@@ -1,0 +1,17 @@
+data:
+  tushare_token: "YOUR_TOKEN"
+  start_date: "20210101"
+  end_date: "20260101"
+  data_dir: "data"
+  benchmark_code: "399300.SZ"
+strategy:
+  initial_weight_momentum: 0.5
+  step: 0.05
+  max_iterations: 20
+  top_n: 50
+  rebalance: "monthly"
+  risk_free_rate: 0.03
+  max_position_pct: 0.10
+  daily_stop_loss: 0.02
+report:
+  output_dir: "outputs"

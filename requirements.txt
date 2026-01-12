@@ -1,0 +1,8 @@
+backtrader==1.9.78.123
+pandas==2.2.2
+numpy==1.26.4
+matplotlib==3.9.0
+scipy==1.13.1
+tushare==1.4.19
+pyyaml==6.0.1
+reportlab==4.2.0
