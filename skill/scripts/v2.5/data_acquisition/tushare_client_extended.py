@@ -850,7 +850,7 @@ if __name__ == '__main__':
     import os
     
     # 设置环境变量
-    token = os.getenv('TUSHARE_TOKEN', '33d6ebd3bad7812192d768a191e29ebe653a1839b3f63ec8a0dd7da94172')
+    token = os.getenv('TUSHARE_TOKEN')  # 从环境变量获取token
     http_url = os.getenv('TUSHARE_HTTP_URL', 'http://lianghua.nanyangqiankun.top')
     
     try:

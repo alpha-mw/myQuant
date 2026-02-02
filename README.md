@@ -2,7 +2,7 @@
 
 一个端到端的AI量化投资框架，融合了统计学、贝叶斯推断、现代投资组合理论、投资大师智慧和大型语言模型增强分析。
 
-**当前版本**: V2.6  
+**当前版本**: V2.5.2  
 **核心理念**: 全球化一手数据驱动 + LLM深度分析 + 工业级框架设计 + 统计严谨性
 
 ---
@@ -20,37 +20,27 @@
 
 ---
 
-## 🆕 V2.6 新特性：美股宏观数据层
+## 🆕 V2.5.2 新特性：A股高级数据接口
 
-V2.6版本引入了完整的**美股宏观数据层**，实现了对美国市场的全面数据覆盖：
+V2.5.2版本充分利用Tushare一万分权限，解锁了A股市场所有高级数据接口，极大地增强了情绪、筹码、衍生品等另类数据的分析能力。
 
-### 数据源
+### 新增高级数据接口
 
-| 数据源 | 用途 | 数据类型 |
+| 数据类别 | 接口 | 价值 |
 |:---|:---|:---|
-| **FRED** | 美联储经济数据库 | GDP、CPI、PCE、失业率、非农就业、联邦基金利率、国债收益率 |
-| **Finnhub** | 金融数据API | 实时报价、公司新闻、市场新闻、经济日历、财报日历 |
-| **yfinance** | 雅虎财经 | 美股历史行情、公司信息、财务报表、市场指数 |
-| **Tushare** | 专业金融数据 | A股行情、财务数据、宏观数据 |
-| **AKShare** | 开源金融数据 | 概念板块、市场情绪、资金流向 |
-
-### 宏观经济数据覆盖
-
-```python
-# 获取美国宏观经济数据快照
-from us_macro_data import USMacroDataManager
-
-manager = USMacroDataManager()
-snapshot = manager.get_macro_snapshot()
-
-# 输出示例：
-# GDP: $24.03万亿 (2025-Q3)
-# 核心CPI: 331.86 (2025-12)
-# 失业率: 4.4% (2025-12)
-# 联邦基金利率: 3.64% (2026-01-29)
-# 10年期国债: 4.24% (2026-01-29)
-# VIX恐慌指数: 17.44 (2026-01-30)
-```
+| **龙虎榜** | `get_top_list()`, `get_top_inst()` | 识别游资和机构的短线动向 |
+| **融资融券** | `get_margin()`, `get_margin_detail()` | 判断市场杠杆水平和多空情绪 |
+| **股东数据** | `get_stk_holdernumber()`, `get_stk_holdertrade()` | 分析筹码集中度和"聪明钱"动向 |
+| **大宗交易** | `get_block_trade()` | 洞察产业资本和机构的真实意图 |
+| **沪深股通** | `get_hk_hold()` | 跟踪外资的配置偏好 |
+| **限售解禁** | `get_share_float()` | 预判减持压力 |
+| **期权数据** | `get_opt_basic()`, `get_opt_daily()` | 捕捉市场波动率预期 |
+| **期货数据** | `get_fut_basic()`, `get_fut_daily()`, `get_fut_holding()` | 宏观对冲，跨品种套利 |
+| **基金数据** | `get_fund_basic()`, `get_fund_nav()`, `get_fund_portfolio()` | 跟踪明星基金经理的调仓路径 |
+| **指数数据** | `get_index_basic()`, `get_index_daily()`, `get_index_weight()` | 指数增强、ETF套利策略 |
+| **行业分类** | `get_index_classify()`, `get_index_member()` | 构建行业轮动策略 |
+| **可转债** | `get_cb_basic()`, `get_cb_daily()` | 可转债套利策略 |
+| **外汇数据** | `get_fx_obasic()`, `get_fx_daily()` | 汇率风险分析 |
 
 ---
 
@@ -69,6 +59,7 @@ myquant/
 │   │   │       └── us_macro_data_manager.py # 智能数据源管理器
 │   │   ├── v2.5/                   # V2.5 A股数据层
 │   │   │   ├── data_acquisition/   # 数据获取模块
+│   │   │   │   └── tushare_client_extended.py # Tushare高级接口
 │   │   │   └── data_service/       # 数据服务模块
 │   │   ├── v2.4/                   # V2.4 LLM增强分析
 │   │   │   ├── llm_client.py       # LLM客户端
@@ -99,108 +90,37 @@ pip install tushare akshare yfinance pandas numpy pyarrow requests scikit-learn 
 
 ```bash
 # A股数据（必需）
-export TUSHARE_TOKEN='your_tushare_token'
+export TUSHARE_TOKEN=\'your_tushare_token\' # 建议一万分以上权限
 
 # 美股数据（必需）
-export FRED_API_KEY='your_fred_api_key'        # 免费: https://fred.stlouisfed.org/docs/api/api_key.html
-export FINNHUB_API_KEY='your_finnhub_api_key'  # 免费: https://finnhub.io/
+export FRED_API_KEY=\'your_fred_api_key\'        # 免费: https://fred.stlouisfed.org/docs/api/api_key.html
+export FINNHUB_API_KEY=\'your_finnhub_api_key\'  # 免费: https://finnhub.io/
 
 # LLM增强分析（可选）
-export OPENAI_API_KEY='your_openai_api_key'
-export GEMINI_API_KEY='your_gemini_api_key'
+export OPENAI_API_KEY=\'your_openai_api_key\'
+export GEMINI_API_KEY=\'your_gemini_api_key\'
 ```
 
 ### 3. 运行示例
 
-#### 美股宏观数据分析
+#### A股高级数据分析
 
 ```python
 import sys
-sys.path.append('skill/scripts/v2.6')
-from us_macro_data import USMacroDataManager
+sys.path.append(\'skill/scripts/v2.5/data_acquisition\')
+from tushare_client_extended import TushareClientExtended
 
-# 初始化管理器
-manager = USMacroDataManager()
+# 初始化客户端
+client = TushareClientExtended()
 
-# 获取宏观经济数据快照
-snapshot = manager.get_macro_snapshot()
-print(f"GDP: {snapshot['data']['gdp']['value']:.2f}B")
-print(f"失业率: {snapshot['data']['unemployment']['value']:.2f}%")
-print(f"联邦基金利率: {snapshot['data']['fed_rate']['value']:.2f}%")
+# 获取龙虎榜数据
+df = client.get_top_list(trade_date=\'20260130\')
+print(df.head())
 
-# 获取美股行情
-aapl = manager.get_stock_history('AAPL', period='1mo')
-print(f"AAPL最新价格: ${aapl.iloc[-1]['close']:.2f}")
-
-# 获取实时报价
-quote = manager.get_stock_quote('AAPL')
-print(f"AAPL实时: ${quote['price']:.2f} ({quote['change_pct']:+.2f}%)")
+# 获取北向资金持股
+df = client.get_hk_hold(trade_date=\'20260130\')
+print(df.head())
 ```
-
-#### A股数据分析
-
-```python
-sys.path.append('skill/scripts/v2.5')
-from integrated_analysis_pipeline import IntegratedAnalysisPipeline
-
-# 初始化流水线
-pipeline = IntegratedAnalysisPipeline(tushare_token='YOUR_TOKEN')
-
-# 分析单只股票
-result = pipeline.analyze_stock('600519', '贵州茅台')
-print(f"报告路径: {result['report_path']}")
-```
-
----
-
-## 📚 核心模块
-
-### 数据层 (V2.5 + V2.6)
-
-| 模块 | 功能 | 数据源 |
-|:---|:---|:---|
-| **USMacroDataManager** | 美股宏观数据智能调度 | FRED + yfinance + Finnhub |
-| **DataSourceManager** | A股数据智能调度 | Tushare + AKShare |
-| **FREDClient** | 美联储经济数据库API | FRED |
-| **FinnhubClient** | 金融数据API | Finnhub |
-| **YFinanceClient** | 雅虎财经数据 | yfinance |
-| **TushareClient** | A股专业数据 | Tushare Pro |
-| **AKShareClient** | A股开源数据 | AKShare |
-
-### LLM增强分析层 (V2.4)
-
-| 模块 | 功能 |
-|:---|:---|
-| **LLMClient** | 统一封装OpenAI和Gemini API |
-| **PromptTemplates** | 8个标准化Prompt模板 |
-| **LLMQuantPipeline** | 端到端分析流水线（6阶段） |
-| **投资大师智慧库** | 6位投资大师的投资哲学 |
-
-### 工业级基础设施 (V2.3)
-
-| 模块 | 功能 |
-|:---|:---|
-| **表达式引擎** | 使用公式化字符串定义因子 |
-| **特征缓存系统** | 自动缓存特征工程结果 |
-| **财报PIT数据处理** | 处理财报数据的多次修订 |
-| **增强回测引擎** | 滑点、市场冲击等真实成本 |
-
-### 统计验证
-
-- **Bootstrap检验**：评估策略指标的置信区间
-- **蒙特卡洛模拟**：压力测试和风险评估
-- **IC分析**：因子有效性验证
-- **因果推断**：识别真正的因果关系
-
-### 投资大师智慧
-
-融入6位投资大师的可量化策略：
-- 沃伦·巴菲特（价值投资）
-- 本杰明·格雷厄姆（安全边际）
-- 彼得·林奇（成长投资）
-- 雷·达里奥（全天候策略）
-- 乔尔·格林布拉特（神奇公式）
-- 威廉·欧奈尔（CANSLIM）
 
 ---
 
@@ -208,6 +128,7 @@ print(f"报告路径: {result['report_path']}")
 
 | 版本 | 核心特性 | 发布时间 |
 |:---|:---|:---|
+| **V2.5.2** | A股高级数据接口，Tushare一万分权限 | 2026-02-02 |
 | **V2.6** | 美股宏观数据层，FRED/Finnhub/yfinance集成 | 2026-02-01 |
 | **V2.5** | A股一手数据驱动分析框架，Tushare/AKShare集成 | 2026-01-31 |
 | **V2.4** | LLM增强量化分析框架，多Agent协作 | 2026-01-30 |
@@ -215,17 +136,6 @@ print(f"报告路径: {result['report_path']}")
 | **V2.2** | 统计严谨性和因果思维，IC分析、Bootstrap测试 | 2026-01 |
 | **V2.1** | 投资大师策略融合 | 2025-12 |
 | **V2.0** | 基础量化分析框架 | 2025-11 |
-
----
-
-## 📖 理论文档
-
-- [统计检验方法论](skill/references/statistical_framework.md)
-- [贝叶斯推断指南](skill/references/bayesian_guide.md)
-- [因果推断指南](skill/references/causal_inference.md)
-- [投资大师智慧](skill/references/master_investors_wisdom.md)
-- [Qlib框架集成指南](skill/references/qlib_integration.md)
-- [数据源参考](skill/references/data_sources.md)
 
 ---
 
@@ -243,16 +153,6 @@ print(f"报告路径: {result['report_path']}")
 ## ⚠️ 免责声明
 
 本项目仅供学习和研究使用，不构成任何投资建议。投资有风险，入市需谨慎。
-
----
-
-## 🤝 贡献
-
-欢迎提交Issue和Pull Request！
-
-## 📄 许可证
-
-MIT License
 
 ---
 
