@@ -1,12 +1,12 @@
-# 🚀 Quant-Investor V5.0
+# 🚀 Quant-Investor V6.0
 
 <div align="center">
 
-**一个工业级的AI量化投资平台**
+**大一统AI量化投资框架**
 
-*数据驱动 · 机器学习 · 风险管理*
+*数据驱动 · 分层解耦 · 端到端自动化*
 
-[![Version](https://img.shields.io/badge/Version-5.0-blue.svg)](https://github.com/maxwelllee54/myQuant)
+[![Version](https://img.shields.io/badge/Version-6.0-blue.svg)](https://github.com/maxwelllee54/myQuant)
 [![Python](https://img.shields.io/badge/Python-3.8+-green.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -16,32 +16,35 @@
 
 ## 📖 项目简介
 
-**Quant-Investor** 是一个整合了量化分析与AI深度思辨的智能投资研究平台。V5.0版本对量化能力进行了全面升级，涵盖数据清洗、特征工程、机器学习模型、完整因子体系、组合优化、回测和高级风险管理。
+**Quant-Investor** 是一个整合了量化分析与AI深度思辨的智能投资研究平台。V6.0大一统版本将V2.7到V5.0的所有核心能力融合到一个统一、分层解耦的框架中，实现了从数据获取到投资报告的全自动化流水线。
 
 ### 核心投资逻辑
 
 ```
-数据清洗 → 因子工程 → 机器学习 → 多因子合成 → 组合优化 → 回测 & 风控
+数据获取与清洗 → 因子计算与验证 → ML建模与信号生成 → 多LLM多Agent辩论 → 组合优化与风控
 ```
 
-1. **数据驱动**：基于海量数据（价量、基本面、另类）进行分析。
-2. **机器学习**：利用XGBoost、LSTM、Transformer等模型捕捉非线性关系，动态调整因子权重。
-3. **风险管理**：采用Barra模型分解风险，GARCH预测波动率，并进行历史情景压力测试。
+1. **数据驱动**：自动获取并清洗海量数据（价量、基本面、宏观），智能扩充截面样本。
+2. **因子验证**：34+因子计算，IC/IR/多空收益严格验证，筛选有效因子。
+3. **机器学习**：XGBoost/LightGBM/RandomForest集成预测，生成综合排名信号。
+4. **AI辩论**：4大LLM（Gemini/OpenAI/DeepSeek/Qwen）驱动5个专家Agent多轮交叉质询。
+5. **风险管理**：组合优化、VaR/CVaR、压力测试、Alpha/Beta基准对比。
 
 ---
 
-## ✨ V5.0 核心特性
+## ✨ V6.0 分层架构
 
-### 统一化流程概览
+| 层级 | 模块 | 核心能力 |
+|:---|:---|:---|
+| **第1层** | 数据层 (UnifiedDataLayer) | yfinance/Tushare/FRED数据源；SQLite+Parquet持久化；去极值/补缺失/标准化；智能样本扩充 |
+| **第2层** | 因子层 (UnifiedFactorLayer) | 34+因子（动量/反转/波动/RSI/MACD/成交量）；IC/IR验证；多因子综合评分 |
+| **第3层** | 模型层 (UnifiedModelLayer) | XGBoost/LightGBM/RandomForest；加权集成预测；特征重要性分析 |
+| **第4层** | 决策层 (UnifiedDecisionLayer) | 4大LLM适配器；5专家Agent多轮辩论；投资评级生成 |
+| **第5层** | 风控层 (UnifiedRiskLayer) | 最大夏普/风险平价/最小方差优化；VaR/CVaR/压力测试；Alpha/Beta分析 |
 
-| 阶段 | 核心能力 |
-|:---|:---|
-| **数据获取与清洗** | OHLCV/Tick/订单簿/基本面/另类数据；去极值/补缺失/标准化/复权 |
-| **因子工程与筛选** | 500+因子（基本面/价量/宏观/另类）；IC/分层回测/换手率分析 |
-| **机器学习建模** | XGBoost/LSTM/Transformer；时间序列交叉验证；自定义损失函数 |
-| **多因子合成** | 非线性交互；动态权重；生成综合信号 |
-| **组合优化与构建** | 均值-方差/风险平价/Black-Litterman |
-| **回测与风险管理** | backtrader回测；Barra风险模型/GARCH/压力测试 |
+### 智能样本扩充
+
+V6.0的核心创新之一是**智能样本扩充**：当用户提供自定义股票池（如5只股票）时，数据层自动拉取完整指数成分股（约90只），确保因子验证和模型训练有充足的截面样本。决策层和风控层则聚焦用户关注的股票，实现"宽样本训练 + 窄焦点决策"。
 
 ---
 
@@ -55,9 +58,8 @@ git clone https://github.com/maxwelllee54/myQuant.git
 cd myQuant
 
 # 安装依赖
-pip install pandas numpy yfinance akshare tushare scipy
+pip install pandas numpy yfinance scipy
 pip install xgboost lightgbm scikit-learn statsmodels
-pip install backtrader
 ```
 
 ### API密钥配置
@@ -82,6 +84,8 @@ TUSHARE_TOKEN=...
 ```
 /quant-investor 分析美股市场
 
+/quant-investor 分析 AAPL MSFT NVDA GOOGL AMZN
+
 /quant-investor 分析我的持仓：AAPL 25%, MSFT 25%, GOOGL 20%
 ```
 
@@ -89,14 +93,46 @@ TUSHARE_TOKEN=...
 
 ```python
 import sys
-sys.path.append("scripts/v5.0")
+sys.path.insert(0, "scripts/v6.0")
 
-# 示例：使用高级风险管理器
-from risk_management.advanced_risk_manager import AdvancedRiskManager
-risk_manager = AdvancedRiskManager()
-analysis = risk_manager.comprehensive_risk_analysis(returns, portfolio_value)
-report = risk_manager.generate_risk_report(analysis)
-print(report)
+from pipeline.master_pipeline import MasterPipelineV6
+
+# 基本用法：分析美股市场
+pipeline = MasterPipelineV6(market="US")
+report = pipeline.run()
+
+# 自定义股票池（自动扩充样本 + 聚焦分析）
+pipeline = MasterPipelineV6(
+    market="US",
+    stock_pool=["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN"],
+    lookback_years=3,
+    optimization_method='max_sharpe',
+    max_debate_stocks=5
+)
+report = pipeline.run()
+```
+
+---
+
+## 📁 代码结构
+
+```
+myQuant/
+├── README.md
+├── skill/
+│   └── SKILL.md                    # Manus技能定义文件
+├── scripts/
+│   ├── v6.0/                       # V6.0 大一统版本 (~4,400行)
+│   │   ├── data_layer/             # 统一数据层
+│   │   ├── factor_layer/           # 统一因子层
+│   │   ├── model_layer/            # 统一模型层
+│   │   ├── decision_layer/         # 统一决策层
+│   │   ├── risk_layer/             # 统一风控层
+│   │   └── pipeline/               # 统一流水线
+│   ├── v5.0/                       # V5.0 工业级量化框架
+│   ├── v4.0~v4.1/                  # V4.x 统一流水线
+│   ├── v3.0~v3.6/                  # V3.x 因子+LLM
+│   └── v2.7~v2.9/                  # V2.x 基础框架
 ```
 
 ---
@@ -105,7 +141,8 @@ print(report)
 
 | 版本 | 发布日期 | 核心特性 |
 |:---|:---|:---|
-| **V5.0** | 2026-02-06 | **工业级量化框架** - 全面升级量化能力 |
+| **V6.0** | 2026-02-06 | **大一统框架** - 分层解耦，融合V2.7~V5.0全部能力，智能样本扩充 |
+| V5.0 | 2026-02-06 | 工业级量化框架 - 全面升级量化能力 |
 | V4.1 | 2026-02-05 | 基准对比升级版，以超越基准为核心 |
 | V4.0 | 2026-02-04 | 统一主流水线，整合所有能力 |
 | V3.6 | 2026-02-04 | 多LLM支持（DeepSeek/千问/Kimi） |
