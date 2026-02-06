@@ -1,12 +1,12 @@
-# 🚀 Quant-Investor V4.1
+# 🚀 Quant-Investor V5.0
 
 <div align="center">
 
-**一个以超越市场基准为核心目标的AI量化投资平台**
+**一个工业级的AI量化投资平台**
 
-*超越基准 · 长期稳定 · 统计显著*
+*数据驱动 · 机器学习 · 风险管理*
 
-[![Version](https://img.shields.io/badge/Version-4.1-blue.svg)](https://github.com/maxwelllee54/myQuant)
+[![Version](https://img.shields.io/badge/Version-5.0-blue.svg)](https://github.com/maxwelllee54/myQuant)
 [![Python](https://img.shields.io/badge/Python-3.8+-green.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -16,59 +16,32 @@
 
 ## 📖 项目简介
 
-**Quant-Investor** 是一个整合了量化分析与AI深度思辨的智能投资研究平台。V4.1版本以**超越市场基准的长期稳定超额收益**为核心目标，对因子/策略验证系统进行了全面升级，确保所有投资建议都基于统计显著且稳定的超额收益。
+**Quant-Investor** 是一个整合了量化分析与AI深度思辨的智能投资研究平台。V5.0版本对量化能力进行了全面升级，涵盖数据清洗、特征工程、机器学习模型、完整因子体系、组合优化、回测和高级风险管理。
 
 ### 核心投资逻辑
 
 ```
-原始数据 → 因子挖掘(vs.基准) → 选股推荐 → 深度分析 → 多空辩论 → 风险评估 → 投资建议
+数据清洗 → 因子工程 → 机器学习 → 多因子合成 → 组合优化 → 回测 & 风控
 ```
 
-1. **超越基准**：所有分析都围绕相对基准的表现展开。
-2. **长期稳定**：通过滚动窗口、分年度、牛熊市分离测试，确保因子/策略的长期有效性。
-3. **统计显著**：所有Alpha都经过严格的t检验，确保超额收益不是由随机性产生的。
+1. **数据驱动**：基于海量数据（价量、基本面、另类）进行分析。
+2. **机器学习**：利用XGBoost、LSTM、Transformer等模型捕捉非线性关系，动态调整因子权重。
+3. **风险管理**：采用Barra模型分解风险，GARCH预测波动率，并进行历史情景压力测试。
 
 ---
 
-## ✨ 核心特性
+## ✨ V5.0 核心特性
 
-### 分层架构概览
+### 统一化流程概览
 
-| 层级 | 版本 | 核心能力 |
-|:---|:---|:---|
-| **🎯 统一层** | V4.1 | **基准对比升级版** - 以超越基准的长期稳定超额收益为核心 |
-| **🧠 智能层** | V3.6 | 多LLM支持（OpenAI/Gemini/DeepSeek/千问/Kimi） |
-| **🔬 因子层** | V3.2-V3.5 | 动态因子挖掘 + 工业级分析 + 海量因子库 + 深度合成 |
-| **💬 决策层** | V2.9 | 多Agent辩论系统，深度基本面分析 |
-| **⚠️ 风控层** | V2.8 | 全面风险评估，VaR/CVaR/压力测试 |
-| **📊 数据层** | V2.7-V3.0 | 持久化存储 + 全景数据（期货期权/行业） |
-
----
-
-## 🎯 V4.1 因子验证升级
-
-V4.1的核心是构建了一个**以超越市场基准为目标的因子/策略验证系统**：
-
-### 第一阶段：数据获取
-
-| 市场 | 股票池 | 基准指数 | 宏观数据 | 行业数据 |
-|:---|:---|:---|:---|:---|
-| **美股(US)** | NASDAQ100 + S&P500 | SPY, QQQ | 美联储利率、CPI、PMI、VIX | GICS行业分类 |
-| **A股(CN)** | 沪深300 + 中证1000 | HS300, ZZ1000 | 央行利率、CPI、PMI、社融 | 申万行业分类 |
-
-### 第二阶段：因子挖掘与验证 (V4.1 核心升级)
-
-1.  基于个股交易数据和财务数据计算因子
-2.  **因子有效性验证 (vs. 基准)**:
-    -   **超额收益检验**: 计算年化Alpha、信息比率(IR)、Beta、胜率
-    -   **稳定性检验**: 滚动IR、分年度表现、牛熊市表现
-    -   **统计显著性检验**: Alpha t检验 (p < 0.05)
-3.  筛选出**统计显著、稳定且超越基准**的有效因子
-4.  基于有效因子推荐3-5只股票
-
-### 第三阶段及以后
-
-后续的定性分析、估值、多空辩论、风险评估等流程与V4.0保持一致，但所有分析都基于V4.1筛选出的高质量股票池。
+| 阶段 | 核心能力 |
+|:---|:---|
+| **数据获取与清洗** | OHLCV/Tick/订单簿/基本面/另类数据；去极值/补缺失/标准化/复权 |
+| **因子工程与筛选** | 500+因子（基本面/价量/宏观/另类）；IC/分层回测/换手率分析 |
+| **机器学习建模** | XGBoost/LSTM/Transformer；时间序列交叉验证；自定义损失函数 |
+| **多因子合成** | 非线性交互；动态权重；生成综合信号 |
+| **组合优化与构建** | 均值-方差/风险平价/Black-Litterman |
+| **回测与风险管理** | backtrader回测；Barra风险模型/GARCH/压力测试 |
 
 ---
 
@@ -83,7 +56,8 @@ cd myQuant
 
 # 安装依赖
 pip install pandas numpy yfinance akshare tushare scipy
-pip install openai google-generativeai
+pip install xgboost lightgbm scikit-learn statsmodels
+pip install backtrader
 ```
 
 ### API密钥配置
@@ -115,13 +89,14 @@ TUSHARE_TOKEN=...
 
 ```python
 import sys
-sys.path.append("scripts/v4.1/benchmark_analysis")
-from enhanced_factor_validator import EnhancedFactorValidator
+sys.path.append("scripts/v5.0")
 
-# 因子验证
-validator = EnhancedFactorValidator(market="US", benchmark="SPY")
-result = validator.validate_factor(factor_values, forward_returns)
-print(validator.generate_validation_report(result))
+# 示例：使用高级风险管理器
+from risk_management.advanced_risk_manager import AdvancedRiskManager
+risk_manager = AdvancedRiskManager()
+analysis = risk_manager.comprehensive_risk_analysis(returns, portfolio_value)
+report = risk_manager.generate_risk_report(analysis)
+print(report)
 ```
 
 ---
@@ -130,7 +105,8 @@ print(validator.generate_validation_report(result))
 
 | 版本 | 发布日期 | 核心特性 |
 |:---|:---|:---|
-| **V4.1** | 2026-02-05 | **基准对比升级版** - 以超越基准的长期稳定超额收益为核心 |
+| **V5.0** | 2026-02-06 | **工业级量化框架** - 全面升级量化能力 |
+| V4.1 | 2026-02-05 | 基准对比升级版，以超越基准为核心 |
 | V4.0 | 2026-02-04 | 统一主流水线，整合所有能力 |
 | V3.6 | 2026-02-04 | 多LLM支持（DeepSeek/千问/Kimi） |
 | V3.5 | 2026-02-04 | 深度特征合成引擎 |
