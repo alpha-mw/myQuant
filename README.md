@@ -1,12 +1,12 @@
-# 🚀 Quant-Investor V6.0
+# 🚀 Quant-Investor V6.1
 
 <div align="center">
 
-**大一统AI量化投资框架**
+**AI驱动的量化投资框架**
 
-*数据驱动 · 分层解耦 · 端到端自动化*
+*数据驱动 · 分层解耦 · AI因子工程*
 
-[![Version](https://img.shields.io/badge/Version-6.0-blue.svg)](https://github.com/maxwelllee54/myQuant)
+[![Version](https://img.shields.io/badge/Version-6.1-blue.svg)](https://github.com/alpha-mw/myQuant)
 [![Python](https://img.shields.io/badge/Python-3.8+-green.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -16,35 +16,48 @@
 
 ## 📖 项目简介
 
-**Quant-Investor** 是一个整合了量化分析与AI深度思辨的智能投资研究平台。V6.0大一统版本将V2.7到V5.0的所有核心能力融合到一个统一、分层解耦的框架中，实现了从数据获取到投资报告的全自动化流水线。
+**Quant-Investor** 是一个整合了量化分析与AI深度思辨的智能投资研究平台。V6.1版本在V6.0大一统框架基础上，**全面升级因子层**，整合Qlib、TA-Lib、WorldQuant三大主流因子库，并引入AI驱动的因子挖掘引擎，实现从500+因子库到自动化因子发现的全链路智能化。
 
 ### 核心投资逻辑
 
 ```
-数据获取与清洗 → 因子计算与验证 → ML建模与信号生成 → 多LLM多Agent辩论 → 组合优化与风控
+数据获取与清洗 → AI因子工程(500+) → ML建模与信号生成 → 多LLM多Agent辩论 → 组合优化与风控
 ```
 
-1. **数据驱动**：自动获取并清洗海量数据（价量、基本面、宏观），智能扩充截面样本。
-2. **因子验证**：34+因子计算，IC/IR/多空收益严格验证，筛选有效因子。
-3. **机器学习**：XGBoost/LightGBM/RandomForest集成预测，生成综合排名信号。
-4. **AI辩论**：4大LLM（Gemini/OpenAI/DeepSeek/Qwen）驱动5个专家Agent多轮交叉质询。
-5. **风险管理**：组合优化、VaR/CVaR、压力测试、Alpha/Beta基准对比。
+**V6.1核心升级**：因子层从"使用"到"创造"的革命性跃迁
+
+1. **海纳百川因子库 (500+)**: 整合Qlib Alpha158/360、TA-Lib 50+指标、WorldQuant 101 Alphas
+2. **AI创新因子引擎**: Transformer时序特征、LLM情绪因子、另类数据因子
+3. **自动化因子挖掘**: 遗传编程（Genetic Programming）自动发现新因子表达式
+4. **数据层增强**: 完整性检查、另类数据接口
 
 ---
 
-## ✨ V6.0 分层架构
+## ✨ V6.1 分层架构
 
 | 层级 | 模块 | 核心能力 |
 |:---|:---|:---|
-| **第1层** | 数据层 (UnifiedDataLayer) | yfinance/Tushare/FRED数据源；SQLite+Parquet持久化；去极值/补缺失/标准化；智能样本扩充 |
-| **第2层** | 因子层 (UnifiedFactorLayer) | 34+因子（动量/反转/波动/RSI/MACD/成交量）；IC/IR验证；多因子综合评分 |
+| **第1层** | 数据层 (UnifiedDataLayer) | yfinance/Tushare/FRED数据源；SQLite+Parquet持久化；去极值/补缺失/标准化；智能样本扩充；**(V6.1)完整性检查+另类数据接口** |
+| **第2层** | 因子层 (UnifiedFactorLayer) | **(V6.1)500+因子库**（Qlib/TA-Lib/WorldQuant）；**AI创新因子**（Transformer/LLM情绪/另类数据）；**遗传编程因子挖掘**；IC/IR验证；多因子综合评分 |
 | **第3层** | 模型层 (UnifiedModelLayer) | XGBoost/LightGBM/RandomForest；加权集成预测；特征重要性分析 |
 | **第4层** | 决策层 (UnifiedDecisionLayer) | 4大LLM适配器；5专家Agent多轮辩论；投资评级生成 |
 | **第5层** | 风控层 (UnifiedRiskLayer) | 最大夏普/风险平价/最小方差优化；VaR/CVaR/压力测试；Alpha/Beta分析 |
 
-### 智能样本扩充
+### V6.1 因子层革命性增强
 
-V6.0的核心创新之一是**智能样本扩充**：当用户提供自定义股票池（如5只股票）时，数据层自动拉取完整指数成分股（约90只），确保因子验证和模型训练有充足的截面样本。决策层和风控层则聚焦用户关注的股票，实现"宽样本训练 + 窄焦点决策"。
+**三大因子库整合**：
+
+| 因子库 | 因子数量 | 核心特性 |
+|--------|---------|----------|
+| Qlib | 158-360 | Alpha158/Alpha360，工业级量化因子 |
+| TA-Lib | 50+ | 技术分析指标（MACD/RSI/布林带等） |
+| WorldQuant | 101 | WorldQuant 101 Alphas精选 |
+
+**AI驱动因子创新**：
+
+- **Transformer时序因子**：使用Transformer提取深度时序模式作为新因子
+- **LLM情绪因子**：分析财报、新闻文本，生成情绪得分因子
+- **遗传编程挖掘**：自动发现新的有效因子表达式
 
 ---
 
@@ -54,12 +67,13 @@ V6.0的核心创新之一是**智能样本扩充**：当用户提供自定义股
 
 ```bash
 # 克隆仓库
-git clone https://github.com/maxwelllee54/myQuant.git
+git clone https://github.com/alpha-mw/myQuant.git
 cd myQuant
 
 # 安装依赖
 pip install pandas numpy yfinance scipy
 pip install xgboost lightgbm scikit-learn statsmodels
+pip install qlib ta-lib  # V6.1新增
 ```
 
 ### API密钥配置
@@ -93,21 +107,17 @@ TUSHARE_TOKEN=...
 
 ```python
 import sys
-sys.path.insert(0, "scripts/v6.0")
+sys.path.insert(0, "scripts/v6.1")
 
 from pipeline.master_pipeline import MasterPipelineV6
 
-# 基本用法：分析美股市场
-pipeline = MasterPipelineV6(market="US")
-report = pipeline.run()
-
-# 自定义股票池（自动扩充样本 + 聚焦分析）
+# V6.1: 启用所有新功能
 pipeline = MasterPipelineV6(
     market="US",
     stock_pool=["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN"],
-    lookback_years=3,
-    optimization_method='max_sharpe',
-    max_debate_stocks=5
+    enable_factor_mining=True,  # 开启遗传编程因子挖掘
+    enable_transformer_factors=True,  # 开启Transformer因子
+    factor_libraries=["qlib", "talib", "worldquant"]  # 加载所有因子库
 )
 report = pipeline.run()
 ```
@@ -122,17 +132,24 @@ myQuant/
 ├── skill/
 │   └── SKILL.md                    # Manus技能定义文件
 ├── scripts/
-│   ├── v6.0/                       # V6.0 大一统版本 (~4,400行)
+│   ├── v6.1/                       # V6.1 AI因子挖掘增强版
 │   │   ├── data_layer/             # 统一数据层
-│   │   ├── factor_layer/           # 统一因子层
+│   │   ├── factor_layer/           # 统一因子层 (V6.1全面升级)
+│   │   │   ├── unified_factor_layer.py
+│   │   │   ├── factor_libraries/   # 新增：因子库模块
+│   │   │   │   ├── qlib_factors.py
+│   │   │   │   ├── talib_factors.py
+│   │   │   │   ├── worldquant_factors.py
+│   │   │   │   └── alternative_factors.py
+│   │   │   └── factor_mining/      # 新增：因子挖掘模块
+│   │   │       └── genetic_miner.py
 │   │   ├── model_layer/            # 统一模型层
 │   │   ├── decision_layer/         # 统一决策层
 │   │   ├── risk_layer/             # 统一风控层
 │   │   └── pipeline/               # 统一流水线
+│   ├── v6.0/                       # V6.0 大一统版本
 │   ├── v5.0/                       # V5.0 工业级量化框架
-│   ├── v4.0~v4.1/                  # V4.x 统一流水线
-│   ├── v3.0~v3.6/                  # V3.x 因子+LLM
-│   └── v2.7~v2.9/                  # V2.x 基础框架
+│   └── v2.7~v4.1/                  # 历史版本
 ```
 
 ---
@@ -141,7 +158,8 @@ myQuant/
 
 | 版本 | 发布日期 | 核心特性 |
 |:---|:---|:---|
-| **V6.0** | 2026-02-06 | **大一统框架** - 分层解耦，融合V2.7~V5.0全部能力，智能样本扩充 |
+| **V6.1** | 2026-02-25 | **AI因子挖掘增强** - 整合Qlib/TA-Lib/WorldQuant，引入遗传编程、Transformer、LLM因子 |
+| V6.0 | 2026-02-06 | **大一统框架** - 分层解耦，融合V2.7~V5.0全部能力，智能样本扩充 |
 | V5.0 | 2026-02-06 | 工业级量化框架 - 全面升级量化能力 |
 | V4.1 | 2026-02-05 | 基准对比升级版，以超越基准为核心 |
 | V4.0 | 2026-02-04 | 统一主流水线，整合所有能力 |
@@ -166,7 +184,7 @@ myQuant/
 
 <div align="center">
 
-**Built with ❤️ by Maxwell & Manus AI**
+**Built with ❤️ by Maxwell**
 
 ⭐ 如果这个项目对你有帮助，请给个Star支持一下！
 
