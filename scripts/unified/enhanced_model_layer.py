@@ -276,7 +276,7 @@ class EnhancedModelLayer:
     
     def build_lstm_model(self, input_shape: Tuple[int, int],
                         units: List[int] = [64, 32],
-                        dropout: float = 0.2) -> keras.Model:
+                        dropout: float = 0.2):
         """构建LSTM模型"""
         if not TF_AVAILABLE:
             return None

@@ -17,7 +17,7 @@ Quant-Investor V7.0 - 六层架构完整版
 import sys
 import os
 from typing import Optional, List, Dict, Any, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -109,11 +109,11 @@ class QuantInvestorV7:
         self.enable_macro = enable_macro
         self.verbose = verbose
         
+        # 结果存储 - 必须在_init_layers之前初始化
+        self.result = QuantPipelineResult()
+        
         # 初始化各层
         self._init_layers()
-        
-        # 结果存储
-        self.result = QuantPipelineResult()
     
     def _log(self, msg: str, layer: str = ""):
         """记录日志"""

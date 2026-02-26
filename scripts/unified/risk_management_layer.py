@@ -38,8 +38,8 @@ class RiskMetrics:
 @dataclass
 class PositionSizing:
     """仓位管理结果"""
-    target_positions: Dict[str, float]         # 目标仓位
-    risk_adjusted_weights: Dict[str, float]    # 风险调整权重
+    target_positions: Dict[str, float] = field(default_factory=dict)         # 目标仓位
+    risk_adjusted_weights: Dict[str, float] = field(default_factory=dict)    # 风险调整权重
     cash_ratio: float = 0.0                    # 现金比例
     leverage: float = 1.0                      # 杠杆倍数
 
@@ -47,9 +47,9 @@ class PositionSizing:
 @dataclass
 class StopLossTakeProfit:
     """止损止盈设置"""
-    stop_loss_levels: Dict[str, float]         # 止损价位
-    take_profit_levels: Dict[str, float]       # 止盈价位
-    trailing_stops: Dict[str, float]           # 跟踪止损
+    stop_loss_levels: Dict[str, float] = field(default_factory=dict)         # 止损价位
+    take_profit_levels: Dict[str, float] = field(default_factory=dict)       # 止盈价位
+    trailing_stops: Dict[str, float] = field(default_factory=dict)           # 跟踪止损
 
 
 @dataclass
