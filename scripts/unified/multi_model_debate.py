@@ -37,6 +37,9 @@ try:
 except ImportError:
     OPENAI_AVAILABLE = False
 
+# 导入速率限制器
+from llm_rate_limiter import RateLimiter, MockLLMProvider, get_rate_limiter, configure_rate_limiter
+
 
 class AnalystModel(Enum):
     """分析模型类型"""
@@ -105,175 +108,78 @@ class DebateResult:
 
 
 class LLMProvider:
-    """LLM提供商"""
+    """LLM提供商 - 带速率限制"""
     
     def __init__(self):
         self.openai_key = os.environ.get('OPENAI_API_KEY')
         self.deepseek_key = os.environ.get('DEEPSEEK_API_KEY')
         self.client = None
+        self.mock_provider = MockLLMProvider()
+        self.use_mock = False
         
+        # 初始化速率限制器
+        self.rate_limiter = configure_rate_limiter(
+            requests_per_minute=15,  # 保守设置
+            min_interval=4.0,        # 最少4秒间隔
+            max_retries=3
+        )
+        
+        # 添加多个API key
+        if self.openai_key:
+            self.rate_limiter.add_api_key(self.openai_key)
+        if self.deepseek_key:
+            self.rate_limiter.add_api_key(self.deepseek_key)
+        
+        # 初始化OpenAI客户端
         if OPENAI_AVAILABLE and self.openai_key:
-            self.client = OpenAI(api_key=self.openai_key)
+            try:
+                self.client = OpenAI(api_key=self.openai_key)
+            except Exception as e:
+                print(f"[LLMProvider] OpenAI初始化失败: {e}")
+                self.use_mock = True
+        else:
+            print("[LLMProvider] API key未设置，使用模拟模式")
+            self.use_mock = True
     
     def call(self, prompt: str, model: str = "gpt-4", temperature: float = 0.7) -> str:
-        """调用LLM"""
-        if self.client:
-            try:
-                response = self.client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": "你是一位专业的投资分析师。"},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=temperature,
-                    max_tokens=2500
-                )
-                return response.choices[0].message.content
-            except Exception as e:
-                print(f"[LLM] API调用失败: {e}")
+        """调用LLM - 带速率限制"""
         
-        return self._mock_response(prompt)
+        # 如果使用模拟模式
+        if self.use_mock:
+            return self.mock_provider.call(prompt)
+        
+        # 使用速率限制器包装调用
+        def _do_call():
+            return self._api_call(prompt, model, temperature)
+        
+        try:
+            return self.rate_limiter.call_with_retry(_do_call)
+        except Exception as e:
+            print(f"[LLMProvider] API调用失败，切换到模拟模式: {e}")
+            self.use_mock = True
+            return self.mock_provider.call(prompt)
     
-    def _mock_response(self, prompt: str) -> str:
-        """模拟响应"""
-        if "财务分析" in prompt:
-            return self._mock_financial()
-        elif "行业研究" in prompt:
-            return self._mock_industry()
-        elif "宏观分析" in prompt:
-            return self._mock_macro()
-        elif "技术分析" in prompt:
-            return self._mock_technical()
-        elif "风险评估" in prompt:
-            return self._mock_risk()
-        elif "综合决策" in prompt:
-            return self._mock_final()
-        return "{}"
-    
-    def _mock_financial(self) -> str:
-        return json.dumps({
-            "bullish_points": [
-                "ROE连续3年保持在18%以上，盈利能力稳定",
-                "自由现金流充裕，FCF/营收比例达15%",
-                "当前PE 15倍，低于行业平均20倍，估值有吸引力",
-                "毛利率35%，净利率12%，盈利质量优秀"
-            ],
-            "bearish_points": [
-                "应收账款周转天数从45天增至60天，回款压力增大",
-                "资本支出占营收比例上升至20%，影响现金流",
-                "存货周转率下降，可能存在库存积压"
-            ],
-            "confidence": 0.75,
-            "bias": "bullish",
-            "key_factors": ["ROE稳定性", "现金流质量", "估值水平"],
-            "reasoning": "财务指标整体健康，估值合理，盈利能力强"
-        }, ensure_ascii=False)
-    
-    def _mock_industry(self) -> str:
-        return json.dumps({
-            "bullish_points": [
-                "行业处于成长期，未来3年CAGR预计15%",
-                "公司在细分市场占有率达30%，龙头地位稳固",
-                "技术壁垒高，研发投入占比8%，专利数量领先",
-                "政策支持力度大，属于国家战略性新兴产业"
-            ],
-            "bearish_points": [
-                "新进入者增多，竞争加剧，价格战风险",
-                "上游原材料价格波动大，成本控制压力",
-                "技术迭代快，需持续高研发投入维持竞争力"
-            ],
-            "confidence": 0.70,
-            "bias": "bullish",
-            "key_factors": ["行业成长性", "市场份额", "技术壁垒", "政策支持"],
-            "reasoning": "行业前景良好，公司具有明显竞争优势和政策红利"
-        }, ensure_ascii=False)
-    
-    def _mock_macro(self) -> str:
-        return json.dumps({
-            "bullish_points": [
-                "货币政策宽松，流动性充裕利好股市",
-                "经济复苏态势明确，PMI连续3个月扩张",
-                "行业受益于稳增长政策，基建投资加码"
-            ],
-            "bearish_points": [
-                "通胀压力上升，CPI接近3%警戒线",
-                "美联储可能加息，外资流出压力",
-                "地缘政治风险，贸易摩擦不确定性"
-            ],
-            "confidence": 0.65,
-            "bias": "neutral",
-            "key_factors": ["货币政策", "经济周期", "通胀压力"],
-            "reasoning": "宏观环境中性偏正面，但需关注通胀和外部风险"
-        }, ensure_ascii=False)
-    
-    def _mock_technical(self) -> str:
-        return json.dumps({
-            "bullish_points": [
-                "股价突破前期高点，形成上升趋势",
-                "成交量放大，资金流入明显",
-                "MACD金叉，RSI在50-70健康区间",
-                "均线多头排列，短期>中期>长期"
-            ],
-            "bearish_points": [
-                "股价接近历史高位，阻力较大",
-                "RSI接近70，短期可能超买回调",
-                "波动率上升，需警惕剧烈波动"
-            ],
-            "confidence": 0.60,
-            "bias": "bullish",
-            "key_factors": ["趋势方向", "成交量", "技术指标"],
-            "reasoning": "技术面偏强，上升趋势确立，但短期注意回调风险"
-        }, ensure_ascii=False)
-    
-    def _mock_risk(self) -> str:
-        return json.dumps({
-            "bullish_points": [
-                "波动率20%，处于可控范围",
-                "流动性充足，日均成交额5亿以上",
-                "Beta 0.9，系统性风险适中"
-            ],
-            "bearish_points": [
-                "最大回撤可能达25%，需设置止损",
-                "行业集中度高，单一行业风险",
-                "尾部风险：政策变化可能带来冲击"
-            ],
-            "confidence": 0.65,
-            "bias": "caution",
-            "key_factors": ["波动率", "回撤风险", "流动性"],
-            "reasoning": "风险收益比合理，但需控制仓位和设置止损"
-        }, ensure_ascii=False)
-    
-    def _mock_final(self) -> str:
-        return json.dumps({
-            "decision": "买入",
-            "confidence": 0.72,
-            "position_size": 0.15,
-            "target_price": 150.0,
-            "stop_loss": 120.0,
-            "time_horizon": "中期",
-            "logic_chain": [
-                "财务指标健康，ROE 18%，估值合理PE 15倍",
-                "行业处于成长期，公司市占率30%龙头地位",
-                "宏观环境中性偏正面，政策支持",
-                "技术面上升趋势确立，资金流入",
-                "风险可控，设置止损位保护"
-            ],
-            "supporting_evidence": [
-                "连续3年ROE>18%",
-                "行业CAGR 15%",
-                "突破前期高点"
-            ],
-            "opposing_concerns": [
-                "应收账款增加",
-                "竞争加剧",
-                "短期可能超买"
-            ],
-            "risk_mitigation": [
-                "仓位控制在15%以内",
-                "设置止损位120元",
-                "定期跟踪财务变化"
-            ]
-        }, ensure_ascii=False)
+    def _api_call(self, prompt: str, model: str, temperature: float) -> str:
+        """实际API调用"""
+        if not self.client:
+            raise Exception("LLM client not initialized")
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "你是一位专业的投资分析师。"},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=temperature,
+                max_tokens=2500
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            error_msg = str(e).lower()
+            if 'rate limit' in error_msg:
+                raise  # 让速率限制器处理
+            raise
 
 
 class MultiModelDebateSystem:
