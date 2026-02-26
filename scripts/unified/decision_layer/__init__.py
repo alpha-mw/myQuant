@@ -20,6 +20,7 @@ class DecisionLayerResult:
     """决策层结果 - 新架构"""
     debate_results: List = field(default_factory=list)
     investment_decisions: List = field(default_factory=list)
+    stock_recommendations: List = field(default_factory=list)  # 添加这个属性
     portfolio_allocation: Dict[str, float] = field(default_factory=dict)
     market_outlook: str = ""
     final_report: str = ""

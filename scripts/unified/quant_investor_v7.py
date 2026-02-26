@@ -204,8 +204,12 @@ class QuantInvestorV7:
             
             comprehensive = analysis.get('comprehensive_score', pd.DataFrame())
             if not comprehensive.empty:
-                selected = comprehensive[comprehensive.get('有效性', '') == '有效'].head(10)
+                # 选择综合得分最高的前10个因子
+                selected = comprehensive.head(10)
                 self.result.selected_factors = selected['因子'].tolist()
+                self._log(f"选中 {len(self.result.selected_factors)} 个因子", "Layer2")
+            else:
+                self.result.selected_factors = factor_cols[:10]
             
         except Exception as e:
             self._log(f"因子检验失败: {e}", "Layer2")

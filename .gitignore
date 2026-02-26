@@ -64,3 +64,5 @@ Thumbs.db
 
 # Logs
 *.log
+.credentials
+*.credentials

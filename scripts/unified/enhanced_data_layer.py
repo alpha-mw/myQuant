@@ -365,6 +365,10 @@ class DataCleaner:
             if col not in result.columns:
                 continue
             
+            # 只处理数值列
+            if not pd.api.types.is_numeric_dtype(result[col]):
+                continue
+            
             series = result[col].dropna()
             if len(series) == 0:
                 continue
@@ -399,10 +403,14 @@ class DataCleaner:
             if col not in result.columns:
                 continue
             
+            # 只处理数值列
+            if not pd.api.types.is_numeric_dtype(result[col]):
+                continue
+            
             if method == 'ffill':
-                result[col] = result[col].fillna(method='ffill')
+                result[col] = result[col].ffill()
             elif method == 'bfill':
-                result[col] = result[col].fillna(method='bfill')
+                result[col] = result[col].bfill()
             elif method == 'mean':
                 result[col] = result[col].fillna(result[col].mean())
             elif method == 'median':
@@ -425,6 +433,10 @@ class DataCleaner:
         
         for col in columns:
             if col not in result.columns:
+                continue
+            
+            # 只处理数值列
+            if not pd.api.types.is_numeric_dtype(result[col]):
                 continue
             
             series = result[col].dropna()
