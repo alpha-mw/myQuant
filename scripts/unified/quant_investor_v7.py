@@ -35,6 +35,8 @@ from enhanced_model_layer import EnhancedModelLayer
 from macro_terminal_tushare import create_terminal, MacroRiskTerminalBase
 from risk_management_layer import RiskManagementLayer, RiskLayerResult
 from decision_layer import DecisionLayer, DecisionLayerResult
+from batch_data_fetcher import BatchDataFetcher, fetch_large_universe
+from stock_universe import StockUniverse, get_major_indices
 
 
 # ==================== 配置 ====================
@@ -154,35 +156,50 @@ class QuantInvestorV7:
         )
     
     def _layer1_data(self) -> bool:
-        """第1层: 数据层"""
+        """第1层: 数据层 - 支持大数据量批量获取"""
         self._log("=" * 60, "Layer1")
         self._log("【第1层】数据层 - 数据获取与清理", "Layer1")
         
         if not self.stock_pool:
             return False
         
-        all_data = []
-        for symbol in self.stock_pool:
-            try:
-                end_date = datetime.now()
-                start_date = end_date - timedelta(days=365 * self.lookback_years)
+        # 使用批量数据获取器
+        try:
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=365 * self.lookback_years)
+            
+            self._log(f"批量获取 {len(self.stock_pool)} 只股票数据...", "Layer1")
+            
+            fetcher = BatchDataFetcher(
+                market=self.market,
+                max_workers=5,
+                batch_size=50,
+                verbose=self.verbose
+            )
+            
+            df = fetcher.fetch_batch(
+                symbols=self.stock_pool,
+                start_date=start_date.strftime('%Y%m%d'),
+                end_date=end_date.strftime('%Y%m%d')
+            )
+            
+            if not df.empty:
+                self.result.raw_data = df
+                self._log(f"数据层完成: 获取 {df['symbol'].nunique()} 只股票, {len(df)} 条记录", "Layer1")
                 
-                df = self.data_layer.fetch_and_process(
-                    symbol=symbol,
-                    start_date=start_date.strftime('%Y%m%d'),
-                    end_date=end_date.strftime('%Y%m%d')
-                )
+                # 如果有失败的股票，记录日志
+                failed = fetcher.get_failed_stocks()
+                if failed:
+                    self._log(f"获取失败: {len(failed)} 只股票", "Layer1")
                 
-                if not df.empty:
-                    all_data.append(df)
-                    
-            except Exception as e:
-                self._log(f"{symbol} 失败: {e}", "Layer1")
-        
-        if all_data:
-            self.result.raw_data = pd.concat(all_data, ignore_index=True)
-            return True
-        return False
+                return True
+            else:
+                self._log("数据层失败: 未获取到任何数据", "Layer1")
+                return False
+                
+        except Exception as e:
+            self._log(f"数据层异常: {e}", "Layer1")
+            return False
     
     def _layer2_factor(self) -> bool:
         """第2层: 因子层"""
