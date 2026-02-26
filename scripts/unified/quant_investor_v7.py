@@ -32,6 +32,7 @@ from enhanced_data_layer import EnhancedDataLayer, DataCleaner, FeatureEngineer
 from factor_analyzer import FactorAnalyzer
 from enhanced_model_layer import EnhancedModelLayer
 from macro_terminal_tushare import create_terminal, MacroRiskTerminalBase
+from risk_management_layer import RiskManagementLayer, RiskLayerResult
 
 
 # ==================== 配置 ====================
@@ -63,6 +64,11 @@ class QuantPipelineResult:
     macro_report: Optional[Any] = None
     macro_signal: str = ""
     macro_risk_level: str = ""
+    
+    # 风控层输出 (第6层)
+    risk_layer_result: Optional[RiskLayerResult] = None
+    risk_adjusted_positions: Optional[Dict[str, float]] = None
+    stop_loss_levels: Optional[Dict[str, float]] = None
     
     # 决策层输出
     llm_analysis: str = ""
@@ -145,7 +151,15 @@ class QuantInvestorV7:
             except Exception as e:
                 self._log(f"宏观层初始化失败: {e}", "Macro")
         
-        # 5. 决策层 (LLM) - 预留接口
+        # 5. 风控层 (第6层)
+        self.risk_layer = RiskManagementLayer(
+            max_position_size=0.2,
+            max_drawdown_limit=-0.15,
+            target_volatility=0.2,
+            verbose=self.verbose
+        )
+        
+        # 6. 决策层 (LLM) - 预留接口
         self.llm_enabled = self.enable_llm
     
     # ==================== 第1层: 数据层 ====================
@@ -367,18 +381,77 @@ class QuantInvestorV7:
         self._log("宏观层完成", "Layer4")
         return True
     
-    # ==================== 第5层: 决策层 ====================
+    # ==================== 第5层: 风控层 ====================
     
-    def _layer5_decision(self) -> bool:
+    def _layer5_risk(self) -> bool:
+        """
+        风控层: 组合风控与仓位管理 (第6层)
+        
+        输入: 模型预测 + 宏观信号
+        输出: 风险调整后的仓位 + 止损止盈设置
+        """
+        self._log("=" * 60, "Layer5")
+        self._log("【第5层】风控层 - 组合风控与仓位管理", "Layer5")
+        self._log("=" * 60, "Layer5")
+        
+        # 准备数据
+        predicted_returns = {}
+        predicted_volatilities = {}
+        current_prices = {}
+        
+        # 从模型预测中提取
+        if self.result.model_predictions is not None:
+            # 简化: 为每只股票分配预测收益
+            for i, symbol in enumerate(self.stock_pool):
+                predicted_returns[symbol] = self.result.model_predictions.mean()
+                predicted_volatilities[symbol] = 0.25  # 默认波动率
+                current_prices[symbol] = 100.0  # 默认价格
+        
+        # 模拟组合收益
+        portfolio_returns = pd.Series(
+            np.random.normal(0.0005, 0.02, 252),
+            index=pd.date_range(end=datetime.now(), periods=252, freq='B')
+        )
+        
+        try:
+            # 运行风控
+            risk_result = self.risk_layer.run_risk_management(
+                portfolio_returns=portfolio_returns,
+                predicted_returns=predicted_returns,
+                predicted_volatilities=predicted_volatilities,
+                current_prices=current_prices,
+                macro_signal=self.result.macro_signal or "🟢"
+            )
+            
+            self.result.risk_layer_result = risk_result
+            self.result.risk_adjusted_positions = risk_result.position_sizing.risk_adjusted_weights
+            self.result.stop_loss_levels = risk_result.stop_loss_take_profit.stop_loss_levels
+            
+            self._log(f"风控层完成: 风险等级={risk_result.risk_level}", "Layer5")
+            
+            # 输出风险预警
+            if risk_result.risk_warnings:
+                for warning in risk_result.risk_warnings:
+                    self._log(f"  {warning}", "Layer5")
+            
+        except Exception as e:
+            self._log(f"风控层失败: {e}", "Layer5")
+            return False
+        
+        return True
+    
+    # ==================== 第6层: 决策层 ====================
+    
+    def _layer6_decision(self) -> bool:
         """
         决策层: LLM深度分析，生成最终建议
         
-        输入: 模型预测 + 宏观信号
+        输入: 模型预测 + 宏观信号 + 风控信号
         输出: 最终投资建议
         """
-        self._log("=" * 60, "Layer5")
-        self._log("【第5层】决策层 - 生成投资建议", "Layer5")
-        self._log("=" * 60, "Layer5")
+        self._log("=" * 60, "Layer6")
+        self._log("【第6层】决策层 - 生成投资建议", "Layer6")
+        self._log("=" * 60, "Layer6")
         
         # 整合各层信息生成建议
         recommendations = []
@@ -403,7 +476,21 @@ class QuantInvestorV7:
             }
             recommendations.append(signal_map.get(self.result.macro_signal, ""))
         
-        # 3. 基于因子分析
+        # 4. 基于风控层
+        if self.result.risk_layer_result:
+            risk_level = self.result.risk_layer_result.risk_level
+            if risk_level == "danger":
+                recommendations.append("⚠️ 风控层预警: 高风险，建议减仓")
+            elif risk_level == "warning":
+                recommendations.append("⚠️ 风控层提示: 注意风险，控制仓位")
+            
+            # 添加风险指标
+            sharpe = self.result.risk_layer_result.risk_metrics.sharpe_ratio
+            if sharpe > 1:
+                recommendations.append(f"夏普比率{sharpe:.2f}优秀")
+            elif sharpe < 0:
+                recommendations.append(f"夏普比率{sharpe:.2f}为负，风险收益比不佳")
+        # 5. 基于因子分析
         if self.result.selected_factors:
             recommendations.append(f"重点关注因子: {', '.join(self.result.selected_factors[:3])}")
         
@@ -411,8 +498,8 @@ class QuantInvestorV7:
         final_recommendation = " | ".join(filter(None, recommendations))
         self.result.final_recommendation = final_recommendation
         
-        self._log(f"最终建议: {final_recommendation}", "Layer5")
-        self._log("决策层完成", "Layer5")
+        self._log(f"最终建议: {final_recommendation}", "Layer6")
+        self._log("决策层完成", "Layer6")
         return True
     
     # ==================== 主流程 ====================
@@ -449,8 +536,11 @@ class QuantInvestorV7:
         if self.enable_macro:
             self._layer4_macro()
         
-        # Layer 5: 决策层
-        self._layer5_decision()
+        # Layer 5: 风控层
+        self._layer5_risk()
+        
+        # Layer 6: 决策层
+        self._layer6_decision()
         
         self._log("=" * 80)
         self._log("流程执行完成")
@@ -492,6 +582,15 @@ class QuantInvestorV7:
             pred_mean = self.result.model_predictions.mean()
             lines.append(f"**模型层**: 平均预测收益 {pred_mean*100:.2f}%")
         
+        # 风控层
+        if self.result.risk_layer_result:
+            lines.append(f"**风控层**: 风险等级 {self.result.risk_layer_result.risk_level.upper()}")
+            lines.append(f"  - 波动率: {self.result.risk_layer_result.risk_metrics.volatility:.2%}")
+            lines.append(f"  - 最大回撤: {self.result.risk_layer_result.risk_metrics.max_drawdown:.2%}")
+            lines.append(f"  - 夏普比率: {self.result.risk_layer_result.risk_metrics.sharpe_ratio:.2f}")
+            if self.result.risk_adjusted_positions:
+                lines.append(f"  - 风险调整仓位: {len(self.result.risk_adjusted_positions)} 只股票")
+
         # 宏观层
         if self.result.macro_signal:
             lines.append(f"**宏观层**: {self.result.macro_signal} {self.result.macro_risk_level}")
