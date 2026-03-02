@@ -36,7 +36,7 @@ print()
 import sqlite3
 conn = sqlite3.connect(db.db_path)
 cursor = conn.cursor()
-cursor.execute('SELECT DISTINCT ts_code FROM daily_data LIMIT 100')  # 先分析100只
+cursor.execute('SELECT DISTINCT ts_code FROM daily_data')  # 使用全部1900只股票
 stocks = [row[0] for row in cursor.fetchall()]
 conn.close()
 
