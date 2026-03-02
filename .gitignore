@@ -39,30 +39,48 @@ venv.bak/
 *.swo
 *~
 
-# Data files
+# Data files - NEVER COMMIT DATA
 *.csv
 *.xlsx
 *.xls
 *.db
 *.sqlite
+*.sqlite3
+*.pkl
+*.pickle
+*.h5
+*.hdf5
+*.parquet
 
 # Config files with sensitive info
 config.ini
 *_token.txt
+.credentials
+*.credentials
 
-# Output files
+# Output files - NEVER COMMIT REPORTS
+*.log
+*.png
+*.jpg
+*.jpeg
+*.pdf
+*.html
+*.md
+
+# Directories with data/reports
 data/
 reports/
 models/
-*.png
-*.jpg
-*.pdf
+cache/
+output/
+results/
+logs/
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Logs
-*.log
-.credentials
-*.credentials
+# Temporary files
+tmp/
+temp/
+*.tmp
