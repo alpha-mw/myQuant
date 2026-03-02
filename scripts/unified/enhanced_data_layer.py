@@ -514,16 +514,15 @@ class FeatureEngineer:
     # ========== 价量因子 ==========
     
     def calc_momentum_factors(self, df: pd.DataFrame) -> pd.DataFrame:
-        """动量因子 - 使用历史收益率，避免前视偏差"""
+        """动量因子 - 使用历史收益率"""
         result = df.copy()
         
-        # 历史收益率 (过去N天的收益，不是未来)
+        # 不同周期的历史收益率 (过去N天的累计收益)
         for period in [5, 10, 20, 60, 120]:
-            # 过去period天的累计收益: (today - period_days_ago) / period_days_ago
-            result[f'momentum_{period}d'] = result['close'] / result['close'].shift(period) - 1
+            result[f'return_{period}d'] = result['close'].pct_change(period)
         
         # 经典动量: 过去12个月剔除最近1个月的收益
-        result['momentum_12_1'] = result['close'].shift(20) / result['close'].shift(240) - 1
+        result['momentum_12_1'] = result['close'].pct_change(240) - result['close'].pct_change(20)
         
         self._log("动量因子计算完成")
         return result
