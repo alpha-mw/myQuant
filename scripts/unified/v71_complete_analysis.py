@@ -91,7 +91,10 @@ for symbol in symbols[:600]:  # 处理前600只
     results.append(stock_df)
 
 df = pd.concat(results, ignore_index=True)
-df = df.dropna()
+# 只删除关键因子列为空的行，保留名称列
+df = df.dropna(subset=['return_5d', 'return_20d', 'rsi_14'], how='any')
+# 填充名称为空的值
+df['name'] = df['name'].fillna('未知')
 
 print(f'  处理完成: {df["symbol"].nunique()} 只股票, {len(df):,} 条记录')
 
@@ -141,6 +144,13 @@ except Exception as e:
 # ========== [Layer 5] 风控层 ==========
 print('\n[Layer 5] 风控层 - 风险评估...')
 
+# 初始化默认值
+volatility = 0.25
+sharpe = 1.0
+max_drawdown = -0.15
+position = 0.5
+risk_level = '中风险'
+
 daily_returns = df.groupby('date')['return_5d'].mean().dropna()
 
 if len(daily_returns) > 0:
@@ -173,6 +183,10 @@ if len(daily_returns) > 0:
     
     print(f'  风险等级: {risk_level}')
     print(f'  建议仓位: {position:.0%}')
+else:
+    print(f'  使用默认风险参数')
+    print(f'  风险等级: {risk_level}')
+    print(f'  建议仓位: {position:.0%}')
 
 # ========== [Layer 6] 决策层 ==========
 print('\n[Layer 6] 决策层 - 生成投资建议...')
@@ -180,13 +194,20 @@ print('\n[Layer 6] 决策层 - 生成投资建议...')
 # 选择前15只股票
 top15 = selected.head(15).copy()
 
-# 计算权重
-total_score = top15['score'].sum()
-top15['weight'] = (top15['score'] / total_score * position).round(4)
+# 计算权重 - 使用softmax确保正权重
+import numpy as np
+scores = top15['score'].values
+# 平移分数使其为正
+min_score = scores.min()
+if min_score < 0:
+    scores = scores - min_score + 0.001  # 确保所有分数为正
+
+exp_scores = np.exp(scores)
+top15['weight'] = (exp_scores / exp_scores.sum() * position).round(4)
 
 # 调整权重使总和为position
 weight_sum = top15['weight'].sum()
-if abs(weight_sum - position) > 0.01:
+if abs(weight_sum - position) > 0.001:
     top15.loc[top15.index[0], 'weight'] += (position - weight_sum)
 
 # ========== 输出结果 ==========
