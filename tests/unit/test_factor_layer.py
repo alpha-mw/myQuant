@@ -23,12 +23,15 @@ class TestFactorCalculation:
     
     def test_mean_reversion_factor(self):
         """测试均值回归因子"""
-        prices = pd.Series([10, 11, 12, 13, 14, 15, 16, 17, 18, 19])
+        # 使用足够长的序列计算20日均线
+        prices = pd.Series([10 + i * 0.5 for i in range(30)])  # 30个数据点
         ma_20 = prices.rolling(20).mean()
         ma_bias = (prices - ma_20) / ma_20
         
-        # 价格高于均线时，偏离度为正
-        assert ma_bias.iloc[-1] > 0
+        # 价格高于均线时，偏离度为正（跳过前20个NaN）
+        valid_bias = ma_bias.dropna()
+        assert len(valid_bias) > 0
+        assert valid_bias.iloc[-1] > 0
     
     def test_volume_factor(self):
         """测试成交量因子"""
