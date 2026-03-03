@@ -84,8 +84,8 @@ class TestDataCleaning:
             "volume": [100, 200, 300, np.nan, 500],
         })
         
-        # 前向填充
-        df_filled = df.fillna(method="ffill")
+        # 前向填充（使用ffill()方法）
+        df_filled = df.ffill()
         assert df_filled["close"].isna().sum() == 0
         
     def test_outlier_detection(self, sample_stock_data):
