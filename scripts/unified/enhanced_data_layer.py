@@ -17,6 +17,11 @@ Enhanced Data Layer - 增强版数据层
 
 import os
 import sys
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).parent))
+from config import config
+
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -42,7 +47,7 @@ except ImportError:
 
 # ==================== 配置 ====================
 
-TUSHARE_TOKEN = os.environ.get('TUSHARE_TOKEN', '33d6ebd3bad7812192d768a191e29ebe653a1839b3f63ec8a0dd7da94172')
+TUSHARE_TOKEN = config.TUSHARE_TOKEN
 TUSHARE_URL = os.environ.get('TUSHARE_URL', 'http://lianghua.nanyangqiankun.top')
 
 

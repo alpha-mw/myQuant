@@ -20,6 +20,9 @@ from typing import Optional, Dict, Any, List, Tuple, Callable
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
+# 添加项目路径
+sys.path.insert(0, str(Path(__file__).parent))
+
 import pandas as pd
 import numpy as np
 
@@ -31,16 +34,21 @@ logging.basicConfig(
 logger = logging.getLogger('MacroRiskTerminal')
 
 # ==================== Tushare配置 ====================
+from config import config
 
-TUSHARE_TOKEN = "33d6ebd3bad7812192d768a191e29ebe653a1839b3f63ec8a0dd7da94172"
-TUSHARE_URL = 'http://lianghua.nanyangqiankun.top'
+TUSHARE_TOKEN = config.TUSHARE_TOKEN
+TUSHARE_URL = config.TUSHARE_URL
 
 # 初始化Tushare
 try:
     import tushare as ts
-    ts.set_token(TUSHARE_TOKEN)
-    TUSHARE_AVAILABLE = True
-    logger.info("Tushare初始化成功")
+    if TUSHARE_TOKEN:
+        ts.set_token(TUSHARE_TOKEN)
+        TUSHARE_AVAILABLE = True
+        logger.info("Tushare初始化成功")
+    else:
+        TUSHARE_AVAILABLE = False
+        logger.warning("TUSHARE_TOKEN未设置，将使用降级数据源")
 except ImportError:
     TUSHARE_AVAILABLE = False
     logger.warning("Tushare未安装，将使用降级数据源")
