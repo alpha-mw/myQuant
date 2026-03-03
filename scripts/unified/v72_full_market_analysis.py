@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Quant-Investor V7.1 - 完整六层投资组合分析
-包含公司名称和完整六层分析
+Quant-Investor V7.2 - 全市场六层投资组合分析
+修复：覆盖所有板块，包含正确的公司名称
 """
 
 import sys
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
 
@@ -19,7 +19,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 print('=' * 80)
-print('Quant-Investor V7.1 - 完整六层投资组合分析')
+print('Quant-Investor V7.2 - 全市场六层投资组合分析')
 print('=' * 80)
 print(f'时间: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
 print()
@@ -28,54 +28,70 @@ print()
 db_path = '/root/.openclaw/workspace/myQuant/data/stock_database.db'
 conn = sqlite3.connect(db_path)
 
-# 获取股票名称映射
+# 获取股票信息（包含板块）
 print('[准备] 加载股票信息...')
 cursor = conn.cursor()
-
-# 尝试从stock_list获取名称
-cursor.execute('SELECT ts_code, name FROM stock_list')
-stock_names = {row[0]: row[1] for row in cursor.fetchall()}
-
-# 如果名称为空，尝试从daily_data的name字段获取（如果有）
-# 或者使用ts_code作为名称
-default_names = {}
-for ts_code in stock_names:
-    if stock_names[ts_code] is None or stock_names[ts_code] == '':
-        # 尝试从其他表获取或使用代码作为名称
-        default_names[ts_code] = ts_code.split('.')[0]  # 使用代码数字部分
+cursor.execute('SELECT ts_code, name, industry, market FROM stock_list')
+stock_info = {}
+for row in cursor.fetchall():
+    ts_code, name, industry, market = row
+    # 根据代码判断板块
+    code = ts_code.split('.')[0]
+    if code.startswith('60'):
+        board = '沪主板'
+    elif code.startswith('00'):
+        board = '深主板'
+    elif code.startswith('30'):
+        board = '创业板'
+    elif code.startswith('68'):
+        board = '科创板'
+    elif code.startswith('8') or code.startswith('4'):
+        board = '北交所'
     else:
-        default_names[ts_code] = stock_names[ts_code]
+        board = '其他'
+    
+    stock_info[ts_code] = {
+        'name': name if name else code,
+        'industry': industry if industry else '未知',
+        'board': board
+    }
 
-stock_names = default_names
-
-# 读取最近数据
+# 读取数据 - 扩大时间范围确保有足够数据
+print('  读取市场数据...')
 df = pd.read_sql_query(
     "SELECT ts_code, trade_date, open, high, low, close, volume, amount "
-    "FROM daily_data WHERE trade_date >= '20241201' ORDER BY ts_code, trade_date",
+    "FROM daily_data WHERE trade_date >= '20240101' ORDER BY ts_code, trade_date",
     conn
 )
 conn.close()
 
 print(f'  读取完成: {len(df):,} 条记录, {df["ts_code"].nunique()} 只股票')
 
-# 重命名
+# 重命名和添加信息
 df = df.rename(columns={'ts_code': 'symbol', 'trade_date': 'date'})
 df['date'] = pd.to_datetime(df['date'])
-df['name'] = df['symbol'].map(stock_names)
+df['name'] = df['symbol'].map(lambda x: stock_info.get(x, {}).get('name', x.split('.')[0]))
+df['board'] = df['symbol'].map(lambda x: stock_info.get(x, {}).get('board', '未知'))
+df['industry'] = df['symbol'].map(lambda x: stock_info.get(x, {}).get('industry', '未知'))
 
 # ========== [Layer 1-2] 数据层+因子层 ==========
 print('\n[Layer 1-2] 数据层+因子层 - 计算技术指标...')
 df = df.sort_values(['symbol', 'date'])
 
+# 显示板块分布
+print(f'\n  板块分布:')
+board_counts = df.groupby('symbol')['board'].first().value_counts()
+for board, count in board_counts.items():
+    print(f'    {board}: {count} 只')
+
 symbols = df['symbol'].unique()
 results = []
 
-for symbol in symbols[:600]:  # 处理前600只
+for symbol in symbols:  # 处理所有股票，不限于600只
     stock_df = df[df['symbol'] == symbol].copy()
-    if len(stock_df) < 30:
+    if len(stock_df) < 40:  # 需要足够的数据计算60天指标
         continue
     
-    # 排序确保时间顺序
     stock_df = stock_df.sort_values('date')
     
     # 动量因子
@@ -105,12 +121,15 @@ for symbol in symbols[:600]:  # 处理前600只
     results.append(stock_df)
 
 df = pd.concat(results, ignore_index=True)
-# 只删除关键因子列为空的行，保留名称列
 df = df.dropna(subset=['return_5d', 'return_20d', 'rsi_14'], how='any')
-# 填充名称为空的值
-df['name'] = df['name'].fillna('未知')
 
-print(f'  处理完成: {df["symbol"].nunique()} 只股票, {len(df):,} 条记录')
+print(f'\n  处理完成: {df["symbol"].nunique()} 只股票, {len(df):,} 条记录')
+
+# 板块分布（处理后）
+print(f'\n  有效数据板块分布:')
+board_counts = df.groupby('symbol')['board'].first().value_counts()
+for board, count in board_counts.items():
+    print(f'    {board}: {count} 只')
 
 # 获取最新数据
 latest = df.groupby('symbol').last().reset_index()
@@ -141,6 +160,12 @@ selected = selected.sort_values('score', ascending=False)
 
 print(f'  通过筛选: {len(selected)} 只股票')
 
+# 板块分布（筛选后）
+print(f'\n  筛选后板块分布:')
+board_counts = selected['board'].value_counts()
+for board, count in board_counts.items():
+    print(f'    {board}: {count} 只')
+
 # ========== [Layer 4] 宏观层 ==========
 print('\n[Layer 4] 宏观层 - 市场环境分析...')
 
@@ -158,7 +183,6 @@ except Exception as e:
 # ========== [Layer 5] 风控层 ==========
 print('\n[Layer 5] 风控层 - 风险评估...')
 
-# 初始化默认值
 volatility = 0.25
 sharpe = 1.0
 max_drawdown = -0.15
@@ -171,7 +195,6 @@ if len(daily_returns) > 0:
     volatility = daily_returns.std() * np.sqrt(252)
     sharpe = daily_returns.mean() / daily_returns.std() * np.sqrt(252) if daily_returns.std() > 0 else 0
     
-    # 最大回撤
     cum_returns = (1 + daily_returns).cumprod()
     rolling_max = cum_returns.expanding().max()
     drawdown = (cum_returns - rolling_max) / rolling_max
@@ -181,7 +204,6 @@ if len(daily_returns) > 0:
     print(f'  最大回撤: {max_drawdown:.2%}')
     print(f'  夏普比率: {sharpe:.2f}')
     
-    # 仓位建议
     if macro_signal == '🔴':
         position = 0.3
         risk_level = '高风险'
@@ -197,29 +219,40 @@ if len(daily_returns) > 0:
     
     print(f'  风险等级: {risk_level}')
     print(f'  建议仓位: {position:.0%}')
-else:
-    print(f'  使用默认风险参数')
-    print(f'  风险等级: {risk_level}')
-    print(f'  建议仓位: {position:.0%}')
 
 # ========== [Layer 6] 决策层 ==========
 print('\n[Layer 6] 决策层 - 生成投资建议...')
 
-# 选择前15只股票
-top15 = selected.head(15).copy()
+# 选择前15只股票，确保板块分散
+top15_list = []
+boards_selected = set()
 
-# 计算权重 - 使用softmax确保正权重
-import numpy as np
+# 先选每个板块得分最高的
+for board in ['沪主板', '深主板', '创业板', '科创板']:
+    board_stocks = selected[selected['board'] == board]
+    if len(board_stocks) > 0:
+        top15_list.append(board_stocks.iloc[0])
+        boards_selected.add(board)
+
+# 补充到15只
+remaining = 15 - len(top15_list)
+if remaining > 0:
+    already_selected = [s['symbol'] for s in top15_list]
+    remaining_stocks = selected[~selected['symbol'].isin(already_selected)].head(remaining)
+    for _, row in remaining_stocks.iterrows():
+        top15_list.append(row)
+
+top15 = pd.DataFrame(top15_list).head(15)
+
+# 计算权重
 scores = top15['score'].values
-# 平移分数使其为正
 min_score = scores.min()
 if min_score < 0:
-    scores = scores - min_score + 0.001  # 确保所有分数为正
+    scores = scores - min_score + 0.001
 
 exp_scores = np.exp(scores)
 top15['weight'] = (exp_scores / exp_scores.sum() * position).round(4)
 
-# 调整权重使总和为position
 weight_sum = top15['weight'].sum()
 if abs(weight_sum - position) > 0.001:
     top15.loc[top15.index[0], 'weight'] += (position - weight_sum)
@@ -232,25 +265,28 @@ print('=' * 80)
 print(f'\n📊 宏观环境: {macro_signal} {macro_risk}')
 print(f'📈 风险指标: 波动率{volatility:.1%} | 夏普{sharpe:.2f} | 最大回撤{max_drawdown:.1%}')
 print(f'💼 仓位配置: {position:.0%}股票 + {1-position:.0%}现金')
-print(f'📋 选股范围: 600只股票 → 筛选出{len(selected)}只 → 推荐前15只')
+print(f'📋 选股范围: {df["symbol"].nunique()}只股票 → 筛选出{len(selected)}只 → 推荐前15只')
 
 print(f'\n📈 推荐投资组合（前15只）:\n')
-print(f'{"排名":<4} {"代码":<12} {"名称":<10} {"权重":<8} {"5天收益":<10} {"20天收益":<10} {"RSI":<6}')
-print('-' * 80)
+print(f'{"排名":<4} {"代码":<12} {"名称":<10} {"板块":<8} {"行业":<10} {"权重":<8} {"5天收益":<10} {"20天收益":<10}')
+print('-' * 100)
 
 for i, (_, row) in enumerate(top15.iterrows(), 1):
-    name = str(row.get('name', 'N/A'))[:8]
-    print(f'{i:<4} {row["symbol"]:<12} {name:<10} {row["weight"]:>6.1%} {row["return_5d"]:>8.2%} {row["return_20d"]:>8.2%} {row["rsi_14"]:>6.1f}')
+    name = str(row.get('name', '未知'))[:8]
+    board = str(row.get('board', '未知'))[:6]
+    industry = str(row.get('industry', '未知'))[:8]
+    print(f'{i:<4} {row["symbol"]:<12} {name:<10} {board:<8} {industry:<10} {row["weight"]:>6.1%} {row["return_5d"]:>8.2%} {row["return_20d"]:>8.2%}')
 
 print('\n' + '=' * 80)
 print('💡 投资建议')
 print('=' * 80)
 print(f'📅 分析日期: {datetime.now().strftime("%Y-%m-%d")}')
-print(f'🎯 策略类型: 动量策略 + 趋势跟踪')
+print(f'🎯 策略类型: 动量策略 + 趋势跟踪 + 板块分散')
 print()
 print('💼 组合配置:')
 print(f'  - 总仓位: {position:.0%}')
 print('  - 前15只股票按上述权重配置')
+print('  - 板块分散: 覆盖沪主板、深主板、创业板、科创板')
 print('  - 剩余资金保持现金')
 print()
 print('⚠️  风险控制:')
@@ -272,23 +308,20 @@ print('=' * 80)
 print('\n[回测] 验证投资组合历史表现...')
 print('=' * 80)
 
-# 获取推荐股票的历史数据
 recommended_symbols = top15['symbol'].tolist()
 backtest_df = df[df['symbol'].isin(recommended_symbols)].copy()
 
 if len(backtest_df) > 0:
-    # 计算组合每日收益
     portfolio_returns = []
     dates = []
     
     for date, group in backtest_df.groupby('date'):
-        # 按权重计算当日收益
         daily_return = 0
         for _, row in group.iterrows():
             symbol = row['symbol']
             weight = top15[top15['symbol'] == symbol]['weight'].values
             if len(weight) > 0:
-                daily_return += row['return_5d'] * weight[0] / position  # 归一化到100%仓位
+                daily_return += row['return_5d'] * weight[0] / position
         
         portfolio_returns.append(daily_return)
         dates.append(date)
@@ -299,19 +332,16 @@ if len(backtest_df) > 0:
     }).dropna()
     
     if len(portfolio_df) > 20:
-        # 计算回测指标
         total_return = (1 + portfolio_df['return']).prod() - 1
         annual_return = portfolio_df['return'].mean() * 252
         annual_vol = portfolio_df['return'].std() * np.sqrt(252)
         backtest_sharpe = annual_return / annual_vol if annual_vol > 0 else 0
         
-        # 最大回撤
         cum_returns = (1 + portfolio_df['return']).cumprod()
         rolling_max = cum_returns.expanding().max()
         drawdown = (cum_returns - rolling_max) / rolling_max
         backtest_max_dd = drawdown.min()
         
-        # 胜率
         win_rate = (portfolio_df['return'] > 0).mean()
         
         print(f'\n📊 回测结果 (最近{len(portfolio_df)}个交易日):')
@@ -322,7 +352,6 @@ if len(backtest_df) > 0:
         print(f'  最大回撤: {backtest_max_dd:.2%}')
         print(f'  日胜率: {win_rate:.1%}')
         
-        # 与基准比较（假设基准收益为0）
         print(f'\n📈 相对表现:')
         if backtest_sharpe > 1.5:
             print(f'  ✅ 表现优秀 (夏普 > 1.5)')
@@ -338,4 +367,4 @@ else:
     print('  ⚠️  无法获取回测数据')
 
 print('=' * 80)
-print('\n✅ 六层分析 + 回测验证完成！')
+print('\n✅ 全市场六层分析 + 回测验证完成！')

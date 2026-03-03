@@ -1,0 +1,64 @@
+# Quant-Investor V7.0 依赖管理
+# Python 3.10+
+
+# 数据处理
+pandas>=2.0.0
+numpy>=1.24.0
+scipy>=1.10.0
+
+# 数据库
+sqlite3-python
+
+# 量化分析
+# backtrader>=1.9.78  # 稍后安装
+# zipline-reloaded  # 可选
+
+# 机器学习
+scikit-learn>=1.3.0
+xgboost>=2.0.0
+
+# 深度学习（可选）
+# tensorflow>=2.13.0
+# torch>=2.0.0
+
+# 技术指标
+TA-Lib>=0.4.28
+
+# 数据获取
+tushare>=1.2.89
+yfinance>=0.2.18
+fredapi>=0.5.0
+requests>=2.31.0
+
+# 可视化
+matplotlib>=3.7.0
+seaborn>=0.12.0
+plotly>=5.15.0
+
+# 日志和监控
+loguru>=0.7.0
+
+# 配置管理
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+
+# 测试
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-asyncio>=0.21.0
+
+# 代码质量
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.5.0
+
+# 异步支持
+aiohttp>=3.8.0
+asyncio
+
+# 缓存
+# redis>=4.6.0  # P1阶段添加
+
+# 其他工具
+tqdm>=4.65.0
+python-dateutil>=2.8.0
