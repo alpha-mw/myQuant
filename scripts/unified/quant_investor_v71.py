@@ -20,7 +20,9 @@ import numpy as np
 # 添加路径
 unified_dir = os.path.dirname(os.path.abspath(__file__))
 if unified_dir not in sys.path:
-    sys.path.insert(0, unified_dir)
+    sys.path.insert(0, str(Path(__file__).parent))
+from config import config
+sys.path.insert(0, unified_dir)
 
 # 导入各层
 from enhanced_data_layer import EnhancedDataLayer
@@ -35,7 +37,7 @@ from stock_universe import get_major_indices
 
 # ==================== 配置 ====================
 
-TUSHARE_TOKEN = os.environ.get('TUSHARE_TOKEN', '33d6ebd3bad7812192d768a191e29ebe653a1839b3f63ec8a0dd7da94172')
+TUSHARE_TOKEN = config.TUSHARE_TOKEN
 TUSHARE_URL = os.environ.get('TUSHARE_URL', 'http://lianghua.nanyangqiankun.top')
 
 

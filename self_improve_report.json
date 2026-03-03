@@ -1,0 +1,266 @@
+{
+  "timestamp": "2026-03-03T13:29:43.353936",
+  "patterns": {
+    "repeated_code": [],
+    "workarounds": [
+      {
+        "type": "todo_items",
+        "count": 3,
+        "examples": [
+          "/root/.openclaw/workspace/myQuant/scripts/unified/pipeline/__init__.py:            # TODO: \u96c6\u6210\u9057\u4f20\u7f16\u7a0b",
+          "/root/.openclaw/workspace/myQuant/scripts/unified/pipeline/__init__.py:            # TODO: \u96c6\u6210\u6df1\u5ea6\u7279\u5f81",
+          "/root/.openclaw/workspace/myQuant/scripts/unified/pipeline/__init__.py:            # TODO: \u96c6\u6210\u9ad8\u7ea7\u98ce\u9669\u5206\u6790"
+        ]
+      }
+    ],
+    "boilerplate": [],
+    "anti_patterns": [
+      {
+        "type": "bare_exception",
+        "count": 3,
+        "examples": [
+          "/root/.openclaw/workspace/myQuant/scripts/unified/macro_risk_terminal.py:            except Exception:",
+          "/root/.openclaw/workspace/myQuant/scripts/unified/macro_risk_terminal.py:            except Exception:",
+          "/root/.openclaw/workspace/myQuant/scripts/unified/batch_data_pipeline.py:            except Exception:"
+        ]
+      }
+    ]
+  },
+  "pain_points": [
+    {
+      "file": "macro_terminal_tushare.py",
+      "issue": "\u53ef\u80fd\u5305\u542b\u786c\u7f16\u7801\u51ed\u8bc1",
+      "severity": "high"
+    },
+    {
+      "file": "stock_database.py",
+      "issue": "\u4f7f\u7528sys.path.insert\u800c\u4e0d\u662f\u76f8\u5bf9\u5bfc\u5165",
+      "severity": "medium"
+    },
+    {
+      "file": "stock_database.py",
+      "issue": "\u53ef\u80fd\u5305\u542b\u786c\u7f16\u7801\u51ed\u8bc1",
+      "severity": "high"
+    },
+    {
+      "file": "quant_investor_v71.py",
+      "issue": "\u4f7f\u7528sys.path.insert\u800c\u4e0d\u662f\u76f8\u5bf9\u5bfc\u5165",
+      "severity": "medium"
+    },
+    {
+      "file": "quant_investor_v71.py",
+      "issue": "\u53ef\u80fd\u5305\u542b\u786c\u7f16\u7801\u51ed\u8bc1",
+      "severity": "high"
+    },
+    {
+      "file": "unified_v63_complete.py",
+      "issue": "\u4f7f\u7528sys.path.insert\u800c\u4e0d\u662f\u76f8\u5bf9\u5bfc\u5165",
+      "severity": "medium"
+    },
+    {
+      "file": "stock_universe.py",
+      "issue": "\u4f7f\u7528sys.path.insert\u800c\u4e0d\u662f\u76f8\u5bf9\u5bfc\u5165",
+      "severity": "medium"
+    },
+    {
+      "file": "stock_universe.py",
+      "issue": "\u53ef\u80fd\u5305\u542b\u786c\u7f16\u7801\u51ed\u8bc1",
+      "severity": "high"
+    },
+    {
+      "file": "v71_medium_scale_analysis.py",
+      "issue": "\u4f7f\u7528sys.path.insert\u800c\u4e0d\u662f\u76f8\u5bf9\u5bfc\u5165",
+      "severity": "medium"
+    },
+    {
+      "file": "run_large_scale_analysis.py",
+      "issue": "\u4f7f\u7528sys.path.insert\u800c\u4e0d\u662f\u76f8\u5bf9\u5bfc\u5165",
+      "severity": "medium"
+    },
+    {
+      "file": "data_manager.py",
+      "issue": "\u4f7f\u7528sys.path.insert\u800c\u4e0d\u662f\u76f8\u5bf9\u5bfc\u5165",
+      "severity": "medium"
+    },
+    {
+      "file": "macro_terminal_v63.py",
+      "issue": "\u4f7f\u7528\u88f8\u5f02\u5e38\u6355\u83b7",
+      "severity": "high"
+    },
+    {
+      "file": "macro_terminal_v63.py",
+      "issue": "\u53ef\u80fd\u5305\u542b\u786c\u7f16\u7801\u51ed\u8bc1",
+      "severity": "high"
+    },
+    {
+      "file": "v71_global_analysis.py",
+      "issue": "\u4f7f\u7528sys.path.insert\u800c\u4e0d\u662f\u76f8\u5bf9\u5bfc\u5165",
+      "severity": "medium"
+    },
+    {
+      "file": "run_backtest.py",
+      "issue": "\u4f7f\u7528sys.path.insert\u800c\u4e0d\u662f\u76f8\u5bf9\u5bfc\u5165",
+      "severity": "medium"
+    },
+    {
+      "file": "v71_complete_analysis.py",
+      "issue": "\u4f7f\u7528sys.path.insert\u800c\u4e0d\u662f\u76f8\u5bf9\u5bfc\u5165",
+      "severity": "medium"
+    },
+    {
+      "file": "macro_risk_terminal.py",
+      "issue": "\u4f7f\u7528\u88f8\u5f02\u5e38\u6355\u83b7",
+      "severity": "high"
+    },
+    {
+      "file": "macro_risk_terminal.py",
+      "issue": "\u53ef\u80fd\u5305\u542b\u786c\u7f16\u7801\u51ed\u8bc1",
+      "severity": "high"
+    },
+    {
+      "file": "v71_demo.py",
+      "issue": "\u4f7f\u7528sys.path.insert\u800c\u4e0d\u662f\u76f8\u5bf9\u5bfc\u5165",
+      "severity": "medium"
+    },
+    {
+      "file": "v72_full_market_analysis.py",
+      "issue": "\u4f7f\u7528sys.path.insert\u800c\u4e0d\u662f\u76f8\u5bf9\u5bfc\u5165",
+      "severity": "medium"
+    },
+    {
+      "file": "macro_terminal_transparent.py",
+      "issue": "\u4f7f\u7528\u88f8\u5f02\u5e38\u6355\u83b7",
+      "severity": "high"
+    },
+    {
+      "file": "macro_terminal_transparent.py",
+      "issue": "\u53ef\u80fd\u5305\u542b\u786c\u7f16\u7801\u51ed\u8bc1",
+      "severity": "high"
+    },
+    {
+      "file": "example_usage.py",
+      "issue": "\u4f7f\u7528sys.path.insert\u800c\u4e0d\u662f\u76f8\u5bf9\u5bfc\u5165",
+      "severity": "medium"
+    },
+    {
+      "file": "example_usage.py",
+      "issue": "\u53ef\u80fd\u5305\u542b\u786c\u7f16\u7801\u51ed\u8bc1",
+      "severity": "high"
+    },
+    {
+      "file": "README_V63.py",
+      "issue": "\u53ef\u80fd\u5305\u542b\u786c\u7f16\u7801\u51ed\u8bc1",
+      "severity": "high"
+    },
+    {
+      "file": "backtest_engine.py",
+      "issue": "\u4f7f\u7528sys.path.insert\u800c\u4e0d\u662f\u76f8\u5bf9\u5bfc\u5165",
+      "severity": "medium"
+    },
+    {
+      "file": "unified_transparent.py",
+      "issue": "\u4f7f\u7528sys.path.insert\u800c\u4e0d\u662f\u76f8\u5bf9\u5bfc\u5165",
+      "severity": "medium"
+    },
+    {
+      "file": "enhanced_data_layer.py",
+      "issue": "\u53ef\u80fd\u5305\u542b\u786c\u7f16\u7801\u51ed\u8bc1",
+      "severity": "high"
+    },
+    {
+      "file": "quant_investor_v7.py",
+      "issue": "\u4f7f\u7528sys.path.insert\u800c\u4e0d\u662f\u76f8\u5bf9\u5bfc\u5165",
+      "severity": "medium"
+    },
+    {
+      "file": "quant_investor_v7.py",
+      "issue": "\u53ef\u80fd\u5305\u542b\u786c\u7f16\u7801\u51ed\u8bc1",
+      "severity": "high"
+    },
+    {
+      "file": "batch_data_pipeline.py",
+      "issue": "\u4f7f\u7528sys.path.insert\u800c\u4e0d\u662f\u76f8\u5bf9\u5bfc\u5165",
+      "severity": "medium"
+    },
+    {
+      "file": "batch_data_pipeline.py",
+      "issue": "\u4f7f\u7528\u88f8\u5f02\u5e38\u6355\u83b7",
+      "severity": "high"
+    },
+    {
+      "file": "download_all.py",
+      "issue": "\u4f7f\u7528sys.path.insert\u800c\u4e0d\u662f\u76f8\u5bf9\u5bfc\u5165",
+      "severity": "medium"
+    },
+    {
+      "file": "unified_tushare.py",
+      "issue": "\u4f7f\u7528sys.path.insert\u800c\u4e0d\u662f\u76f8\u5bf9\u5bfc\u5165",
+      "severity": "medium"
+    },
+    {
+      "file": "unified_tushare.py",
+      "issue": "\u53ef\u80fd\u5305\u542b\u786c\u7f16\u7801\u51ed\u8bc1",
+      "severity": "high"
+    },
+    {
+      "file": "unified_with_macro.py",
+      "issue": "\u4f7f\u7528sys.path.insert\u800c\u4e0d\u662f\u76f8\u5bf9\u5bfc\u5165",
+      "severity": "medium"
+    },
+    {
+      "file": "batch_data_fetcher.py",
+      "issue": "\u4f7f\u7528sys.path.insert\u800c\u4e0d\u662f\u76f8\u5bf9\u5bfc\u5165",
+      "severity": "medium"
+    },
+    {
+      "file": "v71_large_scale_analysis.py",
+      "issue": "\u4f7f\u7528sys.path.insert\u800c\u4e0d\u662f\u76f8\u5bf9\u5bfc\u5165",
+      "severity": "medium"
+    },
+    {
+      "file": "multi_model_debate.py",
+      "issue": "\u53ef\u80fd\u5305\u542b\u786c\u7f16\u7801\u51ed\u8bc1",
+      "severity": "high"
+    }
+  ],
+  "proposals": [
+    {
+      "id": "error_handling",
+      "title": "\u6539\u8fdb\u9519\u8bef\u5904\u7406\u673a\u5236",
+      "problem": "\u4ee3\u7801\u4e2d\u5b58\u5728\u5927\u91cf\u88f8\u5f02\u5e38\u6355\u83b7\uff0c\u9690\u85cf\u6f5c\u5728bug",
+      "solution": "\u4f7f\u7528\u5177\u4f53\u5f02\u5e38\u7c7b\u578b\uff0c\u6dfb\u52a0\u7ed3\u6784\u5316\u65e5\u5fd7",
+      "files": [
+        "macro_terminal_v63.py",
+        "macro_risk_terminal.py",
+        "macro_terminal_transparent.py",
+        "batch_data_pipeline.py"
+      ],
+      "priority": "high",
+      "effort": "medium"
+    },
+    {
+      "id": "dependency_injection",
+      "title": "\u5f15\u5165\u4f9d\u8d56\u6ce8\u5165\u5bb9\u5668",
+      "problem": "\u5c42\u95f4\u8026\u5408\u5ea6\u9ad8\uff0c\u96be\u4ee5\u6d4b\u8bd5",
+      "solution": "\u521b\u5efaDI\u5bb9\u5668\uff0c\u5b9e\u73b0\u63a5\u53e3\u62bd\u8c61",
+      "files": [
+        "quant_investor_v7.py",
+        "enhanced_data_layer.py"
+      ],
+      "priority": "high",
+      "effort": "high"
+    },
+    {
+      "id": "caching_layer",
+      "title": "\u6dfb\u52a0Redis\u7f13\u5b58\u5c42",
+      "problem": "\u91cd\u590d\u8ba1\u7b97\u548cAPI\u8c03\u7528\u5bfc\u81f4\u6027\u80fd\u5dee",
+      "solution": "\u96c6\u6210Redis\uff0c\u7f13\u5b58\u6570\u636e\u548c\u8ba1\u7b97\u7ed3\u679c",
+      "files": [
+        "stock_database.py",
+        "enhanced_data_layer.py"
+      ],
+      "priority": "medium",
+      "effort": "medium"
+    }
+  ]
+}

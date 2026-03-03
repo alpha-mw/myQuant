@@ -16,11 +16,13 @@ from typing import List, Dict, Optional
 from datetime import datetime
 
 # 读取credentials
+sys.path.insert(0, str(Path(__file__).parent))
+from config import config
 sys.path.insert(0, '/root/.openclaw/workspace/myQuant')
 try:
     from credentials import TUSHARE_TOKEN, TUSHARE_URL
 except ImportError:
-    TUSHARE_TOKEN = os.environ.get('TUSHARE_TOKEN', '33d6ebd3bad7812192d768a191e29ebe653a1839b3f63ec8a0dd7da94172')
+    TUSHARE_TOKEN = config.TUSHARE_TOKEN
     TUSHARE_URL = os.environ.get('TUSHARE_URL', 'http://lianghua.nanyangqiankun.top')
 
 import tushare as ts
