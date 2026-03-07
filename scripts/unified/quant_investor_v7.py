@@ -16,6 +16,7 @@ Quant-Investor V7.0 - 六层架构完整版
 
 import sys
 import os
+from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
@@ -26,9 +27,10 @@ import numpy as np
 # 添加路径
 unified_dir = os.path.dirname(os.path.abspath(__file__))
 if unified_dir not in sys.path:
-    sys.path.insert(0, str(Path(__file__).parent))
+    sys.path.insert(0, unified_dir)
+    
+# 导入配置
 from config import config
-sys.path.insert(0, unified_dir)
 
 # 导入各层
 from enhanced_data_layer import EnhancedDataLayer
