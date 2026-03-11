@@ -29,6 +29,8 @@ from typing import Dict, List, Optional, Tuple, Any, Union
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
 import warnings
+from logger import get_logger
+from exceptions import DataSourceError, DataNotFoundError
 warnings.filterwarnings('ignore')
 
 # 可选依赖
@@ -157,18 +159,18 @@ class TushareDataSource(DataSourceBase):
             freq: 频率 D=日线, W=周线, M=月线
         """
         if not self.pro:
-            return pd.DataFrame()
-        
+            raise DataSourceError("tushare", "API未初始化，无法获取数据")
+
         try:
             # 获取复权因子
             adj_df = self.pro.adj_factor(ts_code=symbol)
-            
+
             # 获取日线数据
             df = self.pro.daily(ts_code=symbol, start_date=start_date, end_date=end_date)
-            
+
             if df is None or df.empty:
-                return pd.DataFrame()
-            
+                raise DataNotFoundError(symbol, f"{start_date} ~ {end_date}")
+
             # 合并复权因子
             if adj_df is not None and not adj_df.empty:
                 df = df.merge(adj_df[['trade_date', 'adj_factor']], on='trade_date', how='left')
@@ -177,11 +179,11 @@ class TushareDataSource(DataSourceBase):
                 df['adj_open'] = df['open'] * df['adj_factor']
                 df['adj_high'] = df['high'] * df['adj_factor']
                 df['adj_low'] = df['low'] * df['adj_factor']
-            
+
             # 转换日期格式
             df['trade_date'] = pd.to_datetime(df['trade_date'])
             df = df.sort_values('trade_date')
-            
+
             # 重命名列
             df = df.rename(columns={
                 'trade_date': 'date',
@@ -192,12 +194,13 @@ class TushareDataSource(DataSourceBase):
                 'vol': 'volume',
                 'amount': 'amount'
             })
-            
+
             return df
-            
+
+        except (DataSourceError, DataNotFoundError):
+            raise
         except Exception as e:
-            print(f"[TushareDataSource] 获取OHLCV失败 {symbol}: {e}")
-            return pd.DataFrame()
+            raise DataSourceError("tushare", f"获取OHLCV失败 {symbol}", e) from e
     
     def get_fundamental(self, symbol: str) -> FundamentalData:
         """获取基本面数据"""
@@ -351,10 +354,10 @@ class DataCleaner:
     
     def __init__(self, verbose: bool = True):
         self.verbose = verbose
-    
-    def _log(self, msg: str):
-        if self.verbose:
-            print(f"[DataCleaner] {msg}")
+        self._logger = get_logger("DataCleaner", verbose)
+
+    def _log(self, msg: str) -> None:
+        self._logger.info(msg)
     
     def winsorize(self, df: pd.DataFrame, columns: List[str],
                   method: str = 'mad', sigma: float = 3.0) -> pd.DataFrame:
@@ -511,10 +514,10 @@ class FeatureEngineer:
     
     def __init__(self, verbose: bool = True):
         self.verbose = verbose
-    
-    def _log(self, msg: str):
-        if self.verbose:
-            print(f"[FeatureEngineer] {msg}")
+        self._logger = get_logger("FeatureEngineer", verbose)
+
+    def _log(self, msg: str) -> None:
+        self._logger.info(msg)
     
     # ========== 价量因子 ==========
     

@@ -70,6 +70,8 @@ except Exception as e:
     print(f"[Warning] 决策层导入失败: {e}")
     DECISION_LAYER_AVAILABLE = False
 
+from logger import get_logger
+
 
 @dataclass
 class LayerExecutionResult:
@@ -153,18 +155,16 @@ class QuantInvestorV72:
         self.stock_pool = stock_pool or []
         self.lookback_years = lookback_years
         self.verbose = verbose
+        self._logger = get_logger("QuantInvestorV72", verbose)
         self.result = QuantResultV72()
-        
+
         # 初始化各层组件
         self._init_layers()
-    
-    def _log(self, msg: str):
-        """记录日志"""
-        timestamp = datetime.now().strftime('%H:%M:%S')
-        entry = f"[{timestamp}] {msg}"
-        self.result.logs.append(entry)
-        if self.verbose:
-            print(entry)
+
+    def _log(self, msg: str) -> None:
+        """记录日志，同时写入执行日志和logger"""
+        self.result.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+        self._logger.info(msg)
     
     def _init_layers(self):
         """初始化各层 (带异常处理)"""

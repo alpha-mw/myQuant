@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import warnings
 warnings.filterwarnings('ignore')
+from logger import get_logger
+from exceptions import RiskCalculationError
 
 
 @dataclass
@@ -89,12 +91,11 @@ class RiskManagementLayer:
         self.take_profit_pct = take_profit_pct
         self.risk_free_rate = risk_free_rate
         self.verbose = verbose
-        
+        self._logger = get_logger("RiskManagementLayer", verbose)
         self.result = RiskLayerResult()
-    
-    def _log(self, msg: str):
-        if self.verbose:
-            print(f"[RiskLayer] {msg}")
+
+    def _log(self, msg: str) -> None:
+        self._logger.info(msg)
     
     # ==================== 风险指标计算 ====================
     
@@ -107,54 +108,58 @@ class RiskManagementLayer:
         计算风险指标
         """
         self._log("计算风险指标...")
-        
+
         metrics = RiskMetrics()
-        
+
         if len(returns) < 2:
             return metrics
-        
-        # 年化波动率
-        metrics.volatility = returns.std() * np.sqrt(252)
-        
-        # 最大回撤
-        cum_returns = (1 + returns).cumprod()
-        rolling_max = cum_returns.expanding().max()
-        drawdown = (cum_returns - rolling_max) / rolling_max
-        metrics.max_drawdown = drawdown.min()
-        
-        # VaR / CVaR
-        metrics.var_95 = np.percentile(returns, 5)
-        metrics.cvar_95 = returns[returns <= metrics.var_95].mean()
-        
-        # 夏普比率
-        excess_returns = returns.mean() * 252 - self.risk_free_rate
-        if metrics.volatility > 0:
-            metrics.sharpe_ratio = excess_returns / metrics.volatility
-        
-        # 索提诺比率
-        downside_returns = returns[returns < 0]
-        downside_std = downside_returns.std() * np.sqrt(252) if len(downside_returns) > 0 else 0
-        if downside_std > 0:
-            metrics.sortino_ratio = excess_returns / downside_std
-        
-        # Beta / Alpha (如果有基准)
-        if benchmark_returns is not None and len(benchmark_returns) == len(returns):
-            covariance = np.cov(returns, benchmark_returns)[0, 1]
-            benchmark_variance = benchmark_returns.var()
-            if benchmark_variance > 0:
-                metrics.beta = covariance / benchmark_variance
-                metrics.alpha = returns.mean() * 252 - self.risk_free_rate - metrics.beta * (benchmark_returns.mean() * 252 - self.risk_free_rate)
-            
-            # 跟踪误差
-            tracking_diff = returns - benchmark_returns
-            metrics.tracking_error = tracking_diff.std() * np.sqrt(252)
-            
-            # 信息比率
-            if metrics.tracking_error > 0:
-                metrics.information_ratio = (returns.mean() - benchmark_returns.mean()) * 252 / metrics.tracking_error
-        
+
+        try:
+            # 年化波动率
+            metrics.volatility = returns.std() * np.sqrt(252)
+
+            # 最大回撤
+            cum_returns = (1 + returns).cumprod()
+            rolling_max = cum_returns.expanding().max()
+            drawdown = (cum_returns - rolling_max) / rolling_max
+            metrics.max_drawdown = drawdown.min()
+
+            # VaR / CVaR
+            metrics.var_95 = np.percentile(returns, 5)
+            metrics.cvar_95 = returns[returns <= metrics.var_95].mean()
+
+            # 夏普比率
+            excess_returns = returns.mean() * 252 - self.risk_free_rate
+            if metrics.volatility > 0:
+                metrics.sharpe_ratio = excess_returns / metrics.volatility
+
+            # 索提诺比率
+            downside_returns = returns[returns < 0]
+            downside_std = downside_returns.std() * np.sqrt(252) if len(downside_returns) > 0 else 0
+            if downside_std > 0:
+                metrics.sortino_ratio = excess_returns / downside_std
+
+            # Beta / Alpha (如果有基准)
+            if benchmark_returns is not None and len(benchmark_returns) == len(returns):
+                covariance = np.cov(returns, benchmark_returns)[0, 1]
+                benchmark_variance = benchmark_returns.var()
+                if benchmark_variance > 0:
+                    metrics.beta = covariance / benchmark_variance
+                    metrics.alpha = returns.mean() * 252 - self.risk_free_rate - metrics.beta * (benchmark_returns.mean() * 252 - self.risk_free_rate)
+
+                # 跟踪误差
+                tracking_diff = returns - benchmark_returns
+                metrics.tracking_error = tracking_diff.std() * np.sqrt(252)
+
+                # 信息比率
+                if metrics.tracking_error > 0:
+                    metrics.information_ratio = (returns.mean() - benchmark_returns.mean()) * 252 / metrics.tracking_error
+
+        except Exception as e:
+            raise RiskCalculationError("risk_metrics", str(e)) from e
+
         self._log(f"风险指标: 波动率={metrics.volatility:.2%}, 最大回撤={metrics.max_drawdown:.2%}, 夏普={metrics.sharpe_ratio:.2f}")
-        
+
         return metrics
     
     # ==================== 仓位管理 ====================
