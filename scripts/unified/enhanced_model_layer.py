@@ -24,6 +24,8 @@ from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import mean_squared_error, mean_absolute_error, accuracy_score, f1_score
 import warnings
 warnings.filterwarnings('ignore')
+from logger import get_logger
+from exceptions import ModelTrainingError, ModelPredictionError
 
 # 可选依赖
 try:
@@ -64,10 +66,10 @@ class EnhancedModelLayer:
         self.verbose = verbose
         self.models: Dict[str, Any] = {}
         self.results: Dict[str, ModelResult] = {}
-    
-    def _log(self, msg: str):
-        if self.verbose:
-            print(f"[EnhancedModelLayer] {msg}")
+        self._logger = get_logger("EnhancedModelLayer", verbose)
+
+    def _log(self, msg: str) -> None:
+        self._logger.info(msg)
     
     # ========== 数据准备 ==========
     
@@ -123,63 +125,66 @@ class EnhancedModelLayer:
             task: 'regression' 或 'classification'
         """
         self._log("训练 Random Forest...")
-        
-        if task == 'regression':
-            model = RandomForestRegressor(
-                n_estimators=kwargs.get('n_estimators', 100),
-                max_depth=kwargs.get('max_depth', 10),
-                min_samples_split=kwargs.get('min_samples_split', 5),
-                random_state=42,
-                n_jobs=-1
+
+        try:
+            if task == 'regression':
+                model = RandomForestRegressor(
+                    n_estimators=kwargs.get('n_estimators', 100),
+                    max_depth=kwargs.get('max_depth', 10),
+                    min_samples_split=kwargs.get('min_samples_split', 5),
+                    random_state=42,
+                    n_jobs=-1
+                )
+            else:
+                model = RandomForestClassifier(
+                    n_estimators=kwargs.get('n_estimators', 100),
+                    max_depth=kwargs.get('max_depth', 10),
+                    random_state=42,
+                    n_jobs=-1
+                )
+
+            model.fit(X_train, y_train)
+
+            # 预测
+            train_pred = model.predict(X_train)
+            val_pred = model.predict(X_val)
+
+            # 计算指标
+            if task == 'regression':
+                train_metrics = {
+                    'mse': mean_squared_error(y_train, train_pred),
+                    'mae': mean_absolute_error(y_train, train_pred)
+                }
+                val_metrics = {
+                    'mse': mean_squared_error(y_val, val_pred),
+                    'mae': mean_absolute_error(y_val, val_pred)
+                }
+            else:
+                train_metrics = {
+                    'accuracy': accuracy_score(y_train, train_pred),
+                    'f1': f1_score(y_train, train_pred, average='weighted')
+                }
+                val_metrics = {
+                    'accuracy': accuracy_score(y_val, val_pred),
+                    'f1': f1_score(y_val, val_pred, average='weighted')
+                }
+
+            # 特征重要性
+            feature_importance = dict(zip(X_train.columns, model.feature_importances_))
+
+            result = ModelResult(
+                model_name='RandomForest',
+                model=model,
+                feature_importance=feature_importance,
+                train_metrics=train_metrics,
+                val_metrics=val_metrics,
+                predictions=pd.Series(val_pred, index=X_val.index)
             )
-        else:
-            model = RandomForestClassifier(
-                n_estimators=kwargs.get('n_estimators', 100),
-                max_depth=kwargs.get('max_depth', 10),
-                random_state=42,
-                n_jobs=-1
-            )
-        
-        model.fit(X_train, y_train)
-        
-        # 预测
-        train_pred = model.predict(X_train)
-        val_pred = model.predict(X_val)
-        
-        # 计算指标
-        if task == 'regression':
-            train_metrics = {
-                'mse': mean_squared_error(y_train, train_pred),
-                'mae': mean_absolute_error(y_train, train_pred)
-            }
-            val_metrics = {
-                'mse': mean_squared_error(y_val, val_pred),
-                'mae': mean_absolute_error(y_val, val_pred)
-            }
-        else:
-            train_metrics = {
-                'accuracy': accuracy_score(y_train, train_pred),
-                'f1': f1_score(y_train, train_pred, average='weighted')
-            }
-            val_metrics = {
-                'accuracy': accuracy_score(y_val, val_pred),
-                'f1': f1_score(y_val, val_pred, average='weighted')
-            }
-        
-        # 特征重要性
-        feature_importance = dict(zip(X_train.columns, model.feature_importances_))
-        
-        result = ModelResult(
-            model_name='RandomForest',
-            model=model,
-            feature_importance=feature_importance,
-            train_metrics=train_metrics,
-            val_metrics=val_metrics,
-            predictions=pd.Series(val_pred, index=X_val.index)
-        )
-        
+        except Exception as e:
+            raise ModelTrainingError("RandomForest", str(e)) from e
+
         self._log(f"Random Forest 训练完成: Val MSE={val_metrics.get('mse', 0):.6f}")
-        
+
         return result
     
     def train_xgboost(self, X_train: pd.DataFrame, y_train: pd.Series,

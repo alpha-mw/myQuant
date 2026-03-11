@@ -24,6 +24,7 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
 from enhanced_data_layer import EnhancedDataLayer
+from logger import get_logger
 
 
 class BatchDataFetcher:
@@ -46,11 +47,10 @@ class BatchDataFetcher:
         self.data_layer = EnhancedDataLayer(market=market, verbose=False)
         self.results: Dict[str, pd.DataFrame] = {}
         self.failed_stocks: List[str] = []
-    
-    def _log(self, msg: str):
-        if self.verbose:
-            timestamp = datetime.now().strftime('%H:%M:%S')
-            print(f"[{timestamp}] [BatchFetcher] {msg}")
+        self._logger = get_logger("BatchFetcher", verbose)
+
+    def _log(self, msg: str) -> None:
+        self._logger.info(msg)
     
     def fetch_single_stock(
         self,

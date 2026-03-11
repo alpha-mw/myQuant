@@ -5,6 +5,10 @@
 
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from logger import get_logger
 
 
 @dataclass
@@ -32,10 +36,10 @@ class DecisionLayer:
     def __init__(self, api_key: Optional[str] = None, verbose: bool = True):
         self.verbose = verbose
         self.result = DecisionLayerResult()
-    
-    def _log(self, msg: str):
-        if self.verbose:
-            print(f"[DecisionLayer] {msg}")
+        self._logger = get_logger("DecisionLayer", verbose)
+
+    def _log(self, msg: str) -> None:
+        self._logger.info(msg)
     
     def run_decision_process(self, symbols, quant_data, macro_data, risk_data):
         """运行决策流程 - 简化版"""
@@ -76,10 +80,10 @@ class UnifiedDecisionLayer:
     def __init__(self, llm_preference: Optional[List[str]] = None, verbose: bool = True):
         self.llm_preference = llm_preference or ["openai"]
         self.verbose = verbose
-        
-    def _log(self, msg: str):
-        if self.verbose:
-            print(f"  [DecisionLayer] {msg}")
+        self._logger = get_logger("UnifiedDecisionLayer", verbose)
+
+    def _log(self, msg: str) -> None:
+        self._logger.info(msg)
     
     def process(self, ranked_stocks: List[Dict], data_bundle: Any) -> DecisionOutput:
         """处理决策 - 兼容旧接口"""

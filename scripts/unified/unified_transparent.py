@@ -23,6 +23,7 @@ from macro_terminal_transparent import (
 
 # 导入量化流水线
 from pipeline import MasterPipelineUnified, UnifiedReport
+from logger import get_logger
 
 
 class UnifiedTransparent:
@@ -48,7 +49,8 @@ class UnifiedTransparent:
         self.enable_macro = enable_macro
         self.verbose = verbose
         self.execution_log: List[str] = []
-        
+        self._logger = get_logger("UnifiedTransparent", verbose)
+
         # 初始化量化流水线
         self.quant_pipeline = MasterPipelineUnified(
             market=self.market,
@@ -66,13 +68,10 @@ class UnifiedTransparent:
             except Exception as e:
                 self._log(f"宏观风控终端初始化失败: {e}")
     
-    def _log(self, msg: str):
+    def _log(self, msg: str) -> None:
         """记录执行日志"""
-        timestamp = datetime.now().strftime('%H:%M:%S')
-        entry = f"[{timestamp}] {msg}"
-        self.execution_log.append(entry)
-        if self.verbose:
-            print(entry)
+        self.execution_log.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+        self._logger.info(msg)
     
     def run(self) -> Dict[str, Any]:
         """

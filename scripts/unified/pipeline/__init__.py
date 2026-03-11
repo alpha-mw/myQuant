@@ -46,6 +46,7 @@ from factor_layer import UnifiedFactorLayer, FactorOutput
 from model_layer import UnifiedModelLayer, ModelOutput
 from decision_layer import UnifiedDecisionLayer, DecisionOutput
 from risk_layer import UnifiedRiskLayer, RiskOutput, Portfolio
+from logger import get_logger
 
 # 尝试导入历史版本特色功能
 try:
@@ -205,7 +206,8 @@ class MasterPipelineUnified:
         self.stock_pool = stock_pool
         self.lookback_years = lookback_years
         self.verbose = verbose
-        
+        self._logger = get_logger("MasterPipelineUnified", verbose)
+
         # 功能开关
         self.features = {
             'V2.7 持久化存储': enable_v27_persistent and V27_AVAILABLE,
@@ -252,9 +254,8 @@ class MasterPipelineUnified:
         
         self._init_legacy_components()
     
-    def _log(self, msg: str):
-        if self.verbose:
-            print(f"[Unified] {msg}")
+    def _log(self, msg: str) -> None:
+        self._logger.info(msg)
     
     def _init_legacy_components(self):
         """初始化历史版本组件"""
