@@ -13,6 +13,8 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass, field
+from logger import get_logger
+from exceptions import FactorCalculationError
 
 # 可选可视化依赖
 try:
@@ -65,10 +67,10 @@ class FactorAnalyzer:
     def __init__(self, verbose: bool = True):
         self.verbose = verbose
         self.results: Dict[str, Dict] = {}
-    
-    def _log(self, msg: str):
-        if self.verbose:
-            print(f"[FactorAnalyzer] {msg}")
+        self._logger = get_logger("FactorAnalyzer", verbose)
+
+    def _log(self, msg: str) -> None:
+        self._logger.info(msg)
     
     # ========== IC值分析 ==========
     
@@ -84,38 +86,35 @@ class FactorAnalyzer:
             method: 'spearman' (秩相关, 推荐) 或 'pearson' (线性相关)
         """
         self._log(f"计算IC值: {factor_col}")
-        
-        # 按日期分组计算IC
-        ic_list = []
-        
-        for date in df['date'].unique():
-            day_data = df[df['date'] == date]
-            
-            if len(day_data) < 10:  # 样本太少跳过
-                continue
-            
-            factor_values = day_data[factor_col]
-            returns = day_data[return_col]
-            
-            # 剔除缺失值
-            mask = factor_values.notna() & returns.notna()
-            if mask.sum() < 10:
-                continue
-            
-            if method == 'spearman':
-                ic = factor_values[mask].corr(returns[mask], method='spearman')
-            else:
-                ic = factor_values[mask].corr(returns[mask], method='pearson')
-            
-            if not np.isnan(ic):
-                ic_list.append({'date': date, 'ic': ic})
-        
-        ic_df = pd.DataFrame(ic_list)
-        if ic_df.empty:
-            return ICAnalysisResult(factor_name=factor_col, ic_mean=0, ic_std=0, 
+
+        try:
+            # 按日期分组计算IC (groupby代替逐日遍历，避免O(n²)过滤)
+            _method = method  # capture for closure
+
+            def _compute_date_ic(group: pd.DataFrame) -> Optional[float]:
+                if len(group) < 10:
+                    return None
+                mask = group[factor_col].notna() & group[return_col].notna()
+                if mask.sum() < 10:
+                    return None
+                ic = group.loc[mask, factor_col].corr(
+                    group.loc[mask, return_col], method=_method
+                )
+                return ic if not np.isnan(ic) else None
+
+            ic_series = (
+                df.groupby('date', sort=True)
+                .apply(_compute_date_ic)
+                .dropna()
+                .rename('ic')
+            )
+            ic_series.index.name = 'date'
+        except Exception as e:
+            raise FactorCalculationError(factor_col, "all", str(e)) from e
+
+        if ic_series.empty:
+            return ICAnalysisResult(factor_name=factor_col, ic_mean=0, ic_std=0,
                                    ic_ir=0, ic_positive_ratio=0, ic_tstat=0)
-        
-        ic_series = ic_df.set_index('date')['ic']
         
         # 计算统计指标
         ic_mean = ic_series.mean()

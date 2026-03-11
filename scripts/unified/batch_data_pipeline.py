@@ -23,6 +23,7 @@ import pickle
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from enhanced_data_layer import EnhancedDataLayer, DataCleaner, FeatureEngineer
 from stock_universe import StockUniverse, get_major_indices
+from logger import get_logger
 
 
 class BatchDataPipeline:
@@ -55,11 +56,10 @@ class BatchDataPipeline:
         
         self.results: List[pd.DataFrame] = []
         self.failed_stocks: List[str] = []
-    
-    def _log(self, msg: str):
-        if self.verbose:
-            timestamp = datetime.now().strftime('%H:%M:%S')
-            print(f"[{timestamp}] [BatchPipeline] {msg}")
+        self._logger = get_logger("BatchPipeline", verbose)
+
+    def _log(self, msg: str) -> None:
+        self._logger.info(msg)
     
     def _get_cache_path(self, stock: str, start_date: str, end_date: str) -> str:
         """获取缓存文件路径"""

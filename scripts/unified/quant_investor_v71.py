@@ -35,6 +35,7 @@ from risk_management_layer import RiskManagementLayer, RiskLayerResult
 from decision_layer import DecisionLayer, DecisionLayerResult
 from batch_data_pipeline import BatchDataPipeline, fetch_major_indices_data
 from stock_universe import get_major_indices
+from logger import get_logger
 
 
 # ==================== 配置 ====================
@@ -112,21 +113,21 @@ class QuantInvestorV71:
         self.use_batch_pipeline = use_batch_pipeline
         self.max_workers = max_workers
         self.verbose = verbose
-        
+        self._logger = get_logger("QuantInvestorV71", verbose)
+
         # 结果存储 - 必须在_init_layers之前初始化
         self.result = QuantPipelineResult()
-        
+
         # 初始化各层
         self._init_layers()
-    
-    def _log(self, msg: str, layer: str = ""):
-        """记录日志"""
-        timestamp = datetime.now().strftime('%H:%M:%S')
-        prefix = f"[{layer}]" if layer else "[Main]"
-        entry = f"[{timestamp}] {prefix} {msg}"
-        self.result.execution_log.append(entry)
-        if self.verbose:
-            print(entry)
+
+    def _log(self, msg: str, layer: str = "") -> None:
+        """记录日志，同时写入执行日志和logger"""
+        prefix = f"[{layer}] " if layer else ""
+        self.result.execution_log.append(
+            f"[{datetime.now().strftime('%H:%M:%S')}] {prefix}{msg}"
+        )
+        self._logger.info(f"{prefix}{msg}")
     
     def _init_layers(self):
         """初始化各层组件"""

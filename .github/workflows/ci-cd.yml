@@ -44,7 +44,7 @@ jobs:
     
     - name: Type check with mypy
       run: |
-        mypy scripts/unified --ignore-missing-imports || true
+        mypy scripts/unified --ignore-missing-imports --no-strict-optional
     
     - name: Test with pytest
       run: |

@@ -5,11 +5,15 @@
 """
 
 import os
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
+from logger import get_logger
 
 # 尝试导入 yfinance
 try:
@@ -38,10 +42,10 @@ class UnifiedDataLayer:
         self.verbose = verbose
         self.end_date = datetime.now()
         self.start_date = self.end_date - timedelta(days=365 * lookback_years)
-        
-    def _log(self, msg: str):
-        if self.verbose:
-            print(f"  [DataLayer] {msg}")
+        self._logger = get_logger("DataLayer", verbose)
+
+    def _log(self, msg: str) -> None:
+        self._logger.info(msg)
     
     def fetch_all(self, stock_pool: Optional[List[str]] = None) -> UnifiedDataBundle:
         """获取所有数据"""

@@ -31,6 +31,7 @@ from macro_terminal_tushare import (
 
 # 导入量化流水线
 from pipeline import MasterPipelineUnified
+from logger import get_logger
 
 
 class UnifiedTushare:
@@ -54,7 +55,8 @@ class UnifiedTushare:
         self.enable_macro = enable_macro
         self.verbose = verbose
         self.execution_log: List[str] = []
-        
+        self._logger = get_logger("UnifiedTushare", verbose)
+
         # 初始化量化流水线
         self.quant_pipeline = MasterPipelineUnified(
             market=self.market,
@@ -72,12 +74,9 @@ class UnifiedTushare:
             except Exception as e:
                 self._log(f"宏观风控终端初始化失败: {e}")
     
-    def _log(self, msg: str):
-        timestamp = datetime.now().strftime('%H:%M:%S')
-        entry = f"[{timestamp}] {msg}"
-        self.execution_log.append(entry)
-        if self.verbose:
-            print(entry)
+    def _log(self, msg: str) -> None:
+        self.execution_log.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+        self._logger.info(msg)
     
     def run(self) -> Dict[str, Any]:
         """执行完整分析"""
