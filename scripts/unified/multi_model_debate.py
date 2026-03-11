@@ -39,6 +39,7 @@ except ImportError:
 
 # 导入速率限制器
 from llm_rate_limiter import RateLimiter, MockLLMProvider, get_rate_limiter, configure_rate_limiter
+from logger import get_logger
 
 
 class AnalystModel(Enum):
@@ -190,10 +191,10 @@ class MultiModelDebateSystem:
     def __init__(self, verbose: bool = True):
         self.llm = LLMProvider()
         self.verbose = verbose
-    
-    def _log(self, msg: str):
-        if self.verbose:
-            print(f"[DebateSystem] {msg}")
+        self._logger = get_logger("DebateSystem", verbose)
+
+    def _log(self, msg: str) -> None:
+        self._logger.info(msg)
     
     def _create_company_research_prompt(self, symbol: str, 
                                        quant_data: Dict,

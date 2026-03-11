@@ -148,7 +148,14 @@ class MacroRiskTerminalBase(ABC):
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.verbose = verbose
         self.execution_log: List[str] = []
-        
+        self._logger = logging.getLogger(f"MacroRiskTerminal.{self.__class__.__name__}")
+        if not self._logger.handlers:
+            _handler = logging.StreamHandler()
+            _handler.setFormatter(logging.Formatter("[%(name)s] %(message)s"))
+            self._logger.addHandler(_handler)
+        self._logger.setLevel(logging.INFO if verbose else logging.WARNING)
+        self._logger.propagate = False
+
         # 初始化Tushare Pro API
         self.pro = None
         if TUSHARE_AVAILABLE:
@@ -160,13 +167,11 @@ class MacroRiskTerminalBase(ABC):
                 self._log("Tushare Pro API初始化成功")
             except Exception as e:
                 self._log(f"Tushare初始化失败: {e}", "warning")
-    
-    def _log(self, msg: str, level: str = "info"):
-        timestamp = datetime.now().strftime('%H:%M:%S')
-        log_entry = f"[{timestamp}] {msg}"
-        self.execution_log.append(log_entry)
-        if self.verbose:
-            print(log_entry)
+
+    def _log(self, msg: str, level: str = "info") -> None:
+        self.execution_log.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+        log_fn = getattr(self._logger, level if level in ("info", "warning", "error", "debug") else "info")
+        log_fn(msg)
     
     @abstractmethod
     def get_modules(self) -> List[ModuleResult]:

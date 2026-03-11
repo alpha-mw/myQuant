@@ -19,6 +19,7 @@ from datetime import datetime
 import pandas as pd
 
 from multi_model_debate import MultiModelDebateSystem, DebateResult, InvestmentDecision
+from logger import get_logger
 
 
 @dataclass
@@ -40,10 +41,10 @@ class DecisionLayer:
         self.debate_system = MultiModelDebateSystem(verbose=verbose)
         self.verbose = verbose
         self.result = DecisionLayerResult()
-    
-    def _log(self, msg: str):
-        if self.verbose:
-            print(f"[DecisionLayer] {msg}")
+        self._logger = get_logger("DecisionLayer", verbose)
+
+    def _log(self, msg: str) -> None:
+        self._logger.info(msg)
     
     def run_decision_process(
         self,

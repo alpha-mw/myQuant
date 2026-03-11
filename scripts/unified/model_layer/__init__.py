@@ -7,6 +7,10 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from logger import get_logger
 
 try:
     from sklearn.ensemble import RandomForestRegressor
@@ -29,10 +33,10 @@ class UnifiedModelLayer:
     def __init__(self, verbose: bool = True, top_n_stocks: int = 20):
         self.verbose = verbose
         self.top_n_stocks = top_n_stocks
-        
-    def _log(self, msg: str):
-        if self.verbose:
-            print(f"  [ModelLayer] {msg}")
+        self._logger = get_logger("ModelLayer", verbose)
+
+    def _log(self, msg: str) -> None:
+        self._logger.info(msg)
     
     def predict(self, factor_matrix: Optional[pd.DataFrame],
                 panel: Optional[pd.DataFrame],

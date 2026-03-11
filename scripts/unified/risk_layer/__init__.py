@@ -7,6 +7,10 @@ import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from logger import get_logger
 
 
 @dataclass
@@ -31,10 +35,10 @@ class UnifiedRiskLayer:
     
     def __init__(self, verbose: bool = True):
         self.verbose = verbose
-        
-    def _log(self, msg: str):
-        if self.verbose:
-            print(f"  [RiskLayer] {msg}")
+        self._logger = get_logger("RiskLayer", verbose)
+
+    def _log(self, msg: str) -> None:
+        self._logger.info(msg)
     
     def process(self, recommendations: List[Dict], data_bundle: Any,
                 optimization_method: str = 'max_sharpe') -> RiskOutput:

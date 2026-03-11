@@ -26,6 +26,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # 添加路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from stock_universe import StockUniverse
+from logger import get_logger
 
 
 @dataclass
@@ -70,11 +71,10 @@ class StockDatabase:
         # 股票池管理
         self.universe = StockUniverse()
         self.progress = DownloadProgress(0, 0, [], datetime.now())
+        self._logger = get_logger("StockDatabase", verbose)
 
-    def _log(self, msg: str):
-        if self.verbose:
-            timestamp = datetime.now().strftime('%H:%M:%S')
-            print(f"[{timestamp}] [StockDB] {msg}")
+    def _log(self, msg: str) -> None:
+        self._logger.info(msg)
 
     def _init_database(self):
         """初始化数据库表结构"""
