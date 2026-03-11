@@ -1,16 +1,16 @@
-# 🚀 Quant-Investor V7.0 - 专业级量化投资平台
+# 🚀 Quant-Investor V8.0 - 专业级量化投资平台
 
 <div align="center">
 
-**从6.9分到8.9分 · 专业级量化交易系统 · 全栈工程化实践**
+**七层架构 · Multi-LLM集成裁判 · Alpha挖掘 · Walk-Forward回测**
 
-[![Version](https://img.shields.io/badge/Version-7.0.0-blue.svg)](https://github.com/alpha-mw/myQuant)
+[![Version](https://img.shields.io/badge/Version-8.0.0-blue.svg)](https://github.com/alpha-mw/myQuant)
 [![Python](https://img.shields.io/badge/Python-3.10+-green.svg)](https://www.python.org/)
 [![Tests](https://img.shields.io/badge/Tests-59%20passing-brightgreen.svg)](tests/)
 [![Coverage](https://img.shields.io/badge/Coverage-60%25-yellow.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**六层架构 · 事件驱动 · 微服务 · 全球多市场 · 实时风控**
+**七层架构 · 事件驱动 · 微服务 · 全球多市场 · 实时风控**
 
 </div>
 
@@ -18,13 +18,13 @@
 
 ## 📖 项目简介
 
-**Quant-Investor V7.0** 是一个融合传统量化分析与AI深度思辨的六层智能投资研究平台。通过分层解耦架构，将数据获取、因子挖掘、模型预测、宏观风控、组合风控、AI决策六大模块有机结合，实现从原始数据到最终投资建议的完整闭环。
+**Quant-Investor V8.0** 是在 V7 六层架构基础上进一步演进的七层智能投资研究平台。新增第7层 **Multi-LLM 集成裁判**（Claude + GPT-4o + DeepSeek + Gemini 四大模型并行），同时引入系统性 Alpha 挖掘和 Walk-Forward 组合回测，并完成了全面的代码质量提升。
 
-### 核心创新：六层架构
+### 核心创新：七层架构
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                     Quant-Investor V7.0                          │
+│                     Quant-Investor V8.0                          │
 │                        量化投资架构                               │
 ├─────────────────────────────────────────────────────────────────┤
 │  第1层 │ 数据层 (Data Layer)                                      │
@@ -50,6 +50,10 @@
 │  第6层 │ 决策层 (Decision Layer)                                  │
 │        │ LLM多模型多空辩论 → 具体投资建议                         │
 │        │ 5个专业模型：财务/行业/宏观/技术/风险                     │
+├─────────────────────────────────────────────────────────────────┤
+│  第7层 │ 集成裁判层 (Ensemble Layer) ★ V8 新增                    │
+│        │ Claude + GPT-4o + DeepSeek + Gemini 四大LLM并行          │
+│        │ 置信度加权投票 · 分歧度风险信号 · 结构化执行报告          │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -57,43 +61,40 @@
 
 ## ✨ 核心特性
 
-### 🎯 第6层：LLM多模型多空辩论系统
+### ★ V8.0 新增：第7层 Multi-LLM 集成裁判
 
-**5个专业分析模型，每个模型分别输出看多/看空观点：**
+**四大独立 LLM 并行裁判，消除单模型偏差：**
 
-| 模型 | 分析维度 | 看多示例 | 看空示例 |
-|:---|:---|:---|:---|
-| **📊 财务分析模型** | ROE/估值/现金流 | ROE 18%、PE 15倍、FCF充裕 | 应收账款增加、资本支出上升 |
-| **🏭 行业研究模型** | 生命周期/竞争格局/护城河 | CAGR 15%、市占率30%、技术壁垒 | 竞争加剧、新进入者威胁 |
-| **🌍 宏观分析模型** | 经济周期/货币政策/通胀 | 货币宽松、经济复苏、政策支持 | 通胀压力、加息风险、地缘冲突 |
-| **📈 技术分析模型** | 趋势/支撑阻力/量价 | 突破前高、放量上涨、MACD金叉 | RSI超买、接近阻力位 |
-| **⚠️ 风险评估模型** | 波动率/回撤/流动性 | 波动率可控、流动性充足 | 最大回撤25%、集中度风险 |
+| 模型 | 角色定位 | 权重 |
+|:---|:---|:---:|
+| **Claude (Anthropic)** | 整体战略分析师 | 0.35 |
+| **GPT-4o (OpenAI)** | 量化基本面分析师 | 0.30 |
+| **DeepSeek** | 中国市场专家 | 0.20 |
+| **Gemini (Google)** | 技术面+替代数据 | 0.15 |
 
-**决策输出：**
-```json
-{
-  "decision": "买入",
-  "confidence": 0.72,
-  "position_size": 0.15,
-  "target_price": 150.00,
-  "stop_loss": 120.00,
-  "time_horizon": "中期",
-  "logic_chain": [
-    "财务指标健康，ROE 18%，估值合理PE 15倍",
-    "行业处于成长期，公司市占率30%龙头地位",
-    "宏观环境中性偏正面，政策支持",
-    "技术面上升趋势确立，资金流入",
-    "风险可控，设置止损位保护"
-  ],
-  "model_consensus": {
-    "财务分析模型": "bullish (75%)",
-    "行业研究模型": "bullish (70%)",
-    "宏观分析模型": "neutral (65%)",
-    "技术分析模型": "bullish (60%)",
-    "风险评估模型": "caution (65%)"
-  }
-}
-```
+**核心机制：**
+- 同一量化数据发送给四个独立 LLM，角色各异
+- 基于置信度的加权投票聚合
+- **分歧度本身作为风险信号**（高分歧 = 不确定性高，自动降仓）
+- 传统量化结论 + LLM 集成 → 最终裁决 + 分步执行计划
+
+### ★ V8.0 新增：系统性 Alpha 挖掘
+
+三层 Alpha 发掘框架（`alpha_mining.py`）：
+
+| 层级 | 方法 | 说明 |
+|:---|:---|:---|
+| **Layer A** | 因子库 | 50+ 预定义系统性因子（动量/价值/质量/低波/成长） |
+| **Layer B** | 遗传搜索 | 遗传算法组合因子基元，进化出新因子 |
+| **Layer C** | LLM 头脑风暴 | 大模型提出文字逻辑 → 量化成因子 |
+
+验证流程：IC/IR → 信息衰减 → 因子正交化 → 容量/换手分析
+
+### ★ V8.0 新增：Walk-Forward 组合回测
+
+- 滚动窗口训练，无未来数据泄露
+- 自动报告：年化收益、夏普比率、最大回撤、卡玛比率
+- 与基准（沪深300/标普500）对比
 
 ### 🛡️ 第5层：组合风控系统
 
@@ -121,49 +122,26 @@
 - 🟢 低风险 → 60%-90%仓位，积极布局
 - 🔵 极低风险 → 80%-100%仓位，逆向布局
 
-### 🤖 第3层：增强模型层
+---
 
-| 模型 | 适用场景 | 特点 |
-|:---|:---|:---|
-| **Random Forest** | 通用预测 | 抗过拟合、特征重要性可解释 |
-| **XGBoost** | 大规模数据 | 高效、准确、支持正则化 |
-| **SVM** | 小样本 | 高维数据处理、核技巧 |
-| **LSTM** | 时序预测 | 捕捉长期依赖、适合价格预测 |
+## 🔧 代码质量改进 (2026-03)
 
-**特性：**
-- 时序交叉验证 (TimeSeriesSplit)
-- 模型集成 (加权平均)
-- 特征重要性自动排序
+本轮代码质量提升主要包含以下内容：
 
-### 📊 第2层：因子分析系统
+### 1. 集中化日志管理 (`logging_config.py`)
+- 使用 **loguru** 替代分散的 `print` / `logging.getLogger`
+- 统一日志格式：时间戳 | 级别 | 模块:函数:行号
+- 自动按日轮转，保留30天日志
+- 独立 error.log 文件，便于问题排查
 
-| 分析维度 | 指标 |
-|:---|:---|
-| **IC分析** | IC均值、IC_IR、正IC比率、t统计量 |
-| **分层回测** | 单调性检验、多空收益、换手率 |
-| **相关性分析** | 因子间相关性、多重共线性检测 |
-| **综合评分** | 收益能力、稳定性、换手率加权评分 |
+### 2. 自定义异常体系 (`exceptions.py`)
+- 替代裸 `except Exception` 捕获
+- 分层异常：`DataError` / `FactorError` / `ModelError` / `RiskError` / `LLMError`
+- 携带上下文信息（来源、字段、期望类型等），定位问题更快
 
-**因子类型：**
-- 动量因子 (5d/20d/60d)
-- 波动率因子 (20d)
-- 均值回归因子 (20d偏离度)
-- 成交量因子
-- 基本面因子 (ROE/PE/PB)
-
-### 📥 第1层：增强数据层
-
-| 数据类型 | 来源 | 说明 |
-|:---|:---|:---|
-| **OHLCV** | Tushare/yfinance | 日线数据，自动复权 |
-| **基本面** | Tushare | ROE、PE、PB、营收、利润 |
-| **资金流** | Tushare | 主力资金、散户资金、大单动向 |
-| **宏观数据** | Tushare/FRED | GDP、CPI、利率、货币供应量 |
-
-**数据清理：**
-- 去极值 (Winsorization)
-- 缺失值处理 (前向填充/插值)
-- 标准化 (Z-score)
+### 3. 关键性能修复
+- **O(n²) IC计算修复**：`factor_analyzer.py` 中滚动IC计算从逐行循环改为向量化操作，大数据集性能提升 10-100x
+- 类型注解补全，提升 IDE 推断精度与代码可读性
 
 ---
 
@@ -187,11 +165,11 @@ pip install -r requirements.txt
 ### API配置
 
 ```bash
-# 设置OpenAI API key (第6层LLM分析必需)
+# 设置多个LLM API key（第7层集成裁判）
 export OPENAI_API_KEY="sk-your-key-here"
-
-# 可选：设置多个key避免rate limit
-export OPENAI_API_KEYS="sk-key-1,sk-key-2,sk-key-3"
+export ANTHROPIC_API_KEY="sk-ant-your-key-here"
+export DEEPSEEK_API_KEY="sk-your-deepseek-key"
+export GOOGLE_API_KEY="your-gemini-key"
 
 # 设置Tushare token (A股数据必需)
 export TUSHARE_TOKEN="your-tushare-token"
@@ -199,100 +177,56 @@ export TUSHARE_TOKEN="your-tushare-token"
 
 ### 使用示例
 
-#### 方式1: 一行代码完整分析 (推荐)
+#### 方式1: 命令行一键分析 (推荐)
+
+```bash
+# V8 七层完整分析
+python scripts/unified/quant_investor_v8.py \
+    --stocks 000001.SZ 600519.SH 000858.SZ \
+    --market CN \
+    --capital 1000000 \
+    --risk-level 中等
+```
+
+#### 方式2: Python API
 
 ```python
-from scripts.unified.quant_investor_v7 import analyze
+from scripts.unified.quant_investor_v8 import QuantInvestorV8
 
-# 六层完整分析
-result = analyze(
+analyzer = QuantInvestorV8(
+    stock_pool=["000001.SZ", "600519.SH"],
     market="CN",
-    stocks=["000001.SZ", "600000.SH", "000858.SZ"],
-    lookback_years=1.0,
+    total_capital=1_000_000,
+    risk_level="中等",
+    enable_macro=True,
+    enable_backtest=True,
     verbose=True
 )
 
-# 查看最终投资建议
-print(result.decision_result.final_report)
+result = analyzer.run()
+print(result.final_report)   # 完整 Markdown 报告，含执行步骤
 ```
 
-**输出示例：**
-```markdown
-# 🎯 量化投资决策报告
-**生成时间**: 2026-02-26 11:30:00
-
-## 📊 市场展望
-结构性机会，精选个股 | 宏观环境支持，可适当积极
-
-## 💼 组合配置建议
-| 标的 | 配置比例 |
-|:---|:---:|
-| 000001.SZ | 35.0% |
-| 600000.SH | 30.0% |
-| CASH | 35.0% |
-
-## 📈 个股投资决策
-
-### 🟢 000001.SZ (平安银行)
-- **决策**: 买入
-- **置信度**: 75%
-- **建议仓位**: 15%
-- **目标价**: ¥15.50
-- **止损位**: ¥12.00
-- **投资周期**: 中期
-
-**决策逻辑**:
-1. 财务指标健康，ROE 15%，估值合理PE 8倍
-2. 银行业受益于货币政策宽松
-3. 技术面突破前期整理平台
-4. 股息率5%，防御属性强
-
-**模型共识**:
-- 财务分析模型: bullish (80%)
-- 行业研究模型: bullish (75%)
-- 宏观分析模型: bullish (70%)
-- 技术分析模型: bullish (65%)
-- 风险评估模型: neutral (60%)
-```
-
-#### 方式2: 仅运行宏观风控
+#### 方式3: 仅运行宏观风控
 
 ```python
 from scripts.unified.macro_terminal_tushare import create_terminal
 
-# 创建宏观风控终端
 terminal = create_terminal("CN")  # 或 "US"
-
-# 生成报告
 report = terminal.generate_risk_report()
 print(terminal.format_report_markdown(report))
 ```
 
-#### 方式3: 自定义六层流水线
+#### 方式4: 独立 Alpha 挖掘
 
 ```python
-from scripts.unified.quant_investor_v7 import QuantInvestorV7
+from scripts.unified.alpha_mining import AlphaMiningEngine
 
-# 创建分析器
-analyzer = QuantInvestorV7(
-    market="CN",
-    stock_pool=["000001.SZ", "600000.SH"],
-    lookback_years=1.0,
-    enable_macro=True,
-    verbose=True
-)
+engine = AlphaMiningEngine(price_data=df)
+result = engine.run_full_mining()
 
-# 运行六层分析
-result = analyzer.run()
-
-# 访问各层结果
-print(f"宏观信号: {result.macro_signal}")
-print(f"风控等级: {result.risk_layer_result.risk_level}")
-print(f"模型预测: {result.model_predictions.mean():.2%}")
-
-# 查看LLM多模型辩论结果
-for decision in result.decision_result.investment_decisions:
-    print(f"{decision.symbol}: {decision.decision} (置信度{decision.confidence:.0%})")
+for factor in result.top_factors[:5]:
+    print(f"{factor.name}: IC={factor.ic_mean:.3f}, IR={factor.ir:.2f}")
 ```
 
 ---
@@ -302,102 +236,85 @@ for decision in result.decision_result.investment_decisions:
 ```
 myQuant/
 ├── README.md                              # 本文件
+├── requirements.txt
+├── pyproject.toml
+├── tests/                                 # 单元测试（59 passing）
+│   └── unit/
+│       ├── test_backtest.py
+│       ├── test_data_layer.py
+│       ├── test_factor_layer.py
+│       ├── test_factor_neutralizer.py
+│       ├── test_market_impact.py
+│       ├── test_model_layer.py
+│       ├── test_risk_management.py
+│       └── test_var_cvar.py
 ├── scripts/
-│   └── unified/                           ⭐ V7.0 六层架构
-│       ├── quant_investor_v7.py           # 主入口：六层流水线
-│       ├── multi_model_debate.py          # 第6层：多模型多空辩论
-│       ├── decision_layer.py              # 第6层：决策层封装
-│       ├── risk_management_layer.py       # 第5层：风控层
-│       ├── macro_terminal_tushare.py      # 第4层：宏观风控终端
-│       ├── enhanced_model_layer.py        # 第3层：模型层
-│       ├── factor_analyzer.py             # 第2层：因子层
-│       ├── enhanced_data_layer.py         # 第1层：数据层
-│       └── llm_rate_limiter.py            # LLM速率限制器
-│
-└── skill/
-    └── SKILL.md                           # Manus技能定义
-```
-
----
-
-## 🔧 高级配置
-
-### 速率限制配置
-
-当使用OpenAI API时，为避免rate limit：
-
-```python
-from llm_rate_limiter import configure_rate_limiter
-
-# 配置速率限制器
-configure_rate_limiter(
-    requests_per_minute=15,    # 每分钟15次
-    min_interval=4.0,          # 最少4秒间隔
-    max_retries=3,             # 最大重试3次
-    api_keys=[                 # 多个API key轮询
-        "sk-key-1",
-        "sk-key-2",
-        "sk-key-3"
-    ]
-)
-```
-
-### 扩展新市场
-
-```python
-from scripts.unified.macro_terminal_tushare import MacroRiskTerminalBase
-
-class HKMacroRiskTerminal(MacroRiskTerminalBase):
-    MARKET = "HK"
-    MARKET_NAME = "港股"
-    
-    def get_modules(self):
-        modules = []
-        modules.append(self._analyze_exchange_rate())
-        modules.append(self._analyze_stock_connect())
-        return modules
+│   ├── unified/                           ⭐ V8.0 七层架构（当前主线）
+│   │   ├── quant_investor_v8.py           # 主入口：七层流水线
+│   │   ├── multi_llm_ensemble.py          # 第7层：四大LLM集成裁判
+│   │   ├── investment_report.py           # 结构化执行报告生成
+│   │   ├── alpha_mining.py                # 系统性Alpha挖掘（三层）
+│   │   ├── portfolio_backtest.py          # Walk-Forward 组合回测
+│   │   ├── multi_model_debate.py          # 第6层：多模型多空辩论
+│   │   ├── decision_layer.py              # 第6层：决策层封装
+│   │   ├── advanced_risk_metrics.py       # 第5层：高级风险指标
+│   │   ├── macro_terminal_tushare.py      # 第4层：宏观风控终端
+│   │   ├── enhanced_model_layer.py        # 第3层：模型层
+│   │   ├── factor_analyzer.py             # 第2层：因子层（O(n²)已修复）
+│   │   ├── factor_neutralizer.py          # 因子中性化
+│   │   ├── enhanced_data_layer.py         # 第1层：数据层
+│   │   ├── logging_config.py              # ★ 集中化日志管理
+│   │   ├── exceptions.py                  # ★ 自定义异常体系
+│   │   ├── logger.py                      # Logger工厂
+│   │   ├── config.py                      # 全局配置
+│   │   ├── cache_manager.py               # 缓存管理
+│   │   ├── di_container.py                # 依赖注入容器
+│   │   ├── event_bus.py                   # 事件总线
+│   │   ├── backtest_engine.py             # 回测引擎
+│   │   ├── market_impact.py               # 市场冲击模型
+│   │   ├── compliance_framework.py        # 合规框架
+│   │   └── archive/                       # 历史版本归档（不建议使用）
+│   │       ├── README.md                  # 归档说明
+│   │       ├── quant_investor_v7.py       # V7.0 六层原版
+│   │       ├── quant_investor_v71.py      # V7.1 过渡版
+│   │       ├── quant_investor_v72.py      # V7.2 健壮版
+│   │       ├── macro_terminal_v63.py      # V6.3 宏观终端
+│   │       └── macro_terminal_transparent.py  # 实验性版本
+│   └── v4.0/ ~ v6.0/                      # 早期版本目录（历史参考）
+└── skill/                                 # Manus技能定义
+    ├── SKILL.md
+    └── references/                        # 参考文档
 ```
 
 ---
 
 ## 📊 分析示例
 
-### 完整六层分析输出
+### V8 完整七层分析输出
 
 ```
 ================================================================================
-Quant-Investor V7.0 六层架构开始执行
-版本: 7.0.0-six-layer
+Quant-Investor V8.0 七层架构开始执行
+版本: 8.0.0-seven-layer
 市场: CN
-股票池: ['000001.SZ', '600000.SH', '000858.SZ']
+股票池: ['000001.SZ', '600519.SH', '000858.SZ']
 ================================================================================
 
-[10:30:00] [Layer1] 【第1层】数据层 - 数据获取与清理
-[10:30:05] [Layer1] 数据层完成: 获取 3 只股票数据
-
-[10:30:05] [Layer2] 【第2层】因子层 - 因子计算与检验
-[10:30:08] [Layer2] 因子层完成: 7 个有效因子
-
-[10:30:08] [Layer3] 【第3层】模型层 - ML模型训练
-[10:30:15] [Layer3] 模型层完成: 4 个模型训练完成
-
-[10:30:15] [Layer4] 【第4层】宏观层 - 市场趋势判断
+[10:30:00] [Layer1] 数据层完成: 获取 3 只股票数据
+[10:30:08] [Layer2] 因子层完成: 7 个有效因子 (IC均值 0.051)
+[10:30:15] [Layer3] 模型层完成: 4 个模型，集成预测 +2.3%
 [10:30:18] [Layer4] 宏观信号: 🟡 中风险
-
-[10:30:18] [Layer5] 【第5层】风控层 - 组合风控
-[10:30:20] [Layer5] 风控完成: warning
-
-[10:30:20] [Layer6] 【第6层】决策层 - LLM多模型多空辩论
-[10:30:20] [DebateSystem] 开始多模型多空辩论: 000001.SZ
-[10:30:24] [DebateSystem]   财务分析模型: bullish (置信度75%)
-[10:30:28] [DebateSystem]   行业研究模型: bullish (置信度70%)
-[10:30:32] [DebateSystem]   宏观分析模型: neutral (置信度65%)
-[10:30:36] [DebateSystem]   技术分析模型: bullish (置信度60%)
-[10:30:40] [DebateSystem]   风险评估模型: caution (置信度65%)
-[10:30:40] [DecisionLayer] 决策: 买入 (置信度75%)
+[10:30:20] [Layer5] 风控完成: warning (VaR 3.2%)
+[10:30:40] [Layer6] 多空辩论完成: 000001.SZ 买入(75%)
+[10:31:20] [Layer7] LLM集成裁判:
+  Claude:   买入 (85%, 权重0.35)
+  GPT-4o:   买入 (78%, 权重0.30)
+  DeepSeek: 持有 (62%, 权重0.20)
+  Gemini:   买入 (71%, 权重0.15)
+  → 最终裁决: 买入 | 置信度 77% | 分歧度 0.18 (低)
 
 ================================================================================
-六层流程执行完成
+七层流程执行完成 (总耗时: 91s)
 ================================================================================
 ```
 
@@ -407,12 +324,14 @@ Quant-Investor V7.0 六层架构开始执行
 
 | 特性 | 说明 | 状态 |
 |:---|:---|:---:|
-| **六层架构** | 分层解耦，每层可独立运行 | ✅ |
-| **多模型辩论** | 5个专业模型多空观点碰撞 | ✅ |
-| **深度研究** | 产品/竞争/行业/政策全方位分析 | ✅ |
-| **完全透明** | 所有步骤可追溯、可验证 | ✅ |
-| **速率限制** | 自动重试、指数退避、多key轮询 | ✅ |
-| **模拟回退** | API不可用时自动使用模拟数据 | ✅ |
+| **七层架构** | 分层解耦，每层可独立运行 | ✅ |
+| **Multi-LLM集成** | 4个独立LLM并行，加权投票聚合 | ✅ |
+| **分歧度风险信号** | LLM分歧高时自动降仓 | ✅ |
+| **系统性Alpha挖掘** | 遗传算法 + LLM生成因子 | ✅ |
+| **Walk-Forward回测** | 无未来数据泄露的滚动回测 | ✅ |
+| **集中化日志** | loguru结构化日志，自动轮转 | ✅ |
+| **分层异常体系** | 精确定位错误来源 | ✅ |
+| **O(n²) IC修复** | 向量化操作，性能提升10-100x | ✅ |
 | **多市场** | CN/US/HK可扩展 | ✅ |
 | **时序CV** | 避免数据泄露的交叉验证 | ✅ |
 | **风险分解** | Barra风格因子风险归因 | ✅ |
@@ -424,12 +343,16 @@ Quant-Investor V7.0 六层架构开始执行
 
 | 版本 | 发布日期 | 核心特性 |
 |:---|:---|:---|
-| **V7.0** | 2026-02-26 | **六层架构 + 多模型辩论** - 数据/因子/模型/宏观/风控/决策六层闭环，LLM多空辩论 |
-| V6.3 | 2026-02-25 | 宏观风控终端 - 多市场适配，第0层风控 |
-| V6.1 | 2026-02-25 | AI因子挖掘 - 遗传编程、Transformer、LLM因子 |
+| **V8.0** | 2026-03-11 | **七层架构** - Multi-LLM集成裁判、Alpha挖掘、Walk-Forward回测、代码质量全面提升 |
+| V7.2 | 2026-02-28 | 健壮六层框架 - 完整6层，稳定性增强 |
+| V7.1 | 2026-02-27 | 修复Path导入问题 |
+| V7.0 | 2026-02-26 | 六层架构 + 多模型辩论 |
+| V6.3 | 2026-02-25 | 宏观风控终端 - 多市场适配 |
 | V6.0 | 2026-02-06 | 大一统框架 - 分层解耦架构 |
 | V5.0 | 2026-02-06 | 工业级量化框架 |
 | V2.7~V4.1 | 2026-02-04 | 基础量化能力构建 |
+
+> 历史版本代码见 [`scripts/unified/archive/`](scripts/unified/archive/)
 
 ---
 
