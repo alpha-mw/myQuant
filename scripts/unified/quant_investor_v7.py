@@ -47,7 +47,7 @@ from logger import get_logger
 # ==================== 配置 ====================
 
 TUSHARE_TOKEN = config.TUSHARE_TOKEN
-TUSHARE_URL = 'http://lianghua.nanyangqiankun.top'
+TUSHARE_URL = os.environ.get('TUSHARE_URL', 'http://lianghua.nanyangqiankun.top')
 
 
 # ==================== 数据结构 ====================

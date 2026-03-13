@@ -254,7 +254,7 @@ class StockDatabase:
 
             pro = ts.pro_api()
             pro._DataApi__token = self.universe.token
-            pro._DataApi__http_url = 'http://lianghua.nanyangqiankun.top'
+            pro._DataApi__http_url = os.environ.get('TUSHARE_URL', 'http://lianghua.nanyangqiankun.top')
 
             # 获取日线数据
             df = pro.daily(
