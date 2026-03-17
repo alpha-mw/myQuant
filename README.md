@@ -152,6 +152,19 @@ pip install -r requirements.txt
 # 可选：安装 Kronos 原生基础模型
 git clone https://github.com/shiyu-coder/Kronos
 cd Kronos && pip install -e . && cd ..
+
+# 可选：前端开发
+cd frontend && npm install && cd ..
+```
+
+### Docker 部署（推荐）
+
+```bash
+# 一键启动全栈（后端 + 前端 + 数据库）
+docker-compose up -d
+
+# 访问 Web 界面：http://localhost:5173
+# API 端点：http://localhost:5000/api/
 ```
 
 ### API 密钥配置
@@ -165,7 +178,19 @@ export TUSHARE_TOKEN="your-token"       # A股数据
 
 ### 使用示例
 
-#### V10 五支柱并行分析（推荐）
+#### Web 平台（推荐）
+
+```bash
+# 启动后端 API
+python web/main.py
+
+# 启动前端（另一个终端）
+cd frontend && npm run dev
+```
+
+Web 平台提供：Dashboard 总览、分析中心（一键触发五支柱分析）、数据浏览器、市场状态监控、RegimeMonitor、自选股管理、系统设置。
+
+#### V10 五支柱并行分析（CLI）
 
 ```bash
 # 命令行
@@ -185,6 +210,21 @@ python scripts/unified/quant_investor_v10.py \
     --output quick.md
 ```
 
+#### 全市场批量分析
+
+```bash
+# 下载 A股全市场数据
+bash download_cn_all.sh
+
+# 运行全市场分析
+bash run_cn_full_analysis.sh
+
+# 美股全市场回测
+python scripts/unified/us_full_market_backtest.py
+```
+
+#### Python API
+
 ```python
 from scripts.unified.quant_investor_v10 import QuantInvestorV10
 
@@ -203,43 +243,6 @@ analyzer = QuantInvestorV10(
 )
 result = analyzer.run()
 print(result.final_report)
-
-# 查看集成裁判结果
-for sym, j in result.ensemble.stock_judgments.items():
-    print(f"{sym}: {j.decision} | 得分={j.ensemble_score:.2f} | 仓位={j.risk_adjusted_weight:.1%}")
-```
-
-#### 单模块使用
-
-```python
-# 集成裁判
-from scripts.unified.ensemble_judge import EnsembleJudgeEngine
-judge = EnsembleJudgeEngine(max_single_position=0.25)
-result = judge.judge(
-    stock_pool=["600519.SH"],
-    kronos_result=..., quant_result=..., debate_result=...,
-    intelligence_result=..., macro_result=..., risk_result=...
-)
-
-# 因子工程（截面打分）
-from scripts.unified.alpha158 import FactorEngineer
-engineer = FactorEngineer(ic_threshold=0.02)
-scores = engineer.cross_sectional_score({"600519.SH": df_price})
-
-# Kronos 预测
-from scripts.unified.kronos_predictor import KronosIntegrator
-signal = KronosIntegrator("kronos-small").analyze_portfolio(
-    {"600519.SH": df_price}, pred_len=20
-)
-
-# 财务分析
-from scripts.unified.financial_analysis import FinancialAnalyzer
-report = FinancialAnalyzer().full_analysis("600519.SH", "贵州茅台", df_financial)
-
-# 宏观终端
-from scripts.unified.macro_terminal_tushare import create_terminal
-terminal = create_terminal("CN")
-print(terminal.format_report_markdown(terminal.generate_risk_report()))
 ```
 
 ---
@@ -251,12 +254,28 @@ myQuant/
 ├── README.md
 ├── requirements.txt
 ├── pyproject.toml
-├── tests/                                 # 单元测试（59 passing）
+├── docker-compose.yml                     # Docker 一键部署
+├── tests/                                 # 单元测试
 │   └── unit/
 ├── skill/                                 # 技能定义文档
-│   └── SKILL_V3.0.md
+│
+├── frontend/                              ⭐ React/TypeScript Web 前端
+│   ├── src/
+│   │   ├── pages/                         # Dashboard, AnalysisHub, DataExplorer,
+│   │   │                                  # MarketStatus, RegimeMonitor, Watchlists, ...
+│   │   ├── components/                    # AppShell, Sidebar, MetricCard, ...
+│   │   └── api/                           # REST API 客户端
+│   └── vite.config.ts
+│
+├── web/                                   ⭐ Flask REST API 后端
+│   ├── api/                               # analysis, data, portfolio, settings
+│   ├── services/                          # 业务逻辑层
+│   ├── models/                            # 数据模型
+│   ├── tasks/                             # 异步分析任务
+│   └── app.py                             # Flask 应用入口
+│
 └── scripts/
-    └── unified/                           ⭐ 主代码目录（42个模块）
+    └── unified/                           ⭐ 量化核心引擎（54个模块）
         │
         │  ── 主入口 ──
         ├── quant_investor_v10.py          # ★ V10 主入口：五支柱并行框架
@@ -267,6 +286,12 @@ myQuant/
         │  ── 集成裁判层（V10 新增）──
         ├── ensemble_judge.py              # ★ 集成裁判：市场状态感知+动态权重
         │
+        │  ── 并行研究管线 ──
+        ├── parallel_research_pipeline.py  # ★ 五分支并行调度引擎
+        ├── branch_contracts.py            # 分支输入/输出契约定义
+        ├── regime_detector.py             # 市场状态检测器
+        ├── signal_calibration.py          # 信号校准与归一化
+        │
         │  ── Branch 4：多维情报融合 ──
         ├── intelligence_layer.py          # 编排器
         ├── financial_analysis.py          # Piotroski/Beneish/Altman/DCF/DuPont
@@ -275,12 +300,7 @@ myQuant/
         │
         │  ── Branch 1：Kronos ──
         ├── kronos_predictor.py            # Kronos K线预测（含统计降级）
-        │
-        │  ── Branch 3：LLM多空辩论 ──
-        ├── decision_layer.py              # 决策层封装
-        ├── multi_model_debate.py          # 5模型多空辩论
-        ├── multi_llm_ensemble.py          # 多LLM集成
-        ├── investment_report.py           # 结构化执行报告
+        ├── kline_backends/                # K线预测后端（Chronos/Kronos/Heuristic）
         │
         │  ── 风控层 ──
         ├── risk_management_layer.py       # 组合风控
@@ -289,6 +309,7 @@ myQuant/
         ├── market_impact.py               # 市场冲击模型
         ├── advanced_risk_metrics.py       # 高级风险指标
         ├── risk_dashboard.py              # 风险可视化
+        ├── risk_dashboard_v8.py           # V8 风险面板
         │
         │  ── Branch 5：宏观层 ──
         ├── macro_terminal_tushare.py      # 宏观风控终端
@@ -306,9 +327,23 @@ myQuant/
         ├── enhanced_data_layer.py         # 多源数据采集与清理
         ├── batch_data_fetcher.py          # 批量数据获取
         ├── stock_database.py              # SQLite数据持久化
-        ├── stock_universe.py              # 股票池管理
+        ├── stock_universe.py              # A股股票池管理
+        ├── us_stock_universe.py           # 美股股票池管理
         ├── data_manager.py                # 数据生命周期管理
         ├── download_all.py                # 批量数据下载
+        ├── download_full_cn_market.py     # A股全市场数据下载
+        ├── download_full_us_market.py     # 美股全市场数据下载
+        ├── us_data_downloader.py          # 美股数据下载器
+        ├── fetch_cn_index_components.py   # A股指数成分获取
+        ├── fetch_us_index_components.py   # 美股指数成分获取
+        ├── fetch_complete_us_universe.py  # 完整美股标的获取
+        ├── credential_utils.py            # API凭证管理
+        │
+        │  ── 全市场分析 ──
+        ├── cn_full_market_analysis.py     # A股全市场分析
+        ├── cn_full_market_batch_analysis.py # A股批量分析
+        ├── us_full_market_analysis.py     # 美股全市场分析
+        ├── us_full_market_backtest.py     # 美股全市场回测
         │
         │  ── 扩展模块 ──
         ├── portfolio_backtest.py          # Walk-Forward组合回测
@@ -322,10 +357,11 @@ myQuant/
         ├── exceptions.py                  # 自定义异常体系
         │
         └── archive/                       # 历史版本归档
-            ├── legacy_scripts/            # 旧版一次性分析脚本（13个）
-            ├── superseded_modules/        # 已被更新版本取代（2个）
-            ├── unused_infrastructure/     # 未集成的基础设施（9个）
-            └── old_layer_packages/        # 旧版模块化包（6个目录）
+            ├── serial_research_legacy_20260312/  # V8之前的串行研究脚本
+            ├── legacy_scripts/            # 旧版一次性分析脚本
+            ├── superseded_modules/        # 已被更新版本取代
+            ├── unused_infrastructure/     # 未集成的基础设施
+            └── old_layer_packages/        # 旧版模块化包
 ```
 
 ---
@@ -387,7 +423,8 @@ quant_investor_v10.py
 
 | 版本 | 发布时间 | 核心特性 |
 |:---|:---|:---|
-| **V10.0** | 2026-03-12 | 五支柱并行架构、集成裁判层、FactorEngineer、市场状态感知 |
+| **V10.1** | 2026-03-17 | Web 平台（React 前端 + Flask API）、Docker 部署、并行研究管线、US/CN 全市场分析、regime 检测、信号校准 |
+| V10.0 | 2026-03-12 | 五支柱并行架构、集成裁判层、FactorEngineer、市场状态感知 |
 | V9.0 | 2026-03-12 | Kronos基础模型(L8) + 财务/新闻/情绪分析(L9) |
 | V8.0 | 2026-03-11 | Multi-LLM集成裁判(L7) + Alpha挖掘 + Walk-Forward回测 |
 | V7.0 | 2026-02-26 | 六层架构 + Multi-LLM多空辩论 |
