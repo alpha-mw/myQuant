@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "quant-investor"
-version = "7.0.0"
-description = "智能量化投资框架 - 六层分层架构量化交易系统"
+version = "8.0.0"
+description = "智能量化投资平台 - V8 五路并行研究、可信回测与组合级集成裁判"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
@@ -23,6 +23,8 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.34.0",
     "pandas>=2.0.0",
     "numpy>=1.24.0",
     "scipy>=1.10.0",
@@ -45,6 +47,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "httpx>=0.28.0",
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
     "pytest-asyncio>=0.21.0",
@@ -79,7 +82,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "--cov=scripts --cov-report=term-missing --cov-report=html"
+addopts = "--cov=scripts --cov-report=term-missing --cov-report=html:results/htmlcov"
 
 [tool.coverage.run]
 source = ["scripts"]
@@ -92,3 +95,6 @@ exclude_lines = [
     "raise AssertionError",
     "raise NotImplementedError",
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["scripts"]

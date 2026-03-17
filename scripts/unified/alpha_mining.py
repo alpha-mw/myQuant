@@ -110,10 +110,15 @@ class FactorLibrary:
 
     @staticmethod
     def price_acceleration(df: pd.DataFrame) -> pd.Series:
-        """价格加速度 = 近期动量 - 中期动量"""
+        """价格加速度 = 近1月收益率 - 前2月平均收益率
+
+        衡量动量是否在加速：r1m（近期速度）减去 (r3m-r1m)/2（前2月平均速度）。
+        正值表示动量加速，负值表示动量衰减。
+        """
         r1m = df.groupby("symbol")["close"].pct_change(21)
         r3m = df.groupby("symbol")["close"].pct_change(63)
-        return r1m - r3m / 3
+        prior_2m_avg = (r3m - r1m) / 2
+        return r1m - prior_2m_avg
 
     # ---- 价值类 -------------------------------------------------------
     @staticmethod
@@ -414,6 +419,9 @@ class GeneticFactorSearch:
         _logger.info(f"遗传搜索：种群={self.pop_size}，代数={self.generations}")
         population = [self._random_gene() for _ in range(self.pop_size)]
 
+        best_ir_ever = -float("inf")
+        stale_generations = 0
+
         for gen in range(self.generations):
             scored = [(g, self._fitness(g)) for g in population]
             scored.sort(key=lambda x: x[1], reverse=True)
@@ -431,6 +439,16 @@ class GeneticFactorSearch:
 
             best_ir = scored[0][1]
             _logger.info(f"  第 {gen+1}/{self.generations} 代，最优IR={best_ir:.4f}")
+
+            # 早停：连续 3 代最优适应度无改善则终止
+            if best_ir > best_ir_ever + 1e-6:
+                best_ir_ever = best_ir
+                stale_generations = 0
+            else:
+                stale_generations += 1
+            if stale_generations >= 3:
+                _logger.info(f"  早停：连续 {stale_generations} 代无改善，终止于第 {gen+1} 代")
+                break
 
         final = [(g, self._fitness(g)) for g in population]
         final.sort(key=lambda x: x[1], reverse=True)
@@ -598,20 +616,31 @@ class FactorValidator:
         return profile
 
     def _decay_halflife(self, factor: pd.Series) -> int:
-        """估算 IC 半衰期"""
-        ic_series = []
+        """估算 IC 半衰期：计算真实滞后 IC（Spearman 相关）并找到衰减至一半的时间。"""
+        from scipy import stats as _stats
+
+        ic_series: list[float] = []
         for lag in range(1, 16):
-            fwd_shifted = self.df.get(self.forward_col, pd.Series(dtype=float))
-            # 简化：IC 随 lag 的下降
-            sample_ic = 0.05 * np.exp(-0.1 * lag) + np.random.normal(0, 0.01)
-            ic_series.append(sample_ic)
-        # 找到 IC 降至一半的时间
-        if not ic_series or ic_series[0] == 0:
+            lagged_ics: list[float] = []
+            for _date, grp_idx in self.df.groupby("date").groups.items():
+                f = factor.reindex(grp_idx).dropna()
+                if len(f) < 10:
+                    continue
+                fwd = self.df[self.forward_col].shift(-lag).reindex(f.index).dropna()
+                common = f.index.intersection(fwd.index)
+                if len(common) < 10:
+                    continue
+                ic_val, _ = _stats.spearmanr(f.loc[common], fwd.loc[common])
+                if np.isfinite(ic_val):
+                    lagged_ics.append(ic_val)
+            ic_series.append(float(np.mean(lagged_ics)) if lagged_ics else 0.0)
+
+        if not ic_series or abs(ic_series[0]) < 1e-6:
             return 5
-        half = ic_series[0] / 2.0
+        half = abs(ic_series[0]) / 2.0
         for i, ic in enumerate(ic_series):
-            if ic <= half:
-                return i + 1
+            if abs(ic) <= half:
+                return max(i + 1, 1)
         return 15
 
     def _factor_turnover(self, factor: pd.Series) -> float:
@@ -649,6 +678,105 @@ class FactorValidator:
             return float(factor.corr(mom))
         except Exception:
             return 0.0
+
+
+# ---------------------------------------------------------------------------
+# 因子中性化（Factor Neutralization）
+# ---------------------------------------------------------------------------
+
+class FactorNeutralizer:
+    """
+    对因子做截面中性化，剔除市值、行业、Beta 等已知风险因子暴露，
+    确保 Alpha 信号来自真实 Alpha 而非风格偏差。
+
+    流程：Winsorize (1%/99%) → 截面标准化 → 对风险因子做 OLS 回归 → 取残差
+    """
+
+    WINSORIZE_LIMITS = (0.01, 0.01)  # 截尾 1%/99%
+
+    def __init__(self, df: pd.DataFrame) -> None:
+        self.df = df
+
+    def neutralize(
+        self,
+        factor: pd.Series,
+        use_size: bool = True,
+        use_beta: bool = True,
+        use_industry: bool = False,
+    ) -> pd.Series:
+        """
+        对因子做截面回归中性化。
+
+        Args:
+            factor: 原始因子值（与 df 同索引）
+            use_size: 是否剔除市值暴露（以 log(close) 作为代理）
+            use_beta: 是否剔除市场 Beta 暴露（以过去 20 日 Beta 估计）
+            use_industry: 是否剔除行业暴露（需要 df 中有 "industry" 列）
+
+        Returns:
+            截面中性化后的残差因子
+        """
+        result = factor.copy().astype(float)
+
+        for date, grp_idx in self.df.groupby("date").groups.items():
+            f = factor.reindex(grp_idx).dropna()
+            if len(f) < 10:
+                continue
+
+            # Step 1: Winsorize
+            lo, hi = f.quantile(self.WINSORIZE_LIMITS[0]), f.quantile(1 - self.WINSORIZE_LIMITS[1])
+            f = f.clip(lo, hi)
+
+            # Step 2: 截面标准化
+            std = f.std()
+            if std < 1e-8:
+                continue
+            f = (f - f.mean()) / std
+
+            # Step 3: 构建控制变量矩阵
+            controls: list[pd.Series] = []
+            grp_df = self.df.loc[grp_idx]
+
+            if use_size and "close" in grp_df.columns:
+                size = np.log(grp_df["close"].clip(lower=0.01)).reindex(f.index)
+                size = (size - size.mean()) / (size.std() + 1e-8)
+                controls.append(size.rename("size"))
+
+            if use_beta and "market_return" in grp_df.columns:
+                mret = grp_df["market_return"].reindex(f.index)
+                controls.append(mret.rename("beta_proxy"))
+
+            if use_industry and "industry" in grp_df.columns:
+                industry = grp_df["industry"].reindex(f.index)
+                dummies = pd.get_dummies(industry, prefix="ind", drop_first=True)
+                dummies = dummies.reindex(f.index).fillna(0)
+                for col in dummies.columns:
+                    controls.append(dummies[col])
+
+            if not controls:
+                # 无控制变量，仅截面标准化
+                result.loc[f.index] = f
+                continue
+
+            # Step 4: OLS 回归，取残差
+            X = pd.concat(controls, axis=1).fillna(0.0)
+            X.insert(0, "const", 1.0)
+            try:
+                beta = np.linalg.lstsq(X.values, f.values, rcond=None)[0]
+                residual = f.values - X.values @ beta
+                result.loc[f.index] = residual
+            except Exception:
+                result.loc[f.index] = f
+
+        return result
+
+    def neutralize_batch(
+        self,
+        factors: dict[str, pd.Series],
+        **kwargs,
+    ) -> dict[str, pd.Series]:
+        """批量中性化多个因子"""
+        return {name: self.neutralize(s, **kwargs) for name, s in factors.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -753,6 +881,34 @@ class AlphaMiner:
                 )
 
         # ---- 筛选 & 正交化 -----------------------------------------------
+        # 先对系统性因子做截面中性化，剔除市值/Beta 暴露
+        try:
+            neutralizer = FactorNeutralizer(self.df)
+            lib = FactorLibrary()
+            neutralized_count = 0
+            for fp in result.systematic_factors:
+                func = getattr(lib, fp.name, None)
+                if func is None:
+                    continue
+                raw_series = func(self.df)
+                neutral_series = neutralizer.neutralize(raw_series, use_size=True, use_beta=True)
+                re_profile = self.validator.validate(
+                    neutral_series,
+                    f"{fp.name}_neutral",
+                    fp.category,
+                    formula_desc=f"{fp.formula_desc} [中性化]",
+                    origin="systematic_neutral",
+                )
+                if re_profile and abs(re_profile.ir) > abs(fp.ir):
+                    fp.ic_mean = re_profile.ic_mean
+                    fp.ir = re_profile.ir
+                    fp.ic_positive_rate = re_profile.ic_positive_rate
+                    neutralized_count += 1
+            if neutralized_count:
+                _logger.info(f"  因子中性化：{neutralized_count} 个因子 IC 有所提升")
+        except Exception as e:
+            _logger.debug(f"因子中性化失败，跳过: {e}")
+
         all_validated = result.systematic_factors + result.genetic_factors
         result.selected_factors = self._select_orthogonal(all_validated)
         result.mining_report = self._generate_report(result)

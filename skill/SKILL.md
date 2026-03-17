@@ -1,160 +1,237 @@
 ---
 name: quant-investor
-description: "一个端到端的AI量化投资技能，用于股票分析、因子挖掘、模型训练和回测。V6.1版本在V6.0大一统框架基础上，全面升级因子层，整合Qlib、TA-Lib、WorldQuant因子库，并引入AI驱动的因子挖掘引擎（遗传编程、Transformer、LLM情绪分析），实现从500+因子库到自动化因子发现的全链路增强。当用户想要进行量化投资、分析股票、构建投资策略或进行回测时使用此技能。"
+description: "用于 myQuant V8.0 五路并行研究主线的 Codex skill。当用户要在当前仓库中分析、修改、调试或测试量化研究流水线、分支契约、风险控制、Alpha 挖掘、宏观模块或回测相关 Python 代码时使用。默认只覆盖 CLI、Python API、测试与研究主线，不处理 web、frontend、FastAPI 服务或页面代码，除非用户明确要求。"
 ---
 
-# 量化投资技能 (Quant-Investor) - V6.1
+# Quant-Investor V8 Skill
 
-**版本**: 6.1 (AI因子挖掘增强)
-**作者**: Manus AI
-**核心理念**: 数据驱动 + 分层解耦 + AI因子工程
+这个 skill 面向当前仓库里的 `myQuant/` 项目主线，目标是让 Codex 优先围绕 V8.0 五路并行研究架构工作，而不是回到早期 V6/V7 文档或 web 代码。
 
----
+## 适用范围
 
-## 1. 技能简介
+默认处理以下内容：
 
-`quant-investor` V6.1 是在 V6.0 大一统框架基础上的**一次重大升级**，核心是**对因子层的革命性增强**。通过整合业界主流因子库和引入AI驱动的因子挖掘引擎，V6.1 将因子分析能力从“使用”提升到“创造”，实现了从海量因子库到自动化因子发现的全链路智能化。
+- `scripts/unified/` 下的 V8 主线研究、风险、组合、回测与数据模块
+- `tests/` 下的单元测试与回归验证
+- `README.md`、`pyproject.toml`、`.env.example` 等项目级说明
+- A 股 / 美股研究逻辑、分支契约、降级策略、可信度治理
 
-### V6.1 核心升级
+默认不处理以下内容，除非用户明确要求：
 
-1.  **海纳百川因子库 (500+)**: 全面整合三大主流因子库，因子数量从 34+ 扩展到 500+。
-    *   **Qlib**: Alpha158 / Alpha360
-    *   **TA-Lib**: 50+ 技术指标
-    *   **WorldQuant**: 101 Alphas 精选
+- `web/`
+- `frontend/`
+- `run_web.sh`
+- FastAPI / Uvicorn 服务与页面交互
+- 仓库内旧版界面层、展示层或前后端联调任务
 
-2.  **AI 创新因子引擎**: 引入 AI 模型生成和提取新型因子。
-    *   **Transformer 时序特征**: 使用 Transformer 提取深度时序模式作为新因子。
-    *   **LLM 情绪因子**: 利用大模型分析财报、新闻文本，生成情绪得分因子。
-    *   **另类数据因子**: 整合社交媒体情绪、搜索趋势等非传统数据源。
+默认把以下内容视为历史资料，而不是当前主线事实来源：
 
-3.  **自动化因子挖掘**: 内置遗传编程（Genetic Programming）引擎，可自动发现新的有效因子表达式。
+- `archive/skill_legacy_20260317/` 中的旧 skill 产物
+- `scripts/unified/archive/` 以及 `scripts/v*/` 历史目录
 
-4.  **数据层增强**: 在数据获取阶段增加完整性检查和另类数据接口，为因子挖掘提供更坚实的基础。
+只有当用户明确要求处理旧版本、迁移兼容或历史对比时，才读取这些文件。
 
----
+## 当前主线的事实来源
 
-## 2. V6.1 分层架构
+处理 V8 任务时，优先按下面顺序建立上下文：
 
+1. `README.md`
+2. `pyproject.toml`
+3. `scripts/unified/quant_investor_v8.py`
+4. `scripts/unified/parallel_research_pipeline.py`
+5. `scripts/unified/branch_contracts.py`
+6. 与当前任务直接相关的研究模块，例如：
+   - `scripts/unified/enhanced_data_layer.py`
+   - `scripts/unified/alpha_mining.py`
+   - `scripts/unified/risk_management_layer.py`
+   - `scripts/unified/macro_terminal_tushare.py`
+   - `scripts/unified/portfolio_backtest.py`
+7. 对应的单元测试，例如：
+   - `tests/unit/test_parallel_research_pipeline.py`
+   - `tests/unit/test_data_layer.py`
+   - `tests/unit/test_risk_management.py`
+   - `tests/unit/test_backtest.py`
+
+如果任务涉及宏观风控，再读取：
+
+- `scripts/unified/MACRO_RISK_GUIDE.md`
+
+如果任务明确指向历史版本，再进入：
+
+- `scripts/unified/archive/`
+- `scripts/v6.0/`
+- `scripts/v2.9/`
+- `scripts/v2.7/`
+
+## 核心架构认知
+
+当前 V8 主线不是旧式串行七层，而是：
+
+`数据层 -> 五路并行研究分支 -> 风控层 -> 集成裁判层`
+
+五个研究分支为：
+
+- `kline` / `kronos`：OHLCV 时序趋势与未来收益判断
+- `quant`：Alpha 挖掘优先，失败时回退经典因子
+- `llm_debate`：基本面、行业、事件驱动的多空辩论
+- `intelligence`：财务质量、情绪、事件风险、资金流、广度
+- `macro`：宏观 regime、流动性、政策和市场风险状态
+
+必须维护的稳定契约：
+
+- 数据层输出 `UnifiedDataBundle`
+- 各研究分支输出 `BranchResult`
+- 编排层输出 `ResearchPipelineResult`
+- 最终组合层输出 `PortfolioStrategy`
+
+处理相关改动时，优先保证以下语义不被破坏：
+
+- `research_only`
+- `degraded`
+- `provenance_summary`
+- `synthetic_symbols`
+- `branch_mode`
+- `reliability`
+
+如果一个改动会影响这些字段，必须同步检查报告输出、聚合逻辑和测试。
+
+## 执行工作流
+
+### 1. 先判断任务落点
+
+先区分任务属于哪一类：
+
+- 当前 V8 主线功能开发或缺陷修复
+- 风控 / 组合策略调参
+- 数据获取、降级与 synthetic 处理
+- Alpha 挖掘或因子分析
+- 回测与评估
+- 历史版本兼容
+
+若用户只说“改 myQuant”，默认按 V8 主线处理，不主动进入 web 或 archive。
+
+### 2. 只读最小必要文件
+
+不要一次性加载整个仓库。先读主入口、契约和相关测试，再按需深入到具体模块。
+
+### 3. 先检查本地数据是否最新
+
+- 如果任务依赖最新行情、A 股日线或宏观数据，先确认本地库与缓存中的最新交易日是否已经覆盖到最新可用交易日。
+- 如果本地数据不是最新的，优先使用 `myQuant` 里的数据下载模块把最新数据落到本地，再继续分析、回测或验证；A 股默认走 Tushare 链路。
+- 优先入口是：
+  - `scripts/unified/data_manager.py`
+  - `scripts/unified/stock_database.py`
+  - `scripts/unified/macro_terminal_tushare.py`
+- 不要为了临时完成任务而跳过本地数据层，直接用远端返回值替代本地落盘结果。
+- 如果 `TUSHARE_TOKEN`、网络或接口可用性不足导致无法更新本地数据，需要明确说明阻塞点和未验证风险。
+
+### 4. 先找测试，再改代码
+
+优先通过现有测试确认模块边界。若缺少覆盖，为改动补充最小必要测试，尤其是：
+
+- 分支失败降级
+- synthetic symbol 排除
+- 风险暴露收缩
+- 组合候选与仓位上限
+- 报告中的可信度 / provenance 字段
+
+### 5. 改动时遵守项目约定
+
+- 注释和文档字符串默认使用中文
+- 使用 `loguru` 体系和 `get_logger`
+- 优先使用项目自定义异常，避免裸 `except Exception`
+- 不要把 API key、token、路径密钥硬编码进仓库
+- 沿用现有模块风格，不因为“更现代”就擅自改成 web service 或前后端架构
+
+### 6. 验证只做与任务相关的最小闭环
+
+优先运行定向测试，其次再跑更大的集合。不要为了一个小修复默认跑全量长耗时任务。
+
+## 常用入口
+
+### 命令行分析
+
+```bash
+cd myQuant
+python scripts/unified/quant_investor_v8.py \
+  --stocks 000001.SZ 600519.SH 000858.SZ \
+  --market CN \
+  --capital 1000000 \
+  --risk 中等
 ```
-MasterPipelineV6.1
-├── 第1层: 数据层 (UnifiedDataLayer)
-│   ├── 数据源: yfinance / Tushare / FRED
-│   ├── 持久化: SQLite + Parquet
-│   ├── 数据清洗: 去极值 / 补缺失 / 标准化
-│   ├── 样本扩充: 自动补充指数成分股
-│   └── (V6.1)数据增强: 完整性检查 + 另类数据接口
-│
-├── 第2层: 因子层 (UnifiedFactorLayer) - V6.1 全面升级
-│   ├── 因子库 (500+): Qlib / TA-Lib / WorldQuant / 基础因子
-│   ├── AI创新因子: Transformer特征 / LLM情绪 / 另类数据
-│   ├── 因子挖掘引擎: 遗传编程自动发现新因子
-│   ├── 因子验证: IC/IR/多空收益/分层回测
-│   └── 候选选股: 多因子综合评分排名
-│
-├── 第3层: 模型层 (UnifiedModelLayer)
-│   ├── ML模型: XGBoost / LightGBM / RandomForest
-│   ├── 集成预测: 加权集成 + 特征重要性
-│   └── 信号生成: 综合排名Top N
-│
-├── 第4层: 决策层 (UnifiedDecisionLayer)
-│   ├── 多LLM适配器: Gemini / OpenAI / DeepSeek / Qwen
-│   ├── 多Agent辩论: 5专家 × 多轮交叉质询
-│   └── 投资评级: 强烈买入/买入/持有/卖出/强烈卖出
-│
-└── 第5层: 风控层 (UnifiedRiskLayer)
-    ├── 组合优化: 最大夏普 / 风险平价 / 最小方差 / 等权
-    ├── 风险评估: VaR / CVaR / 最大回撤 / 波动率
-    ├── 基准对比: Alpha / Beta / 信息比率 / 胜率
-    └── 压力测试: 5种极端场景
-```
 
----
-
-## 3. 使用方法
-
-使用方法与 V6.0 保持一致，技能会自动启用 V6.1 的增强功能。用户可以通过参数开启或关闭特定的因子挖掘功能。
-
-```
-/quant-investor 分析美股市场
-
-/quant-investor 分析 AAPL MSFT NVDA GOOGL AMZN
-```
-
-### 代码调用
+### Python API
 
 ```python
-import sys
-sys.path.insert(0, "/home/ubuntu/skills/quant-investor/scripts/v6.1")
+from scripts.unified import QuantInvestorV8
 
-from pipeline.master_pipeline import MasterPipelineV6
-
-# 启用所有新功能
-pipeline = MasterPipelineV6(
-    market="US",
-    enable_factor_mining=True, # 开启遗传编程因子挖掘
-    enable_transformer_factors=True, # 开启 Transformer 因子
-    factor_libraries=["qlib", "talib", "worldquant"] # 加载所有因子库
+analyzer = QuantInvestorV8(
+    stock_pool=["000001.SZ", "600519.SH"],
+    market="CN",
+    total_capital=1_000_000,
+    risk_level="中等",
+    enable_kronos=True,
+    enable_intelligence=True,
+    enable_llm_debate=True,
+    enable_macro=True,
+    verbose=True,
 )
-report = pipeline.run()
+result = analyzer.run()
 ```
 
-### 新增参数说明
+### 定向测试
 
-| 参数 | 类型 | 默认值 | 说明 |
-|:---|:---|:---|:---|
-| `enable_factor_mining` | bool | False | 是否启用遗传编程进行因子挖掘 |
-| `enable_transformer_factors` | bool | False | 是否启用 Transformer 提取时序特征因子 |
-| `factor_libraries` | list | [] | 加载的外部因子库，可选 ["qlib", "talib", "worldquant"] |
-
----
-
-## 4. V6.1 代码结构
-
-```
-scripts/v6.1/
-├── data_layer/
-│   └── unified_data_layer.py
-├── factor_layer/
-│   ├── unified_factor_layer.py          # 主入口
-│   ├── factor_libraries/                # 新增：因子库模块
-│   │   ├── qlib_factors.py             # Qlib Alpha158/360
-│   │   ├── talib_factors.py            # TA-Lib 指标
-│   │   ├── worldquant_factors.py       # WorldQuant Alphas
-│   │   └── alternative_factors.py      # 另类数据与AI因子
-│   └── factor_mining/                   # 新增：因子挖掘模块
-│       └── genetic_miner.py            # 遗传编程引擎
-├── model_layer/
-│   └── unified_model_layer.py
-├── decision_layer/
-│   └── unified_decision_layer.py
-├── risk_layer/
-│   └── unified_risk_layer.py
-└── pipeline/
-    └── master_pipeline.py
+```bash
+cd myQuant
+pytest tests/unit/test_parallel_research_pipeline.py -v
+pytest tests/unit/test_risk_management.py -v
+pytest tests/unit/test_backtest.py -v
 ```
 
----
+## 文件映射速查
 
-## 5. 版本演进
+按任务类型优先查看：
 
-| 版本 | 核心特性 |
-|:---|:---|
-| **V6.1** | **AI因子挖掘增强** - 整合Qlib/TA-Lib/WorldQuant，引入遗传编程、Transformer、LLM因子 |
-| V6.0 | **大一统框架** - 分层解耦，融合V2.7~V5.0全部能力，智能样本扩充 |
-| V5.0 | 工业级量化框架 - 数据清洗、ML模型、组合优化、高级风险管理 |
-| V4.1 | 基准对比升级版 - 以超越基准的长期稳定超额收益为核心 |
-| V4.0 | 统一主流水线 - 整合所有能力，标准化流程 |
-| V3.6 | 多LLM支持 - DeepSeek、千问、Kimi |
-| V3.5 | 深度特征合成引擎 |
-| V3.4 | 海纳百川因子库 - Alpha158 + tsfresh |
-| V3.3 | 工业级因子分析 - Tear Sheet |
-| V3.2 | 动态因子挖掘系统 |
-| V3.1 | 动态智能框架 - 因子监控 + 组合优化 |
-| V3.0 | 全景数据层 - 期货期权 + 行业数据 |
-| V2.9 | 多Agent辩论系统 |
-| V2.8 | 风险管理模块 |
-| V2.7 | 持久化数据存储 |
+- 主入口与公共导出：
+  - `scripts/unified/quant_investor_v8.py`
+  - `scripts/unified/__init__.py`
+- 并行编排与契约：
+  - `scripts/unified/parallel_research_pipeline.py`
+  - `scripts/unified/branch_contracts.py`
+- 数据层：
+  - `scripts/unified/enhanced_data_layer.py`
+- 传统量化 / Alpha：
+  - `scripts/unified/alpha_mining.py`
+  - `scripts/unified/factor_analyzer.py`
+  - `scripts/unified/factor_neutralizer.py`
+- 风控与组合：
+  - `scripts/unified/risk_management_layer.py`
+  - `scripts/unified/advanced_risk_metrics.py`
+  - `scripts/unified/var_calculator.py`
+  - `scripts/unified/stress_tester.py`
+- 宏观：
+  - `scripts/unified/macro_terminal_tushare.py`
+  - `scripts/unified/MACRO_RISK_GUIDE.md`
+- 回测：
+  - `scripts/unified/portfolio_backtest.py`
+  - `scripts/unified/backtest_engine.py`
+- 全市场批量分析：
+  - `scripts/unified/cn_full_market_analysis.py`
+  - `scripts/unified/cn_full_market_batch_analysis.py`
+  - `scripts/unified/us_full_market_analysis.py`
 
----
+## 边界提醒
 
-**如有问题或建议，欢迎反馈！**
+- 本 skill 默认不接管 `web/`、`frontend/`、页面渲染、接口路由和部署脚本。
+- 即使 `pyproject.toml` 里存在 `fastapi`、`uvicorn` 依赖，也不要默认把仓库理解为 web 项目。
+- 当用户要求“做成 skill”时，默认理解为让 Codex 能更好地维护 `myQuant` 研究主线，而不是重做一个聊天命令系统或前端产品。
+
+## 输出要求
+
+完成任务时，优先给出：
+
+- 改动影响的主线行为
+- 验证是否执行以及结果
+- 是否仍有未覆盖风险
+
+如果因为本地环境、数据接口或凭据缺失导致无法完成验证，需要明确指出阻塞点。
