@@ -7,10 +7,12 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from credential_utils import get_secret
+
 # 尝试加载 .env 文件
 try:
     from dotenv import load_dotenv
-    env_path = Path(__file__).parent.parent / '.env'
+    env_path = Path(__file__).parent.parent.parent / '.env'
     if env_path.exists():
         load_dotenv(env_path)
 except ImportError:
@@ -21,8 +23,17 @@ class Config:
     """配置类"""
     
     # Tushare配置
-    TUSHARE_TOKEN: str = os.environ.get('TUSHARE_TOKEN', '')
+    TUSHARE_TOKEN: str = get_secret('TUSHARE_TOKEN')
     TUSHARE_URL: Optional[str] = os.environ.get('TUSHARE_URL')
+
+    # LLM / 外部 API 凭据
+    OPENAI_API_KEY: str = get_secret('OPENAI_API_KEY')
+    ANTHROPIC_API_KEY: str = get_secret('ANTHROPIC_API_KEY')
+    DEEPSEEK_API_KEY: str = get_secret('DEEPSEEK_API_KEY')
+    GOOGLE_API_KEY: str = get_secret('GOOGLE_API_KEY')
+    DASHSCOPE_API_KEY: str = get_secret('DASHSCOPE_API_KEY')
+    FRED_API_KEY: str = get_secret('FRED_API_KEY')
+    FINNHUB_API_KEY: str = get_secret('FINNHUB_API_KEY')
     
     # 数据库配置
     DB_PATH: str = os.environ.get('DB_PATH', 'data/stock_database.db')
@@ -40,7 +51,12 @@ class Config:
     COMMISSION_RATE: float = float(os.environ.get('COMMISSION_RATE', '0.0003'))
     STAMP_DUTY_RATE: float = float(os.environ.get('STAMP_DUTY_RATE', '0.001'))
     SLIPPAGE: float = float(os.environ.get('SLIPPAGE', '0.001'))
-    
+
+    # K线分析后端配置
+    KRONOS_MODEL_PATH: str = os.environ.get('KRONOS_MODEL_PATH', '${KRONOS_MODEL_PATH}')
+    CHRONOS_MODEL_NAME: str = os.environ.get('CHRONOS_MODEL_NAME', 'amazon/chronos-2-small')
+    KLINE_BACKEND: str = os.environ.get('KLINE_BACKEND', 'heuristic')
+
     @classmethod
     def validate(cls) -> list:
         """验证配置是否完整"""

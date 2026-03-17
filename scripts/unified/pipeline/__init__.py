@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Quant-Investor Unified v7.0 - 大一统版本
-整合 V2.7 ~ V6.0 所有核心功能
+Legacy Unified Pipeline（V2.7 ~ V6.0 兼容保留）
+
+该模块仅用于历史版本兼容，不再作为 V8 主线公共入口。
 
 使用方式:
     from unified import MasterPipelineUnified
