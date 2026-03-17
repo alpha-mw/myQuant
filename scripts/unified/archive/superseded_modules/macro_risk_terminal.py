@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pandas as pd
 import numpy as np
+from credential_utils import create_tushare_pro
 
 try:
     import tushare as ts
@@ -234,11 +235,10 @@ class CNMacroRiskTerminal(MacroRiskTerminalBase):
         self.token = tushare_token or os.environ.get('TUSHARE_TOKEN')
         self.pro = None
         if self.token and TUSHARE_AVAILABLE:
-            ts.set_token(self.token)
-            self.pro = ts.pro_api()
+            self.pro = create_tushare_pro(ts, self.token)
             custom_url = os.environ.get('TUSHARE_HTTP_URL',
                                         'http://lianghua.nanyangqiankun.top')
-            if custom_url:
+            if self.pro is not None and custom_url:
                 self.pro._DataApi__http_url = custom_url
 
     def get_modules(self) -> List[ModuleResult]:

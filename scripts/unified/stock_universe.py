@@ -16,15 +16,13 @@ import pandas as pd
 from typing import List, Dict, Optional
 from datetime import datetime
 
-# 读取credentials
+# 读取环境配置
 sys.path.insert(0, str(Path(__file__).parent))
 from config import config
-sys.path.insert(0, '/root/.openclaw/workspace/myQuant')
-try:
-    from credentials import TUSHARE_TOKEN, TUSHARE_URL
-except ImportError:
-    TUSHARE_TOKEN = config.TUSHARE_TOKEN
-    TUSHARE_URL = os.environ.get('TUSHARE_URL', 'http://lianghua.nanyangqiankun.top')
+from credential_utils import create_tushare_pro
+
+TUSHARE_TOKEN = config.TUSHARE_TOKEN
+TUSHARE_URL = os.environ.get('TUSHARE_URL', 'http://lianghua.nanyangqiankun.top')
 
 import tushare as ts
 
@@ -34,9 +32,9 @@ class StockUniverse:
     
     def __init__(self, token: Optional[str] = None):
         self.token = token or TUSHARE_TOKEN
-        self.pro = ts.pro_api(self.token)
-        self.pro._DataApi__token = self.token
-        self.pro._DataApi__http_url = TUSHARE_URL
+        self.pro = create_tushare_pro(ts, self.token, TUSHARE_URL)
+        if self.pro is None:
+            raise RuntimeError("TUSHARE_TOKEN 未设置，无法初始化股票池服务")
         
         self._hs300_cache: Optional[List[str]] = None
         self._zz500_cache: Optional[List[str]] = None

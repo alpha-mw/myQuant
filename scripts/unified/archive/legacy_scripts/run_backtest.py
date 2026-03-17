@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Quant-Investor V7.0 完整回测运行脚本
-使用Backtrader进行事件驱动回测
+Legacy Backtrader 回测脚本（V7 兼容保留）
+
+该脚本不是 V8 主线的可信回测入口；V8 主线请使用 `portfolio_backtest.py`。
 """
 
 import sys

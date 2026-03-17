@@ -18,9 +18,9 @@ Enhanced Data Layer - 增强版数据层
 import os
 import sys
 from pathlib import Path
-import sys
 sys.path.insert(0, str(Path(__file__).parent))
 from config import config
+from credential_utils import create_tushare_pro
 
 import pandas as pd
 import numpy as np
@@ -139,13 +139,10 @@ class TushareDataSource(DataSourceBase):
         self.pro = None
         if TUSHARE_AVAILABLE:
             try:
-                ts.set_token(TUSHARE_TOKEN)
-                self.pro = ts.pro_api()
-                self.pro._DataApi__token = TUSHARE_TOKEN
-                self.pro._DataApi__http_url = TUSHARE_URL
+                self.pro = create_tushare_pro(ts, TUSHARE_TOKEN, TUSHARE_URL)
                 print("[TushareDataSource] 初始化成功")
-            except Exception as e:
-                print(f"[TushareDataSource] 初始化失败: {e}")
+            except Exception:
+                print("[TushareDataSource] 初始化失败")
     
     def get_ohlcv(self, symbol: str, start_date: str, end_date: str, 
                   freq: str = 'D') -> pd.DataFrame:
@@ -282,6 +279,12 @@ class YahooDataSource(DataSourceBase):
             return pd.DataFrame()
         
         try:
+            # 转换日期格式: YYYYMMDD -> YYYY-MM-DD
+            if len(start_date) == 8 and '-' not in start_date:
+                start_date = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:8]}"
+            if len(end_date) == 8 and '-' not in end_date:
+                end_date = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:8]}"
+            
             ticker = yf.Ticker(symbol)
             df = ticker.history(start=start_date, end=end_date, interval=freq)
             
