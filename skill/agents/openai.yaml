@@ -1,0 +1,4 @@
+interface:
+  display_name: "MyQuant V8"
+  short_description: "在 myQuant V8 量化研究主线上进行开发、排障与验证"
+  default_prompt: "使用 $quant-investor 在当前 myQuant 仓库里处理一个只涉及量化研究主线的任务。"

@@ -35,6 +35,7 @@ logger = logging.getLogger('MacroRiskTerminal')
 
 # ==================== Tushare配置 ====================
 from config import config
+from credential_utils import create_tushare_pro
 
 TUSHARE_TOKEN = config.TUSHARE_TOKEN
 TUSHARE_URL = config.TUSHARE_URL
@@ -43,9 +44,15 @@ TUSHARE_URL = config.TUSHARE_URL
 try:
     import tushare as ts
     if TUSHARE_TOKEN:
-        ts.set_token(TUSHARE_TOKEN)
-        TUSHARE_AVAILABLE = True
-        logger.info("Tushare初始化成功")
+        try:
+            _probe = create_tushare_pro(ts, TUSHARE_TOKEN, TUSHARE_URL)
+            if _probe is None:
+                raise RuntimeError("missing_token")
+            TUSHARE_AVAILABLE = True
+            logger.info("Tushare 初始化成功（内存模式，无落盘持久化）")
+        except Exception:
+            TUSHARE_AVAILABLE = False
+            logger.warning("Tushare 初始化失败，将使用降级数据源")
     else:
         TUSHARE_AVAILABLE = False
         logger.warning("TUSHARE_TOKEN未设置，将使用降级数据源")
@@ -160,13 +167,10 @@ class MacroRiskTerminalBase(ABC):
         self.pro = None
         if TUSHARE_AVAILABLE:
             try:
-                self.pro = ts.pro_api(TUSHARE_TOKEN)
-                # 必须设置token和URL
-                self.pro._DataApi__token = TUSHARE_TOKEN
-                self.pro._DataApi__http_url = TUSHARE_URL
+                self.pro = create_tushare_pro(ts, TUSHARE_TOKEN, TUSHARE_URL)
                 self._log("Tushare Pro API初始化成功")
-            except Exception as e:
-                self._log(f"Tushare初始化失败: {e}", "warning")
+            except Exception:
+                self._log("Tushare 初始化失败，已切换降级数据源", "warning")
 
     def _log(self, msg: str, level: str = "info") -> None:
         self.execution_log.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")

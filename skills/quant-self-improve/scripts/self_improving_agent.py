@@ -292,7 +292,9 @@ class SelfImprovingAgent:
             "proposals": proposals
         }
         
-        output_file = PROJECT_ROOT / "self_improve_report.json"
+        output_dir = PROJECT_ROOT / "results" / "self_improve"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_file = output_dir / "self_improve_report.json"
         with open(output_file, 'w') as f:
             json.dump(result, f, indent=2, default=str)
         
@@ -302,7 +304,7 @@ class SelfImprovingAgent:
         print("✅ 自我改进分析完成！")
         print("=" * 80)
         print("\n💡 建议下一步:")
-        print("  1. 查看详细报告: cat self_improve_report.json")
+        print(f"  1. 查看详细报告: cat {output_file}")
         print("  2. 选择优先级最高的方案实施")
         print("  3. 运行 ./apply_improvement.py --proposal <id>")
         
