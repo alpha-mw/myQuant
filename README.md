@@ -1,250 +1,412 @@
-# Quant-Investor V8.0
+# Quant-Investor V10.0 - 专业级量化投资平台
 
-专业级量化研究平台，当前主线采用：
+<div align="center">
 
-`数据层 -> 五路并行研究分支 -> 风控层 -> 集成裁判层`
+**五支柱并行架构 · Kronos基础模型 · LLM多空辩论 · 多维情报融合 · 集成裁判层 · 因子工程**
 
-系统目标不是给出单一“买/卖”标签，而是形成**组合级投资策略**：总仓位、风格偏好、候选标的、仓位上限和执行约束。
-当前主线默认输出 provenance、分支 `mode`、可靠度和降级状态；当全部候选只来自 synthetic/degraded 数据时，系统会自动降级为 `research_only`，仅保留研究参考结论。
+[![Version](https://img.shields.io/badge/Version-10.0.0-blue.svg)](https://github.com/alpha-mw/myQuant)
+[![Python](https://img.shields.io/badge/Python-3.10+-green.svg)](https://www.python.org/)
+[![Tests](https://img.shields.io/badge/Tests-59%20passing-brightgreen.svg)](tests/)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+</div>
 
 ---
 
-## 当前架构
+## 项目简介
 
-```text
-Data Layer
-  -> Kronos Branch
-  -> Quant Branch
-  -> LLM Debate Branch
-  -> Intelligence Branch
-  -> Macro Branch
-  -> Risk Layer
-  -> Ensemble Layer
+**Quant-Investor V10.0** 彻底重构了 V9 的顺序链式架构，引入**五支柱并行智能框架**：数据层之后，五大分支通过 `ThreadPoolExecutor` 真正并行执行，最终经过风控层约束，由**集成裁判层**（EnsembleJudgeEngine）汇聚所有信号，输出可执行的投资建议。
+
+---
+
+## 系统架构
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                     数据层（Data Layer）                              │
+│  Tushare Pro / AKShare / yfinance · OHLCV + 财务 + 新闻 + 宏观       │
+└───────────────────────────┬─────────────────────────────────────────┘
+                            │ 共享数据，五分支并行启动
+        ┌───────────────────┼────────────────────────┐
+        │                   │                        │
+┌───────▼──────┐  ┌─────────▼────────┐  ┌──────────▼──────────┐
+│  Branch 1    │  │  Branch 2        │  │  Branch 3           │
+│  Kronos      │  │  传统量化         │  │  LLM多空辩论         │
+│  图形预测     │  │  因子层 + 模型层  │  │  5模型角色辩论       │
+│              │  │  Alpha158+       │  │  财务/行业/宏观/     │
+│ kronos-mini  │  │  FactorEngineer  │  │  技术/风险           │
+│ kronos-small │  │  IC-IR加权合成   │  │                     │
+│ kronos-base  │  │  行业中性化       │  │                     │
+└───────┬──────┘  └─────────┬────────┘  └──────────┬──────────┘
+        │                   │                        │
+┌───────▼──────────────┐  ┌─▼─────────────────────────────────┐
+│  Branch 4            │  │  Branch 5                          │
+│  多维情报融合         │  │  宏观数据                           │
+│  财务分析            │  │  货币/信用/增长/估值/情绪            │
+│  新闻情感            │  │  A股：4模块  美股：5模块             │
+│  市场情绪            │  │  宏观一票否决机制                    │
+│  恐慌贪婪指数         │  │                                    │
+└───────┬──────────────┘  └─▲──────────────────────────────────┘
+        └──────────┬─────────┘
+                   │ 五分支信号汇聚
+┌──────────────────▼──────────────────────────────────────────────────┐
+│                     风控层（Risk Layer）                              │
+│  VaR/CVaR · 仓位上限 · Barra因子风险分解 · 止损止盈                   │
+└──────────────────┬──────────────────────────────────────────────────┘
+                   │
+┌──────────────────▼──────────────────────────────────────────────────┐
+│                  集成裁判层（Ensemble Judge Layer）         ★ V10 新增 │
+│                                                                      │
+│  RegimeDetector   → 识别市场状态（趋势/震荡/高波动/危机）              │
+│  动态权重调整      → 不同市场状态下各分支权重不同                       │
+│  宏观一票否决      → macro_score ≤ -0.6 时强制降仓                    │
+│  置信度加权集成    → 方向一致性 × 权重 → 综合得分 [-1, +1]             │
+│  组合配置优化      → 最大单股仓位约束 + 总仓位上限                      │
+└──────────────────┬──────────────────────────────────────────────────┘
+                   │
+            最终投资建议 + Markdown 报告
 ```
 
-### 1. 数据层
-- 统一生成 `UnifiedDataBundle`
-- 按股票保存 OHLCV、基本面、事件、情绪、宏观上下文
-- 对单只股票的数据失败支持降级，不拖垮整篮子
+---
 
-### 2. 五个研究分支
+## 集成裁判层：市场状态感知与动态权重
 
-| 分支 | 作用 | 主要输出 |
-|:---|:---|:---|
-| `kronos` | 基于 OHLCV 的时序趋势与未来收益判断 | `predicted_return`, `trend_regime`, `symbol_scores` |
-| `quant` | Alpha 挖掘优先，失败时回退经典因子 | `alpha_factors`, `factor_exposures`, `expected_return` |
-| `llm_debate` | 基本面、行业、事件驱动的多空辩论 | `bull_case`, `bear_case`, `key_risks` |
-| `intelligence` | 财务质量、事件风险、情绪、资金流、广度 | `financial_health_score`, `event_risk_score`, `alerts` |
-| `macro` | 宏观 regime、流动性、政策和风险状态 | `macro_score`, `macro_regime`, `risk_level` |
-
-所有分支都输出统一的 `BranchResult`，并在 `metadata` 中显式标记：
-- `branch_name`
-- `score`
-- `confidence`
-- `signals`
-- `risks`
-- `explanation`
-- `symbol_scores`
-- `data_source_status`
-- `is_synthetic`
-- `degraded_reason`
-- `branch_mode`
-- `reliability`
-
-### 3. 风控层
-- 消费五个分支的统一结果，不依赖旧串行字段
-- 做仓位管理、波动率控制、止损止盈、压力测试、风险预算
-
-### 4. 集成裁判层
-- 先形成研究共识
-- 再叠加风控硬约束
-- 最终输出组合级策略：
-  - `target_exposure`
-  - `style_bias`
-  - `sector_preferences`
-  - `candidate_symbols`
-  - `position_limits`
-  - `stop_loss_policy`
-  - `execution_notes`
+| 市场状态 | 触发条件 | Kronos | 量化 | 辩论 | 情报融合 | 宏观 |
+|:--------|:--------|:------:|:----:|:----:|:--------:|:----:|
+| 趋势上行 | 低波动 + 5日均涨 | 30% | 25% | 15% | 15% | 15% |
+| 趋势下行 | 低波动 + 5日均跌 | 25% | 20% | 15% | 15% | 25% |
+| 高波动 | 20日vol > 2.5% | 20% | 15% | 15% | 20% | 30% |
+| 震荡盘整 | 低波动 + 无趋势 | 20% | 20% | 20% | 25% | 15% |
+| **极端风险** | vol > 4% 或宏观极端 | 15% | 10% | 10% | 15% | **50%** |
 
 ---
 
-## 一揽子股票的数据传导
+## 核心特性
 
-当输入一揽子股票时，数据传导分三步：
+### Branch 1: Kronos 金融基础模型（K线图形分析）
 
-### 1. 先按股票分开收集
-- `stock_pool` 中每只股票分别抓取和处理
-- 结果进入 `UnifiedDataBundle.symbol_data`
-- 结构是 `symbol -> DataFrame`
+| 特性 | 描述 |
+|:---|:---|
+| **预训练规模** | 45个全球交易所，120亿条K线记录（AAAI 2026） |
+| **零样本预测** | RankIC 比最佳 TSFM 提升 **93%** |
+| **可用模型** | kronos-mini(4M) / kronos-small(25M) / kronos-base(102M) |
+| **降级模式** | 库未安装时自动使用 EWMA+动量统计替代预测 |
 
-### 2. 分支内各自处理
-- `kronos`、`llm_debate`、`intelligence` 主要按股票逐只处理
-- `quant` 会先把全篮子股票合并成一张按 `date, symbol` 排序的截面表，再做 Alpha/因子分析
-- `macro` 是市场级信号，最后会映射到整个篮子
+### Branch 2: 传统量化（改进因子层 + 模型层）
 
-### 3. 最后回到组合级聚合
-- 五个分支都产出 `symbol_scores`
-- 风控层将这些分数聚成组合共识
-- 集成裁判层根据共识与风险约束选出候选标的并决定总仓位
+**Alpha158+ 因子库（200+ 因子）**：
 
----
+| 因子类别 | 代表因子 | 改进点 |
+|:--------|:--------|:------|
+| 价格动量 | RETURN_5D/20D/60D, LOG_RETURN | 多周期覆盖 |
+| 成交量 | VOLUME_MA, AMOUNT_RATIO, VWAP偏离 | 量价关系 |
+| 波动率 | VOLATILITY_20D, PARKINSON | 历史波动 |
+| 技术指标 | RSI/MACD/布林带/均线偏离 | 多参数 |
+| **短期反转** | REVERSAL_5D/10D, MOM_12M_SKIP1M | ★ V10 新增 |
+| **质量代理** | PRICE_STABILITY, CLOSE_POSITION, VOL_DIVERGENCE | ★ V10 新增 |
+| **波动率状态** | VOL_RATIO_5_20, VOL_OF_VOL, OVERNIGHT_GAP | ★ V10 新增 |
 
-## 核心文件
+**FactorEngineer 因子工程流水线**（V10 新增）：
+```
+原始因子 → 3σ去极值 → rolling Z-Score标准化
+→ Spearman IC-IR加权筛选（IC阈值0.02）
+→ 截面排名归一化 → 行业中性化
+→ [-1, +1] 合成评分
+```
 
-### 当前主线
-- `scripts/unified/quant_investor_v8.py`
-- `scripts/unified/parallel_research_pipeline.py`
-- `scripts/unified/branch_contracts.py`
+### Branch 3: LLM 多空辩论
 
-### 当前主线依赖的关键模块
-- `scripts/unified/enhanced_data_layer.py`
-- `scripts/unified/alpha_mining.py`
-- `scripts/unified/macro_terminal_tushare.py`
-- `scripts/unified/risk_management_layer.py`
+5个专业分析角色对每只股票展开多空辩论：
+- **财务分析模型**：报表、盈利、估值、现金流
+- **行业研究模型**：生命周期、竞争格局、护城河
+- **宏观分析模型**：经济周期、货币政策、地缘政治
+- **技术分析模型**：趋势、量价、技术指标
+- **风险评估模型**：波动率、回撤、流动性、尾部风险
 
-### 兼容保留模块（Legacy，不作为当前主线入口）
-- `scripts/unified/enhanced_model_layer.py`
-- `scripts/unified/factor_analyzer.py`
-- `scripts/unified/factor_neutralizer.py`
-- `scripts/unified/portfolio_backtest.py`
+### Branch 4: 多维情报融合
+
+| 模块 | 分析内容 |
+|:---|:---|
+| **财务分析** | Piotroski F-Score · Beneish M-Score · Altman Z-Score · DCF估值 · DuPont拆解 |
+| **新闻分析** | AKShare/RSS/新浪多源 · LLM事件检测(9类) · 情感打分 |
+| **市场情绪** | 恐慌贪婪指数(7维度) · 技术情绪 · 资金流 · 市场广度 · 行业轮动 |
+
+### Branch 5: 宏观数据
+
+| 市场 | 监测维度 |
+|:---|:---|
+| **A股** | 货币（M2/利率/DR007） · 信用（社融/PMI） · 增长（GDP/工业） · 估值（PE/PB） |
+| **美股** | 利率（美债/联储） · 就业（非农/失业率） · 估值（标普PE） · 通胀（CPI/PCE） |
 
 ---
 
 ## 快速开始
 
-### 环境准备
+### 环境配置
 
 ```bash
+git clone https://github.com/alpha-mw/myQuant.git
 cd myQuant
-python3 -m venv venv
-source venv/bin/activate
 pip install -r requirements.txt
+
+# 可选：安装 Kronos 原生基础模型
+git clone https://github.com/shiyu-coder/Kronos
+cd Kronos && pip install -e . && cd ..
 ```
 
-### 可选环境变量
+### API 密钥配置
 
 ```bash
-export TUSHARE_TOKEN="your-tushare-token"
-export OPENAI_API_KEY="sk-your-key-here"
-export ANTHROPIC_API_KEY="sk-ant-your-key-here"
-export DEEPSEEK_API_KEY="sk-your-deepseek-key"
-export GOOGLE_API_KEY="your-gemini-key"
+export ANTHROPIC_API_KEY="sk-ant-..."   # LLM辩论 + 情报融合
+export OPENAI_API_KEY="sk-..."          # 可选LLM
+export DEEPSEEK_API_KEY="sk-..."        # 可选LLM
+export TUSHARE_TOKEN="your-token"       # A股数据
 ```
 
-安全约定：
-- 所有 token / API key 只从环境变量或本地 `.env` 读取，不写入仓库文件
-- 主线 Tushare 客户端采用内存模式初始化，不执行落盘持久化
-- 日志、报告和异常信息不得输出 credential 明文
+### 使用示例
 
-### 命令行
+#### V10 五支柱并行分析（推荐）
 
 ```bash
-python scripts/unified/quant_investor_v8.py \
-  --stocks 000001.SZ 600519.SH 000858.SZ \
-  --market CN \
-  --capital 1000000 \
-  --risk 中等
-```
+# 命令行
+python scripts/unified/quant_investor_v10.py \
+    --stocks 000001.SZ 600519.SH 000858.SZ \
+    --market CN \
+    --capital 1000000 \
+    --risk-level 中等 \
+    --output report_v10.md
 
-可选开关：
-- `--no-kronos`
-- `--no-intelligence`
-- `--no-llm-debate`
-- `--no-macro`
-
-### Python API
-
-官方公共入口：
-
-```python
-from scripts.unified import QuantInvestorV8
+# 禁用部分分支加速
+python scripts/unified/quant_investor_v10.py \
+    --stocks 600519.SH \
+    --no-debate \
+    --no-macro \
+    --workers 3 \
+    --output quick.md
 ```
 
 ```python
-analyzer = QuantInvestorV8(
+from scripts.unified.quant_investor_v10 import QuantInvestorV10
+
+analyzer = QuantInvestorV10(
     stock_pool=["000001.SZ", "600519.SH"],
     market="CN",
     total_capital=1_000_000,
-    risk_level="中等",
+    risk_level="中等",           # 保守 / 中等 / 积极
+    kronos_model="kronos-small",
     enable_kronos=True,
+    enable_quant=True,
+    enable_debate=True,
     enable_intelligence=True,
-    enable_llm_debate=True,
     enable_macro=True,
-    verbose=True,
+    max_workers=5,               # 并行线程数
 )
-
 result = analyzer.run()
-print(result.final_strategy)
 print(result.final_report)
+
+# 查看集成裁判结果
+for sym, j in result.ensemble.stock_judgments.items():
+    print(f"{sym}: {j.decision} | 得分={j.ensemble_score:.2f} | 仓位={j.risk_adjusted_weight:.1%}")
 ```
 
-最终 `final_strategy` 会固定包含：
-- `research_mode`
-- `provenance_summary`
-- `branch_consensus`
-- `position_limits`
-
-### 独立运行 Alpha 挖掘
+#### 单模块使用
 
 ```python
-from scripts.unified.alpha_mining import AlphaMiner
+# 集成裁判
+from scripts.unified.ensemble_judge import EnsembleJudgeEngine
+judge = EnsembleJudgeEngine(max_single_position=0.25)
+result = judge.judge(
+    stock_pool=["600519.SH"],
+    kronos_result=..., quant_result=..., debate_result=...,
+    intelligence_result=..., macro_result=..., risk_result=...
+)
 
-miner = AlphaMiner(df, enable_genetic=True, enable_llm=False)
-result = miner.mine()
+# 因子工程（截面打分）
+from scripts.unified.alpha158 import FactorEngineer
+engineer = FactorEngineer(ic_threshold=0.02)
+scores = engineer.cross_sectional_score({"600519.SH": df_price})
 
-for factor in result.selected_factors[:5]:
-    print(f"{factor.name}: IC={factor.ic_mean:.3f}, IR={factor.ir:.2f}")
+# Kronos 预测
+from scripts.unified.kronos_predictor import KronosIntegrator
+signal = KronosIntegrator("kronos-small").analyze_portfolio(
+    {"600519.SH": df_price}, pred_len=20
+)
+
+# 财务分析
+from scripts.unified.financial_analysis import FinancialAnalyzer
+report = FinancialAnalyzer().full_analysis("600519.SH", "贵州茅台", df_financial)
+
+# 宏观终端
+from scripts.unified.macro_terminal_tushare import create_terminal
+terminal = create_terminal("CN")
+print(terminal.format_report_markdown(terminal.generate_risk_report()))
 ```
 
 ---
 
-## 当前目录建议
+## 代码结构
 
-```text
+```
 myQuant/
 ├── README.md
-├── pyproject.toml
 ├── requirements.txt
-├── tests/
-├── scripts/
-│   ├── unified/
-│   │   ├── quant_investor_v8.py
-│   │   ├── parallel_research_pipeline.py
-│   │   ├── branch_contracts.py
-│   │   ├── enhanced_data_layer.py
-│   │   ├── alpha_mining.py
-│   │   ├── macro_terminal_tushare.py
-│   │   ├── risk_management_layer.py
-│   │   └── archive/
-│   └── v4.0~v6.0/
-└── skill/
+├── pyproject.toml
+├── tests/                                 # 单元测试（59 passing）
+│   └── unit/
+├── skill/                                 # 技能定义文档
+│   └── SKILL_V3.0.md
+└── scripts/
+    └── unified/                           ⭐ 主代码目录（42个模块）
+        │
+        │  ── 主入口 ──
+        ├── quant_investor_v10.py          # ★ V10 主入口：五支柱并行框架
+        ├── quant_investor_v9.py           # V9：九层串行（保留）
+        ├── quant_investor_v8.py           # V8：七层流水线
+        ├── quant_investor_v7.py           # V7：六层基础流水线
+        │
+        │  ── 集成裁判层（V10 新增）──
+        ├── ensemble_judge.py              # ★ 集成裁判：市场状态感知+动态权重
+        │
+        │  ── Branch 4：多维情报融合 ──
+        ├── intelligence_layer.py          # 编排器
+        ├── financial_analysis.py          # Piotroski/Beneish/Altman/DCF/DuPont
+        ├── news_analysis.py               # 新闻&替代数据分析
+        ├── sentiment_analysis.py          # 市场情绪（恐慌贪婪/资金/广度）
+        │
+        │  ── Branch 1：Kronos ──
+        ├── kronos_predictor.py            # Kronos K线预测（含统计降级）
+        │
+        │  ── Branch 3：LLM多空辩论 ──
+        ├── decision_layer.py              # 决策层封装
+        ├── multi_model_debate.py          # 5模型多空辩论
+        ├── multi_llm_ensemble.py          # 多LLM集成
+        ├── investment_report.py           # 结构化执行报告
+        │
+        │  ── 风控层 ──
+        ├── risk_management_layer.py       # 组合风控
+        ├── var_calculator.py              # VaR/CVaR
+        ├── stress_tester.py               # 压力测试
+        ├── market_impact.py               # 市场冲击模型
+        ├── advanced_risk_metrics.py       # 高级风险指标
+        ├── risk_dashboard.py              # 风险可视化
+        │
+        │  ── Branch 5：宏观层 ──
+        ├── macro_terminal_tushare.py      # 宏观风控终端
+        │
+        │  ── Branch 2：传统量化（因子+模型）──
+        ├── enhanced_model_layer.py        # ML模型集成（RF/XGB/LSTM）
+        ├── hyperparameter_tuner.py        # 超参数优化
+        ├── shap_explainer.py              # SHAP可解释性
+        ├── factor_analyzer.py             # IC/IR因子分析
+        ├── factor_neutralizer.py          # 行业/市值中性化
+        ├── alpha_mining.py                # Alpha挖掘（系统/遗传/LLM三层）
+        ├── alpha158.py                    # ★ Alpha158+因子库（200+因子）+ FactorEngineer
+        │
+        │  ── 数据层 ──
+        ├── enhanced_data_layer.py         # 多源数据采集与清理
+        ├── batch_data_fetcher.py          # 批量数据获取
+        ├── stock_database.py              # SQLite数据持久化
+        ├── stock_universe.py              # 股票池管理
+        ├── data_manager.py                # 数据生命周期管理
+        ├── download_all.py                # 批量数据下载
+        │
+        │  ── 扩展模块 ──
+        ├── portfolio_backtest.py          # Walk-Forward组合回测
+        ├── llm_rate_limiter.py            # LLM API限速器
+        ├── cache_manager.py               # 缓存管理
+        │
+        │  ── 基础设施 ──
+        ├── config.py                      # 全局配置
+        ├── logger.py                      # 日志工厂
+        ├── logging_config.py              # 集中化日志管理
+        ├── exceptions.py                  # 自定义异常体系
+        │
+        └── archive/                       # 历史版本归档
+            ├── legacy_scripts/            # 旧版一次性分析脚本（13个）
+            ├── superseded_modules/        # 已被更新版本取代（2个）
+            ├── unused_infrastructure/     # 未集成的基础设施（9个）
+            └── old_layer_packages/        # 旧版模块化包（6个目录）
 ```
 
 ---
 
-## 归档说明
+## 模块依赖关系
 
-旧串行主线、旧 demo 和旧静态报告样例已经移到：
+```
+quant_investor_v10.py
+  ├── [数据层] enhanced_data_layer.py
+  │
+  ├── [Branch 1] kronos_predictor.py
+  ├── [Branch 2] quant_investor_v7.py  ← 降级: alpha158.FactorEngineer
+  │               ├── enhanced_data_layer.py
+  │               ├── factor_analyzer.py + alpha158.py
+  │               ├── enhanced_model_layer.py
+  │               ├── macro_terminal_tushare.py
+  │               ├── risk_management_layer.py
+  │               └── decision_layer.py → multi_model_debate.py
+  ├── [Branch 3] decision_layer.py → multi_model_debate.py
+  ├── [Branch 4] intelligence_layer.py
+  │               ├── financial_analysis.py
+  │               ├── news_analysis.py
+  │               └── sentiment_analysis.py
+  ├── [Branch 5] macro_terminal_tushare.py
+  │
+  ├── [风控层]   risk_management_layer.py
+  └── [裁判层]   ensemble_judge.py
+                  ├── RegimeDetector（市场状态检测）
+                  ├── SignalNormalizer（五分支归一化）
+                  └── EnsembleJudgeEngine（集成裁判）
 
-- `scripts/unified/archive/serial_research_legacy_20260312/`
-
-归档说明见：
-
-- `scripts/unified/archive/README_20260312_parallel_research.md`
+所有模块共享：config.py · logger.py · exceptions.py · cache_manager.py
+```
 
 ---
 
-## 版本说明
+## 综合信号体系
 
-| 版本 | 日期 | 说明 |
+| 集成裁判得分 | 信号 | 建议行动 |
+|:-----------|:-----|:--------|
+| > 0.7 | 强烈买入 | 积极加仓（至最大仓位上限） |
+| 0.3–0.7 | 买入 | 适度加仓 |
+| ±0.3 | 中性 | 维持或观望 |
+| -0.3–-0.7 | 卖出 | 适度减仓 |
+| < -0.7 | 强烈卖出 | 减仓/清仓 |
+
+## 宏观风控信号（一票否决）
+
+| 信号 | 含义 | 集成行为 |
+|:---|:---|:---:|
+| 🔴 极端风险 | 宏观得分 ≤ -0.6 | 一票否决：全部股票强制降至空仓 |
+| 🟠 高风险 | 宏观权重升至 25-50% | 压制所有多头信号 |
+| 🟡 中性 | 正常权重分配 | 五分支均衡决策 |
+| 🟢 宽松 | 宏观权重降至 15% | 量化/Kronos主导 |
+
+---
+
+## 版本历史
+
+| 版本 | 发布时间 | 核心特性 |
 |:---|:---|:---|
-| `V8.0` | 2026-03-13 | 五路并行研究架构、统一分支契约、可信度治理与组合级集成裁判 |
-| `V7.x` | 2026-02 | 六层/七层串行主线 |
-| `V6.x` 及更早 | 2026-02 | 历史能力演进阶段 |
+| **V10.0** | 2026-03-12 | 五支柱并行架构、集成裁判层、FactorEngineer、市场状态感知 |
+| V9.0 | 2026-03-12 | Kronos基础模型(L8) + 财务/新闻/情绪分析(L9) |
+| V8.0 | 2026-03-11 | Multi-LLM集成裁判(L7) + Alpha挖掘 + Walk-Forward回测 |
+| V7.0 | 2026-02-26 | 六层架构 + Multi-LLM多空辩论 |
+| V6.3 | 2026-02-25 | 宏观风控终端 |
 
 ---
 
-## 免责声明
+## 配置说明（.env）
 
-本项目生成的所有分析结果仅供研究和参考，不构成任何投资建议。投资有风险，决策需谨慎。
+```ini
+TUSHARE_TOKEN=your_token          # A股数据API（必需）
+DB_PATH=data/stock_database.db    # SQLite数据库路径
+LOG_LEVEL=INFO                    # 日志级别
+INITIAL_CASH=1000000              # 回测初始资金
+COMMISSION_RATE=0.0003            # 佣金率
+STAMP_DUTY_RATE=0.001             # 印花税（A股卖出）
+SLIPPAGE=0.001                    # 滑点率
+```
+
+---
+
+**免责声明**：本项目仅供学习和研究使用，不构成任何投资建议。量化模型的历史表现不代表未来收益，投资有风险，入市需谨慎。
