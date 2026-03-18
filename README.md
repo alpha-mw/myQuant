@@ -157,11 +157,36 @@ cd Kronos && pip install -e . && cd ..
 ### API 密钥配置
 
 ```bash
+# 复制配置模板
+cp .env.example .env
+# 填入实际值
 export ANTHROPIC_API_KEY="sk-ant-..."   # LLM辩论 + 情报融合
 export OPENAI_API_KEY="sk-..."          # 可选LLM
 export DEEPSEEK_API_KEY="sk-..."        # 可选LLM
 export TUSHARE_TOKEN="your-token"       # A股数据
 ```
+
+### 启动 Web 应用（全栈模式）
+
+项目提供完整的 Web 界面，包含 FastAPI 后端 + React/TypeScript 前端：
+
+```bash
+# 1. 安装前端依赖
+cd frontend && npm install && cd ..
+
+# 2. 启动 Redis（缓存服务，可选）
+docker-compose up -d
+
+# 3. 一键启动前后端
+bash run_web.sh
+```
+
+启动后访问：
+- **前端界面**：http://127.0.0.1:5173/
+- **后端 API**：http://127.0.0.1:8000/api/v1/health
+- **API 文档**：http://127.0.0.1:8000/docs
+
+> 前后端端口可通过环境变量覆盖：`BACKEND_PORT=8080 FRONTEND_PORT=3000 bash run_web.sh`
 
 ### 使用示例
 
@@ -244,6 +269,56 @@ print(terminal.format_report_markdown(terminal.generate_risk_report()))
 
 ---
 
+## Web 应用架构
+
+### 后端（FastAPI）
+
+```
+web/
+├── main.py                # Uvicorn 入口（uvicorn web.main:app）
+├── app.py                 # FastAPI 应用工厂，CORS/路由/静态文件
+├── config.py              # 后端配置（从 .env 读取）
+├── api/
+│   ├── analysis.py        # POST /api/v1/analysis — 触发分析任务
+│   ├── data.py            # GET  /api/v1/data    — 行情/财务数据
+│   ├── portfolio.py       # GET/POST /api/v1/portfolio — 组合管理
+│   └── settings.py        # GET/PUT  /api/v1/settings  — 用户配置
+├── services/              # 业务逻辑层
+│   ├── analysis_service.py
+│   ├── data_service.py
+│   ├── portfolio_service.py
+│   └── settings_service.py
+├── tasks/
+│   └── run_analysis_job.py  # 异步后台分析任务
+└── db/                    # SQLite 数据层
+```
+
+### 前端（React + TypeScript）
+
+```
+frontend/
+├── src/
+│   ├── pages/
+│   │   ├── Dashboard.tsx        # 主仪表盘
+│   │   ├── AnalysisHub.tsx      # 分析中心（发起/管理分析）
+│   │   ├── StockDetail.tsx      # 个股详情页
+│   │   ├── Watchlists.tsx       # 自选股管理
+│   │   ├── DataExplorer.tsx     # 数据探索器
+│   │   ├── AnalysisHistory.tsx  # 历史分析记录
+│   │   ├── MarketStatus.tsx     # 市场状态监控
+│   │   ├── RegimeMonitor.tsx    # 市场状态（Regime）实时监控
+│   │   └── SettingsPage.tsx     # 系统设置
+│   ├── components/              # 可复用 UI 组件
+│   ├── api/                     # 前端 API 客户端
+│   └── types/                   # TypeScript 类型定义
+├── vite.config.ts               # Vite 构建配置（代理 → 后端:8000）
+└── package.json                 # 依赖：React 19 / TailwindCSS / Recharts
+```
+
+**前端技术栈**：React 19 · TypeScript · Vite · TailwindCSS · Zustand · React Query · Recharts · Lightweight Charts
+
+---
+
 ## 代码结构
 
 ```
@@ -251,12 +326,17 @@ myQuant/
 ├── README.md
 ├── requirements.txt
 ├── pyproject.toml
+├── docker-compose.yml                     # Redis 缓存服务
+├── run_web.sh                             # ⭐ 一键启动前后端
+├── .env.example                           # 配置模板
 ├── tests/                                 # 单元测试（59 passing）
 │   └── unit/
+├── web/                                   # ⭐ FastAPI 后端
+├── frontend/                              # ⭐ React/TypeScript 前端
 ├── skill/                                 # 技能定义文档
 │   └── SKILL_V3.0.md
 └── scripts/
-    └── unified/                           ⭐ 主代码目录（42个模块）
+    └── unified/                           ⭐ 核心分析引擎（42个模块）
         │
         │  ── 主入口 ──
         ├── quant_investor_v10.py          # ★ V10 主入口：五支柱并行框架
@@ -397,10 +477,25 @@ quant_investor_v10.py
 
 ## 配置说明（.env）
 
+复制 `.env.example` 为 `.env` 并填入实际值：
+
 ```ini
+# 数据源（必需）
 TUSHARE_TOKEN=your_token          # A股数据API（必需）
+TUSHARE_URL=http://...            # 可选代理地址
+
+# 数据库
 DB_PATH=data/stock_database.db    # SQLite数据库路径
-LOG_LEVEL=INFO                    # 日志级别
+
+# 日志
+LOG_LEVEL=INFO                    # 日志级别（DEBUG/INFO/WARNING/ERROR）
+
+# Redis 缓存（Web 应用可选，需 docker-compose up -d）
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_DB=0
+
+# 回测参数
 INITIAL_CASH=1000000              # 回测初始资金
 COMMISSION_RATE=0.0003            # 佣金率
 STAMP_DUTY_RATE=0.001             # 印花税（A股卖出）
