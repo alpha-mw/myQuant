@@ -8,9 +8,13 @@ LLM Rate Limiter - API速率限制管理
 import time
 import random
 from typing import Optional, Callable, Any
-from functools import wraps
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from collections import deque
+
+
+class RateLimitExceededError(RuntimeError):
+    """超过速率限制且无法恢复时抛出的异常。"""
 
 
 @dataclass
@@ -22,6 +26,18 @@ class RateLimitConfig:
     max_retries: int = 3           # 最大重试次数
     retry_delay: float = 5.0       # 重试延迟(秒)
     exponential_backoff: bool = True  # 指数退避
+
+    def __post_init__(self):
+        if self.requests_per_minute <= 0:
+            raise ValueError("requests_per_minute must be > 0")
+        if self.requests_per_day <= 0:
+            raise ValueError("requests_per_day must be > 0")
+        if self.min_interval < 0:
+            raise ValueError("min_interval must be >= 0")
+        if self.max_retries <= 0:
+            raise ValueError("max_retries must be > 0")
+        if self.retry_delay < 0:
+            raise ValueError("retry_delay must be >= 0")
 
 
 class RateLimiter:
@@ -37,7 +53,7 @@ class RateLimiter:
     
     def __init__(self, config: Optional[RateLimitConfig] = None):
         self.config = config or RateLimitConfig()
-        self.request_times: list = []
+        self.request_times = deque()
         self.daily_count: int = 0
         self.last_reset: datetime = datetime.now()
         self.last_request_time: float = 0
@@ -48,7 +64,7 @@ class RateLimiter:
     
     def add_api_key(self, key: str):
         """添加API key"""
-        if key:
+        if key and key not in self.api_keys:
             self.api_keys.append(key)
     
     def get_current_key(self) -> Optional[str]:
@@ -79,7 +95,8 @@ class RateLimiter:
         
         # 清理1分钟前的记录
         one_minute_ago = now - timedelta(minutes=1)
-        self.request_times = [t for t in self.request_times if t > one_minute_ago]
+        while self.request_times and self.request_times[0] <= one_minute_ago:
+            self.request_times.popleft()
         
         # 检查每分钟限制
         if len(self.request_times) >= self.config.requests_per_minute:
@@ -127,7 +144,9 @@ class RateLimiter:
                     self.rotate_key()
                     continue
                 else:
-                    raise Exception("Rate limit exceeded and no alternative keys available")
+                    raise RateLimitExceededError(
+                        "Rate limit exceeded and no alternative keys available"
+                    )
             
             try:
                 # 记录请求
@@ -168,6 +187,23 @@ class RateLimiter:
                     raise
         
         raise Exception("Max retries exceeded")
+
+    def get_status(self) -> dict:
+        """获取限流器状态，便于监控和调试。"""
+        now = datetime.now()
+        remaining_day = max(self.config.requests_per_day - self.daily_count, 0)
+        one_minute_ago = now - timedelta(minutes=1)
+        recent_requests = sum(1 for t in self.request_times if t > one_minute_ago)
+        remaining_minute = max(self.config.requests_per_minute - recent_requests, 0)
+
+        return {
+            "daily_count": self.daily_count,
+            "remaining_day": remaining_day,
+            "recent_requests": recent_requests,
+            "remaining_minute": remaining_minute,
+            "active_key_index": self.current_key_index,
+            "total_keys": len(self.api_keys)
+        }
 
 
 class MockLLMProvider:
