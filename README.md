@@ -267,6 +267,56 @@ pytest tests/unit/test_backtest.py -v
 
 ---
 
+## Web 应用架构
+
+### 后端（FastAPI）
+
+```
+web/
+├── main.py                # Uvicorn 入口（uvicorn web.main:app）
+├── app.py                 # FastAPI 应用工厂，CORS/路由/静态文件
+├── config.py              # 后端配置（从 .env 读取）
+├── api/
+│   ├── analysis.py        # POST /api/v1/analysis — 触发分析任务
+│   ├── data.py            # GET  /api/v1/data    — 行情/财务数据
+│   ├── portfolio.py       # GET/POST /api/v1/portfolio — 组合管理
+│   └── settings.py        # GET/PUT  /api/v1/settings  — 用户配置
+├── services/              # 业务逻辑层
+│   ├── analysis_service.py
+│   ├── data_service.py
+│   ├── portfolio_service.py
+│   └── settings_service.py
+├── tasks/
+│   └── run_analysis_job.py  # 异步后台分析任务
+└── db/                    # SQLite 数据层
+```
+
+### 前端（React + TypeScript）
+
+```
+frontend/
+├── src/
+│   ├── pages/
+│   │   ├── Dashboard.tsx        # 主仪表盘
+│   │   ├── AnalysisHub.tsx      # 分析中心（发起/管理分析）
+│   │   ├── StockDetail.tsx      # 个股详情页
+│   │   ├── Watchlists.tsx       # 自选股管理
+│   │   ├── DataExplorer.tsx     # 数据探索器
+│   │   ├── AnalysisHistory.tsx  # 历史分析记录
+│   │   ├── MarketStatus.tsx     # 市场状态监控
+│   │   ├── RegimeMonitor.tsx    # 市场状态（Regime）实时监控
+│   │   └── SettingsPage.tsx     # 系统设置
+│   ├── components/              # 可复用 UI 组件
+│   ├── api/                     # 前端 API 客户端
+│   └── types/                   # TypeScript 类型定义
+├── vite.config.ts               # Vite 构建配置（代理 → 后端:8000）
+└── package.json                 # 依赖：React 19 / TailwindCSS / Recharts
+```
+
+**前端技术栈**：React 19 · TypeScript · Vite · TailwindCSS · Zustand · React Query · Recharts · Lightweight Charts
+
+---
+
 ## 代码结构
 
 ```text
