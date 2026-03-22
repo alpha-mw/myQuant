@@ -5,11 +5,9 @@
 from __future__ import annotations
 
 import importlib
-import importlib.util
 import sys
 import types
 from datetime import datetime, timedelta
-from pathlib import Path
 
 import pandas as pd
 
@@ -18,16 +16,9 @@ def _load_module(monkeypatch):
     """在无真实 tushare 依赖的测试环境中导入下载模块。"""
     fake_tushare = types.SimpleNamespace(pro_api=lambda token: object())
     monkeypatch.setitem(sys.modules, "tushare", fake_tushare)
-    module_name = "download_full_cn_market_testable"
+    module_name = "quant_investor.market.download_cn"
     sys.modules.pop(module_name, None)
-    module_path = (
-        Path(__file__).resolve().parents[2] / "scripts" / "unified" / "download_full_cn_market.py"
-    )
-    spec = importlib.util.spec_from_file_location(module_name, module_path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+    module = importlib.import_module(module_name)
     monkeypatch.setattr(module, "TUSHARE_TOKEN", "dummy-token")
     return module
 
@@ -109,6 +100,9 @@ class FakePro:
                 {"trade_date": "20260316", "adj_factor": 1.0},
             ]
         )
+
+    def suspend_d(self, **_kwargs):
+        return pd.DataFrame(columns=["ts_code", "trade_date", "suspend_type"])
 
 
 def test_download_stock_incremental_update(monkeypatch, tmp_path):
@@ -234,4 +228,224 @@ def test_download_stock_skips_when_file_is_latest(monkeypatch, tmp_path):
     result = downloader.download_stock("000001.SZ", "hs300")
 
     assert result["status"] == "cached"
+    assert result["api_calls"] == 0
     assert fake_pro.daily_calls == []
+
+
+def test_download_category_only_sleeps_when_api_called(monkeypatch, tmp_path):
+    module = _load_module(monkeypatch)
+    fake_pro = FakePro()
+    monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
+
+    downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
+    sleep_calls: list[float] = []
+
+    results = iter(
+        [
+            {
+                "symbol": "000001.SZ",
+                "category": "hs300",
+                "status": "cached",
+                "records": 250,
+                "api_calls": 0,
+                "error": None,
+            },
+            {
+                "symbol": "000002.SZ",
+                "category": "hs300",
+                "status": "updated",
+                "records": 260,
+                "api_calls": downloader.REQUESTS_PER_STOCK,
+                "error": None,
+            },
+        ]
+    )
+
+    monkeypatch.setattr(downloader, "download_stock", lambda *_args, **_kwargs: next(results))
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    downloader.download_category(["000001.SZ", "000002.SZ"], "hs300")
+
+    expected_sleep = downloader.REQUESTS_PER_STOCK * 60 / downloader.REQUESTS_PER_MINUTE_BUDGET
+    assert sleep_calls == [expected_sleep]
+
+
+def test_build_completeness_report_detects_blocking_stale_symbols(monkeypatch, tmp_path):
+    module = _load_module(monkeypatch)
+    fake_pro = FakePro()
+    monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
+
+    downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
+    latest_path = tmp_path / "hs300" / "000001.SZ.csv"
+    stale_path = tmp_path / "hs300" / "000002.SZ.csv"
+    latest_path.parent.mkdir(parents=True, exist_ok=True)
+
+    pd.DataFrame(
+        [
+            {
+                "trade_date": "2026-03-16",
+                "close": 10.0,
+            }
+        ]
+    ).to_csv(latest_path, index=False)
+    pd.DataFrame(
+        [
+            {
+                "trade_date": "2026-03-15",
+                "close": 10.0,
+            }
+        ]
+    ).to_csv(stale_path, index=False)
+
+    components = {"hs300": ["000001.SZ", "000002.SZ"], "zz500": [], "zz1000": []}
+
+    report = downloader.build_completeness_report(components=components)
+    assert report["complete"] is False
+    assert report["blocking_incomplete_count"] == 1
+    assert report["categories"]["hs300"]["blocking_stale_symbols"] == [
+        {"symbol": "000002.SZ", "latest_local_date": "20260315"}
+    ]
+
+    allowed_report = downloader.build_completeness_report(
+        components=components,
+        allowed_stale_symbols={"000002.SZ"},
+    )
+    assert allowed_report["complete"] is True
+    assert allowed_report["blocking_incomplete_count"] == 0
+
+
+def test_main_scopes_check_complete_to_selected_category(monkeypatch):
+    module = _load_module(monkeypatch)
+    captured: dict[str, object] = {}
+
+    class FakeDownloader:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def load_components(self):
+            return {
+                "hs300": ["000001.SZ"],
+                "zz500": ["000002.SZ"],
+                "zz1000": ["000003.SZ"],
+                "stats": {"total_unique": 3},
+            }
+
+        def build_completeness_report(self, components=None, allowed_stale_symbols=None, categories=None):
+            captured["categories"] = categories
+            return {
+                "complete": True,
+                "latest_trade_date": "20260316",
+                "blocking_incomplete_count": 0,
+                "categories": {
+                    "hs300": {
+                        "expected": 1,
+                        "date_counts": {"20260316": 1},
+                        "blocking_incomplete_count": 0,
+                    }
+                },
+            }
+
+        def _print_completeness_summary(self, completeness):
+            captured["printed"] = True
+
+    monkeypatch.setattr(module, "CNFullMarketDownloader", FakeDownloader)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["download_cn.py", "--category", "hs300", "--check-complete"],
+    )
+
+    module.main()
+
+    assert captured["categories"] == ["hs300"]
+    assert captured["printed"] is True
+
+
+def test_main_applies_retry_flags_to_selected_category(monkeypatch):
+    module = _load_module(monkeypatch)
+    captured: dict[str, object] = {}
+
+    class FakeDownloader:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def load_components(self):
+            return {
+                "hs300": ["000001.SZ"],
+                "zz500": ["000002.SZ"],
+                "zz1000": ["000003.SZ"],
+                "stats": {"total_unique": 3},
+            }
+
+        def download_all(
+            self,
+            components=None,
+            max_rounds=1,
+            fail_on_incomplete=False,
+            allowed_stale_symbols=None,
+            categories=None,
+        ):
+            captured["max_rounds"] = max_rounds
+            captured["fail_on_incomplete"] = fail_on_incomplete
+            captured["allowed_stale_symbols"] = allowed_stale_symbols
+            captured["categories"] = categories
+            return {}
+
+    monkeypatch.setattr(module, "CNFullMarketDownloader", FakeDownloader)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "download_cn.py",
+            "--category",
+            "hs300",
+            "--max-rounds",
+            "3",
+            "--fail-on-incomplete",
+            "--allowed-stale-symbols",
+            "000001.SZ",
+        ],
+    )
+
+    module.main()
+
+    assert captured["max_rounds"] == 3
+    assert captured["fail_on_incomplete"] is True
+    assert captured["allowed_stale_symbols"] == ["000001.SZ"]
+    assert captured["categories"] == ["hs300"]
+
+
+def test_build_completeness_report_treats_latest_suspend_as_complete(monkeypatch, tmp_path):
+    module = _load_module(monkeypatch)
+    fake_pro = FakePro()
+
+    def _fake_suspend_d(**_kwargs):
+        return pd.DataFrame(
+            [
+                {
+                    "ts_code": "000002.SZ",
+                    "trade_date": "20260316",
+                    "suspend_type": "S",
+                }
+            ]
+        )
+
+    fake_pro.suspend_d = _fake_suspend_d
+    monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
+
+    downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
+    latest_path = tmp_path / "hs300" / "000001.SZ.csv"
+    stale_path = tmp_path / "hs300" / "000002.SZ.csv"
+    latest_path.parent.mkdir(parents=True, exist_ok=True)
+
+    pd.DataFrame([{"trade_date": "2026-03-16", "close": 10.0}]).to_csv(latest_path, index=False)
+    pd.DataFrame([{"trade_date": "2026-03-15", "close": 10.0}]).to_csv(stale_path, index=False)
+
+    components = {"hs300": ["000001.SZ", "000002.SZ"], "zz500": [], "zz1000": []}
+
+    report = downloader.build_completeness_report(components=components)
+    assert report["complete"] is True
+    assert report["blocking_incomplete_count"] == 0
+    assert report["categories"]["hs300"]["suspended_stale_symbols"] == [
+        {"symbol": "000002.SZ", "latest_local_date": "20260315"}
+    ]

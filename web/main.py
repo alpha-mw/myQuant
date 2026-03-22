@@ -1,12 +1,6 @@
 """Uvicorn entry point for the myQuant web application."""
 
-import sys
 from pathlib import Path
-
-# Ensure project root is in sys.path so `web.*` imports work
-project_root = str(Path(__file__).parent.parent)
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
 
 from web.app import create_app
 from web.config import API_HOST, API_PORT

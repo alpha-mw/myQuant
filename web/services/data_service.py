@@ -345,7 +345,7 @@ def _ensure_missing_stock_data_downloaded(force: bool = False) -> None:
         global _MISSING_SYNC_IN_PROGRESS
 
         try:
-            from scripts.unified.stock_database import StockDatabase
+            from quant_investor.stock_database import StockDatabase
 
             logger.info(
                 "Detected %s stocks without daily_data; start background backfill from %s",
@@ -432,8 +432,8 @@ def _fetch_cn_metadata(codes: list[str]) -> dict[str, dict[str, Any]]:
 
     try:
         import tushare as ts
-        from scripts.unified.config import config
-        from scripts.unified.credential_utils import create_tushare_pro
+        from quant_investor.config import config
+        from quant_investor.credential_utils import create_tushare_pro
     except Exception:
         return {}
 
@@ -730,7 +730,7 @@ def ensure_symbols_available(symbols: list[str], market: str) -> list[str]:
     )
     _upsert_stock_list_entries(missing_symbols, normalized_market, metadata)
 
-    from scripts.unified.stock_database import DownloadTask, StockDatabase
+    from quant_investor.stock_database import DownloadTask, StockDatabase
 
     db = StockDatabase(db_path=STOCK_DB_PATH, verbose=False, init_universe=False)
     end_date = datetime.now().strftime("%Y%m%d")
@@ -1101,8 +1101,8 @@ def _store_peer_relationships(
 def _fetch_tushare_client() -> Any | None:
     try:
         import tushare as ts
-        from scripts.unified.config import config
-        from scripts.unified.credential_utils import create_tushare_pro
+        from quant_investor.config import config
+        from quant_investor.credential_utils import create_tushare_pro
     except Exception:
         return None
 

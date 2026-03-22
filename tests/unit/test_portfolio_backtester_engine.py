@@ -7,7 +7,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from portfolio_backtest import PortfolioBacktester, PortfolioConstructor, TransactionCostModel
+from quant_investor.portfolio_backtest import PortfolioBacktester, PortfolioConstructor, TransactionCostModel
 
 
 def _make_backtest_frame(periods: int = 120) -> pd.DataFrame:

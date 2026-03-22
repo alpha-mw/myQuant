@@ -67,6 +67,9 @@ ml = [
 Homepage = "https://github.com/alpha-mw/myQuant"
 Repository = "https://github.com/alpha-mw/myQuant"
 
+[project.scripts]
+quant-investor = "quant_investor.cli.main:main"
+
 [tool.black]
 line-length = 100
 target-version = ['py310', 'py311', 'py312']
@@ -82,10 +85,10 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "--cov=scripts --cov-report=term-missing --cov-report=html:results/htmlcov"
+addopts = "--cov=quant_investor --cov-report=term-missing --cov-report=html:results/htmlcov"
 
 [tool.coverage.run]
-source = ["scripts"]
+source = ["quant_investor"]
 omit = ["*/tests/*", "*/venv/*"]
 
 [tool.coverage.report]
@@ -97,4 +100,4 @@ exclude_lines = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["scripts"]
+packages = ["quant_investor"]

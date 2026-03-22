@@ -5,7 +5,7 @@
 import pytest
 import numpy as np
 import pandas as pd
-from market_impact import MarketImpactModel, AdvancedCostModel, estimate_optimal_trade_size
+from quant_investor.market_impact import MarketImpactModel, AdvancedCostModel, estimate_optimal_trade_size
 
 
 class TestMarketImpactModel:
