@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import random
-import sys
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -14,14 +13,12 @@ from typing import Any
 
 def _project_paths() -> tuple[Path, Path]:
     project_root = Path(__file__).resolve().parents[2]
-    unified_root = project_root / "scripts" / "unified"
-    return project_root, unified_root
+    package_root = project_root / "quant_investor"
+    return project_root, package_root
 
 
 def _prepare_imports() -> None:
-    _, unified_root = _project_paths()
-    if str(unified_root) not in sys.path:
-        sys.path.insert(0, str(unified_root))
+    return None
 
 
 def _sanitize_for_json(obj: Any) -> Any:
@@ -264,7 +261,7 @@ def _final_decision(strategy: Any, risk_summary: dict[str, Any]) -> str:
 def run_job(payload: dict[str, Any]) -> dict[str, Any]:
     _prepare_imports()
 
-    from quant_investor_v8 import QuantInvestorV8
+    from quant_investor import QuantInvestorV8
 
     normalized = _normalize_request(payload)
     analysis_id = payload.get("analysis_id") or datetime.now().strftime("%Y%m%d_%H%M%S")

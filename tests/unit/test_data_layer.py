@@ -8,6 +8,12 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 
+from quant_investor.enhanced_data_layer import (
+    USCompositeDataSource,
+    USLocalCSVDataSource,
+    _normalize_ohlcv_frame,
+)
+
 
 class TestDataLayer:
     """数据层测试"""
@@ -99,3 +105,78 @@ class TestDataCleaning:
         
         # 正常情况下异常值应该很少
         assert len(outliers) < len(df) * 0.05
+
+
+class TestUSDataSources:
+    """美股数据源测试"""
+
+    def test_local_us_csv_source_loads_and_normalizes(self, tmp_path):
+        """本地美股 CSV 应可被标准化读取。"""
+        data_dir = tmp_path / "data" / "us_market_full" / "large_cap"
+        data_dir.mkdir(parents=True)
+        csv_path = data_dir / "AAPL.csv"
+        csv_path.write_text(
+            "\n".join(
+                [
+                    "Date,Open,High,Low,Close,Volume",
+                    "2026-03-18,252,255,249,250,1000",
+                    "2026-03-19,249,252,247,249,1100",
+                    "2026-03-20,248,249,246,248,1200",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        source = USLocalCSVDataSource(str(tmp_path / "data" / "us_market_full"))
+        df = source.get_ohlcv("AAPL", "20260318", "20260320")
+
+        assert not df.empty
+        assert list(df.columns[:6]) == ["date", "open", "high", "low", "close", "volume"]
+        assert "amount" in df.columns
+        assert len(df) == 3
+        assert df["date"].max().strftime("%Y-%m-%d") == "2026-03-20"
+
+    def test_us_composite_source_prefers_local_cache(self, tmp_path):
+        """美股复合数据源应优先使用本地缓存。"""
+        data_dir = tmp_path / "data" / "us_market_full" / "large_cap"
+        data_dir.mkdir(parents=True)
+        csv_path = data_dir / "MSFT.csv"
+        csv_path.write_text(
+            "\n".join(
+                [
+                    "Date,Open,High,Low,Close,Volume",
+                    "2026-03-18,401,405,398,404,2000",
+                    "2026-03-19,404,407,400,402,2100",
+                    "2026-03-20,402,406,399,405,2200",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        source = USCompositeDataSource(local_data_dir=str(tmp_path / "data" / "us_market_full"))
+        df = source.get_ohlcv("MSFT", "20260318", "20260321")
+
+        assert not df.empty
+        assert source.last_ohlcv_source == "local_csv"
+        assert df["close"].iloc[-1] == pytest.approx(405.0)
+
+    def test_normalize_ohlcv_frame_strips_timezone(self):
+        """带时区时间列应被标准化为无时区，便于跨数据源对齐。"""
+        df = pd.DataFrame(
+            {
+                "Date": pd.to_datetime(
+                    ["2026-03-19 00:00:00+00:00", "2026-03-20 00:00:00+00:00"],
+                    utc=True,
+                ),
+                "Open": [100.0, 101.0],
+                "High": [102.0, 103.0],
+                "Low": [99.0, 100.0],
+                "Close": [101.0, 102.0],
+                "Volume": [1000, 1100],
+            }
+        )
+
+        normalized = _normalize_ohlcv_frame(df)
+
+        assert not normalized.empty
+        assert normalized["date"].dt.tz is None
