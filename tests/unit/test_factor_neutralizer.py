@@ -5,7 +5,7 @@
 import pytest
 import numpy as np
 import pandas as pd
-from factor_neutralizer import FactorNeutralizer, PortfolioNeutralizer
+from quant_investor.factor_neutralizer import FactorNeutralizer, PortfolioNeutralizer
 
 
 class TestFactorNeutralizer:
