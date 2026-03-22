@@ -5,15 +5,19 @@
 from __future__ import annotations
 
 import importlib
+import time
 from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+import pytest
 
-from branch_contracts import BranchResult, UnifiedDataBundle
-from cn_full_market_batch_analysis import build_full_market_trade_plan
-from enhanced_data_layer import EnhancedDataLayer
-from parallel_research_pipeline import ParallelResearchPipeline
+from quant_investor.config import config
+from quant_investor.contracts import BranchResult, UnifiedDataBundle
+from quant_investor.market.analyze import build_full_market_trade_plan
+from quant_investor.enhanced_data_layer import EnhancedDataLayer
+from quant_investor.pipeline.parallel_research_pipeline import ParallelResearchPipeline
+from quant_investor.pipeline.quant_investor_v8 import QuantInvestorV8
 
 
 def _make_symbol_frame(symbol: str, scale: float = 1.0, volatile: bool = False) -> pd.DataFrame:
@@ -75,6 +79,14 @@ class _FakeTerminal:
         )
 
 
+@pytest.fixture(autouse=True)
+def _force_internal_fallback_models(monkeypatch, tmp_path):
+    """单测固定走空模型目录，保证 K-line 输出稳定且不依赖本机权重状态。"""
+    monkeypatch.setattr(config, "KRONOS_MODEL_PATH", str(tmp_path / "kronos"))
+    monkeypatch.setattr(config, "CHRONOS_MODEL_NAME", str(tmp_path / "chronos-2"))
+    monkeypatch.setattr(config, "KLINE_ALLOW_REMOTE_MODEL_DOWNLOAD", False)
+
+
 def test_parallel_pipeline_runs_with_all_branches(monkeypatch):
     symbol_frames = {
         "000001.SZ": _make_symbol_frame("000001.SZ", scale=1.0),
@@ -88,7 +100,7 @@ def test_parallel_pipeline_runs_with_all_branches(monkeypatch):
         lambda self, symbol, start_date, end_date, label_periods=5: symbol_frames[symbol].copy(),
     )
     monkeypatch.setattr(
-        "parallel_research_pipeline.create_terminal",
+        "quant_investor.pipeline.parallel_research_pipeline.create_terminal",
         lambda market: _FakeTerminal(signal="🟢", risk_level="低风险", recommendation="积极布局"),
     )
 
@@ -115,9 +127,12 @@ def test_parallel_pipeline_runs_with_all_branches(monkeypatch):
     assert first_recommendation.suggested_shares % 100 == 0
     assert "组合级策略结论" in result.final_report
     assert "可执行交易计划" in result.final_report
-    assert result.calibrated_signals["kline"].branch_mode == "kline_heuristic"
+    assert result.calibrated_signals["kline"].branch_mode == "kline_dual_model"
     assert result.calibrated_signals["llm_debate"].branch_mode == "structured_research_debate"
     assert result.final_strategy.provenance_summary["synthetic_symbols"] == []
+    assert result.branch_results["kline"].metadata["effective_backend"] == "hybrid"
+    assert result.branch_results["kline"].metadata["requested_backend"] == "hybrid"
+    assert result.branch_results["kline"].metadata["llm_interface_reserved"] is True
 
 
 def test_pipeline_degrades_when_single_branch_fails(monkeypatch):
@@ -132,7 +147,7 @@ def test_pipeline_degrades_when_single_branch_fails(monkeypatch):
         lambda self, symbol, start_date, end_date, label_periods=5: symbol_frames[symbol].copy(),
     )
     monkeypatch.setattr(
-        "parallel_research_pipeline.create_terminal",
+        "quant_investor.pipeline.parallel_research_pipeline.create_terminal",
         lambda market: _FakeTerminal(signal="🟡", risk_level="中风险", recommendation="控制仓位"),
     )
 
@@ -149,6 +164,127 @@ def test_pipeline_degrades_when_single_branch_fails(monkeypatch):
     assert 0 <= result.final_strategy.target_exposure <= 1
 
 
+def test_kline_branch_forces_hybrid_backend_and_records_requested_backend(monkeypatch):
+    captured = {}
+
+    class _FakeBackend:
+        name = "hybrid"
+        reliability = 0.84
+        horizon_days = 5
+
+        def predict(self, symbol_data, stock_pool):
+            return BranchResult(
+                branch_name="kline",
+                score=0.12,
+                confidence=0.66,
+                signals={"predicted_return": {stock_pool[0]: 0.03}, "trend_regime": {stock_pool[0]: "上行"}},
+                symbol_scores={stock_pool[0]: 0.4},
+                metadata={"branch_mode": "kline_dual_model", "reliability": 0.73, "horizon_days": 5},
+            )
+
+    def _fake_get_backend(name, **kwargs):
+        captured["name"] = name
+        captured["kwargs"] = kwargs
+        return _FakeBackend()
+
+    monkeypatch.setattr("quant_investor.kline_backends.get_backend", _fake_get_backend)
+
+    symbol = "000001.SZ"
+    pipeline = ParallelResearchPipeline(
+        stock_pool=[symbol],
+        market="CN",
+        kline_backend="heuristic",
+        verbose=False,
+    )
+    bundle = UnifiedDataBundle(
+        market="CN",
+        symbols=[symbol],
+        symbol_data={symbol: _make_symbol_frame(symbol)},
+    )
+
+    result = pipeline._run_kline_branch(bundle)
+
+    assert captured["name"] == "hybrid"
+    assert captured["kwargs"]["evaluator_name"] == "placeholder"
+    assert captured["kwargs"]["allow_remote_download"] is False
+    assert result.metadata["requested_backend"] == "heuristic"
+    assert result.metadata["effective_backend"] == "hybrid"
+    assert result.metadata["branch_mode"] == "kline_dual_model"
+
+
+def test_pipeline_skips_quant_branch_when_disabled(monkeypatch):
+    symbol_frames = {
+        "000001.SZ": _make_symbol_frame("000001.SZ", scale=1.0),
+        "600519.SH": _make_symbol_frame("600519.SH", scale=1.2),
+    }
+
+    monkeypatch.setattr(
+        EnhancedDataLayer,
+        "fetch_and_process",
+        lambda self, symbol, start_date, end_date, label_periods=5: symbol_frames[symbol].copy(),
+    )
+    monkeypatch.setattr(
+        "quant_investor.pipeline.parallel_research_pipeline.create_terminal",
+        lambda market: _FakeTerminal(signal="🟡", risk_level="中风险", recommendation="控制仓位"),
+    )
+
+    def _quant_should_not_run(self, data_bundle):
+        raise AssertionError("quant branch should remain disabled")
+
+    monkeypatch.setattr(ParallelResearchPipeline, "_run_quant_branch", _quant_should_not_run)
+
+    pipeline = ParallelResearchPipeline(
+        stock_pool=list(symbol_frames.keys()),
+        market="CN",
+        enable_quant=False,
+        verbose=False,
+    )
+    result = pipeline.run()
+
+    assert "quant" not in result.branch_results
+    assert set(result.branch_results.keys()) == {"kline", "llm_debate", "intelligence", "macro"}
+
+
+def test_pipeline_degrades_timed_out_branch_without_aborting(monkeypatch, tmp_path):
+    symbol_frames = {
+        "000001.SZ": _make_symbol_frame("000001.SZ", scale=1.0),
+        "600519.SH": _make_symbol_frame("600519.SH", scale=1.2),
+    }
+    marker_file = tmp_path / "llm_branch_finished.txt"
+
+    monkeypatch.setattr(
+        EnhancedDataLayer,
+        "fetch_and_process",
+        lambda self, symbol, start_date, end_date, label_periods=5: symbol_frames[symbol].copy(),
+    )
+    monkeypatch.setattr(
+        "quant_investor.pipeline.parallel_research_pipeline.create_terminal",
+        lambda market: _FakeTerminal(signal="🟢", risk_level="低风险", recommendation="积极布局"),
+    )
+
+    def _slow_llm_branch(self, data_bundle):
+        time.sleep(0.2)
+        marker_file.write_text("finished", encoding="utf-8")
+        return BranchResult(branch_name="llm_debate", score=0.4, confidence=0.6)
+
+    monkeypatch.setattr(ParallelResearchPipeline, "_run_llm_debate_branch", _slow_llm_branch)
+
+    pipeline = ParallelResearchPipeline(
+        stock_pool=list(symbol_frames.keys()),
+        market="CN",
+        branch_timeout=0.05,
+        verbose=False,
+    )
+    result = pipeline.run()
+
+    assert result.branch_results["llm_debate"].success is False
+    assert result.branch_results["llm_debate"].metadata["degraded_reason"] == "branch_timeout"
+    assert "超时" in result.branch_results["llm_debate"].explanation
+    assert 0 <= result.final_strategy.target_exposure <= 1
+    time.sleep(0.25)
+    assert not marker_file.exists()
+
+
 def test_synthetic_symbol_is_excluded_from_candidates(monkeypatch):
     symbol_frames = {
         "000001.SZ": _make_symbol_frame("000001.SZ", scale=1.0),
@@ -162,7 +298,7 @@ def test_synthetic_symbol_is_excluded_from_candidates(monkeypatch):
 
     monkeypatch.setattr(EnhancedDataLayer, "fetch_and_process", _fetch)
     monkeypatch.setattr(
-        "parallel_research_pipeline.create_terminal",
+        "quant_investor.pipeline.parallel_research_pipeline.create_terminal",
         lambda market: _FakeTerminal(signal="🟢", risk_level="低风险", recommendation="积极布局"),
     )
 
@@ -181,7 +317,7 @@ def test_all_synthetic_symbols_degrade_to_research_only(monkeypatch):
 
     monkeypatch.setattr(EnhancedDataLayer, "fetch_and_process", _offline)
     monkeypatch.setattr(
-        "parallel_research_pipeline.create_terminal",
+        "quant_investor.pipeline.parallel_research_pipeline.create_terminal",
         lambda market: _FakeTerminal(signal="🟡", risk_level="中风险", recommendation="控制仓位"),
     )
 
@@ -198,11 +334,43 @@ def test_all_synthetic_symbols_degrade_to_research_only(monkeypatch):
     assert result.final_strategy.provenance_summary["research_only_reason"]
 
 
-def test_scripts_unified_exports_v8_entrypoint():
-    unified = importlib.import_module("scripts.unified")
+def test_quant_investor_exports_v8_entrypoint():
+    unified = importlib.import_module("quant_investor")
 
     assert hasattr(unified, "QuantInvestorV8")
     assert hasattr(unified, "BranchResult")
+
+
+def test_quant_investor_v8_forwards_enable_quant(monkeypatch):
+    captured_kwargs = {}
+
+    class _FakePipeline:
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+
+        def run(self):
+            return SimpleNamespace(
+                data_bundle=UnifiedDataBundle(market="CN", symbols=["000001.SZ"], symbol_data={}),
+                branch_results={},
+                calibrated_signals={},
+                risk_result=None,
+                final_strategy=SimpleNamespace(),
+                final_report="",
+                execution_log=[],
+                timings={},
+            )
+
+    monkeypatch.setattr("quant_investor.pipeline.quant_investor_v8.ParallelResearchPipeline", _FakePipeline)
+
+    investor = QuantInvestorV8(
+        stock_pool=["000001.SZ"],
+        market="CN",
+        enable_quant=False,
+        verbose=False,
+    )
+    investor.run()
+
+    assert captured_kwargs["enable_quant"] is False
 
 
 def test_risk_and_ensemble_reduce_exposure_in_high_risk_case():

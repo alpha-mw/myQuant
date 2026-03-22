@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from stock_database import DownloadProgress, DownloadTask, StockDatabase
+from quant_investor.stock_database import DownloadProgress, DownloadTask, StockDatabase
 
 
 def _build_db(tmp_path: Path) -> StockDatabase:
