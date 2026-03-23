@@ -58,7 +58,7 @@ class HeuristicBackend(KLineBackend):
                 "trend_regime": regimes,
                 "model_mode": "heuristic",
             },
-            risks=["K线分支当前为启发式适配，尚未接入预训练模型。"],
+            risks=[],
             explanation="K线分析（启发式）基于 OHLCV 时序趋势与波动特征生成收益预测和趋势判断。",
             symbol_scores=symbol_scores,
             metadata={
@@ -68,4 +68,6 @@ class HeuristicBackend(KLineBackend):
                 "reliability": self.reliability,
                 "horizon_days": self.horizon_days,
             },
+            conclusion="启发式 K 线快筛已形成完整趋势结论。",
+            diagnostic_notes=["当前阶段使用轻量 K 线快筛结果。"],
         )

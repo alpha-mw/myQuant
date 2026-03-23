@@ -15,9 +15,64 @@ from typing import Any, Optional
 from quant_investor.config import config
 from quant_investor.credential_utils import create_tushare_pro
 from quant_investor.market.config import get_market_settings, normalize_categories
-from quant_investor.pipeline import QuantInvestorV8
+from quant_investor.pipeline import QuantInvestorLatest
 
 _STOCK_NAME_CACHE: dict[str, dict[str, str]] = {"CN": {}, "US": {}}
+BRANCH_LABELS = {
+    "kline": "K线",
+    "quant": "量化",
+    "fundamental": "基本面",
+    "intelligence": "智能融合",
+    "macro": "宏观",
+}
+
+
+def _dedupe_text(items: list[str]) -> list[str]:
+    result: list[str] = []
+    for item in items:
+        text = str(item or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+def _sanitize_text(text: str) -> str:
+    normalized = str(text or "").strip()
+    lowered = normalized.lower()
+    if not normalized:
+        return ""
+    if "could not infer frequency" in lowered:
+        return "部分批次 K 线深度模型未完成频率对齐，已自动回退统计预测。"
+    if "provider_missing" in lowered or "snapshot_missing" in lowered:
+        return "部分模块当前缺少覆盖，已只计入数据覆盖说明。"
+    if "provider_error" in lowered:
+        return "部分数据接口本轮不可用，已只计入数据覆盖说明。"
+    if "timeout" in lowered:
+        return "部分批次模型阶段超时，已自动保留基础结论。"
+    if lowered == "unknown":
+        return "已按默认状态处理。"
+    return normalized
+
+
+def _confidence_label(confidence: float) -> str:
+    if confidence >= 0.70:
+        return "高"
+    if confidence >= 0.45:
+        return "中"
+    return "低"
+
+
+def _branch_label(branch_name: str) -> str:
+    return BRANCH_LABELS.get(branch_name, branch_name)
+
+
+def _default_branch_conclusion(branch_name: str, score: float) -> str:
+    label = _branch_label(branch_name)
+    if score >= 0.15:
+        return f"{label}分支整体给出偏正面的执行结论。"
+    if score <= -0.15:
+        return f"{label}分支整体给出偏谨慎的执行结论。"
+    return f"{label}分支整体维持中性结论。"
 
 
 def load_stock_names(market: str, refresh: bool = False) -> dict[str, str]:
@@ -88,6 +143,42 @@ def get_all_local_symbols(category: str, market: str = "CN", data_dir: str | Non
     return sorted(path.stem for path in category_dir.glob("*.csv"))
 
 
+def _derive_stock_support_drivers(payload: dict[str, Any]) -> list[str]:
+    branch_scores = dict(payload.get("branch_scores", {}))
+    positive = [
+        f"{_branch_label(name)}得分 {float(score):+.2f}"
+        for name, score in sorted(branch_scores.items(), key=lambda item: item[1], reverse=True)
+        if float(score) > 0.05
+    ]
+    if positive:
+        return positive[:3]
+    if float(payload.get("expected_upside", 0.0)) > 0.08:
+        return [f"预期空间约 {float(payload.get('expected_upside', 0.0)):.1%}。"]
+    return ["当前主要依赖组合层的中性结论。"]
+
+
+def _derive_stock_drag_drivers(payload: dict[str, Any]) -> list[str]:
+    branch_scores = dict(payload.get("branch_scores", {}))
+    negative = [
+        f"{_branch_label(name)}得分 {float(score):+.2f}"
+        for name, score in sorted(branch_scores.items(), key=lambda item: item[1])
+        if float(score) < -0.05
+    ]
+    risk_flags = [_sanitize_text(item) for item in payload.get("risk_flags", []) if _sanitize_text(item)]
+    return _dedupe_text(negative[:2] + risk_flags[:2])[:3]
+
+
+def _derive_stock_conclusion(payload: dict[str, Any]) -> str:
+    support_count = int(payload.get("branch_positive_count", 0))
+    confidence = float(payload.get("confidence", 0.0))
+    expected_upside = float(payload.get("expected_upside", 0.0))
+    if support_count >= 4 and confidence >= 0.55:
+        return f"{payload['symbol']} 当前获得 {support_count}/5 路支持，预期空间约 {expected_upside:.1%}。"
+    if support_count >= 3 and confidence >= 0.40:
+        return f"{payload['symbol']} 当前结论偏正，但更适合分批跟踪。"
+    return f"{payload['symbol']} 当前信号仍需观察，暂不宜激进执行。"
+
+
 def analyze_batch(
     symbols: list[str],
     category: str,
@@ -107,15 +198,16 @@ def analyze_batch(
     print(f"前10只: {symbols[:10]}")
 
     try:
-        analyzer = QuantInvestorV8(
+        analyzer = QuantInvestorLatest(
             stock_pool=symbols,
             market=settings.market,
             total_capital=total_capital,
             risk_level=risk_level,
             enable_macro=True,
             enable_kronos=True,
+            enable_fundamental=True,
             enable_intelligence=True,
-            enable_llm_debate=True,
+            enable_branch_debate=True,
             verbose=verbose,
         )
         result = analyzer.run()
@@ -125,6 +217,13 @@ def analyze_batch(
             payload = asdict(recommendation)
             payload["category"] = category
             payload["category_name"] = scoped_category_name
+            payload["one_line_conclusion"] = payload.get("one_line_conclusion") or _derive_stock_conclusion(payload)
+            payload["support_drivers"] = payload.get("support_drivers") or _derive_stock_support_drivers(payload)
+            payload["drag_drivers"] = payload.get("drag_drivers") or _derive_stock_drag_drivers(payload)
+            payload["weight_cap_reasons"] = payload.get("weight_cap_reasons") or [
+                f"组合目标总仓位 {result.final_strategy.target_exposure:.0%}，单票按风险上限约束。"
+            ]
+            payload["macro_score"] = float(result.branch_results.get("macro").score) if result.branch_results.get("macro") else 0.0
             recommendations.append(payload)
 
         analysis = {
@@ -147,12 +246,21 @@ def analyze_batch(
                 "research_mode": result.final_strategy.research_mode,
             },
             "recommendations": recommendations,
+            "execution_log": list(getattr(result, "execution_log", [])),
         }
 
         for name, branch in result.branch_results.items():
             analysis["branches"][name] = {
                 "score": branch.score,
                 "confidence": branch.confidence,
+                "conclusion": branch.conclusion,
+                "support_drivers": list(branch.support_drivers),
+                "drag_drivers": list(branch.drag_drivers),
+                "investment_risks": list(branch.investment_risks),
+                "coverage_notes": list(branch.coverage_notes),
+                "diagnostic_notes": list(branch.diagnostic_notes),
+                "module_coverage": dict(branch.module_coverage),
+                "debate_status": str(branch.metadata.get("debate_status", "skipped")),
                 "top_symbols": [
                     {"symbol": symbol, "score": score}
                     for symbol, score in sorted(
@@ -442,13 +550,17 @@ def build_full_market_trade_plan(
         final_item["portfolio_amount"] = round(amount, 2)
         final_item["portfolio_shares"] = shares
         final_item["cash_buffer"] = round(total_capital * weight - amount, 2)
-        final_recommendations.append(final_item)
+        final_recommendations.append(ActionConsistencyGuard.apply(final_item))
         planned_investment += amount
         category_exposure[item["category"]] = category_exposure.get(item["category"], 0.0) + actual_weight
         style_counter[item.get("style_bias", "均衡")] += 1
 
     cash_reserve = max(total_capital - planned_investment, 0.0)
     portfolio_style_bias = style_counter.most_common(1)[0][0] if style_counter else "均衡"
+    reliability = _safe_average(
+        [float(item.get("confidence", 0.0)) for item in final_recommendations],
+        default=0.0,
+    )
     execution_notes = [
         f"全市场共扫描 {summary['total_stocks']} 只股票，最终入选 {len(final_recommendations)} 只。",
         f"组合计划投入约 {settings.currency_symbol}{planned_investment:,.0f}，保留现金约 {settings.currency_symbol}{cash_reserve:,.0f}。",
@@ -467,9 +579,239 @@ def build_full_market_trade_plan(
             "max_single_weight": round(max_single_weight, 4),
             "category_exposure": {key: round(value, 4) for key, value in category_exposure.items()},
             "execution_notes": execution_notes,
+            "reliability": round(reliability, 4),
         },
         "recommendations": final_recommendations,
     }
+
+
+class ExecutiveSummaryBuilder:
+    """生成面向投资决策的三句话执行摘要。"""
+
+    def __init__(self, portfolio_plan: dict[str, Any], branch_summary: dict[str, dict[str, Any]]) -> None:
+        self.portfolio_plan = portfolio_plan
+        self.branch_summary = branch_summary
+
+    def _macro_score(self) -> float:
+        return float(self.branch_summary.get("macro", {}).get("score", 0.0))
+
+    def _reliability(self) -> float:
+        values = [
+            float(branch.get("confidence", 0.0))
+            for branch in self.branch_summary.values()
+            if branch is not None
+        ]
+        return _safe_average(values, default=0.0)
+
+    def build(self) -> list[str]:
+        exposure = float(self.portfolio_plan.get("target_exposure", 0.0))
+        style = str(self.portfolio_plan.get("style_bias", "均衡"))
+        selected = int(self.portfolio_plan.get("selected_count", 0))
+        macro_score = self._macro_score()
+        reliability = self._reliability()
+        return [
+            f"当前建议总仓位维持在 {exposure:.1%}，组合风格偏{style}。",
+            f"宏观评分 {macro_score:+.2f}，本轮最终纳入 {selected} 只标的进入执行清单。",
+            f"整体可信度为{_confidence_label(reliability)}，当前更适合纪律化分批执行。",
+        ]
+
+
+class ActionConsistencyGuard:
+    """统一校验动作、分支支持度和风险文案的一致性。"""
+
+    MIN_CONFIDENCE = 0.42
+    MACRO_PRESSURE_THRESHOLD = -0.25
+
+    @classmethod
+    def apply(cls, recommendation: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(recommendation)
+        positive_count = int(payload.get("branch_positive_count", 0))
+        confidence = float(payload.get("confidence", 0.0))
+        macro_score = float(payload.get("macro_score", 0.0))
+        target_exposure = float(payload.get("batch_target_exposure", payload.get("portfolio_weight", 0.0)))
+        weak_support = positive_count <= 2
+        low_confidence = confidence < cls.MIN_CONFIDENCE
+        macro_pressure = macro_score <= cls.MACRO_PRESSURE_THRESHOLD or target_exposure <= 0.20
+
+        if macro_pressure or (weak_support and low_confidence):
+            action = "观察"
+        elif weak_support or low_confidence:
+            action = "轻仓试错"
+        else:
+            action = "买入"
+
+        reasons = list(payload.get("weight_cap_reasons", []))
+        if weak_support:
+            reasons.append(f"五路分支支持仅 {positive_count}/5，不宜激进。")
+        if low_confidence:
+            reasons.append(f"综合可信度仅 {_confidence_label(confidence)}。")
+        if macro_pressure:
+            reasons.append("宏观分支当前显著压仓，动作已自动下调。")
+
+        payload["raw_action"] = payload.get("action", "")
+        payload["action"] = action
+        payload["weight_cap_reasons"] = _dedupe_text([_sanitize_text(item) for item in reasons if item])
+        return payload
+
+
+def _aggregate_branch_summary(all_results: dict[str, list[dict[str, Any]]]) -> dict[str, dict[str, Any]]:
+    aggregated: dict[str, dict[str, Any]] = {}
+    total_batches = sum(len(batches) for batches in all_results.values())
+    for batches in all_results.values():
+        for batch in batches:
+            for name, branch in batch.get("branches", {}).items():
+                bucket = aggregated.setdefault(
+                    name,
+                    {
+                        "score_values": [],
+                        "confidence_values": [],
+                        "conclusions": [],
+                        "support_drivers": [],
+                        "drag_drivers": [],
+                        "investment_risks": [],
+                        "coverage_notes": [],
+                        "diagnostic_notes": [],
+                        "module_coverage": {},
+                        "debate_statuses": [],
+                    },
+                )
+                bucket["score_values"].append(float(branch.get("score", 0.0)))
+                bucket["confidence_values"].append(float(branch.get("confidence", 0.0)))
+                bucket["conclusions"].append(str(branch.get("conclusion", "")))
+                bucket["support_drivers"].extend(str(item) for item in branch.get("support_drivers", []))
+                bucket["drag_drivers"].extend(str(item) for item in branch.get("drag_drivers", []))
+                bucket["investment_risks"].extend(str(item) for item in branch.get("investment_risks", branch.get("risks", [])))
+                bucket["coverage_notes"].extend(str(item) for item in branch.get("coverage_notes", []))
+                bucket["diagnostic_notes"].extend(str(item) for item in branch.get("diagnostic_notes", []))
+                bucket["debate_statuses"].append(str(branch.get("debate_status", "skipped")))
+                for module_name, info in branch.get("module_coverage", {}).items():
+                    module_bucket = bucket["module_coverage"].setdefault(
+                        module_name,
+                        {
+                            "label": info.get("label", module_name),
+                            "available_symbols": 0,
+                            "total_symbols": 0,
+                            "disabled_batches": 0,
+                            "status": info.get("status", "active"),
+                        },
+                    )
+                    module_bucket["available_symbols"] += int(info.get("available_symbols", 0))
+                    module_bucket["total_symbols"] += int(info.get("total_symbols", 0))
+                    if info.get("status") == "disabled_global":
+                        module_bucket["disabled_batches"] += 1
+                        module_bucket["status"] = "disabled_global"
+
+    finalized: dict[str, dict[str, Any]] = {}
+    for name, bucket in aggregated.items():
+        module_notes = []
+        for module_name, info in bucket["module_coverage"].items():
+            label = str(info.get("label", module_name))
+            available = int(info.get("available_symbols", 0))
+            total = int(info.get("total_symbols", 0))
+            if info.get("status") == "disabled_global":
+                module_notes.append(f"{label}: 0/{max(total, 1)} 标的可用，{int(info.get('disabled_batches', 0))}/{max(total_batches, 1)} 批次全局剔除。")
+            elif total > 0 and available < total:
+                module_notes.append(f"{label}: {available}/{total} 标的已覆盖。")
+        finalized[name] = {
+            "score": _safe_average(bucket["score_values"], default=0.0),
+            "confidence": _safe_average(bucket["confidence_values"], default=0.0),
+            "conclusion": next(
+                (text for text in bucket["conclusions"] if str(text).strip()),
+                _default_branch_conclusion(name, _safe_average(bucket["score_values"], default=0.0)),
+            ),
+            "support_drivers": _dedupe_text([_sanitize_text(item) for item in bucket["support_drivers"]])[:3],
+            "drag_drivers": _dedupe_text([_sanitize_text(item) for item in bucket["drag_drivers"]])[:3],
+            "investment_risks": _dedupe_text([_sanitize_text(item) for item in bucket["investment_risks"]])[:5],
+            "coverage_notes": _dedupe_text([_sanitize_text(item) for item in bucket["coverage_notes"]] + module_notes)[:6],
+            "diagnostic_notes": _dedupe_text([_sanitize_text(item) for item in bucket["diagnostic_notes"]])[:6],
+            "module_coverage": bucket["module_coverage"],
+            "debate_statuses": [
+                status for status in _dedupe_text(bucket["debate_statuses"])
+                if status and status != "unknown"
+            ],
+        }
+    return finalized
+
+
+class DiagnosticsBucketizer:
+    """把投资风险、覆盖信息和工程诊断拆分到不同报告区域。"""
+
+    def __init__(self, all_results: dict[str, list[dict[str, Any]]], branch_summary: dict[str, dict[str, Any]]) -> None:
+        self.all_results = all_results
+        self.branch_summary = branch_summary
+
+    def bucket(self) -> dict[str, list[str]]:
+        total_batches = max(sum(len(batches) for batches in self.all_results.values()), 1)
+        investment_risks: list[str] = []
+        coverage_notes: list[str] = []
+        diagnostic_notes: list[str] = []
+        for branch_name, branch in self.branch_summary.items():
+            investment_risks.extend(branch.get("investment_risks", []))
+            coverage_notes.extend(branch.get("coverage_notes", []))
+            diagnostic_notes.extend(
+                f"{_sanitize_text(note)}（{total_batches}/{total_batches} 批次）"
+                for note in branch.get("diagnostic_notes", [])
+            )
+        for batches in self.all_results.values():
+            for batch in batches:
+                execution_log = batch.get("execution_log", [])
+                for line in execution_log[-5:]:
+                    sanitized = _sanitize_text(str(line))
+                    if sanitized and sanitized not in diagnostic_notes:
+                        diagnostic_notes.append(f"{sanitized}（1/{total_batches} 批次）")
+        return {
+            "investment_risks": _dedupe_text(investment_risks)[:8],
+            "coverage_notes": _dedupe_text(coverage_notes)[:8],
+            "diagnostic_notes": _dedupe_text(diagnostic_notes)[:12],
+        }
+
+
+class ConclusionRenderer:
+    """渲染分支与个股结论。"""
+
+    @staticmethod
+    def render_branch(branch_name: str, branch: dict[str, Any]) -> list[str]:
+        label = _branch_label(branch_name)
+        conclusion = str(branch.get("conclusion") or _default_branch_conclusion(branch_name, float(branch.get("score", 0.0))))
+        support = _dedupe_text(branch.get("support_drivers", [])) or ["当前未观察到明显增量支撑。"]
+        drag = _dedupe_text(branch.get("drag_drivers", [])) or ["当前未观察到明显拖累项。"]
+        coverage = _dedupe_text(branch.get("coverage_notes", [])) or ["当前未发现显著覆盖缺口。"]
+        return [
+            f"### {label}分支",
+            f"- 平均得分: {branch_name}: {float(branch.get('score', 0.0)):+.3f}",
+            f"- 结论: {conclusion}",
+            f"- 主要驱动: {'；'.join(support[:2])}",
+            f"- 主要拖累: {'；'.join(drag[:2])}",
+            f"- 数据覆盖情况: {'；'.join(coverage[:2])}",
+            f"- 可信度标签: {_confidence_label(float(branch.get('confidence', 0.0)))}",
+            "",
+        ]
+
+    @staticmethod
+    def render_stock(item: dict[str, Any], market: str) -> list[str]:
+        action = str(item.get("action", "观察"))
+        stock_name = get_stock_name(item["symbol"], market=market)
+        support = _dedupe_text(item.get("support_drivers", []) or _derive_stock_support_drivers(item))
+        drag = _dedupe_text(item.get("drag_drivers", []) or _derive_stock_drag_drivers(item))
+        weight_caps = _dedupe_text(item.get("weight_cap_reasons", []))
+        if action == "买入":
+            conclusion = f"{item['symbol']} {stock_name} 当前获得 {int(item.get('branch_positive_count', 0))}/5 路支持，可按计划分批执行。"
+        elif action == "轻仓试错":
+            conclusion = f"{item['symbol']} {stock_name} 当前仍有正向依据，但更适合轻仓试错。"
+        else:
+            conclusion = f"{item['symbol']} {stock_name} 当前信号不足以支撑激进执行，建议继续观察。"
+        one_line = str(item.get("one_line_conclusion", "") or "").strip()
+        if action != "买入" and ("买" in one_line or "执行" in one_line):
+            one_line = ""
+        return [
+            f"### {item.get('rank', '-')}. {item['symbol']} {stock_name} ({item['category_name']})",
+            f"- 一句话结论: {one_line or conclusion}",
+            f"- 入选原因: {'；'.join(support[:3])}",
+            f"- 压仓原因: {'；'.join((drag + weight_caps)[:3]) if (drag or weight_caps) else '当前未见额外压仓理由。'}",
+            f"- 执行动作: {action}",
+            f"- 交易参数: 现价 {item['current_price']:.2f}，参考买点 {item['recommended_entry_price']:.2f}，目标价 {item['target_price']:.2f}，止损价 {item['stop_loss_price']:.2f}",
+            "",
+        ]
 
 
 def save_candidate_index(
@@ -529,38 +871,28 @@ def generate_full_report(
     )
     summary = plan["market_summary"]
     portfolio_plan = plan["portfolio_plan"]
-    recommendations = plan["recommendations"]
+    recommendations = [ActionConsistencyGuard.apply(item) for item in plan["recommendations"]]
+    plan["recommendations"] = recommendations
+    branch_summary = _aggregate_branch_summary(all_results)
+    diagnostics = DiagnosticsBucketizer(all_results, branch_summary).bucket()
+    executive_summary = ExecutiveSummaryBuilder(portfolio_plan, branch_summary).build()
 
     report_lines = [
         f"# {settings.report_flag} {settings.market_name}全市场组合级交易建议报告\n",
         f"**生成时间**: {summary['generated_at']}\n",
-        "**分析架构**: Quant-Investor V8.0 五路并行研究\n",
+        "**分析架构**: Quant-Investor V9 五路并行研究\n",
         f"**分析覆盖**: {summary['total_stocks']} 只股票，{summary['total_batches']} 个批次\n",
-        "\n---\n",
-        "\n## 📊 市场全量扫描摘要\n",
+        "\n## 三句话执行摘要\n",
     ]
-    for category, info in summary["categories"].items():
-        report_lines.append(f"\n### {info['category_name']}\n")
-        report_lines.append(f"- **分析批次**: {info['batch_count']} 批\n")
-        report_lines.append(f"- **股票总数**: {info['stock_count']} 只\n")
-        report_lines.append(f"- **候选股数**: {info['candidate_count']} 只\n")
-        report_lines.append(f"- **平均目标仓位**: {info['avg_target_exposure']:.1%}\n")
-        report_lines.append("- **平均分支得分**:\n")
-        for branch_name in ["kline", "quant", "llm_debate", "intelligence", "macro"]:
-            score = info["avg_branch_scores"].get(branch_name)
-            if score is not None:
-                report_lines.append(f"  - {branch_name}: {score:+.3f}\n")
+    for line in executive_summary:
+        report_lines.append(f"- {line}\n")
 
     report_lines.extend(
         [
-            "\n## 💰 组合级执行计划\n",
-            f"- **总资金**: {settings.currency_symbol}{portfolio_plan['total_capital']:,.0f}\n",
-            f"- **计划总仓位**: {portfolio_plan['target_exposure']:.1%}\n",
-            f"- **计划投入资金**: {settings.currency_symbol}{portfolio_plan['planned_investment']:,.0f}\n",
-            f"- **预留现金**: {settings.currency_symbol}{portfolio_plan['cash_reserve']:,.2f}\n",
-            f"- **组合风格**: {portfolio_plan['style_bias']}\n",
-            f"- **单票上限**: {portfolio_plan['max_single_weight']:.1%}\n",
-            f"- **类别暴露**: "
+            "\n## 为什么当前总仓位是这个水平\n",
+            f"- 当前计划总仓位为 {portfolio_plan['target_exposure']:.1%}，计划投入 {settings.currency_symbol}{portfolio_plan['planned_investment']:,.0f}，预留现金 {settings.currency_symbol}{portfolio_plan['cash_reserve']:,.0f}。\n",
+            f"- 组合风格偏 {portfolio_plan['style_bias']}，单票上限控制在 {portfolio_plan['max_single_weight']:.1%}，本轮最终纳入 {portfolio_plan['selected_count']} 只标的。\n",
+            f"- 类别暴露为 "
             + (
                 " / ".join(
                     f"{category_name(category, settings.market)} {weight:.1%}"
@@ -569,14 +901,26 @@ def generate_full_report(
                 if portfolio_plan["category_exposure"]
                 else "暂无"
             )
-            + "\n",
+            + "。\n",
         ]
     )
+
+    report_lines.extend(
+        [
+            "\n## 数据覆盖与可信度摘要\n",
+            f"- 本次汇总 {summary['total_batches']}/{summary['total_batches']} 批次，覆盖 {summary['total_stocks']}/{summary['total_stocks']} 标的。\n",
+            f"- 组合层平均可信度为 {_confidence_label(float(portfolio_plan.get('reliability', 0.0)))}。\n",
+        ]
+    )
+    for note in diagnostics["coverage_notes"][:5]:
+        report_lines.append(f"- {_sanitize_text(note)}\n")
+    if diagnostics["investment_risks"]:
+        report_lines.append(f"- 需要前置注意的投资风险: {'；'.join(diagnostics['investment_risks'][:3])}\n")
 
     if recommendations:
         report_lines.extend(
             [
-                "\n## 🎯 最终入选标的\n",
+                "\n## 最终推荐标的\n",
                 "| 排名 | 代码 | 名称 | 类别 | 现价 | 推荐买入价 | 目标卖出价 | 止损价 | 推荐仓位 | 金额 | 预期空间 | 五路支持 |\n",
                 "|:---:|:---|:---|:---|---:|---:|---:|---:|---:|---:|---:|---:|\n",
             ]
@@ -597,69 +941,49 @@ def generate_full_report(
                 f"{float(item['expected_upside']):.1%} | {item['branch_positive_count']}/5 |\n"
             )
 
-        report_lines.append("\n## 🧭 个股执行说明\n")
         for item in recommendations[:12]:
-            stock_name = get_stock_name(item["symbol"], market=settings.market)
-            current_price = float(item.get("current_price", 0))
-            entry_low = float(item.get("entry_price_range", {}).get("low", current_price * 0.99))
-            entry_high = float(item.get("entry_price_range", {}).get("high", current_price * 1.01))
-            display_entry_price = float(
-                item.get("recommended_entry_price") or (entry_low + entry_high) / 2 or current_price
-            )
-            report_lines.append(f"\n### {item['rank']}. {item['symbol']} {stock_name} ({item['category_name']})\n")
-            report_lines.append("**📊 交易参数**\n")
-            report_lines.append(f"- **当前价格**: {settings.currency_symbol}{current_price:.2f}\n")
-            report_lines.append(
-                f"- **推荐买入价**: {settings.currency_symbol}{display_entry_price:.2f} "
-                f"(可成交区间: {settings.currency_symbol}{entry_low:.2f} - {settings.currency_symbol}{entry_high:.2f})\n"
-            )
-            report_lines.append(
-                f"- **目标卖出价**: {settings.currency_symbol}{item['target_price']:.2f} "
-                f"(预期收益: {float(item['expected_upside']):.1%})\n"
-            )
-            report_lines.append(
-                f"- **止损价格**: {settings.currency_symbol}{item['stop_loss_price']:.2f} "
-                f"(最大亏损: {(item['stop_loss_price'] / max(display_entry_price, 0.01) - 1) * 100:.1f}%)\n"
-            )
-            report_lines.append(
-                f"- **推荐仓位**: {item['portfolio_weight']:.1%} "
-                f"({settings.currency_symbol}{item['portfolio_amount']:,.0f} / {item['portfolio_shares']:,}股)\n"
-            )
-            report_lines.append("\n**🔬 五路研究分析**\n")
-            report_lines.append(f"- **综合评分**: {float(item['consensus_score']):+.2f}\n")
-            report_lines.append(f"- **支持分支**: {item['branch_positive_count']}/5\n")
-            report_lines.append(f"- **置信度**: {float(item['confidence']):.0%}\n")
-            if item.get("risk_flags") or item.get("position_management"):
-                report_lines.append("\n**⚠️ 风险提示与仓位管理**\n")
-                for flag in item.get("risk_flags", [])[:3]:
-                    report_lines.append(f"- {flag}\n")
-                for note in item.get("position_management", [])[:2]:
-                    report_lines.append(f"- {note}\n")
+            report_lines.extend(ConclusionRenderer.render_stock(item, settings.market))
+            display_entry_price = float(item.get("recommended_entry_price") or item.get("current_price") or 0.01)
+            max_loss = (float(item.get("stop_loss_price", 0.0)) / max(display_entry_price, 0.01) - 1) * 100
+            report_lines.append(f"- 最大亏损: {max_loss:.1f}%\n")
+            report_lines.append(f"- 风险观察: {'；'.join(_dedupe_text([_sanitize_text(flag) for flag in item.get('risk_flags', [])])[:3]) or '无'}\n")
+            report_lines.append("")
     else:
-        report_lines.append("\n## 🎯 最终入选标的\n\n当前没有满足条件的最终买入标的，建议继续以现金观望。\n")
+        report_lines.append("\n## 最终推荐标的\n")
+        report_lines.append("- 当前没有满足条件的最终候选，建议继续以现金和观察仓位为主。\n")
 
-    report_lines.append("\n## ✅ 执行提醒\n")
-    for note in portfolio_plan["execution_notes"]:
-        report_lines.append(f"- {note}\n")
+    report_lines.append("\n## 五路分支结论\n")
+    for branch_name in ["kline", "quant", "fundamental", "intelligence", "macro"]:
+        if branch_name in branch_summary:
+            report_lines.extend(line + "\n" for line in ConclusionRenderer.render_branch(branch_name, branch_summary[branch_name]))
+
+    report_lines.append("## 附录：工程诊断与详细运行日志\n")
+    if diagnostics["diagnostic_notes"]:
+        for note in diagnostics["diagnostic_notes"]:
+            report_lines.append(f"- {note}\n")
+    else:
+        report_lines.append(f"- 当前未记录新增工程诊断（{summary['total_batches']}/{summary['total_batches']} 批次）。\n")
+
+    for category, batches in all_results.items():
+        for batch in batches:
+            if not batch.get("execution_log"):
+                continue
+            report_lines.append(
+                f"- {category_name(category, settings.market)} 批次 {batch.get('batch_id', '-')}: "
+                f"附带 {len(batch.get('execution_log', []))}/{len(batch.get('execution_log', []))} 条运行日志。\n"
+            )
 
     summary_lines = [
         f"# {settings.report_flag} {settings.market_name}全市场分析摘要\n",
         f"**生成时间**: {summary['generated_at']}\n",
         f"**分析覆盖**: {summary['total_stocks']} 只股票，{summary['total_batches']} 个批次\n",
-        f"**计划总仓位**: {portfolio_plan['target_exposure']:.1%}\n",
-        f"**计划投入资金**: {settings.currency_symbol}{portfolio_plan['planned_investment']:,.0f}\n",
-        f"**预留现金**: {settings.currency_symbol}{portfolio_plan['cash_reserve']:,.0f}\n",
-        f"**最终入选标的数**: {portfolio_plan['selected_count']} 只\n",
-        "\n## 类别摘要\n",
+        "\n## 三句话执行摘要\n",
     ]
-    for category, info in summary["categories"].items():
-        summary_lines.append(
-            f"- {info['category_name']}: {info['stock_count']} 只，"
-            f"候选 {info['candidate_count']} 只，平均目标仓位 {info['avg_target_exposure']:.1%}\n"
-        )
+    for line in executive_summary:
+        summary_lines.append(f"- {line}\n")
     summary_lines.append("\n## 执行提醒\n")
     for note in portfolio_plan["execution_notes"]:
-        summary_lines.append(f"- {note}\n")
+        summary_lines.append(f"- {_sanitize_text(note)}\n")
 
     summary_file = target_dir / f"{settings.market}_Full_Report_{timestamp}.md"
     data_file = target_dir / f"{settings.market}_Trade_Data_{timestamp}.json"

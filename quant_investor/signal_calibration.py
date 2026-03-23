@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from quant_investor.contracts import BranchResult, CalibratedBranchSignal
+from quant_investor.versioning import CALIBRATION_SCHEMA_VERSION, DEBATE_TEMPLATE_VERSION
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:
@@ -23,6 +24,7 @@ class SignalCalibrator:
         "kline": 5,
         "quant": 5,
         "llm_debate": 10,
+        "fundamental": 30,
         "intelligence": 10,
         "macro": 20,
     }
@@ -30,7 +32,8 @@ class SignalCalibrator:
     RETURN_SCALE_BY_BRANCH = {
         "kline": 0.14,
         "quant": 0.12,
-        "llm_debate": 0.07,
+        "llm_debate": 0.08,
+        "fundamental": 0.09,
         "intelligence": 0.08,
         "macro": 0.05,
     }
@@ -39,12 +42,20 @@ class SignalCalibrator:
         "kline": "kline_dual_model",
         "quant": "alpha_research",
         "llm_debate": "structured_research_debate",
+        "fundamental": "fundamental_snapshot_fusion",
         "intelligence": "structured_intelligence_fusion",
         "macro": "macro_terminal",
     }
 
-    def __init__(self, symbol_provenance: dict[str, dict[str, Any]] | None = None) -> None:
+    def __init__(
+        self,
+        symbol_provenance: dict[str, dict[str, Any]] | None = None,
+        architecture_version: str = "",
+        branch_schema_version: str = "",
+    ) -> None:
         self.symbol_provenance = symbol_provenance or {}
+        self.architecture_version = architecture_version
+        self.branch_schema_version = branch_schema_version
 
     def calibrate_all(
         self,
@@ -94,6 +105,12 @@ class SignalCalibrator:
         )
         return CalibratedBranchSignal(
             branch_name=branch_name,
+            architecture_version=self.architecture_version,
+            branch_schema_version=self.branch_schema_version,
+            calibration_schema_version=CALIBRATION_SCHEMA_VERSION,
+            debate_template_version=str(
+                branch.debate_template_version or branch.metadata.get("debate_template_version", DEBATE_TEMPLATE_VERSION)
+            ),
             branch_mode=mode,
             horizon_days=horizon,
             reliability=branch_reliability,
@@ -107,6 +124,13 @@ class SignalCalibrator:
                 "reliability": branch_reliability,
                 "data_source_status": branch.metadata.get("data_source_status", "unknown"),
                 "horizon_days": horizon,
+                "architecture_version": self.architecture_version,
+                "branch_schema_version": self.branch_schema_version,
+                "calibration_schema_version": CALIBRATION_SCHEMA_VERSION,
+                "debate_template_version": str(
+                    branch.debate_template_version
+                    or branch.metadata.get("debate_template_version", DEBATE_TEMPLATE_VERSION)
+                ),
             },
         )
 
@@ -114,8 +138,10 @@ class SignalCalibrator:
         base = float(branch.metadata.get("reliability", 1.0 if branch.success else 0.2))
         if not branch.success:
             base = min(base, 0.25)
-        if branch.metadata.get("branch_mode") in {"heuristic_adapter", "kline_heuristic", "structured_research_debate"}:
+        if branch.metadata.get("branch_mode") in {"heuristic_adapter", "kline_heuristic"}:
             base *= 0.85
+        if branch.metadata.get("debate_reason") == "llm_provider_missing":
+            base *= 0.98
         return _clamp(base, 0.0, 1.0)
 
     def _symbol_reliability(self, symbol: str) -> float:
