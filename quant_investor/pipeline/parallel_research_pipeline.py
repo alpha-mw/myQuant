@@ -20,20 +20,36 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from quant_investor.alpha_mining import AlphaMiner, FactorLibrary
-from quant_investor.contracts import (
+from quant_investor.branch_contracts import (
     BranchResult,
+    DebateVerdict,
+    EvidencePacket,
     PortfolioStrategy,
     ResearchPipelineResult,
     TradeRecommendation,
     UnifiedDataBundle,
 )
+from quant_investor.branch_debate_engine import BranchDebateEngine
 from quant_investor.config import config
+from quant_investor.debate_scheduler import DebateScheduler, DebateRetryPolicy
+from quant_investor.debate_templates import BRANCH_DEBATE_ADJUSTMENT_CAPS
 from quant_investor.enhanced_data_layer import EnhancedDataLayer
+from quant_investor.ensemble_judge import EnsembleJudge
+from quant_investor.fundamental_branch import FundamentalBranch
 from quant_investor.logger import get_logger
 from quant_investor.macro_terminal_tushare import create_terminal
 from quant_investor.risk_management_layer import PortfolioOptimizer, RiskLayerResult, RiskManagementLayer
 from quant_investor.signal_calibration import SignalCalibrator
+from quant_investor.versioning import (
+    ARCHITECTURE_VERSION_V9,
+    BRANCH_SCHEMA_VERSION_V9,
+    BRANCH_TRACKER_SCHEMA_VERSION,
+    CALIBRATION_SCHEMA_VERSION,
+    CURRENT_BRANCH_ORDER,
+    CURRENT_BRANCH_WEIGHTS,
+    DEBATE_TEMPLATE_VERSION,
+    output_version_payload,
+)
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:
@@ -43,7 +59,7 @@ def _clamp(value: float, lower: float, upper: float) -> float:
 _BRANCH_METHOD_NAMES = {
     "kline": "_run_kline_branch",
     "quant": "_run_quant_branch",
-    "llm_debate": "_run_llm_debate_branch",
+    "fundamental": "_run_fundamental_branch",
     "intelligence": "_run_intelligence_branch",
     "macro": "_run_macro_branch",
 }
@@ -70,6 +86,10 @@ def _make_ipc_safe(value: Any) -> Any:
 
 def _ipc_safe_branch_result(result: BranchResult) -> BranchResult:
     """裁剪分支结果中的不可 pickle 字段，避免 IPC 传输失败。"""
+    evidence = result.evidence if isinstance(result.evidence, EvidencePacket) else EvidencePacket(
+        branch_name=str(result.branch_name)
+    )
+    verdict = result.debate_verdict if isinstance(result.debate_verdict, DebateVerdict) else DebateVerdict()
     return BranchResult(
         branch_name=str(result.branch_name),
         score=float(result.score),
@@ -80,6 +100,53 @@ def _ipc_safe_branch_result(result: BranchResult) -> BranchResult:
         symbol_scores={str(symbol): float(score) for symbol, score in result.symbol_scores.items()},
         success=bool(result.success),
         metadata=_make_ipc_safe(result.metadata),
+        base_score=float(result.base_score if result.base_score is not None else result.score),
+        final_score=float(result.final_score if result.final_score is not None else result.score),
+        base_confidence=float(
+            result.base_confidence if result.base_confidence is not None else result.confidence
+        ),
+        final_confidence=float(
+            result.final_confidence if result.final_confidence is not None else result.confidence
+        ),
+        horizon_days=int(result.horizon_days),
+        evidence=EvidencePacket(
+            branch_name=str(evidence.branch_name),
+            as_of=str(evidence.as_of),
+            scope=str(evidence.scope),
+            summary=str(evidence.summary),
+            symbols=[str(item) for item in evidence.symbols],
+            top_symbols=[str(item) for item in evidence.top_symbols],
+            bull_points=[str(item) for item in evidence.bull_points],
+            bear_points=[str(item) for item in evidence.bear_points],
+            risk_points=[str(item) for item in evidence.risk_points],
+            unknowns=[str(item) for item in evidence.unknowns],
+            used_features=[str(item) for item in evidence.used_features],
+            feature_values=_make_ipc_safe(evidence.feature_values),
+            symbol_context=_make_ipc_safe(evidence.symbol_context),
+            metadata=_make_ipc_safe(evidence.metadata),
+        ),
+        debate_verdict=DebateVerdict(
+            direction=str(verdict.direction),
+            confidence=float(verdict.confidence),
+            score_adjustment=float(verdict.score_adjustment),
+            bull_points=[str(item) for item in verdict.bull_points],
+            bear_points=[str(item) for item in verdict.bear_points],
+            risk_flags=[str(item) for item in verdict.risk_flags],
+            unknowns=[str(item) for item in verdict.unknowns],
+            used_features=[str(item) for item in verdict.used_features],
+            hard_veto=bool(verdict.hard_veto),
+            metadata=_make_ipc_safe(verdict.metadata),
+        ),
+        data_quality=_make_ipc_safe(result.data_quality),
+        conclusion=str(result.conclusion),
+        thesis_points=[str(item) for item in result.thesis_points],
+        investment_risks=[str(item) for item in result.investment_risks],
+        coverage_notes=[str(item) for item in result.coverage_notes],
+        diagnostic_notes=[str(item) for item in result.diagnostic_notes],
+        support_drivers=[str(item) for item in result.support_drivers],
+        drag_drivers=[str(item) for item in result.drag_drivers],
+        weight_cap_reasons=[str(item) for item in result.weight_cap_reasons],
+        module_coverage=_make_ipc_safe(result.module_coverage),
     )
 
 
@@ -119,19 +186,21 @@ class BranchPerformanceTracker:
     历史文件：data/branch_ic_history.json（相对于工作目录）
     """
 
-    DEFAULT_WEIGHTS: dict[str, float] = {
-        "kline": 0.22,
-        "quant": 0.28,
-        "llm_debate": 0.15,
-        "intelligence": 0.20,
-        "macro": 0.15,
-    }
     MIN_WEIGHT = 0.05      # 分支 IC ≤ 0 时的最低保底权重
     ROLLING_WINDOW = 60    # 滚动 IC 窗口（天/次）
     HISTORY_PATH = "data/branch_ic_history.json"
 
-    def __init__(self) -> None:
-        self._history: dict[str, list[float]] = {k: [] for k in self.DEFAULT_WEIGHTS}
+    def __init__(
+        self,
+        default_weights: dict[str, float],
+        architecture_version: str,
+        branch_schema_version: str,
+    ) -> None:
+        self.default_weights = dict(default_weights)
+        self.architecture_version = architecture_version
+        self.branch_schema_version = branch_schema_version
+        self._history: dict[str, list[float]] = {k: [] for k in self.default_weights}
+        self._archived_history: dict[str, list[float]] = {}
         self._load()
 
     def _load(self) -> None:
@@ -140,11 +209,22 @@ class BranchPerformanceTracker:
             if os.path.exists(self.HISTORY_PATH):
                 with open(self.HISTORY_PATH) as f:
                     data = json.load(f)
-                # 向后兼容：旧版 "kronos" key 自动迁移到 "kline"
-                if "kronos" in data and "kline" not in data:
-                    data["kline"] = data.pop("kronos")
+                if isinstance(data, dict) and "history" in data:
+                    raw_history = dict(data.get("history", {}))
+                    self._archived_history = {
+                        str(key): [float(item) for item in value][-self.ROLLING_WINDOW:]
+                        for key, value in dict(data.get("archived_history", {})).items()
+                    }
+                else:
+                    raw_history = dict(data)
+                if "kronos" in raw_history and "kline" not in raw_history and "kline" in self._history:
+                    raw_history["kline"] = list(raw_history.pop("kronos"))
+                elif "kronos" in raw_history:
+                    self._archived_history["kronos"] = list(raw_history.pop("kronos"))
+                if "llm_debate" in raw_history and "llm_debate" not in self._history:
+                    self._archived_history["llm_debate"] = list(raw_history.pop("llm_debate"))
                 for branch in self._history:
-                    self._history[branch] = data.get(branch, [])[-self.ROLLING_WINDOW:]
+                    self._history[branch] = raw_history.get(branch, [])[-self.ROLLING_WINDOW:]
         except Exception:
             pass
 
@@ -159,7 +239,18 @@ class BranchPerformanceTracker:
         try:
             os.makedirs(os.path.dirname(self.HISTORY_PATH) or ".", exist_ok=True)
             with open(self.HISTORY_PATH, "w") as f:
-                json.dump(self._history, f)
+                json.dump(
+                    {
+                        "schema_version": BRANCH_TRACKER_SCHEMA_VERSION,
+                        "architecture_version": self.architecture_version,
+                        "branch_schema_version": self.branch_schema_version,
+                        "calibration_schema_version": CALIBRATION_SCHEMA_VERSION,
+                        "active_branches": list(self.default_weights.keys()),
+                        "history": self._history,
+                        "archived_history": self._archived_history,
+                    },
+                    f,
+                )
         except Exception:
             pass
 
@@ -172,12 +263,12 @@ class BranchPerformanceTracker:
             if len(history) >= 5:
                 ic_means[branch] = float(np.mean(history[-self.ROLLING_WINDOW:]))
             else:
-                ic_means[branch] = self.DEFAULT_WEIGHTS.get(branch, 0.1)
+                ic_means[branch] = self.default_weights.get(branch, 0.1)
 
         positive_ics = {k: max(v, 0.0) for k, v in ic_means.items()}
         total = sum(positive_ics.values())
         if total < 1e-8:
-            return dict(self.DEFAULT_WEIGHTS)
+            return dict(self.default_weights)
 
         weights = {k: max(v / total, self.MIN_WEIGHT) for k, v in positive_ics.items()}
         # 重新归一化（保底权重可能使总和 > 1）
@@ -199,13 +290,9 @@ def _series_or_empty(values: dict[str, float]) -> pd.Series:
 class ParallelResearchPipeline:
     """并行研究主流程编排器。"""
 
-    BRANCH_ORDER = [
-        "kline",
-        "quant",
-        "llm_debate",
-        "intelligence",
-        "macro",
-    ]
+    BRANCH_ORDER = list(CURRENT_BRANCH_ORDER)
+    ARCHITECTURE_VERSION = ARCHITECTURE_VERSION_V9
+    BRANCH_SCHEMA_VERSION = BRANCH_SCHEMA_VERSION_V9
 
     def __init__(
         self,
@@ -217,15 +304,22 @@ class ParallelResearchPipeline:
         enable_alpha_mining: bool = True,
         enable_quant: bool = True,
         enable_kline: bool = True,
+        enable_fundamental: bool = True,
         enable_intelligence: bool = True,
-        enable_llm_debate: bool = True,
+        enable_branch_debate: bool = True,
         enable_macro: bool = True,
         kline_backend: str = "hybrid",
         allow_synthetic_for_research: bool = False,
         branch_timeout: float = 120.0,
+        debate_top_k: int = 3,
+        debate_min_abs_score: float = 0.08,
+        debate_timeout_sec: float = 8.0,
+        debate_model: str = "gpt-5.4-mini",
+        enable_document_semantics: bool = True,
         verbose: bool = True,
         # 向后兼容
         enable_kronos: bool | None = None,
+        enable_llm_debate: bool | None = None,
     ) -> None:
         self.stock_pool = stock_pool
         self.market = market.upper()
@@ -236,17 +330,48 @@ class ParallelResearchPipeline:
         self.enable_quant = enable_quant
         # 向后兼容：enable_kronos 映射到 enable_kline
         self.enable_kline = enable_kline if enable_kronos is None else enable_kronos
+        self.enable_fundamental = enable_fundamental
         self.enable_intelligence = enable_intelligence
-        self.enable_llm_debate = enable_llm_debate
+        self.enable_branch_debate = (
+            enable_branch_debate if enable_llm_debate is None else enable_llm_debate
+        )
+        self.enable_llm_debate = self.enable_branch_debate
         self.enable_macro = enable_macro
         self.kline_backend = kline_backend
         self.allow_synthetic_for_research = allow_synthetic_for_research
         self.branch_timeout = max(float(branch_timeout), 0.0)
+        self.debate_top_k = max(int(debate_top_k), 1)
+        self.debate_min_abs_score = max(float(debate_min_abs_score), 0.0)
+        self.debate_timeout_sec = max(float(debate_timeout_sec), 0.1)
+        self.debate_model = debate_model
+        self.enable_document_semantics = enable_document_semantics
         self.verbose = verbose
+        self.architecture_version = self.ARCHITECTURE_VERSION
+        self.branch_schema_version = self.BRANCH_SCHEMA_VERSION
+        self.calibration_schema_version = CALIBRATION_SCHEMA_VERSION
+        self.debate_template_version = DEBATE_TEMPLATE_VERSION
         self.data_layer = EnhancedDataLayer(market=self.market, verbose=verbose)
         self.risk_layer = RiskManagementLayer(verbose=verbose)
+        self.branch_debate_engine = BranchDebateEngine(
+            enabled=self.enable_branch_debate,
+            model=self.debate_model,
+            timeout_sec=self.debate_timeout_sec,
+            min_abs_score=self.debate_min_abs_score,
+        )
+        self.debate_scheduler = DebateScheduler(
+            engine=self.branch_debate_engine,
+            per_batch_max_llm_calls=12,
+            per_branch_max_calls=3,
+            single_symbol_max_calls=1,
+            timeout_sec=self.debate_timeout_sec,
+            retry_policy=DebateRetryPolicy(max_attempts=1),
+        )
         self._logger = get_logger("ParallelResearchPipeline", verbose)
-        self._branch_tracker = BranchPerformanceTracker()
+        self._branch_tracker = BranchPerformanceTracker(
+            default_weights=CURRENT_BRANCH_WEIGHTS,
+            architecture_version=self.architecture_version,
+            branch_schema_version=self.branch_schema_version,
+        )
         self._market_regime: str | None = None  # 由 run() 中 RegimeDetector 设定
 
     def _log(self, message: str) -> None:
@@ -256,7 +381,7 @@ class ParallelResearchPipeline:
         return {
             "kline": self.enable_kline,
             "quant": self.enable_quant,
-            "llm_debate": self.enable_llm_debate,
+            "fundamental": self.enable_fundamental,
             "intelligence": self.enable_intelligence,
             "macro": self.enable_macro,
         }
@@ -275,12 +400,18 @@ class ParallelResearchPipeline:
             "enable_alpha_mining": self.enable_alpha_mining,
             "enable_quant": self.enable_quant,
             "enable_kline": self.enable_kline,
+            "enable_fundamental": self.enable_fundamental,
             "enable_intelligence": self.enable_intelligence,
-            "enable_llm_debate": self.enable_llm_debate,
+            "enable_branch_debate": self.enable_branch_debate,
             "enable_macro": self.enable_macro,
             "kline_backend": self.kline_backend,
             "allow_synthetic_for_research": self.allow_synthetic_for_research,
             "branch_timeout": self.branch_timeout,
+            "debate_top_k": self.debate_top_k,
+            "debate_min_abs_score": self.debate_min_abs_score,
+            "debate_timeout_sec": self.debate_timeout_sec,
+            "debate_model": self.debate_model,
+            "enable_document_semantics": self.enable_document_semantics,
             "verbose": self.verbose,
         }
 
@@ -309,11 +440,12 @@ class ParallelResearchPipeline:
         degraded_reason: str,
         risks: list[str] | None = None,
     ) -> BranchResult:
-        return BranchResult(
+        return self._annotate_branch_result(
+            BranchResult(
             branch_name=branch_name,
             score=0.0,
             confidence=0.0,
-            risks=risks or [f"{branch_name} 分支降级: {degraded_reason}"],
+            risks=[],
             explanation=explanation,
             symbol_scores={symbol: 0.0 for symbol in self.stock_pool},
             success=False,
@@ -324,13 +456,56 @@ class ParallelResearchPipeline:
                 "branch_mode": self._default_branch_mode(branch_name),
                 "reliability": 0.2,
             },
+            data_quality={"status": "degraded_branch", "reason": degraded_reason},
+            conclusion=f"{branch_name} 分支本轮未形成可直接执行的增量结论，当前按中性结果处理。",
+            diagnostic_notes=risks or [f"{branch_name} 分支降级: {degraded_reason}"],
+            )
         )
+
+    def _version_payload(self) -> dict[str, str]:
+        return output_version_payload(
+            architecture_version=self.architecture_version,
+            branch_schema_version=self.branch_schema_version,
+        )
+
+    def _annotate_branch_result(self, branch_result: BranchResult) -> BranchResult:
+        versions = self._version_payload()
+        branch_result.architecture_version = versions["architecture_version"]
+        branch_result.branch_schema_version = versions["branch_schema_version"]
+        branch_result.calibration_schema_version = versions["calibration_schema_version"]
+        branch_result.debate_template_version = versions["debate_template_version"]
+        branch_result.metadata.setdefault("architecture_version", branch_result.architecture_version)
+        branch_result.metadata.setdefault("branch_schema_version", branch_result.branch_schema_version)
+        branch_result.metadata.setdefault(
+            "calibration_schema_version",
+            branch_result.calibration_schema_version,
+        )
+        branch_result.metadata.setdefault("debate_template_version", branch_result.debate_template_version)
+        if not branch_result.conclusion:
+            if branch_result.score >= 0.15:
+                branch_result.conclusion = f"{branch_result.branch_name} 分支当前给出偏正面结论。"
+            elif branch_result.score <= -0.15:
+                branch_result.conclusion = f"{branch_result.branch_name} 分支当前给出偏谨慎结论。"
+            else:
+                branch_result.conclusion = f"{branch_result.branch_name} 分支当前维持中性结论。"
+        if not branch_result.thesis_points:
+            branch_result.thesis_points = [branch_result.conclusion]
+        if not branch_result.investment_risks and branch_result.risks:
+            branch_result.investment_risks = [str(item) for item in branch_result.risks[:4]]
+        if not branch_result.support_drivers and branch_result.score > 0.05:
+            branch_result.support_drivers = [f"{branch_result.branch_name} 分支综合评分为正。"]
+        if not branch_result.drag_drivers and branch_result.score < -0.05:
+            branch_result.drag_drivers = [f"{branch_result.branch_name} 分支综合评分偏弱。"]
+        return branch_result
 
     def run(self) -> ResearchPipelineResult:
         """执行完整并行研究流程。"""
         t0 = time.time()
         data_bundle = self._build_data_bundle()
-        result = ResearchPipelineResult(data_bundle=data_bundle)
+        result = ResearchPipelineResult(
+            data_bundle=data_bundle,
+            **self._version_payload(),
+        )
         result.execution_log.append("并行研究流程启动")
         result.timings["data_layer"] = time.time() - t0
 
@@ -710,6 +885,21 @@ class ParallelResearchPipeline:
                 branch_result.metadata.setdefault("degraded_reason", "")
                 branch_result.metadata.setdefault("branch_mode", self._default_branch_mode(name))
                 branch_result.metadata.setdefault("reliability", 1.0 if branch_result.success else 0.25)
+                if name == "kline":
+                    branch_result.metadata.setdefault("requested_backend", self.kline_backend)
+                    branch_result.metadata.setdefault("effective_backend", "hybrid")
+                    branch_result.metadata.setdefault("llm_interface_reserved", True)
+                branch_result.horizon_days = int(
+                    branch_result.metadata.get("horizon_days", branch_result.horizon_days or 5)
+                )
+                branch_result = self._annotate_branch_result(branch_result)
+                evidence_packet = self._build_branch_evidence_packet(
+                    branch_name=name,
+                    data_bundle=data_bundle,
+                    base_result=branch_result,
+                )
+                branch_result.evidence = evidence_packet
+                branch_result = self._apply_branch_debate(name, evidence_packet, branch_result, data_bundle)
                 results[name] = branch_result
         finally:
             for process, recv_conn in process_map.values():
@@ -728,13 +918,246 @@ class ParallelResearchPipeline:
 
         return results
 
+    @staticmethod
+    def _dedupe_list(items: list[str]) -> list[str]:
+        deduped: list[str] = []
+        for item in items:
+            if item and item not in deduped:
+                deduped.append(item)
+        return deduped
+
+    def _build_branch_evidence_packet(
+        self,
+        branch_name: str,
+        data_bundle: UnifiedDataBundle,
+        base_result: BranchResult,
+    ) -> EvidencePacket:
+        """把 deterministic/base 分支结果提炼为统一证据包。"""
+        ranked = sorted(
+            base_result.symbol_scores.items(),
+            key=lambda item: abs(float(item[1])),
+            reverse=True,
+        )
+        top_symbols = [
+            symbol
+            for symbol, score in ranked
+            if abs(float(score)) >= self.debate_min_abs_score
+        ][: self.debate_top_k]
+        if not top_symbols:
+            top_symbols = [symbol for symbol, _ in ranked[: self.debate_top_k]]
+
+        bull_points: list[str] = []
+        bear_points: list[str] = []
+        risk_points = list(base_result.risks[:4])
+        unknowns: list[str] = []
+        used_features = list(base_result.signals.keys())[:10]
+        symbol_context: dict[str, dict[str, Any]] = {}
+
+        if branch_name == "kline":
+            predicted_returns = base_result.signals.get("predicted_return", {})
+            regimes = base_result.signals.get("trend_regime", {})
+            for symbol in top_symbols:
+                score = float(base_result.symbol_scores.get(symbol, 0.0))
+                pred = float(predicted_returns.get(symbol, 0.0))
+                regime = str(regimes.get(symbol, "未知"))
+                symbol_context[symbol] = {"score": score, "predicted_return": pred, "regime": regime}
+                if score > 0:
+                    bull_points.append(f"{symbol} 趋势状态 {regime}，预测收益 {pred:+.2%}。")
+                elif score < 0:
+                    bear_points.append(f"{symbol} 趋势偏弱，预测收益 {pred:+.2%}。")
+        elif branch_name == "quant":
+            alpha_factors = base_result.signals.get("alpha_factors", [])
+            if alpha_factors:
+                bull_points.append("量化因子组: " + " / ".join(str(item) for item in alpha_factors[:5]))
+            for symbol in top_symbols:
+                score = float(base_result.symbol_scores.get(symbol, 0.0))
+                symbol_context[symbol] = {
+                    "score": score,
+                    "factor_exposure": base_result.signals.get("factor_exposures", {}).get(symbol, {}),
+                }
+                if score > 0:
+                    bull_points.append(f"{symbol} 量化打分为正。")
+                elif score < 0:
+                    bear_points.append(f"{symbol} 量化打分为负。")
+        elif branch_name == "fundamental":
+            bull_case = base_result.signals.get("bull_case", {})
+            bear_case = base_result.signals.get("bear_case", {})
+            quality = base_result.signals.get("quality_breakdown", {})
+            for symbol in top_symbols:
+                symbol_context[symbol] = _make_ipc_safe(quality.get(symbol, {}))
+                bull_points.extend(str(item) for item in bull_case.get(symbol, [])[:2])
+                bear_points.extend(str(item) for item in bear_case.get(symbol, [])[:2])
+            if base_result.data_quality.get("documents_missing_symbols"):
+                unknowns.append("部分标的缺少离线文档语义快照。")
+            if base_result.data_quality.get("coverage_ratio", 0.0) < 0.5:
+                unknowns.append("基本面覆盖度偏低，分支自动回退为偏中性解释。")
+        elif branch_name == "intelligence":
+            event_scores = base_result.signals.get("event_risk_score", {})
+            sentiment_scores = base_result.signals.get("sentiment_score", {})
+            flow_scores = base_result.signals.get("money_flow_score", {})
+            for symbol in top_symbols:
+                score = float(base_result.symbol_scores.get(symbol, 0.0))
+                symbol_context[symbol] = {
+                    "score": score,
+                    "event": float(event_scores.get(symbol, 0.0)),
+                    "sentiment": float(sentiment_scores.get(symbol, 0.0)),
+                    "flow": float(flow_scores.get(symbol, 0.0)),
+                }
+                if score > 0:
+                    bull_points.append(f"{symbol} 事件/情绪/资金流共振偏正。")
+                elif score < 0:
+                    bear_points.append(f"{symbol} 事件/情绪/资金流偏弱。")
+        elif branch_name == "macro":
+            bull_points.append(f"宏观 regime: {base_result.signals.get('macro_regime', '未知')}")
+            bull_points.append(f"流动性信号: {base_result.signals.get('liquidity_signal', '🟡')}")
+            symbol_context["market"] = _make_ipc_safe(base_result.signals)
+            if base_result.success is False:
+                unknowns.append("宏观分支当前使用降级统计。")
+
+        if not bull_points and base_result.score > 0:
+            bull_points.append(f"{branch_name} base score 为正。")
+        if not bear_points and base_result.score < 0:
+            bear_points.append(f"{branch_name} base score 为负。")
+        if not used_features:
+            used_features = ["score", "confidence"]
+
+        return EvidencePacket(
+            branch_name=branch_name,
+            as_of=str(data_bundle.metadata.get("end_date", "")),
+            scope="market" if branch_name == "macro" else "symbol",
+            summary=base_result.explanation,
+            symbols=list(self.stock_pool),
+            top_symbols=top_symbols,
+            bull_points=self._dedupe_list(bull_points)[:6],
+            bear_points=self._dedupe_list(bear_points)[:6],
+            risk_points=self._dedupe_list(risk_points)[:6],
+            unknowns=self._dedupe_list(unknowns)[:4],
+            used_features=self._dedupe_list([str(item) for item in used_features])[:10],
+            feature_values={
+                "branch_score": float(base_result.base_score if base_result.base_score is not None else base_result.score),
+                "branch_confidence": float(
+                    base_result.base_confidence
+                    if base_result.base_confidence is not None
+                    else base_result.confidence
+                ),
+            },
+            symbol_context=symbol_context,
+            metadata={
+                "data_quality": _make_ipc_safe(base_result.data_quality),
+                "branch_mode": base_result.metadata.get("branch_mode", self._default_branch_mode(branch_name)),
+                "debate_model": self.debate_model,
+                "template_version": self.debate_template_version,
+            },
+        )
+
+    def _apply_branch_debate(
+        self,
+        branch_name: str,
+        evidence_packet: EvidencePacket,
+        base_result: BranchResult,
+        data_bundle: UnifiedDataBundle | None = None,
+    ) -> BranchResult:
+        """执行 branch-local debate，并把 verdict 融入分支最终输出。"""
+        base_score = float(base_result.base_score if base_result.base_score is not None else base_result.score)
+        base_conf = float(
+            base_result.base_confidence if base_result.base_confidence is not None else base_result.confidence
+        )
+        self.debate_scheduler.engine = self.branch_debate_engine
+        verdict = self.debate_scheduler.evaluate_branch(
+            branch_name=branch_name,
+            evidence=evidence_packet,
+            base_result=base_result,
+            debate_top_k=self.debate_top_k,
+            debate_min_abs_score=self.debate_min_abs_score,
+            data_bundle=data_bundle,
+        )
+
+        cap = BRANCH_DEBATE_ADJUSTMENT_CAPS.get(branch_name, 0.10)
+        bounded_adjustment = _clamp(float(verdict.score_adjustment), -cap, cap)
+        final_score = _clamp(base_score + bounded_adjustment, -1.0, 1.0)
+        disagreement = (base_score * bounded_adjustment) < 0
+
+        if not verdict.hard_veto and base_score != 0.0 and final_score != 0.0 and base_score * final_score < 0:
+            final_score = 0.0
+
+        if verdict.hard_veto:
+            if base_score > 0:
+                final_score = min(abs(final_score), 0.10)
+            elif base_score < 0:
+                final_score = -min(abs(final_score), 0.10)
+            else:
+                final_score = 0.0
+
+        if verdict.metadata.get("reason") in {"llm_provider_missing", "scheduler_gate_not_met"}:
+            final_conf = base_conf
+        elif verdict.hard_veto:
+            final_conf = _clamp(min(base_conf, verdict.confidence or base_conf) * 0.78, 0.15, 1.0)
+        elif disagreement:
+            final_conf = _clamp(min(base_conf, verdict.confidence or base_conf) * 0.82, 0.15, 1.0)
+        else:
+            debate_conf = verdict.confidence if verdict.confidence > 0 else base_conf
+            final_conf = _clamp(base_conf * 0.85 + debate_conf * 0.15, 0.0, 1.0)
+
+        final_risks = self._dedupe_list([*base_result.risks, *verdict.risk_flags])
+        explanation = base_result.explanation
+        if verdict.metadata.get("status") == "deterministic_stub":
+            explanation += " 已通过 branch-local debate 做 bounded review。"
+        elif verdict.metadata.get("reason") == "llm_provider_missing":
+            explanation += " branch-local debate 缺少 provider，保持 deterministic 结果。"
+
+        metadata = dict(base_result.metadata)
+        metadata.update(
+            {
+                "debate_enabled": self.enable_branch_debate,
+                "debate_model": self.debate_model,
+                "debate_status": verdict.metadata.get("status", "skipped"),
+                "debate_reason": verdict.metadata.get("reason", ""),
+                "bounded_adjustment_cap": cap,
+                "bounded_adjustment": bounded_adjustment,
+                **self._version_payload(),
+            }
+        )
+        signals = dict(base_result.signals)
+        signals["debate_verdict"] = verdict.to_dict()
+        signals["base_score"] = base_score
+        signals["final_score"] = final_score
+        signals["base_confidence"] = base_conf
+        signals["final_confidence"] = final_conf
+        signals["bounded_adjustment"] = bounded_adjustment
+
+        return self._annotate_branch_result(
+            BranchResult(
+            branch_name=base_result.branch_name,
+            score=final_score,
+            confidence=final_conf,
+            signals=signals,
+            risks=final_risks,
+            explanation=explanation,
+            symbol_scores=dict(base_result.symbol_scores),
+            success=base_result.success,
+            metadata=metadata,
+            base_score=base_score,
+            final_score=final_score,
+            base_confidence=base_conf,
+            final_confidence=final_conf,
+            horizon_days=int(base_result.horizon_days),
+            evidence=evidence_packet,
+            debate_verdict=verdict,
+            data_quality=dict(base_result.data_quality),
+            )
+        )
+
     def _calibrate_signals(
         self,
         data_bundle: UnifiedDataBundle,
         branch_results: dict[str, BranchResult],
     ) -> dict[str, Any]:
         """对全部分支结果做统一量纲校准。"""
-        calibrator = SignalCalibrator(data_bundle.symbol_provenance())
+        calibrator = SignalCalibrator(
+            data_bundle.symbol_provenance(),
+            architecture_version=self.architecture_version,
+            branch_schema_version=self.branch_schema_version,
+        )
         return calibrator.calibrate_all(branch_results, self.stock_pool)
 
     def _run_kline_branch(self, data_bundle: UnifiedDataBundle) -> BranchResult:
@@ -755,18 +1178,49 @@ class ParallelResearchPipeline:
             "allow_remote_download": config.KLINE_ALLOW_REMOTE_MODEL_DOWNLOAD,
         }
 
-        backend = get_backend(effective_backend, **backend_kwargs)
-        result = backend.predict(data_bundle.symbol_data, self.stock_pool)
+        runtime_backend = effective_backend
+        try:
+            backend = get_backend(effective_backend, **backend_kwargs)
+            result = backend.predict(data_bundle.symbol_data, self.stock_pool)
+        except ModuleNotFoundError as exc:
+            # 最小测试环境允许缺少 torch 等重依赖，此时回退到轻量 heuristic runtime。
+            backend = get_backend("heuristic")
+            result = backend.predict(data_bundle.symbol_data, self.stock_pool)
+            runtime_backend = "heuristic_fallback"
+            result.metadata.setdefault("degraded_reason", f"missing_dependency:{exc.name}")
+            result.metadata.setdefault("runtime_fallback_dependency", exc.name)
         result.branch_name = "kline"
-        result.metadata.setdefault("branch_mode", "kline_dual_model")
+        result.metadata["branch_mode"] = "kline_dual_model"
         result.metadata.setdefault("reliability", backend.reliability)
         result.metadata.setdefault("horizon_days", backend.horizon_days)
         result.metadata["requested_backend"] = requested_backend
         result.metadata["effective_backend"] = effective_backend
+        result.metadata["runtime_backend"] = runtime_backend
+        result.metadata["llm_interface_reserved"] = True
         return result
 
     def _run_quant_branch(self, data_bundle: UnifiedDataBundle) -> BranchResult:
         """传统量化分支：Alpha 挖掘优先，失败时回退到经典因子。"""
+        try:
+            from quant_investor.alpha_mining import AlphaMiner, FactorLibrary
+        except ModuleNotFoundError as exc:
+            return BranchResult(
+                branch_name="quant",
+                explanation=f"量化依赖缺失，分支降级为中性结果: {exc}",
+                symbol_scores={symbol: 0.0 for symbol in self.stock_pool},
+                success=False,
+                metadata={
+                    "branch_mode": "alpha_research",
+                    "reliability": 0.2,
+                    "degraded_reason": f"missing_dependency:{exc.name}",
+                },
+                data_quality={
+                    "status": "degraded_branch",
+                    "reason": "missing_quant_dependency",
+                    "dependency": exc.name,
+                },
+            )
+
         combined = data_bundle.combined_frame()
         if combined.empty:
             return BranchResult(
@@ -877,127 +1331,40 @@ class ParallelResearchPipeline:
             },
         )
 
-    def _run_llm_debate_branch(self, data_bundle: UnifiedDataBundle) -> BranchResult:
-        """LLM 多空辩论分支：第一版使用结构化研究摘要生成辩论结论。"""
-        symbol_scores: dict[str, float] = {}
-        bull_case: dict[str, list[str]] = {}
-        bear_case: dict[str, list[str]] = {}
-        key_risks: dict[str, list[str]] = {}
-
-        for symbol in self.stock_pool:
-            fundamentals = data_bundle.fundamentals.get(symbol, {})
-            events = data_bundle.event_data.get(symbol, [])
-            sentiment = data_bundle.sentiment_data.get(symbol, {})
-
-            bullish_points: list[str] = []
-            bearish_points: list[str] = []
-            risks: list[str] = []
-            score = 0.0
-
-            roe = float(fundamentals.get("roe", 0.0))
-            growth = float(fundamentals.get("profit_growth", fundamentals.get("revenue_growth", 0.0)))
-            debt = float(fundamentals.get("debt_ratio", 0.4))
-            event_impact = _safe_mean([float(item.get("impact", 0.0)) for item in events])
-            fear_greed = float(sentiment.get("fear_greed", 0.0))
-
-            if roe > 0.12:
-                bullish_points.append("盈利能力较强，ROE 表现优于中性水平。")
-                score += 0.25
-            else:
-                bearish_points.append("盈利能力尚未形成明显优势。")
-                score -= 0.1
-
-            if growth > 0.1:
-                bullish_points.append("成长信号积极，利润或收入保持扩张。")
-                score += 0.2
-            elif growth < -0.05:
-                bearish_points.append("成长动能偏弱，基本面改善需要更多验证。")
-                score -= 0.2
-
-            if debt > 0.55:
-                risks.append("资产负债率偏高，需要关注偿债压力。")
-                bearish_points.append("负债水平较高，财务弹性受限。")
-                score -= 0.15
-
-            if event_impact > 0.05:
-                bullish_points.append("近期事件流偏正面，有利于估值修复。")
-                score += 0.15
-            elif event_impact < -0.05:
-                bearish_points.append("近期事件流偏负面，可能压制风险偏好。")
-                score -= 0.15
-
-            if fear_greed > 0.2:
-                bullish_points.append("市场情绪边际回暖。")
-                score += 0.1
-            elif fear_greed < -0.2:
-                bearish_points.append("市场情绪仍偏谨慎。")
-                score -= 0.1
-
-            bull_case[symbol] = bullish_points or ["暂无强烈看多证据，维持中性观察。"]
-            bear_case[symbol] = bearish_points or ["暂无明显看空论据。"]
-            key_risks[symbol] = risks
-            symbol_scores[symbol] = _clamp(score, -1.0, 1.0)
-
-        return BranchResult(
-            branch_name="llm_debate",
-            score=_safe_mean(list(symbol_scores.values())),
-            confidence=0.58,
-            signals={
-                "bull_case": bull_case,
-                "bear_case": bear_case,
-                "key_risks": key_risks,
-                "llm_confidence": 0.58,
-            },
-            risks=["第一版为结构化研究辩论器，新闻与公告摘要仍以占位适配为主。"],
-            explanation="LLM 辩论分支围绕基本面、行业、事件和情绪构建多空论据，但不直接负责最终仓位裁决。",
-            symbol_scores=symbol_scores,
-            metadata={
-                "bull_case": bull_case,
-                "bear_case": bear_case,
-                "branch_mode": "structured_research_debate",
-                "debate_mode": "structured_rules",
-                "reliability": 0.58,
-                "horizon_days": 10,
-            },
+    def _run_fundamental_branch(self, data_bundle: UnifiedDataBundle) -> BranchResult:
+        """公司基本面分支。"""
+        branch = FundamentalBranch(
+            data_layer=self.data_layer,
+            stock_pool=self.stock_pool,
+            enable_document_semantics=self.enable_document_semantics,
         )
+        return branch.run(data_bundle)
+
+    def _run_llm_debate_branch(self, data_bundle: UnifiedDataBundle) -> BranchResult:
+        """Deprecated: 旧 llm_debate 顶层分支已并入 V9 fundamental + branch-local debate。"""
+        result = self._run_fundamental_branch(data_bundle)
+        result.metadata["deprecated_alias"] = "llm_debate"
+        result.metadata["deprecated_alias_target"] = "fundamental"
+        return result
 
     def _run_intelligence_branch(self, data_bundle: UnifiedDataBundle) -> BranchResult:
-        """多维智能融合分支。"""
-        financial_health: dict[str, float] = {}
+        """多维智能融合分支，仅覆盖事件/情绪/资金流/广度/行业轮动。"""
         event_risk: dict[str, float] = {}
         sentiment_score: dict[str, float] = {}
+        money_flow_score: dict[str, float] = {}
         breadth_score: dict[str, float] = {}
+        rotation_score: dict[str, float] = {}
         alerts: list[str] = []
         symbol_scores: dict[str, float] = {}
 
         advancing = 0
         declining = 0
         for symbol, df in data_bundle.symbol_data.items():
-            fundamentals = data_bundle.fundamentals.get(symbol, {})
             sentiments = data_bundle.sentiment_data.get(symbol, {})
             events = data_bundle.event_data.get(symbol, [])
 
-            roe = float(fundamentals.get("roe", 0.0))
-            gross_margin = float(fundamentals.get("gross_margin", 0.0))
-            debt_ratio = float(fundamentals.get("debt_ratio", 0.5))
-            pe = float(fundamentals.get("pe", 15.0))
-            pb = float(fundamentals.get("pb", 2.0))
-
-            piotroski_like = (
-                (1 if roe > 0.1 else 0)
-                + (1 if gross_margin > 0.25 else 0)
-                + (1 if debt_ratio < 0.45 else 0)
-            ) / 3
-            beneish_risk = 1.0 - _clamp((gross_margin * 2 + roe - debt_ratio), 0.0, 1.0)
-            altman_like = _clamp(1.5 - debt_ratio + roe, 0.0, 1.0)
-            valuation_score = _clamp((20 - pe) / 20 + (2.5 - pb) / 3, -1.0, 1.0)
-
-            financial_score = _clamp(
-                (piotroski_like - beneish_risk + altman_like + valuation_score) / 3,
-                -1.0,
-                1.0,
-            )
-            event_score = _clamp(-_safe_mean([abs(float(item.get("impact", 0.0))) for item in events]), -1.0, 0.0)
+            event_bias = _safe_mean([float(item.get("impact", 0.0)) for item in events])
+            event_score = _clamp(event_bias, -1.0, 1.0)
             senti = _clamp(
                 0.5 * float(sentiments.get("fear_greed", 0.0))
                 + 0.3 * float(sentiments.get("money_flow", 0.0))
@@ -1005,6 +1372,7 @@ class ParallelResearchPipeline:
                 -1.0,
                 1.0,
             )
+            flow = _clamp(float(sentiments.get("money_flow", 0.0)), -1.0, 1.0)
 
             if df["close"].pct_change().iloc[-1] >= 0:
                 advancing += 1
@@ -1015,26 +1383,36 @@ class ParallelResearchPipeline:
             if advancing + declining > 0:
                 breadth = (advancing - declining) / (advancing + declining)
 
-            if debt_ratio > 0.6:
-                alerts.append(f"{symbol} 负债率偏高，需结合现金流进一步验证。")
-            if beneish_risk > 0.6:
-                alerts.append(f"{symbol} 财务舞弊风险代理信号偏高。")
+            returns = df["close"].pct_change().dropna()
+            short_trend = float(returns.tail(10).mean()) if len(returns) >= 5 else 0.0
+            medium_trend = float(returns.tail(30).mean()) if len(returns) >= 10 else short_trend
+            rotation = _clamp((short_trend - medium_trend) / (returns.tail(20).std() + 1e-8), -1.0, 1.0)
 
-            financial_health[symbol] = financial_score
+            if event_bias < -0.15:
+                alerts.append(f"{symbol} 近期事件流显著偏负面。")
+            if flow < -0.25:
+                alerts.append(f"{symbol} 资金流持续走弱。")
+
             event_risk[symbol] = event_score
             sentiment_score[symbol] = senti
+            money_flow_score[symbol] = flow
             breadth_score[symbol] = breadth
+            rotation_score[symbol] = rotation
             # 根据市场状态自适应调整融合权重
             regime = self._market_regime
             if regime == "趋势上涨" or regime == "趋势下跌":
-                w_fin, w_sen, w_evt = 0.35, 0.40, 0.25
+                w_evt, w_sen, w_flow, w_rot = 0.25, 0.30, 0.25, 0.20
             elif regime == "震荡低波":
-                w_fin, w_sen, w_evt = 0.55, 0.20, 0.25
+                w_evt, w_sen, w_flow, w_rot = 0.20, 0.25, 0.25, 0.30
             elif regime == "震荡高波":
-                w_fin, w_sen, w_evt = 0.40, 0.25, 0.35
+                w_evt, w_sen, w_flow, w_rot = 0.35, 0.20, 0.25, 0.20
             else:
-                w_fin, w_sen, w_evt = 0.50, 0.25, 0.25
-            symbol_scores[symbol] = _clamp(w_fin * financial_score + w_sen * senti + w_evt * event_score, -1.0, 1.0)
+                w_evt, w_sen, w_flow, w_rot = 0.30, 0.25, 0.25, 0.20
+            symbol_scores[symbol] = _clamp(
+                w_evt * event_score + w_sen * senti + w_flow * flow + w_rot * rotation,
+                -1.0,
+                1.0,
+            )
 
         return BranchResult(
             branch_name="intelligence",
@@ -1042,20 +1420,22 @@ class ParallelResearchPipeline:
             confidence=0.62,
             signals={
                 "intelligence_score": symbol_scores,
-                "financial_health_score": financial_health,
                 "event_risk_score": event_risk,
                 "sentiment_score": sentiment_score,
+                "money_flow_score": money_flow_score,
                 "breadth_score": breadth_score,
+                "rotation_score": rotation_score,
                 "alerts": alerts,
             },
             risks=alerts[:5],
-            explanation="多维智能融合分支独立整合财务质量、事件风险、情绪、资金流和市场广度信号。",
+            explanation="多维智能融合分支只整合新闻/公告事件、情绪、资金流、市场广度与行业轮动信号。",
             symbol_scores=symbol_scores,
             metadata={
-                "financial_health_score": financial_health,
                 "event_risk_score": event_risk,
                 "sentiment_score": sentiment_score,
+                "money_flow_score": money_flow_score,
                 "breadth_score": breadth_score,
+                "rotation_score": rotation_score,
                 "branch_mode": "structured_intelligence_fusion",
                 "reliability": 0.72,
                 "horizon_days": 10,
@@ -1332,10 +1712,8 @@ class ParallelResearchPipeline:
         """生成最终组合级策略。"""
         if calibrated_signals is None:
             calibrated_signals = self._calibrate_signals(data_bundle, branch_results)
-        branch_consensus = {
-            name: round(signal.aggregate_expected_return, 4)
-            for name, signal in calibrated_signals.items()
-        }
+        judge_output = EnsembleJudge.combine(branch_results, market_regime=self._market_regime)
+        branch_consensus = judge_output["branch_consensus"]
         raw_symbol_convictions = self._aggregate_symbol_scores(calibrated_signals)
         expected_returns = self._aggregate_expected_returns(calibrated_signals)
         synthetic_symbols = set(data_bundle.synthetic_symbols())
@@ -1347,8 +1725,17 @@ class ParallelResearchPipeline:
             if score > 0 and (self.allow_synthetic_for_research or symbol not in synthetic_symbols)
         ][: min(8, len(data_bundle.real_symbols()) or len(self.stock_pool))]
 
-        research_score = _safe_mean(list(branch_consensus.values()))
-        disagreement = np.std([branch.score for branch in branch_results.values()]) if branch_results else 0.0
+        research_score = float(judge_output["aggregate_score"])
+        disagreement = (
+            np.std(
+                [
+                    float(branch.final_score if branch.final_score is not None else branch.score)
+                    for branch in branch_results.values()
+                ]
+            )
+            if branch_results
+            else 0.0
+        )
         base_exposure = 1 - risk_result.position_sizing.cash_ratio
         exposure_penalty = _clamp(disagreement, 0.0, 0.35)
         target_exposure = _clamp(base_exposure * (1 - exposure_penalty), 0.1, 0.95)
@@ -1426,6 +1813,7 @@ class ParallelResearchPipeline:
         )
 
         return PortfolioStrategy(
+            **self._version_payload(),
             target_exposure=target_exposure,
             style_bias=style_bias,
             sector_preferences=sector_preferences,
@@ -1453,9 +1841,12 @@ class ParallelResearchPipeline:
                 "branch_reliability": {
                     name: float(signal.reliability) for name, signal in calibrated_signals.items()
                 },
+                "ensemble_weights": judge_output["weights"],
+                "ensemble_confidence": float(judge_output["aggregate_confidence"]),
                 "macro_overlay": macro_overlay,
                 "research_only_reason": research_only_reason,
                 "symbol_provenance": data_bundle.symbol_provenance(),
+                **self._version_payload(),
             },
             research_mode=research_mode,
             trade_recommendations=trade_recommendations,
@@ -1756,10 +2147,11 @@ class ParallelResearchPipeline:
         if trend_regime == "承压":
             risk_flags.append("短线趋势仍承压，优先等待企稳信号。")
 
-        llm_branch = branch_results.get("llm_debate")
-        if llm_branch is not None:
-            llm_risks = llm_branch.signals.get("key_risks", {}).get(symbol, [])
-            risk_flags.extend(str(item) for item in llm_risks[:2])
+        fundamental_branch = branch_results.get("fundamental")
+        if fundamental_branch is not None:
+            fundamental_risks = fundamental_branch.signals.get("bear_case", {}).get(symbol, [])
+            risk_flags.extend(str(item) for item in fundamental_risks[:2])
+            risk_flags.extend(str(item) for item in fundamental_branch.debate_verdict.risk_flags[:1])
 
         intelligence_branch = branch_results.get("intelligence")
         if intelligence_branch is not None:
@@ -1812,11 +2204,11 @@ class ParallelResearchPipeline:
         research_score: float,
     ) -> str:
         quant_score = branch_results.get("quant", BranchResult("quant")).score
-        intelligence_score = branch_results.get("intelligence", BranchResult("intelligence")).score
+        fundamental_score = branch_results.get("fundamental", BranchResult("fundamental")).score
         macro_score = branch_results.get("macro", BranchResult("macro")).score
         if research_score < -0.2 or macro_score < -0.2:
             return "防御"
-        if intelligence_score > 0.2 and quant_score < 0:
+        if fundamental_score > 0.2 and quant_score < 0:
             return "高质量"
         if quant_score > 0.2:
             return "成长"
@@ -1848,10 +2240,14 @@ class ParallelResearchPipeline:
         risk_result = result.risk_result
         active_branch_count = max(len(result.branch_results), 1)
         lines = [
-            "# 五路并行研究投资策略报告",
+            "# V9 五路并行研究投资策略报告",
             "",
             f"**市场**: {result.data_bundle.market}",
             f"**生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"**架构版本**: {result.architecture_version}",
+            f"**分支 Schema**: {result.branch_schema_version}",
+            f"**校准 Schema**: {result.calibration_schema_version}",
+            f"**Debate 模板版本**: {result.debate_template_version}",
             "",
             "## 组合级策略结论",
             f"- 目标总仓位: {strategy.target_exposure:.0%}",
@@ -1869,10 +2265,11 @@ class ParallelResearchPipeline:
             lines.extend(
                 [
                     f"### {branch.branch_name}",
-                    f"- 分支得分: {branch.score:+.2f}",
-                    f"- 置信度: {branch.confidence:.0%}",
+                    f"- Base/Final 得分: {branch.base_score:+.2f} -> {branch.final_score:+.2f}",
+                    f"- Base/Final 置信度: {branch.base_confidence:.0%} -> {branch.final_confidence:.0%}",
                     f"- 分支模式: {branch.metadata.get('branch_mode', 'unknown')}",
                     f"- 可靠度: {float(branch.metadata.get('reliability', 0.0)):.0%}",
+                    f"- Debate 状态: {branch.metadata.get('debate_status', 'n/a') or 'n/a'}",
                     f"- 说明: {branch.explanation}",
                 ]
             )
@@ -1998,6 +2395,7 @@ class ParallelResearchPipeline:
             "kline": "kline_dual_model",
             "quant": "alpha_research",
             "llm_debate": "structured_research_debate",
+            "fundamental": "fundamental_snapshot_fusion",
             "intelligence": "structured_intelligence_fusion",
             "macro": "macro_terminal",
         }.get(branch_name, "unknown")

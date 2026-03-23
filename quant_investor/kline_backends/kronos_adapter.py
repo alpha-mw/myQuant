@@ -87,9 +87,9 @@ class KronosBackend(KLineBackend):
         reliability = self.reliability if runtime_mode == "vendor_native" else 0.58
         score = _safe_mean(list(symbol_scores.values()))
         confidence = _clamp(0.50 + float(np.std(list(symbol_scores.values()) or [0.0])), 0.40, 0.86)
-        risks = []
+        diagnostic_notes = []
         if runtime_mode != "vendor_native":
-            risks.append("Kronos 原生权重未命中，已使用统计替代预测")
+            diagnostic_notes.append("Kronos 原生模型未命中，已自动回退统计预测。")
 
         return BranchResult(
             branch_name="kline",
@@ -102,7 +102,7 @@ class KronosBackend(KLineBackend):
                 "model_runtime_mode": runtime_mode,
                 "kronos_model_name": self._model_name,
             },
-            risks=risks,
+            risks=[],
             explanation=(
                 "K线分析（Kronos）已切换为 myQuant 内置模型链路，"
                 f"当前模型为 {self._model_name}，运行模式为 {runtime_mode}。"
@@ -118,4 +118,10 @@ class KronosBackend(KLineBackend):
                 "model_source": "internal_vendor",
                 "kronos_model_name": self._model_name,
             },
+            conclusion=(
+                "Kronos 模型已给出完整趋势结论。"
+                if runtime_mode == "vendor_native"
+                else "Kronos 模型本轮已自动回退统计预测，但趋势结论仍保持完整。"
+            ),
+            diagnostic_notes=diagnostic_notes,
         )

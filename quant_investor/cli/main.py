@@ -6,16 +6,31 @@ from __future__ import annotations
 
 import argparse
 
-from quant_investor.market import run_market_backtest
-from quant_investor.market.analyze import run_market_analysis
-from quant_investor.market.download import run_download
-from quant_investor.pipeline import QuantInvestorV8
+from quant_investor.pipeline import QuantInvestorLatest, QuantInvestorV8, QuantInvestorV9, QuantInvestorV10
+
+
+def run_download(**kwargs):
+    from quant_investor.market.download import run_download as _run_download
+
+    return _run_download(**kwargs)
+
+
+def run_market_analysis(**kwargs):
+    from quant_investor.market.analyze import run_market_analysis as _run_market_analysis
+
+    return _run_market_analysis(**kwargs)
+
+
+def run_market_backtest(**kwargs):
+    from quant_investor.market import run_market_backtest as _run_market_backtest
+
+    return _run_market_backtest(**kwargs)
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="quant-investor",
-        description="Quant-Investor 统一 CLI",
+        description="Quant-Investor 统一 CLI。V8 为 legacy frozen，V9 为 current architecture，默认 latest=V9。",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -23,6 +38,12 @@ def _build_parser() -> argparse.ArgumentParser:
     research_subparsers = research_parser.add_subparsers(dest="research_command", required=True)
     research_run = research_subparsers.add_parser("run", help="执行研究")
     research_run.add_argument("--stocks", nargs="+", required=True)
+    research_run.add_argument(
+        "--architecture",
+        default="latest",
+        choices=["latest", "v10", "v9", "v8"],
+        help="选择研究架构：`v8`=legacy frozen，`v9`=current，`v10`=multi-agent IC，`latest` 默认等于 V10。",
+    )
     research_run.add_argument("--market", default="CN", choices=["CN", "US"])
     research_run.add_argument("--capital", type=float, default=1_000_000.0)
     research_run.add_argument("--risk", default="中等", choices=["保守", "中等", "积极"])
@@ -36,10 +57,24 @@ def _build_parser() -> argparse.ArgumentParser:
     research_run.add_argument("--no-macro", action="store_true")
     research_run.add_argument("--no-kline", "--no-kronos", action="store_true")
     research_run.add_argument("--no-quant", action="store_true")
+    research_run.add_argument("--no-fundamental", action="store_true")
     research_run.add_argument("--no-intelligence", action="store_true")
+    research_run.add_argument("--no-branch-debate", action="store_true")
     research_run.add_argument("--no-llm-debate", action="store_true")
+    research_run.add_argument("--debate-top-k", type=int, default=3)
+    research_run.add_argument("--debate-min-abs-score", type=float, default=0.08)
+    research_run.add_argument("--debate-timeout-sec", type=float, default=8.0)
+    research_run.add_argument("--debate-model", default="gpt-5.4-mini")
+    research_run.add_argument("--disable-document-semantics", action="store_true")
     research_run.add_argument("--allow-synthetic-for-research", action="store_true")
     research_run.add_argument("--output", default="")
+    # V10 agent layer params
+    research_run.add_argument("--no-agent-layer", action="store_true", help="关闭 V10 Agent IC 层")
+    research_run.add_argument("--enable-branch-debate", action="store_true", help="V10 下同时启用 branch-local debate")
+    research_run.add_argument("--agent-model", default="", help="分支 SubAgent 使用的 LLM 模型")
+    research_run.add_argument("--master-model", default="", help="IC Master Agent 使用的 LLM 模型")
+    research_run.add_argument("--agent-timeout", type=float, default=15.0, help="单个 agent 超时（秒）")
+    research_run.add_argument("--master-timeout", type=float, default=30.0, help="IC agent 超时（秒）")
 
     market_parser = subparsers.add_parser("market", help="全市场工作流")
     market_subparsers = market_parser.add_subparsers(dest="market_command", required=True)
@@ -79,21 +114,53 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     if args.command == "research" and args.research_command == "run":
-        investor = QuantInvestorV8(
+        architecture_cls = {
+            "latest": QuantInvestorLatest,
+            "v10": QuantInvestorV10,
+            "v9": QuantInvestorV9,
+            "v8": QuantInvestorV8,
+        }[args.architecture]
+        investor_kwargs = dict(
             stock_pool=args.stocks,
             market=args.market,
             lookback_years=args.lookback,
             total_capital=args.capital,
             risk_level=args.risk,
             enable_macro=not args.no_macro,
-            enable_quant=not args.no_quant,
             enable_kline=not args.no_kline,
             kline_backend=args.kline_backend,
             enable_intelligence=not args.no_intelligence,
-            enable_llm_debate=not args.no_llm_debate,
             allow_synthetic_for_research=args.allow_synthetic_for_research,
             verbose=True,
         )
+        if args.architecture == "v8":
+            investor_kwargs["enable_llm_debate"] = not args.no_llm_debate
+        else:
+            investor_kwargs.update(
+                {
+                    "enable_quant": not args.no_quant,
+                    "enable_fundamental": not args.no_fundamental,
+                    "enable_branch_debate": not (args.no_branch_debate or args.no_llm_debate),
+                    "debate_top_k": args.debate_top_k,
+                    "debate_min_abs_score": args.debate_min_abs_score,
+                    "debate_timeout_sec": args.debate_timeout_sec,
+                    "debate_model": args.debate_model,
+                    "enable_document_semantics": not args.disable_document_semantics,
+                }
+            )
+            # V10 agent layer params
+            if args.architecture in ("v10", "latest"):
+                investor_kwargs.update(
+                    {
+                        "enable_agent_layer": not args.no_agent_layer,
+                        "enable_branch_debate": args.enable_branch_debate,
+                        "agent_model": args.agent_model,
+                        "master_model": args.master_model,
+                        "agent_timeout": args.agent_timeout,
+                        "master_timeout": args.master_timeout,
+                    }
+                )
+        investor = architecture_cls(**investor_kwargs)
         result = investor.run()
         if args.output:
             investor.save_report(args.output)
