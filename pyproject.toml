@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "quant-investor"
-version = "8.0.0"
-description = "智能量化投资平台 - V8 五路并行研究、可信回测与组合级集成裁判"
+version = "9.0.0"
+description = "智能量化投资平台 - V9 五路并行研究、Fundamental Branch、branch-local debate 与组合级集成裁判"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [

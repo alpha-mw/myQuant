@@ -32,23 +32,23 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install pytest pytest-cov flake8 mypy
+        pip install -e . --no-deps
+        pip install pytest pytest-cov flake8 mypy pandas numpy loguru python-dotenv requests aiohttp pydantic scikit-learn tqdm
     
     - name: Lint with flake8
       run: |
         # 停止构建如果有语法错误或未定义名称
-        flake8 scripts/unified --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 quant_investor --count --select=E9,F63,F7,F82 --show-source --statistics
         # 退出零将所有错误视为警告
-        flake8 scripts/unified --count --exit-zero --max-complexity=10 --max-line-length=100 --statistics
+        flake8 quant_investor --count --exit-zero --max-complexity=10 --max-line-length=100 --statistics
     
     - name: Type check with mypy
       run: |
-        mypy scripts/unified --ignore-missing-imports --no-strict-optional
+        mypy quant_investor --ignore-missing-imports --no-strict-optional
     
     - name: Test with pytest
       run: |
-        pytest tests/unit/ -v --cov=scripts/unified --cov-report=xml --cov-report=html
+        python -m pytest tests/unit/ -v --cov=quant_investor --cov-report=xml --cov-report=html
     
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v3

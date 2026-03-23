@@ -67,7 +67,7 @@ _REGIME_PARAMS: dict[MarketRegime, RegimeParams] = {
         max_position=0.40,
         stop_loss_pct=-0.05,
         rebalance_freq="W",
-        branch_weight_adjustments={"kline": 1.3, "macro": 1.5, "llm_debate": 0.7},
+        branch_weight_adjustments={"kline": 1.3, "macro": 1.5, "fundamental": 0.7},
         description="趋势下跌市：仓位上限 40%，止损收紧至 5%，宏观权重上调",
     ),
     MarketRegime.RANGE_LOW_VOL: RegimeParams(

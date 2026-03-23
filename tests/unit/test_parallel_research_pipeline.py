@@ -12,12 +12,16 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from quant_investor.branch_debate_engine import BranchDebateEngine
+from quant_investor.branch_contracts import BranchResult, EvidencePacket, UnifiedDataBundle
 from quant_investor.config import config
-from quant_investor.contracts import BranchResult, UnifiedDataBundle
+from quant_investor.ensemble_judge import EnsembleJudge
 from quant_investor.market.analyze import build_full_market_trade_plan
 from quant_investor.enhanced_data_layer import EnhancedDataLayer
-from quant_investor.pipeline.parallel_research_pipeline import ParallelResearchPipeline
+from quant_investor.pipeline.parallel_research_pipeline import BranchPerformanceTracker, ParallelResearchPipeline
 from quant_investor.pipeline.quant_investor_v8 import QuantInvestorV8
+from quant_investor.pipeline.quant_investor_v9 import QuantInvestorV9
+from quant_investor.versioning import CURRENT_BRANCH_WEIGHTS
 
 
 def _make_symbol_frame(symbol: str, scale: float = 1.0, volatile: bool = False) -> pd.DataFrame:
@@ -114,7 +118,7 @@ def test_parallel_pipeline_runs_with_all_branches(monkeypatch):
     assert set(result.branch_results.keys()) == {
         "kline",
         "quant",
-        "llm_debate",
+        "fundamental",
         "intelligence",
         "macro",
     }
@@ -128,11 +132,21 @@ def test_parallel_pipeline_runs_with_all_branches(monkeypatch):
     assert "组合级策略结论" in result.final_report
     assert "可执行交易计划" in result.final_report
     assert result.calibrated_signals["kline"].branch_mode == "kline_dual_model"
-    assert result.calibrated_signals["llm_debate"].branch_mode == "structured_research_debate"
+    assert result.calibrated_signals["fundamental"].branch_mode == "fundamental_snapshot_fusion"
     assert result.final_strategy.provenance_summary["synthetic_symbols"] == []
     assert result.branch_results["kline"].metadata["effective_backend"] == "hybrid"
     assert result.branch_results["kline"].metadata["requested_backend"] == "hybrid"
     assert result.branch_results["kline"].metadata["llm_interface_reserved"] is True
+
+
+def test_pipeline_branch_order_uses_fundamental_not_llm_debate():
+    assert ParallelResearchPipeline.BRANCH_ORDER == [
+        "kline",
+        "quant",
+        "fundamental",
+        "intelligence",
+        "macro",
+    ]
 
 
 def test_pipeline_degrades_when_single_branch_fails(monkeypatch):
@@ -242,15 +256,15 @@ def test_pipeline_skips_quant_branch_when_disabled(monkeypatch):
     result = pipeline.run()
 
     assert "quant" not in result.branch_results
-    assert set(result.branch_results.keys()) == {"kline", "llm_debate", "intelligence", "macro"}
+    assert set(result.branch_results.keys()) == {"kline", "fundamental", "intelligence", "macro"}
 
 
-def test_pipeline_degrades_timed_out_branch_without_aborting(monkeypatch, tmp_path):
+def test_pipeline_degrades_timed_out_fundamental_branch_without_aborting(monkeypatch, tmp_path):
     symbol_frames = {
         "000001.SZ": _make_symbol_frame("000001.SZ", scale=1.0),
         "600519.SH": _make_symbol_frame("600519.SH", scale=1.2),
     }
-    marker_file = tmp_path / "llm_branch_finished.txt"
+    marker_file = tmp_path / "fundamental_branch_finished.txt"
 
     monkeypatch.setattr(
         EnhancedDataLayer,
@@ -262,12 +276,12 @@ def test_pipeline_degrades_timed_out_branch_without_aborting(monkeypatch, tmp_pa
         lambda market: _FakeTerminal(signal="🟢", risk_level="低风险", recommendation="积极布局"),
     )
 
-    def _slow_llm_branch(self, data_bundle):
+    def _slow_fundamental_branch(self, data_bundle):
         time.sleep(0.2)
         marker_file.write_text("finished", encoding="utf-8")
-        return BranchResult(branch_name="llm_debate", score=0.4, confidence=0.6)
+        return BranchResult(branch_name="fundamental", score=0.4, confidence=0.6)
 
-    monkeypatch.setattr(ParallelResearchPipeline, "_run_llm_debate_branch", _slow_llm_branch)
+    monkeypatch.setattr(ParallelResearchPipeline, "_run_fundamental_branch", _slow_fundamental_branch)
 
     pipeline = ParallelResearchPipeline(
         stock_pool=list(symbol_frames.keys()),
@@ -277,9 +291,9 @@ def test_pipeline_degrades_timed_out_branch_without_aborting(monkeypatch, tmp_pa
     )
     result = pipeline.run()
 
-    assert result.branch_results["llm_debate"].success is False
-    assert result.branch_results["llm_debate"].metadata["degraded_reason"] == "branch_timeout"
-    assert "超时" in result.branch_results["llm_debate"].explanation
+    assert result.branch_results["fundamental"].success is False
+    assert result.branch_results["fundamental"].metadata["degraded_reason"] == "branch_timeout"
+    assert "超时" in result.branch_results["fundamental"].explanation
     assert 0 <= result.final_strategy.target_exposure <= 1
     time.sleep(0.25)
     assert not marker_file.exists()
@@ -341,7 +355,7 @@ def test_quant_investor_exports_v8_entrypoint():
     assert hasattr(unified, "BranchResult")
 
 
-def test_quant_investor_v8_forwards_enable_quant(monkeypatch):
+def test_quant_investor_v9_forwards_enable_quant(monkeypatch):
     captured_kwargs = {}
 
     class _FakePipeline:
@@ -360,9 +374,9 @@ def test_quant_investor_v8_forwards_enable_quant(monkeypatch):
                 timings={},
             )
 
-    monkeypatch.setattr("quant_investor.pipeline.quant_investor_v8.ParallelResearchPipeline", _FakePipeline)
+    monkeypatch.setattr("quant_investor.pipeline.quant_investor_v9.ParallelResearchPipeline", _FakePipeline)
 
-    investor = QuantInvestorV8(
+    investor = QuantInvestorV9(
         stock_pool=["000001.SZ"],
         market="CN",
         enable_quant=False,
@@ -371,6 +385,256 @@ def test_quant_investor_v8_forwards_enable_quant(monkeypatch):
     investor.run()
 
     assert captured_kwargs["enable_quant"] is False
+
+
+def test_branch_result_score_and_confidence_are_property_aliases():
+    result = BranchResult(
+        branch_name="fundamental",
+        base_score=0.10,
+        final_score=0.25,
+        base_confidence=0.30,
+        final_confidence=0.55,
+    )
+
+    assert result.score == pytest.approx(0.25)
+    assert result.confidence == pytest.approx(0.55)
+
+    result.score = 0.12
+    result.confidence = 0.44
+
+    assert result.final_score == pytest.approx(0.12)
+    assert result.final_confidence == pytest.approx(0.44)
+
+
+def test_v9_branch_tracker_archives_legacy_llm_history_without_remap(tmp_path, monkeypatch):
+    history_path = tmp_path / "branch_ic_history.json"
+    history_path.write_text(
+        """
+        {
+          "kline": [0.1, 0.1, 0.1, 0.1, 0.1],
+          "quant": [0.2, 0.2, 0.2, 0.2, 0.2],
+          "llm_debate": [0.9, 0.9, 0.9, 0.9, 0.9]
+        }
+        """.strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(BranchPerformanceTracker, "HISTORY_PATH", str(history_path))
+
+    tracker = BranchPerformanceTracker(
+        default_weights=CURRENT_BRANCH_WEIGHTS,
+        architecture_version="9.0.0-current",
+        branch_schema_version="v9-fundamental-first-class",
+    )
+
+    assert tracker._history["fundamental"] == []
+    assert tracker._archived_history["llm_debate"] == [0.9, 0.9, 0.9, 0.9, 0.9]
+
+
+def test_branch_local_debate_degrades_without_llm_provider(monkeypatch):
+    for key in ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "GOOGLE_API_KEY"]:
+        monkeypatch.delenv(key, raising=False)
+
+    pipeline = ParallelResearchPipeline(stock_pool=["000001.SZ"], market="CN", verbose=False)
+    base_result = BranchResult(
+        branch_name="quant",
+        score=0.35,
+        confidence=0.62,
+        symbol_scores={"000001.SZ": 0.40},
+        explanation="base quant result",
+    )
+    evidence = EvidencePacket(
+        branch_name="quant",
+        summary="quant evidence",
+        top_symbols=["000001.SZ"],
+        bull_points=["动量因子偏正"],
+        used_features=["momentum_12_1"],
+    )
+
+    fused = pipeline._apply_branch_debate("quant", evidence, base_result)
+
+    assert fused.final_score == pytest.approx(base_result.base_score)
+    assert fused.final_confidence == pytest.approx(base_result.base_confidence)
+    assert fused.debate_verdict.metadata["reason"] == "llm_provider_missing"
+
+
+def test_branch_local_debate_score_adjustment_is_bounded():
+    pipeline = ParallelResearchPipeline(stock_pool=["000001.SZ"], market="CN", verbose=False)
+    pipeline.branch_debate_engine = BranchDebateEngine(
+        enabled=True,
+        responder=lambda **_: {
+            "direction": "bearish",
+            "confidence": 0.9,
+            "score_adjustment": -9.0,
+            "risk_flags": ["overheated"],
+            "used_features": ["roe"],
+            "hard_veto": False,
+        },
+    )
+    base_result = BranchResult(
+        branch_name="fundamental",
+        score=0.55,
+        confidence=0.70,
+        symbol_scores={"000001.SZ": 0.60},
+        explanation="base fundamental result",
+    )
+    evidence = EvidencePacket(
+        branch_name="fundamental",
+        summary="fundamental evidence",
+        top_symbols=["000001.SZ"],
+        bear_points=["估值过高"],
+        used_features=["pe", "pb"],
+    )
+
+    fused = pipeline._apply_branch_debate("fundamental", evidence, base_result)
+
+    assert fused.debate_verdict.score_adjustment >= -0.20
+    assert fused.final_score >= 0.0
+    assert fused.final_score == pytest.approx(0.35)
+
+
+@pytest.mark.parametrize(
+    ("branch_name", "expected_cap"),
+    [
+        ("kline", 0.10),
+        ("quant", 0.10),
+        ("fundamental", 0.20),
+        ("intelligence", 0.15),
+        ("macro", 0.10),
+    ],
+)
+def test_branch_local_debate_caps_are_constant_controlled(branch_name, expected_cap):
+    pipeline = ParallelResearchPipeline(stock_pool=["000001.SZ"], market="CN", verbose=False)
+    pipeline.branch_debate_engine = BranchDebateEngine(
+        enabled=True,
+        responder=lambda **_: {
+            "direction": "bullish",
+            "confidence": 0.8,
+            "score_adjustment": 9.0,
+            "used_features": ["test_feature"],
+        },
+    )
+    evidence = EvidencePacket(
+        branch_name=branch_name,
+        scope="market" if branch_name == "macro" else "symbol",
+        top_symbols=[] if branch_name == "macro" else ["000001.SZ"],
+        used_features=["test_feature"],
+    )
+    base_result = BranchResult(
+        branch_name=branch_name,
+        score=0.30,
+        confidence=0.60,
+        symbol_scores={} if branch_name == "macro" else {"000001.SZ": 0.40},
+        explanation="base result",
+    )
+
+    fused = pipeline._apply_branch_debate(branch_name, evidence, base_result)
+
+    assert fused.debate_verdict.score_adjustment <= expected_cap
+
+
+def test_fundamental_branch_runs_without_document_data(monkeypatch):
+    symbol = "000001.SZ"
+    bundle = UnifiedDataBundle(
+        market="CN",
+        symbols=[symbol],
+        symbol_data={symbol: _make_symbol_frame(symbol)},
+        metadata={"end_date": "20260321"},
+    )
+
+    monkeypatch.setattr(
+        EnhancedDataLayer,
+        "get_document_semantic_snapshot",
+        lambda self, symbol, as_of: self._doc_store.get_semantic_snapshot(symbol, as_of),
+    )
+
+    pipeline = ParallelResearchPipeline(stock_pool=[symbol], market="CN", verbose=False)
+    result = pipeline._run_fundamental_branch(bundle)
+
+    assert result.branch_name == "fundamental"
+    assert symbol in result.symbol_scores
+    assert result.data_quality["documents_missing_symbols"] == [symbol]
+    assert result.success is True
+
+
+def test_ensemble_regime_weights_do_not_contain_debate_key():
+    for weights in EnsembleJudge.REGIME_WEIGHTS.values():
+        assert "debate" not in weights
+        assert "llm_debate" not in weights
+        assert "fundamental" in weights
+
+
+def test_intelligence_branch_no_longer_uses_financial_primary_scoring():
+    symbol_a = "000001.SZ"
+    symbol_b = "600519.SH"
+    frame_a = _make_symbol_frame(symbol_a, scale=1.0)
+    frame_b = _make_symbol_frame(symbol_b, scale=1.0)
+    bundle_high_quality = UnifiedDataBundle(
+        market="CN",
+        symbols=[symbol_a, symbol_b],
+        symbol_data={symbol_a: frame_a, symbol_b: frame_b},
+        fundamentals={
+            symbol_a: {"roe": 0.30, "gross_margin": 0.60, "debt_ratio": 0.10, "pe": 5},
+            symbol_b: {"roe": -0.10, "gross_margin": 0.05, "debt_ratio": 0.90, "pe": 80},
+        },
+        event_data={symbol_a: [], symbol_b: []},
+        sentiment_data={
+            symbol_a: {"fear_greed": 0.1, "money_flow": 0.1, "breadth": 0.1},
+                symbol_b: {"fear_greed": 0.1, "money_flow": 0.1, "breadth": 0.1},
+            },
+        )
+    bundle_low_quality = UnifiedDataBundle(
+        market="CN",
+        symbols=[symbol_a, symbol_b],
+        symbol_data={symbol_a: frame_a.copy(), symbol_b: frame_b.copy()},
+        fundamentals={
+            symbol_a: {"roe": -0.30, "gross_margin": 0.05, "debt_ratio": 0.95, "pe": 80},
+            symbol_b: {"roe": 0.45, "gross_margin": 0.75, "debt_ratio": 0.05, "pe": 6},
+        },
+        event_data={symbol_a: [], symbol_b: []},
+        sentiment_data={
+            symbol_a: {"fear_greed": 0.1, "money_flow": 0.1, "breadth": 0.1},
+            symbol_b: {"fear_greed": 0.1, "money_flow": 0.1, "breadth": 0.1},
+        },
+    )
+
+    pipeline = ParallelResearchPipeline(stock_pool=[symbol_a, symbol_b], market="CN", verbose=False)
+    result_high = pipeline._run_intelligence_branch(bundle_high_quality)
+    result_low = pipeline._run_intelligence_branch(bundle_low_quality)
+
+    assert "financial_health_score" not in result_high.signals
+    assert result_high.symbol_scores == pytest.approx(result_low.symbol_scores)
+
+
+def test_macro_branch_debate_runs_once_market_level(monkeypatch):
+    symbol_frames = {
+        "000001.SZ": _make_symbol_frame("000001.SZ", scale=1.0),
+        "600519.SH": _make_symbol_frame("600519.SH", scale=1.3),
+    }
+    monkeypatch.setattr(
+        EnhancedDataLayer,
+        "fetch_and_process",
+        lambda self, symbol, start_date, end_date, label_periods=5: symbol_frames[symbol].copy(),
+    )
+    monkeypatch.setattr(
+        "quant_investor.pipeline.parallel_research_pipeline.create_terminal",
+        lambda market: _FakeTerminal(signal="🟢", risk_level="低风险", recommendation="积极布局"),
+    )
+
+    call_counter = {"macro": 0}
+    original_evaluate = BranchDebateEngine.evaluate
+
+    def _wrapped_evaluate(self, branch_name, evidence, base_result):
+        if branch_name == "macro":
+            call_counter["macro"] += 1
+            assert evidence.scope == "market"
+        return original_evaluate(self, branch_name, evidence, base_result)
+
+    monkeypatch.setattr(BranchDebateEngine, "evaluate", _wrapped_evaluate)
+
+    pipeline = ParallelResearchPipeline(stock_pool=list(symbol_frames.keys()), market="CN", verbose=False)
+    pipeline.run()
+
+    assert call_counter["macro"] == 1
 
 
 def test_risk_and_ensemble_reduce_exposure_in_high_risk_case():
@@ -400,7 +664,7 @@ def test_risk_and_ensemble_reduce_exposure_in_high_risk_case():
     branch_results = {
         "kline": BranchResult("kline", score=0.7, confidence=0.7, symbol_scores={s: 0.8 for s in symbols}, metadata={"branch_mode": "kline_heuristic", "reliability": 0.62, "horizon_days": 5}),
         "quant": BranchResult("quant", score=-0.6, confidence=0.8, symbol_scores={s: -0.7 for s in symbols}),
-        "llm_debate": BranchResult("llm_debate", score=-0.4, confidence=0.6, symbol_scores={s: -0.5 for s in symbols}),
+        "fundamental": BranchResult("fundamental", score=-0.4, confidence=0.6, symbol_scores={s: -0.5 for s in symbols}),
         "intelligence": BranchResult("intelligence", score=-0.7, confidence=0.7, symbol_scores={s: -0.8 for s in symbols}),
         "macro": BranchResult(
             "macro",
@@ -429,7 +693,7 @@ def test_full_market_trade_plan_builds_portfolio_actions():
                 "branches": {
                     "kline": {"score": 0.08},
                     "quant": {"score": 0.12},
-                    "llm_debate": {"score": 0.05},
+                    "fundamental": {"score": 0.05},
                     "intelligence": {"score": 0.10},
                     "macro": {"score": 0.02},
                 },
@@ -468,7 +732,7 @@ def test_full_market_trade_plan_builds_portfolio_actions():
                 "branches": {
                     "kline": {"score": 0.05},
                     "quant": {"score": 0.10},
-                    "llm_debate": {"score": 0.03},
+                    "fundamental": {"score": 0.03},
                     "intelligence": {"score": 0.07},
                     "macro": {"score": 0.02},
                 },

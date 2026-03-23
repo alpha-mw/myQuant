@@ -9,10 +9,21 @@ import numpy as np
 from datetime import datetime
 
 from quant_investor.enhanced_data_layer import (
+    EnhancedDataLayer,
     USCompositeDataSource,
     USLocalCSVDataSource,
     _normalize_ohlcv_frame,
+    normalize_kline_frame_for_model,
 )
+from quant_investor.branch_contracts import (
+    CorporateDocumentSnapshot,
+    ForecastSnapshot,
+    FundamentalSnapshot,
+    ManagementSnapshot,
+    OwnershipSnapshot,
+    UnifiedDataBundle,
+)
+from quant_investor.fundamental_branch import FundamentalBranch
 
 
 class TestDataLayer:
@@ -180,3 +191,156 @@ class TestUSDataSources:
 
         assert not normalized.empty
         assert normalized["date"].dt.tz is None
+
+
+class TestSnapshotFallbacks:
+    """V9 snapshot 接口降级测试"""
+
+    def test_fundamental_snapshot_returns_neutral_when_provider_missing(self):
+        data_layer = EnhancedDataLayer(market="CN", verbose=False)
+        snapshot = data_layer.get_earnings_forecast_snapshot("000001.SZ", "2026-03-20")
+
+        assert snapshot.available is False
+        assert snapshot.source == "neutral"
+        assert "forecast_provider_missing" in snapshot.notes
+        assert snapshot.data_quality["provider_missing"] is True
+        assert snapshot.provenance["provider_missing"] is True
+
+    def test_document_semantic_snapshot_returns_neutral_when_missing(self):
+        data_layer = EnhancedDataLayer(market="CN", verbose=False)
+        snapshot = data_layer.get_document_semantic_snapshot("000001.SZ", "2026-03-20")
+
+        assert snapshot.available is False
+        assert snapshot.source in {"offline_snapshot", "neutral"}
+        assert "as_of" not in snapshot.data_quality
+        assert "provider_missing" in snapshot.data_quality
+
+    def test_cn_daily_kline_normalization_produces_stable_freq(self):
+        df = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2026-03-16", "2026-03-17", "2026-03-19"]),
+                "open": [10.0, 10.2, 10.3],
+                "high": [10.3, 10.4, 10.5],
+                "low": [9.9, 10.0, 10.1],
+                "close": [10.1, 10.3, 10.4],
+                "volume": [1000, 1100, 1200],
+            }
+        )
+
+        normalized = normalize_kline_frame_for_model(df)
+
+        assert isinstance(normalized.index, pd.DatetimeIndex)
+        assert normalized.index.freqstr == "B"
+        assert normalized.index.tz is None
+        assert normalized.loc[pd.Timestamp("2026-03-18"), "close"] == pytest.approx(10.3)
+
+    def test_provider_global_missing_and_symbol_missing_are_distinct(self):
+        data_layer = EnhancedDataLayer(market="CN", verbose=False)
+
+        class _NoForecastProvider:
+            pass
+
+        data_layer._source = _NoForecastProvider()
+        global_missing = data_layer.get_earnings_forecast_snapshot("000001.SZ", "2026-03-20")
+
+        class _EmptyForecastProvider:
+            def get_earnings_forecast_snapshot(self, symbol, as_of):
+                return {}
+
+        data_layer._source = _EmptyForecastProvider()
+        symbol_missing = data_layer.get_earnings_forecast_snapshot("000001.SZ", "2026-03-20")
+
+        assert global_missing.data_quality["missing_scope"] == "global"
+        assert global_missing.data_quality["provider_missing"] is True
+        assert symbol_missing.data_quality["missing_scope"] == "symbol"
+        assert symbol_missing.data_quality["provider_missing"] is False
+        assert symbol_missing.data_quality["snapshot_missing"] is True
+
+    def test_document_semantics_missing_only_enters_coverage(self):
+        class _StubDataLayer:
+            def get_point_in_time_fundamental_snapshot(self, symbol, as_of):
+                return FundamentalSnapshot(
+                    symbol=symbol,
+                    available=True,
+                    roe=0.18,
+                    gross_margin=0.32,
+                    profit_growth=0.15,
+                    revenue_growth=0.12,
+                    debt_ratio=0.28,
+                    current_ratio=1.4,
+                    pe=12.0,
+                    pb=1.8,
+                    ps=2.0,
+                )
+
+            def get_earnings_forecast_snapshot(self, symbol, as_of):
+                return ForecastSnapshot(
+                    symbol=symbol,
+                    available=True,
+                    forecast_revision=0.06,
+                    eps_growth=0.14,
+                    coverage_count=8,
+                    provider="forecast_provider",
+                )
+
+            def get_management_snapshot(self, symbol, as_of):
+                return ManagementSnapshot(
+                    symbol=symbol,
+                    available=True,
+                    management_stability=0.6,
+                    governance_score=0.5,
+                    management_alignment=0.4,
+                )
+
+            def get_ownership_snapshot(self, symbol, as_of):
+                return OwnershipSnapshot(
+                    symbol=symbol,
+                    available=True,
+                    concentration_score=0.2,
+                    institutional_holding_pct=0.35,
+                    ownership_change_signal=0.1,
+                )
+
+            def get_document_semantic_snapshot(self, symbol, as_of):
+                return CorporateDocumentSnapshot(
+                    symbol=symbol,
+                    available=False,
+                    source="offline_snapshot",
+                    data_quality={
+                        "reason": "snapshot_missing",
+                        "missing_scope": "symbol",
+                        "provider_missing": False,
+                        "snapshot_missing": True,
+                    },
+                )
+
+        dates = pd.bdate_range("2026-03-01", periods=40)
+        data_bundle = UnifiedDataBundle(
+            market="CN",
+            symbols=["000001.SZ"],
+            symbol_data={
+                "000001.SZ": pd.DataFrame(
+                    {
+                        "date": dates,
+                        "close": np.linspace(10, 12, len(dates)),
+                        "open": np.linspace(10, 12, len(dates)),
+                        "high": np.linspace(10.2, 12.2, len(dates)),
+                        "low": np.linspace(9.8, 11.8, len(dates)),
+                        "volume": np.linspace(1_000_000, 1_200_000, len(dates)),
+                    }
+                )
+            },
+            metadata={"end_date": "20260320"},
+        )
+
+        branch = FundamentalBranch(
+            data_layer=_StubDataLayer(),
+            stock_pool=["000001.SZ"],
+            enable_document_semantics=True,
+        )
+        result = branch.run(data_bundle)
+
+        assert any("文档语义" in note for note in result.coverage_notes)
+        assert all("provider_missing" not in risk for risk in result.investment_risks)
+        assert all("snapshot_missing" not in risk for risk in result.investment_risks)
+        assert all("文档语义" not in risk for risk in result.investment_risks)

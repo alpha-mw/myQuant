@@ -9,6 +9,8 @@ Download Full China A-Share Market Data - 下载完整A股市场数据
 总计: 1800只股票
 """
 
+from __future__ import annotations
+
 import os
 from collections import Counter
 from pathlib import Path
