@@ -12,8 +12,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from quant_investor.contracts import BranchResult
+from quant_investor.branch_contracts import BranchResult, DiagnosticEvent
 from quant_investor._vendor.chronos_loader import load_vendored_chronos
+from quant_investor.enhanced_data_layer import normalize_kline_frame_for_model
 
 from .base import KLineBackend
 
@@ -92,6 +93,34 @@ class ChronosBackend(KLineBackend):
                 else:
                     os.environ["TRANSFORMERS_OFFLINE"] = previous_transformers_offline
 
+    def _normalize_symbol_data(
+        self,
+        symbol_data: dict[str, pd.DataFrame],
+    ) -> tuple[dict[str, pd.DataFrame], list[str], list[dict[str, str]]]:
+        normalized_data: dict[str, pd.DataFrame] = {}
+        diagnostic_notes: list[str] = []
+        diagnostic_events: list[dict[str, str]] = []
+        for symbol, df in symbol_data.items():
+            if df is None or df.empty:
+                continue
+            normalized = normalize_kline_frame_for_model(df)
+            if normalized.empty:
+                continue
+            normalized_data[symbol] = normalized
+            if getattr(normalized.index, "freqstr", "") not in {"B", "C", "D"}:
+                diagnostic_notes.append("部分批次 K 线深度模型未完成频率对齐，已自动回退统计预测。")
+                diagnostic_events.append(
+                    DiagnosticEvent(
+                        code="kline_freq_inference_failed",
+                        message="部分批次 K 线深度模型未完成频率对齐，已自动回退统计预测。",
+                        category="diagnostic",
+                        scope="batch",
+                        unit="batches",
+                        severity="warning",
+                    ).__dict__
+                )
+        return normalized_data, diagnostic_notes, diagnostic_events
+
     def _build_input_df(self, symbol_data: dict[str, pd.DataFrame]) -> pd.DataFrame:
         rows: list[pd.DataFrame] = []
         for symbol, df in symbol_data.items():
@@ -104,6 +133,38 @@ class ChronosBackend(KLineBackend):
         if not rows:
             return pd.DataFrame()
         return pd.concat(rows, ignore_index=True).sort_values(["item_id", "timestamp"]).reset_index(drop=True)
+
+    @staticmethod
+    def _fallback_diagnostic(exc: Exception | None) -> tuple[str, list[dict[str, str]]]:
+        if exc is not None and "Could not infer frequency" in str(exc):
+            event = DiagnosticEvent(
+                code="kline_freq_inference_failed",
+                message="部分批次 K 线深度模型未完成频率对齐，已自动回退统计预测。",
+                category="diagnostic",
+                scope="batch",
+                unit="batches",
+                severity="warning",
+            )
+            return event.message, [event.__dict__]
+        if exc is not None and "timeout" in str(exc).lower():
+            event = DiagnosticEvent(
+                code="chronos_timed_out",
+                message="Chronos 深度模型阶段超时，已自动保留统计预测结果。",
+                category="diagnostic",
+                scope="batch",
+                unit="batches",
+                severity="warning",
+            )
+            return event.message, [event.__dict__]
+        event = DiagnosticEvent(
+            code="chronos_fallback_activated",
+            message="Chronos 深度模型未完成本轮推理，已自动回退统计预测。",
+            category="diagnostic",
+            scope="batch",
+            unit="batches",
+            severity="info",
+        )
+        return event.message, [event.__dict__]
 
     def _statistical_return(self, df: pd.DataFrame) -> float:
         close = df["close"].astype(float)
@@ -160,21 +221,22 @@ class ChronosBackend(KLineBackend):
 
     def predict(self, symbol_data: dict[str, pd.DataFrame], stock_pool: list[str]) -> BranchResult:
         self._ensure_pipeline()
+        normalized_symbol_data, diagnostic_notes, diagnostic_events = self._normalize_symbol_data(symbol_data)
 
         symbol_scores: dict[str, float] = {}
         predicted_returns: dict[str, float] = {}
         regimes: dict[str, str] = {}
 
-        input_df = self._build_input_df(symbol_data)
+        input_df = self._build_input_df(normalized_symbol_data)
         if self._pipeline is not None and not input_df.empty:
             try:
                 pred_df = self._pipeline.predict_df(
                     input_df,
                     prediction_length=self.horizon_days,
                     quantile_levels=[0.1, 0.5, 0.9],
-                    cross_learning=len(symbol_data) > 1,
+                    cross_learning=len(normalized_symbol_data) > 1,
                 )
-                for symbol, df in symbol_data.items():
+                for symbol, df in normalized_symbol_data.items():
                     if df.empty:
                         continue
                     last_close = float(df["close"].iloc[-1])
@@ -199,9 +261,22 @@ class ChronosBackend(KLineBackend):
             except Exception as exc:
                 self._load_error = str(exc)
                 self._runtime_mode = "statistical_fallback"
-                symbol_scores, predicted_returns, regimes = self._predict_with_fallback(symbol_data, stock_pool)
+                fallback_message, fallback_events = self._fallback_diagnostic(exc)
+                diagnostic_notes.append(fallback_message)
+                diagnostic_events.extend(fallback_events)
+                symbol_scores, predicted_returns, regimes = self._predict_with_fallback(
+                    normalized_symbol_data or symbol_data,
+                    stock_pool,
+                )
         else:
-            symbol_scores, predicted_returns, regimes = self._predict_with_fallback(symbol_data, stock_pool)
+            if self._pipeline is None:
+                fallback_message, fallback_events = self._fallback_diagnostic(None)
+                diagnostic_notes.append(fallback_message)
+                diagnostic_events.extend(fallback_events)
+            symbol_scores, predicted_returns, regimes = self._predict_with_fallback(
+                normalized_symbol_data or symbol_data,
+                stock_pool,
+            )
 
         for symbol in stock_pool:
             symbol_scores.setdefault(symbol, 0.0)
@@ -211,12 +286,17 @@ class ChronosBackend(KLineBackend):
         reliability = self.reliability if self._runtime_mode == "vendor_native" else 0.56
         score = _safe_mean(list(symbol_scores.values()))
         confidence = _clamp(0.48 + float(np.std(list(symbol_scores.values()) or [0.0])), 0.38, 0.82)
-        risks = []
-        if self._runtime_mode != "vendor_native":
-            message = "Chronos 原生权重未命中，已使用统计替代预测"
-            if self._load_error:
-                message = f"{message}: {self._load_error}"
-            risks.append(message)
+        support_drivers = []
+        drag_drivers = []
+        if score > 0.05:
+            support_drivers.append("Chronos 深度模型给出的中位预测整体偏正。")
+        elif score < -0.05:
+            drag_drivers.append("Chronos 深度模型给出的中位预测整体偏弱。")
+        conclusion = (
+            "Chronos 深度模型结论可直接纳入 K 线判断。"
+            if self._runtime_mode == "vendor_native"
+            else "Chronos 深度模型本轮已自动回退为统计预测，K 线结论仍保持完整。"
+        )
 
         return BranchResult(
             branch_name="kline",
@@ -229,7 +309,7 @@ class ChronosBackend(KLineBackend):
                 "model_runtime_mode": self._runtime_mode,
                 "chronos_model_name": self._model_name,
             },
-            risks=risks,
+            risks=[],
             explanation=(
                 "K线分析（Chronos）已切换为 myQuant 内置模型链路，"
                 f"当前模型为 {self._model_name}，运行模式为 {self._runtime_mode}。"
@@ -244,5 +324,10 @@ class ChronosBackend(KLineBackend):
                 "model_runtime_mode": self._runtime_mode,
                 "model_source": "internal_vendor",
                 "chronos_model_name": self._model_name,
+                "diagnostic_events": diagnostic_events,
             },
+            conclusion=conclusion,
+            diagnostic_notes=list(dict.fromkeys(diagnostic_notes)),
+            support_drivers=support_drivers,
+            drag_drivers=drag_drivers,
         )
