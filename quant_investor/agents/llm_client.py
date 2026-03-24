@@ -59,6 +59,14 @@ _PROVIDER_CONFIGS: dict[str, dict[str, str]] = {
     },
 }
 
+_DEFAULT_MODELS_BY_PROVIDER: dict[str, str] = {
+    # 与仓库现有默认/可选模型保持一致，供 V10 agent 层自动选型使用。
+    "openai": "gpt-5.4-mini",
+    "deepseek": "deepseek-chat",
+    "anthropic": "claude-3-5-sonnet",
+    "google": "gemini-2.0-flash",
+}
+
 
 def _detect_provider(model: str) -> str:
     m = model.lower()
@@ -76,6 +84,35 @@ def _detect_provider(model: str) -> str:
 def has_any_provider() -> bool:
     """Check if at least one LLM provider key is configured."""
     return any(bool(os.getenv(cfg["env_key"])) for cfg in _PROVIDER_CONFIGS.values())
+
+
+def has_provider_for_model(model: str) -> bool:
+    """Check whether the provider required by the given model is configured."""
+    try:
+        provider = _detect_provider(model)
+    except LLMCallError:
+        return False
+    return bool(os.getenv(_PROVIDER_CONFIGS[provider]["env_key"]))
+
+
+def resolve_default_model(preferred_model: str = "") -> str:
+    """
+    Resolve an auto-selected default model for the current environment.
+
+    Selection rules:
+    1. If preferred_model is usable, keep it.
+    2. Otherwise select the first configured provider's repo-default model.
+    3. If no provider is configured, fall back to preferred_model or OpenAI default.
+    """
+    preferred = str(preferred_model or "").strip()
+    if preferred and has_provider_for_model(preferred):
+        return preferred
+
+    for provider in ("openai", "deepseek", "anthropic", "google"):
+        if os.getenv(_PROVIDER_CONFIGS[provider]["env_key"]):
+            return _DEFAULT_MODELS_BY_PROVIDER[provider]
+
+    return preferred or _DEFAULT_MODELS_BY_PROVIDER["openai"]
 
 
 def _get_api_key(provider: str) -> str:
@@ -180,7 +217,8 @@ def _build_google(
 
 def _parse_openai_response(data: dict[str, Any]) -> str:
     try:
-        return data["choices"][0]["message"]["content"]
+        result: str = data["choices"][0]["message"]["content"]
+        return result
     except (KeyError, IndexError) as exc:
         raise LLMCallError(f"Unexpected OpenAI response structure: {exc}") from exc
 
@@ -189,7 +227,8 @@ def _parse_anthropic_response(data: dict[str, Any]) -> str:
     try:
         for block in data["content"]:
             if block.get("type") == "text":
-                return block["text"]
+                result: str = block["text"]
+                return result
         raise LLMCallError("No text block in Anthropic response")
     except (KeyError, IndexError) as exc:
         raise LLMCallError(f"Unexpected Anthropic response structure: {exc}") from exc
@@ -197,7 +236,8 @@ def _parse_anthropic_response(data: dict[str, Any]) -> str:
 
 def _parse_google_response(data: dict[str, Any]) -> str:
     try:
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+        result: str = data["candidates"][0]["content"]["parts"][0]["text"]
+        return result
     except (KeyError, IndexError) as exc:
         raise LLMCallError(f"Unexpected Google response structure: {exc}") from exc
 
@@ -272,7 +312,7 @@ class LLMClient:
         client_timeout = aiohttp.ClientTimeout(total=self.timeout)
         async with aiohttp.ClientSession(timeout=client_timeout) as session:
             async with session.post(url, headers=headers, json=body) as resp:
-                text = await resp.text()
+                text: str = await resp.text()
                 if resp.status != 200:
                     raise LLMCallError(f"HTTP {resp.status}: {text[:500]}")
                 return text
@@ -286,4 +326,5 @@ class LLMClient:
             if lines and lines[-1].strip() == "```":
                 lines = lines[:-1]
             cleaned = "\n".join(lines)
-        return json.loads(cleaned)
+        result: dict[str, Any] = json.loads(cleaned)
+        return result

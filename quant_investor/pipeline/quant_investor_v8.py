@@ -17,6 +17,8 @@ from quant_investor.versioning import (
     BRANCH_SCHEMA_VERSION_V8,
     CALIBRATION_SCHEMA_VERSION,
     DEBATE_TEMPLATE_VERSION,
+    IC_PROTOCOL_VERSION,
+    REPORT_PROTOCOL_VERSION,
 )
 
 _logger = get_logger("QuantInvestorV8")
@@ -28,6 +30,8 @@ class V8PipelineResult:
 
     architecture_version: str = ARCHITECTURE_VERSION_V8
     branch_schema_version: str = BRANCH_SCHEMA_VERSION_V8
+    ic_protocol_version: str = IC_PROTOCOL_VERSION
+    report_protocol_version: str = REPORT_PROTOCOL_VERSION
     calibration_schema_version: str = CALIBRATION_SCHEMA_VERSION
     debate_template_version: str = DEBATE_TEMPLATE_VERSION
     data_bundle: Optional[UnifiedDataBundle] = None
@@ -134,6 +138,16 @@ class QuantInvestorV8:
             "branch_schema_version",
             self.result.branch_schema_version,
         )
+        self.result.ic_protocol_version = getattr(
+            pipeline_result,
+            "ic_protocol_version",
+            self.result.ic_protocol_version,
+        )
+        self.result.report_protocol_version = getattr(
+            pipeline_result,
+            "report_protocol_version",
+            self.result.report_protocol_version,
+        )
         self.result.calibration_schema_version = getattr(
             pipeline_result,
             "calibration_schema_version",
@@ -182,7 +196,7 @@ class QuantInvestorV8:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Quant Investor V8.0 legacy frozen. V9 为 current architecture，最新默认版本为 V9。"
+        description="Quant Investor V8.0 legacy frozen. V9 为 current architecture，最新默认版本为 V10。"
     )
     parser.add_argument("--stocks", nargs="+", default=["000001.SZ", "600519.SH"])
     parser.add_argument("--market", default="CN", choices=["CN", "US"])

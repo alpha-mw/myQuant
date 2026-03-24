@@ -15,12 +15,18 @@ from quant_investor.enhanced_data_layer import EnhancedDataLayer
 
 
 def test_public_package_exports():
+    assert hasattr(quant_investor, "QuantInvestor")
+    assert hasattr(quant_investor, "QuantInvestorCurrent")
     assert hasattr(quant_investor, "QuantInvestorV8")
     assert hasattr(quant_investor, "QuantInvestorV9")
+    assert hasattr(quant_investor, "QuantInvestorV10")
     assert hasattr(quant_investor, "QuantInvestorLatest")
     assert hasattr(quant_investor, "BranchResult")
-    assert quant_investor.QuantInvestorLatest is quant_investor.QuantInvestorV9
+    assert quant_investor.QuantInvestor is quant_investor.QuantInvestorV9
+    assert quant_investor.QuantInvestorCurrent is quant_investor.QuantInvestorV9
+    assert quant_investor.QuantInvestorLatest is quant_investor.QuantInvestorV10
     assert quant_investor.QuantInvestorV8 is not quant_investor.QuantInvestorV9
+    assert quant_investor.QuantInvestorV8 is not quant_investor.QuantInvestorV10
 
 
 def test_cli_market_download_dispatches(monkeypatch):
@@ -87,6 +93,8 @@ def test_cli_research_accepts_architecture_flag(monkeypatch):
     cli_main.main(["research", "run", "--stocks", "000001.SZ", "--architecture", "latest"])
 
     assert captured["stock_pool"] == ["000001.SZ"]
+    assert captured["enable_agent_layer"] is True
+    assert captured["enable_branch_debate"] is True
 
 
 def test_v9_one_symbol_mock_run_includes_version_fields(monkeypatch):
@@ -139,6 +147,10 @@ def test_v9_one_symbol_mock_run_includes_version_fields(monkeypatch):
 
     assert result.architecture_version == "9.0.0-current"
     assert result.branch_schema_version == "v9-fundamental-first-class"
+    assert result.ic_protocol_version
+    assert result.report_protocol_version
     assert result.calibration_schema_version
     assert result.debate_template_version
     assert result.final_strategy.architecture_version == result.architecture_version
+    assert result.final_strategy.ic_protocol_version == result.ic_protocol_version
+    assert result.final_strategy.report_protocol_version == result.report_protocol_version

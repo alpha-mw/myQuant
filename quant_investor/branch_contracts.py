@@ -421,6 +421,8 @@ class PortfolioStrategy:
 
     architecture_version: str = ""
     branch_schema_version: str = ""
+    ic_protocol_version: str = ""
+    report_protocol_version: str = ""
     calibration_schema_version: str = ""
     debate_template_version: str = ""
     target_exposure: float = 0.0
@@ -479,6 +481,8 @@ class ResearchPipelineResult:
     data_bundle: UnifiedDataBundle
     architecture_version: str = ""
     branch_schema_version: str = ""
+    ic_protocol_version: str = ""
+    report_protocol_version: str = ""
     calibration_schema_version: str = ""
     debate_template_version: str = ""
     branch_results: dict[str, BranchResult] = field(default_factory=dict)

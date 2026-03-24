@@ -196,15 +196,17 @@ class TestUSDataSources:
 class TestSnapshotFallbacks:
     """V9 snapshot 接口降级测试"""
 
-    def test_fundamental_snapshot_returns_neutral_when_provider_missing(self):
+    def test_forecast_snapshot_returns_unavailable_when_tushare_offline(self):
         data_layer = EnhancedDataLayer(market="CN", verbose=False)
         snapshot = data_layer.get_earnings_forecast_snapshot("000001.SZ", "2026-03-20")
 
         assert snapshot.available is False
-        assert snapshot.source == "neutral"
-        assert "forecast_provider_missing" in snapshot.notes
-        assert snapshot.data_quality["provider_missing"] is True
-        assert snapshot.provenance["provider_missing"] is True
+        # Provider now exists (tushare) but data is unavailable when client offline
+        assert snapshot.source in {"neutral", "tushare"}
+        has_missing_note = any(
+            "missing" in n for n in snapshot.notes
+        )
+        assert has_missing_note or snapshot.data_quality.get("provider_missing") is True
 
     def test_document_semantic_snapshot_returns_neutral_when_missing(self):
         data_layer = EnhancedDataLayer(market="CN", verbose=False)

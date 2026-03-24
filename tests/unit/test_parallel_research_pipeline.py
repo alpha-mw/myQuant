@@ -178,12 +178,12 @@ def test_pipeline_degrades_when_single_branch_fails(monkeypatch):
     assert 0 <= result.final_strategy.target_exposure <= 1
 
 
-def test_kline_branch_forces_hybrid_backend_and_records_requested_backend(monkeypatch):
+def test_kline_branch_uses_requested_backend_and_records_requested_backend(monkeypatch):
     captured = {}
 
     class _FakeBackend:
-        name = "hybrid"
-        reliability = 0.84
+        name = "heuristic"
+        reliability = 0.62
         horizon_days = 5
 
         def predict(self, symbol_data, stock_pool):
@@ -193,7 +193,7 @@ def test_kline_branch_forces_hybrid_backend_and_records_requested_backend(monkey
                 confidence=0.66,
                 signals={"predicted_return": {stock_pool[0]: 0.03}, "trend_regime": {stock_pool[0]: "上行"}},
                 symbol_scores={stock_pool[0]: 0.4},
-                metadata={"branch_mode": "kline_dual_model", "reliability": 0.73, "horizon_days": 5},
+                metadata={"branch_mode": "kline_heuristic", "reliability": 0.62, "horizon_days": 5},
             )
 
     def _fake_get_backend(name, **kwargs):
@@ -218,12 +218,13 @@ def test_kline_branch_forces_hybrid_backend_and_records_requested_backend(monkey
 
     result = pipeline._run_kline_branch(bundle)
 
-    assert captured["name"] == "hybrid"
-    assert captured["kwargs"]["evaluator_name"] == "placeholder"
-    assert captured["kwargs"]["allow_remote_download"] is False
+    assert captured["name"] == "heuristic"
+    assert captured["kwargs"] == {}
     assert result.metadata["requested_backend"] == "heuristic"
-    assert result.metadata["effective_backend"] == "hybrid"
-    assert result.metadata["branch_mode"] == "kline_dual_model"
+    assert result.metadata["effective_backend"] == "heuristic"
+    assert result.metadata["runtime_backend"] == "heuristic"
+    assert result.metadata["branch_mode"] == "kline_heuristic"
+    assert result.metadata["llm_interface_reserved"] is False
 
 
 def test_pipeline_skips_quant_branch_when_disabled(monkeypatch):

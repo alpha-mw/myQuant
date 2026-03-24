@@ -8,11 +8,17 @@ Agent 层是后置增强，不替换任何 V9 计算逻辑。
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from quant_investor.agents.agent_contracts import AgentEnhancedStrategy
+from quant_investor.agents.llm_client import has_provider_for_model, resolve_default_model
 from quant_investor.agents.orchestrator import AgentOrchestrator
+from quant_investor.agents.prompts import (
+    MASTER_AGENT_PROFILE,
+    RISK_AGENT_PROFILE,
+    format_agent_display_name,
+)
 from quant_investor.logger import get_logger
 from quant_investor.pipeline.quant_investor_v9 import QuantInvestorV9, V9PipelineResult
 from quant_investor.versioning import ARCHITECTURE_VERSION_V10, AGENT_SCHEMA_VERSION
@@ -46,7 +52,7 @@ class QuantInvestorV10(QuantInvestorV9):
         enable_kline: bool = True,
         enable_fundamental: bool = True,
         enable_intelligence: bool = True,
-        enable_branch_debate: bool = False,
+        enable_branch_debate: bool = True,
         kline_backend: str = "hybrid",
         allow_synthetic_for_research: bool = False,
         debate_top_k: int = 3,
@@ -91,11 +97,31 @@ class QuantInvestorV10(QuantInvestorV9):
             enable_llm_debate=enable_llm_debate,
         )
         self.enable_agent_layer = enable_agent_layer
-        self.agent_model = agent_model
-        self.master_model = master_model
+        self.agent_model, self.master_model = self._resolve_agent_models(
+            agent_model=agent_model,
+            master_model=master_model,
+            debate_model=debate_model,
+        )
         self.agent_timeout = agent_timeout
         self.master_timeout = master_timeout
         self.agent_total_timeout = agent_total_timeout
+
+    @staticmethod
+    def _resolve_agent_models(
+        agent_model: str,
+        master_model: str,
+        debate_model: str,
+    ) -> tuple[str, str]:
+        """解析 V10 agent 层的有效模型配置。"""
+        explicit_agent_model = str(agent_model or "").strip()
+        explicit_master_model = str(master_model or "").strip()
+
+        resolved_agent_model = explicit_agent_model or explicit_master_model
+        if not resolved_agent_model:
+            resolved_agent_model = resolve_default_model(preferred_model=debate_model)
+
+        resolved_master_model = explicit_master_model or explicit_agent_model or resolved_agent_model
+        return resolved_agent_model, resolved_master_model
 
     def run(self) -> V10PipelineResult:
         t0 = time.time()
@@ -104,8 +130,12 @@ class QuantInvestorV10(QuantInvestorV9):
         self._log(f"标的: {self.stock_pool}")
         self._log(f"Agent 层: {'启用' if self.enable_agent_layer else '禁用'}")
         if self.enable_agent_layer:
-            self._log(f"分支模型: {self.agent_model or '(未指定)'}")
-            self._log(f"IC 模型: {self.master_model or '(未指定)'}")
+            self._log(
+                "Agent 拓扑: KLine / Quant / Fundamental / Intelligence / Macro / "
+                f"{RISK_AGENT_PROFILE['agent_name']} -> {MASTER_AGENT_PROFILE['agent_name']}"
+            )
+            self._log(f"分支模型: {self.agent_model}")
+            self._log(f"IC 模型: {self.master_model}")
         self._log("=" * 60)
 
         # Step 1: Run full V9 pipeline
@@ -115,6 +145,8 @@ class QuantInvestorV10(QuantInvestorV9):
         v10_result = V10PipelineResult(
             architecture_version=ARCHITECTURE_VERSION_V10,
             branch_schema_version=v9_result.branch_schema_version,
+            ic_protocol_version=v9_result.ic_protocol_version,
+            report_protocol_version=v9_result.report_protocol_version,
             calibration_schema_version=v9_result.calibration_schema_version,
             debate_template_version=v9_result.debate_template_version,
             data_bundle=v9_result.data_bundle,
@@ -125,6 +157,10 @@ class QuantInvestorV10(QuantInvestorV9):
             final_report=v9_result.final_report,
             execution_log=list(v9_result.execution_log),
             layer_timings=dict(v9_result.layer_timings),
+            agent_orchestration=v9_result.agent_orchestration,
+            agent_portfolio_plan=v9_result.agent_portfolio_plan,
+            agent_report_bundle=v9_result.agent_report_bundle,
+            agent_ic_decisions=v9_result.agent_ic_decisions,
             raw_data=v9_result.raw_data,
             factor_data=v9_result.factor_data,
             model_predictions=v9_result.model_predictions,
@@ -136,10 +172,19 @@ class QuantInvestorV10(QuantInvestorV9):
         )
 
         # Step 3: Run agent enhancement layer
-        if self.enable_agent_layer and self.agent_model and self.master_model:
+        if self.enable_agent_layer:
             self._log("🤖 启动 Multi-Agent IC 层...")
             t_agent = time.time()
             try:
+                if not has_provider_for_model(self.agent_model):
+                    self._log(
+                        f"⚠️ 未检测到分支模型 {self.agent_model} 对应的 provider key，Agent 层将降级跳过"
+                    )
+                elif not has_provider_for_model(self.master_model):
+                    self._log(
+                        f"⚠️ 未检测到 IC 模型 {self.master_model} 对应的 provider key，Agent 层将降级跳过"
+                    )
+
                 orchestrator = AgentOrchestrator(
                     branch_model=self.agent_model,
                     master_model=self.master_model,
@@ -192,8 +237,6 @@ class QuantInvestorV10(QuantInvestorV9):
                 agent_time = time.time() - t_agent
                 self._log(f"❌ IC 层异常: {exc}，耗时 {agent_time:.1f}s")
                 v10_result.layer_timings["agent_layer"] = agent_time
-        elif self.enable_agent_layer:
-            self._log("⚠️ Agent 层已启用但未指定模型（agent_model/master_model），跳过")
 
         v10_result.total_time = time.time() - t0
         self._log(f"✅ V10 分析完成，总耗时 {v10_result.total_time:.1f}s")
@@ -210,7 +253,7 @@ class QuantInvestorV10(QuantInvestorV9):
             "",
             "---",
             "",
-            "## 🤖 IC 投资委员会研判（V10 Agent Layer）",
+            f"## 🤖 {MASTER_AGENT_PROFILE['agent_name']}（{MASTER_AGENT_PROFILE['specialist']}）研判（V10 Agent Layer）",
             "",
             f"**最终研判**: {ic.final_conviction}  |  **分数**: {ic.final_score:.3f}  |  **置信度**: {ic.confidence:.2f}",
             f"**风险调整后敞口**: {ic.risk_adjusted_exposure:.1%}",
@@ -234,9 +277,25 @@ class QuantInvestorV10(QuantInvestorV9):
                 lines.append(f"- {item}")
             lines.append("")
 
+        if ic.debate_rounds:
+            lines.append("### IC 辩论记录")
+            for rd in ic.debate_rounds:
+                lines.append(f"**第 {rd.round_number} 轮 — {rd.topic}**")
+                for arg in rd.arguments:
+                    lines.append(f"  - {arg}")
+                if rd.resolution:
+                    lines.append(f"  → 裁决: {rd.resolution}")
+                lines.append("")
+
         if ic.debate_resolution:
             lines.append("### 分歧调解")
             for item in ic.debate_resolution:
+                lines.append(f"- {item}")
+            lines.append("")
+
+        if ic.conviction_drivers:
+            lines.append("### 决策驱动因素")
+            for item in ic.conviction_drivers:
                 lines.append(f"- {item}")
             lines.append("")
 
@@ -256,24 +315,26 @@ class QuantInvestorV10(QuantInvestorV9):
         if agent_result.branch_agent_outputs:
             lines.append("### 各分支 SubAgent 摘要")
             for name, output in agent_result.branch_agent_outputs.items():
+                display_name = format_agent_display_name(name)
                 if output is None:
-                    lines.append(f"- **{name}**: ❌ 未完成")
+                    lines.append(f"- **{display_name}**: 未完成")
                     continue
-                lines.append(f"- **{name}**: {output.conviction} (score={output.conviction_score:.3f})")
-                if output.key_insights:
-                    for insight in output.key_insights[:3]:
-                        lines.append(f"  - {insight}")
+                insights = "；".join(output.key_insights[:2]) if output.key_insights else "无额外洞察。"
+                lines.append(
+                    f"- **{display_name}**: {output.conviction} (score={output.conviction_score:.3f})。{insights}"
+                )
             lines.append("")
 
         # Risk agent summary
         risk = agent_result.risk_agent_output
         if risk:
-            lines.append("### 风控 SubAgent 评估")
+            lines.append(
+                f"### {RISK_AGENT_PROFILE['agent_name']}（{RISK_AGENT_PROFILE['specialist']}）评估"
+            )
+            warning_text = "；".join(risk.risk_warnings[:3]) if risk.risk_warnings else "无新增风控警示。"
             lines.append(f"- 风险等级: **{risk.risk_assessment}**")
             lines.append(f"- 建议最大敞口: {risk.max_recommended_exposure:.1%}")
-            if risk.risk_warnings:
-                for w in risk.risk_warnings[:3]:
-                    lines.append(f"- ⚠️ {w}")
+            lines.append(f"- 风险提示: {warning_text}")
             lines.append("")
 
         # Timings

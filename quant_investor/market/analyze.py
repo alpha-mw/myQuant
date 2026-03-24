@@ -9,13 +9,26 @@ import os
 from collections import Counter
 from dataclasses import asdict
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
+import re
 from typing import Any, Optional
 
+from quant_investor.agent_protocol import (
+    ActionLabel,
+    AgentStatus,
+    BranchVerdict,
+    ConfidenceLabel,
+    Direction,
+    ICDecision,
+    PortfolioPlan,
+    ReportBundle,
+)
+from quant_investor.agents.narrator_agent import NarratorAgent
 from quant_investor.config import config
 from quant_investor.credential_utils import create_tushare_pro
 from quant_investor.market.config import get_market_settings, normalize_categories
-from quant_investor.pipeline import QuantInvestorLatest
+from quant_investor.pipeline import QuantInvestor
 
 _STOCK_NAME_CACHE: dict[str, dict[str, str]] = {"CN": {}, "US": {}}
 BRANCH_LABELS = {
@@ -49,6 +62,13 @@ def _sanitize_text(text: str) -> str:
         return "部分数据接口本轮不可用，已只计入数据覆盖说明。"
     if "timeout" in lowered:
         return "部分批次模型阶段超时，已自动保留基础结论。"
+    if "traceback" in lowered:
+        return "工程异常堆栈已隐藏，系统已记录诊断摘要。"
+    if re.search(r"\b(?:valueerror|runtimeerror|typeerror|keyerror|exception)\b", lowered):
+        return "工程异常已被收敛为诊断摘要。"
+    if lowered.startswith("[debug]") or lowered.startswith("[info]") or lowered.startswith("[warning]"):
+        cleaned = re.sub(r"^\[[A-Z]+\]\s*", "", normalized, flags=re.IGNORECASE).strip()
+        return f"运行日志摘要：{cleaned}" if cleaned else "运行日志摘要已归档。"
     if lowered == "unknown":
         return "已按默认状态处理。"
     return normalized
@@ -198,16 +218,18 @@ def analyze_batch(
     print(f"前10只: {symbols[:10]}")
 
     try:
-        analyzer = QuantInvestorLatest(
+        analyzer = QuantInvestor(
             stock_pool=symbols,
             market=settings.market,
             total_capital=total_capital,
             risk_level=risk_level,
             enable_macro=True,
             enable_kronos=True,
+            kline_backend="heuristic",
             enable_fundamental=True,
             enable_intelligence=True,
-            enable_branch_debate=True,
+            enable_branch_debate=False,
+            enable_document_semantics=False,
             verbose=verbose,
         )
         result = analyzer.run()
@@ -847,13 +869,255 @@ def save_candidate_index(
     return str(output_file)
 
 
+def _serialize_protocol_value(value: Any) -> Any:
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, dict):
+        return {
+            str(key): _serialize_protocol_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_serialize_protocol_value(item) for item in value]
+    return value
+
+
+def _protocol_action_value(action: str) -> str:
+    normalized = str(action or "").strip().lower()
+    if normalized in {"观察", "watch", "observe"}:
+        return "watch"
+    if normalized in {"轻仓试错", "light_buy", "probe"}:
+        return "light_buy"
+    if normalized in {"回避", "avoid", "sell"}:
+        return "avoid"
+    if normalized in {"持有", "hold"}:
+        return "hold"
+    return "buy"
+
+
+def _protocol_action_label(action: str) -> ActionLabel:
+    normalized = _protocol_action_value(action)
+    if normalized == "watch":
+        return ActionLabel.WATCH
+    if normalized == "avoid":
+        return ActionLabel.AVOID
+    if normalized == "hold":
+        return ActionLabel.HOLD
+    return ActionLabel.BUY
+
+
+def _protocol_direction(score: float) -> Direction:
+    if score >= 0.15:
+        return Direction.BULLISH
+    if score <= -0.15:
+        return Direction.BEARISH
+    return Direction.NEUTRAL
+
+
+def _protocol_confidence_label(confidence: float) -> ConfidenceLabel:
+    if confidence >= 0.85:
+        return ConfidenceLabel.VERY_HIGH
+    if confidence >= 0.65:
+        return ConfidenceLabel.HIGH
+    if confidence >= 0.40:
+        return ConfidenceLabel.MEDIUM
+    if confidence >= 0.20:
+        return ConfidenceLabel.LOW
+    return ConfidenceLabel.VERY_LOW
+
+
+def _branch_summary_to_verdict(branch_name: str, payload: dict[str, Any]) -> BranchVerdict:
+    score = float(payload.get("score", 0.0))
+    confidence = float(payload.get("confidence", 0.0))
+    thesis = str(payload.get("conclusion") or "").strip() or _default_branch_conclusion(branch_name, score)
+    return BranchVerdict(
+        agent_name=branch_name,
+        thesis=thesis,
+        status=AgentStatus.SUCCESS,
+        direction=_protocol_direction(score),
+        action=ActionLabel.HOLD if branch_name == "macro" else _protocol_action_label("buy" if score > 0.15 else "hold"),
+        confidence_label=_protocol_confidence_label(confidence),
+        final_score=score,
+        final_confidence=confidence,
+        investment_risks=[str(item) for item in payload.get("investment_risks", [])],
+        coverage_notes=[str(item) for item in payload.get("coverage_notes", [])],
+        diagnostic_notes=[str(item) for item in payload.get("diagnostic_notes", [])],
+        metadata={
+            "support_drivers": list(payload.get("support_drivers", [])),
+            "drag_drivers": list(payload.get("drag_drivers", [])),
+            "module_coverage": dict(payload.get("module_coverage", {})),
+            "debate_statuses": list(payload.get("debate_statuses", [])),
+        },
+    )
+
+
+def _market_macro_verdict(
+    branch_verdicts: dict[str, BranchVerdict],
+    portfolio_plan: dict[str, Any],
+) -> BranchVerdict:
+    macro = branch_verdicts.get(
+        "macro",
+        BranchVerdict(
+            agent_name="macro",
+            thesis="宏观分支当前未提供明确偏离，按中性市场假设处理。",
+            status=AgentStatus.SUCCESS,
+            direction=Direction.NEUTRAL,
+            action=ActionLabel.HOLD,
+            confidence_label=ConfidenceLabel.MEDIUM,
+            final_score=0.0,
+            final_confidence=0.0,
+        ),
+    )
+    macro.metadata.setdefault("regime", "balanced")
+    macro.metadata.setdefault("target_gross_exposure", float(portfolio_plan.get("target_exposure", 0.0)))
+    macro.metadata.setdefault("style_bias", str(portfolio_plan.get("style_bias", "均衡")))
+    macro.symbol = None
+    return macro
+
+
+def _market_ic_decisions(recommendations: list[dict[str, Any]]) -> list[ICDecision]:
+    decisions: list[ICDecision] = []
+    for item in recommendations:
+        symbol = str(item.get("symbol", "")).strip()
+        if not symbol:
+            continue
+        confidence = float(item.get("confidence", 0.0))
+        action_text = _protocol_action_value(str(item.get("action", "buy")))
+        decisions.append(
+            ICDecision(
+                status=AgentStatus.SUCCESS,
+                thesis=str(item.get("one_line_conclusion") or _derive_stock_conclusion(item)).strip(),
+                direction=_protocol_direction(float(item.get("consensus_score", 0.0))),
+                action=_protocol_action_label(action_text),
+                confidence_label=_protocol_confidence_label(confidence),
+                final_score=max(min(float(item.get("consensus_score", 0.0)), 1.0), -1.0),
+                final_confidence=confidence,
+                agreement_points=[str(point) for point in item.get("support_drivers", []) if str(point).strip()],
+                conflict_points=[str(point) for point in item.get("drag_drivers", []) if str(point).strip()],
+                selected_symbols=[symbol],
+                rationale_points=[str(point) for point in item.get("weight_cap_reasons", []) if str(point).strip()],
+                metadata={
+                    "symbol_candidates": [
+                        {
+                            "symbol": symbol,
+                            "action": action_text,
+                            "confidence": confidence,
+                            "one_line_conclusion": str(
+                                item.get("one_line_conclusion") or _derive_stock_conclusion(item)
+                            ).strip(),
+                        }
+                    ],
+                    "symbol_actions": {symbol: action_text},
+                    "symbol_confidences": {symbol: confidence},
+                    "symbol_conclusions": {
+                        symbol: str(item.get("one_line_conclusion") or _derive_stock_conclusion(item)).strip()
+                    },
+                    "source": "full_market_batch",
+                },
+            )
+        )
+    return decisions
+
+
+def _market_portfolio_plan(
+    market_plan: dict[str, Any],
+    recommendations: list[dict[str, Any]],
+    total_capital: float,
+) -> PortfolioPlan:
+    target_positions = {
+        str(item["symbol"]): round(float(item.get("portfolio_weight", 0.0)), 6)
+        for item in recommendations
+        if str(item.get("symbol", "")).strip() and float(item.get("portfolio_weight", 0.0)) > 0.0
+    }
+    concentration = {
+        "selected_count": float(market_plan.get("selected_count", len(target_positions))),
+        "max_single_weight": float(market_plan.get("max_single_weight", 0.0)),
+        "top3_weight_sum": round(
+            sum(sorted(target_positions.values(), reverse=True)[:3]),
+            6,
+        ),
+    }
+    gross_exposure = max(
+        float(market_plan.get("target_exposure", sum(target_positions.values()))),
+        sum(target_positions.values()),
+    )
+    cash_reserve = float(market_plan.get("cash_reserve", 0.0))
+    return PortfolioPlan(
+        status=AgentStatus.SUCCESS,
+        target_exposure=gross_exposure,
+        target_gross_exposure=gross_exposure,
+        target_net_exposure=gross_exposure,
+        cash_ratio=max(min(cash_reserve / max(float(total_capital), 1.0), 1.0), 0.0),
+        target_positions=target_positions,
+        concentration_metrics=concentration,
+        turnover_estimate=0.0,
+        construction_notes=[str(item) for item in market_plan.get("execution_notes", []) if str(item).strip()],
+        metadata={
+            "style_bias": str(market_plan.get("style_bias", "均衡")),
+            "planned_investment": float(market_plan.get("planned_investment", 0.0)),
+            "cash_reserve": cash_reserve,
+            "source": "full_market_batch",
+        },
+    )
+
+
+def _market_run_diagnostics(all_results: dict[str, list[dict[str, Any]]]) -> dict[str, list[str]]:
+    diagnostic_notes: list[str] = []
+    for batches in all_results.values():
+        for batch in batches:
+            diagnostic_notes.extend(str(item) for item in batch.get("execution_log", []) if str(item).strip())
+    return {"diagnostic_notes": diagnostic_notes}
+
+
+def _build_full_market_report_bundle(
+    all_results: dict[str, list[dict[str, Any]]],
+    market: str,
+    total_capital: float,
+    top_k: int,
+) -> tuple[dict[str, Any], ReportBundle]:
+    plan = build_full_market_trade_plan(
+        all_results,
+        market=market,
+        total_capital=total_capital,
+        top_k=top_k,
+    )
+    branch_summary = _aggregate_branch_summary(all_results)
+    recommendations = list(plan.get("recommendations", []))
+    branch_verdicts = {
+        name: _branch_summary_to_verdict(name, payload)
+        for name, payload in branch_summary.items()
+    }
+    protocol_portfolio_plan = _market_portfolio_plan(
+        plan.get("portfolio_plan", {}),
+        recommendations,
+        total_capital=total_capital,
+    )
+    report_bundle = NarratorAgent().run(
+        {
+            "macro_verdict": _market_macro_verdict(branch_verdicts, plan.get("portfolio_plan", {})),
+            "branch_summaries": branch_verdicts,
+            "ic_decisions": _market_ic_decisions(recommendations),
+            "portfolio_plan": protocol_portfolio_plan,
+            "run_diagnostics": _market_run_diagnostics(all_results),
+        }
+    )
+    report_bundle.metadata.update(
+        {
+            "market": market,
+            "report_source": "full_market_batch_narrator",
+            "summary": plan.get("market_summary", {}),
+        }
+    )
+    return plan, report_bundle
+
+
 def generate_full_report(
     all_results: dict[str, list[dict[str, Any]]],
     market: str = "CN",
     output_dir: str | None = None,
     total_capital: float = 1_000_000,
     top_k: int = 12,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     settings = get_market_settings(market)
     target_dir = Path(output_dir or settings.analysis_output_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -863,7 +1127,7 @@ def generate_full_report(
 
     load_stock_names(settings.market)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    plan = build_full_market_trade_plan(
+    plan, report_bundle = _build_full_market_report_bundle(
         all_results,
         market=settings.market,
         total_capital=total_capital,
@@ -871,118 +1135,22 @@ def generate_full_report(
     )
     summary = plan["market_summary"]
     portfolio_plan = plan["portfolio_plan"]
-    recommendations = [ActionConsistencyGuard.apply(item) for item in plan["recommendations"]]
-    plan["recommendations"] = recommendations
-    branch_summary = _aggregate_branch_summary(all_results)
-    diagnostics = DiagnosticsBucketizer(all_results, branch_summary).bucket()
-    executive_summary = ExecutiveSummaryBuilder(portfolio_plan, branch_summary).build()
-
-    report_lines = [
-        f"# {settings.report_flag} {settings.market_name}全市场组合级交易建议报告\n",
-        f"**生成时间**: {summary['generated_at']}\n",
-        "**分析架构**: Quant-Investor V9 五路并行研究\n",
-        f"**分析覆盖**: {summary['total_stocks']} 只股票，{summary['total_batches']} 个批次\n",
-        "\n## 三句话执行摘要\n",
-    ]
-    for line in executive_summary:
-        report_lines.append(f"- {line}\n")
-
-    report_lines.extend(
-        [
-            "\n## 为什么当前总仓位是这个水平\n",
-            f"- 当前计划总仓位为 {portfolio_plan['target_exposure']:.1%}，计划投入 {settings.currency_symbol}{portfolio_plan['planned_investment']:,.0f}，预留现金 {settings.currency_symbol}{portfolio_plan['cash_reserve']:,.0f}。\n",
-            f"- 组合风格偏 {portfolio_plan['style_bias']}，单票上限控制在 {portfolio_plan['max_single_weight']:.1%}，本轮最终纳入 {portfolio_plan['selected_count']} 只标的。\n",
-            f"- 类别暴露为 "
-            + (
-                " / ".join(
-                    f"{category_name(category, settings.market)} {weight:.1%}"
-                    for category, weight in portfolio_plan["category_exposure"].items()
-                )
-                if portfolio_plan["category_exposure"]
-                else "暂无"
-            )
-            + "。\n",
-        ]
-    )
-
-    report_lines.extend(
-        [
-            "\n## 数据覆盖与可信度摘要\n",
-            f"- 本次汇总 {summary['total_batches']}/{summary['total_batches']} 批次，覆盖 {summary['total_stocks']}/{summary['total_stocks']} 标的。\n",
-            f"- 组合层平均可信度为 {_confidence_label(float(portfolio_plan.get('reliability', 0.0)))}。\n",
-        ]
-    )
-    for note in diagnostics["coverage_notes"][:5]:
-        report_lines.append(f"- {_sanitize_text(note)}\n")
-    if diagnostics["investment_risks"]:
-        report_lines.append(f"- 需要前置注意的投资风险: {'；'.join(diagnostics['investment_risks'][:3])}\n")
-
-    if recommendations:
-        report_lines.extend(
-            [
-                "\n## 最终推荐标的\n",
-                "| 排名 | 代码 | 名称 | 类别 | 现价 | 推荐买入价 | 目标卖出价 | 止损价 | 推荐仓位 | 金额 | 预期空间 | 五路支持 |\n",
-                "|:---:|:---|:---|:---|---:|---:|---:|---:|---:|---:|---:|---:|\n",
-            ]
-        )
-        for item in recommendations:
-            stock_name = get_stock_name(item["symbol"], market=settings.market)
-            current_price = float(item.get("current_price", 0))
-            entry_low = float(item.get("entry_price_range", {}).get("low", current_price * 0.99))
-            entry_high = float(item.get("entry_price_range", {}).get("high", current_price * 1.01))
-            display_entry_price = float(
-                item.get("recommended_entry_price") or (entry_low + entry_high) / 2 or current_price
-            )
-            report_lines.append(
-                f"| {item['rank']} | {item['symbol']} | {stock_name} | {item['category_name']} | "
-                f"{settings.currency_symbol}{current_price:.2f} | {settings.currency_symbol}{display_entry_price:.2f} | "
-                f"{settings.currency_symbol}{item['target_price']:.2f} | {settings.currency_symbol}{item['stop_loss_price']:.2f} | "
-                f"{item['portfolio_weight']:.1%} | {settings.currency_symbol}{item['portfolio_amount']:,.0f} | "
-                f"{float(item['expected_upside']):.1%} | {item['branch_positive_count']}/5 |\n"
-            )
-
-        for item in recommendations[:12]:
-            report_lines.extend(ConclusionRenderer.render_stock(item, settings.market))
-            display_entry_price = float(item.get("recommended_entry_price") or item.get("current_price") or 0.01)
-            max_loss = (float(item.get("stop_loss_price", 0.0)) / max(display_entry_price, 0.01) - 1) * 100
-            report_lines.append(f"- 最大亏损: {max_loss:.1f}%\n")
-            report_lines.append(f"- 风险观察: {'；'.join(_dedupe_text([_sanitize_text(flag) for flag in item.get('risk_flags', [])])[:3]) or '无'}\n")
-            report_lines.append("")
-    else:
-        report_lines.append("\n## 最终推荐标的\n")
-        report_lines.append("- 当前没有满足条件的最终候选，建议继续以现金和观察仓位为主。\n")
-
-    report_lines.append("\n## 五路分支结论\n")
-    for branch_name in ["kline", "quant", "fundamental", "intelligence", "macro"]:
-        if branch_name in branch_summary:
-            report_lines.extend(line + "\n" for line in ConclusionRenderer.render_branch(branch_name, branch_summary[branch_name]))
-
-    report_lines.append("## 附录：工程诊断与详细运行日志\n")
-    if diagnostics["diagnostic_notes"]:
-        for note in diagnostics["diagnostic_notes"]:
-            report_lines.append(f"- {note}\n")
-    else:
-        report_lines.append(f"- 当前未记录新增工程诊断（{summary['total_batches']}/{summary['total_batches']} 批次）。\n")
-
-    for category, batches in all_results.items():
-        for batch in batches:
-            if not batch.get("execution_log"):
-                continue
-            report_lines.append(
-                f"- {category_name(category, settings.market)} 批次 {batch.get('batch_id', '-')}: "
-                f"附带 {len(batch.get('execution_log', []))}/{len(batch.get('execution_log', []))} 条运行日志。\n"
-            )
-
     summary_lines = [
         f"# {settings.report_flag} {settings.market_name}全市场分析摘要\n",
         f"**生成时间**: {summary['generated_at']}\n",
         f"**分析覆盖**: {summary['total_stocks']} 只股票，{summary['total_batches']} 个批次\n",
         "\n## 三句话执行摘要\n",
     ]
-    for line in executive_summary:
+    for line in report_bundle.executive_summary:
         summary_lines.append(f"- {line}\n")
-    summary_lines.append("\n## 执行提醒\n")
-    for note in portfolio_plan["execution_notes"]:
+    summary_lines.extend(
+        [
+            "\n## 市场观点\n",
+            f"- {report_bundle.market_view}\n",
+            "\n## 执行提醒\n",
+        ]
+    )
+    for note in report_bundle.portfolio_plan.execution_notes if report_bundle.portfolio_plan else []:
         summary_lines.append(f"- {_sanitize_text(note)}\n")
 
     summary_file = target_dir / f"{settings.market}_Full_Report_{timestamp}.md"
@@ -991,9 +1159,17 @@ def generate_full_report(
     with open(summary_file, "w", encoding="utf-8") as file:
         file.writelines(summary_lines)
     with open(report_file, "w", encoding="utf-8") as file:
-        file.writelines(report_lines)
+        file.write(report_bundle.markdown_report)
     with open(data_file, "w", encoding="utf-8") as file:
-        json.dump(plan, file, indent=2, ensure_ascii=False)
+        json.dump(
+            {
+                **plan,
+                "report_bundle": _serialize_protocol_value(asdict(report_bundle)),
+            },
+            file,
+            indent=2,
+            ensure_ascii=False,
+        )
 
     candidate_file = save_candidate_index(all_results, market=settings.market, output_dir=str(target_dir))
     return {
@@ -1001,6 +1177,7 @@ def generate_full_report(
         "trade_report": str(report_file),
         "trade_data": str(data_file),
         "candidate_index": candidate_file,
+        "report_bundle": report_bundle,
     }
 
 

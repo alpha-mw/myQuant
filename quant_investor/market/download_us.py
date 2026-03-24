@@ -10,12 +10,14 @@ Download Full US Market Data - 下载完整美股市场数据
 """
 
 import os
-import pandas as pd
-from datetime import datetime, timedelta
-from typing import List, Dict, Optional
 import json
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional
+
+import pandas as pd
 
 from quant_investor.config import config
 from quant_investor.credential_utils import create_tushare_pro
@@ -168,7 +170,113 @@ class FullMarketDownloader:
         
         return universe
     
-    def download_stock(self, symbol: str, category: str) -> Dict:
+    def _read_latest_local_date(self, filepath: str) -> Optional[str]:
+        """读取本地 CSV 的最新交易日。"""
+        if not os.path.exists(filepath):
+            return None
+        try:
+            existing_df = pd.read_csv(filepath, usecols=["Date"])
+        except Exception:
+            return None
+        if existing_df.empty:
+            return None
+        latest_series = existing_df["Date"].dropna()
+        if latest_series.empty:
+            return None
+        return str(latest_series.iloc[-1])
+
+    def build_completeness_report(
+        self,
+        universe: Optional[Dict] = None,
+        categories: Optional[List[str]] = None,
+        allowed_stale_symbols: Optional[List[str]] = None,
+    ) -> Dict:
+        """
+        构建美股本地数据完整性报告。
+
+        完整性的定义是：
+        1. 目标股票存在本地 CSV；
+        2. 本地最新交易日达到该类别内的主导最新日；
+        3. allowed_stale_symbols 可跳过阻塞判断。
+        """
+        if universe is None:
+            universe = self.load_universe()
+
+        scoped_categories = categories or ["large_cap", "mid_cap", "small_cap"]
+        allowed = {symbol.upper() for symbol in (allowed_stale_symbols or [])}
+        report: Dict[str, Dict] = {}
+        overall_latest_dates: Counter[str] = Counter()
+        blocking_incomplete_count = 0
+
+        for category in scoped_categories:
+            symbols = list(universe.get(category, []))
+            date_counts: Counter[str] = Counter()
+            missing_symbols: List[str] = []
+            stale_symbols: List[Dict[str, str]] = []
+
+            for symbol in symbols:
+                filepath = os.path.join(self.dirs[category], f"{symbol}.csv")
+                latest_local_date = self._read_latest_local_date(filepath)
+                if latest_local_date is None:
+                    missing_symbols.append(symbol)
+                    continue
+                date_counts[latest_local_date] += 1
+                overall_latest_dates[latest_local_date] += 1
+
+            latest_trade_date = date_counts.most_common(1)[0][0] if date_counts else None
+
+            if latest_trade_date is not None:
+                for symbol in symbols:
+                    filepath = os.path.join(self.dirs[category], f"{symbol}.csv")
+                    latest_local_date = self._read_latest_local_date(filepath)
+                    if latest_local_date and latest_local_date != latest_trade_date:
+                        stale_symbols.append(
+                            {
+                                "symbol": symbol,
+                                "latest_local_date": latest_local_date,
+                            }
+                        )
+
+            blocking_missing_symbols = [
+                symbol for symbol in missing_symbols if symbol.upper() not in allowed
+            ]
+            blocking_stale_symbols = [
+                item for item in stale_symbols if item["symbol"].upper() not in allowed
+            ]
+            category_blocking = len(blocking_missing_symbols) + len(blocking_stale_symbols)
+            blocking_incomplete_count += category_blocking
+
+            report[category] = {
+                "expected": len(symbols),
+                "latest_trade_date": latest_trade_date,
+                "date_counts": dict(date_counts),
+                "missing_symbols": missing_symbols,
+                "stale_symbols": stale_symbols,
+                "allowed_stale_symbols": [
+                    symbol
+                    for symbol in missing_symbols
+                    if symbol.upper() in allowed
+                ] + [
+                    item["symbol"]
+                    for item in stale_symbols
+                    if item["symbol"].upper() in allowed
+                ],
+                "blocking_missing_symbols": blocking_missing_symbols,
+                "blocking_stale_symbols": blocking_stale_symbols,
+                "blocking_incomplete_count": category_blocking,
+            }
+
+        latest_trade_date = overall_latest_dates.most_common(1)[0][0] if overall_latest_dates else None
+        return {
+            "latest_trade_date": latest_trade_date,
+            "allowed_stale_symbols": sorted(allowed),
+            "complete": blocking_incomplete_count == 0,
+            "blocking_incomplete_count": blocking_incomplete_count,
+            "categories_checked": scoped_categories,
+            "categories": report,
+        }
+
+    def download_stock(self, symbol: str, category: str, force_refresh: bool = False) -> Dict:
         """
         下载单只股票数据
         
@@ -179,7 +287,7 @@ class FullMarketDownloader:
         filepath = f"{save_dir}/{symbol}.csv"
         
         # 检查是否已存在且数据完整
-        if os.path.exists(filepath):
+        if os.path.exists(filepath) and not force_refresh:
             try:
                 existing_df = pd.read_csv(filepath)
                 if len(existing_df) > 200:  # 至少200个交易日
@@ -188,7 +296,8 @@ class FullMarketDownloader:
                         'category': category,
                         'status': 'cached',
                         'records': len(existing_df),
-                        'error': None
+                        'error': None,
+                        'source': 'local_cache',
                     }
             except:
                 pass  # 重新下载
@@ -229,7 +338,12 @@ class FullMarketDownloader:
                 'source': source,
             }
     
-    def download_category(self, symbols: List[str], category: str) -> List[Dict]:
+    def download_category(
+        self,
+        symbols: List[str],
+        category: str,
+        force_refresh_symbols: Optional[set[str]] = None,
+    ) -> List[Dict]:
         """
         批量下载某一类别的股票数据
         
@@ -248,6 +362,7 @@ class FullMarketDownloader:
         
         results = []
         start_time = time.time()
+        refresh_set = {symbol.upper() for symbol in (force_refresh_symbols or set())}
         
         # 分批处理
         total_batches = (len(symbols) + self.batch_size - 1) // self.batch_size
@@ -262,7 +377,12 @@ class FullMarketDownloader:
             # 并行下载
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                 future_to_symbol = {
-                    executor.submit(self.download_stock, symbol, category): symbol 
+                    executor.submit(
+                        self.download_stock,
+                        symbol,
+                        category,
+                        symbol.upper() in refresh_set,
+                    ): symbol
                     for symbol in batch_symbols
                 }
                 
@@ -297,7 +417,12 @@ class FullMarketDownloader:
         
         return results
     
-    def download_all(self, universe: Optional[Dict] = None) -> Dict:
+    def download_all(
+        self,
+        universe: Optional[Dict] = None,
+        categories: Optional[List[str]] = None,
+        force_refresh_by_category: Optional[Dict[str, List[str]]] = None,
+    ) -> Dict:
         """
         下载全市场数据
         
@@ -326,23 +451,17 @@ class FullMarketDownloader:
         
         total_start = time.time()
         
-        # 下载大盘股
-        all_results['categories']['large_cap'] = self.download_category(
-            universe['large_cap'], 
-            'large_cap'
-        )
-        
-        # 下载中盘股
-        all_results['categories']['mid_cap'] = self.download_category(
-            universe['mid_cap'],
-            'mid_cap'
-        )
-        
-        # 下载小盘股
-        all_results['categories']['small_cap'] = self.download_category(
-            universe['small_cap'],
-            'small_cap'
-        )
+        selected_categories = categories or ["large_cap", "mid_cap", "small_cap"]
+        refresh_map = force_refresh_by_category or {}
+
+        for category in selected_categories:
+            if category not in universe:
+                continue
+            all_results['categories'][category] = self.download_category(
+                universe[category],
+                category,
+                force_refresh_symbols=set(refresh_map.get(category, [])),
+            )
         
         total_elapsed = time.time() - total_start
         

@@ -17,6 +17,8 @@ from quant_investor.versioning import (
     BRANCH_SCHEMA_VERSION_V9,
     CALIBRATION_SCHEMA_VERSION,
     DEBATE_TEMPLATE_VERSION,
+    IC_PROTOCOL_VERSION,
+    REPORT_PROTOCOL_VERSION,
 )
 
 _logger = get_logger("QuantInvestorV9")
@@ -28,6 +30,8 @@ class V9PipelineResult:
 
     architecture_version: str = ARCHITECTURE_VERSION_V9
     branch_schema_version: str = BRANCH_SCHEMA_VERSION_V9
+    ic_protocol_version: str = IC_PROTOCOL_VERSION
+    report_protocol_version: str = REPORT_PROTOCOL_VERSION
     calibration_schema_version: str = CALIBRATION_SCHEMA_VERSION
     debate_template_version: str = DEBATE_TEMPLATE_VERSION
     data_bundle: Optional[UnifiedDataBundle] = None
@@ -39,6 +43,10 @@ class V9PipelineResult:
     execution_log: list[str] = field(default_factory=list)
     layer_timings: dict[str, float] = field(default_factory=dict)
     total_time: float = 0.0
+    agent_orchestration: Optional[dict[str, Any]] = None
+    agent_portfolio_plan: Any = None
+    agent_report_bundle: Any = None
+    agent_ic_decisions: Any = field(default_factory=dict)
 
     raw_data: dict[str, Any] = field(default_factory=dict)
     factor_data: dict[str, Any] = field(default_factory=dict)
@@ -156,6 +164,16 @@ class QuantInvestorV9:
             "branch_schema_version",
             self.result.branch_schema_version,
         )
+        self.result.ic_protocol_version = getattr(
+            pipeline_result,
+            "ic_protocol_version",
+            self.result.ic_protocol_version,
+        )
+        self.result.report_protocol_version = getattr(
+            pipeline_result,
+            "report_protocol_version",
+            self.result.report_protocol_version,
+        )
         self.result.calibration_schema_version = getattr(
             pipeline_result,
             "calibration_schema_version",
@@ -175,6 +193,10 @@ class QuantInvestorV9:
         self.result.layer_timings = pipeline_result.timings
         self.result.execution_log.extend(pipeline_result.execution_log)
         self.result.raw_data = pipeline_result.data_bundle.symbol_data
+        self.result.agent_orchestration = getattr(pipeline_result, "agent_orchestration", None)
+        self.result.agent_portfolio_plan = getattr(pipeline_result, "agent_portfolio_plan", None)
+        self.result.agent_report_bundle = getattr(pipeline_result, "agent_report_bundle", None)
+        self.result.agent_ic_decisions = getattr(pipeline_result, "agent_ic_decisions", {})
 
         quant_branch = pipeline_result.branch_results.get("quant")
         kline_branch = pipeline_result.branch_results.get("kline")
@@ -200,7 +222,7 @@ class QuantInvestorV9:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Quant Investor V9.0 current architecture. V8 为 legacy frozen，最新默认版本为 V9。"
+        description="Quant Investor V9.0 current architecture. V8 为 legacy frozen，最新默认版本为 V10。"
     )
     parser.add_argument("--stocks", nargs="+", default=["000001.SZ", "600519.SH"])
     parser.add_argument("--market", default="CN", choices=["CN", "US"])

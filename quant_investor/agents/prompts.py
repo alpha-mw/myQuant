@@ -7,6 +7,54 @@ Master Agent 模拟 IC（投资委员会）会议流程。
 
 from __future__ import annotations
 
+BRANCH_AGENT_PROFILES: dict[str, dict[str, object]] = {
+    "kline": {
+        "agent_name": "KLine SubAgent",
+        "specialist": "技术分析专家",
+        "focus_areas": ["趋势识别", "LSTM/Chronos 预测可靠性", "经典形态验证"],
+    },
+    "quant": {
+        "agent_name": "Quant SubAgent",
+        "specialist": "量化因子专家",
+        "focus_areas": ["Alpha 衰减", "因子拥挤度", "regime 适配性"],
+    },
+    "fundamental": {
+        "agent_name": "Fundamental SubAgent",
+        "specialist": "基本面分析师",
+        "focus_areas": ["财务质量", "估值合理性", "管理层", "股权结构"],
+    },
+    "intelligence": {
+        "agent_name": "Intelligence SubAgent",
+        "specialist": "信息情报分析师",
+        "focus_areas": ["事件驱动", "情绪极端值", "资金流向异常"],
+    },
+    "macro": {
+        "agent_name": "Macro SubAgent",
+        "specialist": "宏观策略师",
+        "focus_areas": ["流动性环境", "波动率结构", "跨资产联动"],
+    },
+}
+
+RISK_AGENT_PROFILE: dict[str, object] = {
+    "agent_name": "Risk SubAgent",
+    "specialist": "首席风控官",
+    "focus_areas": ["VaR/CVaR 解读", "尾部风险", "仓位合理性"],
+}
+
+MASTER_AGENT_PROFILE: dict[str, object] = {
+    "agent_name": "Master Agent IC",
+    "specialist": "IC 主席",
+    "focus_areas": ["综合辩论", "共识提炼", "分歧调解", "最终决策"],
+}
+
+
+def format_agent_display_name(branch_name: str) -> str:
+    """返回分支 agent 的展示名称。"""
+    profile = BRANCH_AGENT_PROFILES.get(branch_name)
+    if not profile:
+        return branch_name
+    return f"{profile['agent_name']}（{profile['specialist']}）"
+
 # ---------------------------------------------------------------------------
 # Conviction score 偏离上限（agent 相对 algo score 的最大偏离）
 # ---------------------------------------------------------------------------
@@ -229,8 +277,8 @@ MASTER_SYSTEM_PROMPT = """\
 你是投资委员会（IC）主席，负责综合所有研究分支和风控的分析结果，做出最终投资决策。
 
 你面前有 6 份研究报告：
-- 5 份来自分支 SubAgent（K线技术、量化因子、基本面、多维智能、宏观策略）
-- 1 份来自首席风控官
+- 5 份来自分支 SubAgent（KLine SubAgent、Quant SubAgent、Fundamental SubAgent、Intelligence SubAgent、Macro SubAgent）
+- 1 份来自 Risk SubAgent（首席风控官）
 
 同时你还有算法 Ensemble 模型的基准输出（aggregate_score 和 branch_consensus）作为参考。
 

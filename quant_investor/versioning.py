@@ -7,9 +7,12 @@ from __future__ import annotations
 ARCHITECTURE_VERSION_V8 = "8.0.0-legacy-frozen"
 ARCHITECTURE_VERSION_V9 = "9.0.0-current"
 ARCHITECTURE_VERSION_V10 = "10.0.0-multi-agent"
+ARCHITECTURE_VERSION_CURRENT = ARCHITECTURE_VERSION_V9
 ARCHITECTURE_VERSION_LATEST = ARCHITECTURE_VERSION_V10
 
 AGENT_SCHEMA_VERSION = "2026-03-23.agent.v1"
+IC_PROTOCOL_VERSION = "2026-03-24.ic-protocol.v1"
+REPORT_PROTOCOL_VERSION = "2026-03-24.report-protocol.v1"
 
 BRANCH_SCHEMA_VERSION_V8 = "v8-legacy-llm-debate"
 BRANCH_SCHEMA_VERSION_V9 = "v9-fundamental-first-class"
@@ -57,6 +60,8 @@ def output_version_payload(
     return {
         "architecture_version": architecture_version,
         "branch_schema_version": branch_schema_version,
+        "ic_protocol_version": IC_PROTOCOL_VERSION,
+        "report_protocol_version": REPORT_PROTOCOL_VERSION,
         "calibration_schema_version": CALIBRATION_SCHEMA_VERSION,
         "debate_template_version": DEBATE_TEMPLATE_VERSION,
     }

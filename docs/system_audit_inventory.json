@@ -1,0 +1,656 @@
+{
+  "audit_date": "2026-03-24",
+  "phase": "system_audit_inventory_phase_1",
+  "logic_modified": false,
+  "scope": {
+    "mode": "inventory_and_diff_only",
+    "business_logic_changed": false
+  },
+  "scanned_targets": {
+    "README.md": true,
+    "pyproject.toml": true,
+    "quant_investor/__init__.py": true,
+    "quant_investor/pipeline/": true,
+    "quant_investor/cli/": true,
+    "quant_investor/market/": true,
+    "tests/": true,
+    "web/": true,
+    "frontend/": true,
+    "scripts/": false
+  },
+  "scan_notes": {
+    "scripts_directory_exists": false,
+    "root_level_standalone_runners": [
+      "run_web.sh",
+      "run_us_aggressive_analysis.py"
+    ]
+  },
+  "entrypoints": {
+    "user_default": [
+      {
+        "surface": "python_package_default",
+        "entry": "from quant_investor import QuantInvestor",
+        "actual_target": "QuantInvestorV9",
+        "classification": "stable_mainline",
+        "evidence": [
+          "quant_investor/__init__.py:19-30",
+          "quant_investor/pipeline/current.py:10-14"
+        ]
+      },
+      {
+        "surface": "console_default",
+        "entry": "quant-investor research run / python -m quant_investor",
+        "actual_target": "QuantInvestorLatest -> QuantInvestorV10",
+        "classification": "latest_default_conflict",
+        "evidence": [
+          "pyproject.toml:70-71",
+          "quant_investor/__main__.py:1-5",
+          "quant_investor/cli/main.py:31-45",
+          "quant_investor/pipeline/__init__.py:5-10"
+        ]
+      },
+      {
+        "surface": "web_ui_default",
+        "entry": "web/main.py -> web/app.py -> web/services/analysis_service.py",
+        "actual_target": "single/holdings -> QuantInvestorV8; market -> custom V8 batch aggregator",
+        "classification": "divergent_live_surface",
+        "evidence": [
+          "web/main.py:1-18",
+          "web/app.py:50-75",
+          "web/tasks/run_analysis_job.py:264-312",
+          "web/services/analysis_service.py:615-807"
+        ]
+      }
+    ],
+    "python_api": [
+      {
+        "name": "QuantInvestor",
+        "actual_target": "QuantInvestorV9",
+        "semantics": "current_stable"
+      },
+      {
+        "name": "QuantInvestorCurrent",
+        "actual_target": "QuantInvestorV9",
+        "semantics": "current_stable_alias"
+      },
+      {
+        "name": "quant_investor.pipeline.current.QuantInvestor",
+        "actual_target": "QuantInvestorV9",
+        "semantics": "pipeline_current_alias"
+      },
+      {
+        "name": "QuantInvestorV8",
+        "actual_target": "quant_investor/pipeline/quant_investor_v8.py",
+        "semantics": "legacy_frozen"
+      },
+      {
+        "name": "QuantInvestorV9",
+        "actual_target": "quant_investor/pipeline/quant_investor_v9.py",
+        "semantics": "current_stable"
+      },
+      {
+        "name": "QuantInvestorV10",
+        "actual_target": "quant_investor/pipeline/quant_investor_v10.py",
+        "semantics": "explicit_multi_agent"
+      },
+      {
+        "name": "QuantInvestorLatest",
+        "actual_target": "QuantInvestorV10",
+        "semantics": "explicit_latest_alias"
+      }
+    ],
+    "cli": [
+      {
+        "command": "quant-investor research run",
+        "default_architecture": "latest",
+        "actual_default_target": "QuantInvestorV10"
+      },
+      {
+        "command": "quant-investor market analyze",
+        "actual_target": "quant_investor.market.analyze.run_market_analysis",
+        "stable_line_target": "QuantInvestorV9"
+      },
+      {
+        "command": "quant-investor market download",
+        "actual_target": "quant_investor.market.download.run_download"
+      },
+      {
+        "command": "quant-investor market backtest",
+        "actual_target": "quant_investor.market.run_market_backtest"
+      }
+    ],
+    "full_market": [
+      {
+        "surface": "package_full_market",
+        "entry": "quant_investor.market.run_market_analysis",
+        "actual_target": "QuantInvestor(V9) + NarratorAgent ReportBundle",
+        "classification": "stable_mainline"
+      },
+      {
+        "surface": "web_market_mode",
+        "entry": "web.services.analysis_service._run_market_analysis",
+        "actual_target": "repeated run_job() -> QuantInvestorV8 + custom markdown",
+        "classification": "divergent_live_surface"
+      },
+      {
+        "surface": "root_helper",
+        "entry": "run_us_aggressive_analysis.py",
+        "actual_target": "monkeypatched V8 full-market helper",
+        "classification": "experimental_helper"
+      }
+    ],
+    "batch_report": [
+      {
+        "surface": "package_full_market",
+        "entry": "quant_investor.market.analyze.generate_full_report",
+        "output": [
+          "summary markdown",
+          "trade markdown from ReportBundle",
+          "trade data JSON with serialized report_bundle"
+        ]
+      },
+      {
+        "surface": "single_symbol_current",
+        "entry": "QuantInvestorV9.print_report/save_report",
+        "output": [
+          "final_report markdown"
+        ]
+      },
+      {
+        "surface": "single_symbol_latest",
+        "entry": "QuantInvestorV10.print_report/save_report",
+        "output": [
+          "V9 final_report markdown",
+          "appended V10 agent narrative"
+        ]
+      },
+      {
+        "surface": "web_market",
+        "entry": "web.services.analysis_service._build_market_report",
+        "output": [
+          "custom market markdown"
+        ]
+      },
+      {
+        "surface": "web_single_holdings",
+        "entry": "web.tasks.run_analysis_job.py",
+        "output": [
+          "V8 final_report markdown"
+        ]
+      }
+    ]
+  },
+  "version_semantics": {
+    "V8": {
+      "exists": true,
+      "bindings": [
+        "QuantInvestorV8",
+        "--architecture v8"
+      ],
+      "actual_target": "quant_investor/pipeline/quant_investor_v8.py",
+      "semantics": "legacy_frozen",
+      "evidence": [
+        "quant_investor/versioning.py:7",
+        "quant_investor/pipeline/quant_investor_v8.py:56-128",
+        "quant_investor/cli/main.py:41-45,125-130"
+      ]
+    },
+    "V9": {
+      "exists": true,
+      "bindings": [
+        "QuantInvestor",
+        "QuantInvestorCurrent",
+        "QuantInvestorV9",
+        "--architecture v9",
+        "ARCHITECTURE_VERSION_CURRENT"
+      ],
+      "actual_target": "quant_investor/pipeline/quant_investor_v9.py",
+      "semantics": "current_stable",
+      "evidence": [
+        "quant_investor/pipeline/current.py:10-14",
+        "quant_investor/versioning.py:8-10",
+        "tests/unit/test_public_package_smoke.py:17-29"
+      ]
+    },
+    "V10": {
+      "exists": true,
+      "bindings": [
+        "QuantInvestorV10",
+        "QuantInvestorLatest",
+        "--architecture v10",
+        "--architecture latest",
+        "ARCHITECTURE_VERSION_LATEST"
+      ],
+      "actual_target": "quant_investor/pipeline/quant_investor_v10.py",
+      "semantics": "explicit_multi_agent_and_latest",
+      "evidence": [
+        "quant_investor/pipeline/__init__.py:8-10",
+        "quant_investor/versioning.py:9-11",
+        "quant_investor/cli/main.py:31-45,125-130"
+      ]
+    },
+    "current": {
+      "exists": true,
+      "actual_target": "V9",
+      "semantics": "stable_current_line"
+    },
+    "latest": {
+      "exists": true,
+      "actual_target": "V10",
+      "semantics": "explicit_latest_line_not_stable_default_for_python_package"
+    },
+    "V10.1": {
+      "exists": true,
+      "actual_target": "commentary_and_tests_only",
+      "semantics": "label_drift_without_runtime_binding",
+      "evidence": [
+        "quant_investor/agents/orchestrator.py:1-6",
+        "quant_investor/agents/__init__.py:1-7",
+        "quant_investor/agents/agent_contracts.py:1-6",
+        "quant_investor/agents/master_agent.py:1-6",
+        "tests/unit/test_specialized_subagents.py:1-10"
+      ]
+    }
+  },
+  "stable_mainline": {
+    "official_current": "V9",
+    "python_default_call_chain": [
+      "quant_investor/pipeline/current.py",
+      "quant_investor/pipeline/quant_investor_v9.py",
+      "quant_investor/pipeline/parallel_research_pipeline.py",
+      "quant_investor/enhanced_data_layer.py",
+      "quant_investor/signal_calibration.py",
+      "quant_investor/risk_management_layer.py",
+      "quant_investor/ensemble_judge.py",
+      "quant_investor/fundamental_branch.py"
+    ],
+    "conditional_modules": [
+      "quant_investor/branch_debate_engine.py",
+      "quant_investor/debate_scheduler.py",
+      "quant_investor/corporate_doc_store.py",
+      "quant_investor/corporate_doc_ingest.py"
+    ],
+    "sidecar_only_modules": [
+      "quant_investor/agent_orchestrator.py",
+      "quant_investor/agents/narrator_agent.py"
+    ],
+    "full_market_extra_modules": [
+      "quant_investor/market/analyze.py",
+      "quant_investor/agents/narrator_agent.py"
+    ],
+    "explicit_latest_only_modules": [
+      "quant_investor/pipeline/quant_investor_v10.py",
+      "quant_investor/agents/orchestrator.py",
+      "quant_investor/agents/master_agent.py",
+      "quant_investor/agents/subagent.py",
+      "quant_investor/agents/subagents/"
+    ]
+  },
+  "report_stacks": [
+    {
+      "name": "v8_legacy_pipeline_markdown",
+      "primary_renderer": "quant_investor/pipeline/legacy_v8_pipeline.py::_build_markdown_report",
+      "used_by": [
+        "QuantInvestorV8",
+        "web single/holdings"
+      ]
+    },
+    {
+      "name": "v9_pipeline_markdown",
+      "primary_renderer": "quant_investor/pipeline/parallel_research_pipeline.py::_build_markdown_report",
+      "used_by": [
+        "QuantInvestorV9",
+        "package current single-symbol",
+        "package current shortlist"
+      ]
+    },
+    {
+      "name": "v10_appended_agent_markdown",
+      "primary_renderer": "quant_investor/pipeline/quant_investor_v10.py::_build_agent_report_section",
+      "used_by": [
+        "QuantInvestorV10",
+        "CLI default latest"
+      ]
+    },
+    {
+      "name": "narrator_report_bundle_markdown",
+      "primary_renderer": "quant_investor/agents/narrator_agent.py::run",
+      "used_by": [
+        "package full-market",
+        "agent sidecar bundles"
+      ]
+    },
+    {
+      "name": "web_market_custom_markdown",
+      "primary_renderer": "web/services/analysis_service.py::_build_market_report",
+      "used_by": [
+        "web market mode"
+      ]
+    }
+  ],
+  "call_chains": {
+    "full_market": [
+      "quant-investor market analyze",
+      "quant_investor.cli.main.run_market_analysis",
+      "quant_investor.market.analyze.run_market_analysis",
+      "quant_investor.market.analyze.analyze_category_full",
+      "quant_investor.market.analyze.analyze_batch",
+      "QuantInvestor (= QuantInvestorV9)",
+      "QuantInvestorV9.run",
+      "ParallelResearchPipeline.run",
+      "ParallelResearchPipeline._build_markdown_report",
+      "ParallelResearchPipeline._run_agent_orchestrator_bridge",
+      "quant_investor.market.analyze.generate_full_report",
+      "NarratorAgent.run",
+      "ReportBundle"
+    ],
+    "single_symbol": [
+      "from quant_investor import QuantInvestor",
+      "QuantInvestorV9.run",
+      "ParallelResearchPipeline.run",
+      "_build_data_bundle",
+      "_run_branches(kline, quant, fundamental, intelligence, macro)",
+      "_calibrate_signals",
+      "_run_risk_layer",
+      "_run_ensemble_layer",
+      "_build_markdown_report",
+      "_run_agent_orchestrator_bridge",
+      "result.final_report",
+      "result.agent_report_bundle"
+    ],
+    "shortlist": [
+      "quant-investor research run --architecture v10|latest --kline-backend hybrid|chronos|kronos",
+      "QuantInvestorV10.run",
+      "QuantInvestorV9.run",
+      "ParallelResearchPipeline._run_kline_branch",
+      "non-heuristic kline backend path",
+      "V9 final_report",
+      "quant_investor.agents.orchestrator.AgentOrchestrator.enhance_sync",
+      "append agent report section"
+    ],
+    "web_single_holdings": [
+      "web/main.py",
+      "web/app.py",
+      "web/services/analysis_service.run_analysis",
+      "subprocess web/tasks/run_analysis_job.py",
+      "QuantInvestorV8",
+      "LegacyV8ParallelResearchPipeline",
+      "result.final_report"
+    ],
+    "web_market": [
+      "web/main.py",
+      "web/app.py",
+      "web/services/analysis_service.run_analysis",
+      "web/services/analysis_service._run_market_analysis",
+      "repeated web.tasks.run_analysis_job.run_job",
+      "repeated QuantInvestorV8",
+      "web-side batch aggregation",
+      "web/services/analysis_service._build_market_report"
+    ]
+  },
+  "suspect_redundant_modules": [
+    {
+      "path": "quant_investor/intelligence.py",
+      "status": "legacy_independent_stack",
+      "should_stable_current_call_it": false,
+      "reason": "not traversed by current stable pipeline"
+    },
+    {
+      "path": "run_us_aggressive_analysis.py",
+      "status": "experimental_helper",
+      "should_stable_current_call_it": false,
+      "reason": "monkeypatched V8 full-market helper with local-path assumptions"
+    },
+    {
+      "path": "web/tasks/run_analysis_job.py",
+      "status": "live_but_divergent",
+      "should_stable_current_call_it": false,
+      "reason": "web runner hard-binds QuantInvestorV8"
+    },
+    {
+      "path": "web/services/analysis_service.py::_run_market_analysis",
+      "status": "live_but_divergent",
+      "should_stable_current_call_it": false,
+      "reason": "custom market aggregator over repeated V8 jobs"
+    },
+    {
+      "path": "quant_investor/pipeline/legacy_v8_pipeline.py",
+      "status": "explicit_legacy_support",
+      "should_stable_current_call_it": false,
+      "reason": "only explicit V8 entry should reach it"
+    },
+    {
+      "path": "quant_investor/contracts.py",
+      "status": "compat_only",
+      "should_stable_current_call_it": false,
+      "reason": "branch_contracts.py is the canonical contract source"
+    },
+    {
+      "path": "quant_investor/pipeline/parallel_research_pipeline.py::_run_llm_debate_branch",
+      "status": "deprecated_alias",
+      "should_stable_current_call_it": false,
+      "reason": "deprecated alias to fundamental branch"
+    },
+    {
+      "path": "docs/audits/kline_branch_audit_2026-03-21.md",
+      "status": "stale_audit_doc",
+      "should_stable_current_call_it": false,
+      "reason": "still describes current mainline as V8"
+    }
+  ],
+  "naming_inconsistencies": [
+    {
+      "name": "KLine_vs_Kline",
+      "details": "KLine SubAgent and KLineAgentInput/Output coexist with governance name KlineAgent"
+    },
+    {
+      "name": "llm_debate_vs_fundamental",
+      "details": "web/frontend still expose llm_debate as a top-level branch while current stable mainline uses fundamental + branch-local debate"
+    },
+    {
+      "name": "RiskAgent_vs_RiskGuard",
+      "details": "RiskAgent, SpecializedRiskSubAgent and Risk SubAgent labels coexist with governance name RiskGuard"
+    },
+    {
+      "name": "MasterAgent_vs_ICCoordinator",
+      "details": "MasterAgent labels coexist with governance name ICCoordinator"
+    },
+    {
+      "name": "QuantInvestor_vs_quant-investor",
+      "details": "Python package default means V9 current, while console default means V10 latest"
+    },
+    {
+      "name": "branch_local_debate_vs_enable_branch_debate",
+      "details": "README text, code parameters and compatibility alias enable_llm_debate are not perfectly aligned"
+    }
+  ],
+  "version_inconsistencies": [
+    {
+      "name": "package_version_vs_cli_default",
+      "details": "pyproject and README badge say 9.0.0, but packaged CLI default lands on V10"
+    },
+    {
+      "name": "V10_vs_V10.1",
+      "details": "versioning.py defines V10, while multiple agent-layer files and tests label the same surface V10.1"
+    },
+    {
+      "name": "web_api_version",
+      "details": "web/app.py exposes version 1.0.0, which is a separate numbering scheme from V8/V9/V10"
+    },
+    {
+      "name": "frontend_branding",
+      "details": "frontend chrome still says myQuant V8"
+    },
+    {
+      "name": "stale_audit_doc",
+      "details": "docs/audits/kline_branch_audit_2026-03-21.md still frames current mainline as V8"
+    }
+  ],
+  "entry_conflicts": [
+    {
+      "name": "package_default_vs_cli_default",
+      "surfaces": [
+        "QuantInvestor",
+        "quant-investor research run"
+      ],
+      "details": "package default points to V9 current, CLI default points to latest=V10"
+    },
+    {
+      "name": "package_full_market_vs_web_market",
+      "surfaces": [
+        "quant_investor.market.run_market_analysis",
+        "web.services.analysis_service._run_market_analysis"
+      ],
+      "details": "package full-market uses V9 current + NarratorAgent; web market uses repeated V8 jobs + custom markdown"
+    },
+    {
+      "name": "stable_python_vs_live_web",
+      "surfaces": [
+        "QuantInvestor",
+        "web/main.py"
+      ],
+      "details": "stable current package is V9/fundamental-first; live web remains V8/llm_debate-first"
+    }
+  ],
+  "report_conflicts": [
+    {
+      "name": "single_symbol_vs_full_market",
+      "details": "single-symbol current primary output is final_report; full-market primary output is ReportBundle markdown"
+    },
+    {
+      "name": "web_market_custom_stack",
+      "details": "web market still uses its own markdown builder instead of NarratorAgent"
+    },
+    {
+      "name": "v10_hybrid_stack",
+      "details": "V10 output is V9 markdown plus appended agent section, not a clean protocol replacement"
+    }
+  ],
+  "copy_mismatches": [
+    {
+      "path": "README.md",
+      "topic": "report_stack_unification",
+      "details": "README claims batch and single-symbol/shortlist share one unified report protocol, but current single-symbol primary output is still final_report and web market keeps a custom renderer"
+    },
+    {
+      "path": "pyproject.toml",
+      "topic": "package_version_vs_runtime_default",
+      "details": "package version is 9.0.0 while packaged CLI default lands on V10"
+    },
+    {
+      "path": "quant_investor/cli/main.py",
+      "topic": "default_architecture",
+      "details": "CLI default latest=V10 conflicts with package current default V9"
+    },
+    {
+      "path": "tests/unit/test_specialized_subagents.py",
+      "topic": "version_label",
+      "details": "test title uses V10.1 while runtime version constants use V10"
+    },
+    {
+      "path": "web/tasks/run_analysis_job.py",
+      "topic": "web_runner_semantics",
+      "details": "web runner is explicitly a V8 analysis job"
+    },
+    {
+      "path": "web/services/analysis_service.py",
+      "topic": "branch_semantics",
+      "details": "web presets and branch labels still expose llm_debate as a top-level branch"
+    },
+    {
+      "path": "frontend/src/components/layout/AppShell.tsx",
+      "topic": "branding",
+      "details": "top chrome says myQuant V8"
+    },
+    {
+      "path": "frontend/src/components/layout/Sidebar.tsx",
+      "topic": "branding",
+      "details": "sidebar brand says myQuant V8"
+    },
+    {
+      "path": "frontend/src/pages/AnalysisHub.tsx",
+      "topic": "branch_semantics",
+      "details": "default branches and UI still revolve around llm_debate instead of fundamental"
+    },
+    {
+      "path": "frontend/README.md",
+      "topic": "product_documentation",
+      "details": "still the default Vite template, not product-specific documentation"
+    },
+    {
+      "path": "docs/audits/kline_branch_audit_2026-03-21.md",
+      "topic": "stale_mainline_claim",
+      "details": "still describes current mainline as V8"
+    }
+  ],
+  "direct_answers": {
+    "main_compat_experimental_entries": {
+      "main": [
+        "QuantInvestor -> V9",
+        "quant_investor.pipeline.current.QuantInvestor -> V9",
+        "quant_investor.market.run_market_analysis -> V9 full-market"
+      ],
+      "compat": [
+        "QuantInvestorV8",
+        "CLI --architecture v8",
+        "quant_investor/contracts.py",
+        "enable_llm_debate / _run_llm_debate_branch compatibility aliases"
+      ],
+      "experimental_or_latest": [
+        "QuantInvestorV10",
+        "QuantInvestorLatest",
+        "CLI --architecture v10|latest",
+        "quant_investor.agents.orchestrator.AgentOrchestrator"
+      ],
+      "divergent_live_surfaces": [
+        "web/",
+        "frontend/",
+        "run_us_aggressive_analysis.py"
+      ]
+    },
+    "simultaneous_version_semantics": [
+      "V8 legacy frozen",
+      "V9 current stable",
+      "V10 explicit multi-agent",
+      "current = V9",
+      "latest = V10",
+      "V10.1 label-only semantics in comments/tests",
+      "web surface still behaves like V8",
+      "frontend chrome still brands V8"
+    ],
+    "modules_really_hit_by_stable_mainline": [
+      "quant_investor/pipeline/current.py",
+      "quant_investor/pipeline/quant_investor_v9.py",
+      "quant_investor/pipeline/parallel_research_pipeline.py",
+      "quant_investor/enhanced_data_layer.py",
+      "quant_investor/signal_calibration.py",
+      "quant_investor/risk_management_layer.py",
+      "quant_investor/ensemble_judge.py",
+      "quant_investor/fundamental_branch.py",
+      "quant_investor/market/analyze.py",
+      "quant_investor/agent_orchestrator.py",
+      "quant_investor/agents/narrator_agent.py"
+    ],
+    "modules_that_exist_but_should_not_be_called_by_stable_default": [
+      "quant_investor/intelligence.py",
+      "web/tasks/run_analysis_job.py",
+      "web/services/analysis_service.py::_run_market_analysis",
+      "run_us_aggressive_analysis.py",
+      "quant_investor/pipeline/legacy_v8_pipeline.py",
+      "quant_investor/contracts.py",
+      "quant_investor/pipeline/parallel_research_pipeline.py::_run_llm_debate_branch"
+    ],
+    "copy_areas_out_of_sync": [
+      "README.md",
+      "pyproject.toml",
+      "quant_investor/cli/main.py",
+      "tests/unit/test_specialized_subagents.py",
+      "web/tasks/run_analysis_job.py",
+      "web/services/analysis_service.py",
+      "frontend/src/components/layout/AppShell.tsx",
+      "frontend/src/components/layout/Sidebar.tsx",
+      "frontend/src/pages/AnalysisHub.tsx",
+      "frontend/README.md"
+    ]
+  }
+}

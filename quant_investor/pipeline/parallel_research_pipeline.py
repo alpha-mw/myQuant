@@ -48,6 +48,8 @@ from quant_investor.versioning import (
     CURRENT_BRANCH_ORDER,
     CURRENT_BRANCH_WEIGHTS,
     DEBATE_TEMPLATE_VERSION,
+    IC_PROTOCOL_VERSION,
+    REPORT_PROTOCOL_VERSION,
     output_version_payload,
 )
 
@@ -244,6 +246,8 @@ class BranchPerformanceTracker:
                         "schema_version": BRANCH_TRACKER_SCHEMA_VERSION,
                         "architecture_version": self.architecture_version,
                         "branch_schema_version": self.branch_schema_version,
+                        "ic_protocol_version": IC_PROTOCOL_VERSION,
+                        "report_protocol_version": REPORT_PROTOCOL_VERSION,
                         "calibration_schema_version": CALIBRATION_SCHEMA_VERSION,
                         "active_branches": list(self.default_weights.keys()),
                         "history": self._history,
@@ -373,6 +377,7 @@ class ParallelResearchPipeline:
             branch_schema_version=self.branch_schema_version,
         )
         self._market_regime: str | None = None  # 由 run() 中 RegimeDetector 设定
+        self.enable_agent_orchestrator_bridge = True
 
     def _log(self, message: str) -> None:
         self._logger.info(message)
@@ -570,10 +575,78 @@ class ParallelResearchPipeline:
             calibrated_signals=result.calibrated_signals,
         )
         result.final_report = self._build_markdown_report(result)
+        self._run_agent_orchestrator_bridge(result)
         result.timings["ensemble_layer"] = time.time() - ensemble_start
         result.timings["total"] = time.time() - t0
         result.execution_log.append("并行研究流程完成")
         return result
+
+    def _run_agent_orchestrator_bridge(self, result: ResearchPipelineResult) -> None:
+        """兼容过渡：复用旧 branch_results 生成新协议层 artifacts。"""
+        if not self.enable_agent_orchestrator_bridge:
+            return
+        try:
+            from quant_investor.agent_orchestrator import AgentOrchestrator
+
+            orchestrator = AgentOrchestrator()
+            bridge_output = orchestrator.run_with_precomputed_research(
+                data_bundle=result.data_bundle,
+                branch_results=result.branch_results,
+                constraints=self._build_agent_bridge_constraints(result),
+                existing_portfolio={"current_weights": {}},
+                tradability_snapshot=self._build_agent_bridge_tradability(result.data_bundle),
+                persist_outputs=False,
+            )
+            result.agent_orchestration = bridge_output
+            result.agent_portfolio_plan = bridge_output["portfolio_plan"]
+            result.agent_report_bundle = bridge_output["report_bundle"]
+            result.agent_ic_decisions = bridge_output["ic_by_symbol"]
+            result.execution_log.append(
+                f"[INFO] AgentOrchestrator bridge 完成，生成 {len(bridge_output['ic_by_symbol'])}/{len(result.data_bundle.symbols)} 个 ICDecision。"
+            )
+        except Exception as exc:
+            result.execution_log.append(f"[WARN] AgentOrchestrator bridge 跳过: {exc}")
+
+    def _build_agent_bridge_constraints(self, result: ResearchPipelineResult) -> dict[str, Any]:
+        """把 legacy 风控输出映射为新 orchestrator 的最小约束集。"""
+        risk_level = str(getattr(result.risk_result, "risk_level", "normal"))
+        target_exposure = float(getattr(result.final_strategy, "target_exposure", 0.0))
+        max_weight = float(
+            result.final_strategy.risk_summary.get("max_single_position", self.risk_layer.max_position_size)
+        )
+        if risk_level == "danger":
+            gross_exposure_cap = min(target_exposure, 0.25)
+        elif risk_level == "warning":
+            gross_exposure_cap = min(target_exposure, 0.55)
+        else:
+            gross_exposure_cap = max(target_exposure, 0.0)
+
+        return {
+            "gross_exposure_cap": max(0.0, min(gross_exposure_cap, 1.0)),
+            "max_weight": max(0.0, min(max_weight, 1.0)),
+            "blocked_symbols": list(
+                result.final_strategy.provenance_summary.get("synthetic_symbols", [])
+            ),
+        }
+
+    @staticmethod
+    def _build_agent_bridge_tradability(
+        data_bundle: UnifiedDataBundle,
+    ) -> dict[str, dict[str, Any]]:
+        """为 bridge 模式构造最小可交易快照。"""
+        tradability: dict[str, dict[str, Any]] = {}
+        for symbol in data_bundle.symbols:
+            frame = data_bundle.symbol_data.get(symbol)
+            if frame is None or frame.empty:
+                tradability[symbol] = {"is_tradable": True, "sector": "unknown", "liquidity_score": 0.5}
+                continue
+            avg_volume = float(frame.get("volume", pd.Series([1_000_000])).tail(20).mean() or 1_000_000)
+            tradability[symbol] = {
+                "is_tradable": True,
+                "sector": str(data_bundle.fundamentals.get(symbol, {}).get("sector", "unknown")),
+                "liquidity_score": max(0.2, min(1.0, avg_volume / 5_000_000)),
+            }
+        return tradability
 
     # ---------------------------------------------------------------------
     # 数据层
@@ -887,8 +960,14 @@ class ParallelResearchPipeline:
                 branch_result.metadata.setdefault("reliability", 1.0 if branch_result.success else 0.25)
                 if name == "kline":
                     branch_result.metadata.setdefault("requested_backend", self.kline_backend)
-                    branch_result.metadata.setdefault("effective_backend", "hybrid")
-                    branch_result.metadata.setdefault("llm_interface_reserved", True)
+                    effective_backend = str(
+                        branch_result.metadata.get("effective_backend", self.kline_backend)
+                    ).strip().lower() or "hybrid"
+                    branch_result.metadata.setdefault("effective_backend", effective_backend)
+                    branch_result.metadata.setdefault(
+                        "llm_interface_reserved",
+                        effective_backend in {"chronos", "hybrid"},
+                    )
                 branch_result.horizon_days = int(
                     branch_result.metadata.get("horizon_days", branch_result.horizon_days or 5)
                 )
@@ -1160,16 +1239,57 @@ class ParallelResearchPipeline:
         )
         return calibrator.calibrate_all(branch_results, self.stock_pool)
 
+    @staticmethod
+    def _normalize_kline_backend_name(name: str | None) -> str:
+        normalized = str(name or "hybrid").strip().lower()
+        if normalized not in {"heuristic", "kronos", "chronos", "hybrid"}:
+            return "hybrid"
+        return normalized
+
+    @staticmethod
+    def _kline_branch_mode_for_backend(name: str) -> str:
+        return "kline_heuristic" if name == "heuristic" else "kline_dual_model"
+
+    def _fallback_kline_result(
+        self,
+        data_bundle: UnifiedDataBundle,
+        reason: str,
+    ) -> BranchResult:
+        from quant_investor.kline_backends import get_backend
+
+        base_backend = get_backend("heuristic")
+        result = base_backend.predict(data_bundle.symbol_data, self.stock_pool)
+        lowered_confidence = max(float(result.confidence) * 0.72, 0.25)
+        result.confidence = lowered_confidence
+        result.base_confidence = min(float(result.base_confidence or lowered_confidence), lowered_confidence)
+        note = (
+            "Chronos 深度模型阶段超时，已自动保留 base result。"
+            if "timeout" in str(reason).lower()
+            else "Chronos 深度模型失败，已自动保留 base result。"
+        )
+        if note not in result.diagnostic_notes:
+            result.diagnostic_notes.append(note)
+        result.conclusion = (
+            str(result.conclusion).strip()
+            or "深度模型未完成本轮推理，已保留 K 线基础结论，趋势判断仍然有效。"
+        )
+        result.metadata["fallback_reason"] = str(reason)
+        result.metadata["branch_mode"] = "kline_heuristic"
+        result.metadata["reliability"] = base_backend.reliability
+        result.metadata["horizon_days"] = base_backend.horizon_days
+        return result
+
     def _run_kline_branch(self, data_bundle: UnifiedDataBundle) -> BranchResult:
         """K线分析分支。
 
-        兼容保留 `kline_backend` 入参，但生产执行统一固定到 dual-model
-        `hybrid` 后端：每次同时运行 Kronos + Chronos，再交给 evaluator 综合输出。
+        `kline_backend` 是唯一的运行语义开关：
+        - `heuristic`: full-market / batch fast-screen
+        - `hybrid` / `chronos` / `kronos`: shortlist / second-pass deep analysis
         """
         from quant_investor.kline_backends import get_backend
 
-        requested_backend = self.kline_backend
-        effective_backend = "hybrid"
+        requested_backend = self._normalize_kline_backend_name(self.kline_backend)
+        effective_backend = requested_backend
         backend_kwargs: dict[str, Any] = {
             "kronos_path": config.KRONOS_MODEL_PATH,
             "kronos_model_size": config.KRONOS_MODEL_SIZE,
@@ -1180,23 +1300,42 @@ class ParallelResearchPipeline:
 
         runtime_backend = effective_backend
         try:
-            backend = get_backend(effective_backend, **backend_kwargs)
+            if effective_backend == "heuristic":
+                backend = get_backend("heuristic")
+            else:
+                backend = get_backend(effective_backend, **backend_kwargs)
             result = backend.predict(data_bundle.symbol_data, self.stock_pool)
         except ModuleNotFoundError as exc:
             # 最小测试环境允许缺少 torch 等重依赖，此时回退到轻量 heuristic runtime。
-            backend = get_backend("heuristic")
-            result = backend.predict(data_bundle.symbol_data, self.stock_pool)
+            result = self._fallback_kline_result(data_bundle, f"missing_dependency:{exc.name}")
             runtime_backend = "heuristic_fallback"
             result.metadata.setdefault("degraded_reason", f"missing_dependency:{exc.name}")
             result.metadata.setdefault("runtime_fallback_dependency", exc.name)
+            backend = get_backend("heuristic")
+        except TimeoutError:
+            result = self._fallback_kline_result(data_bundle, "timeout")
+            runtime_backend = "heuristic_fallback"
+            backend = get_backend("heuristic")
+        except Exception as exc:
+            result = self._fallback_kline_result(data_bundle, str(exc))
+            runtime_backend = "heuristic_fallback"
+            backend = get_backend("heuristic")
         result.branch_name = "kline"
-        result.metadata["branch_mode"] = "kline_dual_model"
+        result.metadata["branch_mode"] = self._kline_branch_mode_for_backend(
+            "heuristic" if runtime_backend.startswith("heuristic") else effective_backend
+        )
         result.metadata.setdefault("reliability", backend.reliability)
         result.metadata.setdefault("horizon_days", backend.horizon_days)
         result.metadata["requested_backend"] = requested_backend
         result.metadata["effective_backend"] = effective_backend
         result.metadata["runtime_backend"] = runtime_backend
-        result.metadata["llm_interface_reserved"] = True
+        result.metadata["llm_interface_reserved"] = effective_backend in {"chronos", "hybrid"}
+        if not str(result.conclusion or "").strip():
+            result.conclusion = (
+                "启发式 K 线快筛已形成完整趋势结论。"
+                if runtime_backend.startswith("heuristic")
+                else "K 线深模型链路已形成完整趋势结论。"
+            )
         return result
 
     def _run_quant_branch(self, data_bundle: UnifiedDataBundle) -> BranchResult:
@@ -1443,7 +1582,13 @@ class ParallelResearchPipeline:
         )
 
     def _run_macro_branch(self, data_bundle: UnifiedDataBundle) -> BranchResult:
-        """宏观分支：优先使用现有宏观终端，失败时回退到市场内部统计。"""
+        """宏观分支：运行一次，同一得分广播至所有标的。
+
+        NOTE: 本分支设计为 portfolio 级别分析，整个 pipeline 仅执行一次（非逐股调用）。
+        产出的 macro_score 统一赋值给所有标的的 symbol_scores。
+        V10 Agent 层的 MacroAgentOutput.uniform_score_appropriateness 字段
+        会判断此统一处理是否合理。
+        """
         try:
             terminal = create_terminal(self.market)
             report = terminal.generate_risk_report()

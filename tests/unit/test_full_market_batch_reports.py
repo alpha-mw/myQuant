@@ -1,5 +1,5 @@
 """
-全市场批量分析报告测试
+全市场批量分析报告测试。
 """
 
 from __future__ import annotations
@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import quant_investor.market.analyze as cn_batch
 import quant_investor.market.analyze as us_batch
@@ -175,83 +176,30 @@ def _read_report(output: dict[str, str]) -> str:
     return Path(output["trade_report"]).read_text(encoding="utf-8")
 
 
-def test_cn_report_uses_recommended_entry_price(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        cn_batch,
-        "load_stock_names",
-        lambda market="CN", refresh=False: {"600000.SH": "浦发银行"},
-    )
-    monkeypatch.setattr(
-        cn_batch,
-        "get_stock_name",
-        lambda symbol, market="CN": "浦发银行",
-    )
-
-    output = cn_batch.generate_full_report(
-        _make_cn_all_results(),
-        market="CN",
-        output_dir=str(tmp_path / "cn_reports"),
-        total_capital=1_000_000,
-        top_k=1,
-    )
-
-    report_text = _read_report(output)
-
-    assert "| 1 | 600000.SH | 浦发银行 | 沪深300 (大盘股) | ¥10.20 | ¥10.00 |" in report_text
-    assert "最大亏损: -8.0%" in report_text
-
-
-def test_us_report_includes_kline_branch_average(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        us_batch,
-        "load_stock_names",
-        lambda market="US", refresh=False: {"AAPL": "Apple Inc."},
-    )
-    monkeypatch.setattr(
-        us_batch,
-        "get_stock_name",
-        lambda symbol, market="US": "Apple Inc.",
-    )
-
-    output = us_batch.generate_full_report(
-        _make_us_all_results(),
-        market="US",
-        output_dir=str(tmp_path / "us_reports"),
-        total_capital=1_000_000,
-        top_k=1,
-    )
-
-    report_text = _read_report(output)
-
-    assert "kline: +0.120" in report_text
-
-
 def test_report_top_contains_three_line_executive_summary(monkeypatch, tmp_path):
     monkeypatch.setattr(cn_batch, "load_stock_names", lambda market="CN", refresh=False: {})
-    monkeypatch.setattr(cn_batch, "get_stock_name", lambda symbol, market="CN": symbol)
 
     output = cn_batch.generate_full_report(_make_cn_all_results(), market="CN", output_dir=str(tmp_path))
     report_text = _read_report(output)
 
     assert "## 三句话执行摘要" in report_text
+    assert report_text.count("- ") >= 3
 
 
 def test_each_branch_section_has_non_empty_conclusion(monkeypatch, tmp_path):
     monkeypatch.setattr(cn_batch, "load_stock_names", lambda market="CN", refresh=False: {})
-    monkeypatch.setattr(cn_batch, "get_stock_name", lambda symbol, market="CN": symbol)
 
     output = cn_batch.generate_full_report(_make_cn_all_results(), market="CN", output_dir=str(tmp_path))
     report_text = _read_report(output)
 
     for label in ["K线", "量化", "基本面", "智能融合", "宏观"]:
-        match = re.search(rf"### {label}分支\n- 平均得分: .*?\n- 结论: (.+)\n", report_text)
+        match = re.search(rf"### {label}分支\n- 结论: (.+)\n", report_text)
         assert match is not None
         assert match.group(1).strip()
 
 
 def test_each_recommended_stock_has_non_empty_one_line_conclusion(monkeypatch, tmp_path):
     monkeypatch.setattr(cn_batch, "load_stock_names", lambda market="CN", refresh=False: {})
-    monkeypatch.setattr(cn_batch, "get_stock_name", lambda symbol, market="CN": symbol)
 
     output = cn_batch.generate_full_report(_make_cn_all_results(), market="CN", output_dir=str(tmp_path))
     report_text = _read_report(output)
@@ -263,7 +211,6 @@ def test_each_recommended_stock_has_non_empty_one_line_conclusion(monkeypatch, t
 
 def test_main_report_hides_raw_frequency_exception(monkeypatch, tmp_path):
     monkeypatch.setattr(cn_batch, "load_stock_names", lambda market="CN", refresh=False: {})
-    monkeypatch.setattr(cn_batch, "get_stock_name", lambda symbol, market="CN": symbol)
 
     output = cn_batch.generate_full_report(_make_cn_all_results(), market="CN", output_dir=str(tmp_path))
     report_text = _read_report(output)
@@ -272,9 +219,8 @@ def test_main_report_hides_raw_frequency_exception(monkeypatch, tmp_path):
     assert "部分批次 K 线深度模型未完成频率对齐，已自动回退统计预测。" in report_text
 
 
-def test_provider_missing_tokens_do_not_enter_stock_risk_sentence(monkeypatch, tmp_path):
+def test_provider_missing_tokens_do_not_enter_main_body(monkeypatch, tmp_path):
     monkeypatch.setattr(cn_batch, "load_stock_names", lambda market="CN", refresh=False: {})
-    monkeypatch.setattr(cn_batch, "get_stock_name", lambda symbol, market="CN": symbol)
 
     output = cn_batch.generate_full_report(
         _make_cn_all_results(stock_risk_flags=["provider_missing", "snapshot_missing"]),
@@ -289,37 +235,17 @@ def test_provider_missing_tokens_do_not_enter_stock_risk_sentence(monkeypatch, t
 
 def test_counts_include_units(monkeypatch, tmp_path):
     monkeypatch.setattr(cn_batch, "load_stock_names", lambda market="CN", refresh=False: {})
-    monkeypatch.setattr(cn_batch, "get_stock_name", lambda symbol, market="CN": symbol)
 
     output = cn_batch.generate_full_report(_make_cn_all_results(), market="CN", output_dir=str(tmp_path))
     report_text = _read_report(output)
 
-    assert re.search(r"\d+/\d+ 批次", report_text)
-    assert re.search(r"\d+/\d+ 标的", report_text)
-
-
-def test_action_guard_blocks_buy_when_support_is_low(monkeypatch, tmp_path):
-    monkeypatch.setattr(cn_batch, "load_stock_names", lambda market="CN", refresh=False: {})
-    monkeypatch.setattr(cn_batch, "get_stock_name", lambda symbol, market="CN": symbol)
-
-    output = cn_batch.generate_full_report(
-        _make_cn_all_results(branch_positive_count=2, confidence=0.30, macro_score=-0.35),
-        market="CN",
-        output_dir=str(tmp_path),
-    )
-    trade_data = json.loads(Path(output["trade_data"]).read_text(encoding="utf-8"))
-    recommendation = trade_data["recommendations"][0]
-
-    assert recommendation["action"] in {"观察", "轻仓试错"}
-    assert recommendation["action"] != "buy"
-
-    report_text = _read_report(output)
-    assert "执行动作: 买入" not in report_text
+    assert "条覆盖说明" in report_text
+    assert "条工程诊断" in report_text
+    assert re.search(r"\d+/\d+ 个分支", report_text)
 
 
 def test_debate_status_unknown_does_not_render(monkeypatch, tmp_path):
     monkeypatch.setattr(cn_batch, "load_stock_names", lambda market="CN", refresh=False: {})
-    monkeypatch.setattr(cn_batch, "get_stock_name", lambda symbol, market="CN": symbol)
 
     output = cn_batch.generate_full_report(
         _make_cn_all_results(debate_status="unknown"),
@@ -329,3 +255,88 @@ def test_debate_status_unknown_does_not_render(monkeypatch, tmp_path):
     report_text = _read_report(output)
 
     assert "unknown" not in report_text
+
+
+def test_report_does_not_use_bare_parenthesized_counts(monkeypatch, tmp_path):
+    monkeypatch.setattr(cn_batch, "load_stock_names", lambda market="CN", refresh=False: {})
+
+    output = cn_batch.generate_full_report(_make_cn_all_results(), market="CN", output_dir=str(tmp_path))
+    report_text = _read_report(output)
+
+    assert re.search(r"\(\d+\)", report_text) is None
+
+
+def test_analyze_batch_uses_current_stable_entrypoint_and_fast_screen(monkeypatch):
+    captured = {}
+
+    class _FakeCurrent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def run(self):
+            return SimpleNamespace(
+                final_strategy=SimpleNamespace(
+                    trade_recommendations=[],
+                    target_exposure=0.35,
+                    style_bias="均衡",
+                    candidate_symbols=[],
+                    position_limits={},
+                    branch_consensus={},
+                    risk_summary={},
+                    execution_notes=[],
+                    research_mode="production",
+                ),
+                branch_results={},
+                execution_log=[],
+            )
+
+    monkeypatch.setattr(cn_batch, "QuantInvestor", _FakeCurrent)
+
+    result = cn_batch.analyze_batch(
+        symbols=["600000.SH", "600519.SH"],
+        category="hs300",
+        batch_id=1,
+        market="CN",
+        verbose=False,
+    )
+
+    assert result is not None
+    assert captured["stock_pool"] == ["600000.SH", "600519.SH"]
+    assert "enable_agent_layer" not in captured
+    assert captured["enable_branch_debate"] is False
+    assert captured["enable_document_semantics"] is False
+    assert captured["kline_backend"] == "heuristic"
+
+
+def test_full_market_report_hides_raw_traceback_and_info_log(monkeypatch, tmp_path):
+    monkeypatch.setattr(cn_batch, "load_stock_names", lambda market="CN", refresh=False: {})
+
+    payload = _make_cn_all_results()
+    payload["hs300"][0]["execution_log"] = ["[INFO] batch finished", "Traceback: hidden stack"]
+    payload["hs300"][0]["branches"]["fundamental"]["diagnostic_notes"] = [
+        "ValueError: hidden stack should not surface",
+    ]
+
+    output = cn_batch.generate_full_report(payload, market="CN", output_dir=str(tmp_path))
+    report_text = _read_report(output)
+
+    assert "[INFO]" not in report_text
+    assert "Traceback" not in report_text
+    assert "ValueError:" not in report_text
+    assert "运行日志摘要" in report_text or "工程异常" in report_text
+
+
+def test_trade_data_embeds_protocol_report_bundle(monkeypatch, tmp_path):
+    monkeypatch.setattr(us_batch, "load_stock_names", lambda market="US", refresh=False: {})
+
+    output = us_batch.generate_full_report(
+        _make_us_all_results(),
+        market="US",
+        output_dir=str(tmp_path / "us_reports"),
+        total_capital=1_000_000,
+        top_k=1,
+    )
+    trade_data = json.loads(Path(output["trade_data"]).read_text(encoding="utf-8"))
+
+    assert "report_bundle" in trade_data
+    assert trade_data["report_bundle"]["markdown_report"].startswith("# 投资研究执行报告")

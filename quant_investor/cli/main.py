@@ -30,7 +30,7 @@ def run_market_backtest(**kwargs):
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="quant-investor",
-        description="Quant-Investor 统一 CLI。V8 为 legacy frozen，V9 为 current architecture，默认 latest=V9。",
+        description="Quant-Investor 统一 CLI。V8 为 legacy frozen，V9 为 current architecture，默认 latest=V10。",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -71,8 +71,16 @@ def _build_parser() -> argparse.ArgumentParser:
     # V10 agent layer params
     research_run.add_argument("--no-agent-layer", action="store_true", help="关闭 V10 Agent IC 层")
     research_run.add_argument("--enable-branch-debate", action="store_true", help="V10 下同时启用 branch-local debate")
-    research_run.add_argument("--agent-model", default="", help="分支 SubAgent 使用的 LLM 模型")
-    research_run.add_argument("--master-model", default="", help="IC Master Agent 使用的 LLM 模型")
+    research_run.add_argument(
+        "--agent-model",
+        default="",
+        help="分支 SubAgent 使用的 LLM 模型；留空时自动沿用可用 provider 的默认模型",
+    )
+    research_run.add_argument(
+        "--master-model",
+        default="",
+        help="IC Master Agent 使用的 LLM 模型；留空时默认与 --agent-model 保持一致",
+    )
     research_run.add_argument("--agent-timeout", type=float, default=15.0, help="单个 agent 超时（秒）")
     research_run.add_argument("--master-timeout", type=float, default=30.0, help="IC agent 超时（秒）")
 
@@ -150,10 +158,13 @@ def main(argv: list[str] | None = None) -> None:
             )
             # V10 agent layer params
             if args.architecture in ("v10", "latest"):
+                enable_branch_debate = not (args.no_branch_debate or args.no_llm_debate)
+                if args.enable_branch_debate:
+                    enable_branch_debate = True
                 investor_kwargs.update(
                     {
                         "enable_agent_layer": not args.no_agent_layer,
-                        "enable_branch_debate": args.enable_branch_debate,
+                        "enable_branch_debate": enable_branch_debate,
                         "agent_model": args.agent_model,
                         "master_model": args.master_model,
                         "agent_timeout": args.agent_timeout,
