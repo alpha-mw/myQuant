@@ -78,6 +78,26 @@ def has_any_provider() -> bool:
     return any(bool(os.getenv(cfg["env_key"])) for cfg in _PROVIDER_CONFIGS.values())
 
 
+def has_provider_for_model(model: str) -> bool:
+    """Check whether the provider required by a model currently has credentials."""
+    try:
+        provider = _detect_provider(model)
+    except LLMCallError:
+        return False
+    return bool(os.getenv(_PROVIDER_CONFIGS[provider]["env_key"], ""))
+
+
+def resolve_default_model(preferred_model: str = "") -> str:
+    """Return the preferred model when available, otherwise the first configured default."""
+    preferred = str(preferred_model or "").strip()
+    if preferred and has_provider_for_model(preferred):
+        return preferred
+    for candidate in ("gpt-5.4-mini", "claude-sonnet-4-6", "deepseek-chat", "gemini-2.5-flash"):
+        if has_provider_for_model(candidate):
+            return candidate
+    return preferred or "gpt-5.4-mini"
+
+
 def _get_api_key(provider: str) -> str:
     cfg = _PROVIDER_CONFIGS[provider]
     key = os.getenv(cfg["env_key"], "")

@@ -1,0 +1,131 @@
+"""Workspace organization rules for the myQuant repository."""
+
+from __future__ import annotations
+
+import os
+import shutil
+from pathlib import Path
+
+REPO_ROOT_DIRS = (
+    "quant_investor",
+    "web",
+    "frontend",
+    "tests",
+    "docs",
+    "data",
+    "results",
+    "reports",
+)
+
+ENVIRONMENT_ROLES = {
+    "venv": "Current Web and main-flow compatible environment.",
+    ".venv": "Current script-side environment.",
+    ".venv-managed": "Candidate managed environment kept for migration only.",
+}
+
+EXPLICIT_CLEANUP_DIRS = (
+    Path(".pytest_cache"),
+    Path(".uv-cache"),
+    Path("frontend") / "dist",
+)
+
+_SCAN_EXCLUDE_ROOTS = {
+    ".git",
+    ".venv",
+    ".venv-managed",
+    ".uv-python",
+    "venv",
+    "data",
+    "results",
+    "reports",
+}
+
+
+def get_repo_root(root: Path | None = None) -> Path:
+    """Return the workspace root used by cleanup helpers."""
+    if root is not None:
+        return root.resolve()
+    return Path(__file__).resolve().parents[1]
+
+
+def get_runtime_tmp_dirs(root: Path | None = None) -> tuple[Path, Path]:
+    """Return the runtime tmp directories reserved for local transient output."""
+    repo_root = get_repo_root(root)
+    return repo_root / "results" / "tmp", repo_root / "reports" / "tmp"
+
+
+def ensure_runtime_tmp_dirs(root: Path | None = None) -> tuple[Path, Path]:
+    """Create runtime tmp directories when they do not already exist."""
+    tmp_dirs = get_runtime_tmp_dirs(root)
+    for path in tmp_dirs:
+        path.mkdir(parents=True, exist_ok=True)
+    return tmp_dirs
+
+
+def describe_environment_roles(root: Path | None = None) -> list[dict[str, object]]:
+    """Describe the current Python environment directories kept in the repo."""
+    repo_root = get_repo_root(root)
+    descriptions: list[dict[str, object]] = []
+    for relative_name, role in ENVIRONMENT_ROLES.items():
+        path = repo_root / relative_name
+        descriptions.append(
+            {
+                "relative_path": relative_name,
+                "path": path,
+                "role": role,
+                "exists": path.exists(),
+            }
+        )
+    return descriptions
+
+
+def _should_skip_tree(repo_root: Path, candidate: Path) -> bool:
+    try:
+        relative = candidate.resolve().relative_to(repo_root.resolve())
+    except ValueError:
+        return False
+    if not relative.parts:
+        return False
+    if relative.parts[0] in _SCAN_EXCLUDE_ROOTS:
+        return True
+    return "node_modules" in relative.parts
+
+
+def iter_cleanup_targets(root: Path | None = None) -> list[Path]:
+    """Collect safe-to-delete cache directories inside the workspace."""
+    repo_root = get_repo_root(root)
+    targets: dict[str, Path] = {}
+
+    for relative_dir in EXPLICIT_CLEANUP_DIRS:
+        path = repo_root / relative_dir
+        if path.exists():
+            targets[str(path)] = path
+
+    for current_root, dir_names, _file_names in os.walk(repo_root):
+        current_path = Path(current_root)
+        if _should_skip_tree(repo_root, current_path):
+            dir_names[:] = []
+            continue
+
+        if current_path.name == "__pycache__":
+            targets[str(current_path)] = current_path
+            dir_names[:] = []
+            continue
+
+        dir_names[:] = [
+            directory
+            for directory in dir_names
+            if not _should_skip_tree(repo_root, current_path / directory)
+        ]
+
+    return sorted(targets.values(), key=lambda path: path.relative_to(repo_root).as_posix())
+
+
+def remove_cleanup_targets(paths: list[Path]) -> list[Path]:
+    """Delete collected cleanup targets and return the removed paths."""
+    removed: list[Path] = []
+    for path in paths:
+        if path.exists():
+            shutil.rmtree(path)
+            removed.append(path)
+    return removed
