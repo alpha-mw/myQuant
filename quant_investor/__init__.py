@@ -17,6 +17,8 @@ from quant_investor.contracts import (
     UnifiedDataBundle,
 )
 from quant_investor.pipeline import (
+    QuantInvestor,
+    QuantInvestorPipelineResult,
     QuantInvestorLatest,
     QuantInvestorV8,
     QuantInvestorV9,
@@ -27,6 +29,8 @@ from quant_investor.pipeline import (
 )
 
 __all__ = [
+    "QuantInvestor",
+    "QuantInvestorPipelineResult",
     "QuantInvestorV8",
     "QuantInvestorV9",
     "QuantInvestorV10",
