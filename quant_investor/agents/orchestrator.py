@@ -29,10 +29,17 @@ from quant_investor.logger import get_logger
 from quant_investor.versioning import CURRENT_BRANCH_ORDER
 
 _logger = get_logger("AgentOrchestrator")
+_AGENT_REGISTRY: dict[str, type[BranchSubAgent]] = {
+    name: BranchSubAgent
+    for name in CURRENT_BRANCH_ORDER
+}
 
 
 class AgentOrchestrator:
     """V10 Agent 层编排器：协调所有 SubAgent 并汇总到 IC。"""
+
+    _BRANCH_TIMEOUT_CUSHION_SECONDS = 10.0
+    _MASTER_TIMEOUT_CUSHION_SECONDS = 15.0
 
     def __init__(
         self,
@@ -52,6 +59,50 @@ class AgentOrchestrator:
         self.max_tokens_branch = max_tokens_branch
         self.max_tokens_master = max_tokens_master
 
+    @staticmethod
+    def compute_outer_timeout(
+        timeout_seconds: float,
+        *,
+        max_retries: int = 2,
+        cushion_seconds: float = 10.0,
+    ) -> float:
+        attempts = max(1, int(max_retries))
+        return float(timeout_seconds) * attempts + 1.0 + float(cushion_seconds)
+
+    @classmethod
+    def compute_recommended_total_timeout(
+        cls,
+        *,
+        timeout_per_agent: float,
+        master_timeout: float,
+        existing_total_timeout: float,
+        branch_max_retries: int = 2,
+        master_max_retries: int = 2,
+    ) -> float:
+        branch_budget = cls.compute_outer_timeout(
+            timeout_per_agent,
+            max_retries=branch_max_retries,
+            cushion_seconds=cls._BRANCH_TIMEOUT_CUSHION_SECONDS,
+        )
+        master_budget = cls.compute_outer_timeout(
+            master_timeout,
+            max_retries=master_max_retries,
+            cushion_seconds=cls._MASTER_TIMEOUT_CUSHION_SECONDS,
+        )
+        recommended = branch_budget + master_budget + max(float(timeout_per_agent), 30.0)
+        return max(float(existing_total_timeout), recommended)
+
+    @staticmethod
+    def branch_request_timeout(branch_name: str, timeout_per_agent: float) -> float:
+        multiplier = 1.5 if branch_name == "kline" else 1.0
+        return float(timeout_per_agent) * multiplier
+
+    @staticmethod
+    def branch_max_tokens(branch_name: str, max_tokens_branch: int) -> int:
+        if branch_name == "kline":
+            return min(int(max_tokens_branch), 600)
+        return int(max_tokens_branch)
+
     async def enhance(
         self,
         branch_results: dict[str, BranchResult],
@@ -61,10 +112,12 @@ class AgentOrchestrator:
         data_bundle: UnifiedDataBundle,
         market_regime: str,
         algorithmic_strategy: PortfolioStrategy | None = None,
+        recall_context: dict[str, Any] | None = None,
     ) -> AgentEnhancedStrategy:
         """异步执行全部 agent 层并返回增强策略。"""
         t0 = time.monotonic()
         timings: dict[str, float] = {}
+        review_recall_context = dict(recall_context or {})
 
         if not has_any_provider():
             _logger.warning("No LLM provider available, skipping agent layer")
@@ -76,7 +129,10 @@ class AgentOrchestrator:
         # --- Phase 1: 5 branch SubAgents concurrently ---
         branch_agent_outputs: dict[str, BranchAgentOutput | None] = {}
         branch_inputs = self._prepare_branch_inputs(
-            branch_results, calibrated_signals, market_regime,
+            branch_results,
+            calibrated_signals,
+            market_regime,
+            recall_context=review_recall_context,
         )
 
         t_branch = time.monotonic()
@@ -119,6 +175,7 @@ class AgentOrchestrator:
                     market_regime,
                     list(data_bundle.symbol_data.keys()) if data_bundle else [],
                     master_llm,
+                    recall_context=review_recall_context,
                 )
             except Exception as exc:
                 _logger.warning(f"Master agent (IC) failed: {exc}")
@@ -168,6 +225,7 @@ class AgentOrchestrator:
         branch_results: dict[str, BranchResult],
         calibrated_signals: dict[str, Any],
         market_regime: str,
+        recall_context: dict[str, Any] | None = None,
     ) -> dict[str, BranchAgentInput]:
         """将 BranchResult 转换为 BranchAgentInput。"""
         inputs: dict[str, BranchAgentInput] = {}
@@ -175,53 +233,81 @@ class AgentOrchestrator:
             br = branch_results.get(name)
             if br is None:
                 continue
-
-            base_score = float(br.base_score if br.base_score is not None else br.score)
-            final_score = float(br.final_score if br.final_score is not None else br.score)
-            confidence = float(br.final_confidence if br.final_confidence is not None else br.confidence)
-
-            evidence = br.evidence
-            evidence_summary = evidence.summary if evidence else (br.explanation or "")
-            bull_points = list(evidence.bull_points) if evidence else []
-            bear_points = list(evidence.bear_points) if evidence else []
-            risk_points = list(evidence.risk_points) if evidence else []
-            used_features = list(evidence.used_features) if evidence else []
-
-            cal = calibrated_signals.get(name, {})
-            expected_return = 0.0
-            if hasattr(cal, "expected_return"):
-                expected_return = float(cal.expected_return)
-            elif isinstance(cal, dict):
-                expected_return = float(cal.get("expected_return", 0.0))
-
-            # Compact signals summary (avoid sending full dataframes)
-            signals_summary: dict[str, Any] = {}
-            if isinstance(br.signals, dict):
-                for k, v in br.signals.items():
-                    if isinstance(v, (int, float, str, bool)):
-                        signals_summary[k] = v
-                    elif isinstance(v, dict) and len(v) <= 20:
-                        signals_summary[k] = {
-                            sk: sv for sk, sv in v.items()
-                            if isinstance(sv, (int, float, str, bool))
-                        }
-
-            inputs[name] = BranchAgentInput(
-                branch_name=name,
-                base_score=base_score,
-                final_score=final_score,
-                confidence=confidence,
-                evidence_summary=str(evidence_summary)[:500],
-                bull_points=bull_points[:5],
-                bear_points=bear_points[:5],
-                risk_points=risk_points[:5],
-                used_features=used_features[:10],
-                symbol_scores=dict(br.symbol_scores) if br.symbol_scores else {},
-                market_regime=market_regime,
-                calibrated_expected_return=expected_return,
-                branch_signals=signals_summary,
+            payload = self._extract_common_fields(
+                br,
+                calibrated_signals.get(name, {}),
+                market_regime,
+                recall_context=recall_context,
             )
+            inputs[name] = BranchAgentInput(**payload)
         return inputs
+
+    def _extract_common_fields(
+        self,
+        branch_result: BranchResult,
+        calibrated_signal: Any,
+        market_regime: str,
+        *,
+        recall_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Extract the bounded structured payload shared across review agents."""
+        base_score = float(
+            branch_result.base_score
+            if branch_result.base_score is not None
+            else branch_result.score
+        )
+        final_score = float(
+            branch_result.final_score
+            if branch_result.final_score is not None
+            else branch_result.score
+        )
+        confidence = float(
+            branch_result.final_confidence
+            if branch_result.final_confidence is not None
+            else branch_result.confidence
+        )
+
+        evidence = branch_result.evidence
+        evidence_summary = evidence.summary if evidence else (branch_result.explanation or "")
+        bull_points = list(evidence.bull_points) if evidence else []
+        bear_points = list(evidence.bear_points) if evidence else []
+        risk_points = list(evidence.risk_points) if evidence else []
+        used_features = list(evidence.used_features) if evidence else []
+
+        expected_return = 0.0
+        if hasattr(calibrated_signal, "expected_return"):
+            expected_return = float(calibrated_signal.expected_return)
+        elif isinstance(calibrated_signal, dict):
+            expected_return = float(calibrated_signal.get("expected_return", 0.0))
+
+        signals_summary: dict[str, Any] = {}
+        if isinstance(branch_result.signals, dict):
+            for key, value in branch_result.signals.items():
+                if isinstance(value, (int, float, str, bool)):
+                    signals_summary[key] = value
+                elif isinstance(value, dict) and len(value) <= 20:
+                    signals_summary[key] = {
+                        sub_key: sub_value
+                        for sub_key, sub_value in value.items()
+                        if isinstance(sub_value, (int, float, str, bool))
+                    }
+
+        return {
+            "branch_name": branch_result.branch_name,
+            "base_score": base_score,
+            "final_score": final_score,
+            "confidence": confidence,
+            "evidence_summary": str(evidence_summary)[:500],
+            "bull_points": bull_points[:5],
+            "bear_points": bear_points[:5],
+            "risk_points": risk_points[:5],
+            "used_features": used_features[:10],
+            "symbol_scores": dict(branch_result.symbol_scores) if branch_result.symbol_scores else {},
+            "market_regime": market_regime,
+            "calibrated_expected_return": expected_return,
+            "branch_signals": signals_summary,
+            "recall_context": dict(recall_context or {}),
+        }
 
     async def _run_branch_agent(
         self,
@@ -229,16 +315,18 @@ class AgentOrchestrator:
         agent_input: BranchAgentInput,
         llm_client: LLMClient,
     ) -> BranchAgentOutput:
-        agent = BranchSubAgent(
+        agent_cls = _AGENT_REGISTRY.get(branch_name, BranchSubAgent)
+        branch_timeout = self.branch_request_timeout(branch_name, self.timeout_per_agent)
+        agent = agent_cls(
             branch_name=branch_name,
-            llm_client=llm_client,
+            llm_client=LLMClient(timeout=branch_timeout),
             model=self.branch_model,
-            timeout=self.timeout_per_agent,
-            max_tokens=self.max_tokens_branch,
+            timeout=branch_timeout,
+            max_tokens=self.branch_max_tokens(branch_name, self.max_tokens_branch),
         )
         return await asyncio.wait_for(
             agent.analyze(agent_input),
-            timeout=self.timeout_per_agent + 5.0,
+            timeout=branch_timeout + 5.0,
         )
 
     async def _run_risk_agent(
@@ -291,6 +379,7 @@ class AgentOrchestrator:
         market_regime: str,
         candidate_symbols: list[str],
         llm_client: LLMClient,
+        recall_context: dict[str, Any] | None = None,
     ) -> MasterAgentOutput:
         master_input = MasterAgentInput(
             branch_reports=branch_outputs,
@@ -298,6 +387,7 @@ class AgentOrchestrator:
             ensemble_baseline=ensemble_output,
             market_regime=market_regime,
             candidate_symbols=candidate_symbols,
+            recall_context=dict(recall_context or {}),
         )
 
         agent = MasterAgent(
