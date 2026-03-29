@@ -13,7 +13,7 @@ from multiprocessing.connection import Connection
 
 import pandas as pd
 
-from quant_investor.contracts import BranchResult
+from quant_investor.branch_contracts import BranchResult
 
 from .base import KLineBackend
 from .evaluator import KLineEvaluationInput, get_kline_evaluator

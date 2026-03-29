@@ -15,12 +15,14 @@ from quant_investor.enhanced_data_layer import EnhancedDataLayer
 
 
 def test_public_package_exports():
-    assert hasattr(quant_investor, "QuantInvestorV8")
-    assert hasattr(quant_investor, "QuantInvestorV9")
-    assert hasattr(quant_investor, "QuantInvestorLatest")
+    assert hasattr(quant_investor, "QuantInvestor")
+    assert hasattr(quant_investor, "QuantInvestorPipelineResult")
     assert hasattr(quant_investor, "BranchResult")
-    assert quant_investor.QuantInvestorLatest is quant_investor.QuantInvestorV9
-    assert quant_investor.QuantInvestorV8 is not quant_investor.QuantInvestorV9
+    assert {
+        name
+        for name in dir(quant_investor)
+        if name.startswith("QuantInvestor")
+    } == {"QuantInvestor", "QuantInvestorPipelineResult"}
 
 
 def test_cli_market_download_dispatches(monkeypatch):
@@ -70,10 +72,10 @@ def test_pyproject_only_packages_quant_investor():
     assert 'quant-investor = "quant_investor.cli.main:main"' in pyproject_text
 
 
-def test_cli_research_accepts_architecture_flag(monkeypatch):
+def test_cli_research_dispatches_single_mainline(monkeypatch):
     captured = {}
 
-    class _FakeLatest:
+    class _FakeInvestor:
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
@@ -83,13 +85,13 @@ def test_cli_research_accepts_architecture_flag(monkeypatch):
         def print_report(self):
             return None
 
-    monkeypatch.setattr(cli_main, "QuantInvestorLatest", _FakeLatest)
-    cli_main.main(["research", "run", "--stocks", "000001.SZ", "--architecture", "latest"])
+    monkeypatch.setattr(cli_main, "QuantInvestor", _FakeInvestor)
+    cli_main.main(["research", "run", "--stocks", "000001.SZ"])
 
     assert captured["stock_pool"] == ["000001.SZ"]
 
 
-def test_v9_one_symbol_mock_run_includes_version_fields(monkeypatch):
+def test_single_mainline_one_symbol_mock_run_includes_version_fields(monkeypatch):
     dates = pd.bdate_range("2024-01-01", periods=80)
     close = np.linspace(100, 110, len(dates))
     frame = pd.DataFrame(
@@ -131,14 +133,14 @@ def test_v9_one_symbol_mock_run_includes_version_fields(monkeypatch):
         )(),
     )
 
-    result = quant_investor.QuantInvestorV9(
+    result = quant_investor.QuantInvestor(
         stock_pool=["000001.SZ"],
         market="CN",
         verbose=False,
     ).run()
 
-    assert result.architecture_version == "9.0.0-current"
-    assert result.branch_schema_version == "v9-fundamental-first-class"
+    assert result.architecture_version == "12.0.0-stable"
+    assert result.branch_schema_version == "branch-schema.v12.unified-mainline"
     assert result.calibration_schema_version
     assert result.debate_template_version
     assert result.final_strategy.architecture_version == result.architecture_version

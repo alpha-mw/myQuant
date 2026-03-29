@@ -2,10 +2,10 @@
 
 from pathlib import Path
 
-from web.app import create_app
+from web.api import app as workspace_app
 from web.config import API_HOST, API_PORT
 
-app = create_app()
+app = workspace_app
 
 if __name__ == "__main__":
     import uvicorn

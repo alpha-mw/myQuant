@@ -16,11 +16,10 @@ from quant_investor.branch_debate_engine import BranchDebateEngine
 from quant_investor.branch_contracts import BranchResult, EvidencePacket, UnifiedDataBundle
 from quant_investor.config import config
 from quant_investor.ensemble_judge import EnsembleJudge
+from quant_investor import QuantInvestor
 from quant_investor.market.analyze import build_full_market_trade_plan
 from quant_investor.enhanced_data_layer import EnhancedDataLayer
 from quant_investor.pipeline.parallel_research_pipeline import BranchPerformanceTracker, ParallelResearchPipeline
-from quant_investor.pipeline.quant_investor_v8 import QuantInvestorV8
-from quant_investor.pipeline.quant_investor_v9 import QuantInvestorV9
 from quant_investor.versioning import CURRENT_BRANCH_WEIGHTS
 
 
@@ -348,14 +347,14 @@ def test_all_synthetic_symbols_degrade_to_research_only(monkeypatch):
     assert result.final_strategy.provenance_summary["research_only_reason"]
 
 
-def test_quant_investor_exports_v8_entrypoint():
+def test_quant_investor_exports_mainline_entrypoint():
     unified = importlib.import_module("quant_investor")
 
-    assert hasattr(unified, "QuantInvestorV8")
+    assert hasattr(unified, "QuantInvestor")
     assert hasattr(unified, "BranchResult")
 
 
-def test_quant_investor_v9_forwards_enable_quant(monkeypatch):
+def test_quant_investor_forwards_enable_quant(monkeypatch):
     captured_kwargs = {}
 
     class _FakePipeline:
@@ -374,9 +373,9 @@ def test_quant_investor_v9_forwards_enable_quant(monkeypatch):
                 timings={},
             )
 
-    monkeypatch.setattr("quant_investor.pipeline.quant_investor_v9.ParallelResearchPipeline", _FakePipeline)
+    monkeypatch.setattr("quant_investor.pipeline.mainline.ParallelResearchPipeline", _FakePipeline)
 
-    investor = QuantInvestorV9(
+    investor = QuantInvestor(
         stock_pool=["000001.SZ"],
         market="CN",
         enable_quant=False,

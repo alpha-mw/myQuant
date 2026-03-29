@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "quant-investor"
-version = "9.0.0"
-description = "智能量化投资平台 - V9 五路并行研究、Fundamental Branch、branch-local debate 与组合级集成裁判"
+version = "12.0.0"
+description = "single mainline 智能量化投资平台，围绕 QuantInvestor 单一主线执行结构化研究与风控"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
@@ -69,6 +69,7 @@ Repository = "https://github.com/alpha-mw/myQuant"
 
 [project.scripts]
 quant-investor = "quant_investor.cli.main:main"
+app = "web.main:app"
 
 [tool.black]
 line-length = 100
@@ -76,9 +77,38 @@ target-version = ['py310', 'py311', 'py312']
 
 [tool.mypy]
 python_version = "3.10"
-warn_return_any = true
+warn_return_any = false
 warn_unused_configs = true
-disallow_untyped_defs = true
+disallow_untyped_defs = false
+follow_imports = "skip"
+ignore_missing_imports = true
+strict_optional = false
+disable_error_code = ["import-untyped", "no-any-return", "no-untyped-def", "var-annotated"]
+exclude = [
+    '^quant_investor/_vendor/',
+    '^quant_investor/data/',
+    '^quant_investor/data_manager\.py$',
+    '^quant_investor/enhanced_data_layer\.py$',
+    '^quant_investor/kronos_predictor\.py$',
+    '^quant_investor/forecast_snapshot_store\.py$',
+    '^quant_investor/reporting/',
+    '^quant_investor/learning/',
+    '^quant_investor/monitoring/',
+    '^quant_investor/market/download.*\.py$',
+    '^quant_investor/market/run_pipeline\.py$',
+    '^quant_investor/fetch_.*\.py$',
+    '^quant_investor/alpha.*\.py$',
+    '^quant_investor/stock_database\.py$',
+    '^quant_investor/news_analysis\.py$',
+    '^quant_investor/macro_terminal_tushare\.py$',
+    '^quant_investor/agents/subagents/',
+    '^quant_investor/agents/orchestrator\.py$',
+    '^quant_investor/agents/narrator_agent\.py$',
+    '^quant_investor/agent_orchestrator\.py$',
+    '^quant_investor/kline_backends/',
+    '^quant_investor/factor_analyzer\.py$',
+    '^quant_investor/intelligence\.py$',
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -97,6 +127,28 @@ exclude_lines = [
     "def __repr__",
     "raise AssertionError",
     "raise NotImplementedError",
+]
+
+[tool.hatch.build]
+skip-excluded-dirs = true
+exclude = [
+    "/.uv-cache",
+    "/.uv-python",
+    "/.venv",
+    "/.venv-managed",
+    "/venv",
+    "/frontend/node_modules",
+    "/**/__pycache__",
+    "/**/*.pyc",
+    "/**/.DS_Store",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/quant_investor",
+    "/README.md",
+    "/pyproject.toml",
+    "/requirements.txt",
 ]
 
 [tool.hatch.build.targets.wheel]

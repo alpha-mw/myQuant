@@ -5,7 +5,7 @@
 - **Package**: `quant-investor` v12.0.0
 - **Python API**: `from quant_investor import QuantInvestor`
 - **CLI**: `quant-investor research run`
-- **Web UI**: `./run_web.sh`
+- **Web UI**: `quant-investor web`
 
 ---
 
@@ -17,7 +17,7 @@
 - **风险管理**：VaR / CVaR、压力测试、因子风险模型、市场冲击估算
 - **回测引擎**：Walk-forward 验证，支持 A 股与美股历史数据
 - **宏观终端**：实时拉取 Tushare / FRED / AkShare 宏观指标，输出风险雷达
-- **研究工作台**：FastAPI 后端 + React/Vite 前端，可视化研报与持仓管理
+- **研究工作台**：`quant-investor web` 提供 `/api` 后端和默认 workspace 前端
 
 ---
 
@@ -59,14 +59,14 @@ quant-investor research run \
 ### Web 工作台
 
 ```bash
-# 同时启动后端 API 与前端开发服务
-./run_web.sh
-
-# 仅启动后端
+# 默认运行方式：同源提供 /api 与 workspace 前端
 quant-investor web --reload
+
+# 前端开发模式：单独启动 Vite，并将 /api 代理到后端
+./run_web.sh
 ```
 
-前端位于 `frontend/`，通过 Vite 将 `/api` 代理到后端。
+默认网页入口会跳转到 `/research`，公开 workspace 路由为 `/research`、`/history`、`/history/:jobId`、`/settings`。前端位于 `frontend/`，开发模式下通过 Vite 将 `/api` 代理到后端。
 
 ---
 
@@ -117,8 +117,9 @@ myQuant/
 | 术语 | 说明 |
 |------|------|
 | `branch review` | 当前公开研究流程规范名 |
-| `NarratorAgent → ReportBundle` | 当前报告协议 |
-| `buy / hold / sell / watch / avoid` | 当前稳定动作标签 |
+| `NarratorAgent -> ReportBundle` | 当前报告协议 |
+| `buy` / `hold` / `sell` / `watch` / `avoid` | 当前稳定动作标签 |
+| `reject` / `light_buy` / `strong_buy` | 已移除的旧标签，不再作为公开动作标签 |
 
 ---
 

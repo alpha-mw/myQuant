@@ -2,7 +2,7 @@
 Quant-Investor 官方 Python 入口。
 """
 
-from quant_investor.contracts import (
+from quant_investor.branch_contracts import (
     BranchResult,
     CalibratedBranchSignal,
     CorporateDocumentSnapshot,
@@ -16,24 +16,11 @@ from quant_investor.contracts import (
     ResearchPipelineResult,
     UnifiedDataBundle,
 )
-from quant_investor.pipeline import (
-    QuantInvestorLatest,
-    QuantInvestorV8,
-    QuantInvestorV9,
-    QuantInvestorV10,
-    V8PipelineResult,
-    V9PipelineResult,
-    V10PipelineResult,
-)
+from quant_investor.pipeline import QuantInvestor, QuantInvestorPipelineResult
 
 __all__ = [
-    "QuantInvestorV8",
-    "QuantInvestorV9",
-    "QuantInvestorV10",
-    "QuantInvestorLatest",
-    "V8PipelineResult",
-    "V9PipelineResult",
-    "V10PipelineResult",
+    "QuantInvestor",
+    "QuantInvestorPipelineResult",
     "UnifiedDataBundle",
     "BranchResult",
     "CalibratedBranchSignal",

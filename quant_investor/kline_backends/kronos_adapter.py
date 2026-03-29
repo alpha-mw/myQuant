@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from quant_investor.contracts import BranchResult
+from quant_investor.branch_contracts import BranchResult
 from quant_investor.kronos_predictor import KronosIntegrator
 
 from .base import KLineBackend
