@@ -11,11 +11,11 @@ import type {
 } from '../types/api';
 
 export function fetchStatistics() {
-  return api.get<DatabaseStats>('/data/statistics');
+  return api.get<DatabaseStats>('/api/data/statistics');
 }
 
 export function fetchMarketOverview() {
-  return api.get<MarketOverviewResponse>('/data/market/overview');
+  return api.get<MarketOverviewResponse>('/api/data/market/overview');
 }
 
 export function fetchStocks(params: {
@@ -47,19 +47,19 @@ export function fetchStocks(params: {
   }
   if (params.offset !== undefined) query.set('offset', String(params.offset));
   if (params.limit !== undefined) query.set('limit', String(params.limit));
-  return api.get<StockListResponse>(`/data/stocks?${query}`);
+  return api.get<StockListResponse>(`/api/data/stocks?${query}`);
 }
 
 export function fetchStock(tsCode: string) {
-  return api.get<StockInfo>(`/data/stocks/${tsCode}`);
+  return api.get<StockInfo>(`/api/data/stocks/${tsCode}`);
 }
 
 export function fetchStockDossier(tsCode: string) {
-  return api.get<StockDossierResponse>(`/data/stocks/${tsCode}/dossier`);
+  return api.get<StockDossierResponse>(`/api/data/stocks/${tsCode}/dossier`);
 }
 
 export function fetchStockOverview(tsCode: string) {
-  return api.get<StockOverviewResponse>(`/data/stocks/${tsCode}/overview`);
+  return api.get<StockOverviewResponse>(`/api/data/stocks/${tsCode}/overview`);
 }
 
 export function fetchOHLCV(tsCode: string, startDate?: string, endDate?: string) {
@@ -67,9 +67,9 @@ export function fetchOHLCV(tsCode: string, startDate?: string, endDate?: string)
   if (startDate) query.set('start_date', startDate);
   if (endDate) query.set('end_date', endDate);
   const qs = query.toString();
-  return api.get<OHLCVResponse>(`/data/stocks/${tsCode}/ohlcv${qs ? `?${qs}` : ''}`);
+  return api.get<OHLCVResponse>(`/api/data/stocks/${tsCode}/ohlcv${qs ? `?${qs}` : ''}`);
 }
 
 export function fetchCompetitors(tsCode: string, limit = 8) {
-  return api.get<CompetitorInfo[]>(`/data/stocks/${tsCode}/competitors?limit=${limit}`);
+  return api.get<CompetitorInfo[]>(`/api/data/stocks/${tsCode}/competitors?limit=${limit}`);
 }

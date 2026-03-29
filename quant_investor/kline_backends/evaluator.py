@@ -13,7 +13,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from quant_investor.contracts import BranchResult
+from quant_investor.branch_contracts import BranchResult
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:

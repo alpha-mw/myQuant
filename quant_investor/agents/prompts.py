@@ -259,6 +259,18 @@ MASTER_SYSTEM_PROMPT = """\
 # Prompt builder helpers
 # ---------------------------------------------------------------------------
 
+
+def format_agent_display_name(branch_name: str) -> str:
+    labels = {
+        "kline": "KLineAgent",
+        "quant": "QuantAgent",
+        "fundamental": "FundamentalAgent",
+        "intelligence": "IntelligenceAgent",
+        "macro": "MacroAgent",
+        "risk": "RiskAgent",
+    }
+    return labels.get(str(branch_name).strip().lower(), str(branch_name).strip() or "UnknownAgent")
+
 def build_branch_agent_messages(
     branch_name: str,
     input_json: str,
