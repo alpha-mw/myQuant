@@ -1,0 +1,4 @@
+interface:
+  display_name: "myQuant"
+  short_description: "Guide safe work in the myQuant mainline repo"
+  default_prompt: "Use $myquant to work safely in the myQuant single-mainline repository."

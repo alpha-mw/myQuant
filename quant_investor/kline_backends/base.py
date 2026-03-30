@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 
 import pandas as pd
 
-from quant_investor.contracts import BranchResult
+from quant_investor.branch_contracts import BranchResult
 
 
 class KLineBackend(ABC):

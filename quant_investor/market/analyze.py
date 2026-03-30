@@ -15,7 +15,7 @@ from typing import Any, Optional
 from quant_investor.config import config
 from quant_investor.credential_utils import create_tushare_pro
 from quant_investor.market.config import get_market_settings, normalize_categories
-from quant_investor.pipeline import QuantInvestorLatest
+from quant_investor.pipeline import QuantInvestor
 
 _STOCK_NAME_CACHE: dict[str, dict[str, str]] = {"CN": {}, "US": {}}
 BRANCH_LABELS = {
@@ -198,16 +198,16 @@ def analyze_batch(
     print(f"前10只: {symbols[:10]}")
 
     try:
-        analyzer = QuantInvestorLatest(
+        analyzer = QuantInvestor(
             stock_pool=symbols,
             market=settings.market,
             total_capital=total_capital,
             risk_level=risk_level,
             enable_macro=True,
             enable_kronos=True,
+            enable_quant=True,
             enable_fundamental=True,
             enable_intelligence=True,
-            enable_branch_debate=True,
             verbose=verbose,
         )
         result = analyzer.run()
@@ -226,7 +226,7 @@ def analyze_batch(
             payload["macro_score"] = float(result.branch_results.get("macro").score) if result.branch_results.get("macro") else 0.0
             recommendations.append(payload)
 
-        analysis = {
+        analysis: dict[str, Any] = {
             "market": settings.market,
             "category": category,
             "category_name": scoped_category_name,

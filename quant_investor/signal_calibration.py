@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from quant_investor.contracts import BranchResult, CalibratedBranchSignal
+from quant_investor.branch_contracts import BranchResult, CalibratedBranchSignal
 from quant_investor.versioning import CALIBRATION_SCHEMA_VERSION, DEBATE_TEMPLATE_VERSION
 
 

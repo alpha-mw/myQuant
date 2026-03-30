@@ -189,7 +189,7 @@ export default function BranchDetailModal({ branch, onClose }: Props) {
               <div className="text-sm font-semibold text-[var(--danger)]">风险提示</div>
               <ul className="mt-2 space-y-1">
                 {safeBranch.risks.map((risk, i) => (
-                  <li key={i} className="text-sm text-[var(--danger)]">· {risk}</li>
+                  <li key={`${risk}-${i}`} className="text-sm text-[var(--danger)]">· {risk}</li>
                 ))}
               </ul>
             </div>
@@ -393,7 +393,7 @@ function LlmDebateDetail({ signals }: { signals: Record<string, unknown> }) {
               <div className="text-xs font-semibold text-emerald-700">多方观点</div>
               <ul className="mt-2 space-y-1">
                 {(bullCase[symbol] ?? []).map((point, i) => (
-                  <li key={i} className="text-sm text-emerald-800">+ {point}</li>
+                  <li key={`${point}-${i}`} className="text-sm text-emerald-800">+ {point}</li>
                 ))}
                 {!(bullCase[symbol]?.length) && (
                   <li className="text-sm text-[var(--muted)]">暂无</li>
@@ -404,7 +404,7 @@ function LlmDebateDetail({ signals }: { signals: Record<string, unknown> }) {
               <div className="text-xs font-semibold text-rose-700">空方观点</div>
               <ul className="mt-2 space-y-1">
                 {(bearCase[symbol] ?? []).map((point, i) => (
-                  <li key={i} className="text-sm text-rose-800">- {point}</li>
+                  <li key={`${point}-${i}`} className="text-sm text-rose-800">- {point}</li>
                 ))}
                 {!(bearCase[symbol]?.length) && (
                   <li className="text-sm text-[var(--muted)]">暂无</li>
@@ -486,7 +486,7 @@ function IntelligenceDetail({ signals }: { signals: Record<string, unknown> }) {
           <div className="text-sm font-semibold text-[var(--danger)]">风险警报</div>
           <ul className="mt-2 space-y-1">
             {alerts.map((alert, i) => (
-              <li key={i} className="text-sm text-[var(--danger)]">· {alert}</li>
+              <li key={`${alert}-${i}`} className="text-sm text-[var(--danger)]">· {alert}</li>
             ))}
           </ul>
         </div>
