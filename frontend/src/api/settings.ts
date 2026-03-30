@@ -1,10 +1,18 @@
 import { api } from './client';
-import type { SettingsResponse } from '../types/api';
+import type {
+  LLMModelsResponse,
+  SettingsResponse,
+  SettingsUpdateRequest,
+} from '../types/settings';
 
 export function fetchSettings() {
-  return api.get<SettingsResponse>('/settings');
+  return api.get<SettingsResponse>('/api/settings/');
 }
 
-export function updateSettings(updates: Record<string, unknown>) {
-  return api.put<SettingsResponse>('/settings', updates);
+export function updateSettings(updates: SettingsUpdateRequest) {
+  return api.patch<{ ok: boolean; updated: string[] }>('/api/settings/', updates);
+}
+
+export function getLLMModels() {
+  return api.get<LLMModelsResponse>('/api/settings/models');
 }

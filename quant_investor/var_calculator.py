@@ -146,7 +146,7 @@ def calculate_cvar(returns: Union[pd.Series, np.ndarray],
     else:
         raise ValueError(f"Unknown method: {method}")
     
-    return cvar
+    return float(cvar)
 
 
 def calculate_all_var_metrics(returns: Union[pd.Series, np.ndarray],

@@ -18,13 +18,22 @@ from typing import Any, Optional
 
 import pandas as pd
 
+from quant_investor.versioning import (
+    ARCHITECTURE_VERSION,
+    BRANCH_SCHEMA_VERSION,
+    CALIBRATION_SCHEMA_VERSION,
+    DEBATE_TEMPLATE_VERSION,
+    IC_PROTOCOL_VERSION,
+    REPORT_PROTOCOL_VERSION,
+)
+
 
 @dataclass
 class UnifiedDataBundle:
     """数据层统一输出的数据包。"""
 
-    market: str
-    symbols: list[str]
+    market: str = ""
+    symbols: list[str] = field(default_factory=list)
     symbol_data: dict[str, pd.DataFrame] = field(default_factory=dict)
     fundamentals: dict[str, dict[str, Any]] = field(default_factory=dict)
     event_data: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
@@ -289,10 +298,10 @@ class BranchResult:
     final_score: Optional[float] = None
     base_confidence: Optional[float] = None
     final_confidence: Optional[float] = None
-    architecture_version: str = ""
-    branch_schema_version: str = ""
-    calibration_schema_version: str = ""
-    debate_template_version: str = ""
+    architecture_version: str = ARCHITECTURE_VERSION
+    branch_schema_version: str = BRANCH_SCHEMA_VERSION
+    calibration_schema_version: str = CALIBRATION_SCHEMA_VERSION
+    debate_template_version: str = DEBATE_TEMPLATE_VERSION
     horizon_days: int = 5
     evidence: EvidencePacket = field(default_factory=lambda: EvidencePacket(branch_name="unknown"))
     debate_verdict: DebateVerdict = field(default_factory=DebateVerdict)
@@ -322,10 +331,10 @@ class BranchResult:
         final_score: Optional[float] = None,
         base_confidence: Optional[float] = None,
         final_confidence: Optional[float] = None,
-        architecture_version: str = "",
-        branch_schema_version: str = "",
-        calibration_schema_version: str = "",
-        debate_template_version: str = "",
+        architecture_version: str = ARCHITECTURE_VERSION,
+        branch_schema_version: str = BRANCH_SCHEMA_VERSION,
+        calibration_schema_version: str = CALIBRATION_SCHEMA_VERSION,
+        debate_template_version: str = DEBATE_TEMPLATE_VERSION,
         horizon_days: int = 5,
         evidence: Optional[EvidencePacket] = None,
         debate_verdict: Optional[DebateVerdict] = None,
@@ -400,10 +409,10 @@ class CalibratedBranchSignal:
     """单个研究分支经校准后的标准信号。"""
 
     branch_name: str
-    architecture_version: str = ""
-    branch_schema_version: str = ""
-    calibration_schema_version: str = ""
-    debate_template_version: str = ""
+    architecture_version: str = ARCHITECTURE_VERSION
+    branch_schema_version: str = BRANCH_SCHEMA_VERSION
+    calibration_schema_version: str = CALIBRATION_SCHEMA_VERSION
+    debate_template_version: str = DEBATE_TEMPLATE_VERSION
     branch_mode: str = "unknown"
     horizon_days: int = 5
     reliability: float = 0.0
@@ -416,17 +425,78 @@ class CalibratedBranchSignal:
 
 
 @dataclass
+class LLMUsageRecord:
+    stage: str = ""
+    branch_or_agent_name: str = ""
+    provider: str = ""
+    model: str = ""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    latency_ms: int = 0
+    success: bool = True
+    fallback: bool = False
+    estimated_cost_usd: float = 0.0
+    timestamp_utc: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class LLMUsageSummary:
+    call_count: int = 0
+    success_count: int = 0
+    fallback_count: int = 0
+    failed_count: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    estimated_cost_usd: float = 0.0
+    by_stage: dict[str, dict[str, Any]] = field(default_factory=dict)
+    by_model: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    @property
+    def total_calls(self) -> int:
+        return int(self.call_count)
+
+    @total_calls.setter
+    def total_calls(self, value: int) -> None:
+        self.call_count = int(value)
+
+    @property
+    def total_prompt_tokens(self) -> int:
+        return int(self.prompt_tokens)
+
+    @total_prompt_tokens.setter
+    def total_prompt_tokens(self, value: int) -> None:
+        self.prompt_tokens = int(value)
+
+    @property
+    def total_completion_tokens(self) -> int:
+        return int(self.completion_tokens)
+
+    @total_completion_tokens.setter
+    def total_completion_tokens(self, value: int) -> None:
+        self.completion_tokens = int(value)
+
+
+@dataclass
 class PortfolioStrategy:
     """Ensemble Layer 输出的组合级策略。"""
 
-    architecture_version: str = ""
-    branch_schema_version: str = ""
-    calibration_schema_version: str = ""
-    debate_template_version: str = ""
+    architecture_version: str = ARCHITECTURE_VERSION
+    branch_schema_version: str = BRANCH_SCHEMA_VERSION
+    calibration_schema_version: str = CALIBRATION_SCHEMA_VERSION
+    debate_template_version: str = DEBATE_TEMPLATE_VERSION
     target_exposure: float = 0.0
+    total_exposure: float = 0.0
+    gross_exposure: float = 0.0
+    net_exposure: float = 0.0
+    cash_ratio: float = 1.0
     style_bias: str = "均衡"
     sector_preferences: list[str] = field(default_factory=list)
     candidate_symbols: list[str] = field(default_factory=list)
+    target_weights: dict[str, float] = field(default_factory=dict)
+    target_positions: dict[str, float] = field(default_factory=dict)
     position_limits: dict[str, float] = field(default_factory=dict)
     stop_loss_policy: dict[str, Any] = field(default_factory=dict)
     execution_notes: list[str] = field(default_factory=list)
@@ -435,6 +505,12 @@ class PortfolioStrategy:
     risk_summary: dict[str, Any] = field(default_factory=dict)
     provenance_summary: dict[str, Any] = field(default_factory=dict)
     research_mode: str = "production"
+    summary: str = ""
+    notes: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    blocked_symbols: list[str] = field(default_factory=list)
+    rejected_symbols: list[str] = field(default_factory=list)
+    recommendations: list["TradeRecommendation"] = field(default_factory=list)
     trade_recommendations: list["TradeRecommendation"] = field(default_factory=list)
 
 
@@ -444,6 +520,7 @@ class TradeRecommendation:
 
     symbol: str
     action: str = "watch"
+    weight: float = 0.0
     category: str = ""
     current_price: float = 0.0
     recommended_entry_price: float = 0.0
@@ -462,6 +539,11 @@ class TradeRecommendation:
     lot_size: int = 1
     confidence: float = 0.0
     consensus_score: float = 0.0
+    rationale: str = ""
+    one_line_conclusion: str = ""
+    support_drivers: list[str] = field(default_factory=list)
+    drag_drivers: list[str] = field(default_factory=list)
+    weight_cap_reasons: list[str] = field(default_factory=list)
     branch_positive_count: int = 0
     branch_scores: dict[str, float] = field(default_factory=dict)
     branch_expected_returns: dict[str, float] = field(default_factory=dict)
@@ -470,6 +552,7 @@ class TradeRecommendation:
     horizon_days: int = 5
     trend_regime: str = "震荡"
     data_source_status: str = "unknown"
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -477,10 +560,12 @@ class ResearchPipelineResult:
     """并行研究主流程结果。"""
 
     data_bundle: UnifiedDataBundle
-    architecture_version: str = ""
-    branch_schema_version: str = ""
-    calibration_schema_version: str = ""
-    debate_template_version: str = ""
+    architecture_version: str = ARCHITECTURE_VERSION
+    branch_schema_version: str = BRANCH_SCHEMA_VERSION
+    calibration_schema_version: str = CALIBRATION_SCHEMA_VERSION
+    ic_protocol_version: str = IC_PROTOCOL_VERSION
+    report_protocol_version: str = REPORT_PROTOCOL_VERSION
+    debate_template_version: str = DEBATE_TEMPLATE_VERSION
     branch_results: dict[str, BranchResult] = field(default_factory=dict)
     risk_result: Optional[Any] = None
     final_strategy: PortfolioStrategy = field(default_factory=PortfolioStrategy)
@@ -499,6 +584,8 @@ __all__ = [
     "EvidencePacket",
     "ForecastSnapshot",
     "FundamentalSnapshot",
+    "LLMUsageRecord",
+    "LLMUsageSummary",
     "ManagementSnapshot",
     "OwnershipSnapshot",
     "PortfolioStrategy",

@@ -41,13 +41,15 @@ from quant_investor.macro_terminal_tushare import create_terminal
 from quant_investor.risk_management_layer import PortfolioOptimizer, RiskLayerResult, RiskManagementLayer
 from quant_investor.signal_calibration import SignalCalibrator
 from quant_investor.versioning import (
-    ARCHITECTURE_VERSION_V9,
-    BRANCH_SCHEMA_VERSION_V9,
+    ARCHITECTURE_VERSION,
+    BRANCH_SCHEMA_VERSION,
     BRANCH_TRACKER_SCHEMA_VERSION,
     CALIBRATION_SCHEMA_VERSION,
     CURRENT_BRANCH_ORDER,
     CURRENT_BRANCH_WEIGHTS,
     DEBATE_TEMPLATE_VERSION,
+    IC_PROTOCOL_VERSION,
+    REPORT_PROTOCOL_VERSION,
     output_version_payload,
 )
 
@@ -158,6 +160,7 @@ def _branch_process_entry(
     send_conn: Connection,
 ) -> None:
     """在独立子进程中执行单个研究分支，便于超时后强制回收。"""
+    import traceback as _tb
     try:
         pipeline = ParallelResearchPipeline(**pipeline_kwargs)
         pipeline._market_regime = market_regime
@@ -165,7 +168,7 @@ def _branch_process_entry(
         branch_result = branch_method(data_bundle)
         send_conn.send({"ok": True, "result": _ipc_safe_branch_result(branch_result)})
     except Exception as exc:
-        send_conn.send({"ok": False, "error": str(exc)})
+        send_conn.send({"ok": False, "error": str(exc), "traceback": _tb.format_exc()})
     finally:
         send_conn.close()
 
@@ -291,8 +294,8 @@ class ParallelResearchPipeline:
     """并行研究主流程编排器。"""
 
     BRANCH_ORDER = list(CURRENT_BRANCH_ORDER)
-    ARCHITECTURE_VERSION = ARCHITECTURE_VERSION_V9
-    BRANCH_SCHEMA_VERSION = BRANCH_SCHEMA_VERSION_V9
+    ARCHITECTURE_VERSION = ARCHITECTURE_VERSION
+    BRANCH_SCHEMA_VERSION = BRANCH_SCHEMA_VERSION
 
     def __init__(
         self,
@@ -416,7 +419,7 @@ class ParallelResearchPipeline:
         }
 
     @staticmethod
-    def _branch_process_context() -> mp.context.BaseContext:
+    def _branch_process_context() -> Any:
         """优先选择 fork，确保测试 monkeypatch 和大对象共享在 POSIX 下可用。"""
         if os.name != "nt":
             start_methods = mp.get_all_start_methods()
@@ -463,10 +466,12 @@ class ParallelResearchPipeline:
         )
 
     def _version_payload(self) -> dict[str, str]:
-        return output_version_payload(
+        payload = output_version_payload(
             architecture_version=self.architecture_version,
             branch_schema_version=self.branch_schema_version,
         )
+        payload["debate_template_version"] = DEBATE_TEMPLATE_VERSION
+        return payload
 
     def _annotate_branch_result(self, branch_result: BranchResult) -> BranchResult:
         versions = self._version_payload()
@@ -504,7 +509,12 @@ class ParallelResearchPipeline:
         data_bundle = self._build_data_bundle()
         result = ResearchPipelineResult(
             data_bundle=data_bundle,
-            **self._version_payload(),
+            architecture_version=self.architecture_version,
+            branch_schema_version=self.branch_schema_version,
+            calibration_schema_version=CALIBRATION_SCHEMA_VERSION,
+            ic_protocol_version=IC_PROTOCOL_VERSION,
+            report_protocol_version=REPORT_PROTOCOL_VERSION,
+            debate_template_version=DEBATE_TEMPLATE_VERSION,
         )
         result.execution_log.append("并行研究流程启动")
         result.timings["data_layer"] = time.time() - t0
@@ -867,7 +877,10 @@ class ParallelResearchPipeline:
 
                 if not payload.get("ok", False):
                     error_message = str(payload.get("error", "branch_process_failed"))
+                    error_tb = payload.get("traceback", "")
                     self._log(f"{name} 分支失败，使用降级结果: {error_message}")
+                    if error_tb:
+                        self._log(f"{name} 分支堆栈:\n{error_tb.strip()}")
                     results[name] = self._degraded_branch_result(
                         branch_name=name,
                         explanation=f"{name} 分支异常，已降级为中性结果。",
@@ -1737,7 +1750,7 @@ class ParallelResearchPipeline:
             else 0.0
         )
         base_exposure = 1 - risk_result.position_sizing.cash_ratio
-        exposure_penalty = _clamp(disagreement, 0.0, 0.35)
+        exposure_penalty = _clamp(float(disagreement), 0.0, 0.35)
         target_exposure = _clamp(base_exposure * (1 - exposure_penalty), 0.1, 0.95)
         if synthetic_symbols and not self.allow_synthetic_for_research:
             target_exposure = min(target_exposure, 0.45)
@@ -1813,7 +1826,10 @@ class ParallelResearchPipeline:
         )
 
         return PortfolioStrategy(
-            **self._version_payload(),
+            architecture_version=self.architecture_version,
+            branch_schema_version=self.branch_schema_version,
+            calibration_schema_version=CALIBRATION_SCHEMA_VERSION,
+            debate_template_version=DEBATE_TEMPLATE_VERSION,
             target_exposure=target_exposure,
             style_bias=style_bias,
             sector_preferences=sector_preferences,
