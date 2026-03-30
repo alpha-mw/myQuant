@@ -296,8 +296,21 @@ class QuantInvestor:
 
     def _review_layer_available(self) -> bool:
         if not self.enable_agent_layer:
+            self._log("Review layer: 已通过配置标志禁用 (enable_agent_layer=False)")
             return False
-        return has_provider_for_model(self.agent_model) and has_provider_for_model(self.master_model)
+        if not has_provider_for_model(self.agent_model):
+            self._log(
+                f"Review layer: agent_model={self.agent_model!r} 无对应 API Key，"
+                "跳过 agent 层（请检查 ANTHROPIC_API_KEY / OPENAI_API_KEY 等环境变量）"
+            )
+            return False
+        if not has_provider_for_model(self.master_model):
+            self._log(
+                f"Review layer: master_model={self.master_model!r} 无对应 API Key，"
+                "跳过 agent 层（请检查 OPENAI_API_KEY / ANTHROPIC_API_KEY 等环境变量）"
+            )
+            return False
+        return True
 
     def _run_review_layer(
         self,
