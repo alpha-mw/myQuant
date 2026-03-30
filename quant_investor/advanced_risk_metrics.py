@@ -73,8 +73,8 @@ def calculate_sortino_ratio(returns: Union[pd.Series, np.ndarray],
     
     if annualized:
         sortino *= np.sqrt(252)
-    
-    return sortino
+
+    return float(sortino)
 
 
 def calculate_calmar_ratio(returns: Union[pd.Series, np.ndarray],

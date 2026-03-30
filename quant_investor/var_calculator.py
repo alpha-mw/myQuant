@@ -24,7 +24,7 @@ def calculate_historical_var(returns: Union[pd.Series, np.ndarray],
     returns = np.array(returns).flatten()
     alpha = 1 - confidence_level
     var = np.percentile(returns, alpha * 100)
-    return var
+    return float(var)
 
 
 def calculate_parametric_var(returns: Union[pd.Series, np.ndarray],
@@ -106,8 +106,8 @@ def calculate_monte_carlo_var(returns: Union[pd.Series, np.ndarray],
     # 计算VaR
     alpha = 1 - confidence_level
     var = np.percentile(simulated_returns, alpha * 100)
-    
-    return var
+
+    return float(var)
 
 
 def calculate_cvar(returns: Union[pd.Series, np.ndarray],

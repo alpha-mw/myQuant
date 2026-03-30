@@ -58,11 +58,11 @@ class StressTester:
         return StressTestResult(
             scenario_name="相关性冲击",
             portfolio_value_before=portfolio_value,
-            portfolio_value_after=final_value,
-            loss_amount=loss,
-            loss_percentage=loss / portfolio_value,
-            var_95=np.percentile(stressed_returns, 5),
-            var_99=np.percentile(stressed_returns, 1),
+            portfolio_value_after=float(final_value),
+            loss_amount=float(loss),
+            loss_percentage=float(loss / portfolio_value),
+            var_95=float(np.percentile(stressed_returns, 5)),
+            var_99=float(np.percentile(stressed_returns, 1)),
             max_drawdown=self._calculate_max_drawdown(stressed_returns)
         )
     
@@ -87,11 +87,11 @@ class StressTester:
         return StressTestResult(
             scenario_name="流动性冲击",
             portfolio_value_before=portfolio_value,
-            portfolio_value_after=final_value,
-            loss_amount=loss,
-            loss_percentage=loss / portfolio_value,
-            var_95=np.percentile(stressed_returns, 5),
-            var_99=np.percentile(stressed_returns, 1),
+            portfolio_value_after=float(final_value),
+            loss_amount=float(loss),
+            loss_percentage=float(loss / portfolio_value),
+            var_95=float(np.percentile(stressed_returns, 5)),
+            var_99=float(np.percentile(stressed_returns, 1)),
             max_drawdown=self._calculate_max_drawdown(stressed_returns)
         )
     
@@ -117,11 +117,11 @@ class StressTester:
         return StressTestResult(
             scenario_name="波动率飙升",
             portfolio_value_before=portfolio_value,
-            portfolio_value_after=final_value,
-            loss_amount=loss,
-            loss_percentage=loss / portfolio_value,
-            var_95=np.percentile(stressed_returns, 5),
-            var_99=np.percentile(stressed_returns, 1),
+            portfolio_value_after=float(final_value),
+            loss_amount=float(loss),
+            loss_percentage=float(loss / portfolio_value),
+            var_95=float(np.percentile(stressed_returns, 5)),
+            var_99=float(np.percentile(stressed_returns, 1)),
             max_drawdown=self._calculate_max_drawdown(stressed_returns)
         )
     
@@ -143,11 +143,11 @@ class StressTester:
         return StressTestResult(
             scenario_name="2008金融危机",
             portfolio_value_before=portfolio_value,
-            portfolio_value_after=final_value,
-            loss_amount=loss,
-            loss_percentage=loss / portfolio_value,
-            var_95=np.percentile(crisis_returns, 5),
-            var_99=np.percentile(crisis_returns, 1),
+            portfolio_value_after=float(final_value),
+            loss_amount=float(loss),
+            loss_percentage=float(loss / portfolio_value),
+            var_95=float(np.percentile(crisis_returns, 5)),
+            var_99=float(np.percentile(crisis_returns, 1)),
             max_drawdown=self._calculate_max_drawdown(crisis_returns)
         )
     
@@ -173,11 +173,11 @@ class StressTester:
         return StressTestResult(
             scenario_name="2015A股熔断",
             portfolio_value_before=portfolio_value,
-            portfolio_value_after=final_value,
-            loss_amount=loss,
-            loss_percentage=loss / portfolio_value,
-            var_95=np.percentile(circuit_breaker_returns, 5),
-            var_99=np.percentile(circuit_breaker_returns, 1),
+            portfolio_value_after=float(final_value),
+            loss_amount=float(loss),
+            loss_percentage=float(loss / portfolio_value),
+            var_95=float(np.percentile(circuit_breaker_returns, 5)),
+            var_99=float(np.percentile(circuit_breaker_returns, 1)),
             max_drawdown=self._calculate_max_drawdown(circuit_breaker_returns)
         )
     

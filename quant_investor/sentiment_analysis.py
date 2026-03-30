@@ -233,7 +233,7 @@ class TechnicalSentimentCalculator:
         if avg_loss < 1e-10:
             return 100.0
         rs = avg_gain / avg_loss
-        return 100.0 - 100.0 / (1.0 + rs)
+        return float(100.0 - 100.0 / (1.0 + rs))
 
     @staticmethod
     def _calc_macd(close: np.ndarray, fast: int = 12, slow: int = 26, signal: int = 9):

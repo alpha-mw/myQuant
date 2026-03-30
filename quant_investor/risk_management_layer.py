@@ -125,7 +125,7 @@ class RiskManagementLayer:
             metrics.max_drawdown = drawdown.min()
 
             # VaR / CVaR
-            metrics.var_95 = np.percentile(returns, 5)
+            metrics.var_95 = float(np.percentile(returns, 5))
             metrics.cvar_95 = returns[returns <= metrics.var_95].mean()
 
             # 夏普比率
