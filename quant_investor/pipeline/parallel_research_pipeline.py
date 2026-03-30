@@ -160,6 +160,7 @@ def _branch_process_entry(
     send_conn: Connection,
 ) -> None:
     """在独立子进程中执行单个研究分支，便于超时后强制回收。"""
+    import traceback as _tb
     try:
         pipeline = ParallelResearchPipeline(**pipeline_kwargs)
         pipeline._market_regime = market_regime
@@ -167,7 +168,7 @@ def _branch_process_entry(
         branch_result = branch_method(data_bundle)
         send_conn.send({"ok": True, "result": _ipc_safe_branch_result(branch_result)})
     except Exception as exc:
-        send_conn.send({"ok": False, "error": str(exc)})
+        send_conn.send({"ok": False, "error": str(exc), "traceback": _tb.format_exc()})
     finally:
         send_conn.close()
 
@@ -876,7 +877,10 @@ class ParallelResearchPipeline:
 
                 if not payload.get("ok", False):
                     error_message = str(payload.get("error", "branch_process_failed"))
+                    error_tb = payload.get("traceback", "")
                     self._log(f"{name} 分支失败，使用降级结果: {error_message}")
+                    if error_tb:
+                        self._log(f"{name} 分支堆栈:\n{error_tb.strip()}")
                     results[name] = self._degraded_branch_result(
                         branch_name=name,
                         explanation=f"{name} 分支异常，已降级为中性结果。",
