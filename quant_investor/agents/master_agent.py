@@ -1,8 +1,8 @@
 """
-V10 Master Agent（IC 投资委员会主席）。
+V12 Master Agent（IC 投资委员会主席）。
 
-综合所有分支 SubAgent 和风控 SubAgent 的研报，
-模拟 IC 会议流程，产出最终投资建议。
+直接接收5个分支的原始量化数据 + 风控结果 + 历史交易回顾，
+主持五轮多空辩论，产出最终投资决策（含交易决策和投资逻辑存档）。
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from quant_investor.agents.agent_contracts import (
     MasterAgentInput,
     MasterAgentOutput,
     SymbolRecommendation,
+    TradeDecision,
 )
 from quant_investor.agents.llm_client import LLMClient, LLMCallError
 from quant_investor.agents.prompts import build_master_agent_messages
@@ -30,7 +31,7 @@ def _clamp(value: float, lower: float, upper: float) -> float:
 
 
 class MasterAgent:
-    """IC 主席：汇总 6 份研报，主持辩论，做出最终决策。"""
+    """IC 主席：直接读取5个分支原始量化数据，主持五轮多空辩论，做出最终决策。"""
 
     def __init__(
         self,
@@ -96,16 +97,15 @@ class MasterAgent:
         if raw.get("final_conviction") not in valid_convictions:
             raw["final_conviction"] = self._score_to_conviction(bounded_score)
 
-        # Apply risk veto: if risk assessment is extreme, cap conviction
-        risk_report = agent_input.risk_report
-        if risk_report and risk_report.risk_assessment == "extreme":
+        # Apply risk veto from risk_result (if VaR / risk level is extreme)
+        risk_result = agent_input.risk_result or {}
+        risk_level = str(risk_result.get("risk_level", risk_result.get("risk_assessment", ""))).lower()
+        if risk_level == "extreme":
             if raw["final_conviction"] in ("strong_buy", "buy"):
                 raw["final_conviction"] = "neutral"
                 raw["final_score"] = min(bounded_score, 0.1)
-                if "risk_warnings" not in raw:
-                    raw.setdefault("disagreement_areas", [])
                 raw.setdefault("debate_resolution", []).append(
-                    "风控官一票否决：风险评估为 extreme，conviction 已降级至 neutral"
+                    "风控层一票否决：风险评估为 extreme，conviction 已降级至 neutral"
                 )
 
         # Parse top_picks into SymbolRecommendation
@@ -119,10 +119,29 @@ class MasterAgent:
                     pass
         raw["top_picks"] = parsed_picks
 
+        # Parse trade_decisions into TradeDecision
+        raw_decisions = raw.get("trade_decisions", [])
+        parsed_decisions = []
+        for decision in raw_decisions:
+            if isinstance(decision, dict):
+                try:
+                    parsed_decisions.append(TradeDecision.model_validate(decision))
+                except Exception:
+                    pass
+        raw["trade_decisions"] = parsed_decisions
+
         # Ensure list fields
-        for field in ("consensus_areas", "disagreement_areas", "debate_resolution", "dissenting_views"):
+        for field in (
+            "debate_rounds", "consensus_areas", "disagreement_areas",
+            "debate_resolution", "conviction_drivers", "dissenting_views",
+        ):
             if not isinstance(raw.get(field), list):
                 raw[field] = []
+
+        # Ensure string fields
+        for field in ("bull_case", "bear_case", "investment_thesis", "portfolio_narrative"):
+            if not isinstance(raw.get(field), str):
+                raw[field] = ""
 
         return MasterAgentOutput.model_validate(raw)
 
