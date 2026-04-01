@@ -165,6 +165,11 @@ def build_risk_agent_messages(input_json: str) -> list[dict[str, str]]:
     ]
 
 
+def format_agent_display_name(branch_name: str) -> str:
+    """Stub — branch SubAgents removed in V12; returns branch name as-is."""
+    return branch_name
+
+
 def build_master_agent_messages(input_json: str) -> list[dict[str, str]]:
     """构建 IC Master Agent 的 messages。"""
     return [
