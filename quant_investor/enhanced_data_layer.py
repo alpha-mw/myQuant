@@ -93,11 +93,26 @@ class USLocalCSVDataSource(DataSourceBase):
         return self._store.read(symbol, start_date, end_date)
 
     def get_fundamental(self, symbol):
+        fundamental_path = self._store._base_dir / f"{symbol}_fundamental.json"
+        if fundamental_path.exists():
+            import json
+            try:
+                data = json.loads(fundamental_path.read_text())
+                fields = {k: v for k, v in data.items() if hasattr(FundamentalData, k)}
+                return FundamentalData(symbol=symbol, **fields)
+            except Exception:
+                pass
         return FundamentalData(symbol=symbol)
 
 
+def _fundamental_has_data(fd: FundamentalData) -> bool:
+    """检查 FundamentalData 是否包含有效数据（至少3个非 None 字段）。"""
+    fields = ("roe", "roa", "gross_margin", "net_margin", "pe", "pb", "debt_ratio", "current_ratio")
+    return sum(1 for f in fields if getattr(fd, f, None) is not None) >= 3
+
+
 class USCompositeDataSource(DataSourceBase):
-    """美股复合数据源：本地缓存优先，刷新回补走 Tushare，最后回退 Yahoo。"""
+    """美股复合数据源：Tushare（高积分）→ Yahoo Finance → SEC EDGAR。"""
 
     def __init__(self, local_data_dir=None, max_staleness_days=7):
         self._local = USLocalCSVDataSource(local_data_dir)
@@ -137,11 +152,73 @@ class USCompositeDataSource(DataSourceBase):
         return pd.DataFrame()
 
     def get_fundamental(self, symbol):
-        if self.last_ohlcv_source == "yahoo":
-            self.last_fundamental_source = "yahoo"
-            return self._yahoo.get_fundamental(symbol)
-        self.last_fundamental_source = "skipped"
+        """
+        三级回退获取基本面数据：
+        1. Tushare（us_fina_indicator + 三张报表，高积分接口）
+        2. Yahoo Finance（yfinance.Ticker.info）
+        3. SEC EDGAR（XBRL company facts，公开免费接口）
+        """
+        # --- 1. Tushare ---
+        try:
+            result = self._tushare.get_fundamental(symbol)
+            if _fundamental_has_data(result):
+                self.last_fundamental_source = "tushare"
+                return result
+        except Exception:
+            pass
+
+        # --- 2. Yahoo Finance ---
+        try:
+            result = self._yahoo.get_fundamental(symbol)
+            if _fundamental_has_data(result):
+                self.last_fundamental_source = "yahoo"
+                return result
+        except Exception:
+            pass
+
+        # --- 3. SEC EDGAR（公开渠道回退）---
+        try:
+            from quant_investor.sec_fundamental import fetch_sec_fundamental
+            sec_data = fetch_sec_fundamental(symbol)
+            if sec_data:
+                result = FundamentalData(symbol=symbol, **{
+                    k: v for k, v in sec_data.items()
+                    if hasattr(FundamentalData, k) and v is not None
+                })
+                if _fundamental_has_data(result):
+                    self.last_fundamental_source = "sec_edgar"
+                    return result
+        except Exception:
+            pass
+
+        self.last_fundamental_source = "unavailable"
         return FundamentalData(symbol=symbol)
+
+    def get_daily_basic(self, symbol, trade_date=None):
+        """获取 PE/PB 等每日基础指标：Tushare 优先，回退 Yahoo。"""
+        # Tushare us_fina_indicator 包含 PE/PB
+        try:
+            result = self._tushare.get_fundamental(symbol)
+            if any(getattr(result, f, None) is not None for f in ("pe", "pb")):
+                return {
+                    "pe": getattr(result, "pe", None),
+                    "pb": getattr(result, "pb", None),
+                    "ps": getattr(result, "ps", None),
+                    "dividend_yield": getattr(result, "dividend_yield", None),
+                }
+        except Exception:
+            pass
+        # Yahoo fallback
+        try:
+            result = self._yahoo.get_fundamental(symbol)
+            return {
+                "pe": getattr(result, "pe", None),
+                "pb": getattr(result, "pb", None),
+                "ps": getattr(result, "ps", None),
+                "dividend_yield": getattr(result, "dividend_yield", None),
+            }
+        except Exception:
+            return {}
 
 
 # ==================== 数据处理 ====================

@@ -180,11 +180,26 @@ class SymbolRecommendation(_CompatModel):
     target_weight: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
-class MasterAgentInput(_CompatModel):
-    """IC master review input."""
+class TradeDecision(_CompatModel):
+    """单个标的的交易决策。"""
 
-    branch_reports: dict[str, BaseBranchAgentOutput] = Field(default_factory=dict)
-    risk_report: RiskAgentOutput | None = None
+    symbol: str
+    action: Literal["buy", "hold", "sell"] = "hold"
+    target_weight: float = Field(default=0.0, ge=0.0, le=1.0)
+    rationale: str = Field(default="", description="该标的交易决策的具体依据")
+
+
+class MasterAgentInput(_CompatModel):
+    """IC master review input — 直接接收原始分支量化数据，不经过 SubAgent 处理。"""
+
+    branch_results: dict[str, Any] = Field(
+        default_factory=dict,
+        description="5个分支的序列化 BranchResult（量化分数、signals、evidence）",
+    )
+    risk_result: dict[str, Any] = Field(
+        default_factory=dict,
+        description="风控层序列化输出（VaR、仓位建议、stop loss 等）",
+    )
     ensemble_baseline: dict[str, Any] = Field(
         default_factory=dict,
         description="算法 EnsembleJudge 输出，作为参考基准",
@@ -193,23 +208,33 @@ class MasterAgentInput(_CompatModel):
     candidate_symbols: list[str] = Field(default_factory=list)
     recall_context: dict[str, Any] = Field(
         default_factory=dict,
-        description="仅供 review layer 参考的历史回顾摘要，不可直接驱动最终仓位。",
+        description="过往交易记录、盈亏、历史投资逻辑和反思，仅供参考不可直接驱动仓位。",
     )
 
 
 class MasterAgentOutput(_CompatModel):
-    """IC master review output."""
+    """IC master review output — 包含多轮多空辩论记录及完整投资决策。"""
 
     final_conviction: Literal["strong_buy", "buy", "neutral", "sell", "strong_sell"] = "neutral"
     final_score: float = Field(default=0.0, ge=-1.0, le=1.0)
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
-    consensus_areas: list[str] = Field(default_factory=list, description="IC 共识点")
-    disagreement_areas: list[str] = Field(default_factory=list, description="IC 分歧点")
-    debate_rounds: list[str] = Field(default_factory=list, description="IC 关键辩论轮次")
-    debate_resolution: list[str] = Field(default_factory=list, description="分歧如何调解")
+    bull_case: str = Field(default="", description="多方核心论点汇总")
+    bear_case: str = Field(default="", description="空方核心论点汇总")
+    debate_rounds: list[str] = Field(default_factory=list, description="五轮多空辩论的逐轮摘要")
+    consensus_areas: list[str] = Field(default_factory=list, description="多空双方共识点")
+    disagreement_areas: list[str] = Field(default_factory=list, description="多空双方核心分歧")
+    debate_resolution: list[str] = Field(default_factory=list, description="分歧如何最终裁决")
     conviction_drivers: list[str] = Field(default_factory=list, description="最终 conviction 的关键驱动")
+    trade_decisions: list[TradeDecision] = Field(
+        default_factory=list,
+        description="每个候选标的的具体交易决策（action + target_weight + rationale）",
+    )
     top_picks: list[SymbolRecommendation] = Field(default_factory=list)
-    portfolio_narrative: str = Field(default="", description="3-5 句投资论点")
+    investment_thesis: str = Field(
+        default="",
+        description="本次决策的完整投资逻辑（含因果链和风险提示），供存档和学习回顾",
+    )
+    portfolio_narrative: str = Field(default="", description="3-5 句执行摘要")
     risk_adjusted_exposure: float = Field(default=0.5, ge=0.0, le=1.0)
     dissenting_views: list[str] = Field(default_factory=list, description="保留的少数派意见")
 
@@ -247,4 +272,5 @@ __all__ = [
     "RiskAgentInput",
     "RiskAgentOutput",
     "SymbolRecommendation",
+    "TradeDecision",
 ]
