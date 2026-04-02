@@ -66,6 +66,8 @@ config.ini
 *.pdf
 *.html
 *.md
+!README.md
+!Agents.md
 
 # Directories with data/reports
 data/
