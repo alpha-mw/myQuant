@@ -7,8 +7,8 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 import web.main as web_main
-from web.api import app as exported_app
-from web.api import create_app
+from web.workspace_app import app as exported_app
+from web.workspace_app import create_app
 
 
 def test_web_main_entrypoint_uses_workspace_app():

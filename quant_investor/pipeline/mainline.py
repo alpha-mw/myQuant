@@ -28,10 +28,13 @@ from quant_investor.branch_contracts import (
     LLMUsageRecord,
     LLMUsageSummary,
     PortfolioStrategy,
+    ResearchPipelineResult,
     TradeRecommendation,
     UnifiedDataBundle,
 )
+from quant_investor.contracts import GlobalContext, PortfolioDecision, ShortlistItem, SymbolResearchPacket
 from quant_investor.config import config
+from quant_investor.portfolio import build_portfolio_decisions
 from quant_investor.llm_gateway import (
     current_usage_session_id,
     end_usage_session,
@@ -73,6 +76,10 @@ class QuantInvestorPipelineResult:
     data_bundle: Optional[UnifiedDataBundle] = None
     branch_results: dict[str, Any] = field(default_factory=dict)
     calibrated_signals: dict[str, Any] = field(default_factory=dict)
+    global_context: GlobalContext | None = None
+    symbol_research_packets: dict[str, SymbolResearchPacket] = field(default_factory=dict)
+    shortlist: list[ShortlistItem] = field(default_factory=list)
+    portfolio_decisions: list[PortfolioDecision] = field(default_factory=list)
     risk_results: Any = None
     final_strategy: PortfolioStrategy = field(default_factory=PortfolioStrategy)
     final_report: str = ""
@@ -109,6 +116,10 @@ class ResearchCoreSnapshot:
     data_bundle: UnifiedDataBundle
     branch_results: dict[str, Any] = field(default_factory=dict)
     calibrated_signals: dict[str, Any] = field(default_factory=dict)
+    global_context: GlobalContext | None = None
+    symbol_research_packets: dict[str, SymbolResearchPacket] = field(default_factory=dict)
+    shortlist: list[ShortlistItem] = field(default_factory=list)
+    portfolio_decisions: list[PortfolioDecision] = field(default_factory=list)
     risk_result: Any = None
     baseline_strategy: PortfolioStrategy = field(default_factory=PortfolioStrategy)
     market_regime: str | None = None
@@ -265,7 +276,24 @@ class QuantInvestor:
         pipeline_any = cast(Any, pipeline)
         pipeline_any.enable_agent_orchestrator_bridge = False
         if hasattr(pipeline_any, "run_research_core"):
-            return cast(ResearchCoreSnapshot, pipeline_any.run_research_core())
+            research_result = cast(ResearchPipelineResult, pipeline_any.run_research_core())
+            return ResearchCoreSnapshot(
+                data_bundle=research_result.data_bundle,
+                branch_results=research_result.branch_results,
+                calibrated_signals=research_result.calibrated_signals,
+                global_context=getattr(research_result, "global_context", None),
+                symbol_research_packets=dict(getattr(research_result, "symbol_research_packets", {})),
+                shortlist=list(getattr(research_result, "shortlist", [])),
+                portfolio_decisions=list(getattr(research_result, "portfolio_decisions", [])),
+                risk_result=research_result.risk_result,
+                baseline_strategy=research_result.final_strategy,
+                market_regime=getattr(research_result, "market_regime", None),
+                timings=research_result.timings,
+                execution_log=research_result.execution_log,
+                branch_schema_version=research_result.branch_schema_version,
+                calibration_schema_version=research_result.calibration_schema_version,
+                llm_usage_session_id=getattr(research_result, "llm_usage_session_id", ""),
+            )
 
         legacy_result = pipeline.run()
         macro_branch = getattr(legacy_result, "branch_results", {}).get("macro")
@@ -280,6 +308,10 @@ class QuantInvestor:
             data_bundle=legacy_result.data_bundle,
             branch_results=getattr(legacy_result, "branch_results", {}),
             calibrated_signals=getattr(legacy_result, "calibrated_signals", {}),
+            global_context=getattr(legacy_result, "global_context", None),
+            symbol_research_packets=dict(getattr(legacy_result, "symbol_research_packets", {})),
+            shortlist=list(getattr(legacy_result, "shortlist", [])),
+            portfolio_decisions=list(getattr(legacy_result, "portfolio_decisions", [])),
             risk_result=getattr(legacy_result, "risk_result", None),
             baseline_strategy=getattr(legacy_result, "final_strategy", PortfolioStrategy()),
             market_regime=market_regime,
@@ -418,6 +450,14 @@ class QuantInvestor:
             ic_by_symbol=orchestration["ic_by_symbol"],
             report_bundle=report_bundle,
         )
+        final_portfolio_decisions = build_portfolio_decisions(
+            shortlist=list(snapshot.shortlist),
+            trade_recommendations=list(
+                getattr(final_strategy, "trade_recommendations", [])
+                or getattr(final_strategy, "recommendations", [])
+            ),
+            global_context=snapshot.global_context or GlobalContext(),
+        )
         final_report = update_usage_markdown(
             report_bundle.markdown_report,
             usage_summary,
@@ -448,6 +488,10 @@ class QuantInvestor:
             data_bundle=snapshot.data_bundle,
             branch_results=snapshot.branch_results,
             calibrated_signals=snapshot.calibrated_signals,
+            global_context=snapshot.global_context,
+            symbol_research_packets=snapshot.symbol_research_packets,
+            shortlist=snapshot.shortlist,
+            portfolio_decisions=final_portfolio_decisions,
             risk_results=orchestration["risk_by_symbol"],
             final_strategy=final_strategy,
             final_report=final_report,
@@ -631,6 +675,26 @@ class QuantInvestor:
             lines.extend(f"- Debate resolution: {item}" for item in master_output.debate_resolution[:3])
         if master_output.portfolio_narrative:
             lines.append(f"- 组合叙事: {master_output.portfolio_narrative}")
+        if master_output.top_picks:
+            lines.append("- 单票建议明细（仅供参考，最终仓位以组合构造器为准）:")
+            for pick in master_output.top_picks[:5]:
+                lines.append(
+                    f"  - {pick.symbol}: {pick.action}/{pick.conviction}, "
+                    f"entry={self._fmt_optional_price(getattr(pick, 'entry_price', None))}, "
+                    f"target={self._fmt_optional_price(getattr(pick, 'target_price', None))}, "
+                    f"stop={self._fmt_optional_price(getattr(pick, 'stop_loss', None))}, "
+                    f"rr={self._fmt_optional_ratio(getattr(pick, 'risk_reward_ratio', None))}, "
+                    f"suggested={self._fmt_optional_pct(getattr(pick, 'position_size_pct', None))}"
+                )
+                scenarios = list(getattr(pick, "what_if_scenarios", []) or [])
+                for scenario in scenarios[:3]:
+                    lines.append(
+                        "    - what-if: "
+                        + f"{getattr(scenario, 'scenario', '')} | "
+                        + f"{getattr(scenario, 'trigger_condition', '')} | "
+                        + f"{getattr(scenario, 'expected_outcome', '')} | "
+                        + f"p={float(getattr(scenario, 'probability', 0.0)):.0%}"
+                    )
         lines.append("")
         return lines
 
@@ -651,6 +715,13 @@ class QuantInvestor:
         if master_output is not None and master_output.top_picks:
             top_symbols = ", ".join(pick.symbol for pick in master_output.top_picks[:5])
             lines.append(f"- Review Layer top picks: {top_symbols}")
+            for pick in master_output.top_picks[:3]:
+                lines.append(
+                    f"- {pick.symbol} 建议参考: 入场 {self._fmt_optional_price(getattr(pick, 'entry_price', None))}, "
+                    f"目标 {self._fmt_optional_price(getattr(pick, 'target_price', None))}, "
+                    f"止损 {self._fmt_optional_price(getattr(pick, 'stop_loss', None))}, "
+                    f"仓位 {self._fmt_optional_pct(getattr(pick, 'position_size_pct', None))}"
+                )
         research_mode = getattr(final_strategy, "research_mode", "")
         if research_mode:
             lines.append(f"- 执行模式: {research_mode}")
@@ -707,6 +778,12 @@ class QuantInvestor:
                 lines.append(
                     f"- 持续跟踪 {pick.symbol}: review 建议为 {pick.action}，依据 {pick.rationale or '待补充'}"
                 )
+                if getattr(pick, "what_if_scenarios", None):
+                    first_scenario = pick.what_if_scenarios[0]
+                    lines.append(
+                        f"  - 关键情景: {getattr(first_scenario, 'scenario', '')}"
+                        f" / {getattr(first_scenario, 'trigger_condition', '')}"
+                    )
         if len(lines) == 1:
             lines.append("- 当前没有额外待办。")
         lines.append("")
@@ -908,6 +985,33 @@ class QuantInvestor:
     @staticmethod
     def _conviction_score(conviction: str) -> float:
         return _CONVICTION_SCORE.get(str(conviction).strip().lower(), 0.0)
+
+    @staticmethod
+    def _fmt_optional_price(value: Any) -> str:
+        try:
+            if value is None:
+                return "n/a"
+            return f"¥{float(value):.2f}"
+        except Exception:
+            return "n/a"
+
+    @staticmethod
+    def _fmt_optional_pct(value: Any) -> str:
+        try:
+            if value is None:
+                return "n/a"
+            return f"{float(value):.1%}"
+        except Exception:
+            return "n/a"
+
+    @staticmethod
+    def _fmt_optional_ratio(value: Any) -> str:
+        try:
+            if value is None:
+                return "n/a"
+            return f"{float(value):.2f}"
+        except Exception:
+            return "n/a"
 
     def _portfolio_plan_to_strategy(
         self,

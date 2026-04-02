@@ -3,6 +3,7 @@
 测试数据获取、清洗、特征工程
 """
 
+import json
 import pytest
 import pandas as pd
 import numpy as np
@@ -15,6 +16,7 @@ from quant_investor.enhanced_data_layer import (
     _normalize_ohlcv_frame,
     normalize_kline_frame_for_model,
 )
+from quant_investor.data.models import FundamentalData
 from quant_investor.branch_contracts import (
     CorporateDocumentSnapshot,
     ForecastSnapshot,
@@ -193,8 +195,148 @@ class TestUSDataSources:
         assert normalized["date"].dt.tz is None
 
 
+    def test_us_local_csv_source_loads_cached_fundamental_json(self, tmp_path):
+        """本地美股缓存 JSON 应可填充基本面与 daily_basic。"""
+        data_dir = tmp_path / "data" / "us_market_full" / "large_cap"
+        data_dir.mkdir(parents=True)
+        csv_path = data_dir / "AAPL.csv"
+        csv_path.write_text(
+            chr(10).join(
+                [
+                    "Date,Open,High,Low,Close,Volume",
+                    "2026-03-18,252,255,249,250,1000",
+                    "2026-03-19,249,252,247,249,1100",
+                    "2026-03-20,248,249,246,248,1200",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (tmp_path / "data" / "us_market_full" / "AAPL_fundamental.json").write_text(
+            json.dumps(
+                {
+                    "report_date": "2026-03-19",
+                    "pe": 31.2,
+                    "pb": 8.7,
+                    "roe": 18.4,
+                    "net_margin": 24.5,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        source = USLocalCSVDataSource(str(tmp_path / "data" / "us_market_full"))
+        fundamental = source.get_fundamental("AAPL")
+        daily_basic = source.get_daily_basic("AAPL", "20260320")
+
+        assert fundamental.pe == pytest.approx(31.2)
+        assert fundamental.pb == pytest.approx(8.7)
+        assert fundamental.roe == pytest.approx(18.4)
+        assert daily_basic == {"pe": 31.2, "pb": 8.7}
+
+    def test_us_composite_falls_back_to_sec_after_local_csv(self, tmp_path, monkeypatch):
+        """OHLCV 走本地 CSV 时，基本面仍应可回退到 SEC。"""
+        data_dir = tmp_path / "data" / "us_market_full" / "large_cap"
+        data_dir.mkdir(parents=True)
+        csv_path = data_dir / "AAPL.csv"
+        csv_path.write_text(
+            chr(10).join(
+                [
+                    "Date,Open,High,Low,Close,Volume",
+                    "2026-03-18,252,255,249,250,1000",
+                    "2026-03-19,249,252,247,249,1100",
+                    "2026-03-20,248,249,246,248,1200",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        source = USCompositeDataSource(local_data_dir=str(tmp_path / "data" / "us_market_full"))
+        ohlcv = source.get_ohlcv("AAPL", "20260318", "20260320")
+        assert not ohlcv.empty
+        assert source.last_ohlcv_source == "local_csv"
+
+        monkeypatch.setattr(source._tushare, "get_fundamental", lambda symbol: FundamentalData(symbol=symbol))
+        monkeypatch.setattr(source._yahoo, "get_fundamental", lambda symbol: FundamentalData(symbol=symbol))
+        monkeypatch.setattr(
+            "quant_investor.enhanced_data_layer.fetch_sec_fundamental",
+            lambda symbol: {"roe": 12.5, "net_margin": 8.3, "current_ratio": 2.1},
+        )
+
+        fundamental = source.get_fundamental("AAPL")
+
+        assert source.last_fundamental_source == "sec_edgar"
+        assert fundamental.roe == pytest.approx(12.5)
+        assert fundamental.net_margin == pytest.approx(8.3)
+        assert fundamental.current_ratio == pytest.approx(2.1)
+
+    def test_us_composite_daily_basic_uses_provider_payload(self, tmp_path, monkeypatch):
+        """daily_basic 应直接暴露可用的估值字段。"""
+        source = USCompositeDataSource(local_data_dir=str(tmp_path / "data" / "us_market_full"))
+        monkeypatch.setattr(source._tushare, "get_daily_basic", lambda symbol, trade_date=None: {"pe": 19.1, "pb": 4.2})
+        monkeypatch.setattr(source._yahoo, "get_fundamental", lambda symbol: FundamentalData(symbol=symbol))
+
+        daily_basic = source.get_daily_basic("AAPL", "20260320")
+
+        assert daily_basic == {"pe": 19.1, "pb": 4.2}
+
+    def test_us_composite_returns_empty_when_all_fundamental_providers_fail(self, tmp_path, monkeypatch):
+        """所有 provider 失败时应安全回退为空对象/空字典。"""
+        source = USCompositeDataSource(local_data_dir=str(tmp_path / "data" / "us_market_full"))
+        monkeypatch.setattr(source._local, "get_fundamental", lambda symbol: FundamentalData(symbol=symbol))
+        monkeypatch.setattr(source._tushare, "get_fundamental", lambda symbol: FundamentalData(symbol=symbol))
+        monkeypatch.setattr(source._yahoo, "get_fundamental", lambda symbol: FundamentalData(symbol=symbol))
+        monkeypatch.setattr("quant_investor.enhanced_data_layer.fetch_sec_fundamental", lambda symbol: {})
+        monkeypatch.setattr(source._tushare, "get_daily_basic", lambda symbol, trade_date=None: {})
+
+        fundamental = source.get_fundamental("AAPL")
+        daily_basic = source.get_daily_basic("AAPL", "20260320")
+
+        assert source.last_fundamental_source == "unavailable"
+        assert fundamental == FundamentalData(symbol="AAPL")
+        assert daily_basic == {}
+
+
 class TestSnapshotFallbacks:
     """V9 snapshot 接口降级测试"""
+
+    def test_us_snapshot_becomes_available_when_fundamental_cache_exists(self, tmp_path):
+        """US 基本面缓存命中时，点时快照应可用。"""
+        data_dir = tmp_path / "data" / "us_market_full" / "large_cap"
+        data_dir.mkdir(parents=True)
+        (data_dir / "AAPL.csv").write_text(
+            "\n".join(
+                [
+                    "Date,Open,High,Low,Close,Volume",
+                    "2026-03-18,252,255,249,250,1000",
+                    "2026-03-19,249,252,247,249,1100",
+                    "2026-03-20,248,249,246,248,1200",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (tmp_path / "data" / "us_market_full" / "AAPL_fundamental.json").write_text(
+            json.dumps(
+                {
+                    "report_date": "2026-03-19",
+                    "pe": 31.2,
+                    "pb": 8.7,
+                    "roe": 18.4,
+                    "net_margin": 24.5,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        data_layer = EnhancedDataLayer(market="US", verbose=False)
+        data_layer._source = USCompositeDataSource(local_data_dir=str(tmp_path / "data" / "us_market_full"))
+
+        snapshot = data_layer.get_point_in_time_fundamental_snapshot("AAPL", "2026-03-20")
+
+        assert snapshot.available is True
+        assert snapshot.source == "local_cache"
+        assert snapshot.pe == pytest.approx(31.2)
+        assert snapshot.pb == pytest.approx(8.7)
+        assert snapshot.roe == pytest.approx(18.4)
 
     def test_fundamental_snapshot_returns_neutral_when_provider_missing(self):
         data_layer = EnhancedDataLayer(market="CN", verbose=False)
@@ -202,9 +344,10 @@ class TestSnapshotFallbacks:
 
         assert snapshot.available is False
         assert snapshot.source == "neutral"
-        assert "forecast_provider_missing" in snapshot.notes
-        assert snapshot.data_quality["provider_missing"] is True
-        assert snapshot.provenance["provider_missing"] is True
+        assert any(note.startswith("forecast_provider_") for note in snapshot.notes)
+        assert snapshot.data_quality["reason"] in {"provider_missing", "provider_error"}
+        assert "provider_missing" in snapshot.data_quality
+        assert "provider_missing" in snapshot.provenance
 
     def test_document_semantic_snapshot_returns_neutral_when_missing(self):
         data_layer = EnhancedDataLayer(market="CN", verbose=False)

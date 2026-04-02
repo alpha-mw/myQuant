@@ -39,6 +39,14 @@ from quant_investor.data.sources.base import (
 from quant_investor.data.sources.tushare_cn import TushareDataSource
 from quant_investor.data.sources.tushare_us import USTushareDataSource
 from quant_investor.data.sources.yahoo import YahooDataSource
+from quant_investor.data.sources.us_fundamental import (
+    fundamental_from_mapping,
+    fundamental_has_values,
+    fundamental_to_daily_basic,
+    load_local_fundamental,
+    merge_daily_basic,
+    fetch_sec_fundamental,
+)
 
 # USLocalCSVDataSource & USCompositeDataSource — inline for backward compat
 import pandas as pd
@@ -93,7 +101,10 @@ class USLocalCSVDataSource(DataSourceBase):
         return self._store.read(symbol, start_date, end_date)
 
     def get_fundamental(self, symbol):
-        return FundamentalData(symbol=symbol)
+        return load_local_fundamental(self._store.base_dir, symbol)
+
+    def get_daily_basic(self, symbol, trade_date=None):
+        return fundamental_to_daily_basic(self.get_fundamental(symbol))
 
 
 class USCompositeDataSource(DataSourceBase):
@@ -137,11 +148,59 @@ class USCompositeDataSource(DataSourceBase):
         return pd.DataFrame()
 
     def get_fundamental(self, symbol):
-        if self.last_ohlcv_source == "yahoo":
-            self.last_fundamental_source = "yahoo"
-            return self._yahoo.get_fundamental(symbol)
-        self.last_fundamental_source = "skipped"
+        local = self._local.get_fundamental(symbol)
+        if fundamental_has_values(local):
+            self.last_fundamental_source = "local_cache"
+            return local
+
+        try:
+            tushare = self._tushare.get_fundamental(symbol)
+            if fundamental_has_values(tushare):
+                self.last_fundamental_source = "tushare_us"
+                return tushare
+        except Exception:
+            pass
+
+        try:
+            yahoo = self._yahoo.get_fundamental(symbol)
+            if fundamental_has_values(yahoo):
+                self.last_fundamental_source = "yahoo"
+                return yahoo
+        except Exception:
+            pass
+
+        try:
+            sec_payload = fetch_sec_fundamental(symbol)
+            if sec_payload:
+                sec_result = fundamental_from_mapping(symbol, sec_payload)
+                if fundamental_has_values(sec_result):
+                    self.last_fundamental_source = "sec_edgar"
+                    return sec_result
+        except Exception:
+            pass
+
+        self.last_fundamental_source = "unavailable"
         return FundamentalData(symbol=symbol)
+
+    def get_daily_basic(self, symbol, trade_date=None):
+        local = fundamental_to_daily_basic(self._local.get_fundamental(symbol))
+        try:
+            tushare = self._tushare.get_daily_basic(symbol, trade_date)
+        except Exception:
+            tushare = {}
+        try:
+            yahoo = fundamental_to_daily_basic(self._yahoo.get_fundamental(symbol))
+        except Exception:
+            yahoo = {}
+        merged = merge_daily_basic(local, tushare, yahoo)
+        if merged and getattr(self, "last_fundamental_source", "unknown") == "unavailable":
+            if tushare:
+                self.last_fundamental_source = "tushare_us_daily_basic"
+            elif yahoo:
+                self.last_fundamental_source = "yahoo_daily_basic"
+            elif local:
+                self.last_fundamental_source = "local_cache"
+        return merged
 
 
 # ==================== 数据处理 ====================

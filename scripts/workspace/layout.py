@@ -45,7 +45,7 @@ def get_repo_root(root: Path | None = None) -> Path:
     """Return the workspace root used by cleanup helpers."""
     if root is not None:
         return root.resolve()
-    return Path(__file__).resolve().parents[1]
+    return Path(__file__).resolve().parents[2]
 
 
 def get_runtime_tmp_dirs(root: Path | None = None) -> tuple[Path, Path]:

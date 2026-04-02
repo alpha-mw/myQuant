@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -254,6 +255,9 @@ def test_market_running_job_has_extended_stale_timeout(tmp_path, monkeypatch):
     web_analysis_dir = results_dir / "web_analysis"
     jobs_dir = web_analysis_dir / "jobs"
     jobs_dir.mkdir(parents=True, exist_ok=True)
+    now = datetime.now()
+    created_at = (now - timedelta(minutes=30)).isoformat(timespec="seconds")
+    updated_at = (now - timedelta(minutes=15)).isoformat(timespec="seconds")
 
     monkeypatch.setattr(analysis_service, "APP_DB_PATH", str(tmp_path / "app.db"))
     monkeypatch.setattr(analysis_service, "RESULTS_DIR", results_dir)
@@ -266,8 +270,8 @@ def test_market_running_job_has_extended_stale_timeout(tmp_path, monkeypatch):
                 "ok": True,
                 "job_id": "20260317_100000_000001",
                 "status": "running",
-                "created_at": "2026-03-17T10:00:00",
-                "updated_at": "2026-03-17T10:15:00",
+                "created_at": created_at,
+                "updated_at": updated_at,
                 "result": None,
                 "error": None,
                 "mode": "market",

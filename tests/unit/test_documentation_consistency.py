@@ -83,5 +83,12 @@ def test_workspace_docs_point_to_live_workspace_modules_and_launcher():
     assert "./run_web.sh" in entrypoints
     assert "placeholder" not in readme
     assert "placeholder" not in module_map
-    assert "FastAPI research workspace backend" in readme
+    assert "web.main:app" in readme
     assert "React/Vite research workspace frontend" in readme
+
+
+def test_run_web_launcher_reloads_web_and_quant_investor_sources():
+    launcher = _read(ROOT / "run_web.sh")
+
+    assert '--reload-dir "$ROOT_DIR/web"' in launcher
+    assert '--reload-dir "$ROOT_DIR/quant_investor"' in launcher

@@ -6,6 +6,8 @@ import importlib
 
 import quant_investor
 import quant_investor.pipeline as pipeline
+import web.main as web_main
+import web.workspace_app as workspace_app
 
 
 def _mainline_exports(module) -> set[str]:
@@ -77,3 +79,7 @@ def test_cli_web_help_describes_workspace_service():
     help_text = parser.format_help()
 
     assert "启动研究工作台 Web 服务" in help_text
+
+
+def test_workspace_entrypoint_is_the_workspace_app():
+    assert web_main.app is workspace_app.app

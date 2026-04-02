@@ -26,7 +26,7 @@ class _TimedBranchAgent:
         self.branch_name = branch_name
 
     def analyze(self, agent_input):
-        required_timeout = 40.0 if self.branch_name in {"kline", "fundamental", "macro"} else 5.0
+        required_timeout = 40.0 if self.branch_name == "kline" else 5.0
         return _TimedAwaitable(
             required_timeout=required_timeout,
             result=BaseBranchAgentOutput(
@@ -81,7 +81,6 @@ def _make_branch_result(branch_name: str) -> BranchResult:
 
 def test_review_layer_budget_allows_slow_branch_agents(monkeypatch):
     monkeypatch.setattr(orchestrator_module, "has_any_provider", lambda: True)
-    monkeypatch.setattr(orchestrator_module, "has_provider_for_model", lambda _model: True)
     monkeypatch.setattr(orchestrator_module.asyncio, "wait_for", _fake_wait_for)
 
     for branch_name in CURRENT_BRANCH_ORDER:
@@ -113,7 +112,11 @@ def test_review_layer_budget_allows_slow_branch_agents(monkeypatch):
         calibrated_signals={},
         risk_result={},
         ensemble_output={},
-        data_bundle=UnifiedDataBundle(stock_data={"000001.SZ": {}}),
+        data_bundle=UnifiedDataBundle(
+            market="CN",
+            symbols=["000001.SZ"],
+            symbol_data={"000001.SZ": {}},
+        ),
         market_regime="neutral",
         algorithmic_strategy=None,
     )
@@ -129,7 +132,6 @@ def test_review_layer_budget_allows_slow_branch_agents(monkeypatch):
 
 def test_kline_branch_uses_extended_request_budget(monkeypatch):
     monkeypatch.setattr(orchestrator_module, "has_any_provider", lambda: True)
-    monkeypatch.setattr(orchestrator_module, "has_provider_for_model", lambda _model: True)
 
     _RequestBudgetAwareBranchAgent.observed_timeouts = {}
     _RequestBudgetAwareBranchAgent.observed_max_tokens = {}
@@ -162,7 +164,11 @@ def test_kline_branch_uses_extended_request_budget(monkeypatch):
         calibrated_signals={},
         risk_result={},
         ensemble_output={},
-        data_bundle=UnifiedDataBundle(stock_data={"000001.SZ": {}}),
+        data_bundle=UnifiedDataBundle(
+            market="CN",
+            symbols=["000001.SZ"],
+            symbol_data={"000001.SZ": {}},
+        ),
         market_regime="neutral",
         algorithmic_strategy=None,
     )

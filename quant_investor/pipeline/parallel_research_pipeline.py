@@ -13,8 +13,10 @@ import multiprocessing as mp
 import os
 import pickle
 import time
+from copy import deepcopy
 from datetime import datetime, timedelta
 from multiprocessing.connection import Connection
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -29,6 +31,7 @@ from quant_investor.branch_contracts import (
     TradeRecommendation,
     UnifiedDataBundle,
 )
+from quant_investor.contracts import GlobalContext, PortfolioDecision, ShortlistItem, SymbolResearchPacket
 from quant_investor.branch_debate_engine import BranchDebateEngine
 from quant_investor.config import config
 from quant_investor.debate_scheduler import DebateScheduler, DebateRetryPolicy
@@ -38,6 +41,7 @@ from quant_investor.ensemble_judge import EnsembleJudge
 from quant_investor.fundamental_branch import FundamentalBranch
 from quant_investor.logger import get_logger
 from quant_investor.macro_terminal_tushare import create_terminal
+from quant_investor.orchestration import ThreeLayerOrchestrator
 from quant_investor.risk_management_layer import PortfolioOptimizer, RiskLayerResult, RiskManagementLayer
 from quant_investor.signal_calibration import SignalCalibrator
 from quant_investor.versioning import (
@@ -173,6 +177,39 @@ def _branch_process_entry(
         send_conn.close()
 
 
+def _symbol_process_entry(
+    symbol: str,
+    branch_names: list[str],
+    pipeline_kwargs: dict[str, Any],
+    market_regime: str | None,
+    phase1_context: dict[str, Any],
+    global_context: GlobalContext | None,
+    data_bundle: UnifiedDataBundle,
+    send_conn: Connection,
+) -> None:
+    """在独立子进程中执行单个 symbol 的 phase2 分支。"""
+    try:
+        kwargs = dict(pipeline_kwargs)
+        kwargs["stock_pool"] = [symbol]
+        pipeline = ParallelResearchPipeline(**kwargs)
+        pipeline._market_regime = market_regime
+        subset_bundle = pipeline._build_symbol_scope_bundle(
+            data_bundle,
+            symbol,
+            phase1_context,
+            global_context=global_context,
+        )
+        branch_results: dict[str, BranchResult] = {}
+        for branch_name in branch_names:
+            branch_method = getattr(pipeline, _BRANCH_METHOD_NAMES[branch_name])
+            branch_results[branch_name] = _ipc_safe_branch_result(branch_method(subset_bundle))
+        send_conn.send({"ok": True, "results": branch_results})
+    except Exception as exc:
+        send_conn.send({"ok": False, "error": str(exc)})
+    finally:
+        send_conn.close()
+
+
 # ---------------------------------------------------------------------------
 # 自适应集成权重追踪器
 # ---------------------------------------------------------------------------
@@ -296,6 +333,8 @@ class ParallelResearchPipeline:
     BRANCH_ORDER = list(CURRENT_BRANCH_ORDER)
     ARCHITECTURE_VERSION = ARCHITECTURE_VERSION
     BRANCH_SCHEMA_VERSION = BRANCH_SCHEMA_VERSION
+    PHASE1_BRANCHES = ("macro", "quant")
+    PHASE2_BRANCHES = ("kline", "fundamental", "intelligence")
 
     def __init__(
         self,
@@ -320,6 +359,8 @@ class ParallelResearchPipeline:
         debate_model: str = "gpt-5.4-mini",
         enable_document_semantics: bool = True,
         verbose: bool = True,
+        hybrid_phased_execution: bool = True,
+        block_on_macro_failure: bool = False,
         # 向后兼容
         enable_kronos: bool | None = None,
         enable_llm_debate: bool | None = None,
@@ -349,6 +390,8 @@ class ParallelResearchPipeline:
         self.debate_model = debate_model
         self.enable_document_semantics = enable_document_semantics
         self.verbose = verbose
+        self.hybrid_phased_execution = hybrid_phased_execution
+        self.block_on_macro_failure = block_on_macro_failure
         self.architecture_version = self.ARCHITECTURE_VERSION
         self.branch_schema_version = self.BRANCH_SCHEMA_VERSION
         self.calibration_schema_version = CALIBRATION_SCHEMA_VERSION
@@ -375,6 +418,7 @@ class ParallelResearchPipeline:
             architecture_version=self.architecture_version,
             branch_schema_version=self.branch_schema_version,
         )
+        self._three_layer_orchestrator = ThreeLayerOrchestrator()
         self._market_regime: str | None = None  # 由 run() 中 RegimeDetector 设定
 
     def _log(self, message: str) -> None:
@@ -416,6 +460,8 @@ class ParallelResearchPipeline:
             "debate_model": self.debate_model,
             "enable_document_semantics": self.enable_document_semantics,
             "verbose": self.verbose,
+            "hybrid_phased_execution": self.hybrid_phased_execution,
+            "block_on_macro_failure": self.block_on_macro_failure,
         }
 
     @staticmethod
@@ -507,6 +553,8 @@ class ParallelResearchPipeline:
         """执行完整并行研究流程。"""
         t0 = time.time()
         data_bundle = self._build_data_bundle()
+        data_bundle = self._validate_data_bundle(data_bundle)
+        self.stock_pool = list(data_bundle.symbols or self.stock_pool)
         result = ResearchPipelineResult(
             data_bundle=data_bundle,
             architecture_version=self.architecture_version,
@@ -532,7 +580,10 @@ class ParallelResearchPipeline:
             self._log(f"市场状态识别失败，使用默认权重: {regime_exc}")
 
         branch_start = time.time()
-        result.branch_results = self._run_branches(data_bundle)
+        if self.hybrid_phased_execution:
+            result.branch_results = self._run_branches_phased(data_bundle, result.execution_log)
+        else:
+            result.branch_results = self._run_branches(data_bundle)
         result.timings["research_branches"] = time.time() - branch_start
         result.calibrated_signals = self._calibrate_signals(data_bundle, result.branch_results)
 
@@ -579,6 +630,29 @@ class ParallelResearchPipeline:
             result.risk_result,
             calibrated_signals=result.calibrated_signals,
         )
+        (
+            result.global_context,
+            result.symbol_research_packets,
+            result.shortlist,
+            result.portfolio_decisions,
+        ) = self._build_three_layer_artifacts(
+            data_bundle=data_bundle,
+            branch_results=result.branch_results,
+            calibrated_signals=result.calibrated_signals,
+            risk_result=result.risk_result,
+            final_strategy=result.final_strategy,
+        )
+        result.data_bundle.metadata = dict(result.data_bundle.metadata)
+        result.data_bundle.metadata["global_context"] = (
+            result.global_context.to_dict() if result.global_context is not None else {}
+        )
+        result.data_bundle.metadata["symbol_research_packets"] = {
+            symbol: packet.to_dict() for symbol, packet in result.symbol_research_packets.items()
+        }
+        result.data_bundle.metadata["shortlist"] = [item.to_dict() for item in result.shortlist]
+        result.data_bundle.metadata["portfolio_decisions"] = [
+            decision.to_dict() for decision in result.portfolio_decisions
+        ]
         result.final_report = self._build_markdown_report(result)
         result.timings["ensemble_layer"] = time.time() - ensemble_start
         result.timings["total"] = time.time() - t0
@@ -634,6 +708,75 @@ class ParallelResearchPipeline:
                 "research_mode": self._bundle_research_mode(symbol_provenance),
             },
         )
+
+    def _validate_data_bundle(self, bundle: UnifiedDataBundle) -> UnifiedDataBundle:
+        """数据门禁：过滤 synthetic/stale 标的，无可用标的则失败。"""
+        synthetic_symbols = set(bundle.synthetic_symbols())
+        stale_symbols = set(bundle.stale_symbols())
+        removed: dict[str, list[str]] = {}
+        retained_symbols: list[str] = []
+        retained_symbol_data: dict[str, pd.DataFrame] = {}
+        retained_fundamentals: dict[str, dict[str, Any]] = {}
+        retained_event_data: dict[str, list[dict[str, Any]]] = {}
+        retained_sentiment_data: dict[str, dict[str, Any]] = {}
+        retained_provenance: dict[str, dict[str, Any]] = {}
+
+        for symbol in list(bundle.symbols):
+            reasons: list[str] = []
+            df = bundle.symbol_data.get(symbol)
+            meta = bundle.symbol_provenance().get(symbol, {})
+            if meta.get("is_synthetic"):
+                reasons.append("synthetic")
+            if symbol in synthetic_symbols and "synthetic" not in reasons:
+                reasons.append("synthetic")
+            if symbol in stale_symbols:
+                reasons.append(f"stale>{3}d")
+            if df is None or df.empty:
+                reasons.append("empty_frame")
+
+            if reasons:
+                removed[symbol] = reasons
+                self._log(
+                    f"数据门禁剔除 {symbol}: {', '.join(reasons)}"
+                )
+                continue
+
+            retained_symbols.append(symbol)
+            retained_symbol_data[symbol] = df
+            retained_fundamentals[symbol] = dict(bundle.fundamentals.get(symbol, {}))
+            retained_event_data[symbol] = list(bundle.event_data.get(symbol, []))
+            retained_sentiment_data[symbol] = dict(bundle.sentiment_data.get(symbol, {}))
+            retained_provenance[symbol] = dict(meta)
+
+        if not retained_symbols:
+            raise RuntimeError("无可用数据标的")
+
+        bundle.symbols = retained_symbols
+        bundle.symbol_data = retained_symbol_data
+        bundle.fundamentals = retained_fundamentals
+        bundle.event_data = retained_event_data
+        bundle.sentiment_data = retained_sentiment_data
+        bundle.metadata = dict(bundle.metadata)
+        bundle.metadata["symbol_provenance"] = retained_provenance
+        bundle.metadata["data_gate"] = {
+            "blocked_symbols": sorted(removed),
+            "blocked_reasons": removed,
+            "stale_symbols": sorted(stale_symbols),
+            "synthetic_symbols": sorted(synthetic_symbols),
+            "max_stale_days": 3,
+        }
+        bundle.metadata["data_source_status"] = self._bundle_data_source_status(retained_provenance)
+        bundle.metadata["research_mode"] = self._bundle_research_mode(retained_provenance)
+        if removed:
+            warnings = [
+                f"{symbol}: {', '.join(reasons)}"
+                for symbol, reasons in sorted(removed.items())
+            ]
+            bundle.metadata["data_gate_warnings"] = warnings
+            bundle.metadata.setdefault("coverage_notes", [])
+            if isinstance(bundle.metadata["coverage_notes"], list):
+                bundle.metadata["coverage_notes"].extend(warnings)
+        return bundle
 
     def _fetch_symbol_frame(
         self,
@@ -930,6 +1073,497 @@ class ParallelResearchPipeline:
                 )
 
         return results
+
+    def _run_branches_phased(
+        self,
+        data_bundle: UnifiedDataBundle,
+        execution_log: list[str] | None = None,
+    ) -> dict[str, BranchResult]:
+        """两阶段混合并行：Phase 1 跑 Macro + Quant，Phase 2 按 symbol 跑其余分支。"""
+        execution_log = execution_log if execution_log is not None else []
+        results: dict[str, BranchResult] = {}
+        phase1_enabled = [
+            name
+            for name in self.PHASE1_BRANCHES
+            if self._enabled_branch_flags().get(name, False)
+        ]
+        phase2_enabled = [
+            name
+            for name in self.PHASE2_BRANCHES
+            if self._enabled_branch_flags().get(name, False)
+        ]
+
+        phase1_start = time.time()
+        phase1_results = self._run_branch_group(data_bundle, phase1_enabled)
+        for branch_name, branch_result in phase1_results.items():
+            results[branch_name] = branch_result
+        phase1_context = self._build_phase1_context(results, data_bundle)
+        data_bundle.metadata = dict(data_bundle.metadata)
+        data_bundle.metadata["phase1_context"] = phase1_context
+        phase1_global_context = self._three_layer_orchestrator.build_global_context(
+            data_bundle=data_bundle,
+            phase1_context=phase1_context,
+            branch_results=results,
+            calibrated_signals={},
+            risk_result=None,
+            force_refresh=False,
+        )
+        data_bundle.metadata["global_context"] = phase1_global_context.to_dict()
+        result_macro = results.get("macro")
+        if result_macro is not None:
+            macro_is_effective = bool(result_macro.signals) or abs(float(result_macro.score)) > 1e-8
+            if not macro_is_effective:
+                warning = "宏观分支未产生有效结果，phase1_context 仅保留占位信息。"
+                self._log(warning)
+                execution_log.append(f"[WARN] {warning}")
+                if self.block_on_macro_failure:
+                    raise RuntimeError("宏观分支失败且已配置阻断")
+        elif self.enable_macro and self.block_on_macro_failure:
+            raise RuntimeError("宏观分支未执行且已配置阻断")
+        if phase1_enabled:
+            execution_log.append(
+                f"[INFO] phase1 完成: {', '.join(phase1_enabled)}"
+            )
+        phase1_elapsed = time.time() - phase1_start
+        self._logger.info(f"Phase1 research completed in {phase1_elapsed:.2f}s")
+
+        phase2_start = time.time()
+        if phase1_context.get("macro_regime"):
+            self._market_regime = str(phase1_context.get("macro_regime"))
+        phase2_results = self._run_symbol_parallel_phase(
+            data_bundle=data_bundle,
+            branch_names=phase2_enabled,
+            phase1_context=phase1_context,
+            global_context=phase1_global_context,
+        )
+        results.update(phase2_results)
+        if phase2_enabled:
+            execution_log.append(
+                f"[INFO] phase2 完成: {', '.join(phase2_enabled)}"
+            )
+        phase2_elapsed = time.time() - phase2_start
+        self._logger.info(f"Phase2 research completed in {phase2_elapsed:.2f}s")
+        return results
+
+    def _run_branch_group(
+        self,
+        data_bundle: UnifiedDataBundle,
+        branch_names: list[str],
+    ) -> dict[str, BranchResult]:
+        if not branch_names:
+            return {}
+        pipeline = self._spawn_branch_subset_pipeline(
+            stock_pool=list(data_bundle.symbols),
+            branch_names=branch_names,
+        )
+        pipeline._market_regime = self._market_regime
+        return pipeline._run_branches(data_bundle)
+
+    def _run_symbol_parallel_phase(
+        self,
+        data_bundle: UnifiedDataBundle,
+        branch_names: list[str],
+        phase1_context: dict[str, Any],
+        global_context: GlobalContext | None,
+    ) -> dict[str, BranchResult]:
+        if not branch_names or not data_bundle.symbols:
+            return {}
+
+        max_workers = max(1, min(len(data_bundle.symbols), (os.cpu_count() or 1) * 2))
+        aggregated: dict[str, dict[str, BranchResult]] = {name: {} for name in branch_names}
+        symbols = list(data_bundle.symbols)
+        branch_runtime_kwargs = self._branch_runtime_kwargs()
+        phase2_market_regime = str(phase1_context.get("macro_regime") or self._market_regime or "default")
+
+        for batch_start in range(0, len(symbols), max_workers):
+            batch_symbols = symbols[batch_start: batch_start + max_workers]
+            process_context = self._branch_process_context()
+            process_map: dict[str, tuple[mp.Process, Connection]] = {}
+            deadline = time.monotonic() + self.branch_timeout
+            try:
+                for symbol in batch_symbols:
+                    recv_conn, send_conn = process_context.Pipe(duplex=False)
+                    process = process_context.Process(
+                        target=_symbol_process_entry,
+                        args=(
+                            symbol,
+                            branch_names,
+                            branch_runtime_kwargs,
+                            phase2_market_regime,
+                            phase1_context,
+                            global_context,
+                            data_bundle,
+                            send_conn,
+                        ),
+                        name=f"qi-symbol-{symbol}",
+                    )
+                    process.start()
+                    send_conn.close()
+                    process_map[symbol] = (process, recv_conn)
+
+                for symbol in batch_symbols:
+                    process, recv_conn = process_map[symbol]
+                    remaining = max(deadline - time.monotonic(), 0.0)
+                    process.join(timeout=remaining)
+                    if process.is_alive():
+                        recv_conn.close()
+                        self._terminate_branch_process(process)
+                        self._log(f"{symbol} 任务超时（>{self.branch_timeout:.1f}s），已强制回收并降级。")
+                        for branch_name in branch_names:
+                            aggregated[branch_name][symbol] = self._degraded_symbol_branch_result(
+                                branch_name=branch_name,
+                                symbol=symbol,
+                                degraded_reason="symbol_batch_timeout",
+                            )
+                        continue
+
+                    payload: dict[str, Any] | None = None
+                    try:
+                        if recv_conn.poll(0.1):
+                            payload = recv_conn.recv()
+                    except (EOFError, BrokenPipeError):
+                        payload = None
+                    finally:
+                        recv_conn.close()
+                        process.join(timeout=0.1)
+
+                    if not payload:
+                        for branch_name in branch_names:
+                            aggregated[branch_name][symbol] = self._degraded_symbol_branch_result(
+                                branch_name=branch_name,
+                                symbol=symbol,
+                                degraded_reason="symbol_process_no_result",
+                            )
+                        continue
+
+                    if not payload.get("ok", False):
+                        error_message = str(payload.get("error", "symbol_process_failed"))
+                        self._log(f"{symbol} 任务失败，使用降级结果: {error_message}")
+                        for branch_name in branch_names:
+                            aggregated[branch_name][symbol] = self._degraded_symbol_branch_result(
+                                branch_name=branch_name,
+                                symbol=symbol,
+                                degraded_reason=error_message,
+                            )
+                        continue
+
+                    symbol_results = payload.get("results", {})
+                    for branch_name in branch_names:
+                        branch_result = symbol_results.get(branch_name)
+                        if isinstance(branch_result, BranchResult):
+                            aggregated[branch_name][symbol] = branch_result
+                        else:
+                            aggregated[branch_name][symbol] = self._degraded_symbol_branch_result(
+                                branch_name=branch_name,
+                                symbol=symbol,
+                                degraded_reason="missing_symbol_branch_result",
+                            )
+            finally:
+                for process, recv_conn in process_map.values():
+                    if not recv_conn.closed:
+                        recv_conn.close()
+                    if process.is_alive():
+                        self._terminate_branch_process(process)
+
+        combined: dict[str, BranchResult] = {}
+        for branch_name in branch_names:
+            combined[branch_name] = self._aggregate_symbol_branch_result(
+                branch_name=branch_name,
+                symbol_results=aggregated.get(branch_name, {}),
+                data_bundle=data_bundle,
+                phase1_context=phase1_context,
+            )
+        return combined
+
+    def _spawn_branch_subset_pipeline(
+        self,
+        *,
+        stock_pool: list[str],
+        branch_names: list[str],
+    ) -> "ParallelResearchPipeline":
+        flags = {name: name in branch_names for name in self.BRANCH_ORDER}
+        pipeline = ParallelResearchPipeline(
+            stock_pool=list(stock_pool),
+            market=self.market,
+            lookback_years=self.lookback_years,
+            total_capital=self.total_capital,
+            risk_level=self.risk_level,
+            enable_alpha_mining=self.enable_alpha_mining,
+            enable_quant=flags.get("quant", False),
+            enable_kline=flags.get("kline", False),
+            enable_fundamental=flags.get("fundamental", False),
+            enable_intelligence=flags.get("intelligence", False),
+            enable_branch_debate=self.enable_branch_debate,
+            enable_macro=flags.get("macro", False),
+            kline_backend=self.kline_backend,
+            allow_synthetic_for_research=self.allow_synthetic_for_research,
+            branch_timeout=self.branch_timeout,
+            debate_top_k=self.debate_top_k,
+            debate_min_abs_score=self.debate_min_abs_score,
+            debate_timeout_sec=self.debate_timeout_sec,
+            debate_model=self.debate_model,
+            enable_document_semantics=self.enable_document_semantics,
+            verbose=self.verbose,
+            hybrid_phased_execution=False,
+            block_on_macro_failure=self.block_on_macro_failure,
+        )
+        pipeline._market_regime = self._market_regime
+        return pipeline
+
+    def _build_phase1_context(
+        self,
+        branch_results: dict[str, BranchResult],
+        data_bundle: UnifiedDataBundle,
+    ) -> dict[str, Any]:
+        macro_result = branch_results.get("macro")
+        quant_result = branch_results.get("quant")
+        macro_signals = dict(macro_result.signals) if isinstance(macro_result, BranchResult) else {}
+        factor_exposures = {}
+        alpha_factors: list[str] = []
+        quant_symbol_scores: dict[str, float] = {}
+        if isinstance(quant_result, BranchResult):
+            factor_exposures = dict(quant_result.signals.get("factor_exposures", {}))
+            alpha_factors = [str(item) for item in quant_result.signals.get("alpha_factors", [])]
+            quant_symbol_scores = dict(quant_result.symbol_scores)
+        context = {
+            "macro_regime": str(
+                macro_signals.get("regime")
+                or macro_signals.get("macro_regime")
+                or macro_signals.get("risk_level")
+                or "neutral"
+            ),
+            "macro_score": float(macro_result.score if isinstance(macro_result, BranchResult) else 0.0),
+            "macro_signals": _make_ipc_safe(macro_signals),
+            "factor_exposures": _make_ipc_safe(factor_exposures),
+            "alpha_factors": list(alpha_factors),
+            "quant_symbol_scores": _make_ipc_safe(quant_symbol_scores),
+            "available_symbols": list(data_bundle.symbols),
+        }
+        return context
+
+    def _aggregate_symbol_branch_result(
+        self,
+        *,
+        branch_name: str,
+        symbol_results: dict[str, BranchResult],
+        data_bundle: UnifiedDataBundle,
+        phase1_context: dict[str, Any],
+    ) -> BranchResult:
+        if not symbol_results:
+            return self._degraded_branch_result(
+                branch_name=branch_name,
+                explanation=f"{branch_name} 分支未产出可聚合结果。",
+                degraded_reason="symbol_branch_missing",
+            )
+
+        scores = [float(result.score) for result in symbol_results.values()]
+        confidences = [float(result.confidence) for result in symbol_results.values()]
+        reliabilities = [
+            float(result.metadata.get("reliability", result.confidence))
+            for result in symbol_results.values()
+        ]
+        symbol_score_map: dict[str, float] = {}
+        combined_signals: dict[str, Any] = {}
+        combined_risks: list[str] = []
+        combined_explanations: list[str] = []
+        combined_thesis: list[str] = []
+        combined_coverage: list[str] = []
+        combined_diagnostics: list[str] = []
+        combined_support: list[str] = []
+        combined_drag: list[str] = []
+        combined_weight_caps: list[str] = []
+        combined_quality: dict[str, Any] = {}
+        combined_module_coverage: dict[str, Any] = {}
+
+        for symbol, result in sorted(symbol_results.items()):
+            symbol_score_map[symbol] = float(result.symbol_scores.get(symbol, result.score))
+            combined_signals = self._merge_signal_payloads(combined_signals, result.signals)
+            combined_risks.extend(str(item) for item in result.risks)
+            combined_explanations.append(str(result.explanation))
+            combined_thesis.extend(str(item) for item in result.thesis_points)
+            combined_coverage.extend(str(item) for item in result.coverage_notes)
+            combined_diagnostics.extend(str(item) for item in result.diagnostic_notes)
+            combined_support.extend(str(item) for item in result.support_drivers)
+            combined_drag.extend(str(item) for item in result.drag_drivers)
+            combined_weight_caps.extend(str(item) for item in result.weight_cap_reasons)
+            combined_quality = self._merge_signal_payloads(combined_quality, result.data_quality)
+            combined_module_coverage = self._merge_signal_payloads(
+                combined_module_coverage,
+                result.module_coverage,
+            )
+
+        explanation = (
+            f"{branch_name} 分支已完成 {len(symbol_results)} 只标的的逐票并行聚合。"
+        )
+        if combined_explanations:
+            explanation += " " + " ".join(combined_explanations[:2])
+
+        metadata = {
+            "branch_mode": f"{branch_name}_symbol_parallel",
+            "phase1_context": _make_ipc_safe(phase1_context),
+            "phase2_symbols": list(symbol_results.keys()),
+            "reliability": _safe_mean(reliabilities),
+            "data_source_status": self._branch_data_source_status(data_bundle),
+            "is_synthetic": False,
+            "degraded_reason": "",
+            "source": "phase2_symbol_parallel",
+        }
+        if branch_name == "kline":
+            metadata["requested_backend"] = self.kline_backend
+            metadata["effective_backend"] = "hybrid"
+            metadata["runtime_backend"] = "symbol_parallel"
+            metadata["llm_interface_reserved"] = True
+        if branch_name == "intelligence":
+            metadata["market_regime"] = phase1_context.get("macro_regime", "default")
+
+        aggregated_result = BranchResult(
+            branch_name=branch_name,
+            score=_safe_mean(scores),
+            confidence=_clamp(_safe_mean(confidences), 0.0, 1.0),
+            signals=combined_signals,
+            risks=self._dedupe_list(combined_risks),
+            explanation=explanation,
+            symbol_scores=symbol_score_map,
+            success=all(result.success for result in symbol_results.values()),
+            metadata=metadata,
+            base_score=_safe_mean(scores),
+            final_score=_safe_mean(scores),
+            base_confidence=_clamp(_safe_mean(confidences), 0.0, 1.0),
+            final_confidence=_clamp(_safe_mean(confidences), 0.0, 1.0),
+            horizon_days=int(
+                max(
+                    [result.horizon_days for result in symbol_results.values()] or [5]
+                )
+            ),
+            evidence=EvidencePacket(
+                branch_name=branch_name,
+                as_of=str(data_bundle.metadata.get("end_date", "")),
+                scope="symbol",
+                summary=explanation,
+                symbols=list(symbol_results.keys()),
+                top_symbols=sorted(symbol_score_map, key=symbol_score_map.get, reverse=True)[: self.debate_top_k],
+                bull_points=[],
+                bear_points=[],
+                risk_points=self._dedupe_list(combined_risks[:6]),
+                unknowns=[],
+                used_features=list(combined_signals.keys())[:10],
+                feature_values={"phase2": True, "symbol_count": len(symbol_results)},
+                symbol_context={},
+                metadata={
+                    "phase1_context": _make_ipc_safe(phase1_context),
+                    "branch_mode": metadata["branch_mode"],
+                },
+            ),
+            debate_verdict=DebateVerdict(),
+            data_quality=combined_quality,
+            conclusion=explanation,
+            thesis_points=self._dedupe_list(combined_thesis),
+            investment_risks=self._dedupe_list(combined_risks),
+            coverage_notes=self._dedupe_list(combined_coverage),
+            diagnostic_notes=self._dedupe_list(combined_diagnostics),
+            support_drivers=self._dedupe_list(combined_support),
+            drag_drivers=self._dedupe_list(combined_drag),
+            weight_cap_reasons=self._dedupe_list(combined_weight_caps),
+            module_coverage=combined_module_coverage,
+        )
+        return self._apply_branch_debate(
+            branch_name,
+            aggregated_result.evidence,
+            aggregated_result,
+            data_bundle,
+        )
+
+    @staticmethod
+    def _merge_signal_payloads(base: dict[str, Any], addition: dict[str, Any]) -> dict[str, Any]:
+        if not base:
+            return _make_ipc_safe(addition)
+        merged = deepcopy(base)
+        for key, value in addition.items():
+            if key not in merged:
+                merged[key] = _make_ipc_safe(value)
+                continue
+            merged[key] = ParallelResearchPipeline._merge_signal_values(merged[key], value)
+        return merged
+
+    @staticmethod
+    def _merge_signal_values(existing: Any, incoming: Any) -> Any:
+        if isinstance(existing, dict) and isinstance(incoming, dict):
+            merged = dict(existing)
+            for key, value in incoming.items():
+                if key in merged:
+                    merged[key] = ParallelResearchPipeline._merge_signal_values(merged[key], value)
+                else:
+                    merged[key] = _make_ipc_safe(value)
+            return merged
+        if isinstance(existing, list) and isinstance(incoming, list):
+            return ParallelResearchPipeline._dedupe_list(
+                [str(item) for item in [*existing, *incoming] if str(item).strip()]
+            )
+        if existing in (None, "", {}, []):
+            return _make_ipc_safe(incoming)
+        if incoming in (None, "", {}, []):
+            return _make_ipc_safe(existing)
+        if existing == incoming:
+            return _make_ipc_safe(existing)
+        return _make_ipc_safe(existing)
+
+    @staticmethod
+    def _build_symbol_scope_bundle(
+        data_bundle: UnifiedDataBundle,
+        symbol: str,
+        phase1_context: dict[str, Any],
+        global_context: GlobalContext | None = None,
+    ) -> UnifiedDataBundle:
+        symbol_data = {symbol: deepcopy(data_bundle.symbol_data.get(symbol, pd.DataFrame()))}
+        fundamentals = {symbol: deepcopy(data_bundle.fundamentals.get(symbol, {}))}
+        event_data = {symbol: deepcopy(data_bundle.event_data.get(symbol, []))}
+        sentiment_data = {symbol: deepcopy(data_bundle.sentiment_data.get(symbol, {}))}
+        metadata = dict(data_bundle.metadata)
+        metadata["phase1_context"] = _make_ipc_safe(phase1_context)
+        if global_context is not None:
+            metadata["global_context"] = _make_ipc_safe(global_context.to_dict())
+        elif "global_context" in data_bundle.metadata:
+            metadata["global_context"] = _make_ipc_safe(data_bundle.metadata.get("global_context", {}))
+        metadata["symbol_scope"] = symbol
+        return UnifiedDataBundle(
+            market=data_bundle.market,
+            symbols=[symbol],
+            symbol_data=symbol_data,
+            fundamentals=fundamentals,
+            event_data=event_data,
+            sentiment_data=sentiment_data,
+            macro_data=deepcopy(data_bundle.macro_data),
+            metadata=metadata,
+        )
+
+    def _degraded_symbol_branch_result(
+        self,
+        *,
+        branch_name: str,
+        symbol: str,
+        degraded_reason: str,
+    ) -> BranchResult:
+        return BranchResult(
+            branch_name=branch_name,
+            score=0.0,
+            confidence=0.0,
+            signals={},
+            risks=[f"{symbol} {branch_name} 分支降级: {degraded_reason}"],
+            explanation=f"{symbol} 的 {branch_name} 分支已降级为中性结果。",
+            symbol_scores={symbol: 0.0},
+            success=False,
+            metadata={
+                "data_source_status": "degraded_symbol_branch",
+                "is_synthetic": False,
+                "degraded_reason": degraded_reason,
+                "branch_mode": f"{branch_name}_symbol_parallel",
+                "reliability": 0.0,
+                "symbol": symbol,
+            },
+            data_quality={"status": "degraded_symbol_branch", "reason": degraded_reason, "symbol": symbol},
+            conclusion=f"{symbol} {branch_name} 分支当前按中性结果处理。",
+            diagnostic_notes=[f"{symbol} {branch_name} 降级: {degraded_reason}"],
+        )
 
     @staticmethod
     def _dedupe_list(items: list[str]) -> list[str]:
@@ -1362,6 +1996,11 @@ class ParallelResearchPipeline:
 
     def _run_intelligence_branch(self, data_bundle: UnifiedDataBundle) -> BranchResult:
         """多维智能融合分支，仅覆盖事件/情绪/资金流/广度/行业轮动。"""
+        phase1_context = {}
+        global_context = {}
+        if isinstance(data_bundle.metadata, dict):
+            phase1_context = dict(data_bundle.metadata.get("phase1_context", {}) or {})
+            global_context = dict(data_bundle.metadata.get("global_context", {}) or {})
         event_risk: dict[str, float] = {}
         sentiment_score: dict[str, float] = {}
         money_flow_score: dict[str, float] = {}
@@ -1412,7 +2051,7 @@ class ParallelResearchPipeline:
             breadth_score[symbol] = breadth
             rotation_score[symbol] = rotation
             # 根据市场状态自适应调整融合权重
-            regime = self._market_regime
+            regime = str(phase1_context.get("macro_regime") or self._market_regime or "default")
             if regime == "趋势上涨" or regime == "趋势下跌":
                 w_evt, w_sen, w_flow, w_rot = 0.25, 0.30, 0.25, 0.20
             elif regime == "震荡低波":
@@ -1449,6 +2088,7 @@ class ParallelResearchPipeline:
                 "money_flow_score": money_flow_score,
                 "breadth_score": breadth_score,
                 "rotation_score": rotation_score,
+                "global_context_ref": str(global_context.get("cache_key", "")),
                 "branch_mode": "structured_intelligence_fusion",
                 "reliability": 0.72,
                 "horizon_days": 10,
@@ -2077,6 +2717,46 @@ class ParallelResearchPipeline:
             ),
             reverse=True,
         )
+
+    def _build_three_layer_artifacts(
+        self,
+        *,
+        data_bundle: UnifiedDataBundle,
+        branch_results: dict[str, BranchResult],
+        calibrated_signals: dict[str, Any],
+        risk_result: RiskLayerResult,
+        final_strategy: PortfolioStrategy,
+    ) -> tuple[GlobalContext, dict[str, SymbolResearchPacket], list[ShortlistItem], list[PortfolioDecision]]:
+        phase1_context = {}
+        if isinstance(data_bundle.metadata, dict):
+            phase1_context = dict(data_bundle.metadata.get("phase1_context", {}) or {})
+
+        global_context = self._three_layer_orchestrator.build_global_context(
+            data_bundle=data_bundle,
+            phase1_context=phase1_context,
+            branch_results=branch_results,
+            calibrated_signals=calibrated_signals,
+            risk_result=risk_result,
+            force_refresh=False,
+        )
+        symbol_packets = self._three_layer_orchestrator.build_symbol_packets(
+            data_bundle=data_bundle,
+            branch_results=branch_results,
+            calibrated_signals=calibrated_signals,
+            global_context=global_context,
+        )
+        shortlist = self._three_layer_orchestrator.build_shortlist(
+            data_bundle=data_bundle,
+            symbol_packets=symbol_packets,
+            global_context=global_context,
+            max_items=12,
+        )
+        portfolio_decisions = self._three_layer_orchestrator.build_portfolio_decisions(
+            shortlist=shortlist,
+            trade_recommendations=list(final_strategy.trade_recommendations),
+            global_context=global_context,
+        )
+        return global_context, symbol_packets, shortlist, portfolio_decisions
 
     def _derive_price_levels(
         self,

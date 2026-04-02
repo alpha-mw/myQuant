@@ -18,6 +18,7 @@ from quant_investor.market.config import get_market_settings, normalize_categori
 from quant_investor.pipeline import QuantInvestor
 
 _STOCK_NAME_CACHE: dict[str, dict[str, str]] = {"CN": {}, "US": {}}
+US_UNIVERSE_FILE = Path("data/us_universe/complete_us_universe.json")
 BRANCH_LABELS = {
     "kline": "K线",
     "quant": "量化",
@@ -134,13 +135,54 @@ def category_name(category: str, market: str = "CN") -> str:
     return settings.category_labels.get(category, category)
 
 
+def _normalize_us_symbol(symbol: str) -> str:
+    return str(symbol or "").strip().upper().replace(".", "-")
+
+
+def _load_us_universe_symbols(category: str) -> list[str]:
+    if not US_UNIVERSE_FILE.exists():
+        return []
+
+    try:
+        payload = json.loads(US_UNIVERSE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for symbol in payload.get(category, []):
+        normalized = _normalize_us_symbol(symbol)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            ordered.append(normalized)
+    return ordered
+
+
 def get_all_local_symbols(category: str, market: str = "CN", data_dir: str | None = None) -> list[str]:
     settings = get_market_settings(market)
     base_dir = Path(data_dir or settings.data_dir)
     category_dir = base_dir / category
     if not category_dir.exists():
         return []
-    return sorted(path.stem for path in category_dir.glob("*.csv"))
+
+    if settings.market == "US":
+        curated_symbols = _load_us_universe_symbols(category)
+        if curated_symbols:
+            resolved = []
+            for symbol in curated_symbols:
+                file_candidates = (
+                    category_dir / f"{symbol}.csv",
+                    category_dir / f"{symbol.replace('-', '.')}.csv",
+                )
+                if any(path.exists() for path in file_candidates):
+                    resolved.append(symbol)
+            if resolved:
+                return resolved
+
+    symbols = sorted(path.stem for path in category_dir.glob("*.csv"))
+    if settings.market == "US":
+        return _dedupe_text(_normalize_us_symbol(symbol) for symbol in symbols)
+    return symbols
 
 
 def _derive_stock_support_drivers(payload: dict[str, Any]) -> list[str]:
@@ -187,6 +229,11 @@ def analyze_batch(
     total_capital: float = 1_000_000,
     risk_level: str = "中等",
     verbose: bool = True,
+    enable_agent_layer: bool = True,
+    agent_model: str = "",
+    master_model: str = "",
+    agent_timeout: float = 15.0,
+    master_timeout: float = 30.0,
 ) -> Optional[dict[str, Any]]:
     settings = get_market_settings(market)
     scoped_category_name = category_name(category, settings.market)
@@ -209,6 +256,11 @@ def analyze_batch(
             enable_fundamental=True,
             enable_intelligence=True,
             verbose=verbose,
+            enable_agent_layer=enable_agent_layer,
+            agent_model=agent_model,
+            master_model=master_model,
+            agent_timeout=agent_timeout,
+            master_timeout=master_timeout,
         )
         result = analyzer.run()
 
@@ -245,6 +297,13 @@ def analyze_batch(
                 "execution_notes": result.final_strategy.execution_notes,
                 "research_mode": result.final_strategy.research_mode,
             },
+            "global_context": result.global_context.to_dict() if getattr(result, "global_context", None) else None,
+            "symbol_research_packets": {
+                symbol: packet.to_dict()
+                for symbol, packet in getattr(result, "symbol_research_packets", {}).items()
+            },
+            "shortlist": [item.to_dict() for item in getattr(result, "shortlist", [])],
+            "portfolio_decisions": [item.to_dict() for item in getattr(result, "portfolio_decisions", [])],
             "recommendations": recommendations,
             "execution_log": list(getattr(result, "execution_log", [])),
         }
@@ -309,6 +368,11 @@ def analyze_category_full(
     total_capital: float = 1_000_000,
     risk_level: str = "中等",
     verbose: bool = True,
+    enable_agent_layer: bool = True,
+    agent_model: str = "",
+    master_model: str = "",
+    agent_timeout: float = 15.0,
+    master_timeout: float = 30.0,
 ) -> list[dict[str, Any]]:
     settings = get_market_settings(market)
     scoped_batch_size = batch_size or settings.default_batch_size
@@ -344,6 +408,11 @@ def analyze_category_full(
             total_capital=total_capital,
             risk_level=risk_level,
             verbose=verbose,
+            enable_agent_layer=enable_agent_layer,
+            agent_model=agent_model,
+            master_model=master_model,
+            agent_timeout=agent_timeout,
+            master_timeout=master_timeout,
         )
         if result:
             all_results.append(result)
@@ -1012,6 +1081,11 @@ def run_market_analysis(
     total_capital: float = 1_000_000,
     top_k: int = 12,
     verbose: bool = True,
+    enable_agent_layer: bool = True,
+    agent_model: str = "",
+    master_model: str = "",
+    agent_timeout: float = 15.0,
+    master_timeout: float = 30.0,
 ) -> dict[str, Any]:
     settings = get_market_settings(market)
     selected_categories = normalize_categories(settings.market, categories)
@@ -1026,6 +1100,11 @@ def run_market_analysis(
                 market=settings.market,
                 total_capital=total_capital,
                 verbose=verbose,
+                enable_agent_layer=enable_agent_layer,
+                agent_model=agent_model,
+                master_model=master_model,
+                agent_timeout=agent_timeout,
+                master_timeout=master_timeout,
             )
             all_results[category] = [result] if result else []
         else:
@@ -1035,6 +1114,11 @@ def run_market_analysis(
                 batch_size=batch_size,
                 total_capital=total_capital,
                 verbose=verbose,
+                enable_agent_layer=enable_agent_layer,
+                agent_model=agent_model,
+                master_model=master_model,
+                agent_timeout=agent_timeout,
+                master_timeout=master_timeout,
             )
     report_paths = generate_full_report(
         all_results,

@@ -68,4 +68,17 @@ def run_download(
         for key, value in universe.items()
         if key in selected_categories or key == "stats"
     }
-    return downloader.download_all(scoped_universe)
+    required_latest_trade_date = downloader.detect_latest_available_trade_date()
+    if check_complete:
+        completeness = downloader.build_completeness_report(
+            universe=universe,
+            categories=selected_categories,
+            required_latest_trade_date=required_latest_trade_date,
+        )
+        if hasattr(downloader, "_print_completeness_summary"):
+            downloader._print_completeness_summary(completeness)
+        return completeness
+    return downloader.download_all(
+        universe=scoped_universe,
+        categories=selected_categories,
+    )

@@ -11,6 +11,8 @@ from quant_investor.pipeline.mainline import QuantInvestor
 
 
 def test_timeout_budget_helpers_stay_available():
+    orchestrator = AgentOrchestrator(branch_model="deepseek-chat", master_model="deepseek-chat")
+    assert orchestrator.max_tokens_master == 3000
     assert AgentOrchestrator.compute_outer_timeout(
         30.0,
         max_retries=2,

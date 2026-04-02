@@ -17,6 +17,7 @@ from typing import Any
 import pandas as pd
 import requests
 
+from quant_investor import QuantInvestor
 from quant_investor.market.analyze import load_cn_stock_names
 from quant_investor.market.download_cn import CNFullMarketDownloader
 
@@ -29,6 +30,11 @@ DEFAULT_NOTES_PATH = DEFAULT_BASE_DIR / "latest_notes_payload.md"
 DEFAULT_INITIAL_CAPITAL = 1_000_000.0
 DEFAULT_SHORTCUT_NAME = "Quant Daily To Notes"
 QUOTE_TIMEOUT = 20
+DEFAULT_REVIEW_AGENT_MODEL = "gpt-4.1-mini"
+DEFAULT_REVIEW_MASTER_MODEL = "gpt-4.1-mini"
+DEFAULT_REVIEW_AGENT_TIMEOUT = 20.0
+DEFAULT_REVIEW_MASTER_TIMEOUT = 45.0
+DEFAULT_REVIEW_TOTAL_TIMEOUT = 180.0
 INDEX_QUOTES = {
     "sh000001": "上证指数",
     "sz399001": "深证成指",
@@ -473,7 +479,10 @@ def _position_reason(row: pd.Series) -> str:
     )
 
 
-def _build_rebalance_plan(review: pd.DataFrame) -> list[ProposedOrder]:
+def _build_rebalance_plan(
+    review: pd.DataFrame,
+    review_recommendations: dict[str, dict[str, Any]],
+) -> list[ProposedOrder]:
     weak = review[
         (review["current_price"] < review["stage_stop_price"])
         & (review["score_full_market"] < 0.72)
@@ -485,12 +494,17 @@ def _build_rebalance_plan(review: pd.DataFrame) -> list[ProposedOrder]:
 
     orders: list[ProposedOrder] = []
     for row in weak.head(1).itertuples():
+        review_payload = review_recommendations.get(str(row.symbol).upper(), {})
+        review_action = str(review_payload.get("action", "hold")).strip().lower()
+        if review_action != "sell":
+            continue
         lot_size = 100
         shares = int(int(row.shares_before) * 0.2 // lot_size) * lot_size
         if shares <= 0:
             continue
         trade_value = round(shares * float(row.current_price), 2)
         realized = round(shares * (float(row.current_price) - float(row.buy_price)), 2)
+        rationale = str(review_payload.get("rationale", "")).strip()
         orders.append(
             ProposedOrder(
                 symbol=row.symbol,
@@ -501,7 +515,8 @@ def _build_rebalance_plan(review: pd.DataFrame) -> list[ProposedOrder]:
                 realized_pnl=realized,
                 reason=(
                     f"{row.symbol} 仍低于阶段止损位 {float(row.stage_stop_price):.2f}，"
-                    "且完整日线已明显落后于组合主线，执行温和减仓。"
+                    "且完整日线已明显落后于组合主线，"
+                    + (f"Review Layer 亦给出 sell，理由：{rationale}" if rationale else "Review Layer 亦给出 sell。")
                 ),
             )
         )
@@ -592,6 +607,33 @@ def _format_symbol_set(symbols: list[str]) -> str:
     return " / ".join(symbols)
 
 
+def _collect_suspension_exceptions(completeness_report: dict[str, Any]) -> list[dict[str, str]]:
+    exceptions: list[dict[str, str]] = []
+    for category in completeness_report.get("categories_checked", []):
+        payload = completeness_report.get("categories", {}).get(category, {})
+        for item in payload.get("suspended_stale_symbols", []):
+            exceptions.append(
+                {
+                    "symbol": str(item.get("symbol", "")).upper(),
+                    "latest_local_date": str(item.get("latest_local_date", "")),
+                    "category": str(category).upper(),
+                }
+            )
+    exceptions.sort(key=lambda row: (row["symbol"], row["category"], row["latest_local_date"]))
+    return exceptions
+
+
+def _format_suspension_exception_lines(completeness_report: dict[str, Any]) -> list[str]:
+    exceptions = _collect_suspension_exceptions(completeness_report)
+    if not exceptions:
+        return []
+
+    return [
+        f"`{item['symbol']}`（{item['category']}，本地最新 `{item['latest_local_date']}`）"
+        for item in exceptions
+    ]
+
+
 def _build_blocking_report(
     timestamp_long: str,
     source_record: str,
@@ -599,6 +641,7 @@ def _build_blocking_report(
     completeness_after: dict[str, Any],
     attempted_backfill: bool,
 ) -> str:
+    suspension_lines = _format_suspension_exception_lines(completeness_after)
     lines = [
         "# A股激进科技制造策略正式复盘报告",
         "",
@@ -640,6 +683,11 @@ def _build_blocking_report(
             f"- {category}: 缺失 `{len(payload.get('blocking_missing_symbols', []))}` 个，"
             f"陈旧 `{len(payload.get('blocking_stale_symbols', []))}` 个，"
             f"示例缺口 `{', '.join(missing_sample + stale_sample) if (missing_sample or stale_sample) else '无'}`"
+        )
+    if suspension_lines:
+        lines.append(
+            "- 已识别为停牌非阻塞例外："
+            + "；".join(suspension_lines)
         )
     lines.extend(
         [
@@ -726,6 +774,215 @@ def _build_notes_payload(
             f"- 明日观察重点：{'；'.join(tomorrow_focus)}",
         ]
     )
+
+
+def _to_plain_payload(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if hasattr(value, "__dataclass_fields__"):
+        return asdict(value)
+    if isinstance(value, dict):
+        return {str(key): _to_plain_payload(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_plain_payload(item) for item in value]
+    return str(value)
+
+
+def _build_review_recall_context(
+    source_record: str,
+    source_manifest: dict[str, Any],
+    source_pnl: pd.DataFrame,
+    source_ledger: pd.DataFrame,
+) -> dict[str, Any]:
+    latest_total_value = _safe_float(
+        source_pnl["total_value_after"].iloc[-1] if "total_value_after" in source_pnl.columns else 0.0
+    )
+    latest_cash = _safe_float(
+        source_pnl["cash_after"].iloc[-1] if "cash_after" in source_pnl.columns else 0.0
+    )
+    return {
+        "source_record": source_record,
+        "prior_quote_snapshot": str(source_manifest.get("quote_snapshot", "")),
+        "prior_action_taken": bool(source_manifest.get("action_taken_today", False)),
+        "prior_total_value": latest_total_value,
+        "prior_cash_after": latest_cash,
+        "existing_symbols": [str(symbol) for symbol in source_ledger["symbol"].tolist()],
+        "existing_weights": {
+            str(row.symbol): float(getattr(row, "market_weight", 0.0))
+            for row in source_ledger.itertuples()
+        },
+    }
+
+
+def _run_quantinvestor_review(
+    symbols: list[str],
+    source_record: str,
+    source_manifest: dict[str, Any],
+    source_pnl: pd.DataFrame,
+    source_ledger: pd.DataFrame,
+    total_capital: float,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    recall_context = _build_review_recall_context(
+        source_record=source_record,
+        source_manifest=source_manifest,
+        source_pnl=source_pnl,
+        source_ledger=source_ledger,
+    )
+    investor = QuantInvestor(
+        stock_pool=list(symbols),
+        market="CN",
+        total_capital=total_capital,
+        risk_level="中等",
+        verbose=bool(args.review_verbose),
+        enable_agent_layer=True,
+        agent_model=str(args.review_agent_model),
+        master_model=str(args.review_master_model),
+        agent_timeout=float(args.review_agent_timeout),
+        master_timeout=float(args.review_master_timeout),
+        agent_total_timeout=float(args.review_total_timeout),
+        recall_context=recall_context,
+    )
+    result = investor.run()
+
+    master_output = result.master_review_output
+    risk_output = result.risk_review_output
+    trade_recommendations = [
+        _to_plain_payload(item) for item in list(getattr(result.final_strategy, "trade_recommendations", []) or [])
+    ]
+    top_picks = [
+        _to_plain_payload(item) for item in list(getattr(master_output, "top_picks", []) or [])
+    ]
+    branch_review_outputs = {
+        name: (
+            None
+            if output is None
+            else {
+                "conviction": str(output.conviction),
+                "conviction_score": float(output.conviction_score),
+                "confidence": float(output.confidence),
+                "key_insights": list(output.key_insights),
+                "risk_flags": list(output.risk_flags),
+                "disagreements_with_algo": list(output.disagreements_with_algo),
+                "symbol_views": dict(output.symbol_views),
+            }
+        )
+        for name, output in result.branch_review_outputs.items()
+    }
+
+    summary = {
+        "agent_layer_enabled": bool(result.agent_layer_enabled),
+        "master_review_ready": bool(master_output is not None),
+        "risk_review_ready": bool(risk_output is not None),
+        "agent_model": str(args.review_agent_model),
+        "master_model": str(args.review_master_model),
+        "branch_review_outputs": branch_review_outputs,
+        "branch_review_success": {
+            name: bool(output is not None)
+            for name, output in result.branch_review_outputs.items()
+        },
+        "master_conviction": str(getattr(master_output, "final_conviction", "neutral")),
+        "master_score": float(getattr(master_output, "final_score", 0.0) or 0.0),
+        "master_confidence": float(getattr(master_output, "confidence", 0.0) or 0.0),
+        "consensus_areas": list(getattr(master_output, "consensus_areas", []) or []),
+        "disagreement_areas": list(getattr(master_output, "disagreement_areas", []) or []),
+        "conviction_drivers": list(getattr(master_output, "conviction_drivers", []) or []),
+        "debate_resolution": list(getattr(master_output, "debate_resolution", []) or []),
+        "dissenting_views": list(getattr(master_output, "dissenting_views", []) or []),
+        "portfolio_narrative": str(getattr(master_output, "portfolio_narrative", "") or ""),
+        "top_picks": top_picks,
+        "risk_assessment": str(getattr(risk_output, "risk_assessment", "")),
+        "max_recommended_exposure": float(getattr(risk_output, "max_recommended_exposure", 0.0) or 0.0),
+        "risk_warnings": list(getattr(risk_output, "risk_warnings", []) or []),
+        "hedging_suggestions": list(getattr(risk_output, "hedging_suggestions", []) or []),
+        "target_exposure": float(getattr(result.final_strategy, "target_exposure", 0.0) or 0.0),
+        "candidate_symbols": list(getattr(result.final_strategy, "candidate_symbols", []) or []),
+        "target_weights": {
+            str(symbol): float(weight)
+            for symbol, weight in dict(getattr(result.final_strategy, "target_weights", {}) or {}).items()
+        },
+        "trade_recommendations": trade_recommendations,
+        "final_report": str(result.final_report or ""),
+        "execution_log": list(getattr(result, "execution_log", []) or []),
+    }
+    summary["formal_ready"] = bool(
+        summary["agent_layer_enabled"]
+        and master_output is not None
+        and risk_output is not None
+    )
+    return summary
+
+
+def _review_recommendation_map(review_summary: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    combined_items = list(review_summary.get("trade_recommendations", []) or []) + list(
+        review_summary.get("top_picks", []) or []
+    )
+    for item in combined_items:
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol", "")).upper()
+        if not symbol:
+            continue
+        result[symbol] = item
+    return result
+
+
+def _build_review_layer_blocking_report(
+    timestamp_long: str,
+    source_record: str,
+    latest_trade_date: str,
+    review_summary: dict[str, Any],
+) -> str:
+    lines = [
+        "# A股激进科技制造策略正式复盘报告",
+        "",
+        "## 1. 记录信息",
+        "",
+        "- 市场：A股（CN）",
+        "- 策略：`aggressive_tech_manufacturing`",
+        f"- 上一条正式记录：`{source_record}`",
+        f"- 本次正式记录时间：{timestamp_long}",
+        "- 数据完整性：**已通过**",
+        "- Review Layer：**未通过正式门槛**",
+        "",
+        "## 0. 正式结果速览",
+        "",
+        "- 正式结论：**不生成正式投资结论。**",
+        f"- 数据完整性状态：**完整数据校验通过（目标最新交易日 `{latest_trade_date}`）**",
+        "- 今日是否执行调仓：**否**",
+        "- 明日准备事项：先修复主线 review layer，再重跑正式流程。",
+        "",
+        "## 2. 阻塞原因",
+        "",
+        (
+            f"- agent_layer_enabled：`{review_summary.get('agent_layer_enabled', False)}`；"
+            f"master review 就绪：`{review_summary.get('master_review_ready', False)}`；"
+            f"risk review 就绪：`{review_summary.get('risk_review_ready', False)}`"
+        ),
+        f"- 使用模型：branch=`{review_summary.get('agent_model', '')}`，master=`{review_summary.get('master_model', '')}`",
+        "- 说明：本轮要求必须走 `QuantInvestor` 主线并完成结构化 review layer；当前未达到正式输出门槛。",
+    ]
+    warnings = list(review_summary.get("risk_warnings", []) or [])
+    if warnings:
+        lines.append("- review layer 风险提示：" + "；".join(warnings[:3]))
+    return "\n".join(lines)
+
+
+def _write_review_layer_outputs(
+    run_dir: Path,
+    timestamp: str,
+    review_summary: dict[str, Any],
+) -> None:
+    raw_dir = run_dir / "raw_exports"
+    report_path = run_dir / "quantinvestor_review_report.md"
+    summary_path = run_dir / "quantinvestor_review_summary.json"
+    report_path.write_text(str(review_summary.get("final_report", "")), encoding="utf-8")
+    summary_path.write_text(json.dumps(review_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    shutil.copy2(report_path, raw_dir / f"aggressive_portfolio_{timestamp}_quantinvestor_review_report.md")
+    shutil.copy2(summary_path, raw_dir / f"aggressive_portfolio_{timestamp}_quantinvestor_review_summary.json")
 
 
 def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
@@ -882,6 +1139,129 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "elapsed_sec": round(time.time() - started, 2),
         }
 
+    review_summary = _run_quantinvestor_review(
+        symbols=[str(symbol) for symbol in source_ledger["symbol"].tolist()],
+        source_record=source_record,
+        source_manifest=source_manifest,
+        source_pnl=source_pnl,
+        source_ledger=source_ledger,
+        total_capital=max(source_total_value, 0.0) or initial_capital,
+        args=args,
+    )
+    review_ready = bool(review_summary.get("formal_ready"))
+
+    if not review_ready:
+        report_text = _build_review_layer_blocking_report(
+            timestamp_long=timestamp_long,
+            source_record=source_record,
+            latest_trade_date=latest_trade_date,
+            review_summary=review_summary,
+        )
+        empty_orders = pd.DataFrame(
+            columns=["timestamp", "action", "symbol", "name", "shares", "price", "trade_value", "realized_pnl", "reason"]
+        )
+        pnl_summary = {
+            "record_time": timestamp_long,
+            "quote_snapshot": "",
+            "initial_capital": initial_capital,
+            "cash_before": cash_before,
+            "market_value_before": 0.0,
+            "total_value_before": source_total_value,
+            "portfolio_pnl_before": round(source_total_value - initial_capital, 2),
+            "portfolio_pnl_pct_before": round(_safe_pct(source_total_value - initial_capital, initial_capital), 6),
+            "realized_pnl_from_rebalance": 0.0,
+            "cash_after": cash_before,
+            "market_value_after": 0.0,
+            "total_value_after": source_total_value,
+            "portfolio_pnl_after": round(source_total_value - initial_capital, 2),
+            "portfolio_pnl_pct_after": round(_safe_pct(source_total_value - initial_capital, initial_capital), 6),
+            "delta_vs_source_record": 0.0,
+        }
+        pnl_summary_df = pd.DataFrame([pnl_summary])
+        notes_text = _build_notes_payload(
+            trade_date=now.strftime("%Y-%m-%d"),
+            data_status=f"完整数据校验通过（目标最新交易日 `{latest_trade_date}`）",
+            market_core_view="数据完整，但 `QuantInvestor` 主线 review layer 未完成正式门槛，本轮不生成投资结论。",
+            pnl_summary=pnl_summary,
+            orders=[],
+            tomorrow_focus=["优先修复 review layer 稳定性", "确认 master review 与 risk review 均成功后再重跑"],
+        )
+        DEFAULT_NOTES_PATH.write_text(notes_text, encoding="utf-8")
+        market_snapshot = {
+            "generated_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "quote_snapshot": "",
+            "completeness_before": completeness_before,
+            "completeness_after": completeness_after,
+            "download_report": str(download_report_path) if download_report_path else None,
+            "review_layer": review_summary,
+        }
+        manifest = {
+            "market": "CN",
+            "strategy": "aggressive_tech_manufacturing",
+            "timestamp": timestamp,
+            "recorded_at": timestamp_long,
+            "source_record": source_record,
+            "formal_record": False,
+            "completeness_passed": True,
+            "review_layer_passed": False,
+            "capital_cny": initial_capital,
+            "quote_snapshot": "",
+            "action_taken_today": False,
+            "files": {
+                "analysis_report": "analysis_report.md",
+                "holdings_review": "holdings_review.csv",
+                "orders": "orders.csv",
+                "ledger": "ledger.csv",
+                "pnl_summary": "pnl_summary.csv",
+                "market_snapshot": "market_snapshot.json",
+                "quantinvestor_review_report": "quantinvestor_review_report.md",
+                "quantinvestor_review_summary": "quantinvestor_review_summary.json",
+            },
+            "raw_exports": {
+                "report": f"raw_exports/aggressive_portfolio_{timestamp}_formal_report.md",
+                "orders": f"raw_exports/aggressive_portfolio_{timestamp}_formal_orders.csv",
+                "ledger": f"raw_exports/aggressive_portfolio_{timestamp}_formal_ledger.csv",
+                "pnl_summary": f"raw_exports/aggressive_portfolio_{timestamp}_formal_pnl_summary.csv",
+                "holdings_review": f"raw_exports/aggressive_portfolio_{timestamp}_formal_holdings_review.csv",
+                "quantinvestor_review_report": f"raw_exports/aggressive_portfolio_{timestamp}_quantinvestor_review_report.md",
+                "quantinvestor_review_summary": f"raw_exports/aggressive_portfolio_{timestamp}_quantinvestor_review_summary.json",
+            },
+            "data_snapshot": {
+                "latest_trade_date": latest_trade_date,
+                "completeness": completeness_after,
+                "download_report": str(download_report_path) if download_report_path else None,
+            },
+            "review_layer": review_summary,
+        }
+        _write_outputs(
+            base_dir=base_dir,
+            run_dir=run_dir,
+            report_text=report_text,
+            holdings_review=source_ledger,
+            ledger=source_ledger,
+            orders_df=empty_orders,
+            pnl_summary_df=pnl_summary_df,
+            manifest=manifest,
+            market_snapshot=market_snapshot,
+        )
+        _write_review_layer_outputs(
+            run_dir=run_dir,
+            timestamp=timestamp,
+            review_summary=review_summary,
+        )
+        shortcuts_result = {"success": False, "returncode": None, "stdout": "", "stderr": "Review Layer 未通过正式门槛，未执行 Shortcuts。"}
+        return {
+            "timestamp": timestamp,
+            "timestamp_long": timestamp_long,
+            "run_dir": str(run_dir),
+            "completeness_passed": True,
+            "review_layer_passed": False,
+            "latest_trade_date": latest_trade_date,
+            "action_taken_today": False,
+            "shortcuts_result": shortcuts_result,
+            "elapsed_sec": round(time.time() - started, 2),
+        }
+
     full_metrics = _compute_full_market_metrics(
         components=components,
         data_root=PROJECT_ROOT / "data" / "cn_market_full",
@@ -978,6 +1358,25 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     holdings_review["position_role"] = holdings_review.apply(_position_role, axis=1)
     holdings_review["recommended_action"] = holdings_review.apply(_position_action, axis=1)
     holdings_review["reason"] = holdings_review.apply(_position_reason, axis=1)
+    review_recommendations = _review_recommendation_map(review_summary)
+    holdings_review["review_layer_action"] = holdings_review["symbol"].map(
+        lambda symbol: str(review_recommendations.get(str(symbol).upper(), {}).get("action", "hold"))
+    )
+    holdings_review["review_layer_target_weight"] = holdings_review["symbol"].map(
+        lambda symbol: round(
+            _safe_float(review_recommendations.get(str(symbol).upper(), {}).get("weight")),
+            6,
+        )
+    )
+    holdings_review["review_layer_confidence"] = holdings_review["symbol"].map(
+        lambda symbol: round(
+            _safe_float(review_recommendations.get(str(symbol).upper(), {}).get("confidence")),
+            6,
+        )
+    )
+    holdings_review["review_layer_rationale"] = holdings_review["symbol"].map(
+        lambda symbol: str(review_recommendations.get(str(symbol).upper(), {}).get("rationale", ""))
+    )
     holdings_review = holdings_review.sort_values(
         by=["score_full_market", "today_change_pct", "symbol"],
         ascending=[False, False, True],
@@ -986,7 +1385,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     theme_strength = _summarize_theme_strength(holdings_review)
     style_text = _market_style_conclusion(indices=indices, breadth=breadth)
     strongest_theme_text, weakest_theme_text = _tech_mainline_conclusion(theme_strength)
-    orders = _build_rebalance_plan(holdings_review)
+    orders = _build_rebalance_plan(holdings_review, review_recommendations)
     # 当前策略仍以主线内部修复为主，只在出现明确弱化共振时执行减仓。
     if len(orders) == 1 and theme_strength and theme_strength[0]["avg_score"] >= 0.8:
         orders = []
@@ -1033,24 +1432,56 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     detractors = holdings_review.sort_values("delta_vs_source_record", ascending=True)
     float_winners = holdings_review.sort_values("unrealized_pnl", ascending=False)
     float_losers = holdings_review.sort_values("unrealized_pnl", ascending=True)
+    held_symbols = {str(symbol).upper() for symbol in holdings_review["symbol"].tolist()}
+    held_review_sell_symbols = [
+        symbol
+        for symbol, payload in review_recommendations.items()
+        if symbol in held_symbols and str(payload.get("action", "")).strip().lower() == "sell"
+    ]
 
-    rebalance_reason = (
-        "执行温和调仓，削减已明显落后于主线的弱支线仓位。"
-        if orders
-        else "今天不执行调仓，继续把强修复与弱滞涨的分化再观察一个交易日。"
+    master_conviction = str(review_summary.get("master_conviction", "neutral"))
+    risk_assessment = str(review_summary.get("risk_assessment", ""))
+    max_recommended_exposure = _safe_float(review_summary.get("max_recommended_exposure"))
+    review_narrative = str(review_summary.get("portfolio_narrative", "")).strip()
+    rebalance_reason = "今天不执行调仓，继续把强修复与弱滞涨的分化再观察一个交易日。"
+    if orders:
+        rebalance_reason = "执行温和调仓，结构化 Review Layer 与持仓弱化信号同时指向减仓。"
+    elif held_review_sell_symbols:
+        rebalance_reason = (
+            "今天不执行调仓，但 Review Layer 已点名弱势持仓进入减仓观察，"
+            "先等待一次进一步确认。"
+        )
+    elif master_conviction in {"sell", "strong_sell"}:
+        rebalance_reason = "今天先不追着改单，但 Review Layer 已明显转谨慎，弱势仓位进入下一次确认窗口。"
+    elif risk_assessment in {"high", "extreme"} and max_recommended_exposure <= 0.35:
+        rebalance_reason = "今天不新增风险暴露，先按高风险环境处理，保留组合观察位。"
+    elif master_conviction in {"buy", "strong_buy"} and review_narrative:
+        rebalance_reason = "今天不执行调仓，Review Layer 仍认可主线，但先观察结构修复的持续性。"
+    suspension_lines = _format_suspension_exception_lines(completeness_after)
+    suspension_status_text = (
+        "；停牌例外 "
+        + "、".join(suspension_lines)
+        + " 已识别为非阻塞"
+        if suspension_lines
+        else ""
     )
     data_status = (
         f"完整数据校验通过（目标最新交易日 `{latest_trade_date}`"
-        + (
-            f"；停牌例外 `{', '.join(sorted(completeness_after.get('suspension_evidence', {}).keys()))}` 不构成阻塞）"
-            if completeness_after.get("suspension_evidence")
-            else "）"
-        )
+        + suspension_status_text
+        + "）"
     )
     tomorrow_focus = [
         "确认先进材料与光通信的修复能否延续，不让单日反弹误判为全面重启",
         "继续观察 `大族激光 / 中国西电` 是否能重新站回阶段止损位",
         "跟踪科创50 相对沪深300 的强弱差，判断资金是否继续偏向硬科技",
+    ]
+    review_top_pick_symbols = [
+        str(item.get("symbol", "")).upper()
+        for item in review_summary.get("top_picks", [])
+        if isinstance(item, dict) and str(item.get("symbol", "")).strip()
+    ]
+    held_review_sells = holdings_review[
+        holdings_review["review_layer_action"].astype(str).str.lower() == "sell"
     ]
 
     report_lines = [
@@ -1078,16 +1509,77 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         f"- 首轮完整性：`{'通过' if completeness_before['complete'] else '未通过'}`，阻塞缺口 `{completeness_before['blocking_incomplete_count']}` 个",
         f"- 是否执行补数：`{'是' if attempted_backfill else '否'}`",
         f"- 最终完整性：`{'通过' if completeness_after['complete'] else '未通过'}`，阻塞缺口 `{completeness_after['blocking_incomplete_count']}` 个",
-        f"- HS300：最新 `{breadth['hs300']['latest_count']}/{breadth['hs300']['expected']}`",
-        f"- ZZ500：最新 `{breadth['zz500']['latest_count']}/{breadth['zz500']['expected']}`",
-        f"- ZZ1000：最新 `{breadth['zz1000']['latest_count']}/{breadth['zz1000']['expected']}`",
+        (
+            f"- HS300：最新 `{breadth['hs300']['latest_count']}/{breadth['hs300']['expected']}`"
+            + (
+                f"，停牌非阻塞例外 `{breadth['hs300']['suspended_stale_count']}` 个"
+                if breadth["hs300"]["suspended_stale_count"]
+                else ""
+            )
+        ),
+        (
+            f"- ZZ500：最新 `{breadth['zz500']['latest_count']}/{breadth['zz500']['expected']}`"
+            + (
+                f"，停牌非阻塞例外 `{breadth['zz500']['suspended_stale_count']}` 个"
+                if breadth["zz500"]["suspended_stale_count"]
+                else ""
+            )
+        ),
+        (
+            f"- ZZ1000：最新 `{breadth['zz1000']['latest_count']}/{breadth['zz1000']['expected']}`"
+            + (
+                f"，停牌非阻塞例外 `{breadth['zz1000']['suspended_stale_count']}` 个"
+                if breadth["zz1000"]["suspended_stale_count"]
+                else ""
+            )
+        ),
+        (
+            "- 停牌非阻塞例外："
+            + "；".join(suspension_lines)
+            if suspension_lines
+            else "- 本轮无停牌非阻塞例外。"
+        ),
         (
             f"- 本轮下载报告：`{download_report_path}`"
             if download_report_path
             else "- 本轮未触发补数，直接沿用本地完整数据。"
         ),
         "",
-        "## 3. 当前组合盈亏判断",
+        "## 3. QuantInvestor 主线 / Review Layer 结构化结论",
+        "",
+        f"- Review Layer 已启用：`{review_summary['agent_layer_enabled']}`，branch 成功 `{sum(1 for ok in review_summary['branch_review_success'].values() if ok)}/{len(review_summary['branch_review_success'])}`。",
+        f"- 使用模型：branch=`{review_summary['agent_model']}`，master=`{review_summary['master_model']}`。",
+        (
+            f"- Master conviction：`{review_summary['master_conviction']}`，分数 `{review_summary['master_score']:.2f}`，"
+            f"置信度 `{review_summary['master_confidence']:.2f}`。"
+        ),
+        (
+            f"- Risk review：`{review_summary['risk_assessment']}`，建议最大总暴露 "
+            f"`{review_summary['max_recommended_exposure']:.0%}`。"
+        ),
+        (
+            "- Conviction drivers："
+            + "；".join(review_summary["conviction_drivers"][:3])
+            if review_summary.get("conviction_drivers")
+            else "- Conviction drivers：暂无明确额外驱动。"
+        ),
+        (
+            "- Risk warnings："
+            + "；".join(review_summary["risk_warnings"][:3])
+            if review_summary.get("risk_warnings")
+            else "- Risk warnings：暂无新增结构化风险提示。"
+        ),
+        (
+            "- Review Layer top picks："
+            + (" / ".join(review_top_pick_symbols) if review_top_pick_symbols else "本轮无新增 top picks。")
+        ),
+        (
+            f"- 组合叙事：{review_narrative}"
+            if review_narrative
+            else "- 组合叙事：本轮未给出新增组合叙事，维持结构化中性判断。"
+        ),
+        "",
+        "## 4. 当前组合盈亏判断",
         "",
         f"- 截至 `quote_snapshot={quote_snapshot or 'N/A'}`，组合总资产 **{total_value_after:,.2f} 元**，较初始资金 **{portfolio_pnl_after:,.2f} 元**，收益率 **{portfolio_pnl_after / initial_capital:.2%}**。",
         f"- 相对上一条正式记录 `{source_record}` 的 **{source_total_value:,.2f} 元**，当前盘中净值变动 **{total_value_after - source_total_value:,.2f} 元**。",
@@ -1116,9 +1608,9 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             for row in detractors.head(3).itertuples()
         ),
         "",
-        "## 4. A股整体市场风格与指数结构",
+        "## 5. A股整体市场风格与指数结构",
         "",
-        "### 4.1 指数结构（盘中快照）",
+        "### 5.1 指数结构（盘中快照）",
         "",
     ]
 
@@ -1133,7 +1625,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "",
             f"结论：{style_text}",
             "",
-            "### 4.2 广度与市场内部状态（基于最新完整日线）",
+            "### 5.2 广度与市场内部状态（基于最新完整日线）",
             "",
             (
                 f"- HS300：1日上涨占比 {breadth['hs300']['ret1_positive_ratio']:.1%}，"
@@ -1151,7 +1643,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
                 f"`MA20 > MA60` 占比 {breadth['zz1000']['ma20_gt_ma60_ratio']:.1%}"
             ),
             "",
-            "### 4.3 科技 / 高端制造主线强弱",
+            "### 5.3 科技 / 高端制造主线强弱",
             "",
             f"- {strongest_theme_text}",
             f"- {weakest_theme_text}",
@@ -1161,9 +1653,9 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
                 else "- 主题强弱排序：暂无"
             ),
             "",
-            "## 5. 当前策略持仓复盘",
+            "## 6. 当前策略持仓复盘",
             "",
-            "### 5.1 持仓相对强弱",
+            "### 6.1 持仓相对强弱",
             "",
             "- 今日相对最强："
             + _format_symbol_set(holdings_review.sort_values(
@@ -1174,7 +1666,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
                 ["today_change_pct", "score_full_market"], ascending=[True, True]
             ).head(3)["symbol"].tolist()),
             "",
-            "### 5.2 当前弱点与结构预警",
+            "### 6.2 当前弱点与结构预警",
             "",
         ]
     )
@@ -1192,16 +1684,32 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     report_lines.extend(
         [
             "",
-            "### 5.3 是否需要调仓",
+            "### 6.3 Review Layer 对当前持仓的结构化态度",
+            "",
+            (
+                "- Review Layer 明确给出 `sell` 的持仓："
+                + "；".join(
+                    f"{row.symbol}（目标权重 {row.review_layer_target_weight:.1%}，置信度 {row.review_layer_confidence:.2f}）"
+                    for row in held_review_sells.itertuples()
+                )
+                if not held_review_sells.empty
+                else "- Review Layer 本轮没有对现有持仓给出 `sell` 指令。"
+            ),
+            "",
+            "### 6.4 是否需要调仓",
             "",
             f"- 正式建议：**{'执行温和调仓' if orders else '本次不执行调仓'}**",
             (
-                "- 原因：主线最强分支重新走强，今天更像内部修复而不是主线失效；弱支线虽然没有完全修复，但还不足以在单日里推翻长期主线。"
+                (
+                    "- 原因：虽然 Review Layer 已对个别弱势持仓给出 `sell`，但当前主线最强分支仍在修复，先等待下一次确认再执行。"
+                    if held_review_sells is not None and not held_review_sells.empty
+                    else "- 原因：结构化 Review Layer 没有对现有持仓确认 `sell`，因此仍按长期主线观察，不因单日波动推翻。"
+                )
                 if not orders
-                else "- 原因：弱支线在完整日线与盘中都继续落后，已满足温和减仓条件。"
+                else "- 原因：弱支线在完整日线与盘中都继续落后，且 Review Layer 已给出 `sell`，满足温和减仓条件。"
             ),
             "",
-            "## 6. 面向明日的观察重点和准备事项",
+            "## 7. 面向明日的观察重点和准备事项",
             "",
         ]
     )
@@ -1232,7 +1740,10 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     notes_text = _build_notes_payload(
         trade_date=now.strftime("%Y-%m-%d"),
         data_status=data_status,
-        market_core_view=f"{style_text}{strongest_theme_text}{weakest_theme_text}",
+        market_core_view=(
+            f"{style_text}{strongest_theme_text}{weakest_theme_text}"
+            + (f"Review Layer：{review_narrative}" if review_narrative else "")
+        ),
         pnl_summary=pnl_summary,
         orders=orders,
         tomorrow_focus=tomorrow_focus,
@@ -1257,6 +1768,8 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "ledger": "ledger.csv",
             "pnl_summary": "pnl_summary.csv",
             "market_snapshot": "market_snapshot.json",
+            "quantinvestor_review_report": "quantinvestor_review_report.md",
+            "quantinvestor_review_summary": "quantinvestor_review_summary.json",
         },
         "raw_exports": {
             "report": f"raw_exports/aggressive_portfolio_{timestamp}_formal_report.md",
@@ -1264,12 +1777,15 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "ledger": f"raw_exports/aggressive_portfolio_{timestamp}_formal_ledger.csv",
             "pnl_summary": f"raw_exports/aggressive_portfolio_{timestamp}_formal_pnl_summary.csv",
             "holdings_review": f"raw_exports/aggressive_portfolio_{timestamp}_formal_holdings_review.csv",
+            "quantinvestor_review_report": f"raw_exports/aggressive_portfolio_{timestamp}_quantinvestor_review_report.md",
+            "quantinvestor_review_summary": f"raw_exports/aggressive_portfolio_{timestamp}_quantinvestor_review_summary.json",
         },
         "data_snapshot": {
             "latest_trade_date": latest_trade_date,
             "completeness": completeness_after,
             "download_report": str(download_report_path) if download_report_path else None,
         },
+        "review_layer": review_summary,
     }
     market_snapshot = {
         "generated_at": now.strftime("%Y-%m-%d %H:%M:%S"),
@@ -1284,6 +1800,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "delta_vs_source_record": round(total_value_after - source_total_value, 2),
         },
         "theme_strength": theme_strength,
+        "review_layer": review_summary,
         "download_report": str(download_report_path) if download_report_path else None,
         "quote_fetch_error": quote_error or None,
     }
@@ -1298,6 +1815,11 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         pnl_summary_df=pnl_summary_df,
         manifest=manifest,
         market_snapshot=market_snapshot,
+    )
+    _write_review_layer_outputs(
+        run_dir=run_dir,
+        timestamp=timestamp,
+        review_summary=review_summary,
     )
 
     shortcuts_result = {"success": False, "returncode": None, "stdout": "", "stderr": ""}
@@ -1334,12 +1856,18 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "run_dir": str(run_dir),
         "latest_trade_date": latest_trade_date,
         "completeness_passed": True,
+        "review_layer_passed": True,
         "action_taken_today": bool(orders),
         "data_status": data_status,
         "style_view": style_text,
         "tech_mainline": {
             "strongest": strongest_theme_text,
             "weakest": weakest_theme_text,
+        },
+        "review_layer": {
+            "master_conviction": review_summary["master_conviction"],
+            "risk_assessment": review_summary["risk_assessment"],
+            "max_recommended_exposure": review_summary["max_recommended_exposure"],
         },
         "pnl_summary": pnl_summary,
         "shortcuts_result": shortcuts_result,
@@ -1354,6 +1882,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-rounds", type=int, default=3)
     parser.add_argument("--shortcut-name", default=DEFAULT_SHORTCUT_NAME)
     parser.add_argument("--source-record", default=None)
+    parser.add_argument("--review-agent-model", default=DEFAULT_REVIEW_AGENT_MODEL)
+    parser.add_argument("--review-master-model", default=DEFAULT_REVIEW_MASTER_MODEL)
+    parser.add_argument("--review-agent-timeout", type=float, default=DEFAULT_REVIEW_AGENT_TIMEOUT)
+    parser.add_argument("--review-master-timeout", type=float, default=DEFAULT_REVIEW_MASTER_TIMEOUT)
+    parser.add_argument("--review-total-timeout", type=float, default=DEFAULT_REVIEW_TOTAL_TIMEOUT)
+    parser.add_argument("--review-verbose", action="store_true")
     return parser
 
 

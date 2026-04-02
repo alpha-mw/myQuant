@@ -455,3 +455,12 @@ BranchResult (5路算法输出)
 | `agent_protocol.py` | 协议层 dataclass 定义 |
 | `agent_orchestrator.py` | 备选单链编排策略 |
 | `versioning.py` | 版本号、分支顺序、分支权重 |
+
+---
+
+## 12. 推荐验证入口
+
+- `pytest tests/unit/test_version_naming_consistency.py -v`
+- `pytest tests/unit/test_entrypoint_cleanup.py -v`
+- `pytest tests/unit/test_public_route_string_cleanup.py -v`
+- `pytest tests/unit/test_documentation_consistency.py -v`

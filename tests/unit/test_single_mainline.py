@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def _make_price_frame(symbol: str) -> pd.DataFrame:
     return pd.DataFrame(
         {
-            "date": pd.date_range("2025-01-01", periods=6, freq="D"),
+            "date": pd.date_range(end=pd.Timestamp.now().normalize(), periods=6, freq="D"),
             "close": [10.0, 10.2, 10.4, 10.6, 10.8, 11.0],
             "volume": [2_000_000] * 6,
             "symbol": [symbol] * 6,

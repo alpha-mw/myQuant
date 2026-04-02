@@ -65,7 +65,8 @@ echo "启动后端: http://$BACKEND_HOST:$BACKEND_PORT"
   --host "$BACKEND_HOST" \
   --port "$BACKEND_PORT" \
   --reload \
-  --reload-dir "$ROOT_DIR/web" &
+  --reload-dir "$ROOT_DIR/web" \
+  --reload-dir "$ROOT_DIR/quant_investor" &
 BACKEND_PID=$!
 
 echo "启动前端: http://$FRONTEND_HOST:$FRONTEND_PORT"

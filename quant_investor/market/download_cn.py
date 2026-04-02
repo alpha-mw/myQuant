@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from typing import Any, List, Dict, Optional, Set
 import json
 import time
+import requests
 
 from quant_investor.config import config
 from quant_investor.credential_utils import create_tushare_pro
@@ -27,6 +28,11 @@ try:
     import tushare as ts
 except ImportError:
     ts = None
+
+try:
+    import yfinance as yf
+except ImportError:  # pragma: no cover
+    yf = None
 
 # Tushare配置
 TUSHARE_TOKEN = config.TUSHARE_TOKEN
@@ -39,6 +45,13 @@ class CNFullMarketDownloader:
     SUPPORTED_CATEGORIES = ("hs300", "zz500", "zz1000")
     REQUESTS_PER_STOCK = 2
     REQUESTS_PER_MINUTE_BUDGET = 160
+    EASTMONEY_KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+    EASTMONEY_FIELDS1 = "f1,f2,f3,f4,f5,f6"
+    EASTMONEY_FIELDS2 = "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"
+    EASTMONEY_UT = "fa5fd1943c7b386f172d6893dbfba10b"
+    EASTMONEY_TIMEOUT = 20
+    EASTMONEY_RETRIES = 2
+    YFINANCE_BATCH_SIZE = 100
     
     def __init__(self, 
                  data_dir: str = 'data/cn_market_full',
@@ -79,8 +92,12 @@ class CNFullMarketDownloader:
         self.pro = create_tushare_pro(ts, TUSHARE_TOKEN, TUSHARE_URL)
         if self.pro is None:
             raise RuntimeError("TUSHARE_TOKEN 未设置，无法下载 A 股全市场数据")
+        self._prefer_eastmoney_fallback = False
         self.latest_trade_date = self._resolve_latest_trade_date()
         self._latest_suspended_symbols_cache: Optional[Set[str]] = None
+        self._eastmoney_env_session = self._build_http_session(trust_env=True)
+        self._eastmoney_direct_session = self._build_http_session(trust_env=False)
+        self._last_fetch_source: Optional[str] = None
         
         # 统计信息
         self.stats = {
@@ -91,6 +108,300 @@ class CNFullMarketDownloader:
             'cached': 0,
             'no_data': 0
         }
+
+    @staticmethod
+    def _build_http_session(*, trust_env: bool) -> requests.Session:
+        session = requests.Session()
+        session.trust_env = trust_env
+        session.headers.update(
+            {
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/135.0.0.0 Safari/537.36"
+                ),
+                "Referer": "https://quote.eastmoney.com/",
+                "Accept": "application/json,text/plain,*/*",
+            }
+        )
+        return session
+
+    @staticmethod
+    def _eastmoney_secid(symbol: str) -> str:
+        code, market = str(symbol).strip().upper().split(".")
+        prefix = {"SH": "1", "SZ": "0"}.get(market)
+        if prefix is None:
+            raise ValueError(f"不支持的 Eastmoney 市场: {symbol}")
+        return f"{prefix}.{code}"
+
+    @staticmethod
+    def _yfinance_symbol(symbol: str) -> str:
+        code, market = str(symbol).strip().upper().split(".")
+        suffix = {"SH": "SS", "SZ": "SZ"}.get(market)
+        if suffix is None:
+            raise ValueError(f"不支持的 yfinance 市场: {symbol}")
+        return f"{code}.{suffix}"
+
+    def _request_eastmoney_kline(
+        self,
+        symbol: str,
+        start_date_str: str,
+        end_date_str: str,
+        *,
+        fqt: str,
+    ) -> list[str]:
+        params = {
+            "secid": self._eastmoney_secid(symbol),
+            "klt": "101",
+            "fqt": str(fqt),
+            "beg": start_date_str,
+            "end": end_date_str,
+            "fields1": self.EASTMONEY_FIELDS1,
+            "fields2": self.EASTMONEY_FIELDS2,
+            "ut": self.EASTMONEY_UT,
+        }
+        last_error: Exception | None = None
+        empty_seen = False
+
+        for session in (self._eastmoney_env_session, self._eastmoney_direct_session):
+            for attempt in range(self.EASTMONEY_RETRIES):
+                try:
+                    response = session.get(
+                        self.EASTMONEY_KLINE_URL,
+                        params=params,
+                        timeout=self.EASTMONEY_TIMEOUT,
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
+                    klines = ((payload.get("data") or {}).get("klines") or [])
+                    if klines:
+                        return list(klines)
+                    empty_seen = True
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    if attempt + 1 < self.EASTMONEY_RETRIES:
+                        time.sleep(0.5 * (attempt + 1))
+
+        if empty_seen:
+            return []
+        if last_error is not None:
+            raise RuntimeError(f"Eastmoney kline request failed for {symbol}: {last_error}") from last_error
+        return []
+
+    @staticmethod
+    def _parse_eastmoney_kline_rows(symbol: str, klines: list[str]) -> pd.DataFrame:
+        rows: list[dict[str, float | str]] = []
+        for item in klines:
+            parts = str(item).split(",")
+            if len(parts) < 11:
+                continue
+            trade_date = pd.to_datetime(parts[0], errors="coerce")
+            if pd.isna(trade_date):
+                continue
+            close = float(parts[2])
+            change = float(parts[9])
+            rows.append(
+                {
+                    "ts_code": symbol,
+                    "trade_date": trade_date.strftime("%Y-%m-%d"),
+                    "open": float(parts[1]),
+                    "high": float(parts[3]),
+                    "low": float(parts[4]),
+                    "close": close,
+                    "pre_close": close - change,
+                    "change": change,
+                    "pct_chg": float(parts[8]),
+                    "vol": float(parts[5]),
+                    # Eastmoney amount is Yuan; align to Tushare's 千元口径.
+                    "amount": float(parts[6]) / 1000.0,
+                }
+            )
+        if not rows:
+            return pd.DataFrame()
+        return pd.DataFrame(rows).sort_values("trade_date").reset_index(drop=True)
+
+    def _fetch_stock_frame_from_eastmoney(
+        self,
+        symbol: str,
+        start_date_str: str,
+        end_date_str: str,
+    ) -> pd.DataFrame:
+        raw_klines = self._request_eastmoney_kline(
+            symbol,
+            start_date_str,
+            end_date_str,
+            fqt="0",
+        )
+        if not raw_klines:
+            return pd.DataFrame()
+
+        raw_df = self._parse_eastmoney_kline_rows(symbol, raw_klines)
+        if raw_df.empty:
+            return raw_df
+
+        qfq_klines = self._request_eastmoney_kline(
+            symbol,
+            start_date_str,
+            end_date_str,
+            fqt="1",
+        )
+        qfq_df = self._parse_eastmoney_kline_rows(symbol, qfq_klines)
+        if qfq_df.empty:
+            raw_df["adj_factor"] = 1.0
+            raw_df["adj_close"] = raw_df["close"]
+            raw_df["adj_open"] = raw_df["open"]
+            raw_df["adj_high"] = raw_df["high"]
+            raw_df["adj_low"] = raw_df["low"]
+            return raw_df
+
+        merged = raw_df.merge(
+            qfq_df[["trade_date", "open", "high", "low", "close"]].rename(
+                columns={
+                    "open": "adj_open",
+                    "high": "adj_high",
+                    "low": "adj_low",
+                    "close": "adj_close",
+                }
+            ),
+            on="trade_date",
+            how="left",
+        )
+        raw_close = merged["close"].replace(0, pd.NA)
+        merged["adj_factor"] = (
+            merged["adj_close"].astype(float).div(raw_close.astype(float)).fillna(1.0)
+        )
+        return merged
+
+    @staticmethod
+    def _format_yfinance_frame(symbol: str, df: pd.DataFrame) -> pd.DataFrame:
+        if df is None or df.empty:
+            return pd.DataFrame()
+
+        normalized = df.reset_index().copy()
+        if "Datetime" in normalized.columns and "Date" not in normalized.columns:
+            normalized = normalized.rename(columns={"Datetime": "Date"})
+        if "Date" not in normalized.columns and "index" in normalized.columns:
+            normalized = normalized.rename(columns={"index": "Date"})
+        if "Date" not in normalized.columns:
+            return pd.DataFrame()
+
+        normalized["Date"] = pd.to_datetime(normalized["Date"], errors="coerce")
+        normalized = normalized.dropna(subset=["Date"]).sort_values("Date").reset_index(drop=True)
+        if normalized.empty:
+            return pd.DataFrame()
+
+        close = normalized["Close"].astype(float)
+        prev_close = close.shift(1).fillna(close)
+        change = close - prev_close
+        base_close = close.replace(0, pd.NA)
+        adj_close = normalized.get("Adj Close", close).astype(float)
+        adj_factor = adj_close.div(base_close.astype(float)).fillna(1.0)
+
+        result = pd.DataFrame(
+            {
+                "ts_code": symbol,
+                "trade_date": normalized["Date"].dt.strftime("%Y-%m-%d"),
+                "open": normalized["Open"].astype(float),
+                "high": normalized["High"].astype(float),
+                "low": normalized["Low"].astype(float),
+                "close": close,
+                "pre_close": prev_close.astype(float),
+                "change": change.astype(float),
+                "pct_chg": change.div(prev_close.replace(0, pd.NA).astype(float)).fillna(0.0) * 100.0,
+                "vol": normalized["Volume"].astype(float),
+                # 近似成交额，维持与 Tushare 相同的千元口径。
+                "amount": close.mul(normalized["Volume"].astype(float)).div(1000.0),
+                "adj_factor": adj_factor.astype(float),
+                "adj_close": adj_close.astype(float),
+                "adj_open": normalized["Open"].astype(float).mul(adj_factor.astype(float)),
+                "adj_high": normalized["High"].astype(float).mul(adj_factor.astype(float)),
+                "adj_low": normalized["Low"].astype(float).mul(adj_factor.astype(float)),
+            }
+        )
+        return result.sort_values("trade_date").reset_index(drop=True)
+
+    def _fetch_stock_frame_from_yfinance(
+        self,
+        symbol: str,
+        start_date_str: str,
+        end_date_str: str,
+    ) -> pd.DataFrame:
+        if yf is None:
+            return pd.DataFrame()
+
+        provider_symbol = self._yfinance_symbol(symbol)
+        start_text = datetime.strptime(start_date_str, "%Y%m%d").strftime("%Y-%m-%d")
+        end_text = (datetime.strptime(end_date_str, "%Y%m%d") + timedelta(days=2)).strftime("%Y-%m-%d")
+        raw_df = yf.Ticker(provider_symbol).history(
+            start=start_text,
+            end=end_text,
+            interval="1d",
+            auto_adjust=False,
+            actions=False,
+        )
+        if raw_df is None or raw_df.empty:
+            return pd.DataFrame()
+
+        formatted = self._format_yfinance_frame(symbol, raw_df)
+        if formatted.empty:
+            return formatted
+        latest_allowed = datetime.strptime(end_date_str, "%Y%m%d").strftime("%Y-%m-%d")
+        formatted = formatted[formatted["trade_date"] <= latest_allowed].reset_index(drop=True)
+        return formatted
+
+    def _fetch_batch_from_yfinance(
+        self,
+        symbols: List[str],
+        start_date_str: str,
+        end_date_str: str,
+    ) -> Dict[str, pd.DataFrame]:
+        if yf is None or not symbols:
+            return {}
+
+        provider_to_symbol = {
+            self._yfinance_symbol(symbol): symbol
+            for symbol in symbols
+        }
+        start_text = datetime.strptime(start_date_str, "%Y%m%d").strftime("%Y-%m-%d")
+        end_text = (datetime.strptime(end_date_str, "%Y%m%d") + timedelta(days=2)).strftime("%Y-%m-%d")
+        raw_df = yf.download(
+            list(provider_to_symbol.keys()),
+            start=start_text,
+            end=end_text,
+            interval="1d",
+            auto_adjust=False,
+            actions=False,
+            progress=False,
+            group_by="ticker",
+            threads=False,
+        )
+        if raw_df is None or raw_df.empty:
+            return {}
+
+        latest_allowed = datetime.strptime(end_date_str, "%Y%m%d").strftime("%Y-%m-%d")
+        frames: Dict[str, pd.DataFrame] = {}
+        if isinstance(raw_df.columns, pd.MultiIndex):
+            available = set(raw_df.columns.get_level_values(0))
+            for provider_symbol, symbol in provider_to_symbol.items():
+                if provider_symbol not in available:
+                    continue
+                formatted = self._format_yfinance_frame(symbol, raw_df[provider_symbol])
+                if formatted.empty:
+                    continue
+                formatted = formatted[formatted["trade_date"] <= latest_allowed].reset_index(drop=True)
+                if not formatted.empty:
+                    frames[symbol] = formatted
+            return frames
+
+        if len(provider_to_symbol) == 1:
+            symbol = next(iter(provider_to_symbol.values()))
+            formatted = self._format_yfinance_frame(symbol, raw_df)
+            if not formatted.empty:
+                formatted = formatted[formatted["trade_date"] <= latest_allowed].reset_index(drop=True)
+                if not formatted.empty:
+                    frames[symbol] = formatted
+        return frames
 
     @staticmethod
     def _normalize_allowed_symbols(symbols: Optional[List[str] | Set[str]]) -> Set[str]:
@@ -134,10 +445,12 @@ class CNFullMarketDownloader:
             end = self.end_date.strftime('%Y%m%d')
             cal = self.pro.trade_cal(exchange='SSE', start_date=start, end_date=end, is_open='1')
             if cal is None or cal.empty or 'cal_date' not in cal.columns:
+                self._prefer_eastmoney_fallback = True
                 return fallback
 
             open_days = sorted(str(value) for value in cal['cal_date'].dropna().astype(str).tolist())
             if not open_days:
+                self._prefer_eastmoney_fallback = True
                 return fallback
 
             today = self.end_date.strftime('%Y%m%d')
@@ -146,6 +459,7 @@ class CNFullMarketDownloader:
 
             return open_days[-1]
         except Exception:
+            self._prefer_eastmoney_fallback = True
             return fallback
 
     def _load_existing_data(self, filepath: str) -> tuple[pd.DataFrame, Optional[str]]:
@@ -284,25 +598,209 @@ class CNFullMarketDownloader:
 
     def _fetch_stock_frame(self, symbol: str, start_date_str: str, end_date_str: str) -> pd.DataFrame:
         """通过 Tushare 抓取指定时间窗口内的单只股票行情。"""
-        df = self.pro.daily(ts_code=symbol, start_date=start_date_str, end_date=end_date_str)
-        if df is None or df.empty:
-            return pd.DataFrame()
+        self._last_fetch_source = None
+        tushare_error: Exception | None = None
+        if not self._prefer_eastmoney_fallback:
+            try:
+                df = self.pro.daily(ts_code=symbol, start_date=start_date_str, end_date=end_date_str)
+                if df is not None and not df.empty:
+                    adj_df = self.pro.adj_factor(ts_code=symbol, start_date=start_date_str, end_date=end_date_str)
+                    if adj_df is not None and not adj_df.empty:
+                        df = df.merge(adj_df[['trade_date', 'adj_factor']], on='trade_date', how='left')
+                        # 计算复权价格
+                        df['adj_close'] = df['close'] * df['adj_factor']
+                        df['adj_open'] = df['open'] * df['adj_factor']
+                        df['adj_high'] = df['high'] * df['adj_factor']
+                        df['adj_low'] = df['low'] * df['adj_factor']
 
-        adj_df = self.pro.adj_factor(ts_code=symbol, start_date=start_date_str, end_date=end_date_str)
-        if adj_df is not None and not adj_df.empty:
-            df = df.merge(adj_df[['trade_date', 'adj_factor']], on='trade_date', how='left')
-            # 计算复权价格
-            df['adj_close'] = df['close'] * df['adj_factor']
-            df['adj_open'] = df['open'] * df['adj_factor']
-            df['adj_high'] = df['high'] * df['adj_factor']
-            df['adj_low'] = df['low'] * df['adj_factor']
+                    df['trade_date'] = pd.to_datetime(df['trade_date']).dt.strftime('%Y-%m-%d')
+                    self._last_fetch_source = "tushare"
+                    return (
+                        df.sort_values('trade_date')
+                        .drop_duplicates(subset=['trade_date'], keep='last')
+                        .reset_index(drop=True)
+                    )
+            except Exception as exc:
+                tushare_error = exc
 
-        df['trade_date'] = pd.to_datetime(df['trade_date']).dt.strftime('%Y-%m-%d')
-        return (
-            df.sort_values('trade_date')
-            .drop_duplicates(subset=['trade_date'], keep='last')
-            .reset_index(drop=True)
-        )
+        try:
+            fallback_df = self._fetch_stock_frame_from_eastmoney(symbol, start_date_str, end_date_str)
+            if not fallback_df.empty:
+                self._last_fetch_source = "eastmoney"
+                return fallback_df
+        except Exception:
+            pass
+
+        try:
+            yfinance_df = self._fetch_stock_frame_from_yfinance(symbol, start_date_str, end_date_str)
+            if not yfinance_df.empty:
+                self._last_fetch_source = "yfinance"
+                return yfinance_df
+        except Exception:
+            pass
+
+        if tushare_error is not None:
+            raise tushare_error
+        return pd.DataFrame()
+
+    def _save_download_frame(
+        self,
+        symbol: str,
+        category: str,
+        existing_df: pd.DataFrame,
+        latest_local_date: Optional[str],
+        df: pd.DataFrame,
+        *,
+        source: str,
+    ) -> Dict[str, Any]:
+        filepath = f"{self.dirs[category]}/{symbol}.csv"
+        final_df = df
+        status = 'success'
+        if not existing_df.empty:
+            final_df = (
+                pd.concat([existing_df, df], ignore_index=True)
+                .sort_values('trade_date')
+                .drop_duplicates(subset=['trade_date'], keep='last')
+                .reset_index(drop=True)
+            )
+            status = 'updated'
+
+        final_df.to_csv(filepath, index=False)
+        latest_saved_date = final_df['trade_date'].iloc[-1].replace('-', '')
+        api_calls = self.REQUESTS_PER_STOCK if source in {"tushare", "eastmoney"} else 0
+        return {
+            'symbol': symbol,
+            'category': category,
+            'status': status,
+            'records': len(final_df),
+            'mode': 'incremental' if status == 'updated' else 'full',
+            'latest_local_date': latest_saved_date,
+            'latest_trade_date': self.latest_trade_date,
+            'api_calls': api_calls,
+            'source': source,
+            'error': None
+        }
+
+    def _download_category_via_yfinance_batch(self, symbols: List[str], category: str) -> List[Dict]:
+        print(f"\n{'='*80}")
+        print(f"📥 下载 {category.upper()} ({len(symbols)} 只股票)")
+        print(f"{'='*80}")
+        print(f"时间范围: {self.start_date.strftime('%Y-%m-%d')} 至 {self.latest_trade_date}")
+        print(f"保存目录: {self.dirs[category]}")
+        print(f"回退数据源: yfinance(batch)")
+        print(f"{'='*80}\n")
+
+        results: List[Dict] = []
+        start_time = time.time()
+        total_batches = (len(symbols) + self.YFINANCE_BATCH_SIZE - 1) // self.YFINANCE_BATCH_SIZE
+
+        for batch_index in range(total_batches):
+            batch_start = batch_index * self.YFINANCE_BATCH_SIZE
+            batch_symbols = symbols[batch_start: batch_start + self.YFINANCE_BATCH_SIZE]
+            cache_map: Dict[str, tuple[pd.DataFrame, Optional[str]]] = {}
+            start_date_map: Dict[str, str] = {}
+
+            for symbol in batch_symbols:
+                filepath = f"{self.dirs[category]}/{symbol}.csv"
+                existing_df, latest_local_date = self._load_existing_data(filepath)
+                cache_map[symbol] = (existing_df, latest_local_date)
+                start_date_str = self.start_date.strftime('%Y%m%d')
+                is_incremental = bool(latest_local_date and len(existing_df) >= 200)
+                if is_incremental and latest_local_date:
+                    overlap_start = pd.to_datetime(latest_local_date) - timedelta(days=1)
+                    start_date_str = max(overlap_start.strftime('%Y%m%d'), start_date_str)
+                start_date_map[symbol] = start_date_str
+
+            min_start_date = min(start_date_map.values())
+            try:
+                fetched = self._fetch_batch_from_yfinance(batch_symbols, min_start_date, self.latest_trade_date)
+            except Exception as exc:
+                fetched = {}
+                batch_error = str(exc)[:100]
+            else:
+                batch_error = None
+
+            for symbol in batch_symbols:
+                existing_df, latest_local_date = cache_map[symbol]
+                df = fetched.get(symbol, pd.DataFrame())
+                if not df.empty:
+                    df = df[df["trade_date"] >= datetime.strptime(start_date_map[symbol], "%Y%m%d").strftime("%Y-%m-%d")].reset_index(drop=True)
+
+                if latest_local_date == self.latest_trade_date and len(existing_df) > 0:
+                    result = {
+                        'symbol': symbol,
+                        'category': category,
+                        'status': 'cached',
+                        'records': len(existing_df),
+                        'mode': 'up_to_date',
+                        'latest_local_date': latest_local_date,
+                        'latest_trade_date': self.latest_trade_date,
+                        'api_calls': 0,
+                        'source': None,
+                        'error': None
+                    }
+                elif not df.empty:
+                    result = self._save_download_frame(
+                        symbol,
+                        category,
+                        existing_df,
+                        latest_local_date,
+                        df,
+                        source="yfinance",
+                    )
+                elif not existing_df.empty:
+                    result = {
+                        'symbol': symbol,
+                        'category': category,
+                        'status': 'cached',
+                        'records': len(existing_df),
+                        'mode': 'suspended_or_no_increment',
+                        'latest_local_date': latest_local_date,
+                        'latest_trade_date': self.latest_trade_date,
+                        'api_calls': 0,
+                        'source': 'yfinance',
+                        'error': batch_error,
+                    }
+                else:
+                    result = {
+                        'symbol': symbol,
+                        'category': category,
+                        'status': 'no_data',
+                        'records': 0,
+                        'api_calls': 0,
+                        'source': 'yfinance',
+                        'error': batch_error or 'Empty data'
+                    }
+
+                results.append(result)
+                self.stats['total'] += 1
+                if result['status'] == 'success':
+                    self.stats['success'] += 1
+                elif result['status'] == 'updated':
+                    self.stats['updated'] += 1
+                elif result['status'] == 'cached':
+                    self.stats['cached'] += 1
+                elif result['status'] == 'no_data':
+                    self.stats['no_data'] += 1
+                else:
+                    self.stats['failed'] += 1
+
+            elapsed = time.time() - start_time
+            progress = len(results) / max(len(symbols), 1)
+            eta = elapsed / progress * (1 - progress) if progress > 0 else 0
+            print(
+                f"  批次: {batch_index + 1}/{total_batches} | "
+                f"进度: {len(results)}/{len(symbols)} ({progress*100:.1f}%) | "
+                f"成功: {self.stats['success']} | "
+                f"更新: {self.stats['updated']} | "
+                f"缓存: {self.stats['cached']} | "
+                f"失败: {self.stats['failed']} | "
+                f"ETA: {eta/60:.1f}分钟"
+            )
+
+        elapsed = time.time() - start_time
+        print(f"\n✅ {category.upper()} 下载完成! 耗时: {elapsed/60:.1f} 分钟")
+        return results
     
     def load_components(self, components_file: str = 'data/cn_universe/cn_index_components.json') -> Dict:
         """加载成分股"""
@@ -367,7 +865,8 @@ class CNFullMarketDownloader:
                         'mode': 'suspended_or_no_increment',
                         'latest_local_date': latest_local_date,
                         'latest_trade_date': self.latest_trade_date,
-                        'api_calls': self.REQUESTS_PER_STOCK,
+                        'api_calls': self.REQUESTS_PER_STOCK if self._last_fetch_source in {"tushare", "eastmoney"} else 0,
+                        'source': self._last_fetch_source,
                         'error': None
                     }
                 return {
@@ -375,35 +874,19 @@ class CNFullMarketDownloader:
                     'category': category,
                     'status': 'no_data',
                     'records': 0,
-                    'api_calls': self.REQUESTS_PER_STOCK,
+                    'api_calls': self.REQUESTS_PER_STOCK if self._last_fetch_source in {"tushare", "eastmoney"} else 0,
+                    'source': self._last_fetch_source,
                     'error': 'Empty data'
                 }
 
-            final_df = df
-            status = 'success'
-            if not existing_df.empty:
-                final_df = (
-                    pd.concat([existing_df, df], ignore_index=True)
-                    .sort_values('trade_date')
-                    .drop_duplicates(subset=['trade_date'], keep='last')
-                    .reset_index(drop=True)
-                )
-                status = 'updated'
-
-            final_df.to_csv(filepath, index=False)
-            latest_saved_date = final_df['trade_date'].iloc[-1].replace('-', '')
-
-            return {
-                'symbol': symbol,
-                'category': category,
-                'status': status,
-                'records': len(final_df),
-                'mode': 'incremental' if status == 'updated' else 'full',
-                'latest_local_date': latest_saved_date,
-                'latest_trade_date': self.latest_trade_date,
-                'api_calls': self.REQUESTS_PER_STOCK,
-                'error': None
-            }
+            return self._save_download_frame(
+                symbol,
+                category,
+                existing_df,
+                latest_local_date,
+                df,
+                source=self._last_fetch_source or "unknown",
+            )
             
         except Exception as e:
             return {
@@ -434,6 +917,9 @@ class CNFullMarketDownloader:
         )
         print(f"预计时间: {estimated_minutes:.1f} 分钟")
         print(f"{'='*80}\n")
+
+        if self._prefer_eastmoney_fallback and yf is not None:
+            return self._download_category_via_yfinance_batch(symbols, category)
         
         results = []
         start_time = time.time()

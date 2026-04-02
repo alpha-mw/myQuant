@@ -85,6 +85,11 @@ export function StockPoolInput() {
         return
       }
 
+      setField('universe_keys', nextKeys)
+      setField('stock_input_mode', nextKeys.length > 1 ? 'multi' : 'universe')
+      if (universeOperation === 'replace') {
+        setField('stock_pool', [])
+      }
       resolveMutation.mutate({ keys: nextKeys, operation: universeOperation })
       return
     }
@@ -96,6 +101,11 @@ export function StockPoolInput() {
       return
     }
 
+    setField('universe_keys', [key])
+    setField('stock_input_mode', 'universe')
+    if (universeOperation === 'replace') {
+      setField('stock_pool', [])
+    }
     resolveMutation.mutate({ keys: [key], operation: universeOperation })
   }
 

@@ -480,10 +480,11 @@ def _build_openai_compatible_request(
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
     }
+    token_key = "max_completion_tokens" if model.lower().startswith(("gpt-5", "o1-", "o3-", "o4-")) else "max_tokens"
     body: dict[str, Any] = {
         "model": model,
         "messages": messages,
-        "max_tokens": max_tokens,
+        token_key: max_tokens,
         "temperature": 0.3,
     }
     if response_json:

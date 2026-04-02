@@ -92,7 +92,8 @@ def test_cli_research_dispatches_single_mainline(monkeypatch):
 
 
 def test_single_mainline_one_symbol_mock_run_includes_version_fields(monkeypatch):
-    dates = pd.bdate_range("2024-01-01", periods=80)
+    end_date = pd.Timestamp.now().normalize()
+    dates = pd.bdate_range(end=end_date, periods=80)
     close = np.linspace(100, 110, len(dates))
     frame = pd.DataFrame(
         {
@@ -142,5 +143,5 @@ def test_single_mainline_one_symbol_mock_run_includes_version_fields(monkeypatch
     assert result.architecture_version == "12.0.0-stable"
     assert result.branch_schema_version == "branch-schema.v12.unified-mainline"
     assert result.calibration_schema_version
-    assert result.debate_template_version
+    assert result.agent_schema_version == "2026-03-23.agent.v1"
     assert result.final_strategy.architecture_version == result.architecture_version

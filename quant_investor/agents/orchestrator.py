@@ -49,7 +49,7 @@ class AgentOrchestrator:
         master_timeout: float = 30.0,
         total_timeout: float = 120.0,
         max_tokens_branch: int = 800,
-        max_tokens_master: int = 1500,
+        max_tokens_master: int = 3000,
     ) -> None:
         self.branch_model = branch_model
         self.master_model = master_model

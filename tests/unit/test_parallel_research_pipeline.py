@@ -24,7 +24,7 @@ from quant_investor.versioning import CURRENT_BRANCH_WEIGHTS
 
 
 def _make_symbol_frame(symbol: str, scale: float = 1.0, volatile: bool = False) -> pd.DataFrame:
-    dates = pd.bdate_range("2024-01-01", periods=160)
+    dates = pd.bdate_range(end=pd.Timestamp.now().normalize(), periods=160)
     base_seed = abs(hash(symbol)) % 1000
     rng = np.random.default_rng(base_seed)
     shock_scale = 0.05 if volatile else 0.015
@@ -130,8 +130,8 @@ def test_parallel_pipeline_runs_with_all_branches(monkeypatch):
     assert first_recommendation.suggested_shares % 100 == 0
     assert "组合级策略结论" in result.final_report
     assert "可执行交易计划" in result.final_report
-    assert result.calibrated_signals["kline"].branch_mode == "kline_dual_model"
-    assert result.calibrated_signals["fundamental"].branch_mode == "fundamental_snapshot_fusion"
+    assert result.calibrated_signals["kline"].branch_mode == "kline_symbol_parallel"
+    assert result.calibrated_signals["fundamental"].branch_mode == "fundamental_symbol_parallel"
     assert result.final_strategy.provenance_summary["synthetic_symbols"] == []
     assert result.branch_results["kline"].metadata["effective_backend"] == "hybrid"
     assert result.branch_results["kline"].metadata["requested_backend"] == "hybrid"

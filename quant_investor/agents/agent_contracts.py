@@ -170,6 +170,13 @@ class RiskAgentOutput(_CompatModel):
     reasoning: str = ""
 
 
+class WhatIfScenario(_CompatModel):
+    scenario: str = ""
+    trigger_condition: str = ""
+    expected_outcome: str = ""
+    probability: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
 class SymbolRecommendation(_CompatModel):
     """Review-layer recommendation for a single symbol."""
 
@@ -178,6 +185,12 @@ class SymbolRecommendation(_CompatModel):
     conviction: str = "neutral"
     rationale: str = ""
     target_weight: float = Field(default=0.0, ge=0.0, le=1.0)
+    entry_price: float | None = Field(default=None, ge=0.0)
+    target_price: float | None = Field(default=None, ge=0.0)
+    stop_loss: float | None = Field(default=None, ge=0.0)
+    position_size_pct: float | None = Field(default=None, ge=0.0, le=1.0)
+    risk_reward_ratio: float | None = None
+    what_if_scenarios: list[WhatIfScenario] = Field(default_factory=list)
 
 
 class MasterAgentInput(_CompatModel):
@@ -247,4 +260,5 @@ __all__ = [
     "RiskAgentInput",
     "RiskAgentOutput",
     "SymbolRecommendation",
+    "WhatIfScenario",
 ]

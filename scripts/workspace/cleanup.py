@@ -8,9 +8,9 @@ from pathlib import Path
 from typing import Sequence
 
 if __package__ in {None, ""}:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from scripts.workspace_layout import (
+from scripts.workspace.layout import (
     describe_environment_roles,
     ensure_runtime_tmp_dirs,
     get_repo_root,

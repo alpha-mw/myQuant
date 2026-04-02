@@ -24,7 +24,7 @@ import quant_investor.versioning as versioning
 
 
 def make_price_frame(symbol: str, periods: int = 8) -> pd.DataFrame:
-    dates = pd.date_range("2025-01-01", periods=periods, freq="D")
+    dates = pd.date_range(end=pd.Timestamp.now().normalize(), periods=periods, freq="D")
     return pd.DataFrame(
         {
             "date": dates,

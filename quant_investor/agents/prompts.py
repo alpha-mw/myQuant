@@ -68,7 +68,26 @@ JSON schema:
   "disagreement_areas": ["<area_1>", ...],
   "debate_resolution": ["<resolution_1>", ...],
   "top_picks": [
-    {"symbol": "<code>", "action": "buy"|"hold"|"sell", "conviction": "<level>", "rationale": "<why>", "target_weight": <0.0~1.0>},
+    {
+      "symbol": "<code>",
+      "action": "buy"|"hold"|"sell",
+      "conviction": "<level>",
+      "rationale": "<why>",
+      "target_weight": <0.0~1.0>,
+      "entry_price": <float|null>,
+      "target_price": <float|null>,
+      "stop_loss": <float|null>,
+      "position_size_pct": <float|null>,
+      "risk_reward_ratio": <float|null>,
+      "what_if_scenarios": [
+        {
+          "scenario": "加仓"|"减仓"|"离场",
+          "trigger_condition": "<condition>",
+          "expected_outcome": "<outcome>",
+          "probability": <0.0~1.0>
+        }
+      ]
+    },
     ...
   ],
   "portfolio_narrative": "<3-5 句投资论点>",
@@ -80,6 +99,9 @@ JSON schema:
 - final_score 不得偏离算法 ensemble baseline 的 aggregate_score 超过 ±0.30
 - 必须保留少数派意见（dissenting_views），即使最终不采纳
 - portfolio_narrative 必须清晰说明投资逻辑的因果链
+- entry_price / target_price / stop_loss / position_size_pct / risk_reward_ratio 仅作为建议字段，最终仓位仍由 PortfolioConstructor 决定
+- 若给出价格字段，risk_reward_ratio 应遵循 (target_price - entry_price) / (entry_price - stop_loss)
+- what_if_scenarios 至少给出 2-3 个场景，覆盖加仓 / 减仓 / 离场的触发条件
 """  # no .format() needed - no placeholders
 
 # ---------------------------------------------------------------------------
@@ -249,6 +271,7 @@ MASTER_SYSTEM_PROMPT = """\
 - 基本面和宏观分支的时间框架较长，给予更高的战略权重
 - 短期信号（K线、情绪）适合调节仓位时机，不宜改变战略方向
 - 算法 baseline 是重要参考，但 IC 可以在合理范围内偏离（±0.30）
+- 你可以输出更完整的单票投资建议，包括入场价、目标价、止损价、建议仓位和 what-if 情景，但这些仅供建议，不可覆盖最终组合构造结果
 
 注意：你的 portfolio_narrative 必须清晰说明投资逻辑的因果链——为什么买/卖/持有，理由是什么，风险在哪里。
 

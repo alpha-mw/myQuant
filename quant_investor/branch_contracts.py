@@ -79,6 +79,57 @@ class UnifiedDataBundle:
                 result.append(symbol)
         return result
 
+    def stale_symbols(self, max_stale_days: int = 3) -> list[str]:
+        """返回最后数据点超过 `max_stale_days` 个交易日的标的列表。"""
+        max_stale_days = max(int(max_stale_days), 0)
+        if not self.symbol_data:
+            return []
+
+        reference_date = pd.to_datetime(
+            self.metadata.get("end_date")
+            or self.metadata.get("as_of")
+            or pd.Timestamp.now().normalize(),
+            errors="coerce",
+        )
+        if pd.isna(reference_date):
+            reference_date = pd.Timestamp.now().normalize()
+        reference_date = pd.Timestamp(reference_date).normalize()
+
+        stale: list[str] = []
+        for symbol, df in self.symbol_data.items():
+            last_date = self._frame_last_date(df)
+            if last_date is None:
+                stale.append(symbol)
+                continue
+            gap = self._trading_day_gap(last_date, reference_date)
+            if gap > max_stale_days:
+                stale.append(symbol)
+        return stale
+
+    @staticmethod
+    def _frame_last_date(df: pd.DataFrame | None) -> pd.Timestamp | None:
+        if df is None or df.empty:
+            return None
+        if "date" in df.columns:
+            values = pd.to_datetime(df["date"], errors="coerce")
+        else:
+            values = pd.to_datetime(df.index, errors="coerce")
+        values = values[pd.notna(values)]
+        if len(values) == 0:
+            return None
+        return pd.Timestamp(values.max()).normalize()
+
+    @staticmethod
+    def _trading_day_gap(last_date: pd.Timestamp, reference_date: pd.Timestamp) -> int:
+        last_date = pd.Timestamp(last_date).normalize()
+        reference_date = pd.Timestamp(reference_date).normalize()
+        if last_date >= reference_date:
+            return 0
+        start = last_date + pd.offsets.BDay(1)
+        if start > reference_date:
+            return 0
+        return len(pd.bdate_range(start=start, end=reference_date))
+
     def degraded_symbols(self) -> list[str]:
         """返回非纯真实来源的股票列表。"""
         result = []
@@ -573,6 +624,10 @@ class ResearchPipelineResult:
     execution_log: list[str] = field(default_factory=list)
     timings: dict[str, float] = field(default_factory=dict)
     calibrated_signals: dict[str, CalibratedBranchSignal] = field(default_factory=dict)
+    global_context: Any = None
+    symbol_research_packets: dict[str, Any] = field(default_factory=dict)
+    shortlist: list[Any] = field(default_factory=list)
+    portfolio_decisions: list[Any] = field(default_factory=list)
 
 
 __all__ = [

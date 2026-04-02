@@ -14,6 +14,7 @@ from quant_investor.agents.agent_contracts import (
     RiskAgentInput,
     RiskAgentOutput,
     SymbolRecommendation,
+    WhatIfScenario,
 )
 from quant_investor.agents.llm_client import LLMClient, LLMCallError, has_any_provider
 from quant_investor.agents.master_agent import MasterAgent
@@ -35,5 +36,6 @@ __all__ = [
     "RiskAgentOutput",
     "RiskSubAgent",
     "SymbolRecommendation",
+    "WhatIfScenario",
     "has_any_provider",
 ]

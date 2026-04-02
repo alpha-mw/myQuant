@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from scripts.workspace_cleanup import main as cleanup_main
-from scripts.workspace_layout import (
+from scripts.workspace.cleanup import main as cleanup_main
+from scripts.workspace.layout import (
     describe_environment_roles,
     ensure_runtime_tmp_dirs,
     iter_cleanup_targets,

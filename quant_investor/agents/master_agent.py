@@ -14,6 +14,7 @@ from quant_investor.agents.agent_contracts import (
     MasterAgentInput,
     MasterAgentOutput,
     SymbolRecommendation,
+    WhatIfScenario,
 )
 from quant_investor.agents.llm_client import LLMClient, LLMCallError
 from quant_investor.agents.prompts import build_master_agent_messages
@@ -114,7 +115,7 @@ class MasterAgent:
         for pick in raw_picks:
             if isinstance(pick, dict):
                 try:
-                    parsed_picks.append(SymbolRecommendation.model_validate(pick))
+                    parsed_picks.append(self._normalize_symbol_recommendation(pick))
                 except Exception:
                     pass
         raw["top_picks"] = parsed_picks
@@ -125,6 +126,107 @@ class MasterAgent:
                 raw[field] = []
 
         return MasterAgentOutput.model_validate(raw)
+
+    def _normalize_symbol_recommendation(self, payload: dict[str, Any]) -> SymbolRecommendation:
+        recommendation = SymbolRecommendation.model_validate(payload)
+        recommendation = self._attach_position_size_hint(recommendation)
+        recommendation = self._sanitize_price_structure(recommendation)
+        return recommendation
+
+    @staticmethod
+    def _attach_position_size_hint(recommendation: SymbolRecommendation) -> SymbolRecommendation:
+        payload = recommendation.model_dump()
+        if payload.get("position_size_pct") is None and payload.get("target_weight") is not None:
+            payload["position_size_pct"] = float(payload.get("target_weight", 0.0))
+        return SymbolRecommendation.model_validate(payload)
+
+    @staticmethod
+    def _sanitize_price_structure(recommendation: SymbolRecommendation) -> SymbolRecommendation:
+        payload = recommendation.model_dump()
+        action = str(payload.get("action", "hold")).strip().lower()
+        entry_price = payload.get("entry_price")
+        target_price = payload.get("target_price")
+        stop_loss = payload.get("stop_loss")
+
+        if not MasterAgent._prices_are_valid(entry_price, target_price, stop_loss, action):
+            payload["entry_price"] = None
+            payload["target_price"] = None
+            payload["stop_loss"] = None
+            payload["risk_reward_ratio"] = None
+            payload["what_if_scenarios"] = MasterAgent._normalize_what_if_scenarios(
+                payload.get("what_if_scenarios", [])
+            )
+            return SymbolRecommendation.model_validate(payload)
+
+        ratio = payload.get("risk_reward_ratio")
+        if ratio is None:
+            payload["risk_reward_ratio"] = MasterAgent._compute_risk_reward_ratio(
+                entry_price=float(entry_price),
+                target_price=float(target_price),
+                stop_loss=float(stop_loss),
+                action=action,
+            )
+
+        payload["what_if_scenarios"] = MasterAgent._normalize_what_if_scenarios(
+            payload.get("what_if_scenarios", [])
+        )
+        return SymbolRecommendation.model_validate(payload)
+
+    @staticmethod
+    def _normalize_what_if_scenarios(payload: Any) -> list[WhatIfScenario]:
+        if not isinstance(payload, list):
+            return []
+        scenarios: list[WhatIfScenario] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            try:
+                scenarios.append(WhatIfScenario.model_validate(item))
+            except Exception:
+                continue
+        return scenarios
+
+    @staticmethod
+    def _prices_are_valid(
+        entry_price: Any,
+        target_price: Any,
+        stop_loss: Any,
+        action: str,
+    ) -> bool:
+        try:
+            entry = float(entry_price)
+            target = float(target_price)
+            stop = float(stop_loss)
+        except (TypeError, ValueError):
+            return False
+        if min(entry, target, stop) <= 0:
+            return False
+        if action == "buy":
+            return stop < entry < target
+        if action == "sell":
+            return target < entry < stop
+        return True
+
+    @staticmethod
+    def _compute_risk_reward_ratio(
+        *,
+        entry_price: float,
+        target_price: float,
+        stop_loss: float,
+        action: str,
+    ) -> float | None:
+        try:
+            if action == "sell":
+                risk = stop_loss - entry_price
+                reward = entry_price - target_price
+            else:
+                risk = entry_price - stop_loss
+                reward = target_price - entry_price
+            if risk <= 0:
+                return None
+            return _clamp(reward / risk, -1.0, 100.0)
+        except Exception:
+            return None
 
     @staticmethod
     def _score_to_conviction(score: float) -> str:

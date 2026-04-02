@@ -424,3 +424,74 @@ def test_unified_pipeline_skip_download_tolerates_missing_tushare(monkeypatch):
     assert output["analysis"] == {"hs300": [{"batch_id": 1}]}
     assert captured_analysis["market"] == "CN"
     assert captured_analysis["categories"] == ["hs300"]
+
+
+def test_unified_pipeline_blocks_formal_analysis_when_us_data_stays_incomplete(monkeypatch):
+    analysis_called = {"value": False}
+
+    class FakeDownloader:
+        def __init__(self):
+            self.download_calls: list[dict[str, Any]] = []
+
+        def load_universe(self):
+            return {
+                "large_cap": ["BF-B"],
+                "mid_cap": [],
+                "small_cap": [],
+                "stats": {"total_unique": 1},
+            }
+
+        def detect_latest_available_trade_date(self):
+            return "2026-03-27"
+
+        def build_completeness_report(
+            self,
+            *,
+            universe=None,
+            categories=None,
+            required_latest_trade_date=None,
+        ):
+            return {
+                "latest_trade_date": "2026-03-27",
+                "complete": False,
+                "blocking_incomplete_count": 1,
+                "categories": {
+                    "large_cap": {
+                        "expected": 1,
+                        "latest_trade_date": "2026-03-27",
+                        "date_counts": {"2026-03-26": 1},
+                        "blocking_missing_symbols": [],
+                        "blocking_stale_symbols": [
+                            {"symbol": "BF-B", "latest_local_date": "2026-03-26"}
+                        ],
+                        "blocking_incomplete_count": 1,
+                    }
+                },
+            }
+
+        def download_all(self, **kwargs):
+            self.download_calls.append(kwargs)
+            return {"timestamp": "20260327_130000"}
+
+    downloader = FakeDownloader()
+
+    def _run_market_analysis(**kwargs):
+        analysis_called["value"] = True
+        return {"results": {}, "reports": {}}
+
+    monkeypatch.setattr(market_pipeline, "create_downloader", lambda market, **kwargs: downloader)
+    monkeypatch.setattr(market_pipeline, "get_all_local_symbols", lambda category, market=None: [])
+    monkeypatch.setattr(market_pipeline, "run_market_analysis", _run_market_analysis)
+
+    output = market_pipeline.run_unified_pipeline(
+        market="US",
+        categories=["large_cap"],
+        mode="sample",
+        verbose=False,
+    )
+
+    assert analysis_called["value"] is False
+    assert output["analysis"] == {}
+    assert output["reports"] == {}
+    assert output["blocked"]["reason"] == "data_incomplete"
+    assert downloader.download_calls[0]["force_refresh_by_category"] == {"large_cap": ["BF-B"]}

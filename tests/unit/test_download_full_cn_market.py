@@ -10,6 +10,7 @@ import types
 from datetime import datetime, timedelta
 
 import pandas as pd
+import pytest
 
 
 def _load_module(monkeypatch):
@@ -230,6 +231,143 @@ def test_download_stock_skips_when_file_is_latest(monkeypatch, tmp_path):
     assert result["status"] == "cached"
     assert result["api_calls"] == 0
     assert fake_pro.daily_calls == []
+
+
+def test_download_stock_falls_back_to_eastmoney_when_tushare_is_empty(monkeypatch, tmp_path):
+    module = _load_module(monkeypatch)
+
+    class EmptyDailyPro(FakePro):
+        def daily(self, ts_code: str, start_date: str, end_date: str):
+            self.daily_calls.append((ts_code, start_date, end_date))
+            return pd.DataFrame()
+
+        def adj_factor(self, ts_code: str, start_date: str, end_date: str):
+            return pd.DataFrame()
+
+    fake_pro = EmptyDailyPro()
+    monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
+
+    downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
+
+    def _fake_request(symbol: str, start_date_str: str, end_date_str: str, *, fqt: str):
+        assert symbol == "000001.SZ"
+        assert start_date_str == downloader.start_date.strftime("%Y%m%d")
+        assert end_date_str == downloader.latest_trade_date
+        if fqt == "0":
+            return [
+                "2026-03-13,10.40,10.70,10.80,10.30,1500,15000000,4.81,2.88,0.30,0.50",
+                "2026-03-16,10.70,10.90,11.00,10.60,1600,16000000,3.74,1.87,0.20,0.45",
+            ]
+        return [
+            "2026-03-13,20.80,21.40,21.60,20.60,1500,15000000,4.81,2.88,0.60,0.50",
+            "2026-03-16,21.40,21.80,22.00,21.20,1600,16000000,3.74,1.87,0.40,0.45",
+        ]
+
+    monkeypatch.setattr(downloader, "_request_eastmoney_kline", _fake_request)
+
+    result = downloader.download_stock("000001.SZ", "hs300")
+
+    assert result["status"] == "success"
+    assert fake_pro.daily_calls[-1] == (
+        "000001.SZ",
+        downloader.start_date.strftime("%Y%m%d"),
+        downloader.latest_trade_date,
+    )
+
+    updated_df = pd.read_csv(tmp_path / "hs300" / "000001.SZ.csv")
+    assert updated_df["trade_date"].iloc[-1] == "2026-03-16"
+    assert updated_df["amount"].iloc[-1] == pytest.approx(16000.0)
+    assert updated_df["adj_close"].iloc[-1] == pytest.approx(21.8)
+    assert updated_df["adj_factor"].iloc[-1] == pytest.approx(2.0)
+
+
+def test_download_stock_falls_back_to_yfinance_when_other_sources_fail(monkeypatch, tmp_path):
+    module = _load_module(monkeypatch)
+
+    class EmptyDailyPro(FakePro):
+        def daily(self, ts_code: str, start_date: str, end_date: str):
+            self.daily_calls.append((ts_code, start_date, end_date))
+            return pd.DataFrame()
+
+        def adj_factor(self, ts_code: str, start_date: str, end_date: str):
+            return pd.DataFrame()
+
+    fake_pro = EmptyDailyPro()
+    monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
+
+    downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
+    monkeypatch.setattr(
+        downloader,
+        "_fetch_stock_frame_from_eastmoney",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("eastmoney down")),
+    )
+
+    class FakeTicker:
+        def __init__(self, symbol: str) -> None:
+            self.symbol = symbol
+
+        def history(self, **_kwargs):
+            assert self.symbol == "000001.SZ"
+            return pd.DataFrame(
+                {
+                    "Open": [10.0, 10.2],
+                    "High": [10.4, 10.6],
+                    "Low": [9.9, 10.1],
+                    "Close": [10.2, 10.5],
+                    "Adj Close": [20.4, 21.0],
+                    "Volume": [1000, 1200],
+                },
+                index=pd.to_datetime(["2026-03-13", "2026-03-16"]),
+            )
+
+    monkeypatch.setattr(module, "yf", types.SimpleNamespace(Ticker=FakeTicker))
+
+    result = downloader.download_stock("000001.SZ", "hs300")
+
+    assert result["status"] == "success"
+    assert result["source"] == "yfinance"
+    updated_df = pd.read_csv(tmp_path / "hs300" / "000001.SZ.csv")
+    assert updated_df["trade_date"].tolist() == ["2026-03-13", "2026-03-16"]
+    assert updated_df["amount"].iloc[-1] == pytest.approx(10.5 * 1200 / 1000.0)
+    assert updated_df["adj_factor"].iloc[-1] == pytest.approx(2.0)
+    assert updated_df["adj_close"].iloc[-1] == pytest.approx(21.0)
+
+
+def test_download_category_uses_yfinance_batch_when_fallback_preferred(monkeypatch, tmp_path):
+    module = _load_module(monkeypatch)
+    fake_pro = FakePro()
+    monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
+
+    downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
+    downloader._prefer_eastmoney_fallback = True
+
+    def _fake_download(symbols, **_kwargs):
+        frames = {}
+        for idx, symbol in enumerate(symbols):
+            frames[symbol] = pd.DataFrame(
+                {
+                    "Open": [10.0 + idx, 10.2 + idx],
+                    "High": [10.4 + idx, 10.6 + idx],
+                    "Low": [9.9 + idx, 10.1 + idx],
+                    "Close": [10.2 + idx, 10.5 + idx],
+                    "Adj Close": [10.2 + idx, 10.5 + idx],
+                    "Volume": [1000 + idx, 1200 + idx],
+                },
+                index=pd.to_datetime(["2026-03-13", "2026-03-16"]),
+            )
+        return pd.concat(frames, axis=1)
+
+    monkeypatch.setattr(module, "yf", types.SimpleNamespace(download=_fake_download))
+    downloader.YFINANCE_BATCH_SIZE = 2
+
+    results = downloader.download_category(["000001.SZ", "000002.SZ"], "hs300")
+
+    assert [item["status"] for item in results] == ["success", "success"]
+    assert [item["source"] for item in results] == ["yfinance", "yfinance"]
+    first = pd.read_csv(tmp_path / "hs300" / "000001.SZ.csv")
+    second = pd.read_csv(tmp_path / "hs300" / "000002.SZ.csv")
+    assert first["trade_date"].iloc[-1] == "2026-03-16"
+    assert second["trade_date"].iloc[-1] == "2026-03-16"
 
 
 def test_download_category_only_sleeps_when_api_called(monkeypatch, tmp_path):

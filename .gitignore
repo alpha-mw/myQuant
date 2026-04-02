@@ -74,9 +74,11 @@ data/
 reports/
 models/
 cache/
+.cache/
 output/
 results/
 logs/
+.claude/worktrees/
 
 # OS
 .DS_Store
@@ -86,3 +88,6 @@ Thumbs.db
 tmp/
 temp/
 *.tmp
+.pytest_cache/
+__pycache__/
+.coverage

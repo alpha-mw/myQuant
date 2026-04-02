@@ -1,8 +1,8 @@
-"""Uvicorn entry point for the myQuant web application."""
+"""Uvicorn entry point for the research workspace application."""
 
 from pathlib import Path
 
-from web.api import app as workspace_app
+from web.workspace_app import app as workspace_app
 from web.config import API_HOST, API_PORT
 
 app = workspace_app

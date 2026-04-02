@@ -46,3 +46,34 @@ def create_tushare_pro(ts_module: Any, token: str, http_url: str | None = None) 
     if http_url and hasattr(pro, "_DataApi__http_url"):
         pro._DataApi__http_url = http_url
     return pro
+
+
+def create_tushare_pro_with_fallback(
+    ts_module: Any,
+    primary_token: str,
+    primary_url: str | None = None,
+    fallback_token: str = "",
+    fallback_url: str | None = None,
+) -> tuple[Any | None, str]:
+    """
+    依次尝试主 token 和备用 token，返回客户端以及命中的来源标签。
+
+    任何单个 token 初始化失败都不会阻断下一候选，方便上层在代理失效时
+    回退到官方 API 或备用凭据。
+    """
+    candidates = [
+        ("primary", primary_token, primary_url),
+        ("fallback", fallback_token, fallback_url),
+    ]
+
+    for source, token, url in candidates:
+        if not token or not token.strip():
+            continue
+        try:
+            pro = create_tushare_pro(ts_module, token, url)
+        except Exception:
+            continue
+        if pro is not None:
+            return pro, source
+
+    return None, "unavailable"

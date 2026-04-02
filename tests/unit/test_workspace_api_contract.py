@@ -4,13 +4,14 @@ import json
 import threading
 import time
 
+import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
 import quant_investor.pipeline as pipeline_module
-from web.api import app
 from web.services.research_runner import job_manager
 from web.services.run_history_store import history_store
+from web.workspace_app import app
 
 
 class _FakeLLMUsage:
@@ -200,6 +201,63 @@ def test_universe_presets_cn_includes_all_a(workspace_client: TestClient):
     assert "all_a" in keys
     label = next(p["label"] for p in resp.json()["presets"] if p["key"] == "all_a")
     assert "A股" in label or "全部" in label
+
+
+def test_universe_resolve_cn_falls_back_to_local_snapshot_when_tushare_unavailable(
+    workspace_client: TestClient,
+    monkeypatch,
+):
+    from quant_investor.data._tushare_client import TushareClientPool
+
+    def _raise_query(self, api_name: str, **kwargs):
+        raise RuntimeError(f"{api_name} unavailable in test")
+
+    monkeypatch.setattr(TushareClientPool, "_instance", None)
+    monkeypatch.setattr(TushareClientPool, "query", _raise_query)
+
+    resp = workspace_client.post(
+        "/api/universe/CN/resolve",
+        json={"keys": ["hs300"], "operation": "replace"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] == 300
+    assert body["resolved_keys"] == ["hs300"]
+    assert body["selection_meta"]["per_key_counts"] == {"hs300": 300}
+    assert "000001.SZ" in body["symbols"]
+    assert "600519.SH" in body["symbols"]
+
+
+def test_universe_resolve_cn_uses_latest_tushare_trade_date(
+    workspace_client: TestClient,
+    monkeypatch,
+):
+    from quant_investor.data._tushare_client import TushareClientPool
+
+    def _fake_query(self, api_name: str, **kwargs):
+        assert api_name == "index_weight"
+        return pd.DataFrame(
+            [
+                {"trade_date": "20240131", "con_code": "000001.SZ"},
+                {"trade_date": "20240131", "con_code": "000002.SZ"},
+                {"trade_date": "20231229", "con_code": "600519.SH"},
+            ]
+        )
+
+    monkeypatch.setattr(TushareClientPool, "_instance", None)
+    monkeypatch.setattr(TushareClientPool, "query", _fake_query)
+
+    resp = workspace_client.post(
+        "/api/universe/CN/resolve",
+        json={"keys": ["hs300"], "operation": "replace"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] == 2
+    assert body["symbols"] == ["000001.SZ", "000002.SZ"]
+    assert body["selection_meta"]["per_key_counts"] == {"hs300": 2}
 
 
 def test_universe_resolve_dedupes_and_sorts(workspace_client: TestClient, monkeypatch):

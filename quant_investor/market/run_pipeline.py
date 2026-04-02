@@ -162,6 +162,11 @@ def _is_missing_downloader_dependency(error: RuntimeError) -> bool:
     return "tushare" in lowered and ("未安装" in message or "not installed" in lowered)
 
 
+def _should_block_formal_analysis(download_stage: dict[str, Any]) -> bool:
+    completeness = download_stage.get("completeness_after") or download_stage.get("completeness_before")
+    return bool(completeness) and not bool(completeness.get("complete", False))
+
+
 def _run_download_stage(
     *,
     market: str,
@@ -341,6 +346,28 @@ def run_unified_pipeline(
         max_download_rounds=max_download_rounds,
         mode=mode,
     )
+
+    if _should_block_formal_analysis(download_stage):
+        _print_stage_header(2, "正式分析已阻塞")
+        print("❌ 数据完整性校验未通过，已停止正式分析。")
+        completeness = download_stage.get("completeness_after") or download_stage.get("completeness_before")
+        _print_completeness_summary(completeness or {})
+        return {
+            "market": settings.market,
+            "categories": selected_categories,
+            "download": download_stage,
+            "analysis": {},
+            "reports": {},
+            "blocked": {
+                "reason": "data_incomplete",
+                "completeness": completeness,
+            },
+            "timing": {
+                "download_seconds": download_duration,
+                "analysis_seconds": 0.0,
+                "total_seconds": time.time() - total_started,
+            },
+        }
 
     _print_stage_header(2, "全市场分析与报告生成")
     analysis_started = time.time()
