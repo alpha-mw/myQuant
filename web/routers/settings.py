@@ -25,13 +25,10 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 # Canonical (name, env_key) registry shared by GET and PATCH
 _CREDENTIAL_REGISTRY: list[tuple[str, str]] = [
     ("Tushare",       "TUSHARE_TOKEN"),
-    ("OpenAI",        "OPENAI_API_KEY"),
-    ("Anthropic",     "ANTHROPIC_API_KEY"),
+    ("Moonshot Kimi", "KIMI_API_KEY"),
     ("DeepSeek",      "DEEPSEEK_API_KEY"),
-    ("Google Gemini", "GOOGLE_API_KEY"),
     ("Finnhub",       "FINNHUB_API_KEY"),
     ("Aliyun Qwen",   "DASHSCOPE_API_KEY"),
-    ("Moonshot Kimi", "KIMI_API_KEY"),
     ("FRED",          "FRED_API_KEY"),
 ]
 
@@ -45,14 +42,11 @@ _NUMERIC_REGISTRY: list[tuple[str, str]] = [
 # Maps SettingsUpdateRequest field names → env keys for credentials
 _CREDENTIAL_FIELD_MAP: list[tuple[str, str]] = [
     ("tushare_token",      "TUSHARE_TOKEN"),
-    ("openai_api_key",     "OPENAI_API_KEY"),
-    ("anthropic_api_key",  "ANTHROPIC_API_KEY"),
+    ("kimi_api_key",       "KIMI_API_KEY"),
     ("deepseek_api_key",   "DEEPSEEK_API_KEY"),
-    ("google_api_key",     "GOOGLE_API_KEY"),
     ("fred_api_key",       "FRED_API_KEY"),
     ("finnhub_api_key",    "FINNHUB_API_KEY"),
     ("dashscope_api_key",  "DASHSCOPE_API_KEY"),
-    ("kimi_api_key",       "KIMI_API_KEY"),
 ]
 
 _ENV_PATH = Path(".env")

@@ -17,9 +17,11 @@ def test_full_market_batch_end_to_end(monkeypatch, tmp_path):
 
     report_bundle = run.report_bundle
     reports = run.output["reports"]
-    init_kwargs = run.captured_inits[0]
+    dag_kwargs = run.captured_dag_kwargs[0]
 
-    assert init_kwargs["kline_backend"] == "heuristic"
+    assert dag_kwargs["market"] == "CN"
+    assert dag_kwargs["categories"] == ["core"]
+    assert dag_kwargs["master_reasoning_effort"] == "high"
     assert isinstance(report_bundle, ReportBundle)
     assert report_bundle.agent_name == "NarratorAgent"
     assert_protocol_bundle(
@@ -43,16 +45,18 @@ def test_full_market_batch_passes_agent_layer_kwargs(monkeypatch, tmp_path):
         analysis_kwargs={
             "enable_agent_layer": True,
             "agent_model": "deepseek-chat",
-            "master_model": "gpt-5.4-mini",
+            "master_model": "deepseek-chat",
+            "master_reasoning_effort": "high",
             "agent_timeout": 30.0,
             "master_timeout": 60.0,
         },
     )
 
-    init_kwargs = run.captured_inits[0]
+    dag_kwargs = run.captured_dag_kwargs[0]
 
-    assert init_kwargs["enable_agent_layer"] is True
-    assert init_kwargs["agent_model"] == "deepseek-chat"
-    assert init_kwargs["master_model"] == "gpt-5.4-mini"
-    assert init_kwargs["agent_timeout"] == 30.0
-    assert init_kwargs["master_timeout"] == 60.0
+    assert dag_kwargs["enable_agent_layer"] is True
+    assert dag_kwargs["agent_model"] == "deepseek-chat"
+    assert dag_kwargs["master_model"] == "deepseek-chat"
+    assert dag_kwargs["master_reasoning_effort"] == "high"
+    assert dag_kwargs["agent_timeout"] == 30.0
+    assert dag_kwargs["master_timeout"] == 60.0

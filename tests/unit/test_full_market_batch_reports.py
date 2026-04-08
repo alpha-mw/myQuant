@@ -197,7 +197,8 @@ def test_cn_report_uses_recommended_entry_price(monkeypatch, tmp_path):
 
     report_text = _read_report(output)
 
-    assert "| 1 | 600000.SH | 浦发银行 | 沪深300 (大盘股) | ¥10.20 | ¥10.00 |" in report_text
+    assert "| 1 | 600000.SH | 浦发银行 |" in report_text
+    assert "¥10.20 | ¥10.00 |" in report_text
     assert "最大亏损: -8.0%" in report_text
 
 

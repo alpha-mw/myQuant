@@ -107,7 +107,7 @@ ANALYSIS_PRESETS: dict[str, dict[str, Any]] = {
         "portfolio": {"candidate_limit": 5, "allocation_mode": "conviction_weight", "allow_cash_buffer": True},
         "llm_debate": {
             "enabled": True,
-            "models": ["deepseek-chat", "gpt-4.1-mini", "claude-3-5-sonnet"],
+            "models": ["moonshot-v1-8k", "deepseek-chat", "qwen-plus"],
             "rounds": 3,
             "assignment_mode": "random_balanced",
             "judge_mode": "auto",
@@ -137,7 +137,7 @@ ANALYSIS_PRESETS: dict[str, dict[str, Any]] = {
         "portfolio": {"candidate_limit": 10, "allocation_mode": "risk_budget", "allow_cash_buffer": True},
         "llm_debate": {
             "enabled": True,
-            "models": ["deepseek-chat", "gpt-4.1-mini"],
+            "models": ["moonshot-v1-8k", "deepseek-chat"],
             "rounds": 2,
             "assignment_mode": "random_balanced",
             "judge_mode": "auto",
@@ -207,10 +207,11 @@ RISK_TEMPLATES = [
 ]
 
 LLM_MODELS = [
+    {"id": "moonshot-v1-128k", "label": "Kimi Moonshot 128K", "provider": "Kimi", "env": "KIMI_API_KEY"},
+    {"id": "moonshot-v1-32k", "label": "Kimi Moonshot 32K", "provider": "Kimi", "env": "KIMI_API_KEY"},
+    {"id": "moonshot-v1-8k", "label": "Kimi Moonshot 8K", "provider": "Kimi", "env": "KIMI_API_KEY"},
     {"id": "deepseek-chat", "label": "DeepSeek Chat", "provider": "DeepSeek", "env": "DEEPSEEK_API_KEY"},
-    {"id": "gpt-4.1-mini", "label": "GPT-4.1 mini", "provider": "OpenAI", "env": "OPENAI_API_KEY"},
-    {"id": "claude-3-5-sonnet", "label": "Claude 3.5 Sonnet", "provider": "Anthropic", "env": "ANTHROPIC_API_KEY"},
-    {"id": "gemini-2.0-flash", "label": "Gemini 2.0 Flash", "provider": "Google", "env": "GOOGLE_API_KEY"},
+    {"id": "deepseek-reasoner", "label": "DeepSeek Reasoner", "provider": "DeepSeek", "env": "DEEPSEEK_API_KEY"},
     {"id": "qwen-plus", "label": "通义千问 Plus", "provider": "Alibaba", "env": "DASHSCOPE_API_KEY"},
 ]
 
@@ -616,7 +617,7 @@ def _run_market_analysis(
     payload: dict[str, Any],
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    from web.tasks.run_analysis_job import run_job
+    from quant_investor.market.dag_executor import execute_market_dag
 
     normalized_request = deepcopy(payload)
     targets = list(normalized_request.get("targets") or normalized_request.get("stocks") or [])
@@ -624,120 +625,91 @@ def _run_market_analysis(
         raise ValueError("当前市场下没有可分析的股票")
 
     market = str(normalized_request.get("market", "CN")).upper()
-    batch_size = _market_batch_size(normalized_request)
-    batches = [targets[index : index + batch_size] for index in range(0, len(targets), batch_size)]
-    total_batches = len(batches)
+    started_at = time.perf_counter()
+    if progress_callback is not None:
+        progress_callback(
+            {
+                "status_message": f"统一 DAG 执行中：{market} 市场，{len(targets)} 只股票",
+                "progress": {"current_batch": 1, "total_batches": 1},
+            }
+        )
+
     capital = float(normalized_request.get("risk", {}).get("capital", 1_000_000.0))
     candidate_limit = int(normalized_request.get("portfolio", {}).get("candidate_limit", 12) or 12)
     max_single_position = float(normalized_request.get("risk", {}).get("max_single_position", 0.2) or 0.2)
-
-    warnings: list[str] = []
-    if normalized_request.get("branches", {}).get("llm_debate", {}).get("enabled"):
-        normalized_request["branches"]["llm_debate"]["enabled"] = False
-        normalized_request["llm_debate"]["enabled"] = False
-        normalized_request["llm_debate"]["models"] = []
-        normalized_request["llm_debate"]["assignments"] = []
-        warnings.append("全市场分析已自动关闭 LLM 多空辩论分支，以避免超长时延和过高调用成本。")
-
-    branch_scores: dict[str, list[float]] = {name: [] for name in BRANCH_ORDER}
-    branch_confidences: dict[str, list[float]] = {name: [] for name in BRANCH_ORDER}
-    branch_top_symbols: dict[str, Counter[str]] = {name: Counter() for name in BRANCH_ORDER}
-    branch_risks: dict[str, list[str]] = {name: [] for name in BRANCH_ORDER}
-    risk_volatility: list[float] = []
-    risk_drawdown: list[float] = []
-    risk_sharpe: list[float] = []
-    style_counter: Counter[str] = Counter()
-    batch_target_exposures: list[float] = []
-    aggregated_recommendations: list[dict[str, Any]] = []
-    execution_log: list[str] = []
-    started_at = time.perf_counter()
-
-    for index, batch_targets in enumerate(batches, start=1):
-        if progress_callback is not None:
-            progress_callback(
-                {
-                    "status_message": f"全市场分批扫描中：第 {index}/{total_batches} 批，{len(batch_targets)} 只股票",
-                    "progress": {"current_batch": index, "total_batches": total_batches},
-                }
-            )
-
-        batch_request = deepcopy(normalized_request)
-        batch_request["targets"] = batch_targets
-        batch_request["stocks"] = batch_targets
-
-        batch_started = time.perf_counter()
-        batch_result = run_job(batch_request)
-        batch_elapsed = time.perf_counter() - batch_started
-        execution_log.append(
-            f"[{datetime.now().strftime('%H:%M:%S')}] 第 {index}/{total_batches} 批完成，"
-            f"扫描 {len(batch_targets)} 只，耗时 {batch_elapsed:.1f}s。"
-        )
-
-        batch_target_exposures.append(float(batch_result.get("target_exposure", 0.0)))
-        style_counter[str(batch_result.get("style_bias", "均衡"))] += 1
-        aggregated_recommendations.extend(
-            item for item in batch_result.get("trade_recommendations", []) if isinstance(item, dict)
-        )
-
-        batch_risk = _ensure_dict(batch_result.get("risk"))
-        risk_volatility.append(float(batch_risk.get("volatility", 0.0)))
-        risk_drawdown.append(float(batch_risk.get("max_drawdown", 0.0)))
-        risk_sharpe.append(float(batch_risk.get("sharpe_ratio", 0.0)))
-        warnings.extend(str(item) for item in _ensure_list(batch_risk.get("warnings")))
-
-        for branch in batch_result.get("branches", []):
-            if not isinstance(branch, dict):
-                continue
-            branch_name = str(branch.get("branch_name", ""))
-            if branch_name not in branch_scores:
-                continue
-            branch_scores[branch_name].append(float(branch.get("score", 0.0)))
-            branch_confidences[branch_name].append(float(branch.get("confidence", 0.0)))
-            branch_top_symbols[branch_name].update(str(item) for item in _ensure_list(branch.get("top_symbols")))
-            branch_risks[branch_name].extend(str(item) for item in _ensure_list(branch.get("risks")))
-
-    target_exposure = min(max(_average(batch_target_exposures, default=0.3), 0.1), 0.8)
-    style_bias = style_counter.most_common(1)[0][0] if style_counter else "均衡"
-    final_recommendations = _build_market_trade_recommendations(
-        aggregated_recommendations,
+    dag_artifacts = execute_market_dag(
         market=market,
-        capital=capital,
-        target_exposure=target_exposure,
-        candidate_limit=candidate_limit,
-        max_single_position=max_single_position,
+        symbols=targets,
+        universe="full_a",
+        mode="sample",
+        batch_size=len(targets),
+        total_capital=capital,
+        top_k=max(candidate_limit, 1),
+        verbose=False,
+        enable_agent_layer=bool(normalized_request.get("llm_debate", {}).get("enabled", False)),
+        agent_model="moonshot-v1-128k",
+        master_model="moonshot-v1-128k",
     )
-    candidate_symbols = [item["symbol"] for item in final_recommendations]
-
-    deduped_warnings = list(dict.fromkeys(item for item in warnings if item))[:6]
-    if not final_recommendations:
-        deduped_warnings.append("本次全市场扫描未生成可执行候选，建议调整风险参数或等待市场信号改善。")
+    portfolio_decision = dag_artifacts.get("portfolio_decision")
+    report_bundle = dag_artifacts.get("report_bundle")
+    branch_summaries = dict(dag_artifacts.get("branch_summaries", {}))
+    shortlist = list(dag_artifacts.get("shortlist", []) or [])
+    global_context = dag_artifacts.get("global_context")
+    data_snapshot = dict(
+        dag_artifacts.get("data_snapshot", {})
+        or (getattr(global_context, "metadata", {}) or {}).get("data_snapshot", {})
+    )
+    target_exposure = float(getattr(portfolio_decision, "target_exposure", 0.0) or 0.0)
+    style_bias = str(getattr(global_context, "style_exposures", {}).get("style_bias", "均衡"))
+    candidate_symbols = [str(getattr(item, "symbol", "")) for item in shortlist][:candidate_limit]
+    final_recommendations: list[dict[str, Any]] = []
+    for item in shortlist[:candidate_limit]:
+        symbol = str(getattr(item, "symbol", ""))
+        suggested_weight = float(getattr(item, "suggested_weight", 0.0) or 0.0)
+        if suggested_weight <= 0:
+            suggested_weight = float(getattr(portfolio_decision, "target_weights", {}).get(symbol, 0.0) or 0.0)
+        final_recommendations.append(
+            {
+                "symbol": symbol,
+                "action": str(getattr(getattr(item, "action", None), "value", "hold")),
+                "suggested_weight": round(min(suggested_weight, max_single_position), 4),
+                "recommended_entry_price": 0.0,
+                "target_price": 0.0,
+                "stop_loss_price": 0.0,
+                "confidence": float(getattr(item, "confidence", 0.0) or 0.0),
+                "consensus_score": float(getattr(item, "rank_score", 0.0) or 0.0),
+                "risk_flags": list(getattr(item, "risk_flags", []) or []),
+            }
+        )
+    warnings = list(dict.fromkeys(_ensure_list(getattr(report_bundle, "warnings", []))))[:6]
 
     branches = []
     for branch_name in BRANCH_ORDER:
         enabled = bool(normalized_request.get("branches", {}).get(branch_name, {}).get("enabled", True))
-        top_symbols = [symbol for symbol, _ in branch_top_symbols[branch_name].most_common(5)]
+        verdict = branch_summaries.get(branch_name)
+        top_symbols = candidate_symbols[:5] if branch_name != "llm_debate" else []
         branches.append(
             {
                 "branch_name": branch_name,
                 "enabled": enabled,
-                "score": round(_average(branch_scores[branch_name]), 4),
-                "confidence": round(_average(branch_confidences[branch_name]), 4),
+                "score": round(float(getattr(verdict, "final_score", 0.0) or 0.0), 4),
+                "confidence": round(float(getattr(verdict, "final_confidence", 0.0) or 0.0), 4),
                 "explanation": (
-                    f"全市场分批扫描共 {total_batches} 批，平均分支得分 {_average(branch_scores[branch_name]):+.2f}。"
-                    if enabled else "全市场扫描中未启用该分支。"
+                    str(getattr(verdict, "thesis", "")) if verdict is not None
+                    else ("统一 DAG 未启用该分支。" if not enabled else "统一 DAG 未返回该分支摘要。")
                 ),
-                "risks": list(dict.fromkeys(branch_risks[branch_name]))[:3],
+                "risks": list(dict.fromkeys(list(getattr(verdict, "investment_risks", []) or [])))[:3],
                 "top_symbols": top_symbols,
-                "branch_mode": "market_batch",
+                "branch_mode": "market_dag",
                 "settings": deepcopy(_ensure_dict(normalized_request.get("branches", {}).get(branch_name, {}).get("settings"))),
                 "model_assignment": deepcopy(_ensure_list(normalized_request.get("llm_debate", {}).get("assignments", []))) if branch_name == "llm_debate" else [],
                 "signals": {
-                    "aggregation": "market_batch",
-                    "batch_count": total_batches,
+                    "aggregation": "market_dag",
+                    "batch_count": 1,
                     "scanned_symbols": len(targets),
                 },
                 "metadata": {
-                    "batch_count": total_batches,
+                    "batch_count": 1,
                     "scanned_symbols": len(targets),
                 },
             }
@@ -745,10 +717,12 @@ def _run_market_analysis(
 
     market_label = "A股" if market == "CN" else "美股"
     execution_notes = [
-        f"{market_label}全市场已按 {total_batches} 批完成扫描，共覆盖 {len(targets)} 只股票。",
+        f"{market_label}全市场已通过统一 DAG 完成扫描，共覆盖 {len(targets)} 只股票。",
         f"最终筛出 {len(final_recommendations)} 只候选，目标仓位 {target_exposure:.1%}。",
     ]
-    execution_notes.extend(deduped_warnings[:3])
+    if data_snapshot.get("summary_text"):
+        execution_notes.insert(0, str(data_snapshot["summary_text"]))
+    execution_notes.extend(warnings[:3])
 
     result = {
         "analysis_id": str(normalized_request.get("analysis_id") or datetime.now().strftime("%Y%m%d_%H%M%S")),
@@ -756,7 +730,7 @@ def _run_market_analysis(
         "source": "web",
         "request": normalized_request,
         "total_time": round(time.perf_counter() - started_at, 2),
-        "research_mode": "market_batch",
+        "research_mode": "market_dag",
         "final_decision": _decision_text(
             {
                 "candidate_symbols": candidate_symbols,
@@ -768,31 +742,35 @@ def _run_market_analysis(
         "style_bias": style_bias,
         "sector_preferences": [],
         "candidate_symbols": candidate_symbols,
+        "data_snapshot": data_snapshot,
         "execution_notes": execution_notes,
         "branches": branches,
         "risk": {
             "risk_level": str(normalized_request.get("risk", {}).get("risk_level", "中等")),
-            "volatility": round(_average(risk_volatility), 4),
-            "max_drawdown": round(_average(risk_drawdown), 4),
-            "sharpe_ratio": round(_average(risk_sharpe), 4),
-            "warnings": deduped_warnings,
+            "volatility": 0.0,
+            "max_drawdown": 0.0,
+            "sharpe_ratio": 0.0,
+            "warnings": warnings,
             "max_single_position": max_single_position,
             "max_drawdown_limit": float(normalized_request.get("risk", {}).get("max_drawdown_limit", 0.15)),
             "default_stop_loss": float(normalized_request.get("risk", {}).get("default_stop_loss", 0.08)),
             "keep_cash_buffer": bool(normalized_request.get("risk", {}).get("keep_cash_buffer", True)),
-            "stress_test": deduped_warnings[-1] if deduped_warnings else "",
+            "stress_test": warnings[-1] if warnings else "",
         },
         "trade_recommendations": final_recommendations,
-        "report_markdown": _build_market_report(
-            normalized_request,
-            batch_count=total_batches,
-            scanned_count=len(targets),
-            recommendations=final_recommendations,
-            target_exposure=target_exposure,
-            style_bias=style_bias,
-            warnings=deduped_warnings,
+        "report_markdown": (
+            (f"## 本地数据快照\n- {data_snapshot['summary_text']}\n\n" if data_snapshot.get("summary_text") else "")
+            + _build_market_report(
+                normalized_request,
+                batch_count=1,
+                scanned_count=len(targets),
+                recommendations=final_recommendations,
+                target_exposure=target_exposure,
+                style_bias=style_bias,
+                warnings=warnings,
+            )
         ),
-        "execution_log": execution_log,
+        "execution_log": list(getattr(report_bundle, "coverage_summary", []) or []) + execution_notes,
         "llm_assignments": deepcopy(_ensure_list(normalized_request.get("llm_debate", {}).get("assignments", []))),
         "config_applied": {
             "preset": normalized_request.get("preset"),
@@ -1108,6 +1086,7 @@ def _normalize_web_result(raw: dict[str, Any]) -> dict[str, Any]:
         "style_bias": str(payload.get("style_bias", "均衡")),
         "sector_preferences": [str(item) for item in payload.get("sector_preferences", [])],
         "candidate_symbols": [str(item) for item in payload.get("candidate_symbols", [])],
+        "data_snapshot": deepcopy(_ensure_dict(payload.get("data_snapshot"))),
         "execution_notes": [str(item) for item in payload.get("execution_notes", [])],
         "branches": normalized_branches,
         "risk": risk_review,
@@ -1139,6 +1118,30 @@ def _normalize_legacy_result(raw: dict[str, Any], source: str) -> dict[str, Any]
     market = str(raw.get("market") or ("US" if "us_backtest" in source else "CN")).upper()
     strategy = raw.get("strategy", {})
     timestamp = raw.get("timestamp")
+    latest_trade_date = str(
+        raw.get("latest_trade_date")
+        or strategy.get("latest_trade_date")
+        or strategy.get("effective_target_trade_date")
+        or ""
+    )
+    data_snapshot = deepcopy(_ensure_dict(raw.get("data_snapshot")))
+    if not data_snapshot:
+        data_snapshot = {
+            "market": market,
+            "universe_key": "full_a" if market == "CN" else "full_us",
+            "local_latest_trade_date": latest_trade_date,
+            "freshness_mode": str(raw.get("freshness_mode") or "stable"),
+            "category_symbol_counts": {},
+            "date_distribution_top": [],
+            "data_directories": [],
+            "resolver_priority": [],
+            "data_quality_issue_count": int(raw.get("data_quality_issue_count", 0) or 0),
+            "summary_text": (
+                f"本地 {market} 数据更新至 {latest_trade_date}。"
+                if latest_trade_date
+                else f"本地 {market} 数据日期未知。"
+            ),
+        }
 
     branches = []
     for branch_name, branch in (raw.get("branches") or {}).items():
@@ -1169,6 +1172,7 @@ def _normalize_legacy_result(raw: dict[str, Any], source: str) -> dict[str, Any]
         "style_bias": str(strategy.get("style_bias", "均衡")),
         "sector_preferences": [str(item) for item in strategy.get("sector_preferences", [])],
         "candidate_symbols": [str(item) for item in strategy.get("candidate_symbols", [])],
+        "data_snapshot": data_snapshot,
         "execution_notes": [],
         "branches": branches,
         "risk": {

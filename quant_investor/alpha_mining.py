@@ -489,28 +489,30 @@ class LLMFactorBrainstorm:
 """
 
     def __init__(self, api_key: str = "") -> None:
-        self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY", "")
+        self.api_key = api_key
 
     def brainstorm(self, market_context: str = "当前市场震荡整理") -> list[dict]:
-        """向 Claude 请求因子创意"""
+        """向 LLM 请求因子创意"""
+        from quant_investor.llm_gateway import LLMClient as GatewayLLMClient, has_any_provider, _run_sync
+
+        if not has_any_provider():
+            return self._offline_examples()
+
         prompt = self.BRAINSTORM_PROMPT.format(market_context=market_context)
         try:
-            import anthropic
-            client = anthropic.Anthropic(api_key=self.api_key)
-            msg = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=2048,
+            client = GatewayLLMClient(timeout=30.0, max_retries=1)
+            raw = _run_sync(client.complete_text(
                 messages=[{"role": "user", "content": prompt}],
-            )
-            raw = msg.content[0].text.strip()
-            # 解析JSON
+                model="moonshot-v1-128k",
+                max_tokens=2048,
+                stage="factor_brainstorm",
+            ))
             import re
             match = re.search(r"\[.*\]", raw, re.DOTALL)
             if match:
                 return json.loads(match.group())
         except Exception as e:
             _logger.warning(f"LLM头脑风暴失败: {e}，返回示例因子")
-        # 离线降级：返回预设示例
         return self._offline_examples()
 
     @staticmethod

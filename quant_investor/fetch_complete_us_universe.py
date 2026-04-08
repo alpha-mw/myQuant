@@ -212,6 +212,9 @@ def get_complete_universe() -> Dict[str, List[str]]:
     all_symbols = list(set(large_cap_combined + mid_cap + small_cap))
     
     result = {
+        'full_us': all_symbols,
+        'full_market': all_symbols,
+        'all_us': all_symbols,
         'sp500': large_cap,
         'nasdaq100': nasdaq100,
         'large_cap': large_cap_combined,
@@ -223,7 +226,8 @@ def get_complete_universe() -> Dict[str, List[str]]:
             'nasdaq100': len(nasdaq100),
             'large_cap': len(large_cap_combined),
             'mid_cap': len(mid_cap),
-        'small_cap': len(small_cap),
+            'small_cap': len(small_cap),
+            'full_us': len(all_symbols),
             'total_unique': len(all_symbols)
         }
     }
@@ -237,6 +241,7 @@ def get_complete_universe() -> Dict[str, List[str]]:
     print(f"大盘股合计:     {len(large_cap_combined):4d} 只 (去重)")
     print(f"S&P MidCap 400: {len(mid_cap):4d} 只")
     print(f"Russell 2000:   {len(small_cap):4d} 只 (代表性样本)")
+    print(f"全美股:         {len(all_symbols):4d} 只 (canonical full_us)")
     print("-" * 80)
     print(f"总计:           {len(all_symbols):4d} 只 (全市场去重)")
     print("=" * 80)
@@ -254,15 +259,16 @@ def save_universe(universe: Dict, output_dir: str = 'data/us_universe'):
         json.dump(universe, f, indent=2)
     
     # 保存各分类文本文件
-    for category in ['sp500', 'nasdaq100', 'large_cap', 'mid_cap', 'small_cap']:
+    for category in ['full_us', 'full_market', 'all_us', 'sp500', 'nasdaq100', 'large_cap', 'mid_cap', 'small_cap']:
         txt_file = f"{output_dir}/{category}_symbols.txt"
         with open(txt_file, 'w') as f:
-            for symbol in sorted(universe[category]):
+            for symbol in sorted(universe.get(category, [])):
                 f.write(f"{symbol}\n")
     
     print()
     print("💾 成分股列表已保存:")
     print(f"  {output_dir}/complete_us_universe.json")
+    print(f"  {output_dir}/full_us_symbols.txt        ({len(universe.get('full_us', []))} 只)")
     print(f"  {output_dir}/sp500_symbols.txt          ({len(universe['sp500'])} 只)")
     print(f"  {output_dir}/nasdaq100_symbols.txt      ({len(universe['nasdaq100'])} 只)")
     print(f"  {output_dir}/large_cap_symbols.txt      ({len(universe['large_cap'])} 只)")

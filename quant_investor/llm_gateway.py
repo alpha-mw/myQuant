@@ -27,6 +27,7 @@ from typing import Any, Iterator
 
 from quant_investor.branch_contracts import LLMUsageRecord, LLMUsageSummary
 from quant_investor.logger import get_logger
+from quant_investor.llm_transport import build_openai_compatible_completion_body, normalize_label
 
 try:
     import aiohttp
@@ -67,22 +68,6 @@ class LLMUsageSessionHandle:
 
 
 LLM_PROVIDER_REGISTRY: dict[str, LLMProviderSpec] = {
-    "openai": LLMProviderSpec(
-        name="openai",
-        env_key="OPENAI_API_KEY",
-        base_url="https://api.openai.com/v1/chat/completions",
-        auth_header="Authorization",
-        auth_prefix="Bearer ",
-        default_model="gpt-5.4-mini",
-    ),
-    "anthropic": LLMProviderSpec(
-        name="anthropic",
-        env_key="ANTHROPIC_API_KEY",
-        base_url="https://api.anthropic.com/v1/messages",
-        auth_header="x-api-key",
-        auth_prefix="",
-        default_model="claude-3-5-sonnet",
-    ),
     "deepseek": LLMProviderSpec(
         name="deepseek",
         env_key="DEEPSEEK_API_KEY",
@@ -90,14 +75,6 @@ LLM_PROVIDER_REGISTRY: dict[str, LLMProviderSpec] = {
         auth_header="Authorization",
         auth_prefix="Bearer ",
         default_model="deepseek-chat",
-    ),
-    "google": LLMProviderSpec(
-        name="google",
-        env_key="GOOGLE_API_KEY",
-        base_url="https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-        auth_header="",
-        auth_prefix="",
-        default_model="gemini-2.0-flash",
     ),
     "qwen": LLMProviderSpec(
         name="qwen",
@@ -113,31 +90,26 @@ LLM_PROVIDER_REGISTRY: dict[str, LLMProviderSpec] = {
         base_url="https://api.moonshot.cn/v1/chat/completions",
         auth_header="Authorization",
         auth_prefix="Bearer ",
-        default_model="moonshot-v1-8k",
+        default_model="moonshot-v1-128k",
     ),
 }
 
 LLM_MODEL_PRICING_REGISTRY: dict[str, LLMModelPricing] = {
-    "gpt-5.4-mini": LLMModelPricing("gpt-5.4-mini", prompt_usd_per_1m=0.40, completion_usd_per_1m=1.60),
-    "gpt-4o-mini": LLMModelPricing("gpt-4o-mini", prompt_usd_per_1m=0.15, completion_usd_per_1m=0.60),
     "deepseek-chat": LLMModelPricing("deepseek-chat", prompt_usd_per_1m=0.27, completion_usd_per_1m=1.10),
-    "claude-3-5-sonnet": LLMModelPricing("claude-3-5-sonnet", prompt_usd_per_1m=3.00, completion_usd_per_1m=15.00),
-    "claude-haiku-4-5-20251001": LLMModelPricing(
-        "claude-haiku-4-5-20251001",
-        prompt_usd_per_1m=1.00,
-        completion_usd_per_1m=5.00,
-    ),
-    "claude-sonnet-4-6": LLMModelPricing("claude-sonnet-4-6", prompt_usd_per_1m=3.00, completion_usd_per_1m=15.00),
-    "gemini-2.0-flash": LLMModelPricing("gemini-2.0-flash", prompt_usd_per_1m=0.10, completion_usd_per_1m=0.40),
+    "deepseek-reasoner": LLMModelPricing("deepseek-reasoner", prompt_usd_per_1m=0.55, completion_usd_per_1m=2.19),
     "qwen-plus": LLMModelPricing("qwen-plus", prompt_usd_per_1m=0.11, completion_usd_per_1m=0.28),
     "qwen-turbo": LLMModelPricing("qwen-turbo", prompt_usd_per_1m=0.04, completion_usd_per_1m=0.08),
     "moonshot-v1-8k": LLMModelPricing("moonshot-v1-8k", prompt_usd_per_1m=1.64, completion_usd_per_1m=1.64),
+    "moonshot-v1-32k": LLMModelPricing("moonshot-v1-32k", prompt_usd_per_1m=3.28, completion_usd_per_1m=3.28),
+    "moonshot-v1-128k": LLMModelPricing("moonshot-v1-128k", prompt_usd_per_1m=8.20, completion_usd_per_1m=8.20),
 }
 
 LLM_STAGE_NAMES: dict[str, str] = {
     "review_branch_subagent": "Review branch subagent",
     "review_risk_subagent": "Review risk subagent",
     "review_master_agent": "Review master agent",
+    "review_branch_overlay": "Review branch overlay",
+    "review_master_symbol": "Review master symbol",
     "intelligence_summary": "Intelligence synthesis",
     "news_sentiment": "News sentiment analysis",
     "factor_brainstorm": "Factor brainstorm",
@@ -156,14 +128,8 @@ _SESSION_RECORDS: dict[str, list[LLMUsageRecord]] = {}
 
 def detect_provider(model: str) -> str:
     normalized = str(model or "").strip().lower()
-    if normalized.startswith(("gpt-", "o1-", "o3-", "o4-")):
-        return "openai"
-    if normalized.startswith("claude-"):
-        return "anthropic"
     if normalized.startswith("deepseek"):
         return "deepseek"
-    if normalized.startswith("gemini"):
-        return "google"
     if normalized.startswith("qwen"):
         return "qwen"
     if normalized.startswith("moonshot"):
@@ -188,12 +154,12 @@ def resolve_default_model(preferred_model: str = "") -> str:
     if preferred and has_provider_for_model(preferred):
         return preferred
 
-    for provider_name in ("openai", "deepseek", "anthropic", "google", "qwen", "kimi"):
+    for provider_name in ("kimi", "deepseek", "qwen"):
         provider = LLM_PROVIDER_REGISTRY[provider_name]
         if os.getenv(provider.env_key):
             return provider.default_model
 
-    return preferred or LLM_PROVIDER_REGISTRY["openai"].default_model
+    return preferred or LLM_PROVIDER_REGISTRY["kimi"].default_model
 
 
 def current_usage_session_id() -> str | None:
@@ -469,6 +435,7 @@ def _get_api_key(provider: str) -> str:
 
 
 def _build_openai_compatible_request(
+    provider: str,
     model: str,
     messages: list[dict[str, str]],
     max_tokens: int,
@@ -480,79 +447,14 @@ def _build_openai_compatible_request(
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
     }
-    body: dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": 0.3,
-    }
-    if response_json:
-        body["response_format"] = {"type": "json_object"}
+    body = build_openai_compatible_completion_body(
+        provider=provider,
+        model=model,
+        messages=messages,
+        max_tokens=max_tokens,
+        response_json=response_json,
+    )
     return base_url, headers, body
-
-
-def _build_anthropic_request(
-    model: str,
-    messages: list[dict[str, str]],
-    max_tokens: int,
-    response_json: bool,
-    api_key: str,
-) -> tuple[str, dict[str, str], dict[str, Any]]:
-    system_prompt = ""
-    user_messages: list[dict[str, str]] = []
-    for message in messages:
-        if message.get("role") == "system":
-            system_prompt = str(message.get("content", ""))
-        else:
-            user_messages.append(message)
-
-    if response_json and system_prompt:
-        system_prompt += "\n\nYou MUST respond with valid JSON only. No markdown, no extra text."
-
-    headers = {
-        "Content-Type": "application/json",
-        "x-api-key": api_key,
-        "anthropic-version": "2023-06-01",
-    }
-    body: dict[str, Any] = {
-        "model": model,
-        "max_tokens": max_tokens,
-        "temperature": 0.3,
-        "messages": user_messages,
-    }
-    if system_prompt:
-        body["system"] = system_prompt
-    return LLM_PROVIDER_REGISTRY["anthropic"].base_url, headers, body
-
-
-def _build_google_request(
-    model: str,
-    messages: list[dict[str, str]],
-    max_tokens: int,
-    response_json: bool,
-    api_key: str,
-) -> tuple[str, dict[str, str], dict[str, Any]]:
-    url = LLM_PROVIDER_REGISTRY["google"].base_url.format(model=model) + f"?key={api_key}"
-    contents: list[dict[str, Any]] = []
-    system_instruction: dict[str, Any] | None = None
-    for message in messages:
-        if message.get("role") == "system":
-            system_instruction = {"parts": [{"text": str(message.get("content", ""))}]}
-        else:
-            role = "model" if message.get("role") == "assistant" else "user"
-            contents.append({"role": role, "parts": [{"text": str(message.get("content", ""))}]})
-
-    generation_config: dict[str, Any] = {
-        "maxOutputTokens": max_tokens,
-        "temperature": 0.3,
-    }
-    if response_json:
-        generation_config["responseMimeType"] = "application/json"
-
-    body: dict[str, Any] = {"contents": contents, "generationConfig": generation_config}
-    if system_instruction:
-        body["systemInstruction"] = system_instruction
-    return url, {"Content-Type": "application/json"}, body
 
 
 def _parse_openai_response(data: dict[str, Any]) -> str:
@@ -560,23 +462,6 @@ def _parse_openai_response(data: dict[str, Any]) -> str:
         return str(data["choices"][0]["message"]["content"])
     except (KeyError, IndexError, TypeError) as exc:
         raise LLMCallError(f"Unexpected OpenAI response structure: {exc}") from exc
-
-
-def _parse_anthropic_response(data: dict[str, Any]) -> str:
-    try:
-        for item in data["content"]:
-            if item.get("type") == "text":
-                return str(item["text"])
-        raise LLMCallError("No text block in Anthropic response")
-    except (KeyError, IndexError, TypeError) as exc:
-        raise LLMCallError(f"Unexpected Anthropic response structure: {exc}") from exc
-
-
-def _parse_google_response(data: dict[str, Any]) -> str:
-    try:
-        return str(data["candidates"][0]["content"]["parts"][0]["text"])
-    except (KeyError, IndexError, TypeError) as exc:
-        raise LLMCallError(f"Unexpected Google response structure: {exc}") from exc
 
 
 def _extract_usage(
@@ -590,27 +475,12 @@ def _extract_usage(
     completion_tokens = completion_fallback
     total_tokens = prompt_fallback + completion_fallback
 
-    if provider in {"openai", "deepseek", "qwen", "kimi"}:
+    if provider in {"deepseek", "qwen", "kimi"}:
         usage = response_data.get("usage", {})
         if isinstance(usage, dict):
             prompt_tokens = int(usage.get("prompt_tokens", prompt_fallback) or prompt_fallback)
             completion_tokens = int(usage.get("completion_tokens", completion_fallback) or completion_fallback)
             total_tokens = int(usage.get("total_tokens", prompt_tokens + completion_tokens) or (prompt_tokens + completion_tokens))
-    elif provider == "anthropic":
-        usage = response_data.get("usage", {})
-        if isinstance(usage, dict):
-            prompt_tokens = int(usage.get("input_tokens", prompt_fallback) or prompt_fallback)
-            completion_tokens = int(usage.get("output_tokens", completion_fallback) or completion_fallback)
-            total_tokens = prompt_tokens + completion_tokens
-    elif provider == "google":
-        usage = response_data.get("usageMetadata", {})
-        if isinstance(usage, dict):
-            prompt_tokens = int(usage.get("promptTokenCount", prompt_fallback) or prompt_fallback)
-            completion_tokens = int(
-                usage.get("candidatesTokenCount", usage.get("candidateTokenCount", completion_fallback))
-                or completion_fallback
-            )
-            total_tokens = int(usage.get("totalTokenCount", prompt_tokens + completion_tokens) or (prompt_tokens + completion_tokens))
 
     return prompt_tokens, completion_tokens, total_tokens
 
@@ -618,9 +488,10 @@ def _extract_usage(
 class LLMClient:
     """统一异步 LLM 客户端。"""
 
-    def __init__(self, timeout: float = 30.0, max_retries: int = 2) -> None:
+    def __init__(self, timeout: float = 30.0, max_retries: int = 2, default_reasoning_effort: str = "") -> None:
         self.timeout = timeout
         self.max_retries = max_retries
+        self.default_reasoning_effort = str(default_reasoning_effort or "").strip()
 
     async def complete(
         self,
@@ -630,6 +501,7 @@ class LLMClient:
         response_json: bool = True,
         stage: str = "",
         actor_name: str = "",
+        reasoning_effort: str = "",
     ) -> dict[str, Any]:
         content_text = await self.complete_text(
             messages=messages,
@@ -638,6 +510,7 @@ class LLMClient:
             response_json=response_json,
             stage=stage,
             actor_name=actor_name,
+            reasoning_effort=reasoning_effort,
         )
         return self._parse_json_content(content_text)
 
@@ -649,10 +522,11 @@ class LLMClient:
         response_json: bool = False,
         stage: str = "",
         actor_name: str = "",
+        reasoning_effort: str = "",
     ) -> str:
         provider = detect_provider(model)
-        stage_name = str(stage or "unlabeled_stage")
-        branch_or_agent_name = str(actor_name or "")
+        stage_name = normalize_label(stage) or "unlabeled_stage"
+        branch_or_agent_name = normalize_label(actor_name)
         prompt_tokens_est = estimate_message_tokens(messages)
         t0 = time.monotonic()
 
@@ -671,25 +545,18 @@ class LLMClient:
             )
             raise
 
-        if provider == "anthropic":
-            url, headers, body = _build_anthropic_request(model, messages, max_tokens, response_json, api_key)
-        elif provider == "google":
-            url, headers, body = _build_google_request(model, messages, max_tokens, response_json, api_key)
-        else:
-            url, headers, body = _build_openai_compatible_request(
-                model=model,
-                messages=messages,
-                max_tokens=max_tokens,
-                response_json=response_json,
-                api_key=api_key,
-                base_url=LLM_PROVIDER_REGISTRY[provider].base_url,
-            )
+        url, headers, body = _build_openai_compatible_request(
+            provider=provider,
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            response_json=response_json,
+            api_key=api_key,
+            base_url=LLM_PROVIDER_REGISTRY[provider].base_url,
+        )
 
         parser = {
-            "openai": _parse_openai_response,
             "deepseek": _parse_openai_response,
-            "anthropic": _parse_anthropic_response,
-            "google": _parse_google_response,
             "qwen": _parse_openai_response,
             "kimi": _parse_openai_response,
         }[provider]

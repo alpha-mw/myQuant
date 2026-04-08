@@ -39,14 +39,10 @@ def test_reporting_protocol_consistency(monkeypatch, tmp_path):
         "## 推荐标的卡片",
         "## 数据覆盖摘要",
         "## 附录：工程诊断",
-        "## 数据概览",
-        "## 市场概览",
-        "## 分析过程",
-        "## SubAgent 决策过程、逻辑和依据",
-        "## Master Agent 决策过程、逻辑和依据",
-        "## 最终投资建议",
-        "## 仓位、买卖指令",
-        "## 下一步计划",
+        "## Bayesian 决策分解",
+        "## 模型角色元数据",
+        "## 执行 Trace",
+        "## What-If 响应计划",
     ]:
         assert header in final_report
 

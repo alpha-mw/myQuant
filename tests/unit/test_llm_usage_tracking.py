@@ -10,7 +10,7 @@ from quant_investor.llm_gateway import LLMCallError, LLMClient, end_usage_sessio
 
 def test_llm_usage_success_records_tokens_and_cost(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("KIMI_API_KEY", "test-key")
 
     async def _fake_http_post(self, url, headers, body):  # type: ignore[no-untyped-def]
         return json.dumps(
@@ -31,7 +31,7 @@ def test_llm_usage_success_records_tokens_and_cost(monkeypatch, tmp_path):
         payload = asyncio.run(
             LLMClient(timeout=1.0, max_retries=1).complete(
                 messages=[{"role": "user", "content": "return json"}],
-                model="gpt-5.4-mini",
+                model="moonshot-v1-8k",
                 max_tokens=128,
                 stage="review_branch_subagent",
                 actor_name="quant",
@@ -54,7 +54,7 @@ def test_llm_usage_success_records_tokens_and_cost(monkeypatch, tmp_path):
 
 def test_llm_usage_records_provider_missing_fallback(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("KIMI_API_KEY", raising=False)
 
     handle = start_usage_session(label="usage-missing-provider")
     try:
@@ -62,7 +62,7 @@ def test_llm_usage_records_provider_missing_fallback(monkeypatch, tmp_path):
             asyncio.run(
                 LLMClient(timeout=1.0, max_retries=1).complete(
                     messages=[{"role": "user", "content": "return json"}],
-                    model="gpt-5.4-mini",
+                    model="moonshot-v1-8k",
                     max_tokens=64,
                     stage="review_branch_subagent",
                     actor_name="macro",
@@ -76,12 +76,12 @@ def test_llm_usage_records_provider_missing_fallback(monkeypatch, tmp_path):
     assert summary.success_count == 0
     assert summary.fallback_count == 1
     assert records[0].fallback is True
-    assert "Missing env var OPENAI_API_KEY" in records[0].metadata["reason"]
+    assert "Missing env var KIMI_API_KEY" in records[0].metadata["reason"]
 
 
 def test_llm_usage_records_timeout_fallback(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("KIMI_API_KEY", "test-key")
 
     async def _timeout_http_post(self, url, headers, body):  # type: ignore[no-untyped-def]
         raise asyncio.TimeoutError("timed out")
@@ -94,7 +94,7 @@ def test_llm_usage_records_timeout_fallback(monkeypatch, tmp_path):
             asyncio.run(
                 LLMClient(timeout=0.1, max_retries=1).complete(
                     messages=[{"role": "user", "content": "return json"}],
-                    model="gpt-5.4-mini",
+                    model="moonshot-v1-8k",
                     max_tokens=64,
                     stage="review_master_agent",
                     actor_name="ICCoordinator",

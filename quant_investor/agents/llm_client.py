@@ -12,7 +12,16 @@ import json
 import os
 from typing import Any
 
+from quant_investor.branch_contracts import LLMUsageRecord
+from quant_investor.llm_gateway import (
+    estimate_cost_usd,
+    estimate_message_tokens,
+    estimate_text_tokens,
+    record_fallback_event,
+    record_usage,
+)
 from quant_investor.logger import get_logger
+from quant_investor.llm_transport import build_openai_compatible_completion_body, normalize_label
 
 try:
     import aiohttp
@@ -33,43 +42,35 @@ class LLMCallError(Exception):
 # ---------------------------------------------------------------------------
 
 _PROVIDER_CONFIGS: dict[str, dict[str, str]] = {
-    "openai": {
-        "env_key": "OPENAI_API_KEY",
-        "base_url": "https://api.openai.com/v1/chat/completions",
-        "auth_header": "Authorization",
-        "auth_prefix": "Bearer ",
-    },
-    "anthropic": {
-        "env_key": "ANTHROPIC_API_KEY",
-        "base_url": "https://api.anthropic.com/v1/messages",
-        "auth_header": "x-api-key",
-        "auth_prefix": "",
-    },
     "deepseek": {
         "env_key": "DEEPSEEK_API_KEY",
         "base_url": "https://api.deepseek.com/v1/chat/completions",
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
     },
-    "google": {
-        "env_key": "GOOGLE_API_KEY",
-        "base_url": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-        "auth_header": "",
-        "auth_prefix": "",
+    "qwen": {
+        "env_key": "DASHSCOPE_API_KEY",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+    },
+    "kimi": {
+        "env_key": "KIMI_API_KEY",
+        "base_url": "https://api.moonshot.cn/v1/chat/completions",
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
     },
 }
 
 
 def _detect_provider(model: str) -> str:
     m = model.lower()
-    if m.startswith(("gpt-", "o1-", "o3-", "o4-")):
-        return "openai"
-    if m.startswith("claude-"):
-        return "anthropic"
     if m.startswith("deepseek"):
         return "deepseek"
-    if m.startswith("gemini"):
-        return "google"
+    if m.startswith("qwen"):
+        return "qwen"
+    if m.startswith("moonshot"):
+        return "kimi"
     raise LLMCallError(f"Cannot detect provider for model: {model}")
 
 
@@ -92,10 +93,10 @@ def resolve_default_model(preferred_model: str = "") -> str:
     preferred = str(preferred_model or "").strip()
     if preferred and has_provider_for_model(preferred):
         return preferred
-    for candidate in ("gpt-5.4-mini", "claude-sonnet-4-6", "deepseek-chat", "gemini-2.5-flash"):
+    for candidate in ("moonshot-v1-128k", "deepseek-chat", "qwen-plus"):
         if has_provider_for_model(candidate):
             return candidate
-    return preferred or "gpt-5.4-mini"
+    return preferred or "moonshot-v1-128k"
 
 
 def _get_api_key(provider: str) -> str:
@@ -111,6 +112,7 @@ def _get_api_key(provider: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _build_openai_compatible(
+    provider: str,
     model: str,
     messages: list[dict[str, str]],
     max_tokens: int,
@@ -122,76 +124,14 @@ def _build_openai_compatible(
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
     }
-    body: dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": 0.3,
-    }
-    if response_json:
-        body["response_format"] = {"type": "json_object"}
+    body = build_openai_compatible_completion_body(
+        provider=provider,
+        model=model,
+        messages=messages,
+        max_tokens=max_tokens,
+        response_json=response_json,
+    )
     return base_url, headers, body
-
-
-def _build_anthropic(
-    model: str,
-    messages: list[dict[str, str]],
-    max_tokens: int,
-    response_json: bool,
-    api_key: str,
-) -> tuple[str, dict[str, str], dict[str, Any]]:
-    system_msg = ""
-    user_messages = []
-    for m in messages:
-        if m["role"] == "system":
-            system_msg = m["content"]
-        else:
-            user_messages.append(m)
-
-    if response_json and system_msg:
-        system_msg += "\n\nYou MUST respond with valid JSON only. No markdown, no extra text."
-
-    headers = {
-        "Content-Type": "application/json",
-        "x-api-key": api_key,
-        "anthropic-version": "2023-06-01",
-    }
-    body: dict[str, Any] = {
-        "model": model,
-        "max_tokens": max_tokens,
-        "temperature": 0.3,
-        "messages": user_messages,
-    }
-    if system_msg:
-        body["system"] = system_msg
-    return _PROVIDER_CONFIGS["anthropic"]["base_url"], headers, body
-
-
-def _build_google(
-    model: str,
-    messages: list[dict[str, str]],
-    max_tokens: int,
-    response_json: bool,
-    api_key: str,
-) -> tuple[str, dict[str, str], dict[str, Any]]:
-    url = _PROVIDER_CONFIGS["google"]["base_url"].format(model=model) + f"?key={api_key}"
-    contents = []
-    system_instruction = None
-    for m in messages:
-        if m["role"] == "system":
-            system_instruction = {"parts": [{"text": m["content"]}]}
-        else:
-            role = "model" if m["role"] == "assistant" else "user"
-            contents.append({"role": role, "parts": [{"text": m["content"]}]})
-
-    body: dict[str, Any] = {"contents": contents}
-    if system_instruction:
-        body["systemInstruction"] = system_instruction
-    generation_config: dict[str, Any] = {"maxOutputTokens": max_tokens, "temperature": 0.3}
-    if response_json:
-        generation_config["responseMimeType"] = "application/json"
-    body["generationConfig"] = generation_config
-    return url, {"Content-Type": "application/json"}, body
 
 
 # ---------------------------------------------------------------------------
@@ -203,23 +143,6 @@ def _parse_openai_response(data: dict[str, Any]) -> str:
         return data["choices"][0]["message"]["content"]
     except (KeyError, IndexError) as exc:
         raise LLMCallError(f"Unexpected OpenAI response structure: {exc}") from exc
-
-
-def _parse_anthropic_response(data: dict[str, Any]) -> str:
-    try:
-        for block in data["content"]:
-            if block.get("type") == "text":
-                return block["text"]
-        raise LLMCallError("No text block in Anthropic response")
-    except (KeyError, IndexError) as exc:
-        raise LLMCallError(f"Unexpected Anthropic response structure: {exc}") from exc
-
-
-def _parse_google_response(data: dict[str, Any]) -> str:
-    try:
-        return data["candidates"][0]["content"]["parts"][0]["text"]
-    except (KeyError, IndexError) as exc:
-        raise LLMCallError(f"Unexpected Google response structure: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -239,26 +162,26 @@ class LLMClient:
         model: str,
         max_tokens: int = 1024,
         response_json: bool = True,
+        stage: str = "",
+        actor_name: str = "",
+        reasoning_effort: str = "",
     ) -> dict[str, Any]:
         """Send a chat completion request and return parsed JSON."""
         provider = _detect_provider(model)
         api_key = _get_api_key(provider)
+        stage_name = normalize_label(stage) or "unlabeled_stage"
+        branch_or_agent_name = normalize_label(actor_name)
+        prompt_tokens_est = estimate_message_tokens(messages)
 
-        if provider == "anthropic":
-            url, headers, body = _build_anthropic(model, messages, max_tokens, response_json, api_key)
-        elif provider == "google":
-            url, headers, body = _build_google(model, messages, max_tokens, response_json, api_key)
-        else:
-            cfg = _PROVIDER_CONFIGS[provider]
-            url, headers, body = _build_openai_compatible(
-                model, messages, max_tokens, response_json, api_key, cfg["base_url"],
-            )
+        cfg = _PROVIDER_CONFIGS[provider]
+        url, headers, body = _build_openai_compatible(
+            provider, model, messages, max_tokens, response_json, api_key, cfg["base_url"],
+        )
 
         parse_fn = {
-            "openai": _parse_openai_response,
             "deepseek": _parse_openai_response,
-            "anthropic": _parse_anthropic_response,
-            "google": _parse_google_response,
+            "qwen": _parse_openai_response,
+            "kimi": _parse_openai_response,
         }[provider]
 
         last_exc: Exception | None = None
@@ -267,6 +190,22 @@ class LLMClient:
                 raw_text = await self._http_post(url, headers, body)
                 response_data = json.loads(raw_text)
                 content_text = parse_fn(response_data)
+                completion_tokens = estimate_text_tokens(content_text)
+                record_usage(
+                    LLMUsageRecord(
+                        stage=stage_name,
+                        branch_or_agent_name=branch_or_agent_name,
+                        provider=provider,
+                        model=model,
+                        prompt_tokens=prompt_tokens_est,
+                        completion_tokens=completion_tokens,
+                        total_tokens=prompt_tokens_est + completion_tokens,
+                        latency_ms=0,
+                        success=True,
+                        fallback=False,
+                        estimated_cost_usd=estimate_cost_usd(model, prompt_tokens_est, completion_tokens),
+                    )
+                )
                 return self._parse_json_content(content_text)
             except (_AiohttpClientError, asyncio.TimeoutError) as exc:
                 last_exc = exc
@@ -284,6 +223,15 @@ class LLMClient:
                 if attempt < self.max_retries:
                     await asyncio.sleep(0.5 * attempt)
 
+        record_fallback_event(
+            stage=stage_name,
+            branch_or_agent_name=branch_or_agent_name,
+            model=model,
+            reason=str(last_exc or "llm_call_failed"),
+            provider=provider,
+            prompt_tokens=prompt_tokens_est,
+            latency_ms=0,
+        )
         raise LLMCallError(f"All {self.max_retries} attempts failed for model={model}: {last_exc}")
 
     async def _http_post(self, url: str, headers: dict[str, str], body: dict[str, Any]) -> str:

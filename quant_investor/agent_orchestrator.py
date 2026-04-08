@@ -49,6 +49,11 @@ from quant_investor.agents.portfolio_constructor import PortfolioConstructor
 from quant_investor.agents.quant_agent import QuantAgent
 from quant_investor.agents.risk_guard import RiskGuard
 from quant_investor.branch_contracts import BranchResult, UnifiedDataBundle
+from quant_investor.reporting.run_artifacts import (
+    build_execution_trace,
+    build_model_role_metadata,
+    build_what_if_plan,
+)
 from quant_investor.versioning import (
     ARCHITECTURE_VERSION,
     BRANCH_SCHEMA_VERSION,
@@ -99,6 +104,7 @@ class AgentOrchestrator:
         constraints: Mapping[str, Any] | None = None,
         existing_portfolio: Mapping[str, Any] | None = None,
         tradability_snapshot: Mapping[str, Any] | None = None,
+        review_bundle: Any | None = None,
         persist_dir: str | Path | None = None,
         persist_outputs: bool = True,
     ) -> dict[str, Any]:
@@ -125,6 +131,7 @@ class AgentOrchestrator:
             constraints=normalized_constraints,
             existing_portfolio=normalized_portfolio,
             tradability_snapshot=normalized_tradability,
+            review_bundle=review_bundle,
             persist_dir=persist_dir,
             persist_outputs=persist_outputs,
         )
@@ -137,6 +144,7 @@ class AgentOrchestrator:
         constraints: Mapping[str, Any] | None = None,
         existing_portfolio: Mapping[str, Any] | None = None,
         tradability_snapshot: Mapping[str, Any] | None = None,
+        review_bundle: Any | None = None,
         persist_dir: str | Path | None = None,
         persist_outputs: bool = False,
     ) -> dict[str, Any]:
@@ -161,6 +169,7 @@ class AgentOrchestrator:
             existing_portfolio=normalized_portfolio,
             tradability_snapshot=normalized_tradability,
             ic_hints_by_symbol={},
+            review_bundle=review_bundle,
             persist_dir=persist_dir,
             persist_outputs=persist_outputs,
         )
@@ -175,6 +184,7 @@ class AgentOrchestrator:
         existing_portfolio: Mapping[str, Any] | None = None,
         tradability_snapshot: Mapping[str, Any] | None = None,
         ic_hints_by_symbol: Mapping[str, Mapping[str, Any]] | None = None,
+        review_bundle: Any | None = None,
         persist_dir: str | Path | None = None,
         persist_outputs: bool = False,
     ) -> dict[str, Any]:
@@ -199,6 +209,7 @@ class AgentOrchestrator:
             existing_portfolio=normalized_portfolio,
             tradability_snapshot=normalized_tradability,
             ic_hints_by_symbol=normalized_hints,
+            review_bundle=review_bundle,
             persist_dir=persist_dir,
             persist_outputs=persist_outputs,
         )
@@ -362,6 +373,7 @@ class AgentOrchestrator:
         existing_portfolio: Mapping[str, Any],
         tradability_snapshot: Mapping[str, Any],
         ic_hints_by_symbol: Mapping[str, Mapping[str, Any]],
+        review_bundle: Any | None,
         persist_dir: str | Path | None,
         persist_outputs: bool,
     ) -> dict[str, Any]:
@@ -417,6 +429,64 @@ class AgentOrchestrator:
 
         branch_summaries = self._aggregate_branch_summaries(research_by_symbol)
         run_diagnostics = self._build_run_diagnostics(research_by_symbol)
+        aggregated_risk_decision = self._aggregate_report_risk_decision(
+            risk_by_symbol=risk_by_symbol,
+            aggregated_risk_limits=aggregated_risk_limits,
+        )
+        review_metadata = dict(getattr(review_bundle, "metadata", {}) or {}) if review_bundle is not None else {}
+        model_role_metadata = build_model_role_metadata(
+            branch_model=str(review_metadata.get("branch_model", "")),
+            master_model=str(review_metadata.get("master_model", "")),
+            agent_fallback_model=str(review_metadata.get("branch_fallback_model", "")),
+            master_fallback_model=str(review_metadata.get("master_fallback_model", "")),
+            resolved_branch_model=str(review_metadata.get("branch_primary_model", review_metadata.get("branch_model", ""))),
+            resolved_master_model=str(review_metadata.get("master_primary_model", review_metadata.get("master_model", ""))),
+            master_reasoning_effort=str(review_metadata.get("master_reasoning_effort", "")),
+            branch_provider=str(review_metadata.get("branch_provider", "")),
+            master_provider=str(review_metadata.get("master_provider", "")),
+            branch_timeout=float(review_metadata.get("branch_timeout", 0.0)),
+            master_timeout=float(review_metadata.get("master_timeout", 0.0)),
+            agent_layer_enabled=bool(review_metadata.get("agent_layer_enabled", False)),
+            branch_fallback_used=bool(review_metadata.get("branch_fallback_used", False)),
+            master_fallback_used=bool(review_metadata.get("master_fallback_used", False)),
+            branch_fallback_reason=str(review_metadata.get("branch_fallback_reason", "")),
+            master_fallback_reason=str(review_metadata.get("master_fallback_reason", "")),
+            universe_key=str(review_metadata.get("universe_key", "")),
+            universe_size=int(review_metadata.get("symbol_count", 0)),
+            universe_hash=str(review_metadata.get("universe_hash", "")),
+            metadata=review_metadata,
+        )
+        what_if_plan = build_what_if_plan(
+            portfolio_plan=portfolio_plan,
+            market_summary={
+                "candidate_count": len(ic_by_symbol),
+                "selected_count": len([item for item in ic_by_symbol.values() if item.action == ActionLabel.BUY]),
+                "macro_score": float(macro_verdict.final_score),
+            },
+            model_roles=model_role_metadata,
+            candidate_count=len(ic_by_symbol),
+            selected_count=len([item for item in ic_by_symbol.values() if item.action == ActionLabel.BUY]),
+        )
+        execution_trace = build_execution_trace(
+            model_roles=model_role_metadata,
+            analysis_meta={
+                "batch_count": len(research_by_symbol),
+                "category_count": len(research_by_symbol),
+                "total_stocks": len(data_bundle.symbols),
+                "fallback_reasons": list(getattr(review_bundle, "fallback_reasons", []) or []),
+                "master_success": bool(review_bundle is not None),
+                "ic_hints_count": len(ic_hints_by_symbol),
+            },
+            portfolio_plan={
+                "selected_count": len([item for item in ic_by_symbol.values() if item.action == ActionLabel.BUY]),
+                "target_exposure": float(portfolio_plan.target_gross_exposure),
+                "max_single_weight": max(portfolio_plan.position_limits.values(), default=0.0),
+                "risk_veto": bool(aggregated_risk_decision.veto),
+                "action_cap": aggregated_risk_decision.action_cap.value,
+                "risk_summary": portfolio_plan.metadata.get("risk_summary", {}),
+                "execution_notes": portfolio_plan.execution_notes,
+            },
+        )
         report_bundle = self.narrator_agent.run(
             {
                 "macro_verdict": macro_verdict,
@@ -424,11 +494,12 @@ class AgentOrchestrator:
                 "ic_decisions": list(ic_by_symbol.values()),
                 "portfolio_plan": portfolio_plan,
                 "run_diagnostics": run_diagnostics,
+                "review_bundle": review_bundle,
+                "ic_hints_by_symbol": dict(ic_hints_by_symbol),
+                "model_role_metadata": model_role_metadata,
+                "execution_trace": execution_trace,
+                "what_if_plan": what_if_plan,
             }
-        )
-        aggregated_risk_decision = self._aggregate_report_risk_decision(
-            risk_by_symbol=risk_by_symbol,
-            aggregated_risk_limits=aggregated_risk_limits,
         )
         report_bundle = ReportBundle(
             architecture_version=report_bundle.architecture_version,
@@ -442,6 +513,11 @@ class AgentOrchestrator:
             risk_decision=aggregated_risk_decision,
             ic_decision=next(iter(ic_by_symbol.values()), None),
             ic_decisions=list(ic_by_symbol.values()),
+            review_bundle=report_bundle.review_bundle,
+            ic_hints_by_symbol=dict(report_bundle.ic_hints_by_symbol),
+            model_role_metadata=report_bundle.model_role_metadata,
+            execution_trace=report_bundle.execution_trace,
+            what_if_plan=report_bundle.what_if_plan,
             portfolio_plan=portfolio_plan,
             markdown_report=report_bundle.markdown_report,
             executive_summary=report_bundle.executive_summary,
@@ -479,6 +555,7 @@ class AgentOrchestrator:
             "portfolio_plan": portfolio_plan,
             "report_bundle": report_bundle,
             "persisted_paths": persisted_paths,
+            "review_bundle": review_bundle,
         }
 
     def _attach_symbol_to_ic_decision(

@@ -41,6 +41,20 @@ def _default_chronos_model_name() -> str:
     return candidates[-1]
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 class Config:
     """配置类"""
     
@@ -49,17 +63,26 @@ class Config:
     TUSHARE_URL: Optional[str] = os.environ.get('TUSHARE_URL')
 
     # LLM / 外部 API 凭据
-    OPENAI_API_KEY: str = get_secret('OPENAI_API_KEY')
-    ANTHROPIC_API_KEY: str = get_secret('ANTHROPIC_API_KEY')
+    KIMI_API_KEY: str = get_secret('KIMI_API_KEY')
     DEEPSEEK_API_KEY: str = get_secret('DEEPSEEK_API_KEY')
-    GOOGLE_API_KEY: str = get_secret('GOOGLE_API_KEY')
     DASHSCOPE_API_KEY: str = get_secret('DASHSCOPE_API_KEY')
     FRED_API_KEY: str = get_secret('FRED_API_KEY')
     FINNHUB_API_KEY: str = get_secret('FINNHUB_API_KEY')
     
     # 数据库配置
     DB_PATH: str = os.environ.get('DB_PATH', 'data/stock_database.db')
-    
+    CN_MARKET_DATA_DIR: str = os.environ.get('CN_MARKET_DATA_DIR', 'data/cn_market_full')
+    CN_FRESHNESS_MODE: str = os.environ.get('CN_FRESHNESS_MODE', 'stable')
+    CN_FRESHNESS_COVERAGE_THRESHOLD: float = _env_float('CN_FRESHNESS_COVERAGE_THRESHOLD', 0.95)
+    CN_STRICT_EARLY_STOP_SAMPLE_SIZE: int = _env_int('CN_STRICT_EARLY_STOP_SAMPLE_SIZE', 10)
+    CN_STRICT_EARLY_STOP_STALE_RATIO: float = _env_float('CN_STRICT_EARLY_STOP_STALE_RATIO', 0.80)
+
+    # Pipeline mode: "bayesian" (new 7-layer) or "legacy" (original 3-layer)
+    PIPELINE_MODE: str = os.environ.get('PIPELINE_MODE', 'bayesian')
+    DECISION_ENGINE: str = os.environ.get('DECISION_ENGINE', 'bayesian')
+    BAYESIAN_SHORTLIST_SIZE: int = _env_int('BAYESIAN_SHORTLIST_SIZE', 20)
+    FUNNEL_MAX_CANDIDATES: int = _env_int('FUNNEL_MAX_CANDIDATES', 400)
+
     # 日志配置
     LOG_LEVEL: str = os.environ.get('LOG_LEVEL', 'INFO')
     

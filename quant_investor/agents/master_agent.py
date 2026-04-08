@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 from typing import Any
+import json
 
 from quant_investor.agents.agent_contracts import (
     MasterAgentInput,
@@ -37,18 +38,25 @@ class MasterAgent:
         self,
         llm_client: LLMClient,
         model: str,
+        reasoning_effort: str = "high",
         timeout: float = 30.0,
         max_tokens: int = 1500,
     ) -> None:
         self.llm_client = llm_client
         self.model = model
+        self.reasoning_effort = str(reasoning_effort or "").strip() or "high"
         self.timeout = timeout
         self.max_tokens = max_tokens
 
     async def deliberate(self, agent_input: MasterAgentInput) -> MasterAgentOutput:
         """主持 IC 会议并产出最终决策。"""
         t0 = time.monotonic()
-        input_json = agent_input.model_dump_json(indent=2)
+        payload: dict[str, Any]
+        if getattr(agent_input, "evidence_pack", None):
+            payload = dict(agent_input.evidence_pack)
+        else:
+            payload = agent_input.model_dump(exclude={"evidence_pack"}) if hasattr(agent_input, "model_dump") else {}
+        input_json = json.dumps(payload, ensure_ascii=False, indent=2)
         messages = build_master_agent_messages(input_json)
 
         try:
@@ -57,6 +65,9 @@ class MasterAgent:
                 model=self.model,
                 max_tokens=self.max_tokens,
                 response_json=True,
+                stage="review_master_agent",
+                actor_name="ICCoordinator",
+                reasoning_effort=self.reasoning_effort,
             )
             output = self._parse_and_bound(raw, agent_input)
             elapsed = time.monotonic() - t0

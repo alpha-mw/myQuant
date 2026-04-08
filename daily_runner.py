@@ -8,6 +8,7 @@ myQuant 每日 A 股自动分析脚本
   python daily_runner.py --backend-only  # 仅启动并守护后端（不做分析）
   python daily_runner.py --report-only   # 打印上次分析报告
   python daily_runner.py --dry-run       # 验证配置和连接，不实际运行
+  python daily_runner.py --skip-stage1   # 跳过 Stage 1（数据检查与下载），直接分析
   python daily_runner.py --skip-download # 跳过数据下载，直接分析
   python daily_runner.py --config PATH   # 指定配置文件路径
 """
@@ -32,6 +33,26 @@ from urllib.error import URLError
 
 # ── 项目根目录 ─────────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent.resolve()
+
+
+def _bootstrap_project_venv() -> None:
+    """If available, re-exec into the project .venv Python."""
+    venv_root = (ROOT / ".venv").resolve()
+    target = venv_root / "bin" / "python"
+    if not target.exists():
+        return
+
+    try:
+        current_prefix = Path(sys.prefix).resolve()
+        if current_prefix == venv_root:
+            return
+    except Exception:
+        if str(sys.prefix).startswith(str(venv_root)):
+            return
+
+    sys.stderr.write(f"[daily_runner] switching interpreter to {target}\n")
+    sys.stderr.flush()
+    os.execv(str(target), [str(target), *sys.argv])
 
 # ── 日志 ───────────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -63,15 +84,24 @@ def load_config(config_path: Optional[str] = None) -> dict[str, Any]:
     # 默认值补全
     defaults: dict[str, Any] = {
         "market": "CN",
+        "universe": "full_a",
         "risk_level": "中等",
         "total_capital": 1_000_000,
-        "agent_model": "",
-        "master_model": "",
+        "agent_model": "moonshot-v1-128k",
+        "agent_fallback_model": "deepseek-reasoner",
+        "master_model": "moonshot-v1-128k",
+        "master_fallback_model": "deepseek-chat",
+        "master_reasoning_effort": "",
+        "pipeline_mode": "bayesian",
+        "funnel_max_candidates": 400,
+        "bayesian_shortlist_size": 20,
+        "freshness_mode": "stable",
         "kline_backend": "heuristic",
         "top_k": 20,
         "agent_timeout": 20.0,
         "master_timeout": 45.0,
         "enable_agent_layer": True,
+        "skip_stage1": False,
         "skip_download": False,
         "years": 3,
         "workers": 4,
@@ -251,20 +281,70 @@ class AnalysisRunner:
         os.chdir(ROOT)
 
         from quant_investor.market.run_pipeline import run_unified_pipeline
+        from quant_investor.model_roles import resolve_model_role
+
+        branch_resolution = resolve_model_role(
+            role="branch",
+            primary_model=str(config.get("agent_model", "")),
+            fallback_model=str(config.get("agent_fallback_model", "")),
+        )
+        master_resolution = resolve_model_role(
+            role="master",
+            primary_model=str(config.get("master_model", "")),
+            fallback_model=str(config.get("master_fallback_model", "")),
+        )
+        config = dict(config)
+        config["agent_model"] = branch_resolution.resolved_model
+        config["master_model"] = master_resolution.resolved_model
+        config.setdefault("universe", "full_a")
+        config.setdefault("skip_stage1", bool(config.get("skip_data_check", False)))
+        config["model_role_resolution"] = {
+            "branch": branch_resolution.to_dict(),
+            "master": master_resolution.to_dict(),
+        }
+
+        # Propagate Bayesian pipeline settings to Config via env vars
+        pipeline_mode = config.get("pipeline_mode", "bayesian")
+        os.environ.setdefault("PIPELINE_MODE", pipeline_mode)
+        os.environ.setdefault("FUNNEL_MAX_CANDIDATES", str(config.get("funnel_max_candidates", 400)))
+        os.environ.setdefault("BAYESIAN_SHORTLIST_SIZE", str(config.get("bayesian_shortlist_size", 20)))
+        os.environ.setdefault("CN_FRESHNESS_MODE", config.get("freshness_mode", "stable"))
 
         log.info(
-            "开始分析 | market=%s | agent=%s | master=%s | top_k=%s",
+            "开始分析 | market=%s | universe=%s | pipeline_mode=%s | branch_model=%s%s | master_model=%s%s | master_reasoning_effort=%s | top_k=%s | skip_stage1=%s",
             config["market"],
+            config.get("universe", "full_a"),
+            pipeline_mode,
             config["agent_model"] or "(默认)",
+            " [fallback]" if branch_resolution.fallback_used else "",
             config["master_model"] or "(默认)",
+            " [fallback]" if master_resolution.fallback_used else "",
+            config.get("master_reasoning_effort", "") or "(默认)",
             config["top_k"],
+            bool(config.get("skip_stage1", False)),
         )
+        if branch_resolution.fallback_used:
+            log.warning(
+                "branch model fallback activated: primary=%s fallback=%s reason=%s",
+                branch_resolution.primary_model,
+                branch_resolution.fallback_model,
+                branch_resolution.fallback_reason,
+            )
+        if master_resolution.fallback_used:
+            log.warning(
+                "master model fallback activated: primary=%s fallback=%s reason=%s",
+                master_resolution.primary_model,
+                master_resolution.fallback_model,
+                master_resolution.fallback_reason,
+            )
         started = time.time()
 
         def _call_pipeline(skip_dl: bool) -> dict[str, Any]:
             return run_unified_pipeline(
                 market=config["market"],
+                universe=config.get("universe", "full_a"),
                 mode="batch",
+                skip_stage1=bool(config.get("skip_stage1", False)),
                 skip_download=skip_dl,
                 total_capital=config["total_capital"],
                 top_k=config["top_k"],
@@ -272,7 +352,10 @@ class AnalysisRunner:
                 workers=config["workers"],
                 enable_agent_layer=config["enable_agent_layer"],
                 agent_model=config["agent_model"],
+                agent_fallback_model=config.get("agent_fallback_model", "deepseek-reasoner"),
                 master_model=config["master_model"],
+                master_fallback_model=config.get("master_fallback_model", "deepseek-chat"),
+                master_reasoning_effort=config.get("master_reasoning_effort", ""),
                 agent_timeout=config["agent_timeout"],
                 master_timeout=config["master_timeout"],
                 verbose=True,
@@ -341,6 +424,12 @@ def _confidence_label(c: float) -> str:
 class ReportBuilder:
     """从 pipeline 结果构建 8 章节 Markdown 决策报告。"""
 
+    @staticmethod
+    def _display_name(item: dict[str, Any]) -> str:
+        symbol = str(item.get("symbol", "")).strip()
+        company_name = str(item.get("company_name") or item.get("name") or "").strip()
+        return f"{symbol} {company_name}".strip() if company_name else symbol
+
     def build(
         self,
         pipeline_result: dict[str, Any],
@@ -352,6 +441,7 @@ class ReportBuilder:
         timing: dict[str, Any] = pipeline_result.get("timing", {})
         download: dict[str, Any] = pipeline_result.get("download", {})
         categories: list[str] = pipeline_result.get("categories", [])
+        analysis_meta: dict[str, Any] = pipeline_result.get("analysis_meta", {})
 
         # 聚合分支数据
         branch_summary = self._aggregate_branches(all_results)
@@ -382,6 +472,8 @@ class ReportBuilder:
             self._section_data_overview(market_summary, download, categories, config),
             self._section_market_overview(branch_summary, executive_summary, market_view, portfolio_plan),
             self._section_analysis_process(timing, config),
+            self._section_bayesian_decision(analysis_meta, config),
+            self._section_run_context(analysis_meta, report_bundle),
             self._section_subagent_decisions(branch_summary),
             self._section_master_decisions(executive_summary, market_view, portfolio_plan, narrator_md),
             self._section_investment_recommendations(recommendations, config["market"]),
@@ -425,16 +517,20 @@ class ReportBuilder:
         self, config: dict, now_str: str, total_stocks: int, selected_count: int
     ) -> str:
         capital_str = f"{config['total_capital']:,.0f}"
+        pipeline_mode = config.get("pipeline_mode", "legacy")
+        pipeline_label = "Bayesian 7-Layer" if pipeline_mode == "bayesian" else "Legacy 3-Layer"
         return (
             f"# 📊 myQuant 每日 A 股分析报告\n\n"
             f"**生成时间**: {now_str}  \n"
             f"**市场**: {config['market']}  \n"
+            f"**决策引擎**: {pipeline_label}  \n"
             f"**风险偏好**: {config['risk_level']}  \n"
             f"**总资金**: ¥{capital_str}  \n"
             f"**分析股票数**: {total_stocks}  \n"
             f"**精选标的数**: {selected_count}  \n"
             f"**Subagent 模型**: {config['agent_model'] or '(系统默认)'}  \n"
-            f"**Master Agent 模型**: {config['master_model'] or '(系统默认)'}"
+            f"**Master Agent 模型**: {config['master_model'] or '(系统默认)'}  \n"
+            f"**Master Agent reasoning**: {config.get('master_reasoning_effort', '') or '(系统默认)'}"
         )
 
     def _history_context(self, history: list[dict[str, Any]]) -> str:
@@ -558,16 +654,73 @@ class ReportBuilder:
             f"- K线后端: `{config['kline_backend']}`\n"
             f"- Subagent 模型: `{config['agent_model'] or '(系统默认)'}`\n"
             f"- Master Agent 模型: `{config['master_model'] or '(系统默认)'}`\n"
+            f"- Master Agent reasoning: `{config.get('master_reasoning_effort', '') or '(系统默认)'}`\n"
             f"- Subagent 超时: {config['agent_timeout']}s\n"
             f"- Master Agent 超时: {config['master_timeout']}s\n"
             f"- Agent Layer 启用: {'是' if config['enable_agent_layer'] else '否'}\n\n"
-            f"**分析层级：** 数据层 → K线层 → 量化因子层 → 基本面层 → "
-            f"智能融合层 → 宏观层 → 风险层 → Subagent 审查 → Master Agent 综合 → 组合构建 → 报告生成"
+            f"**决策引擎**: `{config.get('pipeline_mode', 'legacy')}`\n\n"
+            + (
+                f"**分析层级（Bayesian 7-Layer）：** GlobalContext → 全市场分支（K线+量化） → "
+                f"漏斗压缩（{config.get('funnel_max_candidates', 400)} 候选） → 候选分支（基本面+智能融合） → "
+                f"Bayesian 后验决策 → Master Discussion（Top {config.get('bayesian_shortlist_size', 20)}） → "
+                f"确定性控制链 → 组合构建 → 报告生成"
+                if config.get("pipeline_mode") == "bayesian"
+                else
+                f"**分析层级（Legacy 3-Layer）：** 数据层 → K线层 → 量化因子层 → 基本面层 → "
+                f"智能融合层 → 宏观层 → 风险层 → Subagent 审查 → Master synthesis / portfolio-level judgment before deterministic risk and sizing → 组合构建 → 报告生成"
+            )
         )
+
+    def _section_run_context(self, analysis_meta: dict[str, Any], report_bundle: Any) -> str:
+        model_role_metadata = analysis_meta.get("model_role_metadata")
+        execution_trace = analysis_meta.get("execution_trace")
+        what_if_plan = analysis_meta.get("what_if_plan")
+        if not any([model_role_metadata, execution_trace, what_if_plan]) and report_bundle is not None:
+            model_role_metadata = getattr(report_bundle, "model_role_metadata", None)
+            execution_trace = getattr(report_bundle, "execution_trace", None)
+            what_if_plan = getattr(report_bundle, "what_if_plan", None)
+        if not any([model_role_metadata, execution_trace, what_if_plan]):
+            return "## § 4 模型角色与执行轨迹\n\n_本次运行未记录结构化角色元数据或执行轨迹。_"
+
+        from quant_investor.reporting.conclusion_renderer import ConclusionRenderer
+
+        rendered = ConclusionRenderer.render_run_context(
+            model_role_metadata,
+            execution_trace,
+            what_if_plan,
+        )
+        return "## § 4 模型角色与执行轨迹\n\n" + "\n".join(rendered).strip()
+
+    def _section_bayesian_decision(self, analysis_meta: dict[str, Any], config: dict[str, Any]) -> str:
+        """§ 4.5 Bayesian 决策层摘要（仅在 pipeline_mode=bayesian 时渲染）。"""
+        pipeline_mode = analysis_meta.get("pipeline_mode", config.get("pipeline_mode", "legacy"))
+        if pipeline_mode != "bayesian":
+            return ""
+
+        record_count = int(analysis_meta.get("bayesian_record_count", 0))
+        funnel_candidates = int(analysis_meta.get("funnel_candidates_count", 0))
+        funnel_excluded = int(analysis_meta.get("funnel_excluded_count", 0))
+        shortlist_symbols = list(analysis_meta.get("bayesian_shortlist_symbols", []))
+
+        lines = [
+            "## § 4.5 Bayesian 决策层",
+            "",
+            f"- **漏斗压缩**: 全市场 → {funnel_candidates} 候选（排除 {funnel_excluded} 只）",
+            f"- **后验排名**: {record_count} 只候选完成 Bayesian 后验计算",
+            f"- **Master Discussion 入选**: {len(shortlist_symbols)} 只",
+        ]
+        if shortlist_symbols:
+            lines.append(f"- **精选标的**: {', '.join(shortlist_symbols[:20])}")
+        lines.append("")
+        lines.append(
+            "> Bayesian 后验 = 分层先验（市场/宏观/行业/交易性/数据质量）"
+            " × 多分支似然（log-odds 更新）× 相关性折扣 × 降级惩罚 × 覆盖折扣"
+        )
+        return "\n".join(lines)
 
     def _section_subagent_decisions(self, branch_summary: dict) -> str:
         if not branch_summary:
-            return "## § 4 Subagent 决策过程\n\n_本次运行未启用 Agent Layer 或数据不可用。_"
+            return "## § 5 Subagent 决策过程\n\n_本次运行未启用 Agent Layer 或数据不可用。_"
 
         branch_blocks = []
         for branch_key, blabel in _BRANCH_LABEL_MAP.items():
@@ -601,7 +754,7 @@ class ReportBuilder:
             )
 
         body = "\n\n".join(branch_blocks) if branch_blocks else "_无分支数据。_"
-        return f"## § 4 Subagent 决策过程、逻辑和依据\n\n{body}"
+        return f"## § 5 Subagent 决策过程、逻辑和依据\n\n{body}"
 
     def _section_master_decisions(
         self,
@@ -665,14 +818,14 @@ class ReportBuilder:
             f"{exec_block}{mv_block}{summary_block}{notes_block}{narrator_section}"
         ).strip()
 
-        return f"## § 5 Master Agent 决策过程、逻辑和依据\n\n{body}"
+        return f"## § 6 Master Agent 决策过程、逻辑和依据\n\n{body}"
 
     def _section_investment_recommendations(
         self, recommendations: list[dict], market: str
     ) -> str:
         if not recommendations:
             return (
-                "## § 6 最终投资建议\n\n"
+                "## § 7 最终投资建议\n\n"
                 "_本次分析未产生满足买入条件的候选标的。_\n\n"
                 "> 可能原因：市场整体偏弱、宏观压制、数据覆盖不足。建议维持观望，等待信号改善。"
             )
@@ -680,7 +833,7 @@ class ReportBuilder:
         rows = []
         for item in recommendations:
             symbol = item.get("symbol", "")
-            name = item.get("name", "")
+            name = str(item.get("company_name") or item.get("name") or "").strip()
             action = item.get("action", "观察")
             emoji = _ACTION_EMOJI.get(action, "⚪")
             conf = _safe_float(item.get("confidence", 0))
@@ -707,7 +860,7 @@ class ReportBuilder:
             )
 
         body = "\n".join(rows)
-        return f"## § 6 最终投资建议\n\n共精选 **{len(recommendations)}** 只标的：\n{body}"
+        return f"## § 7 最终投资建议\n\n共精选 **{len(recommendations)}** 只标的：\n{body}"
 
     def _section_positions_orders(
         self,
@@ -732,7 +885,7 @@ class ReportBuilder:
 
         if not recommendations:
             return (
-                f"## § 7 仓位和买卖指令\n\n{header}\n"
+                f"## § 8 仓位和买卖指令\n\n{header}\n"
                 "_当前无买入指令，建议全仓现金等待机会。_"
             )
 
@@ -747,8 +900,7 @@ class ReportBuilder:
                 "|---|------|------|---------|---------|------|------|-------|\n"
             )
             for item in buy_orders:
-                symbol = item.get("symbol", "")
-                name = item.get("name", "")
+                display_name = self._display_name(item)
                 action = item.get("action", "观察")
                 entry = _safe_float(item.get("recommended_entry_price") or item.get("current_price", 0))
                 shares = int(item.get("portfolio_shares", 0))
@@ -757,7 +909,7 @@ class ReportBuilder:
                 stop_loss = _safe_float(item.get("stop_loss_price", 0))
                 rank = item.get("rank", "-")
                 order_rows.append(
-                    f"| {rank} | {symbol} {name} | {action} | "
+                    f"| {rank} | {display_name} | {action} | "
                     f"¥{entry:.2f} | {shares:,} | ¥{amount:,.0f} | {weight:.2%} | ¥{stop_loss:.2f} |\n"
                 )
 
@@ -766,17 +918,16 @@ class ReportBuilder:
                 "\n**👁️ 观察/持续跟踪（暂不执行）：**\n\n"
             )
             for item in watch_orders:
-                symbol = item.get("symbol", "")
-                name = item.get("name", "")
+                display_name = self._display_name(item)
                 cur_price = _safe_float(item.get("current_price", 0))
                 target_price = _safe_float(item.get("target_price", 0))
                 one_line = item.get("one_line_conclusion", "信号不足，继续观察。")
                 order_rows.append(
-                    f"- **{symbol} {name}** — 现价 ¥{cur_price:.2f} | 目标 ¥{target_price:.2f} | {one_line}\n"
+                    f"- **{display_name}** — 现价 ¥{cur_price:.2f} | 目标 ¥{target_price:.2f} | {one_line}\n"
                 )
 
         body = header + "".join(order_rows)
-        return f"## § 7 仓位和买卖指令\n\n{body}"
+        return f"## § 8 仓位和买卖指令\n\n{body}"
 
     def _section_next_steps(
         self,
@@ -799,12 +950,12 @@ class ReportBuilder:
 
         # 当前建议摘要
         buy_list = [
-            f"`{r['symbol']}` ¥{_safe_float(r.get('recommended_entry_price') or r.get('current_price', 0)):.2f}"
+            f"`{self._display_name(r)}` ¥{_safe_float(r.get('recommended_entry_price') or r.get('current_price', 0)):.2f}"
             for r in recommendations
             if r.get("action") in ("买入", "轻仓试错")
         ]
         watch_list = [
-            f"`{r['symbol']}`"
+            f"`{self._display_name(r)}`"
             for r in recommendations
             if r.get("action") not in ("买入", "轻仓试错")
         ]
@@ -818,7 +969,7 @@ class ReportBuilder:
             timing_note = f"- 本次分析耗时: {total_secs/60:.1f} 分钟"
 
         return (
-            f"## § 8 下一步计划\n\n"
+            f"## § 9 下一步计划\n\n"
             f"**执行待办：**\n"
             f"- 待建仓标的: {buy_text}\n"
             f"- 待观察标的: {watch_text}\n"
@@ -871,12 +1022,75 @@ class PersistenceManager:
         report_path.write_text(report_md, encoding="utf-8")
         log.info("报告已保存: %s", report_path)
 
+        def _as_mapping(value: Any) -> dict[str, Any]:
+            if isinstance(value, dict):
+                return dict(value)
+            if hasattr(value, "to_dict"):
+                try:
+                    payload = value.to_dict()
+                    if isinstance(payload, dict):
+                        return dict(payload)
+                except Exception:
+                    return {}
+            return {}
+
+        def _compact_trace_summary(value: Any) -> dict[str, Any]:
+            payload = _as_mapping(value)
+            steps = []
+            for step in payload.get("steps", [])[:8]:
+                step_map = _as_mapping(step)
+                steps.append(
+                    {
+                        "stage": step_map.get("stage", ""),
+                        "role": step_map.get("role", ""),
+                        "success": bool(step_map.get("success", False)),
+                        "conclusion": str(step_map.get("conclusion", ""))[:180],
+                    }
+                )
+            return {
+                "model_roles": _as_mapping(payload.get("model_roles")),
+                "key_parameters": {
+                    "selected_count": payload.get("key_parameters", {}).get("selected_count", 0),
+                    "target_exposure": payload.get("key_parameters", {}).get("target_exposure", 0.0),
+                    "max_single_weight": payload.get("key_parameters", {}).get("max_single_weight", 0.0),
+                    "data_quality_issue_count": payload.get("key_parameters", {}).get("data_quality_issue_count", 0),
+                    "resolver_strategy": payload.get("key_parameters", {}).get("resolver_strategy", ""),
+                },
+                "final_deterministic_outcome": _as_mapping(payload.get("final_deterministic_outcome")),
+                "steps": steps,
+                "resolution_strategy": payload.get("resolution_strategy", ""),
+                "local_union_fallback_used": bool(payload.get("local_union_fallback_used", False)),
+            }
+
+        def _compact_whatif_summary(value: Any) -> dict[str, Any]:
+            payload = _as_mapping(value)
+            scenarios = []
+            for scenario in payload.get("scenarios", [])[:6]:
+                scenario_map = _as_mapping(scenario)
+                scenarios.append(
+                    {
+                        "scenario_name": scenario_map.get("scenario_name", ""),
+                        "trigger": str(scenario_map.get("trigger", ""))[:120],
+                        "action": str(scenario_map.get("action", ""))[:120],
+                        "rerun_full_market_daily_path": bool(scenario_map.get("rerun_full_market_daily_path", False)),
+                    }
+                )
+            return {
+                "generated_by": payload.get("generated_by", ""),
+                "scenario_count": len(payload.get("scenarios", []) or []),
+                "scenarios": scenarios,
+                "metadata": _as_mapping(payload.get("metadata")),
+            }
+
         # 2) 构建摘要 JSON
         plan = pipeline_result.get("reports", {})
         report_bundle = plan.get("report_bundle")
         exec_summary = []
         if report_bundle and hasattr(report_bundle, "executive_summary"):
             exec_summary = list(getattr(report_bundle, "executive_summary", []))
+        analysis_meta = pipeline_result.get("analysis_meta", {})
+        execution_trace = _as_mapping(analysis_meta.get("execution_trace"))
+        what_if_plan = _as_mapping(analysis_meta.get("what_if_plan"))
 
         analysis = pipeline_result.get("analysis", {})
         total_stocks = sum(
@@ -887,10 +1101,41 @@ class PersistenceManager:
         result_summary = {
             "total_stocks": total_stocks,
             "categories": pipeline_result.get("categories", []),
+            "universe": pipeline_result.get("universe", config.get("universe", "full_a")),
             "timing_seconds": timing.get("total_seconds", 0),
             "executive_summary": exec_summary,
             "report_file": str(report_path),
+            "model_role_metadata": _as_mapping(analysis_meta.get("model_role_metadata", {})),
+            "branch_model": analysis_meta.get("branch_model", config.get("agent_model", "")),
+            "agent_fallback_model": config.get("agent_fallback_model", ""),
+            "master_model": analysis_meta.get("master_model", config.get("master_model", "")),
+            "master_fallback_model": config.get("master_fallback_model", ""),
+            "master_reasoning_effort": analysis_meta.get(
+                "master_reasoning_effort",
+                config.get("master_reasoning_effort", ""),
+            ),
+            "agent_layer_enabled": analysis_meta.get(
+                "agent_layer_enabled",
+                config.get("enable_agent_layer", False),
+            ),
+            "selected_count": execution_trace.get("final_deterministic_outcome", {}).get("selected_count", 0) if isinstance(execution_trace, dict) else 0,
+            "target_exposure": execution_trace.get("final_deterministic_outcome", {}).get("target_exposure", 0.0) if isinstance(execution_trace, dict) else 0.0,
+            "data_quality_issue_count": analysis_meta.get("data_quality_issue_count", 0),
+            "researchable_count": analysis_meta.get("researchable_count", 0),
+            "quarantined_count": analysis_meta.get("quarantined_count", 0),
+            "evidence_pack_token_count": analysis_meta.get("evidence_pack_token_count", 0),
+            "evidence_pack_field_limit": analysis_meta.get("evidence_pack_field_limit", 0),
+            "evidence_pack_shortlist_limit": analysis_meta.get("evidence_pack_shortlist_limit", 0),
+            "model_role_resolution": config.get("model_role_resolution", {}),
+            # Bayesian pipeline info
+            "pipeline_mode": analysis_meta.get("pipeline_mode", config.get("pipeline_mode", "legacy")),
+            "bayesian_shortlist_symbols": analysis_meta.get("bayesian_shortlist_symbols", []),
+            "bayesian_record_count": analysis_meta.get("bayesian_record_count", 0),
+            "funnel_candidates_count": analysis_meta.get("funnel_candidates_count", 0),
+            "funnel_excluded_count": analysis_meta.get("funnel_excluded_count", 0),
         }
+        trace_summary = _compact_trace_summary(execution_trace)
+        whatif_summary = _compact_whatif_summary(what_if_plan)
 
         # 3) 存入 web_runs.db
         try:
@@ -904,7 +1149,10 @@ class PersistenceManager:
                     ensure_ascii=False,
                 ),
                 report_markdown=report_md,
+                report_path=str(report_path),
                 result_summary_json=json.dumps(result_summary, ensure_ascii=False),
+                trace_summary_json=json.dumps(trace_summary, ensure_ascii=False),
+                whatif_summary_json=json.dumps(whatif_summary, ensure_ascii=False),
                 total_time=_safe_float(timing.get("total_seconds", 0)),
                 market=config["market"],
                 stock_pool=json.dumps([]),
@@ -921,8 +1169,14 @@ class PersistenceManager:
 # 7. 主流程函数
 # ══════════════════════════════════════════════════════════════════════════════
 
-def run_once(config: dict[str, Any], skip_download: bool = False) -> str:
+def run_once(
+    config: dict[str, Any],
+    skip_download: bool = False,
+    skip_stage1: bool = False,
+) -> str:
     """执行一次完整分析，返回报告路径。"""
+    if skip_stage1:
+        config = {**config, "skip_stage1": True}
     if skip_download:
         config = {**config, "skip_download": True}
 
@@ -1080,6 +1334,17 @@ def dry_run(config: dict[str, Any]) -> None:
     except ImportError as exc:
         print(f"✗ quant_investor 导入失败: {exc}")
 
+    pipeline_mode = config.get("pipeline_mode", "legacy")
+    print(f"\n决策引擎: {pipeline_mode}")
+    if pipeline_mode == "bayesian":
+        try:
+            from quant_investor.bayesian import BayesianPosteriorEngine, HierarchicalPriorBuilder  # noqa: F401
+            from quant_investor.funnel import DeterministicFunnel  # noqa: F401
+            from quant_investor.global_context import GlobalContextBuilder  # noqa: F401
+            print("✓ Bayesian pipeline 模块可导入")
+        except ImportError as exc:
+            print(f"✗ Bayesian pipeline 导入失败: {exc}")
+
     print("\nDRY RUN 完成。")
 
 
@@ -1114,6 +1379,16 @@ def main() -> None:
         help="验证配置和连接，不实际运行",
     )
     parser.add_argument(
+        "--skip-stage1",
+        action="store_true",
+        help="跳过 Stage 1（数据新鲜度检查与下载），直接进入分析",
+    )
+    parser.add_argument(
+        "--skip-data-check",
+        action="store_true",
+        help="跳过 Stage 1（数据新鲜度检查与下载）的兼容别名",
+    )
+    parser.add_argument(
         "--skip-download",
         action="store_true",
         help="跳过数据下载，直接分析（数据需提前准备好）",
@@ -1123,6 +1398,18 @@ def main() -> None:
         metavar="PATH",
         help="配置文件路径（默认: daily_config.py）",
     )
+    parser.add_argument(
+        "--master-reasoning-effort",
+        choices=["low", "medium", "high", "xhigh"],
+        default="",
+        help="覆盖 Master Agent 的 reasoning 强度（默认使用配置文件中的值）",
+    )
+    parser.add_argument(
+        "--pipeline-mode",
+        choices=["bayesian", "legacy"],
+        default="",
+        help="决策引擎模式: bayesian（7层）或 legacy（3层）",
+    )
     args = parser.parse_args()
 
     # 加载配置
@@ -1131,6 +1418,13 @@ def main() -> None:
     except Exception as exc:
         log.error("配置加载失败: %s", exc)
         sys.exit(1)
+
+    if args.master_reasoning_effort:
+        config["master_reasoning_effort"] = args.master_reasoning_effort
+    if args.pipeline_mode:
+        config["pipeline_mode"] = args.pipeline_mode
+    if args.skip_stage1 or args.skip_data_check:
+        config["skip_stage1"] = True
 
     # 分支执行
     if args.dry_run:
@@ -1144,7 +1438,11 @@ def main() -> None:
     else:
         # 默认：立即运行一次分析
         try:
-            run_once(config, skip_download=args.skip_download)
+            run_once(
+                config,
+                skip_download=args.skip_download,
+                skip_stage1=bool(config.get("skip_stage1", False)),
+            )
         except KeyboardInterrupt:
             log.info("用户中断。")
             sys.exit(0)
@@ -1154,4 +1452,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    _bootstrap_project_venv()
     main()

@@ -317,8 +317,9 @@ class SentimentEngine:
         使用 LLM 进行深度情感分析。
         Returns: (score, label, event_type, impact_pct) or None
         """
-        api_key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("OPENAI_API_KEY")
-        if not api_key:
+        from quant_investor.llm_gateway import LLMClient as GatewayLLMClient, has_any_provider, _run_sync
+
+        if not has_any_provider():
             return None
 
         prompt = f"""分析以下金融新闻对股票 {symbol} 的情感影响，以JSON格式输出：
@@ -336,35 +337,21 @@ class SentimentEngine:
 }}"""
 
         try:
-            if os.getenv("ANTHROPIC_API_KEY"):
-                import anthropic  # type: ignore
-                client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-                msg = client.messages.create(
-                    model="claude-haiku-4-5-20251001",
-                    max_tokens=256,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                content = msg.content[0].text
-            else:
-                import openai  # type: ignore
-                client = openai.OpenAI(api_key=api_key)
-                resp = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=256,
-                )
-                content = resp.choices[0].message.content or ""
-
-            # 解析JSON
-            json_match = re.search(r'\{[^{}]+\}', content, re.DOTALL)
-            if json_match:
-                data = json.loads(json_match.group())
-                return (
-                    float(data.get("sentiment_score", 0)),
-                    str(data.get("sentiment_label", "中性")),
-                    str(data.get("event_type", "")),
-                    float(data.get("expected_price_impact_pct", 0)),
-                )
+            client = GatewayLLMClient(timeout=15.0, max_retries=1)
+            data = _run_sync(client.complete(
+                messages=[{"role": "user", "content": prompt}],
+                model="moonshot-v1-8k",
+                max_tokens=256,
+                response_json=True,
+                stage="news_sentiment",
+                actor_name=symbol,
+            ))
+            return (
+                float(data.get("sentiment_score", 0)),
+                str(data.get("sentiment_label", "中性")),
+                str(data.get("event_type", "")),
+                float(data.get("expected_price_impact_pct", 0)),
+            )
         except Exception as e:
             _logger.debug(f"LLM情感分析失败: {e}")
 
