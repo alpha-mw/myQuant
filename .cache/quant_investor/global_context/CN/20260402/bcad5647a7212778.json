@@ -1,0 +1,508 @@
+{
+  "market": "CN",
+  "as_of_date": "20260402",
+  "latest_trade_date": "20260402",
+  "universe": [
+    "688519.SH",
+    "688525.SH",
+    "688295.SH",
+    "601179.SH",
+    "002008.SZ",
+    "601869.SH",
+    "600487.SH",
+    "002384.SZ"
+  ],
+  "universe_hash": "bcad5647a7212778",
+  "completeness_passed": true,
+  "data_gate": {
+    "blocked_symbols": [],
+    "blocked_reasons": {},
+    "stale_symbols": [],
+    "synthetic_symbols": [],
+    "max_stale_days": 3
+  },
+  "macro_regime": {
+    "regime": "中风险",
+    "score": 0.010000000000000002,
+    "signals": {
+      "macro_score": 0.0,
+      "macro_regime": "中风险",
+      "liquidity_signal": "🟡",
+      "policy_signal": "控制仓位，精选个股",
+      "risk_level": "中风险",
+      "debate_verdict": {
+        "direction": "bullish",
+        "confidence": 0.475,
+        "score_adjustment": 0.010000000000000002,
+        "bull_points": [
+          "宏观 regime: 中风险",
+          "流动性信号: 🟡"
+        ],
+        "bear_points": [],
+        "risk_flags": [],
+        "unknowns": [],
+        "used_features": [
+          "macro_score",
+          "macro_regime",
+          "liquidity_signal",
+          "policy_signal",
+          "risk_level"
+        ],
+        "hard_veto": false,
+        "metadata": {
+          "status": "deterministic_stub",
+          "reason": "",
+          "reviewed_symbols": [
+            "__market__"
+          ],
+          "reviewed_symbol_count": 1,
+          "cache_hits": 0,
+          "timeout_sec": 8.0,
+          "retry_policy": {
+            "max_attempts": 1,
+            "retryable_reasons": [
+              "timeout",
+              "transient_error"
+            ]
+          },
+          "template_version": "2026-03-22.branch-debate.v2",
+          "scope": "market"
+        }
+      },
+      "base_score": 0.0,
+      "final_score": 0.010000000000000002,
+      "base_confidence": 0.75,
+      "final_confidence": 0.70875,
+      "bounded_adjustment": 0.010000000000000002
+    }
+  },
+  "quant_factor_scores": {
+    "688519.SH": -0.017748552443672017,
+    "002008.SZ": -0.09870005922902196,
+    "002384.SZ": -0.09682652521338263,
+    "600487.SH": 0.1208116413686816,
+    "601179.SH": -0.3425619638729504,
+    "601869.SH": 0.408880289858931,
+    "688295.SH": 0.02356820806101935,
+    "688525.SH": 0.002576961470394671
+  },
+  "style_exposures": {
+    "688519.SH": {
+      "momentum_3m": 0.9892744419206438,
+      "realized_vol_20d": -0.06536182182563662,
+      "rsi_14": 56.47038421731517,
+      "macd_signal": -0.015273188899274887,
+      "volume_ratio": 10.0327608589041
+    },
+    "688525.SH": {
+      "momentum_3m": 1.0012996018148668,
+      "realized_vol_20d": -0.06245515507143137,
+      "rsi_14": 53.852198465075496,
+      "macd_signal": -0.01857035405242246,
+      "volume_ratio": 10.373287474522947
+    },
+    "688295.SH": {
+      "momentum_3m": 1.0022329451827519,
+      "realized_vol_20d": -0.08338971371156058,
+      "rsi_14": 61.565444834714285,
+      "macd_signal": -0.007038451547160663,
+      "volume_ratio": 10.626045246802823
+    },
+    "601179.SH": {
+      "momentum_3m": 0.6123711694147169,
+      "realized_vol_20d": -0.041104565406430475,
+      "rsi_14": 26.489031887812487,
+      "macd_signal": -0.02271777866103254,
+      "volume_ratio": 8.326131568655258
+    },
+    "002008.SZ": {
+      "momentum_3m": 0.6701406585232175,
+      "realized_vol_20d": -0.03768957518449428,
+      "rsi_14": 38.964483907456,
+      "macd_signal": -0.014534661532786068,
+      "volume_ratio": 9.43248048621763
+    },
+    "601869.SH": {
+      "momentum_3m": 1.4430871737923376,
+      "realized_vol_20d": -0.05415703371983855,
+      "rsi_14": 71.29529756573675,
+      "macd_signal": 0.02078035976312499,
+      "volume_ratio": 10.225485538165186
+    },
+    "600487.SH": {
+      "momentum_3m": 0.9824494118455802,
+      "realized_vol_20d": -0.053702925835159135,
+      "rsi_14": 50.97825928671812,
+      "macd_signal": 0.005067842656443354,
+      "volume_ratio": 10.146182075936858
+    },
+    "002384.SZ": {
+      "momentum_3m": 0.3405485180174639,
+      "realized_vol_20d": -0.04790400127265421,
+      "rsi_14": 49.746278728880384,
+      "macd_signal": -0.012685992056122716,
+      "volume_ratio": 10.005559341146734
+    }
+  },
+  "liquidity_snapshot": {
+    "688519.SH": {
+      "last_amount": 868433.4116785736,
+      "last_volume": 6503171.0,
+      "avg_amount_20d": 931218.8647742929,
+      "liquidity_score": 0.00931218864774293
+    },
+    "688525.SH": {
+      "last_amount": 9517392.122632047,
+      "last_volume": 44143747.0,
+      "avg_amount_20d": 9933382.786551217,
+      "liquidity_score": 0.09933382786551216
+    },
+    "688295.SH": {
+      "last_amount": 1140792.23842239,
+      "last_volume": 21204317.0,
+      "avg_amount_20d": 1407905.4841238675,
+      "liquidity_score": 0.014079054841238675
+    },
+    "601179.SH": {
+      "last_amount": 2104338.4923535595,
+      "last_volume": 134548494.0,
+      "avg_amount_20d": 5245169.134154956,
+      "liquidity_score": 0.05245169134154956
+    },
+    "002008.SZ": {
+      "last_amount": 1996903.9833643725,
+      "last_volume": 31152949.0,
+      "avg_amount_20d": 2138413.2804444893,
+      "liquidity_score": 0.021384132804444893
+    },
+    "601869.SH": {
+      "last_amount": 5633344.948,
+      "last_volume": 18290081.0,
+      "avg_amount_20d": 4287555.501604071,
+      "liquidity_score": 0.042875555016040706
+    },
+    "600487.SH": {
+      "last_amount": 6689311.524575341,
+      "last_volume": 128739639.0,
+      "avg_amount_20d": 6877902.919110832,
+      "liquidity_score": 0.06877902919110832
+    },
+    "002384.SZ": {
+      "last_amount": 7647512.049,
+      "last_volume": 70160661.0,
+      "avg_amount_20d": 8838312.551176088,
+      "liquidity_score": 0.08838312551176088
+    }
+  },
+  "risk_budget": {},
+  "correlation_matrix": {
+    "688519.SH": {
+      "688519.SH": 1.0,
+      "688525.SH": 0.2867171795852936,
+      "688295.SH": 0.31371882821488545,
+      "601179.SH": 0.11999340765302076,
+      "002008.SZ": 0.40039285297168287,
+      "601869.SH": 0.25606533479297344,
+      "600487.SH": 0.35507402682754363,
+      "002384.SZ": 0.4395074628180067
+    },
+    "688525.SH": {
+      "688519.SH": 0.2867171795852936,
+      "688525.SH": 1.0,
+      "688295.SH": 0.3085492390140197,
+      "601179.SH": 0.3547286672670979,
+      "002008.SZ": 0.36443166986661896,
+      "601869.SH": 0.15069036968088617,
+      "600487.SH": 0.2666769848503004,
+      "002384.SZ": 0.27341675621256484
+    },
+    "688295.SH": {
+      "688519.SH": 0.31371882821488545,
+      "688525.SH": 0.3085492390140197,
+      "688295.SH": 1.0,
+      "601179.SH": 0.09011846093252324,
+      "002008.SZ": 0.19584047649349332,
+      "601869.SH": 0.1562568635036654,
+      "600487.SH": 0.2066073911664486,
+      "002384.SZ": 0.1733846749166241
+    },
+    "601179.SH": {
+      "688519.SH": 0.11999340765302076,
+      "688525.SH": 0.3547286672670979,
+      "688295.SH": 0.09011846093252324,
+      "601179.SH": 1.0,
+      "002008.SZ": 0.21261919463215834,
+      "601869.SH": 0.08229648091536645,
+      "600487.SH": 0.28007788668668737,
+      "002384.SZ": 0.11323375537536201
+    },
+    "002008.SZ": {
+      "688519.SH": 0.40039285297168287,
+      "688525.SH": 0.36443166986661896,
+      "688295.SH": 0.19584047649349332,
+      "601179.SH": 0.21261919463215834,
+      "002008.SZ": 1.0,
+      "601869.SH": 0.36525796232496427,
+      "600487.SH": 0.5068973034906427,
+      "002384.SZ": 0.5023510509553998
+    },
+    "601869.SH": {
+      "688519.SH": 0.25606533479297344,
+      "688525.SH": 0.15069036968088617,
+      "688295.SH": 0.1562568635036654,
+      "601179.SH": 0.08229648091536645,
+      "002008.SZ": 0.36525796232496427,
+      "601869.SH": 1.0,
+      "600487.SH": 0.6557861699059585,
+      "002384.SZ": 0.40536944600009683
+    },
+    "600487.SH": {
+      "688519.SH": 0.35507402682754363,
+      "688525.SH": 0.2666769848503004,
+      "688295.SH": 0.2066073911664486,
+      "601179.SH": 0.28007788668668737,
+      "002008.SZ": 0.5068973034906427,
+      "601869.SH": 0.6557861699059585,
+      "600487.SH": 1.0,
+      "002384.SZ": 0.33609145100334864
+    },
+    "002384.SZ": {
+      "688519.SH": 0.4395074628180067,
+      "688525.SH": 0.27341675621256484,
+      "688295.SH": 0.1733846749166241,
+      "601179.SH": 0.11323375537536201,
+      "002008.SZ": 0.5023510509553998,
+      "601869.SH": 0.40536944600009683,
+      "600487.SH": 0.33609145100334864,
+      "002384.SZ": 1.0
+    }
+  },
+  "phase1_context": {
+    "macro_regime": "中风险",
+    "macro_score": 0.010000000000000002,
+    "macro_signals": {
+      "macro_score": 0.0,
+      "macro_regime": "中风险",
+      "liquidity_signal": "🟡",
+      "policy_signal": "控制仓位，精选个股",
+      "risk_level": "中风险",
+      "debate_verdict": {
+        "direction": "bullish",
+        "confidence": 0.475,
+        "score_adjustment": 0.010000000000000002,
+        "bull_points": [
+          "宏观 regime: 中风险",
+          "流动性信号: 🟡"
+        ],
+        "bear_points": [],
+        "risk_flags": [],
+        "unknowns": [],
+        "used_features": [
+          "macro_score",
+          "macro_regime",
+          "liquidity_signal",
+          "policy_signal",
+          "risk_level"
+        ],
+        "hard_veto": false,
+        "metadata": {
+          "status": "deterministic_stub",
+          "reason": "",
+          "reviewed_symbols": [
+            "__market__"
+          ],
+          "reviewed_symbol_count": 1,
+          "cache_hits": 0,
+          "timeout_sec": 8.0,
+          "retry_policy": {
+            "max_attempts": 1,
+            "retryable_reasons": [
+              "timeout",
+              "transient_error"
+            ]
+          },
+          "template_version": "2026-03-22.branch-debate.v2",
+          "scope": "market"
+        }
+      },
+      "base_score": 0.0,
+      "final_score": 0.010000000000000002,
+      "base_confidence": 0.75,
+      "final_confidence": 0.70875,
+      "bounded_adjustment": 0.010000000000000002
+    },
+    "factor_exposures": {
+      "688519.SH": {
+        "momentum_3m": 0.9892744419206438,
+        "realized_vol_20d": -0.06536182182563662,
+        "rsi_14": 56.47038421731517,
+        "macd_signal": -0.015273188899274887,
+        "volume_ratio": 10.0327608589041
+      },
+      "688525.SH": {
+        "momentum_3m": 1.0012996018148668,
+        "realized_vol_20d": -0.06245515507143137,
+        "rsi_14": 53.852198465075496,
+        "macd_signal": -0.01857035405242246,
+        "volume_ratio": 10.373287474522947
+      },
+      "688295.SH": {
+        "momentum_3m": 1.0022329451827519,
+        "realized_vol_20d": -0.08338971371156058,
+        "rsi_14": 61.565444834714285,
+        "macd_signal": -0.007038451547160663,
+        "volume_ratio": 10.626045246802823
+      },
+      "601179.SH": {
+        "momentum_3m": 0.6123711694147169,
+        "realized_vol_20d": -0.041104565406430475,
+        "rsi_14": 26.489031887812487,
+        "macd_signal": -0.02271777866103254,
+        "volume_ratio": 8.326131568655258
+      },
+      "002008.SZ": {
+        "momentum_3m": 0.6701406585232175,
+        "realized_vol_20d": -0.03768957518449428,
+        "rsi_14": 38.964483907456,
+        "macd_signal": -0.014534661532786068,
+        "volume_ratio": 9.43248048621763
+      },
+      "601869.SH": {
+        "momentum_3m": 1.4430871737923376,
+        "realized_vol_20d": -0.05415703371983855,
+        "rsi_14": 71.29529756573675,
+        "macd_signal": 0.02078035976312499,
+        "volume_ratio": 10.225485538165186
+      },
+      "600487.SH": {
+        "momentum_3m": 0.9824494118455802,
+        "realized_vol_20d": -0.053702925835159135,
+        "rsi_14": 50.97825928671812,
+        "macd_signal": 0.005067842656443354,
+        "volume_ratio": 10.146182075936858
+      },
+      "002384.SZ": {
+        "momentum_3m": 0.3405485180174639,
+        "realized_vol_20d": -0.04790400127265421,
+        "rsi_14": 49.746278728880384,
+        "macd_signal": -0.012685992056122716,
+        "volume_ratio": 10.005559341146734
+      }
+    },
+    "alpha_factors": [
+      "momentum_3m",
+      "realized_vol_20d",
+      "rsi_14",
+      "macd_signal",
+      "volume_ratio"
+    ],
+    "quant_symbol_scores": {
+      "688519.SH": -0.017748552443672017,
+      "002008.SZ": -0.09870005922902196,
+      "002384.SZ": -0.09682652521338263,
+      "600487.SH": 0.1208116413686816,
+      "601179.SH": -0.3425619638729504,
+      "601869.SH": 0.408880289858931,
+      "688295.SH": 0.02356820806101935,
+      "688525.SH": 0.002576961470394671
+    },
+    "available_symbols": [
+      "688519.SH",
+      "688525.SH",
+      "688295.SH",
+      "601179.SH",
+      "002008.SZ",
+      "601869.SH",
+      "600487.SH",
+      "002384.SZ"
+    ]
+  },
+  "source_metadata": {
+    "symbol_provenance": {
+      "688519.SH": {
+        "symbol": "688519.SH",
+        "data_source_status": "real",
+        "is_synthetic": false,
+        "degraded_reason": "",
+        "branch_mode": "real_market_data",
+        "reliability": 1.0,
+        "price_source": "local_csv",
+        "fundamental_source": "unavailable"
+      },
+      "688525.SH": {
+        "symbol": "688525.SH",
+        "data_source_status": "real",
+        "is_synthetic": false,
+        "degraded_reason": "",
+        "branch_mode": "real_market_data",
+        "reliability": 1.0,
+        "price_source": "local_csv",
+        "fundamental_source": "unavailable"
+      },
+      "688295.SH": {
+        "symbol": "688295.SH",
+        "data_source_status": "real",
+        "is_synthetic": false,
+        "degraded_reason": "",
+        "branch_mode": "real_market_data",
+        "reliability": 1.0,
+        "price_source": "local_csv",
+        "fundamental_source": "unavailable"
+      },
+      "601179.SH": {
+        "symbol": "601179.SH",
+        "data_source_status": "real",
+        "is_synthetic": false,
+        "degraded_reason": "",
+        "branch_mode": "real_market_data",
+        "reliability": 1.0,
+        "price_source": "local_csv",
+        "fundamental_source": "unavailable"
+      },
+      "002008.SZ": {
+        "symbol": "002008.SZ",
+        "data_source_status": "real",
+        "is_synthetic": false,
+        "degraded_reason": "",
+        "branch_mode": "real_market_data",
+        "reliability": 1.0,
+        "price_source": "local_csv",
+        "fundamental_source": "unavailable"
+      },
+      "601869.SH": {
+        "symbol": "601869.SH",
+        "data_source_status": "real",
+        "is_synthetic": false,
+        "degraded_reason": "",
+        "branch_mode": "real_market_data",
+        "reliability": 1.0,
+        "price_source": "local_csv",
+        "fundamental_source": "unavailable"
+      },
+      "600487.SH": {
+        "symbol": "600487.SH",
+        "data_source_status": "real",
+        "is_synthetic": false,
+        "degraded_reason": "",
+        "branch_mode": "real_market_data",
+        "reliability": 1.0,
+        "price_source": "local_csv",
+        "fundamental_source": "unavailable"
+      },
+      "002384.SZ": {
+        "symbol": "002384.SZ",
+        "data_source_status": "real",
+        "is_synthetic": false,
+        "degraded_reason": "",
+        "branch_mode": "real_market_data",
+        "reliability": 1.0,
+        "price_source": "local_csv",
+        "fundamental_source": "unavailable"
+      }
+    },
+    "data_source_status": "real"
+  },
+  "cache_key": "CN:20260402:bcad5647a7212778",
+  "cache_path": ".cache/quant_investor/global_context/CN/20260402/bcad5647a7212778.json",
+  "schema_version": "global-context.v1"
+}

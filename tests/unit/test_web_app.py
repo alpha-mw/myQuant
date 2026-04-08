@@ -172,6 +172,31 @@ def test_analysis_branch_payload_is_normalized_when_optional_fields_are_null():
     assert branch["settings"]["prediction_horizon"] == "20d"
 
 
+def test_web_result_normalization_preserves_data_snapshot():
+    result = _normalize_web_result(
+        {
+            "analysis_id": "test",
+            "request": {"targets": ["000001.SZ"], "market": "CN"},
+            "branches": [],
+            "data_snapshot": {
+                "market": "CN",
+                "universe_key": "full_a",
+                "local_latest_trade_date": "20260326",
+                "freshness_mode": "stable",
+                "category_symbol_counts": {"full_a": 1},
+                "date_distribution_top": [{"trade_date": "20260326", "symbol_count": 1}],
+                "data_directories": ["data/cn_market_full/hs300"],
+                "resolver_priority": ["hs300", "zz500", "zz1000", "other"],
+                "data_quality_issue_count": 0,
+                "summary_text": "本地 A 股数据更新至 20260326。",
+            },
+        }
+    )
+
+    assert result["data_snapshot"]["local_latest_trade_date"] == "20260326"
+    assert result["data_snapshot"]["summary_text"] == "本地 A 股数据更新至 20260326。"
+
+
 def test_market_mode_expands_all_downloaded_symbols_from_selected_market(tmp_path, monkeypatch):
     stock_db = tmp_path / "stock.db"
     conn = sqlite3.connect(stock_db)

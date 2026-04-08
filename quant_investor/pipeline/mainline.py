@@ -12,19 +12,26 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional, cast
 
-from quant_investor.agent_orchestrator import AgentOrchestrator as StructuredAgentOrchestrator
-from quant_investor.agent_protocol import BranchVerdict, ICDecision, PortfolioPlan, ReportBundle
+from quant_investor.agent_protocol import BranchVerdict, GlobalContext, ICDecision, PortfolioPlan, ReportBundle
 from quant_investor.agents.agent_contracts import (
     AgentEnhancedStrategy,
     BaseBranchAgentOutput,
+    MasterAgentInput,
     MasterAgentOutput,
     RiskAgentOutput,
+    ShortlistEvidencePack,
 )
 from quant_investor.agents.base import BaseAgent
 from quant_investor.agents.llm_client import has_provider_for_model, resolve_default_model
-from quant_investor.agents.orchestrator import AgentOrchestrator as ReviewAgentOrchestrator
 from quant_investor.agents.prompts import format_agent_display_name
+from quant_investor.bayesian.likelihood import SignalLikelihoodMapper
+from quant_investor.bayesian.posterior import BayesianPosteriorEngine
+from quant_investor.bayesian.prior import HierarchicalPriorBuilder
+from quant_investor.bayesian.types import PosteriorResult
+from quant_investor.funnel.deterministic_funnel import DeterministicFunnel, FunnelConfig, FunnelOutput
+from quant_investor.model_roles import resolve_model_role
 from quant_investor.branch_contracts import (
+    BranchResult,
     LLMUsageRecord,
     LLMUsageSummary,
     PortfolioStrategy,
@@ -32,6 +39,7 @@ from quant_investor.branch_contracts import (
     UnifiedDataBundle,
 )
 from quant_investor.config import config
+from quant_investor.global_context.builder import GlobalContextBuilder
 from quant_investor.llm_gateway import (
     current_usage_session_id,
     end_usage_session,
@@ -40,17 +48,26 @@ from quant_investor.llm_gateway import (
     update_usage_markdown,
 )
 from quant_investor.logger import get_logger
-from quant_investor.pipeline.parallel_research_pipeline import ParallelResearchPipeline
+from quant_investor.market.data_snapshot import build_market_data_snapshot
+from quant_investor.reporting.conclusion_renderer import ConclusionRenderer
+from quant_investor.reporting.run_artifacts import build_model_role_metadata
 from quant_investor.versioning import (
     AGENT_SCHEMA_VERSION,
     ARCHITECTURE_VERSION,
     BRANCH_SCHEMA_VERSION,
     CALIBRATION_SCHEMA_VERSION,
+    DEBATE_TEMPLATE_VERSION,
     IC_PROTOCOL_VERSION,
     REPORT_PROTOCOL_VERSION,
 )
 
 _logger = get_logger("QuantInvestor")
+
+
+def _execute_market_dag(**kwargs: Any) -> dict[str, Any]:
+    from quant_investor.market.dag_executor import execute_market_dag
+
+    return execute_market_dag(**kwargs)
 
 _CONVICTION_SCORE = {
     "strong_buy": 0.80,
@@ -70,6 +87,7 @@ class QuantInvestorPipelineResult:
     ic_protocol_version: str = IC_PROTOCOL_VERSION
     report_protocol_version: str = REPORT_PROTOCOL_VERSION
     calibration_schema_version: str = CALIBRATION_SCHEMA_VERSION
+    debate_template_version: str = DEBATE_TEMPLATE_VERSION
     data_bundle: Optional[UnifiedDataBundle] = None
     branch_results: dict[str, Any] = field(default_factory=dict)
     calibrated_signals: dict[str, Any] = field(default_factory=dict)
@@ -83,9 +101,15 @@ class QuantInvestorPipelineResult:
     agent_portfolio_plan: Any = None
     agent_report_bundle: Any = None
     agent_ic_decisions: Any = field(default_factory=dict)
+    agent_review_bundle: Any = None
+    ic_hints_by_symbol: dict[str, dict[str, Any]] = field(default_factory=dict)
+    model_role_metadata: Any = None
+    execution_trace: Any = None
+    what_if_plan: Any = None
     llm_usage_records: list[LLMUsageRecord] = field(default_factory=list)
     llm_usage_summary: LLMUsageSummary = field(default_factory=LLMUsageSummary)
     llm_usage_session_id: str = ""
+    data_snapshot: dict[str, Any] = field(default_factory=dict)
     raw_data: dict[str, Any] = field(default_factory=dict)
     factor_data: dict[str, Any] = field(default_factory=dict)
     model_predictions: dict[str, Any] = field(default_factory=dict)
@@ -100,8 +124,16 @@ class QuantInvestorPipelineResult:
     branch_review_outputs: dict[str, BaseBranchAgentOutput | None] = field(default_factory=dict)
     master_review_output: MasterAgentOutput | None = None
     risk_review_output: RiskAgentOutput | None = None
+    review_bundle: Any = None
+    symbol_review_bundle: dict[str, dict[str, Any]] = field(default_factory=dict)
     agent_layer_enabled: bool = False
     agent_schema_version: str = AGENT_SCHEMA_VERSION
+    pipeline_mode: str = "legacy"
+    global_context: Optional[GlobalContext] = None
+    funnel_output: Optional[FunnelOutput] = None
+    bayesian_records: list[Any] = field(default_factory=list)
+    shortlist_evidence: list[Any] = field(default_factory=list)
+    bayesian_shortlist_symbols: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -142,11 +174,15 @@ class QuantInvestor:
         verbose: bool = True,
         enable_kronos: bool | None = None,
         enable_agent_layer: bool = True,
-        agent_model: str = "claude-sonnet-4-6",
-        master_model: str = "gpt-5.4-mini",
+        agent_model: str = "moonshot-v1-128k",
+        master_model: str = "moonshot-v1-128k",
+        agent_fallback_model: str = "deepseek-reasoner",
+        master_fallback_model: str = "deepseek-chat",
+        master_reasoning_effort: str = "",
         agent_timeout: float = 15.0,
         master_timeout: float = 30.0,
         agent_total_timeout: float = 120.0,
+        universe_key: str = "full_a",
         recall_context: dict[str, Any] | None = None,
     ) -> None:
         self.stock_pool = stock_pool
@@ -166,13 +202,27 @@ class QuantInvestor:
         self.enable_document_semantics = enable_document_semantics
         self.verbose = verbose
         self.enable_agent_layer = enable_agent_layer
-        self.agent_model, self.master_model = self._resolve_agent_models(
-            agent_model=agent_model,
-            master_model=master_model,
+        self.primary_agent_model = str(agent_model or "").strip() or resolve_default_model(preferred_model="moonshot-v1-128k")
+        self.primary_master_model = str(master_model or "").strip() or resolve_default_model(preferred_model="moonshot-v1-128k")
+        self.agent_fallback_model = str(agent_fallback_model or "").strip()
+        self.master_fallback_model = str(master_fallback_model or "").strip()
+        self.agent_resolution = resolve_model_role(
+            role="branch",
+            primary_model=self.primary_agent_model,
+            fallback_model=self.agent_fallback_model,
         )
+        self.master_resolution = resolve_model_role(
+            role="master",
+            primary_model=self.primary_master_model,
+            fallback_model=self.master_fallback_model,
+        )
+        self.agent_model = self.agent_resolution.resolved_model
+        self.master_model = self.master_resolution.resolved_model
+        self.master_reasoning_effort = str(master_reasoning_effort or "").strip() or "high"
         self.agent_timeout = agent_timeout
         self.master_timeout = master_timeout
         self.agent_total_timeout = agent_total_timeout
+        self.universe_key = str(universe_key or "").strip() or "full_a"
         self.recall_context = dict(recall_context or {})
         self.result = QuantInvestorPipelineResult()
 
@@ -187,8 +237,8 @@ class QuantInvestor:
         master_model: str,
     ) -> tuple[str, str]:
         return (
-            str(agent_model or "").strip() or resolve_default_model(preferred_model="claude-sonnet-4-6"),
-            str(master_model or "").strip() or resolve_default_model(preferred_model="gpt-5.4-mini"),
+            str(agent_model or "").strip() or resolve_default_model(preferred_model="moonshot-v1-128k"),
+            str(master_model or "").strip() or resolve_default_model(preferred_model="moonshot-v1-128k"),
         )
 
     def run(self) -> QuantInvestorPipelineResult:
@@ -201,8 +251,34 @@ class QuantInvestor:
             self._log("=" * 60)
             self._log("🚀 Quant-Investor 主线启动")
             self._log(f"标的: {self.stock_pool}")
-            self._log(f"市场: {self.market}  资金: ¥{self.total_capital:,.0f}")
-            self._log(f"Review Layer: {'启用' if self.enable_agent_layer else '禁用'}")
+            self._log(f"市场: {self.market}  universe={self.universe_key}  资金: ¥{self.total_capital:,.0f}")
+            self._log(
+                "Review Layer: %s | branch_model=%s | master_model=%s | master_reasoning_effort=%s"
+                % (
+                    "启用" if self.enable_agent_layer else "禁用",
+                    self.agent_model,
+                    self.master_model,
+                    self.master_reasoning_effort,
+                )
+            )
+            if self.agent_resolution.fallback_used:
+                self._log(
+                    "branch model fallback: primary=%s fallback=%s reason=%s"
+                    % (
+                        self.agent_resolution.primary_model,
+                        self.agent_resolution.fallback_model,
+                        self.agent_resolution.fallback_reason,
+                    )
+                )
+            if self.master_resolution.fallback_used:
+                self._log(
+                    "master model fallback: primary=%s fallback=%s reason=%s"
+                    % (
+                        self.master_resolution.primary_model,
+                        self.master_resolution.fallback_model,
+                        self.master_resolution.fallback_reason,
+                    )
+                )
             self._log("=" * 60)
 
             if hasattr(config, "validate_runtime"):
@@ -211,22 +287,48 @@ class QuantInvestor:
                     enable_agent_layer=self.enable_agent_layer,
                     agent_model=self.agent_model,
                     master_model=self.master_model,
+                    master_reasoning_effort=self.master_reasoning_effort,
                     kline_backend=self.kline_backend,
                 )
                 for message in validation["errors"]:
                     self._log(f"⚠️ {message}")
                 for message in validation["warnings"]:
                     self._log(f"⚠️ {message}")
-
-            snapshot = self._run_research_core()
-            review_result, agent_layer_enabled = self._run_review_layer(snapshot)
-            orchestration = self._run_unified_control_chain(snapshot, review_result)
-            records, summary = snapshot_usage(current_usage_session_id() or snapshot.llm_usage_session_id)
-            result = self._build_result(
-                snapshot=snapshot,
-                orchestration=orchestration,
-                review_result=review_result,
-                agent_layer_enabled=agent_layer_enabled,
+            data_snapshot = build_market_data_snapshot(
+                market=self.market,
+                universe=self.universe_key,
+                requested_symbols=list(self.stock_pool),
+            )
+            missing_requested = list(data_snapshot.get("missing_requested_symbols", []) or [])
+            unreadable_requested = list(data_snapshot.get("unreadable_requested_symbols", []) or [])
+            if missing_requested or unreadable_requested:
+                missing_text = ", ".join(missing_requested + unreadable_requested)
+                raise ValueError(f"本地数据不可用于研究：{missing_text}")
+            if data_snapshot.get("summary_text"):
+                self._log(f"数据快照: {data_snapshot['summary_text']}")
+            dag_artifacts = _execute_market_dag(
+                market=self.market,
+                symbols=list(self.stock_pool),
+                universe=self.universe_key,
+                mode="sample",
+                batch_size=len(self.stock_pool),
+                total_capital=self.total_capital,
+                top_k=max(1, min(len(self.stock_pool), int(getattr(config, "BAYESIAN_SHORTLIST_SIZE", 20)))),
+                verbose=self.verbose,
+                enable_agent_layer=self.enable_agent_layer,
+                agent_model=self.primary_agent_model,
+                agent_fallback_model=self.agent_fallback_model,
+                master_model=self.primary_master_model,
+                master_fallback_model=self.master_fallback_model,
+                master_reasoning_effort=self.master_reasoning_effort,
+                agent_timeout=self.agent_timeout,
+                master_timeout=self.master_timeout,
+                recall_context=self.recall_context,
+                data_snapshot=data_snapshot,
+            )
+            records, summary = snapshot_usage(current_usage_session_id() or "")
+            result = self._build_result_from_dag(
+                dag_artifacts=dag_artifacts,
                 usage_records=records,
                 usage_summary=summary,
                 total_time=time.time() - t0,
@@ -242,57 +344,307 @@ class QuantInvestor:
             if managed_session is not None:
                 end_usage_session(managed_session)
 
+    def _build_result_from_dag(
+        self,
+        *,
+        dag_artifacts: dict[str, Any],
+        usage_records: list[Any],
+        usage_summary: Any,
+        total_time: float,
+    ) -> QuantInvestorPipelineResult:
+        report_bundle = dag_artifacts.get("report_bundle")
+        portfolio_decision = dag_artifacts.get("portfolio_decision")
+        global_context = dag_artifacts.get("global_context")
+        data_snapshot = dict(
+            dag_artifacts.get("data_snapshot", {})
+            or (
+                getattr(global_context, "metadata", {}) or {}
+            ).get("data_snapshot", {})
+        )
+        final_strategy = self._portfolio_decision_to_strategy(
+            portfolio_decision=portfolio_decision,
+            report_bundle=report_bundle,
+            global_context=global_context,
+        )
+        final_report = update_usage_markdown(
+            getattr(report_bundle, "markdown_report", "") or "",
+            usage_summary,
+            title="## LLM 可观测性（统一 DAG）",
+        )
+        result = QuantInvestorPipelineResult(
+            architecture_version=ARCHITECTURE_VERSION,
+            branch_schema_version=BRANCH_SCHEMA_VERSION,
+            ic_protocol_version=getattr(report_bundle, "ic_protocol_version", IC_PROTOCOL_VERSION),
+            report_protocol_version=getattr(report_bundle, "report_protocol_version", REPORT_PROTOCOL_VERSION),
+            calibration_schema_version=CALIBRATION_SCHEMA_VERSION,
+            debate_template_version=DEBATE_TEMPLATE_VERSION,
+            data_bundle=None,
+            branch_results=dict(dag_artifacts.get("branch_results", {})),
+            calibrated_signals={},
+            risk_results=dag_artifacts.get("risk_decision"),
+            final_strategy=final_strategy,
+            final_report=final_report,
+            execution_log=list(self.result.execution_log) + ["[INFO] unified market DAG executed", "single-mainline 完成"],
+            layer_timings={"total": total_time},
+            total_time=total_time,
+            agent_orchestration=dict(dag_artifacts),
+            agent_portfolio_plan=dag_artifacts.get("portfolio_plan"),
+            agent_report_bundle=report_bundle,
+            agent_ic_decisions=dag_artifacts.get("ic_decisions"),
+            agent_review_bundle=dag_artifacts.get("review_bundle"),
+            ic_hints_by_symbol=dict(getattr(dag_artifacts.get("review_bundle"), "ic_hints_by_symbol", {}) or {}),
+            model_role_metadata=dag_artifacts.get("model_role_metadata"),
+            execution_trace=dag_artifacts.get("execution_trace"),
+            what_if_plan=dag_artifacts.get("what_if_plan"),
+            llm_usage_records=list(usage_records),
+            llm_usage_summary=usage_summary,
+            llm_usage_session_id=current_usage_session_id() or "",
+            data_snapshot=data_snapshot,
+            raw_data={},
+            factor_data={},
+            model_predictions={},
+            macro_signal=str(getattr(getattr(report_bundle, "macro_verdict", None), "metadata", {}).get("policy_signal", "🟡")),
+            macro_summary=str(getattr(getattr(report_bundle, "macro_verdict", None), "thesis", "") or ""),
+            baseline_strategy=final_strategy,
+            baseline_risk_result=dag_artifacts.get("risk_decision"),
+            macro_verdict=getattr(report_bundle, "macro_verdict", None),
+            reviewed_research_by_symbol=dict(dag_artifacts.get("branch_verdicts_by_symbol", {})),
+            reviewed_branch_summaries=dict(dag_artifacts.get("branch_summaries", {})),
+            branch_review_outputs=(
+                dict(dag_artifacts.get("branch_summaries", {}))
+                if self.enable_agent_layer
+                else {}
+            ),
+            master_review_output=(
+                dag_artifacts.get("portfolio_master_output")
+                if self.enable_agent_layer
+                else None
+            ),
+            risk_review_output=dag_artifacts.get("risk_decision"),
+            review_bundle=dag_artifacts.get("review_bundle"),
+            symbol_review_bundle={},
+            agent_layer_enabled=self.enable_agent_layer,
+            pipeline_mode="bayesian",
+            global_context=global_context,
+            funnel_output=dag_artifacts.get("funnel_output"),
+            bayesian_records=list(dag_artifacts.get("bayesian_records", [])),
+            shortlist_evidence=list(dag_artifacts.get("shortlist_evidence", [])),
+            bayesian_shortlist_symbols=[
+                item.symbol
+                for item in list(dag_artifacts.get("shortlist", []))
+            ],
+        )
+        result.final_strategy.metadata["agent_layer_enabled"] = self.enable_agent_layer
+        provenance_summary = dict(getattr(result.final_strategy, "provenance_summary", {}))
+        provenance_summary["agent_layer_enabled"] = self.enable_agent_layer
+        result.final_strategy.provenance_summary = provenance_summary
+        return result
+
+    def _portfolio_decision_to_strategy(
+        self,
+        *,
+        portfolio_decision: Any,
+        report_bundle: Any,
+        global_context: Any,
+    ) -> PortfolioStrategy:
+        shortlist = list(getattr(portfolio_decision, "shortlist", []) or [])
+        target_weights = dict(getattr(portfolio_decision, "target_weights", {}) or {})
+        recommendations: list[TradeRecommendation] = []
+        for item in shortlist:
+            rationale = list(getattr(item, "rationale", []) or [])
+            recommendations.append(
+                TradeRecommendation(
+                    symbol=str(getattr(item, "symbol", "")),
+                    action=str(getattr(getattr(item, "action", None), "value", "hold")),
+                    weight=float(target_weights.get(getattr(item, "symbol", ""), getattr(item, "suggested_weight", 0.0)) or 0.0),
+                    suggested_weight=float(getattr(item, "suggested_weight", 0.0) or 0.0),
+                    confidence=float(getattr(item, "confidence", 0.0) or 0.0),
+                    expected_upside=float(getattr(item, "expected_upside", 0.0) or 0.0),
+                    rationale="；".join(rationale[:2]) or str(getattr(item, "symbol", "")),
+                    one_line_conclusion="；".join(rationale[:1]) or str(getattr(item, "symbol", "")),
+                    risk_flags=list(getattr(item, "risk_flags", []) or []),
+                    metadata={"company_name": str(getattr(item, "company_name", ""))},
+                )
+            )
+        macro_verdict = getattr(report_bundle, "macro_verdict", None)
+        return PortfolioStrategy(
+            target_exposure=float(getattr(portfolio_decision, "target_exposure", 0.0) or 0.0),
+            total_exposure=float(getattr(portfolio_decision, "target_exposure", 0.0) or 0.0),
+            gross_exposure=float(getattr(portfolio_decision, "target_gross_exposure", 0.0) or 0.0),
+            net_exposure=float(getattr(portfolio_decision, "target_net_exposure", 0.0) or 0.0),
+            cash_ratio=float(getattr(portfolio_decision, "cash_ratio", 1.0) or 1.0),
+            style_bias=str(getattr(global_context, "style_exposures", {}).get("style_bias", "均衡")),
+            candidate_symbols=[str(getattr(item, "symbol", "")) for item in shortlist],
+            target_weights=target_weights,
+            target_positions=dict(getattr(portfolio_decision, "target_positions", {}) or {}),
+            position_limits=dict(getattr(getattr(report_bundle, "portfolio_plan", None), "position_limits", {}) or {}),
+            execution_notes=list(getattr(getattr(report_bundle, "portfolio_plan", None), "execution_notes", []) or []),
+            branch_consensus={
+                name: float(getattr(verdict, "final_score", 0.0) or 0.0)
+                for name, verdict in dict(getattr(report_bundle, "branch_verdicts", {}) or {}).items()
+            },
+            risk_summary=dict(getattr(portfolio_decision, "risk_constraints", {}) or {}),
+            provenance_summary={
+                "generated_from": "market_dag",
+                "tracked_symbols": [str(getattr(item, "symbol", "")) for item in shortlist],
+            },
+            research_mode="production",
+            summary=str(getattr(report_bundle, "summary", "") or ""),
+            notes=list(getattr(report_bundle, "executive_summary", []) or []),
+            metadata={
+                "generated_from": "market_dag",
+                "report_headline": str(getattr(report_bundle, "headline", "") or ""),
+            },
+            recommendations=recommendations,
+            trade_recommendations=recommendations,
+            blocked_symbols=list(getattr(getattr(report_bundle, "portfolio_plan", None), "blocked_symbols", []) or []),
+            rejected_symbols=list(getattr(getattr(report_bundle, "portfolio_plan", None), "rejected_symbols", []) or []),
+            sector_preferences=[],
+            stop_loss_policy={},
+            symbol_convictions={symbol: float(weight) for symbol, weight in target_weights.items()},
+        )
+
     def _run_research_core(
         self,
     ) -> ResearchCoreSnapshot:
-        pipeline = ParallelResearchPipeline(
+        raise RuntimeError("legacy research core has been retired; use execute_market_dag()")
+
+    def _build_global_context(
+        self,
+        snapshot: ResearchCoreSnapshot,
+    ) -> GlobalContext:
+        builder = GlobalContextBuilder()
+        return builder.build(
             stock_pool=self.stock_pool,
             market=self.market,
-            lookback_years=self.lookback_years,
-            total_capital=self.total_capital,
-            risk_level=self.risk_level,
-            enable_alpha_mining=self.enable_alpha_mining,
-            enable_quant=self.enable_quant,
-            enable_kline=self.enable_kline,
-            enable_fundamental=self.enable_fundamental,
-            enable_intelligence=self.enable_intelligence,
-            enable_macro=self.enable_macro,
-            kline_backend=self.kline_backend,
-            allow_synthetic_for_research=self.allow_synthetic_for_research,
-            enable_document_semantics=self.enable_document_semantics,
-            verbose=self.verbose,
+            universe_key=self.universe_key,
+            config=config,
+            data_bundle=snapshot.data_bundle,
         )
-        pipeline_any = cast(Any, pipeline)
-        pipeline_any.enable_agent_orchestrator_bridge = False
-        if hasattr(pipeline_any, "run_research_core"):
-            return cast(ResearchCoreSnapshot, pipeline_any.run_research_core())
 
-        legacy_result = pipeline.run()
-        macro_branch = getattr(legacy_result, "branch_results", {}).get("macro")
-        market_regime = None
-        if macro_branch is not None and isinstance(getattr(macro_branch, "signals", {}), dict):
-            market_regime = (
-                macro_branch.signals.get("regime")
-                or macro_branch.signals.get("macro_regime")
-                or macro_branch.signals.get("risk_level")
-            )
-        return ResearchCoreSnapshot(
-            data_bundle=legacy_result.data_bundle,
-            branch_results=getattr(legacy_result, "branch_results", {}),
-            calibrated_signals=getattr(legacy_result, "calibrated_signals", {}),
-            risk_result=getattr(legacy_result, "risk_result", None),
-            baseline_strategy=getattr(legacy_result, "final_strategy", PortfolioStrategy()),
-            market_regime=market_regime,
-            timings=getattr(legacy_result, "timings", {}),
-            execution_log=getattr(legacy_result, "execution_log", []),
-            branch_schema_version=getattr(legacy_result, "branch_schema_version", BRANCH_SCHEMA_VERSION),
-            calibration_schema_version=getattr(
-                legacy_result,
-                "calibration_schema_version",
-                CALIBRATION_SCHEMA_VERSION,
-            ),
-            llm_usage_session_id=getattr(legacy_result, "llm_usage_session_id", ""),
+    def _run_funnel(
+        self,
+        snapshot: ResearchCoreSnapshot,
+        global_context: GlobalContext,
+    ) -> FunnelOutput:
+        funnel_config = FunnelConfig(
+            max_candidates=getattr(config, "FUNNEL_MAX_CANDIDATES", 400),
         )
+        funnel = DeterministicFunnel(config=funnel_config)
+        return funnel.run(
+            branch_results=snapshot.branch_results,
+            global_context=global_context,
+        )
+
+    def _run_bayesian_decision(
+        self,
+        snapshot: ResearchCoreSnapshot,
+        global_context: GlobalContext,
+        funnel_output: FunnelOutput,
+    ) -> list[PosteriorResult]:
+        prior_builder = HierarchicalPriorBuilder()
+        likelihood_mapper = SignalLikelihoodMapper()
+        engine = BayesianPosteriorEngine()
+        candidate_set = set(funnel_output.candidates)
+        regime = snapshot.market_regime or global_context.macro_regime or "default"
+
+        records: list[PosteriorResult] = []
+        for symbol in funnel_output.candidates:
+            prior = prior_builder.build_prior(symbol, global_context)
+            likelihoods = likelihood_mapper.compute_likelihoods(
+                branch_results=snapshot.branch_results,
+                symbol=symbol,
+                candidate_symbols=candidate_set,
+            )
+            is_degraded: dict[str, bool] = {}
+            for branch_name, br in snapshot.branch_results.items():
+                if isinstance(br, BranchResult) and getattr(br, "metadata", {}).get("degraded"):
+                    is_degraded[branch_name] = True
+
+            company_name = global_context.symbol_name_map.get(symbol, "")
+            result = engine.compute_posterior(
+                prior, likelihoods,
+                symbol=symbol,
+                company_name=company_name,
+                regime=regime,
+                is_degraded=is_degraded,
+            )
+            records.append(result)
+
+        records.sort(key=lambda r: r.posterior_action_score, reverse=True)
+        for rank, record in enumerate(records, 1):
+            record.rank = rank
+        return records
+
+    def _build_shortlist_evidence(
+        self,
+        bayesian_records: list[PosteriorResult],
+        snapshot: ResearchCoreSnapshot,
+        global_context: GlobalContext,
+    ) -> list[ShortlistEvidencePack]:
+        shortlist_size = getattr(config, "BAYESIAN_SHORTLIST_SIZE", 20)
+        shortlist = bayesian_records[:shortlist_size]
+        packs: list[ShortlistEvidencePack] = []
+        for record in shortlist:
+            branch_summaries: dict[str, dict[str, Any]] = {}
+            for branch_name, br in snapshot.branch_results.items():
+                if not isinstance(br, BranchResult):
+                    continue
+                sym_score = br.symbol_scores.get(record.symbol, br.final_score)
+                branch_summaries[branch_name] = {
+                    "score": float(sym_score) if sym_score is not None else 0.0,
+                    "confidence": float(br.final_confidence or br.confidence or 0.0),
+                    "direction": "bullish" if (sym_score or 0) > 0 else "bearish" if (sym_score or 0) < 0 else "neutral",
+                }
+            pack = ShortlistEvidencePack(
+                symbol=record.symbol,
+                company_name=record.company_name,
+                bayesian_record=record.to_dict(),
+                branch_verdicts_summary=branch_summaries,
+                risk_flags=[],
+                key_catalysts=[],
+                macro_summary=global_context.macro_regime,
+            )
+            packs.append(pack)
+        return packs
+
+    def _run_bayesian_pipeline(
+        self,
+        snapshot: ResearchCoreSnapshot,
+    ) -> tuple[GlobalContext, FunnelOutput, list[PosteriorResult], list[ShortlistEvidencePack]]:
+        t0 = time.time()
+        self._log("🔬 Bayesian pipeline: building GlobalContext...")
+        global_context = self._build_global_context(snapshot)
+        self._log(
+            f"GlobalContext: regime={global_context.macro_regime}, "
+            f"universe={len(global_context.universe_tiers.get('total', []))}, "
+            f"quarantine={len(global_context.data_quality_quarantine)}"
+        )
+
+        self._log("🔬 Bayesian pipeline: running deterministic funnel...")
+        funnel_output = self._run_funnel(snapshot, global_context)
+        self._log(
+            f"Funnel: {len(self.stock_pool)} -> {len(funnel_output.candidates)} candidates, "
+            f"{len(funnel_output.excluded_symbols)} excluded"
+        )
+
+        self._log("🔬 Bayesian pipeline: computing Bayesian posteriors...")
+        bayesian_records = self._run_bayesian_decision(snapshot, global_context, funnel_output)
+        if bayesian_records:
+            top = bayesian_records[0]
+            self._log(
+                f"Bayesian top: {top.symbol} ({top.company_name}) "
+                f"action_score={top.posterior_action_score:.3f} "
+                f"win_rate={top.posterior_win_rate:.3f}"
+            )
+
+        self._log("🔬 Bayesian pipeline: building shortlist evidence packs...")
+        shortlist_evidence = self._build_shortlist_evidence(bayesian_records, snapshot, global_context)
+        self._log(f"Shortlist: {len(shortlist_evidence)} symbols for master discussion")
+
+        elapsed = time.time() - t0
+        self._log(f"🔬 Bayesian pipeline complete in {elapsed:.1f}s")
+        return global_context, funnel_output, bayesian_records, shortlist_evidence
 
     def _review_layer_available(self) -> bool:
         if not self.enable_agent_layer:
@@ -301,104 +653,29 @@ class QuantInvestor:
         if not has_provider_for_model(self.agent_model):
             self._log(
                 f"Review layer: agent_model={self.agent_model!r} 无对应 API Key，"
-                "跳过 agent 层（请检查 ANTHROPIC_API_KEY / OPENAI_API_KEY 等环境变量）"
+                "将使用 review layer 的安全降级路径（请检查 KIMI_API_KEY / DEEPSEEK_API_KEY 等环境变量）"
             )
-            return False
         if not has_provider_for_model(self.master_model):
             self._log(
                 f"Review layer: master_model={self.master_model!r} 无对应 API Key，"
-                "跳过 agent 层（请检查 OPENAI_API_KEY / ANTHROPIC_API_KEY 等环境变量）"
+                "将使用 review layer 的安全降级路径（请检查 KIMI_API_KEY / DEEPSEEK_API_KEY 等环境变量）"
             )
-            return False
         return True
 
     def _run_review_layer(
         self,
         snapshot: ResearchCoreSnapshot,
+        *,
+        candidate_symbols: list[str] | None = None,
     ) -> tuple[AgentEnhancedStrategy | None, bool]:
-        if not self._review_layer_available():
-            return None, False
-
-        effective_total_timeout = ReviewAgentOrchestrator.compute_recommended_total_timeout(
-            timeout_per_agent=self.agent_timeout,
-            master_timeout=self.master_timeout,
-            existing_total_timeout=self.agent_total_timeout,
-        )
-        orchestrator = ReviewAgentOrchestrator(
-            branch_model=self.agent_model,
-            master_model=self.master_model,
-            timeout_per_agent=self.agent_timeout,
-            master_timeout=self.master_timeout,
-            total_timeout=effective_total_timeout,
-        )
-        market_regime = snapshot.market_regime or self._derive_market_regime(snapshot)
-        review_result = orchestrator.enhance_sync(
-            branch_results=snapshot.branch_results,
-            calibrated_signals=snapshot.calibrated_signals,
-            risk_result=snapshot.risk_result,
-            ensemble_output=self._build_ensemble_output(snapshot.baseline_strategy),
-            data_bundle=snapshot.data_bundle,
-            market_regime=market_regime,
-            algorithmic_strategy=snapshot.baseline_strategy,
-            recall_context=self.recall_context,
-        )
-        enabled = any(output is not None for output in review_result.branch_agent_outputs.values())
-        return review_result, enabled
+        raise RuntimeError("legacy review-layer side path has been retired; use execute_market_dag()")
 
     def _run_unified_control_chain(
         self,
         snapshot: ResearchCoreSnapshot,
         review_result: AgentEnhancedStrategy | None,
     ) -> dict[str, Any]:
-        structured = StructuredAgentOrchestrator()
-        constraints = self._build_structured_constraints(snapshot, review_result)
-        tradability_snapshot = structured._normalize_tradability_snapshot(snapshot.data_bundle, None)
-        existing_portfolio = {"current_weights": {}}
-
-        if review_result and any(output is not None for output in review_result.branch_agent_outputs.values()):
-            macro_verdict = structured._build_macro_verdict_from_branch_results(
-                snapshot.branch_results,
-                snapshot.data_bundle,
-            )
-            reviewed_research = structured._build_symbol_verdicts_from_branch_results(
-                snapshot.branch_results,
-                snapshot.data_bundle,
-            )
-            macro_verdict = self._apply_review_to_verdict(
-                macro_verdict,
-                review_result.branch_agent_outputs.get("macro"),
-                symbol=None,
-            )
-            reviewed_by_symbol: dict[str, dict[str, BranchVerdict]] = {}
-            for symbol, branch_map in reviewed_research.items():
-                reviewed_by_symbol[symbol] = {}
-                for branch_name, verdict in branch_map.items():
-                    reviewed_by_symbol[symbol][branch_name] = self._apply_review_to_verdict(
-                        verdict,
-                        review_result.branch_agent_outputs.get(branch_name),
-                        symbol=symbol,
-                    )
-            return structured.run_with_structured_research(
-                data_bundle=snapshot.data_bundle,
-                macro_verdict=macro_verdict,
-                research_by_symbol=reviewed_by_symbol,
-                constraints=constraints,
-                existing_portfolio=existing_portfolio,
-                tradability_snapshot=tradability_snapshot,
-                ic_hints_by_symbol=self._build_ic_hints_by_symbol(
-                    review_result.agent_strategy,
-                ),
-                persist_outputs=False,
-            )
-
-        return structured.run_with_precomputed_research(
-            data_bundle=snapshot.data_bundle,
-            branch_results=snapshot.branch_results,
-            constraints=constraints,
-            existing_portfolio=existing_portfolio,
-            tradability_snapshot=tradability_snapshot,
-            persist_outputs=False,
-        )
+        raise RuntimeError("legacy unified-control-chain adapter has been retired; use execute_market_dag()")
 
     def _build_result(
         self,
@@ -413,6 +690,8 @@ class QuantInvestor:
     ) -> QuantInvestorPipelineResult:
         portfolio_plan = orchestration["portfolio_plan"]
         report_bundle = orchestration["report_bundle"]
+        model_role_metadata = self._build_model_role_metadata(report_bundle)
+        report_bundle.model_role_metadata = model_role_metadata
         final_strategy = self._portfolio_plan_to_strategy(
             portfolio_plan=portfolio_plan,
             ic_by_symbol=orchestration["ic_by_symbol"],
@@ -445,6 +724,7 @@ class QuantInvestor:
             ic_protocol_version=report_bundle.ic_protocol_version,
             report_protocol_version=report_bundle.report_protocol_version,
             calibration_schema_version=snapshot.calibration_schema_version,
+            debate_template_version=DEBATE_TEMPLATE_VERSION,
             data_bundle=snapshot.data_bundle,
             branch_results=snapshot.branch_results,
             calibrated_signals=snapshot.calibrated_signals,
@@ -458,6 +738,11 @@ class QuantInvestor:
             agent_portfolio_plan=portfolio_plan,
             agent_report_bundle=report_bundle,
             agent_ic_decisions=orchestration["ic_by_symbol"],
+            agent_review_bundle=orchestration.get("review_bundle"),
+            ic_hints_by_symbol=self._extract_ic_hints_by_symbol(review_result),
+            model_role_metadata=model_role_metadata,
+            execution_trace=getattr(report_bundle, "execution_trace", None),
+            what_if_plan=getattr(report_bundle, "what_if_plan", None),
             llm_usage_records=list(usage_records),
             llm_usage_summary=usage_summary,
             llm_usage_session_id=current_usage_session_id() or snapshot.llm_usage_session_id,
@@ -482,6 +767,12 @@ class QuantInvestor:
             ),
             master_review_output=review_result.agent_strategy if review_result else None,
             risk_review_output=review_result.risk_agent_output if review_result else None,
+            review_bundle=orchestration.get("review_bundle"),
+            symbol_review_bundle=(
+                dict(getattr(review_result, "symbol_review_bundle", {}))
+                if review_result
+                else {}
+            ),
             agent_layer_enabled=agent_layer_enabled,
         )
         result.final_strategy.metadata["agent_layer_enabled"] = agent_layer_enabled
@@ -489,6 +780,50 @@ class QuantInvestor:
         provenance_summary["agent_layer_enabled"] = agent_layer_enabled
         result.final_strategy.provenance_summary = provenance_summary
         return result
+
+    def _build_model_role_metadata(self, report_bundle: ReportBundle) -> Any:
+        payload = dict(getattr(report_bundle, "model_role_metadata", {}) or {})
+        payload.setdefault("branch_model", self.primary_agent_model)
+        payload.setdefault("master_model", self.primary_master_model)
+        payload.setdefault("agent_fallback_model", self.agent_fallback_model)
+        payload.setdefault("master_fallback_model", self.master_fallback_model)
+        payload.setdefault("resolved_branch_model", self.agent_resolution.resolved_model)
+        payload.setdefault("resolved_master_model", self.master_resolution.resolved_model)
+        payload.setdefault("master_reasoning_effort", self.master_reasoning_effort)
+        payload.setdefault("branch_provider", payload.get("branch_provider", ""))
+        payload.setdefault("master_provider", payload.get("master_provider", ""))
+        payload.setdefault("branch_timeout", self.agent_timeout)
+        payload.setdefault("master_timeout", self.master_timeout)
+        payload.setdefault("agent_layer_enabled", self.enable_agent_layer)
+        payload.setdefault("branch_fallback_used", self.agent_resolution.fallback_used)
+        payload.setdefault("master_fallback_used", self.master_resolution.fallback_used)
+        payload.setdefault("branch_fallback_reason", self.agent_resolution.fallback_reason)
+        payload.setdefault("master_fallback_reason", self.master_resolution.fallback_reason)
+        payload.setdefault("universe_key", self.universe_key)
+        payload.setdefault("universe_size", len(self.stock_pool))
+        payload.setdefault("universe_hash", "")
+        return build_model_role_metadata(
+            branch_model=str(payload.get("branch_model", self.primary_agent_model)),
+            master_model=str(payload.get("master_model", self.primary_master_model)),
+            agent_fallback_model=str(payload.get("agent_fallback_model", self.agent_fallback_model)),
+            master_fallback_model=str(payload.get("master_fallback_model", self.master_fallback_model)),
+            resolved_branch_model=str(payload.get("resolved_branch_model", self.agent_resolution.resolved_model)),
+            resolved_master_model=str(payload.get("resolved_master_model", self.master_resolution.resolved_model)),
+            master_reasoning_effort=str(payload.get("master_reasoning_effort", self.master_reasoning_effort)),
+            branch_provider=str(payload.get("branch_provider", "")),
+            master_provider=str(payload.get("master_provider", "")),
+            branch_timeout=float(payload.get("branch_timeout", self.agent_timeout)),
+            master_timeout=float(payload.get("master_timeout", self.master_timeout)),
+            agent_layer_enabled=bool(payload.get("agent_layer_enabled", self.enable_agent_layer)),
+            branch_fallback_used=bool(payload.get("branch_fallback_used", self.agent_resolution.fallback_used)),
+            master_fallback_used=bool(payload.get("master_fallback_used", self.master_resolution.fallback_used)),
+            branch_fallback_reason=str(payload.get("branch_fallback_reason", self.agent_resolution.fallback_reason)),
+            master_fallback_reason=str(payload.get("master_fallback_reason", self.master_resolution.fallback_reason)),
+            universe_key=str(payload.get("universe_key", self.universe_key)),
+            universe_size=int(payload.get("universe_size", len(self.stock_pool))),
+            universe_hash=str(payload.get("universe_hash", "")),
+            metadata=payload,
+        )
 
     def _append_workspace_report_sections(
         self,
@@ -507,8 +842,20 @@ class QuantInvestor:
         branch_outputs = review_result.branch_agent_outputs if review_result else {}
         lines = [base_report.rstrip(), ""]
         lines.extend(self._render_data_overview(snapshot, report_bundle))
+        lines.extend(
+            ConclusionRenderer.render_run_context(
+                getattr(report_bundle, "model_role_metadata", None),
+                getattr(report_bundle, "execution_trace", None),
+                getattr(report_bundle, "what_if_plan", None),
+            )
+        )
         lines.extend(self._render_market_overview(report_bundle, portfolio_plan, master_output))
         lines.extend(self._render_analysis_process(execution_log, layer_timings))
+        review_bundle = getattr(review_result, "review_bundle", None) if review_result else None
+        if review_bundle is not None:
+            lines.extend(self._render_review_overview(review_bundle))
+        if self.result.pipeline_mode == "bayesian":
+            lines.extend(self._render_bayesian_overview())
         lines.extend(self._render_subagent_reasoning(branch_outputs))
         lines.extend(self._render_master_reasoning(master_output))
         lines.extend(self._render_final_advice(report_bundle, final_strategy, master_output))
@@ -580,6 +927,50 @@ class QuantInvestor:
             lines.extend(f"- 阶段耗时: {key}={float(value):.2f}s" for key, value in ordered_timings[:12])
         else:
             lines.append("- 阶段耗时: 无耗时明细。")
+        lines.append("")
+        return lines
+
+    def _render_review_overview(self, review_bundle: Any) -> list[str]:
+        lines = ["## LLM 复核总览"]
+        fallback_reasons = list(getattr(review_bundle, "fallback_reasons", []) or [])
+        if fallback_reasons:
+            lines.extend(f"- 降级原因: {reason}" for reason in fallback_reasons[:4])
+        symbol_hints = dict(getattr(review_bundle, "ic_hints_by_symbol", {}) or {})
+        if symbol_hints:
+            lines.append("- IC hints by symbol:")
+            for symbol in sorted(symbol_hints):
+                hint = symbol_hints[symbol]
+                lines.append(
+                    f"  - {symbol}: action={hint.get('action', 'hold')}, "
+                    f"score={float(hint.get('score', 0.0)):.2f}, "
+                    f"confidence={float(hint.get('confidence', 0.0)):.2f}"
+                )
+        lines.append("")
+        return lines
+
+    def _render_bayesian_overview(self) -> list[str]:
+        lines = ["## Bayesian 决策层"]
+        funnel = self.result.funnel_output
+        if funnel is not None:
+            lines.append(
+                f"- 漏斗压缩: {len(self.stock_pool)} 只 -> {len(funnel.candidates)} 候选 "
+                f"({len(funnel.excluded_symbols)} 被排除)"
+            )
+        records = self.result.bayesian_records
+        if records:
+            lines.append(f"- Bayesian 后验排名: 共 {len(records)} 只候选")
+            for r in records[:10]:
+                name_tag = f" ({r.company_name})" if r.company_name else ""
+                lines.append(
+                    f"  - #{r.rank} {r.symbol}{name_tag}: "
+                    f"action_score={r.posterior_action_score:.3f}, "
+                    f"win_rate={r.posterior_win_rate:.3f}, "
+                    f"confidence={r.posterior_confidence:.3f}"
+                )
+        shortlist = self.result.shortlist_evidence
+        if shortlist:
+            lines.append(f"- Master Discussion 入选: {len(shortlist)} 只")
+            lines.append(f"  - 标的: {', '.join(p.symbol for p in shortlist[:10])}")
         lines.append("")
         return lines
 
@@ -741,6 +1132,20 @@ class QuantInvestor:
                 timings[f"review_{key}"] = float(value)
         timings["total"] = total_time
         return timings
+
+    def _extract_ic_hints_by_symbol(self, review_result: AgentEnhancedStrategy | None) -> dict[str, dict[str, Any]]:
+        if review_result is None:
+            return {}
+        if review_result.ic_hints_by_symbol:
+            return dict(review_result.ic_hints_by_symbol)
+        review_bundle = getattr(review_result, "review_bundle", None)
+        if review_bundle is not None:
+            hints = getattr(review_bundle, "ic_hints_by_symbol", {})
+            if isinstance(hints, dict):
+                return {str(symbol): dict(hint) for symbol, hint in hints.items() if isinstance(hint, dict)}
+        if review_result.agent_strategy is not None:
+            return self._build_ic_hints_by_symbol(review_result.agent_strategy)
+        return {}
 
     @staticmethod
     def _build_ensemble_output(strategy: PortfolioStrategy) -> dict[str, Any]:

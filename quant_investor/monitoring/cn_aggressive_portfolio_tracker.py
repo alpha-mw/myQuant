@@ -18,6 +18,7 @@ import pandas as pd
 import requests
 
 from quant_investor.market.analyze import load_cn_stock_names
+from quant_investor.market.config import get_market_settings
 from quant_investor.market.download_cn import CNFullMarketDownloader
 
 
@@ -748,8 +749,9 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         source_pnl["total_value_after"].iloc[-1] if "total_value_after" in source_pnl.columns else initial_capital
     )
 
+    cn_data_root = Path(get_market_settings('CN').data_dir)
     downloader = CNFullMarketDownloader(
-        data_dir=str(PROJECT_ROOT / "data" / "cn_market_full"),
+        data_dir=str(cn_data_root),
         years=args.years,
         max_workers=4,
     )
@@ -767,12 +769,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             fail_on_incomplete=False,
         )
         completeness_after = download_results["completeness"]
-        download_report_path = (
-            PROJECT_ROOT
-            / "data"
-            / "cn_market_full"
-            / f"download_report_{download_results['timestamp']}.json"
-        )
+        download_report_path = cn_data_root / f"download_report_{download_results['timestamp']}.json"
     else:
         completeness_after = completeness_before
 
@@ -884,7 +881,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
 
     full_metrics = _compute_full_market_metrics(
         components=components,
-        data_root=PROJECT_ROOT / "data" / "cn_market_full",
+        data_root=cn_data_root,
         latest_trade_date=latest_trade_date,
     )
     metrics_map = {
@@ -918,7 +915,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         category: _compute_category_breadth(
             category=category,
             symbols=components.get(category, []),
-            data_root=PROJECT_ROOT / "data" / "cn_market_full",
+            data_root=cn_data_root,
             latest_trade_date=latest_trade_date,
             completeness_report=completeness_after,
         )

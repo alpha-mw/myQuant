@@ -14,10 +14,8 @@ logger = logging.getLogger(__name__)
 # Credential names used by the quant system
 CREDENTIAL_KEYS = [
     ("TUSHARE_TOKEN", "Tushare"),
-    ("OPENAI_API_KEY", "OpenAI"),
-    ("ANTHROPIC_API_KEY", "Anthropic"),
+    ("KIMI_API_KEY", "Kimi"),
     ("DEEPSEEK_API_KEY", "DeepSeek"),
-    ("GOOGLE_API_KEY", "Google"),
     ("FRED_API_KEY", "FRED"),
     ("FINNHUB_API_KEY", "Finnhub"),
     ("DASHSCOPE_API_KEY", "Dashscope"),
@@ -119,10 +117,8 @@ def update_settings(updates: dict) -> dict:
 
     key_mapping = {
         "tushare_token": "TUSHARE_TOKEN",
-        "openai_api_key": "OPENAI_API_KEY",
-        "anthropic_api_key": "ANTHROPIC_API_KEY",
+        "kimi_api_key": "KIMI_API_KEY",
         "deepseek_api_key": "DEEPSEEK_API_KEY",
-        "google_api_key": "GOOGLE_API_KEY",
         "fred_api_key": "FRED_API_KEY",
         "finnhub_api_key": "FINNHUB_API_KEY",
         "dashscope_api_key": "DASHSCOPE_API_KEY",

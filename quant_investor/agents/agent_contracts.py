@@ -11,6 +11,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from quant_investor.agent_protocol import StockReviewBundle
+
 
 class _CompatModel(BaseModel):
     """Allow additive compatibility fields across partially migrated modules."""
@@ -174,6 +176,7 @@ class SymbolRecommendation(_CompatModel):
     """Review-layer recommendation for a single symbol."""
 
     symbol: str
+    company_name: str = ""
     action: Literal["buy", "hold", "sell"] = "hold"
     conviction: str = "neutral"
     rationale: str = ""
@@ -187,6 +190,39 @@ class TradeDecision(_CompatModel):
     action: Literal["buy", "hold", "sell"] = "hold"
     target_weight: float = Field(default=0.0, ge=0.0, le=1.0)
     rationale: str = Field(default="", description="该标的交易决策的具体依据")
+    evidence_pack: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Shortlist-before-master evidence pack with hard size limits.",
+    )
+    branch_reports: dict[str, BaseBranchAgentOutput] = Field(default_factory=dict)
+    risk_report: RiskAgentOutput | None = None
+
+
+class ShortlistEvidencePack(_CompatModel):
+    """Compact evidence pack for a single shortlisted symbol.
+
+    Used as input to the Master Discussion Layer — contains only the
+    information needed for the IC debate, not raw data.
+    """
+
+    symbol: str = ""
+    company_name: str = ""
+    bayesian_record: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Bayesian posterior metrics (win_rate, alpha, confidence, action_score)",
+    )
+    branch_verdicts_summary: dict[str, dict[str, Any]] = Field(
+        default_factory=dict,
+        description="Per-branch verdict summaries (score, confidence, thesis, direction)",
+    )
+    review_overlays: dict[str, dict[str, Any]] = Field(
+        default_factory=dict,
+        description="Symbol-level review overlay verdicts from BranchOverlayReviewer",
+    )
+    risk_flags: list[str] = Field(default_factory=list)
+    key_catalysts: list[str] = Field(default_factory=list)
+    macro_summary: str = ""
+    portfolio_constraints: dict[str, Any] = Field(default_factory=dict)
 
 
 class MasterAgentInput(_CompatModel):
@@ -202,10 +238,14 @@ class MasterAgentInput(_CompatModel):
     )
     ensemble_baseline: dict[str, Any] = Field(
         default_factory=dict,
-        description="算法 EnsembleJudge 输出，作为参考基准",
+        description="算法 EnsembleJudge / Bayesian 输出，作为参考基准",
     )
     market_regime: str = "default"
     candidate_symbols: list[str] = Field(default_factory=list)
+    shortlist_evidence: list[ShortlistEvidencePack] = Field(
+        default_factory=list,
+        description="When present, master debate uses this compact shortlist pack instead of raw branch_results.",
+    )
     recall_context: dict[str, Any] = Field(
         default_factory=dict,
         description="过往交易记录、盈亏、历史投资逻辑和反思，仅供参考不可直接驱动仓位。",
@@ -249,6 +289,9 @@ class AgentEnhancedStrategy(_CompatModel):
     fallback_used: bool = True
     branch_agent_outputs: dict[str, BaseBranchAgentOutput | None] = Field(default_factory=dict)
     risk_agent_output: RiskAgentOutput | None = None
+    review_bundle: StockReviewBundle | None = None
+    symbol_review_bundle: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    ic_hints_by_symbol: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 __all__ = [
@@ -266,6 +309,7 @@ __all__ = [
     "MacroAgentInput",
     "MacroAgentOutput",
     "MasterAgentInput",
+    "ShortlistEvidencePack",
     "MasterAgentOutput",
     "QuantAgentInput",
     "QuantAgentOutput",

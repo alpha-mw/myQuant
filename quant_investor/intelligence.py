@@ -341,8 +341,9 @@ class IntelligenceLayerEngine:
         sentiment: MarketSentimentReport,
     ) -> str:
         """使用LLM生成人类可读的综合分析"""
-        api_key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("OPENAI_API_KEY")
-        if not api_key:
+        from quant_investor.llm_gateway import LLMClient as GatewayLLMClient, has_any_provider, _run_sync
+
+        if not has_any_provider():
             return self._fallback_synthesis(sig)
 
         context = f"""你是一位专业的量化投资分析师。请基于以下多维度分析数据，为{sig.stock_name}({sig.symbol})生成简洁的投资分析摘要（200字以内，中文）：
@@ -359,24 +360,14 @@ class IntelligenceLayerEngine:
 请用专业简洁的语言综合以上信息，给出核心投资逻辑和主要关注点。"""
 
         try:
-            if os.getenv("ANTHROPIC_API_KEY"):
-                import anthropic  # type: ignore
-                client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-                msg = client.messages.create(
-                    model="claude-haiku-4-5-20251001",
-                    max_tokens=400,
-                    messages=[{"role": "user", "content": context}]
-                )
-                return msg.content[0].text
-            else:
-                import openai  # type: ignore
-                client = openai.OpenAI(api_key=api_key)
-                resp = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role": "user", "content": context}],
-                    max_tokens=400,
-                )
-                return resp.choices[0].message.content or ""
+            client = GatewayLLMClient(timeout=15.0, max_retries=1)
+            return _run_sync(client.complete_text(
+                messages=[{"role": "user", "content": context}],
+                model="moonshot-v1-8k",
+                max_tokens=400,
+                stage="intelligence_summary",
+                actor_name=sig.symbol,
+            ))
         except Exception as e:
             _logger.debug(f"LLM综合分析失败: {e}")
             return self._fallback_synthesis(sig)

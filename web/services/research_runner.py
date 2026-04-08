@@ -204,6 +204,61 @@ def _build_recall_context(result: Any, req: ResearchRunRequest) -> dict[str, Any
     return recall
 
 
+def _compact_trace_summary(payload: Any) -> dict[str, Any]:
+    trace = payload if isinstance(payload, dict) else getattr(payload, "to_dict", lambda: {})()
+    if not isinstance(trace, dict):
+        trace = {}
+    steps: list[dict[str, Any]] = []
+    for step in list(trace.get("steps", []) or [])[:8]:
+        step_map = step if isinstance(step, dict) else getattr(step, "to_dict", lambda: {})()
+        if not isinstance(step_map, dict):
+            step_map = {}
+        steps.append(
+            {
+                "stage": step_map.get("stage", ""),
+                "role": step_map.get("role", ""),
+                "success": bool(step_map.get("success", False)),
+                "conclusion": str(step_map.get("conclusion", ""))[:160],
+            }
+        )
+    return {
+        "model_roles": trace.get("model_roles", {}),
+        "key_parameters": {
+            "selected_count": trace.get("key_parameters", {}).get("selected_count", 0),
+            "target_exposure": trace.get("key_parameters", {}).get("target_exposure", 0.0),
+            "max_single_weight": trace.get("key_parameters", {}).get("max_single_weight", 0.0),
+            "data_quality_issue_count": trace.get("key_parameters", {}).get("data_quality_issue_count", 0),
+        },
+        "final_deterministic_outcome": trace.get("final_deterministic_outcome", {}),
+        "steps": steps,
+    }
+
+
+def _compact_whatif_summary(payload: Any) -> dict[str, Any]:
+    plan = payload if isinstance(payload, dict) else getattr(payload, "to_dict", lambda: {})()
+    if not isinstance(plan, dict):
+        plan = {}
+    scenarios: list[dict[str, Any]] = []
+    for scenario in list(plan.get("scenarios", []) or [])[:6]:
+        scenario_map = scenario if isinstance(scenario, dict) else getattr(scenario, "to_dict", lambda: {})()
+        if not isinstance(scenario_map, dict):
+            scenario_map = {}
+        scenarios.append(
+            {
+                "scenario_name": scenario_map.get("scenario_name", ""),
+                "trigger": str(scenario_map.get("trigger", ""))[:120],
+                "action": str(scenario_map.get("action", ""))[:120],
+                "rerun_full_market_daily_path": bool(scenario_map.get("rerun_full_market_daily_path", False)),
+            }
+        )
+    return {
+        "generated_by": plan.get("generated_by", ""),
+        "scenario_count": len(plan.get("scenarios", []) or []),
+        "scenarios": scenarios,
+        "metadata": plan.get("metadata", {}),
+    }
+
+
 def _run_research(job: ResearchJob, loop: asyncio.AbstractEventLoop) -> None:
     """Execute QuantInvestor.run() in a worker thread."""
     from quant_investor.pipeline import QuantInvestor
@@ -220,6 +275,8 @@ def _run_research(job: ResearchJob, loop: asyncio.AbstractEventLoop) -> None:
     recall_context: dict[str, Any] = {}
     trades: list[dict[str, Any]] = []
     review_recall_context: dict[str, Any] = {}
+    trace_summary: dict[str, Any] = {}
+    whatif_summary: dict[str, Any] = {}
 
     try:
         req = job.request
@@ -248,6 +305,8 @@ def _run_research(job: ResearchJob, loop: asyncio.AbstractEventLoop) -> None:
             verbose=True,
         )
         result = investor.run()
+        trace_summary = _compact_trace_summary(getattr(result, "execution_trace", None))
+        whatif_summary = _compact_whatif_summary(getattr(result, "what_if_plan", None))
 
         job.total_time = time.time() - t0
         job.progress_pct = 1.0
@@ -257,11 +316,13 @@ def _run_research(job: ResearchJob, loop: asyncio.AbstractEventLoop) -> None:
 
         recall_context = _build_recall_context(result, req)
         trades = _extract_trades(result, req.stock_pool)
+        execution_log = list(getattr(result, "execution_log", []) or [])
 
         job.result_summary = {
             "total_time": job.total_time,
             "layer_timings": result.layer_timings,
-            "execution_log": result.execution_log,
+            "execution_log_excerpt": execution_log[:12],
+            "execution_log_count": len(execution_log),
             "llm_usage_summary": {
                 "total_calls": getattr(result.llm_usage_summary, "total_calls", 0),
                 "total_prompt_tokens": getattr(result.llm_usage_summary, "total_prompt_tokens", 0),
@@ -272,6 +333,9 @@ def _run_research(job: ResearchJob, loop: asyncio.AbstractEventLoop) -> None:
             },
             "market": req.market,
             "stock_pool": req.stock_pool,
+            "data_snapshot": dict(getattr(result, "data_snapshot", {}) or {}),
+            "trace_summary": trace_summary,
+            "whatif_summary": whatif_summary,
         }
         final_status = "completed"
 
@@ -302,6 +366,9 @@ def _run_research(job: ResearchJob, loop: asyncio.AbstractEventLoop) -> None:
             request_json=job.request.model_dump_json(),
             report_markdown=job.report_markdown,
             result_summary_json=json.dumps(job.result_summary or {}),
+            report_path="",
+            trace_summary_json=json.dumps(trace_summary, ensure_ascii=False),
+            whatif_summary_json=json.dumps(whatif_summary, ensure_ascii=False),
             total_time=job.total_time,
             market=job.request.market,
             stock_pool=json.dumps(job.request.stock_pool),
@@ -366,6 +433,8 @@ class ResearchJobManager:
                 "universe_operation": request.universe_operation,
                 "resolved_count": len(request.stock_pool),
             }),
+            trace_summary_json=json.dumps({}),
+            whatif_summary_json=json.dumps({}),
         )
         self._executor.submit(_run_research, job, loop)
         return job

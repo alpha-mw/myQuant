@@ -27,6 +27,18 @@ class _FakeResult:
     llm_usage_summary = _FakeLLMUsage()
     final_strategy = None
     master_review_output = None
+    data_snapshot = {
+        "market": "CN",
+        "universe_key": "full_a",
+        "local_latest_trade_date": "20260326",
+        "freshness_mode": "stable",
+        "category_symbol_counts": {"full_a": 2},
+        "date_distribution_top": [{"trade_date": "20260326", "symbol_count": 2}],
+        "data_directories": ["data/cn_market_full/hs300"],
+        "resolver_priority": ["hs300", "zz500", "zz1000", "other"],
+        "data_quality_issue_count": 0,
+        "summary_text": "本地 A 股数据更新至 20260326。",
+    }
 
 
 def _make_payload(**overrides):
@@ -115,6 +127,7 @@ def test_completed_run_persists_without_sse_consumer(workspace_client: TestClien
     assert terminal["error"] is None
     assert terminal["result_summary"]["stock_pool"] == ["000001.SZ", "600519.SH"]
     assert terminal["result_summary"]["market"] == "CN"
+    assert terminal["result_summary"]["data_snapshot"]["local_latest_trade_date"] == "20260326"
 
     with job_manager._lock:
         job_manager._jobs.clear()
@@ -126,6 +139,7 @@ def test_completed_run_persists_without_sse_consumer(workspace_client: TestClien
     assert fallback_job.status_code == 200
     assert fallback_job.json()["status"] == "completed"
     assert fallback_job.json()["result_summary"]["total_time"] is not None
+    assert fallback_job.json()["result_summary"]["data_snapshot"]["summary_text"] == "本地 A 股数据更新至 20260326。"
 
     assert fallback_report.status_code == 200
     assert fallback_report.json()["markdown"] == "# Research Report"
@@ -465,14 +479,14 @@ def test_settings_patch_updates_existing_env_line(workspace_client: TestClient, 
     from web.routers import settings as settings_mod
 
     env_file = tmp_path / ".env"
-    env_file.write_text("# comment\nOPENAI_API_KEY=old-value\nOTHER=x\n", encoding="utf-8")
+    env_file.write_text("# comment\nKIMI_API_KEY=old-value\nOTHER=x\n", encoding="utf-8")
     monkeypatch.setattr(settings_mod, "_ENV_PATH", env_file)
 
-    workspace_client.patch("/api/settings/", json={"openai_api_key": "new-value"})
+    workspace_client.patch("/api/settings/", json={"kimi_api_key": "new-value"})
 
     content = env_file.read_text()
-    assert content.count("OPENAI_API_KEY=") == 1
-    assert "OPENAI_API_KEY=new-value" in content
+    assert content.count("KIMI_API_KEY=") == 1
+    assert "KIMI_API_KEY=new-value" in content
     assert "OTHER=x" in content
 
 
@@ -480,18 +494,16 @@ def test_settings_get_masks_credentials(workspace_client: TestClient, monkeypatc
     """GET /api/settings/ returns masked values for set keys."""
     import os
 
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-abcdefghijklmnop")
+    monkeypatch.setenv("KIMI_API_KEY", "sk-abcdefghijklmnop")
 
     resp = workspace_client.get("/api/settings/")
     assert resp.status_code == 200
     creds = {c["env_key"]: c for c in resp.json()["credentials"]}
-    openai_cred = creds["OPENAI_API_KEY"]
-    assert openai_cred["is_set"] is True
-    assert "sk-a" in openai_cred["masked_value"]
-    assert "mnop" in openai_cred["masked_value"]
-    assert "abcdefghijkl" not in openai_cred["masked_value"]
-    # Kimi key should appear in the registry
-    assert "KIMI_API_KEY" in creds
+    kimi_cred = creds["KIMI_API_KEY"]
+    assert kimi_cred["is_set"] is True
+    assert "sk-a" in kimi_cred["masked_value"]
+    assert "mnop" in kimi_cred["masked_value"]
+    assert "abcdefghijkl" not in kimi_cred["masked_value"]
 
 
 def test_settings_get_includes_database_summaries(workspace_client: TestClient, tmp_path, monkeypatch):
