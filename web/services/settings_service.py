@@ -4,20 +4,21 @@ from __future__ import annotations
 
 import logging
 import os
+import sqlite3
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 from web.config import PROJECT_ROOT
+from web.services.run_history_store import history_store
 
 logger = logging.getLogger(__name__)
 
 # Credential names used by the quant system
 CREDENTIAL_KEYS = [
     ("TUSHARE_TOKEN", "Tushare"),
-    ("OPENAI_API_KEY", "OpenAI"),
-    ("ANTHROPIC_API_KEY", "Anthropic"),
+    ("KIMI_API_KEY", "Kimi"),
     ("DEEPSEEK_API_KEY", "DeepSeek"),
-    ("GOOGLE_API_KEY", "Google"),
     ("FRED_API_KEY", "FRED"),
     ("FINNHUB_API_KEY", "Finnhub"),
     ("DASHSCOPE_API_KEY", "Dashscope"),
@@ -56,12 +57,76 @@ def get_backtest_defaults() -> dict:
     }
 
 
+def _file_summary(path: Path) -> dict[str, object]:
+    resolved = path.resolve()
+    if not resolved.exists():
+        return {
+            "path": str(resolved),
+            "exists": False,
+            "size_bytes": None,
+            "modified_at": None,
+        }
+
+    stat = resolved.stat()
+    return {
+        "path": str(resolved),
+        "exists": True,
+        "size_bytes": int(stat.st_size),
+        "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+    }
+
+
+def _workspace_db_summary() -> dict[str, object]:
+    db_path = history_store._db_path.resolve()
+    summary = _file_summary(db_path)
+    payload = {
+        **summary,
+        "run_count": 0,
+        "completed_runs": 0,
+        "failed_runs": 0,
+        "preset_count": 0,
+        "pending_trades": 0,
+        "last_run_at": None,
+    }
+    if not db_path.exists():
+        return payload
+
+    conn = history_store._conn()
+
+    def scalar(query: str) -> int:
+        try:
+            row = conn.execute(query).fetchone()
+        except sqlite3.DatabaseError:
+            return 0
+        return int(row[0]) if row and row[0] is not None else 0
+
+    try:
+        last_run_row = conn.execute("SELECT MAX(created_at) FROM runs").fetchone()
+    except sqlite3.DatabaseError:
+        last_run_row = None
+
+    payload.update(
+        {
+            "run_count": scalar("SELECT COUNT(*) FROM runs"),
+            "completed_runs": scalar("SELECT COUNT(*) FROM runs WHERE status = 'completed'"),
+            "failed_runs": scalar("SELECT COUNT(*) FROM runs WHERE status = 'failed'"),
+            "preset_count": scalar("SELECT COUNT(*) FROM presets"),
+            "pending_trades": scalar("SELECT COUNT(*) FROM trade_records WHERE outcome_status = 'pending'"),
+            "last_run_at": str(last_run_row[0]) if last_run_row and last_run_row[0] else None,
+        }
+    )
+    return payload
+
+
 def get_settings() -> dict:
+    stock_db_path = Path(os.environ.get("DB_PATH", "data/stock_database.db"))
     return {
         "credentials": get_credentials_status(),
         "backtest": get_backtest_defaults(),
-        "db_path": os.environ.get("DB_PATH", "data/stock_database.db"),
+        "db_path": str(stock_db_path),
         "log_level": os.environ.get("LOG_LEVEL", "INFO"),
+        "stock_db": _file_summary(stock_db_path),
+        "workspace_db": _workspace_db_summary(),
     }
 
 
@@ -119,10 +184,8 @@ def update_settings(updates: dict) -> dict:
 
     key_mapping = {
         "tushare_token": "TUSHARE_TOKEN",
-        "openai_api_key": "OPENAI_API_KEY",
-        "anthropic_api_key": "ANTHROPIC_API_KEY",
+        "kimi_api_key": "KIMI_API_KEY",
         "deepseek_api_key": "DEEPSEEK_API_KEY",
-        "google_api_key": "GOOGLE_API_KEY",
         "fred_api_key": "FRED_API_KEY",
         "finnhub_api_key": "FINNHUB_API_KEY",
         "dashscope_api_key": "DASHSCOPE_API_KEY",

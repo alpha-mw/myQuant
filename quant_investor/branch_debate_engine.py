@@ -29,7 +29,7 @@ class BranchDebateEngine:
     def __init__(
         self,
         enabled: bool = True,
-        model: str = "gpt-5.4-mini",
+        model: str = "moonshot-v1-8k",
         timeout_sec: float = 8.0,
         min_abs_score: float = 0.08,
         responder: Callable[..., dict[str, Any] | DebateVerdict] | None = None,
@@ -43,10 +43,9 @@ class BranchDebateEngine:
     @staticmethod
     def _has_provider() -> bool:
         provider_keys = [
-            "OPENAI_API_KEY",
-            "ANTHROPIC_API_KEY",
+            "KIMI_API_KEY",
             "DEEPSEEK_API_KEY",
-            "GOOGLE_API_KEY",
+            "DASHSCOPE_API_KEY",
         ]
         return any(bool(os.getenv(key)) for key in provider_keys)
 

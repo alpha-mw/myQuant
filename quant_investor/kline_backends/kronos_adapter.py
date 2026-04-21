@@ -55,6 +55,10 @@ class KronosBackend(KLineBackend):
             allow_remote_download=allow_remote_download,
         )
 
+    @property
+    def runtime_mode(self) -> str:
+        return self._integrator.runtime_mode
+
     @classmethod
     def _normalize_model_name(cls, kronos_model_size: str | None) -> str:
         return cls._SIZE_TO_MODEL_NAME.get(str(kronos_model_size or "base").lower(), "kronos-base")

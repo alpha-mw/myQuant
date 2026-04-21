@@ -1,0 +1,4 @@
+interface:
+  display_name: "myQuant Backend Ops"
+  short_description: "Route myQuant backend ops and diagnostics"
+  default_prompt: "Use $myquant-backend-ops to handle myQuant backend operations, routing, and diagnostics."

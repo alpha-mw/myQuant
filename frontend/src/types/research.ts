@@ -11,8 +11,11 @@ export interface ResearchRunRequest {
   enable_fundamental: boolean
   enable_intelligence: boolean
   enable_agent_layer: boolean
+  review_model_priority: string[]
   agent_model: string
+  agent_fallback_model: string
   master_model: string
+  master_fallback_model: string
   agent_timeout: number
   master_timeout: number
   preset_id?: string

@@ -1,7 +1,6 @@
-"""
-公开编排入口。
-"""
+"""Public pipeline entrypoints."""
 
-from quant_investor.pipeline.mainline import QuantInvestor, QuantInvestorPipelineResult
+from quant_investor.pipeline.mainline import QuantInvestor
+from quant_investor.pipeline.result_types import QuantInvestorPipelineResult
 
 __all__ = ["QuantInvestor", "QuantInvestorPipelineResult"]

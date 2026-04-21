@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
-from dataclasses import asdict
+from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -100,7 +100,16 @@ def _risk_summary(result: Any, request: dict[str, Any]) -> dict[str, Any]:
 
 
 def _trade_summary(trade: Any) -> dict[str, Any]:
-    payload = asdict(trade)
+    if is_dataclass(trade):
+        payload = asdict(trade)
+    elif isinstance(trade, dict):
+        payload = dict(trade)
+    else:
+        payload = {
+            key: getattr(trade, key)
+            for key in dir(trade)
+            if not key.startswith("_") and not callable(getattr(trade, key))
+        }
     risk_flags = [str(item) for item in payload["risk_flags"]]
     rationale = [
         f"共识得分 {float(payload['consensus_score']):+.2f}",
@@ -261,22 +270,25 @@ def _final_decision(strategy: Any, risk_summary: dict[str, Any]) -> str:
 def run_job(payload: dict[str, Any]) -> dict[str, Any]:
     _prepare_imports()
 
-    from quant_investor import QuantInvestorV8
+    from quant_investor.pipeline import QuantInvestor
 
     normalized = _normalize_request(payload)
     analysis_id = payload.get("analysis_id") or datetime.now().strftime("%Y%m%d_%H%M%S")
     created_at = datetime.now().isoformat(timespec="seconds")
 
-    investor = QuantInvestorV8(
+    investor = QuantInvestor(
         stock_pool=normalized["stocks"],
         market=normalized["market"],
+        lookback_years=1.0,
         total_capital=normalized["capital"],
         risk_level=normalized["risk_level"],
         enable_macro=normalized["enable_macro"],
+        enable_quant=bool(normalized["branches"].get("quant", {}).get("enabled", True)),
         enable_kline=normalized["enable_kline"],
         kline_backend=normalized["branches"].get("kline", {}).get("settings", {}).get("backend", "heuristic"),
+        enable_fundamental=bool(normalized["branches"].get("fundamental", {}).get("enabled", True)),
         enable_intelligence=normalized["enable_intelligence"],
-        enable_llm_debate=normalized["enable_llm_debate"],
+        enable_agent_layer=bool(normalized["llm_debate"].get("enabled", False)),
         verbose=False,
     )
     result = investor.run()
@@ -285,7 +297,9 @@ def run_job(payload: dict[str, Any]) -> dict[str, Any]:
     decisions = [_trade_summary(item) for item in strategy.trade_recommendations]
 
     branches = []
-    for branch_name in ["kline", "quant", "llm_debate", "intelligence", "macro"]:
+    from web.services.analysis_service import BRANCH_ORDER
+
+    for branch_name in BRANCH_ORDER:
         branch_result = result.branch_results.get(branch_name)
         if branch_result is None:
             branches.append(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 import json
 import sqlite3
 from pathlib import Path
@@ -172,6 +173,31 @@ def test_analysis_branch_payload_is_normalized_when_optional_fields_are_null():
     assert branch["settings"]["prediction_horizon"] == "20d"
 
 
+def test_web_result_normalization_preserves_data_snapshot():
+    result = _normalize_web_result(
+        {
+            "analysis_id": "test",
+            "request": {"targets": ["000001.SZ"], "market": "CN"},
+            "branches": [],
+            "data_snapshot": {
+                "market": "CN",
+                "universe_key": "full_a",
+                "local_latest_trade_date": "20260326",
+                "freshness_mode": "stable",
+                "category_symbol_counts": {"full_a": 1},
+                "date_distribution_top": [{"trade_date": "20260326", "symbol_count": 1}],
+                "data_directories": ["data/cn_market_full/hs300"],
+                "resolver_priority": ["hs300", "zz500", "zz1000", "other"],
+                "data_quality_issue_count": 0,
+                "summary_text": "本地 A 股数据更新至 20260326。",
+            },
+        }
+    )
+
+    assert result["data_snapshot"]["local_latest_trade_date"] == "20260326"
+    assert result["data_snapshot"]["summary_text"] == "本地 A 股数据更新至 20260326。"
+
+
 def test_market_mode_expands_all_downloaded_symbols_from_selected_market(tmp_path, monkeypatch):
     stock_db = tmp_path / "stock.db"
     conn = sqlite3.connect(stock_db)
@@ -260,14 +286,18 @@ def test_market_running_job_has_extended_stale_timeout(tmp_path, monkeypatch):
     monkeypatch.setattr(analysis_service, "WEB_ANALYSIS_DIR", web_analysis_dir)
     monkeypatch.setattr(analysis_service, "JOB_DIR", jobs_dir)
 
+    now = datetime.now().replace(microsecond=0)
+    created_at = (now - timedelta(hours=2, minutes=10)).isoformat()
+    updated_at = (now - timedelta(hours=2)).isoformat()
+
     analysis_service._job_file_for("20260317_100000_000001").write_text(
         json.dumps(
             {
                 "ok": True,
                 "job_id": "20260317_100000_000001",
                 "status": "running",
-                "created_at": "2026-03-17T10:00:00",
-                "updated_at": "2026-03-17T10:15:00",
+                "created_at": created_at,
+                "updated_at": updated_at,
                 "result": None,
                 "error": None,
                 "mode": "market",

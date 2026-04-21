@@ -5,9 +5,9 @@ A股激进科技制造策略正式复盘跟踪器。
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import shutil
-import subprocess
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -18,7 +18,11 @@ import pandas as pd
 import requests
 
 from quant_investor.market.analyze import load_cn_stock_names
+from quant_investor.market.config import get_market_settings
 from quant_investor.market.download_cn import CNFullMarketDownloader
+from quant_investor.llm_provider_priority import coerce_review_model_priority
+from quant_investor.pipeline import QuantInvestor
+from quant_investor.research_run_config import ResolvedReviewModels
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -27,7 +31,6 @@ DEFAULT_BASE_DIR = (
 )
 DEFAULT_NOTES_PATH = DEFAULT_BASE_DIR / "latest_notes_payload.md"
 DEFAULT_INITIAL_CAPITAL = 1_000_000.0
-DEFAULT_SHORTCUT_NAME = "Quant Daily To Notes"
 QUOTE_TIMEOUT = 20
 INDEX_QUOTES = {
     "sh000001": "上证指数",
@@ -57,6 +60,184 @@ class ProposedOrder:
     trade_value: float
     realized_pnl: float
     reason: str
+
+
+def _load_daily_config_llm_settings() -> dict[str, Any]:
+    config_path = PROJECT_ROOT / "daily_config.py"
+    if not config_path.exists():
+        return {
+            "review_model_priority": coerce_review_model_priority([]),
+            "agent_model": "",
+            "agent_fallback_model": "",
+            "master_model": "",
+            "master_fallback_model": "",
+            "master_reasoning_effort": "",
+        }
+
+    spec = importlib.util.spec_from_file_location("_daily_cfg_for_tracker", config_path)
+    module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+    assert spec.loader is not None
+    spec.loader.exec_module(module)  # type: ignore[union-attr]
+    cfg: dict[str, Any] = dict(getattr(module, "DAILY_CONFIG", {}) or {})
+    resolved = ResolvedReviewModels.from_mapping(cfg)
+    return resolved.to_runtime_kwargs()
+
+
+def _plain_dict(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if hasattr(value, "to_dict"):
+        payload = value.to_dict()
+        if isinstance(payload, dict):
+            return dict(payload)
+    if isinstance(value, dict):
+        return dict(value)
+    data = getattr(value, "__dict__", None)
+    if isinstance(data, dict):
+        return dict(data)
+    return {}
+
+
+def _llm_usage_summary_to_dict(summary: Any) -> dict[str, Any]:
+    return {
+        "call_count": int(getattr(summary, "call_count", 0) or 0),
+        "success_count": int(getattr(summary, "success_count", 0) or 0),
+        "fallback_count": int(getattr(summary, "fallback_count", 0) or 0),
+        "failed_count": int(getattr(summary, "failed_count", 0) or 0),
+        "total_tokens": int(getattr(summary, "total_tokens", 0) or 0),
+        "estimated_cost_usd": round(float(getattr(summary, "estimated_cost_usd", 0.0) or 0.0), 8),
+    }
+
+
+def _trade_recommendation_to_dict(recommendation: Any) -> dict[str, Any]:
+    if recommendation is None:
+        return {}
+    payload = _plain_dict(recommendation)
+    if payload:
+        return payload
+    return {
+        "symbol": str(getattr(recommendation, "symbol", "")),
+        "action": str(getattr(recommendation, "action", "")),
+        "weight": float(getattr(recommendation, "weight", 0.0) or 0.0),
+        "confidence": float(getattr(recommendation, "confidence", 0.0) or 0.0),
+        "one_line_conclusion": str(getattr(recommendation, "one_line_conclusion", "")),
+        "risk_flags": list(getattr(recommendation, "risk_flags", []) or []),
+        "metadata": dict(getattr(recommendation, "metadata", {}) or {}),
+    }
+
+
+def _run_unified_review_mainline_for_holdings(
+    *,
+    source_ledger: pd.DataFrame,
+    latest_trade_date: str,
+    source_record: str,
+) -> dict[str, Any]:
+    review_by_symbol: dict[str, dict[str, Any]] = {}
+    degraded_symbols: dict[str, str] = {}
+    llm_settings = _load_daily_config_llm_settings()
+    review_models = ResolvedReviewModels.from_mapping(llm_settings)
+    aggregate_attempt_usage = {
+        "call_count": 0,
+        "success_count": 0,
+        "fallback_count": 0,
+        "failed_count": 0,
+        "total_tokens": 0,
+        "estimated_cost_usd": 0.0,
+    }
+    aggregate_effective_usage = {
+        "call_count": 0,
+        "success_count": 0,
+        "fallback_count": 0,
+        "failed_count": 0,
+        "total_tokens": 0,
+        "estimated_cost_usd": 0.0,
+    }
+    model_role_metadata: dict[str, Any] = {}
+    fallback_reasons: list[str] = []
+    session_ids: dict[str, str] = {}
+
+    for row in source_ledger.itertuples():
+        symbol = str(getattr(row, "symbol", "")).strip().upper()
+        if not symbol:
+            continue
+        current_value = _safe_float(getattr(row, "current_value", 0.0), 0.0)
+        cost_basis = _safe_float(getattr(row, "cost_basis", 0.0), 0.0)
+        review_capital = max(current_value, cost_basis, 10_000.0)
+        investor = QuantInvestor(
+            stock_pool=[symbol],
+            market="CN",
+            lookback_years=1.0,
+            total_capital=review_capital,
+            risk_level="积极",
+            verbose=False,
+            enable_agent_layer=True,
+            universe_key="full_a",
+            enable_document_semantics=True,
+            **review_models.to_runtime_kwargs(),
+            recall_context={
+                "strategy": "aggressive_tech_manufacturing",
+                "source_record": source_record,
+                "latest_trade_date": latest_trade_date,
+                "holding_symbol": symbol,
+            },
+        )
+        result = investor.run()
+        attempt_usage = _llm_usage_summary_to_dict(getattr(result, "llm_usage_summary", None))
+        effective_usage = _llm_usage_summary_to_dict(getattr(result, "llm_effective_summary", None))
+        for key in ("call_count", "success_count", "fallback_count", "failed_count", "total_tokens"):
+            aggregate_attempt_usage[key] += int(attempt_usage[key])
+            aggregate_effective_usage[key] += int(effective_usage[key])
+        aggregate_attempt_usage["estimated_cost_usd"] = round(
+            float(aggregate_attempt_usage["estimated_cost_usd"]) + float(attempt_usage["estimated_cost_usd"]),
+            8,
+        )
+        aggregate_effective_usage["estimated_cost_usd"] = round(
+            float(aggregate_effective_usage["estimated_cost_usd"]) + float(effective_usage["estimated_cost_usd"]),
+            8,
+        )
+        role_payload = _plain_dict(getattr(result, "model_role_metadata", None))
+        if role_payload and not model_role_metadata:
+            model_role_metadata = role_payload
+        review_bundle = getattr(result, "review_bundle", None)
+        fallback_reasons.extend(list(getattr(review_bundle, "fallback_reasons", []) or []))
+        degraded_reason = ""
+        if attempt_usage["call_count"] <= 0:
+            degraded_reason = (
+                f"{symbol} review-layer 未产生有效 LLM 调用，已按降级模式继续；"
+                "请核对模型配额、provider 可用性或 free-tier 限制。"
+            )
+            degraded_symbols[symbol] = degraded_reason
+            fallback_reasons.append(degraded_reason)
+        recommendations = list(getattr(getattr(result, "final_strategy", None), "recommendations", []) or [])
+        if not recommendations:
+            recommendations = list(getattr(getattr(result, "final_strategy", None), "trade_recommendations", []) or [])
+        recommendation = next((item for item in recommendations if str(getattr(item, "symbol", "")).upper() == symbol), None)
+        ic_hint = dict((getattr(result, "ic_hints_by_symbol", {}) or {}).get(symbol, {}))
+        session_ids[symbol] = str(getattr(result, "llm_usage_session_id", "") or "")
+        review_by_symbol[symbol] = {
+            "llm_usage": attempt_usage,
+            "llm_attempt_summary": attempt_usage,
+            "llm_effective_summary": effective_usage,
+            "llm_session_id": session_ids[symbol],
+            "ic_hint": ic_hint,
+            "recommendation": _trade_recommendation_to_dict(recommendation),
+            "report_excerpt": str(getattr(result, "final_report", "") or "")[:2000],
+            "llm_degraded": bool(degraded_reason),
+            "llm_degraded_reason": degraded_reason,
+        }
+        time.sleep(0.8)
+
+    return {
+        "reviewed_symbols": list(review_by_symbol.keys()),
+        "by_symbol": review_by_symbol,
+        "degraded_symbols": degraded_symbols,
+        "llm_usage_summary": aggregate_attempt_usage,
+        "llm_attempt_summary": aggregate_attempt_usage,
+        "llm_effective_summary": aggregate_effective_usage,
+        "model_role_metadata": model_role_metadata,
+        "fallback_reasons": sorted(dict.fromkeys(item for item in fallback_reasons if str(item).strip())),
+        "session_ids": session_ids,
+    }
 
 
 def _now_local() -> datetime:
@@ -411,12 +592,12 @@ def _tech_mainline_conclusion(theme_strength: list[dict[str, Any]]) -> tuple[str
     strongest = theme_strength[0]
     weakest = theme_strength[-1]
     strong_text = (
-        f"{strongest['theme']} 最强，平均盘中涨跌 {strongest['avg_today_change_pct']:+.2f}% ，"
-        f"平均全市场评分 {strongest['avg_score']:.3f}。"
+        f"{strongest['theme']} 的完整日线强度最强，平均全市场评分 {strongest['avg_score']:.3f}，"
+        f"盘中涨跌 {strongest['avg_today_change_pct']:+.2f}%。"
     )
     weak_text = (
-        f"{weakest['theme']} 最弱，平均盘中涨跌 {weakest['avg_today_change_pct']:+.2f}% ，"
-        f"平均全市场评分 {weakest['avg_score']:.3f}。"
+        f"{weakest['theme']} 的完整日线强度最弱，平均全市场评分 {weakest['avg_score']:.3f}，"
+        f"盘中涨跌 {weakest['avg_today_change_pct']:+.2f}%。"
     )
     return strong_text, weak_text
 
@@ -592,66 +773,213 @@ def _format_symbol_set(symbols: list[str]) -> str:
     return " / ".join(symbols)
 
 
-def _build_blocking_report(
-    timestamp_long: str,
-    source_record: str,
-    completeness_before: dict[str, Any],
-    completeness_after: dict[str, Any],
-    attempted_backfill: bool,
+def _format_top_holdings_by_unrealized_pnl(frame: pd.DataFrame, *, positive: bool) -> str:
+    if frame.empty or "unrealized_pnl" not in frame.columns:
+        return "无"
+
+    filtered = frame[frame["unrealized_pnl"] > 0] if positive else frame[frame["unrealized_pnl"] < 0]
+    if filtered.empty:
+        return "无"
+
+    ordered = filtered.sort_values("unrealized_pnl", ascending=not positive)
+    return "；".join(
+        f"{row.symbol}({row.name}) {row.unrealized_pnl:,.2f} 元"
+        for row in ordered.head(3).itertuples()
+    )
+
+
+def _format_trade_date(value: Any) -> str:
+    text = str(value or "").strip()
+    if len(text) == 8 and text.isdigit():
+        return f"{text[:4]}-{text[4:6]}-{text[6:]}"
+    return text or "未知"
+
+
+def _dominant_trade_date(date_counts: dict[str, Any]) -> str:
+    normalized = {
+        str(date).strip(): int(count or 0)
+        for date, count in (date_counts or {}).items()
+        if str(date).strip()
+    }
+    if not normalized:
+        return ""
+    return max(normalized.items(), key=lambda item: (item[1], item[0]))[0]
+
+
+def _resolve_analysis_trade_date(completeness_report: dict[str, Any]) -> str:
+    categories = dict(completeness_report.get("categories", {}) or {})
+    full_a = dict(categories.get("full_a", {}) or {})
+    dominant = _dominant_trade_date(full_a.get("date_counts", {}) or {})
+    if dominant:
+        return dominant
+
+    aggregate_counts: dict[str, int] = {}
+    for payload in categories.values():
+        for date, count in (payload.get("date_counts", {}) or {}).items():
+            key = str(date).strip()
+            if not key:
+                continue
+            aggregate_counts[key] = aggregate_counts.get(key, 0) + int(count or 0)
+    dominant = _dominant_trade_date(aggregate_counts)
+    if dominant:
+        return dominant
+    return str(
+        completeness_report.get("effective_target_trade_date")
+        or completeness_report.get("latest_trade_date")
+        or ""
+    )
+
+
+def _build_data_status_summary(
+    completeness_report: dict[str, Any],
+    analysis_trade_date: str,
 ) -> str:
+    target_trade_date = _format_trade_date(completeness_report.get("latest_trade_date"))
+    effective_target_trade_date = _format_trade_date(
+        completeness_report.get("effective_target_trade_date")
+        or completeness_report.get("latest_trade_date")
+    )
+    strict_trade_date = _format_trade_date(
+        completeness_report.get("strict_trade_date")
+        or completeness_report.get("latest_trade_date")
+    )
+    freshness_mode = str(completeness_report.get("freshness_mode") or "strict")
+    blocking_count = int(completeness_report.get("blocking_incomplete_count", 0) or 0)
+    coverage_ratio = float(completeness_report.get("coverage_ratio", 0.0) or 0.0)
+    pre_listing_count = len(completeness_report.get("pre_listing_symbols", []) or [])
+    full_a = (
+        completeness_report.get("categories", {})
+        .get("full_a", {})
+        or {}
+    )
+    dominant_count = int((full_a.get("date_counts", {}) or {}).get(analysis_trade_date, 0) or 0)
+    dominant_expected = int(full_a.get("expected", 0) or 0)
+    suspended_stale_count = len(
+        (
+            completeness_report.get("categories", {})
+            .get("full_a", {})
+            .get("suspended_stale_symbols", [])
+            or []
+        )
+    )
+
+    base = f"本地主导A股日线快照位于 `{_format_trade_date(analysis_trade_date)}`"
+    if _format_trade_date(analysis_trade_date) != effective_target_trade_date:
+        base += (
+            f"，而当前完整性目标交易日为 `{effective_target_trade_date}`"
+            f"（strict 最新 `{strict_trade_date}` / 报告 latest `{target_trade_date}`）"
+        )
+    else:
+        base += f"，当前完整性目标交易日同样为 `{effective_target_trade_date}`"
+    extras = [
+        f"主导快照覆盖 `{dominant_count}/{dominant_expected}`",
+        f"覆盖率 `{coverage_ratio:.1%}`",
+        f"停牌/长期停牌例外 `{suspended_stale_count}` 个",
+        f"预上市样本 `{pre_listing_count}` 个",
+        f"完整性模式 `{freshness_mode}`",
+    ]
+    if blocking_count > 0:
+        extras.insert(0, f"阻塞缺口 `{blocking_count}` 个")
+    else:
+        extras.insert(0, "阻塞缺口 `0` 个")
+    return base + "（" + "；".join(extras) + "）"
+
+
+def _build_data_snapshot_lines(
+    completeness_report: dict[str, Any],
+    quote_snapshot: str,
+    analysis_trade_date: str,
+) -> list[str]:
+    categories = dict(completeness_report.get("categories", {}) or {})
+    full_a = dict(categories.get("full_a", {}) or {})
+    analysis_count = int((full_a.get("date_counts", {}) or {}).get(analysis_trade_date, 0) or 0)
     lines = [
-        "# A股激进科技制造策略正式复盘报告",
-        "",
-        "## 1. 记录信息",
-        "",
-        "- 市场：A股（CN）",
-        "- 策略：`aggressive_tech_manufacturing`",
-        f"- 上一条正式记录：`{source_record}`",
-        f"- 本次正式记录时间：{timestamp_long}",
-        "- 完整性校验：**未通过**",
-        "",
-        "## 0. 正式结果速览",
-        "",
-        "- 正式结论：**不生成正式投资结论。**",
         (
-            f"- 数据完整性状态：**未通过（目标最新交易日 `{completeness_after['latest_trade_date']}`，"
-            f"阻塞缺口 `{completeness_after['blocking_incomplete_count']}` 个）**"
+            f"- 分析采用的主导本地快照：`{_format_trade_date(analysis_trade_date)}`，"
+            f"`full_a` 覆盖 `{analysis_count}/{int(full_a.get('expected', 0) or 0)}`"
         ),
-        "- 今日是否执行调仓：**否**",
-        "- 明日准备事项：先补齐阻塞缺口，再重跑正式流程。",
-        "",
-        "## 2. 阻塞原因",
-        "",
+        f"- 本地最新交易日：`{_format_trade_date(completeness_report.get('latest_trade_date'))}`",
+        f"- strict 最新交易日：`{_format_trade_date(completeness_report.get('strict_trade_date'))}`",
+        f"- stable 最新交易日：`{_format_trade_date(completeness_report.get('stable_trade_date'))}`",
+        f"- 当前采用目标交易日：`{_format_trade_date(completeness_report.get('effective_target_trade_date'))}`",
+        f"- 新鲜度模式：`{completeness_report.get('freshness_mode') or 'strict'}`",
         (
-            f"- 首轮完整性：`{'通过' if completeness_before['complete'] else '未通过'}`，"
-            f"阻塞缺口 `{completeness_before['blocking_incomplete_count']}` 个"
+            f"- 覆盖完成度：`{int(completeness_report.get('coverage_complete_count', 0) or 0)}/"
+            f"{int(completeness_report.get('expected_scope_count', 0) or 0)}` "
+            f"（{float(completeness_report.get('coverage_ratio', 0.0) or 0.0):.1%}）"
         ),
-        f"- 是否执行补数：`{'是' if attempted_backfill else '否'}`",
         (
-            f"- 最终完整性：`{'通过' if completeness_after['complete'] else '未通过'}`，"
-            f"阻塞缺口 `{completeness_after['blocking_incomplete_count']}` 个"
+            f"- 完整性状态：`{'通过' if completeness_report.get('complete') else '未通过'}`，"
+            f"阻塞缺口 `{int(completeness_report.get('blocking_incomplete_count', 0) or 0)}` 个"
+        ),
+        (
+            f"- 指数/持仓盘中快照：`{quote_snapshot}`；指数与持仓现价使用盘中行情，"
+            "广度、主题与全市场强弱仍以本地最新日线快照为准。"
+            if quote_snapshot
+            else "- 指数/持仓盘中快照：`N/A`，本轮全部结论基于本地日线快照。"
         ),
     ]
-    for category in completeness_after["categories_checked"]:
-        payload = completeness_after["categories"][category]
-        missing_sample = payload.get("blocking_missing_symbols", [])[:10]
-        stale_sample = [item["symbol"] for item in payload.get("blocking_stale_symbols", [])[:10]]
+
+    pre_listing = list(completeness_report.get("pre_listing_symbols", []) or [])
+    if pre_listing:
         lines.append(
-            f"- {category}: 缺失 `{len(payload.get('blocking_missing_symbols', []))}` 个，"
-            f"陈旧 `{len(payload.get('blocking_stale_symbols', []))}` 个，"
-            f"示例缺口 `{', '.join(missing_sample + stale_sample) if (missing_sample or stale_sample) else '无'}`"
+            "- 预上市样本：`"
+            + "，".join(
+                f"{item.get('symbol')}@{_format_trade_date(item.get('list_date'))}"
+                for item in pre_listing[:8]
+            )
+            + (" ...`" if len(pre_listing) > 8 else "`")
         )
-    lines.extend(
-        [
-            "",
-            "## 3. 下一步补数建议",
-            "",
-            "- 继续使用 `quant_investor.market.download_cn` 对阻塞样本做单点重试。",
-            "- 若仅剩停牌样本，必须核验 `suspend_d` 口径后再决定是否转为非阻塞例外。",
-            "- 在完整数据校验通过前，不生成正式投资结论，也不更新调仓建议。",
-        ]
-    )
-    return "\n".join(lines)
+
+    for category in completeness_report.get("categories_checked", []):
+        payload = categories.get(category, {})
+        if not payload:
+            continue
+        category_dominant_trade_date = _dominant_trade_date(payload.get("date_counts", {}) or {})
+        category_dominant_count = int((payload.get("date_counts", {}) or {}).get(category_dominant_trade_date, 0) or 0)
+        lines.append(
+            f"- {category}：目标 `{_format_trade_date(payload.get('latest_trade_date'))}`，"
+            f"主导本地快照 `{_format_trade_date(category_dominant_trade_date)}` "
+            f"（`{category_dominant_count}/{int(payload.get('expected', 0) or 0)}`），"
+            f"目标覆盖 `{int(payload.get('coverage_complete_count', 0) or 0)}/"
+            f"{int(payload.get('expected', 0) or 0)}`，"
+            f"阻塞缺口 `{int(payload.get('blocking_incomplete_count', 0) or 0)}`，"
+            f"停牌例外 `{len(payload.get('suspended_stale_symbols', []) or [])}`"
+        )
+        blocking_missing = list(payload.get("blocking_missing_symbols", []) or [])
+        if blocking_missing:
+            lines.append(
+                "- "
+                + category
+                + " 阻塞缺失：`"
+                + "，".join(blocking_missing[:10])
+                + (" ...`" if len(blocking_missing) > 10 else "`")
+            )
+        blocking_stale = list(payload.get("blocking_stale_symbols", []) or [])
+        if blocking_stale:
+            lines.append(
+                "- "
+                + category
+                + " 阻塞旧档：`"
+                + "，".join(
+                    f"{item.get('symbol')}@{_format_trade_date(item.get('latest_local_date'))}"
+                    for item in blocking_stale[:10]
+                )
+                + (" ...`" if len(blocking_stale) > 10 else "`")
+            )
+        suspended = list(payload.get("suspended_stale_symbols", []) or [])
+        if suspended:
+            lines.append(
+                "- "
+                + category
+                + " 停牌/长期停牌例外：`"
+                + "，".join(
+                    f"{item.get('symbol')}@{_format_trade_date(item.get('latest_local_date'))}"
+                    for item in suspended[:10]
+                )
+                + (" ...`" if len(suspended) > 10 else "`")
+            )
+    return lines
 
 
 def _write_outputs(
@@ -748,144 +1076,40 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         source_pnl["total_value_after"].iloc[-1] if "total_value_after" in source_pnl.columns else initial_capital
     )
 
+    cn_data_root = Path(get_market_settings('CN').data_dir)
     downloader = CNFullMarketDownloader(
-        data_dir=str(PROJECT_ROOT / "data" / "cn_market_full"),
+        data_dir=str(cn_data_root),
         years=args.years,
         max_workers=4,
     )
     components = downloader.load_components()
-    completeness_before = downloader.build_completeness_report(components=components)
+    completeness_before = downloader.build_completeness_report(
+        components=components,
+        allowed_stale_symbols=args.allowed_stale_symbols,
+    )
     attempted_backfill = False
     download_report_path = None
-    download_results: dict[str, Any] | None = None
+    completeness_after = completeness_before
 
-    if not completeness_before["complete"]:
-        attempted_backfill = True
-        download_results = downloader.download_all(
-            components=components,
-            max_rounds=args.max_rounds,
-            fail_on_incomplete=False,
-        )
-        completeness_after = download_results["completeness"]
-        download_report_path = (
-            PROJECT_ROOT
-            / "data"
-            / "cn_market_full"
-            / f"download_report_{download_results['timestamp']}.json"
-        )
-    else:
-        completeness_after = completeness_before
-
-    latest_trade_date = completeness_after["latest_trade_date"]
+    latest_trade_date = str(completeness_after.get("latest_trade_date") or "")
+    analysis_trade_date = _resolve_analysis_trade_date(completeness_after)
     completeness_passed = bool(completeness_after["complete"])
 
-    if not completeness_passed:
-        report_text = _build_blocking_report(
-            timestamp_long=timestamp_long,
-            source_record=source_record,
-            completeness_before=completeness_before,
-            completeness_after=completeness_after,
-            attempted_backfill=attempted_backfill,
-        )
-        empty_orders = pd.DataFrame(
-            columns=["timestamp", "action", "symbol", "name", "shares", "price", "trade_value", "realized_pnl", "reason"]
-        )
-        pnl_summary = {
-            "record_time": timestamp_long,
-            "quote_snapshot": "",
-            "initial_capital": initial_capital,
-            "cash_before": cash_before,
-            "market_value_before": 0.0,
-            "total_value_before": source_total_value,
-            "portfolio_pnl_before": round(source_total_value - initial_capital, 2),
-            "portfolio_pnl_pct_before": round(_safe_pct(source_total_value - initial_capital, initial_capital), 6),
-            "realized_pnl_from_rebalance": 0.0,
-            "cash_after": cash_before,
-            "market_value_after": 0.0,
-            "total_value_after": source_total_value,
-            "portfolio_pnl_after": round(source_total_value - initial_capital, 2),
-            "portfolio_pnl_pct_after": round(_safe_pct(source_total_value - initial_capital, initial_capital), 6),
-            "delta_vs_source_record": 0.0,
-        }
-        pnl_summary_df = pd.DataFrame([pnl_summary])
-        notes_text = _build_notes_payload(
-            trade_date=now.strftime("%Y-%m-%d"),
-            data_status=(
-                f"完整性未通过（目标最新交易日 `{latest_trade_date}`，"
-                f"阻塞缺口 `{completeness_after['blocking_incomplete_count']}` 个）"
-            ),
-            market_core_view="本轮先停在补数与校验阶段，不生成正式投资判断。",
-            pnl_summary=pnl_summary,
-            orders=[],
-            tomorrow_focus=["优先补齐阻塞缺口", "确认停牌样本是否可转为非阻塞例外"],
-        )
-        DEFAULT_NOTES_PATH.write_text(notes_text, encoding="utf-8")
-        market_snapshot = {
-            "generated_at": now.strftime("%Y-%m-%d %H:%M:%S"),
-            "quote_snapshot": "",
-            "completeness_before": completeness_before,
-            "completeness_after": completeness_after,
-            "download_report": str(download_report_path) if download_report_path else None,
-        }
-        manifest = {
-            "market": "CN",
-            "strategy": "aggressive_tech_manufacturing",
-            "timestamp": timestamp,
-            "recorded_at": timestamp_long,
-            "source_record": source_record,
-            "formal_record": False,
-            "completeness_passed": False,
-            "capital_cny": initial_capital,
-            "quote_snapshot": "",
-            "action_taken_today": False,
-            "files": {
-                "analysis_report": "analysis_report.md",
-                "holdings_review": "holdings_review.csv",
-                "orders": "orders.csv",
-                "ledger": "ledger.csv",
-                "pnl_summary": "pnl_summary.csv",
-                "market_snapshot": "market_snapshot.json",
-            },
-            "raw_exports": {
-                "report": f"raw_exports/aggressive_portfolio_{timestamp}_formal_report.md",
-                "orders": f"raw_exports/aggressive_portfolio_{timestamp}_formal_orders.csv",
-                "ledger": f"raw_exports/aggressive_portfolio_{timestamp}_formal_ledger.csv",
-                "pnl_summary": f"raw_exports/aggressive_portfolio_{timestamp}_formal_pnl_summary.csv",
-                "holdings_review": f"raw_exports/aggressive_portfolio_{timestamp}_formal_holdings_review.csv",
-            },
-            "data_snapshot": {
-                "latest_trade_date": latest_trade_date,
-                "completeness": completeness_after,
-                "download_report": str(download_report_path) if download_report_path else None,
-            },
-        }
-        _write_outputs(
-            base_dir=base_dir,
-            run_dir=run_dir,
-            report_text=report_text,
-            holdings_review=source_ledger,
-            ledger=source_ledger,
-            orders_df=empty_orders,
-            pnl_summary_df=pnl_summary_df,
-            manifest=manifest,
-            market_snapshot=market_snapshot,
-        )
-        shortcuts_result = {"success": False, "returncode": None, "stdout": "", "stderr": "数据完整性未通过，未执行 Shortcuts。"}
-        return {
-            "timestamp": timestamp,
-            "timestamp_long": timestamp_long,
-            "run_dir": str(run_dir),
-            "completeness_passed": False,
-            "latest_trade_date": latest_trade_date,
-            "action_taken_today": False,
-            "shortcuts_result": shortcuts_result,
-            "elapsed_sec": round(time.time() - started, 2),
-        }
+    review_layer = _run_unified_review_mainline_for_holdings(
+        source_ledger=source_ledger,
+        latest_trade_date=analysis_trade_date,
+        source_record=source_record,
+    )
+    review_by_symbol = dict(review_layer.get("by_symbol", {}) or {})
+    degraded_symbols = dict(review_layer.get("degraded_symbols", {}) or {})
+    review_attempt_summary = dict(review_layer.get("llm_attempt_summary", review_layer.get("llm_usage_summary", {})) or {})
+    review_effective_summary = dict(review_layer.get("llm_effective_summary", {}) or {})
+    review_model_role_metadata = dict(review_layer.get("model_role_metadata", {}) or {})
 
     full_metrics = _compute_full_market_metrics(
         components=components,
-        data_root=PROJECT_ROOT / "data" / "cn_market_full",
-        latest_trade_date=latest_trade_date,
+        data_root=cn_data_root,
+        latest_trade_date=analysis_trade_date,
     )
     metrics_map = {
         row.symbol: row._asdict()
@@ -918,8 +1142,8 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         category: _compute_category_breadth(
             category=category,
             symbols=components.get(category, []),
-            data_root=PROJECT_ROOT / "data" / "cn_market_full",
-            latest_trade_date=latest_trade_date,
+            data_root=cn_data_root,
+            latest_trade_date=analysis_trade_date,
             completeness_report=completeness_after,
         )
         for category in ("hs300", "zz500", "zz1000")
@@ -934,6 +1158,24 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         symbol = row.symbol
         metric = metrics_map.get(symbol, {})
         quote = quote_payload.get(_map_symbol_to_quote_code(symbol), {})
+        review_payload = review_by_symbol.get(symbol, {})
+        recommendation = dict(review_payload.get("recommendation", {}) or {})
+        ic_hint = dict(review_payload.get("ic_hint", {}) or {})
+        llm_attempt_summary = dict(review_payload.get("llm_attempt_summary", {}) or {})
+        llm_effective_summary = dict(review_payload.get("llm_effective_summary", {}) or {})
+        llm_action = str(recommendation.get("action") or ic_hint.get("action") or "hold")
+        llm_confidence = float(
+            recommendation.get("confidence")
+            or ic_hint.get("confidence_hint")
+            or 0.0
+        )
+        llm_conclusion = str(
+            recommendation.get("one_line_conclusion")
+            or ic_hint.get("thesis")
+            or ""
+        ).strip()
+        llm_risk_flags = list(recommendation.get("risk_flags") or ic_hint.get("risk_flags") or [])
+        llm_session_id = str(review_payload.get("llm_session_id", "") or "")
         current_price = _safe_float(quote.get("current"), _safe_float(metric.get("latest_close"), getattr(row, "current_price", 0.0)))
         current_value = round(int(row.shares) * current_price, 2)
         buy_value = round(float(row.cost_basis), 2)
@@ -966,6 +1208,14 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
                 "stage_target_price": staged_target,
                 "stage_stop_price": staged_stop,
                 "delta_vs_source_record": round(current_value - previous_value_map.get(symbol, 0.0), 2),
+                "llm_action": llm_action,
+                "llm_confidence": round(llm_confidence, 6),
+                "llm_conclusion": llm_conclusion,
+                "llm_risk_flags": "；".join(str(item).strip() for item in llm_risk_flags if str(item).strip()),
+                "llm_session_id": llm_session_id,
+                "llm_attempt_calls": int(llm_attempt_summary.get("call_count", 0) or 0),
+                "llm_failed_calls": int(llm_attempt_summary.get("failed_count", 0) or 0),
+                "llm_effective_calls": int(llm_effective_summary.get("call_count", 0) or 0),
             }
         )
 
@@ -1039,19 +1289,36 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         if orders
         else "今天不执行调仓，继续把强修复与弱滞涨的分化再观察一个交易日。"
     )
-    data_status = (
-        f"完整数据校验通过（目标最新交易日 `{latest_trade_date}`"
-        + (
-            f"；停牌例外 `{', '.join(sorted(completeness_after.get('suspension_evidence', {}).keys()))}` 不构成阻塞）"
-            if completeness_after.get("suspension_evidence")
-            else "）"
-        )
-    )
+    data_status = _build_data_status_summary(completeness_after, analysis_trade_date=analysis_trade_date)
     tomorrow_focus = [
         "确认先进材料与光通信的修复能否延续，不让单日反弹误判为全面重启",
         "继续观察 `大族激光 / 中国西电` 是否能重新站回阶段止损位",
         "跟踪科创50 相对沪深300 的强弱差，判断资金是否继续偏向硬科技",
     ]
+    if not completeness_passed:
+        tomorrow_focus.insert(
+            0,
+            (
+                f"核对本地A股快照阻塞缺口 `{int(completeness_after.get('blocking_incomplete_count', 0) or 0)}` 个"
+                "是否属于真实缺数还是停牌/预上市扰动"
+            ),
+        )
+    if (
+        str(completeness_after.get("strict_trade_date") or "") 
+        and completeness_after.get("strict_trade_date") != completeness_after.get("effective_target_trade_date")
+    ):
+        tomorrow_focus.insert(
+            0,
+            (
+                f"关注 strict 交易日 `{_format_trade_date(completeness_after.get('strict_trade_date'))}`"
+                " 是否在明日变成必须补齐的新主导快照"
+            ),
+        )
+    data_snapshot_lines = _build_data_snapshot_lines(
+        completeness_report=completeness_after,
+        quote_snapshot=quote_snapshot,
+        analysis_trade_date=analysis_trade_date,
+    )
 
     report_lines = [
         "# A股激进科技制造策略正式复盘报告",
@@ -1063,48 +1330,46 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         f"- 上一条正式记录：`{source_record}`",
         f"- 本次正式记录时间：{timestamp_long}",
         f"- 盘中快照：{quote_snapshot or 'N/A'}",
-        "- 完整性校验：**已通过**",
+        f"- 完整性校验：**{'已通过' if completeness_passed else '未通过'}**",
+        "- 分析口径：**直接基于本地已有数据，不自动补数，不把完整性校验作为正式结论前置阻断。**",
+        "- 分析链路：**统一 DAG / review-layer（逐持仓主线复核）**",
         "",
         "## 0. 正式结果速览",
         "",
         f"- 正式结论：**{rebalance_reason}**",
         f"- 数据完整性状态：**{data_status}**",
         f"- 今日是否执行调仓：**{'是' if orders else '否'}**",
+        (
+            f"- LLM 复核状态：**已执行**，原始尝试 `{review_attempt_summary.get('call_count', 0)}` 次"
+            f"（成功 `{review_attempt_summary.get('success_count', 0)}` / 失败 `{review_attempt_summary.get('failed_count', 0)}` / "
+            f"fallback `{review_attempt_summary.get('fallback_count', 0)}`），"
+            f"有效输出 `{review_effective_summary.get('call_count', 0)}` 次，"
+            f"`{review_attempt_summary.get('total_tokens', 0)}` tokens，"
+            f"估算成本 `${float(review_attempt_summary.get('estimated_cost_usd', 0.0)):.6f}`"
+        ),
+        (
+            "- Review-layer 降级：`"
+            + "，".join(sorted(degraded_symbols.keys()))
+            + "`"
+            if degraded_symbols
+            else "- Review-layer 降级：无"
+        ),
         f"- 明日准备事项：{'；'.join(tomorrow_focus)}",
         "",
-        "## 2. 数据完整性结论",
+        "## 2. 数据状态与本地快照",
         "",
         f"- 当前运行时间：`{timestamp_long}`",
-        f"- 首轮完整性：`{'通过' if completeness_before['complete'] else '未通过'}`，阻塞缺口 `{completeness_before['blocking_incomplete_count']}` 个",
+        f"- 首轮完整性：`{'通过' if completeness_before['complete'] else '未通过'}`，阻塞缺口 `{int(completeness_before['blocking_incomplete_count'])}` 个",
         f"- 是否执行补数：`{'是' if attempted_backfill else '否'}`",
-        f"- 最终完整性：`{'通过' if completeness_after['complete'] else '未通过'}`，阻塞缺口 `{completeness_after['blocking_incomplete_count']}` 个",
-        f"- HS300：最新 `{breadth['hs300']['latest_count']}/{breadth['hs300']['expected']}`",
-        f"- ZZ500：最新 `{breadth['zz500']['latest_count']}/{breadth['zz500']['expected']}`",
-        f"- ZZ1000：最新 `{breadth['zz1000']['latest_count']}/{breadth['zz1000']['expected']}`",
-        (
-            f"- 本轮下载报告：`{download_report_path}`"
-            if download_report_path
-            else "- 本轮未触发补数，直接沿用本地完整数据。"
-        ),
+        "- 本轮策略：即使存在数据滞后或局部缺口，也继续给出正式分析与正式建议，但会明确披露数据限制。",
+        *data_snapshot_lines,
         "",
         "## 3. 当前组合盈亏判断",
         "",
         f"- 截至 `quote_snapshot={quote_snapshot or 'N/A'}`，组合总资产 **{total_value_after:,.2f} 元**，较初始资金 **{portfolio_pnl_after:,.2f} 元**，收益率 **{portfolio_pnl_after / initial_capital:.2%}**。",
         f"- 相对上一条正式记录 `{source_record}` 的 **{source_total_value:,.2f} 元**，当前盘中净值变动 **{total_value_after - source_total_value:,.2f} 元**。",
-        "- 当前浮盈仓位："
-        + (
-            "；".join(
-                f"{row.symbol}({row.name}) {row.unrealized_pnl:,.2f} 元"
-                for row in float_winners[float_winners["unrealized_pnl"] > 0].head(3).itertuples()
-            )
-            if not float_winners[float_winners["unrealized_pnl"] > 0].empty
-            else "无"
-        ),
-        "- 当前浮亏前三："
-        + "；".join(
-            f"{row.symbol}({row.name}) {row.unrealized_pnl:,.2f} 元"
-            for row in float_losers.head(3).itertuples()
-        ),
+        "- 当前浮盈仓位：" + _format_top_holdings_by_unrealized_pnl(float_winners, positive=True),
+        "- 当前浮亏前三：" + _format_top_holdings_by_unrealized_pnl(float_losers, positive=False),
         "- 相对上一条正式记录的正向收益贡献："
         + "；".join(
             f"{row.symbol} {row.delta_vs_source_record:,.2f} 元"
@@ -1192,7 +1457,40 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     report_lines.extend(
         [
             "",
-            "### 5.3 是否需要调仓",
+            "### 5.3 统一 DAG / Review Layer 复核",
+            "",
+            (
+                f"- 分支模型：`{review_model_role_metadata.get('resolved_branch_model') or review_model_role_metadata.get('branch_model') or 'N/A'}`；"
+                f"主模型：`{review_model_role_metadata.get('resolved_master_model') or review_model_role_metadata.get('master_model') or 'N/A'}`"
+            ),
+            (
+                f"- 原始尝试汇总：`{review_attempt_summary.get('call_count', 0)}` 次，"
+                f"成功 `{review_attempt_summary.get('success_count', 0)}` 次，"
+                f"失败 `{review_attempt_summary.get('failed_count', 0)}` 次，"
+                f"fallback `{review_attempt_summary.get('fallback_count', 0)}` 次，"
+                f"tokens `{review_attempt_summary.get('total_tokens', 0)}`，"
+                f"成本 `${float(review_attempt_summary.get('estimated_cost_usd', 0.0)):.6f}`"
+            ),
+            (
+                f"- 有效输出汇总：`{review_effective_summary.get('call_count', 0)}` 次，"
+                f"成功 `{review_effective_summary.get('success_count', 0)}` 次，"
+                f"tokens `{review_effective_summary.get('total_tokens', 0)}`，"
+                f"成本 `${float(review_effective_summary.get('estimated_cost_usd', 0.0)):.6f}`"
+            ),
+            (
+                "- review-layer fallback："
+                + "；".join(review_layer.get("fallback_reasons", [])[:6])
+                if review_layer.get("fallback_reasons")
+                else "- review-layer fallback：无"
+            ),
+            (
+                "- review-layer 降级标的："
+                + "；".join(f"{symbol}: {reason}" for symbol, reason in list(degraded_symbols.items())[:6])
+                if degraded_symbols
+                else "- review-layer 降级标的：无"
+            ),
+            "",
+            "### 5.4 是否需要调仓",
             "",
             f"- 正式建议：**{'执行温和调仓' if orders else '本次不执行调仓'}**",
             (
@@ -1200,6 +1498,21 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
                 if not orders
                 else "- 原因：弱支线在完整日线与盘中都继续落后，已满足温和减仓条件。"
             ),
+        ]
+    )
+    for row in holdings_review.itertuples():
+        report_lines.append(
+            f"- `{row.symbol}` LLM 复核：动作 `{row.llm_action}`，置信度 `{row.llm_confidence:.2f}`；"
+            f"{row.llm_conclusion or '未返回明确一句话结论。'}"
+            + (f" 风险：{row.llm_risk_flags}" if str(row.llm_risk_flags).strip() else "")
+            + (
+                f" 降级：{review_by_symbol.get(row.symbol, {}).get('llm_degraded_reason', '')}"
+                if review_by_symbol.get(row.symbol, {}).get("llm_degraded")
+                else ""
+            )
+        )
+    report_lines.extend(
+        [
             "",
             "## 6. 面向明日的观察重点和准备事项",
             "",
@@ -1246,10 +1559,12 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "recorded_at": timestamp_long,
         "source_record": source_record,
         "formal_record": True,
-        "completeness_passed": True,
+        "completeness_passed": completeness_passed,
         "capital_cny": initial_capital,
         "quote_snapshot": quote_snapshot,
         "action_taken_today": bool(orders),
+        "analysis_chain": "unified_dag_review_layer_per_holding",
+        "analysis_input_policy": "local_snapshot_no_backfill_no_gate",
         "files": {
             "analysis_report": "analysis_report.md",
             "holdings_review": "holdings_review.csv",
@@ -1267,15 +1582,34 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         },
         "data_snapshot": {
             "latest_trade_date": latest_trade_date,
+            "analysis_trade_date": analysis_trade_date,
+            "strict_trade_date": completeness_after.get("strict_trade_date"),
+            "stable_trade_date": completeness_after.get("stable_trade_date"),
+            "effective_target_trade_date": completeness_after.get("effective_target_trade_date"),
+            "freshness_mode": completeness_after.get("freshness_mode"),
+            "coverage_ratio": completeness_after.get("coverage_ratio"),
+            "blocking_incomplete_count": completeness_after.get("blocking_incomplete_count"),
             "completeness": completeness_after,
             "download_report": str(download_report_path) if download_report_path else None,
+        },
+        "review_layer": {
+            "reviewed_symbols": list(review_layer.get("reviewed_symbols", []) or []),
+            "llm_usage_summary": review_attempt_summary,
+            "llm_attempt_summary": review_attempt_summary,
+            "llm_effective_summary": review_effective_summary,
+            "model_role_metadata": review_model_role_metadata,
+            "fallback_reasons": list(review_layer.get("fallback_reasons", []) or []),
+            "degraded_symbols": degraded_symbols,
+            "session_ids": dict(review_layer.get("session_ids", {}) or {}),
         },
     }
     market_snapshot = {
         "generated_at": now.strftime("%Y-%m-%d %H:%M:%S"),
         "quote_snapshot": quote_snapshot,
+        "analysis_trade_date": analysis_trade_date,
         "indices": indices,
         "breadth": breadth,
+        "data_status": data_status,
         "completeness": completeness_after,
         "portfolio": {
             "total_value": total_value_after,
@@ -1284,6 +1618,16 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "delta_vs_source_record": round(total_value_after - source_total_value, 2),
         },
         "theme_strength": theme_strength,
+        "review_layer": {
+            "reviewed_symbols": list(review_layer.get("reviewed_symbols", []) or []),
+            "llm_usage_summary": review_attempt_summary,
+            "llm_attempt_summary": review_attempt_summary,
+            "llm_effective_summary": review_effective_summary,
+            "model_role_metadata": review_model_role_metadata,
+            "fallback_reasons": list(review_layer.get("fallback_reasons", []) or []),
+            "degraded_symbols": degraded_symbols,
+            "session_ids": dict(review_layer.get("session_ids", {}) or {}),
+        },
         "download_report": str(download_report_path) if download_report_path else None,
         "quote_fetch_error": quote_error or None,
     }
@@ -1300,49 +1644,22 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         market_snapshot=market_snapshot,
     )
 
-    shortcuts_result = {"success": False, "returncode": None, "stdout": "", "stderr": ""}
-    try:
-        completed = subprocess.run(
-            [
-                "shortcuts",
-                "run",
-                args.shortcut_name,
-                "--input-path",
-                str(DEFAULT_NOTES_PATH),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        shortcuts_result = {
-            "success": completed.returncode == 0,
-            "returncode": completed.returncode,
-            "stdout": completed.stdout.strip(),
-            "stderr": completed.stderr.strip(),
-        }
-    except Exception as exc:
-        shortcuts_result = {
-            "success": False,
-            "returncode": None,
-            "stdout": "",
-            "stderr": str(exc),
-        }
-
     return {
         "timestamp": timestamp,
         "timestamp_long": timestamp_long,
         "run_dir": str(run_dir),
         "latest_trade_date": latest_trade_date,
-        "completeness_passed": True,
+        "analysis_trade_date": analysis_trade_date,
+        "completeness_passed": completeness_passed,
         "action_taken_today": bool(orders),
         "data_status": data_status,
         "style_view": style_text,
+        "review_layer_degraded_symbols": degraded_symbols,
         "tech_mainline": {
             "strongest": strongest_theme_text,
             "weakest": weakest_theme_text,
         },
         "pnl_summary": pnl_summary,
-        "shortcuts_result": shortcuts_result,
         "elapsed_sec": round(time.time() - started, 2),
     }
 
@@ -1352,8 +1669,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base-dir", default=str(DEFAULT_BASE_DIR))
     parser.add_argument("--years", type=int, default=7)
     parser.add_argument("--max-rounds", type=int, default=3)
-    parser.add_argument("--shortcut-name", default=DEFAULT_SHORTCUT_NAME)
     parser.add_argument("--source-record", default=None)
+    parser.add_argument("--allowed-stale-symbols", nargs="*", default=[])
     return parser
 
 

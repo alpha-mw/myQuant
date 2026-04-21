@@ -7,7 +7,6 @@ const ResearchPage = lazy(() => import('./pages/ResearchPage').then((mod) => ({ 
 const HistoryPage = lazy(() => import('./pages/HistoryPage').then((mod) => ({ default: mod.HistoryPage })))
 const RunDetailPage = lazy(() => import('./pages/RunDetailPage').then((mod) => ({ default: mod.RunDetailPage })))
 const SettingsPage = lazy(() => import('./pages/SettingsPage'))
-const DataExplorerPage = lazy(() => import('./pages/DataExplorerPage'))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -29,8 +28,6 @@ export default function App() {
             <Route path="/research" element={<RouteView><ResearchPage /></RouteView>} />
             <Route path="/history" element={<RouteView><HistoryPage /></RouteView>} />
             <Route path="/history/:jobId" element={<RouteView><RunDetailPage /></RouteView>} />
-            <Route path="/data" element={<RouteView><DataExplorerPage /></RouteView>} />
-            <Route path="/data/:tsCode" element={<RouteView><DataExplorerPage /></RouteView>} />
             <Route path="/settings" element={<RouteView><SettingsPage /></RouteView>} />
             <Route path="*" element={<NotFound />} />
           </Route>
