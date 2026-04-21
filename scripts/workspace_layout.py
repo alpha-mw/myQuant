@@ -29,7 +29,6 @@ EXPLICIT_CLEANUP_DIRS = (
     Path(".uv-cache"),
     Path("frontend") / "dist",
 )
-
 _PATH_AUDIT_FILES = (
     Path(".venv/bin/activate"),
     Path(".venv/bin/activate.bat"),
