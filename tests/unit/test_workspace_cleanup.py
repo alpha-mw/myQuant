@@ -13,6 +13,7 @@ from scripts.workspace_layout import (
 
 
 def test_iter_cleanup_targets_only_collects_safe_workspace_caches(tmp_path):
+    (tmp_path / ".cache" / "quant_investor").mkdir(parents=True)
     (tmp_path / "__pycache__").mkdir()
     (tmp_path / "quant_investor" / "__pycache__").mkdir(parents=True)
     (tmp_path / ".pytest_cache").mkdir()
@@ -26,6 +27,7 @@ def test_iter_cleanup_targets_only_collects_safe_workspace_caches(tmp_path):
     targets = [path.relative_to(tmp_path).as_posix() for path in iter_cleanup_targets(tmp_path)]
 
     assert targets == [
+        ".cache",
         ".pytest_cache",
         ".uv-cache",
         "__pycache__",
@@ -89,7 +91,7 @@ def test_workspace_path_audit_finds_and_repairs_legacy_local_roots(tmp_path):
 
     findings = {
         item["relative_path"]: item
-        for item in find_legacy_workspace_root_references(tmp_path)
+        for item in find_legacy_workspace_root_references(tmp_path, legacy_roots=[legacy_root])
     }
 
     assert sorted(findings) == [
@@ -99,7 +101,10 @@ def test_workspace_path_audit_finds_and_repairs_legacy_local_roots(tmp_path):
 
     updated = [
         path.relative_to(tmp_path).as_posix()
-        for path in replace_legacy_workspace_root_references(tmp_path)
+        for path in replace_legacy_workspace_root_references(
+            tmp_path,
+            legacy_roots=[legacy_root],
+        )
     ]
 
     assert sorted(updated) == [
@@ -110,4 +115,4 @@ def test_workspace_path_audit_finds_and_repairs_legacy_local_roots(tmp_path):
     assert str(tmp_path / ".git" / "worktrees" / "demo") in linked_git.read_text(
         encoding="utf-8"
     )
-    assert find_legacy_workspace_root_references(tmp_path) == []
+    assert find_legacy_workspace_root_references(tmp_path, legacy_roots=[legacy_root]) == []
