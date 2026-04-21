@@ -84,6 +84,13 @@ class HierarchicalPriorBuilder:
     @staticmethod
     def _sector_prior(symbol: str, ctx: GlobalContext) -> float:
         """Derive sector prior from style/industry exposure data."""
+        selection_profile = str(
+            (ctx.metadata or {}).get("selection_profile", {}).get("funnel_profile", "classic")
+            if isinstance((ctx.metadata or {}).get("selection_profile", {}), dict)
+            else "classic"
+        ).strip().lower()
+        if selection_profile != "momentum_leader":
+            return 0.50
         exposures = ctx.style_exposures or {}
         if not exposures:
             return 0.50  # neutral if no sector data

@@ -16,6 +16,7 @@ from typing import Any, AsyncGenerator, Optional
 
 from web.models.research_models import ResearchRunRequest
 from web.services.run_history_store import history_store
+from quant_investor.research_run_config import ResearchRunConfig
 
 
 @dataclass
@@ -204,6 +205,17 @@ def _build_recall_context(result: Any, req: ResearchRunRequest) -> dict[str, Any
     return recall
 
 
+def _serialize_usage_summary(summary: Any) -> dict[str, Any]:
+    return {
+        "total_calls": getattr(summary, "total_calls", getattr(summary, "call_count", 0)),
+        "total_prompt_tokens": getattr(summary, "total_prompt_tokens", getattr(summary, "prompt_tokens", 0)),
+        "total_completion_tokens": getattr(summary, "total_completion_tokens", getattr(summary, "completion_tokens", 0)),
+        "estimated_cost_usd": getattr(summary, "estimated_cost_usd", 0.0),
+        "failed_count": getattr(summary, "failed_count", 0),
+        "fallback_count": getattr(summary, "fallback_count", 0),
+    }
+
+
 def _compact_trace_summary(payload: Any) -> dict[str, Any]:
     trace = payload if isinstance(payload, dict) else getattr(payload, "to_dict", lambda: {})()
     if not isinstance(trace, dict):
@@ -284,26 +296,11 @@ def _run_research(job: ResearchJob, loop: asyncio.AbstractEventLoop) -> None:
             market=req.market,
             stock_pool=req.stock_pool,
         )
-        investor = QuantInvestor(
-            stock_pool=req.stock_pool,
-            market=req.market,
-            lookback_years=req.lookback_years,
-            total_capital=req.capital,
-            risk_level=req.risk_level,
-            enable_macro=req.enable_macro,
-            enable_quant=req.enable_quant,
-            enable_kline=req.enable_kline,
-            enable_fundamental=req.enable_fundamental,
-            enable_intelligence=req.enable_intelligence,
-            kline_backend=req.kline_backend,
-            enable_agent_layer=req.enable_agent_layer,
-            agent_model=req.agent_model,
-            master_model=req.master_model,
-            agent_timeout=req.agent_timeout,
-            master_timeout=req.master_timeout,
+        run_config = ResearchRunConfig.from_mapping(
+            req.model_dump(),
             recall_context=review_recall_context,
-            verbose=True,
         )
+        investor = QuantInvestor(**run_config.to_quant_investor_kwargs(verbose=True))
         result = investor.run()
         trace_summary = _compact_trace_summary(getattr(result, "execution_trace", None))
         whatif_summary = _compact_whatif_summary(getattr(result, "what_if_plan", None))
@@ -323,14 +320,9 @@ def _run_research(job: ResearchJob, loop: asyncio.AbstractEventLoop) -> None:
             "layer_timings": result.layer_timings,
             "execution_log_excerpt": execution_log[:12],
             "execution_log_count": len(execution_log),
-            "llm_usage_summary": {
-                "total_calls": getattr(result.llm_usage_summary, "total_calls", 0),
-                "total_prompt_tokens": getattr(result.llm_usage_summary, "total_prompt_tokens", 0),
-                "total_completion_tokens": getattr(
-                    result.llm_usage_summary, "total_completion_tokens", 0
-                ),
-                "estimated_cost_usd": getattr(result.llm_usage_summary, "estimated_cost_usd", 0.0),
-            },
+            "llm_usage_summary": _serialize_usage_summary(getattr(result, "llm_usage_summary", None)),
+            "llm_effective_summary": _serialize_usage_summary(getattr(result, "llm_effective_summary", None)),
+            "llm_usage_session_id": str(getattr(result, "llm_usage_session_id", "") or ""),
             "market": req.market,
             "stock_pool": req.stock_pool,
             "data_snapshot": dict(getattr(result, "data_snapshot", {}) or {}),

@@ -136,6 +136,8 @@ class BranchOverlayReviewer:
         branch_name: str,
         llm_client: LLMClient,
         model: str,
+        candidate_models: list[str] | None = None,
+        fallback_model: str = "",
         timeout: float = 15.0,
         max_tokens: int = 600,
         score_cap: float | None = None,
@@ -144,6 +146,8 @@ class BranchOverlayReviewer:
         self.branch_name = str(branch_name)
         self.llm_client = llm_client
         self.model = str(model or "").strip()
+        self.candidate_models = [str(item).strip() for item in list(candidate_models or []) if str(item).strip()]
+        self.fallback_model = str(fallback_model or "").strip()
         self.timeout = max(float(timeout), 0.1)
         self.max_tokens = max(int(max_tokens), 16)
         self.score_cap = float(score_cap if score_cap is not None else BRANCH_OVERLAY_SCORE_CAP.get(self.branch_name, 0.10))
@@ -155,7 +159,10 @@ class BranchOverlayReviewer:
         t0 = time.monotonic()
         actor_name = f"{packet.symbol}:{self.branch_name}"
         stage = "review_branch_overlay"
-        if not self.model or not has_provider_for_model(self.model):
+        if (
+            (not self.model or not has_provider_for_model(self.model))
+            and (not self.fallback_model or not has_provider_for_model(self.fallback_model))
+        ):
             return self._fallback(packet, stage=stage, actor_name=actor_name, reason="llm_provider_missing", started_at=t0)
 
         messages = build_branch_overlay_messages(self.branch_name, json.dumps(packet.to_dict(), ensure_ascii=False, sort_keys=True))
@@ -163,6 +170,8 @@ class BranchOverlayReviewer:
             raw = await self.llm_client.complete(
                 messages=messages,
                 model=self.model,
+                candidate_models=self.candidate_models,
+                fallback_model=self.fallback_model,
                 max_tokens=self.max_tokens,
                 response_json=True,
                 stage=stage,
@@ -346,6 +355,8 @@ class MasterICAgent:
         *,
         llm_client: LLMClient,
         model: str,
+        candidate_models: list[str] | None = None,
+        fallback_model: str = "",
         reasoning_effort: str = "high",
         timeout: float = 30.0,
         max_tokens: int = 900,
@@ -354,6 +365,8 @@ class MasterICAgent:
     ) -> None:
         self.llm_client = llm_client
         self.model = str(model or "").strip()
+        self.candidate_models = [str(item).strip() for item in list(candidate_models or []) if str(item).strip()]
+        self.fallback_model = str(fallback_model or "").strip()
         self.reasoning_effort = str(reasoning_effort or "").strip() or "high"
         self.timeout = max(float(timeout), 0.1)
         self.max_tokens = max(int(max_tokens), 16)
@@ -364,7 +377,10 @@ class MasterICAgent:
         t0 = time.monotonic()
         actor_name = f"IC:{packet.symbol}"
         stage = "review_master_symbol"
-        if not self.model or not has_provider_for_model(self.model):
+        if (
+            (not self.model or not has_provider_for_model(self.model))
+            and (not self.fallback_model or not has_provider_for_model(self.fallback_model))
+        ):
             return self._fallback(packet, stage=stage, actor_name=actor_name, reason="llm_provider_missing", started_at=t0)
 
         messages = build_master_symbol_messages(packet.symbol, json.dumps(packet.to_dict(), ensure_ascii=False, sort_keys=True))
@@ -372,6 +388,8 @@ class MasterICAgent:
             raw = await self.llm_client.complete(
                 messages=messages,
                 model=self.model,
+                candidate_models=self.candidate_models,
+                fallback_model=self.fallback_model,
                 max_tokens=self.max_tokens,
                 response_json=True,
                 stage=stage,

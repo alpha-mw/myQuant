@@ -62,7 +62,7 @@ from quant_investor.versioning import (
 )
 
 
-class AgentOrchestrator:
+class ControlChainOrchestrator:
     """把新协议层 agents 串为固定调用链。"""
 
     @staticmethod
@@ -806,7 +806,7 @@ class AgentOrchestrator:
         for symbol_payload in research_by_symbol.values():
             for verdict in symbol_payload.values():
                 diagnostics.extend(verdict.diagnostic_notes)
-        return {"diagnostic_notes": AgentOrchestrator._dedupe_texts(diagnostics)}
+        return {"diagnostic_notes": ControlChainOrchestrator._dedupe_texts(diagnostics)}
 
     def _normalize_tradability_snapshot(
         self,
@@ -1016,3 +1016,6 @@ class AgentOrchestrator:
         if isinstance(value, Path):
             return str(value)
         return value
+
+
+AgentOrchestrator = ControlChainOrchestrator

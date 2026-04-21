@@ -179,7 +179,7 @@ async def get_settings():
 
 @router.get("/models", response_model=LLMModelsResponse)
 async def get_models():
-    from quant_investor.agents.llm_client import has_provider_for_model
+    from quant_investor.llm_gateway import has_provider_for_model
     from quant_investor.llm_gateway import (
         LLM_MODEL_PRICING_REGISTRY,
         LLM_PROVIDER_REGISTRY,

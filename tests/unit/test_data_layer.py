@@ -192,6 +192,25 @@ class TestUSDataSources:
         assert not normalized.empty
         assert normalized["date"].dt.tz is None
 
+    def test_normalize_ohlcv_frame_coalesces_duplicate_volume_columns(self):
+        """当 volume 与 vol 同时存在时，应合并为单一 volume 列且不丢失有效值。"""
+        df = pd.DataFrame(
+            {
+                "trade_date": ["2026-03-19", "2026-03-20"],
+                "open": [10.0, 10.2],
+                "high": [10.3, 10.4],
+                "low": [9.9, 10.0],
+                "close": [10.1, 10.3],
+                "volume": [None, 2200.0],
+                "vol": [2100.0, None],
+            }
+        )
+
+        normalized = _normalize_ohlcv_frame(df)
+
+        assert list(normalized.columns).count("volume") == 1
+        assert normalized["volume"].tolist() == [2100.0, 2200.0]
+
 
 class TestSnapshotFallbacks:
     """V9 snapshot 接口降级测试"""

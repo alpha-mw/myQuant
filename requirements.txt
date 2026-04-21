@@ -1,5 +1,11 @@
-# Quant-Investor V7.0 依赖管理
-# Python 3.10+
+# Quant-Investor compatibility requirements
+#
+# Official workflow:
+#   uv sync --extra dev
+#   uv run <command>
+#
+# Source of truth lives in pyproject.toml + uv.lock. Keep this file aligned for
+# external tooling that still expects requirements.txt.
 
 # Web API
 fastapi>=0.115.0

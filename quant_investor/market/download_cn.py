@@ -110,6 +110,7 @@ class CNFullMarketDownloader:
             self.stable_trade_date = local_trade_date
         self.latest_trade_date = self._default_target_trade_date()
         self._latest_suspended_symbols_cache: dict[str, Set[str]] = {}
+        self._active_listing_dates_cache: dict[str, str] | None = None
         
         # 统计信息
         self.stats = {
@@ -193,6 +194,66 @@ class CNFullMarketDownloader:
     def _freshness_index_path(self) -> Path:
         """On-disk freshness index: symbol -> latest_trade_date (YYYYMMDD)."""
         return Path(self.data_dir) / ".cache" / "freshness_index.json"
+
+    def _load_active_listing_dates(self) -> dict[str, str]:
+        """Load current active-listing dates as {SYMBOL: YYYYMMDD}."""
+        if self._active_listing_dates_cache is not None:
+            return self._active_listing_dates_cache
+        if self.pro is None:
+            self._active_listing_dates_cache = {}
+            return self._active_listing_dates_cache
+
+        try:
+            stock_basic = self.pro.stock_basic(
+                exchange="",
+                list_status="L",
+                fields="ts_code,list_date",
+            )
+        except Exception:
+            stock_basic = None
+
+        if stock_basic is None or stock_basic.empty:
+            self._active_listing_dates_cache = {}
+            return self._active_listing_dates_cache
+
+        listing_dates: dict[str, str] = {}
+        for row in stock_basic.itertuples(index=False):
+            symbol = str(getattr(row, "ts_code", "") or "").strip().upper()
+            list_date = str(getattr(row, "list_date", "") or "").strip()
+            if symbol and list_date:
+                listing_dates[symbol] = list_date
+        self._active_listing_dates_cache = listing_dates
+        return self._active_listing_dates_cache
+
+    def _pre_listing_symbols_for_target(
+        self,
+        *,
+        components: Dict[str, Any],
+        target_categories: List[str],
+        target_trade_date: str,
+    ) -> dict[str, str]:
+        """Return symbols listed after *target_trade_date*.
+
+        Those symbols should not be treated as missing/stale for the target day
+        because they were not yet part of the tradable universe.
+        """
+        listing_dates = self._load_active_listing_dates()
+        if not listing_dates:
+            return {}
+
+        relevant_symbols: Set[str] = set()
+        for category in target_categories:
+            for symbol in components.get(category, []) or []:
+                normalized = str(symbol or "").strip().upper()
+                if normalized:
+                    relevant_symbols.add(normalized)
+
+        pre_listing_symbols: dict[str, str] = {}
+        for symbol in relevant_symbols:
+            list_date = listing_dates.get(symbol, "")
+            if list_date and list_date > target_trade_date:
+                pre_listing_symbols[symbol] = list_date
+        return pre_listing_symbols
 
     def _resolve_trade_date_targets(self) -> tuple[str, str]:
         """解析严格目标日与稳定目标日（带当日磁盘缓存）。"""
@@ -422,6 +483,15 @@ class CNFullMarketDownloader:
         suspended_symbols = self._load_latest_suspended_symbols(target_trade_date)
         coverage_complete_count = 0
         expected_scope_count = 0
+        pre_listing_symbols = self._pre_listing_symbols_for_target(
+            components=components,
+            target_categories=target_categories,
+            target_trade_date=target_trade_date,
+        )
+        report['pre_listing_symbols'] = [
+            {'symbol': symbol, 'list_date': list_date}
+            for symbol, list_date in sorted(pre_listing_symbols.items())
+        ]
 
         # Load freshness index once for all categories; collect new discoveries
         # to flush at the end so future checks are even faster.
@@ -439,11 +509,25 @@ class CNFullMarketDownloader:
             blocking_stale: List[Dict[str, str]] = []
             blocking_unreadable: List[Dict[str, str]] = []
             category_coverage_complete_count = 0
-            expected_count = len(components.get(category, []))
+            category_symbols = [
+                str(symbol or "").strip().upper()
+                for symbol in components.get(category, []) or []
+                if str(symbol or "").strip().upper() not in pre_listing_symbols
+            ]
+            expected_count = len(category_symbols)
             expected_scope_count += expected_count
+            category_pre_listing_symbols = [
+                {'symbol': symbol, 'list_date': pre_listing_symbols[symbol]}
+                for symbol in sorted(
+                    {
+                        str(symbol or "").strip().upper()
+                        for symbol in components.get(category, []) or []
+                        if str(symbol or "").strip().upper() in pre_listing_symbols
+                    }
+                )
+            ]
 
-            for symbol in components.get(category, []):
-                normalized_sym = str(symbol or "").strip().upper()
+            for normalized_sym in category_symbols:
                 indexed_date = freshness_index.get(normalized_sym)
 
                 if indexed_date:
@@ -465,7 +549,7 @@ class CNFullMarketDownloader:
                 else:
                     # ── Slow path: peek the CSV file ──
                     local_state = self._evaluate_symbol_local_status_for_target(
-                        symbol,
+                        normalized_sym,
                         category=category,
                         target_trade_date=target_trade_date,
                         allowed_stale_symbols=allowed,
@@ -521,6 +605,7 @@ class CNFullMarketDownloader:
             report['categories'][category] = {
                 'expected': expected_count,
                 'latest_trade_date': target_trade_date,
+                'pre_listing_symbols': category_pre_listing_symbols,
                 'date_counts': dict(sorted(date_counts.items())),
                 'status_counts': dict(sorted(status_counts.items())),
                 'missing_symbols': sorted(missing_symbols),

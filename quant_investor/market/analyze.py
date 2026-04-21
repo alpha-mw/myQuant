@@ -17,6 +17,7 @@ from quant_investor.credential_utils import create_tushare_pro
 from quant_investor.market.cn_resolver import CNUniverseResolver
 from quant_investor.market.config import get_market_settings, normalize_categories, normalize_universe
 from quant_investor.market.data_snapshot import build_market_data_snapshot
+from quant_investor.llm_provider_priority import resolve_runtime_role_models
 from quant_investor.market.dag_executor import execute_market_dag
 from quant_investor.pipeline import QuantInvestor
 from quant_investor.reporting.conclusion_renderer import ConclusionRenderer
@@ -1598,18 +1599,20 @@ def run_market_analysis(
     **analysis_kwargs: Any,
 ) -> dict[str, Any]:
     analysis_kwargs = dict(analysis_kwargs)
+    branch_config, master_config = resolve_runtime_role_models(
+        review_model_priority=analysis_kwargs.get("review_model_priority", []),
+        agent_model=str(analysis_kwargs.get("agent_model", "") or ""),
+        agent_fallback_model=str(agent_fallback_model or analysis_kwargs.get("agent_fallback_model", "") or ""),
+        master_model=str(analysis_kwargs.get("master_model", "") or ""),
+        master_fallback_model=str(master_fallback_model or analysis_kwargs.get("master_fallback_model", "") or ""),
+    )
     analysis_kwargs.setdefault("enable_agent_layer", True)
-    analysis_kwargs.setdefault("agent_model", "moonshot-v1-128k")
-    analysis_kwargs.setdefault("master_model", "moonshot-v1-128k")
+    analysis_kwargs["review_model_priority"] = list(analysis_kwargs.get("review_model_priority", []) or [])
+    analysis_kwargs["agent_model"] = branch_config.primary_model
+    analysis_kwargs["master_model"] = master_config.primary_model
     analysis_kwargs.setdefault("master_reasoning_effort", master_reasoning_effort)
-    if agent_fallback_model:
-        analysis_kwargs["agent_fallback_model"] = agent_fallback_model
-    else:
-        analysis_kwargs.setdefault("agent_fallback_model", "deepseek-reasoner")
-    if master_fallback_model:
-        analysis_kwargs["master_fallback_model"] = master_fallback_model
-    else:
-        analysis_kwargs.setdefault("master_fallback_model", "deepseek-chat")
+    analysis_kwargs["agent_fallback_model"] = branch_config.fallback_model
+    analysis_kwargs["master_fallback_model"] = master_config.fallback_model
     settings = get_market_settings(market)
     selected_categories = (
         normalize_universe(settings.market, universe)
@@ -1635,13 +1638,29 @@ def run_market_analysis(
         top_k=top_k,
         verbose=verbose,
         enable_agent_layer=bool(analysis_kwargs.get("enable_agent_layer", True)),
+        review_model_priority=list(analysis_kwargs.get("review_model_priority", []) or []),
         agent_model=str(analysis_kwargs.get("agent_model", "")),
         agent_fallback_model=str(analysis_kwargs.get("agent_fallback_model", "")),
         master_model=str(analysis_kwargs.get("master_model", "")),
         master_fallback_model=str(analysis_kwargs.get("master_fallback_model", "")),
         master_reasoning_effort=str(analysis_kwargs.get("master_reasoning_effort", master_reasoning_effort)),
-        agent_timeout=float(analysis_kwargs.get("agent_timeout", 15.0)),
-        master_timeout=float(analysis_kwargs.get("master_timeout", 30.0)),
+        agent_timeout=float(
+            analysis_kwargs.get("agent_timeout", config.DEFAULT_AGENT_TIMEOUT_SECONDS)
+        ),
+        master_timeout=float(
+            analysis_kwargs.get("master_timeout", config.DEFAULT_MASTER_TIMEOUT_SECONDS)
+        ),
+        funnel_profile=str(analysis_kwargs.get("funnel_profile", config.FUNNEL_PROFILE) or config.FUNNEL_PROFILE),
+        max_candidates=int(analysis_kwargs.get("max_candidates", config.FUNNEL_MAX_CANDIDATES) or config.FUNNEL_MAX_CANDIDATES),
+        trend_windows=list(analysis_kwargs.get("trend_windows", config.FUNNEL_TREND_WINDOWS) or config.FUNNEL_TREND_WINDOWS),
+        volume_spike_threshold=float(
+            analysis_kwargs.get("volume_spike_threshold", config.FUNNEL_VOLUME_SPIKE_THRESHOLD)
+            or config.FUNNEL_VOLUME_SPIKE_THRESHOLD
+        ),
+        breakout_distance_pct=float(
+            analysis_kwargs.get("breakout_distance_pct", config.FUNNEL_BREAKOUT_DISTANCE_PCT)
+            or config.FUNNEL_BREAKOUT_DISTANCE_PCT
+        ),
         recall_context=analysis_kwargs.get("recall_context"),
         data_snapshot=scoped_data_snapshot,
     )
@@ -1668,12 +1687,17 @@ def run_market_analysis(
         "category_count": len(selected_categories),
         "symbols": list(symbol_packets.keys()),
         "analysis_kwargs": dict(analysis_kwargs),
+        "review_model_priority": list(analysis_kwargs.get("review_model_priority", []) or []),
         "branch_model": str(analysis_kwargs.get("agent_model", "")),
         "master_model": str(analysis_kwargs.get("master_model", "")),
         "master_reasoning_effort": str(analysis_kwargs.get("master_reasoning_effort", master_reasoning_effort)),
         "agent_layer_enabled": bool(analysis_kwargs.get("enable_agent_layer", True)),
-        "agent_timeout": float(analysis_kwargs.get("agent_timeout", 15.0)),
-        "master_timeout": float(analysis_kwargs.get("master_timeout", 30.0)),
+        "agent_timeout": float(
+            analysis_kwargs.get("agent_timeout", config.DEFAULT_AGENT_TIMEOUT_SECONDS)
+        ),
+        "master_timeout": float(
+            analysis_kwargs.get("master_timeout", config.DEFAULT_MASTER_TIMEOUT_SECONDS)
+        ),
         "model_role_metadata": model_role_metadata.to_dict(),
         "execution_trace": execution_trace.to_dict(),
         "what_if_plan": what_if_plan.to_dict(),

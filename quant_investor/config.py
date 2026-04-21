@@ -55,6 +55,24 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_int_list(name: str, default: tuple[int, ...]) -> tuple[int, ...]:
+    raw = str(os.environ.get(name, "") or "").strip()
+    if not raw:
+        return tuple(int(item) for item in default)
+    values: list[int] = []
+    for item in raw.split(","):
+        text = str(item).strip()
+        if not text:
+            continue
+        try:
+            values.append(int(text))
+        except (TypeError, ValueError):
+            continue
+    if not values:
+        return tuple(int(item) for item in default)
+    return tuple(values)
+
+
 class Config:
     """配置类"""
     
@@ -81,7 +99,15 @@ class Config:
     PIPELINE_MODE: str = os.environ.get('PIPELINE_MODE', 'bayesian')
     DECISION_ENGINE: str = os.environ.get('DECISION_ENGINE', 'bayesian')
     BAYESIAN_SHORTLIST_SIZE: int = _env_int('BAYESIAN_SHORTLIST_SIZE', 20)
-    FUNNEL_MAX_CANDIDATES: int = _env_int('FUNNEL_MAX_CANDIDATES', 400)
+    FUNNEL_PROFILE: str = str(os.environ.get('FUNNEL_PROFILE', 'momentum_leader') or 'momentum_leader').strip().lower()
+    FUNNEL_MAX_CANDIDATES: int = _env_int('FUNNEL_MAX_CANDIDATES', 200)
+    FUNNEL_TREND_WINDOWS: tuple[int, ...] = _env_int_list('FUNNEL_TREND_WINDOWS', (20, 60, 120))
+    FUNNEL_VOLUME_SPIKE_THRESHOLD: float = _env_float('FUNNEL_VOLUME_SPIKE_THRESHOLD', 1.35)
+    FUNNEL_BREAKOUT_DISTANCE_PCT: float = _env_float('FUNNEL_BREAKOUT_DISTANCE_PCT', 0.06)
+    FUNNEL_SECTOR_BUCKET_LIMIT: int = _env_int('FUNNEL_SECTOR_BUCKET_LIMIT', 2)
+    DEFAULT_AGENT_TIMEOUT_SECONDS: float = _env_float('AGENT_TIMEOUT_SECONDS', 180.0)
+    DEFAULT_MASTER_TIMEOUT_SECONDS: float = _env_float('MASTER_TIMEOUT_SECONDS', 900.0)
+    DEFAULT_AGENT_TOTAL_TIMEOUT_SECONDS: float = _env_float('TOTAL_TIMEOUT_SECONDS', 2400.0)
 
     # 日志配置
     LOG_LEVEL: str = os.environ.get('LOG_LEVEL', 'INFO')

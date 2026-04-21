@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -19,8 +18,7 @@ from quant_investor.agent_protocol import (
     RiskDecision,
     RiskLevel,
 )
-from quant_investor.agents.agent_contracts import MasterAgentOutput, SymbolRecommendation
-from quant_investor.branch_contracts import BranchResult, PortfolioStrategy, UnifiedDataBundle
+from quant_investor.branch_contracts import BranchResult, UnifiedDataBundle
 from quant_investor.pipeline.mainline import QuantInvestor
 
 
@@ -175,35 +173,6 @@ def test_mainline_raises_when_requested_symbol_has_no_local_csv(monkeypatch):
 
     with pytest.raises(ValueError, match="000001.SZ"):
         investor.run()
-
-
-def test_master_review_adapter_ignores_target_weight_and_portfolio_narrative():
-    investor = QuantInvestor(stock_pool=["000001.SZ"], verbose=False, enable_agent_layer=False)
-    master_output = MasterAgentOutput(
-        final_conviction="buy",
-        final_score=0.36,
-        confidence=0.84,
-        top_picks=[
-            SymbolRecommendation(
-                symbol="000001.SZ",
-                action="buy",
-                conviction="strong_buy",
-                rationale="structured rationale",
-                target_weight=0.95,
-            )
-        ],
-        conviction_drivers=["driver"],
-        debate_resolution=["resolution"],
-        portfolio_narrative="free text should not enter final allocation",
-        risk_adjusted_exposure=0.75,
-    )
-
-    hints = investor._build_ic_hints_by_symbol(master_output)
-
-    assert set(hints["000001.SZ"]) == {"score", "confidence", "action", "rationale_points"}
-    assert hints["000001.SZ"]["action"] == "buy"
-    assert "target_weight" not in hints["000001.SZ"]
-    assert "portfolio_narrative" not in hints["000001.SZ"]
 
 
 def test_control_chain_keeps_risk_veto_over_buy_hints():

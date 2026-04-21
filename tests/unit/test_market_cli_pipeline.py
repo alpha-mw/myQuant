@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any
 from types import SimpleNamespace
 
+import pytest
+
 import quant_investor.cli.main as cli_main
 import quant_investor.market.analyze as market_analyze
 import quant_investor.market.run_pipeline as market_pipeline
@@ -61,13 +63,29 @@ def test_market_analyze_cli_passes_agent_layer_args(monkeypatch):
             "hs300",
             "--no-agent-layer",
             "--agent-model",
-            "deepseek-chat",
+            "qwen3.5-plus",
+            "--agent-fallback-model",
+            "qwen3.5-flash",
             "--master-model",
-            "deepseek-chat",
+            "deepseek-reasoner",
+            "--master-fallback-model",
+            "moonshot-v1-128k",
             "--agent-timeout",
             "30",
             "--master-timeout",
             "60",
+            "--funnel-profile",
+            "momentum_leader",
+            "--max-candidates",
+            "150",
+            "--trend-windows",
+            "15",
+            "45",
+            "120",
+            "--volume-spike-threshold",
+            "1.5",
+            "--breakout-distance-pct",
+            "0.05",
         ]
     )
 
@@ -75,10 +93,55 @@ def test_market_analyze_cli_passes_agent_layer_args(monkeypatch):
     assert captured["mode"] == "sample"
     assert captured["categories"] == ["hs300"]
     assert captured["enable_agent_layer"] is False
-    assert captured["agent_model"] == "deepseek-chat"
-    assert captured["master_model"] == "deepseek-chat"
+    assert captured["agent_model"] == "qwen3.5-plus"
+    assert captured["agent_fallback_model"] == "qwen3.5-flash"
+    assert captured["master_model"] == "deepseek-reasoner"
+    assert captured["master_fallback_model"] == "moonshot-v1-128k"
     assert captured["agent_timeout"] == 30.0
     assert captured["master_timeout"] == 60.0
+    assert captured["funnel_profile"] == "momentum_leader"
+    assert captured["max_candidates"] == 150
+    assert captured["trend_windows"] == [15, 45, 120]
+    assert captured["volume_spike_threshold"] == 1.5
+    assert captured["breakout_distance_pct"] == 0.05
+
+
+def test_cli_timeout_defaults_are_long_running():
+    parser = cli_main._build_parser()
+
+    research_args = parser.parse_args(
+        [
+            "research",
+            "run",
+            "--market",
+            "CN",
+            "--stocks",
+            "600000.SH",
+        ]
+    )
+    analyze_args = parser.parse_args(
+        [
+            "market",
+            "analyze",
+            "--market",
+            "CN",
+        ]
+    )
+    run_args = parser.parse_args(
+        [
+            "market",
+            "run",
+            "--market",
+            "CN",
+        ]
+    )
+
+    assert research_args.agent_timeout == 180.0
+    assert research_args.master_timeout == 900.0
+    assert analyze_args.agent_timeout == 180.0
+    assert analyze_args.master_timeout == 900.0
+    assert run_args.agent_timeout == 180.0
+    assert run_args.master_timeout == 900.0
 
 
 def test_market_run_cli_dispatches_to_unified_pipeline(monkeypatch):
@@ -102,13 +165,29 @@ def test_market_run_cli_dispatches_to_unified_pipeline(monkeypatch):
             "sample",
             "--skip-download",
             "--agent-model",
-            "deepseek-chat",
+            "qwen3.5-plus",
+            "--agent-fallback-model",
+            "qwen3.5-flash",
             "--master-model",
-            "deepseek-chat",
+            "deepseek-reasoner",
+            "--master-fallback-model",
+            "moonshot-v1-128k",
             "--agent-timeout",
             "25",
             "--master-timeout",
             "55",
+            "--funnel-profile",
+            "momentum_leader",
+            "--max-candidates",
+            "180",
+            "--trend-windows",
+            "20",
+            "60",
+            "120",
+            "--volume-spike-threshold",
+            "1.4",
+            "--breakout-distance-pct",
+            "0.04",
             "--years",
             "5",
             "--workers",
@@ -124,47 +203,32 @@ def test_market_run_cli_dispatches_to_unified_pipeline(monkeypatch):
     assert captured["skip_download"] is True
     assert captured["force_download"] is False
     assert captured["enable_agent_layer"] is True
-    assert captured["agent_model"] == "deepseek-chat"
-    assert captured["master_model"] == "deepseek-chat"
+    assert captured["agent_model"] == "qwen3.5-plus"
+    assert captured["agent_fallback_model"] == "qwen3.5-flash"
+    assert captured["master_model"] == "deepseek-reasoner"
+    assert captured["master_fallback_model"] == "moonshot-v1-128k"
     assert captured["agent_timeout"] == 25.0
     assert captured["master_timeout"] == 55.0
+    assert captured["funnel_profile"] == "momentum_leader"
+    assert captured["max_candidates"] == 180
+    assert captured["trend_windows"] == [20, 60, 120]
+    assert captured["volume_spike_threshold"] == 1.4
+    assert captured["breakout_distance_pct"] == 0.04
     assert captured["years"] == 5
     assert captured["workers"] == 6
     assert captured["max_download_rounds"] == 3
 
 
-def test_market_download_cli_uses_maintenance_alias(monkeypatch):
-    captured: dict[str, Any] = {}
-
-    def _run_market_maintenance(**kwargs):
-        captured.update(kwargs)
-        return {"status": "ok"}
-
-    monkeypatch.setattr(cli_main, "run_market_maintenance", _run_market_maintenance)
-
-    cli_main.main(
-        [
-            "market",
-            "download",
-            "--market",
-            "CN",
-            "--years",
-            "3",
-            "--workers",
-            "4",
-            "--batch-size",
-            "50",
-            "--max-rounds",
-            "2",
-        ]
-    )
-
-    assert captured["market"] == "CN"
-    assert captured["years"] == 3
-    assert captured["max_workers"] == 4
-    assert captured["batch_size"] == 50
-    assert captured["max_rounds"] == 2
-    assert captured["deprecated_alias"] is True
+def test_market_download_cli_is_removed():
+    with pytest.raises(SystemExit):
+        cli_main.main(
+            [
+                "market",
+                "download",
+                "--market",
+                "CN",
+            ]
+        )
 
 
 def test_unified_pipeline_stage1_builds_advisory_snapshot(monkeypatch):
@@ -205,8 +269,7 @@ def test_unified_pipeline_stage1_builds_advisory_snapshot(monkeypatch):
         categories=["hs300"],
         mode="sample",
         enable_agent_layer=True,
-        agent_model="deepseek-chat",
-        master_model="deepseek-chat",
+        review_model_priority=["deepseek-chat"],
         agent_timeout=20.0,
         master_timeout=40.0,
         verbose=False,
@@ -218,8 +281,7 @@ def test_unified_pipeline_stage1_builds_advisory_snapshot(monkeypatch):
     assert output["analysis"] == {"hs300": [{"batch_id": 1}]}
     assert captured_analysis["data_snapshot"]["local_latest_trade_date"] == "20260326"
     assert captured_analysis["enable_agent_layer"] is True
-    assert captured_analysis["agent_model"] == "deepseek-chat"
-    assert captured_analysis["master_model"] == "deepseek-chat"
+    assert captured_analysis["review_model_priority"] == ["deepseek-chat"]
     assert captured_analysis["master_reasoning_effort"] == "high"
     assert captured_analysis["agent_timeout"] == 20.0
     assert captured_analysis["master_timeout"] == 40.0
@@ -269,6 +331,8 @@ def test_unified_pipeline_uses_local_snapshot_even_when_data_is_stale(monkeypatc
     assert output["download"]["status"] == "snapshot_only"
     assert output["download"]["data_snapshot"]["local_latest_trade_date"] == "20260325"
     assert captured_analysis["master_reasoning_effort"] == "high"
+    assert captured_analysis["agent_timeout"] == 180.0
+    assert captured_analysis["master_timeout"] == 900.0
     assert captured_analysis["categories"] == ["hs300"]
     assert captured_analysis["mode"] == "sample"
     assert captured_analysis["data_snapshot"]["data_quality_issue_count"] == 1
@@ -366,6 +430,56 @@ def test_unified_pipeline_skip_stage1_becomes_compatibility_warning(monkeypatch)
     assert output["analysis"] == {"hs300": [{"batch_id": 1}]}
     assert captured_analysis["market"] == "CN"
     assert captured_analysis["categories"] == ["hs300"]
+
+
+def test_unified_pipeline_forwards_recall_context(monkeypatch):
+    captured_analysis: dict[str, Any] = {}
+
+    def _run_market_analysis(**kwargs):
+        captured_analysis.update(kwargs)
+        return {
+            "results": {"hs300": [{"batch_id": 1}]},
+            "reports": {
+                "summary_report": "summary.md",
+                "trade_report": "trade.md",
+                "trade_data": "trade.json",
+                "candidate_index": "candidates.json",
+            },
+        }
+
+    monkeypatch.setattr(
+        market_pipeline,
+        "build_market_data_snapshot",
+        lambda **kwargs: {
+            "market": "CN",
+            "universe_key": "hs300",
+            "local_latest_trade_date": "20260326",
+            "freshness_mode": "stable",
+            "category_symbol_counts": {"hs300": 1},
+            "date_distribution_top": [{"trade_date": "20260326", "symbol_count": 1}],
+            "data_directories": ["data/cn_market_full/hs300"],
+            "resolver_priority": ["hs300", "zz500", "zz1000", "other"],
+            "data_quality_issue_count": 0,
+            "summary_text": "本地 A 股数据更新至 20260326。",
+        },
+    )
+    monkeypatch.setattr(market_pipeline, "run_market_analysis", _run_market_analysis)
+
+    recall_context = {
+        "source": "strategy_records",
+        "market": "CN",
+        "recent_symbols": ["600000.SH"],
+    }
+    output = market_pipeline.run_unified_pipeline(
+        market="CN",
+        categories=["hs300"],
+        mode="sample",
+        recall_context=recall_context,
+        verbose=False,
+    )
+
+    assert output["analysis"] == {"hs300": [{"batch_id": 1}]}
+    assert captured_analysis["recall_context"] == recall_context
 
 
 def test_run_market_analysis_exposes_role_metadata(monkeypatch, tmp_path):
@@ -524,9 +638,10 @@ def test_run_market_analysis_exposes_role_metadata(monkeypatch, tmp_path):
 
     assert captured_dag["agent_model"] == "deepseek-reasoner"
     assert captured_dag["master_model"] == "moonshot-v1-128k"
+    assert captured_dag["agent_model"] == "deepseek-reasoner"
     assert captured_dag["data_snapshot"]["local_latest_trade_date"] == "20260326"
     assert output["analysis_meta"]["model_role_metadata"]["branch_model"] == "deepseek-reasoner"
-    assert output["analysis_meta"]["model_role_metadata"]["master_model"] == "moonshot-v1-128k"
+    assert output["analysis_meta"]["master_model"] == "moonshot-v1-128k"
     assert output["analysis_meta"]["data_snapshot"]["local_latest_trade_date"] == "20260326"
     assert any(
         step["stage"] == "master_synthesis"

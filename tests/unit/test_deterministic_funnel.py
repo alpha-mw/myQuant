@@ -15,15 +15,19 @@ def _make_context(
     quarantine: list[str] | None = None,
     suspended: list[str] | None = None,
     illiquid: list[str] | None = None,
+    industry_map: dict[str, str] | None = None,
+    symbol_market_state: dict[str, dict[str, float]] | None = None,
 ) -> GlobalContext:
     return GlobalContext(
         universe_symbols=symbols,
         universe_tiers={"researchable": symbols, "total": symbols},
+        industry_map=industry_map or {},
         data_quality_quarantine=quarantine or [],
         liquidity_filter={
             "suspended": suspended or [],
             "illiquid": illiquid or [],
         },
+        metadata={"symbol_market_state": symbol_market_state or {}},
     )
 
 
@@ -122,3 +126,82 @@ class TestDeterministicFunnel:
 
         assert len(output.candidates) == 2
         assert all(score == 0.0 for score in output.candidate_scores.values())
+
+    def test_momentum_leader_prefers_breakout_confirmation(self):
+        symbols = ["A", "B", "C"]
+        ctx = _make_context(
+            symbols,
+            symbol_market_state={
+                "A": {
+                    "momentum_strength": 0.90,
+                    "breakout_readiness": 0.95,
+                    "volume_confirmation": 0.80,
+                    "trend_stability": 0.85,
+                    "distance_from_high_pct": 0.01,
+                    "fake_breakout_risk": 0.10,
+                    "max_drawdown_pct": 0.04,
+                    "return_20d": 0.16,
+                },
+                "B": {
+                    "momentum_strength": 0.82,
+                    "breakout_readiness": 0.90,
+                    "volume_confirmation": 0.00,
+                    "trend_stability": 0.55,
+                    "distance_from_high_pct": 0.02,
+                    "fake_breakout_risk": 0.95,
+                    "max_drawdown_pct": 0.18,
+                    "return_20d": 0.10,
+                },
+                "C": {
+                    "momentum_strength": 0.55,
+                    "breakout_readiness": 0.45,
+                    "volume_confirmation": 0.30,
+                    "trend_stability": 0.55,
+                    "distance_from_high_pct": 0.08,
+                    "fake_breakout_risk": 0.20,
+                    "max_drawdown_pct": 0.06,
+                    "return_20d": 0.05,
+                },
+            },
+        )
+        quant = _make_branch("quant", {"A": 0.4, "B": 0.5, "C": 0.2})
+        kline = _make_branch("kline", {"A": 0.8, "B": 0.85, "C": 0.3})
+
+        funnel = DeterministicFunnel(
+            FunnelConfig(
+                profile="momentum_leader",
+                max_candidates=2,
+                sector_bucket_limit=0,
+            )
+        )
+        output = funnel.run(quant_result=quant, kline_result=kline, global_context=ctx)
+
+        assert output.candidates == ["A", "C"]
+        assert output.candidate_scores["A"] > output.candidate_scores["C"]
+        assert "B" in output.excluded_symbols
+
+    def test_momentum_leader_limits_sector_crowding(self):
+        symbols = ["A", "B", "C"]
+        ctx = _make_context(
+            symbols,
+            industry_map={"A": "半导体", "B": "半导体", "C": "银行"},
+            symbol_market_state={
+                "A": {"momentum_strength": 0.92, "breakout_readiness": 0.90, "volume_confirmation": 0.70, "trend_stability": 0.80, "distance_from_high_pct": 0.01, "fake_breakout_risk": 0.12, "max_drawdown_pct": 0.05, "return_20d": 0.18},
+                "B": {"momentum_strength": 0.89, "breakout_readiness": 0.88, "volume_confirmation": 0.72, "trend_stability": 0.78, "distance_from_high_pct": 0.02, "fake_breakout_risk": 0.15, "max_drawdown_pct": 0.06, "return_20d": 0.17},
+                "C": {"momentum_strength": 0.78, "breakout_readiness": 0.76, "volume_confirmation": 0.60, "trend_stability": 0.74, "distance_from_high_pct": 0.03, "fake_breakout_risk": 0.10, "max_drawdown_pct": 0.04, "return_20d": 0.12},
+            },
+        )
+        quant = _make_branch("quant", {"A": 0.6, "B": 0.58, "C": 0.45})
+        kline = _make_branch("kline", {"A": 0.8, "B": 0.79, "C": 0.62})
+
+        funnel = DeterministicFunnel(
+            FunnelConfig(
+                profile="momentum_leader",
+                max_candidates=2,
+                sector_bucket_limit=1,
+            )
+        )
+        output = funnel.run(quant_result=quant, kline_result=kline, global_context=ctx)
+
+        assert output.candidates == ["A", "C"]
+        assert output.excluded_symbols["B"] == "sector_bucket_limit"

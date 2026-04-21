@@ -8,7 +8,9 @@ const LABEL_CLASS_NAME = 'mb-2 block text-[11px] font-medium uppercase tracking-
 
 export function LLMModelSelector() {
   const agentModel = useResearchStore((state) => state.agent_model)
+  const agentFallbackModel = useResearchStore((state) => state.agent_fallback_model)
   const masterModel = useResearchStore((state) => state.master_model)
+  const masterFallbackModel = useResearchStore((state) => state.master_fallback_model)
   const setField = useResearchStore((state) => state.setField)
 
   const { data } = useQuery({
@@ -18,48 +20,36 @@ export function LLMModelSelector() {
   })
 
   const available = data?.models?.filter((model) => model.available) ?? []
+  const slots = [
+    { id: 'agent_model', label: 'Subagent primary', value: agentModel },
+    { id: 'agent_fallback_model', label: 'Subagent fallback', value: agentFallbackModel },
+    { id: 'master_model', label: 'Master primary', value: masterModel },
+    { id: 'master_fallback_model', label: 'Master fallback', value: masterFallbackModel },
+  ] as const
 
   return (
     <div className="grid gap-3">
-      <div>
-        <label className={LABEL_CLASS_NAME} htmlFor="branch-agent-model">
-          Branch agent model
-        </label>
-        <select
-          id="branch-agent-model"
-          name="agent_model"
-          value={agentModel}
-          onChange={(event) => setField('agent_model', event.target.value)}
-          className={FIELD_CLASS_NAME}
-        >
-          <option value="">default (claude-sonnet-4-6)</option>
-          {available.map((model) => (
-            <option key={model.id} value={model.id}>
-              {model.label} - ${model.prompt_price}/1M
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div>
-        <label className={LABEL_CLASS_NAME} htmlFor="master-ic-model">
-          Master IC model
-        </label>
-        <select
-          id="master-ic-model"
-          name="master_model"
-          value={masterModel}
-          onChange={(event) => setField('master_model', event.target.value)}
-          className={FIELD_CLASS_NAME}
-        >
-          <option value="">default (gpt-5.4-mini)</option>
-          {available.map((model) => (
-            <option key={model.id} value={model.id}>
-              {model.label} - ${model.prompt_price}/1M
-            </option>
-          ))}
-        </select>
-      </div>
+      {slots.map((slot) => (
+        <div key={slot.id}>
+          <label className={LABEL_CLASS_NAME} htmlFor={slot.id}>
+            {slot.label}
+          </label>
+          <select
+            id={slot.id}
+            name={slot.id}
+            value={slot.value}
+            onChange={(event) => setField(slot.id, event.target.value)}
+            className={FIELD_CLASS_NAME}
+          >
+            <option value="">use default</option>
+            {available.map((model) => (
+              <option key={model.id} value={model.id}>
+                {model.label} - ${model.prompt_price}/1M
+              </option>
+            ))}
+          </select>
+        </div>
+      ))}
     </div>
   )
 }

@@ -13,11 +13,15 @@ def _make_context(
     regime: str = "未知",
     quarantine: list[str] | None = None,
     suspended: list[str] | None = None,
+    selection_profile: str = "classic",
+    style_exposures: dict[str, object] | None = None,
 ) -> GlobalContext:
     return GlobalContext(
         macro_regime=regime,
         data_quality_quarantine=quarantine or [],
         liquidity_filter={"suspended": suspended or []},
+        style_exposures=style_exposures or {},
+        metadata={"selection_profile": {"funnel_profile": selection_profile}},
     )
 
 
@@ -61,6 +65,21 @@ class TestHierarchicalPriorBuilder:
         builder = HierarchicalPriorBuilder()
         prior = builder.build_prior("000001.SZ", ctx)
         assert 0.01 <= prior.composite_prior <= 0.99
+
+    def test_momentum_leader_uses_sector_prior(self):
+        ctx = _make_context(
+            regime="趋势上涨",
+            selection_profile="momentum_leader",
+            style_exposures={
+                "000001.SZ": {"prior": 0.78},
+                "default": 0.50,
+            },
+        )
+        builder = HierarchicalPriorBuilder()
+        prior = builder.build_prior("000001.SZ", ctx)
+
+        assert prior.sector_prior == pytest.approx(0.78, abs=1e-6)
+        assert prior.composite_prior > 0.50
 
     def test_prior_to_dict(self):
         prior = PriorSet(market_prior=0.55, composite_prior=0.52)

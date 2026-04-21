@@ -83,6 +83,12 @@ def build_openai_compatible_completion_body(
     response_json: bool,
     extra_body: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    reasoning_effort = ""
+    safe_extra_body: dict[str, Any] = {}
+    if extra_body:
+        reasoning_effort = normalize_label(str(extra_body.get("reasoning_effort", "")))
+        safe_extra_body = telemetry_safe_body(extra_body)
+
     body: dict[str, Any] = {
         "model": model,
         "messages": messages,
@@ -91,6 +97,9 @@ def build_openai_compatible_completion_body(
     }
     if response_json and supports_json_mode(provider, model):
         body["response_format"] = {"type": "json_object"}
-    if extra_body:
-        body.update(extra_body)
-    return telemetry_safe_body(body)
+    if safe_extra_body:
+        body.update(safe_extra_body)
+    body = telemetry_safe_body(body)
+    if reasoning_effort and supports_reasoning_effort(provider, model):
+        body["reasoning_effort"] = reasoning_effort
+    return body

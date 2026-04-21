@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
+from quant_investor.bayesian.calibration import CalibrationStore
 from quant_investor.bayesian.likelihood import SignalLikelihoodMapper, _score_to_likelihood
 from quant_investor.bayesian.posterior import BayesianPosteriorEngine
 from quant_investor.bayesian.types import LikelihoodSet, PosteriorResult, PriorSet
 from quant_investor.branch_contracts import BranchResult
+from quant_investor.agent_protocol import GlobalContext
 
 
 class TestScoreToLikelihood:
@@ -70,6 +74,72 @@ class TestSignalLikelihoodMapper:
         ls = mapper.compute_likelihoods(branch_results=branches, symbol="A")
         assert ls.kline_likelihood == 0.50
         assert ls.quant_likelihood == 0.50
+
+    def test_momentum_profile_uses_calibration_and_recall_bias(self, tmp_path):
+        outcomes = tmp_path / "bayesian_outcomes.jsonl"
+        outcomes.write_text(
+            "\n".join(
+                json.dumps(
+                    {
+                        "symbol": "A",
+                        "branch": "kline",
+                        "score": 0.7,
+                        "bucket": "strong_positive",
+                        "realized_return": value,
+                    }
+                )
+                for value in ([-0.03] * 10 + [0.01, -0.02])
+            ),
+            encoding="utf-8",
+        )
+        store_path = tmp_path / "bayesian_calibration.json"
+        store_path.write_text("{}", encoding="utf-8")
+        calibration_store = CalibrationStore(str(store_path))
+        branches = {
+            "kline": BranchResult(
+                branch_name="kline",
+                final_score=0.7,
+                final_confidence=0.8,
+                symbol_scores={"A": 0.7},
+                metadata={"reliability": 0.7},
+            ),
+            "quant": BranchResult(
+                branch_name="quant",
+                final_score=0.4,
+                final_confidence=0.6,
+                symbol_scores={"A": 0.4},
+                metadata={"reliability": 0.7},
+            ),
+        }
+        ctx = GlobalContext(
+            macro_regime="趋势上涨",
+            cross_section_quant={"breadth": 0.60},
+            industry_map={"A": "半导体"},
+            risk_budget={"sector_bucket_limit": 2},
+            metadata={
+                "selection_profile": {"funnel_profile": "momentum_leader"},
+                "symbol_market_state": {
+                    "A": {
+                        "momentum_strength": 0.82,
+                        "breakout_readiness": 0.88,
+                        "volume_confirmation": 0.70,
+                        "fake_breakout_risk": 0.18,
+                    }
+                },
+                "candidate_sector_counts": {"半导体": 2},
+            },
+        )
+        mapper = SignalLikelihoodMapper(
+            calibration_store=calibration_store,
+            recall_context={"top_picks": [{"symbol": "A", "action": "sell"}]},
+            global_context=ctx,
+        )
+
+        ls = mapper.compute_likelihoods(branch_results=branches, symbol="A")
+
+        assert ls.kline_likelihood < 0.70
+        assert ls.metadata["history_confidence"] > 0.0
+        assert ls.metadata["setup_failure_penalty"] > 0.0
 
 
 class TestBayesianPosteriorEngine:
@@ -187,3 +257,59 @@ class TestBayesianPosteriorEngine:
         result = engine.compute_posterior(prior, likelihoods, symbol="A")
         # Should remain bearish since evidence is neutral
         assert result.posterior_win_rate < 0.40
+
+    def test_momentum_profile_penalizes_fake_breakouts(self):
+        engine = BayesianPosteriorEngine()
+        prior = PriorSet(composite_prior=0.55)
+        base = engine.compute_posterior(
+            prior,
+            LikelihoodSet(
+                kline_likelihood=0.74,
+                quant_likelihood=0.66,
+                fundamental_likelihood=0.58,
+                intelligence_likelihood=0.68,
+                metadata={
+                    "profile": "momentum_leader",
+                    "branch_weights": {"kline": 1.35, "quant": 1.0, "fundamental": 0.7, "intelligence": 1.2},
+                    "history_confidence": 0.70,
+                    "avg_reliability": 0.68,
+                    "momentum_strength": 0.84,
+                    "fake_breakout_penalty": 0.10,
+                    "setup_failure_penalty": 0.0,
+                    "crowding_penalty": 0.0,
+                    "market_pressure": 0.0,
+                    "calibration_samples": {"kline": 8},
+                    "sector": "半导体",
+                },
+            ),
+            symbol="A",
+            regime="趋势上涨",
+        )
+        risky = engine.compute_posterior(
+            prior,
+            LikelihoodSet(
+                kline_likelihood=0.74,
+                quant_likelihood=0.66,
+                fundamental_likelihood=0.58,
+                intelligence_likelihood=0.68,
+                metadata={
+                    "profile": "momentum_leader",
+                    "branch_weights": {"kline": 1.35, "quant": 1.0, "fundamental": 0.7, "intelligence": 1.2},
+                    "history_confidence": 0.70,
+                    "avg_reliability": 0.68,
+                    "momentum_strength": 0.84,
+                    "fake_breakout_penalty": 0.85,
+                    "setup_failure_penalty": 0.45,
+                    "crowding_penalty": 0.30,
+                    "market_pressure": 0.5,
+                    "calibration_samples": {"kline": 8},
+                    "sector": "半导体",
+                },
+            ),
+            symbol="A",
+            regime="趋势上涨",
+        )
+
+        assert risky.posterior_action_score < base.posterior_action_score
+        assert risky.posterior_confidence < base.posterior_confidence
+        assert risky.metadata["kill_switch"] is True

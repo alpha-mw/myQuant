@@ -1,4 +1,4 @@
-import { ChartNoAxesCombined, Database, History, Settings2, ShieldCheck, Workflow } from 'lucide-react'
+import { ChartNoAxesCombined, History, Settings2, ShieldCheck, Workflow } from 'lucide-react'
 import { Link, NavLink } from 'react-router-dom'
 
 const NAV_ITEMS = [
@@ -7,12 +7,6 @@ const NAV_ITEMS = [
     label: 'Research Workspace',
     description: 'Run the mainline research flow and review live output.',
     icon: ChartNoAxesCombined,
-  },
-  {
-    to: '/data',
-    label: 'Data Explorer',
-    description: 'Browse market overview, stocks, and company dossiers.',
-    icon: Database,
   },
   {
     to: '/history',

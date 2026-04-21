@@ -7,6 +7,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from quant_investor.config import config
+from quant_investor.llm_provider_priority import resolve_runtime_role_models
 from quant_investor.market.analyze import run_market_analysis
 from quant_investor.market.config import get_market_settings, normalize_categories, normalize_universe
 from quant_investor.market.data_snapshot import build_market_data_snapshot
@@ -89,13 +91,20 @@ def run_unified_pipeline(
     force_download: bool = False,
     verbose: bool = True,
     enable_agent_layer: bool = True,
+    review_model_priority: list[str] | None = None,
     agent_model: str = "",
     agent_fallback_model: str = "",
     master_model: str = "",
     master_fallback_model: str = "",
     master_reasoning_effort: str = "high",
-    agent_timeout: float = 15.0,
-    master_timeout: float = 30.0,
+    agent_timeout: float = config.DEFAULT_AGENT_TIMEOUT_SECONDS,
+    master_timeout: float = config.DEFAULT_MASTER_TIMEOUT_SECONDS,
+    funnel_profile: str = config.FUNNEL_PROFILE,
+    max_candidates: int = config.FUNNEL_MAX_CANDIDATES,
+    trend_windows: list[int] | tuple[int, ...] | None = None,
+    volume_spike_threshold: float = config.FUNNEL_VOLUME_SPIKE_THRESHOLD,
+    breakout_distance_pct: float = config.FUNNEL_BREAKOUT_DISTANCE_PCT,
+    recall_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     settings = get_market_settings(market)
     selected_categories = (
@@ -121,6 +130,13 @@ def run_unified_pipeline(
 
     _print_stage_header(2, "全市场分析与报告生成")
     analysis_started = time.time()
+    branch_config, master_config = resolve_runtime_role_models(
+        review_model_priority=review_model_priority,
+        agent_model=agent_model,
+        agent_fallback_model=agent_fallback_model,
+        master_model=master_model,
+        master_fallback_model=master_fallback_model,
+    )
     analysis_output = run_market_analysis(
         market=settings.market,
         universe=universe,
@@ -131,13 +147,20 @@ def run_unified_pipeline(
         top_k=top_k,
         verbose=verbose,
         enable_agent_layer=enable_agent_layer,
-        agent_model=agent_model,
-        agent_fallback_model=agent_fallback_model,
-        master_model=master_model,
-        master_fallback_model=master_fallback_model,
+        review_model_priority=list(review_model_priority or []),
+        agent_model=branch_config.primary_model,
+        agent_fallback_model=branch_config.fallback_model,
+        master_model=master_config.primary_model,
+        master_fallback_model=master_config.fallback_model,
         master_reasoning_effort=master_reasoning_effort,
         agent_timeout=agent_timeout,
         master_timeout=master_timeout,
+        funnel_profile=funnel_profile,
+        max_candidates=max_candidates,
+        trend_windows=list(trend_windows or config.FUNNEL_TREND_WINDOWS),
+        volume_spike_threshold=volume_spike_threshold,
+        breakout_distance_pct=breakout_distance_pct,
+        recall_context=recall_context,
         data_snapshot=download_stage.get("data_snapshot"),
     )
     analysis_duration = time.time() - analysis_started
