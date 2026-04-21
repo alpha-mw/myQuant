@@ -12,12 +12,15 @@
 import os
 import pandas as pd
 from datetime import datetime
+from pathlib import Path
 
 # ──────────────────────────────────────────────
 # 路径配置
 # ──────────────────────────────────────────────
-MYQUANT_DIR = os.path.dirname(os.path.abspath(__file__))
-KRONOS_DATA_DIR = "/Users/maxwell/Quant/Kronos/data/us_market_full"
+PROJECT_ROOT = Path(__file__).resolve().parent
+KRONOS_DATA_DIR = Path(
+    os.environ.get("KRONOS_DATA_DIR", PROJECT_ROOT / "data" / "us_market_full")
+).expanduser()
 
 # ──────────────────────────────────────────────
 # Step 1: 补丁 YahooDataSource.get_ohlcv()
@@ -30,14 +33,14 @@ def _find_local_csv(symbol: str) -> str | None:
     """在 Kronos 各子目录中查找 CSV 文件路径。"""
     if symbol in _symbol_category_cache:
         cat = _symbol_category_cache[symbol]
-        path = os.path.join(KRONOS_DATA_DIR, cat, f"{symbol}.csv")
-        return path if os.path.exists(path) else None
+        path = KRONOS_DATA_DIR / cat / f"{symbol}.csv"
+        return str(path) if path.exists() else None
 
     for cat in ("large_cap", "mid_cap", "small_cap"):
-        path = os.path.join(KRONOS_DATA_DIR, cat, f"{symbol}.csv")
-        if os.path.exists(path):
+        path = KRONOS_DATA_DIR / cat / f"{symbol}.csv"
+        if path.exists():
             _symbol_category_cache[symbol] = cat
-            return path
+            return str(path)
     return None
 
 
@@ -97,11 +100,11 @@ from quant_investor.market import analyze as batch_module
 # Step 3: 补丁 get_all_local_symbols() → Kronos 路径
 # ──────────────────────────────────────────────
 def _kronos_get_all_local_symbols(category: str):
-    data_dir = os.path.join(KRONOS_DATA_DIR, category)
-    if not os.path.exists(data_dir):
+    data_dir = KRONOS_DATA_DIR / category
+    if not data_dir.exists():
         print(f"[Kronos] 目录不存在: {data_dir}")
         return []
-    csv_files = [f for f in os.listdir(data_dir) if f.endswith(".csv")]
+    csv_files = [path.name for path in data_dir.iterdir() if path.suffix == ".csv"]
     symbols = [f.replace(".csv", "") for f in csv_files]
     print(f"[Kronos] {category}: {len(symbols)} 只股票")
     return symbols
@@ -206,8 +209,8 @@ print("✅ analyze_batch 已补丁，使用激进风格 + capital=100,000")
 # ──────────────────────────────────────────────
 # Step 5: 确保结果目录存在
 # ──────────────────────────────────────────────
-results_dir = os.path.join(MYQUANT_DIR, "results", "us_analysis_full")
-os.makedirs(results_dir, exist_ok=True)
+results_dir = PROJECT_ROOT / "results" / "us_analysis_full"
+results_dir.mkdir(parents=True, exist_ok=True)
 
 # ──────────────────────────────────────────────
 # Step 6: 运行全量分析

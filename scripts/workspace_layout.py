@@ -24,13 +24,10 @@ ENVIRONMENT_ROLES = {
 }
 
 EXPLICIT_CLEANUP_DIRS = (
+    Path(".cache"),
     Path(".pytest_cache"),
     Path(".uv-cache"),
     Path("frontend") / "dist",
-)
-
-LEGACY_WORKSPACE_ROOTS = (
-    Path("/Users/maxwell/Library/CloudStorage/OneDrive-Personal/mySpace/myQuant"),
 )
 
 _PATH_AUDIT_FILES = (
@@ -55,6 +52,14 @@ _SCAN_EXCLUDE_ROOTS = {
     "results",
     "reports",
 }
+
+
+def _coerce_legacy_workspace_roots(
+    legacy_roots: tuple[Path, ...] | list[Path] | tuple[str, ...] | list[str] | None,
+) -> tuple[Path, ...]:
+    if legacy_roots is None:
+        return ()
+    return tuple(Path(root).expanduser() for root in legacy_roots)
 
 
 def get_repo_root(root: Path | None = None) -> Path:
@@ -165,14 +170,19 @@ def iter_workspace_path_audit_targets(root: Path | None = None) -> list[Path]:
     return sorted(targets.values(), key=lambda path: path.relative_to(repo_root).as_posix())
 
 
-def find_legacy_workspace_root_references(root: Path | None = None) -> list[dict[str, object]]:
+def find_legacy_workspace_root_references(
+    root: Path | None = None,
+    *,
+    legacy_roots: tuple[Path, ...] | list[Path] | tuple[str, ...] | list[str] | None = None,
+) -> list[dict[str, object]]:
     """Report local operational files that still point at the legacy workspace root."""
     repo_root = get_repo_root(root)
+    resolved_legacy_roots = _coerce_legacy_workspace_roots(legacy_roots)
     findings: list[dict[str, object]] = []
 
     for path in iter_workspace_path_audit_targets(repo_root):
         text = path.read_text(encoding="utf-8")
-        for legacy_root in LEGACY_WORKSPACE_ROOTS:
+        for legacy_root in resolved_legacy_roots:
             legacy_text = str(legacy_root)
             if legacy_text not in text:
                 continue
@@ -192,17 +202,19 @@ def replace_legacy_workspace_root_references(
     root: Path | None = None,
     *,
     new_root: Path | None = None,
+    legacy_roots: tuple[Path, ...] | list[Path] | tuple[str, ...] | list[str] | None = None,
 ) -> list[Path]:
     """Rewrite legacy workspace roots inside local operational text files."""
     repo_root = get_repo_root(root)
     target_root = get_repo_root(new_root) if new_root is not None else repo_root
+    resolved_legacy_roots = _coerce_legacy_workspace_roots(legacy_roots)
     updated_paths: list[Path] = []
 
     for path in iter_workspace_path_audit_targets(repo_root):
         original_text = path.read_text(encoding="utf-8")
         updated_text = original_text
 
-        for legacy_root in LEGACY_WORKSPACE_ROOTS:
+        for legacy_root in resolved_legacy_roots:
             updated_text = updated_text.replace(str(legacy_root), str(target_root))
 
         if updated_text == original_text:
