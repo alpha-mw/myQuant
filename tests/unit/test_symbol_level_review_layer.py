@@ -93,6 +93,49 @@ def test_branch_overlay_reviewer_applies_bounded_adjustment(monkeypatch):
     assert verdict.telemetry.fallback is False
 
 
+def test_branch_overlay_reviewer_forwards_fallback_model(monkeypatch):
+    captured: dict[str, object] = {}
+
+    async def _fake_complete(self, *args, **kwargs):
+        captured.update(kwargs)
+        return {
+            "thesis": "overlay thesis",
+            "score_delta": 0.0,
+            "confidence_delta": 0.0,
+            "agreement_points": [],
+            "conflict_points": [],
+            "missing_risks": [],
+            "contradictions": [],
+            "risk_flags": [],
+        }
+
+    monkeypatch.setattr(stock_reviewers, "has_provider_for_model", lambda _model: True)
+    monkeypatch.setattr(stock_reviewers.LLMClient, "complete", _fake_complete)
+
+    reviewer = BranchOverlayReviewer(
+        branch_name="kline",
+        llm_client=stock_reviewers.LLMClient(),
+        model="qwen-plus",
+        fallback_model="moonshot-v1-128k",
+        timeout=1.0,
+    )
+    asyncio.run(
+        reviewer.review(
+            BranchOverlayPacket(
+                symbol="000001.SZ",
+                branch_name="kline",
+                base_score=0.1,
+                base_confidence=0.4,
+                thesis="base thesis",
+                direction="neutral",
+                action="hold",
+            )
+        )
+    )
+
+    assert captured["fallback_model"] == "moonshot-v1-128k"
+
+
 def test_branch_overlay_reviewer_falls_back_when_provider_missing(monkeypatch):
     monkeypatch.setattr(stock_reviewers, "has_provider_for_model", lambda _model: False)
 
@@ -220,6 +263,46 @@ def test_master_ic_agent_forwards_reasoning_effort(monkeypatch):
     assert captured["reasoning_effort"] == "high"
     assert captured["stage"] == "review_master_symbol"
     assert captured["actor_name"] == "IC:000001.SZ"
+
+
+def test_master_ic_agent_forwards_fallback_model(monkeypatch):
+    captured: dict[str, object] = {}
+
+    async def _fake_complete(self, *args, **kwargs):
+        captured.update(kwargs)
+        return {
+            "thesis": "master thesis",
+            "score_delta": 0.0,
+            "confidence_delta": 0.0,
+            "agreement_points": [],
+            "conflict_points": [],
+            "rationale_points": [],
+            "risk_flags": [],
+        }
+
+    monkeypatch.setattr(stock_reviewers, "has_provider_for_model", lambda _model: True)
+    monkeypatch.setattr(stock_reviewers.LLMClient, "complete", _fake_complete)
+
+    agent = MasterICAgent(
+        llm_client=stock_reviewers.LLMClient(),
+        model="qwen-plus",
+        fallback_model="moonshot-v1-128k",
+        timeout=1.0,
+    )
+    asyncio.run(
+        agent.deliberate(
+            MasterSymbolPacket(
+                symbol="000001.SZ",
+                branch_overlay_summaries=[],
+                macro_summary={},
+                risk_summary={},
+                baseline_score=0.0,
+                baseline_confidence=0.5,
+            )
+        )
+    )
+
+    assert captured["fallback_model"] == "moonshot-v1-128k"
 
 
 def test_legacy_master_agent_forwards_reasoning_effort(monkeypatch):

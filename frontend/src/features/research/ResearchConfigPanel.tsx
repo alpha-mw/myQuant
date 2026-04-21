@@ -127,7 +127,7 @@ export function ResearchConfigPanel({ submit, isSubmitting, isRunning }: Props) 
         <section className={SECTION_CLASS_NAME}>
           <SectionHeading
             title="Runtime limits"
-            description="Keep agent timeouts explicit so long runs fail fast and recover cleanly."
+            description="Keep hard time caps explicit so long reasoning runs can finish, while true failures still terminate."
             icon={TimerReset}
           />
           <div className="grid gap-3 sm:grid-cols-2">

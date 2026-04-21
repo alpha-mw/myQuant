@@ -421,6 +421,46 @@ def test_build_completeness_report_detects_blocking_stale_symbols(monkeypatch, t
     assert allowed_report["blocking_incomplete_count"] == 0
 
 
+def test_build_completeness_report_excludes_symbols_listed_after_target_trade_date(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_module(monkeypatch, freshness_mode="strict")
+    fake_pro = FakePro()
+
+    def _fake_stock_basic(**_kwargs):
+        return pd.DataFrame(
+            [
+                {"ts_code": "000001.SZ", "list_date": "20200101"},
+                {"ts_code": "301696.SZ", "list_date": "20260317"},
+            ]
+        )
+
+    fake_pro.stock_basic = _fake_stock_basic
+    monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
+
+    downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
+    latest_path = tmp_path / "other" / "000001.SZ.csv"
+    latest_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{"trade_date": "2026-03-16", "close": 10.0}]).to_csv(latest_path, index=False)
+
+    components = {"full_a": ["000001.SZ", "301696.SZ"], "stats": {"total_unique": 2}}
+    report = downloader.build_completeness_report(
+        components=components,
+        categories=["full_a"],
+        target_trade_date="20260316",
+    )
+
+    assert report["complete"] is True
+    assert report["blocking_incomplete_count"] == 0
+    assert report["expected_scope_count"] == 1
+    assert report["coverage_complete_count"] == 1
+    assert report["categories"]["full_a"]["expected"] == 1
+    assert report["categories"]["full_a"]["pre_listing_symbols"] == [
+        {"symbol": "301696.SZ", "list_date": "20260317"}
+    ]
+
+
 def test_build_completeness_report_stable_mode_rolls_back_when_strict_coverage_is_below_threshold(
     monkeypatch,
     tmp_path,

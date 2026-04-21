@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from quant_investor.agents.llm_client import has_provider_for_model
+from quant_investor.llm_gateway import has_provider_for_model
 
 
 @dataclass

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 
 import quant_investor.pipeline.mainline as mainline_module
+from quant_investor.branch_contracts import LLMUsageRecord
 from quant_investor.agent_protocol import (
     ActionLabel,
     AgentStatus,
@@ -16,6 +18,8 @@ from quant_investor.agent_protocol import (
     WhatIfPlan,
 )
 from quant_investor.branch_contracts import BranchResult
+from quant_investor.llm_gateway import current_usage_session_id, record_fallback_event, record_usage
+from quant_investor.market.dag_executor import _run_async_coroutine_safely
 from quant_investor.pipeline.mainline import QuantInvestor
 
 
@@ -171,7 +175,6 @@ def test_quant_investor_run_uses_market_dag_not_legacy_research_core(monkeypatch
         raise AssertionError("legacy research core should not run")
 
     monkeypatch.setattr(mainline_module, "_execute_market_dag", _fake_execute_market_dag, raising=False)
-    monkeypatch.setattr(QuantInvestor, "_run_research_core", _legacy_path_should_not_run)
 
     investor = QuantInvestor(
         stock_pool=["000001.SZ"],
@@ -189,3 +192,73 @@ def test_quant_investor_run_uses_market_dag_not_legacy_research_core(monkeypatch
     assert result.final_strategy.candidate_symbols == ["000001.SZ"]
     assert result.agent_report_bundle.markdown_report == "# DAG Report"
     assert result.master_review_output is not None
+
+
+def test_async_runner_preserves_llm_usage_session_in_thread_path():
+    async def _inner() -> str | None:
+        return current_usage_session_id()
+
+    async def _outer() -> str | None:
+        return _run_async_coroutine_safely(_inner)
+
+    investor = QuantInvestor(
+        stock_pool=["000001.SZ"],
+        market="CN",
+        total_capital=1_000_000,
+        enable_agent_layer=True,
+        verbose=False,
+    )
+    session = mainline_module.start_usage_session(label="thread-path-session")
+    try:
+        observed = asyncio.run(_outer())
+    finally:
+        mainline_module.end_usage_session(session)
+
+    assert observed == session.session_id
+
+
+def test_quant_investor_run_exposes_attempt_and_effective_llm_usage(monkeypatch):
+    def _fake_execute_market_dag(**kwargs):
+        record_usage(
+            LLMUsageRecord(
+                stage="review_branch_overlay",
+                branch_or_agent_name="000001.SZ:kline",
+                provider="qwen",
+                model="qwen-plus",
+                prompt_tokens=10,
+                completion_tokens=5,
+                total_tokens=15,
+                success=True,
+                fallback=False,
+                estimated_cost_usd=0.001,
+            )
+        )
+        record_fallback_event(
+            stage="review_master_agent",
+            branch_or_agent_name="ICCoordinator",
+            model="qwen-plus",
+            provider="qwen",
+            prompt_tokens=12,
+            reason="timeout",
+        )
+        return _fake_dag_artifacts()
+
+    monkeypatch.setattr(mainline_module, "_execute_market_dag", _fake_execute_market_dag, raising=False)
+
+    investor = QuantInvestor(
+        stock_pool=["000001.SZ"],
+        market="CN",
+        total_capital=1_000_000,
+        enable_agent_layer=True,
+        verbose=False,
+    )
+    result = investor.run()
+
+    assert result.llm_usage_summary.call_count == 2
+    assert result.llm_usage_summary.success_count == 1
+    assert result.llm_usage_summary.fallback_count == 1
+    assert result.llm_usage_summary.failed_count == 1
+    assert result.llm_effective_summary.call_count == 1
+    assert result.llm_effective_summary.success_count == 1
+    assert result.llm_effective_summary.fallback_count == 0
+    assert result.llm_effective_summary.total_tokens == 15

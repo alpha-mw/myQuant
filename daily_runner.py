@@ -4,10 +4,9 @@ myQuant 每日 A 股自动分析脚本
 
 用法:
   python daily_runner.py                 # 立即运行一次完整分析
-  python daily_runner.py --daemon        # 后台守护：启动后端 + 每天定时运行
-  python daily_runner.py --backend-only  # 仅启动并守护后端（不做分析）
-  python daily_runner.py --report-only   # 打印上次分析报告
-  python daily_runner.py --dry-run       # 验证配置和连接，不实际运行
+  python daily_runner.py --daemon        # 定时守护：每天定时运行分析
+  python daily_runner.py --report-only   # 打印最新策略记录中的正式分析报告
+  python daily_runner.py --dry-run       # 验证配置和 strategy_records 输入，不实际运行
   python daily_runner.py --skip-stage1   # 跳过 Stage 1（数据检查与下载），直接分析
   python daily_runner.py --skip-download # 跳过数据下载，直接分析
   python daily_runner.py --config PATH   # 指定配置文件路径
@@ -16,23 +15,60 @@ myQuant 每日 A 股自动分析脚本
 from __future__ import annotations
 
 import argparse
+import csv
 import importlib.util
-import json
 import logging
 import os
+import re
 import signal
-import subprocess
 import sys
 import time
-import uuid
+from collections import defaultdict
 from datetime import datetime, date
 from pathlib import Path
 from typing import Any, Optional
-from urllib.request import urlopen
-from urllib.error import URLError
+
+from quant_investor.config import config as runtime_config
+from quant_investor.llm_provider_priority import (
+    coerce_review_model_priority,
+    normalize_model_name,
+    resolve_runtime_role_models,
+)
+from quant_investor.research_run_config import ResolvedReviewModels
 
 # ── 项目根目录 ─────────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent.resolve()
+RUN_DIR_PATTERN = re.compile(r"^\d{8}_\d{3,6}$")
+
+
+def _legacy_review_model_fields(config: dict[str, Any]) -> list[str]:
+    return [
+        str(config.get("agent_model", "") or ""),
+        str(config.get("agent_fallback_model", "") or ""),
+        str(config.get("master_model", "") or ""),
+        str(config.get("master_fallback_model", "") or ""),
+    ]
+
+
+def _resolve_review_model_priority(config: dict[str, Any]) -> list[str]:
+    return coerce_review_model_priority(
+        config.get("review_model_priority", []),
+        legacy_models=_legacy_review_model_fields(config),
+    )
+
+
+def _normalize_role_model_overrides(config: dict[str, Any]) -> dict[str, str]:
+    normalized: dict[str, str] = {}
+    for key in (
+        "agent_model",
+        "agent_fallback_model",
+        "master_model",
+        "master_fallback_model",
+    ):
+        value = normalize_model_name(str(config.get(key, "") or ""))
+        if value:
+            normalized[key] = value
+    return normalized
 
 
 def _bootstrap_project_venv() -> None:
@@ -81,25 +117,30 @@ def load_config(config_path: Optional[str] = None) -> dict[str, Any]:
     if not cfg:
         raise ValueError(f"配置文件 {path} 中未找到 DAILY_CONFIG 字典。")
 
+    normalized = dict(cfg)
+    normalized["review_model_priority"] = _resolve_review_model_priority(cfg)
+
     # 默认值补全
     defaults: dict[str, Any] = {
         "market": "CN",
         "universe": "full_a",
         "risk_level": "中等",
         "total_capital": 1_000_000,
-        "agent_model": "moonshot-v1-128k",
-        "agent_fallback_model": "deepseek-reasoner",
+        "review_model_priority": ["deepseek-chat", "moonshot-v1-128k", "qwen3.5-plus"],
         "master_model": "moonshot-v1-128k",
-        "master_fallback_model": "deepseek-chat",
+        "master_fallback_model": "deepseek-reasoner",
         "master_reasoning_effort": "",
-        "pipeline_mode": "bayesian",
-        "funnel_max_candidates": 400,
+        "funnel_profile": runtime_config.FUNNEL_PROFILE,
+        "funnel_max_candidates": 200,
+        "trend_windows": list(runtime_config.FUNNEL_TREND_WINDOWS),
+        "volume_spike_threshold": runtime_config.FUNNEL_VOLUME_SPIKE_THRESHOLD,
+        "breakout_distance_pct": runtime_config.FUNNEL_BREAKOUT_DISTANCE_PCT,
         "bayesian_shortlist_size": 20,
         "freshness_mode": "stable",
         "kline_backend": "heuristic",
         "top_k": 20,
-        "agent_timeout": 20.0,
-        "master_timeout": 45.0,
+        "agent_timeout": runtime_config.DEFAULT_AGENT_TIMEOUT_SECONDS,
+        "master_timeout": runtime_config.DEFAULT_MASTER_TIMEOUT_SECONDS,
         "enable_agent_layer": True,
         "skip_stage1": False,
         "skip_download": False,
@@ -107,164 +148,285 @@ def load_config(config_path: Optional[str] = None) -> dict[str, Any]:
         "workers": 4,
         "schedule_time": "17:30",
         "report_dir": "reports/daily",
-        "history_lookback": 5,
-        "backend_host": "127.0.0.1",
-        "backend_port": 8000,
     }
     for key, val in defaults.items():
-        cfg.setdefault(key, val)
+        normalized.setdefault(key, val)
+    normalized.update(_normalize_role_model_overrides(normalized))
+    for key in (
+        "pipeline_mode",
+        "history_lookback",
+        "backend_host",
+        "backend_port",
+    ):
+        normalized.pop(key, None)
+    return normalized
 
-    return cfg
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 2. 后端管理
-# ══════════════════════════════════════════════════════════════════════════════
-
-class BackendManager:
-    """启动、监控并自动重启 FastAPI/uvicorn 后端。"""
-
-    def __init__(self, host: str, port: int) -> None:
-        self.host = host
-        self.port = port
-        self._proc: Optional[subprocess.Popen] = None
-        self._health_url = f"http://{host}:{port}/api/health"
-
-    def _find_python(self) -> str:
-        """优先使用项目 venv，回退到当前 Python。"""
-        venv_python = ROOT / ".venv" / "bin" / "python"
-        if venv_python.exists():
-            return str(venv_python)
-        return sys.executable
-
-    def start(self) -> subprocess.Popen:
-        """启动 uvicorn 后端进程。"""
-        python = self._find_python()
-        cmd = [
-            python, "-m", "uvicorn", "web.api:app",
-            "--host", self.host,
-            "--port", str(self.port),
-            "--log-level", "warning",
-        ]
-        log.info("启动后端: %s", " ".join(cmd))
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(ROOT),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        # 等待就绪（最多 15 秒）
-        for _ in range(30):
-            time.sleep(0.5)
-            if self.is_healthy():
-                log.info("后端已就绪: http://%s:%s", self.host, self.port)
-                return proc
-            if proc.poll() is not None:
-                output = proc.stdout.read() if proc.stdout else ""
-                raise RuntimeError(f"后端启动失败（退出码 {proc.returncode}）:\n{output}")
-        log.warning("后端启动超时，继续尝试...")
-        return proc
-
-    def is_healthy(self) -> bool:
-        """检查后端健康状态。"""
-        try:
-            with urlopen(self._health_url, timeout=3) as resp:
-                data = json.loads(resp.read())
-                return bool(data.get("ok"))
-        except Exception:
-            return False
-
-    def ensure_running(self, proc: Optional[subprocess.Popen]) -> subprocess.Popen:
-        """若后端进程已死或不健康，则重启。"""
-        if proc is None or proc.poll() is not None:
-            log.warning("后端进程已停止，正在重启...")
-            return self.start()
-        if not self.is_healthy():
-            log.warning("后端健康检查失败，尝试重启...")
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-            return self.start()
-        return proc
-
-    def stop(self, proc: Optional[subprocess.Popen]) -> None:
-        if proc and proc.poll() is None:
-            log.info("正在停止后端...")
-            proc.terminate()
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+def _normalize_runtime_config(config: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(config)
+    normalized["review_model_priority"] = _resolve_review_model_priority(normalized)
+    normalized.update(_normalize_role_model_overrides(normalized))
+    for key in (
+        "pipeline_mode",
+        "history_lookback",
+        "backend_host",
+        "backend_port",
+    ):
+        normalized.pop(key, None)
+    return normalized
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 3. 历史记录加载
+# 2. 策略记录历史
 # ══════════════════════════════════════════════════════════════════════════════
+
+def _strategy_records_market_root(market: str) -> Path:
+    return ROOT / "results" / "strategy_records" / str(market or "CN").upper()
+
+
+def _dedupe_text(values: list[str], limit: int = 8) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        ordered.append(text)
+        seen.add(text)
+        if len(ordered) >= limit:
+            break
+    return ordered
 
 class HistoryLoader:
-    """从 web_runs.db 加载历史分析记录，用于报告上下文。"""
+    """从 strategy_records 读取最近 5 个日期的策略记录。"""
 
-    def __init__(self) -> None:
-        self._store: Any = None
-
-    def _get_store(self) -> Any:
-        if self._store is None:
-            from web.services.run_history_store import RunHistoryStore
-            self._store = RunHistoryStore()
-            self._store.init_db()
-        return self._store
-
-    def load_recent(self, n: int, market: str = "CN") -> list[dict[str, Any]]:
-        """加载最近 n 次分析记录。"""
-        try:
-            store = self._get_store()
-            items, _ = store.get_history(page=1, per_page=n, market=market)
-            return items
-        except Exception as exc:
-            log.warning("加载历史记录失败: %s", exc)
+    def _iter_run_dirs(self, market: str) -> list[Path]:
+        market_root = _strategy_records_market_root(market)
+        if not market_root.exists():
             return []
 
-    def load_last_report(self, market: str = "CN") -> Optional[str]:
-        """读取上次分析的 Markdown 报告。"""
+        run_dirs: list[Path] = []
+        for path in market_root.rglob("*"):
+            if path.is_dir() and RUN_DIR_PATTERN.match(path.name):
+                run_dirs.append(path)
+        return sorted(run_dirs, key=lambda item: item.as_posix(), reverse=True)
+
+    def _parse_markdown_excerpt(self, path: Path) -> dict[str, Any]:
         try:
-            store = self._get_store()
-            items, _ = store.get_history(page=1, per_page=1, market=market)
-            if not items:
-                return None
-            run = store.get_run(items[0]["job_id"])
-            if run:
-                return run.get("report_markdown", "")
-            return None
+            lines = path.read_text(encoding="utf-8").splitlines()
         except Exception as exc:
-            log.warning("读取上次报告失败: %s", exc)
+            return {"file": path.name, "error": str(exc)}
+
+        excerpt_lines: list[str] = []
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith(("#", "-", "*")) or ":" in line:
+                excerpt_lines.append(line[:180])
+            if len(excerpt_lines) >= 6:
+                break
+        if not excerpt_lines:
+            excerpt_lines = [line.strip()[:180] for line in lines if line.strip()][:3]
+        return {"file": path.name, "excerpt_lines": excerpt_lines}
+
+    def _parse_csv_summary(self, path: Path) -> dict[str, Any]:
+        columns: list[str] = []
+        symbols: list[str] = []
+        actions: list[str] = []
+        shares_sample: list[str] = []
+        price_sample: list[str] = []
+        row_count = 0
+
+        try:
+            with path.open("r", encoding="utf-8", newline="") as fh:
+                reader = csv.DictReader(fh)
+                columns = list(reader.fieldnames or [])
+                for row in reader:
+                    row_count += 1
+                    lowered = {str(key or "").lower(): value for key, value in row.items()}
+                    for key in ("symbol", "ticker", "code"):
+                        value = str(lowered.get(key, "") or "").strip()
+                        if value:
+                            symbols.append(value)
+                            break
+                    for key in ("action", "side", "direction"):
+                        value = str(lowered.get(key, "") or "").strip()
+                        if value:
+                            actions.append(value)
+                            break
+                    for key in ("shares", "quantity", "qty"):
+                        value = str(lowered.get(key, "") or "").strip()
+                        if value:
+                            shares_sample.append(value)
+                            break
+                    for key in ("price", "entry_price", "current_price", "target_price"):
+                        value = str(lowered.get(key, "") or "").strip()
+                        if value:
+                            price_sample.append(value)
+                            break
+        except Exception as exc:
+            return {"file": path.name, "error": str(exc)}
+
+        return {
+            "file": path.name,
+            "row_count": row_count,
+            "columns": columns[:12],
+            "symbols": _dedupe_text(symbols, limit=6),
+            "actions": _dedupe_text(actions, limit=6),
+            "shares_sample": shares_sample[:3],
+            "price_sample": price_sample[:3],
+        }
+
+    def _collect_run_entry(self, market: str, run_dir: Path) -> Optional[dict[str, Any]]:
+        market_root = _strategy_records_market_root(market)
+        try:
+            relative = run_dir.relative_to(market_root)
+        except ValueError:
             return None
+        if len(relative.parts) < 2:
+            return None
+
+        date_part, time_part = run_dir.name.split("_", 1)
+        strategy = "/".join(relative.parts[:-1])
+        markdown_files: list[str] = []
+        csv_files: list[str] = []
+        markdown_excerpts: list[dict[str, Any]] = []
+        csv_summaries: list[dict[str, Any]] = []
+        latest_report_excerpt = ""
+
+        for child in sorted(run_dir.iterdir(), key=lambda item: item.name):
+            if not child.is_file():
+                continue
+            if child.suffix.lower() not in {".md", ".csv"}:
+                continue
+            if child.suffix.lower() == ".md":
+                markdown_files.append(str(child))
+                excerpt = self._parse_markdown_excerpt(child)
+                markdown_excerpts.append(excerpt)
+                if child.name == "analysis_report.md" and not latest_report_excerpt:
+                    latest_report_excerpt = "\n".join(excerpt.get("excerpt_lines", [])[:4])
+            else:
+                csv_files.append(str(child))
+                csv_summaries.append(self._parse_csv_summary(child))
+
+        return {
+            "date": date_part,
+            "timestamp": f"{date_part}_{time_part.zfill(6)}",
+            "strategy": strategy,
+            "record_dir": str(run_dir),
+            "markdown_files": markdown_files,
+            "csv_files": csv_files,
+            "markdown_excerpts": markdown_excerpts,
+            "csv_summaries": csv_summaries,
+            "latest_report_excerpt": latest_report_excerpt,
+            "symbols": _dedupe_text(
+                [symbol for summary in csv_summaries for symbol in summary.get("symbols", [])],
+                limit=10,
+            ),
+            "actions": _dedupe_text(
+                [action for summary in csv_summaries for action in summary.get("actions", [])],
+                limit=10,
+            ),
+        }
+
+    def load_recent(self, market: str = "CN", max_dates: int = 5) -> list[dict[str, Any]]:
+        entries: list[dict[str, Any]] = []
+        for run_dir in self._iter_run_dirs(market):
+            entry = self._collect_run_entry(market, run_dir)
+            if entry is not None:
+                entries.append(entry)
+        if not entries:
+            return []
+
+        ordered_dates = sorted({item["date"] for item in entries}, reverse=True)[:max_dates]
+        selected = [item for item in entries if item["date"] in ordered_dates]
+        return sorted(selected, key=lambda item: str(item.get("timestamp", "")), reverse=True)
+
+    def build_recall_context(self, runs: list[dict[str, Any]], market: str = "CN") -> dict[str, Any]:
+        window_dates = sorted({str(item.get("date", "")) for item in runs if item.get("date")}, reverse=True)
+        recent_symbols = _dedupe_text(
+            [symbol for item in runs for symbol in item.get("symbols", [])],
+            limit=20,
+        )
+        recent_actions: list[dict[str, str]] = []
+        for item in runs:
+            for summary in item.get("csv_summaries", []):
+                actions = summary.get("actions", [])
+                symbols = summary.get("symbols", [])
+                if not actions and not symbols:
+                    continue
+                recent_actions.append(
+                    {
+                        "date": str(item.get("date", "") or ""),
+                        "strategy": str(item.get("strategy", "") or ""),
+                        "file": str(summary.get("file", "") or ""),
+                        "symbol": symbols[0] if symbols else "",
+                        "action": actions[0] if actions else "",
+                    }
+                )
+                if len(recent_actions) >= 20:
+                    break
+            if len(recent_actions) >= 20:
+                break
+
+        return {
+            "source": "strategy_records",
+            "market": str(market or "CN").upper(),
+            "window_dates": window_dates[:5],
+            "records": [
+                {
+                    "date": item.get("date", ""),
+                    "strategy": item.get("strategy", ""),
+                    "record_dir": item.get("record_dir", ""),
+                    "markdown_excerpts": item.get("markdown_excerpts", [])[:4],
+                    "csv_summaries": item.get("csv_summaries", [])[:4],
+                }
+                for item in runs[:12]
+            ],
+            "recent_symbols": recent_symbols,
+            "recent_actions": recent_actions,
+            "latest_report_excerpt": str(runs[0].get("latest_report_excerpt", "") or "") if runs else "",
+        }
+
+    def load_last_report(self, market: str = "CN") -> Optional[str]:
+        for item in self.load_recent(market=market, max_dates=5):
+            report_path = Path(str(item.get("record_dir", ""))) / "analysis_report.md"
+            if not report_path.exists():
+                continue
+            try:
+                return report_path.read_text(encoding="utf-8")
+            except Exception as exc:
+                log.warning("读取最新策略记录报告失败: %s", exc)
+                return None
+        return None
 
     def format_context_section(self, runs: list[dict[str, Any]]) -> str:
-        """格式化历史摘要，作为报告中的"历史上下文"章节。"""
         if not runs:
-            return "_暂无历史分析记录。_"
+            return "_暂无最近 5 个日期的策略记录。_"
 
-        lines = []
-        for run in runs:
-            created = run.get("created_at", "")[:16]
-            status = run.get("status", "")
-            stocks = run.get("stock_pool", [])
-            if isinstance(stocks, str):
-                try:
-                    stocks = json.loads(stocks)
-                except Exception:
-                    stocks = []
-            stock_count = len(stocks) if isinstance(stocks, list) else 0
-            risk = run.get("risk_level", "")
-            job_id = run.get("job_id", "")[:8]
+        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for item in runs:
+            grouped[str(item.get("date", ""))].append(item)
 
-            lines.append(
-                f"- `{created}` | {status} | 分析 {stock_count} 只股票 | "
-                f"风险偏好: {risk} | ID: `{job_id}`"
-            )
+        lines: list[str] = []
+        for date_key in sorted(grouped.keys(), reverse=True):
+            lines.append(f"### {date_key}")
+            for item in sorted(grouped[date_key], key=lambda row: str(row.get("timestamp", "")), reverse=True):
+                symbols = "、".join(item.get("symbols", [])[:4]) or "无"
+                actions = "、".join(item.get("actions", [])[:4]) or "无"
+                excerpt_lines: list[str] = []
+                for excerpt in item.get("markdown_excerpts", []):
+                    excerpt_lines.extend(excerpt.get("excerpt_lines", [])[:2])
+                    if len(excerpt_lines) >= 2:
+                        break
+                excerpt_text = " / ".join(excerpt_lines[:2]) if excerpt_lines else "暂无摘要"
+                lines.append(
+                    f"- `{item.get('strategy', '')}` | `{Path(str(item.get('record_dir', ''))).name}` | "
+                    f"{len(item.get('markdown_files', []))} md / {len(item.get('csv_files', []))} csv | "
+                    f"symbols: {symbols} | actions: {actions}"
+                )
+                lines.append(f"  摘要: {excerpt_text}")
         return "\n".join(lines)
 
 
@@ -275,27 +437,31 @@ class HistoryLoader:
 class AnalysisRunner:
     """包装 run_unified_pipeline，执行全量 A 股分析。"""
 
-    def run(self, config: dict[str, Any]) -> dict[str, Any]:
+    def run(self, config: dict[str, Any], recall_context: dict[str, Any] | None = None) -> dict[str, Any]:
         """执行全量市场分析，返回 pipeline 结果字典。"""
+        config = _normalize_runtime_config(config)
         # 确保工作目录正确（pipeline 依赖相对路径）
         os.chdir(ROOT)
 
         from quant_investor.market.run_pipeline import run_unified_pipeline
         from quant_investor.model_roles import resolve_model_role
 
+        review_models = ResolvedReviewModels.from_mapping(config)
         branch_resolution = resolve_model_role(
             role="branch",
-            primary_model=str(config.get("agent_model", "")),
-            fallback_model=str(config.get("agent_fallback_model", "")),
+            primary_model=review_models.branch_primary_model,
+            fallback_model=review_models.branch_fallback_model,
         )
         master_resolution = resolve_model_role(
             role="master",
-            primary_model=str(config.get("master_model", "")),
-            fallback_model=str(config.get("master_fallback_model", "")),
+            primary_model=review_models.master_primary_model,
+            fallback_model=review_models.master_fallback_model,
         )
-        config = dict(config)
+        config = review_models.apply_to_mapping(config)
         config["agent_model"] = branch_resolution.resolved_model
         config["master_model"] = master_resolution.resolved_model
+        config["agent_fallback_model"] = branch_resolution.fallback_model
+        config["master_fallback_model"] = master_resolution.fallback_model
         config.setdefault("universe", "full_a")
         config.setdefault("skip_stage1", bool(config.get("skip_data_check", False)))
         config["model_role_resolution"] = {
@@ -303,18 +469,28 @@ class AnalysisRunner:
             "master": master_resolution.to_dict(),
         }
 
-        # Propagate Bayesian pipeline settings to Config via env vars
-        pipeline_mode = config.get("pipeline_mode", "bayesian")
-        os.environ.setdefault("PIPELINE_MODE", pipeline_mode)
-        os.environ.setdefault("FUNNEL_MAX_CANDIDATES", str(config.get("funnel_max_candidates", 400)))
+        os.environ.setdefault("FUNNEL_MAX_CANDIDATES", str(config.get("funnel_max_candidates", 200)))
+        os.environ.setdefault("FUNNEL_PROFILE", str(config.get("funnel_profile", runtime_config.FUNNEL_PROFILE)))
+        os.environ.setdefault(
+            "FUNNEL_TREND_WINDOWS",
+            ",".join(str(int(item)) for item in config.get("trend_windows", runtime_config.FUNNEL_TREND_WINDOWS)),
+        )
+        os.environ.setdefault(
+            "FUNNEL_VOLUME_SPIKE_THRESHOLD",
+            str(config.get("volume_spike_threshold", runtime_config.FUNNEL_VOLUME_SPIKE_THRESHOLD)),
+        )
+        os.environ.setdefault(
+            "FUNNEL_BREAKOUT_DISTANCE_PCT",
+            str(config.get("breakout_distance_pct", runtime_config.FUNNEL_BREAKOUT_DISTANCE_PCT)),
+        )
         os.environ.setdefault("BAYESIAN_SHORTLIST_SIZE", str(config.get("bayesian_shortlist_size", 20)))
         os.environ.setdefault("CN_FRESHNESS_MODE", config.get("freshness_mode", "stable"))
 
         log.info(
-            "开始分析 | market=%s | universe=%s | pipeline_mode=%s | branch_model=%s%s | master_model=%s%s | master_reasoning_effort=%s | top_k=%s | skip_stage1=%s",
+            "开始分析 | market=%s | universe=%s | review_model_priority=%s | branch_model=%s%s | master_model=%s%s | master_reasoning_effort=%s | top_k=%s | skip_stage1=%s",
             config["market"],
             config.get("universe", "full_a"),
-            pipeline_mode,
+            " -> ".join(config["review_model_priority"]),
             config["agent_model"] or "(默认)",
             " [fallback]" if branch_resolution.fallback_used else "",
             config["master_model"] or "(默认)",
@@ -351,13 +527,15 @@ class AnalysisRunner:
                 years=config["years"],
                 workers=config["workers"],
                 enable_agent_layer=config["enable_agent_layer"],
+                review_model_priority=config["review_model_priority"],
                 agent_model=config["agent_model"],
-                agent_fallback_model=config.get("agent_fallback_model", "deepseek-reasoner"),
+                agent_fallback_model=config["agent_fallback_model"],
                 master_model=config["master_model"],
-                master_fallback_model=config.get("master_fallback_model", "deepseek-chat"),
+                master_fallback_model=config["master_fallback_model"],
                 master_reasoning_effort=config.get("master_reasoning_effort", ""),
                 agent_timeout=config["agent_timeout"],
                 master_timeout=config["master_timeout"],
+                recall_context=dict(recall_context or {}),
                 verbose=True,
             )
 
@@ -517,26 +695,24 @@ class ReportBuilder:
         self, config: dict, now_str: str, total_stocks: int, selected_count: int
     ) -> str:
         capital_str = f"{config['total_capital']:,.0f}"
-        pipeline_mode = config.get("pipeline_mode", "legacy")
-        pipeline_label = "Bayesian 7-Layer" if pipeline_mode == "bayesian" else "Legacy 3-Layer"
+        review_chain = " -> ".join(config.get("review_model_priority", []) or ["(系统默认)"])
         return (
             f"# 📊 myQuant 每日 A 股分析报告\n\n"
             f"**生成时间**: {now_str}  \n"
             f"**市场**: {config['market']}  \n"
-            f"**决策引擎**: {pipeline_label}  \n"
+            f"**执行主线**: 统一 DAG + Bayesian Pipeline  \n"
             f"**风险偏好**: {config['risk_level']}  \n"
             f"**总资金**: ¥{capital_str}  \n"
             f"**分析股票数**: {total_stocks}  \n"
             f"**精选标的数**: {selected_count}  \n"
-            f"**Subagent 模型**: {config['agent_model'] or '(系统默认)'}  \n"
-            f"**Master Agent 模型**: {config['master_model'] or '(系统默认)'}  \n"
+            f"**Review 模型优先级**: {review_chain}  \n"
             f"**Master Agent reasoning**: {config.get('master_reasoning_effort', '') or '(系统默认)'}"
         )
 
     def _history_context(self, history: list[dict[str, Any]]) -> str:
         loader = HistoryLoader()
         context = loader.format_context_section(history)
-        return f"## 📚 历史分析上下文（最近 {len(history)} 次）\n\n{context}"
+        return f"## 📚 历史分析上下文（最近 5 个日期的策略记录）\n\n{context}"
 
     def _section_data_overview(
         self,
@@ -643,6 +819,7 @@ class ReportBuilder:
         dl_secs = _safe_float(timing.get("download_seconds", 0))
         an_secs = _safe_float(timing.get("analysis_seconds", 0))
         total_secs = _safe_float(timing.get("total_seconds", 0))
+        review_chain = " -> ".join(config.get("review_model_priority", []) or ["(系统默认)"])
 
         return (
             f"## § 3 分析过程\n\n"
@@ -652,23 +829,15 @@ class ReportBuilder:
             f"- 总耗时: {total_secs:.1f}s（{total_secs/60:.1f} 分钟）\n\n"
             f"**分析配置：**\n"
             f"- K线后端: `{config['kline_backend']}`\n"
-            f"- Subagent 模型: `{config['agent_model'] or '(系统默认)'}`\n"
-            f"- Master Agent 模型: `{config['master_model'] or '(系统默认)'}`\n"
+            f"- Review 模型优先级: `{review_chain}`\n"
             f"- Master Agent reasoning: `{config.get('master_reasoning_effort', '') or '(系统默认)'}`\n"
             f"- Subagent 超时: {config['agent_timeout']}s\n"
             f"- Master Agent 超时: {config['master_timeout']}s\n"
             f"- Agent Layer 启用: {'是' if config['enable_agent_layer'] else '否'}\n\n"
-            f"**决策引擎**: `{config.get('pipeline_mode', 'legacy')}`\n\n"
-            + (
-                f"**分析层级（Bayesian 7-Layer）：** GlobalContext → 全市场分支（K线+量化） → "
-                f"漏斗压缩（{config.get('funnel_max_candidates', 400)} 候选） → 候选分支（基本面+智能融合） → "
-                f"Bayesian 后验决策 → Master Discussion（Top {config.get('bayesian_shortlist_size', 20)}） → "
-                f"确定性控制链 → 组合构建 → 报告生成"
-                if config.get("pipeline_mode") == "bayesian"
-                else
-                f"**分析层级（Legacy 3-Layer）：** 数据层 → K线层 → 量化因子层 → 基本面层 → "
-                f"智能融合层 → 宏观层 → 风险层 → Subagent 审查 → Master synthesis / portfolio-level judgment before deterministic risk and sizing → 组合构建 → 报告生成"
-            )
+            f"**分析层级（统一 DAG）:** GlobalContext → 全市场分支（K线+量化） → "
+            f"漏斗压缩（{config.get('funnel_max_candidates', 200)} 候选） → 候选分支（基本面+智能融合） → "
+            f"Bayesian 后验决策 → Master Discussion（Top {config.get('bayesian_shortlist_size', 20)}） → "
+            f"确定性控制链 → 组合构建 → 报告生成"
         )
 
     def _section_run_context(self, analysis_meta: dict[str, Any], report_bundle: Any) -> str:
@@ -692,15 +861,13 @@ class ReportBuilder:
         return "## § 4 模型角色与执行轨迹\n\n" + "\n".join(rendered).strip()
 
     def _section_bayesian_decision(self, analysis_meta: dict[str, Any], config: dict[str, Any]) -> str:
-        """§ 4.5 Bayesian 决策层摘要（仅在 pipeline_mode=bayesian 时渲染）。"""
-        pipeline_mode = analysis_meta.get("pipeline_mode", config.get("pipeline_mode", "legacy"))
-        if pipeline_mode != "bayesian":
-            return ""
-
+        """§ 4.5 Bayesian 决策层摘要。"""
         record_count = int(analysis_meta.get("bayesian_record_count", 0))
         funnel_candidates = int(analysis_meta.get("funnel_candidates_count", 0))
         funnel_excluded = int(analysis_meta.get("funnel_excluded_count", 0))
         shortlist_symbols = list(analysis_meta.get("bayesian_shortlist_symbols", []))
+        if not any([record_count, funnel_candidates, funnel_excluded, shortlist_symbols]):
+            return ""
 
         lines = [
             "## § 4.5 Bayesian 决策层",
@@ -936,19 +1103,16 @@ class ReportBuilder:
         recommendations: list[dict],
         timing: dict,
     ) -> str:
-        from datetime import timedelta
-
         schedule_time = config.get("schedule_time", "17:30")
         next_run = f"下次分析时间: 明日 {schedule_time}"
 
-        # 上次分析提示
         prev_note = ""
         if history:
             last = history[0]
-            last_date = last.get("created_at", "")[:10]
-            prev_note = f"- 上次分析: {last_date}（{last.get('status', '')}）"
+            last_date = str(last.get("date", "") or "")
+            last_strategy = str(last.get("strategy", "") or "")
+            prev_note = f"- 最近参考记录: {last_date} / {last_strategy}"
 
-        # 当前建议摘要
         buy_list = [
             f"`{self._display_name(r)}` ¥{_safe_float(r.get('recommended_entry_price') or r.get('current_price', 0)):.2f}"
             for r in recommendations
@@ -979,7 +1143,7 @@ class ReportBuilder:
             f"- {next_run}\n"
             f"{prev_note}\n"
             f"{timing_note}\n"
-            f"- 历史分析记录已保存至 `data/web_runs.db`，可在 Web 工作台查看\n\n"
+            f"- 历史上下文来自 `results/strategy_records/{config['market']}` 最近 5 个日期的正式记录\n\n"
             f"**风险提示：**\n"
             f"- 本报告为系统自动生成，仅供参考，不构成投资建议\n"
             f"- 请结合实际市场情况和个人风险承受能力做出决策\n"
@@ -992,17 +1156,7 @@ class ReportBuilder:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class PersistenceManager:
-    """将报告保存到文件和 web_runs.db。"""
-
-    def __init__(self) -> None:
-        self._store: Any = None
-
-    def _get_store(self) -> Any:
-        if self._store is None:
-            from web.services.run_history_store import RunHistoryStore
-            self._store = RunHistoryStore()
-            self._store.init_db()
-        return self._store
+    """仅将 daily 报告保存到文件系统。"""
 
     def save(
         self,
@@ -1010,159 +1164,14 @@ class PersistenceManager:
         pipeline_result: dict[str, Any],
         config: dict[str, Any],
     ) -> str:
-        """保存报告到文件和数据库，返回 job_id。"""
-        job_id = f"daily-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}"
-        now_iso = datetime.now().isoformat()
-
-        # 1) 保存 Markdown 文件
+        """保存报告到 `reports/daily`，返回报告路径。"""
         report_dir = ROOT / config["report_dir"]
         report_dir.mkdir(parents=True, exist_ok=True)
         filename = f"{datetime.now().strftime('%Y-%m-%d_%H%M')}_analysis.md"
         report_path = report_dir / filename
         report_path.write_text(report_md, encoding="utf-8")
         log.info("报告已保存: %s", report_path)
-
-        def _as_mapping(value: Any) -> dict[str, Any]:
-            if isinstance(value, dict):
-                return dict(value)
-            if hasattr(value, "to_dict"):
-                try:
-                    payload = value.to_dict()
-                    if isinstance(payload, dict):
-                        return dict(payload)
-                except Exception:
-                    return {}
-            return {}
-
-        def _compact_trace_summary(value: Any) -> dict[str, Any]:
-            payload = _as_mapping(value)
-            steps = []
-            for step in payload.get("steps", [])[:8]:
-                step_map = _as_mapping(step)
-                steps.append(
-                    {
-                        "stage": step_map.get("stage", ""),
-                        "role": step_map.get("role", ""),
-                        "success": bool(step_map.get("success", False)),
-                        "conclusion": str(step_map.get("conclusion", ""))[:180],
-                    }
-                )
-            return {
-                "model_roles": _as_mapping(payload.get("model_roles")),
-                "key_parameters": {
-                    "selected_count": payload.get("key_parameters", {}).get("selected_count", 0),
-                    "target_exposure": payload.get("key_parameters", {}).get("target_exposure", 0.0),
-                    "max_single_weight": payload.get("key_parameters", {}).get("max_single_weight", 0.0),
-                    "data_quality_issue_count": payload.get("key_parameters", {}).get("data_quality_issue_count", 0),
-                    "resolver_strategy": payload.get("key_parameters", {}).get("resolver_strategy", ""),
-                },
-                "final_deterministic_outcome": _as_mapping(payload.get("final_deterministic_outcome")),
-                "steps": steps,
-                "resolution_strategy": payload.get("resolution_strategy", ""),
-                "local_union_fallback_used": bool(payload.get("local_union_fallback_used", False)),
-            }
-
-        def _compact_whatif_summary(value: Any) -> dict[str, Any]:
-            payload = _as_mapping(value)
-            scenarios = []
-            for scenario in payload.get("scenarios", [])[:6]:
-                scenario_map = _as_mapping(scenario)
-                scenarios.append(
-                    {
-                        "scenario_name": scenario_map.get("scenario_name", ""),
-                        "trigger": str(scenario_map.get("trigger", ""))[:120],
-                        "action": str(scenario_map.get("action", ""))[:120],
-                        "rerun_full_market_daily_path": bool(scenario_map.get("rerun_full_market_daily_path", False)),
-                    }
-                )
-            return {
-                "generated_by": payload.get("generated_by", ""),
-                "scenario_count": len(payload.get("scenarios", []) or []),
-                "scenarios": scenarios,
-                "metadata": _as_mapping(payload.get("metadata")),
-            }
-
-        # 2) 构建摘要 JSON
-        plan = pipeline_result.get("reports", {})
-        report_bundle = plan.get("report_bundle")
-        exec_summary = []
-        if report_bundle and hasattr(report_bundle, "executive_summary"):
-            exec_summary = list(getattr(report_bundle, "executive_summary", []))
-        analysis_meta = pipeline_result.get("analysis_meta", {})
-        execution_trace = _as_mapping(analysis_meta.get("execution_trace"))
-        what_if_plan = _as_mapping(analysis_meta.get("what_if_plan"))
-
-        analysis = pipeline_result.get("analysis", {})
-        total_stocks = sum(
-            sum(b.get("stock_count", 0) for b in batches)
-            for batches in analysis.values()
-        )
-        timing = pipeline_result.get("timing", {})
-        result_summary = {
-            "total_stocks": total_stocks,
-            "categories": pipeline_result.get("categories", []),
-            "universe": pipeline_result.get("universe", config.get("universe", "full_a")),
-            "timing_seconds": timing.get("total_seconds", 0),
-            "executive_summary": exec_summary,
-            "report_file": str(report_path),
-            "model_role_metadata": _as_mapping(analysis_meta.get("model_role_metadata", {})),
-            "branch_model": analysis_meta.get("branch_model", config.get("agent_model", "")),
-            "agent_fallback_model": config.get("agent_fallback_model", ""),
-            "master_model": analysis_meta.get("master_model", config.get("master_model", "")),
-            "master_fallback_model": config.get("master_fallback_model", ""),
-            "master_reasoning_effort": analysis_meta.get(
-                "master_reasoning_effort",
-                config.get("master_reasoning_effort", ""),
-            ),
-            "agent_layer_enabled": analysis_meta.get(
-                "agent_layer_enabled",
-                config.get("enable_agent_layer", False),
-            ),
-            "selected_count": execution_trace.get("final_deterministic_outcome", {}).get("selected_count", 0) if isinstance(execution_trace, dict) else 0,
-            "target_exposure": execution_trace.get("final_deterministic_outcome", {}).get("target_exposure", 0.0) if isinstance(execution_trace, dict) else 0.0,
-            "data_quality_issue_count": analysis_meta.get("data_quality_issue_count", 0),
-            "researchable_count": analysis_meta.get("researchable_count", 0),
-            "quarantined_count": analysis_meta.get("quarantined_count", 0),
-            "evidence_pack_token_count": analysis_meta.get("evidence_pack_token_count", 0),
-            "evidence_pack_field_limit": analysis_meta.get("evidence_pack_field_limit", 0),
-            "evidence_pack_shortlist_limit": analysis_meta.get("evidence_pack_shortlist_limit", 0),
-            "model_role_resolution": config.get("model_role_resolution", {}),
-            # Bayesian pipeline info
-            "pipeline_mode": analysis_meta.get("pipeline_mode", config.get("pipeline_mode", "legacy")),
-            "bayesian_shortlist_symbols": analysis_meta.get("bayesian_shortlist_symbols", []),
-            "bayesian_record_count": analysis_meta.get("bayesian_record_count", 0),
-            "funnel_candidates_count": analysis_meta.get("funnel_candidates_count", 0),
-            "funnel_excluded_count": analysis_meta.get("funnel_excluded_count", 0),
-        }
-        trace_summary = _compact_trace_summary(execution_trace)
-        whatif_summary = _compact_whatif_summary(what_if_plan)
-
-        # 3) 存入 web_runs.db
-        try:
-            store = self._get_store()
-            store.save_run(
-                job_id=job_id,
-                created_at=now_iso,
-                status="completed",
-                request_json=json.dumps(
-                    {k: v for k, v in config.items() if isinstance(v, (str, int, float, bool))},
-                    ensure_ascii=False,
-                ),
-                report_markdown=report_md,
-                report_path=str(report_path),
-                result_summary_json=json.dumps(result_summary, ensure_ascii=False),
-                trace_summary_json=json.dumps(trace_summary, ensure_ascii=False),
-                whatif_summary_json=json.dumps(whatif_summary, ensure_ascii=False),
-                total_time=_safe_float(timing.get("total_seconds", 0)),
-                market=config["market"],
-                stock_pool=json.dumps([]),
-                risk_level=config["risk_level"],
-            )
-            log.info("分析记录已写入数据库: job_id=%s", job_id)
-        except Exception as exc:
-            log.warning("写入数据库失败（报告文件已保存）: %s", exc)
-
-        return job_id
+        return str(report_path)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1175,6 +1184,7 @@ def run_once(
     skip_stage1: bool = False,
 ) -> str:
     """执行一次完整分析，返回报告路径。"""
+    config = _normalize_runtime_config(config)
     if skip_stage1:
         config = {**config, "skip_stage1": True}
     if skip_download:
@@ -1185,27 +1195,32 @@ def run_once(
     builder = ReportBuilder()
     persist = PersistenceManager()
 
-    history = history_loader.load_recent(config["history_lookback"], config["market"])
-    log.info("已加载 %d 条历史记录", len(history))
+    history = history_loader.load_recent(market=config["market"], max_dates=5)
+    recall_context = history_loader.build_recall_context(history, market=config["market"])
+    log.info(
+        "已加载 %d 条策略记录，覆盖最近 %d 个日期",
+        len(history),
+        len(recall_context.get("window_dates", [])),
+    )
 
-    pipeline_result = runner.run(config)
+    pipeline_result = runner.run(config, recall_context=recall_context)
 
     log.info("生成决策报告...")
     report_md = builder.build(pipeline_result, config, history)
 
-    job_id = persist.save(report_md, pipeline_result, config)
+    report_path = persist.save(report_md, pipeline_result, config)
 
     # 打印报告到控制台
     print("\n" + "=" * 80)
     print(report_md)
     print("=" * 80)
 
-    log.info("分析完成，job_id=%s", job_id)
-    return job_id
+    log.info("分析完成，report_path=%s", report_path)
+    return report_path
 
 
 def run_daemon(config: dict[str, Any]) -> None:
-    """守护模式：启动后端 + 每天定时运行分析。"""
+    """守护模式：每天定时运行分析。"""
     try:
         schedule_dt = datetime.strptime(config["schedule_time"], "%H:%M")
         schedule_time = schedule_dt.time()
@@ -1213,12 +1228,8 @@ def run_daemon(config: dict[str, Any]) -> None:
         log.error("无效的 schedule_time 格式: %s（应为 HH:MM）", config["schedule_time"])
         sys.exit(1)
 
-    backend_mgr = BackendManager(config["backend_host"], config["backend_port"])
-    backend_proc: Optional[subprocess.Popen] = None
-
     def _shutdown(signum: int, frame: Any) -> None:
         log.info("收到信号 %s，正在退出...", signum)
-        backend_mgr.stop(backend_proc)
         sys.exit(0)
 
     signal.signal(signal.SIGINT, _shutdown)
@@ -1226,22 +1237,9 @@ def run_daemon(config: dict[str, Any]) -> None:
 
     log.info("守护模式启动 | 每日 %s 自动分析", config["schedule_time"])
 
-    # 启动后端
-    try:
-        backend_proc = backend_mgr.start()
-    except Exception as exc:
-        log.error("后端启动失败: %s", exc)
-        log.info("继续运行（无 Web 后端，仅执行分析）")
-
     last_run_date: Optional[date] = None
 
     while True:
-        # 守护后端
-        try:
-            backend_proc = backend_mgr.ensure_running(backend_proc)
-        except Exception as exc:
-            log.warning("后端守护失败: %s", exc)
-
         now = datetime.now()
         today = now.date()
 
@@ -1261,71 +1259,42 @@ def run_daemon(config: dict[str, Any]) -> None:
         time.sleep(60)
 
 
-def run_backend_only(config: dict[str, Any]) -> None:
-    """仅启动并守护后端进程。"""
-    backend_mgr = BackendManager(config["backend_host"], config["backend_port"])
-    backend_proc: Optional[subprocess.Popen] = None
-
-    def _shutdown(signum: int, frame: Any) -> None:
-        log.info("收到信号，正在停止后端...")
-        backend_mgr.stop(backend_proc)
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, _shutdown)
-    signal.signal(signal.SIGTERM, _shutdown)
-
-    try:
-        backend_proc = backend_mgr.start()
-    except Exception as exc:
-        log.error("后端启动失败: %s", exc)
-        sys.exit(1)
-
-    log.info(
-        "后端运行中: http://%s:%s （Ctrl-C 停止）",
-        config["backend_host"],
-        config["backend_port"],
-    )
-
-    while True:
-        try:
-            backend_proc = backend_mgr.ensure_running(backend_proc)
-        except Exception as exc:
-            log.warning("后端守护异常: %s", exc)
-        time.sleep(30)
-
-
 def print_last_report(config: dict[str, Any]) -> None:
     """打印最后一次分析报告。"""
     loader = HistoryLoader()
     report = loader.load_last_report(config["market"])
     if not report:
-        print("暂无历史报告。请先运行 python daily_runner.py 执行一次分析。")
+        print("暂无策略记录报告。请先确认 results/strategy_records 下存在正式 run 目录。")
         return
     print(report)
 
 
 def dry_run(config: dict[str, Any]) -> None:
-    """验证配置和连接，不实际运行分析。"""
+    """验证配置和策略记录输入，不实际运行分析。"""
+    config = _normalize_runtime_config(config)
     print("=== DRY RUN 模式 ===\n")
 
     print("✓ 配置加载成功")
     for k, v in config.items():
         print(f"  {k}: {v}")
 
-    print("\n检查后端连通性...")
-    backend_mgr = BackendManager(config["backend_host"], config["backend_port"])
-    if backend_mgr.is_healthy():
-        print(f"✓ 后端已运行: http://{config['backend_host']}:{config['backend_port']}")
+    print("\n检查策略记录目录...")
+    loader = HistoryLoader()
+    market_root = _strategy_records_market_root(config["market"])
+    print(f"  market_root: {market_root}")
+    if market_root.exists():
+        print("✓ 市场策略记录目录存在")
     else:
-        print(f"✗ 后端未运行（启动后端: python daily_runner.py --backend-only）")
+        print("✗ 市场策略记录目录不存在")
 
-    print("\n检查数据库...")
     try:
-        loader = HistoryLoader()
-        runs = loader.load_recent(3, config["market"])
-        print(f"✓ 数据库连接成功，历史记录 {len(runs)} 条")
+        runs = loader.load_recent(market=config["market"], max_dates=5)
+        recall_context = loader.build_recall_context(runs, market=config["market"])
+        print(f"✓ 最近 5 个日期共解析 {len(runs)} 条策略记录")
+        print(f"  window_dates: {recall_context.get('window_dates', [])}")
+        print(f"  recent_symbols: {recall_context.get('recent_symbols', [])[:10]}")
     except Exception as exc:
-        print(f"✗ 数据库连接失败: {exc}")
+        print(f"✗ 策略记录解析失败: {exc}")
 
     print("\n检查 Python 环境...")
     try:
@@ -1334,16 +1303,15 @@ def dry_run(config: dict[str, Any]) -> None:
     except ImportError as exc:
         print(f"✗ quant_investor 导入失败: {exc}")
 
-    pipeline_mode = config.get("pipeline_mode", "legacy")
-    print(f"\n决策引擎: {pipeline_mode}")
-    if pipeline_mode == "bayesian":
-        try:
-            from quant_investor.bayesian import BayesianPosteriorEngine, HierarchicalPriorBuilder  # noqa: F401
-            from quant_investor.funnel import DeterministicFunnel  # noqa: F401
-            from quant_investor.global_context import GlobalContextBuilder  # noqa: F401
-            print("✓ Bayesian pipeline 模块可导入")
-        except ImportError as exc:
-            print(f"✗ Bayesian pipeline 导入失败: {exc}")
+    print("\n决策主线: unified_dag")
+    print(f"Review 模型优先级: {' -> '.join(config.get('review_model_priority', []))}")
+    try:
+        from quant_investor.bayesian import BayesianPosteriorEngine, HierarchicalPriorBuilder  # noqa: F401
+        from quant_investor.funnel import DeterministicFunnel  # noqa: F401
+        from quant_investor.global_context import GlobalContextBuilder  # noqa: F401
+        print("✓ Bayesian pipeline 模块可导入")
+    except ImportError as exc:
+        print(f"✗ Bayesian pipeline 导入失败: {exc}")
 
     print("\nDRY RUN 完成。")
 
@@ -1361,22 +1329,17 @@ def main() -> None:
     parser.add_argument(
         "--daemon",
         action="store_true",
-        help="守护模式：启动后端 + 每天定时分析",
-    )
-    parser.add_argument(
-        "--backend-only",
-        action="store_true",
-        help="仅启动并守护后端",
+        help="守护模式：每天定时分析",
     )
     parser.add_argument(
         "--report-only",
         action="store_true",
-        help="打印上次分析报告",
+        help="打印最新策略记录目录中的正式分析报告",
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="验证配置和连接，不实际运行",
+        help="验证配置和 strategy_records 输入，不实际运行",
     )
     parser.add_argument(
         "--skip-stage1",
@@ -1404,12 +1367,6 @@ def main() -> None:
         default="",
         help="覆盖 Master Agent 的 reasoning 强度（默认使用配置文件中的值）",
     )
-    parser.add_argument(
-        "--pipeline-mode",
-        choices=["bayesian", "legacy"],
-        default="",
-        help="决策引擎模式: bayesian（7层）或 legacy（3层）",
-    )
     args = parser.parse_args()
 
     # 加载配置
@@ -1421,16 +1378,13 @@ def main() -> None:
 
     if args.master_reasoning_effort:
         config["master_reasoning_effort"] = args.master_reasoning_effort
-    if args.pipeline_mode:
-        config["pipeline_mode"] = args.pipeline_mode
     if args.skip_stage1 or args.skip_data_check:
         config["skip_stage1"] = True
+    config = _normalize_runtime_config(config)
 
     # 分支执行
     if args.dry_run:
         dry_run(config)
-    elif args.backend_only:
-        run_backend_only(config)
     elif args.report_only:
         print_last_report(config)
     elif args.daemon:

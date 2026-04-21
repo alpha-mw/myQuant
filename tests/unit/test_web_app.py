@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 import json
 import sqlite3
 from pathlib import Path
@@ -285,14 +286,18 @@ def test_market_running_job_has_extended_stale_timeout(tmp_path, monkeypatch):
     monkeypatch.setattr(analysis_service, "WEB_ANALYSIS_DIR", web_analysis_dir)
     monkeypatch.setattr(analysis_service, "JOB_DIR", jobs_dir)
 
+    now = datetime.now().replace(microsecond=0)
+    created_at = (now - timedelta(hours=2, minutes=10)).isoformat()
+    updated_at = (now - timedelta(hours=2)).isoformat()
+
     analysis_service._job_file_for("20260317_100000_000001").write_text(
         json.dumps(
             {
                 "ok": True,
                 "job_id": "20260317_100000_000001",
                 "status": "running",
-                "created_at": "2026-03-17T10:00:00",
-                "updated_at": "2026-03-17T10:15:00",
+                "created_at": created_at,
+                "updated_at": updated_at,
                 "result": None,
                 "error": None,
                 "mode": "market",

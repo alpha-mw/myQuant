@@ -26,6 +26,14 @@ def test_timeout_budget_helpers_stay_available():
     ) >= 120.0
 
 
+def test_quant_investor_defaults_allow_long_running_llm_calls():
+    investor = QuantInvestor(stock_pool=["000001.SZ"])
+
+    assert investor.agent_timeout == 180.0
+    assert investor.master_timeout == 900.0
+    assert investor.agent_total_timeout == 2400.0
+
+
 def test_mainline_forwards_recall_context_to_unified_dag(monkeypatch):
     captured: dict[str, object] = {}
     recall_context = {
@@ -117,6 +125,11 @@ def test_mainline_forwards_recall_context_to_unified_dag(monkeypatch):
         enable_agent_layer=True,
         agent_model="deepseek-chat",
         master_model="deepseek-chat",
+        funnel_profile="momentum_leader",
+        max_candidates=160,
+        trend_windows=[15, 45, 120],
+        volume_spike_threshold=1.45,
+        breakout_distance_pct=0.05,
         recall_context=recall_context,
         verbose=False,
     )
@@ -125,6 +138,11 @@ def test_mainline_forwards_recall_context_to_unified_dag(monkeypatch):
     assert captured["recall_context"] == recall_context
     assert captured["agent_model"] == "deepseek-chat"
     assert captured["master_model"] == "deepseek-chat"
+    assert captured["funnel_profile"] == "momentum_leader"
+    assert captured["max_candidates"] == 160
+    assert captured["trend_windows"] == [15, 45, 120]
+    assert captured["volume_spike_threshold"] == 1.45
+    assert captured["breakout_distance_pct"] == 0.05
 
 
 def test_extract_common_fields_keeps_scalar_branch_signals_and_recall_context():
@@ -172,7 +190,6 @@ def test_master_agent_input_receives_recall_context(monkeypatch):
             captured_input["payload"] = agent_input
             return MasterAgentOutput(final_conviction="buy", final_score=0.2, confidence=0.7)
 
-    monkeypatch.setattr(mainline_module, "has_provider_for_model", lambda _model: True)
     monkeypatch.setattr("quant_investor.agents.orchestrator.MasterAgent", FakeMasterAgent)
 
     orchestrator = AgentOrchestrator(branch_model="deepseek-chat", master_model="deepseek-chat")

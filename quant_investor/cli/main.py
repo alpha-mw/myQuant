@@ -7,7 +7,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from quant_investor.config import config
 from quant_investor.pipeline import QuantInvestor
+from quant_investor.research_run_config import ResearchRunConfig, ResolvedReviewModels
 
 
 def run_download(**kwargs):
@@ -119,25 +121,26 @@ def _build_parser() -> argparse.ArgumentParser:
         help="关闭当前主线的 review layer",
     )
     research_run.add_argument(
-        "--agent-model",
-        default="",
-        help="分支 review agent 使用的 LLM 模型",
+        "--review-model",
+        action="append",
+        dest="review_model_priority",
+        default=[],
+        help="按传入顺序覆盖默认 review 模型优先级，可重复传入",
     )
-    research_run.add_argument(
-        "--master-model",
-        default="",
-        help="主协调 review agent 使用的 LLM 模型",
-    )
+    research_run.add_argument("--agent-model", default="")
+    research_run.add_argument("--agent-fallback-model", default="")
+    research_run.add_argument("--master-model", default="")
+    research_run.add_argument("--master-fallback-model", default="")
     research_run.add_argument(
         "--agent-timeout",
         type=float,
-        default=15.0,
+        default=config.DEFAULT_AGENT_TIMEOUT_SECONDS,
         help="单个 agent 超时（秒）",
     )
     research_run.add_argument(
         "--master-timeout",
         type=float,
-        default=30.0,
+        default=config.DEFAULT_MASTER_TIMEOUT_SECONDS,
         help="主协调 agent 超时（秒）",
     )
     research_run.add_argument(
@@ -145,6 +148,37 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["low", "medium", "high", "xhigh"],
         default="high",
         help="Master Agent reasoning 强度",
+    )
+    research_run.add_argument(
+        "--funnel-profile",
+        default=config.FUNNEL_PROFILE,
+        choices=["classic", "momentum_leader"],
+        help="候选漏斗配方",
+    )
+    research_run.add_argument(
+        "--max-candidates",
+        type=int,
+        default=config.FUNNEL_MAX_CANDIDATES,
+        help="进入候选研究阶段的最大标的数",
+    )
+    research_run.add_argument(
+        "--trend-windows",
+        type=int,
+        nargs="+",
+        default=list(config.FUNNEL_TREND_WINDOWS),
+        help="动量窗口（日），例如 20 60 120",
+    )
+    research_run.add_argument(
+        "--volume-spike-threshold",
+        type=float,
+        default=config.FUNNEL_VOLUME_SPIKE_THRESHOLD,
+        help="放量确认阈值",
+    )
+    research_run.add_argument(
+        "--breakout-distance-pct",
+        type=float,
+        default=config.FUNNEL_BREAKOUT_DISTANCE_PCT,
+        help="距阶段高点的最大距离",
     )
 
     market_parser = subparsers.add_parser("market", help="全市场工作流")
@@ -174,28 +208,6 @@ def _build_parser() -> argparse.ArgumentParser:
     market_maintain.add_argument("--fail-on-incomplete", action="store_true")
     market_maintain.add_argument("--allowed-stale-symbols", nargs="*")
 
-    market_download = market_subparsers.add_parser(
-        "download",
-        help="下载全市场数据",
-    )
-    market_download.add_argument(
-        "--market",
-        required=True,
-        choices=["CN", "US"],
-    )
-    market_download.add_argument(
-        "--category",
-        action="append",
-        dest="categories",
-    )
-    market_download.add_argument("--years", type=int, default=3)
-    market_download.add_argument("--workers", type=int, default=4)
-    market_download.add_argument("--batch-size", type=int, default=50)
-    market_download.add_argument("--check-complete", action="store_true")
-    market_download.add_argument("--max-rounds", type=int, default=1)
-    market_download.add_argument("--fail-on-incomplete", action="store_true")
-    market_download.add_argument("--allowed-stale-symbols", nargs="*")
-
     market_analyze = market_subparsers.add_parser(
         "analyze",
         help="分析全市场",
@@ -219,15 +231,28 @@ def _build_parser() -> argparse.ArgumentParser:
     market_analyze.add_argument("--capital", type=float, default=1_000_000)
     market_analyze.add_argument("--top-k", type=int, default=12)
     market_analyze.add_argument("--no-agent-layer", action="store_true")
+    market_analyze.add_argument(
+        "--review-model",
+        action="append",
+        dest="review_model_priority",
+        default=[],
+    )
     market_analyze.add_argument("--agent-model", default="")
+    market_analyze.add_argument("--agent-fallback-model", default="")
     market_analyze.add_argument("--master-model", default="")
+    market_analyze.add_argument("--master-fallback-model", default="")
     market_analyze.add_argument(
         "--master-reasoning-effort",
         choices=["low", "medium", "high", "xhigh"],
         default="high",
     )
-    market_analyze.add_argument("--agent-timeout", type=float, default=15.0)
-    market_analyze.add_argument("--master-timeout", type=float, default=30.0)
+    market_analyze.add_argument("--agent-timeout", type=float, default=config.DEFAULT_AGENT_TIMEOUT_SECONDS)
+    market_analyze.add_argument("--master-timeout", type=float, default=config.DEFAULT_MASTER_TIMEOUT_SECONDS)
+    market_analyze.add_argument("--funnel-profile", default=config.FUNNEL_PROFILE, choices=["classic", "momentum_leader"])
+    market_analyze.add_argument("--max-candidates", type=int, default=config.FUNNEL_MAX_CANDIDATES)
+    market_analyze.add_argument("--trend-windows", type=int, nargs="+", default=list(config.FUNNEL_TREND_WINDOWS))
+    market_analyze.add_argument("--volume-spike-threshold", type=float, default=config.FUNNEL_VOLUME_SPIKE_THRESHOLD)
+    market_analyze.add_argument("--breakout-distance-pct", type=float, default=config.FUNNEL_BREAKOUT_DISTANCE_PCT)
 
     market_run = market_subparsers.add_parser(
         "run",
@@ -256,15 +281,28 @@ def _build_parser() -> argparse.ArgumentParser:
     market_run.add_argument("--workers", type=int, default=4)
     market_run.add_argument("--max-download-rounds", type=int, default=2)
     market_run.add_argument("--no-agent-layer", action="store_true")
+    market_run.add_argument(
+        "--review-model",
+        action="append",
+        dest="review_model_priority",
+        default=[],
+    )
     market_run.add_argument("--agent-model", default="")
+    market_run.add_argument("--agent-fallback-model", default="")
     market_run.add_argument("--master-model", default="")
+    market_run.add_argument("--master-fallback-model", default="")
     market_run.add_argument(
         "--master-reasoning-effort",
         choices=["low", "medium", "high", "xhigh"],
         default="high",
     )
-    market_run.add_argument("--agent-timeout", type=float, default=15.0)
-    market_run.add_argument("--master-timeout", type=float, default=30.0)
+    market_run.add_argument("--agent-timeout", type=float, default=config.DEFAULT_AGENT_TIMEOUT_SECONDS)
+    market_run.add_argument("--master-timeout", type=float, default=config.DEFAULT_MASTER_TIMEOUT_SECONDS)
+    market_run.add_argument("--funnel-profile", default=config.FUNNEL_PROFILE, choices=["classic", "momentum_leader"])
+    market_run.add_argument("--max-candidates", type=int, default=config.FUNNEL_MAX_CANDIDATES)
+    market_run.add_argument("--trend-windows", type=int, nargs="+", default=list(config.FUNNEL_TREND_WINDOWS))
+    market_run.add_argument("--volume-spike-threshold", type=float, default=config.FUNNEL_VOLUME_SPIKE_THRESHOLD)
+    market_run.add_argument("--breakout-distance-pct", type=float, default=config.FUNNEL_BREAKOUT_DISTANCE_PCT)
 
     market_backtest = market_subparsers.add_parser(
         "backtest",
@@ -299,49 +337,16 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    review_models = ResolvedReviewModels.from_mapping(vars(args))
 
     if args.command == "research" and args.research_command == "run":
-        investor = QuantInvestor(
-            stock_pool=args.stocks,
-            market=args.market,
-            lookback_years=args.lookback,
-            total_capital=args.capital,
-            risk_level=args.risk,
-            enable_macro=not args.no_macro,
-            enable_quant=not args.no_quant,
-            enable_kline=not args.no_kline,
-            enable_fundamental=not args.no_fundamental,
-            enable_intelligence=not args.no_intelligence,
-            kline_backend=args.kline_backend,
-            allow_synthetic_for_research=args.allow_synthetic_for_research,
-            enable_document_semantics=not args.disable_document_semantics,
-            verbose=True,
-            enable_agent_layer=not args.no_agent_layer,
-            agent_model=args.agent_model,
-            master_model=args.master_model,
-            master_reasoning_effort=args.master_reasoning_effort,
-            agent_timeout=args.agent_timeout,
-            master_timeout=args.master_timeout,
-        )
+        run_config = ResearchRunConfig.from_mapping(vars(args))
+        investor = QuantInvestor(**run_config.to_quant_investor_kwargs(verbose=True))
         investor.run()
         if args.output:
             investor.save_report(args.output)
         else:
             investor.print_report()
-        return
-
-    if args.command == "market" and args.market_command == "download":
-        run_market_maintenance(
-            market=args.market,
-            categories=args.categories,
-            years=args.years,
-            max_workers=args.workers,
-            batch_size=args.batch_size,
-            max_rounds=args.max_rounds,
-            fail_on_incomplete=args.fail_on_incomplete,
-            allowed_stale_symbols=args.allowed_stale_symbols,
-            deprecated_alias=True,
-        )
         return
 
     if args.command == "market" and args.market_command == "maintain":
@@ -366,11 +371,12 @@ def main(argv: list[str] | None = None) -> None:
             total_capital=args.capital,
             top_k=args.top_k,
             enable_agent_layer=not args.no_agent_layer,
-            agent_model=args.agent_model,
-            master_model=args.master_model,
-            master_reasoning_effort=args.master_reasoning_effort,
-            agent_timeout=args.agent_timeout,
-            master_timeout=args.master_timeout,
+            funnel_profile=args.funnel_profile,
+            max_candidates=args.max_candidates,
+            trend_windows=args.trend_windows,
+            volume_spike_threshold=args.volume_spike_threshold,
+            breakout_distance_pct=args.breakout_distance_pct,
+            **review_models.to_runtime_kwargs(),
         )
         return
 
@@ -388,11 +394,12 @@ def main(argv: list[str] | None = None) -> None:
             workers=args.workers,
             max_download_rounds=args.max_download_rounds,
             enable_agent_layer=not args.no_agent_layer,
-            agent_model=args.agent_model,
-            master_model=args.master_model,
-            master_reasoning_effort=args.master_reasoning_effort,
-            agent_timeout=args.agent_timeout,
-            master_timeout=args.master_timeout,
+            funnel_profile=args.funnel_profile,
+            max_candidates=args.max_candidates,
+            trend_windows=args.trend_windows,
+            volume_spike_threshold=args.volume_spike_threshold,
+            breakout_distance_pct=args.breakout_distance_pct,
+            **review_models.to_runtime_kwargs(),
         )
         return
 

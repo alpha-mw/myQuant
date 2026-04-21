@@ -75,6 +75,16 @@ class BayesianPosteriorEngine:
         """
         degraded = is_degraded or {}
         prior_log_odds = _safe_log_odds(prior.composite_prior)
+        metadata = dict(likelihoods.metadata or {})
+        profile = str(metadata.get("profile", "classic") or "classic").strip().lower() or "classic"
+        history_confidence = float(metadata.get("history_confidence", 0.0) or 0.0)
+        avg_reliability = float(metadata.get("avg_reliability", 0.0) or 0.0)
+        recall_bias = float(metadata.get("recall_bias", 0.0) or 0.0)
+        momentum_strength = float(metadata.get("momentum_strength", 0.0) or 0.0)
+        fake_breakout_penalty = float(metadata.get("fake_breakout_penalty", 0.0) or 0.0)
+        setup_failure_penalty = float(metadata.get("setup_failure_penalty", 0.0) or 0.0)
+        crowding_penalty = float(metadata.get("crowding_penalty", 0.0) or 0.0)
+        market_pressure = float(metadata.get("market_pressure", 0.0) or 0.0)
 
         # Build per-branch log-likelihood ratios
         branch_llr: dict[str, float] = {}
@@ -88,7 +98,19 @@ class BayesianPosteriorEngine:
             evidence_sources.append(name)
 
         # Compute effective weights with correlation discount
-        weights = {name: _BASE_BRANCH_WEIGHT for name in branch_llr}
+        dynamic_weights = {
+            str(name): float(weight)
+            for name, weight in dict(metadata.get("branch_weights", {}) or {}).items()
+        }
+        if profile == "momentum_leader" and dynamic_weights:
+            weight_values = [max(value, 0.10) for value in dynamic_weights.values()]
+            mean_weight = sum(weight_values) / max(len(weight_values), 1)
+            weights = {
+                name: max(0.10, float(dynamic_weights.get(name, mean_weight))) / max(mean_weight, 1e-6)
+                for name in branch_llr
+            }
+        else:
+            weights = {name: _BASE_BRANCH_WEIGHT for name in branch_llr}
         total_correlation_discount = 0.0
         for branch_a, branch_b, rho in _CORRELATION_PAIRS:
             if branch_a in branch_llr and branch_b in branch_llr:
@@ -124,28 +146,71 @@ class BayesianPosteriorEngine:
             data_quality_penalty = 0.15
 
         # Final posterior with penalties
-        confidence = max(0.10, coverage_ratio * (1.0 - data_quality_penalty))
+        if profile == "momentum_leader":
+            confidence = 0.25 * coverage_ratio + 0.50 * history_confidence + 0.25 * avg_reliability
+            confidence -= data_quality_penalty
+            confidence -= fake_breakout_penalty * 0.20
+            confidence -= setup_failure_penalty * 0.12
+            confidence -= crowding_penalty * 0.08
+            confidence = max(0.10, min(0.98, confidence))
+        else:
+            confidence = max(0.10, coverage_ratio * (1.0 - data_quality_penalty))
         correlation_discounted_posterior = raw_posterior
 
         # Posterior win rate — the final probability estimate
         posterior_win_rate = raw_posterior
+        if profile == "momentum_leader":
+            posterior_win_rate = max(
+                _EPSILON,
+                min(
+                    1.0 - _EPSILON,
+                    raw_posterior
+                    + recall_bias * 0.25
+                    + momentum_strength * 0.04
+                    - fake_breakout_penalty * 0.06
+                    - setup_failure_penalty * 0.05
+                    - crowding_penalty * 0.03,
+                ),
+            )
 
         # Expected alpha — rough estimate based on distance from neutral
         posterior_expected_alpha = (posterior_win_rate - 0.50) * 0.10  # scale to ~5% max
         posterior_capacity_penalty = max(0.0, total_correlation_discount * 0.05 + total_fallback_penalty * 0.03)
+        if profile == "momentum_leader":
+            posterior_capacity_penalty += fake_breakout_penalty * 0.04
+            posterior_capacity_penalty += setup_failure_penalty * 0.03
+            posterior_capacity_penalty += crowding_penalty * 0.02
         posterior_edge_after_costs = posterior_expected_alpha - posterior_capacity_penalty
 
         # Regime adjustment
         thresholds = _ACTION_THRESHOLDS.get(regime, _ACTION_THRESHOLDS["未知"])
         buy_threshold = thresholds["buy"]
+        if profile == "momentum_leader":
+            buy_threshold += max(0.0, market_pressure) * 0.04
+            buy_threshold += fake_breakout_penalty * 0.02
+            buy_threshold += setup_failure_penalty * 0.015
+            buy_threshold = min(0.80, buy_threshold)
         regime_adjustment = buy_threshold - 0.55  # relative to neutral threshold
 
         # Action score: combines win rate, confidence, and regime awareness
-        posterior_action_score = (
-            posterior_win_rate * 0.60
-            + confidence * 0.25
-            + max(0.0, posterior_expected_alpha) * 5.0 * 0.15
-        )
+        if profile == "momentum_leader":
+            posterior_action_score = (
+                posterior_win_rate * 0.42
+                + confidence * 0.23
+                + max(0.0, posterior_edge_after_costs) * 5.0 * 0.18
+                + momentum_strength * 0.17
+            )
+            posterior_action_score -= fake_breakout_penalty * 0.14
+            posterior_action_score -= setup_failure_penalty * 0.10
+            posterior_action_score -= crowding_penalty * 0.06
+            posterior_action_score -= max(0.0, buy_threshold - posterior_win_rate) * 0.45
+        else:
+            posterior_action_score = (
+                posterior_win_rate * 0.60
+                + confidence * 0.25
+                + max(0.0, posterior_expected_alpha) * 5.0 * 0.15
+            )
+        posterior_action_score = max(-1.0, min(1.0, posterior_action_score))
 
         return PosteriorResult(
             symbol=symbol,
@@ -167,4 +232,26 @@ class BayesianPosteriorEngine:
             regime_adjustment=regime_adjustment,
             evidence_sources=evidence_sources,
             action_threshold_used=buy_threshold,
+            metadata={
+                "profile": profile,
+                "history_confidence": history_confidence,
+                "avg_reliability": avg_reliability,
+                "recall_bias": recall_bias,
+                "momentum_strength": momentum_strength,
+                "fake_breakout_penalty": fake_breakout_penalty,
+                "setup_failure_penalty": setup_failure_penalty,
+                "crowding_penalty": crowding_penalty,
+                "market_pressure": market_pressure,
+                "calibration_samples": dict(metadata.get("calibration_samples", {}) or {}),
+                "branch_weights": dict(dynamic_weights or {}),
+                "kill_switch": bool(
+                    profile == "momentum_leader"
+                    and (
+                        fake_breakout_penalty >= 0.88
+                        or setup_failure_penalty >= 0.75
+                        or (posterior_edge_after_costs < -0.01 and momentum_strength >= 0.60)
+                    )
+                ),
+                "sector": str(metadata.get("sector", "") or ""),
+            },
         )

@@ -8,7 +8,9 @@ BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_HOST="${FRONTEND_HOST:-127.0.0.1}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 
-if [[ -x "$ROOT_DIR/venv/bin/python" ]]; then
+if [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
+  PYTHON_BIN="$ROOT_DIR/.venv/bin/python"
+elif [[ -x "$ROOT_DIR/venv/bin/python" ]]; then
   PYTHON_BIN="$ROOT_DIR/venv/bin/python"
 else
   PYTHON_BIN="${PYTHON_BIN:-python3}"
@@ -55,17 +57,18 @@ cleanup() {
 ensure_command "$PYTHON_BIN"
 ensure_command npm
 
+BACKEND_CMD=("$PYTHON_BIN" -m uvicorn web.main:app --host "$BACKEND_HOST" --port "$BACKEND_PORT" --reload --reload-dir "$ROOT_DIR/web")
+if command -v uv >/dev/null 2>&1; then
+  BACKEND_CMD=(uv run --no-sync python -m uvicorn web.main:app --host "$BACKEND_HOST" --port "$BACKEND_PORT" --reload --reload-dir "$ROOT_DIR/web")
+fi
+
 check_port "$BACKEND_PORT" "后端"
 check_port "$FRONTEND_PORT" "前端"
 
 trap cleanup INT TERM EXIT
 
 echo "启动后端: http://$BACKEND_HOST:$BACKEND_PORT"
-"$PYTHON_BIN" -m uvicorn web.main:app \
-  --host "$BACKEND_HOST" \
-  --port "$BACKEND_PORT" \
-  --reload \
-  --reload-dir "$ROOT_DIR/web" &
+"${BACKEND_CMD[@]}" &
 BACKEND_PID=$!
 
 echo "启动前端: http://$FRONTEND_HOST:$FRONTEND_PORT"
@@ -76,7 +79,7 @@ echo "启动前端: http://$FRONTEND_HOST:$FRONTEND_PORT"
 FRONTEND_PID=$!
 
 echo "前端页面: http://$FRONTEND_HOST:$FRONTEND_PORT/"
-echo "后端接口: http://$BACKEND_HOST:$BACKEND_PORT/api/v1/health"
+echo "后端接口: http://$BACKEND_HOST:$BACKEND_PORT/api/health"
 echo "按 Ctrl+C 可同时关闭前后端。"
 
 wait

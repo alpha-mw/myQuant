@@ -8,6 +8,7 @@ V12 Agent 编排器。
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import time
 from dataclasses import asdict, is_dataclass
 from enum import Enum
@@ -45,6 +46,7 @@ from quant_investor.agents.stock_reviewers import (
 )
 from quant_investor.agents.subagent import BranchSubAgent, RiskSubAgent
 from quant_investor.branch_contracts import BranchResult, PortfolioStrategy, UnifiedDataBundle
+from quant_investor.config import config
 from quant_investor.llm_gateway import LLMClient as GatewayLLMClient
 from quant_investor.logger import get_logger
 from quant_investor.versioning import CURRENT_BRANCH_ORDER
@@ -76,9 +78,9 @@ class AgentOrchestrator:
         master_fallback_used: bool = False,
         master_fallback_reason: str = "",
         universe_key: str = "full_a",
-        timeout_per_agent: float = 15.0,
-        master_timeout: float = 30.0,
-        total_timeout: float = 120.0,
+        timeout_per_agent: float = config.DEFAULT_AGENT_TIMEOUT_SECONDS,
+        master_timeout: float = config.DEFAULT_MASTER_TIMEOUT_SECONDS,
+        total_timeout: float = config.DEFAULT_AGENT_TOTAL_TIMEOUT_SECONDS,
         max_tokens_branch: int = 800,
         max_tokens_master: int = 2000,
     ) -> None:
@@ -260,8 +262,9 @@ class AgentOrchestrator:
 
         if loop and loop.is_running():
             import concurrent.futures
+            ctx = contextvars.copy_context()
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(asyncio.run, self.enhance(**kwargs))
+                future = pool.submit(lambda: ctx.run(asyncio.run, self.enhance(**kwargs)))
                 return future.result(timeout=self.total_timeout)
         else:
             return asyncio.run(self.enhance(**kwargs))
@@ -410,6 +413,7 @@ class AgentOrchestrator:
         agent = MasterAgent(
             llm_client=llm_client,
             model=self.master_model,
+            fallback_model=self.master_fallback_model,
             reasoning_effort=self.master_reasoning_effort,
             timeout=self.master_timeout,
             max_tokens=self.max_tokens_master,
@@ -473,6 +477,7 @@ class AgentOrchestrator:
                     branch_name=branch_name,
                     llm_client=review_llm,
                     model=self.branch_model,
+                    fallback_model=self.branch_fallback_model,
                     timeout=self.timeout_per_agent,
                     max_tokens=self.branch_max_tokens(branch_name, self.max_tokens_branch),
                 )
@@ -503,6 +508,7 @@ class AgentOrchestrator:
             reviewer = MasterICAgent(
                 llm_client=review_master_llm,
                 model=self.master_model,
+                fallback_model=self.master_fallback_model,
                 reasoning_effort=self.master_reasoning_effort,
                 timeout=self.master_timeout,
                 max_tokens=self.max_tokens_master,

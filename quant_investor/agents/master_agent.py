@@ -38,12 +38,16 @@ class MasterAgent:
         self,
         llm_client: LLMClient,
         model: str,
+        candidate_models: list[str] | None = None,
+        fallback_model: str = "",
         reasoning_effort: str = "high",
         timeout: float = 30.0,
         max_tokens: int = 1500,
     ) -> None:
         self.llm_client = llm_client
         self.model = model
+        self.candidate_models = [str(item).strip() for item in list(candidate_models or []) if str(item).strip()]
+        self.fallback_model = str(fallback_model or "").strip()
         self.reasoning_effort = str(reasoning_effort or "").strip() or "high"
         self.timeout = timeout
         self.max_tokens = max_tokens
@@ -63,6 +67,8 @@ class MasterAgent:
             raw = await self.llm_client.complete(
                 messages=messages,
                 model=self.model,
+                candidate_models=self.candidate_models,
+                fallback_model=self.fallback_model,
                 max_tokens=self.max_tokens,
                 response_json=True,
                 stage="review_master_agent",

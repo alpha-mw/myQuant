@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 import quant_investor.pipeline as pipeline_module
 from web.api import app
+from web.models.research_models import ResearchRunRequest
 from web.services.research_runner import job_manager
 from web.services.run_history_store import history_store
 
@@ -18,6 +19,17 @@ class _FakeLLMUsage:
     total_prompt_tokens = 128
     total_completion_tokens = 64
     estimated_cost_usd = 0.0123
+    failed_count = 1
+    fallback_count = 1
+
+
+class _FakeEffectiveLLMUsage:
+    total_calls = 1
+    total_prompt_tokens = 64
+    total_completion_tokens = 32
+    estimated_cost_usd = 0.0061
+    failed_count = 0
+    fallback_count = 0
 
 
 class _FakeResult:
@@ -25,6 +37,8 @@ class _FakeResult:
     layer_timings = {"data": 0.12, "review": 0.34}
     execution_log = ["data ready", "report ready"]
     llm_usage_summary = _FakeLLMUsage()
+    llm_effective_summary = _FakeEffectiveLLMUsage()
+    llm_usage_session_id = "session-123"
     final_strategy = None
     master_review_output = None
     data_snapshot = {
@@ -55,13 +69,33 @@ def _make_payload(**overrides):
         "enable_fundamental": True,
         "enable_intelligence": True,
         "enable_agent_layer": True,
-        "agent_model": "",
-        "master_model": "",
+        "review_model_priority": [],
         "agent_timeout": 15,
         "master_timeout": 30,
     }
     payload.update(overrides)
     return payload
+
+
+def test_research_run_request_schema_exposes_explicit_role_model_fields():
+    schema = ResearchRunRequest.model_json_schema()
+    properties = schema.get("properties", {})
+
+    assert "agent_model" in properties
+    assert "agent_fallback_model" in properties
+    assert "master_model" in properties
+    assert "master_fallback_model" in properties
+    assert "review_model_priority" in properties
+
+
+def test_research_run_request_defaults_leave_role_overrides_blank():
+    request = ResearchRunRequest(stock_pool=["000001.SZ"])
+
+    assert request.review_model_priority == []
+    assert request.agent_model == ""
+    assert request.agent_fallback_model == ""
+    assert request.master_model == ""
+    assert request.master_fallback_model == ""
 
 
 def _wait_for_terminal_state(client: TestClient, job_id: str) -> dict[str, object]:
@@ -128,6 +162,9 @@ def test_completed_run_persists_without_sse_consumer(workspace_client: TestClien
     assert terminal["result_summary"]["stock_pool"] == ["000001.SZ", "600519.SH"]
     assert terminal["result_summary"]["market"] == "CN"
     assert terminal["result_summary"]["data_snapshot"]["local_latest_trade_date"] == "20260326"
+    assert terminal["result_summary"]["llm_usage_summary"]["failed_count"] == 1
+    assert terminal["result_summary"]["llm_effective_summary"]["total_calls"] == 1
+    assert terminal["result_summary"]["llm_usage_session_id"] == "session-123"
 
     with job_manager._lock:
         job_manager._jobs.clear()

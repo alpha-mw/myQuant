@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
+from quant_investor.llm_provider_priority import resolve_runtime_role_models
 from web.config import APP_DB_PATH, PROJECT_ROOT, PROJECT_VENV_PYTHON, RESULTS_DIR, STOCK_DB_PATH, WEB_ANALYSIS_DIR
 
 logger = logging.getLogger(__name__)
@@ -107,7 +108,7 @@ ANALYSIS_PRESETS: dict[str, dict[str, Any]] = {
         "portfolio": {"candidate_limit": 5, "allocation_mode": "conviction_weight", "allow_cash_buffer": True},
         "llm_debate": {
             "enabled": True,
-            "models": ["moonshot-v1-8k", "deepseek-chat", "qwen-plus"],
+            "models": ["qwen3.5-flash", "deepseek-chat", "moonshot-v1-128k", "qwen3.5-plus"],
             "rounds": 3,
             "assignment_mode": "random_balanced",
             "judge_mode": "auto",
@@ -137,7 +138,7 @@ ANALYSIS_PRESETS: dict[str, dict[str, Any]] = {
         "portfolio": {"candidate_limit": 10, "allocation_mode": "risk_budget", "allow_cash_buffer": True},
         "llm_debate": {
             "enabled": True,
-            "models": ["moonshot-v1-8k", "deepseek-chat"],
+            "models": ["qwen3.5-flash", "deepseek-chat", "moonshot-v1-128k", "qwen3.5-plus"],
             "rounds": 2,
             "assignment_mode": "random_balanced",
             "judge_mode": "auto",
@@ -207,12 +208,13 @@ RISK_TEMPLATES = [
 ]
 
 LLM_MODELS = [
+    {"id": "qwen3.5-flash", "label": "通义千问 3.5 Flash", "provider": "Alibaba", "env": "DASHSCOPE_API_KEY"},
+    {"id": "deepseek-chat", "label": "DeepSeek Chat", "provider": "DeepSeek", "env": "DEEPSEEK_API_KEY"},
     {"id": "moonshot-v1-128k", "label": "Kimi Moonshot 128K", "provider": "Kimi", "env": "KIMI_API_KEY"},
+    {"id": "qwen3.5-plus", "label": "通义千问 3.5 Plus", "provider": "Alibaba", "env": "DASHSCOPE_API_KEY"},
+    {"id": "deepseek-reasoner", "label": "DeepSeek Reasoner", "provider": "DeepSeek", "env": "DEEPSEEK_API_KEY"},
     {"id": "moonshot-v1-32k", "label": "Kimi Moonshot 32K", "provider": "Kimi", "env": "KIMI_API_KEY"},
     {"id": "moonshot-v1-8k", "label": "Kimi Moonshot 8K", "provider": "Kimi", "env": "KIMI_API_KEY"},
-    {"id": "deepseek-chat", "label": "DeepSeek Chat", "provider": "DeepSeek", "env": "DEEPSEEK_API_KEY"},
-    {"id": "deepseek-reasoner", "label": "DeepSeek Reasoner", "provider": "DeepSeek", "env": "DEEPSEEK_API_KEY"},
-    {"id": "qwen-plus", "label": "通义千问 Plus", "provider": "Alibaba", "env": "DASHSCOPE_API_KEY"},
 ]
 
 
@@ -434,8 +436,13 @@ def _job_stale_timeout(payload: dict[str, Any]) -> timedelta:
     if mode != "market":
         return STALE_JOB_TIMEOUT
 
-    targets = payload.get("targets") or payload.get("stocks") or []
-    target_count = len(targets) if isinstance(targets, list) else int(payload.get("target_count") or 0)
+    targets = payload.get("targets")
+    if not targets:
+        targets = payload.get("stocks")
+    if isinstance(targets, list) and targets:
+        target_count = len(targets)
+    else:
+        target_count = int(payload.get("target_count") or 0)
     timeout_seconds = min(
         LARGE_ANALYSIS_TIMEOUT_CAP_SECONDS + 1800,
         max(5400, 1200 + target_count * 2),
@@ -636,7 +643,24 @@ def _run_market_analysis(
 
     capital = float(normalized_request.get("risk", {}).get("capital", 1_000_000.0))
     candidate_limit = int(normalized_request.get("portfolio", {}).get("candidate_limit", 12) or 12)
+    funnel_profile = str(normalized_request.get("portfolio", {}).get("funnel_profile", "momentum_leader") or "momentum_leader")
+    max_candidates = int(normalized_request.get("portfolio", {}).get("max_candidates", 200) or 200)
+    trend_windows = list(normalized_request.get("portfolio", {}).get("trend_windows", [20, 60, 120]) or [20, 60, 120])
+    volume_spike_threshold = float(normalized_request.get("portfolio", {}).get("volume_spike_threshold", 1.35) or 1.35)
+    breakout_distance_pct = float(normalized_request.get("portfolio", {}).get("breakout_distance_pct", 0.06) or 0.06)
     max_single_position = float(normalized_request.get("risk", {}).get("max_single_position", 0.2) or 0.2)
+    ordered_review_models = list(
+        normalized_request.get("review_model_priority", [])
+        or normalized_request.get("llm_debate", {}).get("models", [])
+        or []
+    )
+    branch_config, master_config = resolve_runtime_role_models(
+        review_model_priority=ordered_review_models,
+        agent_model=str(normalized_request.get("agent_model", "") or ""),
+        agent_fallback_model=str(normalized_request.get("agent_fallback_model", "") or ""),
+        master_model=str(normalized_request.get("master_model", "") or ""),
+        master_fallback_model=str(normalized_request.get("master_fallback_model", "") or ""),
+    )
     dag_artifacts = execute_market_dag(
         market=market,
         symbols=targets,
@@ -647,8 +671,16 @@ def _run_market_analysis(
         top_k=max(candidate_limit, 1),
         verbose=False,
         enable_agent_layer=bool(normalized_request.get("llm_debate", {}).get("enabled", False)),
-        agent_model="moonshot-v1-128k",
-        master_model="moonshot-v1-128k",
+        review_model_priority=ordered_review_models,
+        agent_model=branch_config.primary_model,
+        agent_fallback_model=branch_config.fallback_model,
+        master_model=master_config.primary_model,
+        master_fallback_model=master_config.fallback_model,
+        funnel_profile=funnel_profile,
+        max_candidates=max_candidates,
+        trend_windows=trend_windows,
+        volume_spike_threshold=volume_spike_threshold,
+        breakout_distance_pct=breakout_distance_pct,
     )
     portfolio_decision = dag_artifacts.get("portfolio_decision")
     report_bundle = dag_artifacts.get("report_bundle")

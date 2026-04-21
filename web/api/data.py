@@ -16,7 +16,7 @@ from web.models.data_models import (
 )
 from web.services import data_service
 
-router = APIRouter(prefix="/api/data", tags=["data"])
+router = APIRouter(prefix="/data", tags=["data"])
 
 
 @router.get("/statistics", response_model=DatabaseStats)

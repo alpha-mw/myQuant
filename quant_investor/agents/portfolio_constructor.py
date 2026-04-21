@@ -31,6 +31,9 @@ class _SymbolIntent:
     symbol: str
     score: float
     confidence: float
+    calibrated_confidence: float
+    momentum_strength: float
+    fake_breakout_penalty: float
     action: ActionLabel
     position_mode: str
     sector: str
@@ -284,6 +287,9 @@ class PortfolioConstructor(BaseAgent):
                     {
                         "scores": [],
                         "confidences": [],
+                        "calibrated_confidences": [],
+                        "momentum_strengths": [],
+                        "fake_breakout_penalties": [],
                         "actions": [],
                         "position_modes": [],
                         "sectors": [],
@@ -291,6 +297,15 @@ class PortfolioConstructor(BaseAgent):
                 )
                 bucket["scores"].append(self.clamp(float(item["score"]), -1.0, 1.0))
                 bucket["confidences"].append(self.clamp(float(item["confidence"]), 0.0, 1.0))
+                bucket["calibrated_confidences"].append(
+                    self.clamp(float(item.get("calibrated_confidence", item["confidence"])), 0.0, 1.0)
+                )
+                bucket["momentum_strengths"].append(
+                    self.clamp(float(item.get("momentum_strength", max(float(item["score"]), 0.0))), 0.0, 1.0)
+                )
+                bucket["fake_breakout_penalties"].append(
+                    self.clamp(float(item.get("fake_breakout_penalty", 0.0)), 0.0, 1.0)
+                )
                 bucket["actions"].append(self._coerce_action(item["action"]))
                 bucket["position_modes"].append(self._normalize_position_mode(item["position_mode"]))
                 sector = str(item.get("sector") or tradability.get(symbol, {}).get("sector") or "unknown")
@@ -301,6 +316,9 @@ class PortfolioConstructor(BaseAgent):
             payload = aggregated[symbol]
             score = sum(payload["scores"]) / len(payload["scores"])
             confidence = sum(payload["confidences"]) / len(payload["confidences"])
+            calibrated_confidence = sum(payload["calibrated_confidences"]) / len(payload["calibrated_confidences"])
+            momentum_strength = sum(payload["momentum_strengths"]) / len(payload["momentum_strengths"])
+            fake_breakout_penalty = sum(payload["fake_breakout_penalties"]) / len(payload["fake_breakout_penalties"])
             action = self._merge_action(payload["actions"])
             position_mode = self._merge_position_mode(payload["position_modes"], action, symbol, explicit_rejects)
             sector = sorted(str(item) for item in payload["sectors"] if str(item).strip())[0]
@@ -308,6 +326,9 @@ class PortfolioConstructor(BaseAgent):
                 symbol=symbol,
                 score=self.clamp(score, -1.0, 1.0),
                 confidence=self.clamp(confidence, 0.0, 1.0),
+                calibrated_confidence=self.clamp(calibrated_confidence, 0.0, 1.0),
+                momentum_strength=self.clamp(momentum_strength, 0.0, 1.0),
+                fake_breakout_penalty=self.clamp(fake_breakout_penalty, 0.0, 1.0),
                 action=action,
                 position_mode=position_mode,
                 sector=sector,
@@ -331,6 +352,9 @@ class PortfolioConstructor(BaseAgent):
                         "symbol": symbol,
                         "score": candidate.get("score", decision.final_score),
                         "confidence": candidate.get("confidence", decision.final_confidence),
+                        "calibrated_confidence": candidate.get("calibrated_confidence", candidate.get("confidence", decision.final_confidence)),
+                        "momentum_strength": candidate.get("momentum_strength", max(float(candidate.get("score", decision.final_score)), 0.0)),
+                        "fake_breakout_penalty": candidate.get("fake_breakout_penalty", 0.0),
                         "action": candidate.get("action", decision.action),
                         "position_mode": candidate.get("position_mode", self._default_position_mode(decision.action)),
                         "sector": candidate.get("sector", ""),
@@ -356,6 +380,9 @@ class PortfolioConstructor(BaseAgent):
 
         symbol_scores = metadata.get("symbol_scores", {})
         symbol_confidences = metadata.get("symbol_confidences", {})
+        symbol_calibrated_confidences = metadata.get("symbol_calibrated_confidences", {})
+        symbol_momentum_strengths = metadata.get("symbol_momentum_strengths", {})
+        symbol_fake_breakout_penalties = metadata.get("symbol_fake_breakout_penalties", {})
         symbol_actions = metadata.get("symbol_actions", {})
         symbol_modes = metadata.get("symbol_modes", {})
         symbol_sectors = metadata.get("symbol_sectors", {})
@@ -370,6 +397,15 @@ class PortfolioConstructor(BaseAgent):
                     "confidence": symbol_confidences.get(symbol, decision.final_confidence)
                     if isinstance(symbol_confidences, Mapping)
                     else decision.final_confidence,
+                    "calibrated_confidence": symbol_calibrated_confidences.get(symbol, decision.final_confidence)
+                    if isinstance(symbol_calibrated_confidences, Mapping)
+                    else decision.final_confidence,
+                    "momentum_strength": symbol_momentum_strengths.get(symbol, max(float(decision.final_score), 0.0))
+                    if isinstance(symbol_momentum_strengths, Mapping)
+                    else max(float(decision.final_score), 0.0),
+                    "fake_breakout_penalty": symbol_fake_breakout_penalties.get(symbol, 0.0)
+                    if isinstance(symbol_fake_breakout_penalties, Mapping)
+                    else 0.0,
                     "action": symbol_actions.get(symbol, decision.action)
                     if isinstance(symbol_actions, Mapping)
                     else decision.action,
@@ -549,7 +585,10 @@ class PortfolioConstructor(BaseAgent):
         sectors: dict[str, str] = {}
         for symbol in sorted(intents):
             intent = intents[symbol]
-            strength = max(intent.score, 0.0) * (0.5 + 0.5 * intent.confidence)
+            confidence_term = max(intent.calibrated_confidence, intent.confidence)
+            strength = max(intent.momentum_strength, max(intent.score, 0.0))
+            strength *= 0.35 + 0.65 * confidence_term
+            strength *= 1.0 - min(intent.fake_breakout_penalty, 0.80) * 0.45
             strength *= self._ACTION_MULTIPLIER.get(intent.action, 0.0)
             cap = self._resolve_symbol_cap(
                 symbol=symbol,
