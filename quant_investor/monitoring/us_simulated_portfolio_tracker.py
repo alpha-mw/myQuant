@@ -9,7 +9,6 @@ import json
 import math
 import re
 import shutil
-import subprocess
 import time
 from collections import Counter
 from dataclasses import asdict, dataclass
@@ -1023,30 +1022,6 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         market_snapshot=market_snapshot,
     )
 
-    shortcuts_result = {"success": False, "returncode": None, "stderr": "", "stdout": ""}
-    try:
-        command = [
-            "shortcuts",
-            "run",
-            "Quant Daily To Notes",
-            "--input-path",
-            str(DEFAULT_NOTES_PATH),
-        ]
-        completed = subprocess.run(command, capture_output=True, text=True, check=False)
-        shortcuts_result = {
-            "success": completed.returncode == 0,
-            "returncode": completed.returncode,
-            "stderr": completed.stderr.strip(),
-            "stdout": completed.stdout.strip(),
-        }
-    except Exception as exc:
-        shortcuts_result = {
-            "success": False,
-            "returncode": None,
-            "stderr": str(exc),
-            "stdout": "",
-        }
-
     elapsed_sec = round(time.time() - started, 2)
     return {
         "timestamp": timestamp,
@@ -1063,7 +1038,6 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "allowed_exclusions": allowed_exclusions,
         "target_latest_trade_date": target_latest_trade_date,
         "recommendation_timestamp": recommendation_timestamp,
-        "shortcuts_result": shortcuts_result,
         "elapsed_sec": elapsed_sec,
     }
 

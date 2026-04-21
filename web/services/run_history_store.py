@@ -41,7 +41,10 @@ class RunHistoryStore:
                 status TEXT NOT NULL,
                 request_json TEXT NOT NULL,
                 report_markdown TEXT DEFAULT '',
+                report_path TEXT DEFAULT '',
                 result_summary_json TEXT DEFAULT '{}',
+                trace_summary_json TEXT DEFAULT '{}',
+                whatif_summary_json TEXT DEFAULT '{}',
                 total_time REAL,
                 market TEXT DEFAULT 'CN',
                 stock_pool TEXT DEFAULT '[]',
@@ -79,6 +82,9 @@ class RunHistoryStore:
             ("error",               "TEXT DEFAULT ''"),
             ("selection_meta_json", "TEXT DEFAULT '{}'"),
             ("recall_context_json", "TEXT DEFAULT '{}'"),
+            ("report_path",         "TEXT DEFAULT ''"),
+            ("trace_summary_json",  "TEXT DEFAULT '{}'"),
+            ("whatif_summary_json", "TEXT DEFAULT '{}'"),
         ]:
             self._ensure_column(conn, "runs", col, sql)
         conn.commit()
@@ -104,7 +110,10 @@ class RunHistoryStore:
         status: str,
         request_json: str,
         report_markdown: str = "",
+        report_path: str = "",
         result_summary_json: str = "{}",
+        trace_summary_json: str = "{}",
+        whatif_summary_json: str = "{}",
         total_time: Optional[float] = None,
         market: str = "CN",
         stock_pool: str = "[]",
@@ -118,10 +127,10 @@ class RunHistoryStore:
         conn.execute(
             """
             INSERT OR REPLACE INTO runs
-                (job_id, created_at, status, request_json, report_markdown,
-                 result_summary_json, total_time, market, stock_pool, risk_level,
+                (job_id, created_at, status, request_json, report_markdown, report_path,
+                 result_summary_json, trace_summary_json, whatif_summary_json, total_time, market, stock_pool, risk_level,
                  preset_id, error, selection_meta_json, recall_context_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job_id,
@@ -129,7 +138,10 @@ class RunHistoryStore:
                 status,
                 request_json,
                 report_markdown,
+                report_path,
                 result_summary_json,
+                trace_summary_json,
+                whatif_summary_json,
                 total_time,
                 market,
                 stock_pool,

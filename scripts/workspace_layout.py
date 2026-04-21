@@ -29,6 +29,22 @@ EXPLICIT_CLEANUP_DIRS = (
     Path("frontend") / "dist",
 )
 
+LEGACY_WORKSPACE_ROOTS = (
+    Path("/legacy/workspace/myQuant"),
+)
+
+_PATH_AUDIT_FILES = (
+    Path(".venv/bin/activate"),
+    Path(".venv/bin/activate.bat"),
+    Path(".venv/bin/activate.csh"),
+    Path(".venv/bin/activate.fish"),
+    Path(".venv/bin/activate.nu"),
+)
+
+_PATH_AUDIT_GLOBS = (
+    ".claude/worktrees/*/.git",
+)
+
 _SCAN_EXCLUDE_ROOTS = {
     ".git",
     ".venv",
@@ -129,3 +145,70 @@ def remove_cleanup_targets(paths: list[Path]) -> list[Path]:
             shutil.rmtree(path)
             removed.append(path)
     return removed
+
+
+def iter_workspace_path_audit_targets(root: Path | None = None) -> list[Path]:
+    """Collect local text files that may retain a moved workspace root."""
+    repo_root = get_repo_root(root)
+    targets: dict[str, Path] = {}
+
+    for relative_path in _PATH_AUDIT_FILES:
+        path = repo_root / relative_path
+        if path.exists():
+            targets[str(path)] = path
+
+    for pattern in _PATH_AUDIT_GLOBS:
+        for path in repo_root.glob(pattern):
+            if path.is_file():
+                targets[str(path)] = path
+
+    return sorted(targets.values(), key=lambda path: path.relative_to(repo_root).as_posix())
+
+
+def find_legacy_workspace_root_references(root: Path | None = None) -> list[dict[str, object]]:
+    """Report local operational files that still point at the legacy workspace root."""
+    repo_root = get_repo_root(root)
+    findings: list[dict[str, object]] = []
+
+    for path in iter_workspace_path_audit_targets(repo_root):
+        text = path.read_text(encoding="utf-8")
+        for legacy_root in LEGACY_WORKSPACE_ROOTS:
+            legacy_text = str(legacy_root)
+            if legacy_text not in text:
+                continue
+            findings.append(
+                {
+                    "relative_path": path.relative_to(repo_root).as_posix(),
+                    "path": path,
+                    "legacy_root": legacy_root,
+                }
+            )
+            break
+
+    return findings
+
+
+def replace_legacy_workspace_root_references(
+    root: Path | None = None,
+    *,
+    new_root: Path | None = None,
+) -> list[Path]:
+    """Rewrite legacy workspace roots inside local operational text files."""
+    repo_root = get_repo_root(root)
+    target_root = get_repo_root(new_root) if new_root is not None else repo_root
+    updated_paths: list[Path] = []
+
+    for path in iter_workspace_path_audit_targets(repo_root):
+        original_text = path.read_text(encoding="utf-8")
+        updated_text = original_text
+
+        for legacy_root in LEGACY_WORKSPACE_ROOTS:
+            updated_text = updated_text.replace(str(legacy_root), str(target_root))
+
+        if updated_text == original_text:
+            continue
+
+        path.write_text(updated_text, encoding="utf-8")
+        updated_paths.append(path)
+
+    return updated_paths

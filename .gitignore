@@ -60,12 +60,12 @@ config.ini
 
 # Output files - NEVER COMMIT REPORTS
 *.log
-*.png
-*.jpg
-*.jpeg
-*.pdf
-*.html
-*.md
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pytest_cache/
+.mypy_cache/
 
 # Directories with data/reports
 data/
@@ -84,3 +84,4 @@ Thumbs.db
 tmp/
 temp/
 *.tmp
+.omx/

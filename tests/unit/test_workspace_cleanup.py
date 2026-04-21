@@ -6,7 +6,9 @@ from scripts.workspace_cleanup import main as cleanup_main
 from scripts.workspace_layout import (
     describe_environment_roles,
     ensure_runtime_tmp_dirs,
+    find_legacy_workspace_root_references,
     iter_cleanup_targets,
+    replace_legacy_workspace_root_references,
 )
 
 
@@ -70,3 +72,42 @@ def test_workspace_cleanup_script_applies_cleanup_and_prepares_tmp_dirs(tmp_path
     stdout = capsys.readouterr().out
     assert "workspace cleanup mode: apply" in stdout
     assert "removed 2 directories" in stdout
+
+
+def test_workspace_path_audit_finds_and_repairs_legacy_local_roots(tmp_path):
+    legacy_root = "/legacy/workspace/myQuant"
+    activate = tmp_path / ".venv" / "bin" / "activate"
+    linked_git = tmp_path / ".claude" / "worktrees" / "demo" / ".git"
+
+    activate.parent.mkdir(parents=True)
+    linked_git.parent.mkdir(parents=True)
+    activate.write_text(f"VIRTUAL_ENV='{legacy_root}/.venv'\n", encoding="utf-8")
+    linked_git.write_text(
+        f"gitdir: {legacy_root}/.git/worktrees/demo\n",
+        encoding="utf-8",
+    )
+
+    findings = {
+        item["relative_path"]: item
+        for item in find_legacy_workspace_root_references(tmp_path)
+    }
+
+    assert sorted(findings) == [
+        ".claude/worktrees/demo/.git",
+        ".venv/bin/activate",
+    ]
+
+    updated = [
+        path.relative_to(tmp_path).as_posix()
+        for path in replace_legacy_workspace_root_references(tmp_path)
+    ]
+
+    assert sorted(updated) == [
+        ".claude/worktrees/demo/.git",
+        ".venv/bin/activate",
+    ]
+    assert str(tmp_path / ".venv") in activate.read_text(encoding="utf-8")
+    assert str(tmp_path / ".git" / "worktrees" / "demo") in linked_git.read_text(
+        encoding="utf-8"
+    )
+    assert find_legacy_workspace_root_references(tmp_path) == []

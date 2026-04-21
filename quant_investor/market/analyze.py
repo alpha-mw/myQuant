@@ -14,8 +14,13 @@ from typing import Any, Optional
 
 from quant_investor.config import config
 from quant_investor.credential_utils import create_tushare_pro
-from quant_investor.market.config import get_market_settings, normalize_categories
+from quant_investor.market.cn_resolver import CNUniverseResolver
+from quant_investor.market.config import get_market_settings, normalize_categories, normalize_universe
+from quant_investor.market.data_snapshot import build_market_data_snapshot
+from quant_investor.llm_provider_priority import resolve_runtime_role_models
+from quant_investor.market.dag_executor import execute_market_dag
 from quant_investor.pipeline import QuantInvestor
+from quant_investor.reporting.conclusion_renderer import ConclusionRenderer
 
 _STOCK_NAME_CACHE: dict[str, dict[str, str]] = {"CN": {}, "US": {}}
 BRANCH_LABELS = {
@@ -64,6 +69,169 @@ def _confidence_label(confidence: float) -> str:
 
 def _branch_label(branch_name: str) -> str:
     return BRANCH_LABELS.get(branch_name, branch_name)
+
+
+def _to_mapping(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if hasattr(value, "to_dict"):
+        payload = value.to_dict()
+        if isinstance(payload, dict):
+            return dict(payload)
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
+
+
+def _analysis_meta_from_result(
+    result: Any,
+    *,
+    market: str,
+    universe: str,
+    category: str,
+    batch_id: int,
+    symbols: list[str],
+    analysis_kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    report_bundle = getattr(result, "agent_report_bundle", None)
+    orchestration = dict(getattr(result, "agent_orchestration", {}) or {})
+    model_role_metadata = getattr(result, "model_role_metadata", None)
+    execution_trace = getattr(result, "execution_trace", None)
+    what_if_plan = getattr(result, "what_if_plan", None)
+    if model_role_metadata is None and report_bundle is not None:
+        model_role_metadata = getattr(report_bundle, "model_role_metadata", None)
+    if execution_trace is None and report_bundle is not None:
+        execution_trace = getattr(report_bundle, "execution_trace", None)
+    if what_if_plan is None and report_bundle is not None:
+        what_if_plan = getattr(report_bundle, "what_if_plan", None)
+
+    model_role_payload = _to_mapping(model_role_metadata)
+    execution_trace_payload = _to_mapping(execution_trace)
+    what_if_plan_payload = _to_mapping(what_if_plan)
+    global_context_payload = (
+        getattr(result, "global_context").to_dict()
+        if hasattr(getattr(result, "global_context", None), "to_dict")
+        else {}
+    )
+    global_metadata = dict(global_context_payload.get("metadata", {})) if isinstance(global_context_payload, dict) else {}
+    data_snapshot_payload = dict(orchestration.get("data_snapshot", {}) or global_metadata.get("data_snapshot", {}) or {})
+    symbol_research_packets = {
+        symbol: packet.to_dict() if hasattr(packet, "to_dict") else dict(packet)
+        for symbol, packet in dict(orchestration.get("symbol_research_packets", {}) or {}).items()
+    }
+    shortlist_payload = [
+        item.to_dict() if hasattr(item, "to_dict") else dict(item)
+        for item in list(orchestration.get("shortlist", []) or [])
+    ]
+    portfolio_decision_payload = (
+        orchestration.get("portfolio_decision").to_dict()
+        if hasattr(orchestration.get("portfolio_decision"), "to_dict")
+        else {}
+    )
+    return {
+        "market": market,
+        "universe": universe,
+        "category": category,
+        "batch_id": batch_id,
+        "symbols": list(symbols),
+        "batch_count": 1,
+        "total_stocks": len(symbols),
+        "category_count": 1,
+        "agent_layer_enabled": bool(getattr(result, "agent_layer_enabled", analysis_kwargs.get("enable_agent_layer", False))),
+        "branch_model": str(analysis_kwargs.get("agent_model", "")),
+        "master_model": str(analysis_kwargs.get("master_model", "")),
+        "master_reasoning_effort": str(analysis_kwargs.get("master_reasoning_effort", "")),
+        "agent_timeout": float(analysis_kwargs.get("agent_timeout", 0.0) or 0.0),
+        "master_timeout": float(analysis_kwargs.get("master_timeout", 0.0) or 0.0),
+        "model_role_metadata": model_role_payload,
+        "execution_trace": execution_trace_payload,
+        "what_if_plan": what_if_plan_payload,
+        "review_bundle": _to_mapping(report_bundle),
+        "ic_hints_by_symbol": dict(getattr(result, "ic_hints_by_symbol", {}) or {}),
+        "report_protocol_version": str(getattr(report_bundle, "report_protocol_version", "")),
+        "ic_protocol_version": str(getattr(report_bundle, "ic_protocol_version", "")),
+        "branch_schema_version": str(getattr(result, "branch_schema_version", "")),
+        "global_context": global_context_payload,
+        "data_snapshot": data_snapshot_payload,
+        "symbol_research_packets": symbol_research_packets,
+        "shortlist": shortlist_payload,
+        "portfolio_decision": portfolio_decision_payload,
+        "bayesian_records": [
+            record.to_dict() if hasattr(record, "to_dict") else dict(record)
+            for record in list(getattr(result, "bayesian_records", []) or [])
+        ],
+        "funnel_summary": dict(orchestration.get("funnel_summary", {}) or {}),
+        # Bayesian pipeline artifacts
+        "pipeline_mode": str(getattr(result, "pipeline_mode", "legacy")),
+        "bayesian_shortlist_symbols": list(getattr(result, "bayesian_shortlist_symbols", []) or []),
+        "bayesian_record_count": len(getattr(result, "bayesian_records", []) or []),
+        "funnel_candidates_count": (
+            len(getattr(result, "funnel_output", None).candidates)
+            if getattr(result, "funnel_output", None) is not None
+            else 0
+        ),
+        "funnel_excluded_count": (
+            len(getattr(result, "funnel_output", None).excluded_symbols)
+            if getattr(result, "funnel_output", None) is not None
+            else 0
+        ),
+    }
+
+
+def _build_analysis_meta(all_results: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    meta: dict[str, Any] = {
+        "market": "",
+        "batch_count": 0,
+        "total_stocks": 0,
+        "category_count": 0,
+        "symbols": [],
+        "batch_traces": [],
+        "analysis_kwargs": {},
+    }
+    first_meta: dict[str, Any] | None = None
+    seen_categories = 0
+    for category, batches in all_results.items():
+        if batches:
+            seen_categories += 1
+        for batch in batches:
+            meta["batch_count"] += 1
+            meta["total_stocks"] += int(batch.get("stock_count", 0))
+            meta["symbols"].extend(list(batch.get("stocks", [])))
+            analysis_meta = batch.get("analysis_meta", {})
+            if analysis_meta and first_meta is None:
+                first_meta = dict(analysis_meta)
+            if batch.get("execution_log"):
+                meta["batch_traces"].append(
+                    {
+                        "category": category,
+                        "batch_id": batch.get("batch_id"),
+                        "log_tail": list(batch.get("execution_log", []))[-5:],
+                    }
+                )
+    meta["category_count"] = seen_categories
+    meta["symbols"] = list(dict.fromkeys(str(symbol) for symbol in meta["symbols"] if str(symbol).strip()))
+    if first_meta is not None:
+        meta["market"] = str(first_meta.get("market", meta["market"]))
+        meta["universe"] = str(first_meta.get("universe", meta.get("universe", "")))
+        meta["branch_model"] = str(first_meta.get("branch_model", ""))
+        meta["master_model"] = str(first_meta.get("master_model", ""))
+        meta["master_reasoning_effort"] = str(first_meta.get("master_reasoning_effort", ""))
+        meta["agent_layer_enabled"] = bool(first_meta.get("agent_layer_enabled", False))
+        meta["model_role_metadata"] = dict(first_meta.get("model_role_metadata", {}))
+        meta["execution_trace"] = dict(first_meta.get("execution_trace", {}))
+        meta["what_if_plan"] = dict(first_meta.get("what_if_plan", {}))
+        meta["global_context"] = dict(first_meta.get("global_context", {}))
+        meta["data_snapshot"] = dict(first_meta.get("data_snapshot", {}))
+        meta["symbol_research_packets"] = dict(first_meta.get("symbol_research_packets", {}))
+        meta["shortlist"] = list(first_meta.get("shortlist", []))
+        meta["portfolio_decision"] = dict(first_meta.get("portfolio_decision", {}))
+        meta["review_bundle"] = dict(first_meta.get("review_bundle", {}))
+        meta["ic_hints_by_symbol"] = dict(first_meta.get("ic_hints_by_symbol", {}))
+        meta["branch_schema_version"] = str(first_meta.get("branch_schema_version", ""))
+        meta["ic_protocol_version"] = str(first_meta.get("ic_protocol_version", ""))
+        meta["report_protocol_version"] = str(first_meta.get("report_protocol_version", ""))
+        meta["analysis_kwargs"] = dict(first_meta.get("analysis_kwargs", {}))
+    return meta
 
 
 def _default_branch_conclusion(branch_name: str, score: float) -> str:
@@ -131,12 +299,16 @@ def get_us_stock_name(symbol: str) -> str:
 
 def category_name(category: str, market: str = "CN") -> str:
     settings = get_market_settings(market)
-    return settings.category_labels.get(category, category)
+    return getattr(settings, "category_labels", {}).get(category, category)
 
 
 def get_all_local_symbols(category: str, market: str = "CN", data_dir: str | None = None) -> list[str]:
     settings = get_market_settings(market)
     base_dir = Path(data_dir or settings.data_dir)
+    if settings.market == "CN" and category == "full_a":
+        resolver = CNUniverseResolver(data_dir=str(base_dir))
+        symbols, _ = resolver.collect_full_a_inventory()
+        return symbols
     category_dir = base_dir / category
     if not category_dir.exists():
         return []
@@ -184,12 +356,24 @@ def analyze_batch(
     category: str,
     batch_id: int,
     market: str = "CN",
+    universe: str = "full_a",
     total_capital: float = 1_000_000,
     risk_level: str = "中等",
     verbose: bool = True,
+    analysis_kwargs: dict[str, Any] | None = None,
 ) -> Optional[dict[str, Any]]:
     settings = get_market_settings(market)
     scoped_category_name = category_name(category, settings.market)
+    analyzer_kwargs = dict(analysis_kwargs or {})
+    analyzer_kwargs.setdefault("kline_backend", "heuristic")
+    analyzer_kwargs.setdefault("enable_macro", True)
+    analyzer_kwargs.setdefault("enable_kronos", True)
+    analyzer_kwargs.setdefault("enable_quant", True)
+    analyzer_kwargs.setdefault("enable_fundamental", True)
+    analyzer_kwargs.setdefault("enable_intelligence", True)
+    analyzer_kwargs.setdefault("verbose", verbose)
+    analyzer_kwargs.setdefault("master_reasoning_effort", "high")
+    analyzer_kwargs.setdefault("universe_key", universe)
 
     print(f"\n{'=' * 80}")
     print(f"📊 分析 {scoped_category_name} - 批次 {batch_id}")
@@ -203,12 +387,7 @@ def analyze_batch(
             market=settings.market,
             total_capital=total_capital,
             risk_level=risk_level,
-            enable_macro=True,
-            enable_kronos=True,
-            enable_quant=True,
-            enable_fundamental=True,
-            enable_intelligence=True,
-            verbose=verbose,
+            **analyzer_kwargs,
         )
         result = analyzer.run()
 
@@ -228,6 +407,7 @@ def analyze_batch(
 
         analysis: dict[str, Any] = {
             "market": settings.market,
+            "universe": universe,
             "category": category,
             "category_name": scoped_category_name,
             "batch_id": batch_id,
@@ -248,6 +428,15 @@ def analyze_batch(
             "recommendations": recommendations,
             "execution_log": list(getattr(result, "execution_log", [])),
         }
+        analysis["analysis_meta"] = _analysis_meta_from_result(
+            result,
+            market=settings.market,
+            universe=universe,
+            category=category,
+            batch_id=batch_id,
+            symbols=symbols,
+            analysis_kwargs=analyzer_kwargs,
+        )
 
         for name, branch in result.branch_results.items():
             analysis["branches"][name] = {
@@ -303,12 +492,14 @@ def save_batch_result(
 def analyze_category_full(
     category: str,
     market: str = "CN",
+    universe: str | None = None,
     batch_size: Optional[int] = None,
     data_dir: str | None = None,
     output_dir: str | None = None,
     total_capital: float = 1_000_000,
     risk_level: str = "中等",
     verbose: bool = True,
+    analysis_kwargs: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     settings = get_market_settings(market)
     scoped_batch_size = batch_size or settings.default_batch_size
@@ -341,9 +532,11 @@ def analyze_category_full(
             category,
             index + 1,
             market=settings.market,
+            universe=universe or category,
             total_capital=total_capital,
             risk_level=risk_level,
             verbose=verbose,
+            analysis_kwargs=analysis_kwargs,
         )
         if result:
             all_results.append(result)
@@ -456,6 +649,9 @@ def build_full_market_trade_plan(
                 payload = dict(recommendation)
                 payload["category"] = category
                 payload["category_name"] = category_name(category, settings.market)
+                company_name = str(payload.get("company_name", "") or get_stock_name(payload.get("symbol", ""), market=settings.market)).strip()
+                payload["company_name"] = company_name
+                payload["name"] = str(payload.get("name", "") or company_name).strip()
                 payload["batch_target_exposure"] = batch_target_exposure
                 payload["style_bias"] = batch_style_bias
                 payload["risk_level"] = batch_risk_summary.get("risk_level", "normal")
@@ -512,7 +708,7 @@ def build_full_market_trade_plan(
         for item in active:
             weight = weight_map.get(item["symbol"], 0.0)
             entry_price = float(item.get("recommended_entry_price") or item.get("current_price") or 0.0)
-            lot_size = int(item.get("lot_size", settings.lot_size))
+            lot_size = int(item.get("lot_size", getattr(settings, "lot_size", 100)))
             if entry_price <= 0:
                 continue
             minimum_ticket = entry_price * lot_size
@@ -537,7 +733,7 @@ def build_full_market_trade_plan(
     for rank, item in enumerate(active, start=1):
         weight = weight_map.get(item["symbol"], 0.0)
         entry_price = float(item.get("recommended_entry_price") or item.get("current_price") or 0.0)
-        lot_size = int(item.get("lot_size", settings.lot_size))
+        lot_size = int(item.get("lot_size", getattr(settings, "lot_size", 100)))
         shares = int((total_capital * weight) // max(entry_price, 0.01) // lot_size) * lot_size
         amount = shares * entry_price
         actual_weight = amount / total_capital if total_capital > 0 else 0.0
@@ -770,6 +966,18 @@ class ConclusionRenderer:
     """渲染分支与个股结论。"""
 
     @staticmethod
+    def _coerce_mapping(value: Any) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if hasattr(value, "to_dict"):
+            payload = value.to_dict()
+            if isinstance(payload, dict):
+                return dict(payload)
+        if isinstance(value, dict):
+            return dict(value)
+        return {}
+
+    @staticmethod
     def render_branch(branch_name: str, branch: dict[str, Any]) -> list[str]:
         label = _branch_label(branch_name)
         conclusion = str(branch.get("conclusion") or _default_branch_conclusion(branch_name, float(branch.get("score", 0.0))))
@@ -786,6 +994,93 @@ class ConclusionRenderer:
             f"- 可信度标签: {_confidence_label(float(branch.get('confidence', 0.0)))}",
             "",
         ]
+
+    @staticmethod
+    def render_model_role_metadata(model_role_metadata: Any) -> list[str]:
+        payload = ConclusionRenderer._coerce_mapping(model_role_metadata)
+        if not payload:
+            return ["- 当前未记录模型角色元数据。"]
+        lines = ["- 模型角色元数据:"]
+        for key in [
+            "agent_model",
+            "agent_fallback_model",
+            "master_model",
+            "master_fallback_model",
+            "master_reasoning_effort",
+        ]:
+            if key in payload:
+                lines.append(f"  - {key}: {payload[key]}")
+        if payload.get("resolver_directory_priority"):
+            lines.append(f"  - resolver_directory_priority: {payload['resolver_directory_priority']}")
+        if payload.get("physical_directories_used_for_full_a"):
+            lines.append(
+                f"  - physical_directories_used_for_full_a: {', '.join(str(item) for item in payload['physical_directories_used_for_full_a'])}"
+            )
+        if payload.get("fallback_used") is not None:
+            lines.append(f"  - fallback_used: {payload['fallback_used']}")
+        return lines
+
+    @staticmethod
+    def render_execution_trace(execution_trace: Any) -> list[str]:
+        payload = ConclusionRenderer._coerce_mapping(execution_trace)
+        if not payload:
+            return ["- 当前未记录执行轨迹。"]
+        lines = ["- 执行轨迹:"]
+        if payload.get("stage_summaries"):
+            lines.append("  - stages:")
+            for stage in payload.get("stage_summaries", [])[:8]:
+                stage_payload = ConclusionRenderer._coerce_mapping(stage)
+                if not stage_payload:
+                    continue
+                stage_name = stage_payload.get("stage_name", "stage")
+                status = stage_payload.get("status", "")
+                lines.append(f"    - {stage_name}: {status}")
+        for key in [
+            "resolver_directory_priority",
+            "physical_directories_used_for_full_a",
+            "local_union_fallback_used",
+            "final_deterministic_outcome",
+        ]:
+            if key in payload:
+                value = payload[key]
+                if isinstance(value, list):
+                    value = ", ".join(str(item) for item in value)
+                lines.append(f"  - {key}: {value}")
+        return lines
+
+    @staticmethod
+    def render_what_if_plan(what_if_plan: Any) -> list[str]:
+        payload = ConclusionRenderer._coerce_mapping(what_if_plan)
+        scenarios = payload.get("scenarios", []) if isinstance(payload.get("scenarios", []), list) else []
+        if not payload and not scenarios:
+            return ["- 当前未记录 what-if 计划。"]
+        lines = ["- what-if 计划:"]
+        for scenario in scenarios[:6]:
+            scenario_payload = ConclusionRenderer._coerce_mapping(scenario)
+            if not scenario_payload:
+                continue
+            lines.extend(
+                [
+                    f"  - 场景: {scenario_payload.get('scenario_name', 'scenario')}",
+                    f"    - 触发: {scenario_payload.get('trigger', '')}",
+                    f"    - 动作: {scenario_payload.get('action', '')}",
+                    f"    - 仓位调整: {scenario_payload.get('position_adjustment_rule', '')}",
+                    f"    - 重新跑全市场: {'是' if scenario_payload.get('rerun_full_market_daily_path') else '否'}",
+                ]
+            )
+        return lines
+
+    @staticmethod
+    def render_run_context(
+        model_role_metadata: Any,
+        execution_trace: Any,
+        what_if_plan: Any,
+    ) -> list[str]:
+        lines: list[str] = []
+        lines.extend(ConclusionRenderer.render_model_role_metadata(model_role_metadata))
+        lines.extend(ConclusionRenderer.render_execution_trace(execution_trace))
+        lines.extend(ConclusionRenderer.render_what_if_plan(what_if_plan))
+        return lines
 
     @staticmethod
     def render_stock(item: dict[str, Any], market: str) -> list[str]:
@@ -847,6 +1142,22 @@ def save_candidate_index(
     return str(output_file)
 
 
+def _build_full_market_report_bundle(
+    all_results: dict[str, list[dict[str, Any]]],
+    *,
+    market: str,
+    total_capital: float,
+    top_k: int,
+) -> tuple[dict[str, Any], Any | None]:
+    plan = build_full_market_trade_plan(
+        all_results,
+        market=market,
+        total_capital=total_capital,
+        top_k=top_k,
+    )
+    return plan, None
+
+
 def generate_full_report(
     all_results: dict[str, list[dict[str, Any]]],
     market: str = "CN",
@@ -863,27 +1174,50 @@ def generate_full_report(
 
     load_stock_names(settings.market)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    plan = build_full_market_trade_plan(
+    plan, report_bundle = _build_full_market_report_bundle(
         all_results,
         market=settings.market,
         total_capital=total_capital,
         top_k=top_k,
     )
     summary = plan["market_summary"]
-    portfolio_plan = plan["portfolio_plan"]
-    recommendations = [ActionConsistencyGuard.apply(item) for item in plan["recommendations"]]
+    portfolio_plan = _to_mapping(getattr(report_bundle, "portfolio_plan", None)) or _to_mapping(plan.get("portfolio_plan"))
+    target_weights = dict(portfolio_plan.get("target_weights", {}) or {})
+    position_limits = dict(portfolio_plan.get("position_limits", {}) or {})
+    category_exposure = dict(portfolio_plan.get("category_exposure", {}) or {})
+    execution_notes = list(portfolio_plan.get("execution_notes", []) or [])
+    if not portfolio_plan:
+        portfolio_plan = {}
+    portfolio_plan.setdefault("target_weights", target_weights)
+    portfolio_plan.setdefault("position_limits", position_limits)
+    portfolio_plan.setdefault("category_exposure", category_exposure)
+    portfolio_plan.setdefault("execution_notes", execution_notes)
+    portfolio_plan.setdefault("target_exposure", float(portfolio_plan.get("target_exposure", sum(target_weights.values()) if target_weights else 0.0)))
+    portfolio_plan.setdefault("planned_investment", float(portfolio_plan["target_exposure"]) * float(total_capital))
+    portfolio_plan.setdefault("cash_reserve", float(total_capital) * float(portfolio_plan.get("cash_ratio", 1.0 - float(portfolio_plan["target_exposure"]))))
+    portfolio_plan.setdefault("style_bias", portfolio_plan.get("style_bias", "均衡"))
+    portfolio_plan.setdefault("max_single_weight", max(position_limits.values(), default=max(target_weights.values(), default=0.0)))
+    portfolio_plan.setdefault("selected_count", len(target_weights))
+    raw_recommendations = list(plan.get("recommendations", []) or [])
+    recommendations = [ActionConsistencyGuard.apply(item) for item in raw_recommendations]
     plan["recommendations"] = recommendations
+    plan["portfolio_plan"] = portfolio_plan
     branch_summary = _aggregate_branch_summary(all_results)
     diagnostics = DiagnosticsBucketizer(all_results, branch_summary).bucket()
     executive_summary = ExecutiveSummaryBuilder(portfolio_plan, branch_summary).build()
+    analysis_meta = _build_analysis_meta(all_results)
 
     report_lines = [
         f"# {settings.report_flag} {settings.market_name}全市场组合级交易建议报告\n",
         f"**生成时间**: {summary['generated_at']}\n",
         "**分析架构**: Quant-Investor V9 五路并行研究\n",
         f"**分析覆盖**: {summary['total_stocks']} 只股票，{summary['total_batches']} 个批次\n",
+        f"**分析 universe**: {analysis_meta.get('universe', 'full_a')}\n",
         "\n## 三句话执行摘要\n",
     ]
+    data_snapshot_summary = str((analysis_meta.get("data_snapshot", {}) or {}).get("summary_text", "")).strip()
+    if data_snapshot_summary:
+        report_lines.insert(5, f"**本地数据快照**: {data_snapshot_summary}\n")
     for line in executive_summary:
         report_lines.append(f"- {line}\n")
 
@@ -916,6 +1250,27 @@ def generate_full_report(
         report_lines.append(f"- {_sanitize_text(note)}\n")
     if diagnostics["investment_risks"]:
         report_lines.append(f"- 需要前置注意的投资风险: {'；'.join(diagnostics['investment_risks'][:3])}\n")
+    if analysis_meta.get("model_role_metadata"):
+        report_lines.extend(["\n## 模型角色与执行轨迹\n"])
+        render_run_context = getattr(ConclusionRenderer, "render_run_context", None)
+        if callable(render_run_context):
+            report_lines.extend(
+                render_run_context(
+                    analysis_meta.get("model_role_metadata"),
+                    analysis_meta.get("execution_trace"),
+                    analysis_meta.get("what_if_plan"),
+                )
+            )
+        else:
+            report_lines.extend(
+                ConclusionRenderer.render_model_role_metadata(analysis_meta.get("model_role_metadata"))
+            )
+            report_lines.extend(
+                ConclusionRenderer.render_execution_trace(analysis_meta.get("execution_trace"))
+            )
+            report_lines.extend(
+                ConclusionRenderer.render_what_if_plan(analysis_meta.get("what_if_plan"))
+            )
 
     if recommendations:
         report_lines.extend(
@@ -977,8 +1332,11 @@ def generate_full_report(
         f"# {settings.report_flag} {settings.market_name}全市场分析摘要\n",
         f"**生成时间**: {summary['generated_at']}\n",
         f"**分析覆盖**: {summary['total_stocks']} 只股票，{summary['total_batches']} 个批次\n",
+        f"**分析 universe**: {analysis_meta.get('universe', 'full_a')}\n",
         "\n## 三句话执行摘要\n",
     ]
+    if data_snapshot_summary:
+        summary_lines.insert(4, f"**本地数据快照**: {data_snapshot_summary}\n")
     for line in executive_summary:
         summary_lines.append(f"- {line}\n")
     summary_lines.append("\n## 执行提醒\n")
@@ -1004,42 +1362,383 @@ def generate_full_report(
     }
 
 
+def _build_legacy_recommendation_from_dag(
+    *,
+    symbol: str,
+    packet: Any,
+    shortlist_item: Any | None,
+    portfolio_decision: Any,
+    category: str,
+    market: str,
+    total_capital: float,
+) -> dict[str, Any]:
+    category_label = category_name(category, market)
+    branch_scores = dict(getattr(packet, "branch_scores", {}) or {})
+    branch_confidences = dict(getattr(packet, "branch_confidences", {}) or {})
+    branch_theses = dict(getattr(packet, "branch_theses", {}) or {})
+    score_values = [float(value) for value in branch_scores.values()]
+    confidence_values = [float(value) for value in branch_confidences.values()]
+    consensus_score = sum(score_values) / max(len(score_values), 1)
+    branch_positive_count = sum(1 for value in score_values if value > 0)
+    suggested_weight = float(
+        getattr(portfolio_decision, "target_weights", {}).get(
+            symbol,
+            getattr(shortlist_item, "suggested_weight", 0.0) if shortlist_item is not None else 0.0,
+        )
+    )
+    rank_score = float(getattr(shortlist_item, "rank_score", consensus_score) if shortlist_item is not None else consensus_score)
+    confidence = float(
+        getattr(shortlist_item, "confidence", sum(confidence_values) / max(len(confidence_values), 1) if confidence_values else 0.0)
+    )
+    current_price = float((getattr(packet, "metadata", {}) or {}).get("latest_close", 0.0) or 0.0)
+    if current_price <= 0:
+        current_price = float((getattr(packet, "metadata", {}) or {}).get("price_summary", {}).get("latest_close", 0.0) or 0.0)
+    if current_price <= 0:
+        current_price = max(rank_score, 0.01) * 100.0
+
+    recommended_entry_price = current_price
+    target_price = current_price * (1 + max(rank_score, 0.0) * 0.25)
+    stop_loss_price = current_price * (0.92 if rank_score >= 0 else 0.88)
+    support_drivers = list(getattr(shortlist_item, "rationale", []) or [])
+    if not support_drivers:
+        support_drivers = [text for text in branch_theses.values() if str(text).strip()]
+    drag_drivers = list(getattr(packet, "diagnostic_notes", []) or []) + list(getattr(packet, "risk_flags", []) or [])
+    weight_cap_reasons = list(getattr(shortlist_item, "risk_flags", []) or [])
+    action = getattr(shortlist_item, "action", None)
+    action_value = action.value if hasattr(action, "value") else str(action or "buy").lower()
+    company_name = str(
+        getattr(shortlist_item, "company_name", "") or getattr(packet, "company_name", "") or get_stock_name(symbol, market=market)
+    ).strip()
+    return {
+        "symbol": symbol,
+        "company_name": company_name,
+        "name": company_name,
+        "category": category,
+        "category_name": category_label,
+        "action": action_value,
+        "current_price": round(current_price, 4),
+        "recommended_entry_price": round(recommended_entry_price, 4),
+        "target_price": round(target_price, 4),
+        "stop_loss_price": round(stop_loss_price, 4),
+        "entry_price_range": {
+            "low": round(current_price * 0.98, 4),
+            "high": round(current_price * 1.02, 4),
+        },
+        "portfolio_weight": round(suggested_weight, 4),
+        "suggested_weight": round(suggested_weight, 4),
+        "portfolio_amount": round(suggested_weight * total_capital, 2),
+        "expected_upside": round(max(rank_score, 0.0), 4),
+        "confidence": round(confidence, 4),
+        "consensus_score": round(consensus_score, 4),
+        "model_expected_return": round(max(consensus_score, 0.0), 4),
+        "branch_positive_count": int(branch_positive_count),
+        "support_drivers": _dedupe_text([_sanitize_text(item) for item in support_drivers])[:5],
+        "drag_drivers": _dedupe_text([_sanitize_text(item) for item in drag_drivers])[:5],
+        "weight_cap_reasons": _dedupe_text([_sanitize_text(item) for item in weight_cap_reasons])[:5],
+        "risk_flags": _dedupe_text([_sanitize_text(item) for item in list(getattr(shortlist_item, "risk_flags", []) or []) + list(getattr(packet, "risk_flags", []) or [])])[:5],
+        "one_line_conclusion": str(
+            getattr(shortlist_item, "rationale", [])[0]
+            if shortlist_item is not None and getattr(shortlist_item, "rationale", [])
+            else next((text for text in branch_theses.values() if str(text).strip()), f"{symbol} 已进入组合候选。")
+        ),
+        "data_source_status": "real" if current_price > 0 else "synthetic",
+        "lot_size": 100,
+        "macro_score": float((getattr(packet, "metadata", {}) or {}).get("macro_score", 0.0)),
+        "global_quant_score": float((getattr(packet, "metadata", {}) or {}).get("global_quant_summary", {}).get("final_score", 0.0)),
+        "current_weight": float(getattr(portfolio_decision, "target_weights", {}).get(symbol, 0.0)),
+        "target_position": float(getattr(portfolio_decision, "target_positions", {}).get(symbol, 0.0)),
+    }
+
+
+def _synthesize_legacy_analysis_results_from_dag(
+    *,
+    dag_artifacts: dict[str, Any],
+    market: str,
+    universe: str,
+    categories: list[str],
+    total_capital: float,
+) -> dict[str, list[dict[str, Any]]]:
+    packets = dict(dag_artifacts.get("symbol_research_packets", {}) or {})
+    shortlist = list(dag_artifacts.get("shortlist", []) or [])
+    portfolio_decision = dag_artifacts.get("portfolio_decision")
+    branch_summaries = dict(dag_artifacts.get("branch_summaries", {}) or {})
+    selected_categories = list(categories or [universe])
+    shortlist_by_symbol = {getattr(item, "symbol", ""): item for item in shortlist}
+    symbols_by_category: dict[str, list[str]] = {category: [] for category in selected_categories}
+    for symbol, packet in packets.items():
+        category = str(getattr(packet, "category", "") or universe)
+        if category not in symbols_by_category:
+            symbols_by_category[category] = []
+        symbols_by_category[category].append(symbol)
+
+    branches_as_dict: dict[str, dict[str, Any]] = {}
+    for name, branch in branch_summaries.items():
+        if hasattr(branch, "to_dict"):
+            branch_payload = branch.to_dict()
+        elif isinstance(branch, Mapping):
+            branch_payload = dict(branch)
+        else:
+            branch_payload = {}
+        branches_as_dict[name] = {
+            "score": float(branch_payload.get("score", branch_payload.get("final_score", 0.0))),
+            "confidence": float(branch_payload.get("confidence", branch_payload.get("final_confidence", 0.0))),
+            "conclusion": str(branch_payload.get("conclusion", branch_payload.get("thesis", ""))),
+            "support_drivers": [
+                str(item)
+                for item in branch_payload.get("support_drivers", branch_payload.get("coverage_notes", []))
+            ],
+            "drag_drivers": [
+                str(item)
+                for item in branch_payload.get("drag_drivers", branch_payload.get("diagnostic_notes", []))
+            ],
+            "investment_risks": [
+                str(item)
+                for item in branch_payload.get("investment_risks", branch_payload.get("risks", []))
+            ],
+            "coverage_notes": [str(item) for item in branch_payload.get("coverage_notes", [])],
+            "diagnostic_notes": [str(item) for item in branch_payload.get("diagnostic_notes", [])],
+            "module_coverage": dict(branch_payload.get("module_coverage", {})),
+            "debate_statuses": [str(item) for item in branch_payload.get("debate_statuses", [])],
+            "metadata": dict(branch_payload.get("metadata", {})),
+        }
+    execution_trace = dag_artifacts.get("execution_trace")
+    execution_log = []
+    if execution_trace is not None:
+        steps = getattr(execution_trace, "steps", []) if hasattr(execution_trace, "steps") else []
+        for step in steps:
+            conclusion = getattr(step, "conclusion", "") if hasattr(step, "conclusion") else ""
+            stage = getattr(step, "stage", "") if hasattr(step, "stage") else ""
+            execution_log.append(f"{stage}: {conclusion}".strip(": "))
+
+    all_results: dict[str, list[dict[str, Any]]] = {}
+    for category in selected_categories:
+        symbols = list(dict.fromkeys(symbols_by_category.get(category, [])))
+        recommendations = []
+        for symbol in symbols:
+            packet = packets.get(symbol)
+            if packet is None:
+                continue
+            shortlist_item = shortlist_by_symbol.get(symbol)
+            recommendation = _build_legacy_recommendation_from_dag(
+                symbol=symbol,
+                packet=packet,
+                shortlist_item=shortlist_item,
+                portfolio_decision=portfolio_decision,
+                category=category,
+                market=market,
+                total_capital=total_capital,
+            )
+            if recommendation.get("data_source_status") == "real":
+                recommendations.append(recommendation)
+        all_results[category] = [
+            {
+                "market": market,
+                "universe": universe,
+                "category": category,
+                "category_name": category_name(category, market),
+                "batch_id": 1,
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+                "stocks": symbols,
+                "stock_count": len(symbols),
+                "branches": branches_as_dict,
+                "strategy": {
+                    "target_exposure": float(getattr(portfolio_decision, "target_exposure", 0.0)),
+                    "style_bias": str(
+                        getattr(portfolio_decision, "metadata", {}).get(
+                            "style_bias",
+                            getattr(portfolio_decision, "target_positions", {}) and "均衡" or "防御",
+                        )
+                    ),
+                    "risk_summary": dict(getattr(portfolio_decision, "risk_constraints", {}).get("risk_decision", {})),
+                    "candidate_symbols": [getattr(item, "symbol", "") for item in shortlist],
+                    "data_quality_issue_count": len(dag_artifacts.get("data_quality_issues", []) or []),
+                },
+                "recommendations": recommendations,
+                "execution_log": list(execution_log),
+                "analysis_meta": {
+                    "global_context": dag_artifacts.get("global_context").to_dict() if hasattr(dag_artifacts.get("global_context"), "to_dict") else {},
+                    "data_snapshot": dict(
+                        dag_artifacts.get("data_snapshot", {})
+                        or (
+                            getattr(dag_artifacts.get("global_context"), "metadata", {}) or {}
+                        ).get("data_snapshot", {})
+                    ),
+                    "symbol_research_packets": {
+                        symbol: packet.to_dict() if hasattr(packet, "to_dict") else dict(packet)
+                        for symbol, packet in packets.items()
+                    },
+                    "shortlist": [item.to_dict() if hasattr(item, "to_dict") else dict(item) for item in shortlist],
+                    "portfolio_decision": portfolio_decision.to_dict() if hasattr(portfolio_decision, "to_dict") else dict(portfolio_decision or {}),
+                    "model_role_metadata": dag_artifacts.get("model_role_metadata").to_dict() if hasattr(dag_artifacts.get("model_role_metadata"), "to_dict") else {},
+                    "what_if_plan": dag_artifacts.get("what_if_plan").to_dict() if hasattr(dag_artifacts.get("what_if_plan"), "to_dict") else {},
+                    "execution_trace": dag_artifacts.get("execution_trace").to_dict() if hasattr(dag_artifacts.get("execution_trace"), "to_dict") else {},
+                    "review_bundle": dag_artifacts.get("review_bundle").to_dict() if hasattr(dag_artifacts.get("review_bundle"), "to_dict") else {},
+                    "ic_hints_by_symbol": dict(dag_artifacts.get("review_bundle").ic_hints_by_symbol if dag_artifacts.get("review_bundle") else {}),
+                    "branch_schema_version": getattr(dag_artifacts.get("review_bundle"), "branch_schema_version", ""),
+                    "ic_protocol_version": getattr(dag_artifacts.get("review_bundle"), "ic_protocol_version", ""),
+                    "report_protocol_version": getattr(dag_artifacts.get("review_bundle"), "report_protocol_version", ""),
+                },
+            }
+        ]
+    return all_results
+
+
 def run_market_analysis(
     market: str,
+    universe: str | None = None,
     mode: str = "batch",
     categories: list[str] | None = None,
     batch_size: int | None = None,
     total_capital: float = 1_000_000,
     top_k: int = 12,
     verbose: bool = True,
+    master_reasoning_effort: str = "high",
+    agent_fallback_model: str = "",
+    master_fallback_model: str = "",
+    data_snapshot: dict[str, Any] | None = None,
+    **analysis_kwargs: Any,
 ) -> dict[str, Any]:
+    analysis_kwargs = dict(analysis_kwargs)
+    branch_config, master_config = resolve_runtime_role_models(
+        review_model_priority=analysis_kwargs.get("review_model_priority", []),
+        agent_model=str(analysis_kwargs.get("agent_model", "") or ""),
+        agent_fallback_model=str(agent_fallback_model or analysis_kwargs.get("agent_fallback_model", "") or ""),
+        master_model=str(analysis_kwargs.get("master_model", "") or ""),
+        master_fallback_model=str(master_fallback_model or analysis_kwargs.get("master_fallback_model", "") or ""),
+    )
+    analysis_kwargs.setdefault("enable_agent_layer", True)
+    analysis_kwargs["review_model_priority"] = list(analysis_kwargs.get("review_model_priority", []) or [])
+    analysis_kwargs["agent_model"] = branch_config.primary_model
+    analysis_kwargs["master_model"] = master_config.primary_model
+    analysis_kwargs.setdefault("master_reasoning_effort", master_reasoning_effort)
+    analysis_kwargs["agent_fallback_model"] = branch_config.fallback_model
+    analysis_kwargs["master_fallback_model"] = master_config.fallback_model
     settings = get_market_settings(market)
-    selected_categories = normalize_categories(settings.market, categories)
-    all_results: dict[str, list[dict[str, Any]]] = {}
-    for category in selected_categories:
-        if mode == "sample":
-            symbols = get_all_local_symbols(category, market=settings.market)[: settings.default_batch_size]
-            result = analyze_batch(
-                symbols,
-                category,
-                1,
-                market=settings.market,
-                total_capital=total_capital,
-                verbose=verbose,
-            )
-            all_results[category] = [result] if result else []
-        else:
-            all_results[category] = analyze_category_full(
-                category,
-                market=settings.market,
-                batch_size=batch_size,
-                total_capital=total_capital,
-                verbose=verbose,
-            )
+    selected_categories = (
+        normalize_universe(settings.market, universe)
+        if universe is not None
+        else normalize_categories(settings.market, categories)
+    )
+    dag_universe = universe if universe is not None else (selected_categories[0] if len(selected_categories) == 1 else None)
+    scoped_data_snapshot = dict(
+        data_snapshot
+        or build_market_data_snapshot(
+            market=settings.market,
+            universe=dag_universe,
+            categories=selected_categories,
+        )
+    )
+    dag_artifacts = execute_market_dag(
+        market=settings.market,
+        universe=dag_universe,
+        categories=selected_categories,
+        mode=mode,
+        batch_size=batch_size,
+        total_capital=total_capital,
+        top_k=top_k,
+        verbose=verbose,
+        enable_agent_layer=bool(analysis_kwargs.get("enable_agent_layer", True)),
+        review_model_priority=list(analysis_kwargs.get("review_model_priority", []) or []),
+        agent_model=str(analysis_kwargs.get("agent_model", "")),
+        agent_fallback_model=str(analysis_kwargs.get("agent_fallback_model", "")),
+        master_model=str(analysis_kwargs.get("master_model", "")),
+        master_fallback_model=str(analysis_kwargs.get("master_fallback_model", "")),
+        master_reasoning_effort=str(analysis_kwargs.get("master_reasoning_effort", master_reasoning_effort)),
+        agent_timeout=float(
+            analysis_kwargs.get("agent_timeout", config.DEFAULT_AGENT_TIMEOUT_SECONDS)
+        ),
+        master_timeout=float(
+            analysis_kwargs.get("master_timeout", config.DEFAULT_MASTER_TIMEOUT_SECONDS)
+        ),
+        funnel_profile=str(analysis_kwargs.get("funnel_profile", config.FUNNEL_PROFILE) or config.FUNNEL_PROFILE),
+        max_candidates=int(analysis_kwargs.get("max_candidates", config.FUNNEL_MAX_CANDIDATES) or config.FUNNEL_MAX_CANDIDATES),
+        trend_windows=list(analysis_kwargs.get("trend_windows", config.FUNNEL_TREND_WINDOWS) or config.FUNNEL_TREND_WINDOWS),
+        volume_spike_threshold=float(
+            analysis_kwargs.get("volume_spike_threshold", config.FUNNEL_VOLUME_SPIKE_THRESHOLD)
+            or config.FUNNEL_VOLUME_SPIKE_THRESHOLD
+        ),
+        breakout_distance_pct=float(
+            analysis_kwargs.get("breakout_distance_pct", config.FUNNEL_BREAKOUT_DISTANCE_PCT)
+            or config.FUNNEL_BREAKOUT_DISTANCE_PCT
+        ),
+        recall_context=analysis_kwargs.get("recall_context"),
+        data_snapshot=scoped_data_snapshot,
+    )
+    all_results = _synthesize_legacy_analysis_results_from_dag(
+        dag_artifacts=dag_artifacts,
+        market=settings.market,
+        universe=dag_universe or "full_a",
+        categories=selected_categories,
+        total_capital=total_capital,
+    )
+    review_bundle = dag_artifacts.get("review_bundle")
+    model_role_metadata = dag_artifacts["model_role_metadata"]
+    execution_trace = dag_artifacts["execution_trace"]
+    what_if_plan = dag_artifacts["what_if_plan"]
+    global_context = dag_artifacts["global_context"]
+    portfolio_decision = dag_artifacts["portfolio_decision"]
+    shortlist = list(dag_artifacts.get("shortlist", []) or [])
+    symbol_packets = dag_artifacts["symbol_research_packets"]
+    analysis_meta: dict[str, Any] = {
+        "market": settings.market,
+        "universe": dag_universe or "full_a",
+        "batch_count": len(selected_categories),
+        "total_stocks": len(symbol_packets),
+        "category_count": len(selected_categories),
+        "symbols": list(symbol_packets.keys()),
+        "analysis_kwargs": dict(analysis_kwargs),
+        "review_model_priority": list(analysis_kwargs.get("review_model_priority", []) or []),
+        "branch_model": str(analysis_kwargs.get("agent_model", "")),
+        "master_model": str(analysis_kwargs.get("master_model", "")),
+        "master_reasoning_effort": str(analysis_kwargs.get("master_reasoning_effort", master_reasoning_effort)),
+        "agent_layer_enabled": bool(analysis_kwargs.get("enable_agent_layer", True)),
+        "agent_timeout": float(
+            analysis_kwargs.get("agent_timeout", config.DEFAULT_AGENT_TIMEOUT_SECONDS)
+        ),
+        "master_timeout": float(
+            analysis_kwargs.get("master_timeout", config.DEFAULT_MASTER_TIMEOUT_SECONDS)
+        ),
+        "model_role_metadata": model_role_metadata.to_dict(),
+        "execution_trace": execution_trace.to_dict(),
+        "what_if_plan": what_if_plan.to_dict(),
+        "global_context": global_context.to_dict(),
+        "symbol_research_packets": {
+            symbol: packet.to_dict()
+            for symbol, packet in symbol_packets.items()
+        },
+        "shortlist": [item.to_dict() for item in shortlist],
+        "portfolio_decision": portfolio_decision.to_dict(),
+        "review_bundle": review_bundle.to_dict() if hasattr(review_bundle, "to_dict") else {},
+        "ic_hints_by_symbol": dict(review_bundle.ic_hints_by_symbol if review_bundle else {}),
+        "branch_schema_version": str(review_bundle.branch_schema_version if review_bundle else ""),
+        "ic_protocol_version": str(review_bundle.ic_protocol_version if review_bundle else ""),
+        "report_protocol_version": str(review_bundle.report_protocol_version if review_bundle else ""),
+        "bayesian_records": [
+            record.to_dict() if hasattr(record, "to_dict") else dict(record)
+            for record in dag_artifacts.get("bayesian_records", [])
+        ],
+        "funnel_summary": dict(dag_artifacts.get("funnel_summary", {})),
+        "branch_summaries": {
+            name: verdict.to_dict() if hasattr(verdict, "to_dict") else dict(verdict)
+            for name, verdict in dag_artifacts.get("branch_summaries", {}).items()
+        },
+        "data_quality_issues": list(dag_artifacts.get("data_quality_issues", [])),
+        "resolver": dict(dag_artifacts.get("resolver", {})),
+        "data_snapshot": dict(
+            dag_artifacts.get("data_snapshot", {})
+            or (
+                global_context.to_dict().get("metadata", {})
+                if hasattr(global_context, "to_dict")
+                else {}
+            ).get("data_snapshot", {})
+            or scoped_data_snapshot
+        ),
+    }
     report_paths = generate_full_report(
         all_results,
         market=settings.market,
         total_capital=total_capital,
         top_k=top_k,
     )
-    return {"results": all_results, "reports": report_paths}
+    report_paths["report_bundle"] = dag_artifacts["report_bundle"]
+    return {"results": all_results, "reports": report_paths, "analysis_meta": analysis_meta}

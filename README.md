@@ -140,7 +140,7 @@ Walk-forward 验证，支持 A 股与美股历史数据回测。
 ### 安装
 
 ```bash
-pip install -e ".[dev]"
+uv sync --extra dev
 ```
 
 <details open>
@@ -167,7 +167,7 @@ print(result.report_bundle)
 <summary><strong>CLI</strong></summary>
 
 ```bash
-quant-investor research run \
+uv run quant-investor research run \
   --stocks 000001.SZ 600519.SH \
   --market CN \
   --capital 1000000 \
@@ -181,7 +181,7 @@ quant-investor research run \
 
 ```bash
 # 默认运行方式：同源提供 /api 与 workspace 前端
-quant-investor web --reload
+uv run quant-investor web --reload
 
 # 前端开发模式：单独启动 Vite，并将 /api 代理到后端
 ./run_web.sh
@@ -196,7 +196,7 @@ quant-investor web --reload
 
 ```bash
 # 编辑 daily_config.py 调整参数后运行
-python daily_runner.py
+uv run python daily_runner.py
 ```
 
 `daily_config.py` 支持配置市场、universe、资金、LLM 模型（agent / master + fallback）、reasoning 强度、超时、数据下载参数与定时调度时间。
@@ -217,12 +217,16 @@ cp .env.example .env
 | 变量 | 说明 |
 |------|------|
 | `TUSHARE_TOKEN` | Tushare Pro Token（A 股数据） |
-| `OPENAI_API_KEY` | OpenAI（LLM Review Layer） |
-| `ANTHROPIC_API_KEY` | Anthropic Claude（LLM Review Layer） |
-| `DEEPSEEK_API_KEY` | DeepSeek（LLM Review Layer） |
-| `GOOGLE_API_KEY` | Google Gemini（LLM Review Layer） |
-| `DASHSCOPE_API_KEY` | 通义千问（LLM Review Layer） |
+| `TUSHARE_URL` | Tushare 代理 URL（可选） |
 | `KIMI_API_KEY` | Kimi / Moonshot（LLM Review Layer） |
+| `DEEPSEEK_API_KEY` | DeepSeek（LLM Review Layer） |
+| `DASHSCOPE_API_KEY` | 通义千问（LLM Review Layer） |
+| `FRED_API_KEY` | FRED 宏观数据 |
+| `FINNHUB_API_KEY` | Finnhub（可选） |
+| `DB_PATH` | 股票数据库路径 |
+| `APP_DB_PATH` | legacy web session DB 路径 |
+| `API_HOST` / `API_PORT` | web 服务监听地址 |
+| `CORS_ORIGINS` | workspace 开发时允许的前端来源 |
 
 </details>
 

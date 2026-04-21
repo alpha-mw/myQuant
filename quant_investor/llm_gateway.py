@@ -26,7 +26,18 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from quant_investor.branch_contracts import LLMUsageRecord, LLMUsageSummary
+from quant_investor.llm_provider_priority import (
+    DEFAULT_ORDERED_MODELS,
+    build_candidate_model_chain,
+    normalize_model_name,
+    resolve_review_model_priority,
+)
 from quant_investor.logger import get_logger
+from quant_investor.llm_transport import (
+    build_openai_compatible_completion_body,
+    normalize_label,
+    supports_reasoning_effort,
+)
 
 try:
     import aiohttp
@@ -41,6 +52,25 @@ _logger = get_logger("LLMGateway")
 
 class LLMCallError(Exception):
     """LLM 调用失败。"""
+
+
+class LLMProviderResponseError(LLMCallError):
+    """Provider returned a non-200 response."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        provider: str,
+        model: str,
+        status_code: int,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.provider = provider
+        self.model = model
+        self.status_code = int(status_code or 0)
+        self.headers = dict(headers or {})
 
 
 @dataclass(frozen=True)
@@ -66,23 +96,24 @@ class LLMUsageSessionHandle:
     _token: contextvars.Token[str | None] | None = field(repr=False, default=None)
 
 
+@dataclass(frozen=True)
+class ProviderFailureAnalysis:
+    status_code: int
+    reason: str
+    retry_after_seconds: float = 0.0
+    is_rate_limited: bool = False
+    should_cooldown_provider: bool = False
+    cooldown_seconds: float = 0.0
+
+
+@dataclass
+class ProviderCooldown:
+    until_monotonic: float
+    reason: str
+    status_code: int = 0
+
+
 LLM_PROVIDER_REGISTRY: dict[str, LLMProviderSpec] = {
-    "openai": LLMProviderSpec(
-        name="openai",
-        env_key="OPENAI_API_KEY",
-        base_url="https://api.openai.com/v1/chat/completions",
-        auth_header="Authorization",
-        auth_prefix="Bearer ",
-        default_model="gpt-5.4-mini",
-    ),
-    "anthropic": LLMProviderSpec(
-        name="anthropic",
-        env_key="ANTHROPIC_API_KEY",
-        base_url="https://api.anthropic.com/v1/messages",
-        auth_header="x-api-key",
-        auth_prefix="",
-        default_model="claude-3-5-sonnet",
-    ),
     "deepseek": LLMProviderSpec(
         name="deepseek",
         env_key="DEEPSEEK_API_KEY",
@@ -91,21 +122,13 @@ LLM_PROVIDER_REGISTRY: dict[str, LLMProviderSpec] = {
         auth_prefix="Bearer ",
         default_model="deepseek-chat",
     ),
-    "google": LLMProviderSpec(
-        name="google",
-        env_key="GOOGLE_API_KEY",
-        base_url="https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-        auth_header="",
-        auth_prefix="",
-        default_model="gemini-2.0-flash",
-    ),
     "qwen": LLMProviderSpec(
         name="qwen",
         env_key="DASHSCOPE_API_KEY",
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
         auth_header="Authorization",
         auth_prefix="Bearer ",
-        default_model="qwen-plus",
+        default_model="qwen3.5-plus",
     ),
     "kimi": LLMProviderSpec(
         name="kimi",
@@ -113,31 +136,28 @@ LLM_PROVIDER_REGISTRY: dict[str, LLMProviderSpec] = {
         base_url="https://api.moonshot.cn/v1/chat/completions",
         auth_header="Authorization",
         auth_prefix="Bearer ",
-        default_model="moonshot-v1-8k",
+        default_model="moonshot-v1-128k",
     ),
 }
 
 LLM_MODEL_PRICING_REGISTRY: dict[str, LLMModelPricing] = {
-    "gpt-5.4-mini": LLMModelPricing("gpt-5.4-mini", prompt_usd_per_1m=0.40, completion_usd_per_1m=1.60),
-    "gpt-4o-mini": LLMModelPricing("gpt-4o-mini", prompt_usd_per_1m=0.15, completion_usd_per_1m=0.60),
     "deepseek-chat": LLMModelPricing("deepseek-chat", prompt_usd_per_1m=0.27, completion_usd_per_1m=1.10),
-    "claude-3-5-sonnet": LLMModelPricing("claude-3-5-sonnet", prompt_usd_per_1m=3.00, completion_usd_per_1m=15.00),
-    "claude-haiku-4-5-20251001": LLMModelPricing(
-        "claude-haiku-4-5-20251001",
-        prompt_usd_per_1m=1.00,
-        completion_usd_per_1m=5.00,
-    ),
-    "claude-sonnet-4-6": LLMModelPricing("claude-sonnet-4-6", prompt_usd_per_1m=3.00, completion_usd_per_1m=15.00),
-    "gemini-2.0-flash": LLMModelPricing("gemini-2.0-flash", prompt_usd_per_1m=0.10, completion_usd_per_1m=0.40),
-    "qwen-plus": LLMModelPricing("qwen-plus", prompt_usd_per_1m=0.11, completion_usd_per_1m=0.28),
+    "deepseek-reasoner": LLMModelPricing("deepseek-reasoner", prompt_usd_per_1m=0.55, completion_usd_per_1m=2.19),
+    "qwen3.5-plus": LLMModelPricing("qwen3.5-plus", prompt_usd_per_1m=0.11, completion_usd_per_1m=0.28),
+    "qwen3.5-flash": LLMModelPricing("qwen3.5-flash", prompt_usd_per_1m=0.04, completion_usd_per_1m=0.08),
+    "qwen3.6-plus": LLMModelPricing("qwen3.6-plus", prompt_usd_per_1m=0.11, completion_usd_per_1m=0.28),
     "qwen-turbo": LLMModelPricing("qwen-turbo", prompt_usd_per_1m=0.04, completion_usd_per_1m=0.08),
     "moonshot-v1-8k": LLMModelPricing("moonshot-v1-8k", prompt_usd_per_1m=1.64, completion_usd_per_1m=1.64),
+    "moonshot-v1-32k": LLMModelPricing("moonshot-v1-32k", prompt_usd_per_1m=3.28, completion_usd_per_1m=3.28),
+    "moonshot-v1-128k": LLMModelPricing("moonshot-v1-128k", prompt_usd_per_1m=8.20, completion_usd_per_1m=8.20),
 }
 
 LLM_STAGE_NAMES: dict[str, str] = {
     "review_branch_subagent": "Review branch subagent",
     "review_risk_subagent": "Review risk subagent",
     "review_master_agent": "Review master agent",
+    "review_branch_overlay": "Review branch overlay",
+    "review_master_symbol": "Review master symbol",
     "intelligence_summary": "Intelligence synthesis",
     "news_sentiment": "News sentiment analysis",
     "factor_brainstorm": "Factor brainstorm",
@@ -145,6 +165,29 @@ LLM_STAGE_NAMES: dict[str, str] = {
 
 LLM_PROVIDER_ENV_KEYS: tuple[str, ...] = tuple(spec.env_key for spec in LLM_PROVIDER_REGISTRY.values())
 USAGE_LOG_PATH = Path("data") / "llm_usage.jsonl"
+PROVIDER_CONCURRENCY_LIMITS: dict[str, int] = {
+    "deepseek": 4,
+    "qwen": 4,
+    "kimi": 2,
+}
+_PROVIDER_LIMITERS: dict[tuple[int, str], asyncio.Semaphore] = {}
+_PROVIDER_LIMITERS_LOCK = threading.Lock()
+_PROVIDER_COOLDOWNS: dict[str, ProviderCooldown] = {}
+_PROVIDER_COOLDOWNS_LOCK = threading.Lock()
+_RATE_LIMIT_RETRY_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"try again after\s+(\d+(?:\.\d+)?)\s*seconds?", re.IGNORECASE),
+    re.compile(r"retry after\s+(\d+(?:\.\d+)?)\s*seconds?", re.IGNORECASE),
+)
+_COOLDOWN_REASON_KEYWORDS: tuple[str, ...] = (
+    "arrearage",
+    "invalid api key",
+    "unauthorized",
+    "forbidden",
+    "account disabled",
+    "deactivated",
+    "quota exhausted",
+    "insufficient balance",
+)
 
 _ACTIVE_USAGE_SESSION: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "quant_investor_active_llm_usage_session",
@@ -155,15 +198,9 @@ _SESSION_RECORDS: dict[str, list[LLMUsageRecord]] = {}
 
 
 def detect_provider(model: str) -> str:
-    normalized = str(model or "").strip().lower()
-    if normalized.startswith(("gpt-", "o1-", "o3-", "o4-")):
-        return "openai"
-    if normalized.startswith("claude-"):
-        return "anthropic"
+    normalized = normalize_model_name(model).lower()
     if normalized.startswith("deepseek"):
         return "deepseek"
-    if normalized.startswith("gemini"):
-        return "google"
     if normalized.startswith("qwen"):
         return "qwen"
     if normalized.startswith("moonshot"):
@@ -184,16 +221,13 @@ def has_provider_for_model(model: str) -> bool:
 
 
 def resolve_default_model(preferred_model: str = "") -> str:
-    preferred = str(preferred_model or "").strip()
+    preferred = normalize_model_name(preferred_model)
     if preferred and has_provider_for_model(preferred):
         return preferred
-
-    for provider_name in ("openai", "deepseek", "anthropic", "google", "qwen", "kimi"):
-        provider = LLM_PROVIDER_REGISTRY[provider_name]
-        if os.getenv(provider.env_key):
-            return provider.default_model
-
-    return preferred or LLM_PROVIDER_REGISTRY["openai"].default_model
+    priority = resolve_review_model_priority(preferred_models=[preferred], available_only=True)
+    if priority.primary_model:
+        return priority.primary_model
+    return preferred or DEFAULT_ORDERED_MODELS[0]
 
 
 def current_usage_session_id() -> str | None:
@@ -291,13 +325,17 @@ def build_usage_summary(records: list[LLMUsageRecord]) -> LLMUsageSummary:
     return summary
 
 
+def build_effective_usage_summary(records: list[LLMUsageRecord]) -> LLMUsageSummary:
+    return build_usage_summary([record for record in records if bool(record.success)])
+
+
 def snapshot_usage(session_id: str | None = None) -> tuple[list[LLMUsageRecord], LLMUsageSummary]:
     records = get_usage_records(session_id)
     return records, build_usage_summary(records)
 
 
 def estimate_cost_usd(model: str, prompt_tokens: int, completion_tokens: int) -> float:
-    pricing = LLM_MODEL_PRICING_REGISTRY.get(str(model or "").strip())
+    pricing = LLM_MODEL_PRICING_REGISTRY.get(normalize_model_name(model))
     if pricing is None:
         return 0.0
     prompt_cost = (max(int(prompt_tokens), 0) / 1_000_000.0) * pricing.prompt_usd_per_1m
@@ -366,6 +404,7 @@ def record_fallback_event(
     prompt_tokens: int = 0,
     latency_ms: int = 0,
     session_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> LLMUsageRecord:
     resolved_provider = provider
     if not resolved_provider:
@@ -388,7 +427,7 @@ def record_fallback_event(
             success=False,
             fallback=True,
             estimated_cost_usd=estimate_cost_usd(model, prompt_tokens, 0),
-            metadata={"reason": str(reason or "")},
+            metadata={"reason": str(reason or ""), **dict(metadata or {})},
         ),
         session_id=session_id,
     )
@@ -403,6 +442,105 @@ def _normalize_failure_reason(exc: Exception | None) -> str:
     if text:
         return text
     return type(exc).__name__
+
+
+def _provider_semaphore(provider: str) -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    key = (id(loop), str(provider or "").strip().lower())
+    limit = max(int(PROVIDER_CONCURRENCY_LIMITS.get(key[1], 4) or 4), 1)
+    with _PROVIDER_LIMITERS_LOCK:
+        semaphore = _PROVIDER_LIMITERS.get(key)
+        if semaphore is None:
+            semaphore = asyncio.Semaphore(limit)
+            _PROVIDER_LIMITERS[key] = semaphore
+        return semaphore
+
+
+def _parse_retry_after_seconds(exc: Exception | None, text: str) -> float:
+    if isinstance(exc, LLMProviderResponseError):
+        header_value = str(exc.headers.get("Retry-After", "") or "").strip()
+        if header_value:
+            try:
+                return max(float(header_value), 0.0)
+            except ValueError:
+                pass
+    for pattern in _RATE_LIMIT_RETRY_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            try:
+                return max(float(match.group(1)), 0.0)
+            except ValueError:
+                continue
+    return 0.0
+
+
+def analyze_provider_failure(exc: Exception | None, *, provider: str, model: str) -> ProviderFailureAnalysis:
+    text = _normalize_failure_reason(exc)
+    lowered = text.lower()
+    status_code = 0
+    if isinstance(exc, LLMProviderResponseError):
+        status_code = exc.status_code
+    else:
+        match = re.search(r"\bHTTP\s+(\d{3})\b", text, flags=re.IGNORECASE)
+        if match:
+            status_code = int(match.group(1))
+
+    retry_after_seconds = _parse_retry_after_seconds(exc, text)
+    is_rate_limited = bool(
+        status_code == 429
+        or "rate limit" in lowered
+        or "too many requests" in lowered
+        or "engine_overloaded" in lowered
+        or "engine overloaded" in lowered
+        or "organization concurrency" in lowered
+    )
+    should_cooldown_provider = bool(
+        any(keyword in lowered for keyword in _COOLDOWN_REASON_KEYWORDS)
+    )
+    cooldown_seconds = 0.0
+    if should_cooldown_provider:
+        cooldown_seconds = max(retry_after_seconds, 300.0)
+    return ProviderFailureAnalysis(
+        status_code=status_code,
+        reason=text,
+        retry_after_seconds=retry_after_seconds,
+        is_rate_limited=is_rate_limited,
+        should_cooldown_provider=should_cooldown_provider,
+        cooldown_seconds=cooldown_seconds,
+    )
+
+
+def _mark_provider_cooldown(provider: str, analysis: ProviderFailureAnalysis) -> None:
+    if not analysis.should_cooldown_provider or analysis.cooldown_seconds <= 0:
+        return
+    with _PROVIDER_COOLDOWNS_LOCK:
+        _PROVIDER_COOLDOWNS[provider] = ProviderCooldown(
+            until_monotonic=time.monotonic() + analysis.cooldown_seconds,
+            reason=analysis.reason,
+            status_code=analysis.status_code,
+        )
+
+
+def get_provider_cooldown(provider: str) -> ProviderCooldown | None:
+    with _PROVIDER_COOLDOWNS_LOCK:
+        cooldown = _PROVIDER_COOLDOWNS.get(provider)
+        if cooldown is None:
+            return None
+        if cooldown.until_monotonic <= time.monotonic():
+            _PROVIDER_COOLDOWNS.pop(provider, None)
+            return None
+        return ProviderCooldown(
+            until_monotonic=cooldown.until_monotonic,
+            reason=cooldown.reason,
+            status_code=cooldown.status_code,
+        )
+
+
+def reset_provider_runtime_state() -> None:
+    with _PROVIDER_COOLDOWNS_LOCK:
+        _PROVIDER_COOLDOWNS.clear()
+    with _PROVIDER_LIMITERS_LOCK:
+        _PROVIDER_LIMITERS.clear()
 
 
 def render_usage_markdown(summary: LLMUsageSummary, title: str = "## LLM 可观测性") -> str:
@@ -423,6 +561,7 @@ def render_usage_markdown(summary: LLMUsageSummary, title: str = "## LLM 可观�
         [
             f"- 调用次数: {summary.call_count}",
             f"- 成功次数: {summary.success_count}",
+            f"- 失败次数: {summary.failed_count}",
             f"- 降级/回退次数: {summary.fallback_count}",
             f"- Prompt Tokens: {summary.prompt_tokens}",
             f"- Completion Tokens: {summary.completion_tokens}",
@@ -469,10 +608,12 @@ def _get_api_key(provider: str) -> str:
 
 
 def _build_openai_compatible_request(
+    provider: str,
     model: str,
     messages: list[dict[str, str]],
     max_tokens: int,
     response_json: bool,
+    reasoning_effort: str,
     api_key: str,
     base_url: str,
 ) -> tuple[str, dict[str, str], dict[str, Any]]:
@@ -480,79 +621,19 @@ def _build_openai_compatible_request(
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
     }
-    body: dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": 0.3,
-    }
-    if response_json:
-        body["response_format"] = {"type": "json_object"}
+    body = build_openai_compatible_completion_body(
+        provider=provider,
+        model=model,
+        messages=messages,
+        max_tokens=max_tokens,
+        response_json=response_json,
+        extra_body={
+            "reasoning_effort": str(reasoning_effort or "").strip(),
+        }
+        if str(reasoning_effort or "").strip() and supports_reasoning_effort(provider, model)
+        else None,
+    )
     return base_url, headers, body
-
-
-def _build_anthropic_request(
-    model: str,
-    messages: list[dict[str, str]],
-    max_tokens: int,
-    response_json: bool,
-    api_key: str,
-) -> tuple[str, dict[str, str], dict[str, Any]]:
-    system_prompt = ""
-    user_messages: list[dict[str, str]] = []
-    for message in messages:
-        if message.get("role") == "system":
-            system_prompt = str(message.get("content", ""))
-        else:
-            user_messages.append(message)
-
-    if response_json and system_prompt:
-        system_prompt += "\n\nYou MUST respond with valid JSON only. No markdown, no extra text."
-
-    headers = {
-        "Content-Type": "application/json",
-        "x-api-key": api_key,
-        "anthropic-version": "2023-06-01",
-    }
-    body: dict[str, Any] = {
-        "model": model,
-        "max_tokens": max_tokens,
-        "temperature": 0.3,
-        "messages": user_messages,
-    }
-    if system_prompt:
-        body["system"] = system_prompt
-    return LLM_PROVIDER_REGISTRY["anthropic"].base_url, headers, body
-
-
-def _build_google_request(
-    model: str,
-    messages: list[dict[str, str]],
-    max_tokens: int,
-    response_json: bool,
-    api_key: str,
-) -> tuple[str, dict[str, str], dict[str, Any]]:
-    url = LLM_PROVIDER_REGISTRY["google"].base_url.format(model=model) + f"?key={api_key}"
-    contents: list[dict[str, Any]] = []
-    system_instruction: dict[str, Any] | None = None
-    for message in messages:
-        if message.get("role") == "system":
-            system_instruction = {"parts": [{"text": str(message.get("content", ""))}]}
-        else:
-            role = "model" if message.get("role") == "assistant" else "user"
-            contents.append({"role": role, "parts": [{"text": str(message.get("content", ""))}]})
-
-    generation_config: dict[str, Any] = {
-        "maxOutputTokens": max_tokens,
-        "temperature": 0.3,
-    }
-    if response_json:
-        generation_config["responseMimeType"] = "application/json"
-
-    body: dict[str, Any] = {"contents": contents, "generationConfig": generation_config}
-    if system_instruction:
-        body["systemInstruction"] = system_instruction
-    return url, {"Content-Type": "application/json"}, body
 
 
 def _parse_openai_response(data: dict[str, Any]) -> str:
@@ -560,23 +641,6 @@ def _parse_openai_response(data: dict[str, Any]) -> str:
         return str(data["choices"][0]["message"]["content"])
     except (KeyError, IndexError, TypeError) as exc:
         raise LLMCallError(f"Unexpected OpenAI response structure: {exc}") from exc
-
-
-def _parse_anthropic_response(data: dict[str, Any]) -> str:
-    try:
-        for item in data["content"]:
-            if item.get("type") == "text":
-                return str(item["text"])
-        raise LLMCallError("No text block in Anthropic response")
-    except (KeyError, IndexError, TypeError) as exc:
-        raise LLMCallError(f"Unexpected Anthropic response structure: {exc}") from exc
-
-
-def _parse_google_response(data: dict[str, Any]) -> str:
-    try:
-        return str(data["candidates"][0]["content"]["parts"][0]["text"])
-    except (KeyError, IndexError, TypeError) as exc:
-        raise LLMCallError(f"Unexpected Google response structure: {exc}") from exc
 
 
 def _extract_usage(
@@ -590,27 +654,12 @@ def _extract_usage(
     completion_tokens = completion_fallback
     total_tokens = prompt_fallback + completion_fallback
 
-    if provider in {"openai", "deepseek", "qwen", "kimi"}:
+    if provider in {"deepseek", "qwen", "kimi"}:
         usage = response_data.get("usage", {})
         if isinstance(usage, dict):
             prompt_tokens = int(usage.get("prompt_tokens", prompt_fallback) or prompt_fallback)
             completion_tokens = int(usage.get("completion_tokens", completion_fallback) or completion_fallback)
             total_tokens = int(usage.get("total_tokens", prompt_tokens + completion_tokens) or (prompt_tokens + completion_tokens))
-    elif provider == "anthropic":
-        usage = response_data.get("usage", {})
-        if isinstance(usage, dict):
-            prompt_tokens = int(usage.get("input_tokens", prompt_fallback) or prompt_fallback)
-            completion_tokens = int(usage.get("output_tokens", completion_fallback) or completion_fallback)
-            total_tokens = prompt_tokens + completion_tokens
-    elif provider == "google":
-        usage = response_data.get("usageMetadata", {})
-        if isinstance(usage, dict):
-            prompt_tokens = int(usage.get("promptTokenCount", prompt_fallback) or prompt_fallback)
-            completion_tokens = int(
-                usage.get("candidatesTokenCount", usage.get("candidateTokenCount", completion_fallback))
-                or completion_fallback
-            )
-            total_tokens = int(usage.get("totalTokenCount", prompt_tokens + completion_tokens) or (prompt_tokens + completion_tokens))
 
     return prompt_tokens, completion_tokens, total_tokens
 
@@ -618,26 +667,33 @@ def _extract_usage(
 class LLMClient:
     """统一异步 LLM 客户端。"""
 
-    def __init__(self, timeout: float = 30.0, max_retries: int = 2) -> None:
+    def __init__(self, timeout: float = 30.0, max_retries: int = 2, default_reasoning_effort: str = "") -> None:
         self.timeout = timeout
         self.max_retries = max_retries
+        self.default_reasoning_effort = str(default_reasoning_effort or "").strip()
 
     async def complete(
         self,
         messages: list[dict[str, str]],
         model: str,
+        fallback_model: str = "",
+        candidate_models: list[str] | None = None,
         max_tokens: int = 1024,
         response_json: bool = True,
         stage: str = "",
         actor_name: str = "",
+        reasoning_effort: str = "",
     ) -> dict[str, Any]:
         content_text = await self.complete_text(
             messages=messages,
             model=model,
+            fallback_model=fallback_model,
+            candidate_models=candidate_models,
             max_tokens=max_tokens,
             response_json=response_json,
             stage=stage,
             actor_name=actor_name,
+            reasoning_effort=reasoning_effort,
         )
         return self._parse_json_content(content_text)
 
@@ -645,113 +701,217 @@ class LLMClient:
         self,
         messages: list[dict[str, str]],
         model: str,
+        fallback_model: str = "",
+        candidate_models: list[str] | None = None,
         max_tokens: int = 1024,
         response_json: bool = False,
         stage: str = "",
         actor_name: str = "",
+        reasoning_effort: str = "",
     ) -> str:
-        provider = detect_provider(model)
-        stage_name = str(stage or "unlabeled_stage")
-        branch_or_agent_name = str(actor_name or "")
+        requested_model = normalize_model_name(model)
+        fallback_candidate = normalize_model_name(fallback_model)
+        effective_reasoning_effort = str(reasoning_effort or self.default_reasoning_effort or "").strip()
+        resolved_candidates = build_candidate_model_chain(
+            requested_model=requested_model,
+            fallback_model=fallback_candidate,
+            candidate_models=candidate_models,
+        )
+        if not resolved_candidates:
+            raise LLMCallError("LLM model is required")
+        stage_name = normalize_label(stage) or "unlabeled_stage"
+        branch_or_agent_name = normalize_label(actor_name)
         prompt_tokens_est = estimate_message_tokens(messages)
-        t0 = time.monotonic()
+        failure_messages: list[str] = []
+        prior_fallback_reason = ""
 
-        try:
-            api_key = _get_api_key(provider)
-        except LLMCallError as exc:
-            latency_ms = int((time.monotonic() - t0) * 1000)
-            record_fallback_event(
-                stage=stage_name,
-                branch_or_agent_name=branch_or_agent_name,
-                model=model,
-                reason=str(exc),
-                provider=provider,
-                prompt_tokens=prompt_tokens_est,
-                latency_ms=latency_ms,
-            )
-            raise
+        for index, candidate_model in enumerate(resolved_candidates):
+            candidate_started = time.monotonic()
+            provider = detect_provider(candidate_model)
+            base_metadata = {
+                "requested_model": requested_model,
+                "fallback_model": fallback_candidate,
+                "resolved_model": candidate_model,
+                "candidate_models": list(resolved_candidates),
+                "used_fallback_model": bool(candidate_model != requested_model),
+            }
+            cooldown = get_provider_cooldown(provider)
+            if cooldown is not None:
+                remaining = round(max(cooldown.until_monotonic - time.monotonic(), 0.0), 3)
+                failure_reason = cooldown.reason or f"provider_cooldown_active:{provider}"
+                record_fallback_event(
+                    stage=stage_name,
+                    branch_or_agent_name=branch_or_agent_name,
+                    model=candidate_model,
+                    reason=failure_reason,
+                    provider=provider,
+                    prompt_tokens=prompt_tokens_est,
+                    latency_ms=int((time.monotonic() - candidate_started) * 1000),
+                    metadata={
+                        **base_metadata,
+                        "cooldown_hit": True,
+                        "retry_after_seconds": remaining,
+                        "status_code": cooldown.status_code,
+                    },
+                )
+                prior_fallback_reason = failure_reason
+                failure_messages.append(f"{candidate_model}: {failure_reason}")
+                if index + 1 < len(resolved_candidates):
+                    continue
+                raise LLMCallError(
+                    "All %s attempts failed for models=%s"
+                    % (self.max_retries, " -> ".join(failure_messages or resolved_candidates))
+                )
+            try:
+                api_key = _get_api_key(provider)
+            except LLMCallError as exc:
+                latency_ms = int((time.monotonic() - candidate_started) * 1000)
+                analysis = analyze_provider_failure(exc, provider=provider, model=candidate_model)
+                record_fallback_event(
+                    stage=stage_name,
+                    branch_or_agent_name=branch_or_agent_name,
+                    model=candidate_model,
+                    reason=analysis.reason,
+                    provider=provider,
+                    prompt_tokens=prompt_tokens_est,
+                    latency_ms=latency_ms,
+                    metadata={
+                        **base_metadata,
+                        "cooldown_hit": False,
+                        "retry_after_seconds": analysis.retry_after_seconds,
+                        "status_code": analysis.status_code,
+                    },
+                )
+                prior_fallback_reason = analysis.reason
+                failure_messages.append(f"{candidate_model}: {analysis.reason}")
+                if index + 1 < len(resolved_candidates):
+                    continue
+                raise
 
-        if provider == "anthropic":
-            url, headers, body = _build_anthropic_request(model, messages, max_tokens, response_json, api_key)
-        elif provider == "google":
-            url, headers, body = _build_google_request(model, messages, max_tokens, response_json, api_key)
-        else:
             url, headers, body = _build_openai_compatible_request(
-                model=model,
+                provider=provider,
+                model=candidate_model,
                 messages=messages,
                 max_tokens=max_tokens,
                 response_json=response_json,
+                reasoning_effort=effective_reasoning_effort,
                 api_key=api_key,
                 base_url=LLM_PROVIDER_REGISTRY[provider].base_url,
             )
 
-        parser = {
-            "openai": _parse_openai_response,
-            "deepseek": _parse_openai_response,
-            "anthropic": _parse_anthropic_response,
-            "google": _parse_google_response,
-            "qwen": _parse_openai_response,
-            "kimi": _parse_openai_response,
-        }[provider]
+            parser = {
+                "deepseek": _parse_openai_response,
+                "qwen": _parse_openai_response,
+                "kimi": _parse_openai_response,
+            }[provider]
 
-        last_exc: Exception | None = None
-        for attempt in range(1, self.max_retries + 1):
-            try:
-                raw_text = await self._http_post(url=url, headers=headers, body=body)
-                response_data = json.loads(raw_text)
-                content_text = parser(response_data)
-                completion_est = estimate_text_tokens(content_text)
-                prompt_tokens, completion_tokens, total_tokens = _extract_usage(
-                    provider=provider,
-                    response_data=response_data,
-                    prompt_fallback=prompt_tokens_est,
-                    completion_fallback=completion_est,
-                )
-                latency_ms = int((time.monotonic() - t0) * 1000)
-                record_usage(
-                    LLMUsageRecord(
-                        stage=stage_name,
-                        branch_or_agent_name=branch_or_agent_name,
+            last_exc: Exception | None = None
+            rate_limit_retry_count = 0
+            retry_after_seconds = 0.0
+            for attempt in range(1, self.max_retries + 1):
+                try:
+                    semaphore = _provider_semaphore(provider)
+                    async with semaphore:
+                        raw_text = await self._http_post(url=url, headers=headers, body=body)
+                    response_data = json.loads(raw_text)
+                    content_text = parser(response_data)
+                    if response_json:
+                        self._parse_json_content(content_text)
+                    completion_est = estimate_text_tokens(content_text)
+                    prompt_tokens, completion_tokens, total_tokens = _extract_usage(
                         provider=provider,
-                        model=model,
-                        prompt_tokens=prompt_tokens,
-                        completion_tokens=completion_tokens,
-                        total_tokens=total_tokens,
-                        latency_ms=latency_ms,
-                        success=True,
-                        fallback=False,
-                        estimated_cost_usd=estimate_cost_usd(model, prompt_tokens, completion_tokens),
+                        response_data=response_data,
+                        prompt_fallback=prompt_tokens_est,
+                        completion_fallback=completion_est,
                     )
-                )
-                return content_text
-            except (_AiohttpClientError, asyncio.TimeoutError, json.JSONDecodeError, LLMCallError) as exc:
-                last_exc = exc
-                if attempt < self.max_retries:
-                    await asyncio.sleep(1.0 * attempt)
+                    latency_ms = int((time.monotonic() - candidate_started) * 1000)
+                    metadata = {
+                        **base_metadata,
+                        "rate_limit_retry_count": rate_limit_retry_count,
+                        "retry_after_seconds": retry_after_seconds,
+                        "cooldown_hit": False,
+                    }
+                    if prior_fallback_reason:
+                        metadata["fallback_reason"] = prior_fallback_reason
+                    record_usage(
+                        LLMUsageRecord(
+                            stage=stage_name,
+                            branch_or_agent_name=branch_or_agent_name,
+                            provider=provider,
+                            model=candidate_model,
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                            total_tokens=total_tokens,
+                            latency_ms=latency_ms,
+                            success=True,
+                            fallback=False,
+                            estimated_cost_usd=estimate_cost_usd(candidate_model, prompt_tokens, completion_tokens),
+                            metadata=metadata,
+                        )
+                    )
+                    return content_text
+                except (_AiohttpClientError, asyncio.TimeoutError, json.JSONDecodeError, LLMCallError) as exc:
+                    last_exc = exc
+                    analysis = analyze_provider_failure(exc, provider=provider, model=candidate_model)
+                    if isinstance(exc, asyncio.TimeoutError):
+                        break
+                    if analysis.is_rate_limited and attempt < self.max_retries:
+                        delay = analysis.retry_after_seconds or float(attempt)
+                        retry_after_seconds = analysis.retry_after_seconds or delay
+                        rate_limit_retry_count += 1
+                        await asyncio.sleep(delay)
+                        continue
+                    if attempt < self.max_retries:
+                        await asyncio.sleep(1.0 * attempt)
+                    continue
+
+            latency_ms = int((time.monotonic() - candidate_started) * 1000)
+            analysis = analyze_provider_failure(last_exc, provider=provider, model=candidate_model)
+            _mark_provider_cooldown(provider, analysis)
+            failure_reason = analysis.reason
+            record_fallback_event(
+                stage=stage_name,
+                branch_or_agent_name=branch_or_agent_name,
+                model=candidate_model,
+                reason=failure_reason,
+                provider=provider,
+                prompt_tokens=prompt_tokens_est,
+                latency_ms=latency_ms,
+                metadata={
+                    **base_metadata,
+                    "rate_limit_retry_count": rate_limit_retry_count,
+                    "retry_after_seconds": analysis.retry_after_seconds or retry_after_seconds,
+                    "cooldown_hit": False,
+                    "cooldown_applied": analysis.should_cooldown_provider,
+                    "status_code": analysis.status_code,
+                },
+            )
+            prior_fallback_reason = failure_reason
+            failure_messages.append(f"{candidate_model}: {failure_reason}")
+            if index + 1 < len(resolved_candidates):
                 continue
 
-        latency_ms = int((time.monotonic() - t0) * 1000)
-        failure_reason = _normalize_failure_reason(last_exc)
-        record_fallback_event(
-            stage=stage_name,
-            branch_or_agent_name=branch_or_agent_name,
-            model=model,
-            reason=failure_reason,
-            provider=provider,
-            prompt_tokens=prompt_tokens_est,
-            latency_ms=latency_ms,
+        raise LLMCallError(
+            "All %s attempts failed for models=%s"
+            % (self.max_retries, " -> ".join(failure_messages or resolved_candidates))
         )
-        raise LLMCallError(f"All {self.max_retries} attempts failed for model={model}: {failure_reason}")
 
     async def _http_post(self, url: str, headers: dict[str, str], body: dict[str, Any]) -> str:
         if aiohttp is None:
             raise LLMCallError("aiohttp is required for LLM calls. Install with: pip install aiohttp")
         timeout = aiohttp.ClientTimeout(total=self.timeout)
+        provider = detect_provider(str(body.get("model", "")))
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(url, headers=headers, json=body) as response:
                 text = await response.text()
                 if response.status != 200:
-                    raise LLMCallError(f"HTTP {response.status}: {text[:500]}")
+                    raise LLMProviderResponseError(
+                        f"HTTP {response.status}: {text[:500]}",
+                        provider=provider,
+                        model=str(body.get("model", "")),
+                        status_code=response.status,
+                        headers=dict(response.headers),
+                    )
                 return text
 
     @staticmethod
@@ -811,9 +971,10 @@ def _run_sync(coro: Any) -> Any:
 
     if loop and loop.is_running():
         import concurrent.futures
+        ctx = contextvars.copy_context()
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, coro)
+            future = pool.submit(lambda: ctx.run(asyncio.run, coro))
             return future.result()
     return asyncio.run(coro)
 
@@ -822,6 +983,8 @@ def complete_json_sync(
     *,
     messages: list[dict[str, str]],
     model: str,
+    fallback_model: str = "",
+    candidate_models: list[str] | None = None,
     max_tokens: int = 1024,
     timeout: float = 30.0,
     max_retries: int = 2,
@@ -833,6 +996,8 @@ def complete_json_sync(
         client.complete(
             messages=messages,
             model=model,
+            fallback_model=fallback_model,
+            candidate_models=candidate_models,
             max_tokens=max_tokens,
             response_json=True,
             stage=stage,
@@ -845,6 +1010,8 @@ def complete_text_sync(
     *,
     messages: list[dict[str, str]],
     model: str,
+    fallback_model: str = "",
+    candidate_models: list[str] | None = None,
     max_tokens: int = 1024,
     timeout: float = 30.0,
     max_retries: int = 2,
@@ -856,6 +1023,8 @@ def complete_text_sync(
         client.complete_text(
             messages=messages,
             model=model,
+            fallback_model=fallback_model,
+            candidate_models=candidate_models,
             max_tokens=max_tokens,
             response_json=False,
             stage=stage,
@@ -865,6 +1034,8 @@ def complete_text_sync(
 
 
 __all__ = [
+    "LLMProviderResponseError",
+    "ProviderFailureAnalysis",
     "LLMCallError",
     "LLMClient",
     "LLMProviderSpec",
@@ -876,6 +1047,8 @@ __all__ = [
     "LLM_PROVIDER_ENV_KEYS",
     "USAGE_LOG_PATH",
     "build_usage_summary",
+    "analyze_provider_failure",
+    "build_effective_usage_summary",
     "complete_json_sync",
     "complete_text_sync",
     "current_usage_session_id",
@@ -884,12 +1057,14 @@ __all__ = [
     "estimate_cost_usd",
     "estimate_message_tokens",
     "estimate_text_tokens",
+    "get_provider_cooldown",
     "get_usage_records",
     "has_any_provider",
     "has_provider_for_model",
     "record_fallback_event",
     "record_usage",
     "render_usage_markdown",
+    "reset_provider_runtime_state",
     "resolve_default_model",
     "snapshot_usage",
     "start_usage_session",

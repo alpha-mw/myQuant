@@ -3,6 +3,11 @@
 V9 集成裁判辅助模块。
 
 只消费各分支 final_score / final_confidence，不把 debate 当成独立分支输入。
+
+.. deprecated::
+    This module is superseded by ``quant_investor.bayesian.posterior``
+    (BayesianPosteriorEngine).  Kept for shadow-mode comparison during
+    migration.  Use ``DECISION_ENGINE = "bayesian"`` in config to switch.
 """
 
 from __future__ import annotations

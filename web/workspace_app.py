@@ -88,7 +88,7 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
     app.include_router(presets.router)
     app.include_router(settings.router)
     app.include_router(universe.router)
-    app.include_router(data_router)
+    app.include_router(data_router, prefix="/api")
 
     @app.get("/api/health")
     async def health() -> dict[str, object]:

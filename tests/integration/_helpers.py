@@ -8,7 +8,25 @@ import json
 import pandas as pd
 
 from quant_investor import QuantInvestor
-from quant_investor.agent_protocol import ActionLabel, ICDecision, PortfolioPlan, ReportBundle, RiskDecision, RiskLevel
+from quant_investor.agent_protocol import (
+    ActionLabel,
+    DataQualityDiagnostics,
+    ExecutionTrace,
+    ExecutionTraceStep,
+    GlobalContext,
+    ICDecision,
+    ModelRoleMetadata,
+    PortfolioDecision,
+    PortfolioPlan,
+    ReportBundle,
+    RiskDecision,
+    RiskLevel,
+    ShortlistItem,
+    StockReviewBundle,
+    SymbolResearchPacket,
+    WhatIfPlan,
+    WhatIfScenario,
+)
 from quant_investor.agents.agent_contracts import (
     AgentEnhancedStrategy,
     BaseBranchAgentOutput,
@@ -18,8 +36,8 @@ from quant_investor.agents.agent_contracts import (
 )
 from quant_investor.agents.narrator_agent import NarratorAgent
 from quant_investor.branch_contracts import BranchResult, PortfolioStrategy, TradeRecommendation, UnifiedDataBundle
-from quant_investor.pipeline.parallel_research_pipeline import ParallelResearchPipeline
 import quant_investor.market.analyze as market_analyze
+import quant_investor.pipeline.mainline as mainline_module
 import quant_investor.versioning as versioning
 
 
@@ -323,6 +341,7 @@ def build_report_bundle(
     ic_decision: ICDecision,
     portfolio_plan: PortfolioPlan,
     run_diagnostics: dict[str, list[str]] | None = None,
+    dag_payload: dict[str, object] | None = None,
 ) -> tuple[dict[str, object], ReportBundle]:
     narrator = NarratorAgent()
     branch_verdicts = {
@@ -332,15 +351,16 @@ def build_report_bundle(
         )
         for name, branch_result in branch_results.items()
     }
-    bundle = narrator.run(
-        {
-            "macro_verdict": branch_verdicts["macro"],
-            "branch_summaries": branch_verdicts,
-            "ic_decisions": [ic_decision],
-            "portfolio_plan": portfolio_plan,
-            "run_diagnostics": run_diagnostics or {},
-        }
-    )
+    payload = {
+        "macro_verdict": branch_verdicts["macro"],
+        "branch_summaries": branch_verdicts,
+        "ic_decisions": [ic_decision],
+        "portfolio_plan": portfolio_plan,
+        "run_diagnostics": run_diagnostics or {},
+    }
+    if dag_payload:
+        payload.update(dag_payload)
+    bundle = narrator.run(payload)
     bundle = ReportBundle(
         architecture_version=versioning.ARCHITECTURE_VERSION,
         branch_schema_version=versioning.BRANCH_SCHEMA_VERSION,
@@ -367,6 +387,283 @@ def build_report_bundle(
         metadata={**bundle.metadata, "narrator_read_only": True},
     )
     return branch_verdicts, bundle
+
+
+def make_dag_artifacts(
+    symbols: list[str],
+    *,
+    thesis_prefix: str,
+    veto: bool = False,
+    review_enabled: bool = False,
+) -> dict[str, object]:
+    artifacts = make_artifacts(symbols, thesis_prefix=thesis_prefix, veto=veto)
+    selected_symbols = list(artifacts["portfolio_plan"].target_weights)
+    shortlist_symbols = selected_symbols or list(symbols[:1])
+    shortlist = [
+        ShortlistItem(
+            symbol=symbol,
+            company_name=symbol,
+            category="full_a",
+            rank_score=0.91 - index * 0.05,
+            action=ActionLabel.BUY if symbol in selected_symbols else ActionLabel.WATCH,
+            confidence=0.82 - index * 0.04,
+            expected_upside=0.12 - index * 0.01,
+            suggested_weight=float(artifacts["portfolio_plan"].target_weights.get(symbol, 0.0)),
+            risk_flags=[f"{symbol} risk"],
+            rationale=[f"{thesis_prefix} posterior summary {symbol}"],
+            metadata={
+                "posterior_action_score": round(0.91 - index * 0.05, 4),
+                "posterior_win_rate": round(0.66 - index * 0.03, 4),
+                "posterior_confidence": round(0.82 - index * 0.04, 4),
+                "posterior_edge_after_costs": round(0.05 - index * 0.01, 4),
+                "posterior_capacity_penalty": round(0.01 + index * 0.002, 4),
+            },
+        )
+        for index, symbol in enumerate(shortlist_symbols)
+    ]
+    model_role_metadata = ModelRoleMetadata(
+        branch_model="deepseek-chat" if review_enabled else "deterministic",
+        master_model="moonshot-v1-128k" if review_enabled else "deterministic",
+        resolved_branch_model="deepseek-chat" if review_enabled else "deterministic",
+        resolved_master_model="moonshot-v1-128k" if review_enabled else "deterministic",
+        master_reasoning_effort="high",
+        agent_layer_enabled=review_enabled,
+        universe_key="full_a",
+        universe_size=len(symbols),
+    )
+    execution_trace = ExecutionTrace(
+        model_roles=model_role_metadata,
+        key_parameters={
+            "total_universe_count": len(symbols),
+            "researchable_count": len(symbols),
+            "shortlistable_count": len(shortlist_symbols),
+            "shortlist_count": len(shortlist),
+            "final_selected_count": len(selected_symbols),
+        },
+        resolution_strategy="logical_full_a",
+        steps=[
+            ExecutionTraceStep(
+                stage="global_context",
+                role="system",
+                model="deterministic",
+                success=True,
+                conclusion=f"{len(symbols)} symbols resolved",
+            ),
+            ExecutionTraceStep(
+                stage="candidate_review",
+                role="system",
+                model="deterministic",
+                success=True,
+                conclusion=f"{len(shortlist_symbols)} candidates reviewed",
+            ),
+            ExecutionTraceStep(
+                stage="deterministic_portfolio_decision",
+                role="system",
+                model="deterministic",
+                success=True,
+                conclusion=f"{len(selected_symbols)} names selected",
+            ),
+        ],
+        final_deterministic_outcome={"selected_count": len(selected_symbols)},
+    )
+    what_if_plan = WhatIfPlan(
+        scenarios=[
+            WhatIfScenario(
+                scenario_name="macro_turns_weaker",
+                trigger="macro score deteriorates",
+                action="reduce exposure",
+            ),
+            WhatIfScenario(
+                scenario_name="candidate_set_decays",
+                trigger="posteriors lose edge",
+                action="re-run funnel",
+            ),
+        ]
+    )
+    global_context = GlobalContext(
+        market="CN",
+        universe_key="full_a",
+        rebalance_date="2026-03-26",
+        latest_trade_date="2026-03-26",
+        effective_target_trade_date="2026-03-26",
+        macro_regime="neutral",
+        universe_symbols=list(symbols),
+        symbol_name_map={symbol: symbol for symbol in symbols},
+        style_exposures={"style_bias": "均衡"},
+        freshness_mode="stable",
+        universe_tiers={
+            "total": list(symbols),
+            "researchable": list(symbols),
+            "shortlistable": list(shortlist_symbols),
+            "final_selected": list(selected_symbols),
+        },
+        data_quality_diagnostics=DataQualityDiagnostics(
+            total_universe_count=len(symbols),
+            researchable_universe_count=len(symbols),
+            shortlistable_universe_count=len(shortlist_symbols),
+            final_selected_universe_count=len(selected_symbols),
+        ),
+    )
+    symbol_research_packets = {
+        symbol: SymbolResearchPacket(
+            symbol=symbol,
+            company_name=symbol,
+            market="CN",
+            category="full_a",
+            branch_scores={
+                name: float(branch.symbol_scores.get(symbol, branch.final_score))
+                for name, branch in artifacts["branch_results"].items()
+            },
+            branch_confidences={
+                name: float(branch.final_confidence or branch.confidence or 0.0)
+                for name, branch in artifacts["branch_results"].items()
+            },
+            branch_theses={
+                name: str(branch.conclusion or branch.explanation or name)
+                for name, branch in artifacts["branch_results"].items()
+            },
+            risk_flags=[f"{symbol} risk"],
+            coverage_notes=["fixture coverage"],
+            diagnostic_notes=["fixture diagnostics"],
+        )
+        for symbol in symbols
+    }
+    portfolio_decision = PortfolioDecision(
+        shortlist=shortlist,
+        target_exposure=float(artifacts["portfolio_plan"].target_exposure),
+        target_gross_exposure=float(artifacts["portfolio_plan"].target_gross_exposure),
+        target_net_exposure=float(artifacts["portfolio_plan"].target_net_exposure),
+        cash_ratio=float(artifacts["portfolio_plan"].cash_ratio),
+        target_weights=dict(artifacts["portfolio_plan"].target_weights),
+        target_positions=dict(artifacts["portfolio_plan"].target_positions),
+        risk_constraints={
+            "blocked_symbols": list(artifacts["portfolio_plan"].blocked_symbols),
+            "position_limits": dict(artifacts["portfolio_plan"].position_limits),
+        },
+        master_hints={
+            item.symbol: {"action": item.action.value, "score": item.rank_score, "confidence": item.confidence}
+            for item in shortlist
+        },
+        what_if_plan=what_if_plan,
+        execution_trace=execution_trace,
+        metadata={"selected_count": len(selected_symbols)},
+    )
+    review_bundle = StockReviewBundle(
+        branch_summaries={},
+        ic_hints_by_symbol={
+            item.symbol: {
+                "action": item.action.value,
+                "score": item.rank_score,
+                "confidence": item.confidence,
+                "rationale_points": list(item.rationale),
+            }
+            for item in shortlist
+        },
+        fallback_reasons=[] if review_enabled else ["review_disabled"],
+    )
+    portfolio_master_output = (
+        MasterAgentOutput(
+            final_conviction="buy",
+            final_score=0.66,
+            confidence=0.84,
+            debate_resolution=[f"{thesis_prefix} master resolution"],
+            conviction_drivers=[f"{thesis_prefix} conviction driver"],
+            top_picks=[
+                SymbolRecommendation(
+                    symbol=item.symbol,
+                    action=item.action.value,
+                    conviction="buy",
+                    rationale=item.rationale[0],
+                    target_weight=item.suggested_weight,
+                )
+                for item in shortlist
+            ],
+            risk_adjusted_exposure=float(artifacts["portfolio_plan"].target_exposure),
+        )
+        if review_enabled
+        else None
+    )
+    bayesian_records = [
+        {
+            "symbol": item.symbol,
+            "company_name": item.company_name,
+            "posterior_action_score": item.metadata["posterior_action_score"],
+            "posterior_win_rate": item.metadata["posterior_win_rate"],
+            "posterior_confidence": item.metadata["posterior_confidence"],
+            "posterior_edge_after_costs": item.metadata["posterior_edge_after_costs"],
+            "posterior_capacity_penalty": item.metadata["posterior_capacity_penalty"],
+            "rank": index + 1,
+        }
+        for index, item in enumerate(shortlist)
+    ]
+    funnel_summary = {
+        "total_universe_count": len(symbols),
+        "researchable_count": len(symbols),
+        "shortlistable_count": len(shortlist_symbols),
+        "final_selected_count": len(selected_symbols),
+        "compression_ratio": f"{len(symbols)} -> {len(shortlist_symbols)} -> {len(selected_symbols)}",
+    }
+    branch_verdicts, report_bundle = build_report_bundle(
+        artifacts["branch_results"],
+        risk_decision=artifacts["risk_decision"],
+        ic_decision=artifacts["ic_decision"],
+        portfolio_plan=artifacts["portfolio_plan"],
+        run_diagnostics=artifacts["run_diagnostics"],
+        dag_payload={
+            "global_context": global_context,
+            "symbol_research_packets": symbol_research_packets,
+            "shortlist": shortlist,
+            "portfolio_decision": portfolio_decision,
+            "model_role_metadata": model_role_metadata,
+            "execution_trace": execution_trace,
+            "what_if_plan": what_if_plan,
+            "review_bundle": review_bundle,
+            "ic_hints_by_symbol": dict(review_bundle.ic_hints_by_symbol),
+            "bayesian_records": bayesian_records,
+            "funnel_summary": funnel_summary,
+        },
+    )
+    branch_verdicts_by_symbol = {
+        symbol: {
+            name: deepcopy(verdict)
+            for name, verdict in branch_verdicts.items()
+        }
+        for symbol in symbols
+    }
+    for symbol, verdicts in branch_verdicts_by_symbol.items():
+        for verdict in verdicts.values():
+            verdict.symbol = symbol
+    return {
+        "global_context": global_context,
+        "symbol_research_packets": symbol_research_packets,
+        "branch_verdicts_by_symbol": branch_verdicts_by_symbol,
+        "branch_summaries": branch_verdicts,
+        "macro_verdict": branch_verdicts["macro"],
+        "risk_decision": artifacts["risk_decision"],
+        "ic_decisions": [artifacts["ic_decision"]],
+        "shortlist": shortlist,
+        "portfolio_plan": artifacts["portfolio_plan"],
+        "portfolio_decision": portfolio_decision,
+        "review_bundle": review_bundle,
+        "model_role_metadata": model_role_metadata,
+        "what_if_plan": what_if_plan,
+        "execution_trace": execution_trace,
+        "tradability_snapshot": {symbol: {"tradable": True} for symbol in symbols},
+        "data_quality_issues": [],
+        "data_quality_summary": {"researchable_count": len(symbols)},
+        "resolver": {"resolution_strategy": "logical_full_a"},
+        "report_bundle": report_bundle,
+        "portfolio_master_output": portfolio_master_output,
+        "portfolio_master_meta": {"confidence": 0.84} if review_enabled else {},
+        "branch_results": artifacts["branch_results"],
+        "bayesian_records": bayesian_records,
+        "funnel_output": SimpleNamespace(
+            candidates=list(shortlist_symbols),
+            excluded_symbols={},
+            funnel_metadata=funnel_summary,
+        ),
+        "funnel_summary": funnel_summary,
+    }
 
 
 def make_review_result(
@@ -468,74 +765,14 @@ def run_stubbed_quant_path(
     review_enabled: bool = False,
 ) -> SimpleNamespace:
     artifacts = make_artifacts(symbols, thesis_prefix=thesis_prefix, veto=veto)
-    data_bundle = make_data_bundle(symbols)
+    dag_artifacts = make_dag_artifacts(
+        symbols,
+        thesis_prefix=thesis_prefix,
+        veto=veto,
+        review_enabled=review_enabled,
+    )
     review_result = make_review_result(symbols, thesis_prefix=thesis_prefix) if review_enabled else None
-
-    monkeypatch.setattr(ParallelResearchPipeline, "_build_data_bundle", lambda self: data_bundle)
-    monkeypatch.setattr(
-        ParallelResearchPipeline,
-        "_run_branches",
-        lambda self, _data_bundle: artifacts["branch_results"],
-    )
-    monkeypatch.setattr(ParallelResearchPipeline, "_calibrate_signals", lambda self, *_args, **_kwargs: {})
-    monkeypatch.setattr(
-        ParallelResearchPipeline,
-        "_run_risk_layer",
-        lambda self, *_args, **_kwargs: artifacts["risk_decision"],
-    )
-    monkeypatch.setattr(
-        ParallelResearchPipeline,
-        "_run_ensemble_layer",
-        lambda self, *_args, **_kwargs: artifacts["strategy"],
-    )
-    monkeypatch.setattr(
-        ParallelResearchPipeline,
-        "_build_markdown_report",
-        lambda self, _result: f"# {thesis_prefix}\n\nsynthetic markdown report",
-    )
-
-    def _run_review_layer(self, _snapshot):
-        return review_result, review_enabled
-
-    def _run_unified_control_chain(self, snapshot, _review_result):
-        branch_verdicts, report_bundle = build_report_bundle(
-            snapshot.branch_results,
-            risk_decision=artifacts["risk_decision"],
-            ic_decision=artifacts["ic_decision"],
-            portfolio_plan=artifacts["portfolio_plan"],
-            run_diagnostics=artifacts["run_diagnostics"],
-        )
-        research_by_symbol = {
-            symbol: {
-                branch_name: deepcopy(verdict)
-                for branch_name, verdict in branch_verdicts.items()
-                if branch_name != "macro"
-            }
-            for symbol in symbols
-        }
-        ic_by_symbol = {
-            symbol: deepcopy(artifacts["ic_decision"])
-            for symbol in symbols
-        }
-        for symbol, ic_decision in ic_by_symbol.items():
-            ic_decision.symbol = symbol
-        risk_by_symbol = {
-            symbol: deepcopy(artifacts["risk_decision"])
-            for symbol in symbols
-        }
-        return {
-            "data_bundle": snapshot.data_bundle,
-            "macro_verdict": report_bundle.macro_verdict,
-            "research_by_symbol": research_by_symbol,
-            "risk_by_symbol": risk_by_symbol,
-            "ic_by_symbol": ic_by_symbol,
-            "portfolio_plan": artifacts["portfolio_plan"],
-            "report_bundle": report_bundle,
-            "persisted_paths": {},
-        }
-
-    monkeypatch.setattr(QuantInvestor, "_run_review_layer", _run_review_layer)
-    monkeypatch.setattr(QuantInvestor, "_run_unified_control_chain", _run_unified_control_chain)
+    monkeypatch.setattr(mainline_module, "_execute_market_dag", lambda **_kwargs: dag_artifacts, raising=False)
 
     investor = QuantInvestor(
         stock_pool=symbols,
@@ -562,17 +799,13 @@ def run_stubbed_full_market_path(
     analysis_kwargs: dict[str, object] | None = None,
 ) -> SimpleNamespace:
     artifacts = make_artifacts(symbols, thesis_prefix="full-market", veto=False)
-    captured_inits: list[dict[str, object]] = []
-
-    class FakeAnalyzer:
-        def __init__(self, **kwargs):
-            captured_inits.append(kwargs)
-
-        def run(self):
-            return SimpleNamespace(
-                final_strategy=artifacts["strategy"],
-                branch_results=artifacts["branch_results"],
-            )
+    dag_artifacts = make_dag_artifacts(
+        symbols,
+        thesis_prefix="full-market",
+        veto=False,
+        review_enabled=bool((analysis_kwargs or {}).get("enable_agent_layer", False)),
+    )
+    captured_dag_kwargs: list[dict[str, object]] = []
 
     def _save_candidate_index(_all_results, *, market: str, output_dir: str):
         path = Path(output_dir) / f"{market}_candidates.json"
@@ -580,13 +813,7 @@ def run_stubbed_full_market_path(
         return str(path)
 
     def _build_full_market_report_bundle(_all_results, *, market: str, total_capital: float, top_k: int):
-        _branch_verdicts, report_bundle = build_report_bundle(
-            artifacts["branch_results"],
-            risk_decision=artifacts["risk_decision"],
-            ic_decision=artifacts["ic_decision"],
-            portfolio_plan=artifacts["portfolio_plan"],
-            run_diagnostics=artifacts["run_diagnostics"],
-        )
+        report_bundle = dag_artifacts["report_bundle"]
         plan = {
             "market_summary": {
                 "generated_at": "2026-03-24T00:00:00Z",
@@ -605,7 +832,11 @@ def run_stubbed_full_market_path(
         }
         return plan, report_bundle
 
-    monkeypatch.setattr(market_analyze, "QuantInvestor", FakeAnalyzer, raising=False)
+    def _fake_execute_market_dag(**kwargs):
+        captured_dag_kwargs.append(dict(kwargs))
+        return dag_artifacts
+
+    monkeypatch.setattr(market_analyze, "execute_market_dag", _fake_execute_market_dag, raising=False)
     monkeypatch.setattr(
         market_analyze,
         "get_market_settings",
@@ -648,6 +879,6 @@ def run_stubbed_full_market_path(
     return SimpleNamespace(
         output=output,
         report_bundle=report_bundle,
-        captured_inits=captured_inits,
+        captured_dag_kwargs=captured_dag_kwargs,
         artifacts=artifacts,
     )

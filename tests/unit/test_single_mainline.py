@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 import quant_investor.agent_orchestrator as agent_orchestrator_module
+import quant_investor.pipeline.mainline as mainline_module
 from quant_investor.agent_orchestrator import AgentOrchestrator
 from quant_investor.agent_protocol import (
     ActionLabel,
@@ -17,10 +18,8 @@ from quant_investor.agent_protocol import (
     RiskDecision,
     RiskLevel,
 )
-from quant_investor.agents.agent_contracts import MasterAgentOutput, SymbolRecommendation
-from quant_investor.branch_contracts import BranchResult, PortfolioStrategy, UnifiedDataBundle
+from quant_investor.branch_contracts import BranchResult, UnifiedDataBundle
 from quant_investor.pipeline.mainline import QuantInvestor
-from quant_investor.pipeline.parallel_research_pipeline import ParallelResearchPipeline
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -150,33 +149,30 @@ def test_plain_pytest_bootstrap_adds_project_root_to_sys_path():
     assert str(ROOT) in sys.path
 
 
-def test_master_review_adapter_ignores_target_weight_and_portfolio_narrative():
+def test_mainline_raises_when_requested_symbol_has_no_local_csv(monkeypatch):
     investor = QuantInvestor(stock_pool=["000001.SZ"], verbose=False, enable_agent_layer=False)
-    master_output = MasterAgentOutput(
-        final_conviction="buy",
-        final_score=0.36,
-        confidence=0.84,
-        top_picks=[
-            SymbolRecommendation(
-                symbol="000001.SZ",
-                action="buy",
-                conviction="strong_buy",
-                rationale="structured rationale",
-                target_weight=0.95,
-            )
-        ],
-        conviction_drivers=["driver"],
-        debate_resolution=["resolution"],
-        portfolio_narrative="free text should not enter final allocation",
-        risk_adjusted_exposure=0.75,
+
+    monkeypatch.setattr(
+        mainline_module,
+        "build_market_data_snapshot",
+        lambda **kwargs: {
+            "market": "CN",
+            "universe_key": "full_a",
+            "local_latest_trade_date": "20260326",
+            "freshness_mode": "stable",
+            "category_symbol_counts": {"full_a": 0},
+            "date_distribution_top": [],
+            "data_directories": ["data/cn_market_full/hs300"],
+            "resolver_priority": ["hs300", "zz500", "zz1000", "other"],
+            "data_quality_issue_count": 1,
+            "summary_text": "请求标的本地无数据。",
+            "missing_requested_symbols": ["000001.SZ"],
+            "unreadable_requested_symbols": [],
+        },
     )
 
-    hints = investor._build_ic_hints_by_symbol(master_output)
-
-    assert set(hints["000001.SZ"]) == {"score", "confidence", "action", "rationale_points"}
-    assert hints["000001.SZ"]["action"] == "buy"
-    assert "target_weight" not in hints["000001.SZ"]
-    assert "portfolio_narrative" not in hints["000001.SZ"]
+    with pytest.raises(ValueError, match="000001.SZ"):
+        investor.run()
 
 
 def test_control_chain_keeps_risk_veto_over_buy_hints():
@@ -265,37 +261,22 @@ def test_control_chain_is_deterministic_for_identical_inputs():
     assert first["report_bundle"].portfolio_plan == second["report_bundle"].portfolio_plan
 
 
-def test_reuses_macro_branch_context_without_second_macro_run(monkeypatch):
+def test_precomputed_research_bridge_reuses_macro_branch_context_without_second_macro_run(monkeypatch):
     symbols = ["000001.SZ"]
-    snapshot = SimpleNamespace(
-        data_bundle=_make_data_bundle(symbols),
-        branch_results=_make_branch_results(symbols),
-        baseline_strategy=SimpleNamespace(
-            target_weights={"000001.SZ": 0.35},
-            target_positions={"000001.SZ": 0.35},
-            position_limits={"000001.SZ": 0.4},
-            total_exposure=0.35,
-            gross_exposure=0.35,
-            net_exposure=0.35,
-            cash_ratio=0.65,
-            style_bias="均衡",
-            branch_consensus={"macro": 0.22},
-            risk_summary={"risk_level": "medium"},
-            execution_notes=["baseline strategy"],
-            research_mode="production",
-        ),
-        market_regime="neutral",
-        calibrated_signals={},
-        risk_result=None,
-    )
 
     def _unexpected_macro_run(self, payload):
         raise AssertionError(f"unexpected macro rerun: {payload}")
 
     monkeypatch.setattr(agent_orchestrator_module.MacroAgent, "run", _unexpected_macro_run)
 
-    investor = QuantInvestor(stock_pool=symbols, verbose=False, enable_agent_layer=False)
-    orchestration = investor._run_unified_control_chain(snapshot, None)
+    orchestration = AgentOrchestrator().run_with_precomputed_research(
+        data_bundle=_make_data_bundle(symbols),
+        branch_results=_make_branch_results(symbols),
+        constraints={},
+        existing_portfolio={"current_weights": {}},
+        tradability_snapshot={},
+        persist_outputs=False,
+    )
 
     assert orchestration["macro_verdict"] is not None
     assert orchestration["report_bundle"].macro_verdict is not None

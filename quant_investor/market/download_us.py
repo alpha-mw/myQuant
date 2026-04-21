@@ -12,7 +12,7 @@ Download Full US Market Data - 下载完整美股市场数据
 import os
 import pandas as pd
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional
+from typing import Any, List, Dict, Optional
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
@@ -56,6 +56,7 @@ class FullMarketDownloader:
         
         # 创建分层目录
         self.dirs = {
+            'full_us': f"{data_dir}/full_us",
             'large_cap': f"{data_dir}/large_cap",
             'mid_cap': f"{data_dir}/mid_cap",
             'small_cap': f"{data_dir}/small_cap"
@@ -154,18 +155,85 @@ class FullMarketDownloader:
         
     def load_universe(self, universe_file: str = 'data/us_universe/complete_us_universe.json') -> Dict:
         """加载股票池"""
-        with open(universe_file, 'r') as f:
-            universe = json.load(f)
-        
+        if os.path.exists(universe_file):
+            with open(universe_file, 'r') as f:
+                universe = json.load(f)
+        else:
+            universe = {}
+
+        if not universe:
+            universe = self._build_local_universe()
+        elif "full_us" not in universe or not universe.get("full_us"):
+            universe = self._canonicalize_universe(universe)
+
         print("=" * 80)
         print("📊 加载股票池")
         print("=" * 80)
-        print(f"大盘股: {len(universe['large_cap'])} 只")
-        print(f"中盘股: {len(universe['mid_cap'])} 只")
-        print(f"小盘股: {len(universe['small_cap'])} 只")
+        print(f"全美股: {len(universe['full_us'])} 只")
+        print(f"大盘股: {len(universe.get('large_cap', []))} 只")
+        print(f"中盘股: {len(universe.get('mid_cap', []))} 只")
+        print(f"小盘股: {len(universe.get('small_cap', []))} 只")
         print(f"总计: {universe['stats']['total_unique']} 只")
         print("=" * 80)
         
+        return universe
+
+    def _build_local_universe(self) -> Dict[str, List[str]]:
+        """从本地文件目录构建 full_us universe。"""
+        symbols = {
+            path.stem.strip()
+            for path in Path(self.data_dir).rglob("*.csv")
+            if path.suffix.lower() == ".csv" and "_snapshots" not in path.parts and path.stem.strip()
+        }
+        full_us = sorted(symbols)
+        return {
+            "full_us": full_us,
+            "full_market": full_us,
+            "all_us": full_us,
+            "all": full_us,
+            "large_cap": full_us,
+            "mid_cap": full_us,
+            "small_cap": full_us,
+            "stats": {
+                "full_us": len(full_us),
+                "large_cap": len(full_us),
+                "mid_cap": len(full_us),
+                "small_cap": len(full_us),
+                "total_unique": len(full_us),
+            },
+        }
+
+    def _canonicalize_universe(self, universe: Dict[str, Any]) -> Dict[str, Any]:
+        """补齐 full_us 及其别名，兼容旧 universe 文件。"""
+        full_us = list(
+            dict.fromkeys(
+                universe.get("full_us", [])
+                or universe.get("all_us", [])
+                or universe.get("all", [])
+                or (universe.get("large_cap", []) + universe.get("mid_cap", []) + universe.get("small_cap", []))
+            )
+        )
+        large_cap = list(dict.fromkeys(universe.get("large_cap", []) or full_us))
+        mid_cap = list(dict.fromkeys(universe.get("mid_cap", []) or full_us))
+        small_cap = list(dict.fromkeys(universe.get("small_cap", []) or full_us))
+        stats = dict(universe.get("stats", {}))
+        stats.setdefault("full_us", len(full_us))
+        stats.setdefault("large_cap", len(large_cap))
+        stats.setdefault("mid_cap", len(mid_cap))
+        stats.setdefault("small_cap", len(small_cap))
+        stats.setdefault("total_unique", len(full_us))
+        universe.update(
+            {
+                "full_us": full_us,
+                "full_market": full_us,
+                "all_us": full_us,
+                "all": full_us,
+                "large_cap": large_cap,
+                "mid_cap": mid_cap,
+                "small_cap": small_cap,
+                "stats": stats,
+            }
+        )
         return universe
     
     def download_stock(self, symbol: str, category: str) -> Dict:
@@ -175,7 +243,7 @@ class FullMarketDownloader:
         Returns:
             Dict with download result
         """
-        save_dir = self.dirs[category]
+        save_dir = self.dirs.get(category, self.dirs["full_us"])
         filepath = f"{save_dir}/{symbol}.csv"
         
         # 检查是否已存在且数据完整
@@ -306,6 +374,8 @@ class FullMarketDownloader:
         """
         if universe is None:
             universe = self.load_universe()
+        elif "full_us" not in universe or not universe.get("full_us"):
+            universe = self._canonicalize_universe(dict(universe))
         
         print("\n" + "=" * 80)
         print("🚀 开始下载完整美股市场数据")
@@ -326,23 +396,20 @@ class FullMarketDownloader:
         
         total_start = time.time()
         
-        # 下载大盘股
-        all_results['categories']['large_cap'] = self.download_category(
-            universe['large_cap'], 
-            'large_cap'
+        full_us_symbols = list(universe.get("full_us", []) or universe.get("all", []))
+        all_results['categories']['full_us'] = self.download_category(
+            full_us_symbols,
+            'full_us'
         )
-        
-        # 下载中盘股
-        all_results['categories']['mid_cap'] = self.download_category(
-            universe['mid_cap'],
-            'mid_cap'
-        )
-        
-        # 下载小盘股
-        all_results['categories']['small_cap'] = self.download_category(
-            universe['small_cap'],
-            'small_cap'
-        )
+
+        # 兼容旧分层下载模式：如果 universe 里仍然有 legacy buckets，则保留输出
+        for legacy_category in ['large_cap', 'mid_cap', 'small_cap']:
+            legacy_symbols = list(universe.get(legacy_category, []) or [])
+            if legacy_symbols and legacy_symbols != full_us_symbols:
+                all_results['categories'][legacy_category] = self.download_category(
+                    legacy_symbols,
+                    legacy_category
+                )
         
         total_elapsed = time.time() - total_start
         
@@ -386,8 +453,13 @@ def main():
     parser.add_argument('--years', type=int, default=3, help='下载年数 (默认3)')
     parser.add_argument('--workers', type=int, default=8, help='并行线程数 (默认8)')
     parser.add_argument('--batch', type=int, default=100, help='每批处理数量 (默认100)')
-    parser.add_argument('--category', type=str, choices=['large', 'mid', 'small', 'all'],
-                       default='all', help='下载类别 (默认all)')
+    parser.add_argument(
+        '--category',
+        type=str,
+        choices=['full', 'full_us', 'large', 'mid', 'small', 'all'],
+        default='all',
+        help='下载类别 (默认all)',
+    )
     
     args = parser.parse_args()
     
@@ -403,6 +475,8 @@ def main():
         downloader.download_all(universe)
     else:
         category_map = {
+            'full': 'full_us',
+            'full_us': 'full_us',
             'large': 'large_cap',
             'mid': 'mid_cap',
             'small': 'small_cap'

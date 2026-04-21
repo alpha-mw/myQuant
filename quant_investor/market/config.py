@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from quant_investor.config import config
+
 
 @dataclass(frozen=True)
 class MarketSettings:
@@ -29,16 +31,21 @@ MARKET_SETTINGS: dict[str, MarketSettings] = {
         market_name="A股",
         report_flag="🇨🇳",
         currency_symbol="¥",
-        data_dir="data/cn_market_full",
+        data_dir=config.CN_MARKET_DATA_DIR,
         analysis_output_dir="results/cn_analysis_full",
         backtest_output_dir="results/cn_backtest",
         name_cache_file="data/cn_universe/stock_names.json",
         default_batch_size=30,
-        categories=("hs300", "zz500", "zz1000"),
+        categories=("full_a",),
         category_labels={
-            "hs300": "沪深300 (大盘股)",
-            "zz500": "中证500 (中盘股)",
-            "zz1000": "中证1000 (小盘股)",
+            "full_a": "全 A 股 (Full A-share Universe)",
+            "all_a": "全 A 股 (Alias)",
+            "full_market": "全市场 (Alias)",
+            "hs300": "沪深300 (兼容)",
+            "zz500": "中证500 (兼容)",
+            "zz1000": "中证1000 (兼容)",
+            "all": "默认全市场",
+            "full": "默认全市场",
         },
         lot_size=100,
     ),
@@ -52,11 +59,16 @@ MARKET_SETTINGS: dict[str, MarketSettings] = {
         backtest_output_dir="results/us_backtest",
         name_cache_file="data/us_universe/stock_names.json",
         default_batch_size=25,
-        categories=("large_cap", "mid_cap", "small_cap"),
+        categories=("full_us",),
         category_labels={
+            "full_us": "全美股 (Full US Universe)",
+            "all_us": "全美股 (Alias)",
+            "full_market": "全市场 (Alias)",
             "large_cap": "大盘股 (S&P 500)",
             "mid_cap": "中盘股 (Mid Cap)",
             "small_cap": "小盘股 (Small Cap)",
+            "all": "默认全市场",
+            "full": "默认全市场",
         },
         lot_size=1,
     ),
@@ -72,17 +84,39 @@ def get_market_settings(market: str) -> MarketSettings:
 
 def normalize_categories(market: str, categories: list[str] | None) -> list[str]:
     settings = get_market_settings(market)
+    canonical_full = "full_a" if settings.market == "CN" else "full_us"
     if not categories:
         return list(settings.categories)
 
     normalized: list[str] = []
     for category in categories:
-        if category == "all":
+        key = str(category).strip().lower()
+        if key in {"all", "full", "core", "full_a", "all_a", "full_us", "all_us", "full_market"}:
+            key = canonical_full
+        if key == "all":
             return list(settings.categories)
-        if category not in settings.category_labels:
+        if key not in settings.category_labels:
             raise ValueError(
                 f"不支持的类别: {category!r}，{settings.market} 可选 {list(settings.category_labels)}"
             )
-        if category not in normalized:
-            normalized.append(category)
+        if key == canonical_full and key not in normalized:
+            normalized.append(key)
+            continue
+        if key not in normalized:
+            normalized.append(key)
     return normalized
+
+
+def normalize_universe(market: str, universe: str | None) -> list[str]:
+    settings = get_market_settings(market)
+    canonical_full = "full_a" if settings.market == "CN" else "full_us"
+    key = str(universe or "").strip().lower()
+    if not key:
+        return list(settings.categories)
+    if key in {"core", "full_a", "all_a", "full_us", "all_us", "full_market", "full", "all"}:
+        return [canonical_full]
+    if key in settings.category_labels:
+        return [key]
+    raise ValueError(
+        f"不支持的 universe: {universe!r}，{settings.market} 可选 {[canonical_full, *sorted(settings.category_labels) ]}"
+    )

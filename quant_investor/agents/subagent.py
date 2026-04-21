@@ -60,6 +60,8 @@ class BranchSubAgent:
                 model=self.model,
                 max_tokens=self.max_tokens,
                 response_json=True,
+                stage="review_branch_subagent",
+                actor_name=self.branch_name,
             )
             output = self._parse_and_bound(raw, agent_input)
             elapsed = time.monotonic() - t0
@@ -139,6 +141,8 @@ class RiskSubAgent:
                 model=self.model,
                 max_tokens=self.max_tokens,
                 response_json=True,
+                stage="review_risk_subagent",
+                actor_name="RiskGuard",
             )
             output = self._parse_and_validate(raw)
             elapsed = time.monotonic() - t0

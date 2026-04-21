@@ -18,6 +18,7 @@ from quant_investor.agents.agent_contracts import (
 from quant_investor.agents.llm_client import LLMClient, LLMCallError, has_any_provider
 from quant_investor.agents.master_agent import MasterAgent
 from quant_investor.agents.orchestrator import AgentOrchestrator
+from quant_investor.agents.stock_reviewers import BranchOverlayReviewer, MasterICAgent
 from quant_investor.agents.subagent import BranchSubAgent, RiskSubAgent
 
 __all__ = [
@@ -26,11 +27,13 @@ __all__ = [
     "BranchAgentInput",
     "BranchAgentOutput",
     "BranchSubAgent",
+    "BranchOverlayReviewer",
     "LLMCallError",
     "LLMClient",
     "MasterAgent",
     "MasterAgentInput",
     "MasterAgentOutput",
+    "MasterICAgent",
     "RiskAgentInput",
     "RiskAgentOutput",
     "RiskSubAgent",
