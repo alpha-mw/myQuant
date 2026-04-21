@@ -1,317 +1,323 @@
 <div align="center">
 
+<br/>
+
+```
+  ██████  ██    ██  █████  ███    ██ ████████
+ ██    ██ ██    ██ ██   ██ ████   ██    ██
+ ██    ██ ██    ██ ███████ ██ ██  ██    ██
+ ██ ▄▄ ██ ██    ██ ██   ██ ██  ██ ██    ██
+  ██████   ██████  ██   ██ ██   ████    ██
+     ▀▀
+```
+
 # Quant-Investor
 
-**Three-Layer Multi-Agent Quantitative Investment Research Platform**
+**三层多智能体量化投研系统**
 
-三层多智能体量化投研系统 | A 股 & 美股 | LLM 辩论框架 | 因子分析 | 风险管理 | 回测引擎
+*A deterministic research core with an optional LLM debate layer —*  
+*no hallucination reaches your portfolio.*
 
 <br/>
 
-![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
-![Version](https://img.shields.io/badge/version-v12.0.0-orange)
-![License](https://img.shields.io/badge/license-MIT-green)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688)
-![React](https://img.shields.io/badge/React-19-61DAFB)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org)
+[![Version](https://img.shields.io/badge/Version-v12.0.0-FF6B35?style=flat-square)](https://github.com/alpha-mw/myQuant/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-22C55E?style=flat-square)](LICENSE)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black)](https://react.dev)
+
+<br/>
+
+[**快速开始**](#-快速开始) · [**架构设计**](#-架构) · [**API 参考**](#-api) · [**文档**](#-文档)
+
+<br/>
 
 </div>
 
 ---
 
-围绕 `QuantInvestor` 单一主线，系统采用**三层数据架构**：`GlobalContext`（市场全局上下文）→ `SymbolResearchPacket`（逐标的多分支研究）→ `PortfolioDecision`（组合决策与执行）。确定性控制层负责硬约束、风控否决与组合构建，LLM 审阅层提供定性评判与结构化辩论，严格为 advisory-only，永远不覆盖控制层的硬否决。覆盖 A 股与美股市场，完整支持从基本面分析到投资报告生成的全流程管道。
+## 设计理念
 
----
+量化研究系统的核心矛盾：**LLM 有推理能力但会幻觉，规则引擎有确定性但无弹性。**
 
-## 入口
+Quant-Investor 的解法是严格分层：
 
-| 方式 | 用法 |
-|------|------|
-| **Python API** | `from quant_investor import QuantInvestor` |
-| **CLI** | `quant-investor research run` |
-| **Web UI** | `quant-investor web` |
-
----
-
-## 架构
-
-```mermaid
-graph TB
-    subgraph Stage1["Stage 1: Research Core"]
-        direction TB
-        PRP["ParallelResearchPipeline<br/>(5 分支并行进程)"]
-        ENS["EnsembleJudge<br/>(加权聚合)"]
-        PRP --> ENS
-    end
-
-    subgraph Stage2["Stage 2: Review Layer (Optional LLM)"]
-        direction TB
-        BSA["BranchSubAgent x5"]
-        RSA["RiskSubAgent"]
-        MA["MasterAgent<br/>(IC 主席)"]
-        SR["StockReviewers<br/>(BranchOverlayVerdict + MasterICHint)"]
-        BSA --> RSA --> MA --> SR
-    end
-
-    subgraph Stage3["Stage 3: Unified Control Chain"]
-        direction TB
-        MAC["MacroAgent (1x)"]
-        RA["KlineAgent / QuantAgent /<br/>FundamentalAgent / IntelligenceAgent<br/>(per symbol)"]
-        RG["RiskGuard<br/>(硬否决)"]
-        ICC["ICCoordinator<br/>(一致性协调)"]
-        PC["PortfolioConstructor<br/>(确定性权重分配)"]
-        NA["NarratorAgent<br/>(ReportBundle)"]
-        MAC --> RA --> RG --> ICC --> PC --> NA
-    end
-
-    Stage1 --> Stage2
-    Stage2 -.->|ic_hints<br/>advisory-only| Stage3
-    Stage1 --> Stage3
-
-    style Stage1 fill:#e8f4fd,stroke:#4a9eda,color:#333
-    style Stage2 fill:#fff3e0,stroke:#f5a623,color:#333
-    style Stage3 fill:#f0f9e8,stroke:#6abf69,color:#333
+```
+确定性控制链（硬约束，永不可被覆盖）
+        ↑
+LLM 审阅层（advisory-only，提供观点，不做决策）
+        ↑
+并行研究核心（5 分支量化分析，加权聚合）
 ```
 
-**分支权重**
-
-| 分支 | Quant | K-Line | Intelligence | Fundamental | Macro |
-|------|:-----:|:------:|:----------:|:-----------:|:-----:|
-| 权重 | 28% | 22% | 20% | 15% | 15% |
+**RiskGuard 具有一票否决权。** LLM 的任何输出只能作为参考信号进入 ICCoordinator，永远无法绕过风控硬约束。
 
 ---
 
-## 核心特性
+## ✨ 核心能力
 
-### 单一主线
-
-仓库主入口只公开 `QuantInvestor` 与 `QuantInvestorPipelineResult`；其余契约类型作为稳定数据模型导出供研究与测试复用。
-
-### 三层协议
-
-`GlobalContext` → `SymbolResearchPacket` → `PortfolioDecision` 三层协议贯穿数据采集、分支研究、组合决策全流程，所有中间产物均为结构化 dataclass，可序列化、可追溯。
-
-### 结构化 Review Layer
-
-多分支审阅结果进入确定性控制链（Research Agents → RiskGuard → ICCoordinator → PortfolioConstructor → NarratorAgent），审阅层只提供 advisory 信号。`StockReviewers` 在 symbol 级别产出 `BranchOverlayVerdict` 与 `MasterICHint`，受 score/confidence delta cap 约束。模型角色支持 primary/fallback 双链解析（默认 deepseek-reasoner / gpt-5.4），支持 OpenAI、Anthropic Claude、DeepSeek、Google Gemini、通义千问、Kimi 等多家提供方，无 API Key 时自动降级为纯算法模式。每次 LLM 调用写入 `data/llm_usage.jsonl`，session 级别汇总 token 用量与成本估算。
-
-### 全流程研究管道
-
-基本面 → 量化因子 → 风险评估 → 投资组合构建，结果统一封装为 `QuantInvestorPipelineResult`，由 NarratorAgent 渲染为结构化 Markdown 报告。
-
-### 因子库
-
-Alpha158、技术指标、基本面因子、宏观替代因子，支持遗传算法因子挖矿与因子衰减分析。
-
-### 风险管理
-
-VaR / CVaR、压力测试、因子风险模型、市场冲击估算。RiskGuard 拥有硬否决权，可强制限制仓位暴露。
-
-### 回测引擎
-
-Walk-forward 验证，支持 A 股与美股历史数据回测。
-
-### 宏观终端
-
-实时拉取 Tushare / FRED / AkShare 宏观指标，输出风险雷达（A 股：杠杆情绪、GDP、估值、通胀、贸易汇率、财政；美股：货币政策、增长、估值、通胀、情绪与收益率曲线）。
-
-### 研究工作台
-
-`quant-investor web` 提供 `web.main:app` 工作台后端入口与 React/Vite 前端；`./run_web.sh` 可启动前端开发工作流。
-
----
-
-## 技术栈
-
-| 层级 | 技术 |
+| 能力 | 说明 |
 |------|------|
-| **后端框架** | Python 3.10+, FastAPI, Pydantic v2, uvicorn |
-| **前端框架** | React 19, TypeScript, Vite, TailwindCSS |
-| **状态管理** | Zustand 5, TanStack Query v5, TanStack Table v8 |
-| **数据科学** | pandas, NumPy, SciPy, scikit-learn, XGBoost, TA-Lib |
-| **可视化** | Recharts 3, Lightweight Charts 5, Plotly, Matplotlib |
-| **数据源** | Tushare (A 股), yfinance (美股), FRED (宏观), AkShare |
-| **LLM 提供方** | OpenAI, Anthropic Claude, DeepSeek, Google Gemini, 通义千问, Kimi |
-| **构建与部署** | Hatch (Python), Vite (前端), Docker Compose |
+| 🏗 **三层数据协议** | `GlobalContext` → `SymbolResearchPacket` → `PortfolioDecision`，全程 Pydantic 结构化，可追溯 |
+| 🔬 **5 分支并行研究** | K-Line · 量化因子 · 基本面 · 情报 · 宏观，各自独立执行后加权聚合 |
+| 🛡 **确定性风控** | RiskGuard 硬否决 → ICCoordinator 一致性校验 → PortfolioConstructor 权重分配 |
+| 🤖 **可选 LLM 审阅层** | 支持 OpenAI / Claude / DeepSeek / Gemini / 通义 / Kimi，无 API Key 自动降级 |
+| 🔀 **混合预测后端** | Kronos Transformer + Amazon Chronos 时序基础模型 + 统计基线，热切换 |
+| 🌏 **双市场覆盖** | A 股（Tushare Pro）+ 美股（yfinance），统一 pipeline |
+| 📊 **Web 工作台** | React 19 + FastAPI，研究任务调度、历史回顾、实时进度 |
+| ⏰ **定时任务** | `daily_runner.py` 支持 cron 调度，每日自动执行全市场扫描 |
 
 ---
 
-## 快速开始
+## 🏛 架构
+
+### 执行流水线
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Stage 1: Research Core                    │
+│                                                             │
+│   KlineAgent ──┐                                            │
+│   QuantAgent ──┤                                            │
+│   FundaAgent ──┼──► EnsembleJudge ──► SymbolResearchPacket │
+│   IntelAgent ──┤     (加权聚合)                              │
+│   MacroAgent ──┘                                            │
+└────────────────────────────┬────────────────────────────────┘
+                             │
+                    ┌────────▼────────┐
+                    │  Stage 2: LLM   │  ← 可选，无 Key 自动跳过
+                    │  Review Layer   │
+                    │                 │
+                    │  BranchSubAgent │
+                    │  RiskSubAgent   │
+                    │  MasterAgent    │
+                    │  (IC 主席)      │
+                    └────────┬────────┘
+                             │ advisory-only hints
+                             ↓
+┌─────────────────────────────────────────────────────────────┐
+│                 Stage 3: Unified Control Chain               │
+│                                                             │
+│   RiskGuard → ICCoordinator → PortfolioConstructor          │
+│   (硬否决)     (一致性校验)    (确定性权重)                   │
+│                                    │                        │
+│                                    ▼                        │
+│                              NarratorAgent                  │
+│                              (ReportBundle)                 │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 分支权重
+
+```
+Quant Factor    ████████████████████████████  28%
+K-Line          ██████████████████████        22%
+Intelligence    ████████████████████          20%
+Fundamental     ███████████████               15%
+Macro           ███████████████               15%
+```
+
+### 数据协议
+
+```python
+GlobalContext              # 市场全局快照（宏观 + 市场结构）
+    └── SymbolResearchPacket[]   # 逐标的多分支研究包
+            └── PortfolioDecision     # 组合决策 + 执行计划
+                    └── ReportBundle       # 可读报告聚合
+```
+
+---
+
+## 🚀 快速开始
 
 ### 安装
 
 ```bash
+# 推荐：使用 uv
+uv pip install -e ".[dev]"
+
+# 或 pip
 pip install -e ".[dev]"
 ```
 
-<details open>
-<summary><strong>Python API</strong></summary>
-
-```python
-from quant_investor import QuantInvestor
-
-investor = QuantInvestor(
-    stock_pool=["000001.SZ", "600519.SH"],
-    market="CN",
-    total_capital=1_000_000,
-    risk_level="中等",
-    verbose=True,
-)
-
-result = investor.run()
-print(result.report_bundle)
-```
-
-</details>
-
-<details>
-<summary><strong>CLI</strong></summary>
-
-```bash
-quant-investor research run \
-  --stocks 000001.SZ 600519.SH \
-  --market CN \
-  --capital 1000000 \
-  --risk 中等
-```
-
-</details>
-
-<details>
-<summary><strong>Web 工作台</strong></summary>
-
-```bash
-# 默认运行方式：同源提供 /api 与 workspace 前端
-quant-investor web --reload
-
-# 前端开发模式：单独启动 Vite，并将 /api 代理到后端
-./run_web.sh
-```
-
-默认网页入口跳转到 `/research`，公开路由为 `/research`、`/history`、`/history/:jobId`、`/settings`。前端位于 `frontend/`，开发模式下通过 Vite 将 `/api` 代理到后端。
-
-</details>
-
-<details>
-<summary><strong>每日定时分析</strong></summary>
-
-```bash
-# 编辑 daily_config.py 调整参数后运行
-python daily_runner.py
-```
-
-`daily_config.py` 支持配置市场、universe、资金、LLM 模型（agent / master + fallback）、reasoning 强度、超时、数据下载参数与定时调度时间。
-
-</details>
-
----
-
-<details>
-<summary><strong>环境变量</strong></summary>
-
-复制 `.env.example` 并填写：
+### 配置
 
 ```bash
 cp .env.example .env
 ```
 
-| 变量 | 说明 |
-|------|------|
-| `TUSHARE_TOKEN` | Tushare Pro Token（A 股数据） |
-| `OPENAI_API_KEY` | OpenAI（LLM Review Layer） |
-| `ANTHROPIC_API_KEY` | Anthropic Claude（LLM Review Layer） |
-| `DEEPSEEK_API_KEY` | DeepSeek（LLM Review Layer） |
-| `GOOGLE_API_KEY` | Google Gemini（LLM Review Layer） |
-| `DASHSCOPE_API_KEY` | 通义千问（LLM Review Layer） |
-| `KIMI_API_KEY` | Kimi / Moonshot（LLM Review Layer） |
+最小配置（A 股，纯算法模式，无需 LLM）：
 
-</details>
+```ini
+TUSHARE_TOKEN=your_tushare_token
+```
 
-<details>
-<summary><strong>项目结构</strong></summary>
+启用 LLM 审阅层（任选其一或多个）：
 
-```text
-myQuant/
-├── quant_investor/              # 核心引擎
-│   ├── pipeline/                # QuantInvestor 主管道
-│   │   ├── mainline.py          #   单一主线入口 (QuantInvestor)
-│   │   └── parallel_research_pipeline.py  #   5 分支并行研究核心
-│   ├── agent_protocol.py        # 三层协议定义 (GlobalContext / SymbolResearchPacket / PortfolioDecision)
-│   ├── agent_orchestrator.py    # 统一控制链编排 (AgentOrchestrator)
-│   ├── agents/                  # 结构化 agent 体系
-│   │   ├── kline_agent.py       #   K-Line 技术分析 agent
-│   │   ├── quant_agent.py       #   量化因子 agent
-│   │   ├── fundamental_agent.py #   基本面 agent
-│   │   ├── intelligence_agent.py#   情报 agent
-│   │   ├── macro_agent.py       #   宏观 agent
-│   │   ├── risk_guard.py        #   硬否决风控引擎
-│   │   ├── ic_coordinator.py    #   一致性协调
-│   │   ├── portfolio_constructor.py  #   确定性权重分配
-│   │   ├── narrator_agent.py    #   NarratorAgent → ReportBundle
-│   │   ├── master_agent.py      #   IC 主席 (MasterAgent)
-│   │   ├── orchestrator.py      #   Review Layer 异步编排
-│   │   ├── stock_reviewers.py   #   symbol-level LLM review (BranchOverlayVerdict + MasterICHint)
-│   │   └── subagents/           #   LLM 审阅层 (5 BranchSubAgent + RiskSubAgent)
-│   ├── model_roles.py           # 模型角色解析 (primary / fallback)
-│   ├── llm_gateway.py           # 统一 LLM 网关与用量观测
-│   ├── llm_transport.py         # OpenAI-compatible 传输抽象
-│   ├── branch_contracts.py      # 公开数据契约 (Pydantic 模型)
-│   ├── kline_backends/          # K-Line 预测后端
-│   │   ├── heuristic.py         #   统计基线后端
-│   │   ├── kronos_adapter.py    #   Kronos 时序 Transformer
-│   │   ├── chronos_adapter.py   #   Amazon Chronos 基础模型
-│   │   ├── hybrid_adapter.py    #   混合后端适配器
-│   │   └── hybrid_engine.py     #   Kronos + Chronos 混合引擎
-│   ├── market/                  # A 股 / 美股市场适配
-│   │   ├── download_cn.py       #   A 股数据下载 (Tushare)
-│   │   ├── download_us.py       #   美股数据下载 (yfinance)
-│   │   ├── analyze.py           #   全市场分析编排
-│   │   ├── run_pipeline.py      #   统一管道 (检查 → 下载 → 分析)
-│   │   ├── cn_resolver.py       #   A 股 universe 解析
-│   │   ├── cn_symbol_status.py  #   标的数据完整性评估
-│   │   ├── dag_executor.py      #   三层 DAG 依赖图执行
-│   │   ├── orchestration.py     #   市场编排层
-│   │   └── shared_csv_reader.py #   共享 CSV 读取
-│   ├── reporting/               # 报告生成
-│   │   ├── conclusion_renderer.py  # Markdown 报告渲染
-│   │   └── run_artifacts.py     #   ExecutionTrace / ModelRoleMetadata / WhatIfPlan
-│   ├── cli/                     # CLI 入口
-│   └── ...                      # 因子库、风险模型、回测、宏观终端等
-├── web/                         # FastAPI 后端 API
-├── frontend/                    # React 19 / Vite / TailwindCSS
-├── daily_runner.py              # 每日定时分析入口
-├── daily_config.py              # 每日分析参数配置
-├── tests/                       # 单元与集成测试
-├── docs/                        # 架构与模块文档
-├── data/                        # 本地数据目录（git 忽略）
-└── results/                     # 本地输出目录（git 忽略）
+```ini
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...
+DEEPSEEK_API_KEY=...
+```
+
+### 三种使用方式
+
+<details open>
+<summary><strong>🐍 Python API</strong></summary>
+
+```python
+from quant_investor import QuantInvestor
+
+investor = QuantInvestor(
+    stock_pool=["000001.SZ", "600519.SH", "300750.SZ"],
+    market="CN",
+    total_capital=1_000_000,
+    risk_level="中等",
+    enable_agent_layer=True,       # 启用 LLM 审阅层
+    agent_model="claude-3-5-sonnet-20241022",
+    verbose=True,
+)
+
+result = investor.run()
+
+# 查看组合建议
+for rec in result.strategy.recommendations:
+    print(f"{rec.symbol}  {rec.action:8s}  权重 {rec.weight:.1%}  {rec.rationale}")
+
+# 完整报告
+print(result.report_bundle.markdown_report)
 ```
 
 </details>
 
 <details>
-<summary><strong>协议与契约</strong></summary>
+<summary><strong>💻 CLI</strong></summary>
 
-| 术语 | 说明 |
-|------|------|
-| `GlobalContext → SymbolResearchPacket → PortfolioDecision` | 三层数据协议 |
-| `Research Core → Review Layer → Unified Control Chain` | 三阶段执行流水线 |
-| `Research Agents → RiskGuard → ICCoordinator → PortfolioConstructor → NarratorAgent` | 统一控制链 |
-| `NarratorAgent → ReportBundle` | 报告协议 |
-| `StockReviewers → BranchOverlayVerdict + MasterICHint` | symbol-level LLM review 协议 |
-| `buy` / `hold` / `sell` / `watch` / `avoid` | 稳定动作标签 |
-| `reject` / `light_buy` / `strong_buy` | 已移除的旧标签 |
+```bash
+# A 股分析
+quant-investor research run \
+  --stocks 000001.SZ 600519.SH 300750.SZ \
+  --market CN \
+  --capital 1000000 \
+  --risk 中等
+
+# 美股分析
+quant-investor research run \
+  --stocks AAPL MSFT NVDA \
+  --market US \
+  --capital 100000 \
+  --risk low
+```
+
+</details>
+
+<details>
+<summary><strong>🌐 Web 工作台</strong></summary>
+
+```bash
+# 启动（后端 + 前端一体）
+quant-investor web --reload
+
+# 或分离启动（前端开发模式）
+./run_web.sh
+```
+
+访问 `http://localhost:8000/research`
+
+路由：`/research` · `/history` · `/history/:jobId` · `/settings`
+
+</details>
+
+<details>
+<summary><strong>⏰ 每日定时分析</strong></summary>
+
+```bash
+# 编辑参数后运行
+vim daily_config.py
+python daily_runner.py
+```
+
+`daily_config.py` 支持：市场选择、股票池、资金规模、LLM 模型及 fallback、reasoning 强度、数据下载策略、cron 调度时间。
+
+</details>
+
+<details>
+<summary><strong>🐳 Docker</strong></summary>
+
+```bash
+docker compose up -d
+```
 
 </details>
 
 ---
 
-## 开发
+## 🧩 项目结构
+
+```
+myQuant/
+├── quant_investor/              # 核心引擎
+│   ├── pipeline/
+│   │   ├── mainline.py          # QuantInvestor 单一主线入口
+│   │   └── parallel_research_pipeline.py
+│   ├── agent_protocol.py        # 三层数据协议定义
+│   ├── agent_orchestrator.py    # 统一控制链编排
+│   ├── agents/
+│   │   ├── kline_agent.py       # K-Line 技术分析
+│   │   ├── quant_agent.py       # 量化因子
+│   │   ├── fundamental_agent.py # 基本面
+│   │   ├── intelligence_agent.py# 舆情情报
+│   │   ├── macro_agent.py       # 宏观
+│   │   ├── risk_guard.py        # 硬否决风控 ⛔
+│   │   ├── ic_coordinator.py    # 一致性协调
+│   │   ├── portfolio_constructor.py
+│   │   ├── narrator_agent.py    # 报告生成
+│   │   ├── master_agent.py      # LLM IC 主席
+│   │   └── subagents/           # LLM 审阅子 agent
+│   ├── kline_backends/          # 时序预测后端
+│   │   ├── hybrid_engine.py     # Kronos + Chronos 混合引擎
+│   │   ├── kronos_adapter.py
+│   │   ├── chronos_adapter.py
+│   │   └── heuristic.py         # 统计基线（无 GPU 降级）
+│   ├── market/                  # 市场数据适配
+│   │   ├── download_cn.py       # A 股（Tushare）
+│   │   ├── download_us.py       # 美股（yfinance）
+│   │   └── dag_executor.py      # 三层 DAG 执行器
+│   ├── llm_gateway.py           # 统一 LLM 网关
+│   └── reporting/               # Markdown 报告渲染
+├── web/                         # FastAPI 后端
+├── frontend/                    # React 19 + Vite + TailwindCSS
+├── daily_runner.py              # 定时任务入口
+├── daily_config.py              # 每日分析配置
+├── tests/                       # 单元 & 集成测试
+└── docs/                        # 架构 & 模块文档
+```
+
+---
+
+## 🔑 环境变量
+
+| 变量 | 必需 | 说明 |
+|------|:----:|------|
+| `TUSHARE_TOKEN` | A 股必需 | [Tushare Pro](https://tushare.pro) 数据接口 |
+| `ANTHROPIC_API_KEY` | 可选 | Claude 模型（推荐用于 Review Layer） |
+| `OPENAI_API_KEY` | 可选 | GPT 系列 |
+| `DEEPSEEK_API_KEY` | 可选 | DeepSeek（性价比高） |
+| `GOOGLE_API_KEY` | 可选 | Gemini 系列 |
+| `DASHSCOPE_API_KEY` | 可选 | 通义千问 |
+| `KIMI_API_KEY` | 可选 | Moonshot Kimi |
+
+> **注意：** 所有 LLM Key 均为可选。未配置时系统自动降级为纯算法模式，研究核心和风控链路正常运行。
+
+---
+
+## 🧪 开发
 
 ```bash
 # 安装开发依赖
 pip install -e ".[dev]"
 
-# 全部测试
+# 运行全部测试
 pytest tests/ -v
 
 # 单元测试
@@ -319,19 +325,40 @@ pytest tests/unit/ -v
 
 # 集成测试
 pytest tests/integration/ -v
+
+# 代码格式化
+black quant_investor/ && flake8 quant_investor/
 ```
 
 ---
 
-## 文档
+## 📐 协议术语表
 
-- [Entrypoints and Versioning](docs/architecture/entrypoints_and_versioning.md)
-- [Research Pipeline and Protocols](docs/architecture/research_pipeline_and_protocols.md)
-- [Module Map](docs/modules/module_map.md)
-- [Macro Risk Reference](docs/modules/macro_risk_reference.md)
+| 术语 | 含义 |
+|------|------|
+| `GlobalContext` | 市场全局快照（宏观指标 + 市场结构） |
+| `SymbolResearchPacket` | 单标的多分支研究结果聚合包 |
+| `PortfolioDecision` | 组合决策，含权重分配与执行计划 |
+| `ReportBundle` | NarratorAgent 输出的可读报告聚合 |
+| `BranchVerdict` | 单分支分析结论（方向 + 置信度 + 证据链） |
+| `ICDecision` | Investment Committee 共识决策 |
+| `RiskDecision` | 风控决策，含仓位上限与否决记录 |
+| `BranchOverlayVerdict` | LLM 分支审阅叠加意见（advisory-only） |
+| `MasterICHint` | MasterAgent 对 IC 的提示信号 |
+| `AgentStatus` | `SUCCESS` / `DEGRADED` / `VETOED` |
+| `ActionLabel` | `buy` / `hold` / `sell` / `watch` / `avoid` |
+
+---
+
+## 📚 文档
+
+- [架构概览与版本管理](docs/architecture/entrypoints_and_versioning.md)
+- [研究管道与数据协议](docs/architecture/research_pipeline_and_protocols.md)
+- [模块索引](docs/modules/module_map.md)
+- [宏观风险参考](docs/modules/macro_risk_reference.md)
 
 ---
 
 ## 许可证
 
-本项目基于 [MIT License](LICENSE) 开源。
+[MIT License](LICENSE) © 2024 alpha-mw
