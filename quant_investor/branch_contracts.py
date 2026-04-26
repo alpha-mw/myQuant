@@ -40,6 +40,33 @@ class UnifiedDataBundle:
     sentiment_data: dict[str, dict[str, Any]] = field(default_factory=dict)
     macro_data: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
+    stock_data: dict[str, pd.DataFrame] = field(init=False, repr=False)
+    stock_pool: list[str] = field(init=False, repr=False)
+
+    def __init__(
+        self,
+        market: str = "",
+        symbols: list[str] | None = None,
+        symbol_data: dict[str, pd.DataFrame] | None = None,
+        fundamentals: dict[str, dict[str, Any]] | None = None,
+        event_data: dict[str, list[dict[str, Any]]] | None = None,
+        sentiment_data: dict[str, dict[str, Any]] | None = None,
+        macro_data: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        stock_data: dict[str, pd.DataFrame] | None = None,
+        stock_pool: list[str] | None = None,
+    ) -> None:
+        payload = symbol_data if symbol_data is not None else stock_data
+        self.market = market
+        self.symbol_data = dict(payload or {})
+        self.symbols = list(symbols or stock_pool or self.symbol_data.keys())
+        self.fundamentals = dict(fundamentals or {})
+        self.event_data = dict(event_data or {})
+        self.sentiment_data = dict(sentiment_data or {})
+        self.macro_data = dict(macro_data or {})
+        self.metadata = dict(metadata or {})
+        self.stock_data = self.symbol_data
+        self.stock_pool = self.symbols
 
     def combined_frame(self) -> pd.DataFrame:
         """将全部标的的时序数据合并为单张表。"""
@@ -194,11 +221,14 @@ class ForecastSnapshot:
     data_quality: dict[str, Any] = field(default_factory=dict)
     provenance: dict[str, Any] = field(default_factory=dict)
     provider: str = "none"
+    horizon_days: int = 0
+    expected_return: float = 0.0
     eps_growth: float = 0.0
     revenue_growth_forecast: float = 0.0
     forecast_revision: float = 0.0
     coverage_count: int = 0
     confidence: float = 0.0
+    metadata: dict[str, Any] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
 
 

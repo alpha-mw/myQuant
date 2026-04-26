@@ -4,7 +4,7 @@ import asyncio
 import contextvars
 import threading
 from dataclasses import asdict, is_dataclass
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 from quant_investor.agent_protocol import ActionLabel
 
@@ -42,7 +42,7 @@ def _as_mapping(value: Any) -> dict[str, Any]:
             return {}
     if is_dataclass(value):
         try:
-            dumped = asdict(value)
+            dumped = asdict(cast(Any, value))
             if isinstance(dumped, Mapping):
                 return dict(dumped)
         except Exception:

@@ -35,7 +35,7 @@ except ImportError:
 
 # Tushare配置
 TUSHARE_TOKEN = config.TUSHARE_TOKEN
-TUSHARE_URL = os.environ.get('TUSHARE_URL', 'http://lianghua.nanyangqiankun.top')
+TUSHARE_URL = config.TUSHARE_URL
 
 
 class CNFullMarketDownloader:
@@ -43,7 +43,7 @@ class CNFullMarketDownloader:
 
     SUPPORTED_CATEGORIES = ("full_a", "hs300", "zz500", "zz1000")
     REQUESTS_PER_STOCK = 2
-    REQUESTS_PER_MINUTE_BUDGET = 500
+    REQUESTS_PER_MINUTE_BUDGET = config.TUSHARE_RATE_LIMIT_PER_MIN
     
     def __init__(self, 
                  data_dir: str | None = None,

@@ -46,3 +46,16 @@ def create_tushare_pro(ts_module: Any, token: str, http_url: str | None = None) 
     if http_url and hasattr(pro, "_DataApi__http_url"):
         pro._DataApi__http_url = http_url
     return pro
+
+
+def create_tushare_pro_with_fallback(
+    ts_module: Any,
+    token: str,
+    fallback_token: str = "",
+    http_url: str | None = None,
+) -> Any | None:
+    """Create a Tushare client from the primary token, then fallback token."""
+    pro = create_tushare_pro(ts_module, token, http_url)
+    if pro is not None:
+        return pro
+    return create_tushare_pro(ts_module, fallback_token, http_url)

@@ -139,7 +139,7 @@ async def _run_candidate_research_phase(
         fallback_reasons: list[str] = []
         for branch_name in branch_names:
             base_verdict = base_branch_verdicts[branch_name]
-            packet = BranchOverlayPacket(
+            overlay_packet = BranchOverlayPacket(
                 symbol=symbol,
                 branch_name=branch_name,
                 base_score=float(base_verdict.final_score),
@@ -168,7 +168,7 @@ async def _run_candidate_research_phase(
                 timeout=agent_timeout,
                 max_tokens=600,
             )
-            overlay = await reviewer.review(packet)
+            overlay = await reviewer.review(overlay_packet)
             branch_overlay_verdicts[branch_name] = overlay
             telemetry.append(overlay.telemetry)
             if overlay.telemetry.fallback and overlay.telemetry.fallback_reason:
@@ -307,7 +307,7 @@ async def _run_candidate_research_phase(
     fallback_reasons: list[str] = []
     telemetry_items: list[Any] = []
     for item in research_results:
-        if isinstance(item, Exception):
+        if isinstance(item, BaseException):
             raise item
         symbol, reviewed_branch_verdicts, packet, master_hint, ic_hint, branch_overlays, telemetry, fallbacks = item
         research_by_symbol[symbol] = reviewed_branch_verdicts

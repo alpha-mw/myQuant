@@ -25,7 +25,7 @@ except Exception:  # pragma: no cover - fallback when tushare is unavailable
 
 # Tushare配置
 TUSHARE_TOKEN = config.TUSHARE_TOKEN
-TUSHARE_URL = os.environ.get('TUSHARE_URL', 'http://lianghua.nanyangqiankun.top')
+TUSHARE_URL = config.TUSHARE_URL
 
 
 def init_tushare():

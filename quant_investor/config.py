@@ -9,6 +9,34 @@ from typing import Optional
 
 from quant_investor.credential_utils import get_secret
 
+MAINLINE_ENV_DEFAULTS: dict[str, str] = {
+    "TUSHARE_TOKEN": "",
+    "TUSHARE_URL": "http://139.196.25.182",
+    "TUSHARE_RATE_LIMIT_PER_MIN": "500",
+    "KIMI_API_KEY": "",
+    "DEEPSEEK_API_KEY": "",
+    "DASHSCOPE_API_KEY": "",
+    "FRED_API_KEY": "",
+    "API_HOST": "0.0.0.0",
+    "API_PORT": "8000",
+    "CORS_ORIGINS": "http://localhost:5173,http://localhost:3000",
+    "DB_PATH": "data/stock_database.db",
+    "APP_DB_PATH": "data/app.db",
+    "LOG_LEVEL": "INFO",
+    "RESULTS_DIR": "results",
+    "WEB_ANALYSIS_DIR": "results/web_analysis",
+    "REDIS_HOST": "localhost",
+    "REDIS_PORT": "6379",
+    "REDIS_DB": "0",
+    "INITIAL_CASH": "1000000",
+    "COMMISSION_RATE": "0.0003",
+    "STAMP_DUTY_RATE": "0.001",
+    "SLIPPAGE": "0.001",
+}
+
+MAINLINE_ENV_KEYS: tuple[str, ...] = tuple(MAINLINE_ENV_DEFAULTS)
+_LEGACY_TUSHARE_URLS = {"http://lianghua.nanyangqiankun.top"}
+
 # 尝试加载 .env 文件
 try:
     from dotenv import load_dotenv
@@ -55,6 +83,18 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_str(
+    name: str,
+    default: str,
+    *,
+    legacy_defaults: set[str] | None = None,
+) -> str:
+    value = str(os.environ.get(name, default) or "").strip()
+    if legacy_defaults and value in legacy_defaults:
+        return default
+    return value or default
+
+
 def _env_int_list(name: str, default: tuple[int, ...]) -> tuple[int, ...]:
     raw = str(os.environ.get(name, "") or "").strip()
     if not raw:
@@ -75,10 +115,21 @@ def _env_int_list(name: str, default: tuple[int, ...]) -> tuple[int, ...]:
 
 class Config:
     """配置类"""
+
+    MAINLINE_ENV_DEFAULTS: dict[str, str] = MAINLINE_ENV_DEFAULTS
+    MAINLINE_ENV_KEYS: tuple[str, ...] = MAINLINE_ENV_KEYS
     
     # Tushare配置
     TUSHARE_TOKEN: str = get_secret('TUSHARE_TOKEN')
-    TUSHARE_URL: Optional[str] = os.environ.get('TUSHARE_URL')
+    TUSHARE_URL: str = _env_str(
+        'TUSHARE_URL',
+        MAINLINE_ENV_DEFAULTS['TUSHARE_URL'],
+        legacy_defaults=_LEGACY_TUSHARE_URLS,
+    )
+    TUSHARE_RATE_LIMIT_PER_MIN: int = _env_int(
+        'TUSHARE_RATE_LIMIT_PER_MIN',
+        int(MAINLINE_ENV_DEFAULTS['TUSHARE_RATE_LIMIT_PER_MIN']),
+    )
 
     # LLM / 外部 API 凭据
     KIMI_API_KEY: str = get_secret('KIMI_API_KEY')
@@ -89,6 +140,7 @@ class Config:
     
     # 数据库配置
     DB_PATH: str = os.environ.get('DB_PATH', 'data/stock_database.db')
+    DATA_DIR: str = os.environ.get('DATA_DIR', 'data')
     CN_MARKET_DATA_DIR: str = os.environ.get('CN_MARKET_DATA_DIR', 'data/cn_market_full')
     CN_FRESHNESS_MODE: str = os.environ.get('CN_FRESHNESS_MODE', 'stable')
     CN_FRESHNESS_COVERAGE_THRESHOLD: float = _env_float('CN_FRESHNESS_COVERAGE_THRESHOLD', 0.95)

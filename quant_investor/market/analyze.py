@@ -10,7 +10,7 @@ from collections import Counter
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 from quant_investor.config import config
 from quant_investor.credential_utils import create_tushare_pro
@@ -20,7 +20,6 @@ from quant_investor.market.data_snapshot import build_market_data_snapshot
 from quant_investor.llm_provider_priority import resolve_runtime_role_models
 from quant_investor.market.dag_executor import execute_market_dag
 from quant_investor.pipeline import QuantInvestor
-from quant_investor.reporting.conclusion_renderer import ConclusionRenderer
 
 _STOCK_NAME_CACHE: dict[str, dict[str, str]] = {"CN": {}, "US": {}}
 BRANCH_LABELS = {

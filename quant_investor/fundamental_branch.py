@@ -121,6 +121,13 @@ class FundamentalBranch:
         expected_returns: dict[str, float] = {}
         symbol_quality: dict[str, dict[str, Any]] = {}
         symbol_conclusions: dict[str, str] = {}
+        financial_quality: dict[str, dict[str, float]] = {}
+        forecast_revisions: dict[str, dict[str, Any]] = {}
+        valuation_metrics: dict[str, dict[str, float]] = {}
+        governance_scores: dict[str, float] = {}
+        ownership_signals: dict[str, dict[str, float]] = {}
+        doc_sentiment: dict[str, float] = {}
+        data_staleness_days: dict[str, int] = {}
         coverage_by_symbol: dict[str, float] = {}
         branch_risks: list[str] = []
         coverage_notes: list[str] = []
@@ -157,6 +164,43 @@ class FundamentalBranch:
                 "ownership": ownership,
                 "document_semantics": document,
             }
+            financial_quality[symbol] = {
+                "roe": float(fundamental.roe),
+                "roa": float(fundamental.roa),
+                "gross_margin": float(fundamental.gross_margin),
+                "net_margin": float(fundamental.net_margin),
+                "revenue_growth": float(fundamental.revenue_growth),
+                "profit_growth": float(fundamental.profit_growth),
+                "debt_ratio": float(fundamental.debt_ratio),
+                "current_ratio": float(fundamental.current_ratio),
+                "cash_flow": float(fundamental.cash_flow),
+            }
+            forecast_revisions[symbol] = {
+                "provider": str(forecast.provider),
+                "eps_growth": float(forecast.eps_growth),
+                "revenue_growth_forecast": float(forecast.revenue_growth_forecast),
+                "forecast_revision": float(forecast.forecast_revision),
+                "coverage_count": int(forecast.coverage_count),
+            }
+            valuation_metrics[symbol] = {
+                "pe": float(fundamental.pe),
+                "pb": float(fundamental.pb),
+                "ps": float(fundamental.ps),
+                "dividend_yield": float(fundamental.dividend_yield),
+            }
+            governance_scores[symbol] = float(management.governance_score)
+            ownership_signals[symbol] = {
+                "concentration_score": float(ownership.concentration_score),
+                "top_holder_pct": float(ownership.top_holder_pct),
+                "institutional_holding_pct": float(ownership.institutional_holding_pct),
+                "insider_holding_pct": float(ownership.insider_holding_pct),
+                "ownership_change_signal": float(ownership.ownership_change_signal),
+            }
+            doc_sentiment[symbol] = float(document.semantic_sentiment)
+            data_staleness_days[symbol] = self._max_snapshot_staleness_days(
+                as_of,
+                list(snapshots.values()),
+            )
 
             components = {
                 "financial_quality": financial_quality_analyzer(fundamental),
@@ -297,6 +341,29 @@ class FundamentalBranch:
             for name, info in module_coverage.items()
             if info["excluded_from_denominator"]
         ]
+        module_scores = {
+            name: round(_safe_mean(module_average_scores.get(name, [])), 4)
+            for name in self.COMPONENT_WEIGHTS
+        }
+        module_confidences = {
+            name: round(
+                float(module_coverage[name]["available_symbols"]) / max(float(module_coverage[name]["total_symbols"]), 1.0),
+                4,
+            )
+            for name in self.COMPONENT_WEIGHTS
+        }
+        module_coverages: dict[str, str] = {}
+        for name, info in module_coverage.items():
+            available_count = int(info["available_symbols"])
+            total_symbols = int(info["total_symbols"])
+            if info["status"] == "disabled_global":
+                module_coverages[name] = "disabled_global"
+            elif available_count == total_symbols:
+                module_coverages[name] = "available"
+            elif available_count > 0:
+                module_coverages[name] = "partial"
+            else:
+                module_coverages[name] = "missing"
         conclusion = (
             "本次基本面结论主要由"
             + ("、".join(active_modules[:3]) if active_modules else "可用模块有限")
@@ -311,6 +378,16 @@ class FundamentalBranch:
             confidence=confidence,
             signals={
                 "component_scores": component_scores,
+                "module_scores": module_scores,
+                "module_confidences": module_confidences,
+                "module_coverages": module_coverages,
+                "financial_quality": financial_quality,
+                "forecast_revisions": forecast_revisions,
+                "valuation_metrics": valuation_metrics,
+                "governance_scores": governance_scores,
+                "ownership_signals": ownership_signals,
+                "doc_sentiment": doc_sentiment,
+                "data_staleness_days": data_staleness_days,
                 "quality_breakdown": symbol_quality,
                 "bull_case": dict(bull_points),
                 "bear_case": dict(bear_points),
@@ -352,6 +429,27 @@ class FundamentalBranch:
         if df is not None and not df.empty and "date" in df.columns:
             return pd.to_datetime(df["date"].max()).strftime("%Y-%m-%d")
         return str(data_bundle.metadata.get("end_date", ""))
+
+    @staticmethod
+    def _max_snapshot_staleness_days(as_of: str, snapshots: list[Any]) -> int:
+        try:
+            as_of_date = pd.to_datetime(as_of).normalize()
+        except Exception:
+            return 0
+        max_days = 0
+        for snapshot in snapshots:
+            effective_time = str(
+                getattr(snapshot, "effective_time", "")
+                or getattr(snapshot, "as_of", "")
+            ).strip()
+            if not effective_time:
+                continue
+            try:
+                days = int((as_of_date - pd.to_datetime(effective_time).normalize()).days)
+            except Exception:
+                continue
+            max_days = max(max_days, days)
+        return max(0, max_days)
 
     def _load_document_snapshot(self, symbol: str, as_of: str) -> CorporateDocumentSnapshot:
         if not self.enable_document_semantics:

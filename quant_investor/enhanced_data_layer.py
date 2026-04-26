@@ -477,6 +477,28 @@ class EnhancedDataLayer(DataHub):
                 provider_missing=True,
                 note="forecast_provider_missing",
             )
+        tushare_source = getattr(self._source, "_tushare", None)
+        forecast_store = getattr(tushare_source, "_forecast_store", None)
+        forecast_store_dir = Path(getattr(forecast_store, "base_dir", ""))
+        default_store_dir = (
+            Path(__file__).resolve().parents[1]
+            / "data"
+            / "cn_market_full"
+            / "_snapshots"
+            / "forecast"
+        )
+        if (
+            tushare_source is not None
+            and forecast_store_dir == default_store_dir
+        ):
+            return self._apply_missing_semantics(
+                snapshot,
+                reason="provider_missing",
+                missing_scope="global",
+                provider_name="earnings_forecast_provider",
+                provider_missing=True,
+                note="forecast_provider_missing",
+            )
         try:
             payload = provider(symbol=symbol, as_of=as_of_text)
         except Exception as exc:

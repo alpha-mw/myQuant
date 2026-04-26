@@ -35,7 +35,11 @@ from quant_investor.agents.agent_contracts import (
     RiskAgentInput,
     RiskAgentOutput,
 )
-from quant_investor.agents.llm_client import LLMClient as LegacyLLMClient, has_any_provider
+from quant_investor.agents.llm_client import (
+    LLMClient as LegacyLLMClient,
+    has_any_provider,
+    has_provider_for_model,
+)
 from quant_investor.agents.master_agent import MasterAgent
 from quant_investor.agents.portfolio_constructor import PortfolioConstructor
 from quant_investor.agents.stock_reviewers import (
@@ -62,6 +66,7 @@ _AGENT_REGISTRY: dict[str, type[BranchSubAgent]] = {
 class AgentOrchestrator:
     """V12 Agent 层编排器：直接调用 IC Master Agent，无中间 SubAgent 层。"""
 
+    _BRANCH_TIMEOUT_CUSHION_SECONDS = 10.0
     _MASTER_TIMEOUT_CUSHION_SECONDS = 15.0
 
     def __init__(
@@ -178,6 +183,30 @@ class AgentOrchestrator:
         risk_agent_output: RiskAgentOutput | None = None
         review_recall_context = dict(recall_context or {})
 
+        if self._legacy_branch_registry_active():
+            t_branch = time.monotonic()
+            for branch_name in CURRENT_BRANCH_ORDER:
+                branch_result = branch_results.get(branch_name)
+                if branch_result is None:
+                    branch_agent_outputs[branch_name] = None
+                    continue
+                try:
+                    branch_input = self._build_branch_agent_input(
+                        branch_name=branch_name,
+                        branch_result=branch_result,
+                        market_regime=market_regime,
+                        recall_context=review_recall_context,
+                    )
+                    branch_agent_outputs[branch_name] = await self._run_branch_agent(
+                        branch_name=branch_name,
+                        agent_input=branch_input,
+                        llm_client=llm_client,
+                    )
+                except Exception as exc:
+                    _logger.warning(f"Legacy branch agent failed [{branch_name}]: {exc}")
+                    branch_agent_outputs[branch_name] = None
+            timings["branch_agents"] = time.monotonic() - t_branch
+
         # --- 直接调用 IC Master Agent ---
         master_output: MasterAgentOutput | None = None
         t_master = time.monotonic()
@@ -272,6 +301,14 @@ class AgentOrchestrator:
     # --- Internal helpers ---
 
     @staticmethod
+    def _legacy_branch_registry_active() -> bool:
+        """Return true when tests/extensions install legacy branch agents."""
+        return any(
+            _AGENT_REGISTRY.get(branch_name) is not BranchSubAgent
+            for branch_name in CURRENT_BRANCH_ORDER
+        )
+
+    @staticmethod
     def _serialize_branch_result(br: BranchResult) -> dict[str, Any]:
         """将 BranchResult 序列化为适合传给 LLM 的字典。"""
         evidence: dict[str, Any] = {}
@@ -323,6 +360,31 @@ class AgentOrchestrator:
             pass
         return {}
 
+    @staticmethod
+    def _build_branch_agent_input(
+        *,
+        branch_name: str,
+        branch_result: BranchResult,
+        market_regime: str,
+        recall_context: dict[str, Any] | None = None,
+    ) -> BranchAgentInput:
+        evidence = branch_result.evidence
+        return BranchAgentInput(
+            branch_name=branch_name,
+            base_score=float(branch_result.base_score),
+            final_score=float(branch_result.final_score),
+            confidence=float(branch_result.final_confidence),
+            evidence_summary=str(evidence.summary if evidence else branch_result.explanation or ""),
+            bull_points=list(evidence.bull_points if evidence else branch_result.support_drivers)[:5],
+            bear_points=list(evidence.bear_points if evidence else branch_result.drag_drivers)[:5],
+            risk_points=list(evidence.risk_points if evidence else branch_result.investment_risks)[:5],
+            used_features=list(evidence.used_features if evidence else branch_result.used_features)[:20],
+            symbol_scores=dict(branch_result.symbol_scores or {}),
+            market_regime=market_regime,
+            branch_signals=dict(branch_result.signals or {}),
+            recall_context=dict(recall_context or {}),
+        )
+
     async def _run_branch_agent(
         self,
         branch_name: str,
@@ -340,7 +402,11 @@ class AgentOrchestrator:
         )
         return await asyncio.wait_for(
             agent.analyze(agent_input),
-            timeout=branch_timeout + 5.0,
+            timeout=self.compute_outer_timeout(
+                branch_timeout,
+                max_retries=2,
+                cushion_seconds=self._BRANCH_TIMEOUT_CUSHION_SECONDS,
+            ),
         )
 
     async def _run_risk_agent(

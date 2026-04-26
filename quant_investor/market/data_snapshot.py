@@ -96,13 +96,15 @@ def _build_cn_snapshot(
         physical_directories = [data_dir / category for category in _CN_PHYSICAL_DIRECTORIES if (data_dir / category).exists()]
 
     category_symbol_counts: dict[str, int]
+    resolved_paths: dict[str, str] = {}
     if universe_key == "full_a" or "full_a" in selected_categories or universe_key == "custom":
         category_symbol_counts = {
             category: _count_csvs(data_dir / category)
             for category in _CN_PHYSICAL_DIRECTORIES
             if (data_dir / category).exists()
         }
-        inventory_symbols, resolved_paths = resolver.collect_full_a_inventory(local_union_fallback_used=True)
+        inventory_symbols, full_a_resolved_paths = resolver.collect_full_a_inventory(local_union_fallback_used=True)
+        resolved_paths = dict(full_a_resolved_paths)
     else:
         category_symbol_counts = {
             category: _count_csvs(data_dir / category)
@@ -110,7 +112,6 @@ def _build_cn_snapshot(
             if (data_dir / category).exists()
         }
         inventory_symbols = []
-        resolved_paths: dict[str, str] = {}
         for category in selected_categories:
             for symbol in reader.list_symbols(category, category=category):
                 inventory_symbols.append(symbol)

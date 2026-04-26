@@ -62,7 +62,7 @@ def _build_reporting_artifacts(
     build_execution_trace_fn: Callable[..., Any],
     build_bayesian_trace_fn: Callable[..., Any],
 ) -> ReportingArtifactsState:
-    data_quality_summary = {
+    data_quality_summary: dict[str, Any] = {
         "data_quality_issue_count": len(data_quality_issues),
         "quarantined_count": len(quarantined_symbols),
         "researchable_count": len(researchable_symbols),

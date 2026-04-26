@@ -67,18 +67,18 @@ def _mapping_int_list(mapping: Mapping[str, Any], *keys: str, default: tuple[int
         if value is None or value == "":
             continue
         if isinstance(value, (list, tuple, set)):
-            result = [int(item) for item in value if str(item).strip()]
-            return tuple(result) if result else tuple(default)
+            list_values = [int(item) for item in value if str(item).strip()]
+            return tuple(list_values) if list_values else tuple(default)
         text = str(value).strip()
         if not text:
             continue
-        result: list[int] = []
+        parsed_values: list[int] = []
         for item in text.split(","):
             part = str(item).strip()
             if not part:
                 continue
-            result.append(int(part))
-        return tuple(result) if result else tuple(default)
+            parsed_values.append(int(part))
+        return tuple(parsed_values) if parsed_values else tuple(default)
     return tuple(default)
 
 

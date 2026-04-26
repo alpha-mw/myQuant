@@ -40,7 +40,7 @@ except ImportError:
     YFINANCE_AVAILABLE = False
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_TUSHARE_URL = os.environ.get("TUSHARE_URL", "http://lianghua.nanyangqiankun.top")
+DEFAULT_TUSHARE_URL = config.TUSHARE_URL
 CONSISTENCY_FIELDS = ("open", "high", "low", "close", "volume", "amount")
 BACKFILL_GRACE_DAYS = 7
 SUPPORTED_MARKETS = {"CN", "US"}

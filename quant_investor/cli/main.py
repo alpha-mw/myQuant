@@ -208,6 +208,27 @@ def _build_parser() -> argparse.ArgumentParser:
     market_maintain.add_argument("--fail-on-incomplete", action="store_true")
     market_maintain.add_argument("--allowed-stale-symbols", nargs="*")
 
+    market_download = market_subparsers.add_parser(
+        "download",
+        help="兼容别名：维护全市场本地数据到最新可得交易日",
+    )
+    market_download.add_argument(
+        "--market",
+        required=True,
+        choices=["CN", "US"],
+    )
+    market_download.add_argument(
+        "--category",
+        action="append",
+        dest="categories",
+    )
+    market_download.add_argument("--years", type=int, default=3)
+    market_download.add_argument("--workers", type=int, default=4)
+    market_download.add_argument("--batch-size", type=int, default=50)
+    market_download.add_argument("--max-rounds", type=int, default=1)
+    market_download.add_argument("--fail-on-incomplete", action="store_true")
+    market_download.add_argument("--allowed-stale-symbols", nargs="*")
+
     market_analyze = market_subparsers.add_parser(
         "analyze",
         help="分析全市场",
@@ -351,6 +372,21 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "market" and args.market_command == "maintain":
         run_market_maintenance(
+            market=args.market,
+            categories=args.categories,
+            years=args.years,
+            max_workers=args.workers,
+            batch_size=args.batch_size,
+            max_rounds=args.max_rounds,
+            fail_on_incomplete=args.fail_on_incomplete,
+            allowed_stale_symbols=args.allowed_stale_symbols,
+        )
+        return
+
+    if args.command == "market" and args.market_command == "download":
+        if not args.categories:
+            parser.error("market download compatibility alias requires at least one --category")
+        run_download(
             market=args.market,
             categories=args.categories,
             years=args.years,

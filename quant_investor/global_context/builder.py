@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, cast
 
 from quant_investor.agent_protocol import DataQualityIssue, GlobalContext
 from quant_investor.config import config
@@ -67,13 +67,25 @@ def _detect_macro_regime(symbol_data: dict[str, Any] | None = None) -> tuple[str
     """Run the regime detector and return (regime_label, regime_params)."""
     try:
         from quant_investor.regime_detector import RegimeDetector
-        detector = RegimeDetector()
+        detector: Any = RegimeDetector()
         if symbol_data:
             result = detector.detect(symbol_data)
-        else:
+        elif hasattr(detector, "detect_from_index"):
             result = detector.detect_from_index()
-        regime_label = result.regime.value if hasattr(result, "regime") else str(result.regime)
-        params = asdict(result) if hasattr(result, "__dataclass_fields__") else {}
+        else:
+            return "未知", _REGIME_DEFAULTS["未知"]
+        if isinstance(result, tuple) and len(result) == 2:
+            regime, params_payload = result
+            regime_label = regime.value if hasattr(regime, "value") else str(regime)
+            if is_dataclass(params_payload):
+                params = asdict(cast(Any, params_payload))
+            elif isinstance(params_payload, Mapping):
+                params = dict(params_payload)
+            else:
+                params = {}
+            return regime_label, params
+        regime_label = result.regime.value if hasattr(result, "regime") else str(result)
+        params = asdict(cast(Any, result)) if is_dataclass(result) else {}
         return regime_label, params
     except Exception as exc:
         _logger.warning("Regime detection failed, using default: %s", exc)
