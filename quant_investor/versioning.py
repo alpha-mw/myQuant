@@ -4,12 +4,22 @@
 
 from __future__ import annotations
 
+from quant_investor.branch_config import get_default_branch_weights
+
 ARCHITECTURE_VERSION = "12.0.0-stable"
 
 AGENT_SCHEMA_VERSION = "2026-03-23.agent.v1"
 
 BRANCH_SCHEMA_VERSION = "branch-schema.v12.unified-mainline"
 CALIBRATION_SCHEMA_VERSION = "2026-03-22.calibration.v2"
+OUTCOME_LEDGER_SCHEMA_VERSION = "2026-04-26.outcome-ledger.v1"
+CALIBRATION_V2_SCHEMA_VERSION = "2026-04-26.calibration-v2.v1"
+POSTERIOR_OVERLAY_SCHEMA_VERSION = "2026-04-26.posterior-overlay.v1"
+DATA_QUALITY_CONTRACT_SCHEMA_VERSION = "2026-04-26.data-quality-contract.v1"
+RISK_TENSOR_SCHEMA_VERSION = "2026-04-26.risk-tensor.v1"
+PORTFOLIO_OPTIMIZER_SCHEMA_VERSION = "2026-04-26.portfolio-optimizer.v1"
+OBSERVABILITY_SCHEMA_VERSION = "2026-04-26.observability.v1"
+AUDIT_BUNDLE_SCHEMA_VERSION = "2026-04-26.audit-bundle.v1"
 BRANCH_TRACKER_SCHEMA_VERSION = "2026-03-22.branch-tracker.v2"
 DEBATE_TEMPLATE_VERSION = "2026-03-22.branch-debate.v2"
 IC_PROTOCOL_VERSION = "ic-protocol.v12.mainline"
@@ -54,11 +64,7 @@ LEGACY_BRANCH_WEIGHTS: dict[str, float] = {
 }
 
 CURRENT_BRANCH_WEIGHTS: dict[str, float] = {
-    "kline": 0.22,
-    "quant": 0.28,
-    "fundamental": 0.15,
-    "intelligence": 0.20,
-    "macro": 0.15,
+    **get_default_branch_weights(),
 }
 
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from quant_investor.branch_config import get_default_branch_weights
 from quant_investor.branch_contracts import BranchResult
 
 
@@ -25,13 +26,7 @@ class EnsembleJudge:
     """V9 分支级集成裁判。"""
 
     REGIME_WEIGHTS: dict[str, dict[str, float]] = {
-        "default": {
-            "kline": 0.23,
-            "quant": 0.24,
-            "fundamental": 0.21,
-            "intelligence": 0.18,
-            "macro": 0.14,
-        },
+        "default": get_default_branch_weights(),
         "趋势上涨": {
             "kline": 0.29,
             "quant": 0.23,
