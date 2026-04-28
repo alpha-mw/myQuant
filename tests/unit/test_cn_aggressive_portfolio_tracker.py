@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from types import SimpleNamespace
 
 import pandas as pd
@@ -406,3 +407,299 @@ def test_format_top_holdings_by_unrealized_pnl_filters_sign():
     losers = tracker._format_top_holdings_by_unrealized_pnl(frame, positive=False)
 
     assert losers == "BBB.SH(乙) -800.00 元；CCC.SH(丙) -300.00 元"
+
+
+def test_format_top_delta_vs_source_record_filters_sign():
+    frame = pd.DataFrame(
+        [
+            {"symbol": "AAA.SH", "delta_vs_source_record": 1200.0},
+            {"symbol": "BBB.SH", "delta_vs_source_record": 230.0},
+            {"symbol": "CCC.SH", "delta_vs_source_record": -800.0},
+            {"symbol": "DDD.SH", "delta_vs_source_record": -300.0},
+        ]
+    )
+
+    winners = tracker._format_top_delta_vs_source_record(frame, positive=True)
+    detractors = tracker._format_top_delta_vs_source_record(frame, positive=False)
+    no_detractors = tracker._format_top_delta_vs_source_record(
+        frame[frame["delta_vs_source_record"] > 0],
+        positive=False,
+    )
+
+    assert winners == "AAA.SH 1,200.00 元；BBB.SH 230.00 元"
+    assert detractors == "CCC.SH -800.00 元；DDD.SH -300.00 元"
+    assert no_detractors == "无"
+
+
+def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypatch, tmp_path):
+    ledger = pd.DataFrame(
+        [
+            {
+                "symbol": "601869.SH",
+                "name": "长飞光纤",
+                "shares": 300,
+                "avg_cost": 100.0,
+                "cost_basis": 30000.0,
+                "current_price": 120.0,
+                "current_value": 36000.0,
+                "unrealized_pnl": 6000.0,
+                "unrealized_pnl_pct": 0.2,
+                "market_weight": 0.2,
+                "stage_target_price": 140.0,
+                "stage_stop_price": 100.0,
+                "thesis_status": "核心持有",
+            }
+        ]
+    )
+    manifest = {"timestamp": "20260422_0942", "capital_cny": 1_000_000.0}
+    pnl = pd.DataFrame([{"cash_after": 100000.0, "total_value_after": 1_100_000.0}])
+
+    monkeypatch.setattr(
+        tracker,
+        "_load_previous_record",
+        lambda base_dir, source_record=None: (ledger, manifest, pnl),
+    )
+    monkeypatch.setattr(
+        tracker,
+        "get_market_settings",
+        lambda _market: SimpleNamespace(data_dir=str(tmp_path / "cn_market_full")),
+    )
+
+    completeness = {
+        "complete": False,
+        "latest_trade_date": "20260427",
+        "strict_trade_date": "20260427",
+        "stable_trade_date": "20260426",
+        "effective_target_trade_date": "20260427",
+        "freshness_mode": "strict",
+        "coverage_ratio": 0.0,
+        "coverage_complete_count": 0,
+        "expected_scope_count": 7302,
+        "blocking_incomplete_count": 7302,
+        "pre_listing_symbols": [],
+        "categories_checked": ["full_a", "hs300", "zz500", "zz1000"],
+        "categories": {
+            "full_a": {
+                "expected": 1,
+                "latest_trade_date": "20260427",
+                "date_counts": {"20260424": 1},
+                "coverage_complete_count": 0,
+                "blocking_incomplete_count": 1,
+                "suspended_stale_symbols": [],
+                "blocking_missing_symbols": [],
+                "blocking_stale_symbols": [{"symbol": "601869.SH", "latest_local_date": "20260424"}],
+            },
+            "hs300": {
+                "expected": 1,
+                "latest_trade_date": "20260427",
+                "date_counts": {"20260424": 1},
+                "coverage_complete_count": 0,
+                "blocking_incomplete_count": 1,
+                "suspended_stale_symbols": [],
+                "blocking_missing_symbols": [],
+                "blocking_stale_symbols": [{"symbol": "601869.SH", "latest_local_date": "20260424"}],
+            },
+            "zz500": {
+                "expected": 0,
+                "latest_trade_date": "20260427",
+                "date_counts": {},
+                "coverage_complete_count": 0,
+                "blocking_incomplete_count": 0,
+                "suspended_stale_symbols": [],
+                "blocking_missing_symbols": [],
+                "blocking_stale_symbols": [],
+            },
+            "zz1000": {
+                "expected": 0,
+                "latest_trade_date": "20260427",
+                "date_counts": {},
+                "coverage_complete_count": 0,
+                "blocking_incomplete_count": 0,
+                "suspended_stale_symbols": [],
+                "blocking_missing_symbols": [],
+                "blocking_stale_symbols": [],
+            },
+        },
+    }
+
+    class _FakeDownloader:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def load_components(self):
+            return {"full_a": ["601869.SH"], "hs300": ["601869.SH"], "zz500": [], "zz1000": []}
+
+        def build_completeness_report(self, components=None, allowed_stale_symbols=None):
+            return completeness
+
+    monkeypatch.setattr(tracker, "CNFullMarketDownloader", _FakeDownloader)
+    monkeypatch.setattr(
+        tracker,
+        "_compute_full_market_metrics",
+        lambda components, data_root, latest_trade_date: pd.DataFrame(
+            [
+                {
+                    "symbol": "601869.SH",
+                    "name": "长飞光纤",
+                    "category": "hs300",
+                    "ret1": 0.02,
+                    "ret5": 0.03,
+                    "ret20": 0.12,
+                    "ret60": 0.20,
+                    "close_vs_ma20": 0.05,
+                    "ma20_vs_ma60": 0.03,
+                    "ma60_vs_ma120": 0.01,
+                    "dd20": -0.02,
+                    "latest_close": 120.0,
+                    "stage_target_price": 140.0,
+                    "stage_stop_price": 100.0,
+                    "score_full_market": 0.91,
+                    "rank_full_market": 8,
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        tracker,
+        "_compute_category_breadth",
+        lambda category, symbols, data_root, latest_trade_date, completeness_report: {
+            "ret1_positive_ratio": 0.2,
+            "ret20_positive_ratio": 0.5,
+            "ma20_gt_ma60_ratio": 0.3,
+            "avg_ret1": 0.0,
+            "avg_ret20": 0.0,
+            "avg_ret60": 0.0,
+            "latest_count": len(symbols),
+            "expected": len(symbols),
+            "suspended_stale_count": 0,
+        },
+    )
+    monkeypatch.setattr(
+        tracker,
+        "_fetch_tencent_quotes",
+        lambda codes: {
+            **{
+                code: {
+                    "quote_code": code,
+                    "name": code,
+                    "current": 100.0,
+                    "prev_close": 99.0,
+                    "open": 99.5,
+                    "high": 101.0,
+                    "low": 98.5,
+                    "time": "20260427101603",
+                    "change": 1.0,
+                    "change_pct": 1.01,
+                }
+                for code in tracker.INDEX_QUOTES.keys()
+            },
+            "sh601869": {
+                "quote_code": "sh601869",
+                "name": "长飞光纤",
+                "current": 120.0,
+                "prev_close": 118.0,
+                "open": 119.0,
+                "high": 121.0,
+                "low": 117.0,
+                "time": "20260427101603",
+                "change": 2.0,
+                "change_pct": 1.69,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        tracker,
+        "_run_unified_review_mainline_for_holdings",
+        lambda source_ledger, latest_trade_date, source_record: {
+            "reviewed_symbols": ["601869.SH"],
+            "by_symbol": {
+                "601869.SH": {
+                    "recommendation": {
+                        "action": "hold",
+                        "confidence": 0.0,
+                        "one_line_conclusion": "继续持有。",
+                        "risk_flags": [],
+                    },
+                    "ic_hint": {"action": "hold", "confidence_hint": 0.0, "thesis": "继续持有。"},
+                    "master_hint": {"action": "hold", "confidence_hint": 0.0},
+                    "llm_attempt_summary": {"call_count": 1, "success_count": 1, "failed_count": 0, "fallback_count": 0, "total_tokens": 8, "estimated_cost_usd": 0.001},
+                    "llm_effective_summary": {"call_count": 1, "success_count": 1, "failed_count": 0, "fallback_count": 0, "total_tokens": 8, "estimated_cost_usd": 0.001},
+                    "llm_session_id": "session-1",
+                    "llm_degraded": False,
+                    "llm_degraded_reason": "",
+                    "reviewed_branch_verdicts": {
+                        "fundamental": {
+                            "metadata": {
+                                "data_quality": {
+                                    "coverage_ratio": 0.33,
+                                    "missing_modules": {"601869.SH": ["forecast_revision", "ownership"]},
+                                    "snapshot_quality_by_symbol": {
+                                        "601869.SH": {
+                                            "forecast_revision": {"provider_missing": True, "missing_scope": "global"},
+                                            "ownership": {"snapshot_missing": True, "missing_scope": "symbol"},
+                                        }
+                                    },
+                                },
+                                "module_coverage": {},
+                            }
+                        },
+                        "kline": {
+                            "action": "sell",
+                            "metadata": {
+                                "evaluator_name": "placeholder_llm_reviewer",
+                                "llm_ready": False,
+                                "model_components": {"chronos": {"runtime_mode": "error_fallback"}},
+                            },
+                            "diagnostic_notes": ["fallback path engaged"],
+                        },
+                        "intelligence": {
+                            "action": "hold",
+                            "metadata": {"branch_mode": "structured_intelligence_fusion"},
+                            "coverage_notes": ["legacy batch retired"],
+                            "investment_risks": ["智能融合当前未调用旧 batch pipeline，文本证据为候选层可扩展能力。"],
+                        },
+                    },
+                    "branch_overlays": {"kline": {"action": "sell"}},
+                    "report_excerpt": "bearish conclusion",
+                }
+            },
+            "degraded_symbols": {},
+            "llm_attempt_summary": {"call_count": 1, "success_count": 1, "failed_count": 0, "fallback_count": 0, "total_tokens": 8, "estimated_cost_usd": 0.001},
+            "llm_effective_summary": {"call_count": 1, "success_count": 1, "failed_count": 0, "fallback_count": 0, "total_tokens": 8, "estimated_cost_usd": 0.001},
+            "model_role_metadata": {"resolved_branch_model": "deepseek-chat", "resolved_master_model": "moonshot-v1-128k"},
+            "fallback_reasons": [],
+            "session_ids": {"601869.SH": "session-1"},
+        },
+    )
+
+    args = argparse.Namespace(
+        base_dir=str(tmp_path / "strategy_records"),
+        years=7,
+        max_rounds=0,
+        source_record=None,
+        allowed_stale_symbols=[],
+    )
+    result = tracker.run_tracker(args)
+
+    assert result["action_taken_today"] is False
+    assert result["report_guardrail_label"] == "no_action_evidence_impaired"
+    run_dir = tmp_path / "strategy_records" / result["timestamp"]
+    report_text = (run_dir / "analysis_report.md").read_text(encoding="utf-8")
+    manifest_payload = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+
+    assert "#### 5.4.1 决策诊断" in report_text
+    assert "stale_snapshot" in report_text
+    assert "placeholder_kline_evaluator" in report_text
+    assert "#### 5.4.3 证据质量与工程诊断" in report_text
+    advice_section = report_text.split("#### 5.4.2 正式建议", 1)[1].split(
+        "#### 5.4.3 证据质量与工程诊断",
+        1,
+    )[0]
+    assert "诊断码" not in advice_section
+    assert "仲裁说明" not in advice_section
+    assert "placeholder_kline_evaluator" not in advice_section
+    assert "provider_missing" not in advice_section
+    assert manifest_payload["action_taken_today"] is False
+    assert manifest_payload["formal_diagnostics"]["decision_guardrail"]["display_label"] == "no_action_evidence_impaired"
+    assert (run_dir / "orders.csv").exists()
+    assert (run_dir / "holdings_review.csv").exists()

@@ -16,9 +16,16 @@ def _install_fake_tushare(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "tushare", module)
 
 
-def test_tushare_default_url_is_new_proxy(monkeypatch):
+def _disable_dotenv_load(monkeypatch) -> None:
+    module = types.ModuleType("dotenv")
+    module.load_dotenv = lambda *_args, **_kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", module)
+
+
+def test_tushare_default_url_is_lianghua_proxy(monkeypatch):
     monkeypatch.delenv("TUSHARE_URL", raising=False)
     monkeypatch.delenv("TUSHARE_RATE_LIMIT_PER_MIN", raising=False)
+    _disable_dotenv_load(monkeypatch)
     _install_fake_tushare(monkeypatch)
 
     config_module = _reload_module("quant_investor.config")
@@ -28,7 +35,7 @@ def test_tushare_default_url_is_new_proxy(monkeypatch):
     download_module = _reload_module("quant_investor.market.download_cn")
     stock_database_module = _reload_module("quant_investor.stock_database")
 
-    expected = "http://139.196.25.182"
+    expected = "http://lianghua.nanyangqiankun.top"
 
     assert config_module.MAINLINE_ENV_DEFAULTS["TUSHARE_URL"] == expected
     assert config_module.MAINLINE_ENV_DEFAULTS["TUSHARE_RATE_LIMIT_PER_MIN"] == "500"
@@ -50,6 +57,7 @@ def test_tushare_url_still_allows_env_override(monkeypatch):
     override_rate = "420"
     monkeypatch.setenv("TUSHARE_URL", override)
     monkeypatch.setenv("TUSHARE_RATE_LIMIT_PER_MIN", override_rate)
+    _disable_dotenv_load(monkeypatch)
     _install_fake_tushare(monkeypatch)
 
     config_module = _reload_module("quant_investor.config")
@@ -70,3 +78,16 @@ def test_tushare_url_still_allows_env_override(monkeypatch):
     pool = pool_module.TushareClientPool()
     pool._ensure_config()
     assert pool._url == override
+
+
+def test_tushare_url_respects_explicit_lianghua_env_override(monkeypatch):
+    override = "http://lianghua.nanyangqiankun.top"
+    monkeypatch.setenv("TUSHARE_URL", override)
+    _disable_dotenv_load(monkeypatch)
+    _install_fake_tushare(monkeypatch)
+
+    config_module = _reload_module("quant_investor.config")
+    download_module = _reload_module("quant_investor.market.download_cn")
+
+    assert config_module.Config.TUSHARE_URL == override
+    assert download_module.TUSHARE_URL == override

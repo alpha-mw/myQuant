@@ -148,6 +148,7 @@ class FundamentalBranch:
         }
         module_average_scores: dict[str, list[float]] = defaultdict(list)
         missing_modules_by_symbol: dict[str, list[str]] = {}
+        snapshot_quality_by_symbol: dict[str, dict[str, dict[str, Any]]] = {}
 
         for symbol in self.stock_pool:
             as_of = self._resolve_as_of(data_bundle, symbol)
@@ -220,16 +221,30 @@ class FundamentalBranch:
             support_points: list[str] = []
             drag_points: list[str] = []
             symbol_module_coverage: dict[str, Any] = {}
+            symbol_snapshot_quality: dict[str, dict[str, Any]] = {}
 
             for name, component in components.items():
                 weight = self.COMPONENT_WEIGHTS[name]
                 component_scores[symbol][name] = round(component.score, 4)
                 status = self._module_status(name, snapshots[name])
                 label = self.MODULE_LABELS[name]
+                snapshot_data_quality = dict(getattr(snapshots[name], "data_quality", {}) or {})
                 symbol_module_coverage[name] = {
                     "status": status,
                     "available": bool(component.available),
                     "weight": weight,
+                }
+                symbol_snapshot_quality[name] = {
+                    "status": status,
+                    "available": bool(getattr(snapshots[name], "available", False)),
+                    "provider_name": str(
+                        snapshot_data_quality.get("provider_name")
+                        or getattr(snapshots[name], "source", "")
+                        or getattr(snapshots[name], "provider", "")
+                    ),
+                    "missing_scope": str(snapshot_data_quality.get("missing_scope", "") or ""),
+                    "provider_missing": bool(snapshot_data_quality.get("provider_missing", False)),
+                    "snapshot_missing": bool(snapshot_data_quality.get("snapshot_missing", False)),
                 }
                 if status == "disabled_global":
                     module_coverage[name]["status"] = "disabled_global"
@@ -261,6 +276,7 @@ class FundamentalBranch:
             coverage_ratio = coverage_weight / max(total_weight, 1e-8)
             coverage_by_symbol[symbol] = coverage_ratio
             missing_modules_by_symbol[symbol] = missing_modules
+            snapshot_quality_by_symbol[symbol] = symbol_snapshot_quality
 
             symbol_scores[symbol] = normalized_score
             expected_returns[symbol] = _clamp(normalized_score * 0.09, -0.18, 0.18)
@@ -282,6 +298,7 @@ class FundamentalBranch:
                 "documents_available": bool(document.available),
                 "forecast_available": bool(forecast.available),
                 "module_coverage": symbol_module_coverage,
+                "snapshot_quality": symbol_snapshot_quality,
                 "conclusion": conclusion,
             }
 
@@ -412,6 +429,7 @@ class FundamentalBranch:
                     if not quality["documents_available"]
                 ],
                 "missing_modules": missing_modules_by_symbol,
+                "snapshot_quality_by_symbol": snapshot_quality_by_symbol,
             },
             conclusion=conclusion,
             thesis_points=self._dedupe(list(symbol_conclusions.values()))[:3],

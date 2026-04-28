@@ -9,8 +9,10 @@ import importlib.util
 import json
 import shutil
 import time
-from dataclasses import asdict, dataclass
+from collections import Counter
+from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +24,13 @@ from quant_investor.market.config import get_market_settings
 from quant_investor.market.download_cn import CNFullMarketDownloader
 from quant_investor.llm_provider_priority import coerce_review_model_priority
 from quant_investor.pipeline import QuantInvestor
+from quant_investor.reporting.formal_diagnostics import (
+    HoldingDecisionDiagnostic,
+    apply_report_decision_guardrail,
+    build_holding_decision_diagnostics,
+    collect_formal_report_warnings,
+    render_holding_diagnostic_markdown_table,
+)
 from quant_investor.research_run_config import ResolvedReviewModels
 
 
@@ -89,13 +98,58 @@ def _plain_dict(value: Any) -> dict[str, Any]:
     if hasattr(value, "to_dict"):
         payload = value.to_dict()
         if isinstance(payload, dict):
-            return dict(payload)
+            return dict(_jsonable(payload))
     if isinstance(value, dict):
-        return dict(value)
+        return dict(_jsonable(value))
     data = getattr(value, "__dict__", None)
     if isinstance(data, dict):
-        return dict(data)
+        return dict(_jsonable(data))
     return {}
+
+
+def _jsonable(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, Path):
+        return str(value)
+    if hasattr(value, "item") and callable(getattr(value, "item")):
+        try:
+            return value.item()
+        except Exception:
+            pass
+    if is_dataclass(value):
+        return _jsonable(asdict(value))
+    if hasattr(value, "to_dict") and not isinstance(value, pd.DataFrame):
+        try:
+            return _jsonable(value.to_dict())
+        except Exception:
+            pass
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonable(item) for item in value]
+    return str(value)
+
+
+def _serialize_reviewed_branch_verdicts(result: Any, symbol: str) -> dict[str, Any]:
+    payload = dict(getattr(result, "reviewed_research_by_symbol", {}) or {}).get(symbol, {})
+    if not isinstance(payload, dict):
+        return {}
+    return {str(name): _jsonable(verdict) for name, verdict in payload.items()}
+
+
+def _serialize_symbol_review_bundle(result: Any, symbol: str) -> dict[str, Any]:
+    review_bundle = getattr(result, "review_bundle", None)
+    if review_bundle is None:
+        return {}
+    branch_overlays = dict(getattr(review_bundle, "branch_overlay_verdicts_by_symbol", {}) or {}).get(symbol, {})
+    master_hints = dict(getattr(review_bundle, "master_hints_by_symbol", {}) or {})
+    return {
+        "branch_overlays": {str(name): _jsonable(verdict) for name, verdict in dict(branch_overlays).items()},
+        "master_hint": _jsonable(master_hints.get(symbol)),
+    }
 
 
 def _llm_usage_summary_to_dict(summary: Any) -> dict[str, Any]:
@@ -214,6 +268,8 @@ def _run_unified_review_mainline_for_holdings(
         recommendation = next((item for item in recommendations if str(getattr(item, "symbol", "")).upper() == symbol), None)
         ic_hint = dict((getattr(result, "ic_hints_by_symbol", {}) or {}).get(symbol, {}))
         session_ids[symbol] = str(getattr(result, "llm_usage_session_id", "") or "")
+        reviewed_branch_verdicts = _serialize_reviewed_branch_verdicts(result, symbol)
+        symbol_review_bundle = _serialize_symbol_review_bundle(result, symbol)
         review_by_symbol[symbol] = {
             "llm_usage": attempt_usage,
             "llm_attempt_summary": attempt_usage,
@@ -224,6 +280,9 @@ def _run_unified_review_mainline_for_holdings(
             "report_excerpt": str(getattr(result, "final_report", "") or "")[:2000],
             "llm_degraded": bool(degraded_reason),
             "llm_degraded_reason": degraded_reason,
+            "reviewed_branch_verdicts": reviewed_branch_verdicts,
+            "branch_overlays": dict(symbol_review_bundle.get("branch_overlays", {}) or {}),
+            "master_hint": dict(symbol_review_bundle.get("master_hint", {}) or {}),
         }
         time.sleep(0.8)
 
@@ -788,6 +847,65 @@ def _format_top_holdings_by_unrealized_pnl(frame: pd.DataFrame, *, positive: boo
     )
 
 
+def _format_top_delta_vs_source_record(frame: pd.DataFrame, *, positive: bool) -> str:
+    if frame.empty or "delta_vs_source_record" not in frame.columns:
+        return "无"
+
+    filtered = (
+        frame[frame["delta_vs_source_record"] > 0]
+        if positive
+        else frame[frame["delta_vs_source_record"] < 0]
+    )
+    if filtered.empty:
+        return "无"
+
+    ordered = filtered.sort_values("delta_vs_source_record", ascending=not positive)
+    return "；".join(
+        f"{row.symbol} {row.delta_vs_source_record:,.2f} 元"
+        for row in ordered.head(3).itertuples()
+    )
+
+
+def _format_signed_money(value: float) -> str:
+    return f"{value:+,.2f} 元"
+
+
+def _format_holding_advice_line(row: Any) -> str:
+    price = _safe_float(getattr(row, "current_price", 0.0), 0.0)
+    stop_price = _safe_float(getattr(row, "stage_stop_price", 0.0), 0.0)
+    target_price = _safe_float(getattr(row, "stage_target_price", 0.0), 0.0)
+    stop_buffer = _safe_pct(price - stop_price, stop_price)
+    hard_signal = "未触发阶段止损" if price >= stop_price else "低于阶段止损，需跟踪减仓确认"
+    return (
+        f"- `{row.symbol}`（{row.name}）：建议 `{row.recommended_action}`，"
+        f"持仓角色 `{row.position_role}`；当前价 `{price:.2f}`，"
+        f"阶段止损 `{stop_price:.2f}`（缓冲 {stop_buffer:+.2%}），"
+        f"阶段目标 `{target_price:.2f}`；浮动盈亏 `{_format_signed_money(float(row.unrealized_pnl))}`，"
+        f"较上一条记录 `{_format_signed_money(float(row.delta_vs_source_record))}`；"
+        f"全市场强度排名 `{int(row.rank_full_market)}`，今日涨跌 `{float(row.today_change_pct):+.2f}%`；"
+        f"{hard_signal}。"
+    )
+
+
+def _format_warning_count_summary(warnings: list[Any]) -> str:
+    if not warnings:
+        return "无"
+    counts = Counter(str(warning.code) for warning in warnings)
+    return "，".join(f"{code}={count}" for code, count in sorted(counts.items()))
+
+
+def _format_warning_messages(warnings: list[Any], *, severity: str | None = None, limit: int = 6) -> str:
+    selected = [
+        warning
+        for warning in warnings
+        if severity is None or str(getattr(warning, "severity", "")) == severity
+    ]
+    if not selected:
+        return "无"
+    messages = [str(warning.human_message).strip() for warning in selected if str(warning.human_message).strip()]
+    return "；".join(messages[:limit]) + (" ..." if len(messages) > limit else "")
+
+
 def _format_trade_date(value: Any) -> str:
     text = str(value or "").strip()
     if len(text) == 8 and text.isdigit():
@@ -1161,14 +1279,22 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         review_payload = review_by_symbol.get(symbol, {})
         recommendation = dict(review_payload.get("recommendation", {}) or {})
         ic_hint = dict(review_payload.get("ic_hint", {}) or {})
+        master_hint = dict(review_payload.get("master_hint", {}) or {})
         llm_attempt_summary = dict(review_payload.get("llm_attempt_summary", {}) or {})
         llm_effective_summary = dict(review_payload.get("llm_effective_summary", {}) or {})
         llm_action = str(recommendation.get("action") or ic_hint.get("action") or "hold")
-        llm_confidence = float(
-            recommendation.get("confidence")
-            or ic_hint.get("confidence_hint")
-            or 0.0
-        )
+        llm_confidence_source = ""
+        llm_confidence_value: float | None = None
+        if "confidence" in recommendation and recommendation.get("confidence") is not None:
+            llm_confidence_value = _safe_float(recommendation.get("confidence"))
+            llm_confidence_source = "recommendation.confidence"
+        elif "confidence_hint" in ic_hint and ic_hint.get("confidence_hint") is not None:
+            llm_confidence_value = _safe_float(ic_hint.get("confidence_hint"))
+            llm_confidence_source = "ic_hint.confidence_hint"
+        elif "confidence_hint" in master_hint and master_hint.get("confidence_hint") is not None:
+            llm_confidence_value = _safe_float(master_hint.get("confidence_hint"))
+            llm_confidence_source = "master_hint.confidence_hint"
+        llm_confidence = float(llm_confidence_value or 0.0)
         llm_conclusion = str(
             recommendation.get("one_line_conclusion")
             or ic_hint.get("thesis")
@@ -1216,6 +1342,8 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
                 "llm_attempt_calls": int(llm_attempt_summary.get("call_count", 0) or 0),
                 "llm_failed_calls": int(llm_attempt_summary.get("failed_count", 0) or 0),
                 "llm_effective_calls": int(llm_effective_summary.get("call_count", 0) or 0),
+                "llm_confidence_source": llm_confidence_source,
+                "llm_degraded": bool(review_payload.get("llm_degraded", False)),
             }
         )
 
@@ -1279,8 +1407,6 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     portfolio_pnl_after = round(total_value_after - initial_capital, 2)
     portfolio_pnl_before = round(total_value_before - initial_capital, 2)
 
-    contribution = holdings_review.sort_values("delta_vs_source_record", ascending=False)
-    detractors = holdings_review.sort_values("delta_vs_source_record", ascending=True)
     float_winners = holdings_review.sort_values("unrealized_pnl", ascending=False)
     float_losers = holdings_review.sort_values("unrealized_pnl", ascending=True)
 
@@ -1319,6 +1445,127 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         quote_snapshot=quote_snapshot,
         analysis_trade_date=analysis_trade_date,
     )
+    branch_signals_by_symbol = {
+        symbol: {
+            "reviewed_branch_verdicts": dict(payload.get("reviewed_branch_verdicts", {}) or {}),
+            "branch_overlays": dict(payload.get("branch_overlays", {}) or {}),
+            "master_hint": dict(payload.get("master_hint", {}) or {}),
+            "ic_hint": dict(payload.get("ic_hint", {}) or {}),
+            "recommendation": dict(payload.get("recommendation", {}) or {}),
+            "report_excerpt": str(payload.get("report_excerpt", "") or ""),
+        }
+        for symbol, payload in review_by_symbol.items()
+    }
+    fundamental_coverage_by_symbol: dict[str, dict[str, Any]] = {}
+    enhanced_data_flags_by_symbol: dict[str, dict[str, Any]] = {}
+    kline_diagnostics: dict[str, dict[str, Any]] = {}
+    intelligence_diagnostics: dict[str, dict[str, Any]] = {}
+    for symbol, payload in branch_signals_by_symbol.items():
+        reviewed_branchs = dict(payload.get("reviewed_branch_verdicts", {}) or {})
+        fundamental_payload = dict(reviewed_branchs.get("fundamental", {}) or {})
+        fundamental_meta = dict(fundamental_payload.get("metadata", {}) or {})
+        fundamental_quality = dict(fundamental_meta.get("data_quality", {}) or {})
+        snapshot_quality_by_symbol = dict(fundamental_quality.get("snapshot_quality_by_symbol", {}) or {})
+        fundamental_coverage_by_symbol[symbol] = {
+            "coverage_ratio": fundamental_quality.get("coverage_ratio"),
+            "missing_modules": (
+                dict(fundamental_quality.get("missing_modules", {}) or {}).get(symbol, [])
+                if isinstance(fundamental_quality.get("missing_modules"), dict)
+                else fundamental_quality.get("missing_modules", [])
+            ),
+            "snapshot_quality": dict(snapshot_quality_by_symbol.get(symbol, {}) or {}),
+            "module_coverage": dict(fundamental_meta.get("module_coverage", {}) or {}),
+        }
+        enhanced_data_flags_by_symbol[symbol] = dict(snapshot_quality_by_symbol.get(symbol, {}) or {})
+        if reviewed_branchs.get("kline"):
+            kline_diagnostics[symbol] = dict(reviewed_branchs.get("kline", {}) or {})
+        if reviewed_branchs.get("intelligence"):
+            intelligence_diagnostics[symbol] = dict(reviewed_branchs.get("intelligence", {}) or {})
+
+    formal_warnings = collect_formal_report_warnings(
+        target_date=str(completeness_after.get("effective_target_trade_date") or latest_trade_date or ""),
+        dominant_local_snapshot_date=analysis_trade_date,
+        completeness_state=completeness_after,
+        holdings_review=holdings_review.to_dict(orient="records"),
+        branch_diagnostics=branch_signals_by_symbol,
+        fundamental_coverage_by_symbol=fundamental_coverage_by_symbol,
+        enhanced_data_flags_by_symbol=enhanced_data_flags_by_symbol,
+        kline_diagnostics=kline_diagnostics,
+        intelligence_diagnostics=intelligence_diagnostics,
+        review_layer_diagnostics={
+            "effective_call_count": int(review_effective_summary.get("call_count", 0) or 0),
+            "attempt_call_count": int(review_attempt_summary.get("call_count", 0) or 0),
+            "degraded_symbols": list(degraded_symbols.keys()),
+        },
+    )
+    holding_diagnostics = build_holding_decision_diagnostics(
+        holdings_review=holdings_review.to_dict(orient="records"),
+        warnings=formal_warnings,
+        provisional_label_by_symbol={
+            str(row.symbol): str(getattr(row, "recommended_action", ""))
+            for row in holdings_review.itertuples()
+        },
+        data_date_by_symbol={str(row.symbol): analysis_trade_date for row in holdings_review.itertuples()},
+        branch_signals_by_symbol=branch_signals_by_symbol,
+    )
+    decision_guardrail = apply_report_decision_guardrail(
+        provisional_label="rebalance" if orders else "no_action",
+        warnings=formal_warnings,
+        holding_diagnostics=holding_diagnostics,
+        llm_confidences=list(holdings_review["llm_confidence"]) if "llm_confidence" in holdings_review.columns else [],
+    )
+    if decision_guardrail.display_label in {"no_action_evidence_impaired", "hold_arbitrated"}:
+        adjusted_diagnostics: list[HoldingDecisionDiagnostic] = []
+        for item in holding_diagnostics:
+            adjusted_diagnostics.append(
+                HoldingDecisionDiagnostic(
+                    symbol=item.symbol,
+                    name=item.name,
+                    data_date=item.data_date,
+                    final_label=decision_guardrail.display_label,
+                    branch_vs_final=(
+                        "conflict_downgraded"
+                        if item.branch_vs_final == "conflict_requires_arbitration"
+                        else item.branch_vs_final
+                    ),
+                    llm_confidence=item.llm_confidence,
+                    warning_codes=list(item.warning_codes),
+                    decision_impact=(
+                        item.decision_impact
+                        if item.decision_impact != "none"
+                        else "downgraded_final_label"
+                    ),
+                    arbitration_note=item.arbitration_note or decision_guardrail.arbitration_note,
+                )
+            )
+        holding_diagnostics = adjusted_diagnostics
+
+    diagnostic_by_symbol = {item.symbol: item for item in holding_diagnostics}
+
+    def _diagnostic_attr(symbol: Any, attr: str, default: Any = "") -> Any:
+        item = diagnostic_by_symbol.get(str(symbol).strip().upper())
+        return getattr(item, attr, default) if item is not None else default
+
+    holdings_review["report_data_date"] = holdings_review["symbol"].map(
+        lambda value: _diagnostic_attr(value, "data_date", "")
+    )
+    holdings_review["report_guardrail_label"] = holdings_review["symbol"].map(
+        lambda value: _diagnostic_attr(value, "final_label", "unknown")
+    )
+    holdings_review["report_branch_vs_final"] = holdings_review["symbol"].map(
+        lambda value: _diagnostic_attr(value, "branch_vs_final", "unknown")
+    )
+    holdings_review["report_warning_codes"] = holdings_review["symbol"].map(
+        lambda value: ",".join(_diagnostic_attr(value, "warning_codes", []))
+    )
+    holdings_review["report_decision_impact"] = holdings_review["symbol"].map(
+        lambda value: _diagnostic_attr(value, "decision_impact", "none")
+    )
+    holdings_review["report_arbitration_note"] = holdings_review["symbol"].map(
+        lambda value: _diagnostic_attr(value, "arbitration_note", "")
+    )
+    diagnostic_table = render_holding_diagnostic_markdown_table(holding_diagnostics)
+    typed_warning_codes = sorted({warning.code for warning in formal_warnings})
 
     report_lines = [
         "# A股激进科技制造策略正式复盘报告",
@@ -1337,8 +1584,19 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "## 0. 正式结果速览",
         "",
         f"- 正式结论：**{rebalance_reason}**",
+        f"- 报告展示标签：**`{decision_guardrail.display_label}`**",
         f"- 数据完整性状态：**{data_status}**",
         f"- 今日是否执行调仓：**{'是' if orders else '否'}**",
+        (
+            f"- Typed diagnostics：`{', '.join(typed_warning_codes)}`"
+            if typed_warning_codes
+            else "- Typed diagnostics：无"
+        ),
+        (
+            f"- 决策护栏说明：{decision_guardrail.arbitration_note}"
+            if str(decision_guardrail.arbitration_note).strip()
+            else "- 决策护栏说明：无"
+        ),
         (
             f"- LLM 复核状态：**已执行**，原始尝试 `{review_attempt_summary.get('call_count', 0)}` 次"
             f"（成功 `{review_attempt_summary.get('success_count', 0)}` / 失败 `{review_attempt_summary.get('failed_count', 0)}` / "
@@ -1371,15 +1629,9 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "- 当前浮盈仓位：" + _format_top_holdings_by_unrealized_pnl(float_winners, positive=True),
         "- 当前浮亏前三：" + _format_top_holdings_by_unrealized_pnl(float_losers, positive=False),
         "- 相对上一条正式记录的正向收益贡献："
-        + "；".join(
-            f"{row.symbol} {row.delta_vs_source_record:,.2f} 元"
-            for row in contribution.head(3).itertuples()
-        ),
+        + _format_top_delta_vs_source_record(holdings_review, positive=True),
         "- 相对上一条正式记录的拖累来源前三："
-        + "；".join(
-            f"{row.symbol} {row.delta_vs_source_record:,.2f} 元"
-            for row in detractors.head(3).itertuples()
-        ),
+        + _format_top_delta_vs_source_record(holdings_review, positive=False),
         "",
         "## 4. A股整体市场风格与指数结构",
         "",
@@ -1492,6 +1744,24 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "",
             "### 5.4 是否需要调仓",
             "",
+            f"- 报告展示标签：`{decision_guardrail.display_label}`",
+            (
+                f"- 护栏仲裁说明：{decision_guardrail.arbitration_note}"
+                if str(decision_guardrail.arbitration_note).strip()
+                else "- 护栏仲裁说明：无"
+            ),
+            (
+                f"- 触发 warning codes：`{', '.join(typed_warning_codes)}`"
+                if typed_warning_codes
+                else "- 触发 warning codes：无"
+            ),
+            "",
+            "#### 5.4.1 决策诊断",
+            "",
+            diagnostic_table,
+            "",
+            "#### 5.4.2 正式建议",
+            "",
             f"- 正式建议：**{'执行温和调仓' if orders else '本次不执行调仓'}**",
             (
                 "- 原因：主线最强分支重新走强，今天更像内部修复而不是主线失效；弱支线虽然没有完全修复，但还不足以在单日里推翻长期主线。"
@@ -1501,16 +1771,32 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         ]
     )
     for row in holdings_review.itertuples():
-        report_lines.append(
-            f"- `{row.symbol}` LLM 复核：动作 `{row.llm_action}`，置信度 `{row.llm_confidence:.2f}`；"
-            f"{row.llm_conclusion or '未返回明确一句话结论。'}"
-            + (f" 风险：{row.llm_risk_flags}" if str(row.llm_risk_flags).strip() else "")
-            + (
-                f" 降级：{review_by_symbol.get(row.symbol, {}).get('llm_degraded_reason', '')}"
-                if review_by_symbol.get(row.symbol, {}).get("llm_degraded")
-                else ""
-            )
-        )
+        report_lines.append(_format_holding_advice_line(row))
+    report_lines.extend(
+        [
+            "",
+            "#### 5.4.3 证据质量与工程诊断",
+            "",
+            f"- 诊断汇总：{_format_warning_count_summary(formal_warnings)}",
+            f"- Material 级证据缺口：{_format_warning_messages(formal_warnings, severity='material', limit=3)}",
+            (
+                f"- LLM / review-layer 状态：原始尝试 `{review_attempt_summary.get('call_count', 0)}` 次，"
+                f"有效输出 `{review_effective_summary.get('call_count', 0)}` 次；"
+                + (
+                    "降级标的 `"
+                    + "，".join(sorted(degraded_symbols.keys()))
+                    + "`。"
+                    if degraded_symbols
+                    else "无逐标的 review-layer 降级。"
+                )
+            ),
+            "- 工程诊断说明：provider、snapshot、K 线 evaluator、旧 intelligence batch 等诊断仅用于说明证据等级，不直接作为逐票投资建议正文。",
+            "",
+            "##### 持仓诊断明细",
+            "",
+            diagnostic_table,
+        ]
+    )
     report_lines.extend(
         [
             "",
@@ -1551,6 +1837,13 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         tomorrow_focus=tomorrow_focus,
     )
     DEFAULT_NOTES_PATH.write_text(notes_text, encoding="utf-8")
+    formal_diagnostics_payload = {
+        "warnings": [_jsonable(item.to_dict()) for item in formal_warnings],
+        "holding_diagnostics": [_jsonable(item.to_dict()) for item in holding_diagnostics],
+        "decision_guardrail": _jsonable(decision_guardrail.to_dict()),
+        "typed_warning_codes": typed_warning_codes,
+        "branch_diagnostics_by_symbol": _jsonable(branch_signals_by_symbol),
+    }
 
     manifest = {
         "market": "CN",
@@ -1601,7 +1894,9 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "fallback_reasons": list(review_layer.get("fallback_reasons", []) or []),
             "degraded_symbols": degraded_symbols,
             "session_ids": dict(review_layer.get("session_ids", {}) or {}),
+            "symbol_diagnostics": _jsonable(branch_signals_by_symbol),
         },
+        "formal_diagnostics": formal_diagnostics_payload,
     }
     market_snapshot = {
         "generated_at": now.strftime("%Y-%m-%d %H:%M:%S"),
@@ -1627,7 +1922,9 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "fallback_reasons": list(review_layer.get("fallback_reasons", []) or []),
             "degraded_symbols": degraded_symbols,
             "session_ids": dict(review_layer.get("session_ids", {}) or {}),
+            "symbol_diagnostics": _jsonable(branch_signals_by_symbol),
         },
+        "formal_diagnostics": formal_diagnostics_payload,
         "download_report": str(download_report_path) if download_report_path else None,
         "quote_fetch_error": quote_error or None,
     }
@@ -1652,6 +1949,8 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "analysis_trade_date": analysis_trade_date,
         "completeness_passed": completeness_passed,
         "action_taken_today": bool(orders),
+        "report_guardrail_label": decision_guardrail.display_label,
+        "typed_warning_codes": typed_warning_codes,
         "data_status": data_status,
         "style_view": style_text,
         "review_layer_degraded_symbols": degraded_symbols,
@@ -1659,6 +1958,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "strongest": strongest_theme_text,
             "weakest": weakest_theme_text,
         },
+        "formal_diagnostics": formal_diagnostics_payload,
         "pnl_summary": pnl_summary,
         "elapsed_sec": round(time.time() - started, 2),
     }

@@ -11,7 +11,7 @@ from quant_investor.credential_utils import get_secret
 
 MAINLINE_ENV_DEFAULTS: dict[str, str] = {
     "TUSHARE_TOKEN": "",
-    "TUSHARE_URL": "http://139.196.25.182",
+    "TUSHARE_URL": "http://lianghua.nanyangqiankun.top",
     "TUSHARE_RATE_LIMIT_PER_MIN": "500",
     "KIMI_API_KEY": "",
     "DEEPSEEK_API_KEY": "",
@@ -35,7 +35,6 @@ MAINLINE_ENV_DEFAULTS: dict[str, str] = {
 }
 
 MAINLINE_ENV_KEYS: tuple[str, ...] = tuple(MAINLINE_ENV_DEFAULTS)
-_LEGACY_TUSHARE_URLS = {"http://lianghua.nanyangqiankun.top"}
 
 # 尝试加载 .env 文件
 try:
@@ -86,13 +85,11 @@ def _env_int(name: str, default: int) -> int:
 def _env_str(
     name: str,
     default: str,
-    *,
-    legacy_defaults: set[str] | None = None,
 ) -> str:
-    value = str(os.environ.get(name, default) or "").strip()
-    if legacy_defaults and value in legacy_defaults:
-        return default
-    return value or default
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return str(default or "").strip() or default
+    return str(raw_value or "").strip() or default
 
 
 def _env_int_list(name: str, default: tuple[int, ...]) -> tuple[int, ...]:
@@ -124,7 +121,6 @@ class Config:
     TUSHARE_URL: str = _env_str(
         'TUSHARE_URL',
         MAINLINE_ENV_DEFAULTS['TUSHARE_URL'],
-        legacy_defaults=_LEGACY_TUSHARE_URLS,
     )
     TUSHARE_RATE_LIMIT_PER_MIN: int = _env_int(
         'TUSHARE_RATE_LIMIT_PER_MIN',
