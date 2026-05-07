@@ -58,6 +58,12 @@ THEME_BASKETS = {
     "电力设备": ["601179.SH", "600487.SH"],
     "光通信": ["601869.SH"],
 }
+CANDIDATE_POOL_PATH = PROJECT_ROOT / "results" / "cn_analysis_full" / "all_candidates.json"
+CATEGORY_THEME_LABELS = {
+    "hs300": "大盘核心资产",
+    "zz500": "中盘制造主线",
+    "zz1000": "小盘成长弹性",
+}
 
 
 @dataclass
@@ -748,6 +754,151 @@ def _build_rebalance_plan(review: pd.DataFrame) -> list[ProposedOrder]:
     return orders
 
 
+def _load_local_candidate_symbols() -> list[str]:
+    if not CANDIDATE_POOL_PATH.exists():
+        return []
+    try:
+        payload = json.loads(CANDIDATE_POOL_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    values = payload.get("full_a")
+    if not isinstance(values, list):
+        return []
+    symbols: list[str] = []
+    for item in values:
+        symbol = str(item or "").strip().upper()
+        if symbol:
+            symbols.append(symbol)
+    return symbols
+
+
+def _theme_label_for_symbol(symbol: str, category: str) -> str:
+    for theme, symbols in THEME_BASKETS.items():
+        if symbol in symbols:
+            return theme
+    return CATEGORY_THEME_LABELS.get(category, "正式筛选候选")
+
+
+def _evidence_quality_label(
+    *,
+    completeness_passed: bool,
+    analysis_trade_date: str,
+    strict_trade_date: str,
+    source: str,
+) -> str:
+    if completeness_passed:
+        return "高"
+    if source == "latest_formal_screening" and analysis_trade_date and analysis_trade_date == strict_trade_date:
+        return "中"
+    return "中等偏弱"
+
+
+def _build_candidate_pool(
+    *,
+    full_metrics: pd.DataFrame,
+    held_symbols: list[str],
+    completeness_passed: bool,
+    analysis_trade_date: str,
+    strict_trade_date: str,
+) -> pd.DataFrame:
+    if full_metrics.empty:
+        return pd.DataFrame()
+
+    candidate_symbols = _load_local_candidate_symbols()
+    candidate_priority = {symbol: idx for idx, symbol in enumerate(candidate_symbols)}
+    held_set = {str(symbol).strip().upper() for symbol in held_symbols}
+    metrics = full_metrics.copy()
+    metrics["symbol"] = metrics["symbol"].astype(str).str.upper()
+    metrics = metrics[~metrics["symbol"].isin(held_set)].copy()
+    if metrics.empty:
+        return metrics
+
+    metrics["candidate_source"] = metrics["symbol"].map(
+        lambda symbol: "latest_formal_screening" if symbol in candidate_priority else "full_market_strength"
+    )
+    metrics["candidate_priority"] = metrics["symbol"].map(lambda symbol: candidate_priority.get(symbol, 999999))
+    metrics["theme_label"] = metrics.apply(
+        lambda row: _theme_label_for_symbol(str(row["symbol"]), str(row.get("category", ""))),
+        axis=1,
+    )
+    metrics["evidence_quality"] = metrics["candidate_source"].map(
+        lambda source: _evidence_quality_label(
+            completeness_passed=completeness_passed,
+            analysis_trade_date=analysis_trade_date,
+            strict_trade_date=strict_trade_date,
+            source=str(source),
+        )
+    )
+    metrics = metrics.sort_values(
+        by=["candidate_priority", "score_full_market", "ret20", "ret60", "symbol"],
+        ascending=[True, False, False, False, True],
+    ).reset_index(drop=True)
+    metrics["candidate_rank"] = range(1, len(metrics) + 1)
+    return metrics.head(12).reset_index(drop=True)
+
+
+def _build_switch_plan(
+    *,
+    holdings_review: pd.DataFrame,
+    candidate_pool: pd.DataFrame,
+    completeness_passed: bool,
+) -> pd.DataFrame:
+    if holdings_review.empty or candidate_pool.empty:
+        return pd.DataFrame()
+
+    weak_holdings = holdings_review.sort_values(
+        by=["rank_full_market", "score_full_market", "today_change_pct"],
+        ascending=[False, True, True],
+    ).head(3)
+    best_candidates = candidate_pool.sort_values(
+        by=["candidate_priority", "score_full_market", "ret20", "symbol"],
+        ascending=[True, False, False, True],
+    ).head(3)
+
+    rows: list[dict[str, Any]] = []
+    for weak_row, candidate_row in zip(weak_holdings.itertuples(), best_candidates.itertuples()):
+        score_gap = round(float(candidate_row.score_full_market) - float(weak_row.score_full_market), 6)
+        ret20_gap = round(float(candidate_row.ret20) - float(weak_row.ret20), 6)
+        superior = (
+            score_gap >= 0.12
+            and int(candidate_row.rank_full_market) + 120 <= int(weak_row.rank_full_market)
+            and ret20_gap >= 0.08
+        )
+        actionable = superior and completeness_passed
+        rows.append(
+            {
+                "sell_symbol": weak_row.symbol,
+                "sell_name": weak_row.name,
+                "sell_role": weak_row.position_role,
+                "sell_rank_full_market": int(weak_row.rank_full_market),
+                "sell_score_full_market": round(float(weak_row.score_full_market), 6),
+                "buy_symbol": candidate_row.symbol,
+                "buy_name": candidate_row.name,
+                "buy_theme": candidate_row.theme_label,
+                "buy_rank_full_market": int(candidate_row.rank_full_market),
+                "buy_score_full_market": round(float(candidate_row.score_full_market), 6),
+                "score_gap": score_gap,
+                "ret20_gap": ret20_gap,
+                "candidate_source": candidate_row.candidate_source,
+                "evidence_quality": candidate_row.evidence_quality,
+                "priority": "high" if superior else "watch",
+                "action": "switch_now" if actionable else ("prepare_switch" if superior else "watch_only"),
+                "switch_ratio_hint": "20%" if actionable else "先观察，不执行",
+                "trigger_threshold": (
+                    "候选继续留在本地强度前120，且现持仓未收复阶段止损位"
+                    if not actionable
+                    else "按20%试探性换仓，若候选继续强于卖出对象再递增"
+                ),
+                "no_switch_condition": (
+                    "当前本地快照未完成 strict 完整性，先不把结构优势直接转成实单"
+                    if superior and not completeness_passed
+                    else "若现持仓重新回到前250名且候选优势收敛，则继续持有原仓"
+                ),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def _apply_orders(
     source_ledger: pd.DataFrame,
     orders: list[ProposedOrder],
@@ -884,6 +1035,31 @@ def _format_holding_advice_line(row: Any) -> str:
         f"较上一条记录 `{_format_signed_money(float(row.delta_vs_source_record))}`；"
         f"全市场强度排名 `{int(row.rank_full_market)}`，今日涨跌 `{float(row.today_change_pct):+.2f}%`；"
         f"{hard_signal}。"
+    )
+
+
+def _format_candidate_advice_line(row: Any, switch_row: dict[str, Any] | None) -> str:
+    source_label = "最新正式筛选结果" if str(row.candidate_source) == "latest_formal_screening" else "本地全市场强度"
+    relative_advantage = (
+        f"相对 `{switch_row['sell_symbol']}` 更优，强度排名前移 `{int(switch_row['sell_rank_full_market']) - int(switch_row['buy_rank_full_market'])}` 位"
+        f"，20日动量高出 `{float(switch_row['ret20_gap']):+.2%}`；"
+        if switch_row
+        else f"当前在本地候选中位列前 `{int(row.candidate_rank)}`，20日收益 `{float(row.ret20):+.2%}`；"
+    )
+    major_risk = (
+        "本地 strict 快照仍有缺口，结论依赖主导本地快照延续性；"
+        if str(row.evidence_quality) != "高"
+        else "若回撤跌破阶段止损位，短线强度可能失真；"
+    )
+    trigger = (
+        str(switch_row["trigger_threshold"])
+        if switch_row
+        else "若连续两次正式复盘仍在候选前列，可升级为优先观察对象"
+    )
+    return (
+        f"- `{row.symbol}`（{row.name}）：主线 `{row.theme_label}`，来源 `{source_label}`；"
+        f"{relative_advantage}主要风险：{major_risk}"
+        f"触发条件：{trigger}；证据质量：`{row.evidence_quality}`。"
     )
 
 
@@ -1105,6 +1281,8 @@ def _write_outputs(
     run_dir: Path,
     report_text: str,
     holdings_review: pd.DataFrame,
+    candidate_pool: pd.DataFrame,
+    switch_plan_df: pd.DataFrame,
     ledger: pd.DataFrame,
     orders_df: pd.DataFrame,
     pnl_summary_df: pd.DataFrame,
@@ -1117,6 +1295,8 @@ def _write_outputs(
 
     report_path = run_dir / "analysis_report.md"
     holdings_path = run_dir / "holdings_review.csv"
+    candidate_path = run_dir / "candidate_pool.csv"
+    switch_path = run_dir / "switch_plan.csv"
     ledger_path = run_dir / "ledger.csv"
     orders_path = run_dir / "orders.csv"
     pnl_path = run_dir / "pnl_summary.csv"
@@ -1125,6 +1305,8 @@ def _write_outputs(
 
     report_path.write_text(report_text, encoding="utf-8")
     holdings_review.to_csv(holdings_path, index=False, encoding="utf-8-sig")
+    candidate_pool.to_csv(candidate_path, index=False, encoding="utf-8-sig")
+    switch_plan_df.to_csv(switch_path, index=False, encoding="utf-8-sig")
     ledger.to_csv(ledger_path, index=False, encoding="utf-8-sig")
     orders_df.to_csv(orders_path, index=False, encoding="utf-8-sig")
     pnl_summary_df.to_csv(pnl_path, index=False, encoding="utf-8-sig")
@@ -1134,6 +1316,8 @@ def _write_outputs(
     prefix = f"aggressive_portfolio_{manifest['timestamp']}_formal"
     shutil.copy2(report_path, raw_dir / f"{prefix}_report.md")
     shutil.copy2(holdings_path, raw_dir / f"{prefix}_holdings_review.csv")
+    shutil.copy2(candidate_path, raw_dir / f"{prefix}_candidate_pool.csv")
+    shutil.copy2(switch_path, raw_dir / f"{prefix}_switch_plan.csv")
     shutil.copy2(ledger_path, raw_dir / f"{prefix}_ledger.csv")
     shutil.copy2(orders_path, raw_dir / f"{prefix}_orders.csv")
     shutil.copy2(pnl_path, raw_dir / f"{prefix}_pnl_summary.csv")
@@ -1145,6 +1329,8 @@ def _build_notes_payload(
     market_core_view: str,
     pnl_summary: dict[str, Any],
     orders: list[ProposedOrder],
+    switch_plan_df: pd.DataFrame,
+    candidate_pool: pd.DataFrame,
     tomorrow_focus: list[str],
 ) -> str:
     if orders:
@@ -1153,6 +1339,32 @@ def _build_notes_payload(
         )
     else:
         order_text = "无，本日维持现有结构。"
+
+    if switch_plan_df.empty:
+        switch_text = "否，暂无明显优于现持仓的可执行换仓对象。"
+        switch_detail_text = "维持原组合，继续跟踪候选观察池。"
+    else:
+        top_switch = switch_plan_df.iloc[0]
+        action = str(top_switch["action"])
+        if action == "switch_now":
+            switch_text = "是，已形成明确换仓优先级。"
+        elif action == "prepare_switch":
+            switch_text = "否，但已形成预备换仓对象。"
+        else:
+            switch_text = "否，先保留观察池。"
+        switch_detail_text = (
+            f"{top_switch['sell_symbol']} -> {top_switch['buy_symbol']}，优先级 `{top_switch['priority']}`，"
+            f"触发条件：{top_switch['trigger_threshold']}"
+        )
+
+    if candidate_pool.empty:
+        candidate_text = "暂无可用备选。"
+    else:
+        top_rows = candidate_pool.head(3)
+        candidate_text = "；".join(
+            f"{row.symbol}({row.name})/{row.theme_label}/证据{row.evidence_quality}"
+            for row in top_rows.itertuples()
+        )
 
     return "\n".join(
         [
@@ -1167,8 +1379,11 @@ def _build_notes_payload(
                 f"（{pnl_summary['portfolio_pnl_pct_after']:.2%}），较上一条正式记录变动 "
                 f"`{pnl_summary['delta_vs_source_record']:,.2f} 元`。"
             ),
+            f"- 备选投资建议：{candidate_text}",
             f"- 是否调仓：{'是' if orders else '否'}",
             f"- 调仓内容：{order_text}",
+            f"- 是否换仓：{switch_text}",
+            f"- 换仓内容：{switch_detail_text}",
             f"- 明日观察重点：{'；'.join(tomorrow_focus)}",
         ]
     )
@@ -1360,6 +1575,18 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         by=["score_full_market", "today_change_pct", "symbol"],
         ascending=[False, False, True],
     ).reset_index(drop=True)
+    candidate_pool = _build_candidate_pool(
+        full_metrics=full_metrics,
+        held_symbols=holdings_review["symbol"].tolist(),
+        completeness_passed=completeness_passed,
+        analysis_trade_date=analysis_trade_date,
+        strict_trade_date=str(completeness_after.get("strict_trade_date") or ""),
+    )
+    switch_plan_df = _build_switch_plan(
+        holdings_review=holdings_review,
+        candidate_pool=candidate_pool,
+        completeness_passed=completeness_passed,
+    )
 
     theme_strength = _summarize_theme_strength(holdings_review)
     style_text = _market_style_conclusion(indices=indices, breadth=breadth)
@@ -1566,6 +1793,17 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     )
     diagnostic_table = render_holding_diagnostic_markdown_table(holding_diagnostics)
     typed_warning_codes = sorted({warning.code for warning in formal_warnings})
+    switch_rows_by_buy_symbol = {
+        str(row.buy_symbol): row._asdict()
+        for row in switch_plan_df.itertuples(index=False)
+    }
+    candidate_lines = [
+        _format_candidate_advice_line(row, switch_rows_by_buy_symbol.get(str(row.symbol)))
+        for row in candidate_pool.head(5).itertuples()
+    ]
+    top_switch_action = str(switch_plan_df.iloc[0]["action"]) if not switch_plan_df.empty else ""
+    switch_now = top_switch_action == "switch_now"
+    switch_prepare = top_switch_action == "prepare_switch"
 
     report_lines = [
         "# A股激进科技制造策略正式复盘报告",
@@ -1587,6 +1825,11 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         f"- 报告展示标签：**`{decision_guardrail.display_label}`**",
         f"- 数据完整性状态：**{data_status}**",
         f"- 今日是否执行调仓：**{'是' if orders else '否'}**",
+        (
+            f"- 今日是否执行换仓：**{'是' if switch_now else '否'}**"
+            if switch_plan_df is not None
+            else "- 今日是否执行换仓：**否**"
+        ),
         (
             f"- Typed diagnostics：`{', '.join(typed_warning_codes)}`"
             if typed_warning_codes
@@ -1611,6 +1854,15 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             + "`"
             if degraded_symbols
             else "- Review-layer 降级：无"
+        ),
+        (
+            "- 备选投资建议："
+            + "；".join(
+                f"{row.symbol}({row.name})/{row.theme_label}"
+                for row in candidate_pool.head(3).itertuples()
+            )
+            if not candidate_pool.empty
+            else "- 备选投资建议：暂无"
         ),
         f"- 明日准备事项：{'；'.join(tomorrow_focus)}",
         "",
@@ -1800,6 +2052,49 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     report_lines.extend(
         [
             "",
+            "### 5.5 备选投资建议",
+            "",
+            (
+                "- 本轮备选池来自本地 `results/cn_analysis_full/all_candidates.json` 与最新主导本地快照强度交叉筛选。"
+                if not candidate_pool.empty
+                else "- 本轮未提取到有效备选池。"
+            ),
+            *candidate_lines,
+            "",
+            "### 5.6 现持仓与备选标的换仓比较",
+            "",
+            (
+                "- 正式换仓结论：**执行换仓**，优先按 20% 试探性替换最弱持仓。"
+                if switch_now
+                else (
+                    "- 正式换仓结论：**暂不换仓，但已形成预备换仓对象**。"
+                    if switch_prepare
+                    else "- 正式换仓结论：**暂不换仓**，现阶段以观察池跟踪为主。"
+                )
+            ),
+            (
+                "- 不换仓条件：当前本地 strict 快照仍不完整，先不把结构优势直接转成实单。"
+                if not completeness_passed
+                else "- 不换仓条件：若弱持仓重新收复阶段止损位且候选优势收敛，则维持原组合。"
+            ),
+            "",
+        ]
+    )
+    if switch_plan_df.empty:
+        report_lines.append("- 当前没有形成明确的一对一换仓比较。")
+    else:
+        for row in switch_plan_df.itertuples(index=False):
+            report_lines.append(
+                f"- `{row.sell_symbol}`（{row.sell_name}） vs `{row.buy_symbol}`（{row.buy_name}）："
+                f"候选主线 `{row.buy_theme}`，强度分差 `{float(row.score_gap):+.3f}`，"
+                f"20日动量差 `{float(row.ret20_gap):+.2%}`；建议 `{row.action}`，"
+                f"优先级 `{row.priority}`，比例提示 `{row.switch_ratio_hint}`；"
+                f"触发阈值：{row.trigger_threshold}；不换仓条件：{row.no_switch_condition}"
+            )
+
+    report_lines.extend(
+        [
+            "",
             "## 6. 面向明日的观察重点和准备事项",
             "",
         ]
@@ -1834,6 +2129,8 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         market_core_view=f"{style_text}{strongest_theme_text}{weakest_theme_text}",
         pnl_summary=pnl_summary,
         orders=orders,
+        switch_plan_df=switch_plan_df,
+        candidate_pool=candidate_pool,
         tomorrow_focus=tomorrow_focus,
     )
     DEFAULT_NOTES_PATH.write_text(notes_text, encoding="utf-8")
@@ -1861,6 +2158,8 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "files": {
             "analysis_report": "analysis_report.md",
             "holdings_review": "holdings_review.csv",
+            "candidate_pool": "candidate_pool.csv",
+            "switch_plan": "switch_plan.csv",
             "orders": "orders.csv",
             "ledger": "ledger.csv",
             "pnl_summary": "pnl_summary.csv",
@@ -1872,6 +2171,8 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "ledger": f"raw_exports/aggressive_portfolio_{timestamp}_formal_ledger.csv",
             "pnl_summary": f"raw_exports/aggressive_portfolio_{timestamp}_formal_pnl_summary.csv",
             "holdings_review": f"raw_exports/aggressive_portfolio_{timestamp}_formal_holdings_review.csv",
+            "candidate_pool": f"raw_exports/aggressive_portfolio_{timestamp}_formal_candidate_pool.csv",
+            "switch_plan": f"raw_exports/aggressive_portfolio_{timestamp}_formal_switch_plan.csv",
         },
         "data_snapshot": {
             "latest_trade_date": latest_trade_date,
@@ -1896,6 +2197,8 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "session_ids": dict(review_layer.get("session_ids", {}) or {}),
             "symbol_diagnostics": _jsonable(branch_signals_by_symbol),
         },
+        "candidate_pool": candidate_pool.to_dict(orient="records"),
+        "switch_plan": switch_plan_df.to_dict(orient="records"),
         "formal_diagnostics": formal_diagnostics_payload,
     }
     market_snapshot = {
@@ -1913,6 +2216,8 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "delta_vs_source_record": round(total_value_after - source_total_value, 2),
         },
         "theme_strength": theme_strength,
+        "candidate_pool": candidate_pool.to_dict(orient="records"),
+        "switch_plan": switch_plan_df.to_dict(orient="records"),
         "review_layer": {
             "reviewed_symbols": list(review_layer.get("reviewed_symbols", []) or []),
             "llm_usage_summary": review_attempt_summary,
@@ -1934,6 +2239,8 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         run_dir=run_dir,
         report_text=report_text,
         holdings_review=holdings_review,
+        candidate_pool=candidate_pool,
+        switch_plan_df=switch_plan_df,
         ledger=updated_ledger,
         orders_df=orders_df,
         pnl_summary_df=pnl_summary_df,
@@ -1949,11 +2256,14 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "analysis_trade_date": analysis_trade_date,
         "completeness_passed": completeness_passed,
         "action_taken_today": bool(orders),
+        "switch_action_today": top_switch_action or "none",
         "report_guardrail_label": decision_guardrail.display_label,
         "typed_warning_codes": typed_warning_codes,
         "data_status": data_status,
         "style_view": style_text,
         "review_layer_degraded_symbols": degraded_symbols,
+        "candidate_pool_top": candidate_pool.head(3).to_dict(orient="records"),
+        "switch_plan": switch_plan_df.to_dict(orient="records"),
         "tech_mainline": {
             "strongest": strongest_theme_text,
             "weakest": weakest_theme_text,
