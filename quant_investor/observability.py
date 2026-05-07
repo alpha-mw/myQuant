@@ -491,6 +491,7 @@ def discover_phase_artifacts(
     data_quality_dir: str | Path | None = None,
     risk_tensor_dir: str | Path | None = None,
     portfolio_optimizer_dir: str | Path | None = None,
+    factor_library_dir: str | Path | None = None,
     docs_dir: str | Path | None = None,
     scripts_dir: str | Path | None = None,
 ) -> list[ArtifactReference]:
@@ -645,6 +646,93 @@ def discover_phase_artifacts(
         schema_hint=getattr(versioning, "PORTFOLIO_OPTIMIZER_SCHEMA_VERSION", None),
         module="portfolio_optimizer",
     )
+
+    try:
+        from quant_investor.factors.schema import (
+            DEFAULT_FACTOR_ADMISSION_DECISIONS_FILENAME,
+            DEFAULT_FACTOR_BACKTEST_RESULTS_FILENAME,
+            DEFAULT_FACTOR_DEFINITIONS_FILENAME,
+            DEFAULT_FACTOR_LIBRARY_DIR,
+            DEFAULT_FACTOR_VALIDATION_REPORTS_FILENAME,
+            DEFAULT_PRODUCTION_FACTORS_FILENAME,
+        )
+        from quant_investor.factors.store import (
+            DEFAULT_FACTOR_CONTRIBUTION_REPORTS_FILENAME,
+            DEFAULT_FACTOR_INCREMENTAL_DIR,
+            DEFAULT_FACTOR_LIBRARY_AUDIT_DIR,
+            DEFAULT_FACTOR_LIBRARY_AUDIT_REPORTS_FILENAME,
+            DEFAULT_FACTOR_REDUNDANCY_REPORTS_FILENAME,
+        )
+    except ImportError:
+        DEFAULT_FACTOR_LIBRARY_DIR = Path("data/factor_library")
+        DEFAULT_FACTOR_DEFINITIONS_FILENAME = "factor_definitions.jsonl"
+        DEFAULT_FACTOR_BACKTEST_RESULTS_FILENAME = "factor_backtest_results.jsonl"
+        DEFAULT_FACTOR_VALIDATION_REPORTS_FILENAME = "factor_validation_reports.jsonl"
+        DEFAULT_FACTOR_ADMISSION_DECISIONS_FILENAME = "factor_admission_decisions.jsonl"
+        DEFAULT_PRODUCTION_FACTORS_FILENAME = "production_factors.json"
+        DEFAULT_FACTOR_INCREMENTAL_DIR = Path("data/factor_library/incremental")
+        DEFAULT_FACTOR_REDUNDANCY_REPORTS_FILENAME = "factor_redundancy_reports.jsonl"
+        DEFAULT_FACTOR_CONTRIBUTION_REPORTS_FILENAME = "factor_contribution_reports.jsonl"
+        DEFAULT_FACTOR_LIBRARY_AUDIT_DIR = Path("data/factor_library/audit")
+        DEFAULT_FACTOR_LIBRARY_AUDIT_REPORTS_FILENAME = "factor_library_audit_reports.jsonl"
+    factor_root = (
+        Path(factor_library_dir) if factor_library_dir is not None else DEFAULT_FACTOR_LIBRARY_DIR
+    )
+    include_factor_refs = factor_library_dir is not None or factor_root.exists()
+    if include_factor_refs:
+        incremental_root = (
+            factor_root / "incremental"
+            if factor_library_dir is not None
+            else DEFAULT_FACTOR_INCREMENTAL_DIR
+        )
+        audit_root = (
+            factor_root / "audit"
+            if factor_library_dir is not None
+            else DEFAULT_FACTOR_LIBRARY_AUDIT_DIR
+        )
+        factor_schema = getattr(versioning, "FACTOR_GOVERNANCE_SCHEMA_VERSION", None)
+        library_schema = getattr(versioning, "FACTOR_LIBRARY_SCHEMA_VERSION", None)
+        incremental_schema = getattr(
+            versioning,
+            "FACTOR_PORTFOLIO_CONTRIBUTION_SCHEMA_VERSION",
+            None,
+        )
+        audit_schema = getattr(versioning, "FACTOR_LIBRARY_AUDIT_SCHEMA_VERSION", None)
+        for name, filename, schema_hint in [
+            ("factor_definitions", DEFAULT_FACTOR_DEFINITIONS_FILENAME, factor_schema),
+            ("factor_backtest_results", DEFAULT_FACTOR_BACKTEST_RESULTS_FILENAME, factor_schema),
+            ("factor_validation_reports", DEFAULT_FACTOR_VALIDATION_REPORTS_FILENAME, factor_schema),
+            ("factor_admission_decisions", DEFAULT_FACTOR_ADMISSION_DECISIONS_FILENAME, factor_schema),
+            ("production_factors", DEFAULT_PRODUCTION_FACTORS_FILENAME, library_schema),
+        ]:
+            _add_expected_ref(
+                refs,
+                name=name,
+                path=factor_root / filename,
+                schema_hint=schema_hint,
+                module="factor_governance",
+            )
+        _add_expected_ref(
+            refs,
+            name="factor_redundancy_reports",
+            path=incremental_root / DEFAULT_FACTOR_REDUNDANCY_REPORTS_FILENAME,
+            schema_hint=getattr(versioning, "FACTOR_CORRELATION_SCHEMA_VERSION", None),
+            module="factor_governance",
+        )
+        _add_expected_ref(
+            refs,
+            name="factor_contribution_reports",
+            path=incremental_root / DEFAULT_FACTOR_CONTRIBUTION_REPORTS_FILENAME,
+            schema_hint=incremental_schema,
+            module="factor_governance",
+        )
+        _add_expected_ref(
+            refs,
+            name="factor_library_audit_reports",
+            path=audit_root / DEFAULT_FACTOR_LIBRARY_AUDIT_REPORTS_FILENAME,
+            schema_hint=audit_schema,
+            module="factor_governance",
+        )
 
     docs_root = Path(docs_dir) if docs_dir is not None else Path("docs")
     if docs_dir is not None or docs_root.exists():
@@ -842,6 +930,73 @@ def summarize_portfolio_optimizer_artifacts(artifact_refs: Sequence[ArtifactRefe
     )
 
 
+def summarize_factor_governance_artifacts(
+    artifact_refs: Sequence[ArtifactReference],
+) -> ModuleHealthSummary:
+    refs = _refs_for_module(artifact_refs, "factor_governance")
+    warnings: list[str] = []
+    failure_count = 0
+    metrics: dict[str, Any] = {
+        "factor_definition_records": 0,
+        "backtest_result_records": 0,
+        "validation_report_records": 0,
+        "admission_decision_records": 0,
+        "production_factor_count": 0,
+        "redundancy_report_records": 0,
+        "contribution_report_records": 0,
+        "audit_report_records": 0,
+    }
+    metric_names = {
+        "factor_definitions": "factor_definition_records",
+        "factor_backtest_results": "backtest_result_records",
+        "factor_validation_reports": "validation_report_records",
+        "factor_admission_decisions": "admission_decision_records",
+        "factor_redundancy_reports": "redundancy_report_records",
+        "factor_contribution_reports": "contribution_report_records",
+        "factor_library_audit_reports": "audit_report_records",
+    }
+    total_records = 0
+    for ref in refs:
+        if not ref.exists:
+            warnings.append(f"Missing optional factor artifact: {ref.name}")
+            continue
+        if ref.artifact_type == ARTIFACT_TYPE_JSONL:
+            try:
+                count = len(_read_jsonl_objects(ref.path))
+            except ValueError as exc:
+                warnings.append(str(exc))
+                failure_count += 1
+                continue
+            total_records += count
+            metric_name = metric_names.get(ref.name)
+            if metric_name is not None:
+                metrics[metric_name] = count
+        elif ref.artifact_type == ARTIFACT_TYPE_JSON:
+            try:
+                payload = read_json_file(ref.path)
+            except ValueError as exc:
+                warnings.append(str(exc))
+                failure_count += 1
+                continue
+            total_records += 1
+            if ref.name == "production_factors":
+                entries = payload.get("entries", [])
+                metrics["production_factor_count"] = len(entries) if isinstance(entries, list) else 0
+        else:
+            total_records += ref.record_count or 0
+    warning_count = len(warnings)
+    return ModuleHealthSummary(
+        module_name="factor_governance",
+        status=_status_from_counts(warning_count, failure_count),
+        artifact_count=len(refs),
+        record_count=total_records,
+        warning_count=warning_count,
+        failure_count=failure_count,
+        key_metrics=metrics,
+        warnings=warnings,
+    )
+
+
 def summarize_docs_and_scripts_artifacts(artifact_refs: Sequence[ArtifactReference]) -> ModuleHealthSummary:
     refs = _refs_for_module(artifact_refs, "docs_scripts")
     warnings: list[str] = []
@@ -891,6 +1046,17 @@ def _gather_schema_versions() -> dict[str, str]:
         "PORTFOLIO_OPTIMIZER_SCHEMA_VERSION",
         "OBSERVABILITY_SCHEMA_VERSION",
         "AUDIT_BUNDLE_SCHEMA_VERSION",
+        "FACTOR_GOVERNANCE_SCHEMA_VERSION",
+        "FACTOR_LIBRARY_SCHEMA_VERSION",
+        "FACTOR_MATRIX_SCHEMA_VERSION",
+        "FACTOR_EXPRESSION_SCHEMA_VERSION",
+        "FACTOR_BACKTEST_SCHEMA_VERSION",
+        "FACTOR_ROBUSTNESS_SCHEMA_VERSION",
+        "FACTOR_COST_CAPACITY_SCHEMA_VERSION",
+        "FACTOR_CORRELATION_SCHEMA_VERSION",
+        "FACTOR_PORTFOLIO_CONTRIBUTION_SCHEMA_VERSION",
+        "FACTOR_LIBRARY_AUDIT_SCHEMA_VERSION",
+        "FACTOR_PRODUCTION_GUARDRAIL_SCHEMA_VERSION",
     ]
     for name in names:
         value = getattr(versioning, name, None)
@@ -955,6 +1121,8 @@ def build_observability_summary(
         summarize_portfolio_optimizer_artifacts(artifact_refs),
         summarize_docs_and_scripts_artifacts(artifact_refs),
     ]
+    if _refs_for_module(artifact_refs, "factor_governance"):
+        module_summaries.append(summarize_factor_governance_artifacts(artifact_refs))
     module_summaries = sorted(module_summaries, key=lambda summary: summary.module_name)
     return SystemObservabilitySummary(
         schema_version=OBSERVABILITY_SCHEMA_VERSION,
@@ -1219,6 +1387,7 @@ __all__ = [
     "summarize_data_quality_artifacts",
     "summarize_risk_tensor_artifacts",
     "summarize_portfolio_optimizer_artifacts",
+    "summarize_factor_governance_artifacts",
     "summarize_docs_and_scripts_artifacts",
     "build_run_manifest",
     "build_observability_summary",

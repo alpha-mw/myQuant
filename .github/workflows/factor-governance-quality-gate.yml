@@ -1,0 +1,72 @@
+name: Factor Governance Quality Gate
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  factor-governance:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run focused Phase 9 factor governance tests
+        run: |
+          uv run python -m pytest \
+            tests/unit/test_factor_governance_schema.py \
+            tests/unit/test_factor_governance_admission.py \
+            tests/unit/test_factor_governance_store.py \
+            tests/unit/test_factor_matrix_contract.py \
+            tests/unit/test_factor_operators.py \
+            tests/unit/test_factor_expression_sandbox.py \
+            tests/unit/test_factor_matrix_store.py \
+            tests/unit/test_factor_backtest.py \
+            tests/unit/test_factor_backtest_store.py \
+            tests/unit/test_factor_metrics.py \
+            tests/unit/test_factor_robustness.py \
+            tests/unit/test_factor_capacity.py \
+            tests/unit/test_factor_validation_artifact_store.py \
+            tests/unit/test_factor_correlation.py \
+            tests/unit/test_factor_contribution.py \
+            tests/unit/test_factor_incremental_store.py \
+            tests/unit/test_factor_library.py \
+            tests/unit/test_factor_library_report.py \
+            tests/unit/test_factor_library_store.py \
+            tests/unit/test_observability_factor_governance.py \
+            --override-ini addopts='' -q
+
+      - name: Run focused Phase 9 factor governance mypy
+        run: |
+          uv run python -m mypy \
+            quant_investor/factors/schema.py \
+            quant_investor/factors/admission.py \
+            quant_investor/factors/store.py \
+            quant_investor/factors/matrix.py \
+            quant_investor/factors/operators.py \
+            quant_investor/factors/expression.py \
+            quant_investor/factors/backtest.py \
+            quant_investor/factors/metrics.py \
+            quant_investor/factors/robustness.py \
+            quant_investor/factors/capacity.py \
+            quant_investor/factors/correlation.py \
+            quant_investor/factors/contribution.py \
+            quant_investor/factors/library.py \
+            quant_investor/factors/report.py \
+            quant_investor/observability.py \
+            quant_investor/versioning.py \
+            --ignore-missing-imports \
+            --no-strict-optional
