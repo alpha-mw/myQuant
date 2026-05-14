@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
 import pytest
 
 import quant_investor.monitoring.cn_aggressive_portfolio_tracker as tracker
+
+
+ROOT = Path(__file__).resolve().parents[2]
+CANONICAL_FACTOR_FIXTURE_ROOT = ROOT / "tests" / "fixtures" / "factor_library_shadow"
 
 
 class _Sentinel(Exception):
@@ -679,6 +684,15 @@ def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypa
         source_record=None,
         allowed_stale_symbols=[],
     )
+    factor_shadow_status = tracker.load_factor_library_shadow_status(
+        root_dir=CANONICAL_FACTOR_FIXTURE_ROOT,
+        as_of="2026-05-01",
+    )
+    monkeypatch.setattr(
+        tracker,
+        "load_factor_library_shadow_status",
+        lambda **_kwargs: factor_shadow_status,
+    )
     result = tracker.run_tracker(args)
 
     assert result["action_taken_today"] is False
@@ -691,6 +705,12 @@ def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypa
     assert "stale_snapshot" in report_text
     assert "placeholder_kline_evaluator" in report_text
     assert "#### 5.4.3 证据质量与工程诊断" in report_text
+    assert "### 5.7 因子库状态（只读影子观察）" in report_text
+    assert "This factor library status is read-only" in report_text
+    assert "does not alter stock selection, portfolio construction, RiskGuard" in report_text
+    assert "| Verdict | `fail` |" in report_text
+    assert "| `production_factor_count` | 2 |" in report_text
+    assert "factor_expired_value_v1" in report_text
     advice_section = report_text.split("#### 5.4.2 正式建议", 1)[1].split(
         "#### 5.4.3 证据质量与工程诊断",
         1,
@@ -701,5 +721,7 @@ def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypa
     assert "provider_missing" not in advice_section
     assert manifest_payload["action_taken_today"] is False
     assert manifest_payload["formal_diagnostics"]["decision_guardrail"]["display_label"] == "no_action_evidence_impaired"
+    orders_payload = (run_dir / "orders.csv").read_text(encoding="utf-8-sig")
+    assert orders_payload == "timestamp,action,symbol,name,shares,price,trade_value,realized_pnl,reason\n"
     assert (run_dir / "orders.csv").exists()
     assert (run_dir / "holdings_review.csv").exists()

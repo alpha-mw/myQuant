@@ -19,6 +19,10 @@ from typing import Any
 import pandas as pd
 import requests
 
+from quant_investor.factors.report import (
+    load_factor_library_shadow_status,
+    render_factor_library_shadow_markdown,
+)
 from quant_investor.market.analyze import load_cn_stock_names
 from quant_investor.market.config import get_market_settings
 from quant_investor.market.download_cn import CNFullMarketDownloader
@@ -125,7 +129,7 @@ def _jsonable(value: Any) -> Any:
             return value.item()
         except Exception:
             pass
-    if is_dataclass(value):
+    if is_dataclass(value) and not isinstance(value, type):
         return _jsonable(asdict(value))
     if hasattr(value, "to_dict") and not isinstance(value, pd.DataFrame):
         try:
@@ -942,9 +946,10 @@ def _apply_orders(
 
     updated = pd.DataFrame(updated_rows)
     invested = float(updated["current_value"].sum()) if not updated.empty else 0.0
-    updated["market_weight"] = (
-        updated["current_value"] / invested if invested > 0 else 0.0
-    ).round(6)
+    if invested > 0:
+        updated["market_weight"] = (updated["current_value"] / invested).round(6)
+    else:
+        updated["market_weight"] = 0.0
     return updated, cash_after, round(realized_total, 2)
 
 
@@ -1565,9 +1570,12 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     holdings_review = pd.DataFrame(current_rows)
     total_market_value_before = round(float(holdings_review["current_value"].sum()), 2)
     total_value_before = round(total_market_value_before + cash_before, 2)
-    holdings_review["market_weight"] = (
-        holdings_review["current_value"] / total_market_value_before if total_market_value_before > 0 else 0.0
-    ).round(6)
+    if total_market_value_before > 0:
+        holdings_review["market_weight"] = (
+            holdings_review["current_value"] / total_market_value_before
+        ).round(6)
+    else:
+        holdings_review["market_weight"] = 0.0
     holdings_review["position_role"] = holdings_review.apply(_position_role, axis=1)
     holdings_review["recommended_action"] = holdings_review.apply(_position_action, axis=1)
     holdings_review["reason"] = holdings_review.apply(_position_reason, axis=1)
@@ -1801,6 +1809,13 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         _format_candidate_advice_line(row, switch_rows_by_buy_symbol.get(str(row.symbol)))
         for row in candidate_pool.head(5).itertuples()
     ]
+    factor_shadow_status = load_factor_library_shadow_status(
+        root_dir=PROJECT_ROOT / "data" / "factor_library",
+        as_of=now.strftime("%Y-%m-%d"),
+    )
+    factor_shadow_lines = render_factor_library_shadow_markdown(factor_shadow_status).splitlines()
+    if factor_shadow_lines[:2] == ["## Factor Library Status (Read-only Shadow)", ""]:
+        factor_shadow_lines = factor_shadow_lines[2:]
     top_switch_action = str(switch_plan_df.iloc[0]["action"]) if not switch_plan_df.empty else ""
     switch_now = top_switch_action == "switch_now"
     switch_prepare = top_switch_action == "prepare_switch"
@@ -2094,6 +2109,10 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
 
     report_lines.extend(
         [
+            "",
+            "### 5.7 因子库状态（只读影子观察）",
+            "",
+            *factor_shadow_lines,
             "",
             "## 6. 面向明日的观察重点和准备事项",
             "",

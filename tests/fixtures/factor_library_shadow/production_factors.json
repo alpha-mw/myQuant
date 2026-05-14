@@ -1,0 +1,52 @@
+{
+  "entries": [
+    {
+      "admission_decision_id": "admit-factor-allowed-momentum-v1-production",
+      "expires_at": "2026-12-31",
+      "factor_id": "factor_allowed_momentum_v1",
+      "factor_version": "v1",
+      "last_revalidation_at": "2026-05-01",
+      "metadata": {
+        "fixture_role": "clean_allowed",
+        "offline_only": true
+      },
+      "owner": "factor-governance-fixture",
+      "production_since": "2026-05-01",
+      "schema_version": "2026-04-27.factor-library.v1",
+      "status": "production",
+      "tags": [
+        "momentum",
+        "phase10-fixture"
+      ],
+      "validation_report_id": "validation-factor-allowed-momentum-v1-current"
+    },
+    {
+      "admission_decision_id": "admit-factor-expired-value-v1-production",
+      "expires_at": "2026-03-31",
+      "factor_id": "factor_expired_value_v1",
+      "factor_version": "v1",
+      "last_revalidation_at": "2025-12-31",
+      "metadata": {
+        "fixture_role": "blocked_expired_validation",
+        "offline_only": true
+      },
+      "owner": "factor-governance-fixture",
+      "production_since": "2025-12-31",
+      "schema_version": "2026-04-27.factor-library.v1",
+      "status": "production",
+      "tags": [
+        "phase10-fixture",
+        "value"
+      ],
+      "validation_report_id": "validation-factor-expired-value-v1-expired"
+    }
+  ],
+  "generated_at": "2026-05-01T00:00:00Z",
+  "library_id": "production-library-shadow-fixture-2026-05-01",
+  "metadata": {
+    "fixture": "phase10-pass2-factor-shadow",
+    "not_runtime_wired": true,
+    "offline_only": true
+  },
+  "schema_version": "2026-04-27.factor-library.v1"
+}

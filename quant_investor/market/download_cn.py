@@ -1054,6 +1054,20 @@ class CNFullMarketDownloader:
                 else local_state.latest_local_date
             )
             self.last_resolver_trace = self.resolver.snapshot()
+            if latest_saved_date and latest_saved_date < effective_target_trade_date:
+                return {
+                    'symbol': local_state.symbol,
+                    'category': category,
+                    'status': 'stale_cached',
+                    'local_status': 'stale_cached',
+                    'records': len(final_df),
+                    'mode': 'stale_cached',
+                    'latest_local_date': latest_saved_date,
+                    'latest_trade_date': effective_target_trade_date,
+                    'resolved_path': str(filepath),
+                    'api_calls': self.REQUESTS_PER_STOCK,
+                    'error': None,
+                }
 
             return {
                 'symbol': local_state.symbol,

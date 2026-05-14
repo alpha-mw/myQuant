@@ -977,6 +977,46 @@ def test_download_stock_returns_stale_cached_when_increment_is_empty(monkeypatch
     assert result["api_calls"] == downloader.REQUESTS_PER_STOCK
 
 
+def test_download_stock_returns_stale_cached_when_fetch_lags_target(monkeypatch, tmp_path):
+    module = _load_module(monkeypatch, freshness_mode="strict")
+    fake_pro = FakePro()
+    monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
+
+    downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
+    file_path = tmp_path / "hs300" / "000001.SZ.csv"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{"trade_date": "2026-03-14", "close": 10.0}]).to_csv(file_path, index=False)
+
+    def _lagging_frame(*_args, **_kwargs):
+        return pd.DataFrame(
+            [
+                {
+                    "ts_code": "000001.SZ",
+                    "trade_date": "2026-03-14",
+                    "open": 10.0,
+                    "high": 10.5,
+                    "low": 9.8,
+                    "close": 10.2,
+                    "pre_close": 10.0,
+                    "change": 0.2,
+                    "pct_chg": 2.0,
+                    "vol": 1000,
+                    "amount": 10000,
+                }
+            ]
+        )
+
+    monkeypatch.setattr(downloader, "_fetch_stock_frame", _lagging_frame)
+
+    result = downloader.download_stock("000001.SZ", "hs300")
+
+    assert result["status"] == "stale_cached"
+    assert result["local_status"] == "stale_cached"
+    assert result["latest_local_date"] == "20260314"
+    assert result["latest_trade_date"] == "20260316"
+    assert result["api_calls"] == downloader.REQUESTS_PER_STOCK
+
+
 def test_download_stock_full_a_lazy_loads_components_from_custom_data_root(monkeypatch, tmp_path):
     module = _load_module(monkeypatch)
     fake_pro = FakePro()
@@ -1119,10 +1159,75 @@ def test_download_all_early_stop_rolls_back_to_stable_target_and_aborts_remainin
 
     assert len(result["categories"]["full_a"]) == 10
     assert result["rounds"][0]["early_stop_reason"] == "strict_same_day_unavailable"
+    assert result["config"]["early_stop_reason"] == "strict_same_day_unavailable"
     assert result["completeness"]["latest_trade_date"] == "20260314"
     assert result["completeness"]["effective_target_trade_date"] == "20260314"
+    assert result["completeness"]["early_stop_reason"] == "strict_same_day_unavailable"
     assert result["completeness"]["complete"] is True
     assert downloader.stats["stale_cached"] == 10
+
+
+def test_download_all_early_stop_when_non_empty_fetch_lags_strict_target(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_module(
+        monkeypatch,
+        freshness_mode="strict",
+        early_stop_sample_size="3",
+        early_stop_stale_ratio="0.80",
+    )
+    fake_pro = FakePro()
+    monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
+    monkeypatch.setattr(module.time, "sleep", lambda *_args, **_kwargs: None)
+
+    downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
+    symbols = [f"{idx:06d}.SZ" for idx in range(1, 6)]
+    hs300_dir = tmp_path / "hs300"
+    hs300_dir.mkdir(parents=True, exist_ok=True)
+    for symbol in symbols:
+        pd.DataFrame([{"trade_date": "2026-03-14", "close": 10.0}]).to_csv(
+            hs300_dir / f"{symbol}.csv",
+            index=False,
+        )
+
+    components = {
+        "full_a": symbols,
+        "all": symbols,
+        "hs300": symbols,
+        "zz500": [],
+        "zz1000": [],
+        "stats": {"total_unique": len(symbols)},
+    }
+
+    def _lagging_frame(symbol, *_args, **_kwargs):
+        return pd.DataFrame(
+            [
+                {
+                    "ts_code": symbol,
+                    "trade_date": "2026-03-14",
+                    "open": 10.0,
+                    "high": 10.5,
+                    "low": 9.8,
+                    "close": 10.2,
+                    "pre_close": 10.0,
+                    "change": 0.2,
+                    "pct_chg": 2.0,
+                    "vol": 1000,
+                    "amount": 10000,
+                }
+            ]
+        )
+
+    monkeypatch.setattr(downloader, "_fetch_stock_frame", _lagging_frame)
+
+    result = downloader.download_all(components=components, categories=["full_a"])
+
+    assert len(result["categories"]["full_a"]) == 3
+    assert {row["status"] for row in result["categories"]["full_a"]} == {"stale_cached"}
+    assert result["rounds"][0]["early_stop_reason"] == "strict_same_day_unavailable"
+    assert result["config"]["effective_target_trade_date"] == "20260314"
+    assert result["completeness"]["complete"] is True
 
 
 def test_download_category_progress_prints_new_counters(monkeypatch, tmp_path, capsys):

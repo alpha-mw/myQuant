@@ -93,6 +93,14 @@ def _status_from_counts(warning_count: int, failure_count: int) -> str:
     return HEALTH_STATUS_PASS
 
 
+def _non_negative_int_or_zero(value: Any) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(number, 0)
+
+
 def _derive_overall_status(module_summaries: Sequence["ModuleHealthSummary"]) -> str:
     if not module_summaries:
         return HEALTH_STATUS_UNKNOWN
@@ -657,6 +665,7 @@ def discover_phase_artifacts(
             DEFAULT_PRODUCTION_FACTORS_FILENAME,
         )
         from quant_investor.factors.store import (
+            DEFAULT_FACTOR_GOVERNANCE_DASHBOARD_FILENAME,
             DEFAULT_FACTOR_CONTRIBUTION_REPORTS_FILENAME,
             DEFAULT_FACTOR_INCREMENTAL_DIR,
             DEFAULT_FACTOR_LIBRARY_AUDIT_DIR,
@@ -675,6 +684,7 @@ def discover_phase_artifacts(
         DEFAULT_FACTOR_CONTRIBUTION_REPORTS_FILENAME = "factor_contribution_reports.jsonl"
         DEFAULT_FACTOR_LIBRARY_AUDIT_DIR = Path("data/factor_library/audit")
         DEFAULT_FACTOR_LIBRARY_AUDIT_REPORTS_FILENAME = "factor_library_audit_reports.jsonl"
+        DEFAULT_FACTOR_GOVERNANCE_DASHBOARD_FILENAME = "factor_governance_dashboard.json"
     factor_root = (
         Path(factor_library_dir) if factor_library_dir is not None else DEFAULT_FACTOR_LIBRARY_DIR
     )
@@ -730,6 +740,13 @@ def discover_phase_artifacts(
             refs,
             name="factor_library_audit_reports",
             path=audit_root / DEFAULT_FACTOR_LIBRARY_AUDIT_REPORTS_FILENAME,
+            schema_hint=audit_schema,
+            module="factor_governance",
+        )
+        _add_expected_ref(
+            refs,
+            name="factor_governance_dashboard",
+            path=audit_root / DEFAULT_FACTOR_GOVERNANCE_DASHBOARD_FILENAME,
             schema_hint=audit_schema,
             module="factor_governance",
         )
@@ -942,6 +959,12 @@ def summarize_factor_governance_artifacts(
         "validation_report_records": 0,
         "admission_decision_records": 0,
         "production_factor_count": 0,
+        "blocked_factor_count": 0,
+        "shadow_only_factor_count": 0,
+        "expired_factor_count": 0,
+        "audit_verdict": HEALTH_STATUS_UNKNOWN,
+        "audit_warning_count": 0,
+        "audit_blocker_count": 0,
         "redundancy_report_records": 0,
         "contribution_report_records": 0,
         "audit_report_records": 0,
@@ -962,15 +985,42 @@ def summarize_factor_governance_artifacts(
             continue
         if ref.artifact_type == ARTIFACT_TYPE_JSONL:
             try:
-                count = len(_read_jsonl_objects(ref.path))
+                rows = _read_jsonl_objects(ref.path)
             except ValueError as exc:
                 warnings.append(str(exc))
                 failure_count += 1
                 continue
+            count = len(rows)
             total_records += count
             metric_name = metric_names.get(ref.name)
             if metric_name is not None:
                 metrics[metric_name] = count
+            if ref.name == "factor_library_audit_reports" and rows:
+                latest_audit = rows[-1]
+                blocked_ids = latest_audit.get("blocked_factor_ids", [])
+                shadow_only_ids = latest_audit.get("shadow_only_factor_ids", [])
+                metrics["audit_verdict"] = str(
+                    latest_audit.get("verdict", HEALTH_STATUS_UNKNOWN) or HEALTH_STATUS_UNKNOWN
+                )
+                metrics["blocked_factor_count"] = (
+                    len(blocked_ids) if isinstance(blocked_ids, list) else 0
+                )
+                metrics["shadow_only_factor_count"] = (
+                    len(shadow_only_ids) if isinstance(shadow_only_ids, list) else 0
+                )
+                metrics["expired_factor_count"] = _non_negative_int_or_zero(
+                    latest_audit.get("expired_factor_count", 0) or 0
+                )
+                metrics["audit_warning_count"] = _non_negative_int_or_zero(
+                    latest_audit.get("warning_count", 0) or 0
+                )
+                metrics["audit_blocker_count"] = _non_negative_int_or_zero(
+                    latest_audit.get("blocker_count", 0) or 0
+                )
+                if not metrics["production_factor_count"]:
+                    metrics["production_factor_count"] = _non_negative_int_or_zero(
+                        latest_audit.get("production_factor_count", 0) or 0
+                    )
         elif ref.artifact_type == ARTIFACT_TYPE_JSON:
             try:
                 payload = read_json_file(ref.path)
@@ -982,6 +1032,39 @@ def summarize_factor_governance_artifacts(
             if ref.name == "production_factors":
                 entries = payload.get("entries", [])
                 metrics["production_factor_count"] = len(entries) if isinstance(entries, list) else 0
+            elif ref.name == "factor_governance_dashboard":
+                raw_counts = payload.get("counts", {})
+                counts = dict(raw_counts) if isinstance(raw_counts, Mapping) else {}
+                blocked_ids = payload.get("blocked_factor_ids", [])
+                shadow_only_ids = payload.get("shadow_only_factor_ids", [])
+                metrics["audit_verdict"] = str(
+                    payload.get("verdict", HEALTH_STATUS_UNKNOWN) or HEALTH_STATUS_UNKNOWN
+                )
+                metrics["blocked_factor_count"] = _non_negative_int_or_zero(
+                    counts.get(
+                        "blocked_factor_count",
+                        len(blocked_ids) if isinstance(blocked_ids, list) else 0,
+                    )
+                )
+                metrics["shadow_only_factor_count"] = _non_negative_int_or_zero(
+                    counts.get(
+                        "shadow_only_factor_count",
+                        len(shadow_only_ids) if isinstance(shadow_only_ids, list) else 0,
+                    )
+                )
+                metrics["expired_factor_count"] = _non_negative_int_or_zero(
+                    counts.get("expired_factor_count", metrics["expired_factor_count"])
+                )
+                metrics["audit_warning_count"] = _non_negative_int_or_zero(
+                    counts.get("warning_count", metrics["audit_warning_count"])
+                )
+                metrics["audit_blocker_count"] = _non_negative_int_or_zero(
+                    counts.get("blocker_count", metrics["audit_blocker_count"])
+                )
+                if not metrics["production_factor_count"]:
+                    metrics["production_factor_count"] = _non_negative_int_or_zero(
+                        counts.get("production_factor_count", 0)
+                    )
         else:
             total_records += ref.record_count or 0
     warning_count = len(warnings)

@@ -1,0 +1,80 @@
+{
+  "allowed_factor_ids": [
+    "factor_allowed_momentum_v1"
+  ],
+  "blocked_factor_ids": [
+    "factor_expired_value_v1"
+  ],
+  "counts": {
+    "blocked_factor_count": 1,
+    "blocker_count": 1,
+    "deprecated_factor_count": 0,
+    "disabled_factor_count": 0,
+    "expired_factor_count": 1,
+    "info_count": 0,
+    "issue_count": 2,
+    "paper_trading_factor_count": 0,
+    "production_factor_count": 2,
+    "rejected_factor_count": 0,
+    "shadow_only_factor_count": 1,
+    "warning_count": 1
+  },
+  "issues": [
+    {
+      "factor_id": "factor_expired_value_v1",
+      "factor_version": "v1",
+      "issue_code": "expired_validation",
+      "issue_id": "issue-factor-expired-value-v1-expired-validation",
+      "message": "validation expired before fixture as_of date; factor remains read-only shadow-blocked",
+      "metadata": {
+        "fixture_role": "blocked_expired_validation"
+      },
+      "schema_version": "2026-04-27.factor-library-audit.v1",
+      "severity": "blocker"
+    },
+    {
+      "factor_id": "factor_shadow_quality_v1",
+      "factor_version": "v1",
+      "issue_code": "missing_incremental_review",
+      "issue_id": "issue-factor-shadow-quality-v1-missing-incremental-review",
+      "message": "shadow-only candidate lacks incremental review and is not production-approved",
+      "metadata": {
+        "fixture_role": "shadow_only_warning"
+      },
+      "schema_version": "2026-04-27.factor-library-audit.v1",
+      "severity": "warning"
+    }
+  ],
+  "library_id": "production-library-shadow-fixture-2026-05-01",
+  "metadata": {
+    "audit_report_id": "factor-library-audit-shadow-fixture-2026-05-01",
+    "fixture": "phase10-pass2-factor-shadow",
+    "not_runtime_wired": true,
+    "offline_only": true
+  },
+  "policy": {
+    "allow_negative_contribution": false,
+    "allow_redundant_factors": false,
+    "metadata": {
+      "fixture": true
+    },
+    "paper_trading_revalidation_days": 30,
+    "policy_id": "factor-library-policy-shadow-fixture-v1",
+    "production_revalidation_days": 90,
+    "require_current_validation": true,
+    "require_definition": true,
+    "require_explicit_production_approval": true,
+    "require_incremental_review": true,
+    "require_validation_report": true,
+    "schema_version": "2026-04-27.factor-library-audit.v1"
+  },
+  "schema_versions": {
+    "FACTOR_LIBRARY_AUDIT_SCHEMA_VERSION": "2026-04-27.factor-library-audit.v1",
+    "FACTOR_LIBRARY_SCHEMA_VERSION": "2026-04-27.factor-library.v1",
+    "FACTOR_PRODUCTION_GUARDRAIL_SCHEMA_VERSION": "2026-04-27.factor-production-guardrail.v1"
+  },
+  "shadow_only_factor_ids": [
+    "factor_shadow_quality_v1"
+  ],
+  "verdict": "fail"
+}
