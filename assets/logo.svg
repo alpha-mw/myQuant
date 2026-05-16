@@ -1,0 +1,26 @@
+<svg width="680" height="130" viewBox="0 0 680 130" xmlns="http://www.w3.org/2000/svg">
+  <!-- dark mode background (only visible in dark theme) -->
+  <rect width="680" height="130" rx="10" fill="#0d1117"/>
+
+  <!-- main title -->
+  <text
+    x="340" y="72"
+    font-family="'Courier New', Courier, monospace"
+    font-size="62"
+    font-weight="900"
+    fill="#f0f6fc"
+    text-anchor="middle"
+    letter-spacing="10">QUANT</text>
+
+  <!-- divider line -->
+  <line x1="140" y1="86" x2="540" y2="86" stroke="#30363d" stroke-width="1"/>
+
+  <!-- subtitle -->
+  <text
+    x="340" y="110"
+    font-family="'Courier New', Courier, monospace"
+    font-size="13"
+    fill="#8b949e"
+    text-anchor="middle"
+    letter-spacing="18">INVESTOR</text>
+</svg>
