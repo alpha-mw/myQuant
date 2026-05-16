@@ -13,6 +13,8 @@ MAINLINE_ENV_DEFAULTS: dict[str, str] = {
     "TUSHARE_TOKEN": "",
     "TUSHARE_URL": "http://lianghua.nanyangqiankun.top",
     "TUSHARE_RATE_LIMIT_PER_MIN": "500",
+    "MYQUANT_LLM_HANDOFF": "codex",
+    "MYQUANT_DISABLE_LOCAL_LLM": "true",
     "KIMI_API_KEY": "",
     "DEEPSEEK_API_KEY": "",
     "DASHSCOPE_API_KEY": "",

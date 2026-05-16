@@ -18,6 +18,7 @@ from quant_investor.market.cn_resolver import CNUniverseResolver
 from quant_investor.market.config import get_market_settings, normalize_categories, normalize_universe
 from quant_investor.market.data_snapshot import build_market_data_snapshot
 from quant_investor.llm_provider_priority import resolve_runtime_role_models
+from quant_investor.llm_policy import apply_local_llm_policy
 from quant_investor.market.dag_executor import execute_market_dag
 from quant_investor.pipeline import QuantInvestor
 
@@ -1605,7 +1606,9 @@ def run_market_analysis(
         master_model=str(analysis_kwargs.get("master_model", "") or ""),
         master_fallback_model=str(master_fallback_model or analysis_kwargs.get("master_fallback_model", "") or ""),
     )
-    analysis_kwargs.setdefault("enable_agent_layer", True)
+    analysis_kwargs["enable_agent_layer"] = apply_local_llm_policy(
+        bool(analysis_kwargs.get("enable_agent_layer", True))
+    )
     analysis_kwargs["review_model_priority"] = list(analysis_kwargs.get("review_model_priority", []) or [])
     analysis_kwargs["agent_model"] = branch_config.primary_model
     analysis_kwargs["master_model"] = master_config.primary_model

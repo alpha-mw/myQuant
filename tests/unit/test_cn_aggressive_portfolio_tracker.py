@@ -88,6 +88,7 @@ def test_run_tracker_forwards_allowed_stale_symbols(monkeypatch, tmp_path):
 
 def test_run_unified_review_mainline_degrades_when_llm_usage_missing(monkeypatch):
     captured: dict[str, object] = {}
+    monkeypatch.setenv("MYQUANT_ENABLE_LOCAL_LLM", "true")
     monkeypatch.setattr(
         tracker,
         "_load_daily_config_llm_settings",
@@ -175,6 +176,21 @@ def test_run_unified_review_mainline_degrades_when_llm_usage_missing(monkeypatch
 
 
 def test_run_unified_review_mainline_aggregates_attempt_and_effective_usage(monkeypatch):
+    monkeypatch.setenv("MYQUANT_ENABLE_LOCAL_LLM", "true")
+    monkeypatch.setattr(
+        tracker,
+        "_load_daily_config_llm_settings",
+        lambda: {
+            "review_model_priority": ["deepseek-chat"],
+            "agent_model": "deepseek-chat",
+            "agent_fallback_model": "",
+            "master_model": "moonshot-v1-128k",
+            "master_fallback_model": "",
+            "master_reasoning_effort": "high",
+            "enable_agent_layer": True,
+        },
+    )
+
     class _FakeInvestor:
         def __init__(self, **kwargs):
             self.symbol = kwargs["stock_pool"][0]
@@ -234,6 +250,30 @@ def test_run_unified_review_mainline_aggregates_attempt_and_effective_usage(monk
         "601869.SH": "session-601869.SH",
         "600487.SH": "session-600487.SH",
     }
+
+
+def test_run_unified_review_mainline_hands_off_to_codex_when_disabled(monkeypatch):
+    monkeypatch.delenv("MYQUANT_ENABLE_LOCAL_LLM", raising=False)
+    monkeypatch.setenv("MYQUANT_DISABLE_LOCAL_LLM", "true")
+
+    class _UnexpectedInvestor:
+        def __init__(self, **kwargs):
+            raise AssertionError("local LLM review should be handed off to Codex")
+
+    monkeypatch.setattr(tracker, "QuantInvestor", _UnexpectedInvestor)
+    ledger = pd.DataFrame([{"symbol": "601869.SH", "cost_basis": 100000.0, "current_value": 120000.0}])
+
+    payload = tracker._run_unified_review_mainline_for_holdings(
+        source_ledger=ledger,
+        latest_trade_date="20260407",
+        source_record="20260408_1403",
+    )
+
+    assert payload["codex_handoff"] is True
+    assert payload["local_llm_disabled"] is True
+    assert payload["llm_attempt_summary"]["call_count"] == 0
+    assert payload["degraded_symbols"] == {}
+    assert payload["by_symbol"]["601869.SH"]["codex_handoff"] is True
 
 
 def test_run_tracker_invokes_unified_review_mainline(monkeypatch, tmp_path):

@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from quant_investor.model_roles import resolve_model_role
+from quant_investor.model_roles import ModelRoleResolution, resolve_model_role
 from quant_investor.config import config
 from quant_investor.llm_provider_priority import resolve_runtime_role_models
 from quant_investor.llm_gateway import (
@@ -21,6 +21,7 @@ from quant_investor.llm_gateway import (
     snapshot_usage,
     start_usage_session,
 )
+from quant_investor.llm_policy import apply_local_llm_policy, local_llm_disabled
 from quant_investor.logger import get_logger
 from quant_investor.market.data_snapshot import build_market_data_snapshot
 from quant_investor.pipeline.result_types import QuantInvestorPipelineResult
@@ -99,7 +100,8 @@ class QuantInvestor:
         self.allow_synthetic_for_research = allow_synthetic_for_research
         self.enable_document_semantics = enable_document_semantics
         self.verbose = verbose
-        self.enable_agent_layer = enable_agent_layer
+        self.enable_agent_layer_requested = bool(enable_agent_layer)
+        self.enable_agent_layer = apply_local_llm_policy(enable_agent_layer)
         branch_config, master_config = resolve_runtime_role_models(
             review_model_priority=review_model_priority,
             agent_model=agent_model,
@@ -107,8 +109,12 @@ class QuantInvestor:
             master_model=master_model,
             master_fallback_model=master_fallback_model,
         )
-        self.primary_agent_model = branch_config.primary_model or resolve_default_model(preferred_model="")
-        self.primary_master_model = master_config.primary_model or resolve_default_model(preferred_model="")
+        self.primary_agent_model = branch_config.primary_model or (
+            "codex-handoff" if not self.enable_agent_layer else resolve_default_model(preferred_model="")
+        )
+        self.primary_master_model = master_config.primary_model or (
+            "codex-handoff" if not self.enable_agent_layer else resolve_default_model(preferred_model="")
+        )
         self.agent_fallback_model = branch_config.fallback_model
         self.master_fallback_model = master_config.fallback_model
         self.review_model_priority = {
@@ -117,16 +123,44 @@ class QuantInvestor:
             "branch_source": branch_config.source,
             "master_source": master_config.source,
         }
-        self.agent_resolution = resolve_model_role(
-            role="branch",
-            primary_model=self.primary_agent_model,
-            fallback_model=self.agent_fallback_model,
-        )
-        self.master_resolution = resolve_model_role(
-            role="master",
-            primary_model=self.primary_master_model,
-            fallback_model=self.master_fallback_model,
-        )
+        if self.enable_agent_layer:
+            self.agent_resolution = resolve_model_role(
+                role="branch",
+                primary_model=self.primary_agent_model,
+                fallback_model=self.agent_fallback_model,
+            )
+            self.master_resolution = resolve_model_role(
+                role="master",
+                primary_model=self.primary_master_model,
+                fallback_model=self.master_fallback_model,
+            )
+        else:
+            self.agent_resolution = ModelRoleResolution(
+                role="branch",
+                primary_model=self.primary_agent_model,
+                fallback_model=self.agent_fallback_model,
+                resolved_model="codex-handoff",
+                fallback_used=False,
+                fallback_reason="local_llm_disabled_codex_handoff"
+                if self.enable_agent_layer_requested
+                else "agent_layer_disabled",
+                provider_available=False,
+                fallback_provider_available=False,
+                metadata={"local_llm_disabled": local_llm_disabled()},
+            )
+            self.master_resolution = ModelRoleResolution(
+                role="master",
+                primary_model=self.primary_master_model,
+                fallback_model=self.master_fallback_model,
+                resolved_model="codex-handoff",
+                fallback_used=False,
+                fallback_reason="local_llm_disabled_codex_handoff"
+                if self.enable_agent_layer_requested
+                else "agent_layer_disabled",
+                provider_available=False,
+                fallback_provider_available=False,
+                metadata={"local_llm_disabled": local_llm_disabled()},
+            )
         self.agent_model = self.agent_resolution.resolved_model
         self.master_model = self.master_resolution.resolved_model
         self.master_reasoning_effort = str(master_reasoning_effort or "").strip() or "high"
@@ -180,6 +214,8 @@ class QuantInvestor:
                     self.master_reasoning_effort,
                 )
             )
+            if self.enable_agent_layer_requested and local_llm_disabled():
+                self._log("Review Layer disabled by local LLM policy; Codex will handle LLM-dependent interpretation.")
             if self.agent_resolution.fallback_used:
                 self._log(
                     "branch model fallback: primary=%s fallback=%s reason=%s"

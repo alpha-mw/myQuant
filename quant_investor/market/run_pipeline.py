@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 from quant_investor.config import config
+from quant_investor.llm_policy import apply_local_llm_policy
 from quant_investor.llm_provider_priority import resolve_runtime_role_models
 from quant_investor.market.analyze import run_market_analysis
 from quant_investor.market.config import get_market_settings, normalize_categories, normalize_universe
@@ -106,6 +107,7 @@ def run_unified_pipeline(
     breakout_distance_pct: float = config.FUNNEL_BREAKOUT_DISTANCE_PCT,
     recall_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    enable_agent_layer = apply_local_llm_policy(enable_agent_layer)
     settings = get_market_settings(market)
     selected_categories = (
         normalize_universe(settings.market, universe)

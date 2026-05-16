@@ -32,6 +32,7 @@ from quant_investor.llm_provider_priority import (
     normalize_model_name,
     resolve_review_model_priority,
 )
+from quant_investor.llm_policy import local_llm_disabled, llm_handoff_reason
 from quant_investor.logger import get_logger
 from quant_investor.llm_transport import (
     build_openai_compatible_completion_body,
@@ -209,10 +210,14 @@ def detect_provider(model: str) -> str:
 
 
 def has_any_provider() -> bool:
+    if local_llm_disabled():
+        return False
     return any(bool(os.getenv(env_key)) for env_key in LLM_PROVIDER_ENV_KEYS)
 
 
 def has_provider_for_model(model: str) -> bool:
+    if local_llm_disabled():
+        return False
     try:
         provider = detect_provider(model)
     except LLMCallError:
@@ -709,6 +714,10 @@ class LLMClient:
         actor_name: str = "",
         reasoning_effort: str = "",
     ) -> str:
+        if local_llm_disabled():
+            raise LLMCallError(
+                f"Local LLM calls are disabled for Codex handoff: {llm_handoff_reason()}"
+            )
         requested_model = normalize_model_name(model)
         fallback_candidate = normalize_model_name(fallback_model)
         effective_reasoning_effort = str(reasoning_effort or self.default_reasoning_effort or "").strip()

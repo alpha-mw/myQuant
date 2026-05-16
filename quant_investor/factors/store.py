@@ -45,6 +45,17 @@ from quant_investor.factors.schema import (
 )
 from quant_investor.factors.library import FactorLibraryAuditReport
 from quant_investor.factors.robustness import FactorRobustnessReport
+from quant_investor.factors.shadow_scoring import (
+    DEFAULT_FACTOR_SHADOW_SCORING_DIR,
+    DEFAULT_SHADOW_CANDIDATE_SCORES_FILENAME,
+    DEFAULT_SHADOW_COMPARISON_DASHBOARD_FILENAME,
+    DEFAULT_SHADOW_COMPARISON_MARKDOWN_FILENAME,
+    DEFAULT_SHADOW_COMPARISON_REPORTS_FILENAME,
+    DEFAULT_SHADOW_FACTOR_SCORES_FILENAME,
+    ShadowCandidateScore,
+    ShadowFactorScore,
+    ShadowScoringComparisonReport,
+)
 
 
 DEFAULT_FACTOR_VALIDATION_DIR = Path("data/factor_library/validation")
@@ -606,6 +617,111 @@ class FactorLibraryAuditStore:
         return self._read_json(self.dashboard_payload_path)
 
 
+class FactorShadowScoringStore:
+    def __init__(self, root_dir: str | Path | None = None) -> None:
+        self.root_dir = Path(root_dir) if root_dir is not None else DEFAULT_FACTOR_SHADOW_SCORING_DIR
+        self.factor_scores_path = self.root_dir / DEFAULT_SHADOW_FACTOR_SCORES_FILENAME
+        self.candidate_scores_path = self.root_dir / DEFAULT_SHADOW_CANDIDATE_SCORES_FILENAME
+        self.comparison_reports_path = self.root_dir / DEFAULT_SHADOW_COMPARISON_REPORTS_FILENAME
+        self.comparison_markdown_path = self.root_dir / DEFAULT_SHADOW_COMPARISON_MARKDOWN_FILENAME
+        self.dashboard_payload_path = self.root_dir / DEFAULT_SHADOW_COMPARISON_DASHBOARD_FILENAME
+
+    def _append_jsonl(self, path: Path, payload: Mapping[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(_json_safe(payload), ensure_ascii=False, sort_keys=True, allow_nan=False)
+            )
+            handle.write("\n")
+
+    def _read_jsonl_payloads(self, path: Path) -> list[dict[str, Any]]:
+        if not path.exists():
+            return []
+        rows: list[dict[str, Any]] = []
+        with path.open("r", encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    payload = json.loads(stripped)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"Malformed JSON in {path} line {line_number}: {exc.msg}") from exc
+                if not isinstance(payload, Mapping):
+                    raise ValueError(f"Expected JSON object in {path} line {line_number}.")
+                rows.append(dict(payload))
+        return rows
+
+    def _write_text(self, path: Path, text: str) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def _write_json(self, path: Path, payload: Mapping[str, Any]) -> Path:
+        return self._write_text(
+            path,
+            json.dumps(_json_safe(payload), ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False)
+            + "\n",
+        )
+
+    def _read_json(self, path: Path) -> dict[str, Any]:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Malformed JSON in {path}: {exc.msg}") from exc
+        if not isinstance(payload, Mapping):
+            raise ValueError(f"Expected JSON object in {path}.")
+        return dict(payload)
+
+    def append_factor_scores(self, scores: Sequence[ShadowFactorScore]) -> int:
+        for score in scores:
+            self._append_jsonl(self.factor_scores_path, score.to_dict())
+        return len(scores)
+
+    def append_candidate_scores(self, scores: Sequence[ShadowCandidateScore]) -> int:
+        for score in scores:
+            self._append_jsonl(self.candidate_scores_path, score.to_dict())
+        return len(scores)
+
+    def append_comparison_report(self, report: ShadowScoringComparisonReport) -> None:
+        if report.report_id in self.get_comparison_report_ids():
+            raise ValueError(f"Duplicate report_id in shadow comparison reports ledger: {report.report_id}")
+        self._append_jsonl(self.comparison_reports_path, report.to_dict())
+
+    def read_factor_scores(self) -> list[ShadowFactorScore]:
+        return [
+            ShadowFactorScore.from_dict(payload)
+            for payload in self._read_jsonl_payloads(self.factor_scores_path)
+        ]
+
+    def read_candidate_scores(self) -> list[ShadowCandidateScore]:
+        return [
+            ShadowCandidateScore.from_dict(payload)
+            for payload in self._read_jsonl_payloads(self.candidate_scores_path)
+        ]
+
+    def read_comparison_reports(self) -> list[ShadowScoringComparisonReport]:
+        return [
+            ShadowScoringComparisonReport.from_dict(payload)
+            for payload in self._read_jsonl_payloads(self.comparison_reports_path)
+        ]
+
+    def get_comparison_report_ids(self) -> set[str]:
+        return {report.report_id for report in self.read_comparison_reports()}
+
+    def save_markdown(self, markdown: str) -> Path:
+        return self._write_text(self.comparison_markdown_path, markdown)
+
+    def load_markdown(self) -> str:
+        return self.comparison_markdown_path.read_text(encoding="utf-8")
+
+    def save_dashboard_payload(self, payload: Mapping[str, Any]) -> Path:
+        return self._write_json(self.dashboard_payload_path, payload)
+
+    def load_dashboard_payload(self) -> dict[str, Any]:
+        return self._read_json(self.dashboard_payload_path)
+
+
 __all__ = [
     "DEFAULT_FACTOR_VALIDATION_DIR",
     "DEFAULT_FACTOR_ROBUSTNESS_REPORTS_FILENAME",
@@ -618,10 +734,17 @@ __all__ = [
     "DEFAULT_FACTOR_LIBRARY_AUDIT_REPORTS_FILENAME",
     "DEFAULT_FACTOR_LIBRARY_AUDIT_MARKDOWN_FILENAME",
     "DEFAULT_FACTOR_GOVERNANCE_DASHBOARD_FILENAME",
+    "DEFAULT_FACTOR_SHADOW_SCORING_DIR",
+    "DEFAULT_SHADOW_FACTOR_SCORES_FILENAME",
+    "DEFAULT_SHADOW_CANDIDATE_SCORES_FILENAME",
+    "DEFAULT_SHADOW_COMPARISON_REPORTS_FILENAME",
+    "DEFAULT_SHADOW_COMPARISON_MARKDOWN_FILENAME",
+    "DEFAULT_SHADOW_COMPARISON_DASHBOARD_FILENAME",
     "FactorGovernanceStore",
     "FactorMatrixStore",
     "FactorBacktestArtifactStore",
     "FactorValidationArtifactStore",
     "FactorCorrelationContributionStore",
     "FactorLibraryAuditStore",
+    "FactorShadowScoringStore",
 ]

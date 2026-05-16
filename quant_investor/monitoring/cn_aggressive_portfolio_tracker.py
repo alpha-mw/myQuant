@@ -26,6 +26,7 @@ from quant_investor.factors.report import (
 from quant_investor.market.analyze import load_cn_stock_names
 from quant_investor.market.config import get_market_settings
 from quant_investor.market.download_cn import CNFullMarketDownloader
+from quant_investor.llm_policy import apply_local_llm_policy, llm_handoff_reason
 from quant_investor.llm_provider_priority import coerce_review_model_priority
 from quant_investor.pipeline import QuantInvestor
 from quant_investor.reporting.formal_diagnostics import (
@@ -99,7 +100,9 @@ def _load_daily_config_llm_settings() -> dict[str, Any]:
     spec.loader.exec_module(module)  # type: ignore[union-attr]
     cfg: dict[str, Any] = dict(getattr(module, "DAILY_CONFIG", {}) or {})
     resolved = ResolvedReviewModels.from_mapping(cfg)
-    return resolved.to_runtime_kwargs()
+    payload = resolved.to_runtime_kwargs()
+    payload["enable_agent_layer"] = bool(cfg.get("enable_agent_layer", True))
+    return payload
 
 
 def _plain_dict(value: Any) -> dict[str, Any]:
@@ -173,6 +176,63 @@ def _llm_usage_summary_to_dict(summary: Any) -> dict[str, Any]:
     }
 
 
+def _empty_llm_usage_summary() -> dict[str, Any]:
+    return {
+        "call_count": 0,
+        "success_count": 0,
+        "fallback_count": 0,
+        "failed_count": 0,
+        "total_tokens": 0,
+        "estimated_cost_usd": 0.0,
+    }
+
+
+def _codex_handoff_review_layer(source_ledger: pd.DataFrame, *, reason: str) -> dict[str, Any]:
+    usage = _empty_llm_usage_summary()
+    review_by_symbol: dict[str, dict[str, Any]] = {}
+    session_ids: dict[str, str] = {}
+    for row in source_ledger.itertuples():
+        symbol = str(getattr(row, "symbol", "")).strip().upper()
+        if not symbol:
+            continue
+        session_ids[symbol] = ""
+        review_by_symbol[symbol] = {
+            "llm_usage": dict(usage),
+            "llm_attempt_summary": dict(usage),
+            "llm_effective_summary": dict(usage),
+            "llm_session_id": "",
+            "ic_hint": {},
+            "recommendation": {},
+            "report_excerpt": "",
+            "llm_degraded": False,
+            "llm_degraded_reason": "",
+            "reviewed_branch_verdicts": {},
+            "branch_overlays": {},
+            "master_hint": {},
+            "codex_handoff": True,
+        }
+    return {
+        "reviewed_symbols": list(review_by_symbol.keys()),
+        "by_symbol": review_by_symbol,
+        "degraded_symbols": {},
+        "llm_usage_summary": dict(usage),
+        "llm_attempt_summary": dict(usage),
+        "llm_effective_summary": dict(usage),
+        "model_role_metadata": {
+            "agent_layer_enabled": False,
+            "branch_model": "codex-handoff",
+            "master_model": "codex-handoff",
+            "local_llm_disabled": True,
+            "llm_handoff": "codex",
+            "handoff_reason": reason,
+        },
+        "fallback_reasons": [reason],
+        "session_ids": session_ids,
+        "local_llm_disabled": True,
+        "codex_handoff": True,
+    }
+
+
 def _trade_recommendation_to_dict(recommendation: Any) -> dict[str, Any]:
     if recommendation is None:
         return {}
@@ -199,6 +259,12 @@ def _run_unified_review_mainline_for_holdings(
     review_by_symbol: dict[str, dict[str, Any]] = {}
     degraded_symbols: dict[str, str] = {}
     llm_settings = _load_daily_config_llm_settings()
+    enable_agent_layer = apply_local_llm_policy(bool(llm_settings.pop("enable_agent_layer", True)))
+    if not enable_agent_layer:
+        return _codex_handoff_review_layer(
+            source_ledger,
+            reason=llm_handoff_reason() or "daily_config_agent_layer_disabled_codex_handoff",
+        )
     review_models = ResolvedReviewModels.from_mapping(llm_settings)
     aggregate_attempt_usage = {
         "call_count": 0,
@@ -234,7 +300,7 @@ def _run_unified_review_mainline_for_holdings(
             total_capital=review_capital,
             risk_level="积极",
             verbose=False,
-            enable_agent_layer=True,
+            enable_agent_layer=enable_agent_layer,
             universe_key="full_a",
             enable_document_semantics=True,
             **review_models.to_runtime_kwargs(),
@@ -1443,6 +1509,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     review_attempt_summary = dict(review_layer.get("llm_attempt_summary", review_layer.get("llm_usage_summary", {})) or {})
     review_effective_summary = dict(review_layer.get("llm_effective_summary", {}) or {})
     review_model_role_metadata = dict(review_layer.get("model_role_metadata", {}) or {})
+    codex_handoff_active = bool(review_layer.get("codex_handoff", False))
 
     full_metrics = _compute_full_market_metrics(
         components=components,
@@ -1856,12 +1923,16 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             else "- 决策护栏说明：无"
         ),
         (
-            f"- LLM 复核状态：**已执行**，原始尝试 `{review_attempt_summary.get('call_count', 0)}` 次"
-            f"（成功 `{review_attempt_summary.get('success_count', 0)}` / 失败 `{review_attempt_summary.get('failed_count', 0)}` / "
-            f"fallback `{review_attempt_summary.get('fallback_count', 0)}`），"
-            f"有效输出 `{review_effective_summary.get('call_count', 0)}` 次，"
-            f"`{review_attempt_summary.get('total_tokens', 0)}` tokens，"
-            f"估算成本 `${float(review_attempt_summary.get('estimated_cost_usd', 0.0)):.6f}`"
+            "- LLM 复核状态：**本地 LLM 未执行；Codex 接管解释**，本地调用 `0` 次"
+            if codex_handoff_active
+            else (
+                f"- LLM 复核状态：**已执行**，原始尝试 `{review_attempt_summary.get('call_count', 0)}` 次"
+                f"（成功 `{review_attempt_summary.get('success_count', 0)}` / 失败 `{review_attempt_summary.get('failed_count', 0)}` / "
+                f"fallback `{review_attempt_summary.get('fallback_count', 0)}`），"
+                f"有效输出 `{review_effective_summary.get('call_count', 0)}` 次，"
+                f"`{review_attempt_summary.get('total_tokens', 0)}` tokens，"
+                f"估算成本 `${float(review_attempt_summary.get('estimated_cost_usd', 0.0)):.6f}`"
+            )
         ),
         (
             "- Review-layer 降级：`"
@@ -1979,8 +2050,12 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "### 5.3 统一 DAG / Review Layer 复核",
             "",
             (
-                f"- 分支模型：`{review_model_role_metadata.get('resolved_branch_model') or review_model_role_metadata.get('branch_model') or 'N/A'}`；"
-                f"主模型：`{review_model_role_metadata.get('resolved_master_model') or review_model_role_metadata.get('master_model') or 'N/A'}`"
+                "- 本地 LLM 调用：`已禁用`；LLM 解释由 Codex 在运行后读取正式产物接管。"
+                if codex_handoff_active
+                else (
+                    f"- 分支模型：`{review_model_role_metadata.get('resolved_branch_model') or review_model_role_metadata.get('branch_model') or 'N/A'}`；"
+                    f"主模型：`{review_model_role_metadata.get('resolved_master_model') or review_model_role_metadata.get('master_model') or 'N/A'}`"
+                )
             ),
             (
                 f"- 原始尝试汇总：`{review_attempt_summary.get('call_count', 0)}` 次，"
@@ -2215,6 +2290,8 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "degraded_symbols": degraded_symbols,
             "session_ids": dict(review_layer.get("session_ids", {}) or {}),
             "symbol_diagnostics": _jsonable(branch_signals_by_symbol),
+            "codex_handoff": codex_handoff_active,
+            "local_llm_disabled": bool(review_layer.get("local_llm_disabled", False)),
         },
         "candidate_pool": candidate_pool.to_dict(orient="records"),
         "switch_plan": switch_plan_df.to_dict(orient="records"),
@@ -2247,6 +2324,8 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "degraded_symbols": degraded_symbols,
             "session_ids": dict(review_layer.get("session_ids", {}) or {}),
             "symbol_diagnostics": _jsonable(branch_signals_by_symbol),
+            "codex_handoff": codex_handoff_active,
+            "local_llm_disabled": bool(review_layer.get("local_llm_disabled", False)),
         },
         "formal_diagnostics": formal_diagnostics_payload,
         "download_report": str(download_report_path) if download_report_path else None,
@@ -2281,6 +2360,8 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "data_status": data_status,
         "style_view": style_text,
         "review_layer_degraded_symbols": degraded_symbols,
+        "codex_handoff": codex_handoff_active,
+        "local_llm_disabled": bool(review_layer.get("local_llm_disabled", False)),
         "candidate_pool_top": candidate_pool.head(3).to_dict(orient="records"),
         "switch_plan": switch_plan_df.to_dict(orient="records"),
         "tech_mainline": {

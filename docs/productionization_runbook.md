@@ -53,6 +53,12 @@ Focused Phase 9 production factor library/audit command:
 PYTHON=./.venv/bin/python scripts/phase9_factor_library_quality_gate.sh
 ```
 
+Focused Phase 11 production factor shadow scoring comparison command:
+
+```bash
+PYTHON=./.venv/bin/python scripts/phase11_factor_shadow_scoring_quality_gate.sh
+```
+
 The full unit suite is intentionally opt-in because the local repository has a known
 unrelated failure in `tests/unit/test_data_layer.py`.
 
@@ -114,6 +120,33 @@ The audit builder reads only local factor governance, validation, redundancy,
 and contribution artifacts. It does not fetch data, call providers, call LLMs,
 or modify strategy outputs.
 
+## Factor Shadow Scoring Comparison
+
+Run the Phase 11 quality gate:
+
+```bash
+PYTHON=./.venv/bin/python scripts/phase11_factor_shadow_scoring_quality_gate.sh
+```
+
+Expected artifact directory:
+
+```text
+data/factor_library/shadow_scoring
+```
+
+Expected files when a caller saves reports through `FactorShadowScoringStore`:
+- `shadow_factor_scores.jsonl`
+- `shadow_candidate_scores.jsonl`
+- `shadow_comparison_reports.jsonl`
+- `shadow_comparison_report.md`
+- `shadow_scoring_dashboard.json`
+
+The comparison reads already-local production factor libraries and factor
+matrices, computes read-only shadow factor scores, and compares those ranks
+against existing official candidate outputs. It does not alter official
+decisions, stock selection, posterior, `RiskGuard`, `PortfolioConstructor`,
+target weights, orders, providers, LLMs, or execution.
+
 ## Expected Artifact Directories
 
 - `data/bayesian_outcome_ledger`
@@ -128,6 +161,7 @@ or modify strategy outputs.
 - `data/factor_library/validation`
 - `data/factor_library/incremental`
 - `data/factor_library/audit`
+- `data/factor_library/shadow_scoring`
 
 ## Offline Default
 
@@ -177,6 +211,14 @@ rejected, disabled, duplicated, redundant, or weak-contribution factors. The
 guardrail helper returns JSON-serializable `allowed`, `blocked`, or
 `shadow_only` decisions for future use, but it is not wired into stock
 selection, `PortfolioConstructor`, or `RiskGuard`.
+
+Phase 11 Pass 1 remains offline. Shadow scoring comparison reads local
+production libraries, local factor matrices, and already-computed candidate
+payloads supplied by the caller. It produces diagnostics under
+`data/factor_library/shadow_scoring` only when explicitly saved. It is not
+wired into official scoring, stock selection, posterior math,
+`PortfolioConstructor`, `RiskGuard`, target weights, orders, market downloads,
+providers, LLMs, broker/execution, or frontend/web behavior.
 
 ## Future Integration Checklist
 

@@ -10,7 +10,8 @@ DAILY_CONFIG = {
     "total_capital": 1_000_000,   # 总资金（元）
 
     # ── LLM 模型配置 ────────────────────────────────────────────────────────────
-    # 默认优先顺序，可按需求覆写；运行时会按顺序依次尝试。
+    # 本地 myQuant 运行不主动调用 LLM；需要 LLM 判断时由 Codex 读取产物接管。
+    # 下列模型仅保留为显式启用本地 review layer 时的兼容配置。
     "review_model_priority": [
         "deepseek-chat",
         "moonshot-v1-128k",
@@ -35,7 +36,7 @@ DAILY_CONFIG = {
     "top_k": 20,                   # 最终精选股票数量
     "agent_timeout": 180.0,        # 单个 subagent 超时（秒）
     "master_timeout": 900.0,       # master agent 超时（秒）
-    "enable_agent_layer": True,    # 是否启用 LLM review layer
+    "enable_agent_layer": False,   # 本地默认禁用 LLM review layer，交给 Codex 接管解释
 
     # ── 数据下载 ────────────────────────────────────────────────────────────────
     "skip_download": False,        # False = 每次先检查并更新数据

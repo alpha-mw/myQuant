@@ -318,6 +318,51 @@ Current Pass 6 limitations:
 - no automatic production approval
 - no live provider, Tushare/yfinance, LLM, broker, or web calls
 
+## Shadow Scoring Comparison
+
+Phase 11 Pass 1 adds a read-only comparison layer between local production
+factor-library signals and already-produced official candidate/ranking outputs.
+It is observability only: it does not alter official scoring, candidate
+selection, posterior scores, `RiskGuard`, `PortfolioConstructor`, target
+weights, orders, providers, LLMs, broker/execution, or web/frontend behavior.
+
+The comparison reads the local production factor library when supplied or
+available under `data/factor_library/production_factors.json`. It can also read
+local factor matrices from `data/factor_library/matrix/factor_matrices.jsonl`
+when a caller supplies those artifacts. Missing libraries, matrices, symbols,
+dates, or values produce warnings in the report instead of runtime failures.
+
+For each production factor, the scorer extracts the latest matrix value with a
+matrix date less than or equal to `as_of`. Raw values are cross-sectionally
+rank-normalized across the supplied official candidate symbols. The factor's
+`expected_direction` comes from the matching `FactorDefinition` when available,
+then matrix metadata, then defaults to positive direction. Higher adjusted
+values receive better normalized scores.
+
+The first shadow score is equal-weighted across covered production factors.
+For each candidate, the report records:
+- official score and rank, deriving rank from official score when needed
+- shadow factor score and shadow factor rank
+- `rank_delta = official_rank - shadow_factor_rank`, where a positive value
+  means shadow factors rank the candidate higher than the official output
+- raw `score_delta = shadow_factor_score - official_score` when both exist
+- factor coverage ratio and warning codes
+
+Report diagnostics include official Top-N symbols, shadow Top-N symbols, their
+intersection, overlap ratio, largest positive and negative rank deltas, compact
+candidate tables, JSON dashboard payloads, and append-only JSONL score/report
+ledgers.
+
+Current limitations:
+- shadow scores are not official scores
+- no stock-selection effect
+- no portfolio-construction effect
+- no factor weighting optimization beyond equal weighting
+- local production library and factor matrices are required for meaningful
+  coverage
+- audit-blocked factors remain excluded unless explicitly requested by the
+  caller for read-only diagnostics
+
 ## Artifact Locations
 
 The default local store root is `data/factor_library`.
@@ -378,6 +423,18 @@ The production library audit store root is `data/factor_library/audit`.
 
 These artifacts summarize production-library readiness and known blockers. They
 do not alter runtime behavior.
+
+The shadow scoring comparison store root is
+`data/factor_library/shadow_scoring`.
+
+- `shadow_factor_scores.jsonl`
+- `shadow_candidate_scores.jsonl`
+- `shadow_comparison_reports.jsonl`
+- `shadow_comparison_report.md`
+- `shadow_scoring_dashboard.json`
+
+These artifacts are append-only or report/dashboard outputs for read-only
+official-versus-shadow comparison. They do not alter runtime behavior.
 
 ## Future Roadmap
 

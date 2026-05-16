@@ -18,6 +18,12 @@ def test_db_path(tmp_path_factory):
     """临时测试数据库"""
     return tmp_path_factory.mktemp("test_db") / "test_stock.db"
 
+
+@pytest.fixture(autouse=True)
+def allow_local_llm_in_tests(monkeypatch):
+    """Keep unit tests independent from a developer's local Codex-handoff .env."""
+    monkeypatch.setenv("MYQUANT_ENABLE_LOCAL_LLM", "true")
+
 @pytest.fixture
 def sample_stock_data():
     """示例股票数据"""

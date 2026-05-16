@@ -154,7 +154,7 @@ def test_load_config_backfills_daily_defaults_without_web_runtime(tmp_path):
         "qwen3.5-plus",
     ]
     assert cfg["master_reasoning_effort"] == ""
-    assert cfg["enable_agent_layer"] is True
+    assert cfg["enable_agent_layer"] is False
     assert cfg["skip_stage1"] is False
     assert cfg["funnel_profile"] == "momentum_leader"
     assert cfg["funnel_max_candidates"] == 200

@@ -141,7 +141,7 @@ def load_config(config_path: Optional[str] = None) -> dict[str, Any]:
         "top_k": 20,
         "agent_timeout": runtime_config.DEFAULT_AGENT_TIMEOUT_SECONDS,
         "master_timeout": runtime_config.DEFAULT_MASTER_TIMEOUT_SECONDS,
-        "enable_agent_layer": True,
+        "enable_agent_layer": False,
         "skip_stage1": False,
         "skip_download": False,
         "years": 3,

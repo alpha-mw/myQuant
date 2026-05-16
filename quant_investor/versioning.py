@@ -35,6 +35,8 @@ FACTOR_LIBRARY_AUDIT_SCHEMA_VERSION = "2026-04-27.factor-library-audit.v1"
 FACTOR_PRODUCTION_GUARDRAIL_SCHEMA_VERSION = (
     "2026-04-27.factor-production-guardrail.v1"
 )
+FACTOR_SHADOW_SCORING_SCHEMA_VERSION = "2026-04-27.factor-shadow-scoring.v1"
+FACTOR_SHADOW_COMPARISON_SCHEMA_VERSION = "2026-04-27.factor-shadow-comparison.v1"
 BRANCH_TRACKER_SCHEMA_VERSION = "2026-03-22.branch-tracker.v2"
 DEBATE_TEMPLATE_VERSION = "2026-03-22.branch-debate.v2"
 IC_PROTOCOL_VERSION = "ic-protocol.v12.mainline"
