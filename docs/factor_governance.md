@@ -164,6 +164,60 @@ Current Pass 3 limitations:
 - no live provider calls
 - no stock selection, `PortfolioConstructor`, or `RiskGuard` wiring
 
+## Factor Backtest Alignment Audit
+
+Phase 12 Pass 1 adds an offline audit layer for factor backtest alignment. It
+does not change the Phase 9 backtester, official selection, candidate lists,
+branch scores, posterior scores, `RiskGuard`, `PortfolioConstructor`, target
+weights, orders, providers, LLMs, or execution.
+
+The audit makes the date semantics explicit:
+- `signal_date`: the factor matrix date used to form weights.
+- `execution_start_date`: the first date where the signal is allowed to be
+  traded.
+- `execution_end_date`: the date where the holding-window return ends and the
+  daily backtest record is dated.
+
+`delay_days` is the number of matrix date steps between `signal_date` and
+`execution_start_date`. A delay of `1` means signal T can execute at T+1. A
+delay of `2` means signal T cannot execute until T+2. Same-day execution
+(`delay_days=0`) is blocked by the audit and is not an admissible default.
+
+`holding_period_days` is the number of matrix date steps from
+`execution_start_date` to `execution_end_date`. With `holding_period_days=1`,
+the return source starts on the execution date and ends one matrix date later.
+The return window must start after the signal date and end after execution
+starts.
+
+Execution prices remain local matrix fields:
+- `open`: requires the bundle `open` field.
+- `close`: requires the bundle `close` field.
+- `vwap`: uses the bundle `vwap` field, or derives it from `amount / volume`
+  when `vwap` is absent.
+
+The default T+1 VWAP example is:
+
+```text
+signal_date=T
+execution_start_date=T+1
+execution_end_date=T+2
+execution_price=vwap
+weight source index=T
+return source index=T+1
+```
+
+The return matrix audit recomputes expected execution returns from the selected
+price field as `price[t + holding_period_days] / price[t] - 1`. It compares the
+observed execution return matrix against that forward execution window using a
+fixed tolerance. A matrix that instead matches a shifted prior close-to-close
+return such as `price[t] / price[t-1] - 1` is flagged as misaligned/lookahead
+risk because it is not the expected execution-window return source.
+
+Alignment audit artifacts are diagnostics only. They can be saved under
+`data/factor_library/alignment_audit`, but this pass does not approve any
+factor into production and does not wire the factor library into selection or
+portfolio construction.
+
 ## Metrics, Slicing, Cost/Capacity Validation
 
 Phase 9 Pass 4 adds offline pre-admission validation helpers on top of

@@ -1,6 +1,7 @@
 """Offline factor governance contracts and stores."""
 
 from quant_investor.factors import backtest as _backtest
+from quant_investor.factors import alignment_audit as _alignment_audit
 from quant_investor.factors import capacity as _capacity
 from quant_investor.factors import contribution as _contribution
 from quant_investor.factors import correlation as _correlation
@@ -19,6 +20,7 @@ from quant_investor.factors.admission import (
     evaluate_backtest_against_thresholds,
     propose_admission_decision,
 )
+from quant_investor.factors.alignment_audit import *  # noqa: F403
 from quant_investor.factors.backtest import *  # noqa: F403
 from quant_investor.factors.capacity import *  # noqa: F403
 from quant_investor.factors.contribution import *  # noqa: F403
@@ -33,6 +35,7 @@ from quant_investor.factors.robustness import *  # noqa: F403
 from quant_investor.factors.schema import *  # noqa: F403
 from quant_investor.factors.shadow_scoring import *  # noqa: F403
 from quant_investor.factors.store import (
+    FactorAlignmentAuditStore,
     FactorBacktestArtifactStore,
     FactorCorrelationContributionStore,
     FactorGovernanceStore,
@@ -44,6 +47,7 @@ from quant_investor.factors.store import (
 
 __all__ = [
     *_schema.__all__,
+    *_alignment_audit.__all__,
     *_backtest.__all__,
     *_capacity.__all__,
     *_correlation.__all__,
@@ -57,6 +61,7 @@ __all__ = [
     *_report.__all__,
     *_shadow_scoring.__all__,
     "FactorGovernanceStore",
+    "FactorAlignmentAuditStore",
     "FactorMatrixStore",
     "FactorBacktestArtifactStore",
     "FactorValidationArtifactStore",

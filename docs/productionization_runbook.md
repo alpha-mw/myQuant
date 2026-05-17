@@ -59,6 +59,12 @@ Focused Phase 11 production factor shadow scoring comparison command:
 PYTHON=./.venv/bin/python scripts/phase11_factor_shadow_scoring_quality_gate.sh
 ```
 
+Focused Phase 12 factor backtest alignment audit command:
+
+```bash
+PYTHON=./.venv/bin/python scripts/phase12_factor_alignment_audit_quality_gate.sh
+```
+
 The full unit suite is intentionally opt-in because the local repository has a known
 unrelated failure in `tests/unit/test_data_layer.py`.
 
@@ -147,6 +153,35 @@ against existing official candidate outputs. It does not alter official
 decisions, stock selection, posterior, `RiskGuard`, `PortfolioConstructor`,
 target weights, orders, providers, LLMs, or execution.
 
+## Factor Backtest Alignment Audit
+
+Run the Phase 12 quality gate:
+
+```bash
+PYTHON=./.venv/bin/python scripts/phase12_factor_alignment_audit_quality_gate.sh
+```
+
+Expected artifact directory:
+
+```text
+data/factor_library/alignment_audit
+```
+
+Expected files when a caller saves reports through `FactorAlignmentAuditStore`:
+- `alignment_audit_reports.jsonl`
+- `alignment_audit_report.md`
+
+The alignment audit checks local `FactorMatrix`, `MatrixDataBundle`, and
+`SingleFactorBacktestRun` artifacts for signal/execution/return-window
+alignment. It validates T+1 delay semantics, execution price availability, VWAP
+derivability, run daily-record dates, and execution-return matrix alignment.
+
+An alignment audit must pass before a factor can be considered for future
+production admission. The current pass is still diagnostics and test hardening
+only: it does not approve production factors and does not wire any factor into
+official scoring, stock selection, posterior math, `RiskGuard`,
+`PortfolioConstructor`, target weights, orders, providers, LLMs, or execution.
+
 ## Expected Artifact Directories
 
 - `data/bayesian_outcome_ledger`
@@ -162,6 +197,7 @@ target weights, orders, providers, LLMs, or execution.
 - `data/factor_library/incremental`
 - `data/factor_library/audit`
 - `data/factor_library/shadow_scoring`
+- `data/factor_library/alignment_audit`
 
 ## Offline Default
 
@@ -217,6 +253,16 @@ production libraries, local factor matrices, and already-computed candidate
 payloads supplied by the caller. It produces diagnostics under
 `data/factor_library/shadow_scoring` only when explicitly saved. It is not
 wired into official scoring, stock selection, posterior math,
+`PortfolioConstructor`, `RiskGuard`, target weights, orders, market downloads,
+providers, LLMs, broker/execution, or frontend/web behavior.
+
+Phase 12 Pass 1 remains offline. Factor backtest alignment audits read local
+factor matrices, matrix bundles, optional single-factor backtest runs, and
+optional execution-return matrices supplied by the caller. They produce
+diagnostics under `data/factor_library/alignment_audit` only when explicitly
+saved. Passing this audit is a prerequisite for future production admission
+consideration, but this pass does not approve factors and does not wire factor
+signals into official scoring, stock selection, posterior math,
 `PortfolioConstructor`, `RiskGuard`, target weights, orders, market downloads,
 providers, LLMs, broker/execution, or frontend/web behavior.
 
