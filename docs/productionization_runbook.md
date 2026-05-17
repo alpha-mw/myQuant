@@ -182,6 +182,40 @@ only: it does not approve production factors and does not wire any factor into
 official scoring, stock selection, posterior math, `RiskGuard`,
 `PortfolioConstructor`, target weights, orders, providers, LLMs, or execution.
 
+## A-share Tradability and Execution Feasibility Audit
+
+Run the Phase 12 Pass 2 quality gate:
+
+```bash
+PYTHON=./.venv/bin/python scripts/phase12_factor_tradability_audit_quality_gate.sh
+```
+
+Expected artifact directory:
+
+```text
+data/factor_library/tradability_audit
+```
+
+Expected files when a caller saves reports through
+`FactorTradabilityAuditStore`:
+- `tradability_masks.jsonl`
+- `tradability_audit_reports.jsonl`
+- `execution_feasibility_reports.jsonl`
+- `tradability_audit_report.md`
+- `execution_feasibility_report.md`
+
+The tradability audit should pass, or be explicitly reviewed, before a factor
+is considered for future production admission. It checks local A-share
+execution constraints such as suspension, limit-up buy blockage, limit-down
+sell blockage, ST / risk-warning status, delisting, new listings, invalid
+price/volume, and low amount/liquidity proxies. The execution feasibility
+report audits buy/sell/hold weight transitions on the execution date.
+
+This pass is still audit-only. It does not adjust factor backtest PnL, model
+partial fills, call brokers, call live data providers, or wire factors into
+selection, posterior scoring, `RiskGuard`, `PortfolioConstructor`, target
+weights, orders, providers, LLMs, or execution.
+
 ## Expected Artifact Directories
 
 - `data/bayesian_outcome_ledger`
@@ -198,6 +232,7 @@ official scoring, stock selection, posterior math, `RiskGuard`,
 - `data/factor_library/audit`
 - `data/factor_library/shadow_scoring`
 - `data/factor_library/alignment_audit`
+- `data/factor_library/tradability_audit`
 
 ## Offline Default
 
@@ -263,6 +298,17 @@ diagnostics under `data/factor_library/alignment_audit` only when explicitly
 saved. Passing this audit is a prerequisite for future production admission
 consideration, but this pass does not approve factors and does not wire factor
 signals into official scoring, stock selection, posterior math,
+`PortfolioConstructor`, `RiskGuard`, target weights, orders, market downloads,
+providers, LLMs, broker/execution, or frontend/web behavior.
+
+Phase 12 Pass 2 remains offline. A-share tradability masks and execution
+feasibility audits read local matrix fields, factor weight matrices, optional
+alignment tuples, and optional single-factor backtest runs supplied by the
+caller. They produce diagnostics under
+`data/factor_library/tradability_audit` only when explicitly saved. Passing or
+reviewing this audit is a prerequisite for future production admission
+consideration, but this pass does not adjust PnL, model fills, approve factors,
+or wire factor signals into official scoring, stock selection, posterior math,
 `PortfolioConstructor`, `RiskGuard`, target weights, orders, market downloads,
 providers, LLMs, broker/execution, or frontend/web behavior.
 

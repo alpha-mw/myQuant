@@ -62,6 +62,17 @@ from quant_investor.factors.shadow_scoring import (
     ShadowFactorScore,
     ShadowScoringComparisonReport,
 )
+from quant_investor.factors.tradability import (
+    DEFAULT_EXECUTION_FEASIBILITY_MARKDOWN_FILENAME,
+    DEFAULT_EXECUTION_FEASIBILITY_REPORTS_FILENAME,
+    DEFAULT_FACTOR_TRADABILITY_AUDIT_DIR,
+    DEFAULT_TRADABILITY_AUDIT_MARKDOWN_FILENAME,
+    DEFAULT_TRADABILITY_AUDIT_REPORTS_FILENAME,
+    DEFAULT_TRADABILITY_MASKS_FILENAME,
+    AShareTradabilityMask,
+    FactorExecutionFeasibilityReport,
+    FactorTradabilityAuditReport,
+)
 
 
 DEFAULT_FACTOR_VALIDATION_DIR = Path("data/factor_library/validation")
@@ -793,6 +804,116 @@ class FactorAlignmentAuditStore:
         return self.alignment_audit_markdown_path.read_text(encoding="utf-8")
 
 
+class FactorTradabilityAuditStore:
+    def __init__(self, root_dir: str | Path | None = None) -> None:
+        self.root_dir = Path(root_dir) if root_dir is not None else DEFAULT_FACTOR_TRADABILITY_AUDIT_DIR
+        self.tradability_masks_path = self.root_dir / DEFAULT_TRADABILITY_MASKS_FILENAME
+        self.tradability_audit_reports_path = (
+            self.root_dir / DEFAULT_TRADABILITY_AUDIT_REPORTS_FILENAME
+        )
+        self.execution_feasibility_reports_path = (
+            self.root_dir / DEFAULT_EXECUTION_FEASIBILITY_REPORTS_FILENAME
+        )
+        self.tradability_audit_markdown_path = (
+            self.root_dir / DEFAULT_TRADABILITY_AUDIT_MARKDOWN_FILENAME
+        )
+        self.execution_feasibility_markdown_path = (
+            self.root_dir / DEFAULT_EXECUTION_FEASIBILITY_MARKDOWN_FILENAME
+        )
+
+    def _append_jsonl(self, path: Path, payload: Mapping[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(_json_safe(payload), ensure_ascii=False, sort_keys=True, allow_nan=False)
+            )
+            handle.write("\n")
+
+    def _read_jsonl_payloads(self, path: Path) -> list[dict[str, Any]]:
+        if not path.exists():
+            return []
+        rows: list[dict[str, Any]] = []
+        with path.open("r", encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    payload = json.loads(stripped)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"Malformed JSON in {path} line {line_number}: {exc.msg}") from exc
+                if not isinstance(payload, Mapping):
+                    raise ValueError(f"Expected JSON object in {path} line {line_number}.")
+                rows.append(dict(payload))
+        return rows
+
+    def _write_text(self, path: Path, text: str) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def append_tradability_mask(self, mask: AShareTradabilityMask) -> None:
+        if mask.mask_id in self.get_tradability_mask_ids():
+            raise ValueError(f"Duplicate mask_id in tradability audit ledger: {mask.mask_id}")
+        self._append_jsonl(self.tradability_masks_path, mask.to_dict())
+
+    def append_tradability_audit_report(self, report: FactorTradabilityAuditReport) -> None:
+        if report.report_id in self.get_tradability_audit_report_ids():
+            raise ValueError(
+                f"Duplicate report_id in tradability audit ledger: {report.report_id}"
+            )
+        self._append_jsonl(self.tradability_audit_reports_path, report.to_dict())
+
+    def append_execution_feasibility_report(
+        self,
+        report: FactorExecutionFeasibilityReport,
+    ) -> None:
+        if report.report_id in self.get_execution_feasibility_report_ids():
+            raise ValueError(
+                f"Duplicate report_id in execution feasibility ledger: {report.report_id}"
+            )
+        self._append_jsonl(self.execution_feasibility_reports_path, report.to_dict())
+
+    def read_tradability_masks(self) -> list[AShareTradabilityMask]:
+        return [
+            AShareTradabilityMask.from_dict(payload)
+            for payload in self._read_jsonl_payloads(self.tradability_masks_path)
+        ]
+
+    def read_tradability_audit_reports(self) -> list[FactorTradabilityAuditReport]:
+        return [
+            FactorTradabilityAuditReport.from_dict(payload)
+            for payload in self._read_jsonl_payloads(self.tradability_audit_reports_path)
+        ]
+
+    def read_execution_feasibility_reports(self) -> list[FactorExecutionFeasibilityReport]:
+        return [
+            FactorExecutionFeasibilityReport.from_dict(payload)
+            for payload in self._read_jsonl_payloads(self.execution_feasibility_reports_path)
+        ]
+
+    def get_tradability_mask_ids(self) -> set[str]:
+        return {mask.mask_id for mask in self.read_tradability_masks()}
+
+    def get_tradability_audit_report_ids(self) -> set[str]:
+        return {report.report_id for report in self.read_tradability_audit_reports()}
+
+    def get_execution_feasibility_report_ids(self) -> set[str]:
+        return {report.report_id for report in self.read_execution_feasibility_reports()}
+
+    def save_tradability_audit_markdown(self, markdown: str) -> Path:
+        return self._write_text(self.tradability_audit_markdown_path, markdown)
+
+    def load_tradability_audit_markdown(self) -> str:
+        return self.tradability_audit_markdown_path.read_text(encoding="utf-8")
+
+    def save_execution_feasibility_markdown(self, markdown: str) -> Path:
+        return self._write_text(self.execution_feasibility_markdown_path, markdown)
+
+    def load_execution_feasibility_markdown(self) -> str:
+        return self.execution_feasibility_markdown_path.read_text(encoding="utf-8")
+
+
 __all__ = [
     "DEFAULT_FACTOR_VALIDATION_DIR",
     "DEFAULT_FACTOR_ROBUSTNESS_REPORTS_FILENAME",
@@ -814,6 +935,12 @@ __all__ = [
     "DEFAULT_FACTOR_ALIGNMENT_AUDIT_DIR",
     "DEFAULT_ALIGNMENT_AUDIT_REPORTS_FILENAME",
     "DEFAULT_ALIGNMENT_AUDIT_MARKDOWN_FILENAME",
+    "DEFAULT_FACTOR_TRADABILITY_AUDIT_DIR",
+    "DEFAULT_TRADABILITY_MASKS_FILENAME",
+    "DEFAULT_TRADABILITY_AUDIT_REPORTS_FILENAME",
+    "DEFAULT_EXECUTION_FEASIBILITY_REPORTS_FILENAME",
+    "DEFAULT_TRADABILITY_AUDIT_MARKDOWN_FILENAME",
+    "DEFAULT_EXECUTION_FEASIBILITY_MARKDOWN_FILENAME",
     "FactorGovernanceStore",
     "FactorMatrixStore",
     "FactorBacktestArtifactStore",
@@ -822,4 +949,5 @@ __all__ = [
     "FactorLibraryAuditStore",
     "FactorShadowScoringStore",
     "FactorAlignmentAuditStore",
+    "FactorTradabilityAuditStore",
 ]

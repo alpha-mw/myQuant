@@ -218,6 +218,67 @@ Alignment audit artifacts are diagnostics only. They can be saved under
 factor into production and does not wire the factor library into selection or
 portfolio construction.
 
+## A-share Tradability Mask and Execution Feasibility Audit
+
+Phase 12 Pass 2 adds an offline A-share tradability mask and execution
+feasibility audit for factor backtests. It reads local `MatrixDataBundle`,
+`FactorWeightMatrix`, and optional `SingleFactorBacktestRun` artifacts only. It
+does not call live providers, LLMs, brokers, market maintenance, market
+analysis, market runs, or frontend/web code.
+
+The tradability mask records five cell-level masks:
+- `can_trade_mask`: basic market tradability for the symbol/date.
+- `can_buy_mask`: whether a new long entry or weight increase is feasible.
+- `can_sell_mask`: whether an exit, reduction, or synthetic short-leg sell is
+  feasible.
+- `can_hold_mask`: whether research accounting can continue carrying the
+  position.
+- `research_eligible_mask`: whether the symbol/date remains eligible for the
+  research universe.
+
+The A-share checks are deterministic and field-driven:
+- suspension blocks trading, buys, and sells; with the suspension filter it also
+  removes the cell from research eligibility.
+- limit-up blocks buys and new long entries, but does not block sells.
+- limit-down blocks sells and exits, but does not block buys.
+- ST / risk-warning status removes research eligibility and blocks new buys when
+  the ST filter is enabled.
+- delisted status blocks trade, buy, sell, hold, and research eligibility.
+- new listings below `min_listing_days` block new buys and research eligibility.
+- valid price is taken from an explicit `valid_price` field, or inferred from a
+  positive price field; VWAP can be derived from `amount / volume`.
+- valid volume is taken from `valid_volume`, or inferred from positive `volume`.
+- low liquidity uses either `low_liquidity` or `amount < min_amount`; it blocks
+  new buys and research eligibility while allowing sells unless another blocker
+  applies.
+
+The execution feasibility audit compares factor target weights against the
+tradability mask on the execution date. It computes each symbol transition as
+`target_weight - previous_weight`, classifies it as buy, sell, or hold, and
+flags blocked buy/sell transitions when the execution-date mask prevents the
+required action. Long-short factor books remain research analytics: the short
+leg is audited as synthetic sell/buy transitions for diagnostics, not as
+broker-ready A-share cash-equity short execution.
+
+Artifacts are diagnostics only and can be saved under
+`data/factor_library/tradability_audit`:
+- `tradability_masks.jsonl`
+- `tradability_audit_reports.jsonl`
+- `execution_feasibility_reports.jsonl`
+- `tradability_audit_report.md`
+- `execution_feasibility_report.md`
+
+No-runtime-impact boundary: this pass does not alter official scoring, stock
+selection, candidate lists, branch scores, posterior scores, `RiskGuard`,
+`PortfolioConstructor`, target weights, orders, `action_taken_today`, providers,
+LLMs, or execution.
+
+Current limitations:
+- no PnL adjustment yet
+- no partial fill model
+- no broker execution model
+- no live provider calls
+
 ## Metrics, Slicing, Cost/Capacity Validation
 
 Phase 9 Pass 4 adds offline pre-admission validation helpers on top of

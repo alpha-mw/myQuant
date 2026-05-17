@@ -14,6 +14,7 @@ from quant_investor.factors import report as _report
 from quant_investor.factors import robustness as _robustness
 from quant_investor.factors import schema as _schema
 from quant_investor.factors import shadow_scoring as _shadow_scoring
+from quant_investor.factors import tradability as _tradability
 from quant_investor.factors.admission import (
     build_library_entry_from_decision,
     build_production_factor_library,
@@ -34,6 +35,7 @@ from quant_investor.factors.report import *  # noqa: F403
 from quant_investor.factors.robustness import *  # noqa: F403
 from quant_investor.factors.schema import *  # noqa: F403
 from quant_investor.factors.shadow_scoring import *  # noqa: F403
+from quant_investor.factors.tradability import *  # noqa: F403
 from quant_investor.factors.store import (
     FactorAlignmentAuditStore,
     FactorBacktestArtifactStore,
@@ -42,6 +44,7 @@ from quant_investor.factors.store import (
     FactorLibraryAuditStore,
     FactorMatrixStore,
     FactorShadowScoringStore,
+    FactorTradabilityAuditStore,
     FactorValidationArtifactStore,
 )
 
@@ -60,8 +63,10 @@ __all__ = [
     *_robustness.__all__,
     *_report.__all__,
     *_shadow_scoring.__all__,
+    *_tradability.__all__,
     "FactorGovernanceStore",
     "FactorAlignmentAuditStore",
+    "FactorTradabilityAuditStore",
     "FactorMatrixStore",
     "FactorBacktestArtifactStore",
     "FactorValidationArtifactStore",

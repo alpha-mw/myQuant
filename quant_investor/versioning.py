@@ -40,6 +40,10 @@ FACTOR_SHADOW_COMPARISON_SCHEMA_VERSION = "2026-04-27.factor-shadow-comparison.v
 FACTOR_BACKTEST_ALIGNMENT_AUDIT_SCHEMA_VERSION = (
     "2026-04-27.factor-backtest-alignment-audit.v1"
 )
+FACTOR_TRADABILITY_AUDIT_SCHEMA_VERSION = "2026-04-27.factor-tradability-audit.v1"
+FACTOR_EXECUTION_FEASIBILITY_AUDIT_SCHEMA_VERSION = (
+    "2026-04-27.factor-execution-feasibility-audit.v1"
+)
 BRANCH_TRACKER_SCHEMA_VERSION = "2026-03-22.branch-tracker.v2"
 DEBATE_TEMPLATE_VERSION = "2026-03-22.branch-debate.v2"
 IC_PROTOCOL_VERSION = "ic-protocol.v12.mainline"
