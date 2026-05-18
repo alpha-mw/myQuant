@@ -447,16 +447,34 @@ async def _execute_market_dag_async(
         if name and symbol not in company_name_map:
             company_name_map[symbol] = name
 
-    branch_model_resolution: ModelRoleResolution = resolve_model_role(
-        role="branch",
-        primary_model=agent_model,
-        fallback_model=agent_fallback_model,
-    )
-    master_model_resolution: ModelRoleResolution = resolve_model_role(
-        role="master",
-        primary_model=master_model,
-        fallback_model=master_fallback_model,
-    )
+    if enable_agent_layer:
+        branch_model_resolution: ModelRoleResolution = resolve_model_role(
+            role="branch",
+            primary_model=agent_model,
+            fallback_model=agent_fallback_model,
+        )
+        master_model_resolution: ModelRoleResolution = resolve_model_role(
+            role="master",
+            primary_model=master_model,
+            fallback_model=master_fallback_model,
+        )
+    else:
+        branch_model_resolution = ModelRoleResolution(
+            role="branch",
+            primary_model=agent_model,
+            fallback_model=agent_fallback_model,
+            resolved_model=agent_model or agent_fallback_model,
+            fallback_reason="agent_layer_disabled",
+            metadata={"agent_layer_enabled": False},
+        )
+        master_model_resolution = ModelRoleResolution(
+            role="master",
+            primary_model=master_model,
+            fallback_model=master_fallback_model,
+            resolved_model=master_model or master_fallback_model,
+            fallback_reason="agent_layer_disabled",
+            metadata={"agent_layer_enabled": False},
+        )
     macro_agent = MacroAgent()
     kline_agent = KlineAgent()
     context_state = _prepare_market_context(

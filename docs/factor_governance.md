@@ -279,6 +279,69 @@ Current limitations:
 - no broker execution model
 - no live provider calls
 
+## Offline Execution Cost and Penalty Simulation
+
+Phase 12 Pass 3 adds a separate offline simulation layer that applies execution
+cost and penalty assumptions to factor backtest daily records. It consumes
+existing `SingleFactorBacktestRun`, `FactorWeightMatrix`, local
+`MatrixDataBundle`, and optional `AShareTradabilityMask` artifacts. The output
+is a separate simulated return series and adjusted-run artifact; the original
+backtest run, daily records, target weights, official stock selection,
+posterior scores, `RiskGuard`, `PortfolioConstructor`, orders, providers, LLMs,
+and execution paths are not mutated or replaced.
+
+The cost model records these components independently:
+- commission, exchange fees, slippage, and spread cost as absolute executed
+  trade weight times the configured bps rate.
+- stamp tax using the A-share sell-side convention by default. If
+  `apply_stamp_tax_on_sell_only` is disabled, stamp tax applies to all executed
+  trades in the simulation.
+- market impact from a deterministic participation proxy:
+
+```text
+participation_rate = abs(executed_trade_weight) * portfolio_value / amount
+```
+
+The supported impact models are fixed bps, linear participation, and square-root
+impact. Linear participation computes
+`impact_bps = impact_coefficient * participation_rate`; square-root impact
+computes `impact_bps = impact_coefficient * sqrt(participation_rate)`.
+
+Tradability constraints are applied before costs. Blocked buys and blocked
+sells keep the previous weight under the default `keep_previous_weight` policy.
+The `block_to_cash` policy is recorded as the same conservative simplification
+in this pass because cash mechanics are not modeled. The
+`mark_unexecutable_only` policy can leave target weights intact while marking
+the transition as blocked for diagnostics. Blocked-transition penalties use the
+simple deterministic rule
+`abs(target_weight - executable_weight) * abs(gross_return)`.
+
+Participation above `max_participation_rate` creates partial-fill and
+low-capacity diagnostics, but Pass 3 does not change executed trade size for
+partial fills. Missing amount, volume, or price data are warning diagnostics.
+Long-short factor books remain research analytics: any short leg is reported as
+a caveat and is not treated as a broker-ready A-share cash-equity short.
+
+Artifacts are simulation-only and can be saved under
+`data/factor_library/execution_cost`:
+- `execution_cost_reports.jsonl`
+- `execution_adjusted_runs.jsonl`
+- `execution_adjusted_daily_records.jsonl`
+- `execution_cost_report.md`
+- `execution_cost_dashboard.json`
+
+No-runtime-impact boundary: this execution-cost simulation is offline-only and
+does not alter official scoring, stock selection, candidate lists, branch
+scores, posterior scores, `RiskGuard`, `PortfolioConstructor`, target weights,
+orders, `action_taken_today`, providers, LLMs, brokers, or execution.
+
+Current limitations:
+- simple proxy model only
+- no partial fill mechanics beyond diagnostics
+- no broker execution model
+- no live provider calls
+- not wired into admission by default
+
 ## Metrics, Slicing, Cost/Capacity Validation
 
 Phase 9 Pass 4 adds offline pre-admission validation helpers on top of

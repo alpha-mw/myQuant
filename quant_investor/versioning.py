@@ -44,6 +44,10 @@ FACTOR_TRADABILITY_AUDIT_SCHEMA_VERSION = "2026-04-27.factor-tradability-audit.v
 FACTOR_EXECUTION_FEASIBILITY_AUDIT_SCHEMA_VERSION = (
     "2026-04-27.factor-execution-feasibility-audit.v1"
 )
+FACTOR_EXECUTION_COST_SIMULATION_SCHEMA_VERSION = (
+    "2026-04-27.factor-execution-cost-simulation.v1"
+)
+FACTOR_EXECUTION_PENALTY_SCHEMA_VERSION = "2026-04-27.factor-execution-penalty.v1"
 BRANCH_TRACKER_SCHEMA_VERSION = "2026-03-22.branch-tracker.v2"
 DEBATE_TEMPLATE_VERSION = "2026-03-22.branch-debate.v2"
 IC_PROTOCOL_VERSION = "ic-protocol.v12.mainline"

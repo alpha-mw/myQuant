@@ -216,6 +216,39 @@ partial fills, call brokers, call live data providers, or wire factors into
 selection, posterior scoring, `RiskGuard`, `PortfolioConstructor`, target
 weights, orders, providers, LLMs, or execution.
 
+## Offline Execution Cost and Penalty Simulation
+
+Run the Phase 12 Pass 3 quality gate:
+
+```bash
+PYTHON=./.venv/bin/python scripts/phase12_factor_execution_cost_quality_gate.sh
+```
+
+Expected artifact directory:
+
+```text
+data/factor_library/execution_cost
+```
+
+Expected files when a caller saves reports through
+`FactorExecutionCostSimulationStore`:
+- `execution_cost_reports.jsonl`
+- `execution_adjusted_runs.jsonl`
+- `execution_adjusted_daily_records.jsonl`
+- `execution_cost_report.md`
+- `execution_cost_dashboard.json`
+
+The execution cost simulation should be reviewed before a factor is considered
+for future production admission. It applies explicit transaction costs,
+sell-side stamp tax by default, exchange fees, commission, slippage, spread
+cost, simple participation-based impact, blocked-transition penalties, missing
+data diagnostics, and long-short research short-leg caveats.
+
+This pass does not replace original factor backtest PnL and does not wire the
+factor library into official scoring, stock selection, posterior scoring,
+`RiskGuard`, `PortfolioConstructor`, target weights, orders, providers, LLMs,
+brokers, or execution.
+
 ## Expected Artifact Directories
 
 - `data/bayesian_outcome_ledger`
@@ -228,6 +261,7 @@ weights, orders, providers, LLMs, or execution.
 - `data/factor_library/matrix`
 - `data/factor_library/backtest`
 - `data/factor_library/validation`
+- `data/factor_library/execution_cost`
 - `data/factor_library/incremental`
 - `data/factor_library/audit`
 - `data/factor_library/shadow_scoring`

@@ -5,6 +5,7 @@ from quant_investor.factors import alignment_audit as _alignment_audit
 from quant_investor.factors import capacity as _capacity
 from quant_investor.factors import contribution as _contribution
 from quant_investor.factors import correlation as _correlation
+from quant_investor.factors import execution_cost as _execution_cost
 from quant_investor.factors import expression as _expression
 from quant_investor.factors import library as _library
 from quant_investor.factors import matrix as _matrix
@@ -27,6 +28,7 @@ from quant_investor.factors.capacity import *  # noqa: F403
 from quant_investor.factors.contribution import *  # noqa: F403
 from quant_investor.factors.correlation import *  # noqa: F403
 from quant_investor.factors.expression import *  # noqa: F403
+from quant_investor.factors.execution_cost import *  # noqa: F403
 from quant_investor.factors.library import *  # noqa: F403
 from quant_investor.factors.matrix import *  # noqa: F403
 from quant_investor.factors.metrics import *  # noqa: F403
@@ -40,6 +42,7 @@ from quant_investor.factors.store import (
     FactorAlignmentAuditStore,
     FactorBacktestArtifactStore,
     FactorCorrelationContributionStore,
+    FactorExecutionCostSimulationStore,
     FactorGovernanceStore,
     FactorLibraryAuditStore,
     FactorMatrixStore,
@@ -55,6 +58,7 @@ __all__ = [
     *_capacity.__all__,
     *_correlation.__all__,
     *_contribution.__all__,
+    *_execution_cost.__all__,
     *_matrix.__all__,
     *_metrics.__all__,
     *_operators.__all__,
@@ -67,6 +71,7 @@ __all__ = [
     "FactorGovernanceStore",
     "FactorAlignmentAuditStore",
     "FactorTradabilityAuditStore",
+    "FactorExecutionCostSimulationStore",
     "FactorMatrixStore",
     "FactorBacktestArtifactStore",
     "FactorValidationArtifactStore",

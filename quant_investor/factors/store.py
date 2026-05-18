@@ -24,6 +24,17 @@ from quant_investor.factors.alignment_audit import (
 from quant_investor.factors.capacity import FactorCostCapacityReport
 from quant_investor.factors.contribution import FactorPortfolioContributionReport
 from quant_investor.factors.correlation import FactorRedundancyReport
+from quant_investor.factors.execution_cost import (
+    DEFAULT_EXECUTION_ADJUSTED_DAILY_RECORDS_FILENAME,
+    DEFAULT_EXECUTION_ADJUSTED_RUNS_FILENAME,
+    DEFAULT_EXECUTION_COST_DASHBOARD_FILENAME,
+    DEFAULT_EXECUTION_COST_MARKDOWN_FILENAME,
+    DEFAULT_EXECUTION_COST_REPORTS_FILENAME,
+    DEFAULT_FACTOR_EXECUTION_COST_DIR,
+    DailyExecutionCostRecord,
+    ExecutionAdjustedBacktestRun,
+    FactorExecutionCostSimulationReport,
+)
 from quant_investor.factors.matrix import (
     DEFAULT_EXPRESSION_RESULTS_FILENAME,
     DEFAULT_FACTOR_MATRICES_FILENAME,
@@ -914,6 +925,132 @@ class FactorTradabilityAuditStore:
         return self.execution_feasibility_markdown_path.read_text(encoding="utf-8")
 
 
+class FactorExecutionCostSimulationStore:
+    def __init__(self, root_dir: str | Path | None = None) -> None:
+        self.root_dir = Path(root_dir) if root_dir is not None else DEFAULT_FACTOR_EXECUTION_COST_DIR
+        self.execution_cost_reports_path = self.root_dir / DEFAULT_EXECUTION_COST_REPORTS_FILENAME
+        self.execution_adjusted_runs_path = (
+            self.root_dir / DEFAULT_EXECUTION_ADJUSTED_RUNS_FILENAME
+        )
+        self.execution_adjusted_daily_records_path = (
+            self.root_dir / DEFAULT_EXECUTION_ADJUSTED_DAILY_RECORDS_FILENAME
+        )
+        self.execution_cost_markdown_path = (
+            self.root_dir / DEFAULT_EXECUTION_COST_MARKDOWN_FILENAME
+        )
+        self.execution_cost_dashboard_path = (
+            self.root_dir / DEFAULT_EXECUTION_COST_DASHBOARD_FILENAME
+        )
+
+    def _append_jsonl(self, path: Path, payload: Mapping[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(_json_safe(payload), ensure_ascii=False, sort_keys=True, allow_nan=False)
+            )
+            handle.write("\n")
+
+    def _read_jsonl_payloads(self, path: Path) -> list[dict[str, Any]]:
+        if not path.exists():
+            return []
+        rows: list[dict[str, Any]] = []
+        with path.open("r", encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    payload = json.loads(stripped)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"Malformed JSON in {path} line {line_number}: {exc.msg}") from exc
+                if not isinstance(payload, Mapping):
+                    raise ValueError(f"Expected JSON object in {path} line {line_number}.")
+                rows.append(dict(payload))
+        return rows
+
+    def _read_json(self, path: Path) -> dict[str, Any]:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Malformed JSON in {path}: {exc.msg}") from exc
+        if not isinstance(payload, Mapping):
+            raise ValueError(f"Expected JSON object in {path}.")
+        return dict(payload)
+
+    def _write_json(self, path: Path, payload: Mapping[str, Any]) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(_json_safe(payload), ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False)
+            + "\n",
+            encoding="utf-8",
+        )
+        return path
+
+    def _write_text(self, path: Path, text: str) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def append_execution_cost_report(
+        self,
+        report: FactorExecutionCostSimulationReport,
+    ) -> None:
+        if report.report_id in self.get_execution_cost_report_ids():
+            raise ValueError(f"Duplicate report_id in execution cost reports ledger: {report.report_id}")
+        self._append_jsonl(self.execution_cost_reports_path, report.to_dict())
+
+    def append_execution_adjusted_run(self, run: ExecutionAdjustedBacktestRun) -> None:
+        if run.adjusted_run_id in self.get_execution_adjusted_run_ids():
+            raise ValueError(
+                f"Duplicate adjusted_run_id in execution adjusted runs ledger: {run.adjusted_run_id}"
+            )
+        self._append_jsonl(self.execution_adjusted_runs_path, run.to_dict())
+
+    def append_daily_execution_cost_records(
+        self,
+        records: Sequence[DailyExecutionCostRecord],
+    ) -> int:
+        for record in records:
+            self._append_jsonl(self.execution_adjusted_daily_records_path, record.to_dict())
+        return len(records)
+
+    def read_execution_cost_reports(self) -> list[FactorExecutionCostSimulationReport]:
+        return [
+            FactorExecutionCostSimulationReport.from_dict(payload)
+            for payload in self._read_jsonl_payloads(self.execution_cost_reports_path)
+        ]
+
+    def read_execution_adjusted_runs(self) -> list[ExecutionAdjustedBacktestRun]:
+        return [
+            ExecutionAdjustedBacktestRun.from_dict(payload)
+            for payload in self._read_jsonl_payloads(self.execution_adjusted_runs_path)
+        ]
+
+    def read_daily_execution_cost_records(self) -> list[DailyExecutionCostRecord]:
+        return [
+            DailyExecutionCostRecord.from_dict(payload)
+            for payload in self._read_jsonl_payloads(self.execution_adjusted_daily_records_path)
+        ]
+
+    def get_execution_cost_report_ids(self) -> set[str]:
+        return {report.report_id for report in self.read_execution_cost_reports()}
+
+    def get_execution_adjusted_run_ids(self) -> set[str]:
+        return {run.adjusted_run_id for run in self.read_execution_adjusted_runs()}
+
+    def save_execution_cost_markdown(self, markdown: str) -> Path:
+        return self._write_text(self.execution_cost_markdown_path, markdown)
+
+    def load_execution_cost_markdown(self) -> str:
+        return self.execution_cost_markdown_path.read_text(encoding="utf-8")
+
+    def save_execution_cost_dashboard(self, payload: Mapping[str, Any]) -> Path:
+        return self._write_json(self.execution_cost_dashboard_path, payload)
+
+    def load_execution_cost_dashboard(self) -> dict[str, Any]:
+        return self._read_json(self.execution_cost_dashboard_path)
+
+
 __all__ = [
     "DEFAULT_FACTOR_VALIDATION_DIR",
     "DEFAULT_FACTOR_ROBUSTNESS_REPORTS_FILENAME",
@@ -941,6 +1078,12 @@ __all__ = [
     "DEFAULT_EXECUTION_FEASIBILITY_REPORTS_FILENAME",
     "DEFAULT_TRADABILITY_AUDIT_MARKDOWN_FILENAME",
     "DEFAULT_EXECUTION_FEASIBILITY_MARKDOWN_FILENAME",
+    "DEFAULT_FACTOR_EXECUTION_COST_DIR",
+    "DEFAULT_EXECUTION_COST_REPORTS_FILENAME",
+    "DEFAULT_EXECUTION_ADJUSTED_DAILY_RECORDS_FILENAME",
+    "DEFAULT_EXECUTION_ADJUSTED_RUNS_FILENAME",
+    "DEFAULT_EXECUTION_COST_MARKDOWN_FILENAME",
+    "DEFAULT_EXECUTION_COST_DASHBOARD_FILENAME",
     "FactorGovernanceStore",
     "FactorMatrixStore",
     "FactorBacktestArtifactStore",
@@ -950,4 +1093,5 @@ __all__ = [
     "FactorShadowScoringStore",
     "FactorAlignmentAuditStore",
     "FactorTradabilityAuditStore",
+    "FactorExecutionCostSimulationStore",
 ]

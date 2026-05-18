@@ -165,22 +165,38 @@ def _run_bayesian_selection_phase(
         top_k=top_k,
     )
 
-    portfolio_master_agent = master_agent_cls(
-        llm_client=llm_client_cls(timeout=master_timeout),
-        model=master_model_resolution.resolved_model,
-        candidate_models=list(master_candidate_models),
-        fallback_model=master_model_resolution.fallback_model,
-        reasoning_effort=master_reasoning_effort,
-        timeout=master_timeout,
-    )
-    portfolio_master_output, portfolio_master_meta = portfolio_master_advisory_fn(
-        master_agent=portfolio_master_agent,
-        macro_verdict=macro_verdict,
-        shortlist=shortlist,
-        global_context=global_context,
-        evidence_pack=evidence_pack,
-        recall_context=recall_context,
-    )
+    if bool(getattr(model_roles, "agent_layer_enabled", False)):
+        portfolio_master_agent = master_agent_cls(
+            llm_client=llm_client_cls(timeout=master_timeout),
+            model=master_model_resolution.resolved_model,
+            candidate_models=list(master_candidate_models),
+            fallback_model=master_model_resolution.fallback_model,
+            reasoning_effort=master_reasoning_effort,
+            timeout=master_timeout,
+        )
+        portfolio_master_output, portfolio_master_meta = portfolio_master_advisory_fn(
+            master_agent=portfolio_master_agent,
+            macro_verdict=macro_verdict,
+            shortlist=shortlist,
+            global_context=global_context,
+            evidence_pack=evidence_pack,
+            recall_context=recall_context,
+        )
+    else:
+        portfolio_master_output = None
+        portfolio_master_meta = {
+            "status": "disabled",
+            "reason": "agent_layer_disabled",
+            "final_conviction": "neutral",
+            "final_score": 0.0,
+            "confidence": 0.0,
+            "top_picks": [],
+            "portfolio_narrative": "Portfolio Master advisory disabled by no-agent mode.",
+            "risk_adjusted_exposure": float(global_context.risk_budget.get("target_exposure", 0.0)),
+            "evidence_pack_token_count": int(
+                evidence_pack.get("trace_fragments", {}).get("budget", {}).get("token_count", 0) or 0
+            ),
+        }
     return BayesianSelectionState(
         bayesian_records=bayesian_records,
         shortlist=shortlist,
