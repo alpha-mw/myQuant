@@ -2,16 +2,13 @@
 """
 Download Full US Market Data - 下载完整美股市场数据
 
-下载所有大中小盘股的3年历史数据
-- 大盘股: 525只 (S&P 500 + NASDAQ-100)
-- 中盘股: 572只 (S&P MidCap 400)
-- 小盘股: 560只 (Russell 2000)
-总计: 1393只股票
+下载市值 100 亿美元以上美股的3年历史数据；低于门槛或未知市值的股票不进入下载/分析池。
+美股批量价格默认使用 yfinance，Tushare us_daily 仅作为可配置后备源。
 """
 
 import os
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Dict, Optional
 import json
@@ -20,6 +17,9 @@ import time
 
 from quant_investor.config import config
 from quant_investor.credential_utils import create_tushare_pro
+from quant_investor.market.us_market_cap_filter import (
+    USMarketCapFilter,
+)
 
 try:
     import yfinance as yf
@@ -33,6 +33,10 @@ except ImportError:
     TUSHARE_AVAILABLE = False
 
 
+DEFAULT_US_PRICE_PROVIDER = "yfinance"
+US_PRICE_PROVIDER_ENV = "MYQUANT_US_PRICE_PROVIDER"
+
+
 class FullMarketDownloader:
     """全市场数据下载器"""
     
@@ -40,7 +44,9 @@ class FullMarketDownloader:
                  data_dir: str = 'data/us_market_full',
                  years: int = 3,
                  max_workers: int = 8,
-                 batch_size: int = 100):
+                 batch_size: int = 100,
+                 min_market_cap_usd: int | float | None = None,
+                 market_cap_cache_file: str | None = None):
         """
         初始化下载器
         
@@ -49,11 +55,21 @@ class FullMarketDownloader:
             years: 下载年数
             max_workers: 并行下载线程数
             batch_size: 每批处理的股票数
+            min_market_cap_usd: 美股最小市值门槛，默认 100 亿美元
+            market_cap_cache_file: 市值缓存文件
         """
         self.data_dir = data_dir
         self.years = years
         self.max_workers = max_workers
         self.batch_size = batch_size
+        self.market_cap_filter = USMarketCapFilter(
+            threshold_usd=min_market_cap_usd,
+            cache_file=market_cap_cache_file,
+            max_workers=max_workers,
+        )
+        self.price_provider = self._normalize_price_provider(
+            os.environ.get(US_PRICE_PROVIDER_ENV, DEFAULT_US_PRICE_PROVIDER)
+        )
         
         # 创建分层目录
         self.dirs = {
@@ -90,6 +106,36 @@ class FullMarketDownloader:
                 self.pro = None
 
     @staticmethod
+    def _normalize_price_provider(value: str | None) -> str:
+        provider = str(value or DEFAULT_US_PRICE_PROVIDER).strip().lower()
+        if provider in {"auto", "yfinance", "akshare", "tushare"}:
+            return provider
+        return DEFAULT_US_PRICE_PROVIDER
+
+    def _provider_order(self) -> list[str]:
+        """Return US OHLCV provider order. yfinance is default for bulk US runs."""
+        if self.price_provider == "tushare":
+            return ["tushare", "yfinance", "akshare"]
+        if self.price_provider == "akshare":
+            return ["akshare", "yfinance", "tushare"]
+        return ["yfinance", "akshare", "tushare"]
+
+    @staticmethod
+    def _is_tushare_quota_error(message: str) -> bool:
+        text = str(message or "")
+        return any(
+            keyword in text
+            for keyword in (
+                "频率超限",
+                "请求上限",
+                "每天最多访问该接口",
+                "每分钟最多访问该接口",
+                "每小时最多访问该接口",
+                "最多访问该接口",
+            )
+        )
+
+    @staticmethod
     def _format_tushare_us_frame(df: pd.DataFrame) -> pd.DataFrame:
         """标准化 Tushare us_daily 输出为本地 CSV 格式。"""
         normalized = df.rename(
@@ -112,6 +158,38 @@ class FullMarketDownloader:
         ]
         return normalized[keep_cols].reset_index(drop=True)
 
+    def _latest_cached_date(self, filepath: str) -> Optional[date]:
+        try:
+            frame = pd.read_csv(filepath, usecols=["Date"])
+        except Exception:
+            return None
+        if frame.empty:
+            return None
+        dates = pd.to_datetime(frame["Date"], errors="coerce").dropna()
+        if dates.empty:
+            return None
+        return dates.max().date()
+
+    def _expected_latest_date(self) -> date:
+        expected = self.end_date.date() - timedelta(days=1)
+        while expected.weekday() >= 5:
+            expected -= timedelta(days=1)
+        return expected
+
+    def _normalize_downloaded_frame(self, df: pd.DataFrame) -> pd.DataFrame:
+        normalized = df.copy()
+        if "Date" in normalized.columns:
+            normalized["Date"] = pd.to_datetime(normalized["Date"], errors="coerce")
+        elif "date" in normalized.columns:
+            normalized = normalized.rename(columns={"date": "Date"})
+            normalized["Date"] = pd.to_datetime(normalized["Date"], errors="coerce")
+        else:
+            return normalized
+        normalized = normalized.dropna(subset=["Date"]).drop_duplicates(subset=["Date"])
+        normalized = normalized.sort_values("Date")
+        normalized["Date"] = normalized["Date"].dt.strftime("%Y-%m-%d")
+        return normalized.reset_index(drop=True)
+
     def _download_from_tushare(self, symbol: str) -> Optional[pd.DataFrame]:
         """优先尝试从 Tushare 拉取美股数据。"""
         if not self.pro or self._tushare_quota_exhausted:
@@ -128,12 +206,12 @@ class FullMarketDownloader:
             return self._format_tushare_us_frame(df)
         except Exception as e:
             message = str(e)
-            if "每天最多访问该接口" in message:
+            if self._is_tushare_quota_error(message):
                 self._tushare_quota_exhausted = True
             return None
 
     def _download_from_yfinance(self, symbol: str) -> Optional[pd.DataFrame]:
-        """回退到 yfinance 拉取美股数据。"""
+        """从 yfinance 拉取美股数据。"""
         if yf is None:
             return None
         try:
@@ -153,6 +231,56 @@ class FullMarketDownloader:
             return df
         except Exception:
             return None
+
+    def _download_from_akshare(self, symbol: str) -> Optional[pd.DataFrame]:
+        """Optional AKShare fallback when installed locally."""
+        try:
+            import akshare as ak  # type: ignore
+        except Exception:
+            return None
+
+        try:
+            try:
+                df = ak.stock_us_daily(symbol=symbol, adjust="")
+            except TypeError:
+                df = ak.stock_us_daily(symbol=symbol)
+            if df is None or df.empty:
+                return None
+            normalized = df.copy()
+            rename_map = {
+                "date": "Date",
+                "日期": "Date",
+                "open": "Open",
+                "开盘": "Open",
+                "high": "High",
+                "最高": "High",
+                "low": "Low",
+                "最低": "Low",
+                "close": "Close",
+                "收盘": "Close",
+                "volume": "Volume",
+                "成交量": "Volume",
+            }
+            normalized = normalized.rename(
+                columns={
+                    key: value
+                    for key, value in rename_map.items()
+                    if key in normalized.columns
+                }
+            )
+            if "Date" not in normalized.columns:
+                return None
+            normalized["Date"] = pd.to_datetime(normalized["Date"], errors="coerce")
+            normalized = normalized.dropna(subset=["Date"])
+            normalized = normalized[
+                (normalized["Date"] >= pd.Timestamp(self.start_date.date()))
+                & (normalized["Date"] <= pd.Timestamp(self.end_date.date()))
+            ]
+            if normalized.empty:
+                return None
+            return normalized.reset_index(drop=True)
+        except Exception:
+            return None
         
     def load_universe(self, universe_file: str = 'data/us_universe/complete_us_universe.json') -> Dict:
         """加载股票池"""
@@ -164,19 +292,62 @@ class FullMarketDownloader:
 
         if not universe:
             universe = self._build_local_universe()
-        elif "full_us" not in universe or not universe.get("full_us"):
+        else:
             universe = self._canonicalize_universe(universe)
+        universe = self._filter_universe_by_market_cap(universe)
 
         print("=" * 80)
         print("📊 加载股票池")
         print("=" * 80)
         print(f"全美股: {len(universe['full_us'])} 只")
+        market_cap_meta = dict(universe.get("metadata", {}).get("market_cap_filter", {}) or {})
+        if market_cap_meta.get("enabled"):
+            print(f"市值门槛: >= ${market_cap_meta['threshold_usd']:,}")
+            print(
+                "市值过滤: "
+                f"{market_cap_meta['included_count']}/{market_cap_meta['input_count']} 只保留，"
+                f"剔除 {market_cap_meta['excluded_count']} 只"
+            )
         print(f"大盘股: {len(universe.get('large_cap', []))} 只")
         print(f"中盘股: {len(universe.get('mid_cap', []))} 只")
         print(f"小盘股: {len(universe.get('small_cap', []))} 只")
         print(f"总计: {universe['stats']['total_unique']} 只")
         print("=" * 80)
         
+        return universe
+
+    def _filter_universe_by_market_cap(self, universe: Dict[str, Any]) -> Dict[str, Any]:
+        """只保留市值达到门槛的美股，未知市值不进入下载/分析池。"""
+        raw_full = list(
+            dict.fromkeys(
+                universe.get("full_us", [])
+                or universe.get("all_us", [])
+                or universe.get("all", [])
+                or (
+                    universe.get("large_cap", [])
+                    + universe.get("mid_cap", [])
+                    + universe.get("small_cap", [])
+                )
+            )
+        )
+        filtered_full, metadata = self.market_cap_filter.filter_symbols(raw_full, fetch_missing=True)
+        allowed = set(filtered_full)
+        for key in ("large_cap", "mid_cap", "small_cap"):
+            universe[key] = [symbol for symbol in list(universe.get(key, []) or []) if symbol in allowed]
+        universe["full_us"] = filtered_full
+        universe["full_market"] = filtered_full
+        universe["all_us"] = filtered_full
+        universe["all"] = filtered_full
+        stats = dict(universe.get("stats", {}) or {})
+        stats["full_us"] = len(filtered_full)
+        stats["large_cap"] = len(universe.get("large_cap", []))
+        stats["mid_cap"] = len(universe.get("mid_cap", []))
+        stats["small_cap"] = len(universe.get("small_cap", []))
+        stats["total_unique"] = len(filtered_full)
+        universe["stats"] = stats
+        metadata_parent = dict(universe.get("metadata", {}) or {})
+        metadata_parent["market_cap_filter"] = metadata
+        universe["metadata"] = metadata_parent
         return universe
 
     def _build_local_universe(self) -> Dict[str, List[str]]:
@@ -246,27 +417,41 @@ class FullMarketDownloader:
         """
         save_dir = self.dirs.get(category, self.dirs["full_us"])
         filepath = f"{save_dir}/{symbol}.csv"
+        expected_latest = self._expected_latest_date()
+        cached_latest = None
         
-        # 检查是否已存在且数据完整
+        # 检查是否已存在且数据足够新鲜
         if os.path.exists(filepath):
             try:
                 existing_df = pd.read_csv(filepath)
-                if len(existing_df) > 200:  # 至少200个交易日
+                cached_latest = self._latest_cached_date(filepath)
+                if len(existing_df) > 200 and cached_latest and cached_latest >= expected_latest:
                     return {
                         'symbol': symbol,
                         'category': category,
                         'status': 'cached',
                         'records': len(existing_df),
+                        'latest_date': cached_latest.isoformat(),
                         'error': None
                     }
             except:
                 pass  # 重新下载
         
-        df = self._download_from_tushare(symbol)
-        source = "tushare"
-        if df is None or df.empty:
-            df = self._download_from_yfinance(symbol)
-            source = "yfinance"
+        downloaders = {
+            "yfinance": self._download_from_yfinance,
+            "akshare": self._download_from_akshare,
+            "tushare": self._download_from_tushare,
+        }
+        df = None
+        source = None
+        attempted_sources: list[str] = []
+        for provider in self._provider_order():
+            attempted_sources.append(provider)
+            provider_df = downloaders[provider](symbol)
+            if provider_df is not None and not provider_df.empty:
+                df = provider_df
+                source = provider
+                break
 
         if df is None or df.empty:
             return {
@@ -274,19 +459,60 @@ class FullMarketDownloader:
                 'category': category,
                 'status': 'no_data',
                 'records': 0,
-                'error': 'No data from tushare/yfinance',
+                'error': f"No data from {'/'.join(attempted_sources)}",
                 'source': None,
+                'attempted_sources': attempted_sources,
             }
 
         try:
+            df = self._normalize_downloaded_frame(df)
+            downloaded_latest = None
+            if "Date" in df.columns and not df.empty:
+                downloaded_latest = pd.to_datetime(df["Date"], errors="coerce").dropna().max().date()
+            if downloaded_latest is None:
+                return {
+                    'symbol': symbol,
+                    'category': category,
+                    'status': 'no_data',
+                    'records': 0,
+                    'error': 'Downloaded data missing valid Date column',
+                    'source': source,
+                    'attempted_sources': attempted_sources,
+                }
+            if cached_latest and downloaded_latest < cached_latest:
+                return {
+                    'symbol': symbol,
+                    'category': category,
+                    'status': 'source_regressed',
+                    'records': len(df),
+                    'latest_date': downloaded_latest.isoformat(),
+                    'cached_latest_date': cached_latest.isoformat(),
+                    'error': 'Provider returned older data than local cache',
+                    'source': source,
+                    'attempted_sources': attempted_sources,
+                }
+            if downloaded_latest < expected_latest:
+                return {
+                    'symbol': symbol,
+                    'category': category,
+                    'status': 'source_stale',
+                    'records': len(df),
+                    'latest_date': downloaded_latest.isoformat(),
+                    'expected_latest_date': expected_latest.isoformat(),
+                    'error': 'Provider data is older than expected latest trading date',
+                    'source': source,
+                    'attempted_sources': attempted_sources,
+                }
             df.to_csv(filepath, index=False)
             return {
                 'symbol': symbol,
                 'category': category,
                 'status': 'success',
                 'records': len(df),
+                'latest_date': downloaded_latest.isoformat(),
                 'error': None,
                 'source': source,
+                'attempted_sources': attempted_sources,
             }
         except Exception as e:
             return {
@@ -296,6 +522,7 @@ class FullMarketDownloader:
                 'records': 0,
                 'error': str(e)[:100],
                 'source': source,
+                'attempted_sources': attempted_sources,
             }
     
     def download_category(self, symbols: List[str], category: str) -> List[Dict]:
@@ -375,8 +602,14 @@ class FullMarketDownloader:
         """
         if universe is None:
             universe = self.load_universe()
-        elif "full_us" not in universe or not universe.get("full_us"):
+        else:
             universe = self._canonicalize_universe(dict(universe))
+            existing_filter = dict(universe.get("metadata", {}).get("market_cap_filter", {}) or {})
+            if not (
+                existing_filter.get("enabled")
+                and int(existing_filter.get("included_count", -1)) == len(universe.get("full_us", []))
+            ):
+                universe = self._filter_universe_by_market_cap(universe)
         
         print("\n" + "=" * 80)
         print("🚀 开始下载完整美股市场数据")
@@ -390,8 +623,13 @@ class FullMarketDownloader:
             'config': {
                 'years': self.years,
                 'max_workers': self.max_workers,
-                'batch_size': self.batch_size
+                'batch_size': self.batch_size,
+                'price_provider': self.price_provider,
+                'price_provider_order': self._provider_order(),
+                'min_market_cap_usd': self.market_cap_filter.threshold_usd,
+                'market_cap_cache_file': str(self.market_cap_filter.cache_file),
             },
+            'market_cap_filter': dict(universe.get("metadata", {}).get("market_cap_filter", {}) or {}),
             'categories': {}
         }
         

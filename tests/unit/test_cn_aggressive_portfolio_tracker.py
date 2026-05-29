@@ -27,6 +27,49 @@ def test_build_parser_accepts_allowed_stale_symbols():
     assert args.allowed_stale_symbols == ["601989.SH", "603000.SH"]
 
 
+def test_switch_plan_accepts_previous_day_realtime_decision_data():
+    holdings_review = pd.DataFrame(
+        [
+            {
+                "symbol": "688295.SH",
+                "name": "中复神鹰",
+                "position_role": "降级观察",
+                "rank_full_market": 752,
+                "score_full_market": 0.538854,
+                "today_change_pct": 0.36,
+                "ret20": 0.019102,
+            }
+        ]
+    )
+    candidate_pool = pd.DataFrame(
+        [
+            {
+                "symbol": "688301.SH",
+                "name": "奕瑞科技",
+                "theme_label": "中盘制造主线",
+                "rank_full_market": 68,
+                "score_full_market": 0.903194,
+                "ret20": 0.384691,
+                "candidate_source": "latest_formal_screening",
+                "candidate_priority": 1,
+                "evidence_quality": "中",
+            }
+        ]
+    )
+
+    switch_plan = tracker._build_switch_plan(
+        holdings_review=holdings_review,
+        candidate_pool=candidate_pool,
+        completeness_passed=False,
+        decision_data_sufficient=True,
+    )
+
+    row = switch_plan.iloc[0]
+    assert row["action"] == "switch_now"
+    assert row["switch_ratio_hint"] == "20%"
+    assert "strict 完整性" not in row["no_switch_condition"]
+
+
 def test_run_tracker_forwards_allowed_stale_symbols(monkeypatch, tmp_path):
     ledger = pd.DataFrame(
         [
@@ -476,6 +519,91 @@ def test_format_top_delta_vs_source_record_filters_sign():
     assert no_detractors == "无"
 
 
+def test_build_notes_payload_includes_names_in_switch_detail():
+    notes = tracker._build_notes_payload(
+        trade_date="2026-05-19",
+        data_status="数据状态",
+        market_core_view="市场判断",
+        pnl_summary={
+            "quote_snapshot": "20260519132031",
+            "total_value_after": 1_411_455.0,
+            "portfolio_pnl_after": 411_455.0,
+            "portfolio_pnl_pct_after": 0.411455,
+            "delta_vs_source_record": 8_153.0,
+        },
+        orders=[],
+        switch_plan_df=pd.DataFrame(
+            [
+                {
+                    "sell_symbol": "688295.SH",
+                    "sell_name": "中复神鹰",
+                    "buy_symbol": "688301.SH",
+                    "buy_name": "奕瑞科技",
+                    "priority": "high",
+                    "action": "prepare_switch",
+                    "trigger_threshold": "候选继续留在本地强度前120",
+                }
+            ]
+        ),
+        candidate_pool=pd.DataFrame(
+            [
+                {
+                    "symbol": "688301.SH",
+                    "name": "奕瑞科技",
+                    "theme_label": "中盘制造主线",
+                    "evidence_quality": "中等偏弱",
+                }
+            ]
+        ),
+        tomorrow_focus=["继续观察"],
+    )
+
+    assert "换仓内容：688295.SH 中复神鹰 -> 688301.SH 奕瑞科技" in notes
+
+
+def test_holding_advice_line_includes_cost_and_pnl():
+    line = tracker._format_holding_advice_line(
+        SimpleNamespace(
+            symbol="002008.SZ",
+            name="大族激光",
+            recommended_action="继续持有",
+            position_role="稳定核心",
+            current_price=148.66,
+            buy_price=65.3,
+            buy_value=137130.0,
+            unrealized_pnl=175056.0,
+            unrealized_pnl_pct=1.27657,
+            stage_stop_price=112.65,
+            stage_target_price=156.61,
+            delta_vs_source_record=-1974.0,
+            rank_full_market=62,
+            today_change_pct=4.26,
+        )
+    )
+
+    assert "持有成本 `65.30`（成本金额 `137,130.00 元`）" in line
+    assert "浮动 PNL `+175,056.00 元`（+127.66%）" in line
+
+
+def test_holding_snapshot_set_includes_cost_and_pnl():
+    frame = pd.DataFrame(
+        [
+            {
+                "symbol": "002008.SZ",
+                "name": "大族激光",
+                "buy_price": 65.3,
+                "unrealized_pnl": 175056.0,
+                "unrealized_pnl_pct": 1.27657,
+            }
+        ]
+    )
+
+    text = tracker._format_holding_snapshot_set(frame)
+
+    assert "002008.SZ(大族激光) 持有成本 `65.30`" in text
+    assert "PNL `+175,056.00 元`（+127.66%）" in text
+
+
 def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypatch, tmp_path):
     ledger = pd.DataFrame(
         [
@@ -744,6 +872,7 @@ def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypa
     assert "#### 5.4.1 决策诊断" in report_text
     assert "stale_snapshot" in report_text
     assert "placeholder_kline_evaluator" in report_text
+    assert "601869.SH(长飞光纤) 持有成本 `100.00`，PNL `+6,000.00 元`（+20.00%）" in report_text
     assert "#### 5.4.3 证据质量与工程诊断" in report_text
     assert "### 5.7 因子库状态（只读影子观察）" in report_text
     assert "This factor library status is read-only" in report_text

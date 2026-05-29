@@ -82,7 +82,7 @@ def run_market_maintenance(
     scoped_universe = {
         key: value
         for key, value in universe.items()
-        if key in selected_categories or key == "stats"
+        if key in selected_categories or key in {"stats", "metadata"}
     }
     return {
         "status": "maintained",

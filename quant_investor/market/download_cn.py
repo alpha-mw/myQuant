@@ -16,7 +16,7 @@ from collections import Counter
 from pathlib import Path
 import pandas as pd
 from datetime import datetime, timedelta
-from typing import Any, List, Dict, Optional, Set
+from typing import Any, List, Dict, Optional, Set, Mapping
 import json
 import time
 
@@ -27,6 +27,12 @@ from quant_investor.market.cn_resolver import CNUniverseResolver
 from quant_investor.market.config import get_market_settings
 from quant_investor.market.cn_symbol_status import evaluate_symbol_local_status, CNSymbolLocalStatusResult
 from quant_investor.market.shared_csv_reader import SharedCSVReader
+from quant_investor.market.tushare_data_cleaning import (
+    CLEANING_STATUS_FAIL,
+    PARQUET_STATUS_SKIPPED,
+    TushareStorageOptimizationConfig,
+    clean_tushare_dataframe_to_file,
+)
 
 try:
     import tushare as ts
@@ -301,6 +307,152 @@ class CNFullMarketDownloader:
         except Exception:
             return strict_fallback, stable_fallback
 
+    def _fetch_trade_date_close_probe(self, target_trade_date: str) -> tuple[pd.DataFrame, str, str]:
+        """Fetch all-market close availability for a single trade date.
+
+        The maintenance target needs full OHLCV from ``daily``.  For deciding
+        whether the strict same-day close has been published at all, a
+        date-scoped all-market probe is cheaper and more accurate than sampling
+        per-symbol history requests.
+        """
+        if self.pro is None:
+            return pd.DataFrame(), "", "provider_unavailable"
+
+        daily_error = ""
+        daily_empty = False
+        try:
+            df = self.pro.daily(
+                trade_date=target_trade_date,
+                fields="ts_code,trade_date,close",
+            )
+            if df is not None and not df.empty:
+                return df, "daily", ""
+            daily_empty = True
+        except TypeError as exc:
+            # Some test doubles and older SDK wrappers do not accept fields.
+            daily_error = str(exc)
+            try:
+                df = self.pro.daily(trade_date=target_trade_date)
+                if df is not None and not df.empty:
+                    return df, "daily", ""
+                daily_empty = True
+            except Exception as retry_exc:
+                daily_error = str(retry_exc)
+        except Exception as exc:
+            daily_error = str(exc)
+
+        try:
+            df = self.pro.daily_basic(
+                trade_date=target_trade_date,
+                fields="ts_code,trade_date,close",
+            )
+            if df is not None and not df.empty:
+                return df, "daily_basic", ""
+        except AttributeError:
+            if daily_empty:
+                return pd.DataFrame(), "daily", "empty"
+            return pd.DataFrame(), "", daily_error or "daily_basic_unavailable"
+        except TypeError as exc:
+            basic_error = str(exc)
+            try:
+                df = self.pro.daily_basic(trade_date=target_trade_date)
+                if df is not None and not df.empty:
+                    return df, "daily_basic", ""
+            except Exception as retry_exc:
+                basic_error = str(retry_exc)
+            if daily_empty:
+                return pd.DataFrame(), "daily", "empty"
+            return pd.DataFrame(), "", daily_error or basic_error
+        except Exception as exc:
+            if daily_empty:
+                return pd.DataFrame(), "daily", "empty"
+            return pd.DataFrame(), "", daily_error or str(exc)
+
+        if daily_empty:
+            return pd.DataFrame(), "daily", "empty"
+        return pd.DataFrame(), "", daily_error or "empty"
+
+    def _probe_strict_same_day_close_availability(
+        self,
+        *,
+        components: Dict[str, Any],
+        target_categories: List[str],
+    ) -> Dict[str, Any]:
+        if (
+            self.freshness_mode != "strict"
+            or self.strict_trade_date == self.stable_trade_date
+        ):
+            return {"applicable": False}
+
+        expected_symbols = {
+            str(symbol or "").strip().upper()
+            for category in target_categories
+            for symbol in components.get(category, []) or []
+            if str(symbol or "").strip().upper()
+        }
+        expected_count = len(expected_symbols)
+        if expected_count == 0:
+            return {"applicable": False, "reason": "empty_universe"}
+
+        df, source, error = self._fetch_trade_date_close_probe(self.strict_trade_date)
+        if df is None or df.empty:
+            if source != "daily" and error and error != "empty":
+                return {
+                    "applicable": True,
+                    "source": source,
+                    "trade_date": self.strict_trade_date,
+                    "available": None,
+                    "coverage_ratio": 0.0,
+                    "available_count": 0,
+                    "expected_count": expected_count,
+                    "reason": error,
+                }
+            return {
+                "applicable": True,
+                "source": source,
+                "trade_date": self.strict_trade_date,
+                "available": False,
+                "coverage_ratio": 0.0,
+                "available_count": 0,
+                "expected_count": expected_count,
+                "reason": error or "empty",
+            }
+
+        probe = df.copy()
+        if "trade_date" in probe.columns:
+            probe["trade_date"] = probe["trade_date"].astype(str).str.replace("-", "", regex=False)
+            probe = probe[probe["trade_date"] == self.strict_trade_date]
+        if "ts_code" not in probe.columns:
+            return {
+                "applicable": True,
+                "source": source,
+                "trade_date": self.strict_trade_date,
+                "available": None,
+                "coverage_ratio": 0.0,
+                "available_count": 0,
+                "expected_count": expected_count,
+                "reason": "missing_ts_code",
+            }
+        if "close" in probe.columns:
+            probe = probe[pd.to_numeric(probe["close"], errors="coerce").notna()]
+
+        available_symbols = {
+            str(symbol or "").strip().upper()
+            for symbol in probe["ts_code"].dropna().tolist()
+        }
+        matched_count = len(expected_symbols & available_symbols)
+        coverage_ratio = matched_count / expected_count if expected_count else 1.0
+        return {
+            "applicable": True,
+            "source": source,
+            "trade_date": self.strict_trade_date,
+            "available": coverage_ratio >= self.coverage_threshold,
+            "coverage_ratio": coverage_ratio,
+            "available_count": matched_count,
+            "expected_count": expected_count,
+            "reason": "",
+        }
+
     def _resolve_latest_trade_date_from_local_cache(self) -> str:
         """从本地 CSV 缓存中推断最新交易日。"""
         latest_dates: list[str] = []
@@ -420,7 +572,7 @@ class CNFullMarketDownloader:
         allowed_stale_symbols: Optional[List[str] | Set[str]] = None,
         suspended_symbols: Optional[Set[str]] = None,
         fast_date_peek: bool = False,
-    ):
+    ) -> CNSymbolLocalStatusResult:
         allowed = self._normalize_allowed_symbols(allowed_stale_symbols)
         local_state = evaluate_symbol_local_status(
             symbol,
@@ -472,7 +624,7 @@ class CNFullMarketDownloader:
         early_stop_reason: str = "",
     ) -> Dict[str, Any]:
         allowed = self._normalize_allowed_symbols(allowed_stale_symbols)
-        report = {
+        report: Dict[str, Any] = {
             'allowed_stale_symbols': sorted(allowed),
             'complete': True,
             'blocking_incomplete_count': 0,
@@ -882,6 +1034,38 @@ class CNFullMarketDownloader:
         if candidate.exists():
             return candidate
         return None
+
+    def _default_cleaning_result_fields(self, status: str = "skipped") -> dict[str, Any]:
+        return {
+            "cleaning_status": status,
+            "cleaning_report_path": None,
+            "factor_readiness_status": None,
+            "storage_status": None,
+            "parquet_status": PARQUET_STATUS_SKIPPED,
+            "quarantine_path": None,
+        }
+
+    def _storage_optimization_config(self) -> TushareStorageOptimizationConfig:
+        return TushareStorageOptimizationConfig(
+            parquet_shadow_write=bool(config.TUSHARE_PARQUET_SHADOW_WRITE),
+            parquet_canonical=bool(config.TUSHARE_PARQUET_CANONICAL),
+            delete_redundant_csv=bool(config.TUSHARE_DELETE_REDUNDANT_CSV),
+            parquet_dir=config.TUSHARE_PARQUET_DIR,
+            parquet_compression=config.TUSHARE_PARQUET_COMPRESSION,
+            metadata={"source": "CNFullMarketDownloader.download_stock"},
+        )
+
+    def _cleaning_result_fields(self, result: Mapping[str, Any] | None) -> dict[str, Any]:
+        if not result:
+            return self._default_cleaning_result_fields()
+        return {
+            "cleaning_status": result.get("cleaning_status"),
+            "cleaning_report_path": result.get("cleaning_report_path"),
+            "factor_readiness_status": result.get("factor_readiness_status"),
+            "storage_status": result.get("storage_status"),
+            "parquet_status": result.get("parquet_status", PARQUET_STATUS_SKIPPED),
+            "quarantine_path": result.get("quarantine_path"),
+        }
     
     def load_components(self, components_file: str | None = None) -> Dict:
         """加载成分股"""
@@ -943,6 +1127,7 @@ class CNFullMarketDownloader:
             Dict with download result
         """
         effective_target_trade_date = target_trade_date or self.latest_trade_date
+        cleaning_skipped_fields = self._default_cleaning_result_fields()
         suspended_symbols = self._load_latest_suspended_symbols(effective_target_trade_date)
         local_state = self._evaluate_symbol_local_status_for_target(
             symbol,
@@ -974,6 +1159,7 @@ class CNFullMarketDownloader:
                 'resolved_path': local_state.resolved_path,
                 'api_calls': 0,
                 'error': None,
+                **cleaning_skipped_fields,
             }
 
         filepath = (
@@ -1008,6 +1194,7 @@ class CNFullMarketDownloader:
                         'resolved_path': stale_cached_state.resolved_path,
                         'api_calls': self.REQUESTS_PER_STOCK,
                         'error': None,
+                        **cleaning_skipped_fields,
                     }
                 return {
                     'symbol': local_state.symbol,
@@ -1021,6 +1208,7 @@ class CNFullMarketDownloader:
                     'resolved_path': local_state.resolved_path,
                     'api_calls': self.REQUESTS_PER_STOCK,
                     'error': 'Empty data',
+                    **cleaning_skipped_fields,
                 }
 
             final_df = df.copy()
@@ -1042,7 +1230,54 @@ class CNFullMarketDownloader:
                 )
 
             Path(filepath).parent.mkdir(parents=True, exist_ok=True)
-            final_df.to_csv(filepath, index=False)
+            cleaning_result: Mapping[str, Any] | None = None
+            if config.TUSHARE_AUTO_CLEAN:
+                cleaning_result = clean_tushare_dataframe_to_file(
+                    final_df,
+                    canonical_path=filepath,
+                    table_name="daily",
+                    promote=True,
+                    raw_backup_dir=config.TUSHARE_RAW_BACKUP_DIR,
+                    quarantine_dir=config.TUSHARE_QUARANTINE_DIR,
+                    report_dir=config.TUSHARE_CLEANING_REPORT_DIR,
+                    factor_readiness_dir=config.TUSHARE_FACTOR_READINESS_DIR,
+                    enable_factor_readiness=bool(config.TUSHARE_FACTOR_READINESS),
+                    enable_storage_audit=bool(config.TUSHARE_STORAGE_AUDIT),
+                    storage_config=self._storage_optimization_config(),
+                    metadata={
+                        "symbol": local_state.symbol,
+                        "category": category,
+                        "target_trade_date": effective_target_trade_date,
+                        "local_status": local_state.local_status,
+                        "mode": "incremental" if is_incremental else "full",
+                    },
+                )
+                cleaning_report = cleaning_result.get("cleaning_report")
+                if (
+                    cleaning_result.get("cleaning_status") == CLEANING_STATUS_FAIL
+                    or getattr(cleaning_report, "status", None) == CLEANING_STATUS_FAIL
+                ):
+                    return {
+                        'symbol': local_state.symbol,
+                        'category': category,
+                        'status': 'failed',
+                        'local_status': local_state.local_status,
+                        'records': existing_records,
+                        'mode': local_state.local_status,
+                        'latest_local_date': local_state.latest_local_date,
+                        'latest_trade_date': effective_target_trade_date,
+                        'resolved_path': str(filepath),
+                        'api_calls': self.REQUESTS_PER_STOCK,
+                        'error': 'Tushare cleaning failed',
+                        **self._cleaning_result_fields(cleaning_result),
+                    }
+                cleaned_df = cleaning_result.get("cleaned_df")
+                if isinstance(cleaned_df, pd.DataFrame):
+                    final_df = cleaned_df
+            else:
+                final_df.to_csv(filepath, index=False)
+                cleaning_result = cleaning_skipped_fields
+            cleaning_fields = self._cleaning_result_fields(cleaning_result)
             latest_saved_ts = pd.NaT
             if 'trade_date' in final_df.columns:
                 latest_saved_ts = pd.to_datetime(final_df['trade_date'], errors='coerce').max()
@@ -1067,6 +1302,7 @@ class CNFullMarketDownloader:
                     'resolved_path': str(filepath),
                     'api_calls': self.REQUESTS_PER_STOCK,
                     'error': None,
+                    **cleaning_fields,
                 }
 
             return {
@@ -1081,6 +1317,7 @@ class CNFullMarketDownloader:
                 'resolved_path': str(filepath),
                 'api_calls': self.REQUESTS_PER_STOCK,
                 'error': None,
+                **cleaning_fields,
             }
 
         except Exception as e:
@@ -1096,6 +1333,7 @@ class CNFullMarketDownloader:
                 'resolved_path': local_state.resolved_path,
                 'api_calls': self.REQUESTS_PER_STOCK,
                 'error': str(e)[:100],
+                **cleaning_skipped_fields,
             }
     
     def download_category(
@@ -1270,17 +1508,38 @@ class CNFullMarketDownloader:
             components = self.load_components()
         self._refresh_full_a_write_categories(components)
         target_categories = self._resolve_target_categories(components, categories)
+        same_day_probe = self._probe_strict_same_day_close_availability(
+            components=components,
+            target_categories=target_categories,
+        )
+        preflight_early_stop_reason = ""
+        preflight_target_trade_date: str | None = None
+        if same_day_probe.get("applicable") and same_day_probe.get("available") is False:
+            preflight_early_stop_reason = "strict_same_day_unavailable"
+            preflight_target_trade_date = self.stable_trade_date
+            print(
+                "\n⏹️ 严格目标日全市场收盘价尚未达到覆盖阈值，"
+                "直接切换到稳定目标日。"
+            )
+            print(
+                f"strict close probe: {same_day_probe.get('available_count', 0)}/"
+                f"{same_day_probe.get('expected_count', 0)} "
+                f"({same_day_probe.get('coverage_ratio', 0.0):.1%}) "
+                f"via {same_day_probe.get('source') or 'unknown'}"
+            )
         preflight_completeness = self.build_completeness_report(
             components=components,
             allowed_stale_symbols=allowed_stale_symbols,
             categories=target_categories,
+            target_trade_date=preflight_target_trade_date,
+            early_stop_reason=preflight_early_stop_reason,
         )
         effective_target_trade_date = preflight_completeness.get(
             'effective_target_trade_date',
             preflight_completeness.get('latest_trade_date', self.latest_trade_date),
         )
 
-        all_results = {
+        all_results: Dict[str, Any] = {
             'timestamp': datetime.now().strftime('%Y%m%d_%H%M%S'),
             'config': {
                 'years': self.years,
@@ -1293,7 +1552,8 @@ class CNFullMarketDownloader:
                 'freshness_mode': self.freshness_mode,
                 'coverage_ratio': preflight_completeness.get('coverage_ratio', 0.0),
                 'coverage_threshold': self.coverage_threshold,
-                'early_stop_reason': '',
+                'early_stop_reason': preflight_early_stop_reason,
+                'same_day_close_probe': same_day_probe,
                 'max_rounds': max_rounds,
                 'fail_on_incomplete': fail_on_incomplete,
                 'categories': list(target_categories),
@@ -1340,7 +1600,7 @@ class CNFullMarketDownloader:
             print(f"🔁 下载轮次 {round_no}/{max_rounds}")
             print("=" * 80)
 
-            round_payload = {
+            round_payload: Dict[str, Any] = {
                 'round': round_no,
                 'categories': {},
                 'effective_target_trade_date': effective_target_trade_date,

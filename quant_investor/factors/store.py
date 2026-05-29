@@ -35,6 +35,15 @@ from quant_investor.factors.execution_cost import (
     ExecutionAdjustedBacktestRun,
     FactorExecutionCostSimulationReport,
 )
+from quant_investor.factors.evidence import (
+    DEFAULT_EVIDENCE_DASHBOARD_FILENAME,
+    DEFAULT_EVIDENCE_DATE_RESULTS_FILENAME,
+    DEFAULT_EVIDENCE_MARKDOWN_FILENAME,
+    DEFAULT_FACTOR_EVIDENCE_DIR,
+    DEFAULT_MULTI_DATE_EVIDENCE_REPORTS_FILENAME,
+    FactorShadowEvidenceDateResult,
+    MultiDateFactorEvidenceReport,
+)
 from quant_investor.factors.matrix import (
     DEFAULT_EXPRESSION_RESULTS_FILENAME,
     DEFAULT_FACTOR_MATRICES_FILENAME,
@@ -750,6 +759,102 @@ class FactorShadowScoringStore:
         return self._read_json(self.dashboard_payload_path)
 
 
+class FactorEvidenceStore:
+    def __init__(self, root_dir: str | Path | None = None) -> None:
+        self.root_dir = Path(root_dir) if root_dir is not None else DEFAULT_FACTOR_EVIDENCE_DIR
+        self.date_results_path = self.root_dir / DEFAULT_EVIDENCE_DATE_RESULTS_FILENAME
+        self.multi_date_reports_path = self.root_dir / DEFAULT_MULTI_DATE_EVIDENCE_REPORTS_FILENAME
+        self.evidence_markdown_path = self.root_dir / DEFAULT_EVIDENCE_MARKDOWN_FILENAME
+        self.evidence_dashboard_path = self.root_dir / DEFAULT_EVIDENCE_DASHBOARD_FILENAME
+
+    def _append_jsonl(self, path: Path, payload: Mapping[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(_json_safe(payload), ensure_ascii=False, sort_keys=True, allow_nan=False)
+            )
+            handle.write("\n")
+
+    def _read_jsonl_payloads(self, path: Path) -> list[dict[str, Any]]:
+        if not path.exists():
+            return []
+        rows: list[dict[str, Any]] = []
+        with path.open("r", encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    payload = json.loads(stripped)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"Malformed JSON in {path} line {line_number}: {exc.msg}") from exc
+                if not isinstance(payload, Mapping):
+                    raise ValueError(f"Expected JSON object in {path} line {line_number}.")
+                rows.append(dict(payload))
+        return rows
+
+    def _write_text(self, path: Path, text: str) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def _write_json(self, path: Path, payload: Mapping[str, Any]) -> Path:
+        return self._write_text(
+            path,
+            json.dumps(_json_safe(payload), ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False)
+            + "\n",
+        )
+
+    def _read_json(self, path: Path) -> dict[str, Any]:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Malformed JSON in {path}: {exc.msg}") from exc
+        if not isinstance(payload, Mapping):
+            raise ValueError(f"Expected JSON object in {path}.")
+        return dict(payload)
+
+    def append_date_result(self, result: FactorShadowEvidenceDateResult) -> None:
+        if result.result_id in self.get_date_result_ids():
+            raise ValueError(f"Duplicate result_id in factor evidence date results ledger: {result.result_id}")
+        self._append_jsonl(self.date_results_path, result.to_dict())
+
+    def append_multi_date_report(self, report: MultiDateFactorEvidenceReport) -> None:
+        if report.report_id in self.get_multi_date_report_ids():
+            raise ValueError(f"Duplicate report_id in multi-date evidence reports ledger: {report.report_id}")
+        self._append_jsonl(self.multi_date_reports_path, report.to_dict())
+
+    def read_date_results(self) -> list[FactorShadowEvidenceDateResult]:
+        return [
+            FactorShadowEvidenceDateResult.from_dict(payload)
+            for payload in self._read_jsonl_payloads(self.date_results_path)
+        ]
+
+    def read_multi_date_reports(self) -> list[MultiDateFactorEvidenceReport]:
+        return [
+            MultiDateFactorEvidenceReport.from_dict(payload)
+            for payload in self._read_jsonl_payloads(self.multi_date_reports_path)
+        ]
+
+    def get_date_result_ids(self) -> set[str]:
+        return {result.result_id for result in self.read_date_results()}
+
+    def get_multi_date_report_ids(self) -> set[str]:
+        return {report.report_id for report in self.read_multi_date_reports()}
+
+    def save_evidence_markdown(self, markdown: str) -> Path:
+        return self._write_text(self.evidence_markdown_path, markdown)
+
+    def load_evidence_markdown(self) -> str:
+        return self.evidence_markdown_path.read_text(encoding="utf-8")
+
+    def save_evidence_dashboard(self, payload: Mapping[str, Any]) -> Path:
+        return self._write_json(self.evidence_dashboard_path, payload)
+
+    def load_evidence_dashboard(self) -> dict[str, Any]:
+        return self._read_json(self.evidence_dashboard_path)
+
+
 class FactorAlignmentAuditStore:
     def __init__(self, root_dir: str | Path | None = None) -> None:
         self.root_dir = Path(root_dir) if root_dir is not None else DEFAULT_FACTOR_ALIGNMENT_AUDIT_DIR
@@ -1069,6 +1174,11 @@ __all__ = [
     "DEFAULT_SHADOW_COMPARISON_REPORTS_FILENAME",
     "DEFAULT_SHADOW_COMPARISON_MARKDOWN_FILENAME",
     "DEFAULT_SHADOW_COMPARISON_DASHBOARD_FILENAME",
+    "DEFAULT_FACTOR_EVIDENCE_DIR",
+    "DEFAULT_EVIDENCE_DATE_RESULTS_FILENAME",
+    "DEFAULT_MULTI_DATE_EVIDENCE_REPORTS_FILENAME",
+    "DEFAULT_EVIDENCE_DASHBOARD_FILENAME",
+    "DEFAULT_EVIDENCE_MARKDOWN_FILENAME",
     "DEFAULT_FACTOR_ALIGNMENT_AUDIT_DIR",
     "DEFAULT_ALIGNMENT_AUDIT_REPORTS_FILENAME",
     "DEFAULT_ALIGNMENT_AUDIT_MARKDOWN_FILENAME",
@@ -1091,6 +1201,7 @@ __all__ = [
     "FactorCorrelationContributionStore",
     "FactorLibraryAuditStore",
     "FactorShadowScoringStore",
+    "FactorEvidenceStore",
     "FactorAlignmentAuditStore",
     "FactorTradabilityAuditStore",
     "FactorExecutionCostSimulationStore",

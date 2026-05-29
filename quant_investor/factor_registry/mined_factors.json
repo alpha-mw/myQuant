@@ -1,0 +1,8 @@
+{
+  "schema_version": "mined-factor-registry.v1",
+  "metadata": {
+    "description": "Governed mined-factor registry. Quant branch only consumes production_factor entries with all 8 gates passed.",
+    "default_policy": "No mined factor is live until manually promoted to production_factor."
+  },
+  "factors": []
+}

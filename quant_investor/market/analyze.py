@@ -20,6 +20,7 @@ from quant_investor.market.data_snapshot import build_market_data_snapshot
 from quant_investor.llm_provider_priority import resolve_runtime_role_models
 from quant_investor.llm_policy import apply_local_llm_policy
 from quant_investor.market.dag_executor import execute_market_dag
+from quant_investor.market.shared_csv_reader import SharedCSVReader
 from quant_investor.pipeline import QuantInvestor
 
 _STOCK_NAME_CACHE: dict[str, dict[str, str]] = {"CN": {}, "US": {}}
@@ -256,6 +257,13 @@ def load_stock_names(market: str, refresh: bool = False) -> dict[str, str]:
         return _STOCK_NAME_CACHE[settings.market]
 
     if settings.market == "US":
+        payload = _load_us_stock_names_from_local_sources()
+        if payload:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(cache_path, "w", encoding="utf-8") as file:
+                json.dump(payload, file, ensure_ascii=False, indent=2, sort_keys=True)
+            _STOCK_NAME_CACHE[settings.market] = payload
+            return payload
         return cache
 
     try:
@@ -293,6 +301,51 @@ def get_stock_name(symbol: str, market: str = "CN") -> str:
     return _STOCK_NAME_CACHE[settings.market].get(symbol, fallback)
 
 
+def _is_unknown_stock_name(value: Any) -> bool:
+    text = str(value or "").strip()
+    return not text or text.upper() in {"N/A", "NA", "NONE", "NULL", "UNKNOWN", "未知"}
+
+
+def _load_us_stock_names_from_local_sources() -> dict[str, str]:
+    """Build a US symbol-name map from local metadata only."""
+    names: dict[str, str] = {}
+    metadata_paths = [
+        Path("data/us_universe/us_market_caps.json"),
+        Path("data/us_universe/complete_us_universe.json"),
+    ]
+    for path in metadata_paths:
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        symbols = payload.get("symbols") if isinstance(payload.get("symbols"), dict) else payload
+        if not isinstance(symbols, dict):
+            continue
+        for symbol, value in symbols.items():
+            normalized_symbol = str(symbol or "").strip().upper()
+            if not normalized_symbol or normalized_symbol in names:
+                continue
+            candidate = ""
+            if isinstance(value, dict):
+                candidate = str(
+                    value.get("name")
+                    or value.get("company_name")
+                    or value.get("companyName")
+                    or value.get("shortName")
+                    or value.get("longName")
+                    or ""
+                ).strip()
+            elif isinstance(value, str):
+                candidate = value.strip()
+            if not _is_unknown_stock_name(candidate):
+                names[normalized_symbol] = candidate
+    return names
+
+
 def get_us_stock_name(symbol: str) -> str:
     return get_stock_name(symbol, market="US")
 
@@ -309,6 +362,8 @@ def get_all_local_symbols(category: str, market: str = "CN", data_dir: str | Non
         resolver = CNUniverseResolver(data_dir=str(base_dir))
         symbols, _ = resolver.collect_full_a_inventory()
         return symbols
+    if settings.market == "US":
+        return SharedCSVReader(market="US", data_dir=base_dir).list_symbols(category)
     category_dir = base_dir / category
     if not category_dir.exists():
         return []
@@ -649,9 +704,15 @@ def build_full_market_trade_plan(
                 payload = dict(recommendation)
                 payload["category"] = category
                 payload["category_name"] = category_name(category, settings.market)
-                company_name = str(payload.get("company_name", "") or get_stock_name(payload.get("symbol", ""), market=settings.market)).strip()
+                raw_company_name = str(payload.get("company_name", "") or "").strip()
+                company_name = (
+                    get_stock_name(payload.get("symbol", ""), market=settings.market)
+                    if _is_unknown_stock_name(raw_company_name)
+                    else raw_company_name
+                )
                 payload["company_name"] = company_name
-                payload["name"] = str(payload.get("name", "") or company_name).strip()
+                raw_name = str(payload.get("name", "") or "").strip()
+                payload["name"] = company_name if _is_unknown_stock_name(raw_name) else raw_name
                 payload["batch_target_exposure"] = batch_target_exposure
                 payload["style_bias"] = batch_style_bias
                 payload["risk_level"] = batch_risk_summary.get("risk_level", "normal")
@@ -1085,7 +1146,9 @@ class ConclusionRenderer:
     @staticmethod
     def render_stock(item: dict[str, Any], market: str) -> list[str]:
         action = str(item.get("action", "观察"))
-        stock_name = get_stock_name(item["symbol"], market=market)
+        stock_name = str(item.get("company_name") or item.get("name") or get_stock_name(item["symbol"], market=market)).strip()
+        if _is_unknown_stock_name(stock_name):
+            stock_name = get_stock_name(item["symbol"], market=market)
         support = _dedupe_text(item.get("support_drivers", []) or _derive_stock_support_drivers(item))
         drag = _dedupe_text(item.get("drag_drivers", []) or _derive_stock_drag_drivers(item))
         weight_caps = _dedupe_text(item.get("weight_cap_reasons", []))
@@ -1281,7 +1344,9 @@ def generate_full_report(
             ]
         )
         for item in recommendations:
-            stock_name = get_stock_name(item["symbol"], market=settings.market)
+            stock_name = str(item.get("company_name") or item.get("name") or get_stock_name(item["symbol"], market=settings.market)).strip()
+            if _is_unknown_stock_name(stock_name):
+                stock_name = get_stock_name(item["symbol"], market=settings.market)
             current_price = float(item.get("current_price", 0))
             entry_low = float(item.get("entry_price_range", {}).get("low", current_price * 0.99))
             entry_high = float(item.get("entry_price_range", {}).get("high", current_price * 1.01))

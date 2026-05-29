@@ -346,6 +346,84 @@ or wire factor signals into official scoring, stock selection, posterior math,
 `PortfolioConstructor`, `RiskGuard`, target weights, orders, market downloads,
 providers, LLMs, broker/execution, or frontend/web behavior.
 
+Phase 13 Pass 1 remains offline. Multi-date shadow evidence collection reads
+local candidate snapshots, local production factor libraries, local factor
+matrices, and optional local audit reports supplied in an input manifest. It
+writes evidence artifacts under `data/factor_library/evidence` and must pass
+before any future paper-portfolio comparison. This pass does not wire factor
+signals into selection or portfolio construction.
+
+## Tushare Daily Download Cleaning Gate
+
+CN Tushare daily downloads now run an offline post-download cleaning hook before
+canonical CSV promotion when `MYQUANT_TUSHARE_AUTO_CLEAN=1`. The hook preserves
+the raw merged frame under `data/raw_backups/tushare`, writes row/cell flags,
+quarantines invalid rows, de-duplicates and sorts the cleaned CSV, and emits
+factor-readiness plus storage-audit sidecars. A cleaning pass does not mean the
+file is factor-ready; missing trade calendar, adjusted factor, limit, suspend,
+tradability, or benchmark-membership evidence is reported separately.
+
+CSV remains canonical by default. Optional Parquet shadow files are written only
+when `MYQUANT_TUSHARE_PARQUET_SHADOW_WRITE=1` and an installed pandas Parquet
+backend is available. The storage audit records backend gaps and compatibility
+reasons; CSV deletion remains disabled by default.
+
+Focused gate:
+
+```bash
+PYTHON=./.venv/bin/python scripts/tushare_data_cleaning_quality_gate.sh
+```
+
+Manual offline cleanup:
+
+```bash
+./.venv/bin/python scripts/clean_tushare_downloads.py \
+  --root-dir data/cn_market_full \
+  --table daily
+```
+
+Run Phase 13 evidence collection with:
+
+```bash
+PYTHON=./.venv/bin/python scripts/collect_factor_shadow_evidence.py \
+  --input-manifest data/factor_library/evidence/sample_manifest.json \
+  --output-dir data/factor_library/evidence \
+  --generated-at 2026-04-27T00:00:00Z \
+  --top-n 30 \
+  --min-observation-days 20 \
+  --min-average-factor-coverage 0.80 \
+  --min-top-n-overlap-ratio 0.50
+```
+
+Input manifest example:
+
+```json
+{
+  "as_of_dates": ["2026-04-01", "2026-04-02"],
+  "date_inputs": [
+    {
+      "as_of": "2026-04-01",
+      "candidates": [
+        {"symbol": "000001.SZ", "official_score": 0.83, "official_rank": 1}
+      ],
+      "production_library_path": "data/factor_library/production_factors.json",
+      "factor_matrix_paths": ["data/factor_library/matrix/factor_matrices.jsonl"],
+      "library_audit_path": "data/factor_library/audit/factor_library_audit_report.json",
+      "alignment_audit_paths": ["data/factor_library/alignment_audit/factor_alignment_audit_reports.jsonl"],
+      "tradability_audit_paths": ["data/factor_library/tradability_audit/tradability_audit_reports.jsonl"],
+      "execution_cost_report_paths": ["data/factor_library/execution_cost/execution_cost_reports.jsonl"]
+    }
+  ]
+}
+```
+
+Artifacts:
+
+- `data/factor_library/evidence/evidence_date_results.jsonl`
+- `data/factor_library/evidence/multi_date_evidence_reports.jsonl`
+- `data/factor_library/evidence/evidence_report.md`
+- `data/factor_library/evidence/evidence_dashboard.json`
+
 ## Future Integration Checklist
 
 1. Generate factor matrices from real point-in-time data.

@@ -7,6 +7,7 @@ import pandas as pd
 
 from quant_investor.agent_protocol import BranchVerdict, SymbolResearchPacket
 from quant_investor.branch_contracts import BranchResult, UnifiedDataBundle
+from quant_investor.factors.runtime import score_with_mined_factors
 from quant_investor.market.dag.common import _dedupe_texts
 from quant_investor.market.shared_csv_reader import SharedCSVReadResult
 
@@ -24,7 +25,9 @@ def _frame_summary(frame: pd.DataFrame) -> dict[str, Any]:
             "volatility": 0.0,
         }
     working = frame.copy()
-    close_col = "close" if "close" in working.columns else "Close" if "Close" in working.columns else ""
+    close_col = (
+        "close" if "close" in working.columns else "Close" if "Close" in working.columns else ""
+    )
     if not close_col:
         return {
             "rows": int(len(working)),
@@ -52,7 +55,9 @@ def _close_series(frame: pd.DataFrame) -> pd.Series:
     if frame is None or frame.empty:
         return pd.Series(dtype=float)
     working = frame.copy()
-    close_col = "close" if "close" in working.columns else "Close" if "Close" in working.columns else ""
+    close_col = (
+        "close" if "close" in working.columns else "Close" if "Close" in working.columns else ""
+    )
     if not close_col:
         return pd.Series(dtype=float)
     return pd.to_numeric(working[close_col], errors="coerce").dropna()
@@ -62,7 +67,9 @@ def _volume_series(frame: pd.DataFrame) -> pd.Series:
     if frame is None or frame.empty:
         return pd.Series(dtype=float)
     working = frame.copy()
-    volume_col = "volume" if "volume" in working.columns else "vol" if "vol" in working.columns else ""
+    volume_col = (
+        "volume" if "volume" in working.columns else "vol" if "vol" in working.columns else ""
+    )
     if not volume_col:
         return pd.Series(dtype=float)
     return pd.to_numeric(working[volume_col], errors="coerce").dropna()
@@ -225,10 +232,20 @@ def _build_market_snapshot(
     latest_trade_date: str,
     macro_overview: dict[str, Any],
 ) -> dict[str, Any]:
-    closes = [summary["latest_close"] for summary in (_frame_summary(frame) for frame in frames.values()) if summary["latest_close"] > 0]
+    closes = [
+        summary["latest_close"]
+        for summary in (_frame_summary(frame) for frame in frames.values())
+        if summary["latest_close"] > 0
+    ]
     frame_summaries = [_frame_summary(frame) for frame in frames.values() if not frame.empty]
-    avg_return = fmean([summary["average_return"] for summary in frame_summaries]) if frame_summaries else 0.0
-    volatility = fmean([summary["volatility"] for summary in frame_summaries]) if frame_summaries else 0.0
+    avg_return = (
+        fmean([summary["average_return"] for summary in frame_summaries])
+        if frame_summaries
+        else 0.0
+    )
+    volatility = (
+        fmean([summary["volatility"] for summary in frame_summaries]) if frame_summaries else 0.0
+    )
     breadth = 0.0
     if frames:
         positive = sum(1 for summary in frame_summaries if summary["average_return"] > 0)
@@ -261,8 +278,12 @@ def _build_global_quant_verdict(
     breadth = float(cross_section_quant.get("breadth", 0.0))
     candidate_count = int(cross_section_quant.get("candidate_count", symbol_count))
     sample_count = int(cross_section_quant.get("sample_count", candidate_count))
-    score = _clamp(average_return * 8.0 + (breadth - 0.5) * 0.6 - average_volatility * 0.4, -1.0, 1.0)
-    confidence = _clamp(0.35 + min(sample_count, max(symbol_count, 1)) / max(symbol_count, 1) * 0.12, 0.0, 1.0)
+    score = _clamp(
+        average_return * 8.0 + (breadth - 0.5) * 0.6 - average_volatility * 0.4, -1.0, 1.0
+    )
+    confidence = _clamp(
+        0.35 + min(sample_count, max(symbol_count, 1)) / max(symbol_count, 1) * 0.12, 0.0, 1.0
+    )
     thesis = (
         "横截面量化结果已在全局上下文中一次性计算并收敛。"
         if score >= 0
@@ -299,29 +320,80 @@ def _build_global_quant_verdict(
     )
 
 
-def _build_quant_branch_result(
-    *,
-    frames: Mapping[str, pd.DataFrame],
-) -> BranchResult:
+def _legacy_quant_symbol_scores(frames: Mapping[str, pd.DataFrame]) -> dict[str, float]:
+    """Fallback quant proxy used only when no governed production factor is live."""
     symbol_scores: dict[str, float] = {}
     for symbol, frame in frames.items():
         summary = _frame_summary(frame)
         score = summary["average_return"] * 8.0 - summary["volatility"] * 2.0
         symbol_scores[symbol] = _clamp(score, -1.0, 1.0)
+    return symbol_scores
+
+
+def _build_quant_branch_result(
+    *,
+    frames: Mapping[str, pd.DataFrame],
+) -> BranchResult:
+    mined = score_with_mined_factors(frames)
+    if mined.factor_count > 0:
+        symbol_scores = dict(mined.symbol_scores)
+        factors_used = list(mined.factors_used)
+        factor_mode = "governed_mined_factors"
+        conclusion = "横截面量化分支已接入通过 8 道门的 production mined factors。"
+        investment_risks = [
+            "量化分支只消费 production_factor；paper/research 因子权重为 0 且不进入选股。",
+            f"mined_factor_coverage={mined.coverage_rate:.2%}",
+        ]
+        coverage_notes = [
+            f"symbols={len(symbol_scores)}",
+            f"production_factors={mined.factor_count}",
+            f"factor_coverage={mined.coverage_rate:.2%}",
+        ]
+        diagnostic_notes = [
+            "global_quant_branch_result",
+            "mined_factor_registry_enforced",
+        ]
+        metadata = {
+            "reliability": _clamp(0.72 + min(mined.factor_count, 5) * 0.03, 0.0, 0.90),
+            "factor_mode": factor_mode,
+            "mined_factor_runtime": mined.to_metadata(),
+        }
+    else:
+        symbol_scores = _legacy_quant_symbol_scores(frames)
+        factors_used = ["short_term_return", "volatility_penalty"]
+        factor_mode = "legacy_proxy_fallback"
+        conclusion = "横截面量化分支未发现可用 production mined factors，回退到收益/波动率代理。"
+        investment_risks = [
+            "没有已通过 8 道门并被人工确认为 production_factor 的 mined factor。",
+            "当前仅使用 legacy short-term-return / volatility-penalty proxy。",
+        ]
+        coverage_notes = [f"symbols={len(symbol_scores)}", "legacy_fallback_until_factor_approval"]
+        diagnostic_notes = [
+            "global_quant_branch_result",
+            "mined_factor_registry_empty_or_not_selectable",
+        ]
+        metadata = {
+            "reliability": 0.55,
+            "factor_mode": factor_mode,
+            "mined_factor_runtime": mined.to_metadata(),
+        }
     return BranchResult(
         branch_name="quant",
         final_score=float(fmean(symbol_scores.values()) if symbol_scores else 0.0),
-        final_confidence=_clamp(0.35 + min(len(symbol_scores), 50) / 120.0, 0.0, 1.0),
+        final_confidence=_clamp(
+            0.38 + min(len(symbol_scores), 50) / 120.0 + min(mined.factor_count, 5) * 0.02, 0.0, 1.0
+        ),
         symbol_scores=symbol_scores,
-        conclusion="横截面量化分支已基于 shared context 与价格代理完成全市场压缩评分。",
+        conclusion=conclusion,
         signals={
             "branch_mode": "cross_section_funnel",
-            "alpha_factors": ["short_term_return", "volatility_penalty"],
+            "factor_mode": factor_mode,
+            "alpha_factors": factors_used,
         },
-        investment_risks=["量化压缩当前未引入更重因子库。"],
-        coverage_notes=[f"symbols={len(symbol_scores)}", "full_market_deterministic_funnel"],
-        diagnostic_notes=["global_quant_branch_result"],
-        metadata={"reliability": 0.70},
+        investment_risks=investment_risks,
+        coverage_notes=coverage_notes,
+        diagnostic_notes=diagnostic_notes,
+        metadata=metadata,
     )
 
 
@@ -331,9 +403,15 @@ def _build_symbol_quant_verdict(
     quant_result: BranchResult,
 ) -> BranchVerdict:
     score = float(quant_result.symbol_scores.get(symbol, quant_result.final_score))
+    factor_mode = str(quant_result.metadata.get("factor_mode", "legacy_proxy_fallback"))
+    thesis = (
+        "量化分支基于已治理 production mined factors 给出 deterministic 结论。"
+        if factor_mode == "governed_mined_factors"
+        else "量化分支当前基于收益/波动率横截面代理给出 deterministic 结论。"
+    )
     return BranchVerdict(
         agent_name="quant",
-        thesis="量化分支当前基于收益/波动率横截面代理给出 deterministic 结论。",
+        thesis=thesis,
         symbol=symbol,
         final_score=score,
         final_confidence=float(quant_result.final_confidence),
@@ -353,7 +431,9 @@ def _build_cross_section_quant(frames: Mapping[str, pd.DataFrame]) -> dict[str, 
             "average_volatility": 0.0,
             "breadth": 0.0,
         }
-    summaries = [_frame_summary(frame) for frame in frames.values() if frame is not None and not frame.empty]
+    summaries = [
+        _frame_summary(frame) for frame in frames.values() if frame is not None and not frame.empty
+    ]
     if not summaries:
         return {
             "candidate_count": len(frames),
@@ -430,8 +510,12 @@ def _build_symbol_research_packet(
         category=category,
         universe_key=universe_key,
         branch_verdicts=dict(branch_verdicts),
-        branch_scores={name: float(verdict.final_score) for name, verdict in branch_verdicts.items()},
-        branch_confidences={name: float(verdict.final_confidence) for name, verdict in branch_verdicts.items()},
+        branch_scores={
+            name: float(verdict.final_score) for name, verdict in branch_verdicts.items()
+        },
+        branch_confidences={
+            name: float(verdict.final_confidence) for name, verdict in branch_verdicts.items()
+        },
         branch_theses={name: str(verdict.thesis) for name, verdict in branch_verdicts.items()},
         risk_flags=_dedupe_texts(
             [item for verdict in branch_verdicts.values() for item in verdict.investment_risks]
@@ -453,7 +537,9 @@ def _build_symbol_research_packet(
             "latest_close": float(frame_summary.get("latest_close", 0.0)),
             "price_summary": frame_summary,
             "data_quality_issues": [issue.to_dict() for issue in read_result.issues],
-            "review_fallback_reasons": list(review_bundle.fallback_reasons if review_bundle else []),
+            "review_fallback_reasons": list(
+                review_bundle.fallback_reasons if review_bundle else []
+            ),
         },
     )
     return packet

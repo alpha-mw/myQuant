@@ -355,6 +355,29 @@ class EnhancedDataLayer(DataHub):
         return snapshot
 
     @staticmethod
+    def _has_metric_value(value: Any) -> bool:
+        if value is None:
+            return False
+        try:
+            return not bool(pd.isna(value))
+        except (TypeError, ValueError):
+            return True
+
+    @staticmethod
+    def _classify_daily_basic_error(exc: Exception) -> str:
+        text = str(exc).lower()
+        if "circuit open" in text:
+            return "circuit_open"
+        if "timeout" in text or "timed out" in text or "请求超时" in text:
+            return "timeout"
+        if any(
+            keyword in text
+            for keyword in ("permission", "403", "无效的 token", "invalid token")
+        ):
+            return "permission_error"
+        return "provider_error"
+
+    @staticmethod
     def _normalize_snapshot_missing(
         snapshot: Any,
         *,
@@ -400,7 +423,6 @@ class EnhancedDataLayer(DataHub):
         )
         try:
             fundamental = self.get_fundamental(symbol)
-            daily_basic = self.get_daily_basic(symbol, trade_date)
         except Exception as exc:
             return self._apply_missing_semantics(
                 snapshot,
@@ -409,6 +431,82 @@ class EnhancedDataLayer(DataHub):
                 provider_name=str(getattr(self, "last_fundamental_source", "direct")),
                 note=f"fundamental_provider_error: {type(exc).__name__}",
             )
+
+        daily_basic: dict[str, Any] = {}
+        try:
+            daily_basic = self.get_daily_basic(symbol, trade_date) or {}
+        except Exception as exc:
+            self.last_daily_basic_status = self._classify_daily_basic_error(exc)
+            self.last_daily_basic_source = "daily_basic"
+            self.last_daily_basic_reason = str(exc)
+            snapshot.notes.append(f"daily_basic_provider_error: {type(exc).__name__}")
+
+        daily_basic_status = str(
+            getattr(
+                self,
+                "last_daily_basic_status",
+                "available" if daily_basic else "unknown",
+            )
+            or "unknown"
+        )
+        daily_basic_source = str(
+            getattr(self, "last_daily_basic_source", "daily_basic") or "daily_basic"
+        )
+        daily_basic_reason = str(
+            getattr(self, "last_daily_basic_reason", "") or ""
+        )
+        if not daily_basic and daily_basic_status == "unknown":
+            endpoint_reasons = getattr(
+                getattr(self, "_client", None),
+                "_endpoint_circuit_reason",
+                {},
+            )
+            if isinstance(endpoint_reasons, dict):
+                endpoint_reason = str(endpoint_reasons.get("daily_basic", "") or "")
+                if endpoint_reason:
+                    daily_basic_status = self._classify_daily_basic_error(
+                        RuntimeError(endpoint_reason)
+                    )
+                    daily_basic_source = "tushare_daily_basic"
+                    daily_basic_reason = endpoint_reason
+        valuation_values = {
+            "pe": (
+                daily_basic.get("pe")
+                if self._has_metric_value(daily_basic.get("pe"))
+                else getattr(fundamental, "pe", None)
+            ),
+            "pb": (
+                daily_basic.get("pb")
+                if self._has_metric_value(daily_basic.get("pb"))
+                else getattr(fundamental, "pb", None)
+            ),
+            "ps": (
+                daily_basic.get("ps")
+                if self._has_metric_value(daily_basic.get("ps"))
+                else getattr(fundamental, "ps", None)
+            ),
+            "dividend_yield": (
+                daily_basic.get("dividend_yield")
+                if self._has_metric_value(daily_basic.get("dividend_yield"))
+                else getattr(fundamental, "dividend_yield", None)
+            ),
+        }
+        daily_basic_valuation_available = any(
+            self._has_metric_value(daily_basic.get(field))
+            for field in ("pe", "pb", "ps", "dividend_yield")
+        )
+        valuation_available = any(
+            self._has_metric_value(value)
+            for value in valuation_values.values()
+        )
+        if daily_basic_valuation_available:
+            valuation_source = daily_basic_source
+        elif valuation_available:
+            valuation_source = str(
+                getattr(self, "last_fundamental_source", "direct")
+            )
+        else:
+            valuation_source = "neutral"
 
         raw_values = {
             "roe": getattr(fundamental, "roe", None),
@@ -420,27 +518,65 @@ class EnhancedDataLayer(DataHub):
             "debt_ratio": getattr(fundamental, "debt_ratio", None),
             "current_ratio": getattr(fundamental, "current_ratio", None),
             "cash_flow": getattr(fundamental, "cash_flow", None),
-            "pe": daily_basic.get("pe", getattr(fundamental, "pe", None)),
-            "pb": daily_basic.get("pb", getattr(fundamental, "pb", None)),
-            "ps": daily_basic.get("ps", getattr(fundamental, "ps", None)),
-            "dividend_yield": daily_basic.get(
-                "dividend_yield",
-                getattr(fundamental, "dividend_yield", None),
-            ),
+            **valuation_values,
         }
         available_fields = 0
         for field, value in raw_values.items():
-            if value is None or pd.isna(value):
+            if not self._has_metric_value(value):
                 continue
             setattr(snapshot, field, float(value))
             available_fields += 1
 
         snapshot.available = available_fields > 0
         snapshot.source = (
-            str(getattr(self, "last_fundamental_source", "direct")) if snapshot.available else "neutral"
+            str(getattr(self, "last_fundamental_source", "direct"))
+            if snapshot.available
+            else "neutral"
         )
         snapshot.provenance["provider_name"] = snapshot.source
         snapshot.data_quality["provider_name"] = snapshot.source
+        daily_basic_global_statuses = {
+            "provider_unavailable",
+            "circuit_open",
+            "timeout",
+            "permission_error",
+            "provider_error",
+            "unsupported",
+        }
+        valuation_missing_scope = (
+            ""
+            if valuation_available
+            else "global"
+            if daily_basic_status in daily_basic_global_statuses
+            else "symbol"
+        )
+        valuation_provider_missing = daily_basic_status in {
+            "provider_unavailable",
+            "unsupported",
+        }
+        valuation_snapshot_missing = (
+            not valuation_available and not valuation_provider_missing
+        )
+        valuation_quality = {
+            "valuation_available": valuation_available,
+            "valuation_source": valuation_source,
+            "valuation_missing_scope": valuation_missing_scope,
+            "valuation_provider_missing": valuation_provider_missing,
+            "valuation_snapshot_missing": valuation_snapshot_missing,
+            "daily_basic_available": daily_basic_valuation_available,
+            "daily_basic_status": daily_basic_status,
+            "daily_basic_source": daily_basic_source,
+            "daily_basic_reason": daily_basic_reason,
+        }
+        snapshot.data_quality.update(valuation_quality)
+        snapshot.provenance.update(valuation_quality)
+        if not valuation_available:
+            note_reason = daily_basic_status or "missing"
+            if daily_basic_reason:
+                note_reason = f"{note_reason}: {daily_basic_reason}"
+            note = f"valuation_snapshot_unavailable: {note_reason}"
+            if note not in snapshot.notes:
+                snapshot.notes.append(note)
         if not snapshot.available:
             return self._apply_missing_semantics(
                 snapshot,

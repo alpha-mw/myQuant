@@ -34,6 +34,7 @@ from quant_investor.reporting.formal_diagnostics import (
     apply_report_decision_guardrail,
     build_holding_decision_diagnostics,
     collect_formal_report_warnings,
+    is_previous_day_realtime_decision_sufficient,
     render_holding_diagnostic_markdown_table,
 )
 from quant_investor.research_run_config import ResolvedReviewModels
@@ -852,12 +853,15 @@ def _theme_label_for_symbol(symbol: str, category: str) -> str:
 def _evidence_quality_label(
     *,
     completeness_passed: bool,
+    decision_data_sufficient: bool,
     analysis_trade_date: str,
     strict_trade_date: str,
     source: str,
 ) -> str:
     if completeness_passed:
         return "高"
+    if decision_data_sufficient:
+        return "中"
     if source == "latest_formal_screening" and analysis_trade_date and analysis_trade_date == strict_trade_date:
         return "中"
     return "中等偏弱"
@@ -868,6 +872,7 @@ def _build_candidate_pool(
     full_metrics: pd.DataFrame,
     held_symbols: list[str],
     completeness_passed: bool,
+    decision_data_sufficient: bool,
     analysis_trade_date: str,
     strict_trade_date: str,
 ) -> pd.DataFrame:
@@ -894,6 +899,7 @@ def _build_candidate_pool(
     metrics["evidence_quality"] = metrics["candidate_source"].map(
         lambda source: _evidence_quality_label(
             completeness_passed=completeness_passed,
+            decision_data_sufficient=decision_data_sufficient,
             analysis_trade_date=analysis_trade_date,
             strict_trade_date=strict_trade_date,
             source=str(source),
@@ -912,6 +918,7 @@ def _build_switch_plan(
     holdings_review: pd.DataFrame,
     candidate_pool: pd.DataFrame,
     completeness_passed: bool,
+    decision_data_sufficient: bool,
 ) -> pd.DataFrame:
     if holdings_review.empty or candidate_pool.empty:
         return pd.DataFrame()
@@ -934,7 +941,7 @@ def _build_switch_plan(
             and int(candidate_row.rank_full_market) + 120 <= int(weak_row.rank_full_market)
             and ret20_gap >= 0.08
         )
-        actionable = superior and completeness_passed
+        actionable = superior and (completeness_passed or decision_data_sufficient)
         rows.append(
             {
                 "sell_symbol": weak_row.symbol,
@@ -960,8 +967,8 @@ def _build_switch_plan(
                     else "按20%试探性换仓，若候选继续强于卖出对象再递增"
                 ),
                 "no_switch_condition": (
-                    "当前本地快照未完成 strict 完整性，先不把结构优势直接转成实单"
-                    if superior and not completeness_passed
+                    "当前前日线+实时行情口径仍未满足决策数据要求，先不把结构优势直接转成实单"
+                    if superior and not (completeness_passed or decision_data_sufficient)
                     else "若现持仓重新回到前250名且候选优势收敛，则继续持有原仓"
                 ),
             }
@@ -1054,6 +1061,25 @@ def _format_symbol_set(symbols: list[str]) -> str:
     return " / ".join(symbols)
 
 
+def _format_holding_snapshot_set(frame: pd.DataFrame) -> str:
+    if frame.empty:
+        return "无"
+    return " / ".join(_format_holding_snapshot(row) for row in frame.itertuples())
+
+
+def _format_holding_snapshot(row: Any) -> str:
+    buy_price = _safe_float(
+        getattr(row, "buy_price", getattr(row, "avg_cost", 0.0)),
+        0.0,
+    )
+    unrealized_pnl = _safe_float(getattr(row, "unrealized_pnl", 0.0), 0.0)
+    unrealized_pnl_pct = _safe_float(getattr(row, "unrealized_pnl_pct", 0.0), 0.0)
+    return (
+        f"{row.symbol}({row.name}) 持有成本 `{buy_price:.2f}`，"
+        f"PNL `{_format_signed_money(unrealized_pnl)}`（{unrealized_pnl_pct:+.2%}）"
+    )
+
+
 def _format_top_holdings_by_unrealized_pnl(frame: pd.DataFrame, *, positive: bool) -> str:
     if frame.empty or "unrealized_pnl" not in frame.columns:
         return "无"
@@ -1094,6 +1120,10 @@ def _format_signed_money(value: float) -> str:
 
 def _format_holding_advice_line(row: Any) -> str:
     price = _safe_float(getattr(row, "current_price", 0.0), 0.0)
+    buy_price = _safe_float(getattr(row, "buy_price", 0.0), 0.0)
+    buy_value = _safe_float(getattr(row, "buy_value", 0.0), 0.0)
+    unrealized_pnl = _safe_float(getattr(row, "unrealized_pnl", 0.0), 0.0)
+    unrealized_pnl_pct = _safe_float(getattr(row, "unrealized_pnl_pct", 0.0), 0.0)
     stop_price = _safe_float(getattr(row, "stage_stop_price", 0.0), 0.0)
     target_price = _safe_float(getattr(row, "stage_target_price", 0.0), 0.0)
     stop_buffer = _safe_pct(price - stop_price, stop_price)
@@ -1101,8 +1131,10 @@ def _format_holding_advice_line(row: Any) -> str:
     return (
         f"- `{row.symbol}`（{row.name}）：建议 `{row.recommended_action}`，"
         f"持仓角色 `{row.position_role}`；当前价 `{price:.2f}`，"
+        f"持有成本 `{buy_price:.2f}`（成本金额 `{buy_value:,.2f} 元`），"
         f"阶段止损 `{stop_price:.2f}`（缓冲 {stop_buffer:+.2%}），"
-        f"阶段目标 `{target_price:.2f}`；浮动盈亏 `{_format_signed_money(float(row.unrealized_pnl))}`，"
+        f"阶段目标 `{target_price:.2f}`；浮动 PNL `{_format_signed_money(unrealized_pnl)}`"
+        f"（{unrealized_pnl_pct:+.2%}），"
         f"较上一条记录 `{_format_signed_money(float(row.delta_vs_source_record))}`；"
         f"全市场强度排名 `{int(row.rank_full_market)}`，今日涨跌 `{float(row.today_change_pct):+.2f}%`；"
         f"{hard_signal}。"
@@ -1117,11 +1149,12 @@ def _format_candidate_advice_line(row: Any, switch_row: dict[str, Any] | None) -
         if switch_row
         else f"当前在本地候选中位列前 `{int(row.candidate_rank)}`，20日收益 `{float(row.ret20):+.2%}`；"
     )
-    major_risk = (
-        "本地 strict 快照仍有缺口，结论依赖主导本地快照延续性；"
-        if str(row.evidence_quality) != "高"
-        else "若回撤跌破阶段止损位，短线强度可能失真；"
-    )
+    if str(row.evidence_quality) == "高":
+        major_risk = "若回撤跌破阶段止损位，短线强度可能失真；"
+    elif str(row.evidence_quality) == "中":
+        major_risk = "盘中采用前一交易日稳定日线结合实时行情，收盘后需用当日日线复核；"
+    else:
+        major_risk = "本地 strict 快照仍有缺口，结论依赖主导本地快照延续性；"
     trigger = (
         str(switch_row["trigger_threshold"])
         if switch_row
@@ -1198,6 +1231,7 @@ def _resolve_analysis_trade_date(completeness_report: dict[str, Any]) -> str:
 def _build_data_status_summary(
     completeness_report: dict[str, Any],
     analysis_trade_date: str,
+    decision_data_sufficient: bool = False,
 ) -> str:
     target_trade_date = _format_trade_date(completeness_report.get("latest_trade_date"))
     effective_target_trade_date = _format_trade_date(
@@ -1247,13 +1281,17 @@ def _build_data_status_summary(
         extras.insert(0, f"阻塞缺口 `{blocking_count}` 个")
     else:
         extras.insert(0, "阻塞缺口 `0` 个")
-    return base + "（" + "；".join(extras) + "）"
+    suffix = "（" + "；".join(extras) + "）"
+    if decision_data_sufficient and _format_trade_date(analysis_trade_date) != effective_target_trade_date:
+        suffix += "；盘中决策口径接受前一交易日稳定日线结合实时行情，当日 strict 日线未出不视为决策阻断。"
+    return base + suffix
 
 
 def _build_data_snapshot_lines(
     completeness_report: dict[str, Any],
     quote_snapshot: str,
     analysis_trade_date: str,
+    decision_data_sufficient: bool = False,
 ) -> list[str]:
     categories = dict(completeness_report.get("categories", {}) or {})
     full_a = dict(categories.get("full_a", {}) or {})
@@ -1284,6 +1322,11 @@ def _build_data_snapshot_lines(
             else "- 指数/持仓盘中快照：`N/A`，本轮全部结论基于本地日线快照。"
         ),
     ]
+    if decision_data_sufficient:
+        lines.append(
+            "- 决策数据口径：`盘中前日线+实时行情可用`；当日 strict 日线缺口仅作数据披露，"
+            "不自动降级正式投资结论。"
+        )
 
     pre_listing = list(completeness_report.get("pre_listing_symbols", []) or [])
     if pre_listing:
@@ -1423,8 +1466,10 @@ def _build_notes_payload(
             switch_text = "否，但已形成预备换仓对象。"
         else:
             switch_text = "否，先保留观察池。"
+        sell_label = f"{top_switch['sell_symbol']} {top_switch['sell_name']}"
+        buy_label = f"{top_switch['buy_symbol']} {top_switch['buy_name']}"
         switch_detail_text = (
-            f"{top_switch['sell_symbol']} -> {top_switch['buy_symbol']}，优先级 `{top_switch['priority']}`，"
+            f"{sell_label} -> {buy_label}，优先级 `{top_switch['priority']}`，"
             f"触发条件：{top_switch['trigger_threshold']}"
         )
 
@@ -1533,6 +1578,16 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         [quote_payload.get(code, {}).get("time", "") for code in index_quote_codes + holding_quote_codes],
         default="",
     )
+    diagnostic_completeness_after = {
+        **completeness_after,
+        "quote_snapshot": quote_snapshot,
+    }
+    decision_data_sufficient = is_previous_day_realtime_decision_sufficient(
+        target_date=str(completeness_after.get("effective_target_trade_date") or latest_trade_date or ""),
+        dominant_local_snapshot_date=analysis_trade_date,
+        completeness_state=diagnostic_completeness_after,
+        quote_snapshot=quote_snapshot,
+    )
 
     indices = {
         code: {
@@ -1581,7 +1636,11 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         elif "confidence_hint" in master_hint and master_hint.get("confidence_hint") is not None:
             llm_confidence_value = _safe_float(master_hint.get("confidence_hint"))
             llm_confidence_source = "master_hint.confidence_hint"
-        llm_confidence = float(llm_confidence_value or 0.0)
+        if codex_handoff_active and llm_confidence_value is None:
+            llm_confidence: float | None = None
+            llm_confidence_source = "codex_handoff"
+        else:
+            llm_confidence = float(llm_confidence_value or 0.0)
         llm_conclusion = str(
             recommendation.get("one_line_conclusion")
             or ic_hint.get("thesis")
@@ -1622,7 +1681,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
                 "stage_stop_price": staged_stop,
                 "delta_vs_source_record": round(current_value - previous_value_map.get(symbol, 0.0), 2),
                 "llm_action": llm_action,
-                "llm_confidence": round(llm_confidence, 6),
+                "llm_confidence": round(llm_confidence, 6) if llm_confidence is not None else None,
                 "llm_conclusion": llm_conclusion,
                 "llm_risk_flags": "；".join(str(item).strip() for item in llm_risk_flags if str(item).strip()),
                 "llm_session_id": llm_session_id,
@@ -1654,6 +1713,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         full_metrics=full_metrics,
         held_symbols=holdings_review["symbol"].tolist(),
         completeness_passed=completeness_passed,
+        decision_data_sufficient=decision_data_sufficient,
         analysis_trade_date=analysis_trade_date,
         strict_trade_date=str(completeness_after.get("strict_trade_date") or ""),
     )
@@ -1661,6 +1721,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         holdings_review=holdings_review,
         candidate_pool=candidate_pool,
         completeness_passed=completeness_passed,
+        decision_data_sufficient=decision_data_sufficient,
     )
 
     theme_strength = _summarize_theme_strength(holdings_review)
@@ -1717,13 +1778,25 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         if orders
         else "今天不执行调仓，继续把强修复与弱滞涨的分化再观察一个交易日。"
     )
-    data_status = _build_data_status_summary(completeness_after, analysis_trade_date=analysis_trade_date)
+    data_status = _build_data_status_summary(
+        completeness_after,
+        analysis_trade_date=analysis_trade_date,
+        decision_data_sufficient=decision_data_sufficient,
+    )
     tomorrow_focus = [
         "确认先进材料与光通信的修复能否延续，不让单日反弹误判为全面重启",
         "继续观察 `大族激光 / 中国西电` 是否能重新站回阶段止损位",
         "跟踪科创50 相对沪深300 的强弱差，判断资金是否继续偏向硬科技",
     ]
-    if not completeness_passed:
+    if not completeness_passed and decision_data_sufficient:
+        tomorrow_focus.insert(
+            0,
+            (
+                f"收盘后确认 strict 交易日 `{_format_trade_date(completeness_after.get('strict_trade_date'))}` "
+                "日线落库，并复核盘中前日线+实时行情结论"
+            ),
+        )
+    elif not completeness_passed:
         tomorrow_focus.insert(
             0,
             (
@@ -1746,6 +1819,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         completeness_report=completeness_after,
         quote_snapshot=quote_snapshot,
         analysis_trade_date=analysis_trade_date,
+        decision_data_sufficient=decision_data_sufficient,
     )
     branch_signals_by_symbol = {
         symbol: {
@@ -1787,7 +1861,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     formal_warnings = collect_formal_report_warnings(
         target_date=str(completeness_after.get("effective_target_trade_date") or latest_trade_date or ""),
         dominant_local_snapshot_date=analysis_trade_date,
-        completeness_state=completeness_after,
+        completeness_state=diagnostic_completeness_after,
         holdings_review=holdings_review.to_dict(orient="records"),
         branch_diagnostics=branch_signals_by_symbol,
         fundamental_coverage_by_symbol=fundamental_coverage_by_symbol,
@@ -1798,6 +1872,9 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "effective_call_count": int(review_effective_summary.get("call_count", 0) or 0),
             "attempt_call_count": int(review_attempt_summary.get("call_count", 0) or 0),
             "degraded_symbols": list(degraded_symbols.keys()),
+            "fallback_reasons": list(review_layer.get("fallback_reasons", []) or []),
+            "codex_handoff": codex_handoff_active,
+            "local_llm_disabled": bool(review_layer.get("local_llm_disabled", False)),
         },
     )
     holding_diagnostics = build_holding_decision_diagnostics(
@@ -1898,6 +1975,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         f"- 本次正式记录时间：{timestamp_long}",
         f"- 盘中快照：{quote_snapshot or 'N/A'}",
         f"- 完整性校验：**{'已通过' if completeness_passed else '未通过'}**",
+        f"- 决策数据口径：**{'盘中前日线+实时行情可用' if decision_data_sufficient else 'strict 日线完整性优先'}**",
         "- 分析口径：**直接基于本地已有数据，不自动补数，不把完整性校验作为正式结论前置阻断。**",
         "- 分析链路：**统一 DAG / review-layer（逐持仓主线复核）**",
         "",
@@ -2021,13 +2099,13 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "### 5.1 持仓相对强弱",
             "",
             "- 今日相对最强："
-            + _format_symbol_set(holdings_review.sort_values(
+            + _format_holding_snapshot_set(holdings_review.sort_values(
                 ["today_change_pct", "score_full_market"], ascending=[False, False]
-            ).head(3)["symbol"].tolist()),
+            ).head(3)),
             "- 今日相对最弱："
-            + _format_symbol_set(holdings_review.sort_values(
+            + _format_holding_snapshot_set(holdings_review.sort_values(
                 ["today_change_pct", "score_full_market"], ascending=[True, True]
-            ).head(3)["symbol"].tolist()),
+            ).head(3)),
             "",
             "### 5.2 当前弱点与结构预警",
             "",
@@ -2244,11 +2322,21 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "source_record": source_record,
         "formal_record": True,
         "completeness_passed": completeness_passed,
+        "decision_data_sufficient": decision_data_sufficient,
+        "decision_data_mode": (
+            "previous_day_daily_plus_realtime"
+            if decision_data_sufficient and not completeness_passed
+            else "strict_daily"
+        ),
         "capital_cny": initial_capital,
         "quote_snapshot": quote_snapshot,
         "action_taken_today": bool(orders),
         "analysis_chain": "unified_dag_review_layer_per_holding",
-        "analysis_input_policy": "local_snapshot_no_backfill_no_gate",
+        "analysis_input_policy": (
+            "previous_day_daily_plus_realtime_no_backfill_no_gate"
+            if decision_data_sufficient and not completeness_passed
+            else "local_snapshot_no_backfill_no_gate"
+        ),
         "files": {
             "analysis_report": "analysis_report.md",
             "holdings_review": "holdings_review.csv",
@@ -2277,6 +2365,12 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "freshness_mode": completeness_after.get("freshness_mode"),
             "coverage_ratio": completeness_after.get("coverage_ratio"),
             "blocking_incomplete_count": completeness_after.get("blocking_incomplete_count"),
+            "decision_data_sufficient": decision_data_sufficient,
+            "decision_data_mode": (
+                "previous_day_daily_plus_realtime"
+                if decision_data_sufficient and not completeness_passed
+                else "strict_daily"
+            ),
             "completeness": completeness_after,
             "download_report": str(download_report_path) if download_report_path else None,
         },
@@ -2305,6 +2399,12 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "breadth": breadth,
         "data_status": data_status,
         "completeness": completeness_after,
+        "decision_data_sufficient": decision_data_sufficient,
+        "decision_data_mode": (
+            "previous_day_daily_plus_realtime"
+            if decision_data_sufficient and not completeness_passed
+            else "strict_daily"
+        ),
         "portfolio": {
             "total_value": total_value_after,
             "portfolio_pnl": portfolio_pnl_after,
@@ -2353,6 +2453,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "latest_trade_date": latest_trade_date,
         "analysis_trade_date": analysis_trade_date,
         "completeness_passed": completeness_passed,
+        "decision_data_sufficient": decision_data_sufficient,
         "action_taken_today": bool(orders),
         "switch_action_today": top_switch_action or "none",
         "report_guardrail_label": decision_guardrail.display_label,

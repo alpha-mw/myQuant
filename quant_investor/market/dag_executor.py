@@ -81,6 +81,7 @@ from quant_investor.market.dag.review import _portfolio_master_advisory
 from quant_investor.market.dag.shortlist import _build_shortlist, _build_shortlist_from_bayesian_records
 from quant_investor.market.provider_health import detect_provider_health
 from quant_investor.market.shared_csv_reader import SharedCSVReader
+from quant_investor.market.us_market_cap_filter import USMarketCapFilter
 from quant_investor.llm_provider_priority import resolve_runtime_role_models
 from quant_investor.model_roles import ModelRoleResolution, resolve_model_role
 from quant_investor.reporting.run_artifacts import (
@@ -341,6 +342,11 @@ async def _execute_market_dag_async(
         for category in selected_categories:
             symbols.extend(shared_reader.list_symbols(category))
         symbols = list(dict.fromkeys(symbols))
+    market_cap_filter_metadata: dict[str, Any] = {}
+    if settings.market == "US":
+        symbols, market_cap_filter_metadata = USMarketCapFilter().filter_symbols(symbols, fetch_missing=True)
+        if explicit_symbols:
+            explicit_symbols = list(symbols)
     if mode == "sample":
         symbols = symbols[: (batch_size or settings.default_batch_size)]
 
@@ -367,6 +373,8 @@ async def _execute_market_dag_async(
             requested_symbols=explicit_symbols,
         )
     )
+    if market_cap_filter_metadata:
+        scoped_data_snapshot["market_cap_filter"] = market_cap_filter_metadata
 
     if not symbols:
         empty_context = GlobalContext(
@@ -379,6 +387,7 @@ async def _execute_market_dag_async(
             metadata={
                 "resolver": shared_reader.snapshot(),
                 "data_snapshot": scoped_data_snapshot,
+                "market_cap_filter": market_cap_filter_metadata,
                 "selection_profile": {
                     "funnel_profile": str(funnel_profile or config.FUNNEL_PROFILE).strip().lower() or config.FUNNEL_PROFILE,
                     "trend_windows": list(trend_windows or config.FUNNEL_TREND_WINDOWS),

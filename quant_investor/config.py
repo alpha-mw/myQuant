@@ -13,6 +13,18 @@ MAINLINE_ENV_DEFAULTS: dict[str, str] = {
     "TUSHARE_TOKEN": "",
     "TUSHARE_URL": "http://lianghua.nanyangqiankun.top",
     "TUSHARE_RATE_LIMIT_PER_MIN": "500",
+    "MYQUANT_TUSHARE_AUTO_CLEAN": "1",
+    "MYQUANT_TUSHARE_FACTOR_READINESS": "1",
+    "MYQUANT_TUSHARE_CLEANING_REPORT_DIR": "data/cleaning_reports/tushare",
+    "MYQUANT_TUSHARE_RAW_BACKUP_DIR": "data/raw_backups/tushare",
+    "MYQUANT_TUSHARE_QUARANTINE_DIR": "data/quarantine/tushare",
+    "MYQUANT_TUSHARE_FACTOR_READINESS_DIR": "data/factor_readiness/tushare",
+    "MYQUANT_TUSHARE_STORAGE_AUDIT": "1",
+    "MYQUANT_TUSHARE_PARQUET_SHADOW_WRITE": "0",
+    "MYQUANT_TUSHARE_PARQUET_CANONICAL": "0",
+    "MYQUANT_TUSHARE_PARQUET_DIR": "data/cn_market_parquet",
+    "MYQUANT_TUSHARE_PARQUET_COMPRESSION": "snappy",
+    "MYQUANT_TUSHARE_DELETE_REDUNDANT_CSV": "0",
     "MYQUANT_LLM_HANDOFF": "codex",
     "MYQUANT_DISABLE_LOCAL_LLM": "true",
     "KIMI_API_KEY": "",
@@ -84,6 +96,13 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return bool(default)
+    return str(raw_value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _env_str(
     name: str,
     default: str,
@@ -127,6 +146,54 @@ class Config:
     TUSHARE_RATE_LIMIT_PER_MIN: int = _env_int(
         'TUSHARE_RATE_LIMIT_PER_MIN',
         int(MAINLINE_ENV_DEFAULTS['TUSHARE_RATE_LIMIT_PER_MIN']),
+    )
+    TUSHARE_AUTO_CLEAN: bool = _env_bool(
+        'MYQUANT_TUSHARE_AUTO_CLEAN',
+        MAINLINE_ENV_DEFAULTS['MYQUANT_TUSHARE_AUTO_CLEAN'] == '1',
+    )
+    TUSHARE_FACTOR_READINESS: bool = _env_bool(
+        'MYQUANT_TUSHARE_FACTOR_READINESS',
+        MAINLINE_ENV_DEFAULTS['MYQUANT_TUSHARE_FACTOR_READINESS'] == '1',
+    )
+    TUSHARE_CLEANING_REPORT_DIR: str = _env_str(
+        'MYQUANT_TUSHARE_CLEANING_REPORT_DIR',
+        MAINLINE_ENV_DEFAULTS['MYQUANT_TUSHARE_CLEANING_REPORT_DIR'],
+    )
+    TUSHARE_RAW_BACKUP_DIR: str = _env_str(
+        'MYQUANT_TUSHARE_RAW_BACKUP_DIR',
+        MAINLINE_ENV_DEFAULTS['MYQUANT_TUSHARE_RAW_BACKUP_DIR'],
+    )
+    TUSHARE_QUARANTINE_DIR: str = _env_str(
+        'MYQUANT_TUSHARE_QUARANTINE_DIR',
+        MAINLINE_ENV_DEFAULTS['MYQUANT_TUSHARE_QUARANTINE_DIR'],
+    )
+    TUSHARE_FACTOR_READINESS_DIR: str = _env_str(
+        'MYQUANT_TUSHARE_FACTOR_READINESS_DIR',
+        MAINLINE_ENV_DEFAULTS['MYQUANT_TUSHARE_FACTOR_READINESS_DIR'],
+    )
+    TUSHARE_STORAGE_AUDIT: bool = _env_bool(
+        'MYQUANT_TUSHARE_STORAGE_AUDIT',
+        MAINLINE_ENV_DEFAULTS['MYQUANT_TUSHARE_STORAGE_AUDIT'] == '1',
+    )
+    TUSHARE_PARQUET_SHADOW_WRITE: bool = _env_bool(
+        'MYQUANT_TUSHARE_PARQUET_SHADOW_WRITE',
+        MAINLINE_ENV_DEFAULTS['MYQUANT_TUSHARE_PARQUET_SHADOW_WRITE'] == '1',
+    )
+    TUSHARE_PARQUET_CANONICAL: bool = _env_bool(
+        'MYQUANT_TUSHARE_PARQUET_CANONICAL',
+        MAINLINE_ENV_DEFAULTS['MYQUANT_TUSHARE_PARQUET_CANONICAL'] == '1',
+    )
+    TUSHARE_PARQUET_DIR: str = _env_str(
+        'MYQUANT_TUSHARE_PARQUET_DIR',
+        MAINLINE_ENV_DEFAULTS['MYQUANT_TUSHARE_PARQUET_DIR'],
+    )
+    TUSHARE_PARQUET_COMPRESSION: str = _env_str(
+        'MYQUANT_TUSHARE_PARQUET_COMPRESSION',
+        MAINLINE_ENV_DEFAULTS['MYQUANT_TUSHARE_PARQUET_COMPRESSION'],
+    )
+    TUSHARE_DELETE_REDUNDANT_CSV: bool = _env_bool(
+        'MYQUANT_TUSHARE_DELETE_REDUNDANT_CSV',
+        MAINLINE_ENV_DEFAULTS['MYQUANT_TUSHARE_DELETE_REDUNDANT_CSV'] == '1',
     )
 
     # LLM / 外部 API 凭据

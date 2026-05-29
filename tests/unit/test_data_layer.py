@@ -15,6 +15,7 @@ from quant_investor.enhanced_data_layer import (
     _normalize_ohlcv_frame,
     normalize_kline_frame_for_model,
 )
+from quant_investor.data.models import FundamentalData
 from quant_investor.branch_contracts import (
     CorporateDocumentSnapshot,
     ForecastSnapshot,
@@ -274,6 +275,127 @@ class TestSnapshotFallbacks:
         assert symbol_missing.data_quality["missing_scope"] == "symbol"
         assert symbol_missing.data_quality["provider_missing"] is False
         assert symbol_missing.data_quality["snapshot_missing"] is True
+
+    def test_daily_basic_circuit_open_degrades_valuation_not_financials(self):
+        class _DailyBasicCircuitLayer(EnhancedDataLayer):
+            def __init__(self):
+                self.last_fundamental_source = "tushare_cn"
+                self.last_daily_basic_status = "unknown"
+                self.last_daily_basic_source = "unknown"
+                self.last_daily_basic_reason = ""
+                self._client = type(
+                    "_Client",
+                    (),
+                    {
+                        "_endpoint_circuit_reason": {
+                            "daily_basic": (
+                                "Tushare circuit open for daily_basic 59.0s: "
+                                "read timed out via 127.0.0.1:6152"
+                            )
+                        }
+                    },
+                )()
+
+            def get_fundamental(self, symbol):
+                return FundamentalData(
+                    symbol=symbol,
+                    roe=0.18,
+                    gross_margin=0.35,
+                    revenue_growth=0.14,
+                    profit_growth=0.12,
+                    debt_ratio=0.28,
+                    current_ratio=1.6,
+                )
+
+            def get_daily_basic(self, symbol, trade_date):
+                return {}
+
+        snapshot = (
+            _DailyBasicCircuitLayer().get_point_in_time_fundamental_snapshot(
+                "000001.SZ",
+                "2026-05-22",
+            )
+        )
+
+        assert snapshot.available is True
+        assert snapshot.roe == pytest.approx(0.18)
+        assert snapshot.pe == 0.0
+        assert snapshot.data_quality["valuation_available"] is False
+        assert snapshot.data_quality["valuation_missing_scope"] == "global"
+        assert snapshot.data_quality["daily_basic_status"] == "circuit_open"
+        assert any(
+            "valuation_snapshot_unavailable" in note
+            for note in snapshot.notes
+        )
+
+    def test_fundamental_branch_disables_valuation_when_daily_basic_down(self):
+        class _StubDataLayer:
+            def get_point_in_time_fundamental_snapshot(self, symbol, as_of):
+                return FundamentalSnapshot(
+                    symbol=symbol,
+                    available=True,
+                    roe=0.18,
+                    gross_margin=0.35,
+                    revenue_growth=0.14,
+                    profit_growth=0.12,
+                    debt_ratio=0.28,
+                    current_ratio=1.6,
+                    data_quality={
+                        "valuation_available": False,
+                        "valuation_missing_scope": "global",
+                        "daily_basic_status": "circuit_open",
+                    },
+                )
+
+            def get_earnings_forecast_snapshot(self, symbol, as_of):
+                return ForecastSnapshot(symbol=symbol, available=False)
+
+            def get_management_snapshot(self, symbol, as_of):
+                return ManagementSnapshot(symbol=symbol, available=False)
+
+            def get_ownership_snapshot(self, symbol, as_of):
+                return OwnershipSnapshot(symbol=symbol, available=False)
+
+            def get_document_semantic_snapshot(self, symbol, as_of):
+                return CorporateDocumentSnapshot(symbol=symbol, available=False)
+
+        dates = pd.bdate_range("2026-05-01", periods=5)
+        data_bundle = UnifiedDataBundle(
+            market="CN",
+            symbols=["000001.SZ"],
+            symbol_data={
+                "000001.SZ": pd.DataFrame(
+                    {
+                        "date": dates,
+                        "close": np.linspace(10, 11, len(dates)),
+                    }
+                )
+            },
+            metadata={"end_date": "20260522"},
+        )
+
+        branch = FundamentalBranch(
+            data_layer=_StubDataLayer(),
+            stock_pool=["000001.SZ"],
+            enable_document_semantics=True,
+        )
+        result = branch.run(data_bundle)
+
+        module_coverages = result.signals["module_coverages"]
+        missing_modules = (
+            result.signals["quality_breakdown"]["000001.SZ"]["missing_modules"]
+        )
+
+        assert module_coverages["financial_quality"] == "available"
+        assert module_coverages["valuation"] == "disabled_global"
+        assert missing_modules == [
+            "forecast_revision",
+            "valuation",
+            "management_governance",
+            "ownership",
+            "document_semantics",
+        ]
+        assert any("估值 全局不可用" in note for note in result.coverage_notes)
 
     def test_document_semantics_missing_only_enters_coverage(self):
         class _StubDataLayer:

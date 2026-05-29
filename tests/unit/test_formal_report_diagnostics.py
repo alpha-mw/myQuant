@@ -94,6 +94,121 @@ def test_collect_warnings_for_stale_snapshot_and_all_zero_confidence():
     assert guardrail.display_label != "no_action"
 
 
+def test_collect_warnings_treats_codex_handoff_as_expected_llm_path():
+    warnings = collect_formal_report_warnings(
+        target_date="20260427",
+        dominant_local_snapshot_date="20260424",
+        completeness_state={"complete": False, "blocking_incomplete_count": 7302},
+        holdings_review=[
+            {
+                "symbol": "601869.SH",
+                "name": "长飞光纤",
+                "llm_confidence": None,
+                "llm_effective_calls": 0,
+                "llm_confidence_source": "codex_handoff",
+            }
+        ],
+        review_layer_diagnostics={
+            "effective_call_count": 0,
+            "codex_handoff": True,
+            "local_llm_disabled": True,
+            "fallback_reasons": ["local_llm_disabled_codex_handoff"],
+        },
+    )
+
+    codes = [item.code for item in warnings]
+    assert "stale_snapshot" in codes
+    assert "llm_confidence_unavailable" not in codes
+
+    diagnostics = build_holding_decision_diagnostics(
+        holdings_review=[
+            {
+                "symbol": "601869.SH",
+                "name": "长飞光纤",
+                "llm_confidence": None,
+                "llm_effective_calls": 0,
+                "llm_confidence_source": "codex_handoff",
+            }
+        ],
+        warnings=warnings,
+        provisional_label_by_symbol={"601869.SH": "继续持有"},
+        data_date_by_symbol={"601869.SH": "20260424"},
+        branch_signals_by_symbol={},
+    )
+    guardrail = apply_report_decision_guardrail(
+        provisional_label="no_action",
+        warnings=warnings,
+        holding_diagnostics=diagnostics,
+        llm_confidences=[None],
+    )
+
+    assert guardrail.display_label == "no_action_evidence_impaired"
+    assert "LLM confidence" not in guardrail.arbitration_note
+    assert "全零" not in guardrail.arbitration_note
+
+
+def test_intraday_previous_day_realtime_cover_keeps_clean_decision_label():
+    holdings_review = [
+        {
+            "symbol": "601869.SH",
+            "name": "长飞光纤",
+            "llm_confidence": None,
+            "llm_effective_calls": 0,
+            "llm_confidence_source": "codex_handoff",
+            "recommended_action": "继续持有",
+        }
+    ]
+    warnings = collect_formal_report_warnings(
+        target_date="20260520",
+        dominant_local_snapshot_date="20260519",
+        completeness_state={
+            "complete": False,
+            "blocking_incomplete_count": 7302,
+            "strict_trade_date": "20260520",
+            "stable_trade_date": "20260519",
+            "freshness_mode": "strict",
+            "coverage_threshold": 0.95,
+            "quote_snapshot": "20260520101603",
+            "categories": {
+                "full_a": {
+                    "expected": 5502,
+                    "date_counts": {"20260519": 5433},
+                }
+            },
+        },
+        holdings_review=holdings_review,
+        review_layer_diagnostics={
+            "effective_call_count": 0,
+            "codex_handoff": True,
+            "local_llm_disabled": True,
+            "fallback_reasons": ["local_llm_disabled_codex_handoff"],
+        },
+    )
+
+    stale_warning = next(item for item in warnings if item.code == "stale_snapshot")
+    assert stale_warning.severity == "info"
+    assert stale_warning.decision_impact == "disclosure_only"
+    assert "不视为决策阻断" in stale_warning.human_message
+
+    diagnostics = build_holding_decision_diagnostics(
+        holdings_review=holdings_review,
+        warnings=warnings,
+        provisional_label_by_symbol={"601869.SH": "继续持有"},
+        data_date_by_symbol={"601869.SH": "20260519"},
+        branch_signals_by_symbol={},
+    )
+    guardrail = apply_report_decision_guardrail(
+        provisional_label="no_action",
+        warnings=warnings,
+        holding_diagnostics=diagnostics,
+        llm_confidences=[None],
+    )
+
+    assert diagnostics[0].branch_vs_final in {"unknown", "aligned"}
+    assert guardrail.display_label == "no_action"
+    assert guardrail.material_warning_count == 0
+
+
 def test_collect_warnings_distinguishes_provider_and_snapshot_missing():
     warnings = collect_formal_report_warnings(
         target_date="20260424",

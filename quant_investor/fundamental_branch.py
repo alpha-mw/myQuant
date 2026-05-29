@@ -76,9 +76,26 @@ class FundamentalBranch:
         return result
 
     def _module_status(self, module_name: str, snapshot: Any) -> str:
-        if module_name == "document_semantics" and not self.enable_document_semantics:
+        if (
+            module_name == "document_semantics"
+            and not self.enable_document_semantics
+        ):
             return "disabled_global"
         data_quality = dict(getattr(snapshot, "data_quality", {}) or {})
+        if (
+            module_name == "valuation"
+            and data_quality.get("valuation_available") is False
+        ):
+            valuation_scope = str(
+                data_quality.get("valuation_missing_scope")
+                or data_quality.get("missing_scope", "")
+            ).strip().lower()
+            if (
+                bool(data_quality.get("valuation_provider_missing"))
+                or valuation_scope == "global"
+            ):
+                return "disabled_global"
+            return "missing_symbol"
         missing_scope = str(data_quality.get("missing_scope", "")).strip().lower()
         if bool(data_quality.get("provider_missing")) or missing_scope == "global":
             return "disabled_global"
@@ -228,7 +245,38 @@ class FundamentalBranch:
                 component_scores[symbol][name] = round(component.score, 4)
                 status = self._module_status(name, snapshots[name])
                 label = self.MODULE_LABELS[name]
-                snapshot_data_quality = dict(getattr(snapshots[name], "data_quality", {}) or {})
+                snapshot_data_quality = dict(
+                    getattr(snapshots[name], "data_quality", {}) or {}
+                )
+                missing_scope = str(
+                    snapshot_data_quality.get("missing_scope", "") or ""
+                )
+                provider_missing = bool(
+                    snapshot_data_quality.get("provider_missing", False)
+                )
+                snapshot_missing = bool(
+                    snapshot_data_quality.get("snapshot_missing", False)
+                )
+                if (
+                    name == "valuation"
+                    and snapshot_data_quality.get("valuation_available") is False
+                ):
+                    missing_scope = str(
+                        snapshot_data_quality.get("valuation_missing_scope")
+                        or missing_scope
+                    )
+                    provider_missing = bool(
+                        snapshot_data_quality.get(
+                            "valuation_provider_missing",
+                            provider_missing,
+                        )
+                    )
+                    snapshot_missing = bool(
+                        snapshot_data_quality.get(
+                            "valuation_snapshot_missing",
+                            snapshot_missing,
+                        )
+                    )
                 symbol_module_coverage[name] = {
                     "status": status,
                     "available": bool(component.available),
@@ -242,9 +290,9 @@ class FundamentalBranch:
                         or getattr(snapshots[name], "source", "")
                         or getattr(snapshots[name], "provider", "")
                     ),
-                    "missing_scope": str(snapshot_data_quality.get("missing_scope", "") or ""),
-                    "provider_missing": bool(snapshot_data_quality.get("provider_missing", False)),
-                    "snapshot_missing": bool(snapshot_data_quality.get("snapshot_missing", False)),
+                    "missing_scope": missing_scope,
+                    "provider_missing": provider_missing,
+                    "snapshot_missing": snapshot_missing,
                 }
                 if status == "disabled_global":
                     module_coverage[name]["status"] = "disabled_global"

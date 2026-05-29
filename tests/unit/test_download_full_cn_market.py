@@ -1167,6 +1167,66 @@ def test_download_all_early_stop_rolls_back_to_stable_target_and_aborts_remainin
     assert downloader.stats["stale_cached"] == 10
 
 
+def test_download_all_uses_trade_date_close_probe_before_sampling_symbols(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_module(
+        monkeypatch,
+        freshness_mode="strict",
+        early_stop_sample_size="10",
+        early_stop_stale_ratio="0.80",
+    )
+
+    class SameDayUnavailablePro(FakePro):
+        def daily(self, *args, **kwargs):
+            if kwargs.get("trade_date") == "20260316":
+                return pd.DataFrame(columns=["ts_code", "trade_date", "close"])
+            return super().daily(*args, **kwargs)
+
+    fake_pro = SameDayUnavailablePro()
+    monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
+    monkeypatch.setattr(module.time, "sleep", lambda *_args, **_kwargs: None)
+
+    downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
+    symbols = [f"{idx:06d}.SZ" for idx in range(1, 13)]
+    hs300_dir = tmp_path / "hs300"
+    hs300_dir.mkdir(parents=True, exist_ok=True)
+    for symbol in symbols:
+        pd.DataFrame([{"trade_date": "2026-03-14", "close": 10.0}]).to_csv(
+            hs300_dir / f"{symbol}.csv",
+            index=False,
+        )
+
+    components = {
+        "full_a": symbols,
+        "all": symbols,
+        "hs300": symbols,
+        "zz500": [],
+        "zz1000": [],
+        "stats": {"total_unique": len(symbols)},
+    }
+    monkeypatch.setattr(
+        downloader,
+        "download_category",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("download_category should not be called after same-day probe")
+        ),
+    )
+
+    result = downloader.download_all(components=components, categories=["full_a"])
+
+    assert result["rounds"] == []
+    assert result["config"]["early_stop_reason"] == "strict_same_day_unavailable"
+    assert result["config"]["same_day_close_probe"]["source"] == "daily"
+    assert result["config"]["same_day_close_probe"]["available"] is False
+    assert result["config"]["effective_target_trade_date"] == "20260314"
+    assert result["completeness"]["effective_target_trade_date"] == "20260314"
+    assert result["completeness"]["early_stop_reason"] == "strict_same_day_unavailable"
+    assert result["completeness"]["complete"] is True
+    assert result["categories"]["full_a"] == []
+
+
 def test_download_all_early_stop_when_non_empty_fetch_lags_strict_target(
     monkeypatch,
     tmp_path,

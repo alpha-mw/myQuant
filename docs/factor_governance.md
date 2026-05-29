@@ -614,6 +614,147 @@ The shadow scoring comparison store root is
 These artifacts are append-only or report/dashboard outputs for read-only
 official-versus-shadow comparison. They do not alter runtime behavior.
 
+## Multi-Date Shadow Evidence Collection
+
+Phase 13 adds an offline evidence collection layer for local multi-date shadow
+scoring review. It reads already-computed candidate snapshots, a local
+production factor library, local factor matrices, and optional local audit
+artifacts. It then summarizes whether official rankings and production-factor
+shadow rankings look stable enough to justify a later paper-portfolio
+comparison.
+
+A real sample run uses a manifest of local artifacts:
+
+```bash
+PYTHON=./.venv/bin/python scripts/collect_factor_shadow_evidence.py \
+  --input-manifest data/factor_library/evidence/sample_manifest.json \
+  --output-dir data/factor_library/evidence \
+  --generated-at 2026-04-27T00:00:00Z \
+  --top-n 30 \
+  --min-observation-days 20
+```
+
+The evidence report tracks official versus shadow rank stability with:
+
+- top-N overlap trend: for each date, the official top-N symbols are compared
+  with the shadow top-N symbols; the overlap ratio is
+  `len(overlap_symbols) / min(top_n, candidate_count)`.
+- factor coverage trend: the date-level average of per-candidate covered
+  production factors divided by usable production factors.
+- rank drift trend: the date-level average and maximum absolute difference
+  between official rank and shadow factor rank for candidates that have both.
+- audit blocker/fail day counts: dates with library blockers, alignment audit
+  fail verdicts, tradability audit fail verdicts, and execution-cost warn/fail
+  verdicts.
+
+The default evidence store root is `data/factor_library/evidence`.
+
+- `evidence_date_results.jsonl`
+- `multi_date_evidence_reports.jsonl`
+- `evidence_report.md`
+- `evidence_dashboard.json`
+
+No-runtime-impact boundary: this pass is evidence only. It does not alter
+official scores, stock selection, posterior, `RiskGuard`,
+`PortfolioConstructor`, target weights, orders, providers, LLMs, broker APIs,
+or execution.
+
+Current limitations:
+
+- evidence only;
+- no paper portfolio yet;
+- no official scoring impact;
+- requires local artifacts and candidate snapshots.
+
+## Governed Mined Factor Runtime Admission
+
+The quant branch now has a narrow runtime adapter for mined factors. This
+adapter is intentionally fail-closed: a mined factor can affect quant scoring
+only after it is manually promoted in `quant_investor/factor_registry/
+mined_factors.json`.
+
+Mined-factor lifecycle states are:
+
+- `draft`
+- `research_candidate`
+- `paper_factor`
+- `production_candidate`
+- `production_factor`
+- `deprecated`
+
+Automated review decisions are limited to:
+
+- `reject`
+- `revise`
+- `watchlist`
+- `paper_factor`
+- `production_candidate`
+
+`production_factor` is not an automated review decision. A
+`production_candidate` still requires manual registry promotion before it can be
+consumed by runtime selection.
+
+The mined-factor evaluator records eight gate results:
+
+1. Data safety.
+2. Coverage and stability.
+3. IC / RankIC.
+4. Group returns.
+5. Cost and turnover.
+6. Neutralization and exposure.
+7. Out-of-sample robustness.
+8. Portfolio incremental validation.
+
+Gate 1 failure is a hard reject. Passing Gates 1-4 without enough OOS or
+portfolio-incremental evidence allows only `paper_factor`. All eight gates must
+pass, and production-grade ICIR plus positive-IC-ratio thresholds must be met,
+before the automated decision can reach `production_candidate`.
+
+Runtime quant-branch admission is stricter than review admission. The runtime
+scorer consumes only factors where:
+
+- `state == production_factor`
+- all eight gates passed
+- `weight != 0`
+- no deprecation reason is present
+
+All `draft`, `research_candidate`, `paper_factor`, and `production_candidate`
+records are skipped by design. If the registry has no selectable
+`production_factor`, the DAG quant branch and standalone `QuantAgent` fall back
+to the legacy `short_term_return` / `volatility_penalty` deterministic proxy.
+
+The default registry is empty:
+
+```json
+{
+  "schema_version": "mined-factor-registry.v1",
+  "factors": []
+}
+```
+
+To activate a factor after external research validation and manual approval,
+the registry entry must be explicitly promoted, for example:
+
+```json
+{
+  "name": "momentum_1m",
+  "version": "v1",
+  "state": "production_factor",
+  "implementation": "alpha_mining.FactorLibrary:momentum_1m",
+  "weight": 0.10,
+  "gate_results": [
+    {"gate_id": 1, "gate_key": "data_safety", "passed": true},
+    {"gate_id": 2, "gate_key": "coverage_stability", "passed": true},
+    {"gate_id": 3, "gate_key": "ic_rankic", "passed": true},
+    {"gate_id": 4, "gate_key": "group_returns", "passed": true},
+    {"gate_id": 5, "gate_key": "cost_turnover", "passed": true},
+    {"gate_id": 6, "gate_key": "neutralization_exposure", "passed": true},
+    {"gate_id": 7, "gate_key": "oos_robustness", "passed": true},
+    {"gate_id": 8, "gate_key": "portfolio_incremental", "passed": true}
+  ]
+}
+```
+
 ## Future Roadmap
 
 1. Index-enhancement validation on top of the offline contribution layer.

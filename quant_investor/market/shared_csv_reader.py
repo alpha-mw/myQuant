@@ -13,6 +13,7 @@ from quant_investor.agent_protocol import DataQualityIssue
 from quant_investor.data.storage.csv_reader import CSVReadResult, infer_latest_date_from_frames, peek_latest_date, read_csv_with_diagnostics
 from quant_investor.market.cn_resolver import CNUniverseResolver
 from quant_investor.market.config import get_market_settings
+from quant_investor.market.us_market_cap_filter import USMarketCapFilter
 
 
 @dataclass
@@ -49,6 +50,8 @@ class SharedCSVReader:
         if self.market == "CN" and self.resolver is None:
             self.resolver = CNUniverseResolver(data_dir=str(self.data_dir))
         self.issues: list[DataQualityIssue] = []
+        self.us_market_cap_filter = USMarketCapFilter() if self.market == "US" else None
+        self.last_market_cap_filter_metadata: dict[str, Any] = {}
 
     def snapshot(self) -> dict[str, Any]:
         return self.resolver.snapshot() if self.resolver is not None else {}
@@ -69,7 +72,11 @@ class SharedCSVReader:
         category_dir = self.data_dir / target_category
         if not category_dir.exists():
             return []
-        return sorted(path.stem for path in category_dir.glob("*.csv") if path.stem.strip())
+        symbols = sorted(path.stem for path in category_dir.glob("*.csv") if path.stem.strip())
+        if self.market == "US" and self.us_market_cap_filter is not None:
+            symbols, metadata = self.us_market_cap_filter.filter_symbols(symbols, fetch_missing=True)
+            self.last_market_cap_filter_metadata = metadata
+        return symbols
 
     def resolve_symbol_path(
         self,

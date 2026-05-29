@@ -126,3 +126,25 @@ def test_earnings_forecast_snapshot_falls_back_after_report_rc_permission_error(
     assert calls[1][0] == "forecast"
     assert snapshot.available is True
     assert snapshot.source == "tushare_forecast"
+
+
+def test_daily_basic_records_circuit_open_as_degraded_metadata():
+    source = TushareDataSource()
+
+    class FakeClient:
+        available = True
+
+        def query(self, api_name: str, **kwargs):
+            raise RuntimeError(
+                "Tushare circuit open for daily_basic 59.0s: "
+                "read timed out via 127.0.0.1:6152"
+            )
+
+    source._client = FakeClient()
+
+    payload = source.get_daily_basic("000001.SZ", "20260522")
+
+    assert payload == {}
+    assert source.last_daily_basic_status == "circuit_open"
+    assert source.last_daily_basic_source == "tushare_daily_basic"
+    assert "127.0.0.1:6152" in source.last_daily_basic_reason

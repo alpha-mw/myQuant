@@ -151,6 +151,64 @@ def _stable_sorted_codes(codes: Iterable[str]) -> list[str]:
     return sorted(_dedupe_texts(str(code or "").strip() for code in codes if str(code or "").strip()))
 
 
+def _review_layer_uses_codex_handoff(payload: Mapping[str, Any]) -> bool:
+    data = _coerce_mapping(payload)
+    if bool(data.get("codex_handoff")):
+        return True
+    if bool(data.get("local_llm_disabled")):
+        return True
+    fallback_text = " ".join(str(item or "").strip().lower() for item in _coerce_sequence(data.get("fallback_reasons")))
+    return "codex_handoff" in fallback_text or "local_llm_disabled" in fallback_text
+
+
+def _has_quote_snapshot(value: Any) -> bool:
+    text = str(value or "").strip()
+    return bool(text and text.upper() not in {"N/A", "NONE", "NULL"})
+
+
+def _dominant_full_a_coverage_ratio(completeness: Mapping[str, Any], dominant_date: str | None) -> float:
+    normalized_dominant = (_normalize_date_text(dominant_date) or "").replace("-", "")
+    categories = _coerce_mapping(completeness.get("categories"))
+    full_a = _coerce_mapping(categories.get("full_a"))
+    expected = int(full_a.get("expected", 0) or 0)
+    if expected <= 0:
+        return 0.0
+    date_counts = _coerce_mapping(full_a.get("date_counts"))
+    count = int(date_counts.get(normalized_dominant, 0) or 0)
+    return count / expected
+
+
+def is_previous_day_realtime_decision_sufficient(
+    *,
+    target_date: str | None,
+    dominant_local_snapshot_date: str | None,
+    completeness_state: Mapping[str, Any] | None = None,
+    quote_snapshot: str | None = None,
+) -> bool:
+    """Return whether previous-day daily bars plus realtime quotes are enough for intraday decisions."""
+
+    completeness = _coerce_mapping(completeness_state)
+    normalized_target = _normalize_date_text(target_date)
+    normalized_dominant = _normalize_date_text(dominant_local_snapshot_date)
+    normalized_stable = _normalize_date_text(completeness.get("stable_trade_date"))
+    normalized_strict = _normalize_date_text(completeness.get("strict_trade_date"))
+    if not normalized_target or not normalized_dominant:
+        return False
+    if not _is_date_before(normalized_dominant, normalized_target):
+        return False
+    if normalized_stable and normalized_dominant != normalized_stable:
+        return False
+    if normalized_strict and normalized_strict != normalized_target:
+        return False
+    if not _has_quote_snapshot(quote_snapshot or completeness.get("quote_snapshot")):
+        return False
+
+    coverage_threshold = float(completeness.get("coverage_threshold", 0.95) or 0.95)
+    if _dominant_full_a_coverage_ratio(completeness, normalized_dominant) < coverage_threshold:
+        return False
+    return True
+
+
 def _final_label_from_value(value: Any) -> str:
     text = str(value or "").strip().lower()
     if not text:
@@ -517,7 +575,12 @@ def collect_formal_report_warnings(
     normalized_target_date = _normalize_date_text(target_date)
     normalized_dominant_date = _normalize_date_text(dominant_local_snapshot_date)
     if normalized_target_date and normalized_dominant_date and _is_date_before(normalized_dominant_date, normalized_target_date):
-        severity = "material" if blocking_gap > 0 or not complete else "warning"
+        previous_day_realtime_ok = is_previous_day_realtime_decision_sufficient(
+            target_date=normalized_target_date,
+            dominant_local_snapshot_date=normalized_dominant_date,
+            completeness_state=completeness,
+        )
+        severity = "info" if previous_day_realtime_ok else ("material" if blocking_gap > 0 or not complete else "warning")
         warnings.append(
             ReportWarning(
                 code="stale_snapshot",
@@ -528,8 +591,15 @@ def collect_formal_report_warnings(
                 affected_symbol=None,
                 decision_impact="downgraded_final_label" if severity == "material" else "disclosure_only",
                 human_message=(
-                    f"本地主导快照日期 {normalized_dominant_date} 早于报告目标日期 {normalized_target_date}"
-                    + (f"，阻塞缺口 {blocking_gap} 个。" if blocking_gap > 0 else "。")
+                    (
+                        f"盘中复盘口径采用 {normalized_dominant_date} 稳定日线并结合实时行情，"
+                        f"{normalized_target_date} 当日日线未广泛可用不视为决策阻断。"
+                    )
+                    if previous_day_realtime_ok
+                    else (
+                        f"本地主导快照日期 {normalized_dominant_date} 早于报告目标日期 {normalized_target_date}"
+                        + (f"，阻塞缺口 {blocking_gap} 个。" if blocking_gap > 0 else "。")
+                    )
                 ),
             )
         )
@@ -658,6 +728,7 @@ def collect_formal_report_warnings(
         )
 
     per_symbol_zero_confidence: list[str] = []
+    codex_handoff_active = _review_layer_uses_codex_handoff(review_layer_diagnostics)
     for holding in holdings:
         symbol = str(holding.get("symbol", "")).strip().upper()
         if not symbol:
@@ -666,7 +737,10 @@ def collect_formal_report_warnings(
         llm_effective_calls = int(holding.get("llm_effective_calls", 0) or 0)
         llm_degraded = bool(holding.get("llm_degraded", False))
         confidence_source = str(holding.get("llm_confidence_source", "")).strip()
-        if llm_confidence is None or llm_effective_calls <= 0 or llm_degraded or not confidence_source:
+        if (
+            not codex_handoff_active
+            and (llm_confidence is None or llm_effective_calls <= 0 or llm_degraded or not confidence_source)
+        ):
             warnings.append(
                 ReportWarning(
                     code="llm_confidence_unavailable",
@@ -683,7 +757,7 @@ def collect_formal_report_warnings(
             per_symbol_zero_confidence.append(symbol)
 
     effective_call_count = int(review_layer_diagnostics.get("effective_call_count", 0) or 0)
-    if effective_call_count <= 0:
+    if effective_call_count <= 0 and not codex_handoff_active:
         warnings.append(
             ReportWarning(
                 code="llm_confidence_unavailable",
@@ -766,8 +840,12 @@ def reconcile_branch_vs_final(
         )
         return "conflict_requires_arbitration", note
 
-    warning_codes = {item.code for item in warnings or []}
-    if clean_hold_like and warning_codes.intersection(
+    material_warning_codes = {
+        item.code
+        for item in warnings or []
+        if item.severity == "material" or item.decision_impact == "downgraded_final_label"
+    }
+    if clean_hold_like and material_warning_codes.intersection(
         {"stale_snapshot", "provider_missing", "snapshot_missing", "llm_confidence_unavailable", "evaluator_unavailable"}
     ):
         return (
@@ -884,7 +962,12 @@ def apply_report_decision_guardrail(
             arbitration_note = "存在冲突分支信号，但结构化仲裁信息完整，报告显示标签已按仲裁方式降级。"
         else:
             display_label = "no_action_evidence_impaired"
-            arbitration_note = "当前 formal review 存在 material 级证据缺口或全零 LLM confidence，报告显示标签已降级。"
+            if material_warnings and all_zero_llm_confidence:
+                arbitration_note = "当前 formal review 同时存在 material 级证据缺口和全零 LLM confidence，报告显示标签已降级。"
+            elif material_warnings:
+                arbitration_note = "当前 formal review 存在 material 级证据缺口，报告显示标签已降级。"
+            else:
+                arbitration_note = "当前 formal review 存在全零 LLM confidence，报告显示标签已降级。"
     elif normalized_provisional in {"hold_arbitrated", "no_action_evidence_impaired"}:
         display_label = normalized_provisional
 
@@ -947,6 +1030,7 @@ __all__ = [
     "apply_report_decision_guardrail",
     "build_holding_decision_diagnostics",
     "collect_formal_report_warnings",
+    "is_previous_day_realtime_decision_sufficient",
     "render_holding_diagnostic_markdown_table",
     "reconcile_branch_vs_final",
 ]

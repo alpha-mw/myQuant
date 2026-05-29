@@ -223,15 +223,28 @@ def _build_us_snapshot(
     data_dir: Path,
 ) -> dict[str, Any]:
     reader = SharedCSVReader(market="US", data_dir=data_dir)
-    category_symbol_counts = {
-        category: _count_csvs(data_dir / category)
+    symbols_by_category = {
+        category: reader.list_symbols(category)
         for category in selected_categories
         if (data_dir / category).exists()
     }
+    category_symbol_counts = {
+        category: len(symbols)
+        for category, symbols in symbols_by_category.items()
+    }
+    market_cap_filter_metadata = dict(reader.last_market_cap_filter_metadata)
+    symbols_to_check = requested_symbols or list(
+        dict.fromkeys(
+            symbol
+            for symbols in symbols_by_category.values()
+            for symbol in symbols
+            if str(symbol or "").strip()
+        )
+    )
     observed_dates: dict[str, str] = {}
     missing_requested_symbols: list[str] = []
     unreadable_requested_symbols: list[str] = []
-    for symbol in requested_symbols:
+    for symbol in symbols_to_check:
         latest = reader.peek_symbol_latest_date(symbol, universe_key=universe_key)
         if latest:
             observed_dates[symbol] = latest
@@ -255,6 +268,7 @@ def _build_us_snapshot(
         "local_latest_trade_date": local_latest_trade_date,
         "freshness_mode": _freshness_mode_for_market("US"),
         "category_symbol_counts": category_symbol_counts,
+        "market_cap_filter": market_cap_filter_metadata,
         "date_distribution_top": date_distribution_top,
         "data_directories": data_directories,
         "resolver_priority": list(selected_categories),
@@ -264,6 +278,7 @@ def _build_us_snapshot(
         "unreadable_requested_symbols": unreadable_requested_symbols,
         "stale_requested_symbols": [],
         "requested_symbol_count": len(requested_symbols),
+        "observed_symbol_count": len(observed_dates),
         "inventory_symbol_count": sum(category_symbol_counts.values()),
     }
 

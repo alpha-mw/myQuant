@@ -5,6 +5,7 @@ Fundamental Branch 子组件。
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 from quant_investor.branch_contracts import (
@@ -116,7 +117,23 @@ def valuation_analyzer(snapshot: FundamentalSnapshot) -> FundamentalComponentRes
         available=snapshot.available,
         used_features=["pe", "pb", "ps", "dividend_yield"],
     )
-    if not snapshot.available:
+    valuation_available = snapshot.data_quality.get("valuation_available")
+    valuation_metrics = (
+        snapshot.pe,
+        snapshot.pb,
+        snapshot.ps,
+        snapshot.dividend_yield,
+    )
+    has_valuation_metric = any(
+        _has_nonzero_metric(value)
+        for value in valuation_metrics
+    )
+    result.available = bool(
+        snapshot.available
+        and valuation_available is not False
+        and has_valuation_metric
+    )
+    if not result.available:
         result.risks.append("估值快照缺失，估值模块回退中性。")
         return result
 
@@ -147,6 +164,18 @@ def valuation_analyzer(snapshot: FundamentalSnapshot) -> FundamentalComponentRes
 
     result.score = _clamp(score, -1.0, 1.0)
     return result
+
+
+def _has_nonzero_metric(value: float | int | None) -> bool:
+    if value is None:
+        return False
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(numeric):
+        return False
+    return numeric != 0.0
 
 
 def management_governance_analyzer(snapshot: ManagementSnapshot) -> FundamentalComponentResult:
