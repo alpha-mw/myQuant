@@ -101,6 +101,7 @@ def test_market_analyze_cli_passes_agent_layer_args(monkeypatch):
     assert captured["master_timeout"] == 60.0
     assert captured["funnel_profile"] == "momentum_leader"
     assert captured["max_candidates"] == 150
+    assert captured["shortlist_size"] == 50
     assert captured["trend_windows"] == [15, 45, 120]
     assert captured["volume_spike_threshold"] == 1.5
     assert captured["breakout_distance_pct"] == 0.05
@@ -211,6 +212,7 @@ def test_market_run_cli_dispatches_to_unified_pipeline(monkeypatch):
     assert captured["master_timeout"] == 55.0
     assert captured["funnel_profile"] == "momentum_leader"
     assert captured["max_candidates"] == 180
+    assert captured["shortlist_size"] == 50
     assert captured["trend_windows"] == [20, 60, 120]
     assert captured["volume_spike_threshold"] == 1.4
     assert captured["breakout_distance_pct"] == 0.04
@@ -285,6 +287,7 @@ def test_unified_pipeline_stage1_builds_advisory_snapshot(monkeypatch):
     assert captured_analysis["master_reasoning_effort"] == "high"
     assert captured_analysis["agent_timeout"] == 20.0
     assert captured_analysis["master_timeout"] == 40.0
+    assert captured_analysis["shortlist_size"] == 50
 
 
 def test_unified_pipeline_uses_local_snapshot_even_when_data_is_stale(monkeypatch):
@@ -560,7 +563,7 @@ def test_run_market_analysis_exposes_role_metadata(monkeypatch, tmp_path):
             "review_bundle": _Payload(
                 {
                     "ic_hints_by_symbol": {"000001.SZ": {"action": "buy"}},
-                    "branch_schema_version": "branch-schema.v12.unified-mainline",
+                    "branch_schema_version": "branch-schema.v13.four-branch",
                     "ic_protocol_version": "ic.v1",
                     "report_protocol_version": "report.v1",
                 }
@@ -642,6 +645,8 @@ def test_run_market_analysis_exposes_role_metadata(monkeypatch, tmp_path):
     assert captured_dag["data_snapshot"]["local_latest_trade_date"] == "20260326"
     assert output["analysis_meta"]["model_role_metadata"]["branch_model"] == "deepseek-reasoner"
     assert output["analysis_meta"]["master_model"] == "moonshot-v1-128k"
+    assert output["analysis_meta"]["bayesian_shortlist_symbols"] == ["000001.SZ"]
+    assert output["analysis_meta"]["bayesian_record_count"] == 0
     assert output["analysis_meta"]["data_snapshot"]["local_latest_trade_date"] == "20260326"
     assert any(
         step["stage"] == "master_synthesis"

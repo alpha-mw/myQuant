@@ -17,12 +17,12 @@ from quant_investor.agent_protocol import (
     WhatIfPlan,
     StockReviewBundle,
 )
+from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
 from quant_investor.reporting.action_consistency_guard import ActionConsistencyGuard
 from quant_investor.reporting.diagnostics_bucketizer import dedupe_texts, sanitize_report_text
 from quant_investor.reporting.executive_summary import confidence_label
 
 BRANCH_LABELS = {
-    "kline": "K线",
     "quant": "量化",
     "fundamental": "基本面",
     "intelligence": "智能融合",
@@ -63,7 +63,9 @@ class ConclusionRenderer:
         branch_summaries: Mapping[str, BranchVerdict | Mapping[str, Any]],
     ) -> dict[str, str]:
         result: dict[str, str] = {}
-        for branch_name in sorted(branch_summaries):
+        for branch_name in CANONICAL_BRANCH_ORDER:
+            if branch_name not in branch_summaries:
+                continue
             branch = branch_summaries[branch_name]
             if isinstance(branch, BranchVerdict):
                 thesis = branch.thesis
@@ -171,7 +173,7 @@ class ConclusionRenderer:
             ]
         )
 
-        for branch_name in ["kline", "quant", "fundamental", "intelligence", "macro"]:
+        for branch_name in CANONICAL_BRANCH_ORDER:
             if branch_name not in branch_conclusions:
                 continue
             lines.extend(

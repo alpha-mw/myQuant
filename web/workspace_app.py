@@ -9,11 +9,14 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+from quant_investor.versioning import ARCHITECTURE_VERSION
 from web.config import CORS_ORIGINS, PROJECT_ROOT
 from web.api.data import router as data_router
 from web.routers import presets, research, settings, universe
 from web.services.run_history_store import history_store
 
+
+WORKSPACE_API_VERSION = ARCHITECTURE_VERSION.split("-", 1)[0]
 
 FRONTEND_STATIC_EXTENSIONS = {
     ".css",
@@ -72,7 +75,7 @@ async def lifespan(_app: FastAPI):
 def create_app(frontend_dist: Path | None = None) -> FastAPI:
     app = FastAPI(
         title="myQuant Research Workspace",
-        version="12.0.0",
+        version=WORKSPACE_API_VERSION,
         lifespan=lifespan,
     )
 
@@ -92,7 +95,7 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
 
     @app.get("/api/health")
     async def health() -> dict[str, object]:
-        return {"ok": True, "version": "12.0.0"}
+        return {"ok": True, "version": WORKSPACE_API_VERSION}
 
     frontend_dist = frontend_dist or (PROJECT_ROOT / "frontend" / "dist")
     if frontend_dist.exists():

@@ -323,7 +323,7 @@ def build_execution_trace(
         ExecutionTraceStep(
             stage="deterministic_funnel",
             role="deterministic",
-            model="quant+kline gates",
+            model="quant gates",
             success=bool(candidate_count or researchable_count),
             conclusion=(
                 f"Deterministic Funnel 已将可研究标的 {researchable_count or 0} 只压缩到候选 {candidate_count or 0} 只。"

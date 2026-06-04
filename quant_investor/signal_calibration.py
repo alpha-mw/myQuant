@@ -2,7 +2,7 @@
 """
 信号校准层
 
-统一将五个研究分支映射为可比较的预期收益、置信度和可靠度。
+统一将四个研究分支映射为可比较的预期收益、置信度和可靠度。
 """
 
 from __future__ import annotations
@@ -21,27 +21,21 @@ class SignalCalibrator:
     """把不同研究分支映射到统一的信号量纲。"""
 
     HORIZON_BY_BRANCH = {
-        "kline": 5,
         "quant": 5,
-        "llm_debate": 10,
         "fundamental": 30,
         "intelligence": 10,
         "macro": 20,
     }
 
     RETURN_SCALE_BY_BRANCH = {
-        "kline": 0.14,
         "quant": 0.12,
-        "llm_debate": 0.08,
         "fundamental": 0.09,
         "intelligence": 0.08,
         "macro": 0.05,
     }
 
     DEFAULT_MODE_BY_BRANCH = {
-        "kline": "kline_dual_model",
         "quant": "alpha_research",
-        "llm_debate": "structured_research_debate",
         "fundamental": "fundamental_snapshot_fusion",
         "intelligence": "structured_intelligence_fusion",
         "macro": "macro_terminal",

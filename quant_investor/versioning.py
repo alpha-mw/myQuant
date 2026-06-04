@@ -6,11 +6,11 @@ from __future__ import annotations
 
 from quant_investor.branch_config import get_default_branch_weights
 
-ARCHITECTURE_VERSION = "12.0.0-stable"
+ARCHITECTURE_VERSION = "13.0.0-stable"
 
 AGENT_SCHEMA_VERSION = "2026-03-23.agent.v1"
 
-BRANCH_SCHEMA_VERSION = "branch-schema.v12.unified-mainline"
+BRANCH_SCHEMA_VERSION = "branch-schema.v13.four-branch"
 CALIBRATION_SCHEMA_VERSION = "2026-03-22.calibration.v2"
 OUTCOME_LEDGER_SCHEMA_VERSION = "2026-04-26.outcome-ledger.v1"
 CALIBRATION_V2_SCHEMA_VERSION = "2026-04-26.calibration-v2.v1"
@@ -56,8 +56,8 @@ FACTOR_EXECUTION_COST_SIMULATION_SCHEMA_VERSION = (
 FACTOR_EXECUTION_PENALTY_SCHEMA_VERSION = "2026-04-27.factor-execution-penalty.v1"
 BRANCH_TRACKER_SCHEMA_VERSION = "2026-03-22.branch-tracker.v2"
 DEBATE_TEMPLATE_VERSION = "2026-03-22.branch-debate.v2"
-IC_PROTOCOL_VERSION = "ic-protocol.v12.mainline"
-REPORT_PROTOCOL_VERSION = "report-protocol.v12.mainline"
+IC_PROTOCOL_VERSION = "ic-protocol.v13.four-branch"
+REPORT_PROTOCOL_VERSION = "report-protocol.v13.four-branch"
 
 PROMOTION_CANDIDATE_SCHEMA_VERSION = "learning.promotion_candidate.v1"
 PROMOTION_DECISION_SCHEMA_VERSION = "learning.promotion_decision.v1"
@@ -72,30 +72,13 @@ REFLECTION_LESSON_DRAFT_SCHEMA_VERSION = "learning.reflection_lesson_draft.v1"
 REFLECTION_REPORT_SCHEMA_VERSION = "learning.reflection_report.v1"
 TRADE_CASE_SCHEMA_VERSION = "learning.trade_case.v1"
 
-LEGACY_BRANCH_ORDER = [
-    "kline",
-    "quant",
-    "llm_debate",
-    "intelligence",
-    "macro",
-]
-
 CURRENT_BRANCH_ORDER = (
-    "kline",
     "quant",
     "fundamental",
     "intelligence",
     "macro",
 )
 BRANCH_ORDER = CURRENT_BRANCH_ORDER
-
-LEGACY_BRANCH_WEIGHTS: dict[str, float] = {
-    "kline": 0.22,
-    "quant": 0.28,
-    "llm_debate": 0.15,
-    "intelligence": 0.20,
-    "macro": 0.15,
-}
 
 CURRENT_BRANCH_WEIGHTS: dict[str, float] = {
     **get_default_branch_weights(),

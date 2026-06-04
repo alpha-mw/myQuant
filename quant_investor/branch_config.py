@@ -8,21 +8,32 @@ from numbers import Real
 
 CANONICAL_BRANCH_ORDER: tuple[str, ...] = (
     "quant",
-    "kline",
-    "intelligence",
     "fundamental",
+    "intelligence",
     "macro",
 )
 
-DEFAULT_BRANCH_WEIGHTS: dict[str, float] = {
+_RAW_FOUR_BRANCH_WEIGHTS: dict[str, float] = {
     "quant": 0.28,
-    "kline": 0.22,
-    "intelligence": 0.20,
     "fundamental": 0.15,
+    "intelligence": 0.20,
     "macro": 0.15,
 }
 
-BRANCH_WEIGHT_VERSION = "branch-weights.v1.phase1"
+
+def _normalize_branch_weights(weights: Mapping[str, float]) -> dict[str, float]:
+    total = sum(float(weights[branch_name]) for branch_name in CANONICAL_BRANCH_ORDER)
+    if total <= 0.0:
+        raise ValueError("Raw branch weights must have a positive total.")
+    return {
+        branch_name: float(weights[branch_name]) / total
+        for branch_name in CANONICAL_BRANCH_ORDER
+    }
+
+
+DEFAULT_BRANCH_WEIGHTS: dict[str, float] = _normalize_branch_weights(_RAW_FOUR_BRANCH_WEIGHTS)
+
+BRANCH_WEIGHT_VERSION = "branch-weights.v2.four-branch"
 
 _WEIGHT_SUM_TOLERANCE = 1e-9
 

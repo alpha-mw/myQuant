@@ -38,8 +38,8 @@
 
 ### `quant_investor/kline_backends`
 
-- 角色：K 线后端选择与融合
-- 说明：`heuristic` 用于快筛，`kronos` / `chronos` / `hybrid` 用于显式深度分析路径
+- 角色：retired compatibility 时序后端
+- 说明：v13 canonical branch set 不再包含 `kline`；该目录仅保留给历史兼容或显式诊断路径。
 
 ### `quant_investor/versioning.py`
 

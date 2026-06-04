@@ -48,7 +48,6 @@ def _posterior(symbol: str = "000001.SZ", rank: int = 3) -> PosteriorResult:
         company_name="平安银行",
         prior=PriorSet(composite_prior=0.56, market_prior=0.55),
         likelihoods=LikelihoodSet(
-            kline_likelihood=0.61,
             quant_likelihood=0.67,
             fundamental_likelihood=0.58,
             intelligence_likelihood=0.52,
@@ -65,7 +64,7 @@ def _posterior(symbol: str = "000001.SZ", rank: int = 3) -> PosteriorResult:
         correlation_discount=0.04,
         data_quality_penalty=0.05,
         regime_adjustment=0.06,
-        evidence_sources=["quant", "kline"],
+        evidence_sources=["quant", "fundamental"],
         action_threshold_used=0.58,
         metadata={"momentum_strength": 0.81},
     )
@@ -74,7 +73,7 @@ def _posterior(symbol: str = "000001.SZ", rank: int = 3) -> PosteriorResult:
 def _branch_results() -> dict[str, BranchStub]:
     return {
         "quant": BranchStub(final_score=0.20, final_confidence=0.70, symbol_scores={"000001.SZ": 0.31}),
-        "kline": BranchStub(final_score=0.10, final_confidence=0.60, symbol_scores={"000001.SZ": 0.42}),
+        "fundamental": BranchStub(final_score=0.10, final_confidence=0.60, symbol_scores={"000001.SZ": 0.42}),
         "intelligence": BranchStub(final_score=0.05, final_confidence=0.50),
         "noncanonical": BranchStub(final_score=0.99, final_confidence=0.99, symbol_scores={"000001.SZ": 0.99}),
     }
@@ -118,13 +117,13 @@ def test_prediction_builder_round_trip_captures_posterior_and_branches() -> None
     assert round_trip.prior["composite_prior"] == pytest.approx(0.56)
     assert round_trip.likelihoods["quant_likelihood"] == pytest.approx(0.67)
     assert round_trip.branch_scores["quant"] == pytest.approx(0.31)
-    assert round_trip.branch_scores["kline"] == pytest.approx(0.42)
+    assert round_trip.branch_scores["fundamental"] == pytest.approx(0.42)
     assert round_trip.branch_scores["intelligence"] == pytest.approx(0.05)
     assert round_trip.branch_confidences["quant"] == pytest.approx(0.70)
     assert round_trip.posterior_win_rate == pytest.approx(0.66)
     assert round_trip.posterior_expected_alpha == pytest.approx(0.04)
     assert round_trip.posterior_edge_after_costs == pytest.approx(0.031)
-    assert round_trip.evidence_sources == ["quant", "kline"]
+    assert round_trip.evidence_sources == ["quant", "fundamental"]
     assert round_trip.metadata["outcome_ledger_schema_version"] == OUTCOME_LEDGER_SCHEMA_VERSION
 
 

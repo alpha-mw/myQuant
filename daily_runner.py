@@ -135,7 +135,7 @@ def load_config(config_path: Optional[str] = None) -> dict[str, Any]:
         "trend_windows": list(runtime_config.FUNNEL_TREND_WINDOWS),
         "volume_spike_threshold": runtime_config.FUNNEL_VOLUME_SPIKE_THRESHOLD,
         "breakout_distance_pct": runtime_config.FUNNEL_BREAKOUT_DISTANCE_PCT,
-        "bayesian_shortlist_size": 20,
+        "bayesian_shortlist_size": 50,
         "freshness_mode": "stable",
         "kline_backend": "heuristic",
         "top_k": 20,
@@ -483,7 +483,7 @@ class AnalysisRunner:
             "FUNNEL_BREAKOUT_DISTANCE_PCT",
             str(config.get("breakout_distance_pct", runtime_config.FUNNEL_BREAKOUT_DISTANCE_PCT)),
         )
-        os.environ.setdefault("BAYESIAN_SHORTLIST_SIZE", str(config.get("bayesian_shortlist_size", 20)))
+        os.environ.setdefault("BAYESIAN_SHORTLIST_SIZE", str(config.get("bayesian_shortlist_size", 50)))
         os.environ.setdefault("CN_FRESHNESS_MODE", config.get("freshness_mode", "stable"))
 
         log.info(
@@ -524,6 +524,7 @@ class AnalysisRunner:
                 skip_download=skip_dl,
                 total_capital=config["total_capital"],
                 top_k=config["top_k"],
+                shortlist_size=max(1, int(config.get("bayesian_shortlist_size", 50))),
                 years=config["years"],
                 workers=config["workers"],
                 enable_agent_layer=config["enable_agent_layer"],
@@ -836,7 +837,7 @@ class ReportBuilder:
             f"- Agent Layer 启用: {'是' if config['enable_agent_layer'] else '否'}\n\n"
             f"**分析层级（统一 DAG）:** GlobalContext → 全市场分支（K线+量化） → "
             f"漏斗压缩（{config.get('funnel_max_candidates', 200)} 候选） → 候选分支（基本面+智能融合） → "
-            f"Bayesian 后验决策 → Master Discussion（Top {config.get('bayesian_shortlist_size', 20)}） → "
+            f"Bayesian 后验决策 → Master Discussion（Top {config.get('bayesian_shortlist_size', 50)}） → "
             f"确定性控制链 → 组合构建 → 报告生成"
         )
 
@@ -877,7 +878,10 @@ class ReportBuilder:
             f"- **Master Discussion 入选**: {len(shortlist_symbols)} 只",
         ]
         if shortlist_symbols:
-            lines.append(f"- **精选标的**: {', '.join(shortlist_symbols[:20])}")
+            display_limit = max(1, int(config.get("bayesian_shortlist_size", 50) or 50))
+            visible_symbols = shortlist_symbols[:display_limit]
+            suffix = "" if len(shortlist_symbols) <= display_limit else f"（仅展示前 {display_limit} 只）"
+            lines.append(f"- **精选标的**{suffix}: {', '.join(visible_symbols)}")
         lines.append("")
         lines.append(
             "> Bayesian 后验 = 分层先验（市场/宏观/行业/交易性/数据质量）"

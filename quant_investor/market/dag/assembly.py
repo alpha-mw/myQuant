@@ -6,6 +6,7 @@ from typing import Any, Mapping
 
 from quant_investor.agent_protocol import ActionLabel, BranchVerdict, ICDecision, RiskDecision
 from quant_investor.agents.agent_contracts import BaseBranchAgentOutput
+from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
 from quant_investor.branch_contracts import BranchResult
 from quant_investor.market.dag.common import _dedupe_texts, _score_to_action
 
@@ -34,6 +35,8 @@ def _aggregate_branch_summaries(
     )
     for symbol, branch_map in research_by_symbol.items():
         for branch_name, verdict in branch_map.items():
+            if branch_name not in CANONICAL_BRANCH_ORDER:
+                continue
             bucket = buckets[branch_name]
             bucket["scores"].append(float(verdict.final_score))
             bucket["confidences"].append(float(verdict.final_confidence))
@@ -43,7 +46,10 @@ def _aggregate_branch_summaries(
             bucket["diagnostic"].extend(verdict.diagnostic_notes)
             bucket["symbols"].append(symbol)
     result: dict[str, BranchVerdict] = {}
-    for branch_name, bucket in buckets.items():
+    for branch_name in CANONICAL_BRANCH_ORDER:
+        bucket = buckets.get(branch_name)
+        if not bucket:
+            continue
         avg_score = fmean(bucket["scores"]) if bucket["scores"] else 0.0
         avg_conf = fmean(bucket["confidences"]) if bucket["confidences"] else 0.0
         result[branch_name] = BranchVerdict(
@@ -71,10 +77,15 @@ def _build_branch_results(
     branch_scores_by_symbol: dict[str, dict[str, float]] = defaultdict(dict)
     for symbol, branch_map in research_by_symbol.items():
         for branch_name, verdict in branch_map.items():
+            if branch_name not in CANONICAL_BRANCH_ORDER:
+                continue
             branch_scores_by_symbol[branch_name][symbol] = float(verdict.final_score)
 
     results: dict[str, BranchResult] = {}
-    for branch_name, verdict in branch_summaries.items():
+    for branch_name in CANONICAL_BRANCH_ORDER:
+        verdict = branch_summaries.get(branch_name)
+        if verdict is None:
+            continue
         results[branch_name] = BranchResult(
             branch_name=branch_name,
             final_score=float(verdict.final_score),
@@ -94,7 +105,10 @@ def _branch_verdicts_to_master_reports(
     research_by_symbol: Mapping[str, Mapping[str, BranchVerdict]],
 ) -> dict[str, BaseBranchAgentOutput]:
     reports: dict[str, BaseBranchAgentOutput] = {}
-    for branch_name, summary in branch_summaries.items():
+    for branch_name in CANONICAL_BRANCH_ORDER:
+        summary = branch_summaries.get(branch_name)
+        if summary is None:
+            continue
         symbol_views: dict[str, str] = {}
         for symbol, branches in research_by_symbol.items():
             verdict = branches.get(branch_name)

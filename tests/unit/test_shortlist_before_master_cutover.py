@@ -19,7 +19,7 @@ def _posterior(symbol: str, company_name: str, score: float, rank: int) -> Poste
         posterior_confidence=0.70,
         posterior_action_score=score,
         rank=rank,
-        evidence_sources=["quant", "kline"],
+        evidence_sources=["quant", "fundamental"],
         action_threshold_used=0.55,
         metadata={"posterior_edge_after_costs": score * 0.08, "posterior_capacity_penalty": 0.02},
     )
@@ -71,4 +71,3 @@ def test_master_evidence_pack_uses_bayesian_shortlist_fields():
     assert evidence_pack["shortlist"][0]["company_name"] == "平安银行"
     assert evidence_pack["shortlist"][0]["posterior_action_score"] == 0.93
     assert evidence_pack["shortlist"][0]["posterior_win_rate"] > evidence_pack["shortlist"][1]["posterior_win_rate"]
-

@@ -2,6 +2,10 @@
 Quant-Investor 官方 Python 入口。
 """
 
+from quant_investor._sourceless import install_sourceless_finder
+
+install_sourceless_finder()
+
 from quant_investor.branch_contracts import (
     BranchResult,
     CalibratedBranchSignal,

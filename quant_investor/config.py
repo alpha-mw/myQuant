@@ -215,7 +215,7 @@ class Config:
     # Pipeline mode: "bayesian" (new 7-layer) or "legacy" (original 3-layer)
     PIPELINE_MODE: str = os.environ.get('PIPELINE_MODE', 'bayesian')
     DECISION_ENGINE: str = os.environ.get('DECISION_ENGINE', 'bayesian')
-    BAYESIAN_SHORTLIST_SIZE: int = _env_int('BAYESIAN_SHORTLIST_SIZE', 20)
+    BAYESIAN_SHORTLIST_SIZE: int = _env_int('BAYESIAN_SHORTLIST_SIZE', 50)
     FUNNEL_PROFILE: str = str(os.environ.get('FUNNEL_PROFILE', 'momentum_leader') or 'momentum_leader').strip().lower()
     FUNNEL_MAX_CANDIDATES: int = _env_int('FUNNEL_MAX_CANDIDATES', 200)
     FUNNEL_TREND_WINDOWS: tuple[int, ...] = _env_int_list('FUNNEL_TREND_WINDOWS', (20, 60, 120))

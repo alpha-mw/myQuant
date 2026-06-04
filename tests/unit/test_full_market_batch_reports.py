@@ -21,7 +21,7 @@ def _make_branch(score: float, confidence: float, conclusion: str, *, debate_sta
         "drag_drivers": ["短期拖累仍需观察。"],
         "investment_risks": ["估值扩张后回撤风险仍在。"] if score > 0 else ["景气度偏弱。"],
         "coverage_notes": ["文档语义 28/30 标的已覆盖。"],
-        "diagnostic_notes": ["Could not infer frequency"] if "K线" in conclusion else [],
+        "diagnostic_notes": ["Could not infer frequency"] if "legacy retired" in conclusion else [],
         "module_coverage": {
             "core": {
                 "label": "核心模块",
@@ -49,7 +49,7 @@ def _make_cn_all_results(
                 "batch_id": 1,
                 "execution_log": ["[INFO] batch finished"],
                 "branches": {
-                    "kline": _make_branch(0.12, 0.62, "K线结论偏正。", debate_status=debate_status),
+                    "kline": _make_branch(0.12, 0.62, "legacy retired kline should be ignored", debate_status=debate_status),
                     "quant": _make_branch(0.08, 0.58, "量化结论偏正。", debate_status=debate_status),
                     "fundamental": {
                         **_make_branch(0.05, 0.54, "基本面结论偏正。", debate_status=debate_status),
@@ -101,7 +101,6 @@ def _make_cn_all_results(
                         "risk_flags": stock_risk_flags or ["波动率中等"],
                         "position_management": ["首次建仓 60%"],
                         "branch_scores": {
-                            "kline": 0.20,
                             "quant": 0.10,
                             "fundamental": 0.08,
                             "intelligence": 0.06,
@@ -124,7 +123,7 @@ def _make_us_all_results():
                 "batch_id": 1,
                 "execution_log": ["[INFO] batch finished"],
                 "branches": {
-                    "kline": _make_branch(0.12, 0.62, "K线结论偏正。"),
+                    "kline": _make_branch(0.12, 0.62, "legacy retired kline should be ignored"),
                     "quant": _make_branch(0.09, 0.57, "量化结论偏正。"),
                     "fundamental": _make_branch(0.04, 0.52, "基本面结论中性偏正。"),
                     "intelligence": _make_branch(0.08, 0.58, "智能融合结论偏正。"),
@@ -156,7 +155,6 @@ def _make_us_all_results():
                         "risk_flags": ["等待回踩"],
                         "position_management": ["目标价附近分批止盈"],
                         "branch_scores": {
-                            "kline": 0.22,
                             "quant": 0.11,
                             "fundamental": 0.05,
                             "intelligence": 0.09,
@@ -202,7 +200,7 @@ def test_cn_report_uses_recommended_entry_price(monkeypatch, tmp_path):
     assert "最大亏损: -8.0%" in report_text
 
 
-def test_us_report_includes_kline_branch_average(monkeypatch, tmp_path):
+def test_us_report_filters_legacy_kline_branch_average(monkeypatch, tmp_path):
     monkeypatch.setattr(
         us_batch,
         "load_stock_names",
@@ -224,7 +222,8 @@ def test_us_report_includes_kline_branch_average(monkeypatch, tmp_path):
 
     report_text = _read_report(output)
 
-    assert "kline: +0.120" in report_text
+    assert "kline: +0.120" not in report_text
+    assert "K线分支" not in report_text
 
 
 def test_report_top_contains_three_line_executive_summary(monkeypatch, tmp_path):
@@ -244,7 +243,7 @@ def test_each_branch_section_has_non_empty_conclusion(monkeypatch, tmp_path):
     output = cn_batch.generate_full_report(_make_cn_all_results(), market="CN", output_dir=str(tmp_path))
     report_text = _read_report(output)
 
-    for label in ["K线", "量化", "基本面", "智能融合", "宏观"]:
+    for label in ["量化", "基本面", "智能融合", "宏观"]:
         match = re.search(rf"### {label}分支\n- 平均得分: .*?\n- 结论: (.+)\n", report_text)
         assert match is not None
         assert match.group(1).strip()
@@ -270,7 +269,8 @@ def test_main_report_hides_raw_frequency_exception(monkeypatch, tmp_path):
     report_text = _read_report(output)
 
     assert "Could not infer frequency" not in report_text
-    assert "部分批次 K 线深度模型未完成频率对齐，已自动回退统计预测。" in report_text
+    assert "部分批次 K 线深度模型未完成频率对齐，已自动回退统计预测。" not in report_text
+    assert "legacy retired kline should be ignored" not in report_text
 
 
 def test_provider_missing_tokens_do_not_enter_stock_risk_sentence(monkeypatch, tmp_path):

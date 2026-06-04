@@ -38,7 +38,6 @@ from quant_investor.agents.agent_contracts import BaseBranchAgentOutput
 from quant_investor.agents.fundamental_agent import FundamentalAgent
 from quant_investor.agents.ic_coordinator import ICCoordinator
 from quant_investor.agents.intelligence_agent import IntelligenceAgent
-from quant_investor.agents.kline_agent import KlineAgent
 from quant_investor.agents.macro_agent import MacroAgent
 from quant_investor.agents.master_agent import MasterAgent
 from quant_investor.agents.narrator_agent import NarratorAgent
@@ -49,7 +48,6 @@ from quant_investor.bayesian.likelihood import SignalLikelihoodMapper
 from quant_investor.bayesian.posterior import BayesianPosteriorEngine
 from quant_investor.bayesian.prior import HierarchicalPriorBuilder
 from quant_investor.config import config
-from quant_investor.branch_contracts import BranchResult
 from quant_investor.funnel.deterministic_funnel import DeterministicFunnel
 from quant_investor.market.cn_resolver import CNUniverseResolver
 from quant_investor.market.config import get_market_settings, normalize_categories, normalize_universe
@@ -197,47 +195,6 @@ def _master_hint_to_ic_hint(hint: MasterICHint) -> dict[str, Any]:
         "metadata": dict(hint.metadata or {}),
     }
 
-def _branch_verdict_to_result(verdict: BranchVerdict, branch_name: str) -> BranchResult:
-    metadata = dict(verdict.metadata or {})
-    raw_symbol_scores = metadata.get("legacy_symbol_scores")
-    symbol_scores: dict[str, float] = {}
-    if isinstance(raw_symbol_scores, Mapping):
-        for symbol, score in raw_symbol_scores.items():
-            text = str(symbol or "").strip()
-            if not text:
-                continue
-            try:
-                symbol_scores[text] = float(score)
-            except Exception:
-                continue
-    if not symbol_scores:
-        symbol_scores = {str(verdict.symbol or branch_name): float(verdict.final_score)}
-    return BranchResult(
-        branch_name=branch_name,
-        score=float(verdict.final_score),
-        confidence=float(verdict.final_confidence),
-        signals=dict(verdict.metadata or {}),
-        risks=list(verdict.investment_risks),
-        explanation=str(verdict.thesis),
-        symbol_scores=symbol_scores,
-        success=verdict.status.value != "vetoed",
-        metadata=metadata,
-        base_score=float(verdict.final_score),
-        final_score=float(verdict.final_score),
-        base_confidence=float(verdict.final_confidence),
-        final_confidence=float(verdict.final_confidence),
-        conclusion=str(verdict.thesis),
-        thesis_points=list(verdict.coverage_notes[:3]),
-        investment_risks=list(verdict.investment_risks),
-        coverage_notes=list(verdict.coverage_notes),
-        diagnostic_notes=list(verdict.diagnostic_notes),
-        support_drivers=[],
-        drag_drivers=[],
-        weight_cap_reasons=[],
-        module_coverage={},
-    )
-
-
 def _branch_output_to_verdict(output: BaseBranchAgentOutput, symbol: str) -> BranchVerdict:
     action = str(output.conviction).lower()
     direction = _score_to_direction(float(output.conviction_score))
@@ -300,6 +257,7 @@ async def _execute_market_dag_async(
     batch_size: int | None,
     total_capital: float,
     top_k: int,
+    shortlist_size: int | None = None,
     download_stage: Mapping[str, Any] | None = None,
     data_snapshot: Mapping[str, Any] | None = None,
     verbose: bool = True,
@@ -485,7 +443,6 @@ async def _execute_market_dag_async(
             metadata={"agent_layer_enabled": False},
         )
     macro_agent = MacroAgent()
-    kline_agent = KlineAgent()
     context_state = _prepare_market_context(
         market=settings.market,
         universe_key=universe_key,
@@ -511,11 +468,8 @@ async def _execute_market_dag_async(
         breakout_distance_pct=float(breakout_distance_pct or config.FUNNEL_BREAKOUT_DISTANCE_PCT),
         sector_bucket_limit=max(0, int(sector_bucket_limit if sector_bucket_limit is not None else config.FUNNEL_SECTOR_BUCKET_LIMIT)),
         macro_agent=macro_agent,
-        kline_agent=kline_agent,
         funnel_cls=DeterministicFunnel,
         provider_health_detector=detect_provider_health,
-        ensure_branch_verdict=_ensure_branch_verdict,
-        branch_verdict_to_result=_branch_verdict_to_result,
     )
     read_results = context_state.read_results
     frames = context_state.frames
@@ -531,7 +485,6 @@ async def _execute_market_dag_async(
     quant_result = context_state.quant_result
     global_context = context_state.global_context
     model_roles = context_state.model_roles
-    full_market_kline_result = context_state.full_market_kline_result
     funnel_output = context_state.funnel_output
 
     fundamental_agent = FundamentalAgent()
@@ -555,11 +508,9 @@ async def _execute_market_dag_async(
         agent_timeout=agent_timeout,
         master_timeout=master_timeout,
         resolver_snapshot=context_state.resolver_snapshot,
-        kline_agent=kline_agent,
         fundamental_agent=fundamental_agent,
         intelligence_agent=intelligence_agent,
         quant_result=quant_result,
-        full_market_kline_result=full_market_kline_result,
         ensure_branch_verdict=_ensure_branch_verdict,
         master_hint_to_ic_hint=_master_hint_to_ic_hint,
     )
@@ -582,7 +533,7 @@ async def _execute_market_dag_async(
         model_roles=model_roles,
         resolver_snapshot=shared_reader.snapshot(),
         data_quality_issues=data_quality_issues,
-        top_k=top_k,
+        top_k=max(1, int(shortlist_size if shortlist_size is not None else top_k)),
         all_symbols=all_symbols,
         funnel_output=funnel_output,
         provider_health=provider_health,
@@ -674,6 +625,7 @@ def execute_market_dag(
     batch_size: int | None,
     total_capital: float,
     top_k: int,
+    shortlist_size: int | None = None,
     download_stage: Mapping[str, Any] | None = None,
     data_snapshot: Mapping[str, Any] | None = None,
     verbose: bool = True,
@@ -704,6 +656,7 @@ def execute_market_dag(
             batch_size=batch_size,
             total_capital=total_capital,
             top_k=top_k,
+            shortlist_size=shortlist_size,
             download_stage=download_stage,
             data_snapshot=data_snapshot,
             verbose=verbose,

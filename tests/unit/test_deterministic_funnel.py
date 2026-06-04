@@ -68,10 +68,9 @@ class TestDeterministicFunnel:
         symbols = [f"S{i:04d}" for i in range(100)]
         ctx = _make_context(symbols)
         quant = _make_branch("quant", {s: float(i) / 100 for i, s in enumerate(symbols)})
-        kline = _make_branch("kline", {s: float(99 - i) / 100 for i, s in enumerate(symbols)})
 
         funnel = DeterministicFunnel(FunnelConfig(max_candidates=20))
-        output = funnel.run(quant_result=quant, kline_result=kline, global_context=ctx)
+        output = funnel.run(quant_result=quant, global_context=ctx)
 
         assert isinstance(output, FunnelOutput)
         assert len(output.candidates) == 20
@@ -88,10 +87,9 @@ class TestDeterministicFunnel:
             illiquid=["BAD_L"],
         )
         quant = _make_branch("quant", {s: 0.5 for s in symbols})
-        kline = _make_branch("kline", {s: 0.5 for s in symbols})
 
         funnel = DeterministicFunnel(FunnelConfig(max_candidates=100))
-        output = funnel.run(quant_result=quant, kline_result=kline, global_context=ctx)
+        output = funnel.run(quant_result=quant, global_context=ctx)
 
         assert set(output.candidates) == {"GOOD1", "GOOD2"}
         assert "BAD_Q" in output.excluded_symbols
@@ -102,27 +100,22 @@ class TestDeterministicFunnel:
         symbols = ["A", "B", "C"]
         ctx = _make_context(symbols)
         quant = _make_branch("quant", {"A": 0.9, "B": 0.5, "C": 0.1})
-        kline = _make_branch("kline", {"A": 0.1, "B": 0.5, "C": 0.9})
 
-        funnel = DeterministicFunnel(FunnelConfig(max_candidates=2, quant_weight=0.6, kline_weight=0.4))
-        output = funnel.run(quant_result=quant, kline_result=kline, global_context=ctx)
+        funnel = DeterministicFunnel(FunnelConfig(max_candidates=2))
+        output = funnel.run(quant_result=quant, global_context=ctx)
 
         assert len(output.candidates) == 2
-        # A: 0.6*0.9 + 0.4*0.1 = 0.58
-        # B: 0.6*0.5 + 0.4*0.5 = 0.50
-        # C: 0.6*0.1 + 0.4*0.9 = 0.42
         assert output.candidates[0] == "A"
         assert output.candidates[1] == "B"
-        assert pytest.approx(output.candidate_scores["A"], abs=0.01) == 0.58
+        assert pytest.approx(output.candidate_scores["A"], abs=0.01) == 0.9
 
     def test_funnel_empty_scores(self):
         symbols = ["A", "B"]
         ctx = _make_context(symbols)
         quant = _make_branch("quant", {})
-        kline = _make_branch("kline", {})
 
         funnel = DeterministicFunnel(FunnelConfig(max_candidates=10))
-        output = funnel.run(quant_result=quant, kline_result=kline, global_context=ctx)
+        output = funnel.run(quant_result=quant, global_context=ctx)
 
         assert len(output.candidates) == 2
         assert all(score == 0.0 for score in output.candidate_scores.values())
@@ -165,7 +158,6 @@ class TestDeterministicFunnel:
             },
         )
         quant = _make_branch("quant", {"A": 0.4, "B": 0.5, "C": 0.2})
-        kline = _make_branch("kline", {"A": 0.8, "B": 0.85, "C": 0.3})
 
         funnel = DeterministicFunnel(
             FunnelConfig(
@@ -174,7 +166,7 @@ class TestDeterministicFunnel:
                 sector_bucket_limit=0,
             )
         )
-        output = funnel.run(quant_result=quant, kline_result=kline, global_context=ctx)
+        output = funnel.run(quant_result=quant, global_context=ctx)
 
         assert output.candidates == ["A", "C"]
         assert output.candidate_scores["A"] > output.candidate_scores["C"]
@@ -192,7 +184,6 @@ class TestDeterministicFunnel:
             },
         )
         quant = _make_branch("quant", {"A": 0.6, "B": 0.58, "C": 0.45})
-        kline = _make_branch("kline", {"A": 0.8, "B": 0.79, "C": 0.62})
 
         funnel = DeterministicFunnel(
             FunnelConfig(
@@ -201,7 +192,7 @@ class TestDeterministicFunnel:
                 sector_bucket_limit=1,
             )
         )
-        output = funnel.run(quant_result=quant, kline_result=kline, global_context=ctx)
+        output = funnel.run(quant_result=quant, global_context=ctx)
 
         assert output.candidates == ["A", "C"]
         assert output.excluded_symbols["B"] == "sector_bucket_limit"

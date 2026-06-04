@@ -53,9 +53,8 @@ def _prediction(prediction_id: str, posterior: float = 0.62, rank: int = 1) -> P
         likelihoods={"quant_likelihood": 0.64},
         branch_scores={
             "quant": 0.4,
-            "kline": -0.4,
             "intelligence": 0.1,
-            "fundamental": 0.2,
+            "fundamental": -0.4,
             "macro": -0.2,
             "noncanonical": 0.99,
         },
@@ -119,7 +118,7 @@ def test_build_training_examples_uses_resolved_outcomes_and_deterministic_order(
     ]
     assert examples[0].realized_label == 1
     assert examples[0].excess_return == pytest.approx(0.04)
-    assert examples[2].target_name == "branch:kline"
+    assert examples[2].target_name == "branch:fundamental"
     assert examples[2].raw_value == pytest.approx(-0.4)
     assert all("noncanonical" not in example.target_name for example in examples)
 

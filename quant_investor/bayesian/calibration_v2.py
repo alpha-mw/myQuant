@@ -22,9 +22,8 @@ try:
 except ImportError:  # pragma: no cover - compatibility fallback for older trees
     CANONICAL_BRANCH_ORDER = (
         "quant",
-        "kline",
-        "intelligence",
         "fundamental",
+        "intelligence",
         "macro",
     )
 

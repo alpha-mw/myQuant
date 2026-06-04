@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from quant_investor.agent_protocol import DataQualityIssue, GlobalContext
 from quant_investor.global_context.builder import GlobalContextBuilder
 
@@ -105,7 +103,6 @@ def test_builder_integrates_provider_health_into_capability_map(monkeypatch):
         lambda **_kw: {
             "deepseek": {"available": True},
             "master": {"available": False},
-            "kline": {"kronos_available": True, "chronos_available": False},
         },
     )
 
@@ -120,7 +117,7 @@ def test_builder_integrates_provider_health_into_capability_map(monkeypatch):
     # detect_provider_health results get merged into model_capability_map
     assert ctx.model_capability_map["deepseek"]["available"] is True
     assert ctx.model_capability_map["master"]["available"] is False
-    assert ctx.model_capability_map["kline"]["kronos_available"] is True
+    assert "kline" not in ctx.model_capability_map
     # Original branch/master entries preserved
     assert ctx.model_capability_map["branch"]["resolved_model"] == "deepseek-reasoner"
 

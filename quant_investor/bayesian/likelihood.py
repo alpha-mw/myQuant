@@ -15,7 +15,6 @@ from quant_investor.branch_contracts import BranchResult
 
 # Default branch reliabilities used when metadata is missing.
 _DEFAULT_RELIABILITY: dict[str, float] = {
-    "kline": 0.65,
     "quant": 0.70,
     "fundamental": 0.60,
     "intelligence": 0.55,
@@ -25,10 +24,7 @@ _DEFAULT_RELIABILITY: dict[str, float] = {
 # Default pairwise correlations between branch signals.
 # These are used to discount the joint information content.
 _DEFAULT_CORRELATIONS: dict[tuple[str, str], float] = {
-    ("kline", "quant"): 0.50,
     ("fundamental", "intelligence"): 0.35,
-    ("kline", "fundamental"): 0.15,
-    ("kline", "intelligence"): 0.10,
     ("quant", "fundamental"): 0.20,
     ("quant", "intelligence"): 0.15,
 }
@@ -149,13 +145,12 @@ class SignalLikelihoodMapper:
         strong_regime = regime == "趋势上涨" or breadth >= 0.55
         weak_regime = regime in {"趋势下跌", "震荡高波"} or breadth <= 0.48
         if strong_regime:
-            weights = {"kline": 1.35, "quant": 1.00, "fundamental": 0.70, "intelligence": 1.25}
+            weights = {"quant": 1.05, "fundamental": 0.75, "intelligence": 1.30}
         elif weak_regime:
-            weights = {"kline": 1.10, "quant": 0.95, "fundamental": 0.70, "intelligence": 1.00}
+            weights = {"quant": 1.00, "fundamental": 0.75, "intelligence": 1.05}
         else:
-            weights = {"kline": 1.20, "quant": 1.00, "fundamental": 0.80, "intelligence": 1.10}
+            weights = {"quant": 1.05, "fundamental": 0.85, "intelligence": 1.15}
         if breakout_risk >= 0.65:
-            weights["kline"] *= 0.85
             weights["intelligence"] *= 0.90
         return weights
 
@@ -201,7 +196,7 @@ class SignalLikelihoodMapper:
             volume_confirmation = float(state.get("volume_confirmation", 0.0) or 0.0)
             breakout_readiness = float(state.get("breakout_readiness", 0.0) or 0.0)
             fake_breakout_risk = float(state.get("fake_breakout_risk", 0.0) or 0.0)
-            if branch_name in {"kline", "intelligence"}:
+            if branch_name == "intelligence":
                 likelihood += 0.04 * volume_confirmation
                 likelihood += 0.03 * breakout_readiness
                 likelihood -= 0.08 * fake_breakout_risk
@@ -211,7 +206,7 @@ class SignalLikelihoodMapper:
             calibration_probability = float(calibration.get("probability", 0.50) or 0.50)
             calibration_sample_size = float(calibration.get("sample_size", 0.0) or 0.0)
             if (
-                branch_name in {"kline", "intelligence"}
+                branch_name == "intelligence"
                 and score > 0.20
                 and calibration_sample_size >= 3.0
                 and calibration_probability < 0.50
@@ -244,7 +239,6 @@ class SignalLikelihoodMapper:
         profile = self._selection_profile()
         branch_meta: dict[str, dict[str, float]] = {}
 
-        kline_l, branch_meta["kline"] = self._branch_likelihood("kline", branch_results, symbol)
         quant_l, branch_meta["quant"] = self._branch_likelihood("quant", branch_results, symbol)
 
         if is_candidate:
@@ -269,7 +263,7 @@ class SignalLikelihoodMapper:
             }
 
         evidence_sources = []
-        for name in ("kline", "quant", "fundamental", "intelligence"):
+        for name in ("quant", "fundamental", "intelligence"):
             if name in candidate_only_branches and not is_candidate:
                 continue
             if name in branch_results:
@@ -306,7 +300,6 @@ class SignalLikelihoodMapper:
                 market_pressure = -0.5
 
         return LikelihoodSet(
-            kline_likelihood=kline_l,
             quant_likelihood=quant_l,
             fundamental_likelihood=fundamental_l,
             intelligence_likelihood=intelligence_l,

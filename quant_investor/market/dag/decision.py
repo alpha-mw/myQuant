@@ -71,10 +71,10 @@ def _run_bayesian_selection_phase(
     posterior_engine = posterior_engine_cls()
     bayesian_records: list[BayesianDecisionRecord] = []
     degraded_map = {
-        "kline": provider_health.get("kline", {}).get("mode") != "hybrid",
+        "quant": False,
         "fundamental": False,
         "intelligence": False,
-        "quant": False,
+        "macro": False,
     }
     for symbol in candidate_symbols:
         prior = prior_builder.build_prior(symbol, global_context)

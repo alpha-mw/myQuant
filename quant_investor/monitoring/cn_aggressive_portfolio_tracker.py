@@ -26,7 +26,7 @@ from quant_investor.factors.report import (
 from quant_investor.market.analyze import load_cn_stock_names
 from quant_investor.market.config import get_market_settings
 from quant_investor.market.download_cn import CNFullMarketDownloader
-from quant_investor.llm_policy import apply_local_llm_policy, llm_handoff_reason
+from quant_investor.llm_policy import llm_handoff_reason
 from quant_investor.llm_provider_priority import coerce_review_model_priority
 from quant_investor.pipeline import QuantInvestor
 from quant_investor.reporting.formal_diagnostics import (
@@ -70,6 +70,7 @@ CATEGORY_THEME_LABELS = {
     "zz500": "中盘制造主线",
     "zz1000": "小盘成长弹性",
 }
+REQUIRED_DAG_BRANCHES = ("quant", "fundamental", "intelligence", "macro")
 
 
 @dataclass
@@ -149,9 +150,23 @@ def _jsonable(value: Any) -> Any:
 
 def _serialize_reviewed_branch_verdicts(result: Any, symbol: str) -> dict[str, Any]:
     payload = dict(getattr(result, "reviewed_research_by_symbol", {}) or {}).get(symbol, {})
-    if not isinstance(payload, dict):
-        return {}
-    return {str(name): _jsonable(verdict) for name, verdict in payload.items()}
+    reviewed = (
+        {str(name): _jsonable(verdict) for name, verdict in payload.items()}
+        if isinstance(payload, dict)
+        else {}
+    )
+    branch_summaries = dict(getattr(result, "reviewed_branch_summaries", {}) or {})
+    for branch_name in ("quant", "macro"):
+        if branch_name in reviewed:
+            continue
+        verdict = branch_summaries.get(branch_name)
+        if verdict is not None:
+            reviewed[branch_name] = _jsonable(verdict)
+    if "macro" not in reviewed:
+        macro_verdict = getattr(result, "macro_verdict", None)
+        if macro_verdict is not None:
+            reviewed["macro"] = _jsonable(macro_verdict)
+    return reviewed
 
 
 def _serialize_symbol_review_bundle(result: Any, symbol: str) -> dict[str, Any]:
@@ -251,6 +266,135 @@ def _trade_recommendation_to_dict(recommendation: Any) -> dict[str, Any]:
     }
 
 
+def _branch_payload_present(payload: Any) -> bool:
+    if payload is None:
+        return False
+    if isinstance(payload, dict):
+        return bool(payload)
+    return True
+
+
+def _branch_evidence_limited(payload: Any) -> bool:
+    if not isinstance(payload, dict) or not payload:
+        return False
+    notes: list[str] = []
+    for key in ("diagnostic_notes", "coverage_notes", "investment_risks"):
+        raw = payload.get(key)
+        if isinstance(raw, list):
+            notes.extend(str(item).lower() for item in raw)
+        elif raw:
+            notes.append(str(raw).lower())
+    metadata = dict(payload.get("metadata", {}) or {})
+    data_quality = dict(metadata.get("data_quality", {}) or {})
+    coverage_ratio = data_quality.get("coverage_ratio")
+    if coverage_ratio is not None:
+        try:
+            if float(coverage_ratio) < 0.8:
+                return True
+        except (TypeError, ValueError):
+            pass
+    limited_markers = (
+        "fallback",
+        "placeholder",
+        "provider_missing",
+        "snapshot_missing",
+        "coverage",
+        "证据不足",
+        "缺失",
+    )
+    return any(any(marker in note for marker in limited_markers) for note in notes)
+
+
+def _build_dag_four_branch_compliance(
+    *,
+    review_symbols: list[str],
+    effective_local_holding_symbols: list[str],
+    branch_signals_by_symbol: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    ordered_symbols = list(
+        dict.fromkeys(
+            [
+                *(str(symbol).strip().upper() for symbol in review_symbols if str(symbol).strip()),
+                *(
+                    str(symbol).strip().upper()
+                    for symbol in effective_local_holding_symbols
+                    if str(symbol).strip()
+                ),
+            ]
+        )
+    )
+    present_by_symbol: dict[str, list[str]] = {}
+    missing_by_symbol: dict[str, list[str]] = {}
+    limited_by_symbol: dict[str, list[str]] = {}
+    for symbol in ordered_symbols:
+        payload = dict(branch_signals_by_symbol.get(symbol, {}) or {})
+        reviewed = dict(payload.get("reviewed_branch_verdicts", {}) or {})
+        present = [
+            branch_name
+            for branch_name in REQUIRED_DAG_BRANCHES
+            if _branch_payload_present(reviewed.get(branch_name))
+        ]
+        missing = [branch_name for branch_name in REQUIRED_DAG_BRANCHES if branch_name not in present]
+        limited = [
+            branch_name
+            for branch_name in present
+            if _branch_evidence_limited(reviewed.get(branch_name))
+        ]
+        present_by_symbol[symbol] = present
+        missing_by_symbol[symbol] = missing
+        if limited:
+            limited_by_symbol[symbol] = limited
+
+    complete = all(not missing for missing in missing_by_symbol.values()) if ordered_symbols else False
+    return {
+        "required_branches": list(REQUIRED_DAG_BRANCHES),
+        "status": "DAG四分支完整执行" if complete else "DAG四分支未完整执行",
+        "complete": complete,
+        "present_branch_by_symbol": present_by_symbol,
+        "missing_branch_by_symbol": missing_by_symbol,
+        "limited_evidence_branch_by_symbol": limited_by_symbol,
+        "formal_review_symbols": list(review_symbols),
+        "effective_local_holding_symbols": list(effective_local_holding_symbols),
+        "reason": (
+            "All required non-LLM DAG branches are materialized; limited-evidence branches remain size caps."
+            if complete
+            else "Some required non-LLM DAG branches are not materialized in reviewed_branch_verdicts."
+        ),
+        "evidence_quality_adjustment": (
+            "keep_limited_evidence_position_caps"
+            if complete and limited_by_symbol
+            else ("none" if complete else "lower_evidence_quality_and_keep_actions_watch_or_no_action")
+        ),
+    }
+
+
+def _render_dag_compliance_markdown(compliance: dict[str, Any]) -> list[str]:
+    missing_by_symbol = dict(compliance.get("missing_branch_by_symbol", {}) or {})
+    present_by_symbol = dict(compliance.get("present_branch_by_symbol", {}) or {})
+    limited_by_symbol = dict(compliance.get("limited_evidence_branch_by_symbol", {}) or {})
+    lines = [
+        "#### 5.3.1 DAG 四分支执行验收",
+        "",
+        f"- required_branches：`{', '.join(compliance.get('required_branches', REQUIRED_DAG_BRANCHES))}`",
+        f"- status：`{compliance.get('status', 'unknown')}`",
+        f"- complete：`{str(bool(compliance.get('complete', False))).lower()}`",
+        f"- present_branch_by_symbol：见下表。",
+        f"- missing_branch_by_symbol：见下表。",
+        f"- limited_evidence_branch_by_symbol：{limited_by_symbol or {}}",
+        f"- 原因：{compliance.get('reason', '')}",
+        f"- 执行影响：{compliance.get('evidence_quality_adjustment', '')}",
+        "",
+        "| symbol | present | missing | limited |",
+        "| --- | --- | --- | --- |",
+    ]
+    for symbol in missing_by_symbol:
+        present = ", ".join(present_by_symbol.get(symbol, []) or ["-"])
+        missing = ", ".join(missing_by_symbol.get(symbol, []) or ["-"])
+        limited = ", ".join(limited_by_symbol.get(symbol, []) or ["-"])
+        lines.append(f"| {symbol} | {present} | {missing} | {limited} |")
+    return lines
+
+
 def _run_unified_review_mainline_for_holdings(
     *,
     source_ledger: pd.DataFrame,
@@ -260,12 +404,14 @@ def _run_unified_review_mainline_for_holdings(
     review_by_symbol: dict[str, dict[str, Any]] = {}
     degraded_symbols: dict[str, str] = {}
     llm_settings = _load_daily_config_llm_settings()
-    enable_agent_layer = apply_local_llm_policy(bool(llm_settings.pop("enable_agent_layer", True)))
-    if not enable_agent_layer:
-        return _codex_handoff_review_layer(
-            source_ledger,
-            reason=llm_handoff_reason() or "daily_config_agent_layer_disabled_codex_handoff",
-        )
+    requested_agent_layer = bool(llm_settings.pop("enable_agent_layer", True))
+    handoff_reason = llm_handoff_reason()
+    codex_handoff_active = bool(handoff_reason or not requested_agent_layer)
+    expected_no_local_llm_reason = (
+        handoff_reason
+        if handoff_reason
+        else ("daily_config_agent_layer_disabled_codex_handoff" if not requested_agent_layer else "")
+    )
     review_models = ResolvedReviewModels.from_mapping(llm_settings)
     aggregate_attempt_usage = {
         "call_count": 0,
@@ -301,7 +447,7 @@ def _run_unified_review_mainline_for_holdings(
             total_capital=review_capital,
             risk_level="积极",
             verbose=False,
-            enable_agent_layer=enable_agent_layer,
+            enable_agent_layer=requested_agent_layer,
             universe_key="full_a",
             enable_document_semantics=True,
             **review_models.to_runtime_kwargs(),
@@ -333,12 +479,15 @@ def _run_unified_review_mainline_for_holdings(
         fallback_reasons.extend(list(getattr(review_bundle, "fallback_reasons", []) or []))
         degraded_reason = ""
         if attempt_usage["call_count"] <= 0:
-            degraded_reason = (
-                f"{symbol} review-layer 未产生有效 LLM 调用，已按降级模式继续；"
-                "请核对模型配额、provider 可用性或 free-tier 限制。"
-            )
-            degraded_symbols[symbol] = degraded_reason
-            fallback_reasons.append(degraded_reason)
+            if expected_no_local_llm_reason:
+                fallback_reasons.append(f"{symbol}: {expected_no_local_llm_reason}")
+            else:
+                degraded_reason = (
+                    f"{symbol} review-layer 未产生有效 LLM 调用，已按降级模式继续；"
+                    "请核对模型配额、provider 可用性或 free-tier 限制。"
+                )
+                degraded_symbols[symbol] = degraded_reason
+                fallback_reasons.append(degraded_reason)
         recommendations = list(getattr(getattr(result, "final_strategy", None), "recommendations", []) or [])
         if not recommendations:
             recommendations = list(getattr(getattr(result, "final_strategy", None), "trade_recommendations", []) or [])
@@ -360,6 +509,8 @@ def _run_unified_review_mainline_for_holdings(
             "reviewed_branch_verdicts": reviewed_branch_verdicts,
             "branch_overlays": dict(symbol_review_bundle.get("branch_overlays", {}) or {}),
             "master_hint": dict(symbol_review_bundle.get("master_hint", {}) or {}),
+            "codex_handoff": codex_handoff_active,
+            "local_llm_disabled": bool(handoff_reason),
         }
         time.sleep(0.8)
 
@@ -373,6 +524,9 @@ def _run_unified_review_mainline_for_holdings(
         "model_role_metadata": model_role_metadata,
         "fallback_reasons": sorted(dict.fromkeys(item for item in fallback_reasons if str(item).strip())),
         "session_ids": session_ids,
+        "local_llm_disabled": bool(handoff_reason),
+        "codex_handoff": codex_handoff_active,
+        "non_llm_dag_executed": bool(review_by_symbol),
     }
 
 
@@ -1832,9 +1986,17 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         }
         for symbol, payload in review_by_symbol.items()
     }
+    dag_four_branch_compliance = _build_dag_four_branch_compliance(
+        review_symbols=list(branch_signals_by_symbol.keys()),
+        effective_local_holding_symbols=[
+            str(symbol).strip().upper()
+            for symbol in list(source_ledger["symbol"])
+            if str(symbol).strip()
+        ],
+        branch_signals_by_symbol=branch_signals_by_symbol,
+    )
     fundamental_coverage_by_symbol: dict[str, dict[str, Any]] = {}
     enhanced_data_flags_by_symbol: dict[str, dict[str, Any]] = {}
-    kline_diagnostics: dict[str, dict[str, Any]] = {}
     intelligence_diagnostics: dict[str, dict[str, Any]] = {}
     for symbol, payload in branch_signals_by_symbol.items():
         reviewed_branchs = dict(payload.get("reviewed_branch_verdicts", {}) or {})
@@ -1853,8 +2015,6 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "module_coverage": dict(fundamental_meta.get("module_coverage", {}) or {}),
         }
         enhanced_data_flags_by_symbol[symbol] = dict(snapshot_quality_by_symbol.get(symbol, {}) or {})
-        if reviewed_branchs.get("kline"):
-            kline_diagnostics[symbol] = dict(reviewed_branchs.get("kline", {}) or {})
         if reviewed_branchs.get("intelligence"):
             intelligence_diagnostics[symbol] = dict(reviewed_branchs.get("intelligence", {}) or {})
 
@@ -1866,7 +2026,6 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         branch_diagnostics=branch_signals_by_symbol,
         fundamental_coverage_by_symbol=fundamental_coverage_by_symbol,
         enhanced_data_flags_by_symbol=enhanced_data_flags_by_symbol,
-        kline_diagnostics=kline_diagnostics,
         intelligence_diagnostics=intelligence_diagnostics,
         review_layer_diagnostics={
             "effective_call_count": int(review_effective_summary.get("call_count", 0) or 0),
@@ -1978,6 +2137,10 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         f"- 决策数据口径：**{'盘中前日线+实时行情可用' if decision_data_sufficient else 'strict 日线完整性优先'}**",
         "- 分析口径：**直接基于本地已有数据，不自动补数，不把完整性校验作为正式结论前置阻断。**",
         "- 分析链路：**统一 DAG / review-layer（逐持仓主线复核）**",
+        (
+            f"- DAG 四分支执行状态：**{dag_four_branch_compliance['status']}**；"
+            f"`complete={str(bool(dag_four_branch_compliance['complete'])).lower()}`"
+        ),
         "",
         "## 0. 正式结果速览",
         "",
@@ -2162,6 +2325,8 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
                 else "- review-layer 降级标的：无"
             ),
             "",
+            *_render_dag_compliance_markdown(dag_four_branch_compliance),
+            "",
             "### 5.4 是否需要调仓",
             "",
             f"- 报告展示标签：`{decision_guardrail.display_label}`",
@@ -2210,7 +2375,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
                     else "无逐标的 review-layer 降级。"
                 )
             ),
-            "- 工程诊断说明：provider、snapshot、K 线 evaluator、旧 intelligence batch 等诊断仅用于说明证据等级，不直接作为逐票投资建议正文。",
+            "- 工程诊断说明：provider、snapshot、旧 intelligence batch 等诊断仅用于说明证据等级，不直接作为逐票投资建议正文。",
             "",
             "##### 持仓诊断明细",
             "",
@@ -2312,6 +2477,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "decision_guardrail": _jsonable(decision_guardrail.to_dict()),
         "typed_warning_codes": typed_warning_codes,
         "branch_diagnostics_by_symbol": _jsonable(branch_signals_by_symbol),
+        "dag_four_branch_compliance": _jsonable(dag_four_branch_compliance),
     }
 
     manifest = {
@@ -2387,6 +2553,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "codex_handoff": codex_handoff_active,
             "local_llm_disabled": bool(review_layer.get("local_llm_disabled", False)),
         },
+        "dag_four_branch_compliance": _jsonable(dag_four_branch_compliance),
         "candidate_pool": candidate_pool.to_dict(orient="records"),
         "switch_plan": switch_plan_df.to_dict(orient="records"),
         "formal_diagnostics": formal_diagnostics_payload,
@@ -2427,6 +2594,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "codex_handoff": codex_handoff_active,
             "local_llm_disabled": bool(review_layer.get("local_llm_disabled", False)),
         },
+        "dag_four_branch_compliance": _jsonable(dag_four_branch_compliance),
         "formal_diagnostics": formal_diagnostics_payload,
         "download_report": str(download_report_path) if download_report_path else None,
         "quote_fetch_error": quote_error or None,
@@ -2469,6 +2637,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "strongest": strongest_theme_text,
             "weakest": weakest_theme_text,
         },
+        "dag_four_branch_compliance": _jsonable(dag_four_branch_compliance),
         "formal_diagnostics": formal_diagnostics_payload,
         "pnl_summary": pnl_summary,
         "elapsed_sec": round(time.time() - started, 2),

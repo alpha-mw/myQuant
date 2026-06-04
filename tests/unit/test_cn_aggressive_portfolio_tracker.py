@@ -295,15 +295,76 @@ def test_run_unified_review_mainline_aggregates_attempt_and_effective_usage(monk
     }
 
 
-def test_run_unified_review_mainline_hands_off_to_codex_when_disabled(monkeypatch):
+def test_run_unified_review_mainline_keeps_non_llm_dag_when_local_llm_disabled(monkeypatch):
     monkeypatch.delenv("MYQUANT_ENABLE_LOCAL_LLM", raising=False)
     monkeypatch.setenv("MYQUANT_DISABLE_LOCAL_LLM", "true")
+    monkeypatch.setattr(
+        tracker,
+        "_load_daily_config_llm_settings",
+        lambda: {
+            "review_model_priority": ["deepseek-chat"],
+            "agent_model": "deepseek-chat",
+            "agent_fallback_model": "",
+            "master_model": "moonshot-v1-128k",
+            "master_fallback_model": "",
+            "master_reasoning_effort": "high",
+            "enable_agent_layer": True,
+        },
+    )
+    captured: dict[str, object] = {}
 
-    class _UnexpectedInvestor:
+    class _FakeInvestor:
         def __init__(self, **kwargs):
-            raise AssertionError("local LLM review should be handed off to Codex")
+            captured["enable_agent_layer"] = kwargs["enable_agent_layer"]
+            self.symbol = kwargs["stock_pool"][0]
 
-    monkeypatch.setattr(tracker, "QuantInvestor", _UnexpectedInvestor)
+        def run(self):
+            return SimpleNamespace(
+                llm_usage_summary=SimpleNamespace(
+                    call_count=0,
+                    total_tokens=0,
+                    estimated_cost_usd=0.0,
+                    success_count=0,
+                    fallback_count=0,
+                    failed_count=0,
+                ),
+                llm_effective_summary=SimpleNamespace(
+                    call_count=0,
+                    total_tokens=0,
+                    estimated_cost_usd=0.0,
+                    success_count=0,
+                    fallback_count=0,
+                    failed_count=0,
+                ),
+                llm_usage_session_id="",
+                model_role_metadata=SimpleNamespace(
+                    local_llm_disabled=True,
+                    agent_layer_enabled=False,
+                ),
+                reviewed_research_by_symbol={
+                    self.symbol: {
+                        "fundamental": {"branch_name": "fundamental", "action": "hold"},
+                        "intelligence": {"branch_name": "intelligence", "action": "hold"},
+                    }
+                },
+                reviewed_branch_summaries={
+                    "quant": {
+                        "branch_name": "quant",
+                        "factor_mode": "governed_mined_factors",
+                    },
+                    "macro": {"branch_name": "macro", "regime": "neutral"},
+                },
+                ic_hints_by_symbol={self.symbol: {"action": "hold"}},
+                final_strategy=SimpleNamespace(recommendations=[]),
+                final_report="deterministic report",
+                review_bundle=SimpleNamespace(
+                    fallback_reasons=[],
+                    branch_overlay_verdicts_by_symbol={},
+                    master_hints_by_symbol={},
+                ),
+            )
+
+    monkeypatch.setattr(tracker, "QuantInvestor", _FakeInvestor)
     ledger = pd.DataFrame([{"symbol": "601869.SH", "cost_basis": 100000.0, "current_value": 120000.0}])
 
     payload = tracker._run_unified_review_mainline_for_holdings(
@@ -312,11 +373,37 @@ def test_run_unified_review_mainline_hands_off_to_codex_when_disabled(monkeypatc
         source_record="20260408_1403",
     )
 
+    assert captured["enable_agent_layer"] is True
     assert payload["codex_handoff"] is True
     assert payload["local_llm_disabled"] is True
+    assert payload["non_llm_dag_executed"] is True
     assert payload["llm_attempt_summary"]["call_count"] == 0
     assert payload["degraded_symbols"] == {}
     assert payload["by_symbol"]["601869.SH"]["codex_handoff"] is True
+    assert set(payload["by_symbol"]["601869.SH"]["reviewed_branch_verdicts"]) == set(
+        tracker.REQUIRED_DAG_BRANCHES
+    )
+
+
+def test_build_dag_four_branch_compliance_marks_complete_when_all_branches_present():
+    branch_signals = {
+        "601869.SH": {
+            "reviewed_branch_verdicts": {
+                branch_name: {"branch_name": branch_name}
+                for branch_name in tracker.REQUIRED_DAG_BRANCHES
+            }
+        }
+    }
+
+    result = tracker._build_dag_four_branch_compliance(
+        review_symbols=["601869.SH"],
+        effective_local_holding_symbols=["601869.SH"],
+        branch_signals_by_symbol=branch_signals,
+    )
+
+    assert result["complete"] is True
+    assert result["status"] == "DAG四分支完整执行"
+    assert result["missing_branch_by_symbol"]["601869.SH"] == []
 
 
 def test_run_tracker_invokes_unified_review_mainline(monkeypatch, tmp_path):
@@ -816,23 +903,24 @@ def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypa
                                 "module_coverage": {},
                             }
                         },
-                        "kline": {
-                            "action": "sell",
-                            "metadata": {
-                                "evaluator_name": "placeholder_llm_reviewer",
-                                "llm_ready": False,
-                                "model_components": {"chronos": {"runtime_mode": "error_fallback"}},
-                            },
-                            "diagnostic_notes": ["fallback path engaged"],
-                        },
                         "intelligence": {
                             "action": "hold",
                             "metadata": {"branch_mode": "structured_intelligence_fusion"},
                             "coverage_notes": ["legacy batch retired"],
                             "investment_risks": ["智能融合当前未调用旧 batch pipeline，文本证据为候选层可扩展能力。"],
                         },
+                        "quant": {
+                            "branch_name": "quant",
+                            "factor_mode": "governed_mined_factors",
+                            "factor_count": 12,
+                            "applied_to_score": True,
+                        },
+                        "macro": {
+                            "branch_name": "macro",
+                            "regime": "neutral",
+                        },
                     },
-                    "branch_overlays": {"kline": {"action": "sell"}},
+                    "branch_overlays": {"fundamental": {"action": "sell"}},
                     "report_excerpt": "bearish conclusion",
                 }
             },
@@ -870,10 +958,12 @@ def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypa
     manifest_payload = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
 
     assert "#### 5.4.1 决策诊断" in report_text
+    assert "#### 5.3.1 DAG 四分支执行验收" in report_text
+    assert "DAG四分支完整执行" in report_text
     assert "stale_snapshot" in report_text
-    assert "placeholder_kline_evaluator" in report_text
     assert "601869.SH(长飞光纤) 持有成本 `100.00`，PNL `+6,000.00 元`（+20.00%）" in report_text
     assert "#### 5.4.3 证据质量与工程诊断" in report_text
+    assert "provider、snapshot、旧 intelligence batch" in report_text
     assert "### 5.7 因子库状态（只读影子观察）" in report_text
     assert "This factor library status is read-only" in report_text
     assert "does not alter stock selection, portfolio construction, RiskGuard" in report_text
@@ -886,10 +976,14 @@ def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypa
     )[0]
     assert "诊断码" not in advice_section
     assert "仲裁说明" not in advice_section
-    assert "placeholder_kline_evaluator" not in advice_section
     assert "provider_missing" not in advice_section
     assert manifest_payload["action_taken_today"] is False
     assert manifest_payload["formal_diagnostics"]["decision_guardrail"]["display_label"] == "no_action_evidence_impaired"
+    assert manifest_payload["dag_four_branch_compliance"]["complete"] is True
+    assert (
+        manifest_payload["formal_diagnostics"]["dag_four_branch_compliance"]["status"]
+        == "DAG四分支完整执行"
+    )
     orders_payload = (run_dir / "orders.csv").read_text(encoding="utf-8-sig")
     assert orders_payload == "timestamp,action,symbol,name,shares,price,trade_value,realized_pnl,reason\n"
     assert (run_dir / "orders.csv").exists()

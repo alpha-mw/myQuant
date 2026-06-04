@@ -97,12 +97,12 @@ def _build_parser() -> argparse.ArgumentParser:
     research_run.add_argument("--lookback", type=float, default=1.0)
     research_run.add_argument(
         "--kline-backend",
-        default="hybrid",
-        choices=["heuristic", "kronos", "chronos", "hybrid"],
-        help="兼容保留参数；当前主线统一使用 kline backend 配置。",
+        default="v13-retired",
+        choices=["v13-retired", "heuristic", "kronos", "chronos", "hybrid"],
+        help="兼容保留参数；v13 四分支主线不再执行 kline 分支。",
     )
     research_run.add_argument("--no-macro", action="store_true")
-    research_run.add_argument("--no-kline", "--no-kronos", action="store_true")
+    research_run.add_argument("--no-kline", "--no-kronos", action="store_true", help="兼容保留参数；v13 默认已禁用 kline。")
     research_run.add_argument("--no-quant", action="store_true")
     research_run.add_argument("--no-fundamental", action="store_true")
     research_run.add_argument("--no-intelligence", action="store_true")
@@ -251,6 +251,11 @@ def _build_parser() -> argparse.ArgumentParser:
     market_analyze.add_argument("--batch-size", type=int, default=None)
     market_analyze.add_argument("--capital", type=float, default=1_000_000)
     market_analyze.add_argument("--top-k", type=int, default=12)
+    market_analyze.add_argument(
+        "--shortlist-size",
+        type=int,
+        default=config.BAYESIAN_SHORTLIST_SIZE,
+    )
     market_analyze.add_argument("--no-agent-layer", action="store_true")
     market_analyze.add_argument(
         "--review-model",
@@ -297,6 +302,11 @@ def _build_parser() -> argparse.ArgumentParser:
     market_run.add_argument("--batch-size", type=int, default=None)
     market_run.add_argument("--capital", type=float, default=1_000_000)
     market_run.add_argument("--top-k", type=int, default=12)
+    market_run.add_argument(
+        "--shortlist-size",
+        type=int,
+        default=config.BAYESIAN_SHORTLIST_SIZE,
+    )
     market_run.add_argument("--skip-download", action="store_true")
     market_run.add_argument("--years", type=int, default=3)
     market_run.add_argument("--workers", type=int, default=4)
@@ -406,6 +416,7 @@ def main(argv: list[str] | None = None) -> None:
             batch_size=args.batch_size,
             total_capital=args.capital,
             top_k=args.top_k,
+            shortlist_size=args.shortlist_size,
             enable_agent_layer=not args.no_agent_layer,
             funnel_profile=args.funnel_profile,
             max_candidates=args.max_candidates,
@@ -424,6 +435,7 @@ def main(argv: list[str] | None = None) -> None:
             batch_size=args.batch_size,
             total_capital=args.capital,
             top_k=args.top_k,
+            shortlist_size=args.shortlist_size,
             skip_download=args.skip_download,
             force_download=False,
             years=args.years,

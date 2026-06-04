@@ -118,3 +118,41 @@ def test_quant_runtime_only_consumes_production_factor_with_all_gates_passed():
     assert result.factors_used == ["momentum_1m"]
     assert "volatility_penalty" in result.skipped_factors
     assert set(result.symbol_scores) == {"AAA", "BBB"}
+
+
+def test_quant_runtime_consumes_price_volume_production_factor():
+    passed_gates = [
+        GateResult(gate_id=i, gate_key=f"gate_{i}", title=f"Gate {i}", passed=True)
+        for i in range(1, 9)
+    ]
+    production = FactorRecord(
+        name="pv_short_reversal_5d",
+        state=FactorLifecycleState.PRODUCTION_FACTOR,
+        implementation="price_volume:pv_short_reversal_5d",
+        weight=1.0,
+        gate_results=passed_gates,
+    )
+    dates = pd.date_range("2024-01-01", periods=80, freq="B")
+    frames = {
+        "AAA": pd.DataFrame(
+            {
+                "trade_date": dates,
+                "adj_close": list(range(100, 180)),
+                "vol": [1000] * 80,
+                "amount": [100_000] * 80,
+            }
+        ),
+        "BBB": pd.DataFrame(
+            {
+                "trade_date": dates,
+                "adj_close": list(reversed(range(100, 180))),
+                "vol": [1000] * 80,
+                "amount": [100_000] * 80,
+            }
+        ),
+    }
+    result = score_with_mined_factors(frames, registry=MinedFactorRegistry.from_records([production]))
+    assert result.factor_count == 1
+    assert result.factors_used == ["pv_short_reversal_5d"]
+    assert result.coverage_rate == 1.0
+    assert result.symbol_scores["BBB"] > result.symbol_scores["AAA"]

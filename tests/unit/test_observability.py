@@ -68,7 +68,7 @@ def test_dataclass_round_trips(tmp_path) -> None:
         market="CN",
         universe_key="unit",
         universe_hash="hash",
-        architecture_version="12.0.0-stable",
+        architecture_version="13.0.0-stable",
         schema_versions={"A": "v1"},
         artifact_refs=[ref],
     )

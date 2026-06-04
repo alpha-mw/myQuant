@@ -70,44 +70,20 @@ class _FakeReader:
 def test_candidate_review_only_runs_after_funnel(monkeypatch):
     import quant_investor.market.dag_executor as dag_module
 
-    reviewed: dict[str, list[str]] = {"kline_shortlist": [], "fundamental": [], "intelligence": [], "kline_full_market": []}
+    reviewed: dict[str, list[str]] = {"fundamental": [], "intelligence": []}
 
     class _FakeFunnel:
         def __init__(self, *_args, **_kwargs):
             pass
 
-        def run(self, *, quant_result, kline_result, global_context):
-            assert set(kline_result.symbol_scores) == {"A", "B", "C", "D"}
+        def run(self, *, quant_result, global_context):
+            assert set(quant_result.symbol_scores) == {"A", "B", "C", "D"}
             return _FakeFunnelOutput(
                 candidates=["A", "B"],
                 candidate_scores={"A": 0.9, "B": 0.8},
                 excluded_symbols={"C": "rank_cutoff", "D": "rank_cutoff"},
                 funnel_metadata={"after_gates": 4, "final_candidates": 2},
             )
-
-    def _fake_kline_run(self, payload):
-        symbol = list(payload["stock_pool"])[0] if payload.get("stock_pool") else ""
-        mode = str(payload.get("mode", "")).lower()
-        if mode == "full_market":
-            reviewed["kline_full_market"] = list(payload["stock_pool"])
-            return BranchVerdict(
-                agent_name="kline",
-                thesis="full market screen",
-                final_score=0.3,
-                final_confidence=0.6,
-                metadata={
-                    "legacy_symbol_scores": {"A": 0.9, "B": 0.8, "C": 0.2, "D": 0.1},
-                },
-            )
-        reviewed["kline_shortlist"].append(symbol)
-        return BranchVerdict(
-            agent_name="kline",
-            thesis=f"kline shortlist {symbol}",
-            symbol=symbol,
-            final_score=0.5,
-            final_confidence=0.7,
-            metadata={"legacy_symbol_scores": {symbol: 0.5}},
-        )
 
     def _fake_fundamental_run(self, payload):
         symbol = list(payload["stock_pool"])[0]
@@ -146,7 +122,6 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
     def _fake_likelihoods(self, *, branch_results, symbol, candidate_symbols=None):
         return LikelihoodSet(
             quant_likelihood=0.6,
-            kline_likelihood=0.7,
             fundamental_likelihood=0.65,
             intelligence_likelihood=0.6,
         )
@@ -164,7 +139,7 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
             posterior_action_score=rank_score,
             posterior_edge_after_costs=0.08,
             posterior_capacity_penalty=0.01,
-            evidence_sources=["quant", "kline", "fundamental", "intelligence"],
+            evidence_sources=["quant", "fundamental", "intelligence"],
             action_threshold_used=0.55,
         )
 
@@ -210,7 +185,6 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
 
     monkeypatch.setattr(dag_module, "SharedCSVReader", _FakeReader)
     monkeypatch.setattr(dag_module, "DeterministicFunnel", _FakeFunnel)
-    monkeypatch.setattr(dag_module.KlineAgent, "run", _fake_kline_run)
     monkeypatch.setattr(dag_module.FundamentalAgent, "run", _fake_fundamental_run)
     monkeypatch.setattr(dag_module.IntelligenceAgent, "run", _fake_intelligence_run)
     monkeypatch.setattr(dag_module.MacroAgent, "run", _fake_macro_run)
@@ -223,7 +197,7 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
     monkeypatch.setattr(dag_module.PortfolioConstructor, "run", _fake_portfolio_run)
     monkeypatch.setattr(dag_module.NarratorAgent, "run", _fake_narrator_run)
     monkeypatch.setattr(dag_module, "_load_company_name_map", lambda market: {"A": "Alpha", "B": "Beta", "C": "Gamma", "D": "Delta"})
-    monkeypatch.setattr(dag_module, "detect_provider_health", lambda **kwargs: {"kline": {"mode": "hybrid"}})
+    monkeypatch.setattr(dag_module, "detect_provider_health", lambda **kwargs: {})
     monkeypatch.setattr(
         dag_module,
         "resolve_model_role",
@@ -247,8 +221,6 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
         verbose=False,
     )
 
-    assert reviewed["kline_full_market"] == ["A", "B", "C", "D"]
-    assert reviewed["kline_shortlist"] == ["A", "B"]
     assert reviewed["fundamental"] == ["A", "B"]
     assert reviewed["intelligence"] == ["A", "B"]
     assert result["global_context"].universe_tiers["shortlistable"] == ["A", "B"]

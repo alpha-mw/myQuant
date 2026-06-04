@@ -187,6 +187,8 @@ class MinedFactorScorer:
             return self._alpha158_cross_sectional(frames)
         if impl.startswith("alpha_mining.FactorLibrary:"):
             return self._alpha_mining_factor(impl.split(":", 1)[1], frames)
+        if impl.startswith("price_volume:"):
+            return self._price_volume_factor(impl.split(":", 1)[1], frames)
         if impl.startswith("builtin:"):
             return self._builtin_factor(impl.split(":", 1)[1], frames)
         # Backward-compatible convention: a registry factor named like a
@@ -213,6 +215,12 @@ class MinedFactorScorer:
             return pd.Series(dtype=float)
         values = func(combined)
         return self._latest_by_symbol(combined, values)
+
+    @staticmethod
+    def _price_volume_factor(name: str, frames: Mapping[str, pd.DataFrame]) -> pd.Series:
+        from quant_investor.factors.price_volume import compute_price_volume_factor
+
+        return compute_price_volume_factor(name, frames)
 
     @staticmethod
     def _builtin_factor(name: str, frames: Mapping[str, pd.DataFrame]) -> pd.Series:

@@ -5,7 +5,7 @@
 固定执行顺序：
 1. 加载 UnifiedDataBundle
 2. 运行一次 MacroAgent
-3. 对每个 symbol 运行 4 个 research agents
+3. 对每个 symbol 运行 v13 canonical research agents
 4. 对每个 symbol 运行 RiskGuard
 5. 对每个 symbol 运行 ICCoordinator
 6. 运行一次 PortfolioConstructor
@@ -24,7 +24,7 @@ from enum import Enum
 import json
 from pathlib import Path
 import tempfile
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 import pandas as pd
 
@@ -42,12 +42,12 @@ from quant_investor.agent_protocol import (
 from quant_investor.agents.fundamental_agent import FundamentalAgent
 from quant_investor.agents.ic_coordinator import ICCoordinator
 from quant_investor.agents.intelligence_agent import IntelligenceAgent
-from quant_investor.agents.kline_agent import KlineAgent
 from quant_investor.agents.macro_agent import MacroAgent
 from quant_investor.agents.narrator_agent import NarratorAgent
 from quant_investor.agents.portfolio_constructor import PortfolioConstructor
 from quant_investor.agents.quant_agent import QuantAgent
 from quant_investor.agents.risk_guard import RiskGuard
+from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
 from quant_investor.branch_contracts import BranchResult, UnifiedDataBundle
 from quant_investor.reporting.run_artifacts import (
     build_execution_trace,
@@ -60,6 +60,9 @@ from quant_investor.versioning import (
     IC_PROTOCOL_VERSION,
     REPORT_PROTOCOL_VERSION,
 )
+
+if TYPE_CHECKING:
+    from quant_investor.agents.kline_agent import KlineAgent
 
 
 class ControlChainOrchestrator:
@@ -87,7 +90,9 @@ class ControlChainOrchestrator:
         narrator_agent: NarratorAgent | None = None,
     ) -> None:
         self.macro_agent = macro_agent or MacroAgent()
-        self.kline_agent = kline_agent or KlineAgent()
+        # v13 removed kline from the canonical branch set. Keep the optional
+        # parameter for compatibility, but do not create or execute it.
+        self.kline_agent = kline_agent
         self.quant_agent = quant_agent or QuantAgent()
         self.fundamental_agent = fundamental_agent or FundamentalAgent()
         self.intelligence_agent = intelligence_agent or IntelligenceAgent()
@@ -264,16 +269,6 @@ class ControlChainOrchestrator:
                 "verbose": False,
             }
             research_by_symbol[symbol] = {
-                "kline": self._ensure_symbol_verdict(
-                    self.kline_agent.run(
-                        {
-                            **branch_payload,
-                            "mode": "shortlist",
-                        }
-                    ),
-                    symbol=symbol,
-                    branch_name="kline",
-                ),
                 "quant": self._ensure_symbol_verdict(
                     self.quant_agent.run(branch_payload),
                     symbol=symbol,
@@ -336,7 +331,6 @@ class ControlChainOrchestrator:
         data_bundle: UnifiedDataBundle,
     ) -> dict[str, dict[str, BranchVerdict]]:
         agent_map = {
-            "kline": self.kline_agent,
             "quant": self.quant_agent,
             "fundamental": self.fundamental_agent,
             "intelligence": self.intelligence_agent,
@@ -613,7 +607,7 @@ class ControlChainOrchestrator:
             result[str(symbol)] = {
                 str(branch_name): verdict
                 for branch_name, verdict in branch_map.items()
-                if isinstance(verdict, BranchVerdict)
+                if str(branch_name) in CANONICAL_BRANCH_ORDER and isinstance(verdict, BranchVerdict)
             }
         return result
 
@@ -717,10 +711,15 @@ class ControlChainOrchestrator:
         per_branch: dict[str, list[BranchVerdict]] = {}
         for symbol_payload in research_by_symbol.values():
             for branch_name, verdict in symbol_payload.items():
+                if branch_name not in CANONICAL_BRANCH_ORDER:
+                    continue
                 per_branch.setdefault(branch_name, []).append(verdict)
 
         aggregated: dict[str, BranchVerdict] = {}
-        for branch_name, verdicts in per_branch.items():
+        for branch_name in CANONICAL_BRANCH_ORDER:
+            verdicts = per_branch.get(branch_name, [])
+            if not verdicts:
+                continue
             thesis = verdicts[0].thesis if verdicts else f"{branch_name} 分支已生成结构化结论。"
             mean_score = sum(item.final_score for item in verdicts) / max(len(verdicts), 1)
             mean_confidence = sum(item.final_confidence for item in verdicts) / max(len(verdicts), 1)

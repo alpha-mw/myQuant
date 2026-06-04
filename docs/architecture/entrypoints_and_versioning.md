@@ -18,11 +18,11 @@
 
 ## Runtime Versions
 
-- package version：`12.0.0`
-- `ARCHITECTURE_VERSION = "12.0.0-stable"`
-- `BRANCH_SCHEMA_VERSION = "branch-schema.v12.unified-mainline"`
-- `IC_PROTOCOL_VERSION = "ic-protocol.v12.mainline"`
-- `REPORT_PROTOCOL_VERSION = "report-protocol.v12.mainline"`
+- package version：`13.0.0`
+- `ARCHITECTURE_VERSION = "13.0.0-stable"`
+- `BRANCH_SCHEMA_VERSION = "branch-schema.v13.four-branch"`
+- `IC_PROTOCOL_VERSION = "ic-protocol.v13.four-branch"`
+- `REPORT_PROTOCOL_VERSION = "report-protocol.v13.four-branch"`
 - `CALIBRATION_SCHEMA_VERSION = "2026-03-22.calibration.v2"`
 - `AGENT_SCHEMA_VERSION = "2026-03-23.agent.v1"`
 

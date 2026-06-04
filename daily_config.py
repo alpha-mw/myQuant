@@ -27,7 +27,7 @@ DAILY_CONFIG = {
     # 漏斗压缩后保留最大候选数（全市场 -> 候选）
     "funnel_max_candidates": 200,
     # Bayesian shortlist 入选数（候选 -> Master Discussion 精选）
-    "bayesian_shortlist_size": 20,
+    "bayesian_shortlist_size": 50,
     # CN 数据新鲜度模式: "stable"（T-1 容忍）/ "strict"（要求当日）
     "freshness_mode": "stable",
 

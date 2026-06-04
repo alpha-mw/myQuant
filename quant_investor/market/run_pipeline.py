@@ -84,6 +84,7 @@ def run_unified_pipeline(
     batch_size: int | None = None,
     total_capital: float = 1_000_000,
     top_k: int = 12,
+    shortlist_size: int | None = None,
     years: int = 3,
     workers: int = 4,
     max_download_rounds: int = 2,
@@ -132,6 +133,10 @@ def run_unified_pipeline(
 
     _print_stage_header(2, "全市场分析与报告生成")
     analysis_started = time.time()
+    effective_shortlist_size = max(
+        1,
+        int(shortlist_size if shortlist_size is not None else config.BAYESIAN_SHORTLIST_SIZE),
+    )
     branch_config, master_config = resolve_runtime_role_models(
         review_model_priority=review_model_priority,
         agent_model=agent_model,
@@ -147,6 +152,7 @@ def run_unified_pipeline(
         batch_size=batch_size,
         total_capital=total_capital,
         top_k=top_k,
+        shortlist_size=effective_shortlist_size,
         verbose=verbose,
         enable_agent_layer=enable_agent_layer,
         review_model_priority=list(review_model_priority or []),

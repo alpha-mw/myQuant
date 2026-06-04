@@ -40,6 +40,66 @@ def _score_to_direction(score: float) -> str:
     return "neutral"
 
 
+def _direction_enum_from_score(score: float) -> Direction:
+    direction = _score_to_direction(score)
+    if direction == "bullish":
+        return Direction.BULLISH
+    if direction == "bearish":
+        return Direction.BEARISH
+    return Direction.NEUTRAL
+
+
+def _build_symbol_quant_verdict(
+    *,
+    symbol: str,
+    quant_result: BranchResult,
+) -> BranchVerdict:
+    score = float(quant_result.symbol_scores.get(symbol, quant_result.final_score))
+    confidence = float(quant_result.final_confidence or 0.0)
+    return BranchVerdict(
+        agent_name="quant",
+        thesis=str(quant_result.conclusion or "quant 分支完成全市场因子评分。"),
+        symbol=symbol,
+        direction=_direction_enum_from_score(score),
+        action=_score_to_action(score),
+        final_score=score,
+        final_confidence=confidence,
+        investment_risks=list(quant_result.investment_risks),
+        coverage_notes=list(quant_result.coverage_notes),
+        diagnostic_notes=list(quant_result.diagnostic_notes),
+        metadata={
+            **dict(quant_result.metadata or {}),
+            "branch_name": "quant",
+            "source": "full_market_quant_result",
+        },
+    )
+
+
+def _build_symbol_macro_verdict(
+    *,
+    symbol: str,
+    macro_verdict: BranchVerdict,
+) -> BranchVerdict:
+    score = float(macro_verdict.final_score)
+    return BranchVerdict(
+        agent_name="macro",
+        thesis=str(macro_verdict.thesis or "macro 分支完成市场状态评估。"),
+        symbol=symbol,
+        direction=_direction_enum_from_score(score),
+        action=_score_to_action(score),
+        final_score=score,
+        final_confidence=float(macro_verdict.final_confidence),
+        investment_risks=list(macro_verdict.investment_risks),
+        coverage_notes=list(macro_verdict.coverage_notes),
+        diagnostic_notes=list(macro_verdict.diagnostic_notes),
+        metadata={
+            **dict(macro_verdict.metadata or {}),
+            "branch_name": "macro",
+            "source": "market_macro_verdict",
+        },
+    )
+
+
 async def _run_candidate_research_phase(
     *,
     candidate_symbols: list[str],
@@ -60,11 +120,9 @@ async def _run_candidate_research_phase(
     agent_timeout: float,
     master_timeout: float,
     resolver_snapshot: Mapping[str, Any],
-    kline_agent: Any,
     fundamental_agent: Any,
     intelligence_agent: Any,
     quant_result: BranchResult,
-    full_market_kline_result: BranchResult,
     ensure_branch_verdict: Callable[..., BranchVerdict],
     master_hint_to_ic_hint: Callable[[Any], dict[str, Any]],
 ) -> CandidateResearchState:
@@ -95,11 +153,7 @@ async def _run_candidate_research_phase(
             "market": market,
             "verbose": False,
         }
-        kline = ensure_branch_verdict(
-            kline_agent.run({**branch_payload, "mode": "shortlist"}),
-            symbol=symbol,
-            branch_name="kline",
-        )
+        quant = _build_symbol_quant_verdict(symbol=symbol, quant_result=quant_result)
         fundamental = ensure_branch_verdict(
             fundamental_agent.run({**branch_payload, "enable_document_semantics": True}),
             symbol=symbol,
@@ -110,10 +164,12 @@ async def _run_candidate_research_phase(
             symbol=symbol,
             branch_name="intelligence",
         )
+        macro = _build_symbol_macro_verdict(symbol=symbol, macro_verdict=macro_verdict)
         base_branch_verdicts = {
-            "kline": kline,
+            "quant": quant,
             "fundamental": fundamental,
             "intelligence": intelligence,
+            "macro": macro,
         }
 
         if not enable_agent_layer:
@@ -185,7 +241,11 @@ async def _run_candidate_research_phase(
                 "data_quality_issue_count": len(read_result.issues),
                 "risk_flags": _dedupe_texts(
                     [issue.message for issue in read_result.issues[:2]]
-                    + [item for item in base_branch_verdicts["kline"].investment_risks[:1]]
+                    + [
+                        risk
+                        for verdict in base_branch_verdicts.values()
+                        for risk in verdict.investment_risks[:1]
+                    ][:2]
                 ),
             },
             baseline_score=float(fmean([item["adjusted_score"] for item in overlay_dicts]) if overlay_dicts else 0.0),
@@ -331,7 +391,6 @@ async def _run_candidate_research_phase(
     branch_summaries["macro"] = macro_verdict
     branch_results = _build_branch_results(research_by_symbol, branch_summaries)
     branch_results["quant"] = quant_result
-    branch_results["kline_funnel"] = full_market_kline_result
 
     return CandidateResearchState(
         symbol_research_packets=symbol_research_packets,

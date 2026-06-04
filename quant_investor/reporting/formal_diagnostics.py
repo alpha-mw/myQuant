@@ -10,8 +10,6 @@ SUPPORTED_WARNING_CODES = {
     "provider_missing",
     "snapshot_missing",
     "stale_snapshot",
-    "placeholder_kline_evaluator",
-    "evaluator_unavailable",
     "llm_confidence_unavailable",
     "retired_signal_suppressed",
 }
@@ -460,27 +458,6 @@ def _fundamental_payload_for_symbol(
     }
 
 
-def _extract_kline_payloads(
-    branch_diagnostics: Mapping[str, Any],
-    kline_diagnostics: Mapping[str, Any],
-) -> list[dict[str, Any]]:
-    collected: list[dict[str, Any]] = []
-    for payload in kline_diagnostics.values():
-        mapping = _coerce_mapping(payload)
-        if mapping:
-            collected.append(mapping)
-    if collected:
-        return collected
-
-    for symbol_payload in branch_diagnostics.values():
-        mapping = _coerce_mapping(symbol_payload)
-        branch_verdicts = _coerce_mapping(mapping.get("reviewed_branch_verdicts") or mapping.get("branch_verdicts"))
-        kline = _coerce_mapping(branch_verdicts.get("kline"))
-        if kline:
-            collected.append(kline)
-    return collected
-
-
 def _extract_intelligence_payloads(
     branch_diagnostics: Mapping[str, Any],
     intelligence_diagnostics: Mapping[str, Any],
@@ -556,7 +533,6 @@ def collect_formal_report_warnings(
     branch_diagnostics: Mapping[str, Any] | None = None,
     fundamental_coverage_by_symbol: Mapping[str, Any] | None = None,
     enhanced_data_flags_by_symbol: Mapping[str, Any] | None = None,
-    kline_diagnostics: Mapping[str, Any] | None = None,
     intelligence_diagnostics: Mapping[str, Any] | None = None,
     review_layer_diagnostics: Mapping[str, Any] | None = None,
 ) -> list[ReportWarning]:
@@ -564,7 +540,6 @@ def collect_formal_report_warnings(
     branch_diagnostics = _coerce_mapping(branch_diagnostics)
     fundamental_coverage_by_symbol = _coerce_mapping(fundamental_coverage_by_symbol)
     enhanced_data_flags_by_symbol = _coerce_mapping(enhanced_data_flags_by_symbol)
-    kline_diagnostics = _coerce_mapping(kline_diagnostics)
     intelligence_diagnostics = _coerce_mapping(intelligence_diagnostics)
     review_layer_diagnostics = _coerce_mapping(review_layer_diagnostics)
     holdings = list(holdings_review or [])
@@ -652,53 +627,6 @@ def collect_formal_report_warnings(
                     human_message=f"{symbol} 缺少 symbol 级基本面模块：{'、'.join(named_modules)}。",
                 )
             )
-
-    placeholder_detected = False
-    evaluator_unavailable_detected = False
-    for payload in _extract_kline_payloads(branch_diagnostics, kline_diagnostics):
-        metadata = _coerce_mapping(payload.get("metadata"))
-        diagnostic_notes = [str(item).strip().lower() for item in _coerce_sequence(payload.get("diagnostic_notes"))]
-        evaluator_name = str(metadata.get("evaluator_name", "")).strip().lower()
-        if "placeholder" in evaluator_name or metadata.get("llm_ready") is False:
-            placeholder_detected = True
-        runtime_modes = []
-        model_components = _coerce_mapping(metadata.get("model_components"))
-        for component_payload in model_components.values():
-            runtime_modes.append(str(_coerce_mapping(component_payload).get("runtime_mode", "")).strip().lower())
-        fallback_reason = str(metadata.get("fallback_reason", "")).strip().lower()
-        if (
-            any("fallback" in mode or "timed_out" in mode or "error" in mode for mode in runtime_modes)
-            or "fallback" in fallback_reason
-            or any("fallback" in note or "超时" in note or "失败" in note for note in diagnostic_notes)
-        ):
-            evaluator_unavailable_detected = True
-
-    if placeholder_detected:
-        warnings.append(
-            ReportWarning(
-                code="placeholder_kline_evaluator",
-                scope="branch",
-                source="kline/evaluator",
-                severity="info",
-                data_date=normalized_dominant_date,
-                affected_symbol=None,
-                decision_impact="disclosure_only",
-                human_message="当前 K 线综合评估器为占位规则版，属于评估器能力限制，不是上游数据缺失。",
-            )
-        )
-    if evaluator_unavailable_detected:
-        warnings.append(
-            ReportWarning(
-                code="evaluator_unavailable",
-                scope="branch",
-                source="kline/runtime",
-                severity="warning",
-                data_date=normalized_dominant_date,
-                affected_symbol=None,
-                decision_impact="disclosure_only",
-                human_message="当前 K 线深模型链路存在 fallback/unavailable 情况，报告已回退到可用的替代评估路径。",
-            )
-        )
 
     retired_detected = False
     for payload in _extract_intelligence_payloads(branch_diagnostics, intelligence_diagnostics):
@@ -846,7 +774,7 @@ def reconcile_branch_vs_final(
         if item.severity == "material" or item.decision_impact == "downgraded_final_label"
     }
     if clean_hold_like and material_warning_codes.intersection(
-        {"stale_snapshot", "provider_missing", "snapshot_missing", "llm_confidence_unavailable", "evaluator_unavailable"}
+        {"stale_snapshot", "provider_missing", "snapshot_missing", "llm_confidence_unavailable"}
     ):
         return (
             "insufficient_evidence",
@@ -951,7 +879,7 @@ def apply_report_decision_guardrail(
             conflicts
             and all(item.arbitration_note for item in conflicts)
             and not any(
-                warning.code in {"stale_snapshot", "provider_missing", "snapshot_missing", "llm_confidence_unavailable", "evaluator_unavailable"}
+                warning.code in {"stale_snapshot", "provider_missing", "snapshot_missing", "llm_confidence_unavailable"}
                 and warning.severity == "material"
                 for warning in material_warnings
             )

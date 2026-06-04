@@ -2,7 +2,2677 @@
   "schema_version": "mined-factor-registry.v1",
   "metadata": {
     "description": "Governed mined-factor registry. Quant branch only consumes production_factor entries with all 8 gates passed.",
-    "default_policy": "No mined factor is live until manually promoted to production_factor."
+    "default_policy": "No mined factor is live until manually promoted to production_factor.",
+    "restored_at": "2026-06-02T03:38:47Z",
+    "restored_from": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
+    "restored_factor_count": 12,
+    "runtime_implementation": "price_volume:<factor_name>",
+    "known_limitation": "Offline neutralization uses hs300/zz500/zz1000 universe buckets because complete industry map was unavailable in the local snapshot."
   },
-  "factors": []
+  "factors": [
+    {
+      "name": "pv_volume_stability_15d",
+      "version": "v20260529",
+      "state": "production_factor",
+      "category": "trading_activity",
+      "implementation": "price_volume:pv_volume_stability_15d",
+      "weight": 0.05,
+      "direction": 1.0,
+      "horizon_days": 30,
+      "owner": "myQuant local factor governance",
+      "description": "Negative 15-day coefficient of variation of volume; stable participation scores higher.",
+      "tags": [
+        "local_price_volume",
+        "volume_stability",
+        "trading_activity"
+      ],
+      "gate_results": [
+        {
+          "gate_id": 1,
+          "gate_key": "data_safety",
+          "title": "Gate 1: 数据安全",
+          "passed": true,
+          "reasons": [
+            "已确认 point-in-time、availability_date、复权与可交易性口径。"
+          ],
+          "metrics": {
+            "no_future_leakage": true,
+            "uses_availability_date": true,
+            "point_in_time_rebalance": true,
+            "adjusted_price_consistent": true,
+            "tradability_rules_defined": true,
+            "missingness_explained": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 2,
+          "gate_key": "coverage_stability",
+          "title": "Gate 2: 覆盖率和稳定性",
+          "passed": true,
+          "reasons": [
+            "覆盖率、缺失率、行业与市值分布通过。"
+          ],
+          "metrics": {
+            "coverage_rate": 0.9988936554526981,
+            "nan_rate": 0.001106344547301874,
+            "monthly_coverage_min": 0.9936046511627907,
+            "max_sector_coverage_share": 0.5521348974932755,
+            "max_size_bucket_coverage_share": 0.5521348974932755,
+            "extreme_value_ratio": 0.0007911213580163197,
+            "thematic": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 3,
+          "gate_key": "ic_rankic",
+          "title": "Gate 3: IC / RankIC",
+          "passed": true,
+          "reasons": [
+            "IC/RankIC 达到观察门槛，且方向未显示单一年份依赖。"
+          ],
+          "metrics": {
+            "icir": 0.6624746923687049,
+            "mean_rankic": 0.044408227762990846,
+            "positive_ic_ratio": 0.8,
+            "rankic_direction_stable": true,
+            "max_single_year_ic_contribution": 0.3319576260622269
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 4,
+          "gate_key": "group_returns",
+          "title": "Gate 4: 分组收益",
+          "passed": true,
+          "reasons": [
+            "分组收益、top quantile 与 long-short spread 通过。"
+          ],
+          "metrics": {
+            "top_bottom_spread": 0.06829295397373879,
+            "top_quantile_return": 0.22094942161730718,
+            "monotonicity": 0.526,
+            "long_short_from_long_side": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 5,
+          "gate_key": "cost_turnover",
+          "title": "Gate 5: 交易成本和换手",
+          "passed": true,
+          "reasons": [
+            "交易成本、滑点、换手与容量通过。"
+          ],
+          "metrics": {
+            "turnover": 7.227044505229436,
+            "cost_adjusted_return": 0.06106590946850935,
+            "slippage_sensitivity_ok": true,
+            "execution_realism": true,
+            "capacity_pressure": 0.012529658563233199
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 6,
+          "gate_key": "neutralization_exposure",
+          "title": "Gate 6: 中性化和暴露分析",
+          "passed": true,
+          "reasons": [
+            "中性化后仍有 alpha，且与现有因子不过度重合。"
+          ],
+          "metrics": {
+            "neutralized_icir": 0.685358913031786,
+            "existing_factor_corr": 0.0,
+            "style_exposure_only": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 7,
+          "gate_key": "oos_robustness",
+          "title": "Gate 7: 样本外和稳健性",
+          "passed": true,
+          "reasons": [
+            "walk-forward、参数、日期、频率、universe 与市场阶段稳健性通过。"
+          ],
+          "metrics": {
+            "oos_positive_ratio": 0.8,
+            "parameter_stability": true,
+            "date_range_robustness": true,
+            "rebalance_frequency_robustness": true,
+            "universe_robustness": true,
+            "regime_robustness": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 8,
+          "gate_key": "portfolio_incremental",
+          "title": "Gate 8: 组合增量验证",
+          "passed": true,
+          "reasons": [
+            "baseline + new factor 相对 baseline 有组合级增量。"
+          ],
+          "metrics": {
+            "master_return_delta": 0.0009302848440279769,
+            "sharpe_delta": 0.0038752414069671993,
+            "max_drawdown_delta": 0.0005030226992757869,
+            "turnover_delta": 0.21681133515688308,
+            "execution_cost_delta": 0.0002168113351568831,
+            "correlation_with_existing_signals": 0.0
+          },
+          "severity": "info"
+        }
+      ],
+      "metrics": {
+        "no_future_leakage": true,
+        "uses_availability_date": true,
+        "point_in_time_rebalance": true,
+        "adjusted_price_consistent": true,
+        "tradability_rules_defined": true,
+        "missingness_explained": true,
+        "coverage_rate": 0.9988936554526981,
+        "nan_rate": 0.001106344547301874,
+        "monthly_coverage_min": 0.9936046511627907,
+        "max_sector_coverage_share": 0.5521348974932755,
+        "max_size_bucket_coverage_share": 0.5521348974932755,
+        "extreme_value_ratio": 0.0007911213580163197,
+        "icir": 0.6624746923687049,
+        "mean_rankic": 0.044408227762990846,
+        "positive_ic_ratio": 0.8,
+        "rankic_direction_stable": true,
+        "max_single_year_ic_contribution": 0.3319576260622269,
+        "horizon_days": 30,
+        "top_bottom_spread": 0.06829295397373879,
+        "top_quantile_return": 0.22094942161730718,
+        "monotonicity": 0.526,
+        "long_short_from_long_side": true,
+        "turnover": 7.227044505229436,
+        "cost_adjusted_return": 0.06106590946850935,
+        "capacity_pressure": 0.012529658563233199,
+        "master_return_delta": 0.0009302848440279769,
+        "sharpe_delta": 0.0038752414069671993,
+        "max_drawdown_delta": 0.0005030226992757869,
+        "turnover_delta": 0.21681133515688308,
+        "execution_cost_delta": 0.0002168113351568831,
+        "median_top_daily_amount_yuan": 159621269.0,
+        "incremental_sleeve_weight": 0.03,
+        "slippage_sensitivity_ok": true,
+        "execution_realism": true,
+        "neutralized_icir": 0.685358913031786,
+        "existing_factor_corr": 0.0,
+        "style_exposure_only": false,
+        "oos_positive_ratio": 0.8,
+        "parameter_stability": true,
+        "date_range_robustness": true,
+        "rebalance_frequency_robustness": true,
+        "universe_robustness": true,
+        "regime_robustness": true,
+        "signal_corr": 0.0
+      },
+      "admission_decision": "production_candidate",
+      "thematic": false,
+      "narrow_coverage": false,
+      "approved_by": "manual_promote_production_20260529_recovered_20260602",
+      "approved_at": "2026-05-29T05:30:16Z",
+      "deprecated_reason": "",
+      "metadata": {
+        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
+        "recovery_reason": "registry was empty although 2026-05-29 promoted mining report and health reports show 12 production_factor entries",
+        "validation_note": "Neutralization uses hs300/zz500/zz1000 universe buckets as a local size/liquidity proxy because no complete industry map is available in the offline data snapshot.",
+        "spec": {
+          "name": "pv_volume_stability_15d",
+          "family": "volume_stability",
+          "category": "trading_activity",
+          "window": 15,
+          "description": "Negative 15-day coefficient of variation of volume; stable participation scores higher.",
+          "literature_anchor": "trading_activity"
+        }
+      }
+    },
+    {
+      "name": "pv_volume_stability_20d",
+      "version": "v20260529",
+      "state": "production_factor",
+      "category": "trading_activity",
+      "implementation": "price_volume:pv_volume_stability_20d",
+      "weight": 0.05,
+      "direction": 1.0,
+      "horizon_days": 30,
+      "owner": "myQuant local factor governance",
+      "description": "Negative 20-day coefficient of variation of volume; stable participation scores higher.",
+      "tags": [
+        "local_price_volume",
+        "volume_stability",
+        "trading_activity"
+      ],
+      "gate_results": [
+        {
+          "gate_id": 1,
+          "gate_key": "data_safety",
+          "title": "Gate 1: 数据安全",
+          "passed": true,
+          "reasons": [
+            "已确认 point-in-time、availability_date、复权与可交易性口径。"
+          ],
+          "metrics": {
+            "no_future_leakage": true,
+            "uses_availability_date": true,
+            "point_in_time_rebalance": true,
+            "adjusted_price_consistent": true,
+            "tradability_rules_defined": true,
+            "missingness_explained": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 2,
+          "gate_key": "coverage_stability",
+          "title": "Gate 2: 覆盖率和稳定性",
+          "passed": true,
+          "reasons": [
+            "覆盖率、缺失率、行业与市值分布通过。"
+          ],
+          "metrics": {
+            "coverage_rate": 0.9985324000903139,
+            "nan_rate": 0.0014675999096861595,
+            "monthly_coverage_min": 0.75,
+            "max_sector_coverage_share": 0.5519954776710005,
+            "max_size_bucket_coverage_share": 0.5519954776710005,
+            "extreme_value_ratio": 0.0009949123798756359,
+            "thematic": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 3,
+          "gate_key": "ic_rankic",
+          "title": "Gate 3: IC / RankIC",
+          "passed": true,
+          "reasons": [
+            "IC/RankIC 达到观察门槛，且方向未显示单一年份依赖。"
+          ],
+          "metrics": {
+            "icir": 0.6609294341298083,
+            "mean_rankic": 0.04401132324201341,
+            "positive_ic_ratio": 0.72,
+            "rankic_direction_stable": true,
+            "max_single_year_ic_contribution": 0.32475852883486533
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 4,
+          "gate_key": "group_returns",
+          "title": "Gate 4: 分组收益",
+          "passed": true,
+          "reasons": [
+            "分组收益、top quantile 与 long-short spread 通过。"
+          ],
+          "metrics": {
+            "top_bottom_spread": 0.061985623256305356,
+            "top_quantile_return": 0.2218957074203365,
+            "monotonicity": 0.556,
+            "long_short_from_long_side": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 5,
+          "gate_key": "cost_turnover",
+          "title": "Gate 5: 交易成本和换手",
+          "passed": true,
+          "reasons": [
+            "交易成本、滑点、换手与容量通过。"
+          ],
+          "metrics": {
+            "turnover": 7.253082569516312,
+            "cost_adjusted_return": 0.054732540686789045,
+            "slippage_sensitivity_ok": true,
+            "execution_realism": true,
+            "capacity_pressure": 0.012190578544895669
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 6,
+          "gate_key": "neutralization_exposure",
+          "title": "Gate 6: 中性化和暴露分析",
+          "passed": true,
+          "reasons": [
+            "中性化后仍有 alpha，且与现有因子不过度重合。"
+          ],
+          "metrics": {
+            "neutralized_icir": 0.7098406559826255,
+            "existing_factor_corr": 0.0,
+            "style_exposure_only": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 7,
+          "gate_key": "oos_robustness",
+          "title": "Gate 7: 样本外和稳健性",
+          "passed": true,
+          "reasons": [
+            "walk-forward、参数、日期、频率、universe 与市场阶段稳健性通过。"
+          ],
+          "metrics": {
+            "oos_positive_ratio": 0.6666666666666666,
+            "parameter_stability": true,
+            "date_range_robustness": true,
+            "rebalance_frequency_robustness": true,
+            "universe_robustness": true,
+            "regime_robustness": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 8,
+          "gate_key": "portfolio_incremental",
+          "title": "Gate 8: 组合增量验证",
+          "passed": true,
+          "reasons": [
+            "baseline + new factor 相对 baseline 有组合级增量。"
+          ],
+          "metrics": {
+            "master_return_delta": 0.0009571256963318539,
+            "sharpe_delta": 0.004149962739458154,
+            "max_drawdown_delta": 0.0008243131395776237,
+            "turnover_delta": 0.21759247708548937,
+            "execution_cost_delta": 0.00021759247708548937,
+            "correlation_with_existing_signals": 0.0
+          },
+          "severity": "info"
+        }
+      ],
+      "metrics": {
+        "no_future_leakage": true,
+        "uses_availability_date": true,
+        "point_in_time_rebalance": true,
+        "adjusted_price_consistent": true,
+        "tradability_rules_defined": true,
+        "missingness_explained": true,
+        "coverage_rate": 0.9985324000903139,
+        "nan_rate": 0.0014675999096861595,
+        "monthly_coverage_min": 0.75,
+        "max_sector_coverage_share": 0.5519954776710005,
+        "max_size_bucket_coverage_share": 0.5519954776710005,
+        "extreme_value_ratio": 0.0009949123798756359,
+        "icir": 0.6609294341298083,
+        "mean_rankic": 0.04401132324201341,
+        "positive_ic_ratio": 0.72,
+        "rankic_direction_stable": true,
+        "max_single_year_ic_contribution": 0.32475852883486533,
+        "horizon_days": 30,
+        "top_bottom_spread": 0.061985623256305356,
+        "top_quantile_return": 0.2218957074203365,
+        "monotonicity": 0.556,
+        "long_short_from_long_side": true,
+        "turnover": 7.253082569516312,
+        "cost_adjusted_return": 0.054732540686789045,
+        "capacity_pressure": 0.012190578544895669,
+        "master_return_delta": 0.0009571256963318539,
+        "sharpe_delta": 0.004149962739458154,
+        "max_drawdown_delta": 0.0008243131395776237,
+        "turnover_delta": 0.21759247708548937,
+        "execution_cost_delta": 0.00021759247708548937,
+        "median_top_daily_amount_yuan": 164061122.5,
+        "incremental_sleeve_weight": 0.03,
+        "slippage_sensitivity_ok": true,
+        "execution_realism": true,
+        "neutralized_icir": 0.7098406559826255,
+        "existing_factor_corr": 0.0,
+        "style_exposure_only": false,
+        "oos_positive_ratio": 0.6666666666666666,
+        "parameter_stability": true,
+        "date_range_robustness": true,
+        "rebalance_frequency_robustness": true,
+        "universe_robustness": true,
+        "regime_robustness": true,
+        "signal_corr": 0.0
+      },
+      "admission_decision": "production_candidate",
+      "thematic": false,
+      "narrow_coverage": false,
+      "approved_by": "manual_promote_production_20260529_recovered_20260602",
+      "approved_at": "2026-05-29T05:30:16Z",
+      "deprecated_reason": "",
+      "metadata": {
+        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
+        "recovery_reason": "registry was empty although 2026-05-29 promoted mining report and health reports show 12 production_factor entries",
+        "validation_note": "Neutralization uses hs300/zz500/zz1000 universe buckets as a local size/liquidity proxy because no complete industry map is available in the offline data snapshot.",
+        "spec": {
+          "name": "pv_volume_stability_20d",
+          "family": "volume_stability",
+          "category": "trading_activity",
+          "window": 20,
+          "description": "Negative 20-day coefficient of variation of volume; stable participation scores higher.",
+          "literature_anchor": "trading_activity"
+        }
+      }
+    },
+    {
+      "name": "pv_amihud_illiquidity_15d",
+      "version": "v20260529",
+      "state": "production_factor",
+      "category": "liquidity",
+      "implementation": "price_volume:pv_amihud_illiquidity_15d",
+      "weight": 0.05,
+      "direction": 1.0,
+      "horizon_days": 30,
+      "owner": "myQuant local factor governance",
+      "description": "15-day average absolute return divided by traded amount; higher measured illiquidity scores higher.",
+      "tags": [
+        "local_price_volume",
+        "amihud_illiquidity",
+        "amihud_illiquidity"
+      ],
+      "gate_results": [
+        {
+          "gate_id": 1,
+          "gate_key": "data_safety",
+          "title": "Gate 1: 数据安全",
+          "passed": true,
+          "reasons": [
+            "已确认 point-in-time、availability_date、复权与可交易性口径。"
+          ],
+          "metrics": {
+            "no_future_leakage": true,
+            "uses_availability_date": true,
+            "point_in_time_rebalance": true,
+            "adjusted_price_consistent": true,
+            "tradability_rules_defined": true,
+            "missingness_explained": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 2,
+          "gate_key": "coverage_stability",
+          "title": "Gate 2: 覆盖率和稳定性",
+          "passed": true,
+          "reasons": [
+            "覆盖率、缺失率、行业与市值分布通过。"
+          ],
+          "metrics": {
+            "coverage_rate": 0.9987807631519531,
+            "nan_rate": 0.0012192368480469632,
+            "monthly_coverage_min": 0.9936046511627907,
+            "max_sector_coverage_share": 0.5521294872954154,
+            "max_size_bucket_coverage_share": 0.5521294872954154,
+            "extreme_value_ratio": 0.009223257075684962,
+            "thematic": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 3,
+          "gate_key": "ic_rankic",
+          "title": "Gate 3: IC / RankIC",
+          "passed": true,
+          "reasons": [
+            "IC/RankIC 达到观察门槛，且方向未显示单一年份依赖。"
+          ],
+          "metrics": {
+            "icir": 0.5925763334773,
+            "mean_rankic": 0.06134304843601928,
+            "positive_ic_ratio": 0.72,
+            "rankic_direction_stable": true,
+            "max_single_year_ic_contribution": 0.36452822132171764
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 4,
+          "gate_key": "group_returns",
+          "title": "Gate 4: 分组收益",
+          "passed": true,
+          "reasons": [
+            "分组收益、top quantile 与 long-short spread 通过。"
+          ],
+          "metrics": {
+            "top_bottom_spread": 0.16080865144390719,
+            "top_quantile_return": 0.28517576687863067,
+            "monotonicity": 0.724,
+            "long_short_from_long_side": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 5,
+          "gate_key": "cost_turnover",
+          "title": "Gate 5: 交易成本和换手",
+          "passed": true,
+          "reasons": [
+            "交易成本、滑点、换手与容量通过。"
+          ],
+          "metrics": {
+            "turnover": 3.638762299129605,
+            "cost_adjusted_return": 0.15716988914477759,
+            "slippage_sensitivity_ok": true,
+            "execution_realism": true,
+            "capacity_pressure": 0.028489742983843457
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 6,
+          "gate_key": "neutralization_exposure",
+          "title": "Gate 6: 中性化和暴露分析",
+          "passed": true,
+          "reasons": [
+            "中性化后仍有 alpha，且与现有因子不过度重合。"
+          ],
+          "metrics": {
+            "neutralized_icir": 0.8301730147480666,
+            "existing_factor_corr": 0.0,
+            "style_exposure_only": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 7,
+          "gate_key": "oos_robustness",
+          "title": "Gate 7: 样本外和稳健性",
+          "passed": true,
+          "reasons": [
+            "walk-forward、参数、日期、频率、universe 与市场阶段稳健性通过。"
+          ],
+          "metrics": {
+            "oos_positive_ratio": 0.6666666666666666,
+            "parameter_stability": true,
+            "date_range_robustness": true,
+            "rebalance_frequency_robustness": true,
+            "universe_robustness": true,
+            "regime_robustness": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 8,
+          "gate_key": "portfolio_incremental",
+          "title": "Gate 8: 组合增量验证",
+          "passed": true,
+          "reasons": [
+            "baseline + new factor 相对 baseline 有组合级增量。"
+          ],
+          "metrics": {
+            "master_return_delta": 0.002853315809964637,
+            "sharpe_delta": 0.00877543895492278,
+            "max_drawdown_delta": 0.0008673763263812084,
+            "turnover_delta": 0.10916286897388815,
+            "execution_cost_delta": 0.00010916286897388815,
+            "correlation_with_existing_signals": 0.0
+          },
+          "severity": "info"
+        }
+      ],
+      "metrics": {
+        "no_future_leakage": true,
+        "uses_availability_date": true,
+        "point_in_time_rebalance": true,
+        "adjusted_price_consistent": true,
+        "tradability_rules_defined": true,
+        "missingness_explained": true,
+        "coverage_rate": 0.9987807631519531,
+        "nan_rate": 0.0012192368480469632,
+        "monthly_coverage_min": 0.9936046511627907,
+        "max_sector_coverage_share": 0.5521294872954154,
+        "max_size_bucket_coverage_share": 0.5521294872954154,
+        "extreme_value_ratio": 0.009223257075684962,
+        "icir": 0.5925763334773,
+        "mean_rankic": 0.06134304843601928,
+        "positive_ic_ratio": 0.72,
+        "rankic_direction_stable": true,
+        "max_single_year_ic_contribution": 0.36452822132171764,
+        "horizon_days": 30,
+        "top_bottom_spread": 0.16080865144390719,
+        "top_quantile_return": 0.28517576687863067,
+        "monotonicity": 0.724,
+        "long_short_from_long_side": true,
+        "turnover": 3.638762299129605,
+        "cost_adjusted_return": 0.15716988914477759,
+        "capacity_pressure": 0.028489742983843457,
+        "master_return_delta": 0.002853315809964637,
+        "sharpe_delta": 0.00877543895492278,
+        "max_drawdown_delta": 0.0008673763263812084,
+        "turnover_delta": 0.10916286897388815,
+        "execution_cost_delta": 0.00010916286897388815,
+        "median_top_daily_amount_yuan": 70200703.5,
+        "incremental_sleeve_weight": 0.03,
+        "slippage_sensitivity_ok": true,
+        "execution_realism": true,
+        "neutralized_icir": 0.8301730147480666,
+        "existing_factor_corr": 0.0,
+        "style_exposure_only": false,
+        "oos_positive_ratio": 0.6666666666666666,
+        "parameter_stability": true,
+        "date_range_robustness": true,
+        "rebalance_frequency_robustness": true,
+        "universe_robustness": true,
+        "regime_robustness": true,
+        "signal_corr": 0.0
+      },
+      "admission_decision": "production_candidate",
+      "thematic": false,
+      "narrow_coverage": false,
+      "approved_by": "manual_promote_production_20260529_recovered_20260602",
+      "approved_at": "2026-05-29T05:30:16Z",
+      "deprecated_reason": "",
+      "metadata": {
+        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
+        "recovery_reason": "registry was empty although 2026-05-29 promoted mining report and health reports show 12 production_factor entries",
+        "validation_note": "Neutralization uses hs300/zz500/zz1000 universe buckets as a local size/liquidity proxy because no complete industry map is available in the offline data snapshot.",
+        "spec": {
+          "name": "pv_amihud_illiquidity_15d",
+          "family": "amihud_illiquidity",
+          "category": "liquidity",
+          "window": 15,
+          "description": "15-day average absolute return divided by traded amount; higher measured illiquidity scores higher.",
+          "literature_anchor": "amihud_illiquidity"
+        }
+      }
+    },
+    {
+      "name": "pv_low_dollar_volume_20d",
+      "version": "v20260529",
+      "state": "production_factor",
+      "category": "liquidity",
+      "implementation": "price_volume:pv_low_dollar_volume_20d",
+      "weight": 0.05,
+      "direction": 1.0,
+      "horizon_days": 30,
+      "owner": "myQuant local factor governance",
+      "description": "Negative log average traded amount over 20 days; lower but still tradable dollar volume scores higher.",
+      "tags": [
+        "local_price_volume",
+        "low_dollar_volume",
+        "turnover_liquidity_premium"
+      ],
+      "gate_results": [
+        {
+          "gate_id": 1,
+          "gate_key": "data_safety",
+          "title": "Gate 1: 数据安全",
+          "passed": true,
+          "reasons": [
+            "已确认 point-in-time、availability_date、复权与可交易性口径。"
+          ],
+          "metrics": {
+            "no_future_leakage": true,
+            "uses_availability_date": true,
+            "point_in_time_rebalance": true,
+            "adjusted_price_consistent": true,
+            "tradability_rules_defined": true,
+            "missingness_explained": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 2,
+          "gate_key": "coverage_stability",
+          "title": "Gate 2: 覆盖率和稳定性",
+          "passed": true,
+          "reasons": [
+            "覆盖率、缺失率、行业与市值分布通过。"
+          ],
+          "metrics": {
+            "coverage_rate": 0.9985324000903139,
+            "nan_rate": 0.0014675999096861595,
+            "monthly_coverage_min": 0.75,
+            "max_sector_coverage_share": 0.5519954776710005,
+            "max_size_bucket_coverage_share": 0.5519954776710005,
+            "extreme_value_ratio": 0.0,
+            "thematic": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 3,
+          "gate_key": "ic_rankic",
+          "title": "Gate 3: IC / RankIC",
+          "passed": true,
+          "reasons": [
+            "IC/RankIC 达到观察门槛，且方向未显示单一年份依赖。"
+          ],
+          "metrics": {
+            "icir": 0.5921302834826092,
+            "mean_rankic": 0.08341974937879662,
+            "positive_ic_ratio": 0.72,
+            "rankic_direction_stable": true,
+            "max_single_year_ic_contribution": 0.3218390438828985
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 4,
+          "gate_key": "group_returns",
+          "title": "Gate 4: 分组收益",
+          "passed": true,
+          "reasons": [
+            "分组收益、top quantile 与 long-short spread 通过。"
+          ],
+          "metrics": {
+            "top_bottom_spread": 0.09385356265626991,
+            "top_quantile_return": 0.25415840852043564,
+            "monotonicity": 0.588,
+            "long_short_from_long_side": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 5,
+          "gate_key": "cost_turnover",
+          "title": "Gate 5: 交易成本和换手",
+          "passed": true,
+          "reasons": [
+            "交易成本、滑点、换手与容量通过。"
+          ],
+          "metrics": {
+            "turnover": 4.071754158532981,
+            "cost_adjusted_return": 0.08978180849773694,
+            "slippage_sensitivity_ok": true,
+            "execution_realism": true,
+            "capacity_pressure": 0.03168610878772719
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 6,
+          "gate_key": "neutralization_exposure",
+          "title": "Gate 6: 中性化和暴露分析",
+          "passed": true,
+          "reasons": [
+            "中性化后仍有 alpha，且与现有因子不过度重合。"
+          ],
+          "metrics": {
+            "neutralized_icir": 0.5509693143644411,
+            "existing_factor_corr": 0.0,
+            "style_exposure_only": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 7,
+          "gate_key": "oos_robustness",
+          "title": "Gate 7: 样本外和稳健性",
+          "passed": true,
+          "reasons": [
+            "walk-forward、参数、日期、频率、universe 与市场阶段稳健性通过。"
+          ],
+          "metrics": {
+            "oos_positive_ratio": 0.6666666666666666,
+            "parameter_stability": true,
+            "date_range_robustness": true,
+            "rebalance_frequency_robustness": true,
+            "universe_robustness": true,
+            "regime_robustness": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 8,
+          "gate_key": "portfolio_incremental",
+          "title": "Gate 8: 组合增量验证",
+          "passed": true,
+          "reasons": [
+            "baseline + new factor 相对 baseline 有组合级增量。"
+          ],
+          "metrics": {
+            "master_return_delta": 0.0019250067293348288,
+            "sharpe_delta": 0.009310764877089685,
+            "max_drawdown_delta": 0.0015668240667471012,
+            "turnover_delta": 0.12215262475598943,
+            "execution_cost_delta": 0.00012215262475598942,
+            "correlation_with_existing_signals": 0.0
+          },
+          "severity": "info"
+        }
+      ],
+      "metrics": {
+        "no_future_leakage": true,
+        "uses_availability_date": true,
+        "point_in_time_rebalance": true,
+        "adjusted_price_consistent": true,
+        "tradability_rules_defined": true,
+        "missingness_explained": true,
+        "coverage_rate": 0.9985324000903139,
+        "nan_rate": 0.0014675999096861595,
+        "monthly_coverage_min": 0.75,
+        "max_sector_coverage_share": 0.5519954776710005,
+        "max_size_bucket_coverage_share": 0.5519954776710005,
+        "extreme_value_ratio": 0.0,
+        "icir": 0.5921302834826092,
+        "mean_rankic": 0.08341974937879662,
+        "positive_ic_ratio": 0.72,
+        "rankic_direction_stable": true,
+        "max_single_year_ic_contribution": 0.3218390438828985,
+        "horizon_days": 30,
+        "top_bottom_spread": 0.09385356265626991,
+        "top_quantile_return": 0.25415840852043564,
+        "monotonicity": 0.588,
+        "long_short_from_long_side": true,
+        "turnover": 4.071754158532981,
+        "cost_adjusted_return": 0.08978180849773694,
+        "capacity_pressure": 0.03168610878772719,
+        "master_return_delta": 0.0019250067293348288,
+        "sharpe_delta": 0.009310764877089685,
+        "max_drawdown_delta": 0.0015668240667471012,
+        "turnover_delta": 0.12215262475598943,
+        "execution_cost_delta": 0.00012215262475598942,
+        "median_top_daily_amount_yuan": 63119142.0,
+        "incremental_sleeve_weight": 0.03,
+        "slippage_sensitivity_ok": true,
+        "execution_realism": true,
+        "neutralized_icir": 0.5509693143644411,
+        "existing_factor_corr": 0.0,
+        "style_exposure_only": false,
+        "oos_positive_ratio": 0.6666666666666666,
+        "parameter_stability": true,
+        "date_range_robustness": true,
+        "rebalance_frequency_robustness": true,
+        "universe_robustness": true,
+        "regime_robustness": true,
+        "signal_corr": 0.0
+      },
+      "admission_decision": "production_candidate",
+      "thematic": false,
+      "narrow_coverage": false,
+      "approved_by": "manual_promote_production_20260529_recovered_20260602",
+      "approved_at": "2026-05-29T05:30:16Z",
+      "deprecated_reason": "",
+      "metadata": {
+        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
+        "recovery_reason": "registry was empty although 2026-05-29 promoted mining report and health reports show 12 production_factor entries",
+        "validation_note": "Neutralization uses hs300/zz500/zz1000 universe buckets as a local size/liquidity proxy because no complete industry map is available in the offline data snapshot.",
+        "spec": {
+          "name": "pv_low_dollar_volume_20d",
+          "family": "low_dollar_volume",
+          "category": "liquidity",
+          "window": 20,
+          "description": "Negative log average traded amount over 20 days; lower but still tradable dollar volume scores higher.",
+          "literature_anchor": "turnover_liquidity_premium"
+        }
+      }
+    },
+    {
+      "name": "pv_amihud_illiquidity_20d",
+      "version": "v20260529",
+      "state": "production_factor",
+      "category": "liquidity",
+      "implementation": "price_volume:pv_amihud_illiquidity_20d",
+      "weight": 0.05,
+      "direction": 1.0,
+      "horizon_days": 30,
+      "owner": "myQuant local factor governance",
+      "description": "20-day average absolute return divided by traded amount; higher measured illiquidity scores higher.",
+      "tags": [
+        "local_price_volume",
+        "amihud_illiquidity",
+        "amihud_illiquidity"
+      ],
+      "gate_results": [
+        {
+          "gate_id": 1,
+          "gate_key": "data_safety",
+          "title": "Gate 1: 数据安全",
+          "passed": true,
+          "reasons": [
+            "已确认 point-in-time、availability_date、复权与可交易性口径。"
+          ],
+          "metrics": {
+            "no_future_leakage": true,
+            "uses_availability_date": true,
+            "point_in_time_rebalance": true,
+            "adjusted_price_consistent": true,
+            "tradability_rules_defined": true,
+            "missingness_explained": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 2,
+          "gate_key": "coverage_stability",
+          "title": "Gate 2: 覆盖率和稳定性",
+          "passed": true,
+          "reasons": [
+            "覆盖率、缺失率、行业与市值分布通过。"
+          ],
+          "metrics": {
+            "coverage_rate": 0.9984872431700158,
+            "nan_rate": 0.0015127568299841952,
+            "monthly_coverage_min": 0.75,
+            "max_sector_coverage_share": 0.5519978291839088,
+            "max_size_bucket_coverage_share": 0.5519978291839088,
+            "extreme_value_ratio": 0.0074395676457951745,
+            "thematic": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 3,
+          "gate_key": "ic_rankic",
+          "title": "Gate 3: IC / RankIC",
+          "passed": true,
+          "reasons": [
+            "IC/RankIC 达到观察门槛，且方向未显示单一年份依赖。"
+          ],
+          "metrics": {
+            "icir": 0.5914276853994945,
+            "mean_rankic": 0.06101174310505294,
+            "positive_ic_ratio": 0.68,
+            "rankic_direction_stable": true,
+            "max_single_year_ic_contribution": 0.3711115203213397
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 4,
+          "gate_key": "group_returns",
+          "title": "Gate 4: 分组收益",
+          "passed": true,
+          "reasons": [
+            "分组收益、top quantile 与 long-short spread 通过。"
+          ],
+          "metrics": {
+            "top_bottom_spread": 0.15957587101546752,
+            "top_quantile_return": 0.28462454552823613,
+            "monotonicity": 0.702,
+            "long_short_from_long_side": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 5,
+          "gate_key": "cost_turnover",
+          "title": "Gate 5: 交易成本和换手",
+          "passed": true,
+          "reasons": [
+            "交易成本、滑点、换手与容量通过。"
+          ],
+          "metrics": {
+            "turnover": 3.380247330494309,
+            "cost_adjusted_return": 0.15619562368497322,
+            "slippage_sensitivity_ok": true,
+            "execution_realism": true,
+            "capacity_pressure": 0.02830969512716046
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 6,
+          "gate_key": "neutralization_exposure",
+          "title": "Gate 6: 中性化和暴露分析",
+          "passed": true,
+          "reasons": [
+            "中性化后仍有 alpha，且与现有因子不过度重合。"
+          ],
+          "metrics": {
+            "neutralized_icir": 0.8423657248755558,
+            "existing_factor_corr": 0.0,
+            "style_exposure_only": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 7,
+          "gate_key": "oos_robustness",
+          "title": "Gate 7: 样本外和稳健性",
+          "passed": true,
+          "reasons": [
+            "walk-forward、参数、日期、频率、universe 与市场阶段稳健性通过。"
+          ],
+          "metrics": {
+            "oos_positive_ratio": 0.6,
+            "parameter_stability": true,
+            "date_range_robustness": true,
+            "rebalance_frequency_robustness": true,
+            "universe_robustness": true,
+            "regime_robustness": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 8,
+          "gate_key": "portfolio_incremental",
+          "title": "Gate 8: 组合增量验证",
+          "passed": true,
+          "reasons": [
+            "baseline + new factor 相对 baseline 有组合级增量。"
+          ],
+          "metrics": {
+            "master_return_delta": 0.002838495264806332,
+            "sharpe_delta": 0.00899684688962277,
+            "max_drawdown_delta": 0.0009210382064000188,
+            "turnover_delta": 0.10140741991482927,
+            "execution_cost_delta": 0.00010140741991482927,
+            "correlation_with_existing_signals": 0.0
+          },
+          "severity": "info"
+        }
+      ],
+      "metrics": {
+        "no_future_leakage": true,
+        "uses_availability_date": true,
+        "point_in_time_rebalance": true,
+        "adjusted_price_consistent": true,
+        "tradability_rules_defined": true,
+        "missingness_explained": true,
+        "coverage_rate": 0.9984872431700158,
+        "nan_rate": 0.0015127568299841952,
+        "monthly_coverage_min": 0.75,
+        "max_sector_coverage_share": 0.5519978291839088,
+        "max_size_bucket_coverage_share": 0.5519978291839088,
+        "extreme_value_ratio": 0.0074395676457951745,
+        "icir": 0.5914276853994945,
+        "mean_rankic": 0.06101174310505294,
+        "positive_ic_ratio": 0.68,
+        "rankic_direction_stable": true,
+        "max_single_year_ic_contribution": 0.3711115203213397,
+        "horizon_days": 30,
+        "top_bottom_spread": 0.15957587101546752,
+        "top_quantile_return": 0.28462454552823613,
+        "monotonicity": 0.702,
+        "long_short_from_long_side": true,
+        "turnover": 3.380247330494309,
+        "cost_adjusted_return": 0.15619562368497322,
+        "capacity_pressure": 0.02830969512716046,
+        "master_return_delta": 0.002838495264806332,
+        "sharpe_delta": 0.00899684688962277,
+        "max_drawdown_delta": 0.0009210382064000188,
+        "turnover_delta": 0.10140741991482927,
+        "execution_cost_delta": 0.00010140741991482927,
+        "median_top_daily_amount_yuan": 70647175.5,
+        "incremental_sleeve_weight": 0.03,
+        "slippage_sensitivity_ok": true,
+        "execution_realism": true,
+        "neutralized_icir": 0.8423657248755558,
+        "existing_factor_corr": 0.0,
+        "style_exposure_only": false,
+        "oos_positive_ratio": 0.6,
+        "parameter_stability": true,
+        "date_range_robustness": true,
+        "rebalance_frequency_robustness": true,
+        "universe_robustness": true,
+        "regime_robustness": true,
+        "signal_corr": 0.0
+      },
+      "admission_decision": "production_candidate",
+      "thematic": false,
+      "narrow_coverage": false,
+      "approved_by": "manual_promote_production_20260529_recovered_20260602",
+      "approved_at": "2026-05-29T05:30:16Z",
+      "deprecated_reason": "",
+      "metadata": {
+        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
+        "recovery_reason": "registry was empty although 2026-05-29 promoted mining report and health reports show 12 production_factor entries",
+        "validation_note": "Neutralization uses hs300/zz500/zz1000 universe buckets as a local size/liquidity proxy because no complete industry map is available in the offline data snapshot.",
+        "spec": {
+          "name": "pv_amihud_illiquidity_20d",
+          "family": "amihud_illiquidity",
+          "category": "liquidity",
+          "window": 20,
+          "description": "20-day average absolute return divided by traded amount; higher measured illiquidity scores higher.",
+          "literature_anchor": "amihud_illiquidity"
+        }
+      }
+    },
+    {
+      "name": "pv_amihud_illiquidity_10d",
+      "version": "v20260529",
+      "state": "production_factor",
+      "category": "liquidity",
+      "implementation": "price_volume:pv_amihud_illiquidity_10d",
+      "weight": 0.05,
+      "direction": 1.0,
+      "horizon_days": 30,
+      "owner": "myQuant local factor governance",
+      "description": "10-day average absolute return divided by traded amount; higher measured illiquidity scores higher.",
+      "tags": [
+        "local_price_volume",
+        "amihud_illiquidity",
+        "amihud_illiquidity"
+      ],
+      "gate_results": [
+        {
+          "gate_id": 1,
+          "gate_key": "data_safety",
+          "title": "Gate 1: 数据安全",
+          "passed": true,
+          "reasons": [
+            "已确认 point-in-time、availability_date、复权与可交易性口径。"
+          ],
+          "metrics": {
+            "no_future_leakage": true,
+            "uses_availability_date": true,
+            "point_in_time_rebalance": true,
+            "adjusted_price_consistent": true,
+            "tradability_rules_defined": true,
+            "missingness_explained": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 2,
+          "gate_key": "coverage_stability",
+          "title": "Gate 2: 覆盖率和稳定性",
+          "passed": true,
+          "reasons": [
+            "覆盖率、缺失率、行业与市值分布通过。"
+          ],
+          "metrics": {
+            "coverage_rate": 0.9992774892752314,
+            "nan_rate": 0.0007225107247685708,
+            "monthly_coverage_min": 0.9971081550028918,
+            "max_sector_coverage_share": 0.5522391432057481,
+            "max_size_bucket_coverage_share": 0.5522391432057481,
+            "extreme_value_ratio": 0.010822902074201274,
+            "thematic": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 3,
+          "gate_key": "ic_rankic",
+          "title": "Gate 3: IC / RankIC",
+          "passed": true,
+          "reasons": [
+            "IC/RankIC 达到观察门槛，且方向未显示单一年份依赖。"
+          ],
+          "metrics": {
+            "icir": 0.5901384362521785,
+            "mean_rankic": 0.061858609937607306,
+            "positive_ic_ratio": 0.72,
+            "rankic_direction_stable": true,
+            "max_single_year_ic_contribution": 0.3636577073522431
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 4,
+          "gate_key": "group_returns",
+          "title": "Gate 4: 分组收益",
+          "passed": true,
+          "reasons": [
+            "分组收益、top quantile 与 long-short spread 通过。"
+          ],
+          "metrics": {
+            "top_bottom_spread": 0.14843441205427566,
+            "top_quantile_return": 0.274612837051832,
+            "monotonicity": 0.692,
+            "long_short_from_long_side": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 5,
+          "gate_key": "cost_turnover",
+          "title": "Gate 5: 交易成本和换手",
+          "passed": true,
+          "reasons": [
+            "交易成本、滑点、换手与容量通过。"
+          ],
+          "metrics": {
+            "turnover": 3.982681087630649,
+            "cost_adjusted_return": 0.14445173096664501,
+            "slippage_sensitivity_ok": true,
+            "execution_realism": true,
+            "capacity_pressure": 0.028436581085211875
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 6,
+          "gate_key": "neutralization_exposure",
+          "title": "Gate 6: 中性化和暴露分析",
+          "passed": true,
+          "reasons": [
+            "中性化后仍有 alpha，且与现有因子不过度重合。"
+          ],
+          "metrics": {
+            "neutralized_icir": 0.7806825761806137,
+            "existing_factor_corr": 0.0,
+            "style_exposure_only": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 7,
+          "gate_key": "oos_robustness",
+          "title": "Gate 7: 样本外和稳健性",
+          "passed": true,
+          "reasons": [
+            "walk-forward、参数、日期、频率、universe 与市场阶段稳健性通过。"
+          ],
+          "metrics": {
+            "oos_positive_ratio": 0.6666666666666666,
+            "parameter_stability": true,
+            "date_range_robustness": true,
+            "rebalance_frequency_robustness": true,
+            "universe_robustness": true,
+            "regime_robustness": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 8,
+          "gate_key": "portfolio_incremental",
+          "title": "Gate 8: 组合增量验证",
+          "passed": true,
+          "reasons": [
+            "baseline + new factor 相对 baseline 有组合级增量。"
+          ],
+          "metrics": {
+            "master_return_delta": 0.002536075164627442,
+            "sharpe_delta": 0.00798568563367395,
+            "max_drawdown_delta": 0.0007911679164227292,
+            "turnover_delta": 0.11948043262891946,
+            "execution_cost_delta": 0.00011948043262891945,
+            "correlation_with_existing_signals": 0.0
+          },
+          "severity": "info"
+        }
+      ],
+      "metrics": {
+        "no_future_leakage": true,
+        "uses_availability_date": true,
+        "point_in_time_rebalance": true,
+        "adjusted_price_consistent": true,
+        "tradability_rules_defined": true,
+        "missingness_explained": true,
+        "coverage_rate": 0.9992774892752314,
+        "nan_rate": 0.0007225107247685708,
+        "monthly_coverage_min": 0.9971081550028918,
+        "max_sector_coverage_share": 0.5522391432057481,
+        "max_size_bucket_coverage_share": 0.5522391432057481,
+        "extreme_value_ratio": 0.010822902074201274,
+        "icir": 0.5901384362521785,
+        "mean_rankic": 0.061858609937607306,
+        "positive_ic_ratio": 0.72,
+        "rankic_direction_stable": true,
+        "max_single_year_ic_contribution": 0.3636577073522431,
+        "horizon_days": 30,
+        "top_bottom_spread": 0.14843441205427566,
+        "top_quantile_return": 0.274612837051832,
+        "monotonicity": 0.692,
+        "long_short_from_long_side": true,
+        "turnover": 3.982681087630649,
+        "cost_adjusted_return": 0.14445173096664501,
+        "capacity_pressure": 0.028436581085211875,
+        "master_return_delta": 0.002536075164627442,
+        "sharpe_delta": 0.00798568563367395,
+        "max_drawdown_delta": 0.0007911679164227292,
+        "turnover_delta": 0.11948043262891946,
+        "execution_cost_delta": 0.00011948043262891945,
+        "median_top_daily_amount_yuan": 70331943.0,
+        "incremental_sleeve_weight": 0.03,
+        "slippage_sensitivity_ok": true,
+        "execution_realism": true,
+        "neutralized_icir": 0.7806825761806137,
+        "existing_factor_corr": 0.0,
+        "style_exposure_only": false,
+        "oos_positive_ratio": 0.6666666666666666,
+        "parameter_stability": true,
+        "date_range_robustness": true,
+        "rebalance_frequency_robustness": true,
+        "universe_robustness": true,
+        "regime_robustness": true,
+        "signal_corr": 0.0
+      },
+      "admission_decision": "production_candidate",
+      "thematic": false,
+      "narrow_coverage": false,
+      "approved_by": "manual_promote_production_20260529_recovered_20260602",
+      "approved_at": "2026-05-29T05:30:16Z",
+      "deprecated_reason": "",
+      "metadata": {
+        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
+        "recovery_reason": "registry was empty although 2026-05-29 promoted mining report and health reports show 12 production_factor entries",
+        "validation_note": "Neutralization uses hs300/zz500/zz1000 universe buckets as a local size/liquidity proxy because no complete industry map is available in the offline data snapshot.",
+        "spec": {
+          "name": "pv_amihud_illiquidity_10d",
+          "family": "amihud_illiquidity",
+          "category": "liquidity",
+          "window": 10,
+          "description": "10-day average absolute return divided by traded amount; higher measured illiquidity scores higher.",
+          "literature_anchor": "amihud_illiquidity"
+        }
+      }
+    },
+    {
+      "name": "pv_low_dollar_volume_15d",
+      "version": "v20260529",
+      "state": "production_factor",
+      "category": "liquidity",
+      "implementation": "price_volume:pv_low_dollar_volume_15d",
+      "weight": 0.05,
+      "direction": 1.0,
+      "horizon_days": 30,
+      "owner": "myQuant local factor governance",
+      "description": "Negative log average traded amount over 15 days; lower but still tradable dollar volume scores higher.",
+      "tags": [
+        "local_price_volume",
+        "low_dollar_volume",
+        "turnover_liquidity_premium"
+      ],
+      "gate_results": [
+        {
+          "gate_id": 1,
+          "gate_key": "data_safety",
+          "title": "Gate 1: 数据安全",
+          "passed": true,
+          "reasons": [
+            "已确认 point-in-time、availability_date、复权与可交易性口径。"
+          ],
+          "metrics": {
+            "no_future_leakage": true,
+            "uses_availability_date": true,
+            "point_in_time_rebalance": true,
+            "adjusted_price_consistent": true,
+            "tradability_rules_defined": true,
+            "missingness_explained": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 2,
+          "gate_key": "coverage_stability",
+          "title": "Gate 2: 覆盖率和稳定性",
+          "passed": true,
+          "reasons": [
+            "覆盖率、缺失率、行业与市值分布通过。"
+          ],
+          "metrics": {
+            "coverage_rate": 0.9988936554526981,
+            "nan_rate": 0.001106344547301874,
+            "monthly_coverage_min": 0.9936046511627907,
+            "max_sector_coverage_share": 0.5521348974932755,
+            "max_size_bucket_coverage_share": 0.5521348974932755,
+            "extreme_value_ratio": 0.0,
+            "thematic": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 3,
+          "gate_key": "ic_rankic",
+          "title": "Gate 3: IC / RankIC",
+          "passed": true,
+          "reasons": [
+            "IC/RankIC 达到观察门槛，且方向未显示单一年份依赖。"
+          ],
+          "metrics": {
+            "icir": 0.5874458091147465,
+            "mean_rankic": 0.08190587542657529,
+            "positive_ic_ratio": 0.68,
+            "rankic_direction_stable": true,
+            "max_single_year_ic_contribution": 0.32462022231872945
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 4,
+          "gate_key": "group_returns",
+          "title": "Gate 4: 分组收益",
+          "passed": true,
+          "reasons": [
+            "分组收益、top quantile 与 long-short spread 通过。"
+          ],
+          "metrics": {
+            "top_bottom_spread": 0.0931154735896354,
+            "top_quantile_return": 0.2494987598363704,
+            "monotonicity": 0.584,
+            "long_short_from_long_side": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 5,
+          "gate_key": "cost_turnover",
+          "title": "Gate 5: 交易成本和换手",
+          "passed": true,
+          "reasons": [
+            "交易成本、滑点、换手与容量通过。"
+          ],
+          "metrics": {
+            "turnover": 4.180124805117125,
+            "cost_adjusted_return": 0.08893534878451828,
+            "slippage_sensitivity_ok": true,
+            "execution_realism": true,
+            "capacity_pressure": 0.03198483867471076
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 6,
+          "gate_key": "neutralization_exposure",
+          "title": "Gate 6: 中性化和暴露分析",
+          "passed": true,
+          "reasons": [
+            "中性化后仍有 alpha，且与现有因子不过度重合。"
+          ],
+          "metrics": {
+            "neutralized_icir": 0.5545622900190289,
+            "existing_factor_corr": 0.0,
+            "style_exposure_only": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 7,
+          "gate_key": "oos_robustness",
+          "title": "Gate 7: 样本外和稳健性",
+          "passed": true,
+          "reasons": [
+            "walk-forward、参数、日期、频率、universe 与市场阶段稳健性通过。"
+          ],
+          "metrics": {
+            "oos_positive_ratio": 0.6,
+            "parameter_stability": true,
+            "date_range_robustness": true,
+            "rebalance_frequency_robustness": true,
+            "universe_robustness": true,
+            "regime_robustness": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 8,
+          "gate_key": "portfolio_incremental",
+          "title": "Gate 8: 组合增量验证",
+          "passed": true,
+          "reasons": [
+            "baseline + new factor 相对 baseline 有组合级增量。"
+          ],
+          "metrics": {
+            "master_return_delta": 0.0017867649905998731,
+            "sharpe_delta": 0.008454022303573103,
+            "max_drawdown_delta": 0.0016126457949542316,
+            "turnover_delta": 0.12540374415351374,
+            "execution_cost_delta": 0.00012540374415351374,
+            "correlation_with_existing_signals": 0.0
+          },
+          "severity": "info"
+        }
+      ],
+      "metrics": {
+        "no_future_leakage": true,
+        "uses_availability_date": true,
+        "point_in_time_rebalance": true,
+        "adjusted_price_consistent": true,
+        "tradability_rules_defined": true,
+        "missingness_explained": true,
+        "coverage_rate": 0.9988936554526981,
+        "nan_rate": 0.001106344547301874,
+        "monthly_coverage_min": 0.9936046511627907,
+        "max_sector_coverage_share": 0.5521348974932755,
+        "max_size_bucket_coverage_share": 0.5521348974932755,
+        "extreme_value_ratio": 0.0,
+        "icir": 0.5874458091147465,
+        "mean_rankic": 0.08190587542657529,
+        "positive_ic_ratio": 0.68,
+        "rankic_direction_stable": true,
+        "max_single_year_ic_contribution": 0.32462022231872945,
+        "horizon_days": 30,
+        "top_bottom_spread": 0.0931154735896354,
+        "top_quantile_return": 0.2494987598363704,
+        "monotonicity": 0.584,
+        "long_short_from_long_side": true,
+        "turnover": 4.180124805117125,
+        "cost_adjusted_return": 0.08893534878451828,
+        "capacity_pressure": 0.03198483867471076,
+        "master_return_delta": 0.0017867649905998731,
+        "sharpe_delta": 0.008454022303573103,
+        "max_drawdown_delta": 0.0016126457949542316,
+        "turnover_delta": 0.12540374415351374,
+        "execution_cost_delta": 0.00012540374415351374,
+        "median_top_daily_amount_yuan": 62529626.00000001,
+        "incremental_sleeve_weight": 0.03,
+        "slippage_sensitivity_ok": true,
+        "execution_realism": true,
+        "neutralized_icir": 0.5545622900190289,
+        "existing_factor_corr": 0.0,
+        "style_exposure_only": false,
+        "oos_positive_ratio": 0.6,
+        "parameter_stability": true,
+        "date_range_robustness": true,
+        "rebalance_frequency_robustness": true,
+        "universe_robustness": true,
+        "regime_robustness": true,
+        "signal_corr": 0.0
+      },
+      "admission_decision": "production_candidate",
+      "thematic": false,
+      "narrow_coverage": false,
+      "approved_by": "manual_promote_production_20260529_recovered_20260602",
+      "approved_at": "2026-05-29T05:30:16Z",
+      "deprecated_reason": "",
+      "metadata": {
+        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
+        "recovery_reason": "registry was empty although 2026-05-29 promoted mining report and health reports show 12 production_factor entries",
+        "validation_note": "Neutralization uses hs300/zz500/zz1000 universe buckets as a local size/liquidity proxy because no complete industry map is available in the offline data snapshot.",
+        "spec": {
+          "name": "pv_low_dollar_volume_15d",
+          "family": "low_dollar_volume",
+          "category": "liquidity",
+          "window": 15,
+          "description": "Negative log average traded amount over 15 days; lower but still tradable dollar volume scores higher.",
+          "literature_anchor": "turnover_liquidity_premium"
+        }
+      }
+    },
+    {
+      "name": "pv_low_dollar_volume_25d",
+      "version": "v20260529",
+      "state": "production_factor",
+      "category": "liquidity",
+      "implementation": "price_volume:pv_low_dollar_volume_25d",
+      "weight": 0.05,
+      "direction": 1.0,
+      "horizon_days": 30,
+      "owner": "myQuant local factor governance",
+      "description": "Negative log average traded amount over 25 days; lower but still tradable dollar volume scores higher.",
+      "tags": [
+        "local_price_volume",
+        "low_dollar_volume",
+        "turnover_liquidity_premium"
+      ],
+      "gate_results": [
+        {
+          "gate_id": 1,
+          "gate_key": "data_safety",
+          "title": "Gate 1: 数据安全",
+          "passed": true,
+          "reasons": [
+            "已确认 point-in-time、availability_date、复权与可交易性口径。"
+          ],
+          "metrics": {
+            "no_future_leakage": true,
+            "uses_availability_date": true,
+            "point_in_time_rebalance": true,
+            "adjusted_price_consistent": true,
+            "tradability_rules_defined": true,
+            "missingness_explained": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 2,
+          "gate_key": "coverage_stability",
+          "title": "Gate 2: 覆盖率和稳定性",
+          "passed": true,
+          "reasons": [
+            "覆盖率、缺失率、行业与市值分布通过。"
+          ],
+          "metrics": {
+            "coverage_rate": 0.9981034093474825,
+            "nan_rate": 0.0018965906525174982,
+            "monthly_coverage_min": 0.5,
+            "max_sector_coverage_share": 0.5519838935891056,
+            "max_size_bucket_coverage_share": 0.5519838935891056,
+            "extreme_value_ratio": 0.0,
+            "thematic": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 3,
+          "gate_key": "ic_rankic",
+          "title": "Gate 3: IC / RankIC",
+          "passed": true,
+          "reasons": [
+            "IC/RankIC 达到观察门槛，且方向未显示单一年份依赖。"
+          ],
+          "metrics": {
+            "icir": 0.5747353480322996,
+            "mean_rankic": 0.08114441687576494,
+            "positive_ic_ratio": 0.72,
+            "rankic_direction_stable": true,
+            "max_single_year_ic_contribution": 0.32246994186722877
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 4,
+          "gate_key": "group_returns",
+          "title": "Gate 4: 分组收益",
+          "passed": true,
+          "reasons": [
+            "分组收益、top quantile 与 long-short spread 通过。"
+          ],
+          "metrics": {
+            "top_bottom_spread": 0.08571783631905908,
+            "top_quantile_return": 0.25205675593233207,
+            "monotonicity": 0.58,
+            "long_short_from_long_side": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 5,
+          "gate_key": "cost_turnover",
+          "title": "Gate 5: 交易成本和换手",
+          "passed": true,
+          "reasons": [
+            "交易成本、滑点、换手与容量通过。"
+          ],
+          "metrics": {
+            "turnover": 3.9352044102499146,
+            "cost_adjusted_return": 0.08178263190880916,
+            "slippage_sensitivity_ok": true,
+            "execution_realism": true,
+            "capacity_pressure": 0.031371068797255805
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 6,
+          "gate_key": "neutralization_exposure",
+          "title": "Gate 6: 中性化和暴露分析",
+          "passed": true,
+          "reasons": [
+            "中性化后仍有 alpha，且与现有因子不过度重合。"
+          ],
+          "metrics": {
+            "neutralized_icir": 0.5264225088926907,
+            "existing_factor_corr": 0.0,
+            "style_exposure_only": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 7,
+          "gate_key": "oos_robustness",
+          "title": "Gate 7: 样本外和稳健性",
+          "passed": true,
+          "reasons": [
+            "walk-forward、参数、日期、频率、universe 与市场阶段稳健性通过。"
+          ],
+          "metrics": {
+            "oos_positive_ratio": 0.6666666666666666,
+            "parameter_stability": true,
+            "date_range_robustness": true,
+            "rebalance_frequency_robustness": true,
+            "universe_robustness": true,
+            "regime_robustness": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 8,
+          "gate_key": "portfolio_incremental",
+          "title": "Gate 8: 组合增量验证",
+          "passed": true,
+          "reasons": [
+            "baseline + new factor 相对 baseline 有组合级增量。"
+          ],
+          "metrics": {
+            "master_return_delta": 0.0018645632165100688,
+            "sharpe_delta": 0.009297510699296976,
+            "max_drawdown_delta": 0.0016103726434936881,
+            "turnover_delta": 0.11805613230749744,
+            "execution_cost_delta": 0.00011805613230749745,
+            "correlation_with_existing_signals": 0.0
+          },
+          "severity": "info"
+        }
+      ],
+      "metrics": {
+        "no_future_leakage": true,
+        "uses_availability_date": true,
+        "point_in_time_rebalance": true,
+        "adjusted_price_consistent": true,
+        "tradability_rules_defined": true,
+        "missingness_explained": true,
+        "coverage_rate": 0.9981034093474825,
+        "nan_rate": 0.0018965906525174982,
+        "monthly_coverage_min": 0.5,
+        "max_sector_coverage_share": 0.5519838935891056,
+        "max_size_bucket_coverage_share": 0.5519838935891056,
+        "extreme_value_ratio": 0.0,
+        "icir": 0.5747353480322996,
+        "mean_rankic": 0.08114441687576494,
+        "positive_ic_ratio": 0.72,
+        "rankic_direction_stable": true,
+        "max_single_year_ic_contribution": 0.32246994186722877,
+        "horizon_days": 30,
+        "top_bottom_spread": 0.08571783631905908,
+        "top_quantile_return": 0.25205675593233207,
+        "monotonicity": 0.58,
+        "long_short_from_long_side": true,
+        "turnover": 3.9352044102499146,
+        "cost_adjusted_return": 0.08178263190880916,
+        "capacity_pressure": 0.031371068797255805,
+        "master_return_delta": 0.0018645632165100688,
+        "sharpe_delta": 0.009297510699296976,
+        "max_drawdown_delta": 0.0016103726434936881,
+        "turnover_delta": 0.11805613230749744,
+        "execution_cost_delta": 0.00011805613230749745,
+        "median_top_daily_amount_yuan": 63753008.0,
+        "incremental_sleeve_weight": 0.03,
+        "slippage_sensitivity_ok": true,
+        "execution_realism": true,
+        "neutralized_icir": 0.5264225088926907,
+        "existing_factor_corr": 0.0,
+        "style_exposure_only": false,
+        "oos_positive_ratio": 0.6666666666666666,
+        "parameter_stability": true,
+        "date_range_robustness": true,
+        "rebalance_frequency_robustness": true,
+        "universe_robustness": true,
+        "regime_robustness": true,
+        "signal_corr": 0.0
+      },
+      "admission_decision": "production_candidate",
+      "thematic": false,
+      "narrow_coverage": false,
+      "approved_by": "manual_promote_production_20260529_recovered_20260602",
+      "approved_at": "2026-05-29T05:30:16Z",
+      "deprecated_reason": "",
+      "metadata": {
+        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
+        "recovery_reason": "registry was empty although 2026-05-29 promoted mining report and health reports show 12 production_factor entries",
+        "validation_note": "Neutralization uses hs300/zz500/zz1000 universe buckets as a local size/liquidity proxy because no complete industry map is available in the offline data snapshot.",
+        "spec": {
+          "name": "pv_low_dollar_volume_25d",
+          "family": "low_dollar_volume",
+          "category": "liquidity",
+          "window": 25,
+          "description": "Negative log average traded amount over 25 days; lower but still tradable dollar volume scores higher.",
+          "literature_anchor": "turnover_liquidity_premium"
+        }
+      }
+    },
+    {
+      "name": "pv_amihud_illiquidity_25d",
+      "version": "v20260529",
+      "state": "production_factor",
+      "category": "liquidity",
+      "implementation": "price_volume:pv_amihud_illiquidity_25d",
+      "weight": 0.05,
+      "direction": 1.0,
+      "horizon_days": 30,
+      "owner": "myQuant local factor governance",
+      "description": "25-day average absolute return divided by traded amount; higher measured illiquidity scores higher.",
+      "tags": [
+        "local_price_volume",
+        "amihud_illiquidity",
+        "amihud_illiquidity"
+      ],
+      "gate_results": [
+        {
+          "gate_id": 1,
+          "gate_key": "data_safety",
+          "title": "Gate 1: 数据安全",
+          "passed": true,
+          "reasons": [
+            "已确认 point-in-time、availability_date、复权与可交易性口径。"
+          ],
+          "metrics": {
+            "no_future_leakage": true,
+            "uses_availability_date": true,
+            "point_in_time_rebalance": true,
+            "adjusted_price_consistent": true,
+            "tradability_rules_defined": true,
+            "missingness_explained": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 2,
+          "gate_key": "coverage_stability",
+          "title": "Gate 2: 覆盖率和稳定性",
+          "passed": true,
+          "reasons": [
+            "覆盖率、缺失率、行业与市值分布通过。"
+          ],
+          "metrics": {
+            "coverage_rate": 0.9979679385865884,
+            "nan_rate": 0.0020320614134116052,
+            "monthly_coverage_min": 0.5,
+            "max_sector_coverage_share": 0.5519683257918552,
+            "max_size_bucket_coverage_share": 0.5519683257918552,
+            "extreme_value_ratio": 0.007013574660633484,
+            "thematic": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 3,
+          "gate_key": "ic_rankic",
+          "title": "Gate 3: IC / RankIC",
+          "passed": true,
+          "reasons": [
+            "IC/RankIC 达到观察门槛，且方向未显示单一年份依赖。"
+          ],
+          "metrics": {
+            "icir": 0.5744086696417071,
+            "mean_rankic": 0.057815412975474795,
+            "positive_ic_ratio": 0.68,
+            "rankic_direction_stable": true,
+            "max_single_year_ic_contribution": 0.38571964745550447
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 4,
+          "gate_key": "group_returns",
+          "title": "Gate 4: 分组收益",
+          "passed": true,
+          "reasons": [
+            "分组收益、top quantile 与 long-short spread 通过。"
+          ],
+          "metrics": {
+            "top_bottom_spread": 0.15534397296576136,
+            "top_quantile_return": 0.2861706734968363,
+            "monotonicity": 0.692,
+            "long_short_from_long_side": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 5,
+          "gate_key": "cost_turnover",
+          "title": "Gate 5: 交易成本和换手",
+          "passed": true,
+          "reasons": [
+            "交易成本、滑点、换手与容量通过。"
+          ],
+          "metrics": {
+            "turnover": 3.1904740303174126,
+            "cost_adjusted_return": 0.15215349893544394,
+            "slippage_sensitivity_ok": true,
+            "execution_realism": true,
+            "capacity_pressure": 0.028060129124717094
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 6,
+          "gate_key": "neutralization_exposure",
+          "title": "Gate 6: 中性化和暴露分析",
+          "passed": true,
+          "reasons": [
+            "中性化后仍有 alpha，且与现有因子不过度重合。"
+          ],
+          "metrics": {
+            "neutralized_icir": 0.8310441326939998,
+            "existing_factor_corr": 0.0,
+            "style_exposure_only": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 7,
+          "gate_key": "oos_robustness",
+          "title": "Gate 7: 样本外和稳健性",
+          "passed": true,
+          "reasons": [
+            "walk-forward、参数、日期、频率、universe 与市场阶段稳健性通过。"
+          ],
+          "metrics": {
+            "oos_positive_ratio": 0.6,
+            "parameter_stability": true,
+            "date_range_robustness": true,
+            "rebalance_frequency_robustness": true,
+            "universe_robustness": true,
+            "regime_robustness": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 8,
+          "gate_key": "portfolio_incremental",
+          "title": "Gate 8: 组合增量验证",
+          "passed": true,
+          "reasons": [
+            "baseline + new factor 相对 baseline 有组合级增量。"
+          ],
+          "metrics": {
+            "master_return_delta": 0.002885468857963784,
+            "sharpe_delta": 0.009004445157275952,
+            "max_drawdown_delta": 0.000951690324371608,
+            "turnover_delta": 0.09571422090952238,
+            "execution_cost_delta": 9.571422090952238e-05,
+            "correlation_with_existing_signals": 0.0
+          },
+          "severity": "info"
+        }
+      ],
+      "metrics": {
+        "no_future_leakage": true,
+        "uses_availability_date": true,
+        "point_in_time_rebalance": true,
+        "adjusted_price_consistent": true,
+        "tradability_rules_defined": true,
+        "missingness_explained": true,
+        "coverage_rate": 0.9979679385865884,
+        "nan_rate": 0.0020320614134116052,
+        "monthly_coverage_min": 0.5,
+        "max_sector_coverage_share": 0.5519683257918552,
+        "max_size_bucket_coverage_share": 0.5519683257918552,
+        "extreme_value_ratio": 0.007013574660633484,
+        "icir": 0.5744086696417071,
+        "mean_rankic": 0.057815412975474795,
+        "positive_ic_ratio": 0.68,
+        "rankic_direction_stable": true,
+        "max_single_year_ic_contribution": 0.38571964745550447,
+        "horizon_days": 30,
+        "top_bottom_spread": 0.15534397296576136,
+        "top_quantile_return": 0.2861706734968363,
+        "monotonicity": 0.692,
+        "long_short_from_long_side": true,
+        "turnover": 3.1904740303174126,
+        "cost_adjusted_return": 0.15215349893544394,
+        "capacity_pressure": 0.028060129124717094,
+        "master_return_delta": 0.002885468857963784,
+        "sharpe_delta": 0.009004445157275952,
+        "max_drawdown_delta": 0.000951690324371608,
+        "turnover_delta": 0.09571422090952238,
+        "execution_cost_delta": 9.571422090952238e-05,
+        "median_top_daily_amount_yuan": 71275509.5,
+        "incremental_sleeve_weight": 0.03,
+        "slippage_sensitivity_ok": true,
+        "execution_realism": true,
+        "neutralized_icir": 0.8310441326939998,
+        "existing_factor_corr": 0.0,
+        "style_exposure_only": false,
+        "oos_positive_ratio": 0.6,
+        "parameter_stability": true,
+        "date_range_robustness": true,
+        "rebalance_frequency_robustness": true,
+        "universe_robustness": true,
+        "regime_robustness": true,
+        "signal_corr": 0.0
+      },
+      "admission_decision": "production_candidate",
+      "thematic": false,
+      "narrow_coverage": false,
+      "approved_by": "manual_promote_production_20260529_recovered_20260602",
+      "approved_at": "2026-05-29T05:30:16Z",
+      "deprecated_reason": "",
+      "metadata": {
+        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
+        "recovery_reason": "registry was empty although 2026-05-29 promoted mining report and health reports show 12 production_factor entries",
+        "validation_note": "Neutralization uses hs300/zz500/zz1000 universe buckets as a local size/liquidity proxy because no complete industry map is available in the offline data snapshot.",
+        "spec": {
+          "name": "pv_amihud_illiquidity_25d",
+          "family": "amihud_illiquidity",
+          "category": "liquidity",
+          "window": 25,
+          "description": "25-day average absolute return divided by traded amount; higher measured illiquidity scores higher.",
+          "literature_anchor": "amihud_illiquidity"
+        }
+      }
+    },
+    {
+      "name": "pv_low_dollar_volume_30d",
+      "version": "v20260529",
+      "state": "production_factor",
+      "category": "liquidity",
+      "implementation": "price_volume:pv_low_dollar_volume_30d",
+      "weight": 0.05,
+      "direction": 1.0,
+      "horizon_days": 30,
+      "owner": "myQuant local factor governance",
+      "description": "Negative log average traded amount over 30 days; lower but still tradable dollar volume scores higher.",
+      "tags": [
+        "local_price_volume",
+        "low_dollar_volume",
+        "turnover_liquidity_premium"
+      ],
+      "gate_results": [
+        {
+          "gate_id": 1,
+          "gate_key": "data_safety",
+          "title": "Gate 1: 数据安全",
+          "passed": true,
+          "reasons": [
+            "已确认 point-in-time、availability_date、复权与可交易性口径。"
+          ],
+          "metrics": {
+            "no_future_leakage": true,
+            "uses_availability_date": true,
+            "point_in_time_rebalance": true,
+            "adjusted_price_consistent": true,
+            "tradability_rules_defined": true,
+            "missingness_explained": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 2,
+          "gate_key": "coverage_stability",
+          "title": "Gate 2: 覆盖率和稳定性",
+          "passed": true,
+          "reasons": [
+            "覆盖率、缺失率、行业与市值分布通过。"
+          ],
+          "metrics": {
+            "coverage_rate": 0.9975389478437571,
+            "nan_rate": 0.0024610521562429444,
+            "monthly_coverage_min": 0.5,
+            "max_sector_coverage_share": 0.5519793576424254,
+            "max_size_bucket_coverage_share": 0.5519793576424254,
+            "extreme_value_ratio": 0.0,
+            "thematic": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 3,
+          "gate_key": "ic_rankic",
+          "title": "Gate 3: IC / RankIC",
+          "passed": true,
+          "reasons": [
+            "IC/RankIC 达到观察门槛，且方向未显示单一年份依赖。"
+          ],
+          "metrics": {
+            "icir": 0.5577843508280484,
+            "mean_rankic": 0.07913714236036058,
+            "positive_ic_ratio": 0.68,
+            "rankic_direction_stable": true,
+            "max_single_year_ic_contribution": 0.32031520645274886
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 4,
+          "gate_key": "group_returns",
+          "title": "Gate 4: 分组收益",
+          "passed": true,
+          "reasons": [
+            "分组收益、top quantile 与 long-short spread 通过。"
+          ],
+          "metrics": {
+            "top_bottom_spread": 0.08383973282071845,
+            "top_quantile_return": 0.251762639190165,
+            "monotonicity": 0.572,
+            "long_short_from_long_side": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 5,
+          "gate_key": "cost_turnover",
+          "title": "Gate 5: 交易成本和换手",
+          "passed": true,
+          "reasons": [
+            "交易成本、滑点、换手与容量通过。"
+          ],
+          "metrics": {
+            "turnover": 3.7439088298923444,
+            "cost_adjusted_return": 0.08009582399082611,
+            "slippage_sensitivity_ok": true,
+            "execution_realism": true,
+            "capacity_pressure": 0.031040769210127116
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 6,
+          "gate_key": "neutralization_exposure",
+          "title": "Gate 6: 中性化和暴露分析",
+          "passed": true,
+          "reasons": [
+            "中性化后仍有 alpha，且与现有因子不过度重合。"
+          ],
+          "metrics": {
+            "neutralized_icir": 0.50674451802498,
+            "existing_factor_corr": 0.0,
+            "style_exposure_only": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 7,
+          "gate_key": "oos_robustness",
+          "title": "Gate 7: 样本外和稳健性",
+          "passed": true,
+          "reasons": [
+            "walk-forward、参数、日期、频率、universe 与市场阶段稳健性通过。"
+          ],
+          "metrics": {
+            "oos_positive_ratio": 0.6,
+            "parameter_stability": true,
+            "date_range_robustness": true,
+            "rebalance_frequency_robustness": true,
+            "universe_robustness": true,
+            "regime_robustness": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 8,
+          "gate_key": "portfolio_incremental",
+          "title": "Gate 8: 组合增量验证",
+          "passed": true,
+          "reasons": [
+            "baseline + new factor 相对 baseline 有组合级增量。"
+          ],
+          "metrics": {
+            "master_return_delta": 0.0018508023502062363,
+            "sharpe_delta": 0.009328308137774374,
+            "max_drawdown_delta": 0.0015071005435353078,
+            "turnover_delta": 0.11231726489677032,
+            "execution_cost_delta": 0.00011231726489677033,
+            "correlation_with_existing_signals": 0.0
+          },
+          "severity": "info"
+        }
+      ],
+      "metrics": {
+        "no_future_leakage": true,
+        "uses_availability_date": true,
+        "point_in_time_rebalance": true,
+        "adjusted_price_consistent": true,
+        "tradability_rules_defined": true,
+        "missingness_explained": true,
+        "coverage_rate": 0.9975389478437571,
+        "nan_rate": 0.0024610521562429444,
+        "monthly_coverage_min": 0.5,
+        "max_sector_coverage_share": 0.5519793576424254,
+        "max_size_bucket_coverage_share": 0.5519793576424254,
+        "extreme_value_ratio": 0.0,
+        "icir": 0.5577843508280484,
+        "mean_rankic": 0.07913714236036058,
+        "positive_ic_ratio": 0.68,
+        "rankic_direction_stable": true,
+        "max_single_year_ic_contribution": 0.32031520645274886,
+        "horizon_days": 30,
+        "top_bottom_spread": 0.08383973282071845,
+        "top_quantile_return": 0.251762639190165,
+        "monotonicity": 0.572,
+        "long_short_from_long_side": true,
+        "turnover": 3.7439088298923444,
+        "cost_adjusted_return": 0.08009582399082611,
+        "capacity_pressure": 0.031040769210127116,
+        "master_return_delta": 0.0018508023502062363,
+        "sharpe_delta": 0.009328308137774374,
+        "max_drawdown_delta": 0.0015071005435353078,
+        "turnover_delta": 0.11231726489677032,
+        "execution_cost_delta": 0.00011231726489677033,
+        "median_top_daily_amount_yuan": 64431393.0,
+        "incremental_sleeve_weight": 0.03,
+        "slippage_sensitivity_ok": true,
+        "execution_realism": true,
+        "neutralized_icir": 0.50674451802498,
+        "existing_factor_corr": 0.0,
+        "style_exposure_only": false,
+        "oos_positive_ratio": 0.6,
+        "parameter_stability": true,
+        "date_range_robustness": true,
+        "rebalance_frequency_robustness": true,
+        "universe_robustness": true,
+        "regime_robustness": true,
+        "signal_corr": 0.0
+      },
+      "admission_decision": "production_candidate",
+      "thematic": false,
+      "narrow_coverage": false,
+      "approved_by": "manual_promote_production_20260529_recovered_20260602",
+      "approved_at": "2026-05-29T05:30:16Z",
+      "deprecated_reason": "",
+      "metadata": {
+        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
+        "recovery_reason": "registry was empty although 2026-05-29 promoted mining report and health reports show 12 production_factor entries",
+        "validation_note": "Neutralization uses hs300/zz500/zz1000 universe buckets as a local size/liquidity proxy because no complete industry map is available in the offline data snapshot.",
+        "spec": {
+          "name": "pv_low_dollar_volume_30d",
+          "family": "low_dollar_volume",
+          "category": "liquidity",
+          "window": 30,
+          "description": "Negative log average traded amount over 30 days; lower but still tradable dollar volume scores higher.",
+          "literature_anchor": "turnover_liquidity_premium"
+        }
+      }
+    },
+    {
+      "name": "pv_short_reversal_5d",
+      "version": "v20260529",
+      "state": "production_factor",
+      "category": "reversal",
+      "implementation": "price_volume:pv_short_reversal_5d",
+      "weight": 0.05,
+      "direction": 1.0,
+      "horizon_days": 30,
+      "owner": "myQuant local factor governance",
+      "description": "Negative five-trading-day return; recent losers score higher.",
+      "tags": [
+        "local_price_volume",
+        "short_reversal",
+        "short_term_reversal"
+      ],
+      "gate_results": [
+        {
+          "gate_id": 1,
+          "gate_key": "data_safety",
+          "title": "Gate 1: 数据安全",
+          "passed": true,
+          "reasons": [
+            "已确认 point-in-time、availability_date、复权与可交易性口径。"
+          ],
+          "metrics": {
+            "no_future_leakage": true,
+            "uses_availability_date": true,
+            "point_in_time_rebalance": true,
+            "adjusted_price_consistent": true,
+            "tradability_rules_defined": true,
+            "missingness_explained": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 2,
+          "gate_key": "coverage_stability",
+          "title": "Gate 2: 覆盖率和稳定性",
+          "passed": true,
+          "reasons": [
+            "覆盖率、缺失率、行业与市值分布通过。"
+          ],
+          "metrics": {
+            "coverage_rate": 0.9996387446376157,
+            "nan_rate": 0.0003612553623842854,
+            "monthly_coverage_min": 0.9976865240023135,
+            "max_sector_coverage_share": 0.5523106111939288,
+            "max_size_bucket_coverage_share": 0.5523106111939288,
+            "extreme_value_ratio": 0.002416768306455256,
+            "thematic": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 3,
+          "gate_key": "ic_rankic",
+          "title": "Gate 3: IC / RankIC",
+          "passed": true,
+          "reasons": [
+            "IC/RankIC 达到观察门槛，且方向未显示单一年份依赖。"
+          ],
+          "metrics": {
+            "icir": 0.5545397059626963,
+            "mean_rankic": 0.07597409254266303,
+            "positive_ic_ratio": 0.76,
+            "rankic_direction_stable": true,
+            "max_single_year_ic_contribution": 0.4378611105945757
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 4,
+          "gate_key": "group_returns",
+          "title": "Gate 4: 分组收益",
+          "passed": true,
+          "reasons": [
+            "分组收益、top quantile 与 long-short spread 通过。"
+          ],
+          "metrics": {
+            "top_bottom_spread": 0.12212635675512817,
+            "top_quantile_return": 0.28847145731966906,
+            "monotonicity": 0.62,
+            "long_short_from_long_side": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 5,
+          "gate_key": "cost_turnover",
+          "title": "Gate 5: 交易成本和换手",
+          "passed": true,
+          "reasons": [
+            "交易成本、滑点、换手与容量通过。"
+          ],
+          "metrics": {
+            "turnover": 7.4922521394943224,
+            "cost_adjusted_return": 0.11463410461563385,
+            "slippage_sensitivity_ok": true,
+            "execution_realism": true,
+            "capacity_pressure": 0.009376315482411688
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 6,
+          "gate_key": "neutralization_exposure",
+          "title": "Gate 6: 中性化和暴露分析",
+          "passed": true,
+          "reasons": [
+            "中性化后仍有 alpha，且与现有因子不过度重合。"
+          ],
+          "metrics": {
+            "neutralized_icir": 0.5831239166222666,
+            "existing_factor_corr": 0.0,
+            "style_exposure_only": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 7,
+          "gate_key": "oos_robustness",
+          "title": "Gate 7: 样本外和稳健性",
+          "passed": true,
+          "reasons": [
+            "walk-forward、参数、日期、频率、universe 与市场阶段稳健性通过。"
+          ],
+          "metrics": {
+            "oos_positive_ratio": 0.6666666666666666,
+            "parameter_stability": true,
+            "date_range_robustness": true,
+            "rebalance_frequency_robustness": true,
+            "universe_robustness": true,
+            "regime_robustness": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 8,
+          "gate_key": "portfolio_incremental",
+          "title": "Gate 8: 组合增量验证",
+          "passed": true,
+          "reasons": [
+            "baseline + new factor 相对 baseline 有组合级增量。"
+          ],
+          "metrics": {
+            "master_return_delta": 0.002957130926827831,
+            "sharpe_delta": 0.007402024525876714,
+            "max_drawdown_delta": 0.0,
+            "turnover_delta": 0.22476756418482965,
+            "execution_cost_delta": 0.00022476756418482967,
+            "correlation_with_existing_signals": 0.0
+          },
+          "severity": "info"
+        }
+      ],
+      "metrics": {
+        "no_future_leakage": true,
+        "uses_availability_date": true,
+        "point_in_time_rebalance": true,
+        "adjusted_price_consistent": true,
+        "tradability_rules_defined": true,
+        "missingness_explained": true,
+        "coverage_rate": 0.9996387446376157,
+        "nan_rate": 0.0003612553623842854,
+        "monthly_coverage_min": 0.9976865240023135,
+        "max_sector_coverage_share": 0.5523106111939288,
+        "max_size_bucket_coverage_share": 0.5523106111939288,
+        "extreme_value_ratio": 0.002416768306455256,
+        "icir": 0.5545397059626963,
+        "mean_rankic": 0.07597409254266303,
+        "positive_ic_ratio": 0.76,
+        "rankic_direction_stable": true,
+        "max_single_year_ic_contribution": 0.4378611105945757,
+        "horizon_days": 30,
+        "top_bottom_spread": 0.12212635675512817,
+        "top_quantile_return": 0.28847145731966906,
+        "monotonicity": 0.62,
+        "long_short_from_long_side": true,
+        "turnover": 7.4922521394943224,
+        "cost_adjusted_return": 0.11463410461563385,
+        "capacity_pressure": 0.009376315482411688,
+        "master_return_delta": 0.002957130926827831,
+        "sharpe_delta": 0.007402024525876714,
+        "max_drawdown_delta": 0.0,
+        "turnover_delta": 0.22476756418482965,
+        "execution_cost_delta": 0.00022476756418482967,
+        "median_top_daily_amount_yuan": 213303403.0,
+        "incremental_sleeve_weight": 0.03,
+        "slippage_sensitivity_ok": true,
+        "execution_realism": true,
+        "neutralized_icir": 0.5831239166222666,
+        "existing_factor_corr": 0.0,
+        "style_exposure_only": false,
+        "oos_positive_ratio": 0.6666666666666666,
+        "parameter_stability": true,
+        "date_range_robustness": true,
+        "rebalance_frequency_robustness": true,
+        "universe_robustness": true,
+        "regime_robustness": true,
+        "signal_corr": 0.0
+      },
+      "admission_decision": "production_candidate",
+      "thematic": false,
+      "narrow_coverage": false,
+      "approved_by": "manual_promote_production_20260529_recovered_20260602",
+      "approved_at": "2026-05-29T05:30:16Z",
+      "deprecated_reason": "",
+      "metadata": {
+        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
+        "recovery_reason": "registry was empty although 2026-05-29 promoted mining report and health reports show 12 production_factor entries",
+        "validation_note": "Neutralization uses hs300/zz500/zz1000 universe buckets as a local size/liquidity proxy because no complete industry map is available in the offline data snapshot.",
+        "spec": {
+          "name": "pv_short_reversal_5d",
+          "family": "short_reversal",
+          "category": "reversal",
+          "window": 5,
+          "description": "Negative five-trading-day return; recent losers score higher.",
+          "literature_anchor": "short_term_reversal"
+        }
+      }
+    },
+    {
+      "name": "pv_volume_stability_10d",
+      "version": "v20260529",
+      "state": "production_factor",
+      "category": "trading_activity",
+      "implementation": "price_volume:pv_volume_stability_10d",
+      "weight": 0.05,
+      "direction": 1.0,
+      "horizon_days": 30,
+      "owner": "myQuant local factor governance",
+      "description": "Negative 10-day coefficient of variation of volume; stable participation scores higher.",
+      "tags": [
+        "local_price_volume",
+        "volume_stability",
+        "trading_activity"
+      ],
+      "gate_results": [
+        {
+          "gate_id": 1,
+          "gate_key": "data_safety",
+          "title": "Gate 1: 数据安全",
+          "passed": true,
+          "reasons": [
+            "已确认 point-in-time、availability_date、复权与可交易性口径。"
+          ],
+          "metrics": {
+            "no_future_leakage": true,
+            "uses_availability_date": true,
+            "point_in_time_rebalance": true,
+            "adjusted_price_consistent": true,
+            "tradability_rules_defined": true,
+            "missingness_explained": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 2,
+          "gate_key": "coverage_stability",
+          "title": "Gate 2: 覆盖率和稳定性",
+          "passed": true,
+          "reasons": [
+            "覆盖率、缺失率、行业与市值分布通过。"
+          ],
+          "metrics": {
+            "coverage_rate": 0.9993678031158275,
+            "nan_rate": 0.0006321968841724994,
+            "monthly_coverage_min": 0.9976865240023135,
+            "max_sector_coverage_share": 0.5522344223035561,
+            "max_size_bucket_coverage_share": 0.5522344223035561,
+            "extreme_value_ratio": 0.0007229677827481813,
+            "thematic": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 3,
+          "gate_key": "ic_rankic",
+          "title": "Gate 3: IC / RankIC",
+          "passed": true,
+          "reasons": [
+            "IC/RankIC 达到观察门槛，且方向未显示单一年份依赖。"
+          ],
+          "metrics": {
+            "icir": 0.5463430230849419,
+            "mean_rankic": 0.03596699803535473,
+            "positive_ic_ratio": 0.72,
+            "rankic_direction_stable": true,
+            "max_single_year_ic_contribution": 0.39311752569221486
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 4,
+          "gate_key": "group_returns",
+          "title": "Gate 4: 分组收益",
+          "passed": true,
+          "reasons": [
+            "分组收益、top quantile 与 long-short spread 通过。"
+          ],
+          "metrics": {
+            "top_bottom_spread": 0.045018341727859776,
+            "top_quantile_return": 0.21023326739015077,
+            "monotonicity": 0.536,
+            "long_short_from_long_side": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 5,
+          "gate_key": "cost_turnover",
+          "title": "Gate 5: 交易成本和换手",
+          "passed": true,
+          "reasons": [
+            "交易成本、滑点、换手与容量通过。"
+          ],
+          "metrics": {
+            "turnover": 7.364000111079247,
+            "cost_adjusted_return": 0.03765434161678053,
+            "slippage_sensitivity_ok": true,
+            "execution_realism": true,
+            "capacity_pressure": 0.012828154165459925
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 6,
+          "gate_key": "neutralization_exposure",
+          "title": "Gate 6: 中性化和暴露分析",
+          "passed": true,
+          "reasons": [
+            "中性化后仍有 alpha，且与现有因子不过度重合。"
+          ],
+          "metrics": {
+            "neutralized_icir": 0.5781506484415131,
+            "existing_factor_corr": 0.0,
+            "style_exposure_only": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 7,
+          "gate_key": "oos_robustness",
+          "title": "Gate 7: 样本外和稳健性",
+          "passed": true,
+          "reasons": [
+            "walk-forward、参数、日期、频率、universe 与市场阶段稳健性通过。"
+          ],
+          "metrics": {
+            "oos_positive_ratio": 0.6666666666666666,
+            "parameter_stability": true,
+            "date_range_robustness": true,
+            "rebalance_frequency_robustness": true,
+            "universe_robustness": true,
+            "regime_robustness": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 8,
+          "gate_key": "portfolio_incremental",
+          "title": "Gate 8: 组合增量验证",
+          "passed": true,
+          "reasons": [
+            "baseline + new factor 相对 baseline 有组合级增量。"
+          ],
+          "metrics": {
+            "master_return_delta": 0.0006078517136496472,
+            "sharpe_delta": 0.0027791453161006762,
+            "max_drawdown_delta": 0.0006695133861222602,
+            "turnover_delta": 0.2209200033323774,
+            "execution_cost_delta": 0.00022092000333237742,
+            "correlation_with_existing_signals": 0.0
+          },
+          "severity": "info"
+        }
+      ],
+      "metrics": {
+        "no_future_leakage": true,
+        "uses_availability_date": true,
+        "point_in_time_rebalance": true,
+        "adjusted_price_consistent": true,
+        "tradability_rules_defined": true,
+        "missingness_explained": true,
+        "coverage_rate": 0.9993678031158275,
+        "nan_rate": 0.0006321968841724994,
+        "monthly_coverage_min": 0.9976865240023135,
+        "max_sector_coverage_share": 0.5522344223035561,
+        "max_size_bucket_coverage_share": 0.5522344223035561,
+        "extreme_value_ratio": 0.0007229677827481813,
+        "icir": 0.5463430230849419,
+        "mean_rankic": 0.03596699803535473,
+        "positive_ic_ratio": 0.72,
+        "rankic_direction_stable": true,
+        "max_single_year_ic_contribution": 0.39311752569221486,
+        "horizon_days": 30,
+        "top_bottom_spread": 0.045018341727859776,
+        "top_quantile_return": 0.21023326739015077,
+        "monotonicity": 0.536,
+        "long_short_from_long_side": true,
+        "turnover": 7.364000111079247,
+        "cost_adjusted_return": 0.03765434161678053,
+        "capacity_pressure": 0.012828154165459925,
+        "master_return_delta": 0.0006078517136496472,
+        "sharpe_delta": 0.0027791453161006762,
+        "max_drawdown_delta": 0.0006695133861222602,
+        "turnover_delta": 0.2209200033323774,
+        "execution_cost_delta": 0.00022092000333237742,
+        "median_top_daily_amount_yuan": 155907075.5,
+        "incremental_sleeve_weight": 0.03,
+        "slippage_sensitivity_ok": true,
+        "execution_realism": true,
+        "neutralized_icir": 0.5781506484415131,
+        "existing_factor_corr": 0.0,
+        "style_exposure_only": false,
+        "oos_positive_ratio": 0.6666666666666666,
+        "parameter_stability": true,
+        "date_range_robustness": true,
+        "rebalance_frequency_robustness": true,
+        "universe_robustness": true,
+        "regime_robustness": true,
+        "signal_corr": 0.0
+      },
+      "admission_decision": "production_candidate",
+      "thematic": false,
+      "narrow_coverage": false,
+      "approved_by": "manual_promote_production_20260529_recovered_20260602",
+      "approved_at": "2026-05-29T05:30:16Z",
+      "deprecated_reason": "",
+      "metadata": {
+        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
+        "recovery_reason": "registry was empty although 2026-05-29 promoted mining report and health reports show 12 production_factor entries",
+        "validation_note": "Neutralization uses hs300/zz500/zz1000 universe buckets as a local size/liquidity proxy because no complete industry map is available in the offline data snapshot.",
+        "spec": {
+          "name": "pv_volume_stability_10d",
+          "family": "volume_stability",
+          "category": "trading_activity",
+          "window": 10,
+          "description": "Negative 10-day coefficient of variation of volume; stable participation scores higher.",
+          "literature_anchor": "trading_activity"
+        }
+      }
+    }
+  ]
 }

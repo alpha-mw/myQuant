@@ -28,9 +28,8 @@ except ImportError:  # pragma: no cover - compatibility fallback for older trees
     BRANCH_WEIGHT_VERSION = ""
     CANONICAL_BRANCH_ORDER = (
         "quant",
-        "kline",
-        "intelligence",
         "fundamental",
+        "intelligence",
         "macro",
     )
 

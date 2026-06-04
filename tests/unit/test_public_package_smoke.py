@@ -199,8 +199,8 @@ def test_single_mainline_one_symbol_mock_run_includes_version_fields(monkeypatch
         verbose=False,
     ).run()
 
-    assert result.architecture_version == "12.0.0-stable"
-    assert result.branch_schema_version == "branch-schema.v12.unified-mainline"
+    assert result.architecture_version == "13.0.0-stable"
+    assert result.branch_schema_version == "branch-schema.v13.four-branch"
     assert result.calibration_schema_version
     assert result.debate_template_version
     assert result.final_strategy.architecture_version == result.architecture_version

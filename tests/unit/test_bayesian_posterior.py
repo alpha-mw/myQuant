@@ -39,8 +39,6 @@ class TestScoreToLikelihood:
 class TestSignalLikelihoodMapper:
     def test_all_branches_available(self):
         branches = {
-            "kline": BranchResult(branch_name="kline", final_score=0.3, final_confidence=0.7,
-                                  symbol_scores={"A": 0.3}, metadata={"reliability": 0.7}),
             "quant": BranchResult(branch_name="quant", final_score=0.5, final_confidence=0.8,
                                   symbol_scores={"A": 0.5}, metadata={"reliability": 0.75}),
             "fundamental": BranchResult(branch_name="fundamental", final_score=0.2, final_confidence=0.6,
@@ -50,14 +48,11 @@ class TestSignalLikelihoodMapper:
         }
         mapper = SignalLikelihoodMapper()
         ls = mapper.compute_likelihoods(branch_results=branches, symbol="A")
-        assert ls.kline_likelihood > 0.50  # positive score
         assert ls.quant_likelihood > 0.50  # positive score
-        assert len(ls.as_list()) == 4
+        assert len(ls.as_list()) == 3
 
     def test_non_candidate_gets_neutral_for_expensive_branches(self):
         branches = {
-            "kline": BranchResult(branch_name="kline", final_score=0.3, final_confidence=0.7,
-                                  symbol_scores={"A": 0.3}, metadata={"reliability": 0.7}),
             "quant": BranchResult(branch_name="quant", final_score=0.5, final_confidence=0.8,
                                   symbol_scores={"A": 0.5}, metadata={"reliability": 0.75}),
         }
@@ -72,7 +67,6 @@ class TestSignalLikelihoodMapper:
         branches = {}
         mapper = SignalLikelihoodMapper()
         ls = mapper.compute_likelihoods(branch_results=branches, symbol="A")
-        assert ls.kline_likelihood == 0.50
         assert ls.quant_likelihood == 0.50
 
     def test_momentum_profile_uses_calibration_and_recall_bias(self, tmp_path):
@@ -82,7 +76,7 @@ class TestSignalLikelihoodMapper:
                 json.dumps(
                     {
                         "symbol": "A",
-                        "branch": "kline",
+                        "branch": "intelligence",
                         "score": 0.7,
                         "bucket": "strong_positive",
                         "realized_return": value,
@@ -96,8 +90,8 @@ class TestSignalLikelihoodMapper:
         store_path.write_text("{}", encoding="utf-8")
         calibration_store = CalibrationStore(str(store_path))
         branches = {
-            "kline": BranchResult(
-                branch_name="kline",
+            "intelligence": BranchResult(
+                branch_name="intelligence",
                 final_score=0.7,
                 final_confidence=0.8,
                 symbol_scores={"A": 0.7},
@@ -137,7 +131,7 @@ class TestSignalLikelihoodMapper:
 
         ls = mapper.compute_likelihoods(branch_results=branches, symbol="A")
 
-        assert ls.kline_likelihood < 0.70
+        assert ls.intelligence_likelihood < 0.70
         assert ls.metadata["history_confidence"] > 0.0
         assert ls.metadata["setup_failure_penalty"] > 0.0
 
@@ -157,7 +151,6 @@ class TestBayesianPosteriorEngine:
         engine = BayesianPosteriorEngine()
         prior = PriorSet(composite_prior=0.50)
         likelihoods = LikelihoodSet(
-            kline_likelihood=0.75,
             quant_likelihood=0.80,
             fundamental_likelihood=0.70,
             intelligence_likelihood=0.65,
@@ -172,7 +165,6 @@ class TestBayesianPosteriorEngine:
         engine = BayesianPosteriorEngine()
         prior = PriorSet(composite_prior=0.50)
         likelihoods = LikelihoodSet(
-            kline_likelihood=0.25,
             quant_likelihood=0.20,
             fundamental_likelihood=0.30,
             intelligence_likelihood=0.35,
@@ -188,10 +180,9 @@ class TestBayesianPosteriorEngine:
 
         # Two correlated branches with strong agreement
         likelihoods_high = LikelihoodSet(
-            kline_likelihood=0.80,
-            quant_likelihood=0.80,
-            fundamental_likelihood=0.50,
-            intelligence_likelihood=0.50,
+            quant_likelihood=0.50,
+            fundamental_likelihood=0.80,
+            intelligence_likelihood=0.80,
         )
 
         result = engine.compute_posterior(prior, likelihoods_high, symbol="A")
@@ -202,12 +193,12 @@ class TestBayesianPosteriorEngine:
     def test_degraded_backend_penalty(self):
         engine = BayesianPosteriorEngine()
         prior = PriorSet(composite_prior=0.50)
-        likelihoods = LikelihoodSet(kline_likelihood=0.80, quant_likelihood=0.80)
+        likelihoods = LikelihoodSet(quant_likelihood=0.80)
 
         normal = engine.compute_posterior(prior, likelihoods, symbol="A")
         degraded = engine.compute_posterior(
             prior, likelihoods, symbol="A",
-            is_degraded={"kline": True},
+            is_degraded={"quant": True},
         )
 
         assert degraded.fallback_penalty > 0.0
@@ -217,8 +208,8 @@ class TestBayesianPosteriorEngine:
     def test_coverage_discount_with_missing_branches(self):
         engine = BayesianPosteriorEngine()
         prior = PriorSet(composite_prior=0.50)
-        # Only kline evidence, others neutral
-        likelihoods = LikelihoodSet(kline_likelihood=0.75)
+        # Only quant evidence, others neutral
+        likelihoods = LikelihoodSet(quant_likelihood=0.75)
 
         result = engine.compute_posterior(prior, likelihoods, symbol="A")
         assert result.coverage_discount > 0.0
@@ -227,7 +218,7 @@ class TestBayesianPosteriorEngine:
     def test_regime_aware_thresholds(self):
         engine = BayesianPosteriorEngine()
         prior = PriorSet(composite_prior=0.50)
-        likelihoods = LikelihoodSet(kline_likelihood=0.70, quant_likelihood=0.70)
+        likelihoods = LikelihoodSet(quant_likelihood=0.70, intelligence_likelihood=0.70)
 
         bull = engine.compute_posterior(prior, likelihoods, symbol="A", regime="趋势上涨")
         bear = engine.compute_posterior(prior, likelihoods, symbol="A", regime="趋势下跌")
@@ -238,7 +229,7 @@ class TestBayesianPosteriorEngine:
     def test_posterior_result_to_dict(self):
         engine = BayesianPosteriorEngine()
         prior = PriorSet(composite_prior=0.55)
-        likelihoods = LikelihoodSet(kline_likelihood=0.70)
+        likelihoods = LikelihoodSet(quant_likelihood=0.70)
         result = engine.compute_posterior(
             prior, likelihoods, symbol="A", company_name="Test Corp",
         )
@@ -264,13 +255,12 @@ class TestBayesianPosteriorEngine:
         base = engine.compute_posterior(
             prior,
             LikelihoodSet(
-                kline_likelihood=0.74,
                 quant_likelihood=0.66,
                 fundamental_likelihood=0.58,
                 intelligence_likelihood=0.68,
                 metadata={
                     "profile": "momentum_leader",
-                    "branch_weights": {"kline": 1.35, "quant": 1.0, "fundamental": 0.7, "intelligence": 1.2},
+                    "branch_weights": {"quant": 1.0, "fundamental": 0.7, "intelligence": 1.2},
                     "history_confidence": 0.70,
                     "avg_reliability": 0.68,
                     "momentum_strength": 0.84,
@@ -278,7 +268,7 @@ class TestBayesianPosteriorEngine:
                     "setup_failure_penalty": 0.0,
                     "crowding_penalty": 0.0,
                     "market_pressure": 0.0,
-                    "calibration_samples": {"kline": 8},
+                    "calibration_samples": {"intelligence": 8},
                     "sector": "半导体",
                 },
             ),
@@ -288,13 +278,12 @@ class TestBayesianPosteriorEngine:
         risky = engine.compute_posterior(
             prior,
             LikelihoodSet(
-                kline_likelihood=0.74,
                 quant_likelihood=0.66,
                 fundamental_likelihood=0.58,
                 intelligence_likelihood=0.68,
                 metadata={
                     "profile": "momentum_leader",
-                    "branch_weights": {"kline": 1.35, "quant": 1.0, "fundamental": 0.7, "intelligence": 1.2},
+                    "branch_weights": {"quant": 1.0, "fundamental": 0.7, "intelligence": 1.2},
                     "history_confidence": 0.70,
                     "avg_reliability": 0.68,
                     "momentum_strength": 0.84,
@@ -302,7 +291,7 @@ class TestBayesianPosteriorEngine:
                     "setup_failure_penalty": 0.45,
                     "crowding_penalty": 0.30,
                     "market_pressure": 0.5,
-                    "calibration_samples": {"kline": 8},
+                    "calibration_samples": {"intelligence": 8},
                     "sector": "半导体",
                 },
             ),

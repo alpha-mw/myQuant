@@ -35,6 +35,7 @@ def _execute_market_dag(**kwargs: Any) -> dict[str, Any]:
 
     return execute_market_dag(**kwargs)
 
+
 _CONVICTION_SCORE = {
     "strong_buy": 0.80,
     "buy": 0.35,
@@ -42,6 +43,7 @@ _CONVICTION_SCORE = {
     "sell": -0.35,
     "strong_sell": -0.80,
 }
+
 
 class QuantInvestor:
     """Single supported public mainline."""
@@ -57,10 +59,10 @@ class QuantInvestor:
         enable_backtest: bool = False,
         enable_alpha_mining: bool = True,
         enable_quant: bool = True,
-        enable_kline: bool = True,
+        enable_kline: bool = False,
         enable_fundamental: bool = True,
         enable_intelligence: bool = True,
-        kline_backend: str = "hybrid",
+        kline_backend: str = "v13-retired",
         allow_synthetic_for_research: bool = False,
         enable_document_semantics: bool = True,
         verbose: bool = True,
@@ -93,7 +95,9 @@ class QuantInvestor:
         self.enable_backtest = enable_backtest
         self.enable_alpha_mining = enable_alpha_mining
         self.enable_quant = enable_quant
-        self.enable_kline = enable_kline if enable_kronos is None else enable_kronos
+        # v13 canonical research has no kline branch. Preserve legacy kwargs as
+        # accepted no-ops so older callers do not reactivate the retired path.
+        self.enable_kline = False
         self.kline_backend = kline_backend
         self.enable_fundamental = enable_fundamental
         self.enable_intelligence = enable_intelligence

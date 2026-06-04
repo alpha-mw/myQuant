@@ -35,7 +35,6 @@
 
 当前稳定 branch set：
 
-- `kline`
 - `quant`
 - `fundamental`
 - `intelligence`

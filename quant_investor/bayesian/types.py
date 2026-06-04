@@ -29,20 +29,42 @@ class PriorSet:
         }
 
 
-@dataclass
+@dataclass(init=False)
 class LikelihoodSet:
     """Per-signal-family likelihood values for a single symbol."""
 
-    kline_likelihood: float = 0.50
     quant_likelihood: float = 0.50
     fundamental_likelihood: float = 0.50
     intelligence_likelihood: float = 0.50
     correlation_matrix: dict[str, float] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def __init__(
+        self,
+        *,
+        quant_likelihood: float = 0.50,
+        fundamental_likelihood: float = 0.50,
+        intelligence_likelihood: float = 0.50,
+        correlation_matrix: dict[str, float] | None = None,
+        metadata: dict[str, Any] | None = None,
+        kline_likelihood: float | None = None,
+    ) -> None:
+        self.quant_likelihood = float(quant_likelihood)
+        self.fundamental_likelihood = float(fundamental_likelihood)
+        self.intelligence_likelihood = float(intelligence_likelihood)
+        self.correlation_matrix = dict(correlation_matrix or {})
+        self.metadata = dict(metadata or {})
+        if kline_likelihood is not None:
+            self.metadata.setdefault("ignored_legacy_kline_likelihood", float(kline_likelihood))
+
+    @property
+    def kline_likelihood(self) -> float:
+        """Compatibility shim for legacy payloads; not part of v13 likelihoods."""
+
+        return 0.50
+
     def to_dict(self) -> dict[str, Any]:
         return {
-            "kline_likelihood": self.kline_likelihood,
             "quant_likelihood": self.quant_likelihood,
             "fundamental_likelihood": self.fundamental_likelihood,
             "intelligence_likelihood": self.intelligence_likelihood,
@@ -51,7 +73,6 @@ class LikelihoodSet:
 
     def as_list(self) -> list[tuple[str, float]]:
         return [
-            ("kline", self.kline_likelihood),
             ("quant", self.quant_likelihood),
             ("fundamental", self.fundamental_likelihood),
             ("intelligence", self.intelligence_likelihood),

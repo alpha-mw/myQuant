@@ -14,7 +14,7 @@
 <br/>
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org)
-[![Version](https://img.shields.io/badge/Version-v12.0.0-FF6B35?style=flat-square)](https://github.com/alpha-mw/myQuant/releases)
+[![Version](https://img.shields.io/badge/Version-v13.0.0-FF6B35?style=flat-square)](https://github.com/alpha-mw/myQuant/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-22C55E?style=flat-square)](LICENSE)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black)](https://react.dev)
@@ -40,7 +40,7 @@ Quant-Investor 的解法是严格分层：
         ↑
 LLM 审阅层（advisory-only，提供观点，不做决策）
         ↑
-并行研究核心（5 分支量化分析，加权聚合）
+并行研究核心（4 分支量化分析，加权聚合）
 ```
 
 **RiskGuard 具有一票否决权。** LLM 的任何输出只能作为参考信号进入 ICCoordinator，永远无法绕过风控硬约束。
@@ -52,7 +52,7 @@ LLM 审阅层（advisory-only，提供观点，不做决策）
 | 能力 | 说明 |
 |------|------|
 | 🏗 **三层数据协议** | `GlobalContext` → `SymbolResearchPacket` → `PortfolioDecision`，全程 Pydantic 结构化，可追溯 |
-| 🔬 **5 分支并行研究** | K-Line · 量化因子 · 基本面 · 情报 · 宏观，各自独立执行后加权聚合 |
+| 🔬 **4 分支并行研究** | 量化因子 · 基本面 · 情报 · 宏观，各自独立执行后加权聚合 |
 | 🛡 **确定性风控** | RiskGuard 硬否决 → ICCoordinator 一致性校验 → PortfolioConstructor 权重分配 |
 | 🤖 **可选 LLM 审阅层** | 支持 OpenAI / Claude / DeepSeek / Gemini / 通义 / Kimi，无 API Key 自动降级 |
 | 🔀 **混合预测后端** | Kronos Transformer + Amazon Chronos 时序基础模型 + 统计基线，热切换 |
@@ -70,8 +70,7 @@ LLM 审阅层（advisory-only，提供观点，不做决策）
 ┌─────────────────────────────────────────────────────────────┐
 │                    Stage 1: Research Core                    │
 │                                                             │
-│   KlineAgent ──┐                                            │
-│   QuantAgent ──┤                                            │
+│   QuantAgent ──┐                                            │
 │   FundaAgent ──┼──► EnsembleJudge ──► SymbolResearchPacket │
 │   IntelAgent ──┤     (加权聚合)                              │
 │   MacroAgent ──┘                                            │
@@ -104,16 +103,15 @@ LLM 审阅层（advisory-only，提供观点，不做决策）
 
 **分支权重**
 
-| 分支 | Quant Factor | K-Line | Intelligence | Fundamental | Macro |
-|------|:------------:|:------:|:------------:|:-----------:|:-----:|
-| 权重 | 28% | 22% | 20% | 15% | 15% |
+| 分支 | Quant Factor | Intelligence | Fundamental | Macro |
+|------|:------------:|:------------:|:-----------:|:-----:|
+| 权重 | 36% | 26% | 19% | 19% |
 
 ```
-Quant Factor    ████████████████████████████  28%
-K-Line          ██████████████████████        22%
-Intelligence    ████████████████████          20%
-Fundamental     ███████████████               15%
-Macro           ███████████████               15%
+Quant Factor    ████████████████████████████████████  36%
+Intelligence    ██████████████████████████            26%
+Fundamental     ███████████████████                   19%
+Macro           ███████████████████                   19%
 ```
 
 ### 数据协议
@@ -264,7 +262,7 @@ myQuant/
 │   ├── agent_protocol.py        # 三层数据协议定义
 │   ├── agent_orchestrator.py    # 统一控制链编排
 │   ├── agents/
-│   │   ├── kline_agent.py       # K-Line 技术分析
+│   │   ├── kline_agent.py       # retired compatibility，不属于 v13 canonical branch
 │   │   ├── quant_agent.py       # 量化因子
 │   │   ├── fundamental_agent.py # 基本面
 │   │   ├── intelligence_agent.py# 舆情情报
@@ -275,7 +273,7 @@ myQuant/
 │   │   ├── narrator_agent.py    # 报告生成
 │   │   ├── master_agent.py      # LLM IC 主席
 │   │   └── subagents/           # LLM 审阅子 agent
-│   ├── kline_backends/          # 时序预测后端
+│   ├── kline_backends/          # retired compatibility 时序预测后端
 │   │   ├── hybrid_engine.py     # Kronos + Chronos 混合引擎
 │   │   ├── kronos_adapter.py
 │   │   ├── chronos_adapter.py

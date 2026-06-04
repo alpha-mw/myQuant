@@ -211,11 +211,11 @@ class ResearchRunConfig:
     risk_level: str = "中等"
     enable_macro: bool = True
     enable_quant: bool = True
-    enable_kline: bool = True
+    enable_kline: bool = False
     enable_fundamental: bool = True
     enable_intelligence: bool = True
     enable_agent_layer: bool = True
-    kline_backend: str = "hybrid"
+    kline_backend: str = "v13-retired"
     allow_synthetic_for_research: bool = False
     enable_document_semantics: bool = True
     review_models: ResolvedReviewModels = field(default_factory=ResolvedReviewModels)
@@ -259,7 +259,7 @@ class ResearchRunConfig:
                 mapping,
                 enabled_key="enable_kline",
                 disabled_key="no_kline",
-                default=True,
+                default=False,
             ),
             enable_fundamental=_mapping_bool(
                 mapping,
@@ -279,7 +279,7 @@ class ResearchRunConfig:
                 disabled_key="no_agent_layer",
                 default=True,
             ),
-            kline_backend=_mapping_str(mapping, "kline_backend", default="hybrid") or "hybrid",
+            kline_backend=_mapping_str(mapping, "kline_backend", default="v13-retired") or "v13-retired",
             allow_synthetic_for_research=_mapping_bool(
                 mapping,
                 enabled_key="allow_synthetic_for_research",
@@ -337,7 +337,7 @@ class ResearchRunConfig:
             "risk_level": self.risk_level,
             "enable_macro": bool(self.enable_macro),
             "enable_quant": bool(self.enable_quant),
-            "enable_kline": bool(self.enable_kline),
+            "enable_kline": False,
             "enable_fundamental": bool(self.enable_fundamental),
             "enable_intelligence": bool(self.enable_intelligence),
             "kline_backend": self.kline_backend,

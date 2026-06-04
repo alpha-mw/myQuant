@@ -42,11 +42,10 @@ def test_default_branch_weights_validate_and_sum_to_one() -> None:
 @pytest.mark.parametrize(
     "weights, message",
     [
-        ({"quant": 0.28, "kline": 0.22, "intelligence": 0.20, "fundamental": 0.15}, "missing"),
+        ({"quant": 0.28, "intelligence": 0.20, "fundamental": 0.15}, "missing"),
         (
             {
                 "quant": 0.28,
-                "kline": 0.22,
                 "intelligence": 0.20,
                 "fundamental": 0.15,
                 "macro": 0.15,
@@ -57,7 +56,6 @@ def test_default_branch_weights_validate_and_sum_to_one() -> None:
         (
             {
                 "quant": -0.28,
-                "kline": 0.22,
                 "intelligence": 0.20,
                 "fundamental": 0.15,
                 "macro": 0.71,
@@ -67,7 +65,6 @@ def test_default_branch_weights_validate_and_sum_to_one() -> None:
         (
             {
                 "quant": float("nan"),
-                "kline": 0.22,
                 "intelligence": 0.20,
                 "fundamental": 0.15,
                 "macro": 0.43,
@@ -77,7 +74,6 @@ def test_default_branch_weights_validate_and_sum_to_one() -> None:
         (
             {
                 "quant": float("inf"),
-                "kline": 0.22,
                 "intelligence": 0.20,
                 "fundamental": 0.15,
                 "macro": 0.43,
@@ -117,7 +113,6 @@ def test_readme_branch_percentages_match_default_branch_weights() -> None:
     readme_weights = _read_branch_weight_table()
     expected_labels = {
         "Quant Factor": "quant",
-        "K-Line": "kline",
         "Intelligence": "intelligence",
         "Fundamental": "fundamental",
         "Macro": "macro",

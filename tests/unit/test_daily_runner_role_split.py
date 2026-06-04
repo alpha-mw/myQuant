@@ -158,6 +158,7 @@ def test_load_config_backfills_daily_defaults_without_web_runtime(tmp_path):
     assert cfg["skip_stage1"] is False
     assert cfg["funnel_profile"] == "momentum_leader"
     assert cfg["funnel_max_candidates"] == 200
+    assert cfg["bayesian_shortlist_size"] == 50
     assert cfg["trend_windows"] == [20, 60, 120]
     assert cfg["volume_spike_threshold"] == 1.35
     assert cfg["breakout_distance_pct"] == 0.06
@@ -355,6 +356,7 @@ def test_analysis_runner_forwards_review_priority_and_recall_context(monkeypatch
     assert captured["master_reasoning_effort"] == "high"
     assert captured["agent_timeout"] == 20.0
     assert captured["master_timeout"] == 45.0
+    assert captured["shortlist_size"] == 50
     assert captured["skip_stage1"] is True
     assert captured["recall_context"] == {"source": "strategy_records", "recent_symbols": ["600000.SH"]}
 

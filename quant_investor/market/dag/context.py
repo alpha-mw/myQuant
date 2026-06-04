@@ -6,7 +6,7 @@ from typing import Any, Callable, Mapping
 import pandas as pd
 
 from quant_investor.agent_protocol import BranchVerdict, DataQualityIssue, GlobalContext
-from quant_investor.branch_contracts import BranchResult, UnifiedDataBundle
+from quant_investor.branch_contracts import BranchResult
 from quant_investor.config import config
 from quant_investor.funnel.deterministic_funnel import FunnelConfig, FunnelOutput
 from quant_investor.market.config import get_market_settings
@@ -43,7 +43,6 @@ class MarketContextState:
     quant_result: BranchResult
     global_context: GlobalContext
     model_roles: Any
-    full_market_kline_result: BranchResult
     funnel_output: FunnelOutput
     resolver_snapshot: dict[str, Any] = field(default_factory=dict)
 
@@ -79,11 +78,8 @@ def _prepare_market_context(
     breakout_distance_pct: float,
     sector_bucket_limit: int,
     macro_agent: Any,
-    kline_agent: Any,
     funnel_cls: Any,
     provider_health_detector: Callable[..., dict[str, dict[str, Any]]],
-    ensure_branch_verdict: Callable[..., BranchVerdict],
-    branch_verdict_to_result: Callable[[BranchVerdict, str], BranchResult],
 ) -> MarketContextState:
     settings = get_market_settings(market)
     all_symbols = list(symbols)
@@ -347,40 +343,6 @@ def _prepare_market_context(
         },
     )
 
-    full_market_bundle = UnifiedDataBundle(
-        market=settings.market,
-        symbols=list(symbols),
-        symbol_data={symbol: frames.get(symbol, pd.DataFrame()) for symbol in symbols},
-        fundamentals={},
-        event_data={},
-        sentiment_data={},
-        macro_data=dict(market_snapshot),
-        metadata={
-            "symbol_provenance": {
-                symbol: {
-                    "path": read_results[symbol].path,
-                    "resolver_trace": read_results[symbol].resolver_trace,
-                    "data_quality_issues": [issue.to_dict() for issue in read_results[symbol].issues],
-                }
-                for symbol in symbols
-            }
-        },
-    )
-    full_market_kline_verdict = ensure_branch_verdict(
-        kline_agent.run(
-            {
-                "data_bundle": full_market_bundle,
-                "stock_pool": list(symbols),
-                "market": settings.market,
-                "verbose": False,
-                "mode": "full_market",
-            }
-        ),
-        symbol="__market__",
-        branch_name="kline",
-    )
-    full_market_kline_result = branch_verdict_to_result(full_market_kline_verdict, "kline")
-
     funnel = funnel_cls(
         FunnelConfig(
             max_candidates=int(max_candidates or getattr(config, "FUNNEL_MAX_CANDIDATES", 200) or 200),
@@ -393,7 +355,6 @@ def _prepare_market_context(
     )
     funnel_output = funnel.run(
         quant_result=quant_result,
-        kline_result=full_market_kline_result,
         global_context=global_context,
     )
     candidate_symbols = [symbol for symbol in funnel_output.candidates if symbol in researchable_symbols]
@@ -439,7 +400,6 @@ def _prepare_market_context(
         quant_result=quant_result,
         global_context=global_context,
         model_roles=model_roles,
-        full_market_kline_result=full_market_kline_result,
         funnel_output=funnel_output,
         resolver_snapshot=resolver_snapshot,
     )

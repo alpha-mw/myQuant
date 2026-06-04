@@ -1,8 +1,7 @@
 """Deterministic funnel — compress full market to candidate set.
 
-Consumes quant + kline BranchResults (full-market) and a GlobalContext,
-then applies a pipeline of gates and ranking to produce a compressed
-candidate set of ~200 symbols by default.
+Consumes the quant BranchResult and a GlobalContext, then applies gates and
+ranking to produce a compressed candidate set of ~200 symbols by default.
 """
 
 from __future__ import annotations
@@ -33,8 +32,6 @@ class FunnelConfig:
     max_candidates: int = 200
     liquidity_percentile_min: float = 0.10
     min_composite_score: float = -1.0  # disabled by default
-    quant_weight: float = 0.55
-    kline_weight: float = 0.45
     profile: str = "classic"
     trend_windows: tuple[int, ...] = (20, 60, 120)
     volume_spike_threshold: float = 1.35
@@ -59,7 +56,7 @@ class DeterministicFunnel:
     1. Data quality gate
     2. Tradability gate
     3. Liquidity gate
-    4. Composite score ranking (quant + kline)
+    4. Quant score ranking with deterministic tradability context
     5. Top-N cutoff
     """
 
@@ -83,21 +80,17 @@ class DeterministicFunnel:
         return str(state.get("industry") or state.get("sector") or "").strip()
 
     @staticmethod
-    def _classic_score(symbol: str, quant_scores: dict[str, float], kline_scores: dict[str, float], *, quant_weight: float, kline_weight: float) -> float:
-        qs = float(quant_scores.get(symbol, 0.0))
-        ks = float(kline_scores.get(symbol, 0.0))
-        return quant_weight * qs + kline_weight * ks
+    def _classic_score(symbol: str, quant_scores: dict[str, float]) -> float:
+        return float(quant_scores.get(symbol, 0.0))
 
     def _momentum_leader_score(
         self,
         *,
         symbol: str,
         quant_scores: dict[str, float],
-        kline_scores: dict[str, float],
         global_context: GlobalContext,
     ) -> float:
         qs = float(quant_scores.get(symbol, 0.0))
-        ks = float(kline_scores.get(symbol, 0.0))
         state = self._symbol_state(global_context, symbol)
         momentum_strength = float(state.get("momentum_strength", 0.0))
         breakout_readiness = float(state.get("breakout_readiness", 0.0))
@@ -108,7 +101,6 @@ class DeterministicFunnel:
         max_drawdown = float(state.get("max_drawdown_pct", 0.0))
         recent_return = float(state.get("return_20d", 0.0))
         quant_component = _clamp((qs + 1.0) / 2.0, 0.0, 1.0)
-        kline_component = _clamp((ks + 1.0) / 2.0, 0.0, 1.0)
         recent_return_component = _clamp((recent_return + 0.12) / 0.30, 0.0, 1.0)
         distance_penalty = _clamp(
             distance_from_high / max(float(self.config.breakout_distance_pct) * 1.5, 0.01),
@@ -118,13 +110,12 @@ class DeterministicFunnel:
         drawdown_penalty = _clamp(max_drawdown / 0.18, 0.0, 1.0)
 
         score = (
-            0.30 * momentum_strength
-            + 0.20 * kline_component
-            + 0.15 * quant_component
+            0.34 * momentum_strength
+            + 0.24 * quant_component
             + 0.13 * breakout_readiness
             + 0.10 * volume_confirmation
             + 0.07 * trend_stability
-            + 0.05 * recent_return_component
+            + 0.08 * recent_return_component
         )
         score -= 0.20 * distance_penalty
         score -= 0.18 * drawdown_penalty
@@ -165,7 +156,6 @@ class DeterministicFunnel:
         self,
         *,
         quant_result: BranchResult,
-        kline_result: BranchResult,
         global_context: GlobalContext,
     ) -> FunnelOutput:
         all_symbols = list(global_context.universe_tiers.get("researchable", global_context.universe_symbols))
@@ -185,11 +175,8 @@ class DeterministicFunnel:
         ).filter(symbols, global_context)
         all_excluded.update(excluded)
 
-        # Score: weighted composite of quant + kline symbol_scores
+        # Score: quant branch plus deterministic tradability/momentum context.
         quant_scores = quant_result.symbol_scores or {}
-        kline_scores = kline_result.symbol_scores or {}
-        qw = self.config.quant_weight
-        kw = self.config.kline_weight
         profile = str(self.config.profile or "classic").strip().lower() or "classic"
 
         composite: dict[str, float] = {}
@@ -198,17 +185,10 @@ class DeterministicFunnel:
                 composite[symbol] = self._momentum_leader_score(
                     symbol=symbol,
                     quant_scores=quant_scores,
-                    kline_scores=kline_scores,
                     global_context=global_context,
                 )
             else:
-                composite[symbol] = self._classic_score(
-                    symbol,
-                    quant_scores,
-                    kline_scores,
-                    quant_weight=qw,
-                    kline_weight=kw,
-                )
+                composite[symbol] = self._classic_score(symbol, quant_scores)
 
         # Filter by minimum composite score
         if self.config.min_composite_score > -1.0:
@@ -252,8 +232,7 @@ class DeterministicFunnel:
                 "after_gates": len(composite),
                 "final_candidates": len(candidates),
                 "max_candidates": self.config.max_candidates,
-                "quant_weight": qw,
-                "kline_weight": kw,
+                "factor_mode": "quant_only",
                 "profile": profile,
                 "trend_windows": list(self.config.trend_windows),
                 "volume_spike_threshold": float(self.config.volume_spike_threshold),

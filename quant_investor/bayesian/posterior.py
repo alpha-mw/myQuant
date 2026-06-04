@@ -14,7 +14,6 @@ from quant_investor.bayesian.types import LikelihoodSet, PosteriorResult, PriorS
 # Correlation discount: when two branches are correlated, reduce
 # the joint information weight.
 _CORRELATION_PAIRS: list[tuple[str, str, float]] = [
-    ("kline", "quant", 0.50),
     ("fundamental", "intelligence", 0.35),
 ]
 
@@ -136,7 +135,7 @@ class BayesianPosteriorEngine:
 
         # Coverage discount: fewer evidence sources -> lower confidence
         num_sources = len(evidence_sources)
-        max_sources = 4  # kline, quant, fundamental, intelligence
+        max_sources = 3  # quant, fundamental, intelligence
         coverage_ratio = num_sources / max_sources if max_sources > 0 else 1.0
         coverage_discount = 1.0 - coverage_ratio
 

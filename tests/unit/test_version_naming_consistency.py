@@ -13,11 +13,11 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_single_mainline_package_and_runtime_versions_are_aligned():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
 
-    assert project["version"] == "12.0.0"
-    assert "single mainline" in project["description"]
+    assert project["version"] == "13.0.0"
+    assert "four-branch single mainline" in project["description"]
 
-    assert versioning.ARCHITECTURE_VERSION == "12.0.0-stable"
-    assert versioning.BRANCH_SCHEMA_VERSION == "branch-schema.v12.unified-mainline"
+    assert versioning.ARCHITECTURE_VERSION == "13.0.0-stable"
+    assert versioning.BRANCH_SCHEMA_VERSION == "branch-schema.v13.four-branch"
     assert versioning.output_version_payload()["architecture_version"] == versioning.ARCHITECTURE_VERSION
     assert versioning.output_version_payload()["branch_schema_version"] == versioning.BRANCH_SCHEMA_VERSION
 
@@ -38,7 +38,7 @@ def test_readme_and_cli_share_single_mainline_policy():
     option_strings = [option for action in run_parser._actions for option in action.option_strings]
     route_flag = "--" + "architecture"
 
-    assert "12.0.0" in readme
+    assert "13.0.0" in readme
     assert route_flag not in readme
     assert "NarratorAgent -> ReportBundle" in readme
     assert "`buy` / `hold` / `sell` / `watch` / `avoid`" in readme
@@ -50,7 +50,7 @@ def test_readme_and_cli_share_single_mainline_policy():
 
 
 def test_versioning_module_exposes_only_single_mainline_payload():
-    assert versioning.CURRENT_BRANCH_ORDER == ("kline", "quant", "fundamental", "intelligence", "macro")
+    assert versioning.CURRENT_BRANCH_ORDER == ("quant", "fundamental", "intelligence", "macro")
     assert versioning.BRANCH_ORDER == versioning.CURRENT_BRANCH_ORDER
     assert versioning.output_version_payload() == {
         "architecture_version": versioning.ARCHITECTURE_VERSION,

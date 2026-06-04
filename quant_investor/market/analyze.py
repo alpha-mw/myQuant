@@ -5,13 +5,13 @@
 from __future__ import annotations
 
 import json
-import os
 from collections import Counter
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
+from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
 from quant_investor.config import config
 from quant_investor.credential_utils import create_tushare_pro
 from quant_investor.market.cn_resolver import CNUniverseResolver
@@ -25,12 +25,12 @@ from quant_investor.pipeline import QuantInvestor
 
 _STOCK_NAME_CACHE: dict[str, dict[str, str]] = {"CN": {}, "US": {}}
 BRANCH_LABELS = {
-    "kline": "K线",
     "quant": "量化",
     "fundamental": "基本面",
     "intelligence": "智能融合",
     "macro": "宏观",
 }
+BRANCH_SUPPORT_DENOMINATOR = len(CANONICAL_BRANCH_ORDER)
 
 
 def _dedupe_text(items: list[str]) -> list[str]:
@@ -70,6 +70,16 @@ def _confidence_label(confidence: float) -> str:
 
 def _branch_label(branch_name: str) -> str:
     return BRANCH_LABELS.get(branch_name, branch_name)
+
+
+def _canonical_branch_map(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Return branch payloads in the v13 canonical order, dropping legacy keys."""
+
+    return {
+        branch_name: payload[branch_name]
+        for branch_name in CANONICAL_BRANCH_ORDER
+        if branch_name in payload
+    }
 
 
 def _to_mapping(value: Any) -> dict[str, Any]:
@@ -371,7 +381,7 @@ def get_all_local_symbols(category: str, market: str = "CN", data_dir: str | Non
 
 
 def _derive_stock_support_drivers(payload: dict[str, Any]) -> list[str]:
-    branch_scores = dict(payload.get("branch_scores", {}))
+    branch_scores = _canonical_branch_map(dict(payload.get("branch_scores", {})))
     positive = [
         f"{_branch_label(name)}得分 {float(score):+.2f}"
         for name, score in sorted(branch_scores.items(), key=lambda item: item[1], reverse=True)
@@ -385,7 +395,7 @@ def _derive_stock_support_drivers(payload: dict[str, Any]) -> list[str]:
 
 
 def _derive_stock_drag_drivers(payload: dict[str, Any]) -> list[str]:
-    branch_scores = dict(payload.get("branch_scores", {}))
+    branch_scores = _canonical_branch_map(dict(payload.get("branch_scores", {})))
     negative = [
         f"{_branch_label(name)}得分 {float(score):+.2f}"
         for name, score in sorted(branch_scores.items(), key=lambda item: item[1])
@@ -399,8 +409,11 @@ def _derive_stock_conclusion(payload: dict[str, Any]) -> str:
     support_count = int(payload.get("branch_positive_count", 0))
     confidence = float(payload.get("confidence", 0.0))
     expected_upside = float(payload.get("expected_upside", 0.0))
-    if support_count >= 4 and confidence >= 0.55:
-        return f"{payload['symbol']} 当前获得 {support_count}/5 路支持，预期空间约 {expected_upside:.1%}。"
+    if support_count >= BRANCH_SUPPORT_DENOMINATOR and confidence >= 0.55:
+        return (
+            f"{payload['symbol']} 当前获得 {support_count}/{BRANCH_SUPPORT_DENOMINATOR} "
+            f"个 v13 分支支持，预期空间约 {expected_upside:.1%}。"
+        )
     if support_count >= 3 and confidence >= 0.40:
         return f"{payload['symbol']} 当前结论偏正，但更适合分批跟踪。"
     return f"{payload['symbol']} 当前信号仍需观察，暂不宜激进执行。"
@@ -420,9 +433,9 @@ def analyze_batch(
     settings = get_market_settings(market)
     scoped_category_name = category_name(category, settings.market)
     analyzer_kwargs = dict(analysis_kwargs or {})
-    analyzer_kwargs.setdefault("kline_backend", "heuristic")
+    analyzer_kwargs.setdefault("enable_kline", False)
+    analyzer_kwargs.setdefault("enable_kronos", False)
     analyzer_kwargs.setdefault("enable_macro", True)
-    analyzer_kwargs.setdefault("enable_kronos", True)
     analyzer_kwargs.setdefault("enable_quant", True)
     analyzer_kwargs.setdefault("enable_fundamental", True)
     analyzer_kwargs.setdefault("enable_intelligence", True)
@@ -663,7 +676,7 @@ def _build_market_summary(all_results: dict[str, list[dict[str, Any]]], market: 
         candidate_count = 0
         for item in results:
             candidate_count += len(item.get("strategy", {}).get("candidate_symbols", []))
-            for name, branch in item.get("branches", {}).items():
+            for name, branch in _canonical_branch_map(dict(item.get("branches", {}))).items():
                 branch_scores.setdefault(name, []).append(float(branch.get("score", 0.0)))
 
         summary["categories"][category] = {
@@ -721,7 +734,7 @@ def build_full_market_trade_plan(
                     * (1 + max(float(payload.get("consensus_score", 0.0)), 0.0))
                     * (1 + max(float(payload.get("model_expected_return", 0.0)), 0.0))
                     * (0.8 + float(payload.get("confidence", 0.0)))
-                    * (1 + float(payload.get("branch_positive_count", 0)) / 5)
+                    * (1 + float(payload.get("branch_positive_count", 0)) / BRANCH_SUPPORT_DENOMINATOR)
                 )
                 collected.append(payload)
 
@@ -899,7 +912,9 @@ class ActionConsistencyGuard:
 
         reasons = list(payload.get("weight_cap_reasons", []))
         if weak_support:
-            reasons.append(f"五路分支支持仅 {positive_count}/5，不宜激进。")
+            reasons.append(
+                f"v13 四分支支持仅 {positive_count}/{BRANCH_SUPPORT_DENOMINATOR}，不宜激进。"
+            )
         if low_confidence:
             reasons.append(f"综合可信度仅 {_confidence_label(confidence)}。")
         if macro_pressure:
@@ -916,7 +931,7 @@ def _aggregate_branch_summary(all_results: dict[str, list[dict[str, Any]]]) -> d
     total_batches = sum(len(batches) for batches in all_results.values())
     for batches in all_results.values():
         for batch in batches:
-            for name, branch in batch.get("branches", {}).items():
+            for name, branch in _canonical_branch_map(dict(batch.get("branches", {}))).items():
                 bucket = aggregated.setdefault(
                     name,
                     {
@@ -1153,7 +1168,11 @@ class ConclusionRenderer:
         drag = _dedupe_text(item.get("drag_drivers", []) or _derive_stock_drag_drivers(item))
         weight_caps = _dedupe_text(item.get("weight_cap_reasons", []))
         if action == "买入":
-            conclusion = f"{item['symbol']} {stock_name} 当前获得 {int(item.get('branch_positive_count', 0))}/5 路支持，可按计划分批执行。"
+            conclusion = (
+                f"{item['symbol']} {stock_name} 当前获得 "
+                f"{int(item.get('branch_positive_count', 0))}/{BRANCH_SUPPORT_DENOMINATOR} "
+                "个 v13 分支支持，可按计划分批执行。"
+            )
         elif action == "轻仓试错":
             conclusion = f"{item['symbol']} {stock_name} 当前仍有正向依据，但更适合轻仓试错。"
         else:
@@ -1273,7 +1292,7 @@ def generate_full_report(
     report_lines = [
         f"# {settings.report_flag} {settings.market_name}全市场组合级交易建议报告\n",
         f"**生成时间**: {summary['generated_at']}\n",
-        "**分析架构**: Quant-Investor V9 五路并行研究\n",
+        "**分析架构**: Quant-Investor V13 四分支研究契约\n",
         f"**分析覆盖**: {summary['total_stocks']} 只股票，{summary['total_batches']} 个批次\n",
         f"**分析 universe**: {analysis_meta.get('universe', 'full_a')}\n",
         "\n## 三句话执行摘要\n",
@@ -1339,7 +1358,7 @@ def generate_full_report(
         report_lines.extend(
             [
                 "\n## 最终推荐标的\n",
-                "| 排名 | 代码 | 名称 | 类别 | 现价 | 推荐买入价 | 目标卖出价 | 止损价 | 推荐仓位 | 金额 | 预期空间 | 五路支持 |\n",
+                "| 排名 | 代码 | 名称 | 类别 | 现价 | 推荐买入价 | 目标卖出价 | 止损价 | 推荐仓位 | 金额 | 预期空间 | v13分支支持 |\n",
                 "|:---:|:---|:---|:---|---:|---:|---:|---:|---:|---:|---:|---:|\n",
             ]
         )
@@ -1358,7 +1377,7 @@ def generate_full_report(
                 f"{settings.currency_symbol}{current_price:.2f} | {settings.currency_symbol}{display_entry_price:.2f} | "
                 f"{settings.currency_symbol}{item['target_price']:.2f} | {settings.currency_symbol}{item['stop_loss_price']:.2f} | "
                 f"{item['portfolio_weight']:.1%} | {settings.currency_symbol}{item['portfolio_amount']:,.0f} | "
-                f"{float(item['expected_upside']):.1%} | {item['branch_positive_count']}/5 |\n"
+                f"{float(item['expected_upside']):.1%} | {item['branch_positive_count']}/{BRANCH_SUPPORT_DENOMINATOR} |\n"
             )
 
         for item in recommendations[:12]:
@@ -1372,8 +1391,8 @@ def generate_full_report(
         report_lines.append("\n## 最终推荐标的\n")
         report_lines.append("- 当前没有满足条件的最终候选，建议继续以现金和观察仓位为主。\n")
 
-    report_lines.append("\n## 五路分支结论\n")
-    for branch_name in ["kline", "quant", "fundamental", "intelligence", "macro"]:
+    report_lines.append("\n## v13 四分支结论\n")
+    for branch_name in CANONICAL_BRANCH_ORDER:
         if branch_name in branch_summary:
             report_lines.extend(line + "\n" for line in ConclusionRenderer.render_branch(branch_name, branch_summary[branch_name]))
 
@@ -1438,9 +1457,9 @@ def _build_legacy_recommendation_from_dag(
     total_capital: float,
 ) -> dict[str, Any]:
     category_label = category_name(category, market)
-    branch_scores = dict(getattr(packet, "branch_scores", {}) or {})
-    branch_confidences = dict(getattr(packet, "branch_confidences", {}) or {})
-    branch_theses = dict(getattr(packet, "branch_theses", {}) or {})
+    branch_scores = _canonical_branch_map(dict(getattr(packet, "branch_scores", {}) or {}))
+    branch_confidences = _canonical_branch_map(dict(getattr(packet, "branch_confidences", {}) or {}))
+    branch_theses = _canonical_branch_map(dict(getattr(packet, "branch_theses", {}) or {}))
     score_values = [float(value) for value in branch_scores.values()]
     confidence_values = [float(value) for value in branch_confidences.values()]
     consensus_score = sum(score_values) / max(len(score_values), 1)
@@ -1537,7 +1556,7 @@ def _synthesize_legacy_analysis_results_from_dag(
         symbols_by_category[category].append(symbol)
 
     branches_as_dict: dict[str, dict[str, Any]] = {}
-    for name, branch in branch_summaries.items():
+    for name, branch in _canonical_branch_map(branch_summaries).items():
         if hasattr(branch, "to_dict"):
             branch_payload = branch.to_dict()
         elif isinstance(branch, Mapping):
@@ -1656,6 +1675,7 @@ def run_market_analysis(
     batch_size: int | None = None,
     total_capital: float = 1_000_000,
     top_k: int = 12,
+    shortlist_size: int | None = None,
     verbose: bool = True,
     master_reasoning_effort: str = "high",
     agent_fallback_model: str = "",
@@ -1703,6 +1723,10 @@ def run_market_analysis(
         batch_size=batch_size,
         total_capital=total_capital,
         top_k=top_k,
+        shortlist_size=max(
+            1,
+            int(shortlist_size if shortlist_size is not None else top_k),
+        ),
         verbose=verbose,
         enable_agent_layer=bool(analysis_kwargs.get("enable_agent_layer", True)),
         review_model_priority=list(analysis_kwargs.get("review_model_priority", []) or []),
@@ -1745,6 +1769,8 @@ def run_market_analysis(
     global_context = dag_artifacts["global_context"]
     portfolio_decision = dag_artifacts["portfolio_decision"]
     shortlist = list(dag_artifacts.get("shortlist", []) or [])
+    bayesian_records = list(dag_artifacts.get("bayesian_records", []) or [])
+    funnel_output = dag_artifacts.get("funnel_output")
     symbol_packets = dag_artifacts["symbol_research_packets"]
     analysis_meta: dict[str, Any] = {
         "market": settings.market,
@@ -1754,6 +1780,7 @@ def run_market_analysis(
         "category_count": len(selected_categories),
         "symbols": list(symbol_packets.keys()),
         "analysis_kwargs": dict(analysis_kwargs),
+        "shortlist_size": max(1, int(shortlist_size if shortlist_size is not None else top_k)),
         "review_model_priority": list(analysis_kwargs.get("review_model_priority", []) or []),
         "branch_model": str(analysis_kwargs.get("agent_model", "")),
         "master_model": str(analysis_kwargs.get("master_model", "")),
@@ -1774,6 +1801,18 @@ def run_market_analysis(
             for symbol, packet in symbol_packets.items()
         },
         "shortlist": [item.to_dict() for item in shortlist],
+        "bayesian_shortlist_symbols": [item.symbol for item in shortlist],
+        "bayesian_record_count": len(bayesian_records),
+        "funnel_candidates_count": (
+            len(getattr(funnel_output, "candidates", []) or [])
+            if funnel_output is not None
+            else 0
+        ),
+        "funnel_excluded_count": (
+            len(getattr(funnel_output, "excluded_symbols", {}) or {})
+            if funnel_output is not None
+            else 0
+        ),
         "portfolio_decision": portfolio_decision.to_dict(),
         "review_bundle": review_bundle.to_dict() if hasattr(review_bundle, "to_dict") else {},
         "ic_hints_by_symbol": dict(review_bundle.ic_hints_by_symbol if review_bundle else {}),
@@ -1782,7 +1821,7 @@ def run_market_analysis(
         "report_protocol_version": str(review_bundle.report_protocol_version if review_bundle else ""),
         "bayesian_records": [
             record.to_dict() if hasattr(record, "to_dict") else dict(record)
-            for record in dag_artifacts.get("bayesian_records", [])
+            for record in bayesian_records
         ],
         "funnel_summary": dict(dag_artifacts.get("funnel_summary", {})),
         "branch_summaries": {

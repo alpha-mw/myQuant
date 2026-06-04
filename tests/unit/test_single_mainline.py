@@ -88,10 +88,10 @@ def _make_verdict(
 
 def _make_research_by_symbol(symbols: list[str]) -> dict[str, dict[str, BranchVerdict]]:
     branch_scores = {
-        "kline": 0.62,
         "quant": 0.58,
         "fundamental": 0.66,
         "intelligence": 0.41,
+        "macro": 0.22,
     }
     return {
         symbol: {
@@ -104,7 +104,6 @@ def _make_research_by_symbol(symbols: list[str]) -> dict[str, dict[str, BranchVe
 
 def _make_branch_results(symbols: list[str]) -> dict[str, BranchResult]:
     branch_scores = {
-        "kline": 0.62,
         "quant": 0.58,
         "fundamental": 0.66,
         "intelligence": 0.41,
@@ -259,6 +258,31 @@ def test_control_chain_is_deterministic_for_identical_inputs():
     assert first["portfolio_plan"] == second["portfolio_plan"]
     assert first["portfolio_plan"].metadata["deterministic"] is True
     assert first["report_bundle"].portfolio_plan == second["report_bundle"].portfolio_plan
+
+
+def test_control_chain_filters_legacy_kline_research_input():
+    orchestrator = AgentOrchestrator()
+    research_by_symbol = _make_research_by_symbol(["000001.SZ"])
+    research_by_symbol["000001.SZ"]["kline"] = _make_verdict(
+        "KlineAgent",
+        0.99,
+        0.99,
+        symbol="000001.SZ",
+    )
+
+    result = orchestrator.run_with_structured_research(
+        data_bundle=_make_data_bundle(["000001.SZ"]),
+        macro_verdict=_make_macro_verdict(),
+        research_by_symbol=research_by_symbol,
+        constraints={},
+        existing_portfolio={"current_weights": {}},
+        tradability_snapshot={},
+        ic_hints_by_symbol={},
+        persist_outputs=False,
+    )
+
+    assert "kline" not in result["research_by_symbol"]["000001.SZ"]
+    assert "kline" not in result["report_bundle"].branch_verdicts
 
 
 def test_precomputed_research_bridge_reuses_macro_branch_context_without_second_macro_run(monkeypatch):

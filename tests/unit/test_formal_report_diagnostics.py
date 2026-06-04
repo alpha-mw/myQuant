@@ -242,7 +242,7 @@ def test_collect_warnings_distinguishes_provider_and_snapshot_missing():
     assert any(item.affected_symbol == "BBB.SH" for item in snapshot)
 
 
-def test_collect_warnings_for_placeholder_and_retired_signal():
+def test_collect_warnings_for_retired_intelligence_signal():
     warnings = collect_formal_report_warnings(
         target_date="20260424",
         dominant_local_snapshot_date="20260424",
@@ -252,14 +252,6 @@ def test_collect_warnings_for_placeholder_and_retired_signal():
         branch_diagnostics={
             "AAA.SH": {
                 "reviewed_branch_verdicts": {
-                    "kline": {
-                        "metadata": {
-                            "evaluator_name": "placeholder_llm_reviewer",
-                            "llm_ready": False,
-                            "model_components": {"chronos": {"runtime_mode": "error_fallback"}},
-                        },
-                        "diagnostic_notes": ["fallback path engaged"],
-                    },
                     "intelligence": {
                         "metadata": {"branch_mode": "structured_intelligence_fusion"},
                         "coverage_notes": ["legacy batch retired"],
@@ -271,7 +263,6 @@ def test_collect_warnings_for_placeholder_and_retired_signal():
     )
 
     codes = [item.code for item in warnings]
-    assert "placeholder_kline_evaluator" in codes
     assert "retired_signal_suppressed" in codes
     assert "provider_missing" not in codes
 
@@ -282,8 +273,8 @@ def test_reconcile_branch_vs_final_requires_arbitration_on_structured_conflict()
         provisional_final_label="继续持有",
         holding_review={"llm_action": "hold", "recommended_action": "继续持有"},
         branch_signals={
-            "branch_overlays": {"kline": {"action": "sell"}},
-            "reviewed_branch_verdicts": {"kline": {"action": "sell"}},
+            "branch_overlays": {"quant": {"action": "sell"}},
+            "reviewed_branch_verdicts": {"quant": {"action": "sell"}},
         },
         warnings=[],
     )
@@ -315,7 +306,7 @@ def test_healthy_evidence_keeps_clean_label():
         warnings=warnings,
         provisional_label_by_symbol={"AAA.SH": "继续持有"},
         data_date_by_symbol={"AAA.SH": "20260424"},
-        branch_signals_by_symbol={"AAA.SH": {"reviewed_branch_verdicts": {"kline": {"action": "hold"}}}},
+        branch_signals_by_symbol={"AAA.SH": {"reviewed_branch_verdicts": {"quant": {"action": "hold"}}}},
     )
     guardrail = apply_report_decision_guardrail(
         provisional_label="no_action",

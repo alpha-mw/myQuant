@@ -14,7 +14,7 @@
   RANGE_HIGH_VOL  震荡高波
 
 不同状态下的建议参数调整：
-  TREND_BULL:      K线分析权重 ↑，止损放宽（0.10），再平衡频率：周
+  TREND_BULL:      量化/情报权重 ↑，止损放宽（0.10），再平衡频率：周
   TREND_BEAR:      全面降仓（仓位上限 40%），止损收紧（0.05），现金优先
   RANGE_LOW_VOL:   Quant/Intelligence 权重 ↑，均值回归策略，再平衡频率：月
   RANGE_HIGH_VOL:  降仓（仓位上限 60%），风险平价权重，再平衡频率：周
@@ -59,15 +59,15 @@ _REGIME_PARAMS: dict[MarketRegime, RegimeParams] = {
         max_position=0.90,
         stop_loss_pct=-0.10,
         rebalance_freq="W",
-        branch_weight_adjustments={"kline": 1.5, "quant": 0.9, "macro": 1.1},
-        description="趋势上涨市：K线分析权重上调，止损放宽至 10%，每周再平衡",
+        branch_weight_adjustments={"quant": 1.2, "intelligence": 1.1, "macro": 1.1},
+        description="趋势上涨市：量化与情报权重上调，止损放宽至 10%，每周再平衡",
     ),
     MarketRegime.TREND_BEAR: RegimeParams(
         regime=MarketRegime.TREND_BEAR,
         max_position=0.40,
         stop_loss_pct=-0.05,
         rebalance_freq="W",
-        branch_weight_adjustments={"kline": 1.3, "macro": 1.5, "fundamental": 0.7},
+        branch_weight_adjustments={"macro": 1.5, "fundamental": 0.7, "quant": 0.9},
         description="趋势下跌市：仓位上限 40%，止损收紧至 5%，宏观权重上调",
     ),
     MarketRegime.RANGE_LOW_VOL: RegimeParams(
@@ -75,7 +75,7 @@ _REGIME_PARAMS: dict[MarketRegime, RegimeParams] = {
         max_position=0.85,
         stop_loss_pct=-0.08,
         rebalance_freq="M",
-        branch_weight_adjustments={"quant": 1.3, "intelligence": 1.2, "kline": 0.7},
+        branch_weight_adjustments={"quant": 1.3, "intelligence": 1.2, "fundamental": 1.1},
         description="震荡低波市：因子选股权重上调，每月再平衡降低摩擦成本",
     ),
     MarketRegime.RANGE_HIGH_VOL: RegimeParams(
@@ -83,7 +83,7 @@ _REGIME_PARAMS: dict[MarketRegime, RegimeParams] = {
         max_position=0.60,
         stop_loss_pct=-0.07,
         rebalance_freq="W",
-        branch_weight_adjustments={"macro": 1.4, "quant": 1.1, "kline": 0.8},
+        branch_weight_adjustments={"macro": 1.4, "quant": 1.1, "intelligence": 0.9},
         description="震荡高波市：仓位上限 60%，宏观权重上调，风险平价仓位",
     ),
 }
