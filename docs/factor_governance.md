@@ -723,6 +723,40 @@ records are skipped by design. If the registry has no selectable
 `production_factor`, the DAG quant branch and standalone `QuantAgent` fall back
 to the legacy `short_term_return` / `volatility_penalty` deterministic proxy.
 
+## A_quant Expression Retest Bridge
+
+Use `scripts/retest_aquant_alpha_mix_8gate.py` to retest A_quant
+`alpha_mix_vwap*_ocfprofit_*` candidates on the myQuant data layer. The runner
+loads A_quant `audit_extended/ready_factors.json` and
+`independent_ready_subset.json`, computes the expression runtime locally, and
+feeds the resulting metrics into the existing `FactorGateEvaluator`. It writes
+review evidence under `reports/factor_governance/aquant_alpha_mix_retest_*` and
+does not modify `quant_investor/factor_registry/mined_factors.json`.
+
+The runtime implementation string for this bridge is
+`aquant_expression:<factor_name>`. It is only consumed by the normal mined-factor
+runtime when the registry record is already a selectable `production_factor`
+with all eight gates passed. `paper_factor`, `research_candidate`, and
+`production_candidate` records remain skipped.
+
+`fin_ocf_to_profit` is loaded from the source-backed PIT helper at
+`quant_investor.factors.pit_fundamentals`. The canonical CSV is
+`data/metadata/fundamental_pit_series.csv` with fixed columns:
+
+```text
+ts_code, report_period, availability_date, metric_name, value, source,
+fetched_at, raw_table, raw_field
+```
+
+For Tushare `income` and `cashflow`, `availability_date` is
+`f_ann_date || ann_date`. `fetched_at` is audit metadata only and is not treated
+as the historical availability date when announcement dates exist. The derived
+metric is `n_cashflow_act / n_income`; zero or missing denominators produce
+`NaN`. Optional Tushare backfill is limited to this PIT financial coverage and
+must not call broker, LLM, or production registry writes. The retest runner
+applies per-request and total-elapsed provider timeouts; timeout or partial
+coverage is reported as a blocker rather than converted into an alpha verdict.
+
 The default registry is empty:
 
 ```json

@@ -30,6 +30,16 @@ class PortfolioConstructionState:
     portfolio_decision: PortfolioDecision
 
 
+def _is_codex_handoff_model_roles(model_roles: Any) -> bool:
+    metadata = dict(getattr(model_roles, "metadata", {}) or {})
+    return bool(
+        metadata.get("review_layer_mode") == "codex_handoff"
+        or metadata.get("codex_handoff_pending")
+        or getattr(model_roles, "resolved_master_model", "") == "codex-handoff"
+        or getattr(model_roles, "resolved_branch_model", "") == "codex-handoff"
+    )
+
+
 def _run_bayesian_selection_phase(
     *,
     candidate_symbols: list[str],
@@ -165,7 +175,11 @@ def _run_bayesian_selection_phase(
         top_k=top_k,
     )
 
-    if bool(getattr(model_roles, "agent_layer_enabled", False)):
+    codex_handoff_review = _is_codex_handoff_model_roles(model_roles)
+    if (
+        bool(getattr(model_roles, "agent_layer_enabled", False))
+        and not codex_handoff_review
+    ):
         portfolio_master_agent = master_agent_cls(
             llm_client=llm_client_cls(timeout=master_timeout),
             model=master_model_resolution.resolved_model,
@@ -182,6 +196,32 @@ def _run_bayesian_selection_phase(
             evidence_pack=evidence_pack,
             recall_context=recall_context,
         )
+    elif codex_handoff_review:
+        portfolio_master_output = None
+        portfolio_master_meta = {
+            "status": "codex_handoff_pending",
+            "reason": "local_llm_disabled_codex_handoff",
+            "review_layer_mode": "codex_handoff",
+            "codex_handoff_pending": True,
+            "final_conviction": "neutral",
+            "final_score": 0.0,
+            "confidence": 0.0,
+            "top_picks": [],
+            "portfolio_narrative": (
+                "Portfolio Master advisory packaged for Codex handoff; "
+                "deterministic pipeline continued."
+            ),
+            "risk_adjusted_exposure": float(
+                global_context.risk_budget.get("target_exposure", 0.0)
+            ),
+            "evidence_pack_token_count": int(
+                evidence_pack.get("trace_fragments", {})
+                .get("budget", {})
+                .get("token_count", 0)
+                or 0
+            ),
+            "evidence_pack": evidence_pack,
+        }
     else:
         portfolio_master_output = None
         portfolio_master_meta = {

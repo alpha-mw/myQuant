@@ -6,10 +6,146 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from quant_investor.branch_contracts import UnifiedDataBundle
+from quant_investor.branch_contracts import (
+    CorporateDocumentSnapshot,
+    ForecastSnapshot,
+    FundamentalSnapshot,
+    ManagementSnapshot,
+    OwnershipSnapshot,
+    UnifiedDataBundle,
+)
 from quant_investor.enhanced_data_layer import EnhancedDataLayer
 from quant_investor.fundamental_branch import FundamentalBranch
 from quant_investor.agents.base import BaseAgent
+
+
+def _has_value(value: Any) -> bool:
+    if value is None:
+        return False
+    try:
+        import pandas as pd
+
+        if pd.isna(value):
+            return False
+    except Exception:
+        pass
+    text = str(value).strip()
+    return bool(text) and text.lower() not in {"nan", "nat", "none"}
+
+
+def _float(value: Any, default: float = 0.0) -> float:
+    if not _has_value(value):
+        return default
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+class _BundleFundamentalDataLayer:
+    """PIT mart-backed data layer used only when bundle fundamentals exist."""
+
+    def __init__(self, records: Mapping[str, Mapping[str, Any]]) -> None:
+        self.records = {str(symbol): dict(payload) for symbol, payload in records.items()}
+
+    def _record(self, symbol: str) -> dict[str, Any]:
+        return dict(self.records.get(symbol, {}) or {})
+
+    def get_point_in_time_fundamental_snapshot(self, symbol: str, as_of: Any) -> FundamentalSnapshot:
+        row = self._record(symbol)
+        if not row:
+            return FundamentalSnapshot(
+                symbol=symbol,
+                as_of=str(as_of),
+                available=False,
+                source="disabled",
+                data_quality={"provider_missing": False, "snapshot_missing": True, "missing_scope": "symbol"},
+            )
+        source = str(row.get("source") or "local_fundamental_mart")
+        return FundamentalSnapshot(
+            symbol=symbol,
+            as_of=str(as_of or row.get("trade_date", "")),
+            available=True,
+            source=source,
+            publish_time=str(row.get("availability_date", "")),
+            effective_time=str(row.get("trade_date", "")),
+            revision_id=str(row.get("source_version", "")),
+            roe=_float(row.get("fin_roe")),
+            roa=_float(row.get("fin_roa")),
+            profit_growth=_float(row.get("fin_net_profit_yoy")),
+            debt_ratio=_float(row.get("fin_debt_to_assets")),
+            cash_flow=_float(row.get("fin_ocf_to_profit")),
+            pe=_float(row.get("pe")),
+            pb=_float(row.get("pb")),
+            ps=_float(row.get("ps")),
+            data_quality={
+                "status": "provider_snapshot",
+                "provider_missing": False,
+                "snapshot_missing": False,
+                "missing_scope": "",
+                "pit_status": "point_in_time",
+                "source_priority": row.get("source_priority", "tushare_primary"),
+            },
+            provenance={
+                "source": source,
+                "source_priority": row.get("source_priority", "tushare_primary"),
+                "availability_date": row.get("availability_date", ""),
+            },
+        )
+
+    def get_earnings_forecast_snapshot(self, symbol: str, as_of: Any) -> ForecastSnapshot:
+        row = self._record(symbol)
+        if not row or not _has_value(row.get("forecast_revision")):
+            return ForecastSnapshot(
+                symbol=symbol,
+                as_of=str(as_of),
+                available=False,
+                source="disabled",
+                provider="local_fundamental_mart",
+                data_quality={"provider_missing": False, "snapshot_missing": True, "missing_scope": "symbol"},
+            )
+        source = str(row.get("source") or "local_fundamental_mart")
+        return ForecastSnapshot(
+            symbol=symbol,
+            as_of=str(as_of or row.get("trade_date", "")),
+            available=True,
+            source=source,
+            provider=source,
+            forecast_revision=_float(row.get("forecast_revision")),
+            eps_growth=_float(row.get("eps_growth")),
+            revenue_growth_forecast=_float(row.get("revenue_growth_forecast")),
+            coverage_count=int(_float(row.get("forecast_coverage_count"), 1.0)),
+            confidence=0.55,
+            data_quality={"status": "provider_snapshot", "provider_missing": False, "missing_scope": ""},
+            provenance={"source": source, "source_priority": row.get("source_priority", "tushare_primary")},
+        )
+
+    def get_management_snapshot(self, symbol: str, as_of: Any) -> ManagementSnapshot:
+        return ManagementSnapshot(
+            symbol=symbol,
+            as_of=str(as_of),
+            available=False,
+            source="disabled",
+            data_quality={"provider_missing": False, "snapshot_missing": True, "missing_scope": "global"},
+        )
+
+    def get_ownership_snapshot(self, symbol: str, as_of: Any) -> OwnershipSnapshot:
+        return OwnershipSnapshot(
+            symbol=symbol,
+            as_of=str(as_of),
+            available=False,
+            source="disabled",
+            data_quality={"provider_missing": False, "snapshot_missing": True, "missing_scope": "global"},
+        )
+
+    def get_document_semantic_snapshot(self, symbol: str, as_of: Any) -> CorporateDocumentSnapshot:
+        return CorporateDocumentSnapshot(
+            symbol=symbol,
+            as_of=str(as_of),
+            available=False,
+            source="disabled",
+            data_quality={"provider_missing": False, "snapshot_missing": True, "missing_scope": "global"},
+        )
 
 
 class FundamentalAgent(BaseAgent):
@@ -26,10 +162,18 @@ class FundamentalAgent(BaseAgent):
         stock_pool = list(envelope.get("stock_pool") or data_bundle.symbols)
         data_layer = envelope.get("data_layer")
         if data_layer is None:
-            data_layer = EnhancedDataLayer(
-                market=str(envelope.get("market", data_bundle.market or "CN")),
-                verbose=bool(envelope.get("verbose", False)),
-            )
+            mart_records = {
+                symbol: payload
+                for symbol, payload in dict(data_bundle.fundamentals or {}).items()
+                if isinstance(payload, Mapping) and payload
+            }
+            if mart_records:
+                data_layer = _BundleFundamentalDataLayer(mart_records)
+            else:
+                data_layer = EnhancedDataLayer(
+                    market=str(envelope.get("market", data_bundle.market or "CN")),
+                    verbose=bool(envelope.get("verbose", False)),
+                )
 
         branch = FundamentalBranch(
             data_layer=data_layer,

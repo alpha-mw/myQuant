@@ -7,7 +7,17 @@ from typing import Any, Callable, Mapping
 
 import pandas as pd
 
-from quant_investor.agent_protocol import ActionLabel, BranchVerdict, Direction, MasterICHint, StockReviewBundle, SymbolResearchPacket
+from quant_investor.agent_protocol import (
+    ActionLabel,
+    AgentStatus,
+    BranchOverlayVerdict,
+    BranchVerdict,
+    Direction,
+    MasterICHint,
+    ReviewTelemetry,
+    StockReviewBundle,
+    SymbolResearchPacket,
+)
 from quant_investor.agents.llm_client import LLMClient as GatewayLLMClient
 from quant_investor.agents.stock_reviewers import (
     BranchOverlayPacket,
@@ -47,6 +57,146 @@ def _direction_enum_from_score(score: float) -> Direction:
     if direction == "bearish":
         return Direction.BEARISH
     return Direction.NEUTRAL
+
+
+def _is_codex_handoff_review(
+    branch_model_resolution: ModelRoleResolution,
+    master_model_resolution: ModelRoleResolution,
+) -> bool:
+    metadata = {
+        **dict(branch_model_resolution.metadata or {}),
+        **dict(master_model_resolution.metadata or {}),
+    }
+    return bool(
+        metadata.get("review_layer_mode") == "codex_handoff"
+        or metadata.get("codex_handoff_pending")
+        or branch_model_resolution.resolved_model == "codex-handoff"
+        or master_model_resolution.resolved_model == "codex-handoff"
+    )
+
+
+def _build_codex_handoff_overlay(
+    packet: BranchOverlayPacket,
+    *,
+    model: str = "codex-handoff",
+) -> BranchOverlayVerdict:
+    """Create a neutral overlay record for Codex review."""
+
+    telemetry = ReviewTelemetry(
+        stage="review_branch_overlay",
+        model=model or "codex-handoff",
+        provider="codex",
+        success=False,
+        fallback=True,
+        fallback_reason="codex_handoff_pending",
+        score_delta=0.0,
+        confidence_delta=0.0,
+        metadata={
+            "actor_name": f"{packet.symbol}:{packet.branch_name}",
+            "codex_handoff_pending": True,
+            "review_layer_mode": "codex_handoff",
+        },
+    )
+    return BranchOverlayVerdict(
+        symbol=packet.symbol,
+        branch_name=packet.branch_name,
+        status=AgentStatus.DEGRADED,
+        thesis=(
+            packet.thesis
+            or f"{packet.symbol} {packet.branch_name} branch awaiting Codex review."
+        ),
+        direction=_direction_enum_from_score(float(packet.base_score)),
+        action=_score_to_action(float(packet.base_score)),
+        base_score=float(packet.base_score),
+        adjusted_score=float(packet.base_score),
+        base_confidence=float(packet.base_confidence),
+        adjusted_confidence=float(packet.base_confidence),
+        score_delta=0.0,
+        confidence_delta=0.0,
+        agreement_points=_dedupe_texts(list(packet.agreement_points)),
+        conflict_points=[],
+        missing_risks=[],
+        contradictions=[],
+        risk_flags=_dedupe_texts(list(packet.risk_points)),
+        telemetry=telemetry,
+        metadata={
+            **dict(packet.metadata or {}),
+            "model": model or "codex-handoff",
+            "stage": "review_branch_overlay",
+            "actor_name": f"{packet.symbol}:{packet.branch_name}",
+            "branch_name": packet.branch_name,
+            "symbol": packet.symbol,
+            "review_layer_mode": "codex_handoff",
+            "codex_handoff_pending": True,
+            "codex_review_packet": packet.to_dict(),
+        },
+    )
+
+
+def _build_codex_handoff_master(
+    packet: MasterSymbolPacket,
+    *,
+    model: str = "codex-handoff",
+) -> MasterICHint:
+    """Create a neutral master hint for Codex review."""
+
+    baseline_score = float(packet.baseline_score)
+    baseline_confidence = float(packet.baseline_confidence)
+    telemetry = ReviewTelemetry(
+        stage="review_master_symbol",
+        model=model or "codex-handoff",
+        provider="codex",
+        success=False,
+        fallback=True,
+        fallback_reason="codex_handoff_pending",
+        score_delta=0.0,
+        confidence_delta=0.0,
+        metadata={
+            "actor_name": f"IC:{packet.symbol}",
+            "codex_handoff_pending": True,
+            "review_layer_mode": "codex_handoff",
+        },
+    )
+    return MasterICHint(
+        symbol=packet.symbol,
+        status=AgentStatus.DEGRADED,
+        thesis=(
+            f"{packet.symbol} per-symbol master review awaiting Codex handoff."
+        ),
+        action=_score_to_action(baseline_score),
+        direction=_direction_enum_from_score(baseline_score),
+        score_hint=baseline_score,
+        confidence_hint=baseline_confidence,
+        score_delta=0.0,
+        confidence_delta=0.0,
+        agreement_points=["base branch verdicts packaged for Codex master review"],
+        conflict_points=[],
+        rationale_points=[
+            f"baseline_score={baseline_score:.3f}",
+            f"baseline_confidence={baseline_confidence:.3f}",
+        ],
+        risk_flags=_dedupe_texts(
+            [
+                str(item)
+                for item in packet.risk_summary.get("risk_flags", [])
+                if str(item).strip()
+            ]
+        ),
+        telemetry=telemetry,
+        metadata={
+            **dict(packet.metadata or {}),
+            "model": model or "codex-handoff",
+            "stage": "review_master_symbol",
+            "actor_name": f"IC:{packet.symbol}",
+            "symbol": packet.symbol,
+            "review_layer_mode": "codex_handoff",
+            "codex_handoff_pending": True,
+            "hard_veto": packet.hard_veto,
+            "baseline_score": baseline_score,
+            "baseline_confidence": baseline_confidence,
+            "codex_review_packet": packet.to_dict(),
+        },
+    )
 
 
 def _build_symbol_quant_verdict(
@@ -125,6 +275,8 @@ async def _run_candidate_research_phase(
     quant_result: BranchResult,
     ensure_branch_verdict: Callable[..., BranchVerdict],
     master_hint_to_ic_hint: Callable[[Any], dict[str, Any]],
+    branch_data_readiness: Mapping[str, Any] | None = None,
+    branch_data_payload: Mapping[str, Any] | None = None,
 ) -> CandidateResearchState:
     async def _research_symbol(
         symbol: str,
@@ -146,6 +298,8 @@ async def _run_candidate_research_phase(
             read_result=read_result,
             market=market,
             market_snapshot=market_snapshot,
+            branch_data_readiness=branch_data_readiness,
+            branch_data_payload=branch_data_payload,
         )
         branch_payload = {
             "data_bundle": bundle,
@@ -187,8 +341,16 @@ async def _run_candidate_research_phase(
             )
             return symbol, base_branch_verdicts, packet, None, {}, {}, [], []
 
-        review_llm = GatewayLLMClient(timeout=agent_timeout)
-        review_master_llm = GatewayLLMClient(timeout=master_timeout)
+        codex_handoff_review = _is_codex_handoff_review(
+            branch_model_resolution,
+            master_model_resolution,
+        )
+        if codex_handoff_review:
+            review_llm = None
+            review_master_llm = None
+        else:
+            review_llm = GatewayLLMClient(timeout=agent_timeout)
+            review_master_llm = GatewayLLMClient(timeout=master_timeout)
         branch_names = list(base_branch_verdicts.keys())
         branch_overlay_verdicts: dict[str, Any] = {}
         telemetry: list[Any] = []
@@ -213,22 +375,44 @@ async def _run_candidate_research_phase(
                     "macro_regime": str(macro_verdict.metadata.get("regime", "neutral")),
                     "data_quality_issue_count": len(read_result.issues),
                 },
-                metadata={"source_branch": branch_name, "symbol": symbol, "resolver": read_result.resolver_trace},
+                metadata={
+                    "source_branch": branch_name,
+                    "symbol": symbol,
+                    "resolver": read_result.resolver_trace,
+                    "review_layer_mode": (
+                        "codex_handoff"
+                        if codex_handoff_review
+                        else "local_llm"
+                    ),
+                },
             )
-            reviewer = BranchOverlayReviewer(
-                branch_name=branch_name,
-                llm_client=review_llm,
-                model=branch_model_resolution.resolved_model,
-                candidate_models=list(branch_candidate_models),
-                fallback_model=branch_model_resolution.fallback_model,
-                timeout=agent_timeout,
-                max_tokens=600,
-            )
-            overlay = await reviewer.review(overlay_packet)
+            if codex_handoff_review:
+                overlay = _build_codex_handoff_overlay(
+                    overlay_packet,
+                    model=branch_model_resolution.resolved_model or "codex-handoff",
+                )
+            else:
+                reviewer = BranchOverlayReviewer(
+                    branch_name=branch_name,
+                    llm_client=review_llm,
+                    model=branch_model_resolution.resolved_model,
+                    candidate_models=list(branch_candidate_models),
+                    fallback_model=branch_model_resolution.fallback_model,
+                    timeout=agent_timeout,
+                    max_tokens=600,
+                )
+                overlay = await reviewer.review(overlay_packet)
             branch_overlay_verdicts[branch_name] = overlay
             telemetry.append(overlay.telemetry)
-            if overlay.telemetry.fallback and overlay.telemetry.fallback_reason:
-                fallback_reasons.append(f"{symbol}/{branch_name}: {overlay.telemetry.fallback_reason}")
+            if (
+                (not codex_handoff_review)
+                and overlay.telemetry.fallback
+                and overlay.telemetry.fallback_reason
+            ):
+                fallback_reasons.append(
+                    f"{symbol}/{branch_name}: "
+                    f"{overlay.telemetry.fallback_reason}"
+                )
 
         overlay_dicts = [overlay.to_dict() for overlay in branch_overlay_verdicts.values()]
         master_packet = MasterSymbolPacket(
@@ -251,21 +435,37 @@ async def _run_candidate_research_phase(
             baseline_score=float(fmean([item["adjusted_score"] for item in overlay_dicts]) if overlay_dicts else 0.0),
             baseline_confidence=float(fmean([item["adjusted_confidence"] for item in overlay_dicts]) if overlay_dicts else 0.0),
             hard_veto=bool(False),
-            metadata={"symbol": symbol, "resolver": read_result.resolver_trace},
+            metadata={
+                "symbol": symbol,
+                "resolver": read_result.resolver_trace,
+                "review_layer_mode": (
+                    "codex_handoff"
+                    if codex_handoff_review
+                    else "local_llm"
+                ),
+            },
         )
-        master_reviewer = MasterICAgent(
-            llm_client=review_master_llm,
-            model=master_model_resolution.resolved_model,
-            candidate_models=list(master_candidate_models),
-            fallback_model=master_model_resolution.fallback_model,
-            reasoning_effort=master_reasoning_effort,
-            timeout=master_timeout,
-            max_tokens=900,
-        )
-        master_hint = await master_reviewer.deliberate(master_packet)
+        if codex_handoff_review:
+            master_hint = _build_codex_handoff_master(
+                master_packet,
+                model=master_model_resolution.resolved_model or "codex-handoff",
+            )
+        else:
+            master_reviewer = MasterICAgent(
+                llm_client=review_master_llm,
+                model=master_model_resolution.resolved_model,
+                candidate_models=list(master_candidate_models),
+                fallback_model=master_model_resolution.fallback_model,
+                reasoning_effort=master_reasoning_effort,
+                timeout=master_timeout,
+                max_tokens=900,
+            )
+            master_hint = await master_reviewer.deliberate(master_packet)
         telemetry.append(master_hint.telemetry)
-        if master_hint.telemetry.fallback and master_hint.telemetry.fallback_reason:
+        if (not codex_handoff_review) and master_hint.telemetry.fallback and master_hint.telemetry.fallback_reason:
             fallback_reasons.append(f"{symbol}: {master_hint.telemetry.fallback_reason}")
+        if codex_handoff_review:
+            fallback_reasons.append(f"{symbol}: codex_handoff_pending")
 
         reviewed_branch_verdicts: dict[str, BranchVerdict] = {}
         for branch_name, base_verdict in base_branch_verdicts.items():
@@ -322,6 +522,17 @@ async def _run_candidate_research_phase(
                     "master_fallback_reason": master_model_resolution.fallback_reason,
                     "master_reasoning_effort": master_reasoning_effort,
                     "agent_layer_enabled": bool(enable_agent_layer),
+                    "review_layer_mode": (
+                        "codex_handoff"
+                        if codex_handoff_review
+                        else "local_llm"
+                    ),
+                    "codex_handoff_pending": bool(codex_handoff_review),
+                    "codex_handoff_packet_count": (
+                        (len(branch_names) + 1)
+                        if codex_handoff_review
+                        else 0
+                    ),
                     "universe_key": universe_key,
                     "symbol_count": len(candidate_symbols),
                     "resolver": read_result.resolver_trace,
@@ -341,6 +552,10 @@ async def _run_candidate_research_phase(
 
     symbol_research_packets: dict[str, SymbolResearchPacket] = {}
     research_by_symbol: dict[str, dict[str, BranchVerdict]] = {}
+    codex_handoff_review = bool(enable_agent_layer) and _is_codex_handoff_review(
+        branch_model_resolution,
+        master_model_resolution,
+    )
     review_bundle = StockReviewBundle(
         agent_name="StockReviewOrchestrator",
         metadata={
@@ -356,6 +571,17 @@ async def _run_candidate_research_phase(
             "master_fallback_reason": master_model_resolution.fallback_reason,
             "master_reasoning_effort": master_reasoning_effort,
             "agent_layer_enabled": bool(enable_agent_layer),
+            "review_layer_mode": (
+                "codex_handoff"
+                if codex_handoff_review
+                else ("local_llm" if enable_agent_layer else "disabled")
+            ),
+            "codex_handoff_pending": bool(codex_handoff_review),
+            "codex_handoff_packet_count": (
+                len(candidate_symbols) * 5
+                if codex_handoff_review
+                else 0
+            ),
             "universe_key": universe_key,
             "symbol_count": len(candidate_symbols),
             "resolver": dict(resolver_snapshot),

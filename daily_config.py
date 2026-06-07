@@ -36,7 +36,8 @@ DAILY_CONFIG = {
     "top_k": 20,                   # 最终精选股票数量
     "agent_timeout": 180.0,        # 单个 subagent 超时（秒）
     "master_timeout": 900.0,       # master agent 超时（秒）
-    "enable_agent_layer": False,   # 本地默认禁用 LLM review layer，交给 Codex 接管解释
+    # 进入 review layer；本地 LLM 禁用时生成 Codex handoff packets
+    "enable_agent_layer": True,
 
     # ── 数据下载 ────────────────────────────────────────────────────────────────
     "skip_download": False,        # False = 每次先检查并更新数据

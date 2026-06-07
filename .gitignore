@@ -70,6 +70,14 @@ htmlcov/
 
 # Directories with data/reports
 data/
+!quant_investor/data/
+quant_investor/data/*
+!quant_investor/data/**/
+!quant_investor/data/**/*.py
+!quant_investor/data/storage/
+quant_investor/data/storage/*
+!quant_investor/data/storage/csv_reader.py
+!quant_investor/data/storage/csv_store.py
 reports/
 models/
 cache/

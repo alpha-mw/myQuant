@@ -274,9 +274,99 @@ def _branch_payload_present(payload: Any) -> bool:
     return True
 
 
-def _branch_evidence_limited(payload: Any) -> bool:
+def _as_mapping(value: Any) -> dict[str, Any]:
+    return dict(value or {}) if isinstance(value, dict) else {}
+
+
+def _coerce_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _has_structured_evidence(payload: dict[str, Any]) -> bool:
+    evidence = payload.get("evidence")
+    if isinstance(evidence, list) and evidence:
+        return True
+    score = _coerce_float(payload.get("final_score", payload.get("score")))
+    confidence = _coerce_float(
+        payload.get("final_confidence", payload.get("confidence"))
+    )
+    return score is not None and confidence is not None and confidence >= 0.35
+
+
+def _average_mapping_ratio(values: Any) -> float | None:
+    if not isinstance(values, dict) or not values:
+        return None
+    ratios = [
+        max(0.0, min(1.0, float(value)))
+        for value in values.values()
+        if _coerce_float(value) is not None
+    ]
+    if not ratios:
+        return None
+    return float(sum(ratios) / len(ratios))
+
+
+def _quant_evidence_limited(payload: dict[str, Any]) -> bool:
+    metadata = _as_mapping(payload.get("metadata"))
+    factor_mode = str(metadata.get("factor_mode", "")).strip()
+    runtime = _as_mapping(metadata.get("mined_factor_runtime"))
+    factor_count = int(_coerce_float(runtime.get("factor_count")) or 0)
+    factors_used = runtime.get("factors_used")
+    applied = runtime.get("applied_to_score")
+    applied_to_score = (
+        bool(applied) if applied is not None else factor_count > 0
+    )
+    average_factor_coverage = _average_mapping_ratio(
+        runtime.get("factor_coverages")
+    )
+    if (
+        factor_mode == "legacy_proxy_fallback"
+        or factor_count <= 0
+        or not factors_used
+    ):
+        return True
+    if not applied_to_score:
+        return True
+    if average_factor_coverage is not None and average_factor_coverage < 0.80:
+        return True
+    return not _has_structured_evidence(payload)
+
+
+def _fundamental_evidence_limited(payload: dict[str, Any]) -> bool:
+    if not _has_structured_evidence(payload):
+        return True
+    data_quality = _as_mapping(payload.get("data_quality"))
+    coverage_ratio = _coerce_float(data_quality.get("coverage_ratio"))
+    if coverage_ratio is not None and coverage_ratio < 0.50:
+        return True
+    metadata = _as_mapping(payload.get("metadata"))
+    module_coverage = _as_mapping(metadata.get("module_coverage"))
+    if module_coverage:
+        active_modules = [
+            _as_mapping(item)
+            for item in module_coverage.values()
+            if _as_mapping(item).get("status") != "disabled_global"
+        ]
+        if active_modules:
+            covered = [
+                _coerce_float(item.get("coverage_ratio"))
+                for item in active_modules
+            ]
+            usable = [float(item) for item in covered if item is not None]
+            if usable and sum(usable) / len(usable) < 0.50:
+                return True
+    return False
+
+
+def _branch_evidence_limited(branch_name: str, payload: Any) -> bool:
     if not isinstance(payload, dict) or not payload:
         return False
+    status = str(payload.get("status", "")).strip().lower()
+    if status in {"error", "failed", "failure"}:
+        return True
     notes: list[str] = []
     for key in ("diagnostic_notes", "coverage_notes", "investment_risks"):
         raw = payload.get(key)
@@ -284,12 +374,14 @@ def _branch_evidence_limited(payload: Any) -> bool:
             notes.extend(str(item).lower() for item in raw)
         elif raw:
             notes.append(str(raw).lower())
-    metadata = dict(payload.get("metadata", {}) or {})
-    data_quality = dict(metadata.get("data_quality", {}) or {})
+    metadata = _as_mapping(payload.get("metadata"))
+    data_quality = _as_mapping(metadata.get("data_quality")) or _as_mapping(
+        payload.get("data_quality")
+    )
     coverage_ratio = data_quality.get("coverage_ratio")
     if coverage_ratio is not None:
         try:
-            if float(coverage_ratio) < 0.8:
+            if float(coverage_ratio) < 0.5:
                 return True
         except (TypeError, ValueError):
             pass
@@ -298,11 +390,18 @@ def _branch_evidence_limited(payload: Any) -> bool:
         "placeholder",
         "provider_missing",
         "snapshot_missing",
-        "coverage",
+        "runtime_error",
+        "compute_error",
+        "empty_factor_values",
         "证据不足",
-        "缺失",
     )
-    return any(any(marker in note for marker in limited_markers) for note in notes)
+    if any(any(marker in note for marker in limited_markers) for note in notes):
+        return True
+    if branch_name == "quant":
+        return _quant_evidence_limited(payload)
+    if branch_name == "fundamental":
+        return _fundamental_evidence_limited(payload)
+    return False
 
 
 def _build_dag_four_branch_compliance(
@@ -314,7 +413,11 @@ def _build_dag_four_branch_compliance(
     ordered_symbols = list(
         dict.fromkeys(
             [
-                *(str(symbol).strip().upper() for symbol in review_symbols if str(symbol).strip()),
+                *(
+                    str(symbol).strip().upper()
+                    for symbol in review_symbols
+                    if str(symbol).strip()
+                ),
                 *(
                     str(symbol).strip().upper()
                     for symbol in effective_local_holding_symbols
@@ -334,18 +437,41 @@ def _build_dag_four_branch_compliance(
             for branch_name in REQUIRED_DAG_BRANCHES
             if _branch_payload_present(reviewed.get(branch_name))
         ]
-        missing = [branch_name for branch_name in REQUIRED_DAG_BRANCHES if branch_name not in present]
+        missing = [
+            branch_name
+            for branch_name in REQUIRED_DAG_BRANCHES
+            if branch_name not in present
+        ]
         limited = [
             branch_name
             for branch_name in present
-            if _branch_evidence_limited(reviewed.get(branch_name))
+            if _branch_evidence_limited(branch_name, reviewed.get(branch_name))
         ]
         present_by_symbol[symbol] = present
         missing_by_symbol[symbol] = missing
         if limited:
             limited_by_symbol[symbol] = limited
 
-    complete = all(not missing for missing in missing_by_symbol.values()) if ordered_symbols else False
+    complete = (
+        all(not missing for missing in missing_by_symbol.values())
+        if ordered_symbols
+        else False
+    )
+    if complete and limited_by_symbol:
+        reason = (
+            "All required non-LLM DAG branches are materialized; "
+            "limited-evidence branches remain size caps."
+        )
+    elif complete:
+        reason = (
+            "All required non-LLM DAG branches are materialized with substantive "
+            "branch evidence; module-level coverage notes remain diagnostics only."
+        )
+    else:
+        reason = (
+            "Some required non-LLM DAG branches are not materialized in "
+            "reviewed_branch_verdicts."
+        )
     return {
         "required_branches": list(REQUIRED_DAG_BRANCHES),
         "status": "DAG四分支完整执行" if complete else "DAG四分支未完整执行",
@@ -355,11 +481,7 @@ def _build_dag_four_branch_compliance(
         "limited_evidence_branch_by_symbol": limited_by_symbol,
         "formal_review_symbols": list(review_symbols),
         "effective_local_holding_symbols": list(effective_local_holding_symbols),
-        "reason": (
-            "All required non-LLM DAG branches are materialized; limited-evidence branches remain size caps."
-            if complete
-            else "Some required non-LLM DAG branches are not materialized in reviewed_branch_verdicts."
-        ),
+        "reason": reason,
         "evidence_quality_adjustment": (
             "keep_limited_evidence_position_caps"
             if complete and limited_by_symbol

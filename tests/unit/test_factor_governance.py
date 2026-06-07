@@ -6,7 +6,10 @@ from quant_investor.factors.governance import (
     FactorRecord,
     GateResult,
 )
-from quant_investor.factors.runtime import MinedFactorRegistry, score_with_mined_factors
+from quant_investor.factors.runtime import (
+    MinedFactorRegistry,
+    score_with_mined_factors,
+)
 
 
 def _base_metrics(**overrides):
@@ -79,7 +82,10 @@ def test_all_gates_passed_becomes_production_candidate_not_production_factor():
 def test_initial_backtest_without_oos_stays_paper_factor():
     review = FactorGateEvaluator().evaluate(
         factor_name="paper_only",
-        metrics=_base_metrics(oos_positive_ratio=0.40, parameter_stability=False),
+        metrics=_base_metrics(
+            oos_positive_ratio=0.40,
+            parameter_stability=False,
+        ),
     )
     assert review.decision.value == "paper_factor"
     assert review.target_state == FactorLifecycleState.PAPER_FACTOR
@@ -87,7 +93,12 @@ def test_initial_backtest_without_oos_stays_paper_factor():
 
 def test_quant_runtime_only_consumes_production_factor_with_all_gates_passed():
     passed_gates = [
-        GateResult(gate_id=i, gate_key=f"gate_{i}", title=f"Gate {i}", passed=True)
+        GateResult(
+            gate_id=i,
+            gate_key=f"gate_{i}",
+            title=f"Gate {i}",
+            passed=True,
+        )
         for i in range(1, 9)
     ]
     production = FactorRecord(
@@ -106,9 +117,15 @@ def test_quant_runtime_only_consumes_production_factor_with_all_gates_passed():
     )
     dates = pd.date_range("2024-01-01", periods=80, freq="B")
     frames = {
-        "AAA": pd.DataFrame({"date": dates, "close": range(80), "volume": [1000] * 80}),
+        "AAA": pd.DataFrame(
+            {"date": dates, "close": range(80), "volume": [1000] * 80}
+        ),
         "BBB": pd.DataFrame(
-            {"date": dates, "close": list(reversed(range(80))), "volume": [1000] * 80}
+            {
+                "date": dates,
+                "close": list(reversed(range(80))),
+                "volume": [1000] * 80,
+            }
         ),
     }
     result = score_with_mined_factors(
@@ -122,7 +139,12 @@ def test_quant_runtime_only_consumes_production_factor_with_all_gates_passed():
 
 def test_quant_runtime_consumes_price_volume_production_factor():
     passed_gates = [
-        GateResult(gate_id=i, gate_key=f"gate_{i}", title=f"Gate {i}", passed=True)
+        GateResult(
+            gate_id=i,
+            gate_key=f"gate_{i}",
+            title=f"Gate {i}",
+            passed=True,
+        )
         for i in range(1, 9)
     ]
     production = FactorRecord(
@@ -151,8 +173,130 @@ def test_quant_runtime_consumes_price_volume_production_factor():
             }
         ),
     }
-    result = score_with_mined_factors(frames, registry=MinedFactorRegistry.from_records([production]))
+    result = score_with_mined_factors(
+        frames,
+        registry=MinedFactorRegistry.from_records([production]),
+    )
     assert result.factor_count == 1
     assert result.factors_used == ["pv_short_reversal_5d"]
     assert result.coverage_rate == 1.0
     assert result.symbol_scores["BBB"] > result.symbol_scores["AAA"]
+
+
+def test_quant_runtime_single_symbol_coverage_uses_factor_availability():
+    passed_gates = [
+        GateResult(
+            gate_id=i,
+            gate_key=f"gate_{i}",
+            title=f"Gate {i}",
+            passed=True,
+        )
+        for i in range(1, 9)
+    ]
+    production = FactorRecord(
+        name="pv_short_reversal_5d",
+        state=FactorLifecycleState.PRODUCTION_FACTOR,
+        implementation="price_volume:pv_short_reversal_5d",
+        weight=1.0,
+        gate_results=passed_gates,
+    )
+    dates = pd.date_range("2024-01-01", periods=80, freq="B")
+    frames = {
+        "AAA": pd.DataFrame(
+            {
+                "trade_date": dates,
+                "adj_close": list(range(100, 180)),
+                "vol": [1000] * 80,
+                "amount": [100_000] * 80,
+            }
+        ),
+    }
+
+    result = score_with_mined_factors(
+        frames,
+        registry=MinedFactorRegistry.from_records([production]),
+    )
+
+    assert result.factor_count == 1
+    assert result.factor_coverages["pv_short_reversal_5d"] == 1.0
+    assert result.coverage_rate == 1.0
+    assert result.to_metadata()["applied_to_score"] is True
+
+
+def test_quant_runtime_consumes_blended_price_volume_factor():
+    passed_gates = [
+        GateResult(
+            gate_id=i,
+            gate_key=f"gate_{i}",
+            title=f"Gate {i}",
+            passed=True,
+        )
+        for i in range(1, 9)
+    ]
+    production = FactorRecord(
+        name="pv_blend_volstab19x2_mom90_amihud5_w75",
+        state=FactorLifecycleState.PRODUCTION_FACTOR,
+        implementation=(
+            "price_volume:pv_blend_volstab19x2_mom90_amihud5_w75"
+        ),
+        weight=1.0,
+        gate_results=passed_gates,
+    )
+    dates = pd.date_range("2024-01-01", periods=130, freq="B")
+    frames = {
+        "AAA": pd.DataFrame(
+            {
+                "trade_date": dates,
+                "adj_close": list(range(100, 230)),
+                "vol": [1000 + (idx % 3) * 10 for idx in range(130)],
+                "amount": [100_000 + idx * 100 for idx in range(130)],
+            }
+        ),
+        "BBB": pd.DataFrame(
+            {
+                "trade_date": dates,
+                "adj_close": list(reversed(range(100, 230))),
+                "vol": [1800 + (idx % 5) * 30 for idx in range(130)],
+                "amount": [160_000 + idx * 80 for idx in range(130)],
+            }
+        ),
+        "CCC": pd.DataFrame(
+            {
+                "trade_date": dates,
+                "adj_close": [120 + (idx % 20) for idx in range(130)],
+                "vol": [1400 + (idx % 11) * 40 for idx in range(130)],
+                "amount": [130_000 + idx * 90 for idx in range(130)],
+            }
+        ),
+    }
+
+    result = score_with_mined_factors(
+        frames,
+        registry=MinedFactorRegistry.from_records([production]),
+    )
+
+    assert result.factor_count == 1
+    assert result.factors_used == ["pv_blend_volstab19x2_mom90_amihud5_w75"]
+    assert (
+        result.factor_coverages["pv_blend_volstab19x2_mom90_amihud5_w75"]
+        == 1.0
+    )
+    assert set(result.symbol_scores) == {"AAA", "BBB", "CCC"}
+
+
+def test_default_registry_includes_promoted_blend_factors():
+    registry = MinedFactorRegistry.load()
+    selectable = {
+        factor.name: factor
+        for factor in registry.selectable_factors()
+    }
+
+    for name in [
+        "pv_blend_volstab19x2_mom90_amihud5_w75",
+        "pv_blend_volstab19x2_mom90_amihud5_w70",
+    ]:
+        factor = selectable[name]
+        assert factor.state == FactorLifecycleState.PRODUCTION_FACTOR
+        assert factor.weight != 0.0
+        assert factor.all_gates_passed()
+        assert factor.implementation == f"price_volume:{name}"

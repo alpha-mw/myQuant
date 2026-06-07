@@ -50,7 +50,7 @@ class _RequestBudgetAwareBranchAgent:
     async def analyze(self, agent_input):
         self.observed_timeouts[self.branch_name] = float(self.llm_client.timeout)
         self.observed_max_tokens[self.branch_name] = int(self.max_tokens)
-        required_timeout = 40.0 if self.branch_name == "kline" else 5.0
+        required_timeout = 5.0
         if float(self.llm_client.timeout) < required_timeout:
             raise orchestrator_module.asyncio.TimeoutError()
         return BaseBranchAgentOutput(
@@ -127,7 +127,7 @@ def test_review_layer_budget_allows_slow_branch_agents(monkeypatch):
     assert result.agent_layer_success is True
 
 
-def test_kline_branch_uses_extended_request_budget(monkeypatch):
+def test_v13_four_branch_request_budget_uses_current_branch_order(monkeypatch):
     monkeypatch.setattr(orchestrator_module, "has_any_provider", lambda: True)
     monkeypatch.setattr(orchestrator_module, "has_provider_for_model", lambda _model: True)
 
@@ -167,8 +167,8 @@ def test_kline_branch_uses_extended_request_budget(monkeypatch):
         algorithmic_strategy=None,
     )
 
-    assert _RequestBudgetAwareBranchAgent.observed_timeouts["kline"] == 45.0
-    assert _RequestBudgetAwareBranchAgent.observed_max_tokens["kline"] == 600
+    assert set(_RequestBudgetAwareBranchAgent.observed_timeouts) == set(CURRENT_BRANCH_ORDER)
     assert _RequestBudgetAwareBranchAgent.observed_timeouts["quant"] == 30.0
-    assert result.branch_agent_outputs["kline"] is not None
+    assert _RequestBudgetAwareBranchAgent.observed_max_tokens["quant"] == 800
+    assert result.branch_agent_outputs["quant"] is not None
     assert result.agent_layer_success is True

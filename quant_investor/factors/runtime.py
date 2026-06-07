@@ -93,12 +93,23 @@ class RuntimeFactorScore:
 
     @property
     def coverage_rate(self) -> float:
+        if self.factor_coverages:
+            values = [
+                max(0.0, min(1.0, float(value)))
+                for value in self.factor_coverages.values()
+            ]
+            return float(sum(values) / max(len(values), 1))
         if not self.symbol_scores:
             return 0.0
-        non_zero = sum(1 for value in self.symbol_scores.values() if abs(float(value)) > 1e-12)
+        non_zero = sum(
+            1
+            for value in self.symbol_scores.values()
+            if abs(float(value)) > 1e-12
+        )
         return non_zero / max(len(self.symbol_scores), 1)
 
     def to_metadata(self) -> dict[str, Any]:
+        applied_to_score = bool(self.factor_count > 0 and self.factors_used)
         return {
             "factor_count": self.factor_count,
             "factors_used": list(self.factors_used),
@@ -106,6 +117,12 @@ class RuntimeFactorScore:
             "factor_coverages": dict(self.factor_coverages),
             "skipped_factors": dict(self.skipped_factors),
             "coverage_rate": self.coverage_rate,
+            "applied_to_score": applied_to_score,
+            "score_weight": float(
+                sum(abs(float(weight)) for weight in self.factor_weights.values())
+            )
+            if applied_to_score
+            else 0.0,
             "registry": dict(self.registry_metadata),
         }
 
@@ -189,6 +206,8 @@ class MinedFactorScorer:
             return self._alpha_mining_factor(impl.split(":", 1)[1], frames)
         if impl.startswith("price_volume:"):
             return self._price_volume_factor(impl.split(":", 1)[1], frames)
+        if impl.startswith("aquant_expression:"):
+            return self._aquant_expression_factor(factor, impl.split(":", 1)[1], frames)
         if impl.startswith("builtin:"):
             return self._builtin_factor(impl.split(":", 1)[1], frames)
         # Backward-compatible convention: a registry factor named like a
@@ -221,6 +240,29 @@ class MinedFactorScorer:
         from quant_investor.factors.price_volume import compute_price_volume_factor
 
         return compute_price_volume_factor(name, frames)
+
+    @staticmethod
+    def _aquant_expression_factor(
+        factor: FactorRecord,
+        name: str,
+        frames: Mapping[str, pd.DataFrame],
+    ) -> pd.Series:
+        from quant_investor.factors.aquant_expression import compute_aquant_expression_factor
+
+        expression = str(factor.metadata.get("expression", "") or "").strip()
+        metadata_dir = factor.metadata.get("metadata_dir")
+        pit_series_path = factor.metadata.get("pit_series_path")
+        fundamental_mart_root = factor.metadata.get("fundamental_mart_root")
+        allow_legacy_fundamental_fallback = factor.metadata.get("allow_legacy_fundamental_fallback")
+        return compute_aquant_expression_factor(
+            str(name or factor.name),
+            frames,
+            expression=expression,
+            metadata_dir=metadata_dir,
+            pit_series_path=pit_series_path,
+            fundamental_mart_root=fundamental_mart_root,
+            allow_legacy_fundamental_fallback=allow_legacy_fundamental_fallback,
+        )
 
     @staticmethod
     def _builtin_factor(name: str, frames: Mapping[str, pd.DataFrame]) -> pd.Series:

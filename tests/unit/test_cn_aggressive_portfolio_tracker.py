@@ -406,6 +406,163 @@ def test_build_dag_four_branch_compliance_marks_complete_when_all_branches_prese
     assert result["missing_branch_by_symbol"]["601869.SH"] == []
 
 
+def test_dag_compliance_does_not_mark_governed_quant_limited():
+    branch_signals = {
+        "688519.SH": {
+            "reviewed_branch_verdicts": {
+                "quant": {
+                    "status": "success",
+                    "final_score": 0.0,
+                    "final_confidence": 0.58,
+                    "evidence": [],
+                    "coverage_notes": [
+                        "symbols=1",
+                        "production_factors=14",
+                        "factor_coverage=100.00%",
+                    ],
+                    "investment_risks": [
+                        (
+                            "量化分支只消费 production_factor；"
+                            "paper/research 因子权重为 0 且不进入选股。"
+                        ),
+                        "mined_factor_coverage=100.00%",
+                    ],
+                    "diagnostic_notes": [
+                        "global_quant_branch_result",
+                        "mined_factor_registry_enforced",
+                    ],
+                    "metadata": {
+                        "factor_mode": "governed_mined_factors",
+                        "mined_factor_runtime": {
+                            "factor_count": 14,
+                            "factors_used": ["pv_volume_stability_15d"],
+                            "factor_coverages": {
+                                "pv_volume_stability_15d": 1.0,
+                            },
+                            "applied_to_score": True,
+                            "score_weight": 0.05,
+                        },
+                    },
+                },
+                "fundamental": {"status": "success"},
+                "intelligence": {"status": "success"},
+                "macro": {"status": "success"},
+            }
+        }
+    }
+
+    result = tracker._build_dag_four_branch_compliance(
+        review_symbols=["688519.SH"],
+        effective_local_holding_symbols=[],
+        branch_signals_by_symbol=branch_signals,
+    )
+
+    assert "quant" not in result["limited_evidence_branch_by_symbol"].get(
+        "688519.SH", []
+    )
+
+
+def test_dag_compliance_does_not_mark_substantive_fundamental_notes_limited():
+    branch_signals = {
+        "688519.SH": {
+            "reviewed_branch_verdicts": {
+                "quant": {
+                    "status": "success",
+                    "final_score": 0.1,
+                    "final_confidence": 0.5,
+                },
+                "fundamental": {
+                    "status": "success",
+                    "final_score": 0.35,
+                    "final_confidence": 0.695,
+                    "evidence": [{"summary": "FundamentalAgent evidence"}],
+                    "coverage_notes": [
+                        "盈利预测 全局不可用，已从评分分母剔除（0/1 标的）。",
+                        "估值 当前覆盖 0/1 标的，缺失部分仅计入覆盖说明。",
+                    ],
+                    "metadata": {
+                        "module_coverage": {
+                            "financial_quality": {
+                                "status": "active",
+                                "coverage_ratio": 1.0,
+                            },
+                            "forecast_revision": {
+                                "status": "disabled_global",
+                                "coverage_ratio": 0.0,
+                            },
+                            "valuation": {
+                                "status": "active",
+                                "coverage_ratio": 0.0,
+                            },
+                            "management_governance": {
+                                "status": "active",
+                                "coverage_ratio": 1.0,
+                            },
+                            "ownership": {
+                                "status": "active",
+                                "coverage_ratio": 1.0,
+                            },
+                            "document_semantics": {
+                                "status": "disabled_global",
+                                "coverage_ratio": 0.0,
+                            },
+                        },
+                    },
+                },
+                "intelligence": {"status": "success"},
+                "macro": {"status": "success"},
+            }
+        }
+    }
+
+    result = tracker._build_dag_four_branch_compliance(
+        review_symbols=["688519.SH"],
+        effective_local_holding_symbols=[],
+        branch_signals_by_symbol=branch_signals,
+    )
+
+    assert "fundamental" not in result["limited_evidence_branch_by_symbol"].get(
+        "688519.SH", []
+    )
+
+
+def test_dag_compliance_keeps_legacy_quant_proxy_limited():
+    branch_signals = {
+        "688519.SH": {
+            "reviewed_branch_verdicts": {
+                "quant": {
+                    "status": "success",
+                    "final_score": 0.0,
+                    "final_confidence": 0.5,
+                    "diagnostic_notes": [
+                        "legacy_proxy_fallback",
+                        "mined_factor_registry_empty_or_not_selectable",
+                    ],
+                    "metadata": {
+                        "factor_mode": "legacy_proxy_fallback",
+                        "mined_factor_runtime": {
+                            "factor_count": 0,
+                            "factors_used": [],
+                            "applied_to_score": False,
+                        },
+                    },
+                },
+                "fundamental": {"status": "success"},
+                "intelligence": {"status": "success"},
+                "macro": {"status": "success"},
+            }
+        }
+    }
+
+    result = tracker._build_dag_four_branch_compliance(
+        review_symbols=["688519.SH"],
+        effective_local_holding_symbols=[],
+        branch_signals_by_symbol=branch_signals,
+    )
+
+    assert "quant" in result["limited_evidence_branch_by_symbol"]["688519.SH"]
+
+
 def test_run_tracker_invokes_unified_review_mainline(monkeypatch, tmp_path):
     ledger = pd.DataFrame(
         [

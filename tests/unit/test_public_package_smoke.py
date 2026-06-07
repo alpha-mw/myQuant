@@ -34,6 +34,77 @@ def test_cli_market_download_dispatches(monkeypatch):
     assert captured["categories"] == ["hs300"]
 
 
+def test_cli_market_fundamental_maintain_dispatches(monkeypatch):
+    captured = {}
+
+    def _fake_run_fundamental_maintenance(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli_main, "run_fundamental_maintenance", _fake_run_fundamental_maintenance)
+    cli_main.main(
+        [
+            "market",
+            "fundamental-maintain",
+            "--market",
+            "CN",
+            "--universes",
+            "hs300,zz500,zz1000",
+            "--years",
+            "5",
+            "--as-of",
+            "20240510",
+        ]
+    )
+
+    assert captured["market"] == "CN"
+    assert captured["universes"] == "hs300,zz500,zz1000"
+    assert captured["years"] == 5
+    assert captured["as_of"] == "20240510"
+    assert captured["allow_live"] is False
+
+
+def test_cli_market_data_governance_dispatches_local_read_only(monkeypatch):
+    captured = {}
+
+    def _fake_run_data_governance(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli_main, "run_data_governance", _fake_run_data_governance)
+    cli_main.main(
+        [
+            "market",
+            "data-governance",
+            "--market",
+            "CN",
+            "--category",
+            "full_a",
+            "--as-of",
+            "20240510",
+        ]
+    )
+
+    assert captured["market"] == "CN"
+    assert captured["categories"] == ["full_a"]
+    assert captured["as_of"] == "20240510"
+    assert captured["allow_live"] is False
+    assert captured["allow_public_fallback"] is False
+
+
+def test_datahub_public_sources_are_not_sourceless():
+    required = [
+        "quant_investor/data/hub.py",
+        "quant_investor/data/models.py",
+        "quant_investor/data/_registry.py",
+        "quant_investor/data/_tushare_client.py",
+        "quant_investor/data/sources/base.py",
+        "quant_investor/data/sources/tushare_cn.py",
+        "quant_investor/data/processing/cleaner.py",
+        "quant_investor/data/universe/cn_universe.py",
+    ]
+    root = Path(__file__).resolve().parents[2]
+    assert all((root / path).exists() for path in required)
+
+
 def test_cli_market_analyze_dispatches(monkeypatch):
     captured = {}
 

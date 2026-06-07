@@ -80,6 +80,7 @@ from quant_investor.market.dag.shortlist import _build_shortlist, _build_shortli
 from quant_investor.market.provider_health import detect_provider_health
 from quant_investor.market.shared_csv_reader import SharedCSVReader
 from quant_investor.market.us_market_cap_filter import USMarketCapFilter
+from quant_investor.llm_policy import llm_handoff_metadata, local_llm_disabled
 from quant_investor.llm_provider_priority import resolve_runtime_role_models
 from quant_investor.model_roles import ModelRoleResolution, resolve_model_role
 from quant_investor.reporting.run_artifacts import (
@@ -93,6 +94,35 @@ from quant_investor.data.universe.cn_universe import LOCAL_UNIVERSE_DIR
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, float(value)))
+
+
+def _codex_handoff_model_resolution(
+    *,
+    role: str,
+    primary_model: str,
+    fallback_model: str,
+) -> ModelRoleResolution:
+    metadata = {
+        **llm_handoff_metadata(),
+        "agent_layer_enabled": True,
+        "review_layer_mode": "codex_handoff",
+        "codex_handoff_pending": True,
+    }
+    return ModelRoleResolution(
+        role=role,
+        primary_model=primary_model,
+        fallback_model=fallback_model,
+        resolved_model="codex-handoff",
+        fallback_used=False,
+        fallback_reason=str(
+            metadata.get("handoff_reason")
+            or "local_llm_disabled_codex_handoff"
+        ),
+        provider_available=False,
+        fallback_provider_available=False,
+        metadata=metadata,
+    )
+
 
 def _load_company_name_map(market: str) -> dict[str, str]:
     if str(market or "").strip().upper() != "CN":
@@ -414,7 +444,19 @@ async def _execute_market_dag_async(
         if name and symbol not in company_name_map:
             company_name_map[symbol] = name
 
-    if enable_agent_layer:
+    codex_handoff_review = bool(enable_agent_layer) and local_llm_disabled()
+    if enable_agent_layer and codex_handoff_review:
+        branch_model_resolution = _codex_handoff_model_resolution(
+            role="branch",
+            primary_model=agent_model,
+            fallback_model=agent_fallback_model,
+        )
+        master_model_resolution = _codex_handoff_model_resolution(
+            role="master",
+            primary_model=master_model,
+            fallback_model=master_fallback_model,
+        )
+    elif enable_agent_layer:
         branch_model_resolution: ModelRoleResolution = resolve_model_role(
             role="branch",
             primary_model=agent_model,
@@ -508,6 +550,8 @@ async def _execute_market_dag_async(
         agent_timeout=agent_timeout,
         master_timeout=master_timeout,
         resolver_snapshot=context_state.resolver_snapshot,
+        branch_data_readiness=context_state.branch_data_readiness,
+        branch_data_payload=context_state.branch_data_payload,
         fundamental_agent=fundamental_agent,
         intelligence_agent=intelligence_agent,
         quant_result=quant_result,

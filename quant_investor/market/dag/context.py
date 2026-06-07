@@ -20,6 +20,11 @@ from quant_investor.market.dag.packets import (
     _frame_summary,
 )
 from quant_investor.market.data_quality import build_data_quality_diagnostics
+from quant_investor.market.branch_readiness import (
+    STATUS_BLOCK,
+    assess_branch_data_readiness,
+    write_branch_readiness_report,
+)
 from quant_investor.market.shared_csv_reader import SharedCSVReadResult, SharedCSVReader
 from quant_investor.llm_gateway import detect_provider
 from quant_investor.model_roles import ModelRoleResolution
@@ -45,11 +50,26 @@ class MarketContextState:
     model_roles: Any
     funnel_output: FunnelOutput
     resolver_snapshot: dict[str, Any] = field(default_factory=dict)
+    branch_data_readiness: dict[str, Any] = field(default_factory=dict)
+    branch_data_payload: dict[str, Any] = field(default_factory=dict)
 
 
 def _is_quarantined_read_result(read_result: Any) -> bool:
     issues = list(getattr(read_result, "issues", []) or [])
     return bool(issues)
+
+
+def _provider_label(resolution: ModelRoleResolution) -> str:
+    metadata = dict(resolution.metadata or {})
+    if (
+        metadata.get("review_layer_mode") == "codex_handoff"
+        or resolution.resolved_model == "codex-handoff"
+    ):
+        return "codex"
+    try:
+        return detect_provider(resolution.resolved_model)
+    except Exception:
+        return ""
 
 
 def _prepare_market_context(
@@ -311,6 +331,26 @@ def _prepare_market_context(
 
         global_context.universe_hash = hashlib.sha256(",".join(sorted(symbols)).encode("utf-8")).hexdigest()[:16]
 
+    role_metadata = {
+        "resolver": resolver_snapshot,
+        "data_quality_issue_count": len(data_quality_issues),
+        "agent_layer_enabled": bool(enable_agent_layer),
+        "provider_health": provider_health,
+        "ordered_review_models": {
+            "branch": list(branch_candidate_models),
+            "master": list(master_candidate_models),
+        },
+    }
+    for key, value in {
+        **dict(branch_model_resolution.metadata or {}),
+        **dict(master_model_resolution.metadata or {}),
+    }.items():
+        role_metadata.setdefault(str(key), value)
+    role_metadata.setdefault(
+        "review_layer_mode",
+        "local_llm" if enable_agent_layer else "disabled",
+    )
+
     model_roles = build_model_role_metadata(
         branch_model=branch_model_resolution.primary_model,
         master_model=master_model_resolution.primary_model,
@@ -319,8 +359,8 @@ def _prepare_market_context(
         resolved_branch_model=branch_model_resolution.resolved_model,
         resolved_master_model=master_model_resolution.resolved_model,
         master_reasoning_effort=master_reasoning_effort,
-        branch_provider=detect_provider(branch_model_resolution.resolved_model),
-        master_provider=detect_provider(master_model_resolution.resolved_model),
+        branch_provider=_provider_label(branch_model_resolution),
+        master_provider=_provider_label(master_model_resolution),
         branch_timeout=agent_timeout,
         master_timeout=master_timeout,
         agent_layer_enabled=bool(enable_agent_layer),
@@ -331,16 +371,7 @@ def _prepare_market_context(
         universe_key=universe_key,
         universe_size=len(symbols),
         universe_hash=global_context.universe_hash,
-        metadata={
-            "resolver": resolver_snapshot,
-            "data_quality_issue_count": len(data_quality_issues),
-            "agent_layer_enabled": bool(enable_agent_layer),
-            "provider_health": provider_health,
-            "ordered_review_models": {
-                "branch": list(branch_candidate_models),
-                "master": list(master_candidate_models),
-            },
-        },
+        metadata=role_metadata,
     )
 
     funnel = funnel_cls(
@@ -360,6 +391,49 @@ def _prepare_market_context(
     candidate_symbols = [symbol for symbol in funnel_output.candidates if symbol in researchable_symbols]
     if not candidate_symbols:
         candidate_symbols = list(researchable_symbols)
+    branch_governance_report = assess_branch_data_readiness(
+        frames=frames,
+        read_results=read_results,
+        candidate_symbols=candidate_symbols,
+        market=settings.market,
+        category=universe_key,
+        as_of=effective_latest_trade_date,
+    )
+    branch_governance_artifacts = write_branch_readiness_report(branch_governance_report)
+    branch_data_readiness = branch_governance_report.to_dict(include_branch_data=False)
+    branch_data_payload = dict(branch_governance_report.branch_data)
+    macro_ready = branch_governance_report.readiness.get("macro")
+    macro_blocked = bool(macro_ready and macro_ready.status == STATUS_BLOCK)
+    blocked_symbols = set(branch_governance_report.blocked_symbols)
+    for symbol in list(blocked_symbols):
+        if symbol in candidate_symbols:
+            funnel_output.excluded_symbols.setdefault(symbol, "branch_data_readiness_block")
+    if macro_blocked:
+        for symbol in candidate_symbols:
+            funnel_output.excluded_symbols.setdefault(symbol, "macro_data_readiness_block")
+        candidate_symbols = []
+    else:
+        candidate_symbols = [symbol for symbol in candidate_symbols if symbol not in blocked_symbols]
+    funnel_output.candidates = list(candidate_symbols)
+    funnel_output.candidate_scores = {
+        symbol: score
+        for symbol, score in dict(funnel_output.candidate_scores).items()
+        if symbol in set(candidate_symbols)
+    }
+    funnel_output.funnel_metadata = dict(funnel_output.funnel_metadata or {})
+    funnel_output.funnel_metadata.update(
+        {
+            "branch_data_governance_status": {
+                branch: readiness.status
+                for branch, readiness in branch_governance_report.readiness.items()
+            },
+            "branch_data_blocked_count": len(branch_governance_report.blocked_symbols),
+            "macro_data_readiness_block": macro_blocked,
+        }
+    )
+    if branch_data_payload.get("macro_data"):
+        market_snapshot.update(dict(branch_data_payload.get("macro_data") or {}))
+        global_context.macro_data.update(dict(branch_data_payload.get("macro_data") or {}))
     global_context.universe_tiers = {
         "total": list(all_symbols),
         "researchable": list(researchable_symbols),
@@ -376,6 +450,12 @@ def _prepare_market_context(
     )
     global_context.metadata["candidate_count"] = len(candidate_symbols)
     global_context.metadata["shortlistable_count"] = len(candidate_symbols)
+    global_context.metadata["branch_data_readiness"] = branch_data_readiness
+    global_context.metadata["branch_readiness_artifacts"] = branch_governance_artifacts
+    global_context.metadata["four_branch_fusion_blocked"] = macro_blocked
+    global_context.metadata["blocked_branch_symbols"] = list(branch_governance_report.blocked_symbols[:128])
+    global_context.metadata["quantifiable_universe_count"] = len(branch_governance_report.quantifiable_universe)
+    global_context.metadata["investable_universe_count"] = len(branch_governance_report.investable_universe)
     candidate_sector_counts: dict[str, int] = {}
     for symbol in candidate_symbols:
         sector = str(industry_map.get(symbol) or tradability_snapshot.get(symbol, {}).get("industry") or tradability_snapshot.get(symbol, {}).get("sector") or "").strip()
@@ -402,4 +482,6 @@ def _prepare_market_context(
         model_roles=model_roles,
         funnel_output=funnel_output,
         resolver_snapshot=resolver_snapshot,
+        branch_data_readiness=branch_data_readiness,
+        branch_data_payload=branch_data_payload,
     )

@@ -50,6 +50,22 @@ def run_market_backtest(**kwargs):
     return _run_market_backtest(**kwargs)
 
 
+def run_fundamental_maintenance(**kwargs):
+    from quant_investor.market.fundamental_mart import (
+        run_cn_fundamental_maintenance as _run_cn_fundamental_maintenance,
+    )
+
+    return _run_cn_fundamental_maintenance(**kwargs)
+
+
+def run_data_governance(**kwargs):
+    from quant_investor.market.data_governance import (
+        run_data_governance as _run_data_governance,
+    )
+
+    return _run_data_governance(**kwargs)
+
+
 def run_web_api(
     *,
     host: str | None = None,
@@ -229,6 +245,57 @@ def _build_parser() -> argparse.ArgumentParser:
     market_download.add_argument("--fail-on-incomplete", action="store_true")
     market_download.add_argument("--allowed-stale-symbols", nargs="*")
 
+    market_fundamental = market_subparsers.add_parser(
+        "fundamental-maintain",
+        help="维护独立 CN PIT fundamental mart，不影响日行情 maintain",
+    )
+    market_fundamental.add_argument("--market", required=True, choices=["CN"])
+    market_fundamental.add_argument(
+        "--universes",
+        default="hs300,zz500,zz1000",
+        help="逗号分隔的 universe 列表，默认 hs300,zz500,zz1000",
+    )
+    market_fundamental.add_argument("--years", type=int, default=5)
+    market_fundamental.add_argument("--as-of", default="")
+    market_fundamental.add_argument("--workers", type=int, default=4)
+    market_fundamental.add_argument("--raw-input-dir", default="")
+    market_fundamental.add_argument("--data-root", default="data/clean/cn_fundamental")
+    market_fundamental.add_argument(
+        "--snapshot-root",
+        default="data/cn_market_full/_snapshots/fundamental",
+    )
+    market_fundamental.add_argument("--reports-root", default="reports/fundamental_readiness")
+    market_fundamental.add_argument(
+        "--allow-live",
+        action="store_true",
+        help="显式允许调用 live provider；本地测试默认不使用",
+    )
+
+    market_data_governance = market_subparsers.add_parser(
+        "data-governance",
+        help="审计四分支数据 readiness，默认只读本地数据",
+    )
+    market_data_governance.add_argument("--market", required=True, choices=["CN"])
+    market_data_governance.add_argument(
+        "--category",
+        action="append",
+        dest="categories",
+        default=[],
+        help="可重复；默认 full_a",
+    )
+    market_data_governance.add_argument("--as-of", default="")
+    market_data_governance.add_argument("--output-dir", default="reports/branch_readiness")
+    market_data_governance.add_argument(
+        "--allow-live",
+        action="store_true",
+        help="显式允许调用 Tushare/live provider 补数",
+    )
+    market_data_governance.add_argument(
+        "--allow-public-fallback",
+        action="store_true",
+        help="显式允许公开结构化 fallback 补数；fallback 不伪装成 Tushare",
+    )
+
     market_analyze = market_subparsers.add_parser(
         "analyze",
         help="分析全市场",
@@ -405,6 +472,32 @@ def main(argv: list[str] | None = None) -> None:
             max_rounds=args.max_rounds,
             fail_on_incomplete=args.fail_on_incomplete,
             allowed_stale_symbols=args.allowed_stale_symbols,
+        )
+        return
+
+    if args.command == "market" and args.market_command == "fundamental-maintain":
+        run_fundamental_maintenance(
+            market=args.market,
+            universes=args.universes,
+            years=args.years,
+            as_of=args.as_of,
+            workers=args.workers,
+            data_root=args.data_root,
+            raw_snapshot_root=args.snapshot_root,
+            reports_root=args.reports_root,
+            raw_input_dir=args.raw_input_dir or None,
+            allow_live=args.allow_live,
+        )
+        return
+
+    if args.command == "market" and args.market_command == "data-governance":
+        run_data_governance(
+            market=args.market,
+            categories=args.categories or ["full_a"],
+            as_of=args.as_of,
+            output_dir=args.output_dir,
+            allow_live=args.allow_live,
+            allow_public_fallback=args.allow_public_fallback,
         )
         return
 

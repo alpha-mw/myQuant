@@ -9,6 +9,7 @@ from quant_investor.factors import evidence as _evidence
 from quant_investor.factors import execution_cost as _execution_cost
 from quant_investor.factors import expression as _expression
 from quant_investor.factors import governance as _governance
+from quant_investor.factors import health as _health
 from quant_investor.factors import library as _library
 from quant_investor.factors import matrix as _matrix
 from quant_investor.factors import metrics as _metrics
@@ -34,6 +35,7 @@ from quant_investor.factors.evidence import *  # noqa: F403
 from quant_investor.factors.expression import *  # noqa: F403
 from quant_investor.factors.execution_cost import *  # noqa: F403
 from quant_investor.factors.governance import *  # noqa: F403
+from quant_investor.factors.health import *  # noqa: F403
 from quant_investor.factors.library import *  # noqa: F403
 from quant_investor.factors.matrix import *  # noqa: F403
 from quant_investor.factors.metrics import *  # noqa: F403
@@ -73,6 +75,7 @@ __all__ = [
     *_operators.__all__,
     *_expression.__all__,
     *_library.__all__,
+    *_health.__all__,
     *_robustness.__all__,
     *_report.__all__,
     *_runtime.__all__,

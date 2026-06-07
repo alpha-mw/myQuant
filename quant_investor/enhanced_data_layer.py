@@ -603,6 +603,26 @@ class EnhancedDataLayer(DataHub):
                 provider_name="earnings_forecast_provider",
             ),
         )
+        tushare_source = getattr(self._source, "_tushare", self._source)
+        forecast_store = getattr(tushare_source, "_forecast_store", None)
+        forecast_store_dir = Path(getattr(forecast_store, "base_dir", ""))
+        default_store_dirs = {
+            Path(__file__).resolve().parents[1]
+            / "data"
+            / "cn_market_full"
+            / "_snapshots"
+            / "forecast",
+            Path(__file__).resolve().parent
+            / "data"
+            / "cn_market_full"
+            / "_snapshots"
+            / "forecast",
+        }
+        if forecast_store is not None and forecast_store_dir not in default_store_dirs:
+            cached_snapshot = forecast_store.get_snapshot(symbol, as_of_text)
+            if isinstance(cached_snapshot, ForecastSnapshot):
+                return cached_snapshot
+
         provider = getattr(self._source, "get_earnings_forecast_snapshot", None)
         if not callable(provider):
             return self._apply_missing_semantics(
@@ -613,19 +633,9 @@ class EnhancedDataLayer(DataHub):
                 provider_missing=True,
                 note="forecast_provider_missing",
             )
-        tushare_source = getattr(self._source, "_tushare", None)
-        forecast_store = getattr(tushare_source, "_forecast_store", None)
-        forecast_store_dir = Path(getattr(forecast_store, "base_dir", ""))
-        default_store_dir = (
-            Path(__file__).resolve().parents[1]
-            / "data"
-            / "cn_market_full"
-            / "_snapshots"
-            / "forecast"
-        )
         if (
             tushare_source is not None
-            and forecast_store_dir == default_store_dir
+            and forecast_store_dir in default_store_dirs
         ):
             return self._apply_missing_semantics(
                 snapshot,
@@ -934,8 +944,8 @@ if __name__ == '__main__':
     )
 
     if not df.empty:
-        print(f"\n数据预览:")
+        print("\n数据预览:")
         print(df.head())
-        print(f"\n因子列表:")
+        print("\n因子列表:")
         factor_cols = [c for c in df.columns if c.startswith(('return_', 'volatility_', 'rsi_', 'macd_', 'ma_bias_', 'label_'))]
         print(factor_cols)

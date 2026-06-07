@@ -7,7 +7,22 @@
     "restored_from": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
     "restored_factor_count": 12,
     "runtime_implementation": "price_volume:<factor_name>",
-    "known_limitation": "Offline neutralization uses hs300/zz500/zz1000 universe buckets because complete industry map was unavailable in the local snapshot."
+    "known_limitation": "Offline neutralization uses hs300/zz500/zz1000 universe buckets because complete industry map was unavailable in the local snapshot.",
+    "last_manual_promotion_at": "2026-06-05T01:06:42Z",
+    "last_manual_promotion_by": "user_requested_codex_delegated_promotion_20260605",
+    "last_manual_promotion_source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/quant_branch_factor_mining_20260604_220329/quant_branch_factor_mining_results.json",
+    "last_manual_promotion_factors": [
+      "pv_blend_volstab19x2_mom90_amihud5_w75",
+      "pv_blend_volstab19x2_mom90_amihud5_w70"
+    ],
+    "production_factor_count": 14,
+    "path": "quant_investor/factor_registry/mined_factors.json",
+    "last_factor_health_review_at": "2026-06-05T18:32:18Z",
+    "last_factor_health_report_json": "reports/factor_governance/health/factor_health_2026-06-05T183218Z.json",
+    "last_factor_health_report_markdown": "reports/factor_governance/health/factor_health_2026-06-05T183218Z.md",
+    "last_factor_health_action_counts": {
+      "keep": 14
+    }
   },
   "factors": [
     {
@@ -229,6 +244,95 @@
           "window": 15,
           "description": "Negative 15-day coefficient of variation of volume; stable participation scores higher.",
           "literature_anchor": "trading_activity"
+        },
+        "health_monitor": {
+          "latest_reviewed_at": "2026-06-05T18:32:18Z",
+          "status": "healthy",
+          "action": "keep",
+          "consecutive_failures": 0,
+          "last_evaluation_id": "pv_volume_stability_15d",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-05T183218Z.md",
+          "latest_reasons": [],
+          "latest_health_metrics": {
+            "coverage_rate": 0.9988936554526981,
+            "nan_rate": 0.001106344547301874,
+            "icir": 0.6624746923687049,
+            "mean_rankic": 0.044408227762990846,
+            "positive_ic_ratio": 0.8,
+            "oos_positive_ratio": 0.8,
+            "top_bottom_spread": 0.06829295397373879,
+            "top_quantile_return": 0.22094942161730718,
+            "turnover": 7.227044505229436,
+            "cost_adjusted_return": 0.06106590946850935,
+            "capacity_pressure": 0.012529658563233199,
+            "neutralized_icir": 0.685358913031786,
+            "master_return_delta": 0.0009302848440279769,
+            "sharpe_delta": 0.0038752414069671993,
+            "max_drawdown_delta": 0.0005030226992757869,
+            "turnover_delta": 0.21681133515688308
+          },
+          "history": [
+            {
+              "reviewed_at": "2026-06-05T12:50:28Z",
+              "factor_name": "pv_volume_stability_15d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9988936554526981,
+                "nan_rate": 0.001106344547301874,
+                "icir": 0.6624746923687049,
+                "mean_rankic": 0.044408227762990846,
+                "positive_ic_ratio": 0.8,
+                "oos_positive_ratio": 0.8,
+                "top_bottom_spread": 0.06829295397373879,
+                "top_quantile_return": 0.22094942161730718,
+                "turnover": 7.227044505229436,
+                "cost_adjusted_return": 0.06106590946850935,
+                "capacity_pressure": 0.012529658563233199,
+                "neutralized_icir": 0.685358913031786,
+                "master_return_delta": 0.0009302848440279769,
+                "sharpe_delta": 0.0038752414069671993,
+                "max_drawdown_delta": 0.0005030226992757869,
+                "turnover_delta": 0.21681133515688308
+              },
+              "evaluation_id": "pv_volume_stability_15d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-05T18:32:18Z",
+              "factor_name": "pv_volume_stability_15d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9988936554526981,
+                "nan_rate": 0.001106344547301874,
+                "icir": 0.6624746923687049,
+                "mean_rankic": 0.044408227762990846,
+                "positive_ic_ratio": 0.8,
+                "oos_positive_ratio": 0.8,
+                "top_bottom_spread": 0.06829295397373879,
+                "top_quantile_return": 0.22094942161730718,
+                "turnover": 7.227044505229436,
+                "cost_adjusted_return": 0.06106590946850935,
+                "capacity_pressure": 0.012529658563233199,
+                "neutralized_icir": 0.685358913031786,
+                "master_return_delta": 0.0009302848440279769,
+                "sharpe_delta": 0.0038752414069671993,
+                "max_drawdown_delta": 0.0005030226992757869,
+                "turnover_delta": 0.21681133515688308
+              },
+              "evaluation_id": "pv_volume_stability_15d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            }
+          ]
         }
       }
     },
@@ -451,6 +555,95 @@
           "window": 20,
           "description": "Negative 20-day coefficient of variation of volume; stable participation scores higher.",
           "literature_anchor": "trading_activity"
+        },
+        "health_monitor": {
+          "latest_reviewed_at": "2026-06-05T18:32:18Z",
+          "status": "healthy",
+          "action": "keep",
+          "consecutive_failures": 0,
+          "last_evaluation_id": "pv_volume_stability_20d",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-05T183218Z.md",
+          "latest_reasons": [],
+          "latest_health_metrics": {
+            "coverage_rate": 0.9985324000903139,
+            "nan_rate": 0.0014675999096861595,
+            "icir": 0.6609294341298083,
+            "mean_rankic": 0.04401132324201341,
+            "positive_ic_ratio": 0.72,
+            "oos_positive_ratio": 0.6666666666666666,
+            "top_bottom_spread": 0.061985623256305356,
+            "top_quantile_return": 0.2218957074203365,
+            "turnover": 7.253082569516312,
+            "cost_adjusted_return": 0.054732540686789045,
+            "capacity_pressure": 0.012190578544895669,
+            "neutralized_icir": 0.7098406559826255,
+            "master_return_delta": 0.0009571256963318539,
+            "sharpe_delta": 0.004149962739458154,
+            "max_drawdown_delta": 0.0008243131395776237,
+            "turnover_delta": 0.21759247708548937
+          },
+          "history": [
+            {
+              "reviewed_at": "2026-06-05T12:50:28Z",
+              "factor_name": "pv_volume_stability_20d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9985324000903139,
+                "nan_rate": 0.0014675999096861595,
+                "icir": 0.6609294341298083,
+                "mean_rankic": 0.04401132324201341,
+                "positive_ic_ratio": 0.72,
+                "oos_positive_ratio": 0.6666666666666666,
+                "top_bottom_spread": 0.061985623256305356,
+                "top_quantile_return": 0.2218957074203365,
+                "turnover": 7.253082569516312,
+                "cost_adjusted_return": 0.054732540686789045,
+                "capacity_pressure": 0.012190578544895669,
+                "neutralized_icir": 0.7098406559826255,
+                "master_return_delta": 0.0009571256963318539,
+                "sharpe_delta": 0.004149962739458154,
+                "max_drawdown_delta": 0.0008243131395776237,
+                "turnover_delta": 0.21759247708548937
+              },
+              "evaluation_id": "pv_volume_stability_20d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-05T18:32:18Z",
+              "factor_name": "pv_volume_stability_20d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9985324000903139,
+                "nan_rate": 0.0014675999096861595,
+                "icir": 0.6609294341298083,
+                "mean_rankic": 0.04401132324201341,
+                "positive_ic_ratio": 0.72,
+                "oos_positive_ratio": 0.6666666666666666,
+                "top_bottom_spread": 0.061985623256305356,
+                "top_quantile_return": 0.2218957074203365,
+                "turnover": 7.253082569516312,
+                "cost_adjusted_return": 0.054732540686789045,
+                "capacity_pressure": 0.012190578544895669,
+                "neutralized_icir": 0.7098406559826255,
+                "master_return_delta": 0.0009571256963318539,
+                "sharpe_delta": 0.004149962739458154,
+                "max_drawdown_delta": 0.0008243131395776237,
+                "turnover_delta": 0.21759247708548937
+              },
+              "evaluation_id": "pv_volume_stability_20d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            }
+          ]
         }
       }
     },
@@ -673,6 +866,95 @@
           "window": 15,
           "description": "15-day average absolute return divided by traded amount; higher measured illiquidity scores higher.",
           "literature_anchor": "amihud_illiquidity"
+        },
+        "health_monitor": {
+          "latest_reviewed_at": "2026-06-05T18:32:18Z",
+          "status": "healthy",
+          "action": "keep",
+          "consecutive_failures": 0,
+          "last_evaluation_id": "pv_amihud_illiquidity_15d",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-05T183218Z.md",
+          "latest_reasons": [],
+          "latest_health_metrics": {
+            "coverage_rate": 0.9987807631519531,
+            "nan_rate": 0.0012192368480469632,
+            "icir": 0.5925763334773,
+            "mean_rankic": 0.06134304843601928,
+            "positive_ic_ratio": 0.72,
+            "oos_positive_ratio": 0.6666666666666666,
+            "top_bottom_spread": 0.16080865144390719,
+            "top_quantile_return": 0.28517576687863067,
+            "turnover": 3.638762299129605,
+            "cost_adjusted_return": 0.15716988914477759,
+            "capacity_pressure": 0.028489742983843457,
+            "neutralized_icir": 0.8301730147480666,
+            "master_return_delta": 0.002853315809964637,
+            "sharpe_delta": 0.00877543895492278,
+            "max_drawdown_delta": 0.0008673763263812084,
+            "turnover_delta": 0.10916286897388815
+          },
+          "history": [
+            {
+              "reviewed_at": "2026-06-05T12:50:28Z",
+              "factor_name": "pv_amihud_illiquidity_15d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9987807631519531,
+                "nan_rate": 0.0012192368480469632,
+                "icir": 0.5925763334773,
+                "mean_rankic": 0.06134304843601928,
+                "positive_ic_ratio": 0.72,
+                "oos_positive_ratio": 0.6666666666666666,
+                "top_bottom_spread": 0.16080865144390719,
+                "top_quantile_return": 0.28517576687863067,
+                "turnover": 3.638762299129605,
+                "cost_adjusted_return": 0.15716988914477759,
+                "capacity_pressure": 0.028489742983843457,
+                "neutralized_icir": 0.8301730147480666,
+                "master_return_delta": 0.002853315809964637,
+                "sharpe_delta": 0.00877543895492278,
+                "max_drawdown_delta": 0.0008673763263812084,
+                "turnover_delta": 0.10916286897388815
+              },
+              "evaluation_id": "pv_amihud_illiquidity_15d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-05T18:32:18Z",
+              "factor_name": "pv_amihud_illiquidity_15d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9987807631519531,
+                "nan_rate": 0.0012192368480469632,
+                "icir": 0.5925763334773,
+                "mean_rankic": 0.06134304843601928,
+                "positive_ic_ratio": 0.72,
+                "oos_positive_ratio": 0.6666666666666666,
+                "top_bottom_spread": 0.16080865144390719,
+                "top_quantile_return": 0.28517576687863067,
+                "turnover": 3.638762299129605,
+                "cost_adjusted_return": 0.15716988914477759,
+                "capacity_pressure": 0.028489742983843457,
+                "neutralized_icir": 0.8301730147480666,
+                "master_return_delta": 0.002853315809964637,
+                "sharpe_delta": 0.00877543895492278,
+                "max_drawdown_delta": 0.0008673763263812084,
+                "turnover_delta": 0.10916286897388815
+              },
+              "evaluation_id": "pv_amihud_illiquidity_15d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            }
+          ]
         }
       }
     },
@@ -895,6 +1177,95 @@
           "window": 20,
           "description": "Negative log average traded amount over 20 days; lower but still tradable dollar volume scores higher.",
           "literature_anchor": "turnover_liquidity_premium"
+        },
+        "health_monitor": {
+          "latest_reviewed_at": "2026-06-05T18:32:18Z",
+          "status": "healthy",
+          "action": "keep",
+          "consecutive_failures": 0,
+          "last_evaluation_id": "pv_low_dollar_volume_20d",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-05T183218Z.md",
+          "latest_reasons": [],
+          "latest_health_metrics": {
+            "coverage_rate": 0.9985324000903139,
+            "nan_rate": 0.0014675999096861595,
+            "icir": 0.5921302834826092,
+            "mean_rankic": 0.08341974937879662,
+            "positive_ic_ratio": 0.72,
+            "oos_positive_ratio": 0.6666666666666666,
+            "top_bottom_spread": 0.09385356265626991,
+            "top_quantile_return": 0.25415840852043564,
+            "turnover": 4.071754158532981,
+            "cost_adjusted_return": 0.08978180849773694,
+            "capacity_pressure": 0.03168610878772719,
+            "neutralized_icir": 0.5509693143644411,
+            "master_return_delta": 0.0019250067293348288,
+            "sharpe_delta": 0.009310764877089685,
+            "max_drawdown_delta": 0.0015668240667471012,
+            "turnover_delta": 0.12215262475598943
+          },
+          "history": [
+            {
+              "reviewed_at": "2026-06-05T12:50:28Z",
+              "factor_name": "pv_low_dollar_volume_20d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9985324000903139,
+                "nan_rate": 0.0014675999096861595,
+                "icir": 0.5921302834826092,
+                "mean_rankic": 0.08341974937879662,
+                "positive_ic_ratio": 0.72,
+                "oos_positive_ratio": 0.6666666666666666,
+                "top_bottom_spread": 0.09385356265626991,
+                "top_quantile_return": 0.25415840852043564,
+                "turnover": 4.071754158532981,
+                "cost_adjusted_return": 0.08978180849773694,
+                "capacity_pressure": 0.03168610878772719,
+                "neutralized_icir": 0.5509693143644411,
+                "master_return_delta": 0.0019250067293348288,
+                "sharpe_delta": 0.009310764877089685,
+                "max_drawdown_delta": 0.0015668240667471012,
+                "turnover_delta": 0.12215262475598943
+              },
+              "evaluation_id": "pv_low_dollar_volume_20d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-05T18:32:18Z",
+              "factor_name": "pv_low_dollar_volume_20d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9985324000903139,
+                "nan_rate": 0.0014675999096861595,
+                "icir": 0.5921302834826092,
+                "mean_rankic": 0.08341974937879662,
+                "positive_ic_ratio": 0.72,
+                "oos_positive_ratio": 0.6666666666666666,
+                "top_bottom_spread": 0.09385356265626991,
+                "top_quantile_return": 0.25415840852043564,
+                "turnover": 4.071754158532981,
+                "cost_adjusted_return": 0.08978180849773694,
+                "capacity_pressure": 0.03168610878772719,
+                "neutralized_icir": 0.5509693143644411,
+                "master_return_delta": 0.0019250067293348288,
+                "sharpe_delta": 0.009310764877089685,
+                "max_drawdown_delta": 0.0015668240667471012,
+                "turnover_delta": 0.12215262475598943
+              },
+              "evaluation_id": "pv_low_dollar_volume_20d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            }
+          ]
         }
       }
     },
@@ -1117,6 +1488,95 @@
           "window": 20,
           "description": "20-day average absolute return divided by traded amount; higher measured illiquidity scores higher.",
           "literature_anchor": "amihud_illiquidity"
+        },
+        "health_monitor": {
+          "latest_reviewed_at": "2026-06-05T18:32:18Z",
+          "status": "healthy",
+          "action": "keep",
+          "consecutive_failures": 0,
+          "last_evaluation_id": "pv_amihud_illiquidity_20d",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-05T183218Z.md",
+          "latest_reasons": [],
+          "latest_health_metrics": {
+            "coverage_rate": 0.9984872431700158,
+            "nan_rate": 0.0015127568299841952,
+            "icir": 0.5914276853994945,
+            "mean_rankic": 0.06101174310505294,
+            "positive_ic_ratio": 0.68,
+            "oos_positive_ratio": 0.6,
+            "top_bottom_spread": 0.15957587101546752,
+            "top_quantile_return": 0.28462454552823613,
+            "turnover": 3.380247330494309,
+            "cost_adjusted_return": 0.15619562368497322,
+            "capacity_pressure": 0.02830969512716046,
+            "neutralized_icir": 0.8423657248755558,
+            "master_return_delta": 0.002838495264806332,
+            "sharpe_delta": 0.00899684688962277,
+            "max_drawdown_delta": 0.0009210382064000188,
+            "turnover_delta": 0.10140741991482927
+          },
+          "history": [
+            {
+              "reviewed_at": "2026-06-05T12:50:28Z",
+              "factor_name": "pv_amihud_illiquidity_20d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9984872431700158,
+                "nan_rate": 0.0015127568299841952,
+                "icir": 0.5914276853994945,
+                "mean_rankic": 0.06101174310505294,
+                "positive_ic_ratio": 0.68,
+                "oos_positive_ratio": 0.6,
+                "top_bottom_spread": 0.15957587101546752,
+                "top_quantile_return": 0.28462454552823613,
+                "turnover": 3.380247330494309,
+                "cost_adjusted_return": 0.15619562368497322,
+                "capacity_pressure": 0.02830969512716046,
+                "neutralized_icir": 0.8423657248755558,
+                "master_return_delta": 0.002838495264806332,
+                "sharpe_delta": 0.00899684688962277,
+                "max_drawdown_delta": 0.0009210382064000188,
+                "turnover_delta": 0.10140741991482927
+              },
+              "evaluation_id": "pv_amihud_illiquidity_20d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-05T18:32:18Z",
+              "factor_name": "pv_amihud_illiquidity_20d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9984872431700158,
+                "nan_rate": 0.0015127568299841952,
+                "icir": 0.5914276853994945,
+                "mean_rankic": 0.06101174310505294,
+                "positive_ic_ratio": 0.68,
+                "oos_positive_ratio": 0.6,
+                "top_bottom_spread": 0.15957587101546752,
+                "top_quantile_return": 0.28462454552823613,
+                "turnover": 3.380247330494309,
+                "cost_adjusted_return": 0.15619562368497322,
+                "capacity_pressure": 0.02830969512716046,
+                "neutralized_icir": 0.8423657248755558,
+                "master_return_delta": 0.002838495264806332,
+                "sharpe_delta": 0.00899684688962277,
+                "max_drawdown_delta": 0.0009210382064000188,
+                "turnover_delta": 0.10140741991482927
+              },
+              "evaluation_id": "pv_amihud_illiquidity_20d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            }
+          ]
         }
       }
     },
@@ -1339,6 +1799,95 @@
           "window": 10,
           "description": "10-day average absolute return divided by traded amount; higher measured illiquidity scores higher.",
           "literature_anchor": "amihud_illiquidity"
+        },
+        "health_monitor": {
+          "latest_reviewed_at": "2026-06-05T18:32:18Z",
+          "status": "healthy",
+          "action": "keep",
+          "consecutive_failures": 0,
+          "last_evaluation_id": "pv_amihud_illiquidity_10d",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-05T183218Z.md",
+          "latest_reasons": [],
+          "latest_health_metrics": {
+            "coverage_rate": 0.9992774892752314,
+            "nan_rate": 0.0007225107247685708,
+            "icir": 0.5901384362521785,
+            "mean_rankic": 0.061858609937607306,
+            "positive_ic_ratio": 0.72,
+            "oos_positive_ratio": 0.6666666666666666,
+            "top_bottom_spread": 0.14843441205427566,
+            "top_quantile_return": 0.274612837051832,
+            "turnover": 3.982681087630649,
+            "cost_adjusted_return": 0.14445173096664501,
+            "capacity_pressure": 0.028436581085211875,
+            "neutralized_icir": 0.7806825761806137,
+            "master_return_delta": 0.002536075164627442,
+            "sharpe_delta": 0.00798568563367395,
+            "max_drawdown_delta": 0.0007911679164227292,
+            "turnover_delta": 0.11948043262891946
+          },
+          "history": [
+            {
+              "reviewed_at": "2026-06-05T12:50:28Z",
+              "factor_name": "pv_amihud_illiquidity_10d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9992774892752314,
+                "nan_rate": 0.0007225107247685708,
+                "icir": 0.5901384362521785,
+                "mean_rankic": 0.061858609937607306,
+                "positive_ic_ratio": 0.72,
+                "oos_positive_ratio": 0.6666666666666666,
+                "top_bottom_spread": 0.14843441205427566,
+                "top_quantile_return": 0.274612837051832,
+                "turnover": 3.982681087630649,
+                "cost_adjusted_return": 0.14445173096664501,
+                "capacity_pressure": 0.028436581085211875,
+                "neutralized_icir": 0.7806825761806137,
+                "master_return_delta": 0.002536075164627442,
+                "sharpe_delta": 0.00798568563367395,
+                "max_drawdown_delta": 0.0007911679164227292,
+                "turnover_delta": 0.11948043262891946
+              },
+              "evaluation_id": "pv_amihud_illiquidity_10d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-05T18:32:18Z",
+              "factor_name": "pv_amihud_illiquidity_10d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9992774892752314,
+                "nan_rate": 0.0007225107247685708,
+                "icir": 0.5901384362521785,
+                "mean_rankic": 0.061858609937607306,
+                "positive_ic_ratio": 0.72,
+                "oos_positive_ratio": 0.6666666666666666,
+                "top_bottom_spread": 0.14843441205427566,
+                "top_quantile_return": 0.274612837051832,
+                "turnover": 3.982681087630649,
+                "cost_adjusted_return": 0.14445173096664501,
+                "capacity_pressure": 0.028436581085211875,
+                "neutralized_icir": 0.7806825761806137,
+                "master_return_delta": 0.002536075164627442,
+                "sharpe_delta": 0.00798568563367395,
+                "max_drawdown_delta": 0.0007911679164227292,
+                "turnover_delta": 0.11948043262891946
+              },
+              "evaluation_id": "pv_amihud_illiquidity_10d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            }
+          ]
         }
       }
     },
@@ -1561,6 +2110,95 @@
           "window": 15,
           "description": "Negative log average traded amount over 15 days; lower but still tradable dollar volume scores higher.",
           "literature_anchor": "turnover_liquidity_premium"
+        },
+        "health_monitor": {
+          "latest_reviewed_at": "2026-06-05T18:32:18Z",
+          "status": "healthy",
+          "action": "keep",
+          "consecutive_failures": 0,
+          "last_evaluation_id": "pv_low_dollar_volume_15d",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-05T183218Z.md",
+          "latest_reasons": [],
+          "latest_health_metrics": {
+            "coverage_rate": 0.9988936554526981,
+            "nan_rate": 0.001106344547301874,
+            "icir": 0.5874458091147465,
+            "mean_rankic": 0.08190587542657529,
+            "positive_ic_ratio": 0.68,
+            "oos_positive_ratio": 0.6,
+            "top_bottom_spread": 0.0931154735896354,
+            "top_quantile_return": 0.2494987598363704,
+            "turnover": 4.180124805117125,
+            "cost_adjusted_return": 0.08893534878451828,
+            "capacity_pressure": 0.03198483867471076,
+            "neutralized_icir": 0.5545622900190289,
+            "master_return_delta": 0.0017867649905998731,
+            "sharpe_delta": 0.008454022303573103,
+            "max_drawdown_delta": 0.0016126457949542316,
+            "turnover_delta": 0.12540374415351374
+          },
+          "history": [
+            {
+              "reviewed_at": "2026-06-05T12:50:28Z",
+              "factor_name": "pv_low_dollar_volume_15d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9988936554526981,
+                "nan_rate": 0.001106344547301874,
+                "icir": 0.5874458091147465,
+                "mean_rankic": 0.08190587542657529,
+                "positive_ic_ratio": 0.68,
+                "oos_positive_ratio": 0.6,
+                "top_bottom_spread": 0.0931154735896354,
+                "top_quantile_return": 0.2494987598363704,
+                "turnover": 4.180124805117125,
+                "cost_adjusted_return": 0.08893534878451828,
+                "capacity_pressure": 0.03198483867471076,
+                "neutralized_icir": 0.5545622900190289,
+                "master_return_delta": 0.0017867649905998731,
+                "sharpe_delta": 0.008454022303573103,
+                "max_drawdown_delta": 0.0016126457949542316,
+                "turnover_delta": 0.12540374415351374
+              },
+              "evaluation_id": "pv_low_dollar_volume_15d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-05T18:32:18Z",
+              "factor_name": "pv_low_dollar_volume_15d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9988936554526981,
+                "nan_rate": 0.001106344547301874,
+                "icir": 0.5874458091147465,
+                "mean_rankic": 0.08190587542657529,
+                "positive_ic_ratio": 0.68,
+                "oos_positive_ratio": 0.6,
+                "top_bottom_spread": 0.0931154735896354,
+                "top_quantile_return": 0.2494987598363704,
+                "turnover": 4.180124805117125,
+                "cost_adjusted_return": 0.08893534878451828,
+                "capacity_pressure": 0.03198483867471076,
+                "neutralized_icir": 0.5545622900190289,
+                "master_return_delta": 0.0017867649905998731,
+                "sharpe_delta": 0.008454022303573103,
+                "max_drawdown_delta": 0.0016126457949542316,
+                "turnover_delta": 0.12540374415351374
+              },
+              "evaluation_id": "pv_low_dollar_volume_15d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            }
+          ]
         }
       }
     },
@@ -1783,6 +2421,95 @@
           "window": 25,
           "description": "Negative log average traded amount over 25 days; lower but still tradable dollar volume scores higher.",
           "literature_anchor": "turnover_liquidity_premium"
+        },
+        "health_monitor": {
+          "latest_reviewed_at": "2026-06-05T18:32:18Z",
+          "status": "healthy",
+          "action": "keep",
+          "consecutive_failures": 0,
+          "last_evaluation_id": "pv_low_dollar_volume_25d",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-05T183218Z.md",
+          "latest_reasons": [],
+          "latest_health_metrics": {
+            "coverage_rate": 0.9981034093474825,
+            "nan_rate": 0.0018965906525174982,
+            "icir": 0.5747353480322996,
+            "mean_rankic": 0.08114441687576494,
+            "positive_ic_ratio": 0.72,
+            "oos_positive_ratio": 0.6666666666666666,
+            "top_bottom_spread": 0.08571783631905908,
+            "top_quantile_return": 0.25205675593233207,
+            "turnover": 3.9352044102499146,
+            "cost_adjusted_return": 0.08178263190880916,
+            "capacity_pressure": 0.031371068797255805,
+            "neutralized_icir": 0.5264225088926907,
+            "master_return_delta": 0.0018645632165100688,
+            "sharpe_delta": 0.009297510699296976,
+            "max_drawdown_delta": 0.0016103726434936881,
+            "turnover_delta": 0.11805613230749744
+          },
+          "history": [
+            {
+              "reviewed_at": "2026-06-05T12:50:28Z",
+              "factor_name": "pv_low_dollar_volume_25d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9981034093474825,
+                "nan_rate": 0.0018965906525174982,
+                "icir": 0.5747353480322996,
+                "mean_rankic": 0.08114441687576494,
+                "positive_ic_ratio": 0.72,
+                "oos_positive_ratio": 0.6666666666666666,
+                "top_bottom_spread": 0.08571783631905908,
+                "top_quantile_return": 0.25205675593233207,
+                "turnover": 3.9352044102499146,
+                "cost_adjusted_return": 0.08178263190880916,
+                "capacity_pressure": 0.031371068797255805,
+                "neutralized_icir": 0.5264225088926907,
+                "master_return_delta": 0.0018645632165100688,
+                "sharpe_delta": 0.009297510699296976,
+                "max_drawdown_delta": 0.0016103726434936881,
+                "turnover_delta": 0.11805613230749744
+              },
+              "evaluation_id": "pv_low_dollar_volume_25d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-05T18:32:18Z",
+              "factor_name": "pv_low_dollar_volume_25d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9981034093474825,
+                "nan_rate": 0.0018965906525174982,
+                "icir": 0.5747353480322996,
+                "mean_rankic": 0.08114441687576494,
+                "positive_ic_ratio": 0.72,
+                "oos_positive_ratio": 0.6666666666666666,
+                "top_bottom_spread": 0.08571783631905908,
+                "top_quantile_return": 0.25205675593233207,
+                "turnover": 3.9352044102499146,
+                "cost_adjusted_return": 0.08178263190880916,
+                "capacity_pressure": 0.031371068797255805,
+                "neutralized_icir": 0.5264225088926907,
+                "master_return_delta": 0.0018645632165100688,
+                "sharpe_delta": 0.009297510699296976,
+                "max_drawdown_delta": 0.0016103726434936881,
+                "turnover_delta": 0.11805613230749744
+              },
+              "evaluation_id": "pv_low_dollar_volume_25d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            }
+          ]
         }
       }
     },
@@ -2005,6 +2732,95 @@
           "window": 25,
           "description": "25-day average absolute return divided by traded amount; higher measured illiquidity scores higher.",
           "literature_anchor": "amihud_illiquidity"
+        },
+        "health_monitor": {
+          "latest_reviewed_at": "2026-06-05T18:32:18Z",
+          "status": "healthy",
+          "action": "keep",
+          "consecutive_failures": 0,
+          "last_evaluation_id": "pv_amihud_illiquidity_25d",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-05T183218Z.md",
+          "latest_reasons": [],
+          "latest_health_metrics": {
+            "coverage_rate": 0.9979679385865884,
+            "nan_rate": 0.0020320614134116052,
+            "icir": 0.5744086696417071,
+            "mean_rankic": 0.057815412975474795,
+            "positive_ic_ratio": 0.68,
+            "oos_positive_ratio": 0.6,
+            "top_bottom_spread": 0.15534397296576136,
+            "top_quantile_return": 0.2861706734968363,
+            "turnover": 3.1904740303174126,
+            "cost_adjusted_return": 0.15215349893544394,
+            "capacity_pressure": 0.028060129124717094,
+            "neutralized_icir": 0.8310441326939998,
+            "master_return_delta": 0.002885468857963784,
+            "sharpe_delta": 0.009004445157275952,
+            "max_drawdown_delta": 0.000951690324371608,
+            "turnover_delta": 0.09571422090952238
+          },
+          "history": [
+            {
+              "reviewed_at": "2026-06-05T12:50:28Z",
+              "factor_name": "pv_amihud_illiquidity_25d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9979679385865884,
+                "nan_rate": 0.0020320614134116052,
+                "icir": 0.5744086696417071,
+                "mean_rankic": 0.057815412975474795,
+                "positive_ic_ratio": 0.68,
+                "oos_positive_ratio": 0.6,
+                "top_bottom_spread": 0.15534397296576136,
+                "top_quantile_return": 0.2861706734968363,
+                "turnover": 3.1904740303174126,
+                "cost_adjusted_return": 0.15215349893544394,
+                "capacity_pressure": 0.028060129124717094,
+                "neutralized_icir": 0.8310441326939998,
+                "master_return_delta": 0.002885468857963784,
+                "sharpe_delta": 0.009004445157275952,
+                "max_drawdown_delta": 0.000951690324371608,
+                "turnover_delta": 0.09571422090952238
+              },
+              "evaluation_id": "pv_amihud_illiquidity_25d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-05T18:32:18Z",
+              "factor_name": "pv_amihud_illiquidity_25d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9979679385865884,
+                "nan_rate": 0.0020320614134116052,
+                "icir": 0.5744086696417071,
+                "mean_rankic": 0.057815412975474795,
+                "positive_ic_ratio": 0.68,
+                "oos_positive_ratio": 0.6,
+                "top_bottom_spread": 0.15534397296576136,
+                "top_quantile_return": 0.2861706734968363,
+                "turnover": 3.1904740303174126,
+                "cost_adjusted_return": 0.15215349893544394,
+                "capacity_pressure": 0.028060129124717094,
+                "neutralized_icir": 0.8310441326939998,
+                "master_return_delta": 0.002885468857963784,
+                "sharpe_delta": 0.009004445157275952,
+                "max_drawdown_delta": 0.000951690324371608,
+                "turnover_delta": 0.09571422090952238
+              },
+              "evaluation_id": "pv_amihud_illiquidity_25d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            }
+          ]
         }
       }
     },
@@ -2227,6 +3043,95 @@
           "window": 30,
           "description": "Negative log average traded amount over 30 days; lower but still tradable dollar volume scores higher.",
           "literature_anchor": "turnover_liquidity_premium"
+        },
+        "health_monitor": {
+          "latest_reviewed_at": "2026-06-05T18:32:18Z",
+          "status": "healthy",
+          "action": "keep",
+          "consecutive_failures": 0,
+          "last_evaluation_id": "pv_low_dollar_volume_30d",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-05T183218Z.md",
+          "latest_reasons": [],
+          "latest_health_metrics": {
+            "coverage_rate": 0.9975389478437571,
+            "nan_rate": 0.0024610521562429444,
+            "icir": 0.5577843508280484,
+            "mean_rankic": 0.07913714236036058,
+            "positive_ic_ratio": 0.68,
+            "oos_positive_ratio": 0.6,
+            "top_bottom_spread": 0.08383973282071845,
+            "top_quantile_return": 0.251762639190165,
+            "turnover": 3.7439088298923444,
+            "cost_adjusted_return": 0.08009582399082611,
+            "capacity_pressure": 0.031040769210127116,
+            "neutralized_icir": 0.50674451802498,
+            "master_return_delta": 0.0018508023502062363,
+            "sharpe_delta": 0.009328308137774374,
+            "max_drawdown_delta": 0.0015071005435353078,
+            "turnover_delta": 0.11231726489677032
+          },
+          "history": [
+            {
+              "reviewed_at": "2026-06-05T12:50:28Z",
+              "factor_name": "pv_low_dollar_volume_30d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9975389478437571,
+                "nan_rate": 0.0024610521562429444,
+                "icir": 0.5577843508280484,
+                "mean_rankic": 0.07913714236036058,
+                "positive_ic_ratio": 0.68,
+                "oos_positive_ratio": 0.6,
+                "top_bottom_spread": 0.08383973282071845,
+                "top_quantile_return": 0.251762639190165,
+                "turnover": 3.7439088298923444,
+                "cost_adjusted_return": 0.08009582399082611,
+                "capacity_pressure": 0.031040769210127116,
+                "neutralized_icir": 0.50674451802498,
+                "master_return_delta": 0.0018508023502062363,
+                "sharpe_delta": 0.009328308137774374,
+                "max_drawdown_delta": 0.0015071005435353078,
+                "turnover_delta": 0.11231726489677032
+              },
+              "evaluation_id": "pv_low_dollar_volume_30d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-05T18:32:18Z",
+              "factor_name": "pv_low_dollar_volume_30d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9975389478437571,
+                "nan_rate": 0.0024610521562429444,
+                "icir": 0.5577843508280484,
+                "mean_rankic": 0.07913714236036058,
+                "positive_ic_ratio": 0.68,
+                "oos_positive_ratio": 0.6,
+                "top_bottom_spread": 0.08383973282071845,
+                "top_quantile_return": 0.251762639190165,
+                "turnover": 3.7439088298923444,
+                "cost_adjusted_return": 0.08009582399082611,
+                "capacity_pressure": 0.031040769210127116,
+                "neutralized_icir": 0.50674451802498,
+                "master_return_delta": 0.0018508023502062363,
+                "sharpe_delta": 0.009328308137774374,
+                "max_drawdown_delta": 0.0015071005435353078,
+                "turnover_delta": 0.11231726489677032
+              },
+              "evaluation_id": "pv_low_dollar_volume_30d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            }
+          ]
         }
       }
     },
@@ -2449,6 +3354,95 @@
           "window": 5,
           "description": "Negative five-trading-day return; recent losers score higher.",
           "literature_anchor": "short_term_reversal"
+        },
+        "health_monitor": {
+          "latest_reviewed_at": "2026-06-05T18:32:18Z",
+          "status": "healthy",
+          "action": "keep",
+          "consecutive_failures": 0,
+          "last_evaluation_id": "pv_short_reversal_5d",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-05T183218Z.md",
+          "latest_reasons": [],
+          "latest_health_metrics": {
+            "coverage_rate": 0.9996387446376157,
+            "nan_rate": 0.0003612553623842854,
+            "icir": 0.5545397059626963,
+            "mean_rankic": 0.07597409254266303,
+            "positive_ic_ratio": 0.76,
+            "oos_positive_ratio": 0.6666666666666666,
+            "top_bottom_spread": 0.12212635675512817,
+            "top_quantile_return": 0.28847145731966906,
+            "turnover": 7.4922521394943224,
+            "cost_adjusted_return": 0.11463410461563385,
+            "capacity_pressure": 0.009376315482411688,
+            "neutralized_icir": 0.5831239166222666,
+            "master_return_delta": 0.002957130926827831,
+            "sharpe_delta": 0.007402024525876714,
+            "max_drawdown_delta": 0.0,
+            "turnover_delta": 0.22476756418482965
+          },
+          "history": [
+            {
+              "reviewed_at": "2026-06-05T12:50:28Z",
+              "factor_name": "pv_short_reversal_5d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9996387446376157,
+                "nan_rate": 0.0003612553623842854,
+                "icir": 0.5545397059626963,
+                "mean_rankic": 0.07597409254266303,
+                "positive_ic_ratio": 0.76,
+                "oos_positive_ratio": 0.6666666666666666,
+                "top_bottom_spread": 0.12212635675512817,
+                "top_quantile_return": 0.28847145731966906,
+                "turnover": 7.4922521394943224,
+                "cost_adjusted_return": 0.11463410461563385,
+                "capacity_pressure": 0.009376315482411688,
+                "neutralized_icir": 0.5831239166222666,
+                "master_return_delta": 0.002957130926827831,
+                "sharpe_delta": 0.007402024525876714,
+                "max_drawdown_delta": 0.0,
+                "turnover_delta": 0.22476756418482965
+              },
+              "evaluation_id": "pv_short_reversal_5d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-05T18:32:18Z",
+              "factor_name": "pv_short_reversal_5d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9996387446376157,
+                "nan_rate": 0.0003612553623842854,
+                "icir": 0.5545397059626963,
+                "mean_rankic": 0.07597409254266303,
+                "positive_ic_ratio": 0.76,
+                "oos_positive_ratio": 0.6666666666666666,
+                "top_bottom_spread": 0.12212635675512817,
+                "top_quantile_return": 0.28847145731966906,
+                "turnover": 7.4922521394943224,
+                "cost_adjusted_return": 0.11463410461563385,
+                "capacity_pressure": 0.009376315482411688,
+                "neutralized_icir": 0.5831239166222666,
+                "master_return_delta": 0.002957130926827831,
+                "sharpe_delta": 0.007402024525876714,
+                "max_drawdown_delta": 0.0,
+                "turnover_delta": 0.22476756418482965
+              },
+              "evaluation_id": "pv_short_reversal_5d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            }
+          ]
         }
       }
     },
@@ -2671,7 +3665,1212 @@
           "window": 10,
           "description": "Negative 10-day coefficient of variation of volume; stable participation scores higher.",
           "literature_anchor": "trading_activity"
+        },
+        "health_monitor": {
+          "latest_reviewed_at": "2026-06-05T18:32:18Z",
+          "status": "healthy",
+          "action": "keep",
+          "consecutive_failures": 0,
+          "last_evaluation_id": "pv_volume_stability_10d",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-05T183218Z.md",
+          "latest_reasons": [],
+          "latest_health_metrics": {
+            "coverage_rate": 0.9993678031158275,
+            "nan_rate": 0.0006321968841724994,
+            "icir": 0.5463430230849419,
+            "mean_rankic": 0.03596699803535473,
+            "positive_ic_ratio": 0.72,
+            "oos_positive_ratio": 0.6666666666666666,
+            "top_bottom_spread": 0.045018341727859776,
+            "top_quantile_return": 0.21023326739015077,
+            "turnover": 7.364000111079247,
+            "cost_adjusted_return": 0.03765434161678053,
+            "capacity_pressure": 0.012828154165459925,
+            "neutralized_icir": 0.5781506484415131,
+            "master_return_delta": 0.0006078517136496472,
+            "sharpe_delta": 0.0027791453161006762,
+            "max_drawdown_delta": 0.0006695133861222602,
+            "turnover_delta": 0.2209200033323774
+          },
+          "history": [
+            {
+              "reviewed_at": "2026-06-05T12:50:28Z",
+              "factor_name": "pv_volume_stability_10d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9993678031158275,
+                "nan_rate": 0.0006321968841724994,
+                "icir": 0.5463430230849419,
+                "mean_rankic": 0.03596699803535473,
+                "positive_ic_ratio": 0.72,
+                "oos_positive_ratio": 0.6666666666666666,
+                "top_bottom_spread": 0.045018341727859776,
+                "top_quantile_return": 0.21023326739015077,
+                "turnover": 7.364000111079247,
+                "cost_adjusted_return": 0.03765434161678053,
+                "capacity_pressure": 0.012828154165459925,
+                "neutralized_icir": 0.5781506484415131,
+                "master_return_delta": 0.0006078517136496472,
+                "sharpe_delta": 0.0027791453161006762,
+                "max_drawdown_delta": 0.0006695133861222602,
+                "turnover_delta": 0.2209200033323774
+              },
+              "evaluation_id": "pv_volume_stability_10d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-05T18:32:18Z",
+              "factor_name": "pv_volume_stability_10d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9993678031158275,
+                "nan_rate": 0.0006321968841724994,
+                "icir": 0.5463430230849419,
+                "mean_rankic": 0.03596699803535473,
+                "positive_ic_ratio": 0.72,
+                "oos_positive_ratio": 0.6666666666666666,
+                "top_bottom_spread": 0.045018341727859776,
+                "top_quantile_return": 0.21023326739015077,
+                "turnover": 7.364000111079247,
+                "cost_adjusted_return": 0.03765434161678053,
+                "capacity_pressure": 0.012828154165459925,
+                "neutralized_icir": 0.5781506484415131,
+                "master_return_delta": 0.0006078517136496472,
+                "sharpe_delta": 0.0027791453161006762,
+                "max_drawdown_delta": 0.0006695133861222602,
+                "turnover_delta": 0.2209200033323774
+              },
+              "evaluation_id": "pv_volume_stability_10d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            }
+          ]
         }
+      }
+    },
+    {
+      "name": "pv_blend_volstab19x2_mom90_amihud5_w75",
+      "version": "v20260605",
+      "state": "production_factor",
+      "category": "trading_activity_momentum_liquidity",
+      "implementation": "price_volume:pv_blend_volstab19x2_mom90_amihud5_w75",
+      "weight": 0.05,
+      "direction": 1.0,
+      "horizon_days": 30,
+      "owner": "myQuant local factor governance",
+      "description": "Rank blend of smoothed volume stability with a momentum/Amihud composite.",
+      "tags": [
+        "local_price_volume",
+        "volume_stability_smooth",
+        "momentum",
+        "amihud_illiquidity",
+        "volstab_momentum_illiquidity_blend",
+        "quant_branch"
+      ],
+      "gate_results": [
+        {
+          "gate_id": 1,
+          "gate_key": "data_safety",
+          "title": "Gate 1: 数据安全",
+          "passed": true,
+          "reasons": [
+            "已确认 point-in-time、availability_date、复权与可交易性口径。"
+          ],
+          "metrics": {
+            "no_future_leakage": true,
+            "uses_availability_date": true,
+            "point_in_time_rebalance": true,
+            "adjusted_price_consistent": true,
+            "tradability_rules_defined": true,
+            "missingness_explained": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 2,
+          "gate_key": "coverage_stability",
+          "title": "Gate 2: 覆盖率和稳定性",
+          "passed": true,
+          "reasons": [
+            "覆盖率、缺失率、行业与市值分布通过。"
+          ],
+          "metrics": {
+            "coverage_rate": 0.9793333333333333,
+            "nan_rate": 0.020666666666666722,
+            "monthly_coverage_min": 0.9405555555555556,
+            "max_sector_coverage_share": 0.5571667596207474,
+            "max_size_bucket_coverage_share": 0.5571667596207474,
+            "extreme_value_ratio": 0.0,
+            "thematic": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 3,
+          "gate_key": "ic_rankic",
+          "title": "Gate 3: IC / RankIC",
+          "passed": true,
+          "reasons": [
+            "IC/RankIC 达到观察门槛，且方向未显示单一年份依赖。"
+          ],
+          "metrics": {
+            "icir": 0.5739981398295194,
+            "mean_rankic": 0.0382760018453762,
+            "positive_ic_ratio": 0.6857142857142857,
+            "rankic_direction_stable": true,
+            "max_single_year_ic_contribution": 0.4757588822988518
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 4,
+          "gate_key": "group_returns",
+          "title": "Gate 4: 分组收益",
+          "passed": true,
+          "reasons": [
+            "分组收益、top quantile 与 long-short spread 通过。"
+          ],
+          "metrics": {
+            "top_bottom_spread": 0.014624970093241457,
+            "top_quantile_return": 0.019735698997263105,
+            "monotonicity": 0.6142857142857143,
+            "long_short_from_long_side": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 5,
+          "gate_key": "cost_turnover",
+          "title": "Gate 5: 交易成本和换手",
+          "passed": true,
+          "reasons": [
+            "交易成本、滑点、换手与容量通过。"
+          ],
+          "metrics": {
+            "turnover": 9.993150623077057,
+            "cost_adjusted_return": 0.014541693838049149,
+            "slippage_sensitivity_ok": true,
+            "execution_realism": true,
+            "capacity_pressure": 0.0600203172375068
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 6,
+          "gate_key": "neutralization_exposure",
+          "title": "Gate 6: 中性化和暴露分析",
+          "passed": true,
+          "reasons": [
+            "中性化后仍有 alpha，且与现有因子不过度重合。"
+          ],
+          "metrics": {
+            "neutralized_icir": 0.5838753733054006,
+            "existing_factor_corr": 0.3729683537310593,
+            "style_exposure_only": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 7,
+          "gate_key": "oos_robustness",
+          "title": "Gate 7: 样本外和稳健性",
+          "passed": true,
+          "reasons": [
+            "walk-forward、参数、日期、频率、universe 与市场阶段稳健性通过。"
+          ],
+          "metrics": {
+            "oos_positive_ratio": 1.0,
+            "parameter_stability": true,
+            "date_range_robustness": true,
+            "rebalance_frequency_robustness": true,
+            "universe_robustness": true,
+            "regime_robustness": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 8,
+          "gate_key": "portfolio_incremental",
+          "title": "Gate 8: 组合增量验证",
+          "passed": true,
+          "reasons": [
+            "baseline + new factor 相对 baseline 有组合级增量。"
+          ],
+          "metrics": {
+            "master_return_delta": 4.179928299870295e-05,
+            "sharpe_delta": 0.0026652294265984144,
+            "max_drawdown_delta": 0.0004534471761843406,
+            "turnover_delta": 0.29979451869231166,
+            "execution_cost_delta": 2.498287655769264e-06,
+            "correlation_with_existing_signals": 0.3729683537310593
+          },
+          "severity": "info"
+        }
+      ],
+      "metrics": {
+        "no_future_leakage": true,
+        "uses_availability_date": true,
+        "point_in_time_rebalance": true,
+        "adjusted_price_consistent": true,
+        "tradability_rules_defined": true,
+        "missingness_explained": true,
+        "coverage_rate": 0.9793333333333333,
+        "nan_rate": 0.020666666666666722,
+        "monthly_coverage_min": 0.9405555555555556,
+        "max_sector_coverage_share": 0.5571667596207474,
+        "max_size_bucket_coverage_share": 0.5571667596207474,
+        "extreme_value_ratio": 0.0,
+        "icir": 0.5739981398295194,
+        "mean_rankic": 0.0382760018453762,
+        "positive_ic_ratio": 0.6857142857142857,
+        "rankic_direction_stable": true,
+        "max_single_year_ic_contribution": 0.4757588822988518,
+        "top_bottom_spread": 0.014624970093241457,
+        "top_quantile_return": 0.019735698997263105,
+        "monotonicity": 0.6142857142857143,
+        "long_short_from_long_side": true,
+        "turnover": 9.993150623077057,
+        "cost_adjusted_return": 0.014541693838049149,
+        "slippage_sensitivity_ok": true,
+        "execution_realism": true,
+        "capacity_pressure": 0.0600203172375068,
+        "neutralized_icir": 0.5838753733054006,
+        "existing_factor_corr": 0.3729683537310593,
+        "style_exposure_only": false,
+        "oos_positive_ratio": 1.0,
+        "parameter_stability": true,
+        "date_range_robustness": true,
+        "rebalance_frequency_robustness": true,
+        "universe_robustness": true,
+        "regime_robustness": true,
+        "master_return_delta": 4.179928299870295e-05,
+        "sharpe_delta": 0.0026652294265984144,
+        "max_drawdown_delta": 0.0004534471761843406,
+        "turnover_delta": 0.29979451869231166,
+        "execution_cost_delta": 2.498287655769264e-06,
+        "correlation_with_existing_signals": 0.3729683537310593,
+        "rank_ic_count": 35,
+        "mean_rankic_biweekly": 0.03545586713475478,
+        "universe_mean_rankic": {
+          "hs300": 0.03333532789675801,
+          "zz500": 0.029219982486330866,
+          "zz1000": 0.042120766450093015
+        },
+        "year_mean_rankic": {
+          "2023": 0.03746802999945387,
+          "2024": 0.05311293124907284,
+          "2025": 0.014610665108026097,
+          "2026": 0.06617517457670069
+        },
+        "blockers": []
+      },
+      "admission_decision": "production_candidate",
+      "thematic": false,
+      "narrow_coverage": false,
+      "approved_by": "user_requested_codex_delegated_promotion_20260605",
+      "approved_at": "2026-06-05T01:06:42Z",
+      "deprecated_reason": "",
+      "metadata": {
+        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/quant_branch_factor_mining_20260604_220329/quant_branch_factor_mining_results.json",
+        "source_run_timestamp": "2026-06-04T22:03:29",
+        "source_conclusion": "manual_production_factor_review_candidate",
+        "effective_analysis_start_date": "2023-06-30",
+        "promotion_reason": "User requested quant branch production promotion after local 8-gate production_candidate evidence.",
+        "promotion_scope": "quant_branch_governed_mined_factor_runtime",
+        "registry_write_source": "manual_delegated_update",
+        "candidate_maturity_start": true,
+        "min_candidate_signal_coverage": 0.6,
+        "fundamental_mart_root": "data/clean/cn_fundamental",
+        "legacy_fundamental_fallback_allowed": false,
+        "pit_coverage": {
+          "mart_root": "data/clean/cn_fundamental",
+          "daily_rows": 1977886,
+          "daily_blocker": "",
+          "metrics_requested": [
+            "fin_roe",
+            "fin_roa",
+            "fin_debt_to_assets",
+            "fin_net_profit_yoy",
+            "fin_ocf_to_profit",
+            "fin_fcf_to_profit",
+            "fcf_to_price"
+          ],
+          "coverage_by_metric": {
+            "fin_roe": 0.6233713850837138,
+            "fin_roa": 0.590183599695586,
+            "fin_debt_to_assets": 0.6249378488077119,
+            "fin_net_profit_yoy": 0.6248668188736682,
+            "fin_ocf_to_profit": 0.5610949391171994,
+            "fin_fcf_to_profit": 0.5609950532724506,
+            "fcf_to_price": 0.6228957382039574
+          },
+          "fin_ocf_to_profit_symbols": 1692,
+          "fin_ocf_to_profit_ratio_rows": 1769469,
+          "legacy_fallback_allowed": false,
+          "pit_rows": 0
+        },
+        "params": {
+          "volume_stability_base_window": 19,
+          "volume_stability_smooth_window": 2,
+          "momentum_window": 90,
+          "amihud_window": 5,
+          "outer_volume_stability_weight": 0.75,
+          "inner_momentum_weight": 0.6
+        },
+        "spec": {
+          "name": "pv_blend_volstab19x2_mom90_amihud5_w75",
+          "family": "volstab_momentum_illiquidity_blend",
+          "category": "trading_activity_momentum_liquidity",
+          "window": 90,
+          "description": "Rank blend of smoothed volume stability with a momentum/Amihud composite.",
+          "formula": "outer_weight * cs_rank(volume_stability_smooth_19d_2d) + (1 - outer_weight) * cs_rank(0.60 * cs_rank(momentum_90) + 0.40 * cs_rank(amihud_5))"
+        },
+        "health_monitor": {
+          "latest_reviewed_at": "2026-06-05T18:32:18Z",
+          "status": "healthy",
+          "action": "keep",
+          "consecutive_failures": 0,
+          "last_evaluation_id": "pv_blend_volstab19x2_mom90_amihud5_w75",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-05T183218Z.md",
+          "latest_reasons": [],
+          "latest_health_metrics": {
+            "coverage_rate": 0.9793333333333333,
+            "nan_rate": 0.020666666666666722,
+            "icir": 0.5739981398295194,
+            "mean_rankic": 0.0382760018453762,
+            "positive_ic_ratio": 0.6857142857142857,
+            "oos_positive_ratio": 1.0,
+            "top_bottom_spread": 0.014624970093241457,
+            "top_quantile_return": 0.019735698997263105,
+            "turnover": 9.993150623077057,
+            "cost_adjusted_return": 0.014541693838049149,
+            "capacity_pressure": 0.0600203172375068,
+            "neutralized_icir": 0.5838753733054006,
+            "master_return_delta": 4.179928299870295e-05,
+            "sharpe_delta": 0.0026652294265984144,
+            "max_drawdown_delta": 0.0004534471761843406,
+            "turnover_delta": 0.29979451869231166
+          },
+          "history": [
+            {
+              "reviewed_at": "2026-06-05T12:50:28Z",
+              "factor_name": "pv_blend_volstab19x2_mom90_amihud5_w75",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9793333333333333,
+                "nan_rate": 0.020666666666666722,
+                "icir": 0.5739981398295194,
+                "mean_rankic": 0.0382760018453762,
+                "positive_ic_ratio": 0.6857142857142857,
+                "oos_positive_ratio": 1.0,
+                "top_bottom_spread": 0.014624970093241457,
+                "top_quantile_return": 0.019735698997263105,
+                "turnover": 9.993150623077057,
+                "cost_adjusted_return": 0.014541693838049149,
+                "capacity_pressure": 0.0600203172375068,
+                "neutralized_icir": 0.5838753733054006,
+                "master_return_delta": 4.179928299870295e-05,
+                "sharpe_delta": 0.0026652294265984144,
+                "max_drawdown_delta": 0.0004534471761843406,
+                "turnover_delta": 0.29979451869231166
+              },
+              "evaluation_id": "pv_blend_volstab19x2_mom90_amihud5_w75",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-05T18:32:18Z",
+              "factor_name": "pv_blend_volstab19x2_mom90_amihud5_w75",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9793333333333333,
+                "nan_rate": 0.020666666666666722,
+                "icir": 0.5739981398295194,
+                "mean_rankic": 0.0382760018453762,
+                "positive_ic_ratio": 0.6857142857142857,
+                "oos_positive_ratio": 1.0,
+                "top_bottom_spread": 0.014624970093241457,
+                "top_quantile_return": 0.019735698997263105,
+                "turnover": 9.993150623077057,
+                "cost_adjusted_return": 0.014541693838049149,
+                "capacity_pressure": 0.0600203172375068,
+                "neutralized_icir": 0.5838753733054006,
+                "master_return_delta": 4.179928299870295e-05,
+                "sharpe_delta": 0.0026652294265984144,
+                "max_drawdown_delta": 0.0004534471761843406,
+                "turnover_delta": 0.29979451869231166
+              },
+              "evaluation_id": "pv_blend_volstab19x2_mom90_amihud5_w75",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "pv_blend_volstab19x2_mom90_amihud5_w70",
+      "version": "v20260605",
+      "state": "production_factor",
+      "category": "trading_activity_momentum_liquidity",
+      "implementation": "price_volume:pv_blend_volstab19x2_mom90_amihud5_w70",
+      "weight": 0.05,
+      "direction": 1.0,
+      "horizon_days": 30,
+      "owner": "myQuant local factor governance",
+      "description": "Rank blend of smoothed volume stability with a momentum/Amihud composite.",
+      "tags": [
+        "local_price_volume",
+        "volume_stability_smooth",
+        "momentum",
+        "amihud_illiquidity",
+        "volstab_momentum_illiquidity_blend",
+        "quant_branch"
+      ],
+      "gate_results": [
+        {
+          "gate_id": 1,
+          "gate_key": "data_safety",
+          "title": "Gate 1: 数据安全",
+          "passed": true,
+          "reasons": [
+            "已确认 point-in-time、availability_date、复权与可交易性口径。"
+          ],
+          "metrics": {
+            "no_future_leakage": true,
+            "uses_availability_date": true,
+            "point_in_time_rebalance": true,
+            "adjusted_price_consistent": true,
+            "tradability_rules_defined": true,
+            "missingness_explained": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 2,
+          "gate_key": "coverage_stability",
+          "title": "Gate 2: 覆盖率和稳定性",
+          "passed": true,
+          "reasons": [
+            "覆盖率、缺失率、行业与市值分布通过。"
+          ],
+          "metrics": {
+            "coverage_rate": 0.9793333333333333,
+            "nan_rate": 0.020666666666666722,
+            "monthly_coverage_min": 0.9405555555555556,
+            "max_sector_coverage_share": 0.5571667596207474,
+            "max_size_bucket_coverage_share": 0.5571667596207474,
+            "extreme_value_ratio": 0.0,
+            "thematic": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 3,
+          "gate_key": "ic_rankic",
+          "title": "Gate 3: IC / RankIC",
+          "passed": true,
+          "reasons": [
+            "IC/RankIC 达到观察门槛，且方向未显示单一年份依赖。"
+          ],
+          "metrics": {
+            "icir": 0.5358172983413233,
+            "mean_rankic": 0.03720901023331961,
+            "positive_ic_ratio": 0.6857142857142857,
+            "rankic_direction_stable": true,
+            "max_single_year_ic_contribution": 0.5057810500599892
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 4,
+          "gate_key": "group_returns",
+          "title": "Gate 4: 分组收益",
+          "passed": true,
+          "reasons": [
+            "分组收益、top quantile 与 long-short spread 通过。"
+          ],
+          "metrics": {
+            "top_bottom_spread": 0.01496573374282096,
+            "top_quantile_return": 0.019588146423295556,
+            "monotonicity": 0.6214285714285714,
+            "long_short_from_long_side": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 5,
+          "gate_key": "cost_turnover",
+          "title": "Gate 5: 交易成本和换手",
+          "passed": true,
+          "reasons": [
+            "交易成本、滑点、换手与容量通过。"
+          ],
+          "metrics": {
+            "turnover": 9.852769028497125,
+            "cost_adjusted_return": 0.01488362733425015,
+            "slippage_sensitivity_ok": true,
+            "execution_realism": true,
+            "capacity_pressure": 0.06112475490348591
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 6,
+          "gate_key": "neutralization_exposure",
+          "title": "Gate 6: 中性化和暴露分析",
+          "passed": true,
+          "reasons": [
+            "中性化后仍有 alpha，且与现有因子不过度重合。"
+          ],
+          "metrics": {
+            "neutralized_icir": 0.5466785298398653,
+            "existing_factor_corr": 0.37902608218070866,
+            "style_exposure_only": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 7,
+          "gate_key": "oos_robustness",
+          "title": "Gate 7: 样本外和稳健性",
+          "passed": true,
+          "reasons": [
+            "walk-forward、参数、日期、频率、universe 与市场阶段稳健性通过。"
+          ],
+          "metrics": {
+            "oos_positive_ratio": 1.0,
+            "parameter_stability": true,
+            "date_range_robustness": true,
+            "rebalance_frequency_robustness": true,
+            "universe_robustness": true,
+            "regime_robustness": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 8,
+          "gate_key": "portfolio_incremental",
+          "title": "Gate 8: 组合增量验证",
+          "passed": true,
+          "reasons": [
+            "baseline + new factor 相对 baseline 有组合级增量。"
+          ],
+          "metrics": {
+            "master_return_delta": 3.737270577967508e-05,
+            "sharpe_delta": 0.002274128366452466,
+            "max_drawdown_delta": 0.0004181695016854947,
+            "turnover_delta": 0.29558307085491375,
+            "execution_cost_delta": 2.463192257124281e-06,
+            "correlation_with_existing_signals": 0.37902608218070866
+          },
+          "severity": "info"
+        }
+      ],
+      "metrics": {
+        "no_future_leakage": true,
+        "uses_availability_date": true,
+        "point_in_time_rebalance": true,
+        "adjusted_price_consistent": true,
+        "tradability_rules_defined": true,
+        "missingness_explained": true,
+        "coverage_rate": 0.9793333333333333,
+        "nan_rate": 0.020666666666666722,
+        "monthly_coverage_min": 0.9405555555555556,
+        "max_sector_coverage_share": 0.5571667596207474,
+        "max_size_bucket_coverage_share": 0.5571667596207474,
+        "extreme_value_ratio": 0.0,
+        "icir": 0.5358172983413233,
+        "mean_rankic": 0.03720901023331961,
+        "positive_ic_ratio": 0.6857142857142857,
+        "rankic_direction_stable": true,
+        "max_single_year_ic_contribution": 0.5057810500599892,
+        "top_bottom_spread": 0.01496573374282096,
+        "top_quantile_return": 0.019588146423295556,
+        "monotonicity": 0.6214285714285714,
+        "long_short_from_long_side": true,
+        "turnover": 9.852769028497125,
+        "cost_adjusted_return": 0.01488362733425015,
+        "slippage_sensitivity_ok": true,
+        "execution_realism": true,
+        "capacity_pressure": 0.06112475490348591,
+        "neutralized_icir": 0.5466785298398653,
+        "existing_factor_corr": 0.37902608218070866,
+        "style_exposure_only": false,
+        "oos_positive_ratio": 1.0,
+        "parameter_stability": true,
+        "date_range_robustness": true,
+        "rebalance_frequency_robustness": true,
+        "universe_robustness": true,
+        "regime_robustness": true,
+        "master_return_delta": 3.737270577967508e-05,
+        "sharpe_delta": 0.002274128366452466,
+        "max_drawdown_delta": 0.0004181695016854947,
+        "turnover_delta": 0.29558307085491375,
+        "execution_cost_delta": 2.463192257124281e-06,
+        "correlation_with_existing_signals": 0.37902608218070866,
+        "rank_ic_count": 35,
+        "mean_rankic_biweekly": 0.03419674875925551,
+        "universe_mean_rankic": {
+          "hs300": 0.030340255515316036,
+          "zz500": 0.029165777764782776,
+          "zz1000": 0.041834239014159016
+        },
+        "year_mean_rankic": {
+          "2023": 0.03303813836413403,
+          "2024": 0.05489053578021206,
+          "2025": 0.013319351433319679,
+          "2026": 0.06313243576371678
+        },
+        "blockers": []
+      },
+      "admission_decision": "production_candidate",
+      "thematic": false,
+      "narrow_coverage": false,
+      "approved_by": "user_requested_codex_delegated_promotion_20260605",
+      "approved_at": "2026-06-05T01:06:42Z",
+      "deprecated_reason": "",
+      "metadata": {
+        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/quant_branch_factor_mining_20260604_220329/quant_branch_factor_mining_results.json",
+        "source_run_timestamp": "2026-06-04T22:03:29",
+        "source_conclusion": "manual_production_factor_review_candidate",
+        "effective_analysis_start_date": "2023-06-30",
+        "promotion_reason": "User requested quant branch production promotion after local 8-gate production_candidate evidence.",
+        "promotion_scope": "quant_branch_governed_mined_factor_runtime",
+        "registry_write_source": "manual_delegated_update",
+        "candidate_maturity_start": true,
+        "min_candidate_signal_coverage": 0.6,
+        "fundamental_mart_root": "data/clean/cn_fundamental",
+        "legacy_fundamental_fallback_allowed": false,
+        "pit_coverage": {
+          "mart_root": "data/clean/cn_fundamental",
+          "daily_rows": 1977886,
+          "daily_blocker": "",
+          "metrics_requested": [
+            "fin_roe",
+            "fin_roa",
+            "fin_debt_to_assets",
+            "fin_net_profit_yoy",
+            "fin_ocf_to_profit",
+            "fin_fcf_to_profit",
+            "fcf_to_price"
+          ],
+          "coverage_by_metric": {
+            "fin_roe": 0.6233713850837138,
+            "fin_roa": 0.590183599695586,
+            "fin_debt_to_assets": 0.6249378488077119,
+            "fin_net_profit_yoy": 0.6248668188736682,
+            "fin_ocf_to_profit": 0.5610949391171994,
+            "fin_fcf_to_profit": 0.5609950532724506,
+            "fcf_to_price": 0.6228957382039574
+          },
+          "fin_ocf_to_profit_symbols": 1692,
+          "fin_ocf_to_profit_ratio_rows": 1769469,
+          "legacy_fallback_allowed": false,
+          "pit_rows": 0
+        },
+        "params": {
+          "volume_stability_base_window": 19,
+          "volume_stability_smooth_window": 2,
+          "momentum_window": 90,
+          "amihud_window": 5,
+          "outer_volume_stability_weight": 0.7,
+          "inner_momentum_weight": 0.6
+        },
+        "spec": {
+          "name": "pv_blend_volstab19x2_mom90_amihud5_w70",
+          "family": "volstab_momentum_illiquidity_blend",
+          "category": "trading_activity_momentum_liquidity",
+          "window": 90,
+          "description": "Rank blend of smoothed volume stability with a momentum/Amihud composite.",
+          "formula": "outer_weight * cs_rank(volume_stability_smooth_19d_2d) + (1 - outer_weight) * cs_rank(0.60 * cs_rank(momentum_90) + 0.40 * cs_rank(amihud_5))"
+        },
+        "health_monitor": {
+          "latest_reviewed_at": "2026-06-05T18:32:18Z",
+          "status": "healthy",
+          "action": "keep",
+          "consecutive_failures": 0,
+          "last_evaluation_id": "pv_blend_volstab19x2_mom90_amihud5_w70",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-05T183218Z.md",
+          "latest_reasons": [],
+          "latest_health_metrics": {
+            "coverage_rate": 0.9793333333333333,
+            "nan_rate": 0.020666666666666722,
+            "icir": 0.5358172983413233,
+            "mean_rankic": 0.03720901023331961,
+            "positive_ic_ratio": 0.6857142857142857,
+            "oos_positive_ratio": 1.0,
+            "top_bottom_spread": 0.01496573374282096,
+            "top_quantile_return": 0.019588146423295556,
+            "turnover": 9.852769028497125,
+            "cost_adjusted_return": 0.01488362733425015,
+            "capacity_pressure": 0.06112475490348591,
+            "neutralized_icir": 0.5466785298398653,
+            "master_return_delta": 3.737270577967508e-05,
+            "sharpe_delta": 0.002274128366452466,
+            "max_drawdown_delta": 0.0004181695016854947,
+            "turnover_delta": 0.29558307085491375
+          },
+          "history": [
+            {
+              "reviewed_at": "2026-06-05T12:50:28Z",
+              "factor_name": "pv_blend_volstab19x2_mom90_amihud5_w70",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9793333333333333,
+                "nan_rate": 0.020666666666666722,
+                "icir": 0.5358172983413233,
+                "mean_rankic": 0.03720901023331961,
+                "positive_ic_ratio": 0.6857142857142857,
+                "oos_positive_ratio": 1.0,
+                "top_bottom_spread": 0.01496573374282096,
+                "top_quantile_return": 0.019588146423295556,
+                "turnover": 9.852769028497125,
+                "cost_adjusted_return": 0.01488362733425015,
+                "capacity_pressure": 0.06112475490348591,
+                "neutralized_icir": 0.5466785298398653,
+                "master_return_delta": 3.737270577967508e-05,
+                "sharpe_delta": 0.002274128366452466,
+                "max_drawdown_delta": 0.0004181695016854947,
+                "turnover_delta": 0.29558307085491375
+              },
+              "evaluation_id": "pv_blend_volstab19x2_mom90_amihud5_w70",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-05T18:32:18Z",
+              "factor_name": "pv_blend_volstab19x2_mom90_amihud5_w70",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9793333333333333,
+                "nan_rate": 0.020666666666666722,
+                "icir": 0.5358172983413233,
+                "mean_rankic": 0.03720901023331961,
+                "positive_ic_ratio": 0.6857142857142857,
+                "oos_positive_ratio": 1.0,
+                "top_bottom_spread": 0.01496573374282096,
+                "top_quantile_return": 0.019588146423295556,
+                "turnover": 9.852769028497125,
+                "cost_adjusted_return": 0.01488362733425015,
+                "capacity_pressure": 0.06112475490348591,
+                "neutralized_icir": 0.5466785298398653,
+                "master_return_delta": 3.737270577967508e-05,
+                "sharpe_delta": 0.002274128366452466,
+                "max_drawdown_delta": 0.0004181695016854947,
+                "turnover_delta": 0.29558307085491375
+              },
+              "evaluation_id": "pv_blend_volstab19x2_mom90_amihud5_w70",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "alpha_mix_vwap120_25_ocfprofit_75",
+      "version": "shadow-20260604",
+      "state": "research_candidate",
+      "category": "aquant_expression_shadow",
+      "implementation": "aquant_expression:alpha_mix_vwap120_25_ocfprofit_75",
+      "weight": 0.0,
+      "direction": 1.0,
+      "horizon_days": 30,
+      "owner": "A_quant research / myQuant runtime bridge",
+      "description": "Shadow registration for A_quant VWAP plus PIT OCF/profit expression. Not selectable until manual production promotion.",
+      "tags": [
+        "aquant",
+        "shadow",
+        "pit_fundamental",
+        "not_production"
+      ],
+      "gate_results": [],
+      "metrics": {},
+      "admission_decision": null,
+      "thematic": false,
+      "narrow_coverage": false,
+      "approved_by": "",
+      "approved_at": "",
+      "deprecated_reason": "",
+      "metadata": {
+        "expression": "cs_rank(0.25 * cs_rank(ts_mean((vwap - close) / close, 120)) + 0.75 * cs_rank(fin_ocf_to_profit))",
+        "required_fields": [
+          "vwap",
+          "close",
+          "fin_ocf_to_profit"
+        ],
+        "fundamental_mart_root": "data/clean/cn_fundamental",
+        "allow_legacy_fundamental_fallback": false,
+        "gate_evidence_required": true,
+        "promotion_rule": "manual production_factor promotion only after all 8 gates pass on the current PIT mart readiness run"
+      }
+    },
+    {
+      "name": "alpha_mix_vwap200_25_ocfprofit_75",
+      "version": "shadow-20260604",
+      "state": "research_candidate",
+      "category": "aquant_expression_shadow",
+      "implementation": "aquant_expression:alpha_mix_vwap200_25_ocfprofit_75",
+      "weight": 0.0,
+      "direction": 1.0,
+      "horizon_days": 30,
+      "owner": "A_quant research / myQuant runtime bridge",
+      "description": "Shadow registration for A_quant VWAP plus PIT OCF/profit expression. Not selectable until manual production promotion.",
+      "tags": [
+        "aquant",
+        "shadow",
+        "pit_fundamental",
+        "not_production"
+      ],
+      "gate_results": [],
+      "metrics": {},
+      "admission_decision": null,
+      "thematic": false,
+      "narrow_coverage": false,
+      "approved_by": "",
+      "approved_at": "",
+      "deprecated_reason": "",
+      "metadata": {
+        "expression": "cs_rank(0.25 * cs_rank(ts_mean((vwap - close) / close, 200)) + 0.75 * cs_rank(fin_ocf_to_profit))",
+        "required_fields": [
+          "vwap",
+          "close",
+          "fin_ocf_to_profit"
+        ],
+        "fundamental_mart_root": "data/clean/cn_fundamental",
+        "allow_legacy_fundamental_fallback": false,
+        "gate_evidence_required": true,
+        "promotion_rule": "manual production_factor promotion only after all 8 gates pass on the current PIT mart readiness run"
+      }
+    },
+    {
+      "name": "alpha_mix_vwap200_50_ocfprofit_50",
+      "version": "shadow-20260604",
+      "state": "research_candidate",
+      "category": "aquant_expression_shadow",
+      "implementation": "aquant_expression:alpha_mix_vwap200_50_ocfprofit_50",
+      "weight": 0.0,
+      "direction": 1.0,
+      "horizon_days": 30,
+      "owner": "A_quant research / myQuant runtime bridge",
+      "description": "Shadow registration for A_quant VWAP plus PIT OCF/profit expression. Not selectable until manual production promotion.",
+      "tags": [
+        "aquant",
+        "shadow",
+        "pit_fundamental",
+        "not_production"
+      ],
+      "gate_results": [],
+      "metrics": {},
+      "admission_decision": null,
+      "thematic": false,
+      "narrow_coverage": false,
+      "approved_by": "",
+      "approved_at": "",
+      "deprecated_reason": "",
+      "metadata": {
+        "expression": "cs_rank(0.5 * cs_rank(ts_mean((vwap - close) / close, 200)) + 0.5 * cs_rank(fin_ocf_to_profit))",
+        "required_fields": [
+          "vwap",
+          "close",
+          "fin_ocf_to_profit"
+        ],
+        "fundamental_mart_root": "data/clean/cn_fundamental",
+        "allow_legacy_fundamental_fallback": false,
+        "gate_evidence_required": true,
+        "promotion_rule": "manual production_factor promotion only after all 8 gates pass on the current PIT mart readiness run"
+      }
+    },
+    {
+      "name": "alpha_mix_vwap200_60_ocfprofit_40",
+      "version": "shadow-20260604",
+      "state": "research_candidate",
+      "category": "aquant_expression_shadow",
+      "implementation": "aquant_expression:alpha_mix_vwap200_60_ocfprofit_40",
+      "weight": 0.0,
+      "direction": 1.0,
+      "horizon_days": 30,
+      "owner": "A_quant research / myQuant runtime bridge",
+      "description": "Shadow registration for A_quant VWAP plus PIT OCF/profit expression. Not selectable until manual production promotion.",
+      "tags": [
+        "aquant",
+        "shadow",
+        "pit_fundamental",
+        "not_production"
+      ],
+      "gate_results": [],
+      "metrics": {},
+      "admission_decision": null,
+      "thematic": false,
+      "narrow_coverage": false,
+      "approved_by": "",
+      "approved_at": "",
+      "deprecated_reason": "",
+      "metadata": {
+        "expression": "cs_rank(0.6 * cs_rank(ts_mean((vwap - close) / close, 200)) + 0.4 * cs_rank(fin_ocf_to_profit))",
+        "required_fields": [
+          "vwap",
+          "close",
+          "fin_ocf_to_profit"
+        ],
+        "fundamental_mart_root": "data/clean/cn_fundamental",
+        "allow_legacy_fundamental_fallback": false,
+        "gate_evidence_required": true,
+        "promotion_rule": "manual production_factor promotion only after all 8 gates pass on the current PIT mart readiness run"
+      }
+    },
+    {
+      "name": "alpha_mix_vwap200_75_ocfprofit_25",
+      "version": "shadow-20260604",
+      "state": "research_candidate",
+      "category": "aquant_expression_shadow",
+      "implementation": "aquant_expression:alpha_mix_vwap200_75_ocfprofit_25",
+      "weight": 0.0,
+      "direction": 1.0,
+      "horizon_days": 30,
+      "owner": "A_quant research / myQuant runtime bridge",
+      "description": "Shadow registration for A_quant VWAP plus PIT OCF/profit expression. Not selectable until manual production promotion.",
+      "tags": [
+        "aquant",
+        "shadow",
+        "pit_fundamental",
+        "not_production"
+      ],
+      "gate_results": [],
+      "metrics": {},
+      "admission_decision": null,
+      "thematic": false,
+      "narrow_coverage": false,
+      "approved_by": "",
+      "approved_at": "",
+      "deprecated_reason": "",
+      "metadata": {
+        "expression": "cs_rank(0.75 * cs_rank(ts_mean((vwap - close) / close, 200)) + 0.25 * cs_rank(fin_ocf_to_profit))",
+        "required_fields": [
+          "vwap",
+          "close",
+          "fin_ocf_to_profit"
+        ],
+        "fundamental_mart_root": "data/clean/cn_fundamental",
+        "allow_legacy_fundamental_fallback": false,
+        "gate_evidence_required": true,
+        "promotion_rule": "manual production_factor promotion only after all 8 gates pass on the current PIT mart readiness run"
+      }
+    },
+    {
+      "name": "alpha_mix_vwap40_25_ocfprofit_75",
+      "version": "shadow-20260604",
+      "state": "research_candidate",
+      "category": "aquant_expression_shadow",
+      "implementation": "aquant_expression:alpha_mix_vwap40_25_ocfprofit_75",
+      "weight": 0.0,
+      "direction": 1.0,
+      "horizon_days": 30,
+      "owner": "A_quant research / myQuant runtime bridge",
+      "description": "Shadow registration for A_quant VWAP plus PIT OCF/profit expression. Not selectable until manual production promotion.",
+      "tags": [
+        "aquant",
+        "shadow",
+        "pit_fundamental",
+        "not_production"
+      ],
+      "gate_results": [],
+      "metrics": {},
+      "admission_decision": null,
+      "thematic": false,
+      "narrow_coverage": false,
+      "approved_by": "",
+      "approved_at": "",
+      "deprecated_reason": "",
+      "metadata": {
+        "expression": "cs_rank(0.25 * cs_rank(ts_mean((vwap - close) / close, 40)) + 0.75 * cs_rank(fin_ocf_to_profit))",
+        "required_fields": [
+          "vwap",
+          "close",
+          "fin_ocf_to_profit"
+        ],
+        "fundamental_mart_root": "data/clean/cn_fundamental",
+        "allow_legacy_fundamental_fallback": false,
+        "gate_evidence_required": true,
+        "promotion_rule": "manual production_factor promotion only after all 8 gates pass on the current PIT mart readiness run"
+      }
+    },
+    {
+      "name": "alpha_mix_vwap40_30_ocfprofit_70",
+      "version": "shadow-20260604",
+      "state": "research_candidate",
+      "category": "aquant_expression_shadow",
+      "implementation": "aquant_expression:alpha_mix_vwap40_30_ocfprofit_70",
+      "weight": 0.0,
+      "direction": 1.0,
+      "horizon_days": 30,
+      "owner": "A_quant research / myQuant runtime bridge",
+      "description": "Shadow registration for A_quant VWAP plus PIT OCF/profit expression. Not selectable until manual production promotion.",
+      "tags": [
+        "aquant",
+        "shadow",
+        "pit_fundamental",
+        "not_production"
+      ],
+      "gate_results": [],
+      "metrics": {},
+      "admission_decision": null,
+      "thematic": false,
+      "narrow_coverage": false,
+      "approved_by": "",
+      "approved_at": "",
+      "deprecated_reason": "",
+      "metadata": {
+        "expression": "cs_rank(0.3 * cs_rank(ts_mean((vwap - close) / close, 40)) + 0.7 * cs_rank(fin_ocf_to_profit))",
+        "required_fields": [
+          "vwap",
+          "close",
+          "fin_ocf_to_profit"
+        ],
+        "fundamental_mart_root": "data/clean/cn_fundamental",
+        "allow_legacy_fundamental_fallback": false,
+        "gate_evidence_required": true,
+        "promotion_rule": "manual production_factor promotion only after all 8 gates pass on the current PIT mart readiness run"
+      }
+    },
+    {
+      "name": "alpha_mix_vwap40_35_ocfprofit_65",
+      "version": "shadow-20260604",
+      "state": "research_candidate",
+      "category": "aquant_expression_shadow",
+      "implementation": "aquant_expression:alpha_mix_vwap40_35_ocfprofit_65",
+      "weight": 0.0,
+      "direction": 1.0,
+      "horizon_days": 30,
+      "owner": "A_quant research / myQuant runtime bridge",
+      "description": "Shadow registration for A_quant VWAP plus PIT OCF/profit expression. Not selectable until manual production promotion.",
+      "tags": [
+        "aquant",
+        "shadow",
+        "pit_fundamental",
+        "not_production"
+      ],
+      "gate_results": [],
+      "metrics": {},
+      "admission_decision": null,
+      "thematic": false,
+      "narrow_coverage": false,
+      "approved_by": "",
+      "approved_at": "",
+      "deprecated_reason": "",
+      "metadata": {
+        "expression": "cs_rank(0.35 * cs_rank(ts_mean((vwap - close) / close, 40)) + 0.65 * cs_rank(fin_ocf_to_profit))",
+        "required_fields": [
+          "vwap",
+          "close",
+          "fin_ocf_to_profit"
+        ],
+        "fundamental_mart_root": "data/clean/cn_fundamental",
+        "allow_legacy_fundamental_fallback": false,
+        "gate_evidence_required": true,
+        "promotion_rule": "manual production_factor promotion only after all 8 gates pass on the current PIT mart readiness run"
+      }
+    },
+    {
+      "name": "alpha_mix_vwap40_50_ocfprofit_50",
+      "version": "shadow-20260604",
+      "state": "research_candidate",
+      "category": "aquant_expression_shadow",
+      "implementation": "aquant_expression:alpha_mix_vwap40_50_ocfprofit_50",
+      "weight": 0.0,
+      "direction": 1.0,
+      "horizon_days": 30,
+      "owner": "A_quant research / myQuant runtime bridge",
+      "description": "Shadow registration for A_quant VWAP plus PIT OCF/profit expression. Not selectable until manual production promotion.",
+      "tags": [
+        "aquant",
+        "shadow",
+        "pit_fundamental",
+        "not_production"
+      ],
+      "gate_results": [],
+      "metrics": {},
+      "admission_decision": null,
+      "thematic": false,
+      "narrow_coverage": false,
+      "approved_by": "",
+      "approved_at": "",
+      "deprecated_reason": "",
+      "metadata": {
+        "expression": "cs_rank(0.5 * cs_rank(ts_mean((vwap - close) / close, 40)) + 0.5 * cs_rank(fin_ocf_to_profit))",
+        "required_fields": [
+          "vwap",
+          "close",
+          "fin_ocf_to_profit"
+        ],
+        "fundamental_mart_root": "data/clean/cn_fundamental",
+        "allow_legacy_fundamental_fallback": false,
+        "gate_evidence_required": true,
+        "promotion_rule": "manual production_factor promotion only after all 8 gates pass on the current PIT mart readiness run"
+      }
+    },
+    {
+      "name": "alpha_mix_vwap80_40_ocfprofit_60",
+      "version": "shadow-20260604",
+      "state": "research_candidate",
+      "category": "aquant_expression_shadow",
+      "implementation": "aquant_expression:alpha_mix_vwap80_40_ocfprofit_60",
+      "weight": 0.0,
+      "direction": 1.0,
+      "horizon_days": 30,
+      "owner": "A_quant research / myQuant runtime bridge",
+      "description": "Shadow registration for A_quant VWAP plus PIT OCF/profit expression. Not selectable until manual production promotion.",
+      "tags": [
+        "aquant",
+        "shadow",
+        "pit_fundamental",
+        "not_production"
+      ],
+      "gate_results": [],
+      "metrics": {},
+      "admission_decision": null,
+      "thematic": false,
+      "narrow_coverage": false,
+      "approved_by": "",
+      "approved_at": "",
+      "deprecated_reason": "",
+      "metadata": {
+        "expression": "cs_rank(0.4 * cs_rank(ts_mean((vwap - close) / close, 80)) + 0.6 * cs_rank(fin_ocf_to_profit))",
+        "required_fields": [
+          "vwap",
+          "close",
+          "fin_ocf_to_profit"
+        ],
+        "fundamental_mart_root": "data/clean/cn_fundamental",
+        "allow_legacy_fundamental_fallback": false,
+        "gate_evidence_required": true,
+        "promotion_rule": "manual production_factor promotion only after all 8 gates pass on the current PIT mart readiness run"
       }
     }
   ]

@@ -1,0 +1,137 @@
+from __future__ import annotations
+
+import json
+
+import pandas as pd
+
+from quant_investor.market.data_governance import run_data_governance
+from quant_investor.market.intelligence_mart import build_intelligence_daily, write_intelligence_mart
+from quant_investor.market.macro_mart import write_macro_mart
+
+
+def _daily_frame(symbol: str = "000001.SZ") -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "ts_code": [symbol, symbol],
+            "trade_date": ["20240509", "20240510"],
+            "open": [10.0, 10.2],
+            "high": [10.3, 10.5],
+            "low": [9.9, 10.0],
+            "close": [10.1, 10.4],
+            "volume": [1000.0, 1200.0],
+            "amount": [10_000.0, 12_500.0],
+        }
+    )
+
+
+def _write_local_daily(root):
+    path = root / "hs300"
+    path.mkdir(parents=True)
+    _daily_frame().to_csv(path / "000001.SZ.csv", index=False)
+
+
+def _write_fundamental(root):
+    root.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": "20240510",
+                "availability_date": "2024-04-30",
+                "source": "tushare_fina_indicator;forecast",
+                "source_priority": "tushare_primary",
+                "fin_roe": 0.13,
+                "fin_roa": 0.06,
+                "fin_debt_to_assets": 0.42,
+                "fin_net_profit_yoy": 0.18,
+                "fin_ocf_to_profit": 1.12,
+                "fin_fcf_to_profit": 0.88,
+                "fcf_to_price": 0.04,
+                "forecast_revision": 0.05,
+            }
+        ]
+    ).to_csv(root / "fundamental_daily.csv", index=False)
+    (root / "latest_manifest.json").write_text(
+        json.dumps({"provider_status": "tushare_primary", "source_priority": "tushare_primary"}),
+        encoding="utf-8",
+    )
+
+
+def test_data_governance_default_is_local_read_only(tmp_path):
+    daily_root = tmp_path / "cn_daily"
+    fundamental_root = tmp_path / "cn_fundamental"
+    intelligence_root = tmp_path / "cn_intelligence"
+    macro_root = tmp_path / "cn_macro"
+    _write_local_daily(daily_root)
+    _write_fundamental(fundamental_root)
+    frame = _daily_frame()
+    intelligence_daily = build_intelligence_daily({"000001.SZ": frame})
+    write_intelligence_mart(intelligence_daily, data_root=intelligence_root, raw_snapshot_root=tmp_path / "snapshots" / "intelligence")
+    write_macro_mart(
+        {
+            "trade_date": "20240510",
+            "macro_score": 0.2,
+            "liquidity_score": 0.4,
+            "volatility_percentile": 45.0,
+            "policy_signal": "neutral",
+            "source": "tushare_macro",
+            "source_priority": "tushare_primary",
+        },
+        data_root=macro_root,
+        raw_snapshot_root=tmp_path / "snapshots" / "macro",
+    )
+
+    result = run_data_governance(
+        market="CN",
+        categories=["full_a"],
+        as_of="20240510",
+        data_dir=daily_root,
+        fundamental_root=fundamental_root,
+        intelligence_root=intelligence_root,
+        macro_root=macro_root,
+        output_dir=tmp_path / "reports",
+    )
+
+    assert result["local_read_only"] is True
+    assert result["allow_live"] is False
+    assert result["reports"][0]["readiness"]["macro"]["status"] == "pass"
+    assert (tmp_path / "reports").joinpath(result["artifacts"]["full_a"]["json"].split("/")[-1]).exists()
+
+
+def test_data_governance_allow_live_uses_explicit_maintenance_path(tmp_path, monkeypatch):
+    calls = {"fundamental": 0, "intelligence": 0, "macro": 0}
+
+    def _fake_fundamental(**kwargs):
+        calls["fundamental"] += 1
+        assert kwargs["allow_live"] is True
+        assert kwargs["universes"] == "full_a"
+        return {}
+
+    def _fake_intelligence(**kwargs):
+        calls["intelligence"] += 1
+        assert kwargs["allow_live"] is True
+        return {}
+
+    def _fake_macro(**kwargs):
+        calls["macro"] += 1
+        assert kwargs["allow_live"] is True
+        return {}
+
+    monkeypatch.setattr("quant_investor.market.fundamental_mart.run_cn_fundamental_maintenance", _fake_fundamental)
+    monkeypatch.setattr("quant_investor.market.intelligence_mart.run_cn_intelligence_maintenance", _fake_intelligence)
+    monkeypatch.setattr("quant_investor.market.macro_mart.run_cn_macro_maintenance", _fake_macro)
+
+    result = run_data_governance(
+        market="CN",
+        categories=["full_a"],
+        as_of="20240510",
+        allow_live=True,
+        data_dir=tmp_path / "empty_daily",
+        fundamental_root=tmp_path / "fundamental",
+        intelligence_root=tmp_path / "intelligence",
+        macro_root=tmp_path / "macro",
+        output_dir=tmp_path / "reports",
+    )
+
+    assert calls == {"fundamental": 1, "intelligence": 1, "macro": 1}
+    assert result["local_read_only"] is False
