@@ -185,6 +185,8 @@ def run_unified_pipeline(
         "analysis": analysis_output["results"],
         "reports": analysis_output["reports"],
         "analysis_meta": analysis_output.get("analysis_meta", {}),
+        "runtime_profile": analysis_output.get("runtime_profile")
+        or analysis_output.get("analysis_meta", {}).get("runtime_profile", {}),
         "timing": {
             "download_seconds": download_duration,
             "analysis_seconds": analysis_duration,

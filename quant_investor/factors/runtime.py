@@ -127,6 +127,72 @@ class RuntimeFactorScore:
         }
 
 
+def _factor_window_from_name(name: str, default: int = 20) -> int:
+    try:
+        suffix = str(name).strip().rsplit("_", 1)[1]
+        return max(int(suffix.removesuffix("d")), 1)
+    except Exception:
+        return int(default)
+
+
+def _factor_window_pair_from_name(
+    name: str,
+    *,
+    default: tuple[int, int] = (20, 5),
+) -> tuple[int, int]:
+    parts = str(name).strip().split("_")
+    try:
+        first = int(parts[-2].removesuffix("d"))
+        second = int(parts[-1].removesuffix("d"))
+        return max(first, 1), max(second, 1)
+    except Exception:
+        return default
+
+
+def _price_volume_factor_lookback_rows(name: str) -> int:
+    factor_name = str(name or "").strip()
+    if not factor_name:
+        return 0
+    if factor_name.startswith("pv_blend_volstab19x2_mom90_amihud5_w"):
+        return 91
+    if factor_name.startswith("pv_volume_stability_smooth_"):
+        base_window, smooth_window = _factor_window_pair_from_name(factor_name)
+        return base_window + smooth_window
+    if factor_name.startswith("pv_dollar_volume_growth_"):
+        short_window, long_window = _factor_window_pair_from_name(
+            factor_name,
+            default=(20, 60),
+        )
+        return max(short_window, long_window)
+    if factor_name.startswith(
+        (
+            "pv_momentum_",
+            "pv_short_reversal_",
+            "pv_volatility_penalty_",
+            "pv_downside_volatility_",
+            "pv_price_efficiency_",
+            "pv_amihud_illiquidity_",
+        )
+    ):
+        return _factor_window_from_name(factor_name) + 1
+    if factor_name.startswith(
+        (
+            "pv_volume_stability_",
+            "pv_low_dollar_volume_",
+            "pv_high_dollar_volume_",
+        )
+    ):
+        return _factor_window_from_name(factor_name)
+    return 0
+
+
+def _price_volume_required_lookback_rows(names: Sequence[str]) -> int:
+    return max(
+        (_price_volume_factor_lookback_rows(name) for name in names),
+        default=0,
+    )
+
+
 class MinedFactorScorer:
     """Compute latest cross-sectional scores from governed production factors."""
 
@@ -152,10 +218,45 @@ class MinedFactorScorer:
         factors_used: list[str] = []
         factor_weights: dict[str, float] = {}
         factor_coverages: dict[str, float] = {}
+        price_volume_prepared: Mapping[str, Any] | None = None
+        price_volume_factor_cache: dict[str, Any] = {}
+        price_volume_names = [
+            str(factor.implementation or "").strip().split(":", 1)[1]
+            for factor in active
+            if str(factor.implementation or "").strip().startswith("price_volume:")
+        ]
+        price_volume_factor_cache["active_price_volume_names"] = tuple(price_volume_names)
+        price_volume_lookback_rows = _price_volume_required_lookback_rows(
+            price_volume_names
+        )
+        include_amihud_base = any(
+            name.startswith("pv_amihud_illiquidity_")
+            or name.startswith("pv_blend_volstab19x2_mom90_amihud5_w")
+            for name in price_volume_names
+        )
 
         for factor in active:
             try:
-                raw = self._compute_factor(factor, frames)
+                impl = str(factor.implementation or "").strip()
+                if impl.startswith("price_volume:"):
+                    if price_volume_prepared is None:
+                        from quant_investor.factors.price_volume import (
+                            prepare_price_volume_frames,
+                        )
+
+                        price_volume_prepared = prepare_price_volume_frames(
+                            frames,
+                            include_amihud_base=include_amihud_base,
+                            lookback_rows=price_volume_lookback_rows,
+                        )
+                    raw = self._price_volume_factor(
+                        impl.split(":", 1)[1],
+                        frames,
+                        prepared_frames=price_volume_prepared,
+                        factor_cache=price_volume_factor_cache,
+                    )
+                else:
+                    raw = self._compute_factor(factor, frames)
             except Exception as exc:
                 skipped[factor.name] = f"compute_error={exc}"
                 continue
@@ -236,10 +337,21 @@ class MinedFactorScorer:
         return self._latest_by_symbol(combined, values)
 
     @staticmethod
-    def _price_volume_factor(name: str, frames: Mapping[str, pd.DataFrame]) -> pd.Series:
+    def _price_volume_factor(
+        name: str,
+        frames: Mapping[str, pd.DataFrame],
+        *,
+        prepared_frames: Mapping[str, Any] | None = None,
+        factor_cache: dict[str, Any] | None = None,
+    ) -> pd.Series:
         from quant_investor.factors.price_volume import compute_price_volume_factor
 
-        return compute_price_volume_factor(name, frames)
+        return compute_price_volume_factor(
+            name,
+            frames,
+            prepared_frames=prepared_frames,
+            factor_cache=factor_cache,
+        )
 
     @staticmethod
     def _aquant_expression_factor(

@@ -20,6 +20,7 @@ def _args(tmp_path: Path) -> argparse.Namespace:
         maintenance_batch_size=50,
         maintenance_max_rounds=1,
         skip_maintenance=False,
+        skip_market_metrics_prewarm=False,
     )
 
 
@@ -79,3 +80,30 @@ def test_daily_review_maintenance_failure_does_not_block_tracker(monkeypatch, tm
     assert calls == ["maintenance", "tracker"]
     assert result["maintenance_preflight"]["status"] == "failed_non_blocking"
     assert "upstream not ready" in result["maintenance_preflight"]["error"]
+
+
+def test_daily_review_forwards_market_metrics_prewarm_debug_flag(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+    args = _args(tmp_path)
+    args.skip_market_metrics_prewarm = True
+
+    monkeypatch.setattr(
+        daily_review,
+        "run_market_maintenance",
+        lambda **_kwargs: {"categories": [], "completeness": {"complete": True}},
+    )
+
+    def _fake_tracker_run(tracker_args):
+        captured["skip_market_metrics_prewarm"] = tracker_args.skip_market_metrics_prewarm
+        return {
+            "timestamp": "run-3",
+            "run_dir": str(tmp_path / "missing-record"),
+            "market_metrics_prewarm": {"status": "skipped"},
+        }
+
+    monkeypatch.setattr(daily_review.tracker, "run_tracker", _fake_tracker_run)
+
+    result = daily_review.run_daily_review(args)
+
+    assert captured["skip_market_metrics_prewarm"] is True
+    assert result["full_market_metrics_cache"]["status"] == "skipped"

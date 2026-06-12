@@ -6,11 +6,14 @@
 
 治理层目标链路固定为：
 
-`Research Agents -> RiskGuard -> ICCoordinator -> PortfolioConstructor -> NarratorAgent`
+`snapshot -> DeterministicFunnel -> four branches -> Bayesian -> RiskGuard -> ICCoordinator -> PortfolioConstructor -> NarratorAgent`
 
 含义：
 
-- Research Agents 负责生成结构化研究证据。
+- snapshot 负责披露本地数据来源、最新交易日和 strict Parquet 健康状态。
+- `DeterministicFunnel` 负责 quant-only 初筛和 candidate set 收敛。
+- four branches 只包含 `quant`、`fundamental`、`intelligence`、`macro`。
+- Bayesian selection 负责把分支证据映射为 posterior shortlist。
 - `RiskGuard` 负责硬约束、hard veto、exposure cap 和 symbol-level limit。
 - `ICCoordinator` 负责共识、分歧和结构化动作建议。
 - `PortfolioConstructor` 负责 deterministic 配权。
@@ -19,7 +22,11 @@
 ## Runtime Shape
 
 - 默认入口：`QuantInvestor`
-- 运行方式：先执行 `ParallelResearchPipeline` 的 deterministic research core，再按配置追加 LLM review layer，最后只走一次结构化控制链。
+- 单标的公开主线：`QuantInvestor` 调用全市场 DAG helper，并把 DAG artifacts 转为 `QuantInvestorPipelineResult`。
+- 全市场主线：`quant-investor market analyze/run` 走 `execute_market_dag()`。
+- DAG 顺序：`data_snapshot` / symbol list -> batch read -> `DeterministicFunnel` -> candidate branch research -> Bayesian selection -> control chain -> reporting artifacts。
+- 可选 LLM review layer 只提供 advisory hints；缺 key 或本地禁用时降级为 Codex handoff，不改变 deterministic 控制链。
+- stage profile：`market analyze/run` 写入 snapshot、symbol list、batch read、funnel/context、candidate research、Bayesian、control chain、report persistence 等阶段耗时。
 - 兼容输出：`final_strategy`、`final_report`
 - 结构化事实面：`agent_portfolio_plan`、`agent_report_bundle`、`agent_ic_decisions`
 
@@ -39,6 +46,8 @@
 - `fundamental`
 - `intelligence`
 - `macro`
+
+`kline`、Kronos/Chronos 和 legacy batch pipeline 不属于 v13 canonical branch set；旧 payload 中的未知分支只能被过滤或作为历史兼容读取，不能重新进入 runtime branch set。
 
 ## Structured Control Contracts
 

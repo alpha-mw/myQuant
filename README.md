@@ -40,7 +40,7 @@ Quant-Investor 的解法是严格分层：
         ↑
 LLM 审阅层（advisory-only，提供观点，不做决策）
         ↑
-并行研究核心（4 分支量化分析，加权聚合）
+数据快照 + DeterministicFunnel + v13 四分支 DAG
 ```
 
 **RiskGuard 具有一票否决权。** LLM 的任何输出只能作为参考信号进入 ICCoordinator，永远无法绕过风控硬约束。
@@ -52,10 +52,10 @@ LLM 审阅层（advisory-only，提供观点，不做决策）
 | 能力 | 说明 |
 |------|------|
 | 🏗 **三层数据协议** | `GlobalContext` → `SymbolResearchPacket` → `PortfolioDecision`，全程 Pydantic 结构化，可追溯 |
-| 🔬 **4 分支并行研究** | 量化因子 · 基本面 · 情报 · 宏观，各自独立执行后加权聚合 |
+| 🔬 **v13 四分支研究 DAG** | 本地快照 → quant-only `DeterministicFunnel` → 量化 · 基本面 · 情报 · 宏观 → Bayesian selection |
 | 🛡 **确定性风控** | RiskGuard 硬否决 → ICCoordinator 一致性校验 → PortfolioConstructor 权重分配 |
 | 🤖 **可选 LLM 审阅层** | 支持 OpenAI / Claude / DeepSeek / Gemini / 通义 / Kimi，无 API Key 自动降级 |
-| 🔀 **混合预测后端** | Kronos Transformer + Amazon Chronos 时序基础模型 + 统计基线，热切换 |
+| 📈 **Parquet 全市场运行面** | strict canonical Parquet、canonical batch symbol 读取和含 exclusive/wall timing 的 stage runtime profile |
 | 🌏 **双市场覆盖** | A 股（Tushare Pro）+ 美股（yfinance），统一 pipeline |
 | 📊 **Web 工作台** | React 19 + FastAPI，研究任务调度、历史回顾、实时进度 |
 | ⏰ **定时任务** | `daily_runner.py` 支持 cron 调度，每日自动执行全市场扫描 |
@@ -68,25 +68,23 @@ LLM 审阅层（advisory-only，提供观点，不做决策）
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Stage 1: Research Core                    │
+│             Stage 1: Snapshot + DeterministicFunnel          │
 │                                                             │
-│   QuantAgent ──┐                                            │
-│   FundaAgent ──┼──► EnsembleJudge ──► SymbolResearchPacket │
-│   IntelAgent ──┤     (加权聚合)                              │
-│   MacroAgent ──┘                                            │
+│   MarketDataReader ──► 本地快照 ──► quant-only funnel        │
+│                                      (candidate shortlist)  │
 └────────────────────────────┬────────────────────────────────┘
                              │
-                    ┌────────▼────────┐
-                    │  Stage 2: LLM   │  ← 可选，无 Key 自动跳过
-                    │  Review Layer   │
-                    │                 │
-                    │  BranchSubAgent │
-                    │  RiskSubAgent   │
-                    │  MasterAgent    │
-                    │  (IC 主席)      │
-                    └────────┬────────┘
-                             │ advisory-only hints
-                             ↓
+┌────────────────────────────▼────────────────────────────────┐
+│                  Stage 2: v13 Research DAG                   │
+│                                                             │
+│   QuantAgent · FundamentalAgent · IntelligenceAgent · Macro │
+│        │                                                    │
+│        ▼                                                    │
+│   SymbolResearchPacket ──► Bayesian selection               │
+│        │                                                    │
+│        └── optional LLM review hints (advisory-only)         │
+└────────────────────────────┬────────────────────────────────┘
+                             │
 ┌─────────────────────────────────────────────────────────────┐
 │                 Stage 3: Unified Control Chain               │
 │                                                             │
@@ -258,11 +256,11 @@ myQuant/
 ├── quant_investor/              # 核心引擎
 │   ├── pipeline/
 │   │   ├── mainline.py          # QuantInvestor 单一主线入口
-│   │   └── parallel_research_pipeline.py
+│   │   ├── result_builder.py
+│   │   └── result_types.py
 │   ├── agent_protocol.py        # 三层数据协议定义
 │   ├── agent_orchestrator.py    # 统一控制链编排
 │   ├── agents/
-│   │   ├── kline_agent.py       # retired compatibility，不属于 v13 canonical branch
 │   │   ├── quant_agent.py       # 量化因子
 │   │   ├── fundamental_agent.py # 基本面
 │   │   ├── intelligence_agent.py# 舆情情报
@@ -273,15 +271,14 @@ myQuant/
 │   │   ├── narrator_agent.py    # 报告生成
 │   │   ├── master_agent.py      # LLM IC 主席
 │   │   └── subagents/           # LLM 审阅子 agent
-│   ├── kline_backends/          # retired compatibility 时序预测后端
-│   │   ├── hybrid_engine.py     # Kronos + Chronos 混合引擎
-│   │   ├── kronos_adapter.py
-│   │   ├── chronos_adapter.py
-│   │   └── heuristic.py         # 统计基线（无 GPU 降级）
-│   ├── market/                  # 市场数据适配
-│   │   ├── download_cn.py       # A 股（Tushare）
-│   │   ├── download_us.py       # 美股（yfinance）
-│   │   └── dag_executor.py      # 三层 DAG 执行器
+│   ├── market/                  # 市场数据、全市场 DAG 和报告持久化
+│   │   ├── market_data_reader.py# Parquet/CSV 统一读取门面
+│   │   ├── market_data_store.py # canonical/clean storage validation helpers
+│   │   ├── shared_csv_reader.py # 批量 symbol 读取兼容 alias
+│   │   ├── runtime_profile.py   # market run/analyze stage profile
+│   │   ├── dag/                 # context/research/Bayesian/control/reporting
+│   │   ├── dag_executor.py      # v13 全市场 DAG 执行器
+│   │   └── download.py          # maintain/download 兼容入口
 │   ├── llm_gateway.py           # 统一 LLM 网关
 │   └── reporting/               # Markdown 报告渲染
 ├── web/                         # FastAPI 后端

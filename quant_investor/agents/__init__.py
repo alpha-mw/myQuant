@@ -1,8 +1,9 @@
 """
-V10 Multi-Agent 层。
+V13 review-layer agent surface.
 
-为五路研究分支 + 风控各配备专属 SubAgent，
-由 IC Master Agent 综合辩论产出最终投资建议。
+This package exposes advisory review-layer contracts and helpers. The runtime
+research surface is the v13 four-branch set; deterministic control-chain gates
+remain authoritative.
 """
 
 from quant_investor.agents.agent_contracts import (

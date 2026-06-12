@@ -34,6 +34,19 @@ LLMs, or connect factors to stock selection or portfolio construction.
 - Production stock selection must not consume draft, research, rejected,
   deprecated, disabled, or paper-trading factors.
 
+## Governed Factor Health Automation
+
+Daily governed-factor health monitoring is report-only unless
+`--apply-registry-actions` is explicitly passed. The default runtime smoke uses
+strict CN Parquet canonical data through `MarketDataReader`: it reads
+`data/parquet/cn/_latest.json`, samples symbol serving files under the snapshot
+manifest, and then invokes the quant-branch mined-factor runtime. It does not
+scan legacy `data/clean/cn_daily` CSV directories.
+
+If the Parquet pointer, manifest, table dataset, or serving cache is missing or
+unhealthy, the runtime smoke reports `parquet_canonical_unavailable` instead of
+falling back to CSV.
+
 ## Admission Gates
 
 `evaluate_backtest_against_thresholds` evaluates an already-produced

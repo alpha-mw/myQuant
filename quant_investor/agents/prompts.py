@@ -1,8 +1,8 @@
 """
-V12 Master Agent system prompt。
+V13 Master Agent system prompt.
 
-分支 SubAgent 已移除，Master Agent 直接读取5个分支的原始量化数据，
-主持多轮多空辩论，产出最终投资决策（含交易决策和投资逻辑存档）。
+The review layer reads v13 four-branch research artifacts directly and remains
+advisory-only; deterministic control-chain gates stay authoritative.
 """
 
 from __future__ import annotations
@@ -67,8 +67,7 @@ JSON schema:
 MASTER_SYSTEM_PROMPT = """\
 你是投资委员会（IC）主席兼首席策略师。
 
-你直接拿到5个量化研究分支的原始数据（不经过任何中间层加工）：
-- kline 分支：K线技术分析、时序预测模型（Kronos/Chronos）、动量信号
+你直接拿到 v13 四个 canonical 研究分支的原始数据（不经过任何中间层加工）：
 - quant 分支：多因子模型、Alpha 挖掘、因子 z-score 排名
 - fundamental 分支：财务质量、估值、治理、盈利预测修正（注意：数据可能缺失，需判断可靠性）
 - intelligence 分支：事件风险、市场情绪、资金流向、市场广度
@@ -82,18 +81,18 @@ MASTER_SYSTEM_PROMPT = """\
 你的决策流程是**五轮多空辩论**：
 
 【第一轮：数据层确认】
-- 逐一核查5个分支的数据质量和信号可靠性
+- 逐一核查四个 canonical 分支的数据质量和信号可靠性
 - 标记数据缺失或存疑的分支（如 fundamental 数据不全），降低其权重
 - 确认哪些分支的信号在当前 market_regime 下最具参考价值
 
 【第二轮：多方立论】
 - 整合所有支持买入/做多的证据
-- 技术面趋势向上？因子信号强？估值合理？情绪积极？宏观支持？
+- 因子信号强？估值合理？情绪积极？宏观支持？
 - 形成 bull_case：最有力的多方论点是什么？
 
 【第三轮：空方立论】
 - 整合所有反对买入的证据
-- 技术面破位？因子拥挤？估值高估？情绪极端贪婪？宏观压制？系统性风险累积？
+- 因子拥挤？估值高估？情绪极端贪婪？宏观压制？系统性风险累积？
 - 形成 bear_case：最有力的空方论点是什么？
 
 【第四轮：交叉辩驳】
@@ -135,7 +134,6 @@ MASTER_SYSTEM_PROMPT = """\
 # ---------------------------------------------------------------------------
 
 CONVICTION_DEVIATION_CAP: dict[str, float] = {
-    "kline": 0.25,
     "quant": 0.25,
     "fundamental": 0.35,
     "intelligence": 0.30,
@@ -143,7 +141,6 @@ CONVICTION_DEVIATION_CAP: dict[str, float] = {
 }
 
 BRANCH_OVERLAY_SCORE_CAP: dict[str, float] = {
-    "kline": 0.10,
     "quant": 0.10,
     "fundamental": 0.14,
     "intelligence": 0.12,
@@ -151,7 +148,6 @@ BRANCH_OVERLAY_SCORE_CAP: dict[str, float] = {
 }
 
 BRANCH_OVERLAY_CONFIDENCE_CAP: dict[str, float] = {
-    "kline": 0.10,
     "quant": 0.10,
     "fundamental": 0.12,
     "intelligence": 0.12,
@@ -250,26 +246,6 @@ JSON schema:
 # ---------------------------------------------------------------------------
 
 BRANCH_SYSTEM_PROMPTS: dict[str, str] = {
-    "kline": """\
-你是一位资深技术分析专家（K线分支 SubAgent），专注于价格趋势、技术形态和时间序列预测模型的解读。
-
-你的专业领域：
-- 经典技术分析：趋势线、支撑阻力、K线形态（头肩、双底、旗形等）
-- 时间序列预测模型：LSTM (Kronos) 和概率预测 (Chronos) 的输出解读
-- 趋势强度与动量分析：ADX、MACD、RSI 的信号确认
-- 多时间框架分析：日线、周线趋势的一致性判断
-
-你的任务：
-1. 审阅量化 K线分支的计算结果（base_score, final_score, evidence）
-2. 判断预测模型的可靠性（模型是否在当前 regime 下表现良好）
-3. 识别技术信号的确认或矛盾
-4. 评估趋势持续性和反转风险
-5. 给出你的独立研判（conviction），如与量化模型有分歧需明确指出
-
-注意：你是解读者而非计算者。基于已有的量化结果进行定性判断，不要重新计算指标。
-
-""" + _BRANCH_OUTPUT_SCHEMA_TEMPLATE.format(deviation_cap=CONVICTION_DEVIATION_CAP["kline"]),
-
     "quant": """\
 你是一位量化因子研究专家（量化分支 SubAgent），专注于因子投资、Alpha 挖掘和统计套利策略的解读。
 
@@ -371,7 +347,7 @@ RISK_SYSTEM_PROMPT = """\
 
 你的任务：
 1. 审阅风险管理层的量化输出（风险指标、仓位建议、止损水平）
-2. 综合 5 个分支 SubAgent 的研判，评估整体风险水平
+2. 综合四个 v13 canonical 分支的研判，评估整体风险水平
 3. 特别关注：
    - 分支间严重分歧（说明不确定性高，应降低风险敞口）
    - 极端 conviction score（无论多空，极端都意味着风险）
@@ -386,7 +362,6 @@ RISK_SYSTEM_PROMPT = """\
 
 def format_agent_display_name(branch_name: str) -> str:
     labels = {
-        "kline": "KLineAgent",
         "quant": "QuantAgent",
         "fundamental": "FundamentalAgent",
         "intelligence": "IntelligenceAgent",

@@ -472,7 +472,12 @@ def assess_branch_data_readiness(
 ) -> BranchGovernanceReport:
     symbols = [_normalize_symbol(symbol) for symbol in (candidate_symbols or frames.keys()) if _normalize_symbol(symbol)]
     run_id = run_id or make_run_id(as_of)
-    quant = assess_quant_readiness(frames=frames, read_results=read_results, symbols=frames.keys(), as_of=as_of)
+    quant = assess_quant_readiness(
+        frames=frames,
+        read_results=read_results,
+        symbols=symbols,
+        as_of=as_of,
+    )
     fundamentals, fundamental_manifest = load_fundamental_records(symbols, as_of=as_of, root=fundamental_root)
     intelligence, intelligence_manifest = load_intelligence_records(symbols, as_of=as_of, root=intelligence_root)
     macro_record, macro_manifest = load_macro_record(as_of=as_of, root=macro_root)
@@ -501,7 +506,7 @@ def assess_branch_data_readiness(
     )
     quantifiable = [
         symbol
-        for symbol in frames.keys()
+        for symbol in symbols
         if _normalize_symbol(symbol) and _normalize_symbol(symbol) not in set(quant.affected_symbols)
     ]
     investable = [symbol for symbol in symbols if symbol not in set(blocked)]

@@ -10,8 +10,43 @@ from typing import Any
 import pandas as pd
 
 from quant_investor.market.config import get_market_settings, normalize_categories
-from quant_investor.market.analyze import get_all_local_symbols
+from quant_investor.market.legacy_batch_analysis import get_all_local_symbols
+from quant_investor.market.market_data_reader import MarketDataReader
 from quant_investor.portfolio_backtest import PortfolioBacktester
+
+
+def _parquet_data_root_from_market_dir(base_dir: Path) -> Path:
+    if (base_dir / "parquet" / "cn").exists():
+        return base_dir
+    if (base_dir.parent / "parquet" / "cn").exists():
+        return base_dir.parent
+    return Path("data")
+
+
+def _normalize_backtest_frame(symbol: str, df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame()
+    date_column = "trade_date" if "trade_date" in df.columns else "Date" if "Date" in df.columns else "date"
+    if date_column not in df.columns:
+        return pd.DataFrame()
+    close_column = "close" if "close" in df.columns else "Close"
+    if close_column not in df.columns:
+        return pd.DataFrame()
+    volume_column = "vol" if "vol" in df.columns else "volume" if "volume" in df.columns else "Volume"
+    normalized = pd.DataFrame(
+        {
+            "date": pd.to_datetime(df[date_column], errors="coerce"),
+            "symbol": symbol,
+            "close": pd.to_numeric(df[close_column], errors="coerce"),
+            "volume": pd.to_numeric(df.get(volume_column, 0), errors="coerce"),
+        }
+    ).dropna(subset=["date", "close"])
+    if normalized.empty:
+        return normalized
+    normalized["forward_ret_1d"] = normalized["close"].shift(-1) / normalized["close"] - 1
+    normalized["factor_score"] = normalized["close"].pct_change(20).fillna(0.0)
+    normalized["benchmark_return"] = 0.0
+    return normalized
 
 
 def _load_market_frame(
@@ -23,6 +58,31 @@ def _load_market_frame(
     settings = get_market_settings(market)
     base_dir = Path(data_dir or settings.data_dir)
     frames: list[pd.DataFrame] = []
+    if settings.market == "CN":
+        reader = MarketDataReader(market="CN", data_root=_parquet_data_root_from_market_dir(base_dir))
+        for category in categories:
+            symbols = reader.list_symbols(category)
+            if sample_size:
+                symbols = symbols[:sample_size]
+            read_results = reader.read_symbol_frames(
+                symbols,
+                universe_key=category,
+                category=category,
+                columns=["ts_code", "trade_date", "close", "vol"],
+            )
+            for symbol, result in read_results.items():
+                normalized = _normalize_backtest_frame(symbol, result.frame)
+                if normalized.empty:
+                    continue
+                frames.append(normalized)
+        if not frames:
+            raise ValueError("未找到可回测的 Parquet serving 市场数据，请先执行 market maintain。")
+        frame = pd.concat(frames, ignore_index=True)
+        frame = frame.dropna(subset=["forward_ret_1d"]).sort_values(["date", "symbol"])
+        if frame.empty:
+            raise ValueError("Parquet serving 数据不足以构造回测标签，请检查时间跨度。")
+        return frame
+
     for category in categories:
         symbols = get_all_local_symbols(category, market=settings.market, data_dir=str(base_dir))
         if sample_size:
@@ -32,24 +92,9 @@ def _load_market_frame(
             if not csv_path.exists():
                 continue
             df = pd.read_csv(csv_path)
-            date_column = "trade_date" if "trade_date" in df.columns else "Date" if "Date" in df.columns else "date"
-            if date_column not in df.columns:
-                continue
-            close_column = "close" if "close" in df.columns else "Close"
-            volume_column = "vol" if "vol" in df.columns else "volume" if "volume" in df.columns else "Volume"
-            normalized = pd.DataFrame(
-                {
-                    "date": pd.to_datetime(df[date_column], errors="coerce"),
-                    "symbol": symbol,
-                    "close": pd.to_numeric(df[close_column], errors="coerce"),
-                    "volume": pd.to_numeric(df.get(volume_column, 0), errors="coerce"),
-                }
-            ).dropna(subset=["date", "close"])
+            normalized = _normalize_backtest_frame(symbol, df)
             if normalized.empty:
                 continue
-            normalized["forward_ret_1d"] = normalized["close"].shift(-1) / normalized["close"] - 1
-            normalized["factor_score"] = normalized["close"].pct_change(20).fillna(0.0)
-            normalized["benchmark_return"] = 0.0
             frames.append(normalized)
     if not frames:
         raise ValueError("未找到可回测的本地市场数据，请先执行 market download。")

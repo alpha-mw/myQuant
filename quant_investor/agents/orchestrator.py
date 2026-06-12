@@ -1,8 +1,8 @@
 """
-V12 Agent 编排器。
+V13 Agent 编排器。
 
-移除了分支 SubAgent 层，Master Agent 直接接收5个分支的原始量化数据、
-风控结果和过往交易记录，在内部进行五轮多空辩论后产出最终投资决策。
+Review layer 只读取 v13 四分支研究结果和风控/回顾材料；最终约束仍由
+deterministic control chain 决定。
 """
 
 from __future__ import annotations
@@ -38,7 +38,6 @@ from quant_investor.agents.agent_contracts import (
 from quant_investor.agents.llm_client import (
     LLMClient as LegacyLLMClient,
     has_any_provider,
-    has_provider_for_model,
 )
 from quant_investor.agents.master_agent import MasterAgent
 from quant_investor.agents.portfolio_constructor import PortfolioConstructor
@@ -138,13 +137,10 @@ class AgentOrchestrator:
 
     @staticmethod
     def branch_request_timeout(branch_name: str, timeout_per_agent: float) -> float:
-        multiplier = 1.5 if branch_name == "kline" else 1.0
-        return float(timeout_per_agent) * multiplier
+        return float(timeout_per_agent)
 
     @staticmethod
     def branch_max_tokens(branch_name: str, max_tokens_branch: int) -> int:
-        if branch_name == "kline":
-            return min(int(max_tokens_branch), 600)
         return int(max_tokens_branch)
 
     async def enhance(

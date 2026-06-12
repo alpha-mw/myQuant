@@ -23,9 +23,10 @@ from quant_investor.factors.report import (
     load_factor_library_shadow_status,
     render_factor_library_shadow_markdown,
 )
-from quant_investor.market.analyze import load_cn_stock_names
 from quant_investor.market.config import get_market_settings
 from quant_investor.market.download_cn import CNFullMarketDownloader
+from quant_investor.market.market_data_reader import MarketDataReader
+from quant_investor.monitoring import cn_aggressive_market_metrics as _market_metrics
 from quant_investor.llm_policy import llm_handoff_reason
 from quant_investor.llm_provider_priority import coerce_review_model_priority
 from quant_investor.pipeline import QuantInvestor
@@ -71,6 +72,31 @@ CATEGORY_THEME_LABELS = {
     "zz1000": "小盘成长弹性",
 }
 REQUIRED_DAG_BRANCHES = ("quant", "fundamental", "intelligence", "macro")
+MARKET_METRICS_CACHE_SCHEMA_VERSION = _market_metrics.MARKET_METRICS_CACHE_SCHEMA_VERSION
+MARKET_METRICS_COMPONENT_KEYS = _market_metrics.MARKET_METRICS_COMPONENT_KEYS
+MARKET_METRICS_CATEGORIES = _market_metrics.MARKET_METRICS_CATEGORIES
+MARKET_METRICS_OUTPUT_COLUMNS = _market_metrics.MARKET_METRICS_OUTPUT_COLUMNS
+MARKET_METRICS_REQUIRED_COLUMNS = _market_metrics.MARKET_METRICS_REQUIRED_COLUMNS
+MarketMetricsBundle = _market_metrics.MarketMetricsBundle
+_compute_category_breadth = _market_metrics._compute_category_breadth
+_compute_full_market_metrics = _market_metrics._compute_full_market_metrics
+_compute_market_metrics_and_breadth = _market_metrics._compute_market_metrics_and_breadth
+_components_fingerprint = _market_metrics._components_fingerprint
+_derive_stage_levels = _market_metrics._derive_stage_levels
+_load_cached_market_metrics_bundle = _market_metrics._load_cached_market_metrics_bundle
+_load_history_frame = _market_metrics._load_history_frame
+_load_or_compute_market_metrics_bundle = (
+    _market_metrics.load_or_compute_market_metrics_bundle
+)
+_market_metrics_cache_dir = _market_metrics._market_metrics_cache_dir
+_metric_return = _market_metrics._metric_return
+_normalize_market_metrics_frame = _market_metrics._normalize_market_metrics_frame
+_price_series = _market_metrics._price_series
+_read_frame_from_result = _market_metrics._read_frame_from_result
+_reader_snapshot_payload = _market_metrics._reader_snapshot_payload
+_score_full_market_metrics = _market_metrics._score_full_market_metrics
+_validate_market_metrics_frame = _market_metrics._validate_market_metrics_frame
+_write_market_metrics_cache = _market_metrics._write_market_metrics_cache
 
 
 @dataclass
@@ -747,203 +773,7 @@ def _fetch_tencent_quotes(quote_codes: list[str]) -> dict[str, dict[str, Any]]:
     return result
 
 
-def _price_series(frame: pd.DataFrame) -> pd.Series:
-    return frame["close"].astype(float)
-
-
-def _load_history_frame(path: Path) -> pd.DataFrame:
-    frame = pd.read_csv(path)
-    if frame.empty:
-        return frame
-    frame = frame.sort_values("trade_date").reset_index(drop=True)
-    return frame
-
-
-def _metric_return(close: pd.Series, periods: int) -> float:
-    if close.empty:
-        return 0.0
-    if len(close) <= periods:
-        base = float(close.iloc[0])
-    else:
-        base = float(close.iloc[-(periods + 1)])
-    current = float(close.iloc[-1])
-    return _safe_pct(current - base, base)
-
-
-def _derive_stage_levels(frame: pd.DataFrame, current_price: float) -> tuple[float, float]:
-    if frame.empty or current_price <= 0:
-        return round(current_price * 1.08, 2), round(current_price * 0.94, 2)
-
-    recent = frame.tail(60).copy()
-    high = recent["high"].astype(float) if "high" in recent.columns else recent["close"].astype(float)
-    low = recent["low"].astype(float) if "low" in recent.columns else recent["close"].astype(float)
-    close = recent["close"].astype(float)
-    prev_close = close.shift(1).fillna(close)
-
-    true_range = pd.concat(
-        [
-            high - low,
-            (high - prev_close).abs(),
-            (low - prev_close).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-    atr = float(true_range.tail(14).mean()) if len(true_range) >= 2 else current_price * 0.02
-    atr = max(atr, current_price * 0.005)
-
-    ma20 = float(close.tail(20).mean()) if len(close) >= 20 else float(close.mean())
-    low20 = float(low.tail(20).min()) if len(low) >= 5 else current_price * 0.96
-    high20 = float(high.tail(20).max()) if len(high) >= 5 else current_price * 1.06
-
-    support = min(current_price, max(low20, ma20 - 0.75 * atr))
-    resistance = max(high20, current_price + 1.5 * atr)
-
-    stop_price = max(current_price * 0.75, min(support * 0.99, current_price * 0.985))
-    target_price = max(current_price * 1.05, resistance)
-    return round(target_price, 2), round(stop_price, 2)
-
-
-def _score_full_market_metrics(metrics: pd.DataFrame) -> pd.DataFrame:
-    if metrics.empty:
-        return metrics
-
-    scored = metrics.copy()
-    rank_weights = {
-        "ret1": 0.08,
-        "ret5": 0.14,
-        "ret20": 0.24,
-        "ret60": 0.22,
-        "close_vs_ma20": 0.12,
-        "ma20_vs_ma60": 0.10,
-        "ma60_vs_ma120": 0.06,
-        "dd20": 0.04,
-    }
-    for column in rank_weights:
-        scored[f"{column}_pct"] = scored[column].rank(method="average", pct=True)
-
-    scored["score_full_market"] = 0.0
-    for column, weight in rank_weights.items():
-        scored["score_full_market"] += scored[f"{column}_pct"] * weight
-
-    scored["score_full_market"] = scored["score_full_market"].round(6)
-    scored = scored.sort_values(
-        by=["score_full_market", "ret20", "ret60", "symbol"],
-        ascending=[False, False, False, True],
-    ).reset_index(drop=True)
-    scored["rank_full_market"] = range(1, len(scored) + 1)
-    return scored
-
-
-def _compute_category_breadth(
-    category: str,
-    symbols: list[str],
-    data_root: Path,
-    latest_trade_date: str,
-    completeness_report: dict[str, Any],
-) -> dict[str, Any]:
-    covered = 0
-    adv_1d = 0
-    adv_20d = 0
-    ma20_gt_ma60 = 0
-    ret_1d_values: list[float] = []
-    ret_20d_values: list[float] = []
-    ret_60d_values: list[float] = []
-
-    for symbol in symbols:
-        path = data_root / category / f"{symbol}.csv"
-        if not path.exists():
-            continue
-        frame = _load_history_frame(path)
-        if frame.empty:
-            continue
-        latest_local_date = str(frame["trade_date"].iloc[-1]).replace("-", "")
-        if latest_local_date != latest_trade_date:
-            continue
-
-        close = _price_series(frame).dropna().astype(float)
-        if len(close) < 2:
-            continue
-
-        ret1 = _metric_return(close, 1)
-        ret20 = _metric_return(close, 20)
-        ret60 = _metric_return(close, 60)
-        ma20 = float(close.tail(20).mean()) if len(close) >= 20 else float(close.mean())
-        ma60 = float(close.tail(60).mean()) if len(close) >= 60 else float(close.mean())
-
-        covered += 1
-        adv_1d += int(ret1 > 0)
-        adv_20d += int(ret20 > 0)
-        ma20_gt_ma60 += int(ma20 > ma60)
-        ret_1d_values.append(ret1)
-        ret_20d_values.append(ret20)
-        ret_60d_values.append(ret60)
-
-    payload = completeness_report["categories"][category]
-    return {
-        "ret1_positive_ratio": adv_1d / covered if covered else 0.0,
-        "ret20_positive_ratio": adv_20d / covered if covered else 0.0,
-        "ma20_gt_ma60_ratio": ma20_gt_ma60 / covered if covered else 0.0,
-        "avg_ret1": sum(ret_1d_values) / len(ret_1d_values) if ret_1d_values else 0.0,
-        "avg_ret20": sum(ret_20d_values) / len(ret_20d_values) if ret_20d_values else 0.0,
-        "avg_ret60": sum(ret_60d_values) / len(ret_60d_values) if ret_60d_values else 0.0,
-        "latest_count": covered,
-        "expected": int(payload.get("expected", len(symbols))),
-        "suspended_stale_count": len(payload.get("suspended_stale_symbols", [])),
-    }
-
-
-def _compute_full_market_metrics(
-    components: dict[str, Any],
-    data_root: Path,
-    latest_trade_date: str,
-) -> pd.DataFrame:
-    stock_names = load_cn_stock_names()
-    rows: list[dict[str, Any]] = []
-    for category in ("hs300", "zz500", "zz1000"):
-        for symbol in components.get(category, []):
-            path = data_root / category / f"{symbol}.csv"
-            if not path.exists():
-                continue
-            frame = _load_history_frame(path)
-            if frame.empty or "trade_date" not in frame.columns or "close" not in frame.columns:
-                continue
-
-            latest_local_date = str(frame["trade_date"].iloc[-1]).replace("-", "")
-            if latest_local_date != latest_trade_date:
-                continue
-
-            close = _price_series(frame).dropna().astype(float)
-            if len(close) < 20:
-                continue
-
-            ma20 = float(close.tail(20).mean())
-            ma60 = float(close.tail(60).mean()) if len(close) >= 60 else float(close.mean())
-            ma120 = float(close.tail(120).mean()) if len(close) >= 120 else ma60
-            latest_close = float(close.iloc[-1])
-            target_price, stop_price = _derive_stage_levels(frame, latest_close)
-
-            rows.append(
-                {
-                    "symbol": symbol,
-                    "name": stock_names.get(symbol, symbol),
-                    "category": category,
-                    "ret1": _metric_return(close, 1),
-                    "ret5": _metric_return(close, 5),
-                    "ret20": _metric_return(close, 20),
-                    "ret60": _metric_return(close, 60),
-                    "close_vs_ma20": _safe_pct(latest_close - ma20, ma20),
-                    "ma20_vs_ma60": _safe_pct(ma20 - ma60, ma60),
-                    "ma60_vs_ma120": _safe_pct(ma60 - ma120, ma120),
-                    "dd20": _safe_pct(latest_close - float(close.tail(20).max()), float(close.tail(20).max())),
-                    "latest_close": latest_close,
-                    "stage_target_price": target_price,
-                    "stage_stop_price": stop_price,
-                }
-            )
-
-    metrics = pd.DataFrame(rows)
-    return _score_full_market_metrics(metrics)
-
+# Full-market metrics/cache helpers live in cn_aggressive_market_metrics.py.
 
 def _summarize_theme_strength(review: pd.DataFrame) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
@@ -976,7 +806,6 @@ def _summarize_theme_strength(review: pd.DataFrame) -> list[dict[str, Any]]:
 
 def _market_style_conclusion(indices: dict[str, dict[str, Any]], breadth: dict[str, dict[str, Any]]) -> str:
     hs300 = breadth.get("hs300", {})
-    zz500 = breadth.get("zz500", {})
     zz1000 = breadth.get("zz1000", {})
     kc50 = indices.get("sh000688", {})
     hs300_idx = indices.get("sh000300", {})
@@ -1692,6 +1521,7 @@ def _write_outputs(
     pnl_path = run_dir / "pnl_summary.csv"
     snapshot_path = run_dir / "market_snapshot.json"
     manifest_path = run_dir / "manifest.json"
+    runtime_profile_path = run_dir / "runtime_profile.json"
 
     report_path.write_text(report_text, encoding="utf-8")
     holdings_review.to_csv(holdings_path, index=False, encoding="utf-8-sig")
@@ -1701,6 +1531,12 @@ def _write_outputs(
     orders_df.to_csv(orders_path, index=False, encoding="utf-8-sig")
     pnl_summary_df.to_csv(pnl_path, index=False, encoding="utf-8-sig")
     snapshot_path.write_text(json.dumps(market_snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+    runtime_profile = manifest.get("runtime_profile") or market_snapshot.get("runtime_profile") or {}
+    if runtime_profile:
+        runtime_profile_path.write_text(
+            json.dumps(runtime_profile, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
     prefix = f"aggressive_portfolio_{manifest['timestamp']}_formal"
@@ -1711,6 +1547,8 @@ def _write_outputs(
     shutil.copy2(ledger_path, raw_dir / f"{prefix}_ledger.csv")
     shutil.copy2(orders_path, raw_dir / f"{prefix}_orders.csv")
     shutil.copy2(pnl_path, raw_dir / f"{prefix}_pnl_summary.csv")
+    if runtime_profile_path.exists():
+        shutil.copy2(runtime_profile_path, raw_dir / "runtime_profile.json")
 
 
 def _build_notes_payload(
@@ -1819,6 +1657,20 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     latest_trade_date = str(completeness_after.get("latest_trade_date") or "")
     analysis_trade_date = _resolve_analysis_trade_date(completeness_after)
     completeness_passed = bool(completeness_after["complete"])
+    market_data_reader = MarketDataReader(market="CN")
+    skip_market_metrics_prewarm = bool(getattr(args, "skip_market_metrics_prewarm", False))
+
+    market_metrics_bundle = _load_or_compute_market_metrics_bundle(
+        base_dir=base_dir,
+        components=components,
+        reader=market_data_reader,
+        latest_trade_date=analysis_trade_date,
+        completeness_report=completeness_after,
+        skip_prewarm=skip_market_metrics_prewarm,
+    )
+    full_metrics = market_metrics_bundle.full_metrics
+    breadth = market_metrics_bundle.breadth
+    market_metrics_cache_meta = market_metrics_bundle.cache_meta
 
     review_layer = _run_unified_review_mainline_for_holdings(
         source_ledger=source_ledger,
@@ -1832,11 +1684,6 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     review_model_role_metadata = dict(review_layer.get("model_role_metadata", {}) or {})
     codex_handoff_active = bool(review_layer.get("codex_handoff", False))
 
-    full_metrics = _compute_full_market_metrics(
-        components=components,
-        data_root=cn_data_root,
-        latest_trade_date=analysis_trade_date,
-    )
     metrics_map = {
         row.symbol: row._asdict()
         for row in full_metrics.itertuples(index=False)
@@ -1872,17 +1719,6 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         }
         for code in index_quote_codes
         if code in quote_payload
-    }
-
-    breadth = {
-        category: _compute_category_breadth(
-            category=category,
-            symbols=components.get(category, []),
-            data_root=cn_data_root,
-            latest_trade_date=analysis_trade_date,
-            completeness_report=completeness_after,
-        )
-        for category in ("hs300", "zz500", "zz1000")
     }
 
     current_rows: list[dict[str, Any]] = []
@@ -2081,7 +1917,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             ),
         )
     if (
-        str(completeness_after.get("strict_trade_date") or "") 
+        str(completeness_after.get("strict_trade_date") or "")
         and completeness_after.get("strict_trade_date") != completeness_after.get("effective_target_trade_date")
     ):
         tomorrow_focus.insert(
@@ -2601,6 +2437,24 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "branch_diagnostics_by_symbol": _jsonable(branch_signals_by_symbol),
         "dag_four_branch_compliance": _jsonable(dag_four_branch_compliance),
     }
+    runtime_profile = {
+        "schema_version": "cn_aggressive_runtime_profile.v1",
+        "market": "CN",
+        "strategy": "aggressive_tech_manufacturing",
+        "record_id": timestamp,
+        "generated_at": _now_local().isoformat(),
+        "snapshot_id": str(market_metrics_cache_meta.get("snapshot_id") or ""),
+        "analysis_trade_date": analysis_trade_date,
+        "total_elapsed_sec": round(time.time() - started, 3),
+        "stages": [
+            {
+                "name": "market_metrics_prewarm",
+                "status": str(market_metrics_cache_meta.get("status") or "unknown"),
+                "elapsed_sec": round(float(market_metrics_cache_meta.get("compute_elapsed_sec", 0.0) or 0.0), 3),
+                "metadata": _jsonable(market_metrics_cache_meta),
+            }
+        ],
+    }
 
     manifest = {
         "market": "CN",
@@ -2634,6 +2488,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "ledger": "ledger.csv",
             "pnl_summary": "pnl_summary.csv",
             "market_snapshot": "market_snapshot.json",
+            "runtime_profile": "runtime_profile.json",
         },
         "raw_exports": {
             "report": f"raw_exports/aggressive_portfolio_{timestamp}_formal_report.md",
@@ -2643,6 +2498,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "holdings_review": f"raw_exports/aggressive_portfolio_{timestamp}_formal_holdings_review.csv",
             "candidate_pool": f"raw_exports/aggressive_portfolio_{timestamp}_formal_candidate_pool.csv",
             "switch_plan": f"raw_exports/aggressive_portfolio_{timestamp}_formal_switch_plan.csv",
+            "runtime_profile": "raw_exports/runtime_profile.json",
         },
         "data_snapshot": {
             "latest_trade_date": latest_trade_date,
@@ -2661,6 +2517,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             ),
             "completeness": completeness_after,
             "download_report": str(download_report_path) if download_report_path else None,
+            "market_metrics_cache": _jsonable(market_metrics_cache_meta),
         },
         "review_layer": {
             "reviewed_symbols": list(review_layer.get("reviewed_symbols", []) or []),
@@ -2679,6 +2536,8 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "candidate_pool": candidate_pool.to_dict(orient="records"),
         "switch_plan": switch_plan_df.to_dict(orient="records"),
         "formal_diagnostics": formal_diagnostics_payload,
+        "market_metrics_prewarm": _jsonable(market_metrics_cache_meta),
+        "runtime_profile": runtime_profile,
     }
     market_snapshot = {
         "generated_at": now.strftime("%Y-%m-%d %H:%M:%S"),
@@ -2686,6 +2545,8 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "analysis_trade_date": analysis_trade_date,
         "indices": indices,
         "breadth": breadth,
+        "market_metrics_prewarm": _jsonable(market_metrics_cache_meta),
+        "runtime_profile": runtime_profile,
         "data_status": data_status,
         "completeness": completeness_after,
         "decision_data_sufficient": decision_data_sufficient,
@@ -2761,6 +2622,8 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         },
         "dag_four_branch_compliance": _jsonable(dag_four_branch_compliance),
         "formal_diagnostics": formal_diagnostics_payload,
+        "market_metrics_prewarm": _jsonable(market_metrics_cache_meta),
+        "full_market_metrics_cache": _jsonable(market_metrics_cache_meta),
         "pnl_summary": pnl_summary,
         "elapsed_sec": round(time.time() - started, 2),
     }
@@ -2773,6 +2636,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-rounds", type=int, default=3)
     parser.add_argument("--source-record", default=None)
     parser.add_argument("--allowed-stale-symbols", nargs="*", default=[])
+    parser.add_argument(
+        "--skip-market-metrics-prewarm",
+        action="store_true",
+        help="工程排障用：跳过启动前 full-market metrics 缓存预热",
+    )
     return parser
 
 

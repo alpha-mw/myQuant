@@ -24,7 +24,7 @@ from enum import Enum
 import json
 from pathlib import Path
 import tempfile
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import Any, Mapping
 
 import pandas as pd
 
@@ -61,10 +61,6 @@ from quant_investor.versioning import (
     REPORT_PROTOCOL_VERSION,
 )
 
-if TYPE_CHECKING:
-    from quant_investor.agents.kline_agent import KlineAgent
-
-
 class ControlChainOrchestrator:
     """把新协议层 agents 串为固定调用链。"""
 
@@ -80,7 +76,7 @@ class ControlChainOrchestrator:
     def __init__(
         self,
         macro_agent: MacroAgent | None = None,
-        kline_agent: KlineAgent | None = None,
+        kline_agent: Any | None = None,
         quant_agent: QuantAgent | None = None,
         fundamental_agent: FundamentalAgent | None = None,
         intelligence_agent: IntelligenceAgent | None = None,

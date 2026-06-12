@@ -19,12 +19,55 @@ class _Sentinel(Exception):
     pass
 
 
+def _fake_market_metrics_bundle(
+    *,
+    full_metrics: pd.DataFrame | None = None,
+    breadth: dict[str, object] | None = None,
+    status: str = "blocking_generated",
+) -> tracker.MarketMetricsBundle:
+    if full_metrics is None:
+        full_metrics = pd.DataFrame(columns=sorted(tracker.MARKET_METRICS_REQUIRED_COLUMNS))
+    if breadth is None:
+        breadth = {
+            category: {
+                "ret1_positive_ratio": 0.0,
+                "ret20_positive_ratio": 0.0,
+                "ma20_gt_ma60_ratio": 0.0,
+                "avg_ret1": 0.0,
+                "avg_ret20": 0.0,
+                "avg_ret60": 0.0,
+                "latest_count": 0,
+                "expected": 0,
+                "suspended_stale_count": 0,
+            }
+            for category in tracker.MARKET_METRICS_CATEGORIES
+        }
+    return tracker.MarketMetricsBundle(
+        full_metrics=full_metrics,
+        breadth=breadth,
+        cache_meta={
+            "schema_version": tracker.MARKET_METRICS_CACHE_SCHEMA_VERSION,
+            "status": status,
+            "cache_hit": status == "cache_hit",
+            "cache_dir": "/tmp/fake-market-metrics-cache",
+            "row_count": int(len(full_metrics)),
+            "compute_elapsed_sec": 0.0,
+            "snapshot_id": "snap-test",
+            "analysis_trade_date": "20260407",
+            "components_fingerprint": "fingerprint",
+        },
+    )
+
+
 def test_build_parser_accepts_allowed_stale_symbols():
     parser = tracker.build_parser()
 
     args = parser.parse_args(["--allowed-stale-symbols", "601989.SH", "603000.SH"])
 
     assert args.allowed_stale_symbols == ["601989.SH", "603000.SH"]
+
+    debug_args = parser.parse_args(["--skip-market-metrics-prewarm"])
+    assert debug_args.skip_market_metrics_prewarm is True
 
 
 def test_switch_plan_accepts_previous_day_realtime_decision_data():
@@ -613,6 +656,11 @@ def test_run_tracker_invokes_unified_review_mainline(monkeypatch, tmp_path):
             }
 
     monkeypatch.setattr(tracker, "CNFullMarketDownloader", _FakeDownloader)
+    monkeypatch.setattr(
+        tracker,
+        "_load_or_compute_market_metrics_bundle",
+        lambda **_kwargs: _fake_market_metrics_bundle(),
+    )
 
     captured: dict[str, object] = {}
 
@@ -697,6 +745,11 @@ def test_run_tracker_keeps_formal_review_when_completeness_incomplete(monkeypatc
             raise AssertionError("run_tracker should not auto-backfill before formal review")
 
     monkeypatch.setattr(tracker, "CNFullMarketDownloader", _FakeDownloader)
+    monkeypatch.setattr(
+        tracker,
+        "_load_or_compute_market_metrics_bundle",
+        lambda **_kwargs: _fake_market_metrics_bundle(),
+    )
 
     captured: dict[str, object] = {}
 
@@ -950,36 +1003,30 @@ def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypa
             return completeness
 
     monkeypatch.setattr(tracker, "CNFullMarketDownloader", _FakeDownloader)
-    monkeypatch.setattr(
-        tracker,
-        "_compute_full_market_metrics",
-        lambda components, data_root, latest_trade_date: pd.DataFrame(
-            [
-                {
-                    "symbol": "601869.SH",
-                    "name": "长飞光纤",
-                    "category": "hs300",
-                    "ret1": 0.02,
-                    "ret5": 0.03,
-                    "ret20": 0.12,
-                    "ret60": 0.20,
-                    "close_vs_ma20": 0.05,
-                    "ma20_vs_ma60": 0.03,
-                    "ma60_vs_ma120": 0.01,
-                    "dd20": -0.02,
-                    "latest_close": 120.0,
-                    "stage_target_price": 140.0,
-                    "stage_stop_price": 100.0,
-                    "score_full_market": 0.91,
-                    "rank_full_market": 8,
-                }
-            ]
-        ),
+    prewarmed_metrics = pd.DataFrame(
+        [
+            {
+                "symbol": "601869.SH",
+                "name": "长飞光纤",
+                "category": "hs300",
+                "ret1": 0.02,
+                "ret5": 0.03,
+                "ret20": 0.12,
+                "ret60": 0.20,
+                "close_vs_ma20": 0.05,
+                "ma20_vs_ma60": 0.03,
+                "ma60_vs_ma120": 0.01,
+                "dd20": -0.02,
+                "latest_close": 120.0,
+                "stage_target_price": 140.0,
+                "stage_stop_price": 100.0,
+                "score_full_market": 0.91,
+                "rank_full_market": 8,
+            }
+        ]
     )
-    monkeypatch.setattr(
-        tracker,
-        "_compute_category_breadth",
-        lambda category, symbols, data_root, latest_trade_date, completeness_report: {
+    prewarmed_breadth = {
+        category: {
             "ret1_positive_ratio": 0.2,
             "ret20_positive_ratio": 0.5,
             "ma20_gt_ma60_ratio": 0.3,
@@ -989,7 +1036,16 @@ def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypa
             "latest_count": len(symbols),
             "expected": len(symbols),
             "suspended_stale_count": 0,
-        },
+        }
+        for category, symbols in {"hs300": ["601869.SH"], "zz500": [], "zz1000": []}.items()
+    }
+    monkeypatch.setattr(
+        tracker,
+        "_load_or_compute_market_metrics_bundle",
+        lambda **_kwargs: _fake_market_metrics_bundle(
+            full_metrics=prewarmed_metrics,
+            breadth=prewarmed_breadth,
+        ),
     )
     monkeypatch.setattr(
         tracker,
@@ -1113,6 +1169,8 @@ def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypa
     run_dir = tmp_path / "strategy_records" / result["timestamp"]
     report_text = (run_dir / "analysis_report.md").read_text(encoding="utf-8")
     manifest_payload = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    market_snapshot_payload = json.loads((run_dir / "market_snapshot.json").read_text(encoding="utf-8"))
+    runtime_profile_payload = json.loads((run_dir / "runtime_profile.json").read_text(encoding="utf-8"))
 
     assert "#### 5.4.1 决策诊断" in report_text
     assert "#### 5.3.1 DAG 四分支执行验收" in report_text
@@ -1137,6 +1195,14 @@ def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypa
     assert manifest_payload["action_taken_today"] is False
     assert manifest_payload["formal_diagnostics"]["decision_guardrail"]["display_label"] == "no_action_evidence_impaired"
     assert manifest_payload["dag_four_branch_compliance"]["complete"] is True
+    assert manifest_payload["market_metrics_prewarm"]["status"] == "blocking_generated"
+    assert manifest_payload["data_snapshot"]["market_metrics_cache"]["status"] == "blocking_generated"
+    assert manifest_payload["files"]["runtime_profile"] == "runtime_profile.json"
+    assert manifest_payload["raw_exports"]["runtime_profile"] == "raw_exports/runtime_profile.json"
+    assert manifest_payload["runtime_profile"]["stages"][0]["name"] == "market_metrics_prewarm"
+    assert market_snapshot_payload["market_metrics_prewarm"]["status"] == "blocking_generated"
+    assert runtime_profile_payload["stages"][0]["status"] == "blocking_generated"
+    assert result["full_market_metrics_cache"]["status"] == "blocking_generated"
     assert (
         manifest_payload["formal_diagnostics"]["dag_four_branch_compliance"]["status"]
         == "DAG四分支完整执行"
@@ -1145,3 +1211,4 @@ def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypa
     assert orders_payload == "timestamp,action,symbol,name,shares,price,trade_value,realized_pnl,reason\n"
     assert (run_dir / "orders.csv").exists()
     assert (run_dir / "holdings_review.csv").exists()
+    assert (run_dir / "raw_exports" / "runtime_profile.json").exists()

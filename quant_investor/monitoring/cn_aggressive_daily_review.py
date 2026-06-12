@@ -93,9 +93,15 @@ def run_daily_review(args: argparse.Namespace) -> dict[str, Any]:
         max_rounds=int(getattr(args, "tracker_max_rounds", 3)),
         source_record=getattr(args, "source_record", None),
         allowed_stale_symbols=list(getattr(args, "allowed_stale_symbols", []) or []),
+        skip_market_metrics_prewarm=bool(getattr(args, "skip_market_metrics_prewarm", False)),
     )
     result = tracker.run_tracker(tracker_args)
     result["maintenance_preflight"] = preflight
+    result["full_market_metrics_cache"] = _jsonable(
+        result.get("full_market_metrics_cache")
+        or result.get("market_metrics_prewarm")
+        or {}
+    )
     if result.get("run_dir"):
         _attach_preflight_to_record(result["run_dir"], preflight)
     return result
@@ -114,6 +120,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--maintenance-batch-size", type=int, default=50)
     parser.add_argument("--maintenance-max-rounds", type=int, default=1)
     parser.add_argument("--skip-maintenance", action="store_true")
+    parser.add_argument(
+        "--skip-market-metrics-prewarm",
+        action="store_true",
+        help="工程排障用：跳过启动前 full-market metrics 缓存预热",
+    )
     return parser
 
 

@@ -112,6 +112,53 @@ def test_four_branch_readiness_blocks_only_symbols_missing_enabled_branch_data(t
     assert report.branch_data["fundamentals"]["000001.SZ"]["forecast_revision"] == 0.05
 
 
+def test_branch_readiness_quant_scope_uses_after_funnel_candidates(tmp_path):
+    fundamental_root = tmp_path / "cn_fundamental"
+    intelligence_root = tmp_path / "cn_intelligence"
+    macro_root = tmp_path / "cn_macro"
+    _write_fundamental_daily(fundamental_root, symbols=("000001.SZ",))
+    candidate_frame = _price_frame("000001.SZ")
+    non_candidate_frame = _price_frame("000002.SZ").drop(columns=["amount"])
+    frames = {
+        "000001.SZ": candidate_frame,
+        "000002.SZ": non_candidate_frame,
+    }
+    intelligence_daily = build_intelligence_daily({"000001.SZ": candidate_frame})
+    write_intelligence_mart(
+        intelligence_daily,
+        data_root=intelligence_root,
+        raw_snapshot_root=tmp_path / "snapshots" / "intelligence",
+    )
+    write_macro_mart(
+        {
+            "trade_date": "20240510",
+            "macro_score": 0.2,
+            "liquidity_score": 0.4,
+            "volatility_percentile": 45.0,
+            "policy_signal": "neutral",
+            "source": "tushare_macro",
+            "source_priority": "tushare_primary",
+        },
+        data_root=macro_root,
+        raw_snapshot_root=tmp_path / "snapshots" / "macro",
+    )
+
+    report = assess_branch_data_readiness(
+        frames=frames,
+        candidate_symbols=["000001.SZ"],
+        as_of="20240510",
+        fundamental_root=fundamental_root,
+        intelligence_root=intelligence_root,
+        macro_root=macro_root,
+        run_id="fixture",
+    )
+
+    assert report.readiness["quant"].status == STATUS_PASS
+    assert report.blocked_symbols == []
+    assert report.quantifiable_universe == ["000001.SZ"]
+    assert report.investable_universe == ["000001.SZ"]
+
+
 def test_macro_missing_blocks_four_branch_fusion(tmp_path):
     fundamental_root = tmp_path / "cn_fundamental"
     intelligence_root = tmp_path / "cn_intelligence"

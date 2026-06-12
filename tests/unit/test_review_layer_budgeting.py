@@ -7,7 +7,7 @@ import quant_investor.pipeline.mainline as mainline_module
 from quant_investor.agent_protocol import ActionLabel, AgentStatus, ExecutionTrace, GlobalContext, PortfolioDecision, ShortlistItem, WhatIfPlan
 from quant_investor.agents.agent_contracts import MasterAgentOutput
 from quant_investor.agents.orchestrator import AgentOrchestrator
-from quant_investor.branch_contracts import BranchResult, UnifiedDataBundle
+from quant_investor.branch_contracts import BranchResult
 from quant_investor.pipeline.mainline import QuantInvestor
 
 
@@ -17,8 +17,8 @@ def test_timeout_budget_helpers_stay_available():
         max_retries=2,
         cushion_seconds=10.0,
     ) == 71.0
-    assert AgentOrchestrator.branch_request_timeout("kline", 30.0) == 45.0
-    assert AgentOrchestrator.branch_max_tokens("kline", 1000) == 600
+    assert AgentOrchestrator.branch_request_timeout("kline", 30.0) == 30.0
+    assert AgentOrchestrator.branch_max_tokens("kline", 1000) == 1000
     assert AgentOrchestrator.compute_recommended_total_timeout(
         timeout_per_agent=30.0,
         master_timeout=60.0,

@@ -48,7 +48,7 @@ class SpecializedRiskSubAgent:
    - 近期资产间相关性急剧上升 → correlation_breakdown_risk > 0.5
    - 多数标的同向运动加剧 → 分散化失效风险
 3. **分支分歧风险**：
-   - 5 个分支 SubAgent 的 conviction_score 标准差 > 0.4 → 不确定性极高
+   - 四个 v13 canonical 分支的 conviction_score 标准差 > 0.4 → 不确定性极高
    - 分歧度高时应主动降低 max_recommended_exposure
 4. **回撤情景描述**：具体描述最可能的回撤路径和预期幅度
 

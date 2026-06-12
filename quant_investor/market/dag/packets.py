@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from statistics import fmean
 from typing import Any, Mapping
 
+import numpy as np
 import pandas as pd
 
 from quant_investor.agent_protocol import BranchVerdict, SymbolResearchPacket
@@ -16,39 +18,94 @@ def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, float(value)))
 
 
-def _frame_summary(frame: pd.DataFrame) -> dict[str, Any]:
+@dataclass(frozen=True)
+class _PreparedMarketStateFrame:
+    summary: dict[str, Any]
+    close: pd.Series
+    volume: pd.Series
+
+
+def _empty_frame_summary(rows: int = 0) -> dict[str, Any]:
+    return {
+        "rows": int(rows),
+        "latest_close": 0.0,
+        "average_return": 0.0,
+        "volatility": 0.0,
+    }
+
+
+def _pct_change_values(close: pd.Series) -> np.ndarray:
+    values = close.to_numpy(dtype=float, copy=False)
+    if values.size < 2:
+        return np.array([], dtype=float)
+    previous = values[:-1]
+    current = values[1:]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        returns = current / previous - 1.0
+    return returns[~np.isnan(returns)]
+
+
+def _numeric_frame_series(
+    frame: pd.DataFrame,
+    column: str,
+    empty: pd.Series,
+) -> pd.Series:
+    if not column:
+        return empty
+    values = frame[column]
+    if pd.api.types.is_numeric_dtype(values.dtype):
+        return values.dropna()
+    return pd.to_numeric(values, errors="coerce").dropna()
+
+
+def _prepare_market_state_frame(frame: pd.DataFrame) -> _PreparedMarketStateFrame:
+    empty = pd.Series(dtype=float)
     if frame is None or frame.empty:
-        return {
-            "rows": 0,
-            "latest_close": 0.0,
-            "average_return": 0.0,
-            "volatility": 0.0,
-        }
-    working = frame.copy()
+        return _PreparedMarketStateFrame(
+            summary=_empty_frame_summary(),
+            close=empty,
+            volume=empty,
+        )
+    working = frame
     close_col = (
         "close" if "close" in working.columns else "Close" if "Close" in working.columns else ""
     )
+    volume_col = (
+        "volume" if "volume" in working.columns else "vol" if "vol" in working.columns else ""
+    )
+    close = _numeric_frame_series(working, close_col, empty)
+    volume = _numeric_frame_series(working, volume_col, empty)
     if not close_col:
-        return {
-            "rows": int(len(working)),
-            "latest_close": 0.0,
-            "average_return": 0.0,
-            "volatility": 0.0,
-        }
-    close = pd.to_numeric(working[close_col], errors="coerce").dropna()
+        return _PreparedMarketStateFrame(
+            summary=_empty_frame_summary(len(working)),
+            close=close,
+            volume=volume,
+        )
     average_return = 0.0
     volatility = 0.0
     if len(close) >= 2:
-        returns = close.pct_change().dropna()
-        average_return = float(returns.tail(20).mean()) if not returns.empty else 0.0
-        volatility = float(returns.tail(60).std()) if len(returns) >= 3 else 0.0
+        returns = _pct_change_values(close)
+        average_return = float(np.mean(returns[-20:])) if returns.size else 0.0
+        volatility = (
+            float(np.std(returns[-60:], ddof=1))
+            if returns.size >= 3
+            else 0.0
+        )
     latest_close = float(close.iloc[-1]) if not close.empty else 0.0
-    return {
-        "rows": int(len(working)),
-        "latest_close": latest_close,
-        "average_return": average_return,
-        "volatility": volatility,
-    }
+    return _PreparedMarketStateFrame(
+        summary={
+            "rows": int(len(working)),
+            "latest_close": latest_close,
+            "average_return": average_return,
+            "volatility": volatility,
+        },
+        close=close,
+        volume=volume,
+    )
+
+
+def _frame_summary(frame: pd.DataFrame) -> dict[str, Any]:
+    return _prepare_market_state_frame(frame).summary
 
 
 def _close_series(frame: pd.DataFrame) -> pd.Series:
@@ -85,23 +142,29 @@ def _window_return(close: pd.Series, window: int) -> float:
     return (latest / base) - 1.0
 
 
+def _latest_moving_average_pair(close: pd.Series, window: int) -> tuple[float, float] | None:
+    if window <= 0 or len(close) < window + 1:
+        return None
+    latest_ma = float(close.tail(window).mean())
+    previous_ma = float(close.iloc[-window - 1 : -1].mean())
+    return latest_ma, previous_ma
+
+
 def _trend_stability(close: pd.Series) -> float:
     if close.empty:
         return 0.0
-    ma20 = close.rolling(20).mean()
-    ma60 = close.rolling(60).mean()
     latest = float(close.iloc[-1])
     score = 0.0
-    if len(ma20.dropna()) >= 2:
-        latest_ma20 = float(ma20.iloc[-1])
-        prev_ma20 = float(ma20.iloc[-2])
+    ma20 = _latest_moving_average_pair(close, 20)
+    if ma20 is not None:
+        latest_ma20, prev_ma20 = ma20
         if latest > latest_ma20:
             score += 0.4
         if latest_ma20 >= prev_ma20:
             score += 0.3
-    if len(ma60.dropna()) >= 2:
-        latest_ma60 = float(ma60.iloc[-1])
-        prev_ma60 = float(ma60.iloc[-2])
+    ma60 = _latest_moving_average_pair(close, 60)
+    if ma60 is not None:
+        latest_ma60, prev_ma60 = ma60
         if latest > latest_ma60:
             score += 0.2
         if latest_ma60 >= prev_ma60:
@@ -140,9 +203,16 @@ def _breakout_metrics(
     distance = max(0.0, (highest - latest) / highest)
     threshold = max(float(breakout_distance_pct), 0.01)
     readiness = 1.0 - _clamp(distance / threshold, 0.0, 1.0)
-    running_high = history.cummax().replace(0.0, pd.NA)
-    drawdown_series = 1.0 - history.div(running_high).fillna(1.0)
-    drawdown = float(drawdown_series.max()) if not drawdown_series.empty else 0.0
+    history_values = history.to_numpy(dtype=float, copy=False)
+    history_values = history_values[~np.isnan(history_values)]
+    drawdown = 0.0
+    if history_values.size:
+        running_high = np.maximum.accumulate(history_values)
+        valid = np.abs(running_high) > 1e-12
+        if valid.any():
+            drawdowns = np.zeros_like(history_values, dtype=float)
+            drawdowns[valid] = 1.0 - history_values[valid] / running_high[valid]
+            drawdown = float(np.nanmax(drawdowns))
     return distance, readiness, _clamp(drawdown, 0.0, 1.0)
 
 
@@ -172,9 +242,10 @@ def _build_symbol_market_state(
     volume_spike_threshold: float,
     breakout_distance_pct: float,
 ) -> dict[str, Any]:
-    summary = _frame_summary(frame)
-    close = _close_series(frame)
-    volume = _volume_series(frame)
+    prepared = _prepare_market_state_frame(frame)
+    summary = prepared.summary
+    close = prepared.close
+    volume = prepared.volume
     stability = _trend_stability(close)
     momentum_strength, returns = _momentum_signal_strength(
         close,
@@ -223,6 +294,21 @@ def _build_symbol_market_state(
     }
 
 
+def _summary_records(
+    frames: Mapping[str, pd.DataFrame],
+    frame_summaries: Mapping[str, Mapping[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for symbol, frame in frames.items():
+        if frame is None or frame.empty:
+            continue
+        summary = dict((frame_summaries or {}).get(symbol, {}) or {})
+        if not summary:
+            summary = _frame_summary(frame)
+        records.append(summary)
+    return records
+
+
 def _build_market_snapshot(
     *,
     market: str,
@@ -231,24 +317,25 @@ def _build_market_snapshot(
     global_summary: dict[str, Any],
     latest_trade_date: str,
     macro_overview: dict[str, Any],
+    frame_summaries: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    summaries = _summary_records(frames, frame_summaries)
     closes = [
         summary["latest_close"]
-        for summary in (_frame_summary(frame) for frame in frames.values())
+        for summary in summaries
         if summary["latest_close"] > 0
     ]
-    frame_summaries = [_frame_summary(frame) for frame in frames.values() if not frame.empty]
     avg_return = (
-        fmean([summary["average_return"] for summary in frame_summaries])
-        if frame_summaries
+        fmean([summary["average_return"] for summary in summaries])
+        if summaries
         else 0.0
     )
     volatility = (
-        fmean([summary["volatility"] for summary in frame_summaries]) if frame_summaries else 0.0
+        fmean([summary["volatility"] for summary in summaries]) if summaries else 0.0
     )
     breadth = 0.0
     if frames:
-        positive = sum(1 for summary in frame_summaries if summary["average_return"] > 0)
+        positive = sum(1 for summary in summaries if summary["average_return"] > 0)
         breadth = positive / max(len(frames), 1)
     return {
         "market": market,
@@ -320,11 +407,17 @@ def _build_global_quant_verdict(
     )
 
 
-def _legacy_quant_symbol_scores(frames: Mapping[str, pd.DataFrame]) -> dict[str, float]:
+def _legacy_quant_symbol_scores(
+    frames: Mapping[str, pd.DataFrame],
+    *,
+    frame_summaries: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, float]:
     """Fallback quant proxy used only when no governed production factor is live."""
     symbol_scores: dict[str, float] = {}
     for symbol, frame in frames.items():
-        summary = _frame_summary(frame)
+        summary = dict((frame_summaries or {}).get(symbol, {}) or {})
+        if not summary:
+            summary = _frame_summary(frame)
         score = summary["average_return"] * 8.0 - summary["volatility"] * 2.0
         symbol_scores[symbol] = _clamp(score, -1.0, 1.0)
     return symbol_scores
@@ -333,6 +426,7 @@ def _legacy_quant_symbol_scores(frames: Mapping[str, pd.DataFrame]) -> dict[str,
 def _build_quant_branch_result(
     *,
     frames: Mapping[str, pd.DataFrame],
+    frame_summaries: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> BranchResult:
     mined = score_with_mined_factors(frames)
     if mined.factor_count > 0:
@@ -359,7 +453,10 @@ def _build_quant_branch_result(
             "mined_factor_runtime": mined.to_metadata(),
         }
     else:
-        symbol_scores = _legacy_quant_symbol_scores(frames)
+        symbol_scores = _legacy_quant_symbol_scores(
+            frames,
+            frame_summaries=frame_summaries,
+        )
         factors_used = ["short_term_return", "volatility_penalty"]
         factor_mode = "legacy_proxy_fallback"
         conclusion = "横截面量化分支未发现可用 production mined factors，回退到收益/波动率代理。"
@@ -422,7 +519,11 @@ def _build_symbol_quant_verdict(
     )
 
 
-def _build_cross_section_quant(frames: Mapping[str, pd.DataFrame]) -> dict[str, Any]:
+def _build_cross_section_quant(
+    frames: Mapping[str, pd.DataFrame],
+    *,
+    frame_summaries: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
     if not frames:
         return {
             "candidate_count": 0,
@@ -431,9 +532,7 @@ def _build_cross_section_quant(frames: Mapping[str, pd.DataFrame]) -> dict[str, 
             "average_volatility": 0.0,
             "breadth": 0.0,
         }
-    summaries = [
-        _frame_summary(frame) for frame in frames.values() if frame is not None and not frame.empty
-    ]
+    summaries = _summary_records(frames, frame_summaries)
     if not summaries:
         return {
             "candidate_count": len(frames),

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import timedelta
+from inspect import Parameter, signature
 from typing import Any, Callable, Mapping
 
 import pandas as pd
@@ -17,7 +19,6 @@ from quant_investor.market.dag.packets import (
     _build_market_snapshot,
     _build_quant_branch_result,
     _build_symbol_tradability,
-    _frame_summary,
 )
 from quant_investor.market.data_quality import build_data_quality_diagnostics
 from quant_investor.market.branch_readiness import (
@@ -25,10 +26,25 @@ from quant_investor.market.branch_readiness import (
     assess_branch_data_readiness,
     write_branch_readiness_report,
 )
+from quant_investor.market.runtime_profile import profile_stage
 from quant_investor.market.shared_csv_reader import SharedCSVReadResult, SharedCSVReader
 from quant_investor.llm_gateway import detect_provider
 from quant_investor.model_roles import ModelRoleResolution
 from quant_investor.reporting.run_artifacts import build_model_role_metadata
+
+
+DAG_RUNTIME_PRICE_VOLUME_COLUMNS: tuple[str, ...] = (
+    "ts_code",
+    "trade_date",
+    "open",
+    "high",
+    "low",
+    "close",
+    "vol",
+    "amount",
+    "adj_close",
+)
+DAG_RUNTIME_LOOKBACK_CALENDAR_DAYS = 420
 
 
 @dataclass
@@ -72,6 +88,54 @@ def _provider_label(resolution: ModelRoleResolution) -> str:
         return ""
 
 
+def _compact_runtime_date(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or text.lower() in {"nan", "nat", "none"}:
+        return ""
+    digits = "".join(ch for ch in text if ch.isdigit())
+    return digits[:8] if len(digits) >= 8 else ""
+
+
+def _runtime_lookback_start_date(
+    latest_trade_date: Any,
+    *,
+    calendar_days: int = DAG_RUNTIME_LOOKBACK_CALENDAR_DAYS,
+) -> str:
+    compact = _compact_runtime_date(latest_trade_date)
+    if not compact:
+        return ""
+    parsed = pd.to_datetime(compact, format="%Y%m%d", errors="coerce")
+    if pd.isna(parsed):
+        return ""
+    return (pd.Timestamp(parsed) - timedelta(days=max(int(calendar_days), 1))).strftime("%Y%m%d")
+
+
+def _call_accepts_keyword(callable_obj: Callable[..., Any], keyword: str) -> bool:
+    try:
+        parameters = signature(callable_obj).parameters.values()
+    except (TypeError, ValueError):
+        return True
+    return any(
+        parameter.name == keyword or parameter.kind == Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+
+
+def _read_symbol_frames_with_projection(
+    batch_reader: Callable[..., Any],
+    symbols: list[str],
+    *,
+    universe_key: str,
+    start_date: str = "",
+) -> dict[str, SharedCSVReadResult]:
+    kwargs: dict[str, Any] = {"universe_key": universe_key}
+    if _call_accepts_keyword(batch_reader, "columns"):
+        kwargs["columns"] = DAG_RUNTIME_PRICE_VOLUME_COLUMNS
+    if start_date and _call_accepts_keyword(batch_reader, "start_date"):
+        kwargs["start_date"] = start_date
+    return dict(batch_reader(symbols, **kwargs) or {})
+
+
 def _prepare_market_context(
     *,
     market: str,
@@ -100,6 +164,7 @@ def _prepare_market_context(
     macro_agent: Any,
     funnel_cls: Any,
     provider_health_detector: Callable[..., dict[str, dict[str, Any]]],
+    runtime_profiler: Any | None = None,
 ) -> MarketContextState:
     settings = get_market_settings(market)
     all_symbols = list(symbols)
@@ -113,70 +178,188 @@ def _prepare_market_context(
     researchable_symbols: list[str] = []
     industry_map: dict[str, str] = {}
     symbol_market_state: dict[str, dict[str, Any]] = {}
-    for symbol in all_symbols:
-        profile = dict(company_profile_map.get(symbol, {}) or {})
-        read_result = shared_reader.read_symbol_frame(symbol, universe_key=universe_key)
-        read_results[symbol] = read_result
-        frames[symbol] = read_result.frame
-        tradability_snapshot[symbol] = _build_symbol_tradability(
-            symbol,
-            read_result,
-            company_name=company_name_map.get(symbol, ""),
-            sector=str(profile.get("sector", "") or profile.get("industry", "")),
-            industry=str(profile.get("industry", "") or profile.get("sector", "")),
-            trend_windows=trend_windows,
-            volume_spike_threshold=volume_spike_threshold,
-            breakout_distance_pct=breakout_distance_pct,
-        )
-        symbol_market_state[symbol] = dict(tradability_snapshot[symbol].get("market_state", {}) or {})
-        industry_label = str(tradability_snapshot[symbol].get("industry") or tradability_snapshot[symbol].get("sector") or "").strip()
-        if industry_label:
-            industry_map[symbol] = industry_label
-        data_quality_issues.extend(read_result.issues)
-        if _is_quarantined_read_result(read_result):
-            quarantined_symbols.append(symbol)
-        else:
-            researchable_symbols.append(symbol)
+    batch_read_results: dict[str, SharedCSVReadResult] = {}
+    raw_read_results: dict[str, SharedCSVReadResult] = {}
+    frame_summaries: dict[str, dict[str, Any]] = {}
+    runtime_lookback_start_date = _runtime_lookback_start_date(
+        scoped_data_snapshot.get("local_latest_trade_date")
+        or scoped_data_snapshot.get("latest_trade_date")
+    )
+    with profile_stage(
+        runtime_profiler,
+        "dag_batch_read",
+        {"symbol_count": len(all_symbols), "universe_key": universe_key},
+    ) as stage_metadata:
+        stage_metadata["projected_columns"] = list(DAG_RUNTIME_PRICE_VOLUME_COLUMNS)
+        stage_metadata["projected_column_count"] = len(DAG_RUNTIME_PRICE_VOLUME_COLUMNS)
+        stage_metadata["runtime_lookback_calendar_days"] = DAG_RUNTIME_LOOKBACK_CALENDAR_DAYS
+        if runtime_lookback_start_date:
+            stage_metadata["runtime_lookback_start_date"] = runtime_lookback_start_date
+        batch_reader = getattr(shared_reader, "read_symbol_frames", None)
+        if callable(batch_reader):
+            batch_read_results = _read_symbol_frames_with_projection(
+                batch_reader,
+                all_symbols,
+                universe_key=universe_key,
+                start_date=runtime_lookback_start_date,
+            )
+        per_symbol_fallback_count = 0
+        for symbol in all_symbols:
+            read_result = batch_read_results.get(symbol)
+            if read_result is None:
+                per_symbol_fallback_count += 1
+                read_result = shared_reader.read_symbol_frame(symbol, universe_key=universe_key)
+            raw_read_results[symbol] = read_result
+        stage_metadata["batch_result_count"] = len(batch_read_results)
+        stage_metadata["per_symbol_fallback_count"] = per_symbol_fallback_count
+    with profile_stage(
+        runtime_profiler,
+        "dag_tradability_snapshot",
+        {"symbol_count": len(all_symbols), "universe_key": universe_key},
+    ) as stage_metadata:
+        for symbol in all_symbols:
+            profile = dict(company_profile_map.get(symbol, {}) or {})
+            read_result = raw_read_results[symbol]
+            read_results[symbol] = read_result
+            frames[symbol] = read_result.frame
+            tradability = _build_symbol_tradability(
+                symbol,
+                read_result,
+                company_name=company_name_map.get(symbol, ""),
+                sector=str(profile.get("sector", "") or profile.get("industry", "")),
+                industry=str(profile.get("industry", "") or profile.get("sector", "")),
+                trend_windows=trend_windows,
+                volume_spike_threshold=volume_spike_threshold,
+                breakout_distance_pct=breakout_distance_pct,
+            )
+            tradability_snapshot[symbol] = tradability
+            market_state = dict(tradability.get("market_state", {}) or {})
+            frame_summaries[symbol] = {
+                "rows": int(market_state.get("rows", 0) or 0),
+                "latest_close": float(market_state.get("latest_close", 0.0) or 0.0),
+                "average_return": float(market_state.get("average_return", 0.0) or 0.0),
+                "volatility": float(market_state.get("volatility", 0.0) or 0.0),
+            }
+            symbol_market_state[symbol] = dict(tradability_snapshot[symbol].get("market_state", {}) or {})
+            industry_label = str(tradability_snapshot[symbol].get("industry") or tradability_snapshot[symbol].get("sector") or "").strip()
+            if industry_label:
+                industry_map[symbol] = industry_label
+            data_quality_issues.extend(read_result.issues)
+            if _is_quarantined_read_result(read_result):
+                quarantined_symbols.append(symbol)
+            else:
+                researchable_symbols.append(symbol)
+        stage_metadata["researchable_count"] = len(researchable_symbols)
+        stage_metadata["quarantined_count"] = len(quarantined_symbols)
+        stage_metadata["issue_count"] = len(data_quality_issues)
 
     symbols = list(researchable_symbols)
 
-    cross_section_quant = _build_cross_section_quant(frames)
-    macro_overview = {
-        "regime": "neutral",
-        "macro_score": cross_section_quant.get("average_return", 0.0),
-        "liquidity_score": cross_section_quant.get("breadth", 0.0),
-        "volatility_percentile": min(95.0, max(5.0, cross_section_quant.get("average_volatility", 0.0) * 100.0 + 50.0)),
-        "policy_signal": "neutral",
-    }
-    snapshot_latest_trade_date = str(scoped_data_snapshot.get("local_latest_trade_date", ""))
-    snapshot_freshness_mode = str(scoped_data_snapshot.get("freshness_mode", "stable"))
-    market_snapshot = _build_market_snapshot(
-        market=settings.market,
-        universe_key=universe_key,
-        frames=frames,
-        global_summary={"candidate_count": len(symbols)},
-        latest_trade_date=(
+    with profile_stage(
+        runtime_profiler,
+        "dag_quant_context",
+        {"researchable_count": len(symbols), "universe_key": universe_key},
+    ) as stage_metadata:
+        with profile_stage(
+            runtime_profiler,
+            "dag_cross_section_quant",
+            {"researchable_count": len(symbols), "frame_count": len(frames)},
+        ) as cross_section_metadata:
+            cross_section_quant = _build_cross_section_quant(
+                frames,
+                frame_summaries=frame_summaries,
+            )
+            cross_section_metadata["breadth"] = float(cross_section_quant.get("breadth", 0.0))
+            cross_section_metadata["average_return"] = float(
+                cross_section_quant.get("average_return", 0.0)
+            )
+            cross_section_metadata["average_volatility"] = float(
+                cross_section_quant.get("average_volatility", 0.0)
+            )
+        macro_overview = {
+            "regime": "neutral",
+            "macro_score": cross_section_quant.get("average_return", 0.0),
+            "liquidity_score": cross_section_quant.get("breadth", 0.0),
+            "volatility_percentile": min(95.0, max(5.0, cross_section_quant.get("average_volatility", 0.0) * 100.0 + 50.0)),
+            "policy_signal": "neutral",
+        }
+        snapshot_latest_trade_date = str(scoped_data_snapshot.get("local_latest_trade_date", ""))
+        snapshot_freshness_mode = str(scoped_data_snapshot.get("freshness_mode", "stable"))
+        effective_snapshot_trade_date = (
             download_stage.get("completeness_after", {}).get("latest_trade_date", "")
             if download_stage
             else snapshot_latest_trade_date
-        ),
-        macro_overview=macro_overview,
-    )
+        )
+        with profile_stage(
+            runtime_profiler,
+            "dag_market_snapshot",
+            {
+                "researchable_count": len(symbols),
+                "latest_trade_date": effective_snapshot_trade_date,
+                "universe_key": universe_key,
+            },
+        ) as market_snapshot_metadata:
+            market_snapshot = _build_market_snapshot(
+                market=settings.market,
+                universe_key=universe_key,
+                frames=frames,
+                global_summary={"candidate_count": len(symbols)},
+                latest_trade_date=effective_snapshot_trade_date,
+                macro_overview=macro_overview,
+                frame_summaries=frame_summaries,
+            )
+            market_snapshot_metadata["snapshot_key_count"] = len(market_snapshot)
 
-    macro_verdict = macro_agent.run({"market_snapshot": market_snapshot})
-    macro_overview["regime"] = str(macro_verdict.metadata.get("regime", "neutral"))
-    macro_overview["macro_score"] = float(macro_verdict.final_score)
-    macro_overview["liquidity_score"] = float(cross_section_quant.get("breadth", 0.0))
-    market_snapshot.update(macro_overview)
-    global_quant_verdict = _build_global_quant_verdict(
-        cross_section_quant=cross_section_quant,
-        symbol_count=len(symbols),
-    )
-    quant_result = _build_quant_branch_result(frames=frames)
+        with profile_stage(
+            runtime_profiler,
+            "dag_macro_verdict",
+            {"market": settings.market, "universe_key": universe_key},
+        ) as macro_metadata:
+            macro_verdict = macro_agent.run({"market_snapshot": market_snapshot})
+            macro_metadata["macro_regime"] = str(
+                macro_verdict.metadata.get("regime", "neutral")
+            )
+            macro_metadata["macro_score"] = float(macro_verdict.final_score)
+        macro_overview["regime"] = str(macro_verdict.metadata.get("regime", "neutral"))
+        macro_overview["macro_score"] = float(macro_verdict.final_score)
+        macro_overview["liquidity_score"] = float(cross_section_quant.get("breadth", 0.0))
+        market_snapshot.update(macro_overview)
+        with profile_stage(
+            runtime_profiler,
+            "dag_global_quant_verdict",
+            {"researchable_count": len(symbols), "universe_key": universe_key},
+        ) as global_quant_metadata:
+            global_quant_verdict = _build_global_quant_verdict(
+                cross_section_quant=cross_section_quant,
+                symbol_count=len(symbols),
+            )
+            global_quant_metadata["global_quant_score"] = float(global_quant_verdict.final_score)
+            global_quant_metadata["global_quant_confidence"] = float(
+                global_quant_verdict.final_confidence
+            )
+        with profile_stage(
+            runtime_profiler,
+            "dag_quant_branch_result",
+            {"researchable_count": len(symbols), "frame_count": len(frames)},
+        ) as quant_branch_metadata:
+            quant_result = _build_quant_branch_result(
+                frames=frames,
+                frame_summaries=frame_summaries,
+            )
+            quant_branch_metadata["scored_symbol_count"] = len(quant_result.symbol_scores)
+        stage_metadata["macro_regime"] = str(macro_verdict.metadata.get("regime", "neutral"))
+        stage_metadata["breadth"] = float(cross_section_quant.get("breadth", 0.0))
     liquidity_scores = {
         symbol: float(
             max(
-                min(1.0, max(0.0, _frame_summary(frame).get("rows", 0) / 250.0)),
+                min(
+                    1.0,
+                    max(
+                        0.0,
+                        float(frame_summaries.get(symbol, {}).get("rows", 0) or 0)
+                        / 250.0,
+                    ),
+                ),
                 tradability_snapshot.get(symbol, {}).get("liquidity_score", 0.0),
             )
         )
@@ -244,6 +427,10 @@ def _prepare_market_context(
             target_exposure = min(target_exposure * 1.08, 0.72)
             max_single_weight = 0.14
 
+    provider_health = provider_health_detector(
+        agent_model=branch_model_resolution.primary_model,
+        master_model=master_model_resolution.primary_model,
+    )
     global_context = GlobalContext(
         market=settings.market,
         universe_key=universe_key,
@@ -280,10 +467,7 @@ def _prepare_market_context(
             quarantined_symbols=quarantined_symbols,
             issues=data_quality_issues,
         ),
-        model_capability_map=provider_health_detector(
-            agent_model=branch_model_resolution.primary_model,
-            master_model=master_model_resolution.primary_model,
-        ),
+        model_capability_map=provider_health,
         symbol_name_map=dict(company_name_map),
         data_quality_quarantine=list(quarantined_symbols),
         freshness_mode=effective_freshness_mode,
@@ -319,10 +503,6 @@ def _prepare_market_context(
                 "sector_bucket_limit": int(sector_bucket_limit),
             },
         },
-    )
-    provider_health = provider_health_detector(
-        agent_model=branch_model_resolution.primary_model,
-        master_model=master_model_resolution.primary_model,
     )
     global_context.model_capability_map = provider_health
     global_context.metadata["provider_health"] = provider_health
@@ -384,22 +564,37 @@ def _prepare_market_context(
             sector_bucket_limit=int(sector_bucket_limit if str(funnel_profile or "").strip().lower() == "momentum_leader" else 0),
         )
     )
-    funnel_output = funnel.run(
-        quant_result=quant_result,
-        global_context=global_context,
-    )
+    with profile_stage(
+        runtime_profiler,
+        "dag_funnel",
+        {"researchable_count": len(researchable_symbols), "max_candidates": int(max_candidates)},
+    ) as stage_metadata:
+        funnel_output = funnel.run(
+            quant_result=quant_result,
+            global_context=global_context,
+        )
+        stage_metadata["candidate_count"] = len(getattr(funnel_output, "candidates", []) or [])
+        stage_metadata["excluded_count"] = len(getattr(funnel_output, "excluded_symbols", {}) or {})
     candidate_symbols = [symbol for symbol in funnel_output.candidates if symbol in researchable_symbols]
     if not candidate_symbols:
         candidate_symbols = list(researchable_symbols)
-    branch_governance_report = assess_branch_data_readiness(
-        frames=frames,
-        read_results=read_results,
-        candidate_symbols=candidate_symbols,
-        market=settings.market,
-        category=universe_key,
-        as_of=effective_latest_trade_date,
-    )
-    branch_governance_artifacts = write_branch_readiness_report(branch_governance_report)
+    with profile_stage(
+        runtime_profiler,
+        "dag_branch_readiness",
+        {"candidate_count": len(candidate_symbols), "universe_key": universe_key},
+    ) as stage_metadata:
+        branch_governance_report = assess_branch_data_readiness(
+            frames=frames,
+            read_results=read_results,
+            candidate_symbols=candidate_symbols,
+            market=settings.market,
+            category=universe_key,
+            as_of=effective_latest_trade_date,
+        )
+        branch_governance_artifacts = write_branch_readiness_report(branch_governance_report)
+        stage_metadata["blocked_symbol_count"] = len(branch_governance_report.blocked_symbols)
+        stage_metadata["quantifiable_universe_count"] = len(branch_governance_report.quantifiable_universe)
+        stage_metadata["investable_universe_count"] = len(branch_governance_report.investable_universe)
     branch_data_readiness = branch_governance_report.to_dict(include_branch_data=False)
     branch_data_payload = dict(branch_governance_report.branch_data)
     macro_ready = branch_governance_report.readiness.get("macro")

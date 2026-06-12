@@ -5,7 +5,6 @@ Quant-Investor V7.0 配置管理模块
 
 import os
 from pathlib import Path
-from typing import Optional
 
 from quant_investor.credential_utils import get_secret
 
@@ -58,29 +57,6 @@ try:
         load_dotenv(env_path)
 except ImportError:
     pass
-
-
-def _default_kronos_model_path() -> str:
-    candidates = [
-        os.environ.get('KRONOS_MODEL_PATH'),
-        str(Path(__file__).resolve().parents[1] / 'data' / 'models' / 'kronos'),
-    ]
-    for candidate in candidates:
-        if candidate and Path(candidate).exists():
-            return candidate
-    return candidates[-1]
-
-
-def _default_chronos_model_name() -> str:
-    candidates = [
-        os.environ.get('CHRONOS_MODEL_NAME'),
-        str(Path(__file__).resolve().parents[1] / 'data' / 'models' / 'chronos-2'),
-    ]
-    for candidate in candidates:
-        if candidate and Path(candidate).exists():
-            return candidate
-    return candidates[-1]
-
 
 def _env_float(name: str, default: float) -> float:
     try:
@@ -239,16 +215,6 @@ class Config:
     COMMISSION_RATE: float = float(os.environ.get('COMMISSION_RATE', '0.0003'))
     STAMP_DUTY_RATE: float = float(os.environ.get('STAMP_DUTY_RATE', '0.001'))
     SLIPPAGE: float = float(os.environ.get('SLIPPAGE', '0.001'))
-
-    # K线分析后端配置
-    KRONOS_MODEL_PATH: str = _default_kronos_model_path()
-    KRONOS_MODEL_SIZE: str = os.environ.get('KRONOS_MODEL_SIZE', 'base')
-    CHRONOS_MODEL_NAME: str = _default_chronos_model_name()
-    KLINE_BACKEND: str = os.environ.get('KLINE_BACKEND', 'hybrid')
-    KLINE_EVALUATOR: str = os.environ.get('KLINE_EVALUATOR', 'placeholder')
-    KLINE_ALLOW_REMOTE_MODEL_DOWNLOAD: bool = os.environ.get(
-        'KLINE_ALLOW_REMOTE_MODEL_DOWNLOAD', 'false'
-    ).lower() in {'1', 'true', 'yes', 'on'}
 
     @classmethod
     def validate(cls) -> list:

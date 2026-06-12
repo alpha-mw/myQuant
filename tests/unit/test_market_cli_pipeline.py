@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 from types import SimpleNamespace
 
@@ -216,12 +218,51 @@ def test_market_run_cli_dispatches_to_unified_pipeline(monkeypatch):
     assert captured["trend_windows"] == [20, 60, 120]
     assert captured["volume_spike_threshold"] == 1.4
     assert captured["breakout_distance_pct"] == 0.04
-    assert captured["years"] == 5
-    assert captured["workers"] == 6
-    assert captured["max_download_rounds"] == 3
 
 
-def test_market_download_cli_is_removed():
+def test_market_storage_internal_cli_dispatches(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def _storage_validate(**kwargs):
+        captured["storage_validate"] = kwargs
+        return {"status": "passed"}
+
+    def _storage_validate_clean(**kwargs):
+        captured["storage_validate_clean"] = kwargs
+        return {"status": "passed"}
+
+    def _materialize_serving(**kwargs):
+        captured["materialize_serving"] = kwargs
+        return {"status": "materialized"}
+
+    def _materialize_features(**kwargs):
+        captured["materialize_features"] = kwargs
+        return {"status": "materialized"}
+
+    def _storage_diff(**kwargs):
+        captured["storage_diff"] = kwargs
+        return {"status": "passed"}
+
+    monkeypatch.setattr(cli_main, "run_storage_validate", _storage_validate)
+    monkeypatch.setattr(cli_main, "run_storage_validate_clean", _storage_validate_clean)
+    monkeypatch.setattr(cli_main, "run_materialize_serving", _materialize_serving)
+    monkeypatch.setattr(cli_main, "run_materialize_features", _materialize_features)
+    monkeypatch.setattr(cli_main, "run_storage_diff", _storage_diff)
+
+    cli_main.main(["market", "storage-validate", "--market", "CN"])
+    cli_main.main(["market", "storage-validate-clean", "--market", "CN"])
+    cli_main.main(["market", "materialize-serving", "--market", "CN"])
+    cli_main.main(["market", "materialize-features", "--market", "CN", "--trade-date", "20260103"])
+    cli_main.main(["market", "storage-diff", "--market", "CN"])
+
+    assert captured["storage_validate"]["market"] == "CN"
+    assert captured["storage_validate_clean"]["market"] == "CN"
+    assert captured["materialize_serving"]["market"] == "CN"
+    assert captured["materialize_features"] == {"market": "CN", "trade_date": "20260103"}
+    assert captured["storage_diff"]["market"] == "CN"
+
+
+def test_market_download_alias_requires_category():
     with pytest.raises(SystemExit):
         cli_main.main(
             [
@@ -245,6 +286,11 @@ def test_unified_pipeline_stage1_builds_advisory_snapshot(monkeypatch):
                 "trade_report": "trade.md",
                 "trade_data": "trade.json",
                 "candidate_index": "candidates.json",
+            },
+            "runtime_profile": {
+                "market": "CN",
+                "universe": "hs300",
+                "stages": [{"name": "dag_symbol_list", "duration_ms": 1.0, "metadata": {}}],
             },
         }
 
@@ -281,6 +327,7 @@ def test_unified_pipeline_stage1_builds_advisory_snapshot(monkeypatch):
     assert output["download"]["reason"] == "analysis_uses_local_data_snapshot"
     assert output["download"]["data_snapshot"]["local_latest_trade_date"] == "20260326"
     assert output["analysis"] == {"hs300": [{"batch_id": 1}]}
+    assert output["runtime_profile"]["stages"][0]["name"] == "dag_symbol_list"
     assert captured_analysis["data_snapshot"]["local_latest_trade_date"] == "20260326"
     assert captured_analysis["enable_agent_layer"] is True
     assert captured_analysis["review_model_priority"] == ["deepseek-chat"]
@@ -641,6 +688,7 @@ def test_run_market_analysis_exposes_role_metadata(monkeypatch, tmp_path):
 
     assert captured_dag["agent_model"] == "deepseek-reasoner"
     assert captured_dag["master_model"] == "moonshot-v1-128k"
+    assert captured_dag["runtime_profiler"] is not None
     assert captured_dag["agent_model"] == "deepseek-reasoner"
     assert captured_dag["data_snapshot"]["local_latest_trade_date"] == "20260326"
     assert output["analysis_meta"]["model_role_metadata"]["branch_model"] == "deepseek-reasoner"
@@ -653,3 +701,9 @@ def test_run_market_analysis_exposes_role_metadata(monkeypatch, tmp_path):
         for step in output["analysis_meta"]["execution_trace"]["steps"]
     )
     assert output["analysis_meta"]["what_if_plan"]["scenarios"][0]["scenario_name"] == "macro_turns_weaker"
+    assert output["runtime_profile"]["stages"][-1]["name"] == "analysis_report_persistence"
+    assert output["analysis_meta"]["runtime_profile"] == output["runtime_profile"]
+    runtime_profile_json = output["reports"]["runtime_profile_json"]
+    runtime_profile_md = output["reports"]["runtime_profile_md"]
+    assert json.loads(Path(runtime_profile_json).read_text(encoding="utf-8"))["stages"][-1]["name"] == "analysis_report_persistence"
+    assert Path(runtime_profile_md).read_text(encoding="utf-8").startswith("# Market Runtime Profile")

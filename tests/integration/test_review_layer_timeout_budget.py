@@ -81,7 +81,6 @@ def _make_branch_result(branch_name: str) -> BranchResult:
 
 def test_review_layer_budget_allows_slow_branch_agents(monkeypatch):
     monkeypatch.setattr(orchestrator_module, "has_any_provider", lambda: True)
-    monkeypatch.setattr(orchestrator_module, "has_provider_for_model", lambda _model: True)
     monkeypatch.setattr(orchestrator_module.asyncio, "wait_for", _fake_wait_for)
 
     for branch_name in CURRENT_BRANCH_ORDER:
@@ -129,7 +128,6 @@ def test_review_layer_budget_allows_slow_branch_agents(monkeypatch):
 
 def test_v13_four_branch_request_budget_uses_current_branch_order(monkeypatch):
     monkeypatch.setattr(orchestrator_module, "has_any_provider", lambda: True)
-    monkeypatch.setattr(orchestrator_module, "has_provider_for_model", lambda _model: True)
 
     _RequestBudgetAwareBranchAgent.observed_timeouts = {}
     _RequestBudgetAwareBranchAgent.observed_max_tokens = {}

@@ -230,7 +230,7 @@ class MasterAgentInput(_CompatModel):
 
     branch_results: dict[str, Any] = Field(
         default_factory=dict,
-        description="5个分支的序列化 BranchResult（量化分数、signals、evidence）",
+        description="v13 四分支的序列化 BranchResult（量化分数、signals、evidence）",
     )
     risk_result: dict[str, Any] = Field(
         default_factory=dict,
@@ -304,8 +304,6 @@ __all__ = [
     "FundamentalAgentOutput",
     "IntelligenceAgentInput",
     "IntelligenceAgentOutput",
-    "KLineAgentInput",
-    "KLineAgentOutput",
     "MacroAgentInput",
     "MacroAgentOutput",
     "MasterAgentInput",

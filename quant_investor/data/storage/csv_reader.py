@@ -15,6 +15,8 @@ import pandas as pd
 
 from quant_investor.agent_protocol import DataQualityIssue
 
+_DATE_COLUMN_CANDIDATES = ("trade_date", "date")
+
 
 @dataclass
 class CSVReadResult:
@@ -28,7 +30,11 @@ class CSVReadResult:
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
-        payload["frame"] = self.frame.to_dict(orient="records") if isinstance(self.frame, pd.DataFrame) else []
+        payload["frame"] = (
+            self.frame.to_dict(orient="records")
+            if isinstance(self.frame, pd.DataFrame)
+            else []
+        )
         payload["issues"] = [issue.to_dict() for issue in self.issues]
         return payload
 
@@ -42,6 +48,15 @@ def _normalize_trade_date(value: Any) -> str:
     digits = "".join(ch for ch in text if ch.isdigit())
     if len(digits) >= 8:
         return digits[:8]
+    return ""
+
+
+def _find_trade_date_column(columns: Iterable[Any]) -> str:
+    by_lower = {str(column).strip().lower(): str(column) for column in columns}
+    for candidate in _DATE_COLUMN_CANDIDATES:
+        column = by_lower.get(candidate)
+        if column:
+            return column
     return ""
 
 
@@ -71,7 +86,7 @@ def _make_issue(
 
 
 def peek_latest_date(path: str | Path, *, tail_bytes: int = 8192) -> str:
-    """Return the last available ``trade_date`` in a CSV without a full read."""
+    """Return the last available date in a CSV without a full read."""
     csv_path = Path(path)
     if not csv_path.exists() or not csv_path.is_file():
         return ""
@@ -80,11 +95,15 @@ def peek_latest_date(path: str | Path, *, tail_bytes: int = 8192) -> str:
             header_bytes = handle.readline()
             if not header_bytes:
                 return ""
-            header = header_bytes.decode("utf-8-sig", errors="replace").strip().split(",")
-            try:
-                date_idx = [item.strip() for item in header].index("trade_date")
-            except ValueError:
+            header = (
+                header_bytes.decode("utf-8-sig", errors="replace")
+                .strip()
+                .split(",")
+            )
+            date_column = _find_trade_date_column(header)
+            if not date_column:
                 return ""
+            date_idx = [item.strip() for item in header].index(date_column)
 
             handle.seek(0, 2)
             size = handle.tell()
@@ -93,7 +112,8 @@ def peek_latest_date(path: str | Path, *, tail_bytes: int = 8192) -> str:
     except Exception:
         return ""
 
-    for line in reversed([item.strip() for item in tail.splitlines() if item.strip()]):
+    tail_lines = [item.strip() for item in tail.splitlines() if item.strip()]
+    for line in reversed(tail_lines):
         if line == ",".join(header):
             continue
         cells = line.split(",")
@@ -105,10 +125,15 @@ def peek_latest_date(path: str | Path, *, tail_bytes: int = 8192) -> str:
     return ""
 
 
-def _filter_by_trade_date(frame: pd.DataFrame, start_date: str = "", end_date: str = "") -> pd.DataFrame:
-    if frame.empty or "trade_date" not in frame.columns:
+def _filter_by_trade_date(
+    frame: pd.DataFrame,
+    start_date: str = "",
+    end_date: str = "",
+) -> pd.DataFrame:
+    date_column = _find_trade_date_column(frame.columns)
+    if frame.empty or not date_column:
         return frame
-    normalized = frame["trade_date"].map(_normalize_trade_date)
+    normalized = frame[date_column].map(_normalize_trade_date)
     filtered = frame.copy()
     filtered["trade_date"] = normalized
     mask = normalized.str.len().eq(8)
@@ -202,7 +227,7 @@ def read_csv_with_diagnostics(
                 resolver_strategy=resolver_strategy,
             )
         )
-    elif "trade_date" not in frame.columns:
+    elif not _find_trade_date_column(frame.columns):
         issues.append(
             _make_issue(
                 path=csv_path,
@@ -216,7 +241,11 @@ def read_csv_with_diagnostics(
             )
         )
     else:
-        frame = _filter_by_trade_date(frame, start_date=start_date, end_date=end_date)
+        frame = _filter_by_trade_date(
+            frame,
+            start_date=start_date,
+            end_date=end_date,
+        )
 
     metadata["row_count"] = int(len(frame))
     metadata["latest_trade_date"] = infer_latest_date_from_frames([frame])
@@ -234,9 +263,12 @@ def read_csv_with_diagnostics(
 def infer_latest_date_from_frames(frames: Iterable[pd.DataFrame]) -> str:
     latest = ""
     for frame in frames:
-        if frame is None or frame.empty or "trade_date" not in frame.columns:
+        if frame is None or frame.empty:
             continue
-        for value in frame["trade_date"].tail(256):
+        date_column = _find_trade_date_column(frame.columns)
+        if not date_column:
+            continue
+        for value in frame[date_column].tail(256):
             normalized = _normalize_trade_date(value)
             if normalized and normalized > latest:
                 latest = normalized

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from quant_investor.config import config
@@ -64,6 +65,50 @@ def run_data_governance(**kwargs):
     )
 
     return _run_data_governance(**kwargs)
+
+
+def run_storage_validate(**kwargs):
+    from quant_investor.market.market_data_store import (
+        run_storage_validate as _run_storage_validate,
+    )
+
+    return _run_storage_validate(**kwargs)
+
+
+def run_storage_validate_clean(**kwargs):
+    from quant_investor.market.market_data_store import (
+        run_storage_validate_clean as _run_storage_validate_clean,
+    )
+
+    return _run_storage_validate_clean(**kwargs)
+
+
+def run_materialize_serving(**kwargs):
+    from quant_investor.market.market_data_store import (
+        run_materialize_serving as _run_materialize_serving,
+    )
+
+    return _run_materialize_serving(**kwargs)
+
+
+def run_materialize_features(**kwargs):
+    from quant_investor.market.market_data_store import (
+        run_materialize_features as _run_materialize_features,
+    )
+
+    return _run_materialize_features(**kwargs)
+
+
+def run_storage_diff(**kwargs):
+    from quant_investor.market.market_data_store import (
+        run_storage_diff as _run_storage_diff,
+    )
+
+    return _run_storage_diff(**kwargs)
+
+
+def _print_json(payload) -> None:
+    print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
 
 
 def run_web_api(
@@ -296,6 +341,37 @@ def _build_parser() -> argparse.ArgumentParser:
         help="显式允许公开结构化 fallback 补数；fallback 不伪装成 Tushare",
     )
 
+    market_storage_validate = market_subparsers.add_parser(
+        "storage-validate",
+        help="校验本地 Parquet canonical snapshot 健康状态",
+    )
+    market_storage_validate.add_argument("--market", required=True, choices=["CN"])
+
+    market_storage_validate_clean = market_subparsers.add_parser(
+        "storage-validate-clean",
+        help="只读校验本地 clean/readiness lineage 可用性",
+    )
+    market_storage_validate_clean.add_argument("--market", required=True, choices=["CN"])
+
+    market_materialize_serving = market_subparsers.add_parser(
+        "materialize-serving",
+        help="从 Parquet canonical 重建 symbol serving layer",
+    )
+    market_materialize_serving.add_argument("--market", required=True, choices=["CN"])
+
+    market_materialize_features = market_subparsers.add_parser(
+        "materialize-features",
+        help="按交易日生成 Parquet feature/cache 物化视图",
+    )
+    market_materialize_features.add_argument("--market", required=True, choices=["CN"])
+    market_materialize_features.add_argument("--trade-date", required=True)
+
+    market_storage_diff = market_subparsers.add_parser(
+        "storage-diff",
+        help="比较 Parquet canonical pointer 与 serving layer 覆盖状态",
+    )
+    market_storage_diff.add_argument("--market", required=True, choices=["CN"])
+
     market_analyze = market_subparsers.add_parser(
         "analyze",
         help="分析全市场",
@@ -499,6 +575,26 @@ def main(argv: list[str] | None = None) -> None:
             allow_live=args.allow_live,
             allow_public_fallback=args.allow_public_fallback,
         )
+        return
+
+    if args.command == "market" and args.market_command == "storage-validate":
+        _print_json(run_storage_validate(market=args.market))
+        return
+
+    if args.command == "market" and args.market_command == "storage-validate-clean":
+        _print_json(run_storage_validate_clean(market=args.market))
+        return
+
+    if args.command == "market" and args.market_command == "materialize-serving":
+        _print_json(run_materialize_serving(market=args.market))
+        return
+
+    if args.command == "market" and args.market_command == "materialize-features":
+        _print_json(run_materialize_features(market=args.market, trade_date=args.trade_date))
+        return
+
+    if args.command == "market" and args.market_command == "storage-diff":
+        _print_json(run_storage_diff(market=args.market))
         return
 
     if args.command == "market" and args.market_command == "analyze":

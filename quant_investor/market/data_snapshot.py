@@ -15,10 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from quant_investor.config import config
-from quant_investor.data.storage.csv_reader import peek_latest_date
-from quant_investor.market.cn_resolver import CNUniverseResolver
-from quant_investor.market.cn_symbol_status import evaluate_symbol_local_status
 from quant_investor.market.config import get_market_settings, normalize_categories, normalize_universe
+from quant_investor.market.market_data_reader import MarketDataReader
 from quant_investor.market.shared_csv_reader import SharedCSVReader
 
 _CN_PHYSICAL_DIRECTORIES: tuple[str, ...] = ("hs300", "zz500", "zz1000", "other")
@@ -87,102 +85,88 @@ def _build_cn_snapshot(
     requested_symbols: list[str],
     data_dir: Path,
 ) -> dict[str, Any]:
-    resolver = CNUniverseResolver(data_dir=str(data_dir))
-    reader = SharedCSVReader(market="CN", data_dir=data_dir, resolver=resolver)
-    freshness_index = _load_cn_freshness_index(data_dir)
-
-    physical_directories = [path for path in resolver.physical_directories_for_full_a() if path.exists()]
-    if not physical_directories:
-        physical_directories = [data_dir / category for category in _CN_PHYSICAL_DIRECTORIES if (data_dir / category).exists()]
-
-    category_symbol_counts: dict[str, int]
-    resolved_paths: dict[str, str] = {}
-    if universe_key == "full_a" or "full_a" in selected_categories or universe_key == "custom":
-        category_symbol_counts = {
-            category: _count_csvs(data_dir / category)
-            for category in _CN_PHYSICAL_DIRECTORIES
-            if (data_dir / category).exists()
+    parquet_data_root = (
+        data_dir
+        if (data_dir / "parquet" / "cn").exists()
+        else data_dir.parent
+        if (data_dir.parent / "parquet" / "cn").exists()
+        else Path("data")
+    )
+    reader = MarketDataReader(market="CN", data_root=parquet_data_root)
+    gate = reader.clean_snapshot_gate()
+    if not gate.get("healthy"):
+        blockers = list(gate.get("blockers", []) or [])
+        return {
+            "market": "CN",
+            "universe_key": universe_key,
+            "local_latest_trade_date": "",
+            "freshness_mode": _freshness_mode_for_market("CN"),
+            "category_symbol_counts": {},
+            "date_distribution_top": [],
+            "data_directories": [],
+            "resolver_priority": ["parquet_canonical", "parquet_serving"],
+            "data_quality_issue_count": len(blockers),
+            "summary_text": "本地 Parquet canonical snapshot 未通过 strict 校验；分析应 fail closed。",
+            "missing_requested_symbols": list(requested_symbols),
+            "unreadable_requested_symbols": [],
+            "stale_requested_symbols": [],
+            "requested_symbol_count": len(requested_symbols),
+            "inventory_symbol_count": 0,
+            "storage_backend": "parquet",
+            "strict_parquet_gate": gate,
+            "fail_closed": True,
         }
-        inventory_symbols, full_a_resolved_paths = resolver.collect_full_a_inventory(local_union_fallback_used=True)
-        resolved_paths = dict(full_a_resolved_paths)
-    else:
-        category_symbol_counts = {
-            category: _count_csvs(data_dir / category)
-            for category in selected_categories
-            if (data_dir / category).exists()
-        }
-        inventory_symbols = []
-        for category in selected_categories:
-            for symbol in reader.list_symbols(category, category=category):
-                inventory_symbols.append(symbol)
-                resolved = reader.resolve_symbol_path(symbol, universe_key=category, category=category)
-                if resolved is not None:
-                    resolved_paths[symbol] = str(resolved)
 
-    if requested_symbols:
-        for symbol in requested_symbols:
-            if symbol not in resolved_paths:
-                resolved = reader.resolve_symbol_path(symbol, universe_key="full_a", category="full_a")
-                if resolved is not None:
-                    resolved_paths[symbol] = str(resolved)
-
-    observed_dates: dict[str, str] = {}
-    for symbol, path_str in resolved_paths.items():
-        indexed = freshness_index.get(symbol, "")
-        if indexed:
-            observed_dates[symbol] = indexed
-            continue
-        latest = peek_latest_date(path_str)
-        if latest:
-            observed_dates[symbol] = latest
-
-    local_latest_trade_date = max(observed_dates.values(), default="")
-    if not local_latest_trade_date and requested_symbols:
-        for symbol in requested_symbols:
-            latest = reader.peek_symbol_latest_date(symbol, universe_key="full_a", category="full_a")
-            if latest:
-                local_latest_trade_date = max(local_latest_trade_date, latest)
-
-    date_distribution = Counter(date for date in observed_dates.values() if str(date).strip())
-    date_distribution_top = [
-        {"trade_date": trade_date, "symbol_count": int(symbol_count)}
-        for trade_date, symbol_count in sorted(date_distribution.items(), key=lambda item: (-item[1], item[0]), reverse=False)[:5]
-    ]
+    category_keys = (
+        ["hs300", "zz500", "zz1000"]
+        if universe_key in {"full_a", "custom"} or "full_a" in selected_categories
+        else list(selected_categories)
+    )
+    category_symbol_counts = {
+        category: len(reader.list_symbols(category))
+        for category in category_keys
+    }
+    inventory_symbols = reader.list_symbols("full_a")
+    local_latest_trade_date = reader.latest_trade_date(universe_key)
 
     missing_requested_symbols: list[str] = []
     unreadable_requested_symbols: list[str] = []
     stale_requested_symbols: list[str] = []
+    observed_dates: dict[str, str] = {}
     for symbol in requested_symbols:
-        target_trade_date = local_latest_trade_date or reader.peek_symbol_latest_date(
-            symbol,
-            universe_key="full_a",
-            category="full_a",
-        )
-        status = evaluate_symbol_local_status(
-            symbol,
-            category="full_a",
-            resolver=resolver,
-            csv_reader=reader,
-            latest_trade_date=target_trade_date,
-            allowed_stale_symbols=[],
-            suspended_symbols=[],
-            freshness_mode=_freshness_mode_for_market("CN"),
-            strict_trade_date=target_trade_date,
-            stable_trade_date=target_trade_date,
-            fast_date_peek=True,
-        )
-        if status.local_status == "missing":
-            missing_requested_symbols.append(symbol)
-        elif status.local_status == "unreadable":
-            unreadable_requested_symbols.append(symbol)
-        elif status.local_status in {"stale", "stale_cached", "suspended_stale"}:
-            stale_requested_symbols.append(symbol)
+        latest = reader.peek_symbol_latest_date(symbol, universe_key="full_a", category="full_a")
+        if latest:
+            observed_dates[symbol] = latest
+        elif symbol in requested_symbols:
+            resolved = reader.resolve_symbol_path(symbol, universe_key="full_a", category="full_a")
+            if resolved is None:
+                missing_requested_symbols.append(symbol)
+            else:
+                unreadable_requested_symbols.append(symbol)
+    if requested_symbols:
+        for symbol, latest in observed_dates.items():
+            if latest and local_latest_trade_date and latest < local_latest_trade_date:
+                stale_requested_symbols.append(symbol)
 
-    data_directories = [str(path) for path in physical_directories]
-    resolver_priority = list((resolver.snapshot() or {}).get("directory_priority", [])) or list(_CN_PHYSICAL_DIRECTORIES)
+    if observed_dates:
+        date_distribution = Counter(date for date in observed_dates.values() if str(date).strip())
+        date_distribution_top = [
+            {"trade_date": trade_date, "symbol_count": int(symbol_count)}
+            for trade_date, symbol_count in sorted(date_distribution.items(), key=lambda item: (-item[1], item[0]))[:5]
+        ]
+    else:
+        date_distribution_top = [
+            {
+                "trade_date": local_latest_trade_date,
+                "symbol_count": len(set(inventory_symbols)),
+            }
+        ] if local_latest_trade_date else []
+
+    data_directories = [str(Path(gate.get("serving_root", "")))] if gate.get("serving_root") else []
+    resolver_priority = ["parquet_serving", "parquet_canonical"]
     summary_parts = [
         f"本地 A 股数据更新至 {local_latest_trade_date or '未知日期'}",
-        "分析默认直接使用现有本地数据",
+        "分析默认使用 Parquet canonical + serving layer",
     ]
     if category_symbol_counts:
         summary_parts.append(
@@ -211,7 +195,10 @@ def _build_cn_snapshot(
         "unreadable_requested_symbols": unreadable_requested_symbols,
         "stale_requested_symbols": stale_requested_symbols,
         "requested_symbol_count": len(requested_symbols),
-        "inventory_symbol_count": len(set(inventory_symbols or resolved_paths.keys())),
+        "inventory_symbol_count": len(set(inventory_symbols)),
+        "storage_backend": "parquet",
+        "strict_parquet_gate": gate,
+        "fail_closed": False,
     }
 
 

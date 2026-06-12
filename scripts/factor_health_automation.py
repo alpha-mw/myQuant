@@ -3,18 +3,20 @@
 
 The default run is offline and report-only.  It reads the local mined-factor
 registry, uses the registry's approved 8-gate evidence for production-factor
-health classification, and runs a local runtime smoke check.  Registry writes
-only occur when ``--apply-registry-actions`` is passed.
+health classification, and runs a strict Parquet runtime smoke check.  Registry
+writes only occur when ``--apply-registry-actions`` is passed.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -41,8 +43,22 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--cadence", choices=["daily", "weekly", "monthly", "review"], default="daily"
     )
-    parser.add_argument("--data-root", default="data/clean/cn_daily")
-    parser.add_argument("--universes", nargs="+", default=["hs300", "zz500", "zz1000"])
+    parser.add_argument(
+        "--market",
+        default="CN",
+        help="Market used by the strict Parquet MarketDataReader runtime smoke.",
+    )
+    parser.add_argument(
+        "--mode-policy",
+        default=os.getenv("MYQUANT_MARKET_DATA_MODE_POLICY", "strict"),
+        help="MarketDataReader mode policy for the runtime smoke.",
+    )
+    parser.add_argument(
+        "--data-root",
+        default="data",
+        help="Repository data root containing parquet/<market>/_latest.json.",
+    )
+    parser.add_argument("--universes", nargs="+", default=["full_a"])
     parser.add_argument("--horizon-days", type=int, default=30)
     parser.add_argument("--warmup-days", type=int, default=260)
     parser.add_argument("--runtime-smoke-symbols", type=int, default=40)
@@ -145,6 +161,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         Path(args.data_root),
         args.universes,
         int(args.runtime_smoke_symbols),
+        market=str(args.market),
+        mode_policy=str(args.mode_policy),
     )
     status_counts = Counter(decision.status.value for decision in decisions)
     action_counts = Counter(decision.action.value for decision in decisions)
@@ -158,6 +176,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     payload = {
         "timestamp": timestamp,
         "cadence": args.cadence,
+        "market": str(args.market).upper(),
+        "mode_policy": str(args.mode_policy),
         "data_root": args.data_root,
         "universes": list(args.universes),
         "horizon_days": args.horizon_days,
@@ -183,6 +203,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "requested": bool(args.fresh_evaluation),
             "evaluated_factor_count": len(fresh_evaluations),
             "blockers": fresh_blockers,
+            "context": dict(fresh_result.get("context", {}) or {}),
         },
         "runtime_smoke": runtime_smoke,
     }
@@ -287,7 +308,6 @@ def _fresh_evaluations(
     try:
         from scripts.mine_quant_branch_factors import (  # type: ignore
             MiningCandidate,
-            build_context,
             candidate_metrics,
             compute_price_volume_signal,
             evaluate_with_myquant_gate,
@@ -299,22 +319,29 @@ def _fresh_evaluations(
             "blockers": [f"fresh_evaluation_import_error:{exc}"],
         }
 
+    context_result = _build_parquet_fresh_context(args)
+    context = context_result.get("context")
+    context_metadata = dict(context_result.get("metadata", {}) or {})
+    blockers.extend(str(item) for item in context_result.get("blockers", []) or [])
+    if context is None:
+        return {
+            "evaluations": evaluations,
+            "blockers": blockers,
+            "context": context_metadata,
+        }
+
     try:
-        context = build_context(
-            data_root=Path(args.data_root).expanduser(),
-            universes=tuple(args.universes),
-            horizon_days=int(args.horizon_days),
-            warmup_days=int(args.warmup_days),
-        )
         context, _resolved_start = restrict_context_to_analysis_window(
             context,
             analysis_start_date=str(args.analysis_start_date),
             min_price_coverage=float(args.min_analysis_price_coverage),
         )
+        context_metadata["analysis_start_date"] = _resolved_start
     except Exception as exc:
         return {
             "evaluations": evaluations,
             "blockers": [f"fresh_evaluation_context_error:{exc}"],
+            "context": context_metadata,
         }
 
     for factor in factors:
@@ -335,11 +362,223 @@ def _fresh_evaluations(
                 "diagnostics": {
                     "evaluation_end_date": _latest_date(context.rebalance_dates),
                     "rankic_count": metrics.get("rank_ic_count", ""),
+                    **context_metadata,
                 },
             }
         except Exception as exc:
             blockers.append(f"{factor.name}:{exc}")
-    return {"evaluations": evaluations, "blockers": blockers}
+    return {
+        "evaluations": evaluations,
+        "blockers": blockers,
+        "context": context_metadata,
+    }
+
+
+def _build_parquet_fresh_context(args: argparse.Namespace) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "data_source": "parquet_canonical",
+        "backend": "parquet",
+        "market": str(getattr(args, "market", "CN") or "CN").strip().upper(),
+        "mode_policy": str(
+            getattr(args, "mode_policy", "strict") or "strict"
+        ).strip().lower(),
+        "data_root": str(Path(getattr(args, "data_root", "data")).expanduser()),
+        "universes": list(getattr(args, "universes", []) or ["full_a"]),
+        "symbols_requested": 0,
+        "symbols_loaded": 0,
+        "sample_symbols": [],
+    }
+    try:
+        from quant_investor.market.market_data_reader import (
+            MarketDataReader,
+            MarketDataUnavailableError,
+        )
+        from scripts.retest_aquant_alpha_mix_8gate import (  # type: ignore
+            RetestContext,
+            build_price_matrices,
+            forward_returns,
+            rebalance_dates,
+        )
+        from scripts.mine_quant_branch_factors import (  # type: ignore
+            MiningCandidate,
+            compute_price_volume_signal,
+        )
+    except Exception as exc:
+        return {
+            "context": None,
+            "metadata": metadata,
+            "blockers": [f"parquet_fresh_context_import_error:{exc}"],
+        }
+
+    reader = MarketDataReader(
+        market=metadata["market"],
+        data_root=Path(metadata["data_root"]),
+        mode_policy=metadata["mode_policy"],
+    )
+    try:
+        snapshot = reader.snapshot()
+    except MarketDataUnavailableError as exc:
+        return {
+            "context": None,
+            "metadata": metadata,
+            "blockers": [f"parquet_canonical_unavailable:{exc}"],
+        }
+    except Exception as exc:
+        return {
+            "context": None,
+            "metadata": metadata,
+            "blockers": [f"parquet_fresh_context_snapshot_error:{exc}"],
+        }
+    metadata.update(_snapshot_smoke_fields(snapshot))
+    if not snapshot.get("healthy"):
+        blockers = "; ".join(
+            str(item) for item in snapshot.get("blockers", []) if str(item).strip()
+        )
+        return {
+            "context": None,
+            "metadata": metadata,
+            "blockers": [
+                f"parquet_canonical_unavailable:{blockers or 'strict Parquet snapshot is not healthy'}"
+            ],
+        }
+
+    frames: dict[str, pd.DataFrame] = {}
+    universe_by_symbol: dict[str, str] = {}
+    for universe in metadata["universes"]:
+        try:
+            symbols = reader.list_symbols(universe_key=str(universe or "full_a"))
+        except Exception as exc:
+            return {
+                "context": None,
+                "metadata": metadata,
+                "blockers": [f"parquet_symbol_list_error:{universe}:{exc}"],
+            }
+        metadata["symbols_requested"] += len(symbols)
+        for symbol in symbols:
+            normalized = str(symbol or "").strip().upper()
+            if not normalized or normalized in frames:
+                continue
+            try:
+                result = reader.read_symbol_frame(
+                    normalized,
+                    universe_key=str(universe or "full_a"),
+                )
+                frame = getattr(result, "frame", pd.DataFrame())
+            except Exception:
+                continue
+            if frame is None or frame.empty:
+                continue
+            working = frame.copy()
+            if "symbol" not in working.columns:
+                working["symbol"] = normalized
+            if "ts_code" not in working.columns:
+                working["ts_code"] = normalized
+            frames[normalized] = working
+            universe_by_symbol[normalized] = str(universe or "full_a")
+
+    metadata["symbols_loaded"] = len(frames)
+    metadata["sample_symbols"] = list(frames)[:5]
+    if not frames:
+        return {
+            "context": None,
+            "metadata": metadata,
+            "blockers": ["parquet_fresh_context_no_frames"],
+        }
+
+    try:
+        adj_close, volume, amount = build_price_matrices(frames)
+        forward = forward_returns(adj_close, int(args.horizon_days))
+        monthly, biweekly = rebalance_dates(
+            adj_close.index,
+            int(args.warmup_days),
+            int(args.horizon_days),
+        )
+    except Exception as exc:
+        return {
+            "context": None,
+            "metadata": metadata,
+            "blockers": [f"parquet_fresh_context_matrix_error:{exc}"],
+        }
+
+    existing = None
+    existing_blocker = ""
+    try:
+        registry_path = Path(
+            getattr(
+                args,
+                "registry_path",
+                "quant_investor/factor_registry/mined_factors.json",
+            )
+        )
+        registry = MinedFactorRegistry.load(registry_path)
+        existing, existing_blocker = _compute_existing_price_volume_composite(
+            registry,
+            adj_close,
+            volume,
+            amount,
+            candidate_type=MiningCandidate,
+            signal_builder=compute_price_volume_signal,
+        )
+    except Exception as exc:
+        existing_blocker = f"existing_composite_unavailable:{exc}"
+
+    metadata["existing_composite_blocker"] = existing_blocker
+    return {
+        "context": RetestContext(
+            frames=frames,
+            universe_by_symbol=universe_by_symbol,
+            adj_close=adj_close,
+            volume=volume,
+            amount=amount,
+            forward_return=forward,
+            rebalance_dates=monthly,
+            biweekly_dates=biweekly,
+            existing_composite=existing,
+            existing_blocker=existing_blocker,
+        ),
+        "metadata": metadata,
+        "blockers": [],
+    }
+
+
+def _compute_existing_price_volume_composite(
+    registry: MinedFactorRegistry,
+    adj_close: pd.DataFrame,
+    volume: pd.DataFrame,
+    amount: pd.DataFrame,
+    *,
+    candidate_type: Any,
+    signal_builder: Any,
+) -> tuple[pd.DataFrame | None, str]:
+    active = registry.selectable_factors()
+    if not active:
+        return None, "no_selectable_production_factors"
+    signal_context = SimpleNamespace(
+        adj_close=adj_close,
+        volume=volume,
+        amount=amount,
+    )
+    composite = pd.DataFrame(0.0, index=adj_close.index, columns=adj_close.columns)
+    total_weight = 0.0
+    blockers: list[str] = []
+    for factor in active:
+        try:
+            candidate = _mining_candidate_from_record(factor, candidate_type)
+            raw = signal_builder(candidate, signal_context)
+        except Exception as exc:
+            blockers.append(f"{factor.name}:{exc}")
+            continue
+        weight = float(factor.weight) * (
+            1.0 if float(getattr(factor, "direction", 1.0)) >= 0 else -1.0
+        )
+        ranked = raw.rank(axis=1, pct=True).mul(2.0).sub(1.0)
+        composite = composite.add(ranked.fillna(0.0).mul(weight), fill_value=0.0)
+        total_weight += abs(weight)
+    if blockers:
+        return None, "unsupported_existing_price_volume_factor:" + ";".join(blockers)
+    if total_weight <= 1e-12:
+        return None, "zero_existing_factor_weight"
+    return composite.div(total_weight).clip(-1.0, 1.0), ""
 
 
 def _mining_candidate_from_record(factor: FactorRecord, candidate_type: Any) -> Any:
@@ -357,6 +596,26 @@ def _mining_candidate_from_record(factor: FactorRecord, candidate_type: Any) -> 
         family = "low_dollar_volume"
     elif name.startswith("pv_amihud_illiquidity_"):
         family = "amihud_illiquidity"
+    elif name.startswith("pv_blend_volstab19x2_mom90_amihud5_w"):
+        family = "volstab_momentum_illiquidity_blend"
+        weight_text = name.rsplit("_w", 1)[-1]
+        outer_weight = float(weight_text) / 100.0
+        return candidate_type(
+            name=factor.name,
+            family=family,
+            category=factor.category,
+            implementation=impl,
+            description=factor.description,
+            window=90,
+            params={
+                "volume_stability_base_window": 19,
+                "volume_stability_smooth_window": 2,
+                "momentum_window": 90,
+                "amihud_window": 5,
+                "outer_volume_stability_weight": outer_weight,
+                "inner_momentum_weight": 0.60,
+            },
+        )
     else:
         raise ValueError(f"unsupported price_volume factor: {name}")
     return candidate_type(
@@ -380,45 +639,161 @@ def build_runtime_smoke(
     data_root: Path,
     universes: Sequence[str],
     sample_size: int,
+    *,
+    market: str = "CN",
+    mode_policy: str = "strict",
 ) -> dict[str, Any]:
-    frames: dict[str, pd.DataFrame] = {}
-    for universe in universes:
-        for path in sorted((data_root / str(universe)).glob("*.csv")):
-            if len(frames) >= max(sample_size, 1):
-                break
-            try:
-                frames[path.stem] = pd.read_csv(path).tail(420)
-            except Exception:
-                continue
-        if len(frames) >= max(sample_size, 1):
-            break
-    if not frames:
+    base = {
+        "data_source": "parquet_canonical",
+        "backend": "parquet",
+        "market": str(market or "").strip().upper() or "CN",
+        "mode_policy": str(mode_policy or "strict").strip().lower() or "strict",
+        "data_root": str(data_root),
+    }
+    try:
+        from quant_investor.market.dag.packets import _build_quant_branch_result
+        from quant_investor.market.market_data_reader import (
+            MarketDataReader,
+            MarketDataUnavailableError,
+        )
+    except Exception as exc:
         return {
-            "factor_mode": "unavailable",
+            **base,
+            "factor_mode": "parquet_runtime_unavailable",
             "factor_count": 0,
             "coverage_rate": 0.0,
             "symbols": 0,
-            "error": f"no local CSV frames found under {data_root}",
+            "symbols_requested": 0,
+            "symbols_loaded": 0,
+            "error": f"strict Parquet runtime imports unavailable: {exc}",
+        }
+
+    reader = MarketDataReader(
+        market=base["market"],
+        data_root=data_root,
+        mode_policy=base["mode_policy"],
+    )
+    try:
+        snapshot = reader.snapshot()
+        if not snapshot.get("healthy"):
+            blockers = list(snapshot.get("blockers", []) or [])
+            return {
+                **base,
+                **_snapshot_smoke_fields(snapshot),
+                "factor_mode": "parquet_canonical_unavailable",
+                "factor_count": 0,
+                "coverage_rate": 0.0,
+                "symbols": 0,
+                "symbols_requested": 0,
+                "symbols_loaded": 0,
+                "error": "; ".join(str(item) for item in blockers)
+                or "strict Parquet snapshot is not healthy",
+            }
+    except MarketDataUnavailableError as exc:
+        return {
+            **base,
+            "factor_mode": "parquet_canonical_unavailable",
+            "factor_count": 0,
+            "coverage_rate": 0.0,
+            "symbols": 0,
+            "symbols_requested": 0,
+            "symbols_loaded": 0,
+            "error": str(exc),
+        }
+    except Exception as exc:
+        return {
+            **base,
+            "factor_mode": "error",
+            "factor_count": 0,
+            "coverage_rate": 0.0,
+            "symbols": 0,
+            "symbols_requested": 0,
+            "symbols_loaded": 0,
+            "error": str(exc),
+        }
+
+    frames: dict[str, pd.DataFrame] = {}
+    symbols_requested = 0
+    for universe in list(universes or ["full_a"]):
+        try:
+            symbols = reader.list_symbols(universe_key=str(universe or "full_a"))
+        except MarketDataUnavailableError as exc:
+            return {
+                **base,
+                **_snapshot_smoke_fields(snapshot),
+                "factor_mode": "parquet_canonical_unavailable",
+                "factor_count": 0,
+                "coverage_rate": 0.0,
+                "symbols": 0,
+                "symbols_requested": symbols_requested,
+                "symbols_loaded": len(frames),
+                "error": str(exc),
+            }
+        symbols_requested += len(symbols)
+        for symbol in symbols:
+            if len(frames) >= max(int(sample_size), 1):
+                break
+            try:
+                result = reader.read_symbol_frame(str(symbol))
+                frame = getattr(result, "frame", pd.DataFrame())
+            except Exception:
+                continue
+            if frame is None or frame.empty:
+                continue
+            frames[str(symbol)] = frame.tail(420)
+        if len(frames) >= max(int(sample_size), 1):
+            break
+    if not frames:
+        return {
+            **base,
+            **_snapshot_smoke_fields(snapshot),
+            "factor_mode": "parquet_canonical_unavailable",
+            "factor_count": 0,
+            "coverage_rate": 0.0,
+            "symbols": 0,
+            "symbols_requested": symbols_requested,
+            "symbols_loaded": 0,
+            "error": "no Parquet serving frames loaded from strict MarketDataReader",
         }
     try:
-        from quant_investor.market.dag.packets import _build_quant_branch_result
-
         result = _build_quant_branch_result(frames=frames)
         runtime = result.metadata.get("mined_factor_runtime", {}) or {}
         return {
+            **base,
+            **_snapshot_smoke_fields(snapshot),
             "factor_mode": result.metadata.get("factor_mode", ""),
             "factor_count": runtime.get("factor_count", 0),
             "coverage_rate": runtime.get("coverage_rate", 0.0),
             "symbols": len(result.symbol_scores),
+            "symbols_requested": symbols_requested,
+            "symbols_loaded": len(frames),
         }
     except Exception as exc:
         return {
+            **base,
+            **_snapshot_smoke_fields(snapshot),
             "factor_mode": "error",
             "factor_count": 0,
             "coverage_rate": 0.0,
             "symbols": len(frames),
+            "symbols_requested": symbols_requested,
+            "symbols_loaded": len(frames),
             "error": str(exc),
         }
+
+
+def _snapshot_smoke_fields(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "snapshot_id": snapshot.get("snapshot_id", ""),
+        "latest_complete_trade_date": snapshot.get("latest_complete_trade_date", ""),
+        "latest_trade_date": snapshot.get("latest_trade_date", ""),
+        "latest_pointer_path": snapshot.get("latest_pointer_path", ""),
+        "table_root": snapshot.get("table_root", ""),
+        "serving_root": snapshot.get("serving_root", ""),
+        "manifest_path": snapshot.get("manifest_path", ""),
+        "snapshot_status": snapshot.get("status", ""),
+        "snapshot_healthy": bool(snapshot.get("healthy", False)),
+    }
 
 
 def write_registry(path: Path, registry: MinedFactorRegistry) -> None:
@@ -495,6 +870,9 @@ def render_markdown(payload: Mapping[str, Any]) -> str:
         lines.extend(["", "## Fresh Evaluation", ""])
         lines.append(f"- Requested: {fresh.get('requested')}")
         lines.append(f"- Evaluated factors: {fresh.get('evaluated_factor_count')}")
+        context = fresh.get("context", {}) or {}
+        if context:
+            lines.append(f"- Context: {context}")
         blockers = fresh.get("blockers", []) or []
         if blockers:
             lines.append("- Blockers:")
@@ -506,7 +884,14 @@ def render_markdown(payload: Mapping[str, Any]) -> str:
             "## Notes",
             "",
             "- Scheduled runs should normally omit `--allow-production-promotion`.",
-            "- Default health classification uses local registry evidence and runtime smoke.",
+            (
+                "- Default health classification uses local registry evidence "
+                "and a strict Parquet MarketDataReader runtime smoke."
+            ),
+            (
+                "- The runtime smoke reads `_latest.json` and Parquet serving "
+                "files; it does not scan legacy CSV daily directories."
+            ),
             (
                 "- Repeated runs over the same matured evaluation window are "
                 "observed but not double-counted as new failures."

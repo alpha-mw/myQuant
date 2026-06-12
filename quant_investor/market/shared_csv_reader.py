@@ -5,12 +5,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable
 
 import pandas as pd
 
 from quant_investor.agent_protocol import DataQualityIssue
-from quant_investor.data.storage.csv_reader import CSVReadResult, infer_latest_date_from_frames, peek_latest_date, read_csv_with_diagnostics
+from quant_investor.data.storage.csv_reader import infer_latest_date_from_frames, peek_latest_date, read_csv_with_diagnostics
 from quant_investor.market.cn_resolver import CNUniverseResolver
 from quant_investor.market.config import get_market_settings
 from quant_investor.market.us_market_cap_filter import USMarketCapFilter
@@ -174,6 +174,29 @@ class SharedCSVReader:
             issues=list(result.issues),
             metadata=dict(result.metadata),
         )
+
+    def read_symbol_frames(
+        self,
+        symbols: Iterable[str],
+        *,
+        universe_key: str = "full_a",
+        category: str | None = None,
+        start_date: str = "",
+        end_date: str = "",
+    ) -> dict[str, SharedCSVReadResult]:
+        results: dict[str, SharedCSVReadResult] = {}
+        for symbol in symbols:
+            normalized = str(symbol or "").strip()
+            if not normalized:
+                continue
+            results[normalized] = self.read_symbol_frame(
+                normalized,
+                universe_key=universe_key,
+                category=category,
+                start_date=start_date,
+                end_date=end_date,
+            )
+        return results
 
     def read_path(
         self,

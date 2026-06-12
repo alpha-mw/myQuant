@@ -90,7 +90,6 @@ exclude = [
     '^quant_investor/data/',
     '^quant_investor/data_manager\.py$',
     '^quant_investor/enhanced_data_layer\.py$',
-    '^quant_investor/kronos_predictor\.py$',
     '^quant_investor/forecast_snapshot_store\.py$',
     '^quant_investor/reporting/',
     '^quant_investor/learning/',
@@ -106,9 +105,7 @@ exclude = [
     '^quant_investor/agents/orchestrator\.py$',
     '^quant_investor/agents/narrator_agent\.py$',
     '^quant_investor/agent_orchestrator\.py$',
-    '^quant_investor/kline_backends/',
     '^quant_investor/factor_analyzer\.py$',
-    '^quant_investor/intelligence\.py$',
 ]
 
 [tool.pytest.ini_options]

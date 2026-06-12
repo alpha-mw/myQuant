@@ -13,7 +13,14 @@ from quant_investor.agent_protocol import (
     RiskDecision,
 )
 from quant_investor.bayesian.types import LikelihoodSet, PosteriorResult, PriorSet
+from quant_investor.market.branch_readiness import (
+    BranchDataReadiness,
+    BranchGovernanceReport,
+    STATUS_PASS,
+    SOURCE_TUSHARE,
+)
 from quant_investor.market.dag_executor import execute_market_dag
+from quant_investor.market.runtime_profile import MarketRuntimeProfiler
 from quant_investor.market.shared_csv_reader import SharedCSVReadResult
 from quant_investor.model_roles import ModelRoleResolution
 
@@ -37,7 +44,16 @@ class _FakeFunnelOutput:
 
 
 class _FakeReader:
+    single_read_count = 0
+    batch_read_count = 0
+    batch_read_columns: tuple[str, ...] = ()
+    batch_read_start_date = ""
+
     def __init__(self, *args, **kwargs):
+        type(self).single_read_count = 0
+        type(self).batch_read_count = 0
+        type(self).batch_read_columns = ()
+        type(self).batch_read_start_date = ""
         self._frames = {
             "A": _frame(0.0),
             "B": _frame(1.0),
@@ -49,6 +65,26 @@ class _FakeReader:
         return list(self._frames)
 
     def read_symbol_frame(self, symbol: str, *, universe_key: str = "full_a"):
+        type(self).single_read_count += 1
+        return self._read_symbol_frame(symbol, universe_key=universe_key)
+
+    def read_symbol_frames(
+        self,
+        symbols,
+        *,
+        universe_key: str = "full_a",
+        columns=None,
+        start_date: str = "",
+    ):
+        type(self).batch_read_count += 1
+        type(self).batch_read_columns = tuple(str(column) for column in (columns or ()))
+        type(self).batch_read_start_date = str(start_date or "")
+        return {
+            symbol: self._read_symbol_frame(symbol, universe_key=universe_key)
+            for symbol in symbols
+        }
+
+    def _read_symbol_frame(self, symbol: str, *, universe_key: str = "full_a"):
         return SharedCSVReadResult(
             frame=self._frames[symbol],
             path=f"/tmp/{symbol}.csv",
@@ -69,8 +105,24 @@ class _FakeReader:
 
 def test_candidate_review_only_runs_after_funnel(monkeypatch):
     import quant_investor.market.dag_executor as dag_module
+    import quant_investor.market.dag.context as dag_context
+    import quant_investor.market.dag.packets as dag_packets
 
     reviewed: dict[str, list[str]] = {"fundamental": [], "intelligence": []}
+    frame_summary_calls = {"count": 0}
+    provider_health_calls = {"count": 0}
+    original_frame_summary = dag_packets._frame_summary
+
+    def _counting_frame_summary(frame):
+        frame_summary_calls["count"] += 1
+        return original_frame_summary(frame)
+
+    def _counting_provider_health(**kwargs):
+        provider_health_calls["count"] += 1
+        return {
+            "agent": {"model": str(kwargs.get("agent_model", "")), "available": False},
+            "master": {"model": str(kwargs.get("master_model", "")), "available": False},
+        }
 
     class _FakeFunnel:
         def __init__(self, *_args, **_kwargs):
@@ -183,7 +235,10 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
             metadata={"funnel_summary": payload.get("funnel_summary", {})},
         )
 
+    monkeypatch.setattr(dag_module, "MarketDataReader", _FakeReader)
     monkeypatch.setattr(dag_module, "SharedCSVReader", _FakeReader)
+    monkeypatch.setattr(dag_module, "MarketDataReader", _FakeReader)
+    monkeypatch.setattr(dag_packets, "_frame_summary", _counting_frame_summary)
     monkeypatch.setattr(dag_module, "DeterministicFunnel", _FakeFunnel)
     monkeypatch.setattr(dag_module.FundamentalAgent, "run", _fake_fundamental_run)
     monkeypatch.setattr(dag_module.IntelligenceAgent, "run", _fake_intelligence_run)
@@ -197,7 +252,35 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
     monkeypatch.setattr(dag_module.PortfolioConstructor, "run", _fake_portfolio_run)
     monkeypatch.setattr(dag_module.NarratorAgent, "run", _fake_narrator_run)
     monkeypatch.setattr(dag_module, "_load_company_name_map", lambda market: {"A": "Alpha", "B": "Beta", "C": "Gamma", "D": "Delta"})
-    monkeypatch.setattr(dag_module, "detect_provider_health", lambda **kwargs: {})
+    monkeypatch.setattr(dag_module, "detect_provider_health", _counting_provider_health)
+    monkeypatch.setattr(
+        dag_context,
+        "assess_branch_data_readiness",
+        lambda **kwargs: BranchGovernanceReport(
+            run_id="fixture",
+            market="CN",
+            category="full_a",
+            as_of="2026-03-01",
+            readiness={
+                branch: BranchDataReadiness(
+                    branch=branch,
+                    status=STATUS_PASS,
+                    coverage_ratio=1.0,
+                    source_priority=SOURCE_TUSHARE,
+                )
+                for branch in ("quant", "fundamental", "intelligence", "macro")
+            },
+            blocked_symbols=[],
+            quantifiable_universe=["A", "B", "C", "D"],
+            investable_universe=["A", "B"],
+            branch_data={},
+        ),
+    )
+    monkeypatch.setattr(
+        dag_context,
+        "write_branch_readiness_report",
+        lambda report: {"json": "fixture.json", "md": "fixture.md", "csv": "fixture.csv"},
+    )
     monkeypatch.setattr(
         dag_module,
         "resolve_model_role",
@@ -210,6 +293,8 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
         ),
     )
 
+    runtime_profiler = MarketRuntimeProfiler(market="CN", universe="full_a", categories=["full_a"])
+
     result = execute_market_dag(
         market="CN",
         universe="full_a",
@@ -217,8 +302,10 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
         batch_size=4,
         total_capital=1_000_000,
         top_k=2,
+        data_snapshot={"local_latest_trade_date": "20260301", "freshness_mode": "stable"},
         enable_agent_layer=False,
         verbose=False,
+        runtime_profiler=runtime_profiler,
     )
 
     assert reviewed["fundamental"] == ["A", "B"]
@@ -227,3 +314,35 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
     assert list(result["portfolio_decision"].target_weights) == ["A", "B"]
     assert result["portfolio_decision"].what_if_plan is not None
     assert result["portfolio_decision"].execution_trace is not None
+    assert _FakeReader.batch_read_count == 1
+    assert _FakeReader.single_read_count == 0
+    assert {"ts_code", "trade_date", "close", "vol", "amount"}.issubset(
+        set(_FakeReader.batch_read_columns)
+    )
+    assert _FakeReader.batch_read_start_date == "20250105"
+    stage_names = {stage["name"] for stage in runtime_profiler.stages}
+    assert {
+        "dag_symbol_list",
+        "dag_batch_read",
+        "dag_tradability_snapshot",
+        "dag_quant_context",
+        "dag_cross_section_quant",
+        "dag_market_snapshot",
+        "dag_macro_verdict",
+        "dag_global_quant_verdict",
+        "dag_quant_branch_result",
+        "dag_funnel",
+        "dag_branch_readiness",
+        "dag_candidate_research",
+        "dag_bayesian_selection",
+        "dag_control_chain",
+        "dag_reporting_artifacts",
+    }.issubset(stage_names)
+    batch_stage = next(stage for stage in runtime_profiler.stages if stage["name"] == "dag_batch_read")
+    assert batch_stage["metadata"]["batch_result_count"] == 4
+    assert batch_stage["metadata"]["per_symbol_fallback_count"] == 0
+    assert batch_stage["metadata"]["projected_column_count"] >= 5
+    assert batch_stage["metadata"]["runtime_lookback_calendar_days"] == 420
+    assert batch_stage["metadata"]["runtime_lookback_start_date"] == _FakeReader.batch_read_start_date
+    assert frame_summary_calls["count"] <= 8
+    assert provider_health_calls["count"] == 1

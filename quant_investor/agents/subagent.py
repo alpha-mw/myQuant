@@ -7,10 +7,13 @@ V10 分支 SubAgent 和风控 SubAgent 实现。
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
 from quant_investor.agents.agent_contracts import (
+    BaseBranchAgentInput,
+    BaseBranchAgentOutput,
     BranchAgentInput,
     BranchAgentOutput,
     RiskAgentInput,
@@ -29,6 +32,100 @@ _logger = get_logger("SubAgent")
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
+
+
+class BaseSubAgent:
+    """Base class for specialized v13 review subagents.
+
+    These agents are advisory-only. They parse and bound LLM output, but never
+    bypass the deterministic RiskGuard / IC / portfolio control chain.
+    """
+
+    def __init__(
+        self,
+        branch_name: str,
+        llm_client: LLMClient | None = None,
+        model: str = "",
+        timeout: float = 15.0,
+        max_tokens: int = 800,
+    ) -> None:
+        self.branch_name = branch_name
+        self.llm_client = llm_client or LLMClient(timeout=timeout)
+        self.model = str(model or "").strip()
+        self.timeout = timeout
+        self.max_tokens = max_tokens
+
+    async def analyze(self, agent_input: BaseBranchAgentInput) -> BaseBranchAgentOutput:
+        """Call the advisory LLM review layer and return bounded output."""
+
+        if not self.model:
+            raise LLMCallError(f"[{self.branch_name}] SubAgent model is required")
+        t0 = time.monotonic()
+        payload = self._build_prompt_payload(agent_input)
+        messages = [
+            {"role": "system", "content": self._get_system_prompt()},
+            {
+                "role": "user",
+                "content": (
+                    f"以下是 {self.branch_name} 分支的量化输入，请给出结构化审阅：\n\n"
+                    f"{json.dumps(payload, ensure_ascii=False, indent=2, default=str)}"
+                ),
+            },
+        ]
+
+        try:
+            raw = await self.llm_client.complete(
+                messages=messages,
+                model=self.model,
+                max_tokens=self.max_tokens,
+                response_json=True,
+                stage="review_branch_subagent",
+                actor_name=self.branch_name,
+            )
+            output = self._parse_and_bound(raw, agent_input)
+            elapsed = time.monotonic() - t0
+            _logger.info(f"[{self.branch_name}] Specialized SubAgent completed in {elapsed:.1f}s")
+            return output
+        except (LLMCallError, Exception) as exc:
+            elapsed = time.monotonic() - t0
+            _logger.warning(
+                f"[{self.branch_name}] Specialized SubAgent failed after {elapsed:.1f}s: {exc}"
+            )
+            raise
+
+    def _build_prompt_payload(self, agent_input: BaseBranchAgentInput) -> dict[str, Any]:
+        return agent_input.model_dump(mode="json")
+
+    def _get_system_prompt(self) -> str:
+        return f"你是 {self.branch_name} 分支专属 SubAgent。必须输出纯 JSON。"
+
+    def _validate_specialized_output(
+        self,
+        raw: dict[str, Any],
+        agent_input: BaseBranchAgentInput,
+    ) -> BaseBranchAgentOutput:
+        return BaseBranchAgentOutput.model_validate(raw)
+
+    def _parse_and_bound(
+        self,
+        raw: dict[str, Any],
+        agent_input: BaseBranchAgentInput,
+    ) -> BaseBranchAgentOutput:
+        raw.setdefault("branch_name", self.branch_name)
+        cap = CONVICTION_DEVIATION_CAP.get(self.branch_name, 0.25)
+        raw_score = float(raw.get("conviction_score", agent_input.final_score))
+        bounded_score = _clamp(
+            raw_score,
+            agent_input.final_score - cap,
+            agent_input.final_score + cap,
+        )
+        raw["conviction_score"] = _clamp(bounded_score, -1.0, 1.0)
+        raw["confidence"] = _clamp(float(raw.get("confidence", 0.5)), 0.0, 1.0)
+
+        valid_convictions = {"strong_buy", "buy", "neutral", "sell", "strong_sell"}
+        if raw.get("conviction") not in valid_convictions:
+            raw["conviction"] = BranchSubAgent._score_to_conviction(raw["conviction_score"])
+        return self._validate_specialized_output(raw, agent_input)
 
 
 class BranchSubAgent:

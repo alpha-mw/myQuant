@@ -14,7 +14,6 @@ through this DAG.
 
 from __future__ import annotations
 
-import json
 import asyncio
 import sqlite3
 from dataclasses import asdict
@@ -77,7 +76,12 @@ from quant_investor.market.dag.research import _run_candidate_research_phase
 from quant_investor.market.dag.reporting import _build_reporting_artifacts
 from quant_investor.market.dag.review import _portfolio_master_advisory
 from quant_investor.market.dag.shortlist import _build_shortlist, _build_shortlist_from_bayesian_records
+from quant_investor.market.market_data_reader import MarketDataReader
+from quant_investor.market.name_map import (
+    load_company_name_map as _load_cached_company_name_map,
+)
 from quant_investor.market.provider_health import detect_provider_health
+from quant_investor.market.runtime_profile import profile_stage
 from quant_investor.market.shared_csv_reader import SharedCSVReader
 from quant_investor.market.us_market_cap_filter import USMarketCapFilter
 from quant_investor.llm_policy import llm_handoff_metadata, local_llm_disabled
@@ -89,7 +93,6 @@ from quant_investor.reporting.run_artifacts import (
     build_model_role_metadata,
     build_what_if_plan,
 )
-from quant_investor.data.universe.cn_universe import LOCAL_UNIVERSE_DIR
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:
@@ -127,20 +130,7 @@ def _codex_handoff_model_resolution(
 def _load_company_name_map(market: str) -> dict[str, str]:
     if str(market or "").strip().upper() != "CN":
         return {}
-    path = LOCAL_UNIVERSE_DIR / "stock_names.json"
-    if not path.exists():
-        return {}
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    if not isinstance(raw, dict):
-        return {}
-    return {
-        str(symbol).strip().upper(): str(name).strip()
-        for symbol, name in raw.items()
-        if str(symbol).strip() and str(name).strip()
-    }
+    return _load_cached_company_name_map(market, allow_provider=False)
 
 
 def _load_company_profile_map(market: str) -> dict[str, dict[str, str]]:
@@ -227,7 +217,6 @@ def _master_hint_to_ic_hint(hint: MasterICHint) -> dict[str, Any]:
 
 def _branch_output_to_verdict(output: BaseBranchAgentOutput, symbol: str) -> BranchVerdict:
     action = str(output.conviction).lower()
-    direction = _score_to_direction(float(output.conviction_score))
     if action not in {"strong_buy", "buy", "neutral", "sell", "strong_sell"}:
         action = "neutral"
     return BranchVerdict(
@@ -308,6 +297,7 @@ async def _execute_market_dag_async(
     breakout_distance_pct: float = config.FUNNEL_BREAKOUT_DISTANCE_PCT,
     sector_bucket_limit: int = config.FUNNEL_SECTOR_BUCKET_LIMIT,
     recall_context: Mapping[str, Any] | None = None,
+    runtime_profiler: Any | None = None,
 ) -> dict[str, Any]:
     settings = get_market_settings(market)
     selected_categories = (
@@ -318,25 +308,43 @@ async def _execute_market_dag_async(
     universe_key = universe or (selected_categories[0] if len(selected_categories) == 1 else "custom")
 
     resolver = CNUniverseResolver(data_dir=settings.data_dir) if settings.market == "CN" else None
-    shared_reader = SharedCSVReader(market=settings.market, data_dir=settings.data_dir, resolver=resolver)
+    if settings.market == "CN":
+        shared_reader = MarketDataReader(market=settings.market)
+    else:
+        shared_reader = SharedCSVReader(market=settings.market, data_dir=settings.data_dir, resolver=resolver)
 
     explicit_symbols = list(dict.fromkeys(str(symbol).strip().upper() for symbol in (symbols or []) if str(symbol).strip()))
-    if explicit_symbols:
-        symbols = explicit_symbols
-    elif settings.market == "CN" and universe_key == "full_a":
-        symbols = shared_reader.list_symbols("full_a")
-    else:
-        symbols = []
-        for category in selected_categories:
-            symbols.extend(shared_reader.list_symbols(category))
-        symbols = list(dict.fromkeys(symbols))
     market_cap_filter_metadata: dict[str, Any] = {}
-    if settings.market == "US":
-        symbols, market_cap_filter_metadata = USMarketCapFilter().filter_symbols(symbols, fetch_missing=True)
+    with profile_stage(
+        runtime_profiler,
+        "dag_symbol_list",
+        {
+            "market": settings.market,
+            "universe_key": universe_key,
+            "category_count": len(selected_categories),
+            "mode": mode,
+            "explicit_symbol_count": len(explicit_symbols),
+        },
+    ) as stage_metadata:
         if explicit_symbols:
-            explicit_symbols = list(symbols)
-    if mode == "sample":
-        symbols = symbols[: (batch_size or settings.default_batch_size)]
+            symbols = explicit_symbols
+        elif settings.market == "CN" and universe_key == "full_a":
+            symbols = shared_reader.list_symbols("full_a")
+        else:
+            symbols = []
+            for category in selected_categories:
+                symbols.extend(shared_reader.list_symbols(category))
+            symbols = list(dict.fromkeys(symbols))
+        if settings.market == "US":
+            symbols, market_cap_filter_metadata = USMarketCapFilter().filter_symbols(symbols, fetch_missing=True)
+            if explicit_symbols:
+                explicit_symbols = list(symbols)
+        unsampled_symbol_count = len(symbols)
+        if mode == "sample":
+            symbols = symbols[: (batch_size or settings.default_batch_size)]
+        stage_metadata["symbol_count"] = len(symbols)
+        stage_metadata["unsampled_symbol_count"] = unsampled_symbol_count
+        stage_metadata["sampled"] = bool(mode == "sample")
 
     branch_config, master_config = resolve_runtime_role_models(
         review_model_priority=review_model_priority,
@@ -485,34 +493,43 @@ async def _execute_market_dag_async(
             metadata={"agent_layer_enabled": False},
         )
     macro_agent = MacroAgent()
-    context_state = _prepare_market_context(
-        market=settings.market,
-        universe_key=universe_key,
-        selected_categories=selected_categories,
-        symbols=all_symbols,
-        company_profile_map=company_profile_map,
-        shared_reader=shared_reader,
-        scoped_data_snapshot=scoped_data_snapshot,
-        download_stage=download_stage,
-        enable_agent_layer=enable_agent_layer,
-        agent_timeout=agent_timeout,
-        master_timeout=master_timeout,
-        master_reasoning_effort=master_reasoning_effort,
-        branch_model_resolution=branch_model_resolution,
-        master_model_resolution=master_model_resolution,
-        branch_candidate_models=branch_candidate_models,
-        master_candidate_models=master_candidate_models,
-        company_name_map=company_name_map,
-        funnel_profile=str(funnel_profile or config.FUNNEL_PROFILE).strip().lower() or config.FUNNEL_PROFILE,
-        max_candidates=max(1, int(max_candidates or config.FUNNEL_MAX_CANDIDATES)),
-        trend_windows=tuple(int(item) for item in (trend_windows or config.FUNNEL_TREND_WINDOWS) if int(item) > 0) or tuple(config.FUNNEL_TREND_WINDOWS),
-        volume_spike_threshold=float(volume_spike_threshold or config.FUNNEL_VOLUME_SPIKE_THRESHOLD),
-        breakout_distance_pct=float(breakout_distance_pct or config.FUNNEL_BREAKOUT_DISTANCE_PCT),
-        sector_bucket_limit=max(0, int(sector_bucket_limit if sector_bucket_limit is not None else config.FUNNEL_SECTOR_BUCKET_LIMIT)),
-        macro_agent=macro_agent,
-        funnel_cls=DeterministicFunnel,
-        provider_health_detector=detect_provider_health,
-    )
+    with profile_stage(
+        runtime_profiler,
+        "dag_context_build",
+        {"symbol_count": len(all_symbols), "universe_key": universe_key},
+    ) as stage_metadata:
+        context_state = _prepare_market_context(
+            market=settings.market,
+            universe_key=universe_key,
+            selected_categories=selected_categories,
+            symbols=all_symbols,
+            company_profile_map=company_profile_map,
+            shared_reader=shared_reader,
+            scoped_data_snapshot=scoped_data_snapshot,
+            download_stage=download_stage,
+            enable_agent_layer=enable_agent_layer,
+            agent_timeout=agent_timeout,
+            master_timeout=master_timeout,
+            master_reasoning_effort=master_reasoning_effort,
+            branch_model_resolution=branch_model_resolution,
+            master_model_resolution=master_model_resolution,
+            branch_candidate_models=branch_candidate_models,
+            master_candidate_models=master_candidate_models,
+            company_name_map=company_name_map,
+            funnel_profile=str(funnel_profile or config.FUNNEL_PROFILE).strip().lower() or config.FUNNEL_PROFILE,
+            max_candidates=max(1, int(max_candidates or config.FUNNEL_MAX_CANDIDATES)),
+            trend_windows=tuple(int(item) for item in (trend_windows or config.FUNNEL_TREND_WINDOWS) if int(item) > 0) or tuple(config.FUNNEL_TREND_WINDOWS),
+            volume_spike_threshold=float(volume_spike_threshold or config.FUNNEL_VOLUME_SPIKE_THRESHOLD),
+            breakout_distance_pct=float(breakout_distance_pct or config.FUNNEL_BREAKOUT_DISTANCE_PCT),
+            sector_bucket_limit=max(0, int(sector_bucket_limit if sector_bucket_limit is not None else config.FUNNEL_SECTOR_BUCKET_LIMIT)),
+            macro_agent=macro_agent,
+            funnel_cls=DeterministicFunnel,
+            provider_health_detector=detect_provider_health,
+            runtime_profiler=runtime_profiler,
+        )
+        stage_metadata["researchable_count"] = len(context_state.researchable_symbols)
+        stage_metadata["candidate_count"] = len(context_state.candidate_symbols)
+        stage_metadata["quarantined_count"] = len(context_state.quarantined_symbols)
     read_results = context_state.read_results
     frames = context_state.frames
     tradability_snapshot = context_state.tradability_snapshot
@@ -531,33 +548,40 @@ async def _execute_market_dag_async(
 
     fundamental_agent = FundamentalAgent()
     intelligence_agent = IntelligenceAgent()
-    research_state = await _run_candidate_research_phase(
-        candidate_symbols=candidate_symbols,
-        company_name_map=company_name_map,
-        market=settings.market,
-        market_snapshot=market_snapshot,
-        universe_key=universe_key,
-        read_results=read_results,
-        frames=frames,
-        global_quant_verdict=global_quant_verdict,
-        macro_verdict=macro_verdict,
-        branch_model_resolution=branch_model_resolution,
-        master_model_resolution=master_model_resolution,
-        branch_candidate_models=branch_candidate_models,
-        master_candidate_models=master_candidate_models,
-        master_reasoning_effort=master_reasoning_effort,
-        enable_agent_layer=enable_agent_layer,
-        agent_timeout=agent_timeout,
-        master_timeout=master_timeout,
-        resolver_snapshot=context_state.resolver_snapshot,
-        branch_data_readiness=context_state.branch_data_readiness,
-        branch_data_payload=context_state.branch_data_payload,
-        fundamental_agent=fundamental_agent,
-        intelligence_agent=intelligence_agent,
-        quant_result=quant_result,
-        ensure_branch_verdict=_ensure_branch_verdict,
-        master_hint_to_ic_hint=_master_hint_to_ic_hint,
-    )
+    with profile_stage(
+        runtime_profiler,
+        "dag_candidate_research",
+        {"candidate_count": len(candidate_symbols), "agent_layer_enabled": bool(enable_agent_layer)},
+    ) as stage_metadata:
+        research_state = await _run_candidate_research_phase(
+            candidate_symbols=candidate_symbols,
+            company_name_map=company_name_map,
+            market=settings.market,
+            market_snapshot=market_snapshot,
+            universe_key=universe_key,
+            read_results=read_results,
+            frames=frames,
+            global_quant_verdict=global_quant_verdict,
+            macro_verdict=macro_verdict,
+            branch_model_resolution=branch_model_resolution,
+            master_model_resolution=master_model_resolution,
+            branch_candidate_models=branch_candidate_models,
+            master_candidate_models=master_candidate_models,
+            master_reasoning_effort=master_reasoning_effort,
+            enable_agent_layer=enable_agent_layer,
+            agent_timeout=agent_timeout,
+            master_timeout=master_timeout,
+            resolver_snapshot=context_state.resolver_snapshot,
+            branch_data_readiness=context_state.branch_data_readiness,
+            branch_data_payload=context_state.branch_data_payload,
+            fundamental_agent=fundamental_agent,
+            intelligence_agent=intelligence_agent,
+            quant_result=quant_result,
+            ensure_branch_verdict=_ensure_branch_verdict,
+            master_hint_to_ic_hint=_master_hint_to_ic_hint,
+        )
+        stage_metadata["packet_count"] = len(research_state.symbol_research_packets)
+        stage_metadata["branch_result_symbol_count"] = len(research_state.research_by_symbol)
     symbol_research_packets = research_state.symbol_research_packets
     research_by_symbol = research_state.research_by_symbol
     review_bundle = research_state.review_bundle
@@ -565,97 +589,121 @@ async def _execute_market_dag_async(
     branch_summaries = research_state.branch_summaries
     branch_results = research_state.branch_results
 
-    selection_state = _run_bayesian_selection_phase(
-        candidate_symbols=candidate_symbols,
-        company_name_map=company_name_map,
-        symbol_research_packets=symbol_research_packets,
-        research_by_symbol=research_by_symbol,
-        branch_summaries=branch_summaries,
-        branch_results=branch_results,
-        macro_verdict=macro_verdict,
-        global_context=global_context,
-        model_roles=model_roles,
-        resolver_snapshot=shared_reader.snapshot(),
-        data_quality_issues=data_quality_issues,
-        top_k=max(1, int(shortlist_size if shortlist_size is not None else top_k)),
-        all_symbols=all_symbols,
-        funnel_output=funnel_output,
-        provider_health=provider_health,
-        master_timeout=master_timeout,
-        master_reasoning_effort=master_reasoning_effort,
-        master_model_resolution=master_model_resolution,
-        master_candidate_models=master_candidate_models,
-        recall_context=recall_context,
-        hierarchical_prior_builder_cls=HierarchicalPriorBuilder,
-        likelihood_mapper_cls=SignalLikelihoodMapper,
-        posterior_engine_cls=BayesianPosteriorEngine,
-        master_agent_cls=MasterAgent,
-        llm_client_cls=GatewayLLMClient,
-        portfolio_master_advisory_fn=_portfolio_master_advisory,
-    )
+    with profile_stage(
+        runtime_profiler,
+        "dag_bayesian_selection",
+        {"candidate_count": len(candidate_symbols), "top_k": max(1, int(shortlist_size if shortlist_size is not None else top_k))},
+    ) as stage_metadata:
+        selection_state = _run_bayesian_selection_phase(
+            candidate_symbols=candidate_symbols,
+            company_name_map=company_name_map,
+            symbol_research_packets=symbol_research_packets,
+            research_by_symbol=research_by_symbol,
+            branch_summaries=branch_summaries,
+            branch_results=branch_results,
+            macro_verdict=macro_verdict,
+            global_context=global_context,
+            model_roles=model_roles,
+            resolver_snapshot=shared_reader.snapshot(),
+            data_quality_issues=data_quality_issues,
+            top_k=max(1, int(shortlist_size if shortlist_size is not None else top_k)),
+            all_symbols=all_symbols,
+            funnel_output=funnel_output,
+            provider_health=provider_health,
+            master_timeout=master_timeout,
+            master_reasoning_effort=master_reasoning_effort,
+            master_model_resolution=master_model_resolution,
+            master_candidate_models=master_candidate_models,
+            recall_context=recall_context,
+            hierarchical_prior_builder_cls=HierarchicalPriorBuilder,
+            likelihood_mapper_cls=SignalLikelihoodMapper,
+            posterior_engine_cls=BayesianPosteriorEngine,
+            master_agent_cls=MasterAgent,
+            llm_client_cls=GatewayLLMClient,
+            portfolio_master_advisory_fn=_portfolio_master_advisory,
+        )
+        stage_metadata["shortlist_count"] = len(selection_state.shortlist)
+        stage_metadata["bayesian_record_count"] = len(selection_state.bayesian_records)
 
-    decision_state = _run_portfolio_construction_phase(
-        shortlist=selection_state.shortlist,
-        branch_summaries=branch_summaries,
-        macro_verdict=macro_verdict,
-        global_context=global_context,
-        data_quality_issues=data_quality_issues,
-        ic_hints_by_symbol=ic_hints_by_symbol,
-        research_by_symbol=research_by_symbol,
-        tradability_snapshot=tradability_snapshot,
-        funnel_summary=selection_state.funnel_summary,
-        bayesian_records=selection_state.bayesian_records,
-        candidate_symbols=candidate_symbols,
-        portfolio_master_output=selection_state.portfolio_master_output,
-        portfolio_master_meta=selection_state.portfolio_master_meta,
-        risk_guard_cls=RiskGuard,
-        ic_coordinator_cls=ICCoordinator,
-        portfolio_constructor_cls=PortfolioConstructor,
-        attach_symbol_to_ic_decision_fn=_attach_symbol_to_ic_decision,
-    )
+    with profile_stage(
+        runtime_profiler,
+        "dag_control_chain",
+        {"shortlist_count": len(selection_state.shortlist)},
+    ) as stage_metadata:
+        decision_state = _run_portfolio_construction_phase(
+            shortlist=selection_state.shortlist,
+            branch_summaries=branch_summaries,
+            macro_verdict=macro_verdict,
+            global_context=global_context,
+            data_quality_issues=data_quality_issues,
+            ic_hints_by_symbol=ic_hints_by_symbol,
+            research_by_symbol=research_by_symbol,
+            tradability_snapshot=tradability_snapshot,
+            funnel_summary=selection_state.funnel_summary,
+            bayesian_records=selection_state.bayesian_records,
+            candidate_symbols=candidate_symbols,
+            portfolio_master_output=selection_state.portfolio_master_output,
+            portfolio_master_meta=selection_state.portfolio_master_meta,
+            risk_guard_cls=RiskGuard,
+            ic_coordinator_cls=ICCoordinator,
+            portfolio_constructor_cls=PortfolioConstructor,
+            attach_symbol_to_ic_decision_fn=_attach_symbol_to_ic_decision,
+        )
+        stage_metadata["ic_decision_count"] = len(decision_state.ic_decisions)
+        stage_metadata["target_weight_count"] = len(getattr(decision_state.portfolio_decision, "target_weights", {}) or {})
 
-    reporting_state = _build_reporting_artifacts(
-        market=settings.market,
-        universe_key=universe_key,
-        all_symbols=all_symbols,
-        researchable_symbols=researchable_symbols,
-        candidate_symbols=candidate_symbols,
-        quarantined_symbols=quarantined_symbols,
-        data_quality_issues=data_quality_issues,
-        read_results=read_results,
-        shared_reader=shared_reader,
-        global_context=global_context,
-        provider_health=provider_health,
-        model_roles=model_roles,
-        funnel_summary=selection_state.funnel_summary,
-        bayesian_records=selection_state.bayesian_records,
-        review_bundle=review_bundle,
-        ic_hints_by_symbol=ic_hints_by_symbol,
-        macro_verdict=macro_verdict,
-        branch_summaries=branch_summaries,
-        branch_verdicts_by_symbol=research_by_symbol,
-        branch_results=branch_results,
-        ic_decisions=decision_state.ic_decisions,
-        portfolio_plan=decision_state.portfolio_plan,
-        portfolio_decision=decision_state.portfolio_decision,
-        symbol_research_packets=symbol_research_packets,
-        shortlist=selection_state.shortlist,
-        portfolio_master_output=selection_state.portfolio_master_output,
-        portfolio_master_meta=selection_state.portfolio_master_meta,
-        portfolio_master_reliability=selection_state.portfolio_master_reliability,
-        risk_decision=decision_state.risk_decision,
-        tradability_snapshot=tradability_snapshot,
-        scoped_data_snapshot=scoped_data_snapshot,
-        download_stage=download_stage,
-        category_count=len(selected_categories),
-        funnel_output=funnel_output,
-        global_quant_verdict=global_quant_verdict,
-        narrator_agent_cls=NarratorAgent,
-        build_data_quality_diagnostics_fn=build_data_quality_diagnostics,
-        build_what_if_plan_fn=build_what_if_plan,
-        build_execution_trace_fn=build_execution_trace,
-        build_bayesian_trace_fn=build_bayesian_trace,
-    )
+    with profile_stage(
+        runtime_profiler,
+        "dag_reporting_artifacts",
+        {
+            "candidate_count": len(candidate_symbols),
+            "shortlist_count": len(selection_state.shortlist),
+            "researchable_count": len(researchable_symbols),
+        },
+    ) as stage_metadata:
+        reporting_state = _build_reporting_artifacts(
+            market=settings.market,
+            universe_key=universe_key,
+            all_symbols=all_symbols,
+            researchable_symbols=researchable_symbols,
+            candidate_symbols=candidate_symbols,
+            quarantined_symbols=quarantined_symbols,
+            data_quality_issues=data_quality_issues,
+            read_results=read_results,
+            shared_reader=shared_reader,
+            global_context=global_context,
+            provider_health=provider_health,
+            model_roles=model_roles,
+            funnel_summary=selection_state.funnel_summary,
+            bayesian_records=selection_state.bayesian_records,
+            review_bundle=review_bundle,
+            ic_hints_by_symbol=ic_hints_by_symbol,
+            macro_verdict=macro_verdict,
+            branch_summaries=branch_summaries,
+            branch_verdicts_by_symbol=research_by_symbol,
+            branch_results=branch_results,
+            ic_decisions=decision_state.ic_decisions,
+            portfolio_plan=decision_state.portfolio_plan,
+            portfolio_decision=decision_state.portfolio_decision,
+            symbol_research_packets=symbol_research_packets,
+            shortlist=selection_state.shortlist,
+            portfolio_master_output=selection_state.portfolio_master_output,
+            portfolio_master_meta=selection_state.portfolio_master_meta,
+            portfolio_master_reliability=selection_state.portfolio_master_reliability,
+            risk_decision=decision_state.risk_decision,
+            tradability_snapshot=tradability_snapshot,
+            scoped_data_snapshot=scoped_data_snapshot,
+            download_stage=download_stage,
+            category_count=len(selected_categories),
+            funnel_output=funnel_output,
+            global_quant_verdict=global_quant_verdict,
+            narrator_agent_cls=NarratorAgent,
+            build_data_quality_diagnostics_fn=build_data_quality_diagnostics,
+            build_what_if_plan_fn=build_what_if_plan,
+            build_execution_trace_fn=build_execution_trace,
+            build_bayesian_trace_fn=build_bayesian_trace,
+        )
+        stage_metadata["artifact_keys"] = sorted(str(key) for key in reporting_state.dag_artifacts.keys())
     return reporting_state.dag_artifacts
 
 
@@ -689,6 +737,7 @@ def execute_market_dag(
     breakout_distance_pct: float = config.FUNNEL_BREAKOUT_DISTANCE_PCT,
     sector_bucket_limit: int = config.FUNNEL_SECTOR_BUCKET_LIMIT,
     recall_context: Mapping[str, Any] | None = None,
+    runtime_profiler: Any | None = None,
 ) -> dict[str, Any]:
     return asyncio.run(
         _execute_market_dag_async(
@@ -721,6 +770,7 @@ def execute_market_dag(
             breakout_distance_pct=breakout_distance_pct,
             sector_bucket_limit=sector_bucket_limit,
             recall_context=recall_context,
+            runtime_profiler=runtime_profiler,
         )
     )
 

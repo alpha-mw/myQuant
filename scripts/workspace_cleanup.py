@@ -16,6 +16,7 @@ from scripts.workspace_layout import (
     get_repo_root,
     iter_cleanup_targets,
     remove_cleanup_targets,
+    write_cleanup_inventory_manifest,
 )
 
 
@@ -37,6 +38,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--show-envs",
         action="store_true",
         help="Print the current Python environment directory roles.",
+    )
+    parser.add_argument(
+        "--inventory",
+        action="store_true",
+        help="Write a conservative cleanup inventory manifest without deleting files.",
+    )
+    parser.add_argument(
+        "--inventory-output-dir",
+        type=Path,
+        default=None,
+        help="Directory for --inventory JSON/Markdown reports.",
     )
     parser.add_argument(
         "--root",
@@ -86,6 +98,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"removed {len(removed)} directories")
     else:
         print(f"would remove {len(cleanup_targets)} directories")
+
+    if args.inventory:
+        inventory_paths = write_cleanup_inventory_manifest(
+            repo_root,
+            output_dir=args.inventory_output_dir,
+        )
+        print("cleanup inventory manifest:")
+        print(f"  - json: {inventory_paths['json']}")
+        print(f"  - md: {inventory_paths['md']}")
 
     return 0
 
