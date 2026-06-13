@@ -43,6 +43,628 @@ def test_iter_cleanup_targets_only_collects_safe_workspace_caches(tmp_path):
     ]
 
 
+def test_iter_cleanup_targets_collects_only_stale_project_cleanup_reports(tmp_path):
+    project_cleanup = tmp_path / "reports" / "project_cleanup"
+    for name in (
+        "cleanup_inventory_20260101T000000Z",
+        "cleanup_inventory_20260102T000000Z",
+        "cleanup_inventory_20260103T000000Z",
+        "cleanup_inventory_20260101T000000Z_apply",
+        "cleanup_inventory_20260102T000000Z_apply",
+        "project_cleanup_status_20260101T000000Z",
+        "project_cleanup_status_20260102T000000Z",
+        "project_cleanup_status_20260103T000000Z",
+        "code_retirement_reference_audit_20260101T000000Z",
+        "code_retirement_reference_audit_20260102T000000Z",
+        "data_duplicate_audit_20260101T000000Z",
+        "data_duplicate_audit_20260102T000000Z",
+        "data_cleanup_plan_20260101T000000Z",
+        "data_cleanup_plan_20260102T000000Z",
+        "data_cleanup_gate_20260101T000000Z",
+        "data_cleanup_gate_20260102T000000Z",
+        "data_cleanup_readback_20260101T000000Z",
+        "data_cleanup_readback_20260102T000000Z",
+        "data_cleanup_whitelist_20260101T000000Z",
+        "data_cleanup_whitelist_20260102T000000Z",
+        "data_cleanup_execute_20260101T000000Z",
+        "data_cleanup_execute_20260102T000000Z",
+        "data_cleanup_restore_policy_20260101T000000Z",
+        "data_cleanup_restore_policy_20260102T000000Z",
+        "data_cleanup_restore_reference_audit_20260101T000000Z",
+        "data_cleanup_restore_reference_audit_20260102T000000Z",
+        "data_cleanup_restore_readiness_20260101T000000Z",
+        "data_cleanup_restore_readiness_20260102T000000Z",
+        "data_cleanup_restore_readback_20260101T000000Z",
+        "data_cleanup_restore_readback_20260102T000000Z",
+        "empty_cell_flags_compaction_20260101T000000Z",
+        "empty_cell_flags_compaction_20260102T000000Z",
+        "issue_cell_flags_compaction_20260101T000000Z",
+        "issue_cell_flags_compaction_20260102T000000Z",
+        "uniform_row_flags_compaction_20260101T000000Z",
+        "uniform_row_flags_compaction_20260102T000000Z",
+        "matrix_coverage_compaction_20260101T000000Z",
+        "matrix_coverage_compaction_20260102T000000Z",
+        "architecture_rebaseline_20260101T000000Z",
+        "architecture_rebaseline_20260102T000000Z",
+    ):
+        (project_cleanup / name).mkdir(parents=True)
+    (project_cleanup / "cleanup_baseline_20260101_000000").mkdir()
+
+    targets = [path.relative_to(tmp_path).as_posix() for path in iter_cleanup_targets(tmp_path)]
+
+    assert targets == [
+        "reports/project_cleanup/architecture_rebaseline_20260101T000000Z",
+        "reports/project_cleanup/cleanup_inventory_20260101T000000Z",
+        "reports/project_cleanup/cleanup_inventory_20260101T000000Z_apply",
+        "reports/project_cleanup/cleanup_inventory_20260102T000000Z",
+        "reports/project_cleanup/code_retirement_reference_audit_20260101T000000Z",
+        "reports/project_cleanup/data_cleanup_execute_20260101T000000Z",
+        "reports/project_cleanup/data_cleanup_gate_20260101T000000Z",
+        "reports/project_cleanup/data_cleanup_plan_20260101T000000Z",
+        "reports/project_cleanup/data_cleanup_readback_20260101T000000Z",
+        "reports/project_cleanup/data_cleanup_restore_policy_20260101T000000Z",
+        "reports/project_cleanup/data_cleanup_restore_readback_20260101T000000Z",
+        "reports/project_cleanup/data_cleanup_restore_readiness_20260101T000000Z",
+        "reports/project_cleanup/data_cleanup_restore_reference_audit_20260101T000000Z",
+        "reports/project_cleanup/data_cleanup_whitelist_20260101T000000Z",
+        "reports/project_cleanup/data_duplicate_audit_20260101T000000Z",
+        "reports/project_cleanup/empty_cell_flags_compaction_20260101T000000Z",
+        "reports/project_cleanup/issue_cell_flags_compaction_20260101T000000Z",
+        "reports/project_cleanup/matrix_coverage_compaction_20260101T000000Z",
+        "reports/project_cleanup/project_cleanup_status_20260101T000000Z",
+        "reports/project_cleanup/project_cleanup_status_20260102T000000Z",
+        "reports/project_cleanup/uniform_row_flags_compaction_20260101T000000Z",
+    ]
+
+
+def test_iter_cleanup_targets_keeps_project_cleanup_status_sources(tmp_path):
+    project_cleanup = tmp_path / "reports" / "project_cleanup"
+    for name in (
+        "data_cleanup_gate_20260101T000000Z",
+        "data_cleanup_gate_20260102T000000Z",
+        "data_cleanup_gate_20260103T000000Z",
+        "project_cleanup_status_20260104T000000Z",
+    ):
+        (project_cleanup / name).mkdir(parents=True)
+    source_json = (
+        project_cleanup
+        / "data_cleanup_gate_20260102T000000Z"
+        / "data_cleanup_gate.json"
+    )
+    source_json.write_text("{}", encoding="utf-8")
+    status_json = (
+        project_cleanup
+        / "project_cleanup_status_20260104T000000Z"
+        / "project_cleanup_status.json"
+    )
+    status_json.write_text(
+        json.dumps({"sources": {"data_cleanup_gate_json": str(source_json)}}),
+        encoding="utf-8",
+    )
+
+    targets = [path.relative_to(tmp_path).as_posix() for path in iter_cleanup_targets(tmp_path)]
+
+    assert targets == [
+        "reports/project_cleanup/data_cleanup_gate_20260101T000000Z",
+    ]
+
+
+def test_iter_cleanup_targets_keeps_source_lineage_for_status_sources(tmp_path):
+    project_cleanup = tmp_path / "reports" / "project_cleanup"
+    for name in (
+        "data_cleanup_whitelist_20260101T000000Z",
+        "data_cleanup_whitelist_20260102T000000Z_approved",
+        "data_cleanup_whitelist_20260103T000000Z_approved",
+        "project_cleanup_status_20260104T000000Z",
+    ):
+        (project_cleanup / name).mkdir(parents=True)
+    pending_json = (
+        project_cleanup
+        / "data_cleanup_whitelist_20260101T000000Z"
+        / "data_cleanup_whitelist.json"
+    )
+    pending_json.write_text("{}", encoding="utf-8")
+    stale_approved_json = (
+        project_cleanup
+        / "data_cleanup_whitelist_20260102T000000Z_approved"
+        / "data_cleanup_whitelist.json"
+    )
+    stale_approved_json.write_text("{}", encoding="utf-8")
+    approved_json = (
+        project_cleanup
+        / "data_cleanup_whitelist_20260103T000000Z_approved"
+        / "data_cleanup_whitelist.json"
+    )
+    approved_json.write_text(
+        json.dumps({"source_whitelist_json": str(pending_json)}),
+        encoding="utf-8",
+    )
+    status_json = (
+        project_cleanup
+        / "project_cleanup_status_20260104T000000Z"
+        / "project_cleanup_status.json"
+    )
+    status_json.write_text(
+        json.dumps({"sources": {"data_cleanup_whitelist_json": str(approved_json)}}),
+        encoding="utf-8",
+    )
+
+    targets = [path.relative_to(tmp_path).as_posix() for path in iter_cleanup_targets(tmp_path)]
+
+    assert targets == [
+        "reports/project_cleanup/data_cleanup_whitelist_20260102T000000Z_approved",
+    ]
+
+
+def test_iter_cleanup_targets_keeps_executed_data_cleanup_reports(tmp_path):
+    project_cleanup = tmp_path / "reports" / "project_cleanup"
+    for name in (
+        "data_cleanup_whitelist_20260101T000000Z",
+        "data_cleanup_whitelist_20260102T000000Z_approved",
+        "data_cleanup_whitelist_20260103T000000Z_approved",
+        "data_cleanup_execute_20260102T000000Z",
+        "data_cleanup_execute_20260103T000000Z",
+        "data_cleanup_execute_20260104T000000Z",
+        "project_cleanup_status_20260105T000000Z",
+    ):
+        (project_cleanup / name).mkdir(parents=True)
+    pending_json = (
+        project_cleanup
+        / "data_cleanup_whitelist_20260101T000000Z"
+        / "data_cleanup_whitelist.json"
+    )
+    pending_json.write_text("{}", encoding="utf-8")
+    executed_whitelist_json = (
+        project_cleanup
+        / "data_cleanup_whitelist_20260102T000000Z_approved"
+        / "data_cleanup_whitelist.json"
+    )
+    executed_whitelist_json.write_text(
+        json.dumps({"source_whitelist_json": str(pending_json)}),
+        encoding="utf-8",
+    )
+    stale_whitelist_json = (
+        project_cleanup
+        / "data_cleanup_whitelist_20260103T000000Z_approved"
+        / "data_cleanup_whitelist.json"
+    )
+    stale_whitelist_json.write_text("{}", encoding="utf-8")
+    executed_report_json = (
+        project_cleanup
+        / "data_cleanup_execute_20260102T000000Z"
+        / "data_cleanup_execute.json"
+    )
+    executed_report_json.write_text(
+        json.dumps(
+            {
+                "apply_requested": True,
+                "confirm_token_valid": True,
+                "execution_performed": True,
+                "source_whitelist_json": str(executed_whitelist_json),
+                "summary": {"deleted_count": 3},
+            }
+        ),
+        encoding="utf-8",
+    )
+    dry_run_report_json = (
+        project_cleanup
+        / "data_cleanup_execute_20260103T000000Z"
+        / "data_cleanup_execute.json"
+    )
+    dry_run_report_json.write_text(
+        json.dumps(
+            {
+                "apply_requested": False,
+                "confirm_token_valid": False,
+                "execution_performed": False,
+                "summary": {"deleted_count": 0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    latest_report_json = (
+        project_cleanup
+        / "data_cleanup_execute_20260104T000000Z"
+        / "data_cleanup_execute.json"
+    )
+    latest_report_json.write_text(
+        json.dumps(
+            {
+                "apply_requested": True,
+                "confirm_token_valid": True,
+                "execution_performed": True,
+                "source_whitelist_json": str(stale_whitelist_json),
+                "summary": {"deleted_count": 4},
+            }
+        ),
+        encoding="utf-8",
+    )
+    status_json = (
+        project_cleanup
+        / "project_cleanup_status_20260105T000000Z"
+        / "project_cleanup_status.json"
+    )
+    status_json.write_text(
+        json.dumps({"sources": {"data_cleanup_execute_json": str(latest_report_json)}}),
+        encoding="utf-8",
+    )
+
+    targets = [path.relative_to(tmp_path).as_posix() for path in iter_cleanup_targets(tmp_path)]
+
+    assert targets == [
+        "reports/project_cleanup/data_cleanup_execute_20260103T000000Z",
+    ]
+
+
+def test_iter_cleanup_targets_keeps_executed_empty_cell_flags_compaction_reports(
+    tmp_path,
+):
+    project_cleanup = tmp_path / "reports" / "project_cleanup"
+    for name in (
+        "empty_cell_flags_compaction_20260101T000000Z",
+        "empty_cell_flags_compaction_20260102T000000Z",
+        "empty_cell_flags_compaction_20260103T000000Z",
+        "project_cleanup_status_20260104T000000Z",
+    ):
+        (project_cleanup / name).mkdir(parents=True)
+    executed_report_json = (
+        project_cleanup
+        / "empty_cell_flags_compaction_20260101T000000Z"
+        / "empty_cell_flags_compaction.json"
+    )
+    executed_report_json.write_text(
+        json.dumps(
+            {
+                "apply_requested": True,
+                "confirm_token_valid": True,
+                "execution_performed": True,
+                "summary": {"compacted_count": 0, "orphan_deleted_count": 2},
+            }
+        ),
+        encoding="utf-8",
+    )
+    dry_run_report_json = (
+        project_cleanup
+        / "empty_cell_flags_compaction_20260102T000000Z"
+        / "empty_cell_flags_compaction.json"
+    )
+    dry_run_report_json.write_text(
+        json.dumps(
+            {
+                "apply_requested": False,
+                "confirm_token_valid": False,
+                "execution_performed": False,
+                "summary": {"would_compact_count": 5},
+            }
+        ),
+        encoding="utf-8",
+    )
+    latest_report_json = (
+        project_cleanup
+        / "empty_cell_flags_compaction_20260103T000000Z"
+        / "empty_cell_flags_compaction.json"
+    )
+    latest_report_json.write_text(
+        json.dumps(
+            {
+                "apply_requested": False,
+                "confirm_token_valid": False,
+                "execution_performed": False,
+                "summary": {"blocked_count": 2},
+            }
+        ),
+        encoding="utf-8",
+    )
+    status_json = (
+        project_cleanup
+        / "project_cleanup_status_20260104T000000Z"
+        / "project_cleanup_status.json"
+    )
+    status_json.write_text(
+        json.dumps(
+            {"sources": {"empty_cell_flags_compaction_json": str(latest_report_json)}}
+        ),
+        encoding="utf-8",
+    )
+
+    targets = [path.relative_to(tmp_path).as_posix() for path in iter_cleanup_targets(tmp_path)]
+
+    assert targets == [
+        "reports/project_cleanup/empty_cell_flags_compaction_20260102T000000Z",
+    ]
+
+
+def test_iter_cleanup_targets_keeps_executed_uniform_row_flags_compaction_reports(
+    tmp_path,
+):
+    project_cleanup = tmp_path / "reports" / "project_cleanup"
+    for name in (
+        "uniform_row_flags_compaction_20260101T000000Z",
+        "uniform_row_flags_compaction_20260102T000000Z",
+        "uniform_row_flags_compaction_20260103T000000Z",
+        "project_cleanup_status_20260104T000000Z",
+    ):
+        (project_cleanup / name).mkdir(parents=True)
+    executed_report_json = (
+        project_cleanup
+        / "uniform_row_flags_compaction_20260101T000000Z"
+        / "uniform_row_flags_compaction.json"
+    )
+    executed_report_json.write_text(
+        json.dumps(
+            {
+                "apply_requested": True,
+                "confirm_token_valid": True,
+                "execution_performed": True,
+                "summary": {"compacted_count": 2},
+            }
+        ),
+        encoding="utf-8",
+    )
+    dry_run_report_json = (
+        project_cleanup
+        / "uniform_row_flags_compaction_20260102T000000Z"
+        / "uniform_row_flags_compaction.json"
+    )
+    dry_run_report_json.write_text(
+        json.dumps(
+            {
+                "apply_requested": False,
+                "confirm_token_valid": False,
+                "execution_performed": False,
+                "summary": {"would_compact_count": 5},
+            }
+        ),
+        encoding="utf-8",
+    )
+    latest_report_json = (
+        project_cleanup
+        / "uniform_row_flags_compaction_20260103T000000Z"
+        / "uniform_row_flags_compaction.json"
+    )
+    latest_report_json.write_text(
+        json.dumps(
+            {
+                "apply_requested": False,
+                "confirm_token_valid": False,
+                "execution_performed": False,
+                "summary": {"blocked_count": 2},
+            }
+        ),
+        encoding="utf-8",
+    )
+    status_json = (
+        project_cleanup
+        / "project_cleanup_status_20260104T000000Z"
+        / "project_cleanup_status.json"
+    )
+    status_json.write_text(
+        json.dumps(
+            {"sources": {"uniform_row_flags_compaction_json": str(latest_report_json)}}
+        ),
+        encoding="utf-8",
+    )
+
+    targets = [path.relative_to(tmp_path).as_posix() for path in iter_cleanup_targets(tmp_path)]
+
+    assert targets == [
+        "reports/project_cleanup/uniform_row_flags_compaction_20260102T000000Z",
+    ]
+
+
+def test_iter_cleanup_targets_keeps_executed_issue_cell_flags_compaction_reports(
+    tmp_path,
+):
+    project_cleanup = tmp_path / "reports" / "project_cleanup"
+    for name in (
+        "issue_cell_flags_compaction_20260101T000000Z",
+        "issue_cell_flags_compaction_20260102T000000Z",
+        "issue_cell_flags_compaction_20260103T000000Z",
+        "project_cleanup_status_20260104T000000Z",
+    ):
+        (project_cleanup / name).mkdir(parents=True)
+    executed_report_json = (
+        project_cleanup
+        / "issue_cell_flags_compaction_20260101T000000Z"
+        / "issue_cell_flags_compaction.json"
+    )
+    executed_report_json.write_text(
+        json.dumps(
+            {
+                "apply_requested": True,
+                "confirm_token_valid": True,
+                "execution_performed": True,
+                "summary": {"compacted_count": 2},
+            }
+        ),
+        encoding="utf-8",
+    )
+    dry_run_report_json = (
+        project_cleanup
+        / "issue_cell_flags_compaction_20260102T000000Z"
+        / "issue_cell_flags_compaction.json"
+    )
+    dry_run_report_json.write_text(
+        json.dumps(
+            {
+                "apply_requested": False,
+                "confirm_token_valid": False,
+                "execution_performed": False,
+                "summary": {"would_compact_count": 5},
+            }
+        ),
+        encoding="utf-8",
+    )
+    latest_report_json = (
+        project_cleanup
+        / "issue_cell_flags_compaction_20260103T000000Z"
+        / "issue_cell_flags_compaction.json"
+    )
+    latest_report_json.write_text(
+        json.dumps(
+            {
+                "apply_requested": False,
+                "confirm_token_valid": False,
+                "execution_performed": False,
+                "summary": {"blocked_count": 2},
+            }
+        ),
+        encoding="utf-8",
+    )
+    status_json = (
+        project_cleanup
+        / "project_cleanup_status_20260104T000000Z"
+        / "project_cleanup_status.json"
+    )
+    status_json.write_text(
+        json.dumps(
+            {"sources": {"issue_cell_flags_compaction_json": str(latest_report_json)}}
+        ),
+        encoding="utf-8",
+    )
+
+    targets = [path.relative_to(tmp_path).as_posix() for path in iter_cleanup_targets(tmp_path)]
+
+    assert targets == [
+        "reports/project_cleanup/issue_cell_flags_compaction_20260102T000000Z",
+    ]
+
+
+def test_iter_cleanup_targets_keeps_executed_matrix_coverage_compaction_reports(
+    tmp_path,
+):
+    project_cleanup = tmp_path / "reports" / "project_cleanup"
+    for name in (
+        "matrix_coverage_compaction_20260101T000000Z",
+        "matrix_coverage_compaction_20260102T000000Z",
+        "matrix_coverage_compaction_20260103T000000Z",
+        "project_cleanup_status_20260104T000000Z",
+    ):
+        (project_cleanup / name).mkdir(parents=True)
+    executed_report_json = (
+        project_cleanup
+        / "matrix_coverage_compaction_20260101T000000Z"
+        / "matrix_coverage_compaction.json"
+    )
+    executed_report_json.write_text(
+        json.dumps(
+            {
+                "apply_requested": True,
+                "confirm_token_valid": True,
+                "execution_performed": True,
+                "summary": {"compacted_count": 2},
+            }
+        ),
+        encoding="utf-8",
+    )
+    dry_run_report_json = (
+        project_cleanup
+        / "matrix_coverage_compaction_20260102T000000Z"
+        / "matrix_coverage_compaction.json"
+    )
+    dry_run_report_json.write_text(
+        json.dumps(
+            {
+                "apply_requested": False,
+                "confirm_token_valid": False,
+                "execution_performed": False,
+                "summary": {"would_compact_count": 5},
+            }
+        ),
+        encoding="utf-8",
+    )
+    latest_report_json = (
+        project_cleanup
+        / "matrix_coverage_compaction_20260103T000000Z"
+        / "matrix_coverage_compaction.json"
+    )
+    latest_report_json.write_text(
+        json.dumps(
+            {
+                "apply_requested": False,
+                "confirm_token_valid": False,
+                "execution_performed": False,
+                "summary": {"blocked_count": 2},
+            }
+        ),
+        encoding="utf-8",
+    )
+    status_json = (
+        project_cleanup
+        / "project_cleanup_status_20260104T000000Z"
+        / "project_cleanup_status.json"
+    )
+    status_json.write_text(
+        json.dumps(
+            {"sources": {"matrix_coverage_compaction_json": str(latest_report_json)}}
+        ),
+        encoding="utf-8",
+    )
+
+    targets = [path.relative_to(tmp_path).as_posix() for path in iter_cleanup_targets(tmp_path)]
+
+    assert targets == [
+        "reports/project_cleanup/matrix_coverage_compaction_20260102T000000Z",
+    ]
+
+
+def test_iter_cleanup_targets_keeps_executed_reference_rewrite_reports(tmp_path):
+    project_cleanup = tmp_path / "reports" / "project_cleanup"
+    for name in (
+        "data_cleanup_reference_rewrite_20260101T000000Z",
+        "data_cleanup_reference_rewrite_20260102T000000Z",
+        "project_cleanup_status_20260103T000000Z",
+    ):
+        (project_cleanup / name).mkdir(parents=True)
+    executed_json = (
+        project_cleanup
+        / "data_cleanup_reference_rewrite_20260101T000000Z"
+        / "data_cleanup_reference_rewrite.json"
+    )
+    executed_json.write_text(
+        json.dumps(
+            {
+                "apply_requested": True,
+                "confirm_token_valid": False,
+                "execution_performed": True,
+                "summary": {"rewritten_deleted_count": 2},
+            }
+        ),
+        encoding="utf-8",
+    )
+    dry_run_json = (
+        project_cleanup
+        / "data_cleanup_reference_rewrite_20260102T000000Z"
+        / "data_cleanup_reference_rewrite.json"
+    )
+    dry_run_json.write_text(
+        json.dumps(
+            {
+                "apply_requested": False,
+                "confirm_token_valid": False,
+                "execution_performed": False,
+                "summary": {"would_rewrite_delete_count": 3},
+            }
+        ),
+        encoding="utf-8",
+    )
+    status_json = (
+        project_cleanup
+        / "project_cleanup_status_20260103T000000Z"
+        / "project_cleanup_status.json"
+    )
+    status_json.write_text(
+        json.dumps(
+            {"sources": {"data_cleanup_reference_rewrite_json": str(dry_run_json)}}
+        ),
+        encoding="utf-8",
+    )
+
+    targets = [path.relative_to(tmp_path).as_posix() for path in iter_cleanup_targets(tmp_path)]
+
+    assert targets == []
+
+
 def test_ensure_runtime_tmp_dirs_creates_expected_directories(tmp_path):
     results_tmp, reports_tmp = ensure_runtime_tmp_dirs(tmp_path)
 
@@ -86,6 +708,24 @@ def test_workspace_cleanup_script_applies_cleanup_and_prepares_tmp_dirs(tmp_path
 def test_cleanup_inventory_classifies_protected_sources_and_delete_candidates(tmp_path):
     (tmp_path / ".mypy_cache").mkdir()
     (tmp_path / "frontend" / "dist").mkdir(parents=True)
+    (tmp_path / "reports" / "project_cleanup" / "cleanup_inventory_20260101T000000Z").mkdir(
+        parents=True
+    )
+    (tmp_path / "reports" / "project_cleanup" / "cleanup_inventory_20260102T000000Z").mkdir(
+        parents=True
+    )
+    (
+        tmp_path
+        / "reports"
+        / "project_cleanup"
+        / "project_cleanup_status_20260101T000000Z"
+    ).mkdir(parents=True)
+    (
+        tmp_path
+        / "reports"
+        / "project_cleanup"
+        / "project_cleanup_status_20260102T000000Z"
+    ).mkdir(parents=True)
     (tmp_path / "data" / "parquet" / "cn").mkdir(parents=True)
     (tmp_path / "data" / "parquet" / "cn" / "_latest.json").write_text(
         "{}",
@@ -128,6 +768,30 @@ def test_cleanup_inventory_classifies_protected_sources_and_delete_candidates(tm
     assert items[".mypy_cache"]["delete_allowed"] is True
     assert items["frontend/dist"]["classification"] == "derived_artifact"
     assert items["frontend/dist"]["delete_allowed"] is True
+    assert (
+        items["reports/project_cleanup/cleanup_inventory_20260101T000000Z"][
+            "classification"
+        ]
+        == "derived_artifact"
+    )
+    assert (
+        items["reports/project_cleanup/cleanup_inventory_20260101T000000Z"][
+            "delete_allowed"
+        ]
+        is True
+    )
+    assert (
+        items["reports/project_cleanup/project_cleanup_status_20260101T000000Z"][
+            "classification"
+        ]
+        == "derived_artifact"
+    )
+    assert (
+        items["reports/project_cleanup/project_cleanup_status_20260101T000000Z"][
+            "delete_allowed"
+        ]
+        is True
+    )
     assert items["data/parquet/cn/_latest.json"]["classification"] == "active_runtime_source"
     assert items["data/parquet/cn/_latest.json"]["delete_allowed"] is False
     assert items["data/raw_backups/tushare"]["classification"] == "duplicate_restore_source"
@@ -149,7 +813,7 @@ def test_cleanup_inventory_classifies_protected_sources_and_delete_candidates(tm
     assert items["quant_investor/_vendor/kronos_model"]["classification"] == "code_retirement_candidate"
     assert manifest["summary"]["safe_cache"] == 1
     assert manifest["summary"]["code_retirement_candidate"] == 8
-    assert manifest["delete_candidate_count"] == 2
+    assert manifest["delete_candidate_count"] == 4
 
 
 def test_cleanup_inventory_keeps_missing_code_retirement_candidates(tmp_path):

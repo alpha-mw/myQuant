@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import importlib
 import json
 import math
 
 import pytest
 
+import quant_investor.factors.execution_cost as execution_cost
+import quant_investor.factors.execution_cost_types as execution_cost_types
 from quant_investor.factors.backtest import (
     BACKTEST_MODE_LONG_ONLY,
     WEIGHTING_METHOD_EQUAL_QUANTILE_BOOKSIZE,
@@ -29,7 +32,6 @@ from quant_investor.factors.execution_cost import (
     EXECUTION_SIMULATION_STATUS_BLOCKED,
     EXECUTION_SIMULATION_STATUS_OK,
     EXECUTION_SIMULATION_STATUS_PARTIAL,
-    PENALTY_POLICY_KEEP_PREVIOUS_WEIGHT,
     DailyExecutionCostRecord,
     ExecutionAdjustedBacktestRun,
     FactorExecutionCostConfig,
@@ -250,6 +252,73 @@ def _run() -> SingleFactorBacktestRun:
         aggregate_result=_aggregate_result(),
         metadata={"offline_only": True},
     )
+
+
+def test_execution_cost_contracts_are_split_and_reexported() -> None:
+    primitives = importlib.import_module(
+        "quant_investor.factors.execution_cost_primitives"
+    )
+    records = importlib.import_module(
+        "quant_investor.factors.execution_cost_records"
+    )
+
+    assert (
+        execution_cost.FactorExecutionCostConfig
+        is execution_cost_types.FactorExecutionCostConfig
+    )
+    assert execution_cost_types.FactorExecutionCostConfig is records.FactorExecutionCostConfig
+    assert execution_cost.ExecutionCostIssue is execution_cost_types.ExecutionCostIssue
+    assert execution_cost_types.ExecutionCostIssue is records.ExecutionCostIssue
+    assert (
+        execution_cost.DailyExecutionCostRecord
+        is execution_cost_types.DailyExecutionCostRecord
+    )
+    assert execution_cost_types.DailyExecutionCostRecord is records.DailyExecutionCostRecord
+    assert (
+        execution_cost.SymbolExecutionCostRecord
+        is execution_cost_types.SymbolExecutionCostRecord
+    )
+    assert (
+        execution_cost_types.SymbolExecutionCostRecord
+        is records.SymbolExecutionCostRecord
+    )
+    assert (
+        execution_cost.FactorExecutionCostSimulationReport
+        is execution_cost_types.FactorExecutionCostSimulationReport
+    )
+    assert (
+        execution_cost_types.FactorExecutionCostSimulationReport
+        is records.FactorExecutionCostSimulationReport
+    )
+    assert (
+        execution_cost.ExecutionAdjustedBacktestRun
+        is execution_cost_types.ExecutionAdjustedBacktestRun
+    )
+    assert (
+        execution_cost_types.ExecutionAdjustedBacktestRun
+        is records.ExecutionAdjustedBacktestRun
+    )
+    assert (
+        execution_cost.make_execution_cost_config_id
+        is execution_cost_types.make_execution_cost_config_id
+    )
+    assert (
+        execution_cost_types.make_execution_cost_config_id
+        is records.make_execution_cost_config_id
+    )
+    assert (
+        execution_cost.make_execution_cost_report_id
+        is execution_cost_types.make_execution_cost_report_id
+    )
+    assert (
+        execution_cost_types.make_execution_cost_report_id
+        is records.make_execution_cost_report_id
+    )
+    assert execution_cost.safe_float is execution_cost_types.safe_float
+    assert execution_cost_types.safe_float is records.safe_float
+    assert execution_cost.infer_trade_direction is execution_cost_types.infer_trade_direction
+    assert execution_cost_types._issue_message is primitives._issue_message
+    assert execution_cost_types._matrix_value_by_symbol is primitives._matrix_value_by_symbol
 
 
 def test_config_and_record_models_round_trip_and_validate() -> None:

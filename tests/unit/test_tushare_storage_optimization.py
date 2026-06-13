@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 import quant_investor.market.tushare_data_cleaning as tdc
+import quant_investor.market.tushare_cleaning_storage as storage
 from quant_investor.market.tushare_data_cleaning import (
     PARQUET_STATUS_SHADOW_WRITTEN,
     PARQUET_STATUS_UNSUPPORTED,
@@ -12,6 +13,15 @@ from quant_investor.market.tushare_data_cleaning import (
     detect_parquet_backend,
     write_parquet_shadow_if_supported,
 )
+
+
+def test_storage_helpers_are_split_and_reexported():
+    assert tdc.detect_parquet_backend is storage.detect_parquet_backend
+    assert tdc.write_parquet_shadow_if_supported is storage.write_parquet_shadow_if_supported
+    assert tdc.build_storage_audit_report is storage.build_storage_audit_report
+    assert tdc.safe_json_dump is storage.safe_json_dump
+    assert tdc.sha256_file is storage.sha256_file
+    assert tdc.atomic_write_dataframe_csv is storage.atomic_write_dataframe_csv
 
 
 def test_detect_parquet_backend_returns_status_without_failing():
@@ -26,7 +36,7 @@ def test_storage_audit_recommends_parquet_for_large_matrix_table_when_backend_su
     monkeypatch,
     tmp_path,
 ):
-    monkeypatch.setattr(tdc, "detect_parquet_backend", lambda: (True, "pyarrow", []))
+    monkeypatch.setattr(storage, "detect_parquet_backend", lambda: (True, "pyarrow", []))
     csv_path = tmp_path / "daily.csv"
     pd.DataFrame(
         [
@@ -56,7 +66,7 @@ def test_storage_audit_recommends_parquet_for_large_matrix_table_when_backend_su
 
 
 def test_parquet_write_skips_cleanly_when_backend_missing(monkeypatch, tmp_path):
-    monkeypatch.setattr(tdc, "detect_parquet_backend", lambda: (False, None, ["missing"]))
+    monkeypatch.setattr(storage, "detect_parquet_backend", lambda: (False, None, ["missing"]))
     csv_path = tmp_path / "daily.csv"
     csv_path.write_text("ts_code,trade_date\n000001.SZ,2026-03-11\n", encoding="utf-8")
 

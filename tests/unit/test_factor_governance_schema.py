@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+from quant_investor.factors import schema as schema_module
+from quant_investor.factors import schema_primitives
 from quant_investor.factors.schema import (
     ADMISSION_DECISION_APPROVE_PAPER_TRADING,
     ADMISSION_DECISION_APPROVE_PRODUCTION,
@@ -11,7 +13,6 @@ from quant_investor.factors.schema import (
     FACTOR_STATUS_PRODUCTION,
     FACTOR_STATUS_REJECTED,
     FACTOR_STATUS_RESEARCH_CANDIDATE,
-    VALIDATION_VERDICT_FAIL,
     VALIDATION_VERDICT_PASS,
     FactorAdmissionDecision,
     FactorBacktestConfig,
@@ -28,6 +29,16 @@ from quant_investor.factors.schema import (
     make_production_library_id,
     make_validation_report_id,
 )
+
+
+def test_factor_schema_primitives_are_split_and_reexported() -> None:
+    assert schema_module.FACTOR_STATUS_DRAFT is schema_primitives.FACTOR_STATUS_DRAFT
+    assert schema_module.FACTOR_FAMILY_CUSTOM is schema_primitives.FACTOR_FAMILY_CUSTOM
+    assert schema_module.SUPPORTED_FACTOR_STATUSES is schema_primitives.SUPPORTED_FACTOR_STATUSES
+    assert schema_module.DEFAULT_FACTOR_LIBRARY_DIR == schema_primitives.DEFAULT_FACTOR_LIBRARY_DIR
+    assert schema_module._json_safe is schema_primitives.json_safe
+    assert schema_module._finite_float is schema_primitives.finite_float
+    assert schema_module._short_hash is schema_primitives.short_hash
 
 
 def _definition() -> FactorDefinition:

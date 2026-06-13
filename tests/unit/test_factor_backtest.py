@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import copy
+import importlib
 import math
 
 import pytest
 
+import quant_investor.factors.backtest as backtest
 from quant_investor.factors.backtest import (
     BACKTEST_MODE_LONG_ONLY,
     BACKTEST_MODE_LONG_SHORT,
@@ -48,6 +50,21 @@ from quant_investor.versioning import FACTOR_BACKTEST_SCHEMA_VERSION
 
 SYMBOLS = ["AAA", "BBB", "CCC", "DDD"]
 DATES = ["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04", "2026-01-05"]
+
+
+def test_factor_backtest_contracts_are_split_and_reexported() -> None:
+    backtest_types = importlib.import_module("quant_investor.factors.backtest_types")
+
+    assert backtest.FactorBacktestAlignment is backtest_types.FactorBacktestAlignment
+    assert backtest.FactorWeightMatrix is backtest_types.FactorWeightMatrix
+    assert backtest.FactorDailyBacktestRecord is backtest_types.FactorDailyBacktestRecord
+    assert backtest.SingleFactorBacktestRun is backtest_types.SingleFactorBacktestRun
+    assert backtest.make_factor_weights_id is backtest_types.make_factor_weights_id
+    assert (
+        backtest.make_factor_backtest_run_id
+        is backtest_types.make_factor_backtest_run_id
+    )
+    assert backtest.make_daily_record_id is backtest_types.make_daily_record_id
 
 
 def _contract(required_fields: list[str] | None = None) -> MatrixDataContract:

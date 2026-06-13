@@ -14,55 +14,19 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import random
-import time
 import warnings
-from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 import numpy as np
 import pandas as pd
 from scipy import stats
 
+from quant_investor.alpha_mining_types import FactorProfile, MiningResult
 from quant_investor.logger import get_logger
 
 warnings.filterwarnings("ignore")
 _logger = get_logger("AlphaMining")
-
-
-# ---------------------------------------------------------------------------
-# 数据结构
-# ---------------------------------------------------------------------------
-
-@dataclass
-class FactorProfile:
-    """一个已验证 Alpha 因子的完整档案"""
-    name: str
-    category: str              # momentum / value / quality / low_vol / growth / custom
-    formula_desc: str          # 人类可读的计算说明
-    ic_mean: float             # 平均IC（信息系数）
-    ic_std: float
-    ir: float                  # IC / std(IC)，越高越稳定
-    ic_positive_rate: float    # IC > 0 的比例
-    decay_halflife: int        # 信号半衰期（天）
-    annual_turnover: float     # 年化换手率
-    long_short_return: float   # 多空年化收益
-    max_drawdown: float        # 多空策略最大回撤
-    correlation_with_existing: float  # 与现有因子库的相关性
-    capacity_score: float      # 容量评分 [0,1]（越高越适合大资金）
-    origin: str = "systematic" # systematic / genetic / llm
-
-
-@dataclass
-class MiningResult:
-    """Alpha 挖掘的完整结果"""
-    systematic_factors: list[FactorProfile] = field(default_factory=list)
-    genetic_factors: list[FactorProfile] = field(default_factory=list)
-    llm_factors: list[FactorProfile] = field(default_factory=list)
-    selected_factors: list[FactorProfile] = field(default_factory=list)  # 通过筛选的
-    factor_correlation_matrix: Optional[pd.DataFrame] = None
-    mining_report: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +136,6 @@ class FactorLibrary:
         """特质波动率（残差波动，需市场收益率）"""
         if "market_return" not in df.columns:
             return FactorLibrary.realized_vol_20d(df)
-        ret = df.groupby("symbol")["close"].pct_change()
         mret = df.get("market_return", pd.Series(0, index=df.index))
         def _resid_vol(grp: pd.DataFrame) -> pd.Series:
             r = grp["close"].pct_change()
@@ -965,7 +928,7 @@ class AlphaMiner:
                 lines.append("- 无\n")
                 return
             lines.append(
-                f"| 因子名 | 类别 | IC均值 | IR | IC+率 | 半衰期 | 换手率 | 来源 |"
+                "| 因子名 | 类别 | IC均值 | IR | IC+率 | 半衰期 | 换手率 | 来源 |"
             )
             lines.append("|--------|------|--------|-----|--------|--------|--------|------|")
             for p in profiles[:15]:

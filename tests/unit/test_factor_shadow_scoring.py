@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import importlib
 import json
 
 import pytest
@@ -38,6 +39,28 @@ from quant_investor.factors.shadow_scoring import (
     resolve_factor_expected_direction,
     select_usable_production_factors,
 )
+
+
+def test_shadow_scoring_contracts_are_split_and_reexported() -> None:
+    shadow_scoring = importlib.import_module(
+        "quant_investor.factors.shadow_scoring"
+    )
+    contracts = importlib.import_module(
+        "quant_investor.factors.shadow_scoring_types"
+    )
+
+    assert shadow_scoring.ShadowScoringConfig is contracts.ShadowScoringConfig
+    assert shadow_scoring.ShadowFactorScore is contracts.ShadowFactorScore
+    assert shadow_scoring.ShadowCandidateScore is contracts.ShadowCandidateScore
+    assert (
+        shadow_scoring.ShadowScoringComparisonReport
+        is contracts.ShadowScoringComparisonReport
+    )
+    assert shadow_scoring.SHADOW_SCORE_STATUS_OK == contracts.SHADOW_SCORE_STATUS_OK
+    assert (
+        shadow_scoring.SHADOW_SCORING_NON_RUNTIME_IMPACT_NOTE
+        == contracts.SHADOW_SCORING_NON_RUNTIME_IMPACT_NOTE
+    )
 
 
 def _entry(factor_id: str, factor_version: str = "v1") -> FactorLibraryEntry:

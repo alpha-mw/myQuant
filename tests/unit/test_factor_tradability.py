@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import importlib
 import json
 
+import quant_investor.factors.tradability as tradability
+import quant_investor.factors.tradability_types as tradability_types
 from quant_investor.factors.matrix import (
     MatrixDataBundle,
     MatrixDataContract,
@@ -87,6 +90,56 @@ def _bundle(fields: dict[str, list[list[object]]]) -> MatrixDataBundle:
         universe_mask=_matrix(True),
         tradability_mask=_matrix(True),
         metadata={"fixture": True},
+    )
+
+
+def test_tradability_contracts_are_split_and_reexported() -> None:
+    primitives = importlib.import_module("quant_investor.factors.tradability_primitives")
+    records = importlib.import_module("quant_investor.factors.tradability_records")
+    rendering = importlib.import_module("quant_investor.factors.tradability_rendering")
+
+    assert tradability.AShareTradabilityConfig is tradability_types.AShareTradabilityConfig
+    assert tradability.FactorTradabilityIssue is tradability_types.FactorTradabilityIssue
+    assert tradability.AShareTradabilityMask is tradability_types.AShareTradabilityMask
+    assert (
+        tradability.ExecutionTransitionAuditRecord
+        is tradability_types.ExecutionTransitionAuditRecord
+    )
+    assert (
+        tradability.FactorExecutionFeasibilityReport
+        is tradability_types.FactorExecutionFeasibilityReport
+    )
+    assert (
+        tradability.FactorTradabilityAuditReport
+        is tradability_types.FactorTradabilityAuditReport
+    )
+    assert tradability.make_tradability_config_id is tradability_types.make_tradability_config_id
+    assert tradability.make_tradability_mask_id is tradability_types.make_tradability_mask_id
+    assert (
+        tradability.make_execution_feasibility_report_id
+        is tradability_types.make_execution_feasibility_report_id
+    )
+    assert tradability_types.AShareTradabilityConfig is primitives.AShareTradabilityConfig
+    assert tradability_types.FactorTradabilityIssue is primitives.FactorTradabilityIssue
+    assert tradability_types.AShareTradabilityMask is primitives.AShareTradabilityMask
+    assert tradability_types.make_tradability_config_id is primitives.make_tradability_config_id
+    assert tradability_types.make_tradability_mask_id is primitives.make_tradability_mask_id
+    assert (
+        tradability_types.ExecutionTransitionAuditRecord
+        is records.ExecutionTransitionAuditRecord
+    )
+    assert (
+        tradability_types.FactorExecutionFeasibilityReport
+        is records.FactorExecutionFeasibilityReport
+    )
+    assert tradability_types.FactorTradabilityAuditReport is records.FactorTradabilityAuditReport
+    assert (
+        tradability.render_tradability_audit_markdown
+        is rendering.render_tradability_audit_markdown
+    )
+    assert (
+        tradability.render_execution_feasibility_markdown
+        is rendering.render_execution_feasibility_markdown
     )
 
 

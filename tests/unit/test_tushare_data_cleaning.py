@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 
+import quant_investor.market.tushare_cleaning_core as core
+import quant_investor.market.tushare_data_cleaning as tdc
 from quant_investor.market.tushare_data_cleaning import (
     CLEANING_STATUS_FAIL,
     CLEANING_STATUS_PASS,
     CLEANING_STATUS_WARN,
     clean_tushare_dataframe,
+    clean_tushare_dataframe_to_file,
 )
 
 
@@ -40,6 +45,15 @@ def _valid_daily(rows: list[dict] | None = None) -> pd.DataFrame:
     )
 
 
+def test_cleaning_core_helpers_are_split_and_reused():
+    assert tdc._resolve_profile is core._resolve_profile
+    assert tdc._normalize_date_value is core._normalize_date_value
+    assert tdc._valid_ts_code is core._valid_ts_code
+    assert tdc._issue is core._issue
+    assert tdc._cell_flag is core._cell_flag
+    assert tdc._build_cleaning_report is core._build_cleaning_report
+
+
 def test_valid_daily_dataframe_passes_and_is_sorted_without_mutating_input():
     frame = _valid_daily()
     original = frame.copy(deep=True)
@@ -52,6 +66,98 @@ def test_valid_daily_dataframe_passes_and_is_sorted_without_mutating_input():
     assert row_flags is not None
     assert cell_flags is not None
     assert frame.equals(original)
+
+
+def test_cleaning_to_file_skips_empty_cell_flags_artifact(tmp_path):
+    result = clean_tushare_dataframe_to_file(
+        _valid_daily(),
+        canonical_path=tmp_path / "market" / "hs300" / "000001.SZ.csv",
+        raw_backup_dir=tmp_path / "raw",
+        quarantine_dir=tmp_path / "quarantine",
+        report_dir=tmp_path / "reports",
+        factor_readiness_dir=tmp_path / "readiness",
+        enable_factor_readiness=False,
+        enable_storage_audit=False,
+        generated_at="2026-03-12T00:00:00Z",
+        metadata={"category": "hs300", "symbol": "000001.SZ"},
+    )
+
+    report = result["cleaning_report"]
+    assert result["cell_flags_df"].empty
+    assert result["cell_flags_path"] is None
+    assert report.cell_flags_path is None
+    assert report.metadata["cell_flags_empty"] is True
+    assert report.metadata["cell_flags_path_suppressed"] is True
+    assert not Path(report.metadata["cell_flags_planned_path"]).exists()
+
+
+def test_cleaning_to_file_writes_non_empty_cell_flags_artifact(tmp_path):
+    frame = _valid_daily()
+    frame.loc[0, "trade_date"] = "bad-date"
+    frame.loc[0, "ts_code"] = "bad-code"
+
+    result = clean_tushare_dataframe_to_file(
+        frame,
+        canonical_path=tmp_path / "market" / "hs300" / "000001.SZ.csv",
+        raw_backup_dir=tmp_path / "raw",
+        quarantine_dir=tmp_path / "quarantine",
+        report_dir=tmp_path / "reports",
+        factor_readiness_dir=tmp_path / "readiness",
+        enable_factor_readiness=False,
+        enable_storage_audit=False,
+        generated_at="2026-03-12T00:00:00Z",
+        metadata={"category": "hs300", "symbol": "000001.SZ"},
+    )
+
+    report = result["cleaning_report"]
+    assert not result["cell_flags_df"].empty
+    assert result["cell_flags_path"] == report.cell_flags_path
+    assert result["cell_flags_path"] is not None
+    assert Path(result["cell_flags_path"]).exists()
+    assert report.metadata["cell_flags_empty"] is False
+    assert report.metadata["cell_flags_path_suppressed"] is False
+
+
+def test_cleaning_to_file_compacts_large_uniform_row_flags(tmp_path):
+    rows = []
+    for index in range(120):
+        rows.append(
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": f"2026-03-{(index % 20) + 1:02d}",
+                "open": 10.0,
+                "high": 10.5,
+                "low": 9.8,
+                "vol": 1000,
+                "amount": 10000,
+                "adj_factor": 1.0,
+            }
+        )
+    result = clean_tushare_dataframe_to_file(
+        pd.DataFrame(rows),
+        canonical_path=tmp_path / "market" / "hs300" / "000001.SZ.csv",
+        raw_backup_dir=tmp_path / "raw",
+        quarantine_dir=tmp_path / "quarantine",
+        report_dir=tmp_path / "reports",
+        factor_readiness_dir=tmp_path / "readiness",
+        enable_factor_readiness=False,
+        enable_storage_audit=False,
+        generated_at="2026-03-12T00:00:00Z",
+        metadata={"category": "hs300", "symbol": "000001.SZ"},
+    )
+
+    report = result["cleaning_report"]
+    assert result["row_flags_path"] is None
+    assert report.row_flags_path is None
+    assert report.metadata["row_flags_compacted"] is True
+    assert report.metadata["row_flags_path_suppressed"] is True
+    assert report.metadata["row_flags_row_count"] == 120
+    assert report.metadata["row_flags_uniform_values"] == {
+        "missing_required_column": True,
+        "quarantined": False,
+        "dropped": False,
+    }
+    assert not Path(report.metadata["row_flags_planned_path"]).exists()
 
 
 def test_per_symbol_daily_missing_ts_code_uses_metadata_symbol():

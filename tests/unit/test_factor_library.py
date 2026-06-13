@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 
 import pytest
@@ -45,6 +46,22 @@ from quant_investor.factors.schema import (
     make_factor_id,
     make_validation_report_id,
 )
+
+
+def test_factor_library_contracts_are_split_and_reexported() -> None:
+    library = importlib.import_module("quant_investor.factors.library")
+    contracts = importlib.import_module("quant_investor.factors.library_types")
+
+    assert library.FactorLibraryPolicy is contracts.FactorLibraryPolicy
+    assert library.FactorLibraryAuditIssue is contracts.FactorLibraryAuditIssue
+    assert library.FactorLibraryAuditReport is contracts.FactorLibraryAuditReport
+    assert (
+        library.FactorProductionGuardrailResult
+        is contracts.FactorProductionGuardrailResult
+    )
+    assert library.make_factor_library_policy_id is contracts.make_factor_library_policy_id
+    assert library.iso_date_add_days is contracts.iso_date_add_days
+    assert library.FACTOR_LIBRARY_AUDIT_PASS == contracts.FACTOR_LIBRARY_AUDIT_PASS
 
 
 def _definition(

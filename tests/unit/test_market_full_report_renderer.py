@@ -2,7 +2,26 @@
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
+
+
+def test_full_report_helpers_and_sections_are_split_and_reexported():
+    from quant_investor.market import full_report
+
+    helpers = importlib.import_module("quant_investor.market.full_report_helpers")
+    sections = importlib.import_module("quant_investor.market.full_report_sections")
+
+    assert full_report._dedupe_text is helpers._dedupe_text
+    assert full_report._sanitize_text is helpers._sanitize_text
+    assert full_report._canonical_branch_map is helpers._canonical_branch_map
+    assert full_report._derive_stock_conclusion is helpers._derive_stock_conclusion
+    assert full_report._build_market_summary is helpers._build_market_summary
+    assert full_report.ExecutiveSummaryBuilder is sections.ExecutiveSummaryBuilder
+    assert full_report.ActionConsistencyGuard is sections.ActionConsistencyGuard
+    assert full_report.DiagnosticsBucketizer is sections.DiagnosticsBucketizer
+    assert full_report.ConclusionRenderer is sections.ConclusionRenderer
+    assert full_report._aggregate_branch_summary is sections._aggregate_branch_summary
 
 
 def test_full_report_renderer_writes_named_stock_report(monkeypatch, tmp_path):

@@ -5,6 +5,7 @@ import json
 import pandas as pd
 
 import quant_investor.market.fundamental_mart as fundamental_mart
+from quant_investor.market import fundamental_mart_contracts, fundamental_mart_normalization
 from quant_investor.factors.pit_fundamentals import (
     build_fundamental_metric_matrices,
     load_fundamental_pit_series,
@@ -16,6 +17,15 @@ from quant_investor.market.fundamental_mart import (
     run_cn_fundamental_maintenance,
     write_fundamental_mart,
 )
+
+
+def test_fundamental_mart_contracts_and_normalizers_are_split() -> None:
+    assert fundamental_mart.FundamentalMartArtifacts is fundamental_mart_contracts.FundamentalMartArtifacts
+    assert fundamental_mart.DERIVED_DAILY_FIELDS is fundamental_mart_contracts.DERIVED_DAILY_FIELDS
+    assert fundamental_mart.SOURCE_TABLES is fundamental_mart_contracts.SOURCE_TABLES
+    assert fundamental_mart._date_text is fundamental_mart_normalization.date_text
+    assert fundamental_mart._period_series is fundamental_mart_normalization.period_series
+    assert fundamental_mart._percent_to_ratio is fundamental_mart_normalization.percent_to_ratio
 
 
 def _raw_tables() -> dict[str, pd.DataFrame]:

@@ -40,6 +40,28 @@ DERIVED_ARTIFACT_DIRS = {
     Path("frontend") / "dist",
     Path("results") / "htmlcov",
 }
+PROJECT_CLEANUP_REPORTS_DIR = Path("reports") / "project_cleanup"
+STALE_CLEANUP_INVENTORY_PREFIX = "cleanup_inventory_"
+STALE_PROJECT_CLEANUP_STATUS_PREFIX = "project_cleanup_status_"
+RETENTION_PROJECT_CLEANUP_REPORT_PREFIXES = (
+    "architecture_rebaseline_",
+    "code_retirement_reference_audit_",
+    "data_duplicate_audit_",
+    "data_cleanup_plan_",
+    "data_cleanup_gate_",
+    "data_cleanup_readback_",
+    "data_cleanup_restore_policy_",
+    "data_cleanup_restore_reference_audit_",
+    "data_cleanup_restore_readiness_",
+    "data_cleanup_restore_readback_",
+    "data_cleanup_reference_rewrite_",
+    "data_cleanup_whitelist_",
+    "data_cleanup_execute_",
+    "empty_cell_flags_compaction_",
+    "issue_cell_flags_compaction_",
+    "uniform_row_flags_compaction_",
+    "matrix_coverage_compaction_",
+)
 
 PROTECTED_INVENTORY_PATHS: tuple[tuple[Path, str, str], ...] = (
     (
@@ -242,6 +264,313 @@ def _should_skip_tree(repo_root: Path, candidate: Path) -> bool:
     return "node_modules" in relative.parts
 
 
+def _is_relative_to_path(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def _iter_stale_report_group(
+    group: list[Path],
+    *,
+    protected_dirs: set[Path] | None = None,
+) -> list[Path]:
+    if len(group) <= 1:
+        return []
+    protected = protected_dirs or set()
+    latest = group[-1]
+    return [
+        path
+        for path in group[:-1]
+        if path not in protected and path != latest
+    ]
+
+
+def _iter_stale_cleanup_inventory_reports(
+    inventory_dirs: list[Path],
+    *,
+    protected_dirs: set[Path] | None = None,
+) -> list[Path]:
+    stale: list[Path] = []
+    for is_apply in (False, True):
+        group = sorted(
+            path
+            for path in inventory_dirs
+            if path.name.endswith("_apply") is is_apply
+        )
+        stale.extend(_iter_stale_report_group(group, protected_dirs=protected_dirs))
+    return stale
+
+
+def _project_cleanup_status_source_dirs(
+    repo_root: Path,
+    cleanup_dirs: list[Path],
+) -> set[Path]:
+    status_dirs = sorted(
+        path
+        for path in cleanup_dirs
+        if path.name.startswith(STALE_PROJECT_CLEANUP_STATUS_PREFIX)
+    )
+    if not status_dirs:
+        return set()
+    status_json = status_dirs[-1] / "project_cleanup_status.json"
+    protected: set[Path] = {status_dirs[-1]}
+    project_cleanup_root = repo_root / PROJECT_CLEANUP_REPORTS_DIR
+    pending_jsons = [status_json]
+    for cleanup_dir in cleanup_dirs:
+        if cleanup_dir.name.startswith("data_cleanup_execute_"):
+            execute_json = cleanup_dir / "data_cleanup_execute.json"
+            payload = _load_project_cleanup_json(execute_json)
+            if _data_cleanup_execution_performed(payload):
+                protected.add(cleanup_dir)
+                pending_jsons.append(execute_json)
+        elif cleanup_dir.name.startswith("empty_cell_flags_compaction_"):
+            compaction_json = cleanup_dir / "empty_cell_flags_compaction.json"
+            payload = _load_project_cleanup_json(compaction_json)
+            if _empty_cell_flags_compaction_performed(payload):
+                protected.add(cleanup_dir)
+                pending_jsons.append(compaction_json)
+        elif cleanup_dir.name.startswith("issue_cell_flags_compaction_"):
+            compaction_json = cleanup_dir / "issue_cell_flags_compaction.json"
+            payload = _load_project_cleanup_json(compaction_json)
+            if _issue_cell_flags_compaction_performed(payload):
+                protected.add(cleanup_dir)
+                pending_jsons.append(compaction_json)
+        elif cleanup_dir.name.startswith("uniform_row_flags_compaction_"):
+            compaction_json = cleanup_dir / "uniform_row_flags_compaction.json"
+            payload = _load_project_cleanup_json(compaction_json)
+            if _uniform_row_flags_compaction_performed(payload):
+                protected.add(cleanup_dir)
+                pending_jsons.append(compaction_json)
+        elif cleanup_dir.name.startswith("matrix_coverage_compaction_"):
+            compaction_json = cleanup_dir / "matrix_coverage_compaction.json"
+            payload = _load_project_cleanup_json(compaction_json)
+            if _matrix_coverage_compaction_performed(payload):
+                protected.add(cleanup_dir)
+                pending_jsons.append(compaction_json)
+        elif cleanup_dir.name.startswith("data_cleanup_reference_rewrite_"):
+            rewrite_json = cleanup_dir / "data_cleanup_reference_rewrite.json"
+            payload = _load_project_cleanup_json(rewrite_json)
+            if _data_cleanup_reference_rewrite_performed(payload):
+                protected.add(cleanup_dir)
+                pending_jsons.append(rewrite_json)
+    seen_jsons: set[Path] = set()
+
+    while pending_jsons:
+        current_json = pending_jsons.pop(0)
+        try:
+            resolved_json = current_json.resolve()
+        except OSError:
+            resolved_json = current_json
+        if resolved_json in seen_jsons:
+            continue
+        seen_jsons.add(resolved_json)
+        payload = _load_project_cleanup_json(current_json)
+        if not payload:
+            continue
+        for source_path in _iter_project_cleanup_source_json_paths(
+            repo_root,
+            project_cleanup_root,
+            payload,
+        ):
+            source_parent = _project_cleanup_source_parent(
+                project_cleanup_root,
+                source_path,
+            )
+            if source_parent is None:
+                continue
+            protected.add(source_parent)
+            pending_jsons.append(source_path)
+    return protected
+
+
+def _data_cleanup_execution_performed(payload: dict[str, Any] | None) -> bool:
+    if not payload:
+        return False
+    summary = payload.get("summary") or {}
+    return (
+        payload.get("apply_requested") is True
+        and payload.get("confirm_token_valid") is True
+        and payload.get("execution_performed") is True
+        and int(summary.get("deleted_count", 0) or 0) > 0
+    )
+
+
+def _empty_cell_flags_compaction_performed(payload: dict[str, Any] | None) -> bool:
+    if not payload:
+        return False
+    summary = payload.get("summary") or {}
+    compacted_count = int(summary.get("compacted_count", 0) or 0)
+    orphan_deleted_count = int(summary.get("orphan_deleted_count", 0) or 0)
+    return (
+        payload.get("apply_requested") is True
+        and payload.get("confirm_token_valid") is True
+        and payload.get("execution_performed") is True
+        and (compacted_count > 0 or orphan_deleted_count > 0)
+    )
+
+
+def _uniform_row_flags_compaction_performed(
+    payload: dict[str, Any] | None,
+) -> bool:
+    if not payload:
+        return False
+    summary = payload.get("summary") or {}
+    compacted_count = int(summary.get("compacted_count", 0) or 0)
+    return (
+        payload.get("apply_requested") is True
+        and payload.get("confirm_token_valid") is True
+        and payload.get("execution_performed") is True
+        and compacted_count > 0
+    )
+
+
+def _issue_cell_flags_compaction_performed(
+    payload: dict[str, Any] | None,
+) -> bool:
+    if not payload:
+        return False
+    summary = payload.get("summary") or {}
+    compacted_count = int(summary.get("compacted_count", 0) or 0)
+    return (
+        payload.get("apply_requested") is True
+        and payload.get("confirm_token_valid") is True
+        and payload.get("execution_performed") is True
+        and compacted_count > 0
+    )
+
+
+def _matrix_coverage_compaction_performed(
+    payload: dict[str, Any] | None,
+) -> bool:
+    if not payload:
+        return False
+    summary = payload.get("summary") or {}
+    compacted_count = int(summary.get("compacted_count", 0) or 0)
+    return (
+        payload.get("apply_requested") is True
+        and payload.get("confirm_token_valid") is True
+        and payload.get("execution_performed") is True
+        and compacted_count > 0
+    )
+
+
+def _data_cleanup_reference_rewrite_performed(
+    payload: dict[str, Any] | None,
+) -> bool:
+    if not payload:
+        return False
+    summary = payload.get("summary") or {}
+    return (
+        payload.get("apply_requested") is True
+        and payload.get("execution_performed") is True
+        and int(summary.get("rewritten_deleted_count", 0) or 0) > 0
+    )
+
+
+def _load_project_cleanup_json(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _iter_project_cleanup_source_json_paths(
+    repo_root: Path,
+    project_cleanup_root: Path,
+    payload: dict[str, Any],
+) -> list[Path]:
+    source_values: list[Any] = []
+    for value in (payload.get("sources") or {}).values():
+        source_values.append(value)
+    for key, value in payload.items():
+        if key.startswith("source_") and key.endswith("_json"):
+            source_values.append(value)
+
+    source_paths: list[Path] = []
+    for value in source_values:
+        if not value:
+            continue
+        source_path = Path(str(value))
+        if not source_path.is_absolute():
+            source_path = repo_root / source_path
+        if _project_cleanup_source_parent(project_cleanup_root, source_path) is None:
+            continue
+        source_paths.append(source_path)
+    return source_paths
+
+
+def _project_cleanup_source_parent(
+    project_cleanup_root: Path,
+    source_path: Path,
+) -> Path | None:
+    try:
+        source_parent = source_path.resolve().parent
+        project_cleanup_resolved = project_cleanup_root.resolve()
+    except OSError:
+        source_parent = source_path.parent
+        project_cleanup_resolved = project_cleanup_root
+    if _is_relative_to_path(source_parent, project_cleanup_resolved):
+        return source_parent
+    return None
+
+
+def _iter_stale_retention_report_dirs(
+    cleanup_dirs: list[Path],
+    *,
+    protected_dirs: set[Path],
+) -> list[Path]:
+    stale: list[Path] = []
+    for prefix in RETENTION_PROJECT_CLEANUP_REPORT_PREFIXES:
+        group = sorted(
+            path
+            for path in cleanup_dirs
+            if path.name.startswith(prefix)
+        )
+        stale.extend(_iter_stale_report_group(group, protected_dirs=protected_dirs))
+    return stale
+
+
+def _iter_stale_project_cleanup_reports(repo_root: Path) -> list[Path]:
+    project_cleanup = repo_root / PROJECT_CLEANUP_REPORTS_DIR
+    if not project_cleanup.exists():
+        return []
+    cleanup_dirs = [
+        path
+        for path in project_cleanup.iterdir()
+        if path.is_dir()
+    ]
+    protected_dirs = _project_cleanup_status_source_dirs(repo_root, cleanup_dirs)
+    stale: list[Path] = []
+    inventory_dirs = [
+        path
+        for path in cleanup_dirs
+        if path.name.startswith(STALE_CLEANUP_INVENTORY_PREFIX)
+    ]
+    stale.extend(
+        _iter_stale_cleanup_inventory_reports(
+            inventory_dirs,
+            protected_dirs=protected_dirs,
+        )
+    )
+    status_dirs = sorted(
+        path
+        for path in cleanup_dirs
+        if path.name.startswith(STALE_PROJECT_CLEANUP_STATUS_PREFIX)
+    )
+    stale.extend(_iter_stale_report_group(status_dirs, protected_dirs=protected_dirs))
+    stale.extend(
+        _iter_stale_retention_report_dirs(
+            cleanup_dirs,
+            protected_dirs=protected_dirs,
+        )
+    )
+    return sorted(stale, key=lambda path: path.relative_to(repo_root).as_posix())
+
+
 def iter_cleanup_targets(root: Path | None = None) -> list[Path]:
     """Collect safe-to-delete cache directories inside the workspace."""
     repo_root = get_repo_root(root)
@@ -251,6 +580,9 @@ def iter_cleanup_targets(root: Path | None = None) -> list[Path]:
         path = repo_root / relative_dir
         if path.exists():
             targets[str(path)] = path
+
+    for path in _iter_stale_project_cleanup_reports(repo_root):
+        targets[str(path)] = path
 
     for current_root, dir_names, _file_names in os.walk(repo_root):
         current_path = Path(current_root)
@@ -289,12 +621,50 @@ def _directory_size_bytes(path: Path, *, max_entries: int = 2000) -> int | None:
 
 
 def _cleanup_classification(path: Path) -> str:
-    return "derived_artifact" if path in DERIVED_ARTIFACT_DIRS else "safe_cache"
+    if path in DERIVED_ARTIFACT_DIRS:
+        return "derived_artifact"
+    if (
+        path.parent == PROJECT_CLEANUP_REPORTS_DIR
+        and path.name.startswith(STALE_CLEANUP_INVENTORY_PREFIX)
+    ):
+        return "derived_artifact"
+    if (
+        path.parent == PROJECT_CLEANUP_REPORTS_DIR
+        and path.name.startswith(STALE_PROJECT_CLEANUP_STATUS_PREFIX)
+    ):
+        return "derived_artifact"
+    if (
+        path.parent == PROJECT_CLEANUP_REPORTS_DIR
+        and any(
+            path.name.startswith(prefix)
+            for prefix in RETENTION_PROJECT_CLEANUP_REPORT_PREFIXES
+        )
+    ):
+        return "derived_artifact"
+    return "safe_cache"
 
 
 def _cleanup_reason(path: Path) -> str:
     if path in DERIVED_ARTIFACT_DIRS:
         return "derived local artifact that can be regenerated"
+    if (
+        path.parent == PROJECT_CLEANUP_REPORTS_DIR
+        and path.name.startswith(STALE_CLEANUP_INVENTORY_PREFIX)
+    ):
+        return "stale workspace cleanup inventory; latest dry-run/apply reports are retained"
+    if (
+        path.parent == PROJECT_CLEANUP_REPORTS_DIR
+        and path.name.startswith(STALE_PROJECT_CLEANUP_STATUS_PREFIX)
+    ):
+        return "stale project cleanup status report; latest report is retained"
+    if (
+        path.parent == PROJECT_CLEANUP_REPORTS_DIR
+        and any(
+            path.name.startswith(prefix)
+            for prefix in RETENTION_PROJECT_CLEANUP_REPORT_PREFIXES
+        )
+    ):
+        return "stale generated project cleanup report; latest and current status sources are retained"
     return "safe local cache directory"
 
 
@@ -458,14 +828,6 @@ def _retirement_reference_tokens(relative_path: Path, module_name: str) -> list[
         tokens.add(module_name)
         tokens.add(module_name.replace(".", "/"))
     return sorted(token for token in tokens if token)
-
-
-def _is_relative_to_path(path: Path, parent: Path) -> bool:
-    try:
-        path.relative_to(parent)
-        return True
-    except ValueError:
-        return False
 
 
 def _is_retirement_candidate_source(source: Path, candidate_paths: list[Path]) -> bool:

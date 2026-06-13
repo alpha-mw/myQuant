@@ -106,7 +106,10 @@ def test_download_stock_auto_clean_hook_writes_reports_and_flags(monkeypatch, tm
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert Path(report["raw_backup_path"]).exists()
     assert Path(report["row_flags_path"]).exists()
-    assert Path(report["cell_flags_path"]).exists()
+    assert report["cell_flags_path"] is None
+    assert report["metadata"]["cell_flags_empty"] is True
+    assert report["metadata"]["cell_flags_path_suppressed"] is True
+    assert not Path(report["metadata"]["cell_flags_planned_path"]).exists()
     assert Path(report["metadata"]["factor_ready_masks_path"]).exists()
     assert Path(report["metadata"]["matrix_coverage_path"]).exists()
     assert Path(report["metadata"]["storage_audit_report_path"]).exists()
@@ -158,6 +161,9 @@ def test_failed_cleaning_preserves_existing_canonical(monkeypatch, tmp_path):
     assert Path(result["cleaning_report_path"]).exists()
     report = json.loads(Path(result["cleaning_report_path"]).read_text(encoding="utf-8"))
     assert Path(report["raw_backup_path"]).exists()
+    assert report["cell_flags_path"] is None
+    assert report["metadata"]["cell_flags_empty"] is True
+    assert report["metadata"]["cell_flags_path_suppressed"] is True
     raw_backup = pd.read_csv(report["raw_backup_path"])
     downloaded_bad_row = raw_backup.loc[raw_backup["ts_code"] == "000001.SZ"].iloc[0]
     assert downloaded_bad_row["vol"] == -1

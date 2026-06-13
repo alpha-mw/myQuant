@@ -17,6 +17,11 @@ from scripts.workspace_layout import get_repo_root
 
 SCHEMA_VERSION = "myquant.data_cleanup_whitelist.v1"
 DEFAULT_MAX_MARKDOWN_ITEMS = 500
+DEFAULT_APPROVAL_PACKET_TOP_ITEMS = 20
+READBACK_PASS_STATUSES = {
+    "hash_readback_passed",
+    "retained_copy_readback_passed",
+}
 
 REQUIRED_PRE_DELETE_GATES = (
     "manual_delete_approval_required",
@@ -79,7 +84,9 @@ def _whitelist_item(candidate: dict[str, Any]) -> CleanupWhitelistItem:
     retained_files = list(candidate.get("retained_files", []))
     return CleanupWhitelistItem(
         group_id=str(candidate.get("group_id", "")),
-        candidate_type=str(candidate.get("candidate_type", "")),
+        candidate_type=str(
+            candidate.get("candidate_type", "restore_source_duplicate_review")
+        ),
         approval_status="pending_manual_approval",
         delete_allowed=False,
         execute_allowed=False,
@@ -113,6 +120,64 @@ def _whitelist_item(candidate: dict[str, Any]) -> CleanupWhitelistItem:
     )
 
 
+def _approval_packet(
+    items: list[dict[str, Any]],
+    *,
+    top_item_limit: int = DEFAULT_APPROVAL_PACKET_TOP_ITEMS,
+) -> dict[str, Any]:
+    approval_status_summary: dict[str, int] = {}
+    batches: dict[str, dict[str, Any]] = {}
+    for item in items:
+        approval_status = str(item.get("approval_status", ""))
+        approval_status_summary[approval_status] = (
+            approval_status_summary.get(approval_status, 0) + 1
+        )
+        candidate_type = str(item.get("candidate_type", ""))
+        batch = batches.setdefault(
+            candidate_type,
+            {
+                "candidate_type": candidate_type,
+                "item_count": 0,
+                "candidate_file_count": 0,
+                "potential_reclaim_bytes": 0,
+                "execute_allowed_count": 0,
+            },
+        )
+        batch["item_count"] += 1
+        batch["candidate_file_count"] += len(item.get("candidate_paths", []))
+        batch["potential_reclaim_bytes"] += int(item.get("reclaimable_bytes") or 0)
+        if item.get("execute_allowed"):
+            batch["execute_allowed_count"] += 1
+
+    top_items = []
+    for item in sorted(
+        items,
+        key=lambda value: (
+            -int(value.get("reclaimable_bytes") or 0),
+            str(value.get("group_id", "")),
+        ),
+    )[:top_item_limit]:
+        candidate_paths = [str(path) for path in item.get("candidate_paths", [])]
+        top_items.append(
+            {
+                "group_id": str(item.get("group_id", "")),
+                "candidate_type": str(item.get("candidate_type", "")),
+                "approval_status": str(item.get("approval_status", "")),
+                "reclaimable_bytes": int(item.get("reclaimable_bytes") or 0),
+                "candidate_file_count": len(candidate_paths),
+                "first_candidate_path": candidate_paths[0] if candidate_paths else "",
+            }
+        )
+
+    return {
+        "approval_status_summary": dict(sorted(approval_status_summary.items())),
+        "candidate_type_batches": [
+            batches[key] for key in sorted(batches)
+        ],
+        "top_reclaim_items": top_items,
+    }
+
+
 def build_data_cleanup_whitelist(
     readback: dict[str, Any],
     *,
@@ -121,12 +186,21 @@ def build_data_cleanup_whitelist(
 ) -> dict[str, Any]:
     """Build a manual approval whitelist from hash-passed readback results."""
     items: list[CleanupWhitelistItem] = []
-    for candidate in readback.get("candidates", []):
-        if candidate.get("readback_status") != "hash_readback_passed":
+    readback_items = readback.get("candidates")
+    if readback_items is None:
+        readback_items = readback.get("groups", [])
+    for candidate in readback_items:
+        if candidate.get("readback_status") not in READBACK_PASS_STATUSES:
             continue
         if (
             candidate_type
-            and candidate.get("candidate_type") != candidate_type
+            and str(
+                candidate.get(
+                    "candidate_type",
+                    "restore_source_duplicate_review",
+                )
+            )
+            != candidate_type
         ):
             continue
         items.append(_whitelist_item(candidate))
@@ -138,6 +212,8 @@ def build_data_cleanup_whitelist(
         type_summary[candidate_type_value] = (
             type_summary.get(candidate_type_value, 0) + 1
         )
+    approval_packet = _approval_packet(item_payload)
+    approval_status_summary = approval_packet["approval_status_summary"]
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -162,7 +238,12 @@ def build_data_cleanup_whitelist(
                 int(item["reclaimable_bytes"]) for item in item_payload
             ),
             "candidate_type_summary": type_summary,
+            "manual_approval_required_count": approval_status_summary.get(
+                "pending_manual_approval",
+                0,
+            ),
         },
+        "approval_packet": approval_packet,
         "required_pre_delete_gates": list(REQUIRED_PRE_DELETE_GATES),
         "items": item_payload,
     }
@@ -190,6 +271,10 @@ def render_data_cleanup_whitelist_markdown(
         f"- Delete candidates: {whitelist.get('delete_candidate_count', 0)}",
         f"- Execute allowed: {whitelist.get('execute_allowed_count', 0)}",
         f"- Whitelist items: {summary.get('whitelist_item_count', 0)}",
+        (
+            "- Manual approval required: "
+            f"{summary.get('manual_approval_required_count', 0)}"
+        ),
         f"- Candidate files: {summary.get('candidate_file_count', 0)}",
         (
             "- Potential reclaim bytes: "
@@ -201,6 +286,28 @@ def render_data_cleanup_whitelist_markdown(
     ]
     for gate in whitelist.get("required_pre_delete_gates", []):
         lines.append(f"- `{gate}`")
+
+    approval_packet = whitelist.get("approval_packet", {})
+    batches = approval_packet.get("candidate_type_batches", [])
+    lines.extend(
+        [
+            "",
+            "## Approval Batches",
+            "",
+            "| Type | Items | Candidate Files | Potential Reclaim Bytes | Execute Allowed |",
+            "| --- | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for batch in batches:
+        lines.append(
+            "| {candidate_type} | {items} | {files} | {bytes} | {execute} |".format(
+                candidate_type=_markdown_cell(batch.get("candidate_type", "")),
+                items=batch.get("item_count", 0),
+                files=batch.get("candidate_file_count", 0),
+                bytes=batch.get("potential_reclaim_bytes", 0),
+                execute=batch.get("execute_allowed_count", 0),
+            )
+        )
 
     lines.extend(
         [

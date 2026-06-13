@@ -24,7 +24,12 @@ def test_factor_evidence_not_imported_by_runtime_selection_surfaces() -> None:
 
 def test_factor_evidence_does_not_reference_orders_or_action_paths() -> None:
     repo_root = Path(__file__).resolve().parents[2]
-    evidence_text = (repo_root / "quant_investor/factors/evidence.py").read_text(encoding="utf-8")
-    assert "orders.csv" not in evidence_text
-    assert "action_taken_today" not in evidence_text
-    assert "target_weights" not in evidence_text
+    evidence_paths = [
+        repo_root / "quant_investor/factors/evidence.py",
+        repo_root / "quant_investor/factors/evidence_types.py",
+    ]
+    for path in evidence_paths:
+        evidence_text = path.read_text(encoding="utf-8")
+        assert "orders.csv" not in evidence_text
+        assert "action_taken_today" not in evidence_text
+        assert "target_weights" not in evidence_text

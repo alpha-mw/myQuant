@@ -18,16 +18,15 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import asdict, is_dataclass
-from datetime import datetime
-from enum import Enum
-import json
 from pathlib import Path
-import tempfile
 from typing import Any, Mapping
 
 import pandas as pd
 
+from quant_investor.agent_orchestrator_persistence import (
+    persist_agent_outputs,
+    serialize_agent_payload,
+)
 from quant_investor.agent_protocol import (
     ActionLabel,
     AgentStatus,
@@ -63,6 +62,8 @@ from quant_investor.versioning import (
 
 class ControlChainOrchestrator:
     """把新协议层 agents 串为固定调用链。"""
+
+    _serialize = staticmethod(serialize_agent_payload)
 
     @staticmethod
     def _version_info() -> dict[str, str]:
@@ -928,89 +929,16 @@ class ControlChainOrchestrator:
         report_bundle: ReportBundle,
         persist_dir: str | Path | None,
     ) -> dict[str, str]:
-        base_dir = (
-            Path(persist_dir)
-            if persist_dir is not None
-            else Path(tempfile.mkdtemp(prefix="quant_investor_agent_orchestrator_"))
+        return persist_agent_outputs(
+            macro_verdict=macro_verdict,
+            research_by_symbol=research_by_symbol,
+            risk_by_symbol=risk_by_symbol,
+            ic_by_symbol=ic_by_symbol,
+            portfolio_plan=portfolio_plan,
+            report_bundle=report_bundle,
+            persist_dir=persist_dir,
+            version_info=self._version_info(),
         )
-        base_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        run_dir = base_dir / f"run_{timestamp}"
-        run_dir.mkdir(parents=True, exist_ok=True)
-
-        files = {
-            "macro_verdict": run_dir / "macro_verdict.json",
-            "research_by_symbol": run_dir / "research_by_symbol.json",
-            "risk_by_symbol": run_dir / "risk_by_symbol.json",
-            "ic_by_symbol": run_dir / "ic_by_symbol.json",
-            "portfolio_plan": run_dir / "portfolio_plan.json",
-            "report_bundle": run_dir / "report_bundle.json",
-            "markdown_report": run_dir / "report.md",
-        }
-
-        files["macro_verdict"].write_text(
-            json.dumps(self._serialize(macro_verdict), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        files["research_by_symbol"].write_text(
-            json.dumps(self._serialize(research_by_symbol), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        files["risk_by_symbol"].write_text(
-            json.dumps(self._serialize(risk_by_symbol), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        files["ic_by_symbol"].write_text(
-            json.dumps(self._serialize(ic_by_symbol), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        files["portfolio_plan"].write_text(
-            json.dumps(self._serialize(portfolio_plan), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        files["report_bundle"].write_text(
-            json.dumps(self._serialize(report_bundle), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        files["markdown_report"].write_text(report_bundle.markdown_report, encoding="utf-8")
-
-        manifest_path = run_dir / "manifest.json"
-        manifest_path.write_text(
-            json.dumps(
-                {
-                    "run_dir": str(run_dir),
-                    **self._version_info(),
-                    "files": {key: str(path) for key, path in files.items()},
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        return {
-            "run_dir": str(run_dir),
-            "manifest": str(manifest_path),
-            **{key: str(path) for key, path in files.items()},
-        }
-
-    def _serialize(self, value: Any) -> Any:
-        if isinstance(value, Enum):
-            return value.value
-        if is_dataclass(value):
-            return {
-                key: self._serialize(item)
-                for key, item in asdict(value).items()
-            }
-        if isinstance(value, Mapping):
-            return {
-                str(key): self._serialize(item)
-                for key, item in value.items()
-            }
-        if isinstance(value, (list, tuple, set)):
-            return [self._serialize(item) for item in value]
-        if isinstance(value, Path):
-            return str(value)
-        return value
 
 
 AgentOrchestrator = ControlChainOrchestrator

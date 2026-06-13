@@ -1,4 +1,5 @@
 import json
+import importlib
 
 import pytest
 
@@ -86,6 +87,28 @@ def _date_input(tmp_path, as_of="2026-04-01", candidates=None, library=True, mat
         production_library_path=str(library_path) if library_path else None,
         factor_matrix_paths=[str(matrix_path)] if matrices else [],
     )
+
+
+def test_evidence_contracts_are_split_and_reexported() -> None:
+    evidence_module = importlib.import_module("quant_investor.factors.evidence")
+    types_module = importlib.import_module("quant_investor.factors.evidence_types")
+    exported_names = [
+        "EVIDENCE_STATUS_OK",
+        "EVIDENCE_STATUS_WARN",
+        "EVIDENCE_STATUS_FAIL",
+        "EVIDENCE_STATUS_INSUFFICIENT_DATA",
+        "FactorEvidenceCollectionConfig",
+        "FactorEvidenceDateInput",
+        "FactorAuditEvidenceSnapshot",
+        "FactorShadowEvidenceDateResult",
+        "MultiDateFactorEvidenceReport",
+        "make_evidence_collection_config_id",
+        "make_evidence_date_result_id",
+        "make_multi_date_evidence_report_id",
+    ]
+    for name in exported_names:
+        assert getattr(evidence_module, name) is getattr(types_module, name)
+        assert name in evidence_module.__all__
 
 
 def test_evidence_dataclass_round_trips() -> None:

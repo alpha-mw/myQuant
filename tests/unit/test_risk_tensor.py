@@ -5,6 +5,8 @@ import math
 
 import pytest
 
+import quant_investor.risk_tensor as risk_tensor
+import quant_investor.risk_tensor_types as risk_tensor_types
 from quant_investor.data_quality_contract import (
     ISSUE_MISSING_REQUIRED_FIELD,
     ISSUE_SEVERITY_BLOCKER,
@@ -110,6 +112,21 @@ def _symbol_tensor(
         max_weight=max_weight,
         stress_shocks={"selloff": -0.10},
     )
+
+
+def test_risk_tensor_contracts_are_split_and_reexported() -> None:
+    assert risk_tensor.RiskIssue is risk_tensor_types.RiskIssue
+    assert risk_tensor.SymbolExposure is risk_tensor_types.SymbolExposure
+    assert risk_tensor.LiquidityProfile is risk_tensor_types.LiquidityProfile
+    assert risk_tensor.ExecutionFeasibility is risk_tensor_types.ExecutionFeasibility
+    assert risk_tensor.StressScenarioResult is risk_tensor_types.StressScenarioResult
+    assert risk_tensor.SymbolRiskTensor is risk_tensor_types.SymbolRiskTensor
+    assert risk_tensor.PortfolioRiskTensor is risk_tensor_types.PortfolioRiskTensor
+    assert risk_tensor.ExecutionFeasibilityReport is risk_tensor_types.ExecutionFeasibilityReport
+    assert risk_tensor.make_risk_issue_id is risk_tensor_types.make_risk_issue_id
+    assert risk_tensor.make_symbol_tensor_id is risk_tensor_types.make_symbol_tensor_id
+    assert risk_tensor.make_portfolio_tensor_id is risk_tensor_types.make_portfolio_tensor_id
+    assert risk_tensor.make_execution_report_id is risk_tensor_types.make_execution_report_id
 
 
 def test_risk_tensor_dataclass_round_trips() -> None:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pandas as pd
 
+import quant_investor.market.tushare_data_cleaning as tdc
+import quant_investor.market.tushare_factor_readiness as readiness
 from quant_investor.market.tushare_data_cleaning import (
     FACTOR_READINESS_NOT_READY,
     build_factor_readiness_report,
@@ -38,6 +40,12 @@ def _daily(with_adj: bool = True) -> pd.DataFrame:
         for row in rows:
             row["adj_factor"] = 1.0
     return pd.DataFrame(rows)
+
+
+def test_factor_readiness_helpers_are_split_and_reexported():
+    assert tdc.build_matrix_coverage_summary is readiness.build_matrix_coverage_summary
+    assert tdc.build_factor_ready_mask_manifest is readiness.build_factor_ready_mask_manifest
+    assert tdc.build_factor_readiness_report is readiness.build_factor_readiness_report
 
 
 def test_factor_ready_mask_manifest_builds_symbol_date_panel():

@@ -6,12 +6,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import re
-import shutil
 import time
-from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -19,64 +16,27 @@ from typing import Any
 import pandas as pd
 
 from quant_investor.market.download_us import FullMarketDownloader
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_BASE_DIR = (
-    PROJECT_ROOT / "results" / "strategy_records" / "US" / "simulated_portfolio_10000"
+from quant_investor.monitoring.us_simulated_tracker_helpers import (
+    DEFAULT_BASE_DIR,
+    DEFAULT_CAPS,
+    DEFAULT_HOLDINGS,
+    DEFAULT_INITIAL_CASH,
+    DEFAULT_NOTES_PATH,
+    NO_DATA_SAMPLE_LIMIT,
+    PROJECT_ROOT,
+    THEME_BASKETS,
+    TradeOrder,
+    format_theme_lines as _format_theme_lines,
+    parse_cap as _parse_cap,
+    parse_initial_holding as _parse_initial_holding,
+    rank_theme_strength as _rank_theme_strength,
+    safe_pct as _safe_pct,
+    theme_for_symbol as _theme_for_symbol,
 )
-DEFAULT_NOTES_PATH = DEFAULT_BASE_DIR / "latest_notes_payload.md"
-DEFAULT_INITIAL_CASH = 7763.03
-DEFAULT_HOLDINGS = [
-    ("CVX", 4, 199.71),
-    ("EOG", 5, 137.19),
-    ("COP", 4, 125.53),
-    ("AEP", 2, 125.03),
-]
-DEFAULT_CAPS = {
-    "CVX": 6,
-    "EOG": 8,
-    "COP": 7,
-    "AEP": 4,
-}
-NO_DATA_SAMPLE_LIMIT = 4
-THEME_BASKETS = {
-    "software": ["MSFT", "NOW", "CRM", "ORCL", "SNOW", "PANW"],
-    "ai": ["NVDA", "AVGO", "PLTR", "ANET", "SMCI", "AMD"],
-    "semiconductor": ["NVDA", "AMD", "AVGO", "AMAT", "LRCX", "KLAC", "TXN"],
-    "energy": ["CVX", "EOG", "COP", "OXY", "DVN", "VLO", "SLB"],
-    "defensive": ["AEP", "DUK", "SO", "PG", "KO", "PEP", "WMT"],
-}
-
-
-@dataclass
-class TradeOrder:
-    symbol: str
-    action: str
-    shares: int
-    price: float
-    trade_value: float
-    reason: str
 
 
 def _now_local() -> datetime:
     return datetime.now().astimezone()
-
-
-def _parse_initial_holding(text: str) -> tuple[str, int, float]:
-    symbol, shares, avg_cost = text.split(":")
-    return symbol.upper(), int(shares), float(avg_cost)
-
-
-def _parse_cap(text: str) -> tuple[str, int]:
-    symbol, max_shares = text.split(":")
-    return symbol.upper(), int(max_shares)
-
-
-def _read_csv_if_exists(path: Path) -> pd.DataFrame | None:
-    if not path.exists():
-        return None
-    return pd.read_csv(path)
 
 
 def _load_latest_prices(symbols: list[str]) -> dict[str, dict[str, Any]]:
@@ -130,12 +90,6 @@ def _extract_recommendation_timestamp(recommendations: dict[str, dict[str, Any]]
         if str(item.get("source_batch_timestamp", "")).strip()
     ]
     return max(timestamps) if timestamps else None
-
-
-def _safe_pct(value: float, base: float) -> float:
-    if abs(base) < 1e-9:
-        return 0.0
-    return value / base
 
 
 def _compute_category_breadth(category: str, symbols: list[str]) -> dict[str, Any]:
@@ -280,25 +234,6 @@ def _seed_trade_log(base_dir: Path, initial_holdings: list[tuple[str, int, float
     if rows:
         rows[-1]["cash_after"] = initial_cash
     return pd.DataFrame(rows)
-
-
-def _rank_theme_strength(themes: dict[str, dict[str, Any]]) -> list[tuple[str, dict[str, Any]]]:
-    return sorted(
-        themes.items(),
-        key=lambda item: (
-            item[1].get("avg_20d_return", 0.0),
-            item[1].get("ma20_gt_ma60_ratio", 0.0),
-            item[1].get("avg_5d_return", 0.0),
-        ),
-        reverse=True,
-    )
-
-
-def _theme_for_symbol(symbol: str) -> str:
-    for theme, symbols in THEME_BASKETS.items():
-        if symbol in symbols:
-            return theme
-    return "other"
 
 
 def _generate_trade_plan(
@@ -515,17 +450,6 @@ def _summarize_positions(positions: pd.DataFrame) -> dict[str, Any]:
     }
 
 
-def _format_theme_lines(themes: dict[str, dict[str, Any]]) -> list[str]:
-    ranked = _rank_theme_strength(themes)
-    lines = []
-    for name, payload in ranked:
-        lines.append(
-            f"- {name}: 20日均值 {payload['avg_20d_return']:.2%}，5日均值 {payload['avg_5d_return']:.2%}，"
-            f"MA20>MA60 占比 {payload['ma20_gt_ma60_ratio']:.1%}"
-        )
-    return lines
-
-
 def _build_notes_payload(
     run_timestamp: str,
     latest_trade_date: str,
@@ -688,7 +612,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     style_bias = _infer_style_bias(breadth, themes)
 
     if completeness_passed:
-        orders, remaining_cash = _generate_trade_plan(positions, cash, prices, recommendations, caps, style_bias)
+        orders, _ = _generate_trade_plan(positions, cash, prices, recommendations, caps, style_bias)
         updated_positions, updated_trade_log, final_cash = _apply_orders(
             positions,
             orders,
@@ -699,7 +623,6 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         )
     else:
         orders = []
-        remaining_cash = cash
         updated_positions, updated_trade_log, final_cash = _apply_orders(
             positions,
             [],

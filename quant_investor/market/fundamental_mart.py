@@ -10,8 +10,6 @@ from __future__ import annotations
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -19,156 +17,36 @@ import numpy as np
 import pandas as pd
 
 from quant_investor.factors.pit_fundamentals import normalize_ts_code
-
-DEFAULT_FUNDAMENTAL_ROOT = Path("data/clean/cn_fundamental")
-DEFAULT_RAW_SNAPSHOT_ROOT = Path("data/cn_market_full/_snapshots/fundamental")
-DEFAULT_READINESS_ROOT = Path("reports/fundamental_readiness")
-DEFAULT_DAILY_ROOT = Path("data/clean/cn_daily")
-DEFAULT_METADATA_ROOT = Path("data/metadata")
-DEFAULT_UNIVERSES = ("hs300", "zz500", "zz1000")
-FULL_A_UNIVERSE_KEYS = {"full_a", "full_market", "all_a", "all", "full"}
-FULL_A_PHYSICAL_DIRECTORIES = ("hs300", "zz500", "zz1000", "other")
-
-SOURCE_TABLES = ("fina_indicator", "income", "balancesheet", "cashflow", "daily_basic", "forecast")
-FINANCIAL_SOURCE_TABLES = ("fina_indicator", "income", "balancesheet", "cashflow")
-DERIVED_PERIOD_FIELDS = (
-    "fin_roe",
-    "fin_roa",
-    "fin_debt_to_assets",
-    "fin_net_profit_yoy",
-    "fin_ocf_to_profit",
-    "fin_fcf_to_profit",
-    "free_cashflow",
+from quant_investor.market.fundamental_mart_contracts import (
+    DEFAULT_DAILY_ROOT,
+    DEFAULT_FUNDAMENTAL_ROOT,
+    DEFAULT_METADATA_ROOT,
+    DEFAULT_RAW_SNAPSHOT_ROOT,
+    DEFAULT_READINESS_ROOT,
+    DEFAULT_UNIVERSES,
+    DERIVED_DAILY_FIELDS,
+    DERIVED_PERIOD_FIELDS,
+    FINANCIAL_SOURCE_TABLES,
+    FORECAST_DAILY_COLUMNS,
+    FULL_A_PHYSICAL_DIRECTORIES,
+    FULL_A_UNIVERSE_KEYS,
+    SOURCE_TABLES,
+    FundamentalMartArtifacts,
 )
-DERIVED_DAILY_FIELDS = DERIVED_PERIOD_FIELDS + ("fcf_to_price", "forecast_revision")
-FORECAST_DAILY_COLUMNS = (
-    "ts_code",
-    "forecast_end_date",
-    "availability_date",
-    "forecast_ann_date",
-    "forecast_revision",
-    "forecast_type",
-    "forecast_summary",
-    "forecast_change_reason",
-    "forecast_source",
-    "forecast_fetched_at",
-    "forecast_ingest_run_id",
+from quant_investor.market.fundamental_mart_normalization import (  # noqa: F401
+    availability as _availability,
+    date_series as _date_series,
+    date_text as _date_text,
+    first_number as _first_number,
+    now_utc as _now_utc,
+    num as _num,
+    percent_to_ratio as _percent_to_ratio,
+    period_series as _period_series,
+    period_text as _period_text,
+    positive_denominator as _positive_denominator,
+    run_id as _run_id,
+    string_series as _string_series,
 )
-
-
-@dataclass(frozen=True)
-class FundamentalMartArtifacts:
-    run_id: str
-    data_root: Path
-    raw_snapshot_root: Path
-    reports_root: Path
-    fundamental_period_path: Path
-    fundamental_daily_path: Path
-    quarantine_path: Path
-    readiness_json_path: Path
-    readiness_md_path: Path
-    readiness_csv_path: Path
-
-
-def _now_utc() -> datetime:
-    return datetime.now(timezone.utc).replace(microsecond=0)
-
-
-def _run_id(as_of: str | None = None) -> str:
-    suffix = str(as_of or "").strip() or _now_utc().strftime("%Y%m%d")
-    return f"cn_fundamental_{suffix}_{_now_utc().strftime('%H%M%S')}"
-
-
-def _date_text(value: object) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, float) and np.isnan(value):
-        return ""
-    text = str(value).strip()
-    if not text or text.lower() in {"nan", "nat", "none"}:
-        return ""
-    if text.endswith(".0") and text[:-2].isdigit():
-        text = text[:-2]
-    parsed = pd.to_datetime(text, errors="coerce")
-    if pd.isna(parsed):
-        return ""
-    return pd.Timestamp(parsed).strftime("%Y-%m-%d")
-
-
-def _period_text(value: object) -> str:
-    text = str(value or "").strip()
-    if not text or text.lower() in {"nan", "nat", "none"}:
-        return ""
-    if text.endswith(".0") and text[:-2].isdigit():
-        text = text[:-2]
-    digits = "".join(ch for ch in text if ch.isdigit())
-    return digits[:8] if len(digits) >= 8 else text
-
-
-def _string_series(values: Any, index: pd.Index) -> pd.Series:
-    if isinstance(values, pd.Series):
-        series = values.reindex(index)
-    else:
-        series = pd.Series(values, index=index)
-    return series.astype("string").fillna("").str.strip()
-
-
-def _period_series(values: Any, index: pd.Index) -> pd.Series:
-    text = _string_series(values, index)
-    text = text.mask(text.str.lower().isin({"nan", "nat", "none"}), "")
-    text = text.str.replace(r"\.0$", "", regex=True)
-    digits = text.str.replace(r"\D+", "", regex=True)
-    return digits.str[:8].where(digits.str.len() >= 8, text).fillna("")
-
-
-def _date_series(values: Any, index: pd.Index) -> pd.Series:
-    text = _string_series(values, index)
-    text = text.mask(text.str.lower().isin({"nan", "nat", "none"}), "")
-    text = text.str.replace(r"\.0$", "", regex=True)
-    digits = text.str.replace(r"\D+", "", regex=True)
-    fast_text = digits.str[:8].where(digits.str.len() >= 8)
-    parsed_fast = pd.to_datetime(fast_text, format="%Y%m%d", errors="coerce")
-    parsed_slow = pd.to_datetime(text.where(fast_text.isna()), errors="coerce")
-    parsed = parsed_fast.fillna(parsed_slow)
-    output = pd.Series("", index=index, dtype=object)
-    valid = parsed.notna()
-    output.loc[valid] = parsed.loc[valid].dt.strftime("%Y-%m-%d")
-    return output
-
-
-def _num(value: object) -> float:
-    try:
-        number = float(value)
-    except Exception:
-        return float("nan")
-    return number if np.isfinite(number) else float("nan")
-
-
-def _first_number(row: Mapping[str, Any], names: Sequence[str]) -> float:
-    for name in names:
-        value = _num(row.get(name))
-        if np.isfinite(value):
-            return value
-    return float("nan")
-
-
-def _positive_denominator(value: float) -> float:
-    return value if np.isfinite(value) and value > 0 else float("nan")
-
-
-def _percent_to_ratio(value: object) -> float:
-    number = _num(value)
-    if not np.isfinite(number):
-        return float("nan")
-    return number / 100.0 if abs(number) > 2.0 else number
-
-
-def _availability(row: Mapping[str, Any]) -> str:
-    for column in ("f_ann_date", "ann_date", "availability_date"):
-        text = _date_text(row.get(column))
-        if text:
-            return text
-    return ""
 
 
 def _load_sector_map(metadata_root: Path | None = None) -> dict[str, str]:

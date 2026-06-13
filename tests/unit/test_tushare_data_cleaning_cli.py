@@ -78,7 +78,7 @@ def test_clean_tushare_downloads_cli_writes_artifacts(tmp_path):
     assert Path(result["raw_backup_path"]).exists()
     assert Path(result["quarantine_path"]).exists()
     assert Path(result["row_flags_path"]).exists()
-    assert Path(result["cell_flags_path"]).exists()
+    assert result["cell_flags_path"] is None
     assert Path(result["factor_ready_masks_path"]).exists()
     assert Path(result["matrix_coverage_path"]).exists()
     assert Path(result["storage_audit_report_path"]).exists()

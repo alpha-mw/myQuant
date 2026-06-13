@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import importlib
 import json
 
 import pytest
 
+import quant_investor.factors.alignment_audit as alignment_audit
 from quant_investor.factors.alignment_audit import (
     ALIGNMENT_AUDIT_FAIL,
     ALIGNMENT_AUDIT_PASS,
@@ -56,6 +58,45 @@ from quant_investor.versioning import FACTOR_BACKTEST_ALIGNMENT_AUDIT_SCHEMA_VER
 
 SYMBOLS = ["AAA", "BBB", "CCC"]
 DATES = ["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04", "2026-01-05"]
+
+
+def test_alignment_audit_contracts_are_split_and_reexported() -> None:
+    alignment_audit_types = importlib.import_module(
+        "quant_investor.factors.alignment_audit_types"
+    )
+
+    assert (
+        alignment_audit.FactorBacktestAlignmentIssue
+        is alignment_audit_types.FactorBacktestAlignmentIssue
+    )
+    assert (
+        alignment_audit.FactorBacktestAlignmentAuditConfig
+        is alignment_audit_types.FactorBacktestAlignmentAuditConfig
+    )
+    assert (
+        alignment_audit.AlignmentAuditRecord
+        is alignment_audit_types.AlignmentAuditRecord
+    )
+    assert (
+        alignment_audit.FactorBacktestAlignmentAuditReport
+        is alignment_audit_types.FactorBacktestAlignmentAuditReport
+    )
+    assert (
+        alignment_audit.make_alignment_audit_config_id
+        is alignment_audit_types.make_alignment_audit_config_id
+    )
+    assert (
+        alignment_audit.make_alignment_issue_id
+        is alignment_audit_types.make_alignment_issue_id
+    )
+    assert (
+        alignment_audit.make_alignment_record_id
+        is alignment_audit_types.make_alignment_record_id
+    )
+    assert (
+        alignment_audit.make_alignment_audit_report_id
+        is alignment_audit_types.make_alignment_audit_report_id
+    )
 
 
 def _contract(required_fields: list[str]) -> MatrixDataContract:

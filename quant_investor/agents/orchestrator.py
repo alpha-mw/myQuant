@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import time
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict
 from enum import Enum
 from typing import Any, Mapping
 
@@ -40,6 +40,11 @@ from quant_investor.agents.llm_client import (
     has_any_provider,
 )
 from quant_investor.agents.master_agent import MasterAgent
+from quant_investor.agents.orchestrator_serialization import (
+    compact_review_mapping,
+    serialize_review_item,
+    serialize_review_map,
+)
 from quant_investor.agents.portfolio_constructor import PortfolioConstructor
 from quant_investor.agents.stock_reviewers import (
     BranchOverlayPacket,
@@ -67,6 +72,9 @@ class AgentOrchestrator:
 
     _BRANCH_TIMEOUT_CUSHION_SECONDS = 10.0
     _MASTER_TIMEOUT_CUSHION_SECONDS = 15.0
+    _compact_mapping = staticmethod(compact_review_mapping)
+    _serialize_review_item = staticmethod(serialize_review_item)
+    _serialize_review_map = staticmethod(serialize_review_map)
 
     def __init__(
         self,
@@ -938,50 +946,6 @@ class AgentOrchestrator:
             "status": hint.status.value if isinstance(hint.status, Enum) else str(hint.status),
             "telemetry": hint.telemetry.to_dict() if hasattr(hint.telemetry, "to_dict") else asdict(hint.telemetry),
             "thesis": hint.thesis,
-        }
-
-    @staticmethod
-    def _compact_mapping(payload: Mapping[str, Any] | Any) -> dict[str, Any]:
-        if isinstance(payload, Mapping):
-            result: dict[str, Any] = {}
-            for key, value in payload.items():
-                if isinstance(value, (int, float, str, bool)) or value is None:
-                    result[str(key)] = value
-                elif isinstance(value, Mapping):
-                    nested = {k: v for k, v in value.items() if isinstance(v, (int, float, str, bool)) or v is None}
-                    if nested:
-                        result[str(key)] = nested
-                elif isinstance(value, list):
-                    items = [item for item in value if isinstance(item, (int, float, str, bool))]
-                    if items:
-                        result[str(key)] = items[:10]
-            return result
-        if hasattr(payload, "__dict__"):
-            return AgentOrchestrator._compact_mapping(payload.__dict__)
-        return {}
-
-    @staticmethod
-    def _serialize_review_item(value: Any) -> Any:
-        if value is None:
-            return None
-        if hasattr(value, "to_dict"):
-            return value.to_dict()
-        if is_dataclass(value):
-            return asdict(value)
-        if isinstance(value, Mapping):
-            return {
-                str(key): AgentOrchestrator._serialize_review_item(item)
-                for key, item in value.items()
-            }
-        if isinstance(value, list):
-            return [AgentOrchestrator._serialize_review_item(item) for item in value]
-        return value
-
-    @staticmethod
-    def _serialize_review_map(value: Mapping[str, Any]) -> dict[str, Any]:
-        return {
-            str(key): AgentOrchestrator._serialize_review_item(item)
-            for key, item in value.items()
         }
 
     @staticmethod

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from quant_investor.factors.store_helpers import JsonArtifactStoreMixin
 from quant_investor.factors.backtest import (
     DEFAULT_FACTOR_BACKTEST_DIR,
     DEFAULT_FACTOR_BACKTEST_RUNS_FILENAME,
@@ -108,22 +108,7 @@ DEFAULT_FACTOR_LIBRARY_AUDIT_MARKDOWN_FILENAME = "factor_library_audit_report.md
 DEFAULT_FACTOR_GOVERNANCE_DASHBOARD_FILENAME = "factor_governance_dashboard.json"
 
 
-def _json_safe(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {
-            str(key): _json_safe(item)
-            for key, item in sorted(value.items(), key=lambda item: str(item[0]))
-        }
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(item) for item in value]
-    if isinstance(value, set):
-        return [_json_safe(item) for item in sorted(value, key=str)]
-    if isinstance(value, Path):
-        return str(value)
-    return value
-
-
-class FactorGovernanceStore:
+class FactorGovernanceStore(JsonArtifactStoreMixin):
     def __init__(self, root_dir: str | Path | None = None) -> None:
         self.root_dir = Path(root_dir) if root_dir is not None else DEFAULT_FACTOR_LIBRARY_DIR
         self.factor_definitions_path = self.root_dir / DEFAULT_FACTOR_DEFINITIONS_FILENAME
@@ -132,50 +117,6 @@ class FactorGovernanceStore:
         self.admission_decisions_path = self.root_dir / DEFAULT_FACTOR_ADMISSION_DECISIONS_FILENAME
         self.production_library_path = self.root_dir / DEFAULT_PRODUCTION_FACTORS_FILENAME
         self.deprecated_factors_path = self.root_dir / DEFAULT_DEPRECATED_FACTORS_FILENAME
-
-    def _append_jsonl(self, path: Path, payload: Mapping[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(
-                json.dumps(_json_safe(payload), ensure_ascii=False, sort_keys=True, allow_nan=False)
-            )
-            handle.write("\n")
-
-    def _read_jsonl_payloads(self, path: Path) -> list[dict[str, Any]]:
-        if not path.exists():
-            return []
-        rows: list[dict[str, Any]] = []
-        with path.open("r", encoding="utf-8") as handle:
-            for line_number, line in enumerate(handle, start=1):
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                try:
-                    payload = json.loads(stripped)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"Malformed JSON in {path} line {line_number}: {exc.msg}") from exc
-                if not isinstance(payload, Mapping):
-                    raise ValueError(f"Expected JSON object in {path} line {line_number}.")
-                rows.append(dict(payload))
-        return rows
-
-    def _read_json(self, path: Path) -> dict[str, Any]:
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Malformed JSON in {path}: {exc.msg}") from exc
-        if not isinstance(payload, Mapping):
-            raise ValueError(f"Expected JSON object in {path}.")
-        return dict(payload)
-
-    def _write_json(self, path: Path, payload: Mapping[str, Any]) -> Path:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(_json_safe(payload), ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False)
-            + "\n",
-            encoding="utf-8",
-        )
-        return path
 
     def append_factor_definition(self, definition: FactorDefinition) -> None:
         if definition.factor_id in self.get_factor_definition_ids():
@@ -240,39 +181,13 @@ class FactorGovernanceStore:
         return {decision.decision_id for decision in self.read_admission_decisions()}
 
 
-class FactorMatrixStore:
+class FactorMatrixStore(JsonArtifactStoreMixin):
     def __init__(self, root_dir: str | Path | None = None) -> None:
         self.root_dir = Path(root_dir) if root_dir is not None else DEFAULT_FACTOR_MATRIX_DIR
         self.matrix_contracts_path = self.root_dir / DEFAULT_MATRIX_CONTRACTS_FILENAME
         self.matrix_bundles_path = self.root_dir / DEFAULT_MATRIX_BUNDLES_FILENAME
         self.factor_matrices_path = self.root_dir / DEFAULT_FACTOR_MATRICES_FILENAME
         self.expression_results_path = self.root_dir / DEFAULT_EXPRESSION_RESULTS_FILENAME
-
-    def _append_jsonl(self, path: Path, payload: Mapping[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(
-                json.dumps(_json_safe(payload), ensure_ascii=False, sort_keys=True, allow_nan=False)
-            )
-            handle.write("\n")
-
-    def _read_jsonl_payloads(self, path: Path) -> list[dict[str, Any]]:
-        if not path.exists():
-            return []
-        rows: list[dict[str, Any]] = []
-        with path.open("r", encoding="utf-8") as handle:
-            for line_number, line in enumerate(handle, start=1):
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                try:
-                    payload = json.loads(stripped)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"Malformed JSON in {path} line {line_number}: {exc.msg}") from exc
-                if not isinstance(payload, Mapping):
-                    raise ValueError(f"Expected JSON object in {path} line {line_number}.")
-                rows.append(dict(payload))
-        return rows
 
     def append_matrix_contract(self, contract: MatrixDataContract) -> None:
         if contract.contract_id in self.get_matrix_contract_ids():
@@ -331,38 +246,12 @@ class FactorMatrixStore:
         return {result.result_id for result in self.read_expression_results()}
 
 
-class FactorBacktestArtifactStore:
+class FactorBacktestArtifactStore(JsonArtifactStoreMixin):
     def __init__(self, root_dir: str | Path | None = None) -> None:
         self.root_dir = Path(root_dir) if root_dir is not None else DEFAULT_FACTOR_BACKTEST_DIR
         self.weight_matrices_path = self.root_dir / DEFAULT_FACTOR_WEIGHT_MATRICES_FILENAME
         self.backtest_runs_path = self.root_dir / DEFAULT_FACTOR_BACKTEST_RUNS_FILENAME
         self.daily_records_path = self.root_dir / DEFAULT_FACTOR_DAILY_RECORDS_FILENAME
-
-    def _append_jsonl(self, path: Path, payload: Mapping[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(
-                json.dumps(_json_safe(payload), ensure_ascii=False, sort_keys=True, allow_nan=False)
-            )
-            handle.write("\n")
-
-    def _read_jsonl_payloads(self, path: Path) -> list[dict[str, Any]]:
-        if not path.exists():
-            return []
-        rows: list[dict[str, Any]] = []
-        with path.open("r", encoding="utf-8") as handle:
-            for line_number, line in enumerate(handle, start=1):
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                try:
-                    payload = json.loads(stripped)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"Malformed JSON in {path} line {line_number}: {exc.msg}") from exc
-                if not isinstance(payload, Mapping):
-                    raise ValueError(f"Expected JSON object in {path} line {line_number}.")
-                rows.append(dict(payload))
-        return rows
 
     def append_weight_matrix(self, matrix: FactorWeightMatrix) -> None:
         if matrix.weights_id in self.get_weight_matrix_ids():
@@ -424,7 +313,7 @@ class FactorBacktestArtifactStore:
         )
 
 
-class FactorValidationArtifactStore:
+class FactorValidationArtifactStore(JsonArtifactStoreMixin):
     def __init__(self, root_dir: str | Path | None = None) -> None:
         self.root_dir = Path(root_dir) if root_dir is not None else DEFAULT_FACTOR_VALIDATION_DIR
         self.robustness_reports_path = (
@@ -436,32 +325,6 @@ class FactorValidationArtifactStore:
         self.enhanced_validation_reports_path = (
             self.root_dir / DEFAULT_ENHANCED_VALIDATION_REPORTS_FILENAME
         )
-
-    def _append_jsonl(self, path: Path, payload: Mapping[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(
-                json.dumps(_json_safe(payload), ensure_ascii=False, sort_keys=True, allow_nan=False)
-            )
-            handle.write("\n")
-
-    def _read_jsonl_payloads(self, path: Path) -> list[dict[str, Any]]:
-        if not path.exists():
-            return []
-        rows: list[dict[str, Any]] = []
-        with path.open("r", encoding="utf-8") as handle:
-            for line_number, line in enumerate(handle, start=1):
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                try:
-                    payload = json.loads(stripped)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"Malformed JSON in {path} line {line_number}: {exc.msg}") from exc
-                if not isinstance(payload, Mapping):
-                    raise ValueError(f"Expected JSON object in {path} line {line_number}.")
-                rows.append(dict(payload))
-        return rows
 
     def append_robustness_report(self, report: FactorRobustnessReport) -> None:
         if report.report_id in self.get_robustness_report_ids():
@@ -506,7 +369,7 @@ class FactorValidationArtifactStore:
         return {report.report_id for report in self.read_enhanced_validation_reports()}
 
 
-class FactorCorrelationContributionStore:
+class FactorCorrelationContributionStore(JsonArtifactStoreMixin):
     def __init__(self, root_dir: str | Path | None = None) -> None:
         self.root_dir = Path(root_dir) if root_dir is not None else DEFAULT_FACTOR_INCREMENTAL_DIR
         self.redundancy_reports_path = (
@@ -515,32 +378,6 @@ class FactorCorrelationContributionStore:
         self.contribution_reports_path = (
             self.root_dir / DEFAULT_FACTOR_CONTRIBUTION_REPORTS_FILENAME
         )
-
-    def _append_jsonl(self, path: Path, payload: Mapping[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(
-                json.dumps(_json_safe(payload), ensure_ascii=False, sort_keys=True, allow_nan=False)
-            )
-            handle.write("\n")
-
-    def _read_jsonl_payloads(self, path: Path) -> list[dict[str, Any]]:
-        if not path.exists():
-            return []
-        rows: list[dict[str, Any]] = []
-        with path.open("r", encoding="utf-8") as handle:
-            for line_number, line in enumerate(handle, start=1):
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                try:
-                    payload = json.loads(stripped)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"Malformed JSON in {path} line {line_number}: {exc.msg}") from exc
-                if not isinstance(payload, Mapping):
-                    raise ValueError(f"Expected JSON object in {path} line {line_number}.")
-                rows.append(dict(payload))
-        return rows
 
     def append_redundancy_report(self, report: FactorRedundancyReport) -> None:
         if report.report_id in self.get_redundancy_report_ids():
@@ -573,59 +410,12 @@ class FactorCorrelationContributionStore:
         return {report.report_id for report in self.read_contribution_reports()}
 
 
-class FactorLibraryAuditStore:
+class FactorLibraryAuditStore(JsonArtifactStoreMixin):
     def __init__(self, root_dir: str | Path | None = None) -> None:
         self.root_dir = Path(root_dir) if root_dir is not None else DEFAULT_FACTOR_LIBRARY_AUDIT_DIR
         self.audit_reports_path = self.root_dir / DEFAULT_FACTOR_LIBRARY_AUDIT_REPORTS_FILENAME
         self.audit_markdown_path = self.root_dir / DEFAULT_FACTOR_LIBRARY_AUDIT_MARKDOWN_FILENAME
         self.dashboard_payload_path = self.root_dir / DEFAULT_FACTOR_GOVERNANCE_DASHBOARD_FILENAME
-
-    def _append_jsonl(self, path: Path, payload: Mapping[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(
-                json.dumps(_json_safe(payload), ensure_ascii=False, sort_keys=True, allow_nan=False)
-            )
-            handle.write("\n")
-
-    def _read_jsonl_payloads(self, path: Path) -> list[dict[str, Any]]:
-        if not path.exists():
-            return []
-        rows: list[dict[str, Any]] = []
-        with path.open("r", encoding="utf-8") as handle:
-            for line_number, line in enumerate(handle, start=1):
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                try:
-                    payload = json.loads(stripped)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"Malformed JSON in {path} line {line_number}: {exc.msg}") from exc
-                if not isinstance(payload, Mapping):
-                    raise ValueError(f"Expected JSON object in {path} line {line_number}.")
-                rows.append(dict(payload))
-        return rows
-
-    def _write_text(self, path: Path, text: str) -> Path:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
-        return path
-
-    def _write_json(self, path: Path, payload: Mapping[str, Any]) -> Path:
-        return self._write_text(
-            path,
-            json.dumps(_json_safe(payload), ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False)
-            + "\n",
-        )
-
-    def _read_json(self, path: Path) -> dict[str, Any]:
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Malformed JSON in {path}: {exc.msg}") from exc
-        if not isinstance(payload, Mapping):
-            raise ValueError(f"Expected JSON object in {path}.")
-        return dict(payload)
 
     def append_audit_report(self, report: FactorLibraryAuditReport) -> None:
         if report.report_id in self.get_audit_report_ids():
@@ -654,7 +444,7 @@ class FactorLibraryAuditStore:
         return self._read_json(self.dashboard_payload_path)
 
 
-class FactorShadowScoringStore:
+class FactorShadowScoringStore(JsonArtifactStoreMixin):
     def __init__(self, root_dir: str | Path | None = None) -> None:
         self.root_dir = Path(root_dir) if root_dir is not None else DEFAULT_FACTOR_SHADOW_SCORING_DIR
         self.factor_scores_path = self.root_dir / DEFAULT_SHADOW_FACTOR_SCORES_FILENAME
@@ -662,53 +452,6 @@ class FactorShadowScoringStore:
         self.comparison_reports_path = self.root_dir / DEFAULT_SHADOW_COMPARISON_REPORTS_FILENAME
         self.comparison_markdown_path = self.root_dir / DEFAULT_SHADOW_COMPARISON_MARKDOWN_FILENAME
         self.dashboard_payload_path = self.root_dir / DEFAULT_SHADOW_COMPARISON_DASHBOARD_FILENAME
-
-    def _append_jsonl(self, path: Path, payload: Mapping[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(
-                json.dumps(_json_safe(payload), ensure_ascii=False, sort_keys=True, allow_nan=False)
-            )
-            handle.write("\n")
-
-    def _read_jsonl_payloads(self, path: Path) -> list[dict[str, Any]]:
-        if not path.exists():
-            return []
-        rows: list[dict[str, Any]] = []
-        with path.open("r", encoding="utf-8") as handle:
-            for line_number, line in enumerate(handle, start=1):
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                try:
-                    payload = json.loads(stripped)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"Malformed JSON in {path} line {line_number}: {exc.msg}") from exc
-                if not isinstance(payload, Mapping):
-                    raise ValueError(f"Expected JSON object in {path} line {line_number}.")
-                rows.append(dict(payload))
-        return rows
-
-    def _write_text(self, path: Path, text: str) -> Path:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
-        return path
-
-    def _write_json(self, path: Path, payload: Mapping[str, Any]) -> Path:
-        return self._write_text(
-            path,
-            json.dumps(_json_safe(payload), ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False)
-            + "\n",
-        )
-
-    def _read_json(self, path: Path) -> dict[str, Any]:
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Malformed JSON in {path}: {exc.msg}") from exc
-        if not isinstance(payload, Mapping):
-            raise ValueError(f"Expected JSON object in {path}.")
-        return dict(payload)
 
     def append_factor_scores(self, scores: Sequence[ShadowFactorScore]) -> int:
         for score in scores:
@@ -759,60 +502,13 @@ class FactorShadowScoringStore:
         return self._read_json(self.dashboard_payload_path)
 
 
-class FactorEvidenceStore:
+class FactorEvidenceStore(JsonArtifactStoreMixin):
     def __init__(self, root_dir: str | Path | None = None) -> None:
         self.root_dir = Path(root_dir) if root_dir is not None else DEFAULT_FACTOR_EVIDENCE_DIR
         self.date_results_path = self.root_dir / DEFAULT_EVIDENCE_DATE_RESULTS_FILENAME
         self.multi_date_reports_path = self.root_dir / DEFAULT_MULTI_DATE_EVIDENCE_REPORTS_FILENAME
         self.evidence_markdown_path = self.root_dir / DEFAULT_EVIDENCE_MARKDOWN_FILENAME
         self.evidence_dashboard_path = self.root_dir / DEFAULT_EVIDENCE_DASHBOARD_FILENAME
-
-    def _append_jsonl(self, path: Path, payload: Mapping[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(
-                json.dumps(_json_safe(payload), ensure_ascii=False, sort_keys=True, allow_nan=False)
-            )
-            handle.write("\n")
-
-    def _read_jsonl_payloads(self, path: Path) -> list[dict[str, Any]]:
-        if not path.exists():
-            return []
-        rows: list[dict[str, Any]] = []
-        with path.open("r", encoding="utf-8") as handle:
-            for line_number, line in enumerate(handle, start=1):
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                try:
-                    payload = json.loads(stripped)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"Malformed JSON in {path} line {line_number}: {exc.msg}") from exc
-                if not isinstance(payload, Mapping):
-                    raise ValueError(f"Expected JSON object in {path} line {line_number}.")
-                rows.append(dict(payload))
-        return rows
-
-    def _write_text(self, path: Path, text: str) -> Path:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
-        return path
-
-    def _write_json(self, path: Path, payload: Mapping[str, Any]) -> Path:
-        return self._write_text(
-            path,
-            json.dumps(_json_safe(payload), ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False)
-            + "\n",
-        )
-
-    def _read_json(self, path: Path) -> dict[str, Any]:
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Malformed JSON in {path}: {exc.msg}") from exc
-        if not isinstance(payload, Mapping):
-            raise ValueError(f"Expected JSON object in {path}.")
-        return dict(payload)
 
     def append_date_result(self, result: FactorShadowEvidenceDateResult) -> None:
         if result.result_id in self.get_date_result_ids():
@@ -855,7 +551,7 @@ class FactorEvidenceStore:
         return self._read_json(self.evidence_dashboard_path)
 
 
-class FactorAlignmentAuditStore:
+class FactorAlignmentAuditStore(JsonArtifactStoreMixin):
     def __init__(self, root_dir: str | Path | None = None) -> None:
         self.root_dir = Path(root_dir) if root_dir is not None else DEFAULT_FACTOR_ALIGNMENT_AUDIT_DIR
         self.alignment_audit_reports_path = (
@@ -864,37 +560,6 @@ class FactorAlignmentAuditStore:
         self.alignment_audit_markdown_path = (
             self.root_dir / DEFAULT_ALIGNMENT_AUDIT_MARKDOWN_FILENAME
         )
-
-    def _append_jsonl(self, path: Path, payload: Mapping[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(
-                json.dumps(_json_safe(payload), ensure_ascii=False, sort_keys=True, allow_nan=False)
-            )
-            handle.write("\n")
-
-    def _read_jsonl_payloads(self, path: Path) -> list[dict[str, Any]]:
-        if not path.exists():
-            return []
-        rows: list[dict[str, Any]] = []
-        with path.open("r", encoding="utf-8") as handle:
-            for line_number, line in enumerate(handle, start=1):
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                try:
-                    payload = json.loads(stripped)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"Malformed JSON in {path} line {line_number}: {exc.msg}") from exc
-                if not isinstance(payload, Mapping):
-                    raise ValueError(f"Expected JSON object in {path} line {line_number}.")
-                rows.append(dict(payload))
-        return rows
-
-    def _write_text(self, path: Path, text: str) -> Path:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
-        return path
 
     def append_alignment_audit_report(
         self,
@@ -920,7 +585,7 @@ class FactorAlignmentAuditStore:
         return self.alignment_audit_markdown_path.read_text(encoding="utf-8")
 
 
-class FactorTradabilityAuditStore:
+class FactorTradabilityAuditStore(JsonArtifactStoreMixin):
     def __init__(self, root_dir: str | Path | None = None) -> None:
         self.root_dir = Path(root_dir) if root_dir is not None else DEFAULT_FACTOR_TRADABILITY_AUDIT_DIR
         self.tradability_masks_path = self.root_dir / DEFAULT_TRADABILITY_MASKS_FILENAME
@@ -936,37 +601,6 @@ class FactorTradabilityAuditStore:
         self.execution_feasibility_markdown_path = (
             self.root_dir / DEFAULT_EXECUTION_FEASIBILITY_MARKDOWN_FILENAME
         )
-
-    def _append_jsonl(self, path: Path, payload: Mapping[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(
-                json.dumps(_json_safe(payload), ensure_ascii=False, sort_keys=True, allow_nan=False)
-            )
-            handle.write("\n")
-
-    def _read_jsonl_payloads(self, path: Path) -> list[dict[str, Any]]:
-        if not path.exists():
-            return []
-        rows: list[dict[str, Any]] = []
-        with path.open("r", encoding="utf-8") as handle:
-            for line_number, line in enumerate(handle, start=1):
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                try:
-                    payload = json.loads(stripped)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"Malformed JSON in {path} line {line_number}: {exc.msg}") from exc
-                if not isinstance(payload, Mapping):
-                    raise ValueError(f"Expected JSON object in {path} line {line_number}.")
-                rows.append(dict(payload))
-        return rows
-
-    def _write_text(self, path: Path, text: str) -> Path:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
-        return path
 
     def append_tradability_mask(self, mask: AShareTradabilityMask) -> None:
         if mask.mask_id in self.get_tradability_mask_ids():
@@ -1030,7 +664,7 @@ class FactorTradabilityAuditStore:
         return self.execution_feasibility_markdown_path.read_text(encoding="utf-8")
 
 
-class FactorExecutionCostSimulationStore:
+class FactorExecutionCostSimulationStore(JsonArtifactStoreMixin):
     def __init__(self, root_dir: str | Path | None = None) -> None:
         self.root_dir = Path(root_dir) if root_dir is not None else DEFAULT_FACTOR_EXECUTION_COST_DIR
         self.execution_cost_reports_path = self.root_dir / DEFAULT_EXECUTION_COST_REPORTS_FILENAME
@@ -1046,55 +680,6 @@ class FactorExecutionCostSimulationStore:
         self.execution_cost_dashboard_path = (
             self.root_dir / DEFAULT_EXECUTION_COST_DASHBOARD_FILENAME
         )
-
-    def _append_jsonl(self, path: Path, payload: Mapping[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(
-                json.dumps(_json_safe(payload), ensure_ascii=False, sort_keys=True, allow_nan=False)
-            )
-            handle.write("\n")
-
-    def _read_jsonl_payloads(self, path: Path) -> list[dict[str, Any]]:
-        if not path.exists():
-            return []
-        rows: list[dict[str, Any]] = []
-        with path.open("r", encoding="utf-8") as handle:
-            for line_number, line in enumerate(handle, start=1):
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                try:
-                    payload = json.loads(stripped)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"Malformed JSON in {path} line {line_number}: {exc.msg}") from exc
-                if not isinstance(payload, Mapping):
-                    raise ValueError(f"Expected JSON object in {path} line {line_number}.")
-                rows.append(dict(payload))
-        return rows
-
-    def _read_json(self, path: Path) -> dict[str, Any]:
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Malformed JSON in {path}: {exc.msg}") from exc
-        if not isinstance(payload, Mapping):
-            raise ValueError(f"Expected JSON object in {path}.")
-        return dict(payload)
-
-    def _write_json(self, path: Path, payload: Mapping[str, Any]) -> Path:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(_json_safe(payload), ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False)
-            + "\n",
-            encoding="utf-8",
-        )
-        return path
-
-    def _write_text(self, path: Path, text: str) -> Path:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
-        return path
 
     def append_execution_cost_report(
         self,

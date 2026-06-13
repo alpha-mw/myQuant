@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
+import importlib
+import importlib.util
 from types import SimpleNamespace
 
 import quant_investor.pipeline.mainline as mainline_module
@@ -9,6 +12,12 @@ from quant_investor.agents.agent_contracts import MasterAgentOutput
 from quant_investor.agents.orchestrator import AgentOrchestrator
 from quant_investor.branch_contracts import BranchResult
 from quant_investor.pipeline.mainline import QuantInvestor
+
+
+@dataclass
+class _ReviewSerializationFixture:
+    action: ActionLabel
+    notes: list[str]
 
 
 def test_timeout_budget_helpers_stay_available():
@@ -24,6 +33,34 @@ def test_timeout_budget_helpers_stay_available():
         master_timeout=60.0,
         existing_total_timeout=120.0,
     ) >= 120.0
+
+
+def test_review_orchestrator_serialization_helpers_are_split_and_delegated():
+    spec = importlib.util.find_spec("quant_investor.agents.orchestrator_serialization")
+    assert spec is not None
+    helper = importlib.import_module("quant_investor.agents.orchestrator_serialization")
+
+    assert AgentOrchestrator._compact_mapping is helper.compact_review_mapping
+    assert AgentOrchestrator._serialize_review_item is helper.serialize_review_item
+    assert AgentOrchestrator._serialize_review_map is helper.serialize_review_map
+
+    compact = AgentOrchestrator._compact_mapping(
+        SimpleNamespace(
+            scalar="kept",
+            nested={"ok": 1, "drop": object()},
+            items=["a", object(), "b"],
+            noisy=object(),
+        )
+    )
+    assert compact == {
+        "scalar": "kept",
+        "nested": {"ok": 1},
+        "items": ["a", "b"],
+    }
+    serialized = AgentOrchestrator._serialize_review_item(
+        _ReviewSerializationFixture(action=ActionLabel.BUY, notes=["ok"])
+    )
+    assert serialized == {"action": ActionLabel.BUY, "notes": ["ok"]}
 
 
 def test_quant_investor_defaults_allow_long_running_llm_calls():

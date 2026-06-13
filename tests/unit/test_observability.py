@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import subprocess
 import sys
@@ -8,13 +9,12 @@ from pathlib import Path
 
 import pytest
 
+import quant_investor.observability as observability
 from quant_investor.observability import (
     ARTIFACT_TYPE_DIRECTORY,
     ARTIFACT_TYPE_JSON,
     ARTIFACT_TYPE_JSONL,
-    AUDIT_BUNDLE_SCHEMA_VERSION,
     HEALTH_STATUS_FAIL,
-    HEALTH_STATUS_PASS,
     HEALTH_STATUS_WARN,
     ArtifactReference,
     AuditBundle,
@@ -40,11 +40,48 @@ from quant_investor.observability import (
     summarize_docs_and_scripts_artifacts,
     summarize_outcome_ledger_artifacts,
 )
-from quant_investor.versioning import OBSERVABILITY_SCHEMA_VERSION
 
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXED_GENERATED_AT = "2026-04-26T00:00:00Z"
+
+
+def test_observability_contracts_are_split_and_reexported() -> None:
+    observability_types = importlib.import_module("quant_investor.observability_types")
+
+    assert observability.ArtifactReference is observability_types.ArtifactReference
+    assert observability.RunManifest is observability_types.RunManifest
+    assert observability.ModuleHealthSummary is observability_types.ModuleHealthSummary
+    assert (
+        observability.SystemObservabilitySummary
+        is observability_types.SystemObservabilitySummary
+    )
+    assert observability.AuditBundle is observability_types.AuditBundle
+    assert observability.make_artifact_id is observability_types.make_artifact_id
+    assert (
+        observability.make_run_manifest_id
+        is observability_types.make_run_manifest_id
+    )
+    assert observability.make_audit_bundle_id is observability_types.make_audit_bundle_id
+
+
+def test_observability_artifact_helpers_are_split_and_reexported() -> None:
+    observability_artifacts = importlib.import_module(
+        "quant_investor.observability_artifacts"
+    )
+
+    assert observability.sha256_file is observability_artifacts.sha256_file
+    assert observability.count_jsonl_records is observability_artifacts.count_jsonl_records
+    assert observability.read_json_file is observability_artifacts.read_json_file
+    assert observability.safe_json_dumps is observability_artifacts.safe_json_dumps
+    assert (
+        observability.build_artifact_reference
+        is observability_artifacts.build_artifact_reference
+    )
+    assert (
+        observability.discover_phase_artifacts
+        is observability_artifacts.discover_phase_artifacts
+    )
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:

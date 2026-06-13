@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 from types import SimpleNamespace
 
@@ -48,6 +49,22 @@ from quant_investor.risk_tensor import (
     SymbolRiskTensor,
 )
 from quant_investor.versioning import PORTFOLIO_OPTIMIZER_SCHEMA_VERSION
+
+
+def test_portfolio_optimizer_contracts_are_split_and_reexported() -> None:
+    optimizer = importlib.import_module("quant_investor.portfolio_optimizer")
+    contracts = importlib.import_module("quant_investor.portfolio_optimizer_types")
+
+    assert optimizer.PortfolioOptimizerConfig is contracts.PortfolioOptimizerConfig
+    assert optimizer.OptimizationCandidate is contracts.OptimizationCandidate
+    assert optimizer.ConstraintViolation is contracts.ConstraintViolation
+    assert optimizer.OptimizedPortfolioPlan is contracts.OptimizedPortfolioPlan
+    assert optimizer.RebalanceInput is contracts.RebalanceInput
+    assert optimizer.RebalanceResult is contracts.RebalanceResult
+    assert optimizer.WalkForwardResult is contracts.WalkForwardResult
+    assert optimizer.bps_to_decimal_return is contracts.bps_to_decimal_return
+    assert optimizer.estimate_turnover is contracts.estimate_turnover
+    assert optimizer.make_plan_id is contracts.make_plan_id
 
 
 def _candidate(symbol: str, **overrides: object) -> OptimizationCandidate:
