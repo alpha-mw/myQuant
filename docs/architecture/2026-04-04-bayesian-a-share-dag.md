@@ -46,7 +46,7 @@ Public entrypoints kept stable where practical:
 - Stable mode is the default via `CN_FRESHNESS_MODE=stable`.
 - Strict same-day freshness only upgrades when current-scope coverage passes threshold.
 - Early-stop logic aborts same-day loops when sampled symbols are mostly `stale_cached`.
-- Completeness and download paths share one CN symbol-local-status evaluator and one CSV reader/quarantine path.
+- Completeness and download paths share one CN symbol-local-status evaluator and one Parquet reader/quarantine-report path.
 
 ## Degradation Model
 

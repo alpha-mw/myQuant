@@ -5,9 +5,15 @@ from typing import Any, Callable, Mapping
 
 from quant_investor.agent_protocol import BayesianDecisionRecord, ICDecision, PortfolioDecision, RiskDecision
 from quant_investor.bayesian.calibration import CalibrationStore
+from quant_investor.config import config
 from quant_investor.market.dag.common import _dedupe_texts
 from quant_investor.market.dag.evidence import _build_master_evidence_pack
 from quant_investor.market.dag.shortlist import _build_shortlist_from_bayesian_records
+from quant_investor.market.dag.theme_context import (
+    build_theme_portfolio_constraints,
+    build_theme_risk_constraints,
+    extract_symbol_theme_metadata,
+)
 from quant_investor.reporting.run_artifacts import build_funnel_summary
 
 
@@ -133,6 +139,10 @@ def _run_bayesian_selection_phase(
                     "calibration_samples": dict((posterior.metadata or {}).get("calibration_samples", {}) or {}) if isinstance(getattr(posterior, "metadata", {}), Mapping) else {},
                     "kill_switch": bool((posterior.metadata or {}).get("kill_switch", False)) if isinstance(getattr(posterior, "metadata", {}), Mapping) else False,
                     "sector": str((posterior.metadata or {}).get("sector", "")) if isinstance(getattr(posterior, "metadata", {}), Mapping) else "",
+                    "theme_rotation": extract_symbol_theme_metadata(
+                        global_context=global_context,
+                        symbol=symbol,
+                    ),
                 },
             )
         )
@@ -269,25 +279,37 @@ def _run_portfolio_construction_phase(
     attach_symbol_to_ic_decision_fn: Callable[..., ICDecision],
 ) -> PortfolioConstructionState:
     risk_guard = risk_guard_cls()
+    shortlisted_symbols = [item.symbol for item in shortlist]
+    risk_constraints = {
+        "gross_exposure_cap": float(global_context.risk_budget.get("target_exposure", 0.55)),
+        "max_weight": float(global_context.risk_budget.get("max_single_weight", 0.12)),
+        "risk_flags": _dedupe_texts([issue.message for issue in data_quality_issues[:8]]),
+        "data_quality_issue_count": len(data_quality_issues),
+    }
+    theme_risk_constraints = build_theme_risk_constraints(
+        global_context=global_context,
+        symbols=shortlisted_symbols,
+        enabled=config.THEME_RISK_GUARD_ENABLED,
+        overextended_gross_cap=config.THEME_RISK_OVEREXTENDED_GROSS_CAP,
+        overextended_max_weight=config.THEME_RISK_OVEREXTENDED_MAX_WEIGHT,
+        distribution_gross_cap=config.THEME_RISK_DISTRIBUTION_GROSS_CAP,
+        distribution_max_weight=config.THEME_RISK_DISTRIBUTION_MAX_WEIGHT,
+        fake_breakout_max_weight=config.THEME_RISK_FAKE_BREAKOUT_MAX_WEIGHT,
+    )
+    risk_constraints.update(theme_risk_constraints)
     risk_decision = risk_guard.run(
         {
             "branch_verdicts": branch_summaries,
             "macro_verdict": macro_verdict,
             "portfolio_state": {
-                "candidate_symbols": [item.symbol for item in shortlist],
+                "candidate_symbols": shortlisted_symbols,
                 "current_weights": {},
             },
-            "constraints": {
-                "gross_exposure_cap": float(global_context.risk_budget.get("target_exposure", 0.55)),
-                "max_weight": float(global_context.risk_budget.get("max_single_weight", 0.12)),
-                "risk_flags": _dedupe_texts([issue.message for issue in data_quality_issues[:8]]),
-                "data_quality_issue_count": len(data_quality_issues),
-            },
+            "constraints": risk_constraints,
         }
     )
 
     ic_coordinator = ic_coordinator_cls()
-    shortlisted_symbols = [item.symbol for item in shortlist]
     shortlist_by_symbol = {item.symbol: item for item in shortlist}
     ic_decisions: list[ICDecision] = []
     for symbol in shortlisted_symbols:
@@ -336,18 +358,33 @@ def _run_portfolio_construction_phase(
         adjusted_limit *= 0.75 + 0.25 * max(liquidity_score, 0.20)
         position_limits[symbol] = max(0.04, min(base_limit, adjusted_limit))
 
+    theme_portfolio_constraints = build_theme_portfolio_constraints(
+        global_context=global_context,
+        symbols=shortlisted_symbols,
+        enabled=config.THEME_PORTFOLIO_CAP_ENABLED,
+        max_theme_exposure=config.THEME_PORTFOLIO_MAX_THEME_EXPOSURE,
+        overextended_max_theme_exposure=config.THEME_PORTFOLIO_OVEREXTENDED_MAX_THEME_EXPOSURE,
+        distribution_max_theme_exposure=config.THEME_PORTFOLIO_DISTRIBUTION_MAX_THEME_EXPOSURE,
+    )
+    portfolio_risk_limits = {
+        "gross_exposure_cap": float(risk_decision.gross_exposure_cap),
+        "max_weight": float(risk_decision.max_weight),
+        "position_limits": position_limits,
+        "blocked_symbols": list(risk_decision.blocked_symbols),
+        "sector_caps": sector_caps,
+        "theme_portfolio_cap_enabled": theme_portfolio_constraints["theme_portfolio_cap_enabled"],
+        "theme_exposure_map": theme_portfolio_constraints["theme_exposure_map"],
+        "theme_caps": theme_portfolio_constraints["theme_caps"],
+        "theme_names": theme_portfolio_constraints["theme_names"],
+        "theme_phases": theme_portfolio_constraints["theme_phases"],
+    }
+
     portfolio_constructor = portfolio_constructor_cls()
     portfolio_plan = portfolio_constructor.run(
         {
             "ic_decisions": ic_decisions,
             "macro_verdict": macro_verdict,
-            "risk_limits": {
-                "gross_exposure_cap": float(risk_decision.gross_exposure_cap),
-                "max_weight": float(risk_decision.max_weight),
-                "position_limits": position_limits,
-                "blocked_symbols": list(risk_decision.blocked_symbols),
-                "sector_caps": sector_caps,
-            },
+            "risk_limits": portfolio_risk_limits,
             "existing_portfolio": {"current_weights": {}},
             "tradability_snapshot": tradability_snapshot,
         }

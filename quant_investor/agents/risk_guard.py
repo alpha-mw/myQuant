@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Mapping
 
 from quant_investor.agent_protocol import (
@@ -67,10 +68,44 @@ class RiskGuard(BaseAgent):
             gross_cap = min(gross_cap, 0.6)
             max_weight = min(max_weight, 0.12)
 
+        theme_enabled = self._as_bool(constraints.get("theme_risk_guard_enabled", False))
+        theme_risk_flags: list[str] = []
+        theme_risk_by_symbol: dict[str, Any] = {}
+        theme_position_limits = {}
+        theme_gross_cap: float | None = None
+        theme_triggered = False
+        if theme_enabled:
+            theme_risk_flags = self._sanitize_text_list(constraints.get("theme_risk_flags", []))
+            theme_risk_by_symbol = self._compact_theme_risk_by_symbol(
+                constraints.get("theme_risk_by_symbol", {})
+            )
+            theme_position_limits = self._sanitize_position_limits(
+                constraints.get("theme_position_limits", {})
+            )
+            theme_gross_cap = self._optional_clamped_float(
+                constraints.get("theme_gross_exposure_cap")
+            )
+            if str(constraints.get("theme_action_cap") or "").strip().lower() == ActionLabel.HOLD.value:
+                action_cap = self.more_restrictive_action(action_cap, ActionLabel.HOLD)
+                theme_triggered = True
+            if theme_gross_cap is not None:
+                gross_cap = min(gross_cap, theme_gross_cap)
+                theme_triggered = True
+
         gross_cap = self.clamp(gross_cap, 0.0, 1.0)
         max_weight = self.clamp(max_weight, 0.0, 1.0)
         unblocked_symbols = [symbol for symbol in candidate_symbols if symbol not in blocked_symbols]
         position_limits = {symbol: max_weight for symbol in unblocked_symbols}
+        applied_theme_position_limits: dict[str, float] = {}
+        if theme_enabled:
+            for symbol, cap in theme_position_limits.items():
+                if symbol not in position_limits:
+                    continue
+                applied_cap = min(float(position_limits[symbol]), cap)
+                position_limits[symbol] = applied_cap
+                applied_theme_position_limits[symbol] = applied_cap
+            if applied_theme_position_limits or theme_risk_flags:
+                theme_triggered = True
 
         risk_level = self._infer_risk_level(veto=veto, risk_count=len(risk_texts), gross_cap=gross_cap)
         status = AgentStatus.VETOED if veto else (
@@ -85,6 +120,9 @@ class RiskGuard(BaseAgent):
                 f"宏观约束要求总暴露不高于 {float(macro_verdict.metadata.get('target_gross_exposure', gross_cap)):.0%}。"
             )
         reasons.extend(risk_texts[:5])
+        if theme_enabled and theme_triggered:
+            flag_text = ", ".join(theme_risk_flags[:5]) if theme_risk_flags else "symbol_position_cap"
+            reasons.append(f"Theme risk overlay applied: {flag_text}")
         if not reasons:
             reasons.append("未触发额外风险约束，维持基础上限。")
 
@@ -99,6 +137,38 @@ class RiskGuard(BaseAgent):
                 risk_level=risk_level,
             )
         ]
+        if theme_enabled and theme_triggered:
+            theme_event_level = (
+                RiskLevel.HIGH
+                if risk_level in {RiskLevel.HIGH, RiskLevel.EXTREME}
+                else RiskLevel.MEDIUM
+            )
+            events.append(
+                EventNote(
+                    title="theme_risk_guard_applied",
+                    message=(
+                        f"action_cap={action_cap.value}, gross_exposure_cap={gross_cap:.2f}, "
+                        f"symbol_count={len(applied_theme_position_limits)}"
+                    ),
+                    scope=CoverageScope.PORTFOLIO,
+                    risk_level=theme_event_level,
+                )
+            )
+
+        metadata = {
+            "candidate_symbols": list(candidate_symbols),
+            "unblocked_symbols": list(unblocked_symbols),
+            "rule_based": True,
+        }
+        if theme_enabled:
+            metadata.update(
+                {
+                    "theme_risk_guard_enabled": True,
+                    "theme_risk_flags": list(theme_risk_flags),
+                    "theme_position_limits": dict(applied_theme_position_limits),
+                    "theme_risk_by_symbol": theme_risk_by_symbol,
+                }
+            )
 
         return RiskDecision(
             status=status,
@@ -113,11 +183,7 @@ class RiskGuard(BaseAgent):
             position_limits=position_limits,
             reasons=reasons,
             events=events,
-            metadata={
-                "candidate_symbols": list(candidate_symbols),
-                "unblocked_symbols": list(unblocked_symbols),
-                "rule_based": True,
-            },
+            metadata=metadata,
         )
 
     @staticmethod
@@ -134,6 +200,83 @@ class RiskGuard(BaseAgent):
     def _get_float(mapping: Mapping[str, Any], key: str, default: float) -> float:
         value = mapping.get(key, default)
         return float(default if value is None else value)
+
+    @staticmethod
+    def _optional_clamped_float(value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(numeric):
+            return None
+        return max(0.0, min(1.0, numeric))
+
+    @staticmethod
+    def _as_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        text = str(value).strip().lower()
+        if text in {"", "0", "false", "no", "off"}:
+            return False
+        return True
+
+    @staticmethod
+    def _sanitize_text_list(value: Any) -> list[str]:
+        if isinstance(value, (str, bytes)):
+            items = [value]
+        else:
+            try:
+                items = list(value or [])
+            except TypeError:
+                items = []
+        result: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            text = str(item or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            result.append(text)
+        return result
+
+    @classmethod
+    def _sanitize_position_limits(cls, value: Any) -> dict[str, float]:
+        if not isinstance(value, Mapping):
+            return {}
+        limits: dict[str, float] = {}
+        for symbol, cap_value in value.items():
+            symbol_text = str(symbol or "").strip()
+            cap = cls._optional_clamped_float(cap_value)
+            if not symbol_text or cap is None:
+                continue
+            limits[symbol_text] = cap
+        return limits
+
+    @classmethod
+    def _compact_theme_risk_by_symbol(cls, value: Any) -> dict[str, Any]:
+        if not isinstance(value, Mapping):
+            return {}
+        compact: dict[str, Any] = {}
+        for symbol, metadata in list(value.items())[:50]:
+            symbol_text = str(symbol or "").strip()
+            if not symbol_text:
+                continue
+            if not isinstance(metadata, Mapping):
+                compact[symbol_text] = {"available": False}
+                continue
+            compact[symbol_text] = {
+                "available": bool(metadata.get("available", False)),
+                "phase": str(metadata.get("phase") or ""),
+                "primary_theme_id": str(metadata.get("primary_theme_id") or ""),
+                "primary_theme_name": str(metadata.get("primary_theme_name") or ""),
+                "symbol_score": cls._optional_clamped_float(metadata.get("symbol_score")) or 0.0,
+                "risk_flags": cls._sanitize_text_list(metadata.get("risk_flags", [])),
+            }
+        return compact
 
     @staticmethod
     def _collect_candidate_symbols(

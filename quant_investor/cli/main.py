@@ -111,6 +111,19 @@ def _print_json(payload) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
 
 
+def _parse_boolish(value: str | bool | None) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return True
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"expected boolean value, got {value!r}")
+
+
 def run_web_api(
     *,
     host: str | None = None,
@@ -264,10 +277,25 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     market_maintain.add_argument("--years", type=int, default=3)
     market_maintain.add_argument("--workers", type=int, default=4)
-    market_maintain.add_argument("--batch-size", type=int, default=50)
+    market_maintain.add_argument("--batch-size", type=int, default=None)
     market_maintain.add_argument("--max-rounds", type=int, default=1)
-    market_maintain.add_argument("--fail-on-incomplete", action="store_true")
+    market_maintain.add_argument("--fail-on-incomplete", nargs="?", const=True, default=False, type=_parse_boolish)
     market_maintain.add_argument("--allowed-stale-symbols", nargs="*")
+    market_maintain.add_argument("--staged", action="store_true")
+    market_maintain.add_argument("--resume", action="store_true")
+    market_maintain.add_argument("--max-batches-per-run", type=int, default=1)
+    market_maintain.add_argument("--min-symbol-success-rate", type=float, default=0.95)
+    market_maintain.add_argument("--target-date", default="auto")
+    market_maintain.add_argument("--daily-window", action="store_true")
+    market_maintain.add_argument(
+        "--storage-mode",
+        choices=["auto", "legacy", "parquet-direct"],
+        default="auto",
+        help=(
+            "CN 日更存储路径；auto 对 CN 非 staged 解析为 parquet-direct，"
+            "staged 仍使用受控批次状态机。legacy 仅保留非 CN 兼容路径。"
+        ),
+    )
 
     market_download = market_subparsers.add_parser(
         "download",
@@ -304,7 +332,7 @@ def _build_parser() -> argparse.ArgumentParser:
     market_fundamental.add_argument("--as-of", default="")
     market_fundamental.add_argument("--workers", type=int, default=4)
     market_fundamental.add_argument("--raw-input-dir", default="")
-    market_fundamental.add_argument("--data-root", default="data/clean/cn_fundamental")
+    market_fundamental.add_argument("--data-root", default="data/parquet/cn")
     market_fundamental.add_argument(
         "--snapshot-root",
         default="data/cn_market_full/_snapshots/fundamental",
@@ -524,15 +552,23 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.command == "market" and args.market_command == "maintain":
+        maintenance_batch_size = args.batch_size if args.batch_size is not None else (200 if args.staged else 50)
         run_market_maintenance(
             market=args.market,
             categories=args.categories,
             years=args.years,
             max_workers=args.workers,
-            batch_size=args.batch_size,
+            batch_size=maintenance_batch_size,
             max_rounds=args.max_rounds,
             fail_on_incomplete=args.fail_on_incomplete,
             allowed_stale_symbols=args.allowed_stale_symbols,
+            storage_mode=args.storage_mode,
+            staged=args.staged,
+            resume=args.resume,
+            max_batches_per_run=args.max_batches_per_run,
+            min_symbol_success_rate=args.min_symbol_success_rate,
+            target_date=args.target_date,
+            daily_window=args.daily_window,
         )
         return
 

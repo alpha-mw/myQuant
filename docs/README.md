@@ -17,8 +17,11 @@ is `./run_web.sh`; the Python CLI entrypoint is `quant-investor`.
 ## Runtime Notes
 
 - `quant-investor research run` executes the current single mainline.
-- `quant-investor market maintain` refreshes local market data when live
-  credentials are intentionally available.
+- `quant-investor market maintain --staged` runs bounded CN staged maintenance:
+  it validates Parquet canonical health, fills only target-date gaps in limited
+  batches, and writes progress artifacts without blocking formal review.
+- `quant-investor market maintain` without `--staged` preserves the legacy
+  maintenance path for explicit full refresh work.
 - `quant-investor market download` is a compatibility alias for the maintenance
   path.
 - `quant-investor web` serves the FastAPI research workspace backend and the

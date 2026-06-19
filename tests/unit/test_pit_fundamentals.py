@@ -61,7 +61,7 @@ def test_fin_ocf_to_profit_visible_only_after_availability_and_zero_profit_nan(t
             },
         ],
         columns=PIT_COLUMNS,
-    ).to_csv(metadata_dir / "fundamental_pit_series.csv", index=False)
+    ).to_parquet(metadata_dir / "fundamental_pit_series.parquet", index=False)
 
     dates = pd.to_datetime(["2024-04-29", "2024-04-30", "2024-05-02"])
     matrix, diagnostics = build_fin_ocf_to_profit_matrix(
@@ -107,7 +107,7 @@ def test_repeated_direct_revision_deduplicates_by_availability(tmp_path):
             },
         ],
         columns=PIT_COLUMNS,
-    ).to_csv(metadata_dir / "fundamental_pit_series.csv", index=False)
+    ).to_parquet(metadata_dir / "fundamental_pit_series.parquet", index=False)
 
     matrix, _diagnostics = build_fin_ocf_to_profit_matrix(
         pd.to_datetime(["2024-04-30"]),
@@ -120,14 +120,15 @@ def test_repeated_direct_revision_deduplicates_by_availability(tmp_path):
 
 
 def test_fin_ocf_to_profit_prefers_canonical_daily_mart(tmp_path):
-    mart_root = tmp_path / "clean" / "cn_fundamental"
-    mart_root.mkdir(parents=True)
+    mart_root = tmp_path / "parquet" / "cn"
+    daily_root = mart_root / "fundamental_daily"
+    daily_root.mkdir(parents=True)
     pd.DataFrame(
         [
             {"ts_code": "000001.SZ", "trade_date": "2024-04-30", "fin_ocf_to_profit": 3.0},
             {"ts_code": "000001.SZ", "trade_date": "2024-05-02", "fin_ocf_to_profit": 4.0},
         ]
-    ).to_csv(mart_root / "fundamental_daily.csv", index=False)
+    ).to_parquet(daily_root / "part.parquet", index=False)
     metadata_dir = tmp_path / "metadata"
     metadata_dir.mkdir()
     pd.DataFrame(
@@ -145,7 +146,7 @@ def test_fin_ocf_to_profit_prefers_canonical_daily_mart(tmp_path):
             }
         ],
         columns=PIT_COLUMNS,
-    ).to_csv(metadata_dir / "fundamental_pit_series.csv", index=False)
+    ).to_parquet(metadata_dir / "fundamental_pit_series.parquet", index=False)
 
     matrix, diagnostics = build_fin_ocf_to_profit_matrix(
         pd.to_datetime(["2024-04-30", "2024-05-02"]),

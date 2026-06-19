@@ -105,7 +105,9 @@ def _price_series(frame: pd.DataFrame) -> pd.Series:
 
 
 def _load_history_frame(path: Path) -> pd.DataFrame:
-    frame = pd.read_csv(path)
+    if path.suffix.lower() != ".parquet":
+        raise ValueError("CN aggressive history frames must be read from Parquet")
+    frame = pd.read_parquet(path)
     if frame.empty:
         return frame
     frame = frame.sort_values("trade_date").reset_index(drop=True)

@@ -24,10 +24,34 @@ def _daily_frame(symbol: str = "000001.SZ") -> pd.DataFrame:
     )
 
 
-def _write_local_daily(root):
-    path = root / "hs300"
-    path.mkdir(parents=True)
-    _daily_frame().to_csv(path / "000001.SZ.csv", index=False)
+def _write_parquet_market_data(root):
+    data_root = root / "data"
+    parquet_root = data_root / "parquet" / "cn"
+    bars_root = parquet_root / "bars"
+    serving_root = data_root / "parquet_serving" / "cn" / "bars"
+    manifest_path = parquet_root / "_snapshots" / "fixture.json"
+    frame = _daily_frame()
+    (bars_root / "year=2024").mkdir(parents=True)
+    (serving_root / "symbol=000001.SZ").mkdir(parents=True)
+    frame.to_parquet(bars_root / "year=2024" / "part.parquet", index=False)
+    frame.to_parquet(serving_root / "symbol=000001.SZ" / "bars.parquet", index=False)
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(json.dumps({"snapshot_id": "fixture"}), encoding="utf-8")
+    (parquet_root / "_latest.json").write_text(
+        json.dumps(
+            {
+                "status": "OK",
+                "snapshot_id": "fixture",
+                "latest_complete_trade_date": "20240510",
+                "latest_trade_date": "20240510",
+                "table_root": str(bars_root),
+                "derived_serving_root": str(serving_root),
+                "manifest_path": str(manifest_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+    return data_root
 
 
 def _write_fundamental(root):
@@ -50,19 +74,24 @@ def _write_fundamental(root):
                 "forecast_revision": 0.05,
             }
         ]
-    ).to_csv(root / "fundamental_daily.csv", index=False)
+    ).to_parquet(root / "part.parquet", index=False)
     (root / "latest_manifest.json").write_text(
-        json.dumps({"provider_status": "tushare_primary", "source_priority": "tushare_primary"}),
+        json.dumps(
+            {
+                "provider_status": "tushare_primary",
+                "source_priority": "tushare_primary",
+                "storage_backend": "parquet_canonical",
+            }
+        ),
         encoding="utf-8",
     )
 
 
 def test_data_governance_default_is_local_read_only(tmp_path):
-    daily_root = tmp_path / "cn_daily"
+    data_root = _write_parquet_market_data(tmp_path)
     fundamental_root = tmp_path / "cn_fundamental"
     intelligence_root = tmp_path / "cn_intelligence"
     macro_root = tmp_path / "cn_macro"
-    _write_local_daily(daily_root)
     _write_fundamental(fundamental_root)
     frame = _daily_frame()
     intelligence_daily = build_intelligence_daily({"000001.SZ": frame})
@@ -85,7 +114,7 @@ def test_data_governance_default_is_local_read_only(tmp_path):
         market="CN",
         categories=["full_a"],
         as_of="20240510",
-        data_dir=daily_root,
+        data_dir=data_root,
         fundamental_root=fundamental_root,
         intelligence_root=intelligence_root,
         macro_root=macro_root,
@@ -99,6 +128,7 @@ def test_data_governance_default_is_local_read_only(tmp_path):
 
 
 def test_data_governance_allow_live_uses_explicit_maintenance_path(tmp_path, monkeypatch):
+    data_root = _write_parquet_market_data(tmp_path)
     calls = {"fundamental": 0, "intelligence": 0, "macro": 0}
 
     def _fake_fundamental(**kwargs):
@@ -126,7 +156,7 @@ def test_data_governance_allow_live_uses_explicit_maintenance_path(tmp_path, mon
         categories=["full_a"],
         as_of="20240510",
         allow_live=True,
-        data_dir=tmp_path / "empty_daily",
+        data_dir=data_root,
         fundamental_root=tmp_path / "fundamental",
         intelligence_root=tmp_path / "intelligence",
         macro_root=tmp_path / "macro",

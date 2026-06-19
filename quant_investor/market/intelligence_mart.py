@@ -11,7 +11,7 @@ import pandas as pd
 
 from quant_investor.market.branch_readiness import SOURCE_TUSHARE
 
-DEFAULT_INTELLIGENCE_ROOT = Path("data/clean/cn_intelligence")
+DEFAULT_INTELLIGENCE_ROOT = Path("data/parquet/cn/intelligence_daily")
 DEFAULT_RAW_SNAPSHOT_ROOT = Path("data/cn_market_full/_snapshots/intelligence")
 INTELLIGENCE_FIELDS = (
     "intelligence_score",
@@ -105,9 +105,9 @@ def write_intelligence_mart(
     data_dir.mkdir(parents=True, exist_ok=True)
     snapshot_dir.mkdir(parents=True, exist_ok=True)
     frame = daily.copy() if daily is not None else pd.DataFrame()
-    daily_path = data_dir / "intelligence_daily.csv"
+    daily_path = data_dir / "part.parquet"
     raw_path = snapshot_dir / f"{run_id}.csv"
-    frame.to_csv(daily_path, index=False)
+    frame.to_parquet(daily_path, index=False)
     frame.to_csv(raw_path, index=False)
     coverage = 0.0 if frame.empty else float(frame[list(INTELLIGENCE_FIELDS)].notna().sum().sum() / max(len(frame) * len(INTELLIGENCE_FIELDS), 1))
     frame_priority = ""
@@ -126,6 +126,8 @@ def write_intelligence_mart(
         "daily_rows": int(len(frame)),
         "field_set": list(INTELLIGENCE_FIELDS),
         "coverage_rate": coverage,
+        "storage_backend": "parquet_canonical",
+        "table": "intelligence_daily",
         "intelligence_daily": str(daily_path),
         "raw_snapshot": str(raw_path),
         "provider_manifest": dict(provider_manifest or {}),

@@ -356,17 +356,16 @@ signals into selection or portfolio construction.
 ## Tushare Daily Download Cleaning Gate
 
 CN Tushare daily downloads now run an offline post-download cleaning hook before
-canonical CSV promotion when `MYQUANT_TUSHARE_AUTO_CLEAN=1`. The hook preserves
+Parquet canonical writes when `MYQUANT_TUSHARE_AUTO_CLEAN=1`. The hook preserves
 the raw merged frame under `data/raw_backups/tushare`, writes row/cell flags,
-quarantines invalid rows, de-duplicates and sorts the cleaned CSV, and emits
+quarantines invalid rows, de-duplicates and sorts the cleaned frame, and emits
 factor-readiness plus storage-audit sidecars. A cleaning pass does not mean the
 file is factor-ready; missing trade calendar, adjusted factor, limit, suspend,
 tradability, or benchmark-membership evidence is reported separately.
 
-CSV remains canonical by default. Optional Parquet shadow files are written only
-when `MYQUANT_TUSHARE_PARQUET_SHADOW_WRITE=1` and an installed pandas Parquet
-backend is available. The storage audit records backend gaps and compatibility
-reasons; CSV deletion remains disabled by default.
+Parquet is the canonical runtime store. CSV deletion flags only apply to legacy
+human export cleanup; production market-data reads must use the Parquet store or
+JSON manifests.
 
 Focused gate:
 

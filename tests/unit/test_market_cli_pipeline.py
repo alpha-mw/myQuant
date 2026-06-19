@@ -42,6 +42,96 @@ def test_market_maintain_cli_dispatches_to_maintenance(monkeypatch):
     assert captured["max_workers"] == 6
     assert captured["max_rounds"] == 3
     assert captured["fail_on_incomplete"] is True
+    assert captured["storage_mode"] == "auto"
+
+
+def test_market_maintain_cli_accepts_parquet_direct_storage_mode(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def _run_market_maintenance(**kwargs):
+        captured.update(kwargs)
+        return {"status": "ok"}
+
+    monkeypatch.setattr(cli_main, "run_market_maintenance", _run_market_maintenance)
+
+    cli_main.main(
+        [
+            "market",
+            "maintain",
+            "--market",
+            "CN",
+            "--storage-mode",
+            "parquet-direct",
+        ]
+    )
+
+    assert captured["market"] == "CN"
+    assert captured["storage_mode"] == "parquet-direct"
+
+
+def test_market_maintain_cli_dispatches_staged_options(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def _run_market_maintenance(**kwargs):
+        captured.update(kwargs)
+        return {"status": "ok"}
+
+    monkeypatch.setattr(cli_main, "run_market_maintenance", _run_market_maintenance)
+
+    cli_main.main(
+        [
+            "market",
+            "maintain",
+            "--market",
+            "CN",
+            "--staged",
+            "--resume",
+            "--batch-size",
+            "200",
+            "--max-batches-per-run",
+            "2",
+            "--min-symbol-success-rate",
+            "0.95",
+            "--target-date",
+            "20260316",
+            "--daily-window",
+            "--fail-on-incomplete",
+            "false",
+        ]
+    )
+
+    assert captured["market"] == "CN"
+    assert captured["staged"] is True
+    assert captured["resume"] is True
+    assert captured["batch_size"] == 200
+    assert captured["max_batches_per_run"] == 2
+    assert captured["min_symbol_success_rate"] == 0.95
+    assert captured["target_date"] == "20260316"
+    assert captured["daily_window"] is True
+    assert captured["fail_on_incomplete"] is False
+
+
+def test_market_maintain_cli_uses_staged_batch_size_default(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def _run_market_maintenance(**kwargs):
+        captured.update(kwargs)
+        return {"status": "ok"}
+
+    monkeypatch.setattr(cli_main, "run_market_maintenance", _run_market_maintenance)
+
+    cli_main.main(
+        [
+            "market",
+            "maintain",
+            "--market",
+            "CN",
+            "--staged",
+        ]
+    )
+
+    assert captured["batch_size"] == 200
+    assert captured["staged"] is True
 
 
 def test_market_analyze_cli_passes_agent_layer_args(monkeypatch):
@@ -141,10 +231,13 @@ def test_cli_timeout_defaults_are_long_running():
 
     assert research_args.agent_timeout == 180.0
     assert research_args.master_timeout == 900.0
+    assert research_args.max_candidates == 500
     assert analyze_args.agent_timeout == 180.0
     assert analyze_args.master_timeout == 900.0
+    assert analyze_args.max_candidates == 500
     assert run_args.agent_timeout == 180.0
     assert run_args.master_timeout == 900.0
+    assert run_args.max_candidates == 500
 
 
 def test_market_run_cli_dispatches_to_unified_pipeline(monkeypatch):

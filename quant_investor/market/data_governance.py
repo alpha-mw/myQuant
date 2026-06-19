@@ -9,11 +9,14 @@ import pandas as pd
 
 from quant_investor.market.branch_readiness import (
     DEFAULT_READINESS_ROOT,
+    DEFAULT_FUNDAMENTAL_ROOT,
+    DEFAULT_INTELLIGENCE_ROOT,
+    DEFAULT_MACRO_ROOT,
     assess_branch_data_readiness,
     make_run_id,
     write_branch_readiness_report,
 )
-from quant_investor.market.shared_csv_reader import SharedCSVReader
+from quant_investor.market.market_data_reader import MarketDataReader
 
 
 def _normalize_categories(categories: Sequence[str] | str | None, category: str = "") -> list[str]:
@@ -33,8 +36,8 @@ def _read_local_frames(
     category: str,
     as_of: str,
     data_dir: str | Path | None = None,
-) -> tuple[dict[str, pd.DataFrame], dict[str, Any], SharedCSVReader]:
-    reader = SharedCSVReader(market=market, data_dir=data_dir)
+) -> tuple[dict[str, pd.DataFrame], dict[str, Any], MarketDataReader]:
+    reader = MarketDataReader(market=market, data_root=data_dir or "data", mode_policy="strict")
     symbols = reader.list_symbols(universe_key=category, category=None if category == "full_a" else category)
     frames: dict[str, pd.DataFrame] = {}
     read_results: dict[str, Any] = {}
@@ -60,9 +63,9 @@ def run_data_governance(
     allow_public_fallback: bool = False,
     output_dir: str | Path = DEFAULT_READINESS_ROOT,
     data_dir: str | Path | None = None,
-    fundamental_root: str | Path = "data/clean/cn_fundamental",
-    intelligence_root: str | Path = "data/clean/cn_intelligence",
-    macro_root: str | Path = "data/clean/cn_macro",
+    fundamental_root: str | Path = DEFAULT_FUNDAMENTAL_ROOT,
+    intelligence_root: str | Path = DEFAULT_INTELLIGENCE_ROOT,
+    macro_root: str | Path = DEFAULT_MACRO_ROOT,
 ) -> dict[str, Any]:
     """Audit branch data readiness and optionally refresh local marts.
 
@@ -110,7 +113,7 @@ def run_data_governance(
             as_of=as_of,
             data_dir=data_dir,
         )
-        effective_as_of = as_of or reader.latest_trade_date(universe_key=selected_category)
+        effective_as_of = as_of or str(reader.snapshot().get("latest_complete_trade_date") or "")
         report = assess_branch_data_readiness(
             frames=frames,
             read_results=read_results,

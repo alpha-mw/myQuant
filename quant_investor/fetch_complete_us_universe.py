@@ -9,24 +9,15 @@ Fetch Complete US Stock Universe - 获取完整美股成分股
 - Russell 2000: 官方或扩展列表
 """
 
-import pandas as pd
-import requests
 from typing import List, Dict
 import json
 import os
 
 
 def fetch_sp500() -> List[str]:
-    """获取标普500完整成分股 (503只)"""
-    try:
-        url = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/master/data/constituents.csv"
-        df = pd.read_csv(url)
-        symbols = df['Symbol'].tolist()
-        print(f"✅ S&P 500: {len(symbols)} 只股票")
-        return symbols
-    except Exception as e:
-        print(f"❌ S&P 500获取失败: {e}")
-        return []
+    """获取标普500完整成分股 (503只)."""
+    print("❌ S&P 500获取失败: production CSV source disabled after Parquet cutover")
+    return []
 
 
 def fetch_nasdaq100() -> List[str]:

@@ -11,7 +11,7 @@ from quant_investor.agent_protocol import BranchVerdict, SymbolResearchPacket
 from quant_investor.branch_contracts import BranchResult, UnifiedDataBundle
 from quant_investor.factors.runtime import score_with_mined_factors
 from quant_investor.market.dag.common import _dedupe_texts
-from quant_investor.market.shared_csv_reader import SharedCSVReadResult
+from quant_investor.market.read_result import MarketDataReadResult
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:
@@ -553,7 +553,7 @@ def _build_cross_section_quant(
 
 def _build_symbol_tradability(
     symbol: str,
-    read_result: SharedCSVReadResult,
+    read_result: MarketDataReadResult,
     *,
     company_name: str = "",
     sector: str = "",
@@ -596,7 +596,7 @@ def _build_symbol_research_packet(
     universe_key: str,
     category: str,
     branch_verdicts: dict[str, BranchVerdict],
-    read_result: SharedCSVReadResult,
+    read_result: MarketDataReadResult,
     macro_verdict: BranchVerdict,
     global_quant_verdict: BranchVerdict,
     review_bundle: Any | None,
@@ -648,7 +648,7 @@ def _build_symbol_bundle(
     *,
     symbol: str,
     frame: pd.DataFrame,
-    read_result: SharedCSVReadResult,
+    read_result: MarketDataReadResult,
     market: str,
     market_snapshot: Mapping[str, Any],
     branch_data_readiness: Mapping[str, Any] | None = None,

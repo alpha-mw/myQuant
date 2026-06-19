@@ -40,7 +40,7 @@ from quant_investor.data.sources.tushare_cn import TushareDataSource
 from quant_investor.data.sources.tushare_us import USTushareDataSource
 from quant_investor.data.sources.yahoo import YahooDataSource
 
-# USLocalCSVDataSource & USCompositeDataSource — inline for backward compat
+# USLocalParquetDataSource & USCompositeDataSource — inline for backward compat
 import pandas as pd
 
 
@@ -81,19 +81,64 @@ def normalize_kline_frame_for_model(
     return normalized
 
 
-class USLocalCSVDataSource(DataSourceBase):
-    """本地美股 CSV 数据源，读取 data/us_market_full。"""
+class USLocalParquetDataSource(DataSourceBase):
+    """本地美股 Parquet 数据源，读取 data/parquet_serving/us/bars。"""
+
+    STANDARD_COLUMNS = [
+        "date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "amount",
+        "adj_close",
+    ]
 
     def __init__(self, data_dir=None):
-        from quant_investor.data.storage.csv_store import CSVStore
-        default_dir = Path(__file__).resolve().parents[1] / "data" / "us_market_full"
-        self._store = CSVStore(data_dir or default_dir)
+        default_dir = (
+            Path(__file__).resolve().parents[1]
+            / "data"
+            / "parquet_serving"
+            / "us"
+            / "bars"
+        )
+        self._base_dir = Path(data_dir or default_dir)
+        self._index: dict[str, Path] = {}
+
+    def _ensure_index(self) -> None:
+        self._index = {}
+        if not self._base_dir.exists():
+            return
+        for path in sorted(self._base_dir.rglob("*.parquet")):
+            symbol = path.stem.upper()
+            parent = path.parent.name
+            if parent.startswith("symbol="):
+                symbol = parent.split("symbol=", 1)[-1].strip().upper()
+            if symbol:
+                self._index[symbol] = path
+
+    def _resolve_path(self, symbol: str) -> Path:
+        normalized = str(symbol or "").strip().upper()
+        if not self._index:
+            self._ensure_index()
+        return self._index.get(
+            normalized,
+            self._base_dir / f"symbol={normalized}" / "bars.parquet",
+        )
 
     def get_ohlcv(self, symbol, start_date, end_date, freq="1d"):
-        return self._store.read(symbol, start_date, end_date)
+        path = self._resolve_path(symbol)
+        if not path.exists():
+            return pd.DataFrame(columns=self.STANDARD_COLUMNS)
+        frame = pd.read_parquet(path)
+        normalized = _normalize_ohlcv_frame(frame)
+        if normalized.empty:
+            return pd.DataFrame(columns=self.STANDARD_COLUMNS)
+        return _filter_ohlcv_by_date(normalized, start_date, end_date)
 
     def get_fundamental(self, symbol):
-        fundamental_path = self._store._base_dir / f"{symbol}_fundamental.json"
+        fundamental_path = self._base_dir / f"{str(symbol).upper()}_fundamental.json"
         if fundamental_path.exists():
             import json
             try:
@@ -115,7 +160,7 @@ class USCompositeDataSource(DataSourceBase):
     """美股复合数据源：Tushare（高积分）→ Yahoo Finance → SEC EDGAR。"""
 
     def __init__(self, local_data_dir=None, max_staleness_days=7):
-        self._local = USLocalCSVDataSource(local_data_dir)
+        self._local = USLocalParquetDataSource(local_data_dir)
         self._tushare = USTushareDataSource()
         self._yahoo = YahooDataSource()
         self._max_staleness_days = max_staleness_days
@@ -131,7 +176,7 @@ class USCompositeDataSource(DataSourceBase):
                 pd.notna(latest_date)
                 and latest_date >= requested_end - pd.Timedelta(days=self._max_staleness_days)
             ):
-                self.last_ohlcv_source = "local_csv"
+                self.last_ohlcv_source = "local_parquet"
                 return local_df
 
         tushare_df = self._tushare.get_ohlcv(symbol, start_date, end_date)
@@ -145,7 +190,7 @@ class USCompositeDataSource(DataSourceBase):
             return yahoo_df
 
         if not local_df.empty:
-            self.last_ohlcv_source = "local_csv_stale"
+            self.last_ohlcv_source = "local_parquet_stale"
             return local_df
 
         self.last_ohlcv_source = "unavailable"

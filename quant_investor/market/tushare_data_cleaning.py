@@ -839,10 +839,7 @@ def _csv_row_count(path: str | Path | None) -> int:
         with resolved.open("r", encoding="utf-8") as handle:
             return max(sum(1 for _line in handle) - 1, 0)
     except UnicodeDecodeError:
-        try:
-            return len(pd.read_csv(resolved))
-        except Exception:
-            return 0
+        return 0
 
 
 def write_parquet_shadow_if_supported(
@@ -2496,42 +2493,70 @@ def clean_tushare_file(
     metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     source = Path(path)
-    if source.suffix.lower() == ".parquet":
-        supported, backend, warnings = detect_parquet_backend()
-        if not supported or backend is None:
-            generated = generated_at or _now_iso()
-            report = _build_cleaning_report(
-                profile=_resolve_profile(table_name, profile),
-                generated_at=generated,
-                source_path=source,
-                raw_backup_path=None,
-                cleaned_path=None,
-                parquet_shadow_path=None,
-                quarantine_path=None,
-                row_flags_path=None,
-                cell_flags_path=None,
-                raw_row_count=0,
-                cleaned_row_count=0,
-                dropped_row_count=0,
-                quarantined_row_count=0,
-                duplicate_row_count=0,
-                conflicting_duplicate_count=0,
-                latest_trade_date=None,
-                issues=[
-                    _issue(
-                        table_name=table_name,
-                        issue_code=STORAGE_ISSUE_PARQUET_BACKEND_MISSING,
-                        severity=CLEANING_ISSUE_BLOCKER,
-                        message="parquet input requested but no backend is available",
-                        metadata={"warnings": warnings},
-                    )
-                ],
-                metadata=dict(metadata or {}),
-            )
-            return {"cleaning_report": report, "cleaning_status": report.status}
-        frame = pd.read_parquet(source, engine=backend)
-    else:
-        frame = pd.read_csv(source)
+    if source.suffix.lower() != ".parquet":
+        generated = generated_at or _now_iso()
+        report = _build_cleaning_report(
+            profile=_resolve_profile(table_name, profile),
+            generated_at=generated,
+            source_path=source,
+            raw_backup_path=None,
+            cleaned_path=None,
+            parquet_shadow_path=None,
+            quarantine_path=None,
+            row_flags_path=None,
+            cell_flags_path=None,
+            raw_row_count=0,
+            cleaned_row_count=0,
+            dropped_row_count=0,
+            quarantined_row_count=0,
+            duplicate_row_count=0,
+            conflicting_duplicate_count=0,
+            latest_trade_date=None,
+            issues=[
+                _issue(
+                    table_name=table_name,
+                    issue_code="unsupported_runtime_input_format",
+                    severity=CLEANING_ISSUE_BLOCKER,
+                    message="production Tushare cleaning reads Parquet inputs only",
+                    metadata={"source_path": str(source)},
+                )
+            ],
+            metadata=dict(metadata or {}),
+        )
+        return {"cleaning_report": report, "cleaning_status": report.status}
+    supported, backend, warnings = detect_parquet_backend()
+    if not supported or backend is None:
+        generated = generated_at or _now_iso()
+        report = _build_cleaning_report(
+            profile=_resolve_profile(table_name, profile),
+            generated_at=generated,
+            source_path=source,
+            raw_backup_path=None,
+            cleaned_path=None,
+            parquet_shadow_path=None,
+            quarantine_path=None,
+            row_flags_path=None,
+            cell_flags_path=None,
+            raw_row_count=0,
+            cleaned_row_count=0,
+            dropped_row_count=0,
+            quarantined_row_count=0,
+            duplicate_row_count=0,
+            conflicting_duplicate_count=0,
+            latest_trade_date=None,
+            issues=[
+                _issue(
+                    table_name=table_name,
+                    issue_code=STORAGE_ISSUE_PARQUET_BACKEND_MISSING,
+                    severity=CLEANING_ISSUE_BLOCKER,
+                    message="parquet input requested but no backend is available",
+                    metadata={"warnings": warnings},
+                )
+            ],
+            metadata=dict(metadata or {}),
+        )
+        return {"cleaning_report": report, "cleaning_status": report.status}
+    frame = pd.read_parquet(source, engine=backend)
     return clean_tushare_dataframe_to_file(
         frame,
         canonical_path=source,

@@ -12,7 +12,7 @@ from quant_investor.factors.pit_fundamentals import (
 from quant_investor.market.fundamental_mart import (
     DERIVED_DAILY_FIELDS,
     _fetch_tushare_tables,
-    _resolve_symbols_from_daily_root,
+    _resolve_symbols_from_parquet_universe,
     run_cn_fundamental_maintenance,
     write_fundamental_mart,
 )
@@ -123,6 +123,50 @@ def _raw_tables() -> dict[str, pd.DataFrame]:
     }
 
 
+def _write_parquet_market_data(root, symbols):
+    data_root = root / "data"
+    parquet_root = data_root / "parquet" / "cn"
+    bars_root = parquet_root / "bars"
+    serving_root = data_root / "parquet_serving" / "cn" / "bars"
+    manifest_path = parquet_root / "_snapshots" / "fixture.json"
+    rows = []
+    for symbol in symbols:
+        rows.append(
+            {
+                "ts_code": symbol,
+                "trade_date": "20240510",
+                "open": 10.0,
+                "high": 10.5,
+                "low": 9.9,
+                "close": 10.2,
+                "vol": 1000.0,
+                "amount": 10000.0,
+            }
+        )
+        serving_dir = serving_root / f"symbol={symbol}"
+        serving_dir.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame([rows[-1]]).to_parquet(serving_dir / "bars.parquet", index=False)
+    (bars_root / "year=2024").mkdir(parents=True)
+    pd.DataFrame(rows).to_parquet(bars_root / "year=2024" / "part.parquet", index=False)
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(json.dumps({"snapshot_id": "fixture"}), encoding="utf-8")
+    (parquet_root / "_latest.json").write_text(
+        json.dumps(
+            {
+                "status": "OK",
+                "snapshot_id": "fixture",
+                "latest_complete_trade_date": "20240510",
+                "latest_trade_date": "20240510",
+                "table_root": str(bars_root),
+                "derived_serving_root": str(serving_root),
+                "manifest_path": str(manifest_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+    return data_root
+
+
 def test_fundamental_mart_pit_join_readiness_and_quarantine(tmp_path):
     artifacts, readiness = write_fundamental_mart(
         _raw_tables(),
@@ -132,7 +176,7 @@ def test_fundamental_mart_pit_join_readiness_and_quarantine(tmp_path):
         run_id="fixture",
     )
 
-    daily = pd.read_csv(artifacts.fundamental_daily_path)
+    daily = pd.read_parquet(artifacts.fundamental_daily_path)
     symbol_daily = daily[daily["ts_code"] == "000001.SZ"].set_index("trade_date")
     assert symbol_daily.loc["2024-04-29", "fin_roe"] == 0.09
     assert symbol_daily.loc["2024-04-30", "fin_roe"] == 0.13
@@ -144,7 +188,7 @@ def test_fundamental_mart_pit_join_readiness_and_quarantine(tmp_path):
     assert symbol_daily.loc["2024-04-30", "forecast_revision"] == 0.11
     assert readiness["gate2_passed"] is True
     assert readiness["coverage_rate"] >= 0.60
-    quarantine = pd.read_csv(artifacts.quarantine_path)
+    quarantine = pd.read_parquet(artifacts.quarantine_path)
     assert "missing_ts_code_end_date_or_announcement_date" in set(quarantine["quarantine_reason"])
     assert artifacts.readiness_json_path.exists()
     assert json.loads(artifacts.readiness_json_path.read_text())["gate2_passed"] is True
@@ -163,7 +207,7 @@ def test_legacy_fetched_at_fallback_disabled_for_production(tmp_path):
                 "fetched_at": "2024-05-10",
             }
         ]
-    ).to_csv(metadata_dir / "fundamental_series.csv", index=False)
+    ).to_parquet(metadata_dir / "fundamental_series.parquet", index=False)
 
     production = load_fundamental_pit_series(
         metadata_dir=metadata_dir,
@@ -213,7 +257,7 @@ def test_daily_basic_uses_local_stock_list_sector(tmp_path, monkeypatch):
             {"ts_code": "000002.SZ", "industry": "全国地产"},
             {"ts_code": "000003.SZ", "industry": "医疗服务"},
         ]
-    ).to_csv(metadata_root / "stock_list.csv", index=False)
+    ).to_parquet(metadata_root / "stock_list.parquet", index=False)
     monkeypatch.setattr(fundamental_mart, "DEFAULT_METADATA_ROOT", metadata_root)
     tables = _raw_tables()
     tables["daily_basic"] = tables["daily_basic"].drop(columns=["sector"])
@@ -226,7 +270,7 @@ def test_daily_basic_uses_local_stock_list_sector(tmp_path, monkeypatch):
         run_id="fixture",
     )
 
-    daily = pd.read_csv(artifacts.fundamental_daily_path)
+    daily = pd.read_parquet(artifacts.fundamental_daily_path)
     sector_by_symbol = daily.groupby("ts_code")["sector"].first().to_dict()
     assert sector_by_symbol["000001.SZ"] == "银行"
     assert sector_by_symbol["000002.SZ"] == "全国地产"
@@ -236,7 +280,7 @@ def test_fundamental_maintenance_offline_input_writes_expected_artifacts(tmp_pat
     raw_dir = tmp_path / "raw"
     raw_dir.mkdir()
     for table, frame in _raw_tables().items():
-        frame.to_csv(raw_dir / f"{table}.csv", index=False)
+        frame.to_parquet(raw_dir / f"{table}.parquet", index=False)
 
     result = run_cn_fundamental_maintenance(
         market="CN",
@@ -257,19 +301,13 @@ def test_fundamental_maintenance_offline_input_writes_expected_artifacts(tmp_pat
     assert manifest["raw_row_counts"]["daily_basic"] > 0
 
 
-def test_full_a_universe_resolves_all_physical_daily_directories(tmp_path):
-    daily_root = tmp_path / "cn_daily"
-    for directory, symbol in {
-        "hs300": "000001.SZ",
-        "zz500": "000002.SZ",
-        "zz1000": "000003.SZ",
-        "other": "000004.SZ",
-    }.items():
-        target = daily_root / directory
-        target.mkdir(parents=True)
-        pd.DataFrame({"trade_date": ["20240510"], "close": [10.0]}).to_csv(target / f"{symbol}.csv", index=False)
+def test_full_a_universe_resolves_from_parquet_serving_inventory(tmp_path):
+    data_root = _write_parquet_market_data(
+        tmp_path,
+        ["000001.SZ", "000002.SZ", "000003.SZ", "000004.SZ"],
+    )
 
-    symbols = _resolve_symbols_from_daily_root(daily_root, ["full_a"])
+    symbols = _resolve_symbols_from_parquet_universe(data_root, ["full_a"])
 
     assert symbols == ["000001.SZ", "000002.SZ", "000003.SZ", "000004.SZ"]
 

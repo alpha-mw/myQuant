@@ -19,6 +19,7 @@ from typing import Any
 import pandas as pd
 
 from quant_investor.market.download_us import FullMarketDownloader
+from quant_investor.market.market_data_reader import MarketDataReader
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -73,28 +74,41 @@ def _parse_cap(text: str) -> tuple[str, int]:
     return symbol.upper(), int(max_shares)
 
 
-def _read_csv_if_exists(path: Path) -> pd.DataFrame | None:
-    if not path.exists():
-        return None
-    return pd.read_csv(path)
+def _us_market_reader() -> MarketDataReader:
+    return MarketDataReader(market="US", data_root=PROJECT_ROOT / "data")
+
+
+def _read_us_symbol_frame(
+    symbol: str,
+    *,
+    reader: MarketDataReader | None = None,
+    columns: list[str] | None = None,
+) -> pd.DataFrame:
+    active_reader = reader or _us_market_reader()
+    try:
+        return active_reader.read_symbol_frame(
+            symbol,
+            universe_key="full_us",
+            columns=columns,
+        ).frame
+    except Exception:
+        return pd.DataFrame()
 
 
 def _load_latest_prices(symbols: list[str]) -> dict[str, dict[str, Any]]:
-    market_root = PROJECT_ROOT / "data" / "us_market_full"
+    reader = _us_market_reader()
     result: dict[str, dict[str, Any]] = {}
     for symbol in symbols:
-        matches = list(market_root.glob(f"*/*{symbol}.csv"))
-        if not matches:
-            continue
-        frame = pd.read_csv(matches[0])
+        frame = _read_us_symbol_frame(symbol, reader=reader)
         if frame.empty:
             continue
         row = frame.iloc[-1]
+        date_value = row.get("trade_date") or row.get("Date") or row.get("date")
+        close_value = row.get("close") if "close" in frame.columns else row.get("Close")
         result[symbol] = {
-            "category": matches[0].parent.name,
-            "date": str(row["Date"]),
-            "close": float(row["Close"]),
-            "path": str(matches[0]),
+            "category": "full_us",
+            "date": str(date_value),
+            "close": float(close_value),
         }
     return result
 
@@ -139,22 +153,33 @@ def _safe_pct(value: float, base: float) -> float:
 
 
 def _compute_category_breadth(category: str, symbols: list[str]) -> dict[str, Any]:
-    market_root = PROJECT_ROOT / "data" / "us_market_full" / category
+    reader = _us_market_reader()
     adv_1d = 0
     adv_20d = 0
     ma20_gt_ma60 = 0
     ret_5d: list[float] = []
     ret_20d: list[float] = []
     covered = 0
+    try:
+        read_results = reader.read_symbol_frames(
+            symbols,
+            universe_key=category,
+            columns=["ts_code", "trade_date", "close"],
+        )
+    except Exception:
+        read_results = {}
     for symbol in symbols:
-        path = market_root / f"{symbol}.csv"
-        if not path.exists():
-            continue
-        frame = pd.read_csv(path, usecols=["Date", "Close"]).dropna()
+        read_result = read_results.get(symbol)
+        frame = (
+            read_result.frame
+            if read_result is not None
+            else _read_us_symbol_frame(symbol, reader=reader)
+        ).dropna()
         if len(frame) < 61:
             continue
         covered += 1
-        close = frame["Close"].astype(float)
+        close_column = "close" if "close" in frame.columns else "Close"
+        close = frame[close_column].astype(float)
         ret_1d = close.iloc[-1] / close.iloc[-2] - 1
         ret_5 = close.iloc[-1] / close.iloc[-6] - 1
         ret_20 = close.iloc[-1] / close.iloc[-21] - 1
@@ -180,11 +205,13 @@ def _compute_theme_snapshot(name: str, symbols: list[str]) -> dict[str, Any]:
     ret_5d: list[float] = []
     ret_20d: list[float] = []
     ma20_gt_ma60 = 0
-    for symbol, meta in prices.items():
-        frame = pd.read_csv(meta["path"], usecols=["Close"]).dropna()
+    reader = _us_market_reader()
+    for symbol in prices:
+        frame = _read_us_symbol_frame(symbol, reader=reader, columns=["ts_code", "trade_date", "close"]).dropna()
         if len(frame) < 61:
             continue
-        close = frame["Close"].astype(float)
+        close_column = "close" if "close" in frame.columns else "Close"
+        close = frame[close_column].astype(float)
         ret_5d.append(float(close.iloc[-1] / close.iloc[-6] - 1))
         ret_20d.append(float(close.iloc[-1] / close.iloc[-21] - 1))
         ma20_gt_ma60 += int(close.tail(20).mean() > close.tail(60).mean())
@@ -225,12 +252,12 @@ def _infer_style_bias(
 
 
 def _load_or_seed_positions(base_dir: Path, initial_cash: float, initial_holdings: list[tuple[str, int, float]]) -> tuple[pd.DataFrame, float, str]:
-    positions_path = base_dir / "latest_positions.csv"
+    positions_path = base_dir / "latest_positions.parquet"
     if positions_path.exists():
-        frame = pd.read_csv(positions_path)
+        frame = pd.read_parquet(positions_path)
         cash = float(frame["cash_balance"].iloc[0]) if "cash_balance" in frame.columns and not frame.empty else initial_cash
         existing_runs = sorted(path.name for path in base_dir.iterdir() if path.is_dir())
-        source_record = existing_runs[-1] if existing_runs else "latest_positions.csv"
+        source_record = existing_runs[-1] if existing_runs else "latest_positions.parquet"
         return frame, cash, source_record
 
     rows = []
@@ -249,9 +276,9 @@ def _load_or_seed_positions(base_dir: Path, initial_cash: float, initial_holding
 
 
 def _seed_trade_log(base_dir: Path, initial_holdings: list[tuple[str, int, float]], initial_cash: float, as_of: str) -> pd.DataFrame:
-    trade_log_path = base_dir / "latest_trade_log.csv"
+    trade_log_path = base_dir / "latest_trade_log.parquet"
     if trade_log_path.exists():
-        return pd.read_csv(trade_log_path)
+        return pd.read_parquet(trade_log_path)
 
     running_cash = 10000.0
     rows = []
@@ -589,10 +616,15 @@ def _write_outputs(
     positions.to_csv(run_dir / "ledger.csv", index=False, encoding="utf-8-sig")
     pnl_summary_df.to_csv(run_dir / "pnl_summary.csv", index=False, encoding="utf-8-sig")
     orders_df.to_csv(run_dir / "orders.csv", index=False, encoding="utf-8-sig")
+    positions.to_parquet(run_dir / "ledger.parquet", index=False)
+    pnl_summary_df.to_parquet(run_dir / "pnl_summary.parquet", index=False)
+    trade_log.to_parquet(run_dir / "trade_log.parquet", index=False)
 
     (base_dir / "latest_snapshot.md").write_text(snapshot_text, encoding="utf-8")
     positions.to_csv(base_dir / "latest_positions.csv", index=False, encoding="utf-8-sig")
     trade_log.to_csv(base_dir / "latest_trade_log.csv", index=False, encoding="utf-8-sig")
+    positions.to_parquet(base_dir / "latest_positions.parquet", index=False)
+    trade_log.to_parquet(base_dir / "latest_trade_log.parquet", index=False)
     DEFAULT_NOTES_PATH.write_text(notes_text, encoding="utf-8")
 
 
@@ -619,10 +651,13 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     attempted_backfill = False
     remediation_results: dict[str, list[dict[str, Any]]] = {}
     inactive_exclusions: dict[str, list[str]] = {}
-    local_coverage = {
-        category: {path.stem.upper() for path in (PROJECT_ROOT / "data" / "us_market_full" / category).glob("*.csv")}
-        for category in ["large_cap", "mid_cap", "small_cap"]
-    }
+    coverage_reader = _us_market_reader()
+    local_coverage: dict[str, set[str]] = {}
+    for category in ["large_cap", "mid_cap", "small_cap"]:
+        try:
+            local_coverage[category] = set(coverage_reader.list_symbols(category))
+        except Exception:
+            local_coverage[category] = set()
 
     if not completeness_before["complete"]:
         attempted_backfill = True

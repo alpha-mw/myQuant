@@ -160,6 +160,12 @@ def _build_reporting_artifacts(
     )
     portfolio_decision.what_if_plan = what_if_plan
     portfolio_decision.execution_trace = execution_trace
+    global_metadata = getattr(global_context, "metadata", {}) or {}
+    if not isinstance(global_metadata, Mapping):
+        global_metadata = {}
+    theme_rotation = dict(global_metadata.get("theme_rotation", {}) or {})
+    theme_scores = dict(global_metadata.get("theme_scores", {}) or {})
+    symbol_theme_score = dict(global_metadata.get("symbol_theme_score", {}) or {})
 
     review_bundle.branch_summaries = branch_summaries
     review_bundle.risk_decision = risk_decision
@@ -189,6 +195,7 @@ def _build_reporting_artifacts(
             "portfolio_decision": portfolio_decision,
             "bayesian_records": bayesian_records,
             "funnel_summary": funnel_summary,
+            "theme_rotation": theme_rotation,
             "run_diagnostics": {
                 **data_quality_summary,
                 "coverage_notes": data_quality_summary["coverage_notes"]
@@ -236,6 +243,9 @@ def _build_reporting_artifacts(
         "resolver": shared_reader.snapshot(),
         "data_snapshot": dict(scoped_data_snapshot),
         "report_bundle": report_bundle,
+        "theme_rotation": theme_rotation,
+        "theme_scores": theme_scores,
+        "symbol_theme_score": symbol_theme_score,
     }
     return ReportingArtifactsState(
         data_quality_summary=data_quality_summary,

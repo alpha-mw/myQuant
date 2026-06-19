@@ -10,7 +10,7 @@ from quant_investor.factors.aquant_expression import (
     ts_mean,
 )
 from quant_investor.factors.governance import FactorLifecycleState, FactorRecord, GateResult
-from quant_investor.factors.pit_fundamentals import PIT_COLUMNS
+from quant_investor.factors.pit_fundamentals import PIT_COLUMNS, write_fundamental_pit_series
 from quant_investor.factors.runtime import MinedFactorRegistry, score_with_mined_factors
 from quant_investor.market.fundamental_mart import write_fundamental_mart
 
@@ -45,8 +45,9 @@ def _write_pit(metadata_dir):
                 "raw_field": "n_income",
             }
         )
-    pd.DataFrame(rows, columns=PIT_COLUMNS).to_csv(
-        metadata_dir / "fundamental_pit_series.csv", index=False
+    write_fundamental_pit_series(
+        pd.DataFrame(rows, columns=PIT_COLUMNS).to_dict("records"),
+        metadata_dir=metadata_dir,
     )
 
 
@@ -112,7 +113,7 @@ def test_aquant_expression_rejects_unknown_name(tmp_path):
 
 
 def test_aquant_expression_reads_full_financial_fields_from_mart(tmp_path):
-    mart_root = tmp_path / "clean" / "cn_fundamental"
+    mart_root = tmp_path / "parquet" / "cn"
     raw_tables = {
         "fina_indicator": pd.DataFrame(
             [
@@ -227,6 +228,6 @@ def test_default_registry_has_aquant_shadow_registration_not_selectable():
     assert factor.implementation == "aquant_expression:alpha_mix_vwap40_50_ocfprofit_50"
     assert factor.state == FactorLifecycleState.RESEARCH_CANDIDATE
     assert factor.weight == 0.0
-    assert factor.metadata["fundamental_mart_root"] == "data/clean/cn_fundamental"
+    assert factor.metadata["fundamental_mart_root"] == "data/parquet/cn"
     assert factor.metadata["allow_legacy_fundamental_fallback"] is False
     assert not factor.selectable_in_quant_branch()

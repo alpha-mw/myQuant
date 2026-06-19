@@ -15,8 +15,8 @@ from quant_investor.market.cn_symbol_status import (
 )
 
 
-def _make_csv_reader(frames: dict[str, pd.DataFrame | None]):
-    """Build a fake SharedCSVReader that serves pre-built frames."""
+def _make_market_reader(frames: dict[str, pd.DataFrame | None]):
+    """Build a fake MarketDataReader that serves pre-built frames."""
     reader = MagicMock()
 
     def _resolve(symbol, **_kw):
@@ -39,12 +39,12 @@ def _frame_with_date(date_str: str) -> pd.DataFrame:
 
 class TestFreshnessFieldPropagation:
     def test_result_carries_three_date_model(self):
-        reader = _make_csv_reader({"000001.SZ": _frame_with_date("20260403")})
+        reader = _make_market_reader({"000001.SZ": _frame_with_date("20260403")})
         result = evaluate_symbol_local_status(
             "000001.SZ",
             category="full_a",
             resolver=MagicMock(),
-            csv_reader=reader,
+            market_reader=reader,
             latest_trade_date="20260403",
             allowed_stale_symbols=None,
             suspended_symbols=None,
@@ -58,12 +58,12 @@ class TestFreshnessFieldPropagation:
         assert result.effective_target_trade_date == "20260403"
 
     def test_stable_mode_uses_t_minus_1(self):
-        reader = _make_csv_reader({"000001.SZ": _frame_with_date("20260402")})
+        reader = _make_market_reader({"000001.SZ": _frame_with_date("20260402")})
         result = evaluate_symbol_local_status(
             "000001.SZ",
             category="full_a",
             resolver=MagicMock(),
-            csv_reader=reader,
+            market_reader=reader,
             latest_trade_date="20260402",
             allowed_stale_symbols=None,
             suspended_symbols=None,
@@ -75,12 +75,12 @@ class TestFreshnessFieldPropagation:
         assert result.is_complete is True
 
     def test_strict_mode_requires_t0(self):
-        reader = _make_csv_reader({"000001.SZ": _frame_with_date("20260402")})
+        reader = _make_market_reader({"000001.SZ": _frame_with_date("20260402")})
         result = evaluate_symbol_local_status(
             "000001.SZ",
             category="full_a",
             resolver=MagicMock(),
-            csv_reader=reader,
+            market_reader=reader,
             latest_trade_date="20260403",
             allowed_stale_symbols=None,
             suspended_symbols=None,
@@ -92,12 +92,12 @@ class TestFreshnessFieldPropagation:
         assert result.is_blocking is True
 
     def test_missing_symbol_carries_freshness_metadata(self):
-        reader = _make_csv_reader({})
+        reader = _make_market_reader({})
         result = evaluate_symbol_local_status(
             "999999.SZ",
             category="full_a",
             resolver=MagicMock(),
-            csv_reader=reader,
+            market_reader=reader,
             latest_trade_date="20260403",
             allowed_stale_symbols=None,
             suspended_symbols=None,
@@ -112,7 +112,7 @@ class TestFreshnessFieldPropagation:
 
 class TestBatchCompleteness:
     def test_batch_evaluates_multiple_symbols(self):
-        reader = _make_csv_reader({
+        reader = _make_market_reader({
             "000001.SZ": _frame_with_date("20260403"),
             "600519.SH": _frame_with_date("20260402"),
         })
@@ -120,7 +120,7 @@ class TestBatchCompleteness:
             ["000001.SZ", "600519.SH", "999999.SZ"],
             category="full_a",
             resolver=MagicMock(),
-            csv_reader=reader,
+            market_reader=reader,
             latest_trade_date="20260403",
             freshness_mode="stable",
             strict_trade_date="20260403",
@@ -132,26 +132,26 @@ class TestBatchCompleteness:
         assert results["999999.SZ"].local_status == "missing"
 
     def test_batch_skips_empty_symbols(self):
-        reader = _make_csv_reader({})
+        reader = _make_market_reader({})
         results = evaluate_batch_completeness(
             ["", "  ", "000001.SZ"],
             category="full_a",
             resolver=MagicMock(),
-            csv_reader=reader,
+            market_reader=reader,
             latest_trade_date="20260403",
         )
         assert len(results) == 1
         assert "000001.SZ" in results
 
     def test_batch_suspended_stale(self):
-        reader = _make_csv_reader({
+        reader = _make_market_reader({
             "000001.SZ": _frame_with_date("20260401"),
         })
         results = evaluate_batch_completeness(
             ["000001.SZ"],
             category="full_a",
             resolver=MagicMock(),
-            csv_reader=reader,
+            market_reader=reader,
             latest_trade_date="20260403",
             suspended_symbols=["000001.SZ"],
         )

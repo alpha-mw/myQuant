@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
-from typing import Any, Sequence
+from datetime import datetime, timezone
+from typing import Any, Callable, Mapping, Sequence
 
 import pandas as pd
 
@@ -32,6 +34,13 @@ class MarketDataStore:
         gate = self.reader.clean_snapshot_gate(refresh=True)
         blockers = list(gate.get("blockers", []) or [])
         status = "passed" if gate.get("healthy") else "failed"
+        coverage: dict[str, Any] = {}
+        try:
+            latest_payload = self.reader._load_latest_payload(refresh=True)
+            raw_coverage = latest_payload.get("coverage", {}) if isinstance(latest_payload, dict) else {}
+            coverage = dict(raw_coverage or {}) if isinstance(raw_coverage, dict) else {}
+        except Exception:
+            coverage = {}
         return {
             "market": self.market,
             "status": status,
@@ -44,6 +53,8 @@ class MarketDataStore:
             "serving_root": gate.get("serving_root", ""),
             "manifest_path": gate.get("manifest_path", ""),
             "mode_policy": gate.get("mode_policy", "strict"),
+            "coverage": coverage,
+            "coverage_ratio": coverage.get("coverage_ratio"),
         }
 
     def _atomic_write_parquet(self, frame: pd.DataFrame, path: Path) -> None:
@@ -57,6 +68,409 @@ class MarketDataStore:
         tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}")
         tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         os.replace(tmp_path, path)
+
+    @staticmethod
+    def _normalize_trade_date(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text or text.lower() in {"nan", "nat", "none"}:
+            return ""
+        digits = "".join(ch for ch in text if ch.isdigit())
+        return digits[:8] if len(digits) >= 8 else ""
+
+    @staticmethod
+    def _normalize_symbol(value: Any) -> str:
+        return str(value or "").strip().upper()
+
+    @staticmethod
+    def _utc_now() -> str:
+        return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+    def _normalize_bars_frame(self, frame: pd.DataFrame) -> pd.DataFrame:
+        work = frame.copy()
+        rename_map = {
+            "Open": "open",
+            "High": "high",
+            "Low": "low",
+            "Close": "close",
+            "Volume": "vol",
+            "Amount": "amount",
+            "Adj Close": "adj_close",
+            "AdjClose": "adj_close",
+        }
+        if "trade_date" not in work.columns:
+            if "Date" in work.columns:
+                rename_map["Date"] = "trade_date"
+            elif "date" in work.columns:
+                rename_map["date"] = "trade_date"
+        if "ts_code" not in work.columns:
+            if "Symbol" in work.columns:
+                rename_map["Symbol"] = "ts_code"
+            elif "symbol" in work.columns:
+                rename_map["symbol"] = "ts_code"
+        work = work.rename(columns=rename_map)
+        missing = [column for column in ["ts_code", "trade_date"] if column not in work.columns]
+        if missing:
+            raise ValueError(f"missing required bars columns: {missing}")
+        work["ts_code"] = work["ts_code"].map(self._normalize_symbol)
+        work["trade_date"] = work["trade_date"].map(self._normalize_trade_date)
+        work = work.loc[work["ts_code"].ne("") & work["trade_date"].ne("")].copy()
+        if work.empty:
+            raise ValueError("no valid bars rows after symbol/date normalization")
+        for column in [
+            "open",
+            "high",
+            "low",
+            "close",
+            "pre_close",
+            "change",
+            "pct_chg",
+            "vol",
+            "amount",
+            "adj_factor",
+            "adj_open",
+            "adj_high",
+            "adj_low",
+            "adj_close",
+            "turnover_rate",
+            "volume_ratio",
+            "pe",
+            "pb",
+            "total_mv",
+            "circ_mv",
+        ]:
+            if column in work.columns:
+                work[column] = pd.to_numeric(work[column], errors="coerce")
+        work = (
+            work.drop_duplicates(subset=["ts_code", "trade_date"], keep="last")
+            .sort_values(["trade_date", "ts_code"])
+            .reset_index(drop=True)
+        )
+        work["_year"] = work["trade_date"].str.slice(0, 4).astype(int)
+        work["_month"] = work["trade_date"].str.slice(4, 6).astype(int)
+        return work
+
+    def _latest_dates_from_bars(self, frame: pd.DataFrame) -> tuple[str, str]:
+        dates = sorted(
+            {
+                self._normalize_trade_date(value)
+                for value in frame.get("trade_date", pd.Series(dtype=str)).tolist()
+                if self._normalize_trade_date(value)
+            }
+        )
+        latest = dates[-1] if dates else ""
+        return latest, latest
+
+    def _validate_adj_factor(self, frame: pd.DataFrame) -> None:
+        if "adj_factor" not in frame.columns:
+            raise ValueError("adj_factor is required for parquet-direct bars upsert")
+        values = pd.to_numeric(frame["adj_factor"], errors="coerce")
+        if values.isna().any() or not (values > 0).all():
+            raise ValueError("adj_factor must be present and positive for parquet-direct bars upsert")
+
+    def _merge_bars(self, existing: pd.DataFrame, incoming: pd.DataFrame) -> pd.DataFrame:
+        frames: list[pd.DataFrame] = []
+        if existing is not None and not existing.empty:
+            frames.append(self._normalize_bars_frame(existing))
+        if incoming is not None and not incoming.empty:
+            frames.append(incoming.copy())
+        if not frames:
+            raise ValueError("no bars rows to merge")
+        merged = pd.concat(frames, ignore_index=True, sort=False)
+        merged = (
+            merged.drop_duplicates(subset=["ts_code", "trade_date"], keep="last")
+            .sort_values(["trade_date", "ts_code"])
+            .reset_index(drop=True)
+        )
+        merged["_year"] = merged["trade_date"].str.slice(0, 4).astype(int)
+        merged["_month"] = merged["trade_date"].str.slice(4, 6).astype(int)
+        return merged
+
+    def _copytree_hardlink_or_copy(self, source: Path, target: Path) -> None:
+        if not source.exists():
+            raise ValueError(f"missing source directory: {source}")
+        if target.exists():
+            shutil.rmtree(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        def _copy_file(src: str, dst: str) -> str:
+            try:
+                os.link(src, dst)
+            except OSError:
+                shutil.copy2(src, dst)
+            return dst
+
+        shutil.copytree(source, target, copy_function=_copy_file)
+
+    def _replace_directories(
+        self,
+        replacements: list[tuple[Path, Path]],
+        *,
+        after_replace: Callable[[], None] | None = None,
+    ) -> None:
+        backups: list[tuple[Path, Path]] = []
+        moved: list[Path] = []
+        try:
+            for source, target in replacements:
+                if not source.exists():
+                    raise ValueError(f"missing staged directory: {source}")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                backup = target.with_name(f".{target.name}.previous")
+                if backup.exists():
+                    shutil.rmtree(backup)
+                if target.exists():
+                    shutil.move(str(target), str(backup))
+                    backups.append((target, backup))
+                shutil.move(str(source), str(target))
+                moved.append(target)
+            if after_replace is not None:
+                after_replace()
+        except Exception:
+            for target in reversed(moved):
+                if target.exists():
+                    shutil.rmtree(target)
+            for target, backup in reversed(backups):
+                if backup.exists():
+                    shutil.move(str(backup), str(target))
+            raise
+        else:
+            for _target, backup in backups:
+                if backup.exists():
+                    shutil.rmtree(backup)
+
+    def append_health_event(self, event_type: str, payload: Mapping[str, Any]) -> None:
+        health_path = self.data_root / "parquet" / self.market.lower() / "_health_ledger.jsonl"
+        health_path.parent.mkdir(parents=True, exist_ok=True)
+        event = {
+            "event_type": str(event_type or ""),
+            "generated_at": self._utc_now(),
+            "market": self.market,
+            "snapshot_id": str(payload.get("snapshot_id") or ""),
+            "status": str(payload.get("status") or ""),
+            "payload": dict(payload),
+        }
+        with health_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
+
+    def upsert_bars(
+        self,
+        frame: pd.DataFrame,
+        *,
+        target_trade_date: str,
+        source: str,
+        snapshot_id: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        target_date = self._normalize_trade_date(target_trade_date)
+        if not target_date:
+            raise ValueError("target_trade_date is required for bars upsert")
+        incoming = self._normalize_bars_frame(frame)
+        incoming_dates = set(incoming["trade_date"].astype(str))
+        if incoming_dates != {target_date}:
+            raise ValueError(
+                "upsert_bars only accepts rows for target_trade_date: "
+                f"{sorted(incoming_dates)} != {target_date}"
+            )
+        self._validate_adj_factor(incoming)
+
+        gate = self.reader.clean_snapshot_gate(refresh=True)
+        if not gate.get("healthy"):
+            blockers = "; ".join(str(item) for item in gate.get("blockers", []) if str(item).strip())
+            raise ValueError(blockers or "cannot upsert without a healthy latest Parquet snapshot")
+        snapshot = self.reader._snapshot_from_payload(self.reader._load_latest_payload(refresh=True))
+
+        resolved_snapshot_id = snapshot_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        staging_base = self.data_root / "parquet_staging" / self.market.lower() / resolved_snapshot_id
+        staged_table = staging_base / "table" / "bars"
+        staged_serving = staging_base / "serving" / "bars"
+        if staging_base.exists():
+            shutil.rmtree(staging_base)
+        try:
+            self._copytree_hardlink_or_copy(snapshot.table_root, staged_table)
+            self._copytree_hardlink_or_copy(snapshot.serving_root, staged_serving)
+
+            for (year, month), month_incoming in incoming.groupby(["_year", "_month"], sort=True):
+                month_dir = staged_table / f"year={int(year)}" / f"month={int(month):02d}"
+                month_path = month_dir / "part.parquet"
+                existing = pd.read_parquet(month_path) if month_path.exists() else pd.DataFrame()
+                merged = self._merge_bars(existing, month_incoming)
+                self._atomic_write_parquet(merged.drop(columns=["_year", "_month"]), month_path)
+
+            for symbol, symbol_incoming in incoming.groupby("ts_code", sort=True):
+                symbol_dir = staged_serving / f"symbol={symbol}"
+                symbol_path = symbol_dir / "bars.parquet"
+                existing = pd.read_parquet(symbol_path) if symbol_path.exists() else pd.DataFrame()
+                merged = self._merge_bars(existing, symbol_incoming)
+                self._atomic_write_parquet(merged.drop(columns=["_year", "_month"]), symbol_path)
+
+            table_files = sorted(staged_table.rglob("*.parquet"))
+            serving_files = sorted(staged_serving.rglob("*.parquet"))
+            if not table_files or not serving_files:
+                raise ValueError("staged upsert produced no parquet files")
+            table_rows = sum(len(pd.read_parquet(path)) for path in table_files)
+            serving_rows = sum(len(pd.read_parquet(path)) for path in serving_files)
+            if table_rows != serving_rows:
+                raise ValueError(f"table/serving row mismatch after upsert: {table_rows} != {serving_rows}")
+
+            snapshot_manifest_dir = self.data_root / "parquet" / self.market.lower() / "_snapshots"
+            snapshot_manifest_path = snapshot_manifest_dir / f"{resolved_snapshot_id}.json"
+            snapshot_payload_dir = snapshot_manifest_dir / resolved_snapshot_id
+            parquet_size = sum(path.stat().st_size for path in table_files)
+            latest_available = self._normalize_trade_date(
+                (metadata or {}).get("latest_available_trade_date") or target_date
+            )
+            latest_complete = self._normalize_trade_date(
+                (metadata or {}).get("latest_complete_trade_date") or latest_available
+            )
+            full_frame = pd.concat((pd.read_parquet(path) for path in table_files), ignore_index=True)
+            coverage = (metadata or {}).get("coverage")
+            if not isinstance(coverage, dict):
+                coverage = {
+                    "latest_available_trade_date": latest_available,
+                    "latest_complete_trade_date": latest_complete,
+                    "row_count": int(len(full_frame)),
+                    "symbol_count": int(full_frame["ts_code"].nunique()) if "ts_code" in full_frame.columns else 0,
+                }
+            manifest = {
+                "snapshot_id": resolved_snapshot_id,
+                "market": self.market,
+                "status": "OK",
+                "source": str(source or ""),
+                "row_count": int(len(full_frame)),
+                "symbol_count": int(full_frame["ts_code"].nunique()) if "ts_code" in full_frame.columns else 0,
+                "latest_trade_date": latest_complete,
+                "latest_available_trade_date": latest_available,
+                "latest_complete_trade_date": latest_complete,
+                "table_root": str(snapshot.table_root),
+                "derived_serving_root": str(snapshot.serving_root),
+                "manifest_path": str(snapshot_manifest_path),
+                "readback_validated": True,
+                "parquet_size_bytes": int(parquet_size),
+                "quarantined_tail_dates": list((metadata or {}).get("quarantined_tail_dates") or []),
+                "coverage": coverage,
+                "blockers": list((metadata or {}).get("blockers") or []),
+                "metadata": {
+                    **dict(metadata or {}),
+                    "previous_snapshot_id": snapshot.snapshot_id,
+                    "upsert_target_trade_date": target_date,
+                    "upsert_affected_symbols": sorted(set(incoming["ts_code"].astype(str))),
+                },
+            }
+            latest_payload = {
+                "snapshot_id": resolved_snapshot_id,
+                "status": "OK",
+                "manifest_path": str(snapshot_manifest_path),
+                "table_root": str(snapshot.table_root),
+                "derived_serving_root": str(snapshot.serving_root),
+                "latest_available_trade_date": latest_available,
+                "latest_complete_trade_date": latest_complete,
+                "latest_trade_date": latest_complete,
+                "quarantined_tail_dates": manifest["quarantined_tail_dates"],
+                "coverage": coverage,
+                "blockers": [],
+                "updated_at": self._utc_now(),
+            }
+            if snapshot_payload_dir.exists():
+                shutil.rmtree(snapshot_payload_dir)
+            self._copytree_hardlink_or_copy(staged_table, snapshot_payload_dir / "table" / "bars")
+            self._copytree_hardlink_or_copy(staged_serving, snapshot_payload_dir / "serving" / "bars")
+            self._atomic_write_json(manifest, snapshot_manifest_path)
+            self._replace_directories(
+                [
+                    (staged_table, snapshot.table_root),
+                    (staged_serving, snapshot.serving_root),
+                ],
+                after_replace=lambda: self._atomic_write_json(latest_payload, self.reader.latest_pointer_path),
+            )
+            self.reader._latest_payload = None
+            self.reader._snapshot_gate_cache = None
+            self.reader._serving_symbols_cache = None
+            return manifest
+        finally:
+            if staging_base.exists():
+                shutil.rmtree(staging_base)
+
+    def write_full_history_bars(
+        self,
+        frame: pd.DataFrame,
+        *,
+        source: str,
+        snapshot_id: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        normalized = self._normalize_bars_frame(frame)
+        if self.market == "CN":
+            self._validate_adj_factor(normalized)
+        resolved_snapshot_id = snapshot_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        table_root = self.data_root / "parquet" / self.market.lower() / "bars"
+        serving_root = self.data_root / "parquet_serving" / self.market.lower() / "bars"
+        manifest_path = self.data_root / "parquet" / self.market.lower() / "_snapshots" / f"{resolved_snapshot_id}.json"
+
+        for (year, month), month_frame in normalized.groupby(["_year", "_month"], sort=True):
+            month_path = table_root / f"year={int(year)}" / f"month={int(month):02d}" / "part.parquet"
+            existing = pd.read_parquet(month_path) if month_path.exists() else pd.DataFrame()
+            merged = self._merge_bars(existing, month_frame)
+            self._atomic_write_parquet(merged.drop(columns=["_year", "_month"]), month_path)
+
+        for symbol, symbol_frame in normalized.groupby("ts_code", sort=True):
+            normalized_symbol = self._normalize_symbol(symbol)
+            if not normalized_symbol:
+                continue
+            symbol_path = serving_root / f"symbol={normalized_symbol}" / "bars.parquet"
+            existing = pd.read_parquet(symbol_path) if symbol_path.exists() else pd.DataFrame()
+            merged = self._merge_bars(existing, symbol_frame)
+            self._atomic_write_parquet(merged.drop(columns=["_year", "_month"]), symbol_path)
+
+        table_files = sorted(table_root.rglob("*.parquet"))
+        serving_files = sorted(serving_root.rglob("*.parquet"))
+        if not table_files or not serving_files:
+            raise ValueError("full-history write produced no parquet files")
+        full_frame = pd.concat((pd.read_parquet(path) for path in table_files), ignore_index=True)
+        latest_available, latest_complete = self._latest_dates_from_bars(full_frame)
+        parquet_size = sum(path.stat().st_size for path in table_files)
+        coverage = {
+            "latest_available_trade_date": latest_available,
+            "latest_complete_trade_date": latest_complete,
+            "row_count": int(len(full_frame)),
+            "symbol_count": int(full_frame["ts_code"].nunique()) if "ts_code" in full_frame.columns else 0,
+        }
+        manifest = {
+            "snapshot_id": resolved_snapshot_id,
+            "market": self.market,
+            "status": "OK",
+            "source": str(source or ""),
+            "row_count": int(len(full_frame)),
+            "symbol_count": int(full_frame["ts_code"].nunique()) if "ts_code" in full_frame.columns else 0,
+            "latest_trade_date": latest_complete,
+            "latest_available_trade_date": latest_available,
+            "latest_complete_trade_date": latest_complete,
+            "table_root": str(table_root),
+            "derived_serving_root": str(serving_root),
+            "manifest_path": str(manifest_path),
+            "readback_validated": True,
+            "parquet_size_bytes": int(parquet_size),
+            "coverage": coverage,
+            "blockers": [],
+            "metadata": dict(metadata or {}),
+        }
+        latest_payload = {
+            "snapshot_id": resolved_snapshot_id,
+            "status": "OK",
+            "manifest_path": str(manifest_path),
+            "table_root": str(table_root),
+            "derived_serving_root": str(serving_root),
+            "latest_available_trade_date": latest_available,
+            "latest_complete_trade_date": latest_complete,
+            "latest_trade_date": latest_complete,
+            "coverage": coverage,
+            "blockers": [],
+            "updated_at": self._utc_now(),
+        }
+        self._atomic_write_json(manifest, manifest_path)
+        self._atomic_write_json(latest_payload, self.reader.latest_pointer_path)
+        self.reader._latest_payload = None
+        self.reader._snapshot_gate_cache = None
+        self.reader._serving_symbols_cache = None
+        return manifest
 
     def materialize_cross_section(
         self,

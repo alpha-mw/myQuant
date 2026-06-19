@@ -9,8 +9,12 @@ import json
 import sys
 import types
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pandas as pd
+
+from quant_investor.market.market_data_reader import MarketDataReader
+from quant_investor.market.market_data_store import MarketDataStore
 
 
 def _load_module(
@@ -38,6 +42,7 @@ def _load_module(
     module_name = "quant_investor.market.download_cn"
     module = importlib.import_module(module_name)
     monkeypatch.setattr(module, "TUSHARE_TOKEN", "dummy-token")
+    monkeypatch.setattr(module.config, "TUSHARE_AUTO_CLEAN", False, raising=False)
     return module
 
 
@@ -123,15 +128,208 @@ class FakePro:
         return pd.DataFrame(columns=["ts_code", "trade_date", "suspend_type"])
 
 
+class BatchFakePro(FakePro):
+    def __init__(self) -> None:
+        super().__init__()
+        self.batch_daily_calls: list[tuple[str, str | None]] = []
+        self.batch_adj_factor_calls: list[tuple[str, str | None]] = []
+        self.daily_basic_calls: list[tuple[str, str | None]] = []
+
+    def daily(
+        self,
+        ts_code: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        trade_date: str | None = None,
+        fields: str | None = None,
+    ):
+        if trade_date:
+            self.batch_daily_calls.append((trade_date, fields))
+            return pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000001.SZ",
+                        "trade_date": trade_date,
+                        "open": 10.7,
+                        "high": 11.0,
+                        "low": 10.6,
+                        "close": 10.9,
+                        "pre_close": 10.7,
+                        "change": 0.2,
+                        "pct_chg": 1.87,
+                        "vol": 1600,
+                        "amount": 16000,
+                    },
+                    {
+                        "ts_code": "000002.SZ",
+                        "trade_date": trade_date,
+                        "open": 20.7,
+                        "high": 21.0,
+                        "low": 20.6,
+                        "close": 20.9,
+                        "pre_close": 20.7,
+                        "change": 0.2,
+                        "pct_chg": 0.97,
+                        "vol": 2600,
+                        "amount": 26000,
+                    },
+                ]
+            )
+        if ts_code is None or start_date is None or end_date is None:
+            raise TypeError("symbol-scoped daily requires ts_code/start_date/end_date")
+        return super().daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
+
+    def adj_factor(
+        self,
+        ts_code: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        trade_date: str | None = None,
+        fields: str | None = None,
+    ):
+        if trade_date:
+            self.batch_adj_factor_calls.append((trade_date, fields))
+            return pd.DataFrame(
+                [
+                    {"ts_code": "000001.SZ", "trade_date": trade_date, "adj_factor": 1.0},
+                    {"ts_code": "000002.SZ", "trade_date": trade_date, "adj_factor": 1.0},
+                ]
+            )
+        if ts_code is None or start_date is None or end_date is None:
+            raise TypeError("symbol-scoped adj_factor requires ts_code/start_date/end_date")
+        return super().adj_factor(ts_code=ts_code, start_date=start_date, end_date=end_date)
+
+    def daily_basic(self, trade_date: str | None = None, fields: str | None = None):
+        self.daily_basic_calls.append((trade_date or "", fields))
+        return pd.DataFrame(
+            [
+                {"ts_code": "000001.SZ", "trade_date": trade_date, "turnover_rate": 1.1, "pe": 12.0, "pb": 1.2},
+                {"ts_code": "000002.SZ", "trade_date": trade_date, "turnover_rate": 1.2, "pe": 13.0, "pb": 1.3},
+            ]
+        )
+
+
+def _write_cn_parquet_rows(data_root: Path, symbol: str, rows: list[dict]) -> None:
+    normalized_rows = []
+    for row in rows:
+        close = float(row.get("close", row.get("adj_close", 10.0)))
+        open_price = float(row.get("open", close))
+        high = float(row.get("high", close))
+        low = float(row.get("low", close))
+        adj_factor = float(row.get("adj_factor", 1.0))
+        normalized_rows.append(
+            {
+                "ts_code": symbol,
+                "trade_date": row.get("trade_date", ""),
+                "open": open_price,
+                "high": high,
+                "low": low,
+                "close": close,
+                "pre_close": float(row.get("pre_close", close)),
+                "change": float(row.get("change", 0.0)),
+                "pct_chg": float(row.get("pct_chg", 0.0)),
+                "vol": float(row.get("vol", 1000.0)),
+                "amount": float(row.get("amount", 10000.0)),
+                "adj_factor": adj_factor,
+                "adj_close": float(row.get("adj_close", close * adj_factor)),
+                "adj_open": float(row.get("adj_open", open_price * adj_factor)),
+                "adj_high": float(row.get("adj_high", high * adj_factor)),
+                "adj_low": float(row.get("adj_low", low * adj_factor)),
+            }
+        )
+    MarketDataStore(market="CN", data_root=data_root).write_full_history_bars(
+        pd.DataFrame(normalized_rows),
+        source="test_download_full_cn_market",
+    )
+
+
+def _write_cn_parquet_row(data_root: Path, symbol: str, trade_date: str, close: float = 10.0) -> None:
+    _write_cn_parquet_rows(data_root, symbol, [{"trade_date": trade_date, "close": close}])
+
+
+def _read_cn_parquet_frame(data_root: Path, symbol: str) -> pd.DataFrame:
+    return MarketDataReader(market="CN", data_root=data_root).read_symbol_frame(symbol).frame
+
+
+def _write_stale_daily_file(path, symbol: str) -> None:
+    data_root = Path(path).parent.parent
+    rows = []
+    start = datetime(2025, 1, 1)
+    for idx in range(250):
+        trade_date = (start + timedelta(days=idx)).strftime("%Y-%m-%d")
+        rows.append(
+            {
+                "ts_code": symbol,
+                "trade_date": trade_date,
+                "open": 9.0,
+                "high": 9.5,
+                "low": 8.8,
+                "close": 9.2,
+                "pre_close": 9.1,
+                "change": 0.1,
+                "pct_chg": 1.0,
+                "vol": 1000,
+                "amount": 10000,
+                "adj_factor": 1.0,
+                "adj_close": 9.2,
+                "adj_open": 9.0,
+                "adj_high": 9.5,
+                "adj_low": 8.8,
+            }
+        )
+    rows.append(
+        {
+            "ts_code": symbol,
+            "trade_date": "2026-03-12",
+            "open": 10.2,
+            "high": 10.6,
+            "low": 10.0,
+            "close": 10.4,
+            "pre_close": 10.2,
+            "change": 0.2,
+            "pct_chg": 1.96,
+            "vol": 1200,
+            "amount": 12000,
+            "adj_factor": 1.0,
+            "adj_close": 10.4,
+            "adj_open": 10.2,
+            "adj_high": 10.6,
+            "adj_low": 10.0,
+            }
+        )
+    _write_cn_parquet_rows(data_root, symbol, rows)
+
+
+def test_download_daily_batch_uses_trade_date_endpoint_once_for_stale_symbols(monkeypatch, tmp_path):
+    module = _load_module(monkeypatch)
+    fake_pro = BatchFakePro()
+    monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
+    monkeypatch.setattr(module.config, "TUSHARE_AUTO_CLEAN", False, raising=False)
+
+    downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
+    _write_stale_daily_file(tmp_path / "hs300" / "000001.SZ.csv", "000001.SZ")
+    _write_stale_daily_file(tmp_path / "hs300" / "000002.SZ.csv", "000002.SZ")
+
+    results = downloader.download_daily_batch(
+        ["000001.SZ", "000002.SZ"],
+        "hs300",
+        target_trade_date="20260316",
+    )
+
+    assert [row["status"] for row in results] == ["updated", "updated"]
+    assert fake_pro.batch_daily_calls == [("20260316", "ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount")]
+    assert fake_pro.batch_adj_factor_calls == [("20260316", "ts_code,trade_date,adj_factor")]
+    assert len(fake_pro.daily_calls) == 0
+    assert _read_cn_parquet_frame(tmp_path, "000001.SZ")["trade_date"].iloc[-1] == "20260316"
+    assert _read_cn_parquet_frame(tmp_path, "000002.SZ")["adj_close"].iloc[-1] == 20.9
+
+
 def test_download_stock_incremental_update(monkeypatch, tmp_path):
     module = _load_module(monkeypatch)
     fake_pro = FakePro()
     monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
 
     downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
-    file_path = tmp_path / "hs300" / "000001.SZ.csv"
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-
     old_rows = []
     start = datetime(2025, 1, 1)
     for idx in range(250):
@@ -176,15 +374,15 @@ def test_download_stock_incremental_update(monkeypatch, tmp_path):
             "adj_low": 10.0,
         }
     )
-    pd.DataFrame(old_rows).to_csv(file_path, index=False)
+    _write_cn_parquet_rows(tmp_path, "000001.SZ", old_rows)
 
     result = downloader.download_stock("000001.SZ", "hs300")
 
     assert result["status"] == "updated"
     assert fake_pro.daily_calls[-1] == ("000001.SZ", "20260311", "20260316")
 
-    updated_df = pd.read_csv(file_path)
-    assert updated_df["trade_date"].iloc[-1] == "2026-03-16"
+    updated_df = _read_cn_parquet_frame(tmp_path, "000001.SZ")
+    assert updated_df["trade_date"].iloc[-1] == "20260316"
     assert updated_df["trade_date"].nunique() == len(updated_df)
 
 
@@ -195,21 +393,14 @@ def test_download_stock_full_a_targets_resolved_existing_path(monkeypatch, tmp_p
 
     downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
 
-    hs300_file = tmp_path / "hs300" / "000001.SZ.csv"
-    zz500_file = tmp_path / "zz500" / "000001.SZ.csv"
-    hs300_file.parent.mkdir(parents=True, exist_ok=True)
-    zz500_file.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame([{"trade_date": "2026-03-15", "close": 9.0}]).to_csv(hs300_file, index=False)
-    pd.DataFrame([{"trade_date": "2026-03-15", "close": 8.0}]).to_csv(zz500_file, index=False)
+    _write_cn_parquet_row(tmp_path, "000001.SZ", "2026-03-15", close=9.0)
 
     result = downloader.download_stock("000001.SZ", "full_a")
 
     assert result["status"] == "updated"
-    assert hs300_file.exists()
-    assert zz500_file.exists()
-    assert pd.read_csv(hs300_file)["trade_date"].iloc[-1] == "2026-03-16"
-    assert pd.read_csv(zz500_file)["close"].iloc[-1] == 8.0
-    assert not (tmp_path / "full_a").exists()
+    updated_df = _read_cn_parquet_frame(tmp_path, "000001.SZ")
+    assert updated_df["trade_date"].iloc[-1] == "20260316"
+    assert updated_df["close"].iloc[-1] == 10.9
 
 
 def test_download_stock_full_a_new_symbol_uses_bucket_from_components(monkeypatch, tmp_path):
@@ -243,8 +434,7 @@ def test_download_stock_full_a_new_symbol_uses_bucket_from_components(monkeypatc
     result = downloader.download_stock("000001.SZ", "full_a")
 
     assert result["status"] == "updated"
-    assert (tmp_path / "hs300" / "000001.SZ.csv").exists()
-    assert not (tmp_path / "other" / "000001.SZ.csv").exists()
+    assert _read_cn_parquet_frame(tmp_path, "000001.SZ")["trade_date"].iloc[-1] == "20260316"
 
 
 def test_download_stock_full_a_lazy_loads_components_for_new_symbol(monkeypatch, tmp_path):
@@ -273,8 +463,7 @@ def test_download_stock_full_a_lazy_loads_components_for_new_symbol(monkeypatch,
 
     assert load_calls == [True]
     assert result["status"] == "updated"
-    assert (tmp_path / "hs300" / "000001.SZ.csv").exists()
-    assert not (tmp_path / "other" / "000001.SZ.csv").exists()
+    assert _read_cn_parquet_frame(tmp_path, "000001.SZ")["trade_date"].iloc[-1] == "20260316"
 
 
 def test_download_stock_skips_when_file_is_latest(monkeypatch, tmp_path):
@@ -283,9 +472,6 @@ def test_download_stock_skips_when_file_is_latest(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
 
     downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
-    file_path = tmp_path / "hs300" / "000001.SZ.csv"
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-
     rows = []
     start = datetime(2025, 2, 1)
     for idx in range(250):
@@ -330,7 +516,7 @@ def test_download_stock_skips_when_file_is_latest(monkeypatch, tmp_path):
             "adj_low": 10.6,
         }
     )
-    pd.DataFrame(rows).to_csv(file_path, index=False)
+    _write_cn_parquet_rows(tmp_path, "000001.SZ", rows)
 
     result = downloader.download_stock("000001.SZ", "hs300")
 
@@ -383,26 +569,8 @@ def test_build_completeness_report_detects_blocking_stale_symbols(monkeypatch, t
     monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
 
     downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
-    latest_path = tmp_path / "hs300" / "000001.SZ.csv"
-    stale_path = tmp_path / "hs300" / "000002.SZ.csv"
-    latest_path.parent.mkdir(parents=True, exist_ok=True)
-
-    pd.DataFrame(
-        [
-            {
-                "trade_date": "2026-03-16",
-                "close": 10.0,
-            }
-        ]
-    ).to_csv(latest_path, index=False)
-    pd.DataFrame(
-        [
-            {
-                "trade_date": "2026-03-15",
-                "close": 10.0,
-            }
-        ]
-    ).to_csv(stale_path, index=False)
+    _write_cn_parquet_row(tmp_path, "000001.SZ", "2026-03-16")
+    _write_cn_parquet_row(tmp_path, "000002.SZ", "2026-03-15")
 
     components = {"hs300": ["000001.SZ", "000002.SZ"], "zz500": [], "zz1000": []}
 
@@ -440,9 +608,7 @@ def test_build_completeness_report_excludes_symbols_listed_after_target_trade_da
     monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
 
     downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
-    latest_path = tmp_path / "other" / "000001.SZ.csv"
-    latest_path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame([{"trade_date": "2026-03-16", "close": 10.0}]).to_csv(latest_path, index=False)
+    _write_cn_parquet_row(tmp_path, "000001.SZ", "2026-03-16")
 
     components = {"full_a": ["000001.SZ", "301696.SZ"], "stats": {"total_unique": 2}}
     report = downloader.build_completeness_report(
@@ -470,11 +636,8 @@ def test_build_completeness_report_stable_mode_rolls_back_when_strict_coverage_i
     monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
 
     downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
-    latest_path = tmp_path / "hs300" / "000001.SZ.csv"
-    stable_path = tmp_path / "hs300" / "000002.SZ.csv"
-    latest_path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame([{"trade_date": "2026-03-16", "close": 10.0}]).to_csv(latest_path, index=False)
-    pd.DataFrame([{"trade_date": "2026-03-14", "close": 10.0}]).to_csv(stable_path, index=False)
+    _write_cn_parquet_row(tmp_path, "000001.SZ", "2026-03-16")
+    _write_cn_parquet_row(tmp_path, "000002.SZ", "2026-03-14")
 
     components = {"hs300": ["000001.SZ", "000002.SZ"], "zz500": [], "zz1000": []}
     report = downloader.build_completeness_report(components=components)
@@ -496,11 +659,8 @@ def test_build_completeness_report_stable_mode_keeps_strict_target_when_coverage
     monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
 
     downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
-    latest_path = tmp_path / "hs300" / "000001.SZ.csv"
-    stable_path = tmp_path / "hs300" / "000002.SZ.csv"
-    latest_path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame([{"trade_date": "2026-03-16", "close": 10.0}]).to_csv(latest_path, index=False)
-    pd.DataFrame([{"trade_date": "2026-03-14", "close": 10.0}]).to_csv(stable_path, index=False)
+    _write_cn_parquet_row(tmp_path, "000001.SZ", "2026-03-16")
+    _write_cn_parquet_row(tmp_path, "000002.SZ", "2026-03-14")
 
     components = {"hs300": ["000001.SZ", "000002.SZ"], "zz500": [], "zz1000": []}
     report = downloader.build_completeness_report(components=components)
@@ -518,11 +678,8 @@ def test_build_completeness_report_strict_mode_does_not_roll_back_target(monkeyp
     monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
 
     downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
-    latest_path = tmp_path / "hs300" / "000001.SZ.csv"
-    stable_path = tmp_path / "hs300" / "000002.SZ.csv"
-    latest_path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame([{"trade_date": "2026-03-16", "close": 10.0}]).to_csv(latest_path, index=False)
-    pd.DataFrame([{"trade_date": "2026-03-14", "close": 10.0}]).to_csv(stable_path, index=False)
+    _write_cn_parquet_row(tmp_path, "000001.SZ", "2026-03-16")
+    _write_cn_parquet_row(tmp_path, "000002.SZ", "2026-03-14")
 
     components = {"hs300": ["000001.SZ", "000002.SZ"], "zz500": [], "zz1000": []}
     report = downloader.build_completeness_report(components=components)
@@ -539,9 +696,7 @@ def test_build_completeness_report_does_not_mutate_default_target_for_download_s
     monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
 
     downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
-    file_path = tmp_path / "hs300" / "000002.SZ.csv"
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame([{"trade_date": "2026-03-14", "close": 10.0}]).to_csv(file_path, index=False)
+    _write_cn_parquet_row(tmp_path, "000002.SZ", "2026-03-14")
 
     components = {"hs300": ["000002.SZ"], "zz500": [], "zz1000": []}
     report = downloader.build_completeness_report(
@@ -582,11 +737,9 @@ def test_build_completeness_report_coverage_uses_scope_expected_and_counts_suspe
     monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
 
     downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
-    base_dir = tmp_path / "hs300"
-    base_dir.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame([{"trade_date": "2026-03-16", "close": 10.0}]).to_csv(base_dir / "000001.SZ.csv", index=False)
-    pd.DataFrame([{"trade_date": "2026-03-15", "close": 10.0}]).to_csv(base_dir / "000002.SZ.csv", index=False)
-    pd.DataFrame([{"trade_date": "2026-03-15", "close": 10.0}]).to_csv(base_dir / "000003.SZ.csv", index=False)
+    _write_cn_parquet_row(tmp_path, "000001.SZ", "2026-03-16")
+    _write_cn_parquet_row(tmp_path, "000002.SZ", "2026-03-15")
+    _write_cn_parquet_row(tmp_path, "000003.SZ", "2026-03-15")
 
     components = {"hs300": ["000001.SZ", "000002.SZ", "000003.SZ"], "zz500": [], "zz1000": []}
     report = downloader.build_completeness_report(
@@ -724,12 +877,8 @@ def test_build_completeness_report_treats_latest_suspend_as_complete(monkeypatch
     monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
 
     downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
-    latest_path = tmp_path / "hs300" / "000001.SZ.csv"
-    stale_path = tmp_path / "hs300" / "000002.SZ.csv"
-    latest_path.parent.mkdir(parents=True, exist_ok=True)
-
-    pd.DataFrame([{"trade_date": "2026-03-16", "close": 10.0}]).to_csv(latest_path, index=False)
-    pd.DataFrame([{"trade_date": "2026-03-15", "close": 10.0}]).to_csv(stale_path, index=False)
+    _write_cn_parquet_row(tmp_path, "000001.SZ", "2026-03-16")
+    _write_cn_parquet_row(tmp_path, "000002.SZ", "2026-03-15")
 
     components = {"hs300": ["000001.SZ", "000002.SZ"], "zz500": [], "zz1000": []}
 
@@ -750,25 +899,7 @@ def test_full_a_local_universe_uses_existing_local_cache(monkeypatch, tmp_path):
         ("zz500", "000002.SZ"),
         ("other", "600001.SH"),
     ]:
-        file_path = tmp_path / category / f"{symbol}.csv"
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        pd.DataFrame(
-            [
-                {
-                    "ts_code": symbol,
-                    "trade_date": "2026-03-16",
-                    "open": 10.0,
-                    "high": 10.5,
-                    "low": 9.8,
-                    "close": 10.2,
-                    "pre_close": 10.0,
-                    "change": 0.2,
-                    "pct_chg": 2.0,
-                    "vol": 1000,
-                    "amount": 10000,
-                }
-            ]
-        ).to_csv(file_path, index=False)
+        _write_cn_parquet_row(tmp_path, symbol, "2026-03-16", close=10.2)
 
     downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
     assert not (tmp_path / "full_a").exists()
@@ -788,9 +919,7 @@ def test_tushare_unavailable_uses_locally_observable_stable_date_for_strict_and_
     module = _load_module(monkeypatch, freshness_mode="stable")
     monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: None)
 
-    hs300_file = tmp_path / "hs300" / "000001.SZ.csv"
-    hs300_file.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame([{"trade_date": "2026-03-15", "close": 10.0}]).to_csv(hs300_file, index=False)
+    _write_cn_parquet_row(tmp_path, "000001.SZ", "2026-03-15")
 
     downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
 
@@ -823,9 +952,7 @@ def test_get_all_local_symbols_full_a_uses_existing_directories_only(tmp_path):
     from quant_investor.market.analyze import get_all_local_symbols
 
     for category, symbol in [("hs300", "000001.SZ"), ("zz500", "000002.SZ"), ("other", "600001.SH")]:
-        file_path = tmp_path / category / f"{symbol}.csv"
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        pd.DataFrame([{"trade_date": "2026-03-16", "close": 10.0}]).to_csv(file_path, index=False)
+        _write_cn_parquet_row(tmp_path, symbol, "2026-03-16")
 
     assert not (tmp_path / "full_a").exists()
     symbols = get_all_local_symbols("full_a", market="CN", data_dir=str(tmp_path))
@@ -838,38 +965,14 @@ def test_get_all_components_falls_back_to_local_universe(monkeypatch):
     monkeypatch.setattr(module, "fetch_hs300", lambda _pro: [])
     monkeypatch.setattr(module, "fetch_zz500", lambda _pro: [])
     monkeypatch.setattr(module, "fetch_zz1000", lambda _pro: [])
-    class _FakeResolver:
-        def __init__(self, *args, **kwargs):
-            self.trace = types.SimpleNamespace(
-                directory_priority=["hs300", "zz500", "zz1000", "other"],
-                physical_directories_used_for_full_a=[],
-                local_union_fallback_used=False,
-                resolved_file_paths_by_symbol={},
-                resolution_strategy="",
-            )
-
-        def collect_full_a_inventory(self, local_union_fallback_used=False):
-            return ["000001.SZ", "600001.SH"], {
-                "000001.SZ": "/tmp/hs300/000001.SZ.csv",
-                "600001.SH": "/tmp/other/600001.SH.csv",
-            }
-
-        def physical_directories_for_full_a(self):
-            return []
-
-        def snapshot(self):
-            return {
-                "directory_priority": ["hs300", "zz500", "zz1000", "other"],
-                "physical_directories_used_for_full_a": ["hs300", "other"],
-                "local_union_fallback_used": True,
-                "resolved_file_paths_by_symbol": {
-                    "000001.SZ": "/tmp/hs300/000001.SZ.csv",
-                    "600001.SH": "/tmp/other/600001.SH.csv",
-                },
-                "resolution_strategy": "local_union",
-            }
-
-    monkeypatch.setattr(module, "CNUniverseResolver", _FakeResolver)
+    monkeypatch.setattr(
+        module,
+        "_local_parquet_full_a_inventory",
+        lambda: (
+            ["000001.SZ", "600001.SH"],
+            {"status": "OK", "latest_complete_trade_date": "20260316"},
+        ),
+    )
 
     components = module.get_all_components(pro=object())
 
@@ -877,32 +980,37 @@ def test_get_all_components_falls_back_to_local_universe(monkeypatch):
     assert components["all"] == ["000001.SZ", "600001.SH"]
     assert components["stats"]["full_a"] == 2
     assert components["stats"]["total_unique"] == 2
-    assert components["resolver"]["local_union_fallback_used"] is True
+    assert components["resolver"]["resolution_strategy"] == "parquet_serving_inventory"
+    assert components["resolver"]["parquet_inventory"]["status"] == "OK"
 
 
 def test_evaluate_symbol_local_status_covers_fixed_contract(tmp_path):
     from quant_investor.market.cn_resolver import CNUniverseResolver
     from quant_investor.market.cn_symbol_status import evaluate_symbol_local_status
-    from quant_investor.market.shared_csv_reader import SharedCSVReader
 
-    latest_file = tmp_path / "hs300" / "000001.SZ.csv"
-    stale_file = tmp_path / "hs300" / "000002.SZ.csv"
-    unreadable_file = tmp_path / "hs300" / "000003.SZ.csv"
-    suspended_file = tmp_path / "hs300" / "000005.SZ.csv"
-    latest_file.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame([{"trade_date": "2026-03-16", "close": 10.0}]).to_csv(latest_file, index=False)
-    pd.DataFrame([{"trade_date": "2026-03-15", "close": 10.0}]).to_csv(stale_file, index=False)
-    pd.DataFrame([{"close": 10.0}]).to_csv(unreadable_file, index=False)
-    pd.DataFrame([{"trade_date": "2026-03-15", "close": 9.5}]).to_csv(suspended_file, index=False)
+    frames = {
+        "000001.SZ": pd.DataFrame([{"trade_date": "2026-03-16", "close": 10.0}]),
+        "000002.SZ": pd.DataFrame([{"trade_date": "2026-03-15", "close": 10.0}]),
+        "000003.SZ": pd.DataFrame([{"close": 10.0}]),
+        "000005.SZ": pd.DataFrame([{"trade_date": "2026-03-15", "close": 9.5}]),
+    }
 
     resolver = CNUniverseResolver(data_dir=str(tmp_path))
-    csv_reader = SharedCSVReader(market="CN", data_dir=str(tmp_path), resolver=resolver)
+
+    class _FakeMarketReader:
+        def resolve_symbol_path(self, symbol, **_kwargs):
+            return tmp_path / f"{symbol}.parquet" if symbol in frames else None
+
+        def read_symbol_frame(self, symbol, **_kwargs):
+            return types.SimpleNamespace(frame=frames.get(symbol, pd.DataFrame()), issues=[])
+
+    market_reader = _FakeMarketReader()
 
     up_to_date = evaluate_symbol_local_status(
         "000001.SZ",
         category="hs300",
         resolver=resolver,
-        csv_reader=csv_reader,
+        market_reader=market_reader,
         latest_trade_date="20260316",
         allowed_stale_symbols=set(),
         suspended_symbols=set(),
@@ -911,7 +1019,7 @@ def test_evaluate_symbol_local_status_covers_fixed_contract(tmp_path):
         "000002.SZ",
         category="hs300",
         resolver=resolver,
-        csv_reader=csv_reader,
+        market_reader=market_reader,
         latest_trade_date="20260316",
         allowed_stale_symbols=set(),
         suspended_symbols=set(),
@@ -920,7 +1028,7 @@ def test_evaluate_symbol_local_status_covers_fixed_contract(tmp_path):
         "000003.SZ",
         category="hs300",
         resolver=resolver,
-        csv_reader=csv_reader,
+        market_reader=market_reader,
         latest_trade_date="20260316",
         allowed_stale_symbols=set(),
         suspended_symbols=set(),
@@ -929,7 +1037,7 @@ def test_evaluate_symbol_local_status_covers_fixed_contract(tmp_path):
         "000004.SZ",
         category="hs300",
         resolver=resolver,
-        csv_reader=csv_reader,
+        market_reader=market_reader,
         latest_trade_date="20260316",
         allowed_stale_symbols={"000004.SZ"},
         suspended_symbols=set(),
@@ -938,7 +1046,7 @@ def test_evaluate_symbol_local_status_covers_fixed_contract(tmp_path):
         "000005.SZ",
         category="hs300",
         resolver=resolver,
-        csv_reader=csv_reader,
+        market_reader=market_reader,
         latest_trade_date="20260316",
         allowed_stale_symbols=set(),
         suspended_symbols={"000005.SZ"},
@@ -965,9 +1073,7 @@ def test_download_stock_returns_stale_cached_when_increment_is_empty(monkeypatch
     monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
 
     downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
-    file_path = tmp_path / "hs300" / "000001.SZ.csv"
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame([{"trade_date": "2026-03-15", "close": 10.0}]).to_csv(file_path, index=False)
+    _write_cn_parquet_row(tmp_path, "000001.SZ", "2026-03-15")
     monkeypatch.setattr(downloader, "_fetch_stock_frame", lambda *_args, **_kwargs: pd.DataFrame())
 
     result = downloader.download_stock("000001.SZ", "hs300")
@@ -983,9 +1089,7 @@ def test_download_stock_returns_stale_cached_when_fetch_lags_target(monkeypatch,
     monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
 
     downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
-    file_path = tmp_path / "hs300" / "000001.SZ.csv"
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame([{"trade_date": "2026-03-14", "close": 10.0}]).to_csv(file_path, index=False)
+    _write_cn_parquet_row(tmp_path, "000001.SZ", "2026-03-14")
 
     def _lagging_frame(*_args, **_kwargs):
         return pd.DataFrame(
@@ -1056,8 +1160,7 @@ def test_download_stock_full_a_lazy_loads_components_from_custom_data_root(monke
     result = downloader.download_stock("000001.SZ", "full_a")
 
     assert result["status"] == "updated"
-    assert (data_dir / "hs300" / "000001.SZ.csv").exists()
-    assert not (data_dir / "other" / "000001.SZ.csv").exists()
+    assert _read_cn_parquet_frame(data_dir, "000001.SZ")["trade_date"].iloc[-1] == "20260316"
 
 
 def test_download_all_skips_loop_when_preflight_is_complete(monkeypatch, tmp_path):
@@ -1117,8 +1220,7 @@ def test_download_all_full_a_routes_fresh_symbol_into_bucket_from_components(mon
 
     assert result["completeness"]["complete"] is True
     assert result["categories"]["full_a"][0]["status"] == "updated"
-    assert (tmp_path / "hs300" / "000001.SZ.csv").exists()
-    assert not (tmp_path / "other" / "000001.SZ.csv").exists()
+    assert _read_cn_parquet_frame(tmp_path, "000001.SZ")["trade_date"].iloc[-1] == "20260316"
 
 
 def test_download_all_early_stop_rolls_back_to_stable_target_and_aborts_remaining_symbols(
@@ -1137,13 +1239,8 @@ def test_download_all_early_stop_rolls_back_to_stable_target_and_aborts_remainin
 
     downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
     symbols = [f"{idx:06d}.SZ" for idx in range(1, 13)]
-    hs300_dir = tmp_path / "hs300"
-    hs300_dir.mkdir(parents=True, exist_ok=True)
     for symbol in symbols:
-        pd.DataFrame([{"trade_date": "2026-03-14", "close": 10.0}]).to_csv(
-            hs300_dir / f"{symbol}.csv",
-            index=False,
-        )
+        _write_cn_parquet_row(tmp_path, symbol, "2026-03-14")
 
     components = {
         "full_a": symbols,
@@ -1190,13 +1287,8 @@ def test_download_all_uses_trade_date_close_probe_before_sampling_symbols(
 
     downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
     symbols = [f"{idx:06d}.SZ" for idx in range(1, 13)]
-    hs300_dir = tmp_path / "hs300"
-    hs300_dir.mkdir(parents=True, exist_ok=True)
     for symbol in symbols:
-        pd.DataFrame([{"trade_date": "2026-03-14", "close": 10.0}]).to_csv(
-            hs300_dir / f"{symbol}.csv",
-            index=False,
-        )
+        _write_cn_parquet_row(tmp_path, symbol, "2026-03-14")
 
     components = {
         "full_a": symbols,
@@ -1243,13 +1335,8 @@ def test_download_all_early_stop_when_non_empty_fetch_lags_strict_target(
 
     downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
     symbols = [f"{idx:06d}.SZ" for idx in range(1, 6)]
-    hs300_dir = tmp_path / "hs300"
-    hs300_dir.mkdir(parents=True, exist_ok=True)
     for symbol in symbols:
-        pd.DataFrame([{"trade_date": "2026-03-14", "close": 10.0}]).to_csv(
-            hs300_dir / f"{symbol}.csv",
-            index=False,
-        )
+        _write_cn_parquet_row(tmp_path, symbol, "2026-03-14")
 
     components = {
         "full_a": symbols,
@@ -1383,40 +1470,28 @@ def test_cn_market_data_dir_env_is_used(monkeypatch, tmp_path):
     components_module = importlib.import_module("quant_investor.fetch_cn_index_components")
     captured: dict[str, str] = {}
 
-    class _FakeResolver:
-        def __init__(self, data_dir, *args, **kwargs):
-            captured["data_dir"] = data_dir
-            self.trace = types.SimpleNamespace(
-                directory_priority=["hs300", "zz500", "zz1000", "other"],
-                physical_directories_used_for_full_a=[],
-                local_union_fallback_used=False,
-                resolved_file_paths_by_symbol={},
-                resolution_strategy="",
-            )
+    class _FakeMarketDataReader:
+        def __init__(self, *, market, data_root, mode_policy):
+            captured["market"] = market
+            captured["data_root"] = str(data_root)
+            captured["mode_policy"] = mode_policy
 
-        def collect_full_a_inventory(self, local_union_fallback_used=False):
-            return [], {}
-
-        def physical_directories_for_full_a(self):
+        def list_symbols(self, universe_key="full_a", category=None):
             return []
 
         def snapshot(self):
-            return {
-                "directory_priority": ["hs300", "zz500", "zz1000", "other"],
-                "physical_directories_used_for_full_a": [],
-                "local_union_fallback_used": False,
-                "resolved_file_paths_by_symbol": {},
-                "resolution_strategy": "upstream_fetch",
-            }
+            return {"status": "blocked", "blockers": ["fixture_empty"]}
 
-    monkeypatch.setattr(components_module, "CNUniverseResolver", _FakeResolver)
+    monkeypatch.setattr(components_module, "MarketDataReader", _FakeMarketDataReader)
     monkeypatch.setattr(components_module, "fetch_full_a", lambda _pro: [])
     monkeypatch.setattr(components_module, "fetch_hs300", lambda _pro: [])
     monkeypatch.setattr(components_module, "fetch_zz500", lambda _pro: [])
     monkeypatch.setattr(components_module, "fetch_zz1000", lambda _pro: [])
     components_module.get_all_components(pro=object())
 
-    assert captured["data_dir"] == str(env_data_dir)
+    assert captured["market"] == "CN"
+    assert captured["data_root"] == str(env_data_dir.parent)
+    assert captured["mode_policy"] == "strict"
 
 
 def test_build_completeness_report_counts_cached_symbol_as_complete(monkeypatch, tmp_path):
@@ -1425,9 +1500,7 @@ def test_build_completeness_report_counts_cached_symbol_as_complete(monkeypatch,
     monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
 
     downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
-    file_path = tmp_path / "hs300" / "000001.SZ.csv"
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame([{"trade_date": "2026-03-16", "close": 10.0}]).to_csv(file_path, index=False)
+    _write_cn_parquet_row(tmp_path, "000001.SZ", "2026-03-16")
     components = {"hs300": ["000001.SZ"], "zz500": [], "zz1000": []}
 
     result = downloader.download_stock("000001.SZ", "hs300")
@@ -1449,10 +1522,7 @@ def test_freshness_index_written_after_completeness_check(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
 
     downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
-    (tmp_path / "hs300").mkdir(parents=True, exist_ok=True)
-    pd.DataFrame([{"trade_date": "2026-03-16", "close": 10.0}]).to_csv(
-        tmp_path / "hs300" / "000001.SZ.csv", index=False
-    )
+    _write_cn_parquet_row(tmp_path, "000001.SZ", "2026-03-16")
 
     components = {"hs300": ["000001.SZ"], "zz500": [], "zz1000": []}
     downloader.build_completeness_report(components=components)
@@ -1497,10 +1567,7 @@ def test_freshness_index_written_after_download(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
 
     downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
-    (tmp_path / "hs300").mkdir(parents=True, exist_ok=True)
-    pd.DataFrame([{"trade_date": "2026-03-14", "close": 10.0}]).to_csv(
-        tmp_path / "hs300" / "000001.SZ.csv", index=False
-    )
+    _write_cn_parquet_row(tmp_path, "000001.SZ", "2026-03-14")
 
     downloader.download_category(["000001.SZ"], "hs300")
 

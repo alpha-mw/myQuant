@@ -59,6 +59,43 @@ def _fake_market_metrics_bundle(
     )
 
 
+def _fake_empty_candidate_dag_status() -> dict[str, object]:
+    return {
+        "candidate_generation_status": "blocked",
+        "blocker": "candidate_dag_incomplete",
+        "required_branches": list(tracker.REQUIRED_DAG_BRANCHES),
+        "candidate_source": "v13_full_market_dag",
+        "dag_pipeline": {
+            "universe": "full_a",
+            "deterministic_funnel": True,
+            "candidate_level_four_branch": True,
+            "bayesian_shortlist": True,
+            "riskguard_ic_portfolio_constructor": True,
+            "bayesian_record_count": 0,
+            "shortlist_count": 0,
+            "portfolio_target_count": 0,
+        },
+        "candidate_dag_four_branch_compliance": {
+            "complete": False,
+            "evaluated_symbols": [],
+            "accepted_symbols": [],
+            "present_branch_by_symbol": {},
+            "missing_branch_by_symbol": {},
+            "required_branches": list(tracker.REQUIRED_DAG_BRANCHES),
+        },
+        "error": "unit_test_stub",
+    }
+
+
+@pytest.fixture(autouse=True)
+def _stub_candidate_level_v13_dag(monkeypatch):
+    monkeypatch.setattr(
+        tracker,
+        "_run_candidate_level_v13_dag",
+        lambda **_kwargs: (pd.DataFrame(dtype=object), _fake_empty_candidate_dag_status()),
+    )
+
+
 def test_build_parser_accepts_allowed_stale_symbols():
     parser = tracker.build_parser()
 
@@ -70,7 +107,312 @@ def test_build_parser_accepts_allowed_stale_symbols():
     assert debug_args.skip_market_metrics_prewarm is True
 
 
-def test_switch_plan_accepts_previous_day_realtime_decision_data():
+def test_realtime_execution_price_accepts_non_current_realtime_field():
+    quote = {
+        "source": "unit_test_quote",
+        "quote_timestamp": "2026-06-17 10:30:00",
+        "last": 42.8,
+        "open": 41.9,
+        "high": 43.2,
+        "low": 41.6,
+        "prev_close": 41.7,
+    }
+
+    price, field = tracker._resolve_realtime_execution_price(quote)
+
+    assert price == pytest.approx(42.8)
+    assert field == "last"
+
+
+def test_realtime_execution_price_accepts_declared_realtime_field():
+    quote = {
+        "source": "unit_test_quote",
+        "quote_timestamp": "2026-06-17 10:30:00",
+        "execution_price_field": "deal_price",
+        "deal_price": 42.8,
+        "open": 41.9,
+        "high": 43.2,
+        "low": 41.6,
+        "prev_close": 41.7,
+    }
+
+    price, field = tracker._resolve_realtime_execution_price(quote)
+
+    assert price == pytest.approx(42.8)
+    assert field == "deal_price"
+
+
+def test_realtime_execution_price_rejects_static_daily_price_only():
+    quote = {
+        "latest_close": 42.8,
+        "prev_close": 41.7,
+        "open": 41.9,
+        "high": 43.2,
+        "low": 41.6,
+    }
+
+    price, field = tracker._resolve_realtime_execution_price(quote)
+
+    assert price == 0.0
+    assert field == ""
+
+
+def test_parse_quote_payload_marks_current_as_realtime_price():
+    parts = [""] * 35
+    parts[1] = "测试股份"
+    parts[3] = "10.50"
+    parts[4] = "10.00"
+    parts[5] = "10.10"
+    parts[30] = "2026-06-17 10:30:00"
+    parts[31] = "0.50"
+    parts[32] = "5.00"
+    parts[33] = "10.80"
+    parts[34] = "10.00"
+
+    parsed = tracker._parse_quote_payload('v_sh600000="' + "~".join(parts) + '";')
+
+    assert parsed is not None
+    assert parsed["source"] == "tencent_realtime_quote"
+    assert parsed["realtime_price"] == pytest.approx(10.5)
+    assert parsed["realtime_price_field"] == "current"
+    assert parsed["quote_timestamp"] == "2026-06-17 10:30:00"
+
+
+def test_load_previous_record_ignores_cache_directories(tmp_path):
+    base_dir = tmp_path / "strategy_records"
+    base_dir.mkdir()
+    (base_dir / "_cache").mkdir()
+    record_dir = base_dir / "20260612_1042"
+    record_dir.mkdir()
+    (record_dir / "manifest.json").write_text(
+        json.dumps({"timestamp": "20260612_1042", "capital_cny": 1_000_000.0}),
+        encoding="utf-8",
+    )
+    pd.DataFrame(
+        [
+            {
+                "symbol": "600487.SH",
+                "name": "亨通光电",
+                "shares": 100,
+                "avg_cost": 1.0,
+                "current_value": 120.0,
+            }
+        ]
+    ).to_parquet(record_dir / "ledger_after_manual_switch.parquet", index=False)
+    (record_dir / "manual_execution_manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "rejected_no_execution_data_gate_and_prepare_switch_only",
+                "next_ledger_path": "ledger_after_manual_switch.parquet",
+                "cash_after": 25.0,
+                "total_value_after": 145.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    pd.DataFrame([{"cash_after": 10.0, "total_value_after": 130.0}]).to_parquet(
+        record_dir / "pnl_summary.parquet",
+        index=False,
+    )
+
+    ledger, manifest, pnl_summary = tracker._load_previous_record(base_dir)
+
+    assert manifest["timestamp"] == "20260612_1042"
+    assert manifest["effective_manual_ledger_path"].endswith("ledger_after_manual_switch.parquet")
+    assert ledger.iloc[0]["symbol"] == "600487.SH"
+    assert pnl_summary.iloc[0]["cash_after"] == 25.0
+    assert pnl_summary.iloc[0]["total_value_after"] == 145.0
+
+
+def test_load_previous_record_rejects_legacy_pnl_summary_csv(tmp_path):
+    base_dir = tmp_path / "strategy_records"
+    base_dir.mkdir()
+    record_dir = base_dir / "20260617_0932"
+    record_dir.mkdir()
+    (record_dir / "manifest.json").write_text(
+        json.dumps({"timestamp": "20260617_0932", "capital_cny": 1_000_000.0}),
+        encoding="utf-8",
+    )
+    pd.DataFrame(
+        [
+            {
+                "symbol": "688301.SH",
+                "name": "奕瑞科技",
+                "shares": 700,
+                "avg_cost": 164.24,
+            }
+        ]
+    ).to_parquet(record_dir / "ledger_after_manual_switch.parquet", index=False)
+    (record_dir / "manual_execution_manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "rejected_no_fill_carry_forward",
+                "next_ledger_path": "ledger_after_manual_switch.parquet",
+                "cash_after": 76_796.0,
+                "total_value_after": 1_410_977.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    pd.DataFrame([{"cash_after": 10.0, "total_value_after": 130.0}]).to_csv(
+        record_dir / "pnl_summary.csv",
+        index=False,
+        encoding="utf-8-sig",
+    )
+
+    with pytest.raises(RuntimeError, match="正式记录"):
+        tracker._load_previous_record(base_dir)
+
+
+def test_load_previous_record_resolves_manual_ledger_parquet_sidecar_from_legacy_manifest(tmp_path):
+    base_dir = tmp_path / "strategy_records"
+    base_dir.mkdir()
+    record_dir = base_dir / "20260617_0932"
+    record_dir.mkdir()
+    (record_dir / "manifest.json").write_text(
+        json.dumps({"timestamp": "20260617_0932", "capital_cny": 1_000_000.0}),
+        encoding="utf-8",
+    )
+    ledger_df = pd.DataFrame(
+        [
+            {
+                "symbol": "600487.SH",
+                "name": "亨通光电",
+                "shares": 1200,
+                "avg_cost": 50.83,
+            }
+        ]
+    )
+    ledger_df.to_csv(record_dir / "ledger_after_manual_switch.csv", index=False, encoding="utf-8-sig")
+    ledger_df.to_parquet(record_dir / "ledger_after_manual_switch.parquet", index=False)
+    (record_dir / "manual_execution_manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "rejected_no_execution_data_gate_dag_incomplete_quote_unverified",
+                "next_ledger_path": str(record_dir / "ledger_after_manual_switch.csv"),
+                "cash_after": 76_796.0,
+                "total_value_after": 1_410_977.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    pd.DataFrame([{"cash_after": 10.0, "total_value_after": 130.0}]).to_parquet(
+        record_dir / "pnl_summary.parquet",
+        index=False,
+    )
+
+    ledger, manifest, pnl_summary = tracker._load_previous_record(base_dir)
+
+    assert manifest["effective_manual_ledger_path"].endswith("ledger_after_manual_switch.parquet")
+    assert ledger.iloc[0]["symbol"] == "600487.SH"
+    assert int(ledger.iloc[0]["shares"]) == 1200
+    assert pnl_summary.iloc[0]["cash_after"] == 76_796.0
+
+
+def test_load_previous_record_accepts_effective_manual_ledger_csv_without_parquet_sidecar(tmp_path):
+    base_dir = tmp_path / "strategy_records"
+    base_dir.mkdir()
+    record_dir = base_dir / "20260618_0934"
+    record_dir.mkdir()
+    (record_dir / "manifest.json").write_text(
+        json.dumps({"timestamp": "20260618_0934", "capital_cny": 1_000_000.0}),
+        encoding="utf-8",
+    )
+    pd.DataFrame(
+        [
+            {
+                "symbol": "688301.SH",
+                "name": "奕瑞科技",
+                "shares": 700,
+                "avg_cost": 164.24,
+            }
+        ]
+    ).to_csv(record_dir / "ledger_after_manual_switch.csv", index=False, encoding="utf-8-sig")
+    (record_dir / "manual_execution_manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "rejected_no_execution_data_gate_quote_unverified_carry_forward",
+                "next_ledger_path": str(record_dir / "ledger_after_manual_switch.csv"),
+                "cash_after": 276_709.0,
+                "total_value_after": 1_684_374.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    pd.DataFrame([{"cash_after": 10.0, "total_value_after": 130.0}]).to_parquet(
+        record_dir / "pnl_summary.parquet",
+        index=False,
+    )
+
+    ledger, manifest, pnl_summary = tracker._load_previous_record(base_dir)
+
+    assert manifest["effective_manual_ledger_path"].endswith("ledger_after_manual_switch.csv")
+    assert ledger.iloc[0]["symbol"] == "688301.SH"
+    assert int(ledger.iloc[0]["shares"]) == 700
+    assert pnl_summary.iloc[0]["cash_after"] == 276_709.0
+    assert pnl_summary.iloc[0]["total_value_after"] == 1_684_374.0
+
+
+def test_load_previous_record_skips_invalidated_manual_manifest(tmp_path):
+    base_dir = tmp_path / "strategy_records"
+    base_dir.mkdir()
+    valid_dir = base_dir / "20260604_1302"
+    valid_dir.mkdir()
+    invalid_dir = base_dir / "20260605_1025"
+    invalid_dir.mkdir()
+
+    for record_dir in (valid_dir, invalid_dir):
+        (record_dir / "manifest.json").write_text(
+            json.dumps({"timestamp": record_dir.name, "capital_cny": 1_000_000.0}),
+            encoding="utf-8",
+        )
+        pd.DataFrame([{"cash_after": 10.0, "total_value_after": 130.0}]).to_parquet(
+            record_dir / "pnl_summary.parquet",
+            index=False,
+        )
+
+    pd.DataFrame([{"symbol": "688301.SH", "shares": 700, "avg_cost": 164.24}]).to_parquet(
+        valid_dir / "ledger_after_manual_switch.parquet",
+        index=False,
+    )
+    (valid_dir / "manual_execution_manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "filled_local_manual",
+                "next_ledger_path": "ledger_after_manual_switch.parquet",
+                "cash_after": 42.0,
+                "total_value_after": 200.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    pd.DataFrame([{"symbol": "600903.SH", "shares": 100, "avg_cost": 9.83}]).to_parquet(
+        invalid_dir / "ledger_after_manual_switch.parquet",
+        index=False,
+    )
+    (invalid_dir / "manual_execution_manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "invalidated_price_basis_no_execution",
+                "next_ledger_path": "ledger_after_manual_switch.parquet",
+                "cash_after": 99.0,
+                "total_value_after": 999.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    ledger, manifest, pnl_summary = tracker._load_previous_record(base_dir)
+
+    assert manifest["timestamp"] == "20260605_1025"
+    assert manifest["effective_manual_manifest_path"].endswith(
+        "20260604_1302/manual_execution_manifest.json"
+    )
+    assert ledger.iloc[0]["symbol"] == "688301.SH"
+    assert pnl_summary.iloc[0]["cash_after"] == 42.0
+
+
+def test_switch_plan_rejects_price_strength_candidate_without_candidate_dag():
     holdings_review = pd.DataFrame(
         [
             {
@@ -107,10 +449,215 @@ def test_switch_plan_accepts_previous_day_realtime_decision_data():
         decision_data_sufficient=True,
     )
 
-    row = switch_plan.iloc[0]
-    assert row["action"] == "switch_now"
-    assert row["switch_ratio_hint"] == "20%"
-    assert "strict 完整性" not in row["no_switch_condition"]
+    assert switch_plan.empty
+
+
+def test_candidate_pool_from_v13_dag_requires_candidate_level_four_branches():
+    complete_branches = {
+        branch: {"branch_name": branch, "final_score": 0.8, "final_confidence": 0.7}
+        for branch in tracker.REQUIRED_DAG_BRANCHES
+    }
+    incomplete_branches = {
+        "quant": {"branch_name": "quant", "final_score": 0.9, "final_confidence": 0.8},
+        "macro": {"branch_name": "macro", "final_score": 0.7, "final_confidence": 0.6},
+    }
+    dag_artifacts = {
+        "funnel_summary": {"candidate_count": 2},
+        "symbol_research_packets": {
+            "688301.SH": {
+                "symbol": "688301.SH",
+                "company_name": "奕瑞科技",
+                "category": "full_a",
+                "branch_verdicts": complete_branches,
+            },
+            "002409.SZ": {
+                "symbol": "002409.SZ",
+                "company_name": "雅克科技",
+                "category": "full_a",
+                "branch_verdicts": incomplete_branches,
+            },
+        },
+        "shortlist": [
+            {
+                "symbol": "688301.SH",
+                "company_name": "奕瑞科技",
+                "category": "full_a",
+                "rank_score": 0.86,
+                "confidence": 0.72,
+                "expected_upside": 0.16,
+                "suggested_weight": 0.08,
+                "risk_flags": ["估值波动"],
+                "rationale": ["四分支共振"],
+            },
+            {
+                "symbol": "002409.SZ",
+                "company_name": "雅克科技",
+                "category": "full_a",
+                "rank_score": 0.93,
+                "confidence": 0.81,
+                "expected_upside": 0.22,
+                "suggested_weight": 0.10,
+            },
+        ],
+        "bayesian_records": [
+            {
+                "symbol": "688301.SH",
+                "posterior_action_score": 0.74,
+                "posterior_win_rate": 0.62,
+                "posterior_expected_alpha": 0.08,
+                "posterior_confidence": 0.71,
+                "rank": 2,
+            },
+            {
+                "symbol": "002409.SZ",
+                "posterior_action_score": 0.92,
+                "posterior_win_rate": 0.68,
+                "posterior_expected_alpha": 0.12,
+                "posterior_confidence": 0.80,
+                "rank": 1,
+            },
+        ],
+        "portfolio_decision": {
+            "target_weights": {"688301.SH": 0.08, "002409.SZ": 0.10},
+            "target_positions": {"688301.SH": 0.08, "002409.SZ": 0.10},
+            "risk_constraints": {"risk_decision": {"status": "success"}},
+        },
+    }
+
+    candidate_pool, status = tracker._build_candidate_pool_from_v13_dag(
+        dag_artifacts=dag_artifacts,
+        held_symbols=[],
+    )
+
+    assert candidate_pool["symbol"].tolist() == ["688301.SH"]
+    row = candidate_pool.iloc[0]
+    assert row["candidate_source"] == "v13_full_market_dag"
+    assert row["candidate_dag_four_branch_complete"] is True
+    assert row["present_branches"] == "quant,fundamental,intelligence,macro"
+    assert row["portfolio_target_weight"] == pytest.approx(0.08)
+    assert "score_full_market" not in candidate_pool.columns
+    assert "ret20" not in candidate_pool.columns
+    assert status["candidate_generation_status"] == "complete"
+    assert status["candidate_dag_four_branch_compliance"]["missing_branch_by_symbol"] == {
+        "002409.SZ": ["fundamental", "intelligence"]
+    }
+
+
+def test_risk_reduction_sell_gate_accepts_sell_only_broken_stop():
+    order = tracker.ProposedOrder(
+        symbol="688301.SH",
+        action="sell",
+        shares=100,
+        price=114.81,
+        trade_value=11481.0,
+        realized_pnl=-4943.0,
+        reason="formal reduce",
+    )
+    effective_ledger = pd.DataFrame(
+        [
+            {
+                "symbol": "688301.SH",
+                "name": "奕瑞科技",
+                "shares": 700,
+                "avg_cost": 164.24,
+            }
+        ]
+    )
+    holdings_review = pd.DataFrame(
+        [
+            {
+                "symbol": "688301.SH",
+                "current_price": 114.81,
+                "stage_stop_price": 161.04,
+                "score_full_market": 0.0,
+                "recommended_action": "减仓待确认",
+                "reason": "仍低于阶段止损位",
+            }
+        ]
+    )
+
+    allowed, reason = tracker._risk_reduction_sell_gate(
+        order=order,
+        effective_ledger=effective_ledger,
+        holdings_review=holdings_review,
+    )
+
+    assert allowed is True
+    assert reason == "risk_reduction_sell_eligible_pending_realtime_quote"
+
+
+def test_risk_reduction_sell_gate_rejects_new_risk_and_invalid_sell_legs():
+    effective_ledger = pd.DataFrame(
+        [
+            {
+                "symbol": "688301.SH",
+                "shares": 100,
+                "avg_cost": 164.24,
+            }
+        ]
+    )
+    holdings_review = pd.DataFrame(
+        [
+            {
+                "symbol": "688301.SH",
+                "current_price": 114.81,
+                "stage_stop_price": 161.04,
+                "score_full_market": 0.0,
+                "recommended_action": "减仓待确认",
+            }
+        ]
+    )
+
+    buy_order = tracker.ProposedOrder(
+        symbol="688301.SH",
+        action="buy",
+        shares=100,
+        price=114.81,
+        trade_value=11481.0,
+        realized_pnl=0.0,
+        reason="not allowed",
+    )
+    allowed, reason = tracker._risk_reduction_sell_gate(
+        order=buy_order,
+        effective_ledger=effective_ledger,
+        holdings_review=holdings_review,
+    )
+    assert allowed is False
+    assert reason == "not_sell_order"
+
+    oversell_order = tracker.ProposedOrder(
+        symbol="688301.SH",
+        action="sell",
+        shares=200,
+        price=114.81,
+        trade_value=22962.0,
+        realized_pnl=-9886.0,
+        reason="oversell",
+    )
+    allowed, reason = tracker._risk_reduction_sell_gate(
+        order=oversell_order,
+        effective_ledger=effective_ledger,
+        holdings_review=holdings_review,
+    )
+    assert allowed is False
+    assert reason == "sell_exceeds_effective_ledger_shares"
+
+    missing_symbol_order = tracker.ProposedOrder(
+        symbol="600903.SH",
+        action="sell",
+        shares=100,
+        price=8.75,
+        trade_value=875.0,
+        realized_pnl=-108.0,
+        reason="not in effective ledger",
+    )
+    allowed, reason = tracker._risk_reduction_sell_gate(
+        order=missing_symbol_order,
+        effective_ledger=effective_ledger,
+        holdings_review=holdings_review,
+    )
+    assert allowed is False
+    assert reason == "symbol_not_in_effective_ledger"
 
 
 def test_run_tracker_forwards_allowed_stale_symbols(monkeypatch, tmp_path):
@@ -1212,3 +1759,259 @@ def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypa
     assert (run_dir / "orders.csv").exists()
     assert (run_dir / "holdings_review.csv").exists()
     assert (run_dir / "raw_exports" / "runtime_profile.json").exists()
+
+
+def test_run_tracker_auto_fills_risk_reduction_sell_with_realtime_quote(monkeypatch, tmp_path):
+    ledger = pd.DataFrame(
+        [
+            {
+                "symbol": "688301.SH",
+                "name": "奕瑞科技",
+                "shares": 500,
+                "avg_cost": 164.24,
+                "cost_basis": 82120.0,
+                "current_price": 145.0,
+                "current_value": 72500.0,
+                "unrealized_pnl": -9620.0,
+                "unrealized_pnl_pct": -0.117145,
+                "market_weight": 0.5,
+                "stage_target_price": 200.46,
+                "stage_stop_price": 137.90,
+                "thesis_status": "降级观察",
+            }
+        ]
+    )
+    manifest = {"timestamp": "20260617_0932", "capital_cny": 1_000_000.0}
+    pnl = pd.DataFrame([{"cash_after": 100000.0, "total_value_after": 172500.0}])
+    monkeypatch.setattr(
+        tracker,
+        "_load_previous_record",
+        lambda base_dir, source_record=None: (ledger, manifest, pnl),
+    )
+    monkeypatch.setattr(
+        tracker,
+        "get_market_settings",
+        lambda _market: SimpleNamespace(data_dir=str(tmp_path / "cn_market_full")),
+    )
+    monkeypatch.setattr(
+        tracker,
+        "is_previous_day_realtime_decision_sufficient",
+        lambda **_kwargs: False,
+    )
+
+    completeness = {
+        "complete": False,
+        "latest_trade_date": "20260618",
+        "strict_trade_date": "20260618",
+        "stable_trade_date": "20260617",
+        "effective_target_trade_date": "20260618",
+        "freshness_mode": "strict",
+        "coverage_ratio": 0.0,
+        "coverage_complete_count": 0,
+        "expected_scope_count": 7302,
+        "blocking_incomplete_count": 7302,
+        "pre_listing_symbols": [],
+        "categories_checked": ["full_a", "hs300", "zz500", "zz1000"],
+        "categories": {
+            "full_a": {
+                "expected": 1,
+                "latest_trade_date": "20260618",
+                "date_counts": {"20260617": 1},
+                "coverage_complete_count": 0,
+                "blocking_incomplete_count": 1,
+                "suspended_stale_symbols": [],
+                "blocking_missing_symbols": [],
+                "blocking_stale_symbols": [{"symbol": "688301.SH", "latest_local_date": "20260617"}],
+            },
+            "hs300": {
+                "expected": 0,
+                "latest_trade_date": "20260618",
+                "date_counts": {},
+                "coverage_complete_count": 0,
+                "blocking_incomplete_count": 0,
+                "suspended_stale_symbols": [],
+                "blocking_missing_symbols": [],
+                "blocking_stale_symbols": [],
+            },
+            "zz500": {
+                "expected": 0,
+                "latest_trade_date": "20260618",
+                "date_counts": {},
+                "coverage_complete_count": 0,
+                "blocking_incomplete_count": 0,
+                "suspended_stale_symbols": [],
+                "blocking_missing_symbols": [],
+                "blocking_stale_symbols": [],
+            },
+            "zz1000": {
+                "expected": 0,
+                "latest_trade_date": "20260618",
+                "date_counts": {},
+                "coverage_complete_count": 0,
+                "blocking_incomplete_count": 0,
+                "suspended_stale_symbols": [],
+                "blocking_missing_symbols": [],
+                "blocking_stale_symbols": [],
+            },
+        },
+    }
+
+    class _FakeDownloader:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def load_components(self):
+            return {"full_a": ["688301.SH"], "hs300": [], "zz500": [], "zz1000": []}
+
+        def build_completeness_report(self, components=None, allowed_stale_symbols=None):
+            return completeness
+
+    monkeypatch.setattr(tracker, "CNFullMarketDownloader", _FakeDownloader)
+    prewarmed_metrics = pd.DataFrame(
+        [
+            {
+                "symbol": "688301.SH",
+                "name": "奕瑞科技",
+                "category": "full_a",
+                "ret1": -0.02,
+                "ret5": -0.05,
+                "ret20": -0.12,
+                "ret60": -0.20,
+                "close_vs_ma20": -0.08,
+                "ma20_vs_ma60": -0.04,
+                "ma60_vs_ma120": -0.02,
+                "dd20": -0.22,
+                "latest_close": 120.0,
+                "stage_target_price": 200.46,
+                "stage_stop_price": 137.90,
+                "score_full_market": 0.38,
+                "rank_full_market": 900,
+            }
+        ]
+    )
+    prewarmed_breadth = {
+        category: {
+            "ret1_positive_ratio": 0.2,
+            "ret20_positive_ratio": 0.3,
+            "ma20_gt_ma60_ratio": 0.25,
+            "avg_ret1": 0.0,
+            "avg_ret20": 0.0,
+            "avg_ret60": 0.0,
+            "latest_count": len(symbols),
+            "expected": len(symbols),
+            "suspended_stale_count": 0,
+        }
+        for category, symbols in {"hs300": [], "zz500": [], "zz1000": []}.items()
+    }
+    monkeypatch.setattr(
+        tracker,
+        "_load_or_compute_market_metrics_bundle",
+        lambda **_kwargs: _fake_market_metrics_bundle(
+            full_metrics=prewarmed_metrics,
+            breadth=prewarmed_breadth,
+        ),
+    )
+    monkeypatch.setattr(
+        tracker,
+        "_fetch_tencent_quotes",
+        lambda codes: {
+            **{
+                code: {
+                    "quote_code": code,
+                    "name": code,
+                    "current": 100.0,
+                    "prev_close": 99.0,
+                    "open": 99.5,
+                    "high": 101.0,
+                    "low": 98.5,
+                    "time": "20260618101603",
+                    "change": 1.0,
+                    "change_pct": 1.01,
+                }
+                for code in tracker.INDEX_QUOTES.keys()
+            },
+            "sh688301": {
+                "quote_code": "sh688301",
+                "name": "奕瑞科技",
+                "current": 120.75,
+                "prev_close": 122.0,
+                "open": 121.5,
+                "high": 122.2,
+                "low": 120.0,
+                "time": "20260618101603",
+                "change": -1.25,
+                "change_pct": -1.02,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        tracker,
+        "_run_unified_review_mainline_for_holdings",
+        lambda source_ledger, latest_trade_date, source_record: {
+            "reviewed_symbols": ["688301.SH"],
+            "by_symbol": {
+                "688301.SH": {
+                    "recommendation": {
+                        "action": "sell",
+                        "confidence": 0.7,
+                        "one_line_conclusion": "跌破止损，减仓。",
+                        "risk_flags": ["broken_stop"],
+                    },
+                    "ic_hint": {"action": "sell", "confidence_hint": 0.7, "thesis": "跌破止损"},
+                    "master_hint": {"action": "sell", "confidence_hint": 0.7},
+                    "llm_attempt_summary": {"call_count": 0, "success_count": 0, "failed_count": 0, "fallback_count": 0, "total_tokens": 0, "estimated_cost_usd": 0.0},
+                    "llm_effective_summary": {"call_count": 0, "success_count": 0, "failed_count": 0, "fallback_count": 0, "total_tokens": 0, "estimated_cost_usd": 0.0},
+                    "reviewed_branch_verdicts": {
+                        "quant": {"branch_name": "quant"},
+                        "fundamental": {"branch_name": "fundamental", "metadata": {"data_quality": {}}},
+                        "intelligence": {"branch_name": "intelligence"},
+                        "macro": {"branch_name": "macro"},
+                    },
+                    "branch_overlays": {},
+                    "report_excerpt": "sell",
+                }
+            },
+            "degraded_symbols": {},
+            "llm_attempt_summary": {"call_count": 0, "success_count": 0, "failed_count": 0, "fallback_count": 0, "total_tokens": 0, "estimated_cost_usd": 0.0},
+            "llm_effective_summary": {"call_count": 0, "success_count": 0, "failed_count": 0, "fallback_count": 0, "total_tokens": 0, "estimated_cost_usd": 0.0},
+            "model_role_metadata": {},
+            "fallback_reasons": [],
+            "session_ids": {},
+        },
+    )
+    factor_shadow_status = tracker.load_factor_library_shadow_status(
+        root_dir=CANONICAL_FACTOR_FIXTURE_ROOT,
+        as_of="2026-05-01",
+    )
+    monkeypatch.setattr(
+        tracker,
+        "load_factor_library_shadow_status",
+        lambda **_kwargs: factor_shadow_status,
+    )
+
+    args = argparse.Namespace(
+        base_dir=str(tmp_path / "strategy_records"),
+        years=7,
+        max_rounds=0,
+        source_record=None,
+        allowed_stale_symbols=[],
+    )
+    result = tracker.run_tracker(args)
+
+    assert result["action_taken_today"] is True
+    assert result["decision_data_sufficient"] is False
+    assert result["manual_execution"]["status"] == "filled_local_manual_paper_rebalance"
+    run_dir = tmp_path / "strategy_records" / result["timestamp"]
+    manual_manifest = json.loads((run_dir / "manual_execution_manifest.json").read_text(encoding="utf-8"))
+    manual_orders = pd.read_csv(run_dir / "manual_switch_and_take_profit_orders.csv")
+    next_ledger = pd.read_csv(run_dir / "ledger_after_manual_switch.csv")
+    formal_manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+
+    assert manual_manifest["price_basis"] == "execution_time_realtime_quote"
+    assert manual_manifest["decision_data_sufficient"] is False
+    assert manual_manifest["applied_local_trades"][0]["symbol"] == "688301.SH"
+    assert manual_orders.iloc[0]["status"] == "filled"
+    assert manual_orders.iloc[0]["execution_price"] == pytest.approx(120.75)
+    assert int(next_ledger.iloc[0]["shares"]) == 400
+    assert formal_manifest["manual_execution"]["status"] == "filled_local_manual_paper_rebalance"
+    assert formal_manifest["execution_price_gate"]["data_gate_allows_new_risk"] is False

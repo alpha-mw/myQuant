@@ -8,6 +8,7 @@
 - Pipeline 结果类型：`quant_investor.pipeline.QuantInvestorPipelineResult`
 - CLI 入口：`quant-investor research run`
 - 当前仓库只发布单一研究主线，不提供架构切换参数。
+- CN bounded maintenance 入口：`quant-investor market maintain --market CN --staged --resume`；每次只处理配置的 batch，并在 `data/cn_market_full/_maintenance_runs/<run_id>/` 写入进度。
 - `quant-investor market download` 仅作为 `market maintain` 的兼容 alias 保留；新流程应优先使用 `market maintain`。
 - Storage 验证入口：`quant-investor market storage-validate --market CN` 校验 Parquet canonical；`quant-investor market storage-validate-clean --market CN` 只读校验 clean/readiness lineage，不触发补数、provider 或写入。
 

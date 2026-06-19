@@ -26,7 +26,8 @@ from quant_investor.fetch_cn_index_components import get_all_components, save_co
 from quant_investor.market.cn_resolver import CNUniverseResolver
 from quant_investor.market.config import get_market_settings
 from quant_investor.market.cn_symbol_status import evaluate_symbol_local_status, CNSymbolLocalStatusResult
-from quant_investor.market.shared_csv_reader import SharedCSVReader
+from quant_investor.market.market_data_reader import MarketDataReader
+from quant_investor.market.market_data_store import MarketDataStore
 from quant_investor.market.tushare_data_cleaning import (
     CLEANING_STATUS_FAIL,
     PARQUET_STATUS_SKIPPED,
@@ -67,6 +68,7 @@ class CNFullMarketDownloader:
         """
         resolved_data_dir = data_dir or get_market_settings("CN").data_dir
         self.data_dir = resolved_data_dir
+        self.data_root = self._resolve_data_root(resolved_data_dir)
         self.components_file = str(self._default_components_file())
         self.years = years
         self.max_workers = max_workers
@@ -83,7 +85,8 @@ class CNFullMarketDownloader:
         for dir_path in self.dirs.values():
             os.makedirs(dir_path, exist_ok=True)
         self.resolver = CNUniverseResolver(data_dir=self.data_dir, directories=self.dirs)
-        self.csv_reader = SharedCSVReader(market="CN", data_dir=self.data_dir, resolver=self.resolver)
+        self.market_reader = MarketDataReader(market="CN", data_root=self.data_root)
+        self.market_store = MarketDataStore(market="CN", data_root=self.data_root)
         self.last_resolver_trace: dict[str, Any] = self.resolver.snapshot()
         self._full_a_write_category_by_symbol: dict[str, str] = {}
         self.freshness_mode = self._normalize_freshness_mode(config.CN_FRESHNESS_MODE)
@@ -160,6 +163,15 @@ class CNFullMarketDownloader:
     def _default_components_file(self) -> Path:
         data_root = Path(self.data_dir).expanduser()
         return data_root.parent / "cn_universe" / "cn_index_components.json"
+
+    @staticmethod
+    def _resolve_data_root(data_dir: str) -> Path:
+        path = Path(data_dir).expanduser()
+        if path.name == "cn_market_full":
+            return path.parent
+        if path.name in {"full_a", "hs300", "zz500", "zz1000", "other"}:
+            return path.parent.parent
+        return path
 
     @staticmethod
     def _normalize_allowed_symbols(symbols: Optional[List[str] | Set[str]]) -> Set[str]:
@@ -454,37 +466,20 @@ class CNFullMarketDownloader:
         }
 
     def _resolve_latest_trade_date_from_local_cache(self) -> str:
-        """从本地 CSV 缓存中推断最新交易日。"""
-        latest_dates: list[str] = []
-        for directory in self.resolver.physical_directories_for_full_a():
-            for csv_file in directory.glob("*.csv"):
-                try:
-                    result = self.csv_reader.read_path(csv_file, universe_key="full_a")
-                except Exception:
-                    continue
-                df = result.frame
-                if df is None or df.empty:
-                    continue
-                date_column = "trade_date" if "trade_date" in df.columns else "date" if "date" in df.columns else ""
-                if not date_column:
-                    continue
-                try:
-                    local_dates = pd.to_datetime(df[date_column], errors="coerce").dt.strftime("%Y%m%d")
-                    values = [value for value in local_dates.dropna().astype(str).tolist() if value.strip()]
-                    if values:
-                        latest_dates.append(max(values))
-                except Exception:
-                    continue
-        return max(latest_dates) if latest_dates else ""
+        """Infer latest local trade date from the strict Parquet pointer."""
+        try:
+            return self.market_reader.latest_trade_date("full_a")
+        except Exception:
+            return ""
 
     def _build_local_symbol_universe(self) -> Dict[str, List[str]]:
-        """从本地 CSV 文件构建不依赖 Tushare 的组件字典。"""
-        full_a_symbols, source_paths = self.resolver.collect_full_a_inventory(local_union_fallback_used=True)
+        """从本地 Parquet serving 文件构建不依赖 Tushare 的组件字典。"""
+        try:
+            full_a_symbols = self.market_reader.list_symbols("full_a")
+        except Exception:
+            full_a_symbols = []
         category_lists: Dict[str, Set[str]] = {category: set() for category in self.SUPPORTED_CATEGORIES}
-        for symbol, path in source_paths.items():
-            parent = Path(path).parent.name
-            if parent in category_lists:
-                category_lists[parent].add(symbol)
+        category_lists["full_a"].update(full_a_symbols)
 
         result = {
             "full_a": full_a_symbols,
@@ -578,7 +573,7 @@ class CNFullMarketDownloader:
             symbol,
             category=category,
             resolver=self.resolver,
-            csv_reader=self.csv_reader,
+            market_reader=self.market_reader,
             latest_trade_date=target_trade_date,
             allowed_stale_symbols=allowed,
             suspended_symbols=suspended_symbols or set(),
@@ -880,9 +875,18 @@ class CNFullMarketDownloader:
         try:
             if disk_path.exists():
                 raw = json.loads(disk_path.read_text(encoding="utf-8"))
-                symbols: Set[str] = set(raw) if isinstance(raw, list) else set()
-                self._latest_suspended_symbols_cache[target_trade_date] = symbols
-                return symbols
+                if (
+                    isinstance(raw, dict)
+                    and raw.get("version") == 2
+                    and str(raw.get("trade_date") or "") == target_trade_date
+                ):
+                    symbols: Set[str] = {
+                        str(symbol).upper()
+                        for symbol in raw.get("symbols", [])
+                        if str(symbol or "").strip()
+                    }
+                    self._latest_suspended_symbols_cache[target_trade_date] = symbols
+                    return symbols
         except Exception:
             pass
 
@@ -890,24 +894,53 @@ class CNFullMarketDownloader:
             self._latest_suspended_symbols_cache[target_trade_date] = set()
             return self._latest_suspended_symbols_cache[target_trade_date]
 
-        try:
-            suspend_df = self.pro.suspend_d(trade_date=target_trade_date)
+        def _normalized_date(value: Any) -> str:
+            digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+            return digits[:8] if len(digits) >= 8 else ""
+
+        def _extract_target_symbols(suspend_df: pd.DataFrame) -> Set[str]:
             if suspend_df is None or suspend_df.empty:
-                symbols = set()
-            else:
-                filtered = suspend_df.copy()
-                if 'suspend_type' in filtered.columns:
-                    filtered = filtered[filtered['suspend_type'].astype(str).str.upper() == 'S']
-                symbols = {
-                    str(symbol).upper()
-                    for symbol in filtered.get('ts_code', pd.Series(dtype=str)).dropna().astype(str)
-                }
+                return set()
+            filtered = suspend_df.copy()
+            date_columns = [column for column in ("trade_date", "suspend_date") if column in filtered.columns]
+            if date_columns:
+                date_mask = pd.Series(False, index=filtered.index)
+                for column in date_columns:
+                    date_mask = date_mask | filtered[column].map(_normalized_date).eq(target_trade_date)
+                filtered = filtered[date_mask]
+            if 'suspend_type' in filtered.columns:
+                filtered = filtered[filtered['suspend_type'].astype(str).str.upper() == 'S']
+            return {
+                str(symbol).upper()
+                for symbol in filtered.get('ts_code', pd.Series(dtype=str)).dropna().astype(str)
+                if str(symbol or "").strip()
+            }
+
+        try:
+            symbols: Set[str] = set()
+            for query in ({"suspend_date": target_trade_date}, {"trade_date": target_trade_date}):
+                try:
+                    suspend_df = self.pro.suspend_d(**query)
+                except TypeError:
+                    continue
+                query_symbols = _extract_target_symbols(suspend_df)
+                if query_symbols:
+                    symbols = query_symbols
+                    break
 
             # ── persist to disk cache (historic data is immutable) ──
             try:
                 disk_path.parent.mkdir(parents=True, exist_ok=True)
                 disk_path.write_text(
-                    json.dumps(sorted(symbols), ensure_ascii=False),
+                    json.dumps(
+                        {
+                            "version": 2,
+                            "trade_date": target_trade_date,
+                            "symbols": sorted(symbols),
+                            "updated_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                        },
+                        ensure_ascii=False,
+                    ),
                     encoding="utf-8",
                 )
             except Exception:
@@ -928,11 +961,7 @@ class CNFullMarketDownloader:
         """
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        uncached = [
-            d for d in dates
-            if d not in self._latest_suspended_symbols_cache
-            and not self._suspend_cache_path(d).exists()
-        ]
+        uncached = [d for d in dates if d not in self._latest_suspended_symbols_cache]
         if not uncached:
             return
 
@@ -1066,6 +1095,22 @@ class CNFullMarketDownloader:
             "parquet_status": result.get("parquet_status", PARQUET_STATUS_SKIPPED),
             "quarantine_path": result.get("quarantine_path"),
         }
+
+    def _write_parquet_bars(
+        self,
+        frame: pd.DataFrame,
+        *,
+        source: str,
+        metadata: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        manifest = self.market_store.write_full_history_bars(
+            frame,
+            source=source,
+            metadata=metadata,
+        )
+        self.market_reader = MarketDataReader(market="CN", data_root=self.data_root)
+        self.market_store.reader = self.market_reader
+        return manifest
     
     def load_components(self, components_file: str | None = None) -> Dict:
         """加载成分股"""
@@ -1113,6 +1158,466 @@ class CNFullMarketDownloader:
         print("=" * 80)
         
         return components
+
+    @staticmethod
+    def _normalize_trade_date_column(frame: pd.DataFrame) -> pd.DataFrame:
+        if frame is None or frame.empty or "trade_date" not in frame.columns:
+            return pd.DataFrame() if frame is None else frame.copy()
+        normalized = frame.copy()
+        normalized["trade_date"] = normalized["trade_date"].map(
+            lambda value: "".join(ch for ch in str(value or "") if ch.isdigit())[:8]
+        )
+        normalized = normalized[normalized["trade_date"].astype(str).str.len() == 8]
+        return normalized.reset_index(drop=True)
+
+    def _fetch_daily_batch_frame(self, target_trade_date: str) -> tuple[pd.DataFrame, int, str]:
+        if self.pro is None:
+            return pd.DataFrame(), 0, "provider_unavailable"
+
+        api_calls = 0
+        daily_fields = "ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount"
+        try:
+            df = self.pro.daily(trade_date=target_trade_date, fields=daily_fields)
+            api_calls += 1
+        except TypeError:
+            try:
+                df = self.pro.daily(trade_date=target_trade_date)
+                api_calls += 1
+            except Exception as exc:
+                return pd.DataFrame(), api_calls, str(exc)[:100]
+        except Exception as exc:
+            return pd.DataFrame(), api_calls, str(exc)[:100]
+
+        if df is None or df.empty:
+            return pd.DataFrame(), api_calls, "daily_empty"
+
+        df = self._normalize_trade_date_column(df)
+        if df.empty:
+            return pd.DataFrame(), api_calls, "daily_empty"
+
+        try:
+            adj_df = self.pro.adj_factor(
+                trade_date=target_trade_date,
+                fields="ts_code,trade_date,adj_factor",
+            )
+            api_calls += 1
+        except TypeError:
+            try:
+                adj_df = self.pro.adj_factor(trade_date=target_trade_date)
+                api_calls += 1
+            except Exception:
+                adj_df = pd.DataFrame()
+        except Exception:
+            adj_df = pd.DataFrame()
+
+        if adj_df is not None and not adj_df.empty:
+            adj_df = self._normalize_trade_date_column(adj_df)
+            merge_keys = [
+                key
+                for key in ("ts_code", "trade_date")
+                if key in df.columns and key in adj_df.columns
+            ]
+            if "adj_factor" in adj_df.columns and merge_keys:
+                df = df.merge(
+                    adj_df[[*merge_keys, "adj_factor"]].drop_duplicates(subset=merge_keys),
+                    on=merge_keys,
+                    how="left",
+                )
+
+        try:
+            basic_df = self.pro.daily_basic(
+                trade_date=target_trade_date,
+                fields="ts_code,trade_date,turnover_rate,pe,pb,total_mv,circ_mv",
+            )
+            api_calls += 1
+        except AttributeError:
+            basic_df = pd.DataFrame()
+        except TypeError:
+            try:
+                basic_df = self.pro.daily_basic(trade_date=target_trade_date)
+                api_calls += 1
+            except Exception:
+                basic_df = pd.DataFrame()
+        except Exception:
+            basic_df = pd.DataFrame()
+
+        if basic_df is not None and not basic_df.empty:
+            basic_df = self._normalize_trade_date_column(basic_df)
+            merge_keys = [
+                key
+                for key in ("ts_code", "trade_date")
+                if key in df.columns and key in basic_df.columns
+            ]
+            if merge_keys:
+                basic_cols = [
+                    column
+                    for column in basic_df.columns
+                    if column in merge_keys or column not in df.columns
+                ]
+                if len(basic_cols) > len(merge_keys):
+                    df = df.merge(
+                        basic_df[basic_cols].drop_duplicates(subset=merge_keys),
+                        on=merge_keys,
+                        how="left",
+                    )
+
+        if "adj_factor" in df.columns:
+            adj_factor = pd.to_numeric(df["adj_factor"], errors="coerce")
+            for source, target in (
+                ("close", "adj_close"),
+                ("open", "adj_open"),
+                ("high", "adj_high"),
+                ("low", "adj_low"),
+            ):
+                if source in df.columns:
+                    df[target] = pd.to_numeric(df[source], errors="coerce") * adj_factor
+
+        df["trade_date"] = pd.to_datetime(
+            df["trade_date"],
+            format="%Y%m%d",
+            errors="coerce",
+        ).dt.strftime("%Y-%m-%d")
+        df = df.dropna(subset=["trade_date"])
+        sort_keys = [key for key in ("ts_code", "trade_date") if key in df.columns]
+        return df.sort_values(sort_keys).reset_index(drop=True), api_calls, ""
+
+    def _existing_symbol_records(self, local_state: CNSymbolLocalStatusResult) -> tuple[pd.DataFrame, int]:
+        existing_df = local_state.frame.copy()
+        existing_records = len(existing_df) if not existing_df.empty else len(local_state.frame)
+        return existing_df, existing_records
+
+    def download_daily_batch(
+        self,
+        symbols: List[str],
+        category: str,
+        target_trade_date: Optional[str] = None,
+    ) -> List[Dict]:
+        """补齐一个交易日的一批股票，避免逐 symbol 请求 daily/adj_factor。"""
+        effective_target_trade_date = target_trade_date or self.latest_trade_date
+        cleaning_skipped_fields = self._default_cleaning_result_fields()
+        normalized_symbols: list[str] = []
+        for symbol in symbols or []:
+            normalized = str(symbol or "").strip().upper()
+            if normalized and normalized not in normalized_symbols:
+                normalized_symbols.append(normalized)
+
+        print(f"\n📥 批量补齐 {category.upper()} {effective_target_trade_date}: {len(normalized_symbols)} 只")
+        suspended_symbols = self._load_latest_suspended_symbols(effective_target_trade_date)
+        local_states: dict[str, CNSymbolLocalStatusResult] = {}
+        results: list[Dict[str, Any]] = []
+        symbols_to_fetch: list[str] = []
+
+        for symbol in normalized_symbols:
+            try:
+                local_state = self._evaluate_symbol_local_status_for_target(
+                    symbol,
+                    category=category,
+                    target_trade_date=effective_target_trade_date,
+                    allowed_stale_symbols=set(),
+                    suspended_symbols=suspended_symbols,
+                )
+            except Exception as exc:
+                results.append(
+                    {
+                        "symbol": symbol,
+                        "category": category,
+                        "status": "failed",
+                        "local_status": "unreadable",
+                        "records": 0,
+                        "mode": "daily_batch",
+                        "latest_local_date": "",
+                        "latest_trade_date": effective_target_trade_date,
+                        "resolved_path": "",
+                        "api_calls": 0,
+                        "batch_api_calls": 0,
+                        "error": str(exc)[:100],
+                        **cleaning_skipped_fields,
+                    }
+                )
+                continue
+
+            local_states[symbol] = local_state
+            existing_df, existing_records = self._existing_symbol_records(local_state)
+            del existing_df
+            self.last_resolver_trace = self.resolver.snapshot()
+
+            if local_state.local_status in {"up_to_date", "suspended_stale"}:
+                results.append(
+                    {
+                        "symbol": local_state.symbol,
+                        "category": category,
+                        "status": "cached",
+                        "local_status": local_state.local_status,
+                        "records": existing_records,
+                        "mode": local_state.local_status,
+                        "latest_local_date": local_state.latest_local_date,
+                        "latest_trade_date": effective_target_trade_date,
+                        "resolved_path": local_state.resolved_path,
+                        "api_calls": 0,
+                        "batch_api_calls": 0,
+                        "error": None,
+                        **cleaning_skipped_fields,
+                    }
+                )
+                continue
+
+            if local_state.local_status in {"missing", "unreadable"}:
+                results.append(
+                    {
+                        "symbol": local_state.symbol,
+                        "category": category,
+                        "status": "failed",
+                        "local_status": local_state.local_status,
+                        "records": existing_records,
+                        "mode": "daily_batch",
+                        "latest_local_date": local_state.latest_local_date,
+                        "latest_trade_date": effective_target_trade_date,
+                        "resolved_path": local_state.resolved_path,
+                        "api_calls": 0,
+                        "batch_api_calls": 0,
+                        "error": "history_backfill_required",
+                        **cleaning_skipped_fields,
+                    }
+                )
+                continue
+
+            symbols_to_fetch.append(symbol)
+
+        batch_df = pd.DataFrame()
+        batch_api_calls = 0
+        batch_error = ""
+        if symbols_to_fetch:
+            batch_df, batch_api_calls, batch_error = self._fetch_daily_batch_frame(effective_target_trade_date)
+            if not batch_df.empty and "ts_code" in batch_df.columns:
+                batch_df["ts_code"] = batch_df["ts_code"].astype(str).str.strip().str.upper()
+
+        for symbol in symbols_to_fetch:
+            local_state = local_states[symbol]
+            existing_df, existing_records = self._existing_symbol_records(local_state)
+            filepath = (
+                self._resolve_full_a_write_path(local_state.symbol, local_state.resolved_path)
+                if category == "full_a"
+                else Path(self.dirs.get(category, self.dirs["other"])) / f"{local_state.symbol}.csv"
+            )
+            symbol_df = pd.DataFrame()
+            if not batch_df.empty and "ts_code" in batch_df.columns:
+                symbol_df = batch_df[batch_df["ts_code"].astype(str).str.upper() == local_state.symbol].copy()
+
+            if symbol_df.empty:
+                if local_state.local_status == "stale" and existing_records > 0:
+                    stale_cached_state = local_state.with_local_status("stale_cached")
+                    results.append(
+                        {
+                            "symbol": stale_cached_state.symbol,
+                            "category": category,
+                            "status": "stale_cached",
+                            "local_status": stale_cached_state.local_status,
+                            "records": existing_records,
+                            "mode": "stale_cached",
+                            "latest_local_date": stale_cached_state.latest_local_date,
+                            "latest_trade_date": effective_target_trade_date,
+                            "resolved_path": stale_cached_state.resolved_path,
+                            "api_calls": 0,
+                            "batch_api_calls": batch_api_calls,
+                            "error": None if batch_error in {"", "daily_empty"} else batch_error,
+                            **cleaning_skipped_fields,
+                        }
+                    )
+                    continue
+                results.append(
+                    {
+                        "symbol": local_state.symbol,
+                        "category": category,
+                        "status": "failed",
+                        "local_status": local_state.local_status,
+                        "records": existing_records,
+                        "mode": "daily_batch",
+                        "latest_local_date": local_state.latest_local_date,
+                        "latest_trade_date": effective_target_trade_date,
+                        "resolved_path": local_state.resolved_path,
+                        "api_calls": 0,
+                        "batch_api_calls": batch_api_calls,
+                        "error": batch_error or "Empty data",
+                        **cleaning_skipped_fields,
+                    }
+                )
+                continue
+
+            try:
+                final_df = symbol_df.copy()
+                if not existing_df.empty and local_state.local_status != "unreadable":
+                    existing_to_merge = existing_df.copy()
+                    if "trade_date" not in existing_to_merge.columns and "date" in existing_to_merge.columns:
+                        existing_to_merge = existing_to_merge.rename(columns={"date": "trade_date"})
+                    if "trade_date" in existing_to_merge.columns:
+                        existing_to_merge["trade_date"] = pd.to_datetime(
+                            existing_to_merge["trade_date"],
+                            errors="coerce",
+                        ).dt.strftime("%Y-%m-%d")
+                        existing_to_merge = existing_to_merge.dropna(subset=["trade_date"])
+                    final_df = (
+                        pd.concat([existing_to_merge, symbol_df], ignore_index=True)
+                        .sort_values("trade_date")
+                        .drop_duplicates(subset=["trade_date"], keep="last")
+                        .reset_index(drop=True)
+                    )
+
+                Path(filepath).parent.mkdir(parents=True, exist_ok=True)
+                cleaning_result: Mapping[str, Any] | None = None
+                if config.TUSHARE_AUTO_CLEAN:
+                    cleaning_result = clean_tushare_dataframe_to_file(
+                        final_df,
+                        canonical_path=filepath,
+                        table_name="daily",
+                        promote=False,
+                        raw_backup_dir=config.TUSHARE_RAW_BACKUP_DIR,
+                        quarantine_dir=config.TUSHARE_QUARANTINE_DIR,
+                        report_dir=config.TUSHARE_CLEANING_REPORT_DIR,
+                        factor_readiness_dir=config.TUSHARE_FACTOR_READINESS_DIR,
+                        enable_factor_readiness=bool(config.TUSHARE_FACTOR_READINESS),
+                        enable_storage_audit=bool(config.TUSHARE_STORAGE_AUDIT),
+                        storage_config=self._storage_optimization_config(),
+                        metadata={
+                            "symbol": local_state.symbol,
+                            "category": category,
+                            "target_trade_date": effective_target_trade_date,
+                            "local_status": local_state.local_status,
+                            "mode": "daily_batch",
+                        },
+                    )
+                    cleaning_report = cleaning_result.get("cleaning_report")
+                    if (
+                        cleaning_result.get("cleaning_status") == CLEANING_STATUS_FAIL
+                        or getattr(cleaning_report, "status", None) == CLEANING_STATUS_FAIL
+                    ):
+                        results.append(
+                            {
+                                "symbol": local_state.symbol,
+                                "category": category,
+                                "status": "failed",
+                                "local_status": local_state.local_status,
+                                "records": existing_records,
+                                "mode": "daily_batch",
+                                "latest_local_date": local_state.latest_local_date,
+                                "latest_trade_date": effective_target_trade_date,
+                                "resolved_path": str(filepath),
+                                "api_calls": 0,
+                                "batch_api_calls": batch_api_calls,
+                                "error": "Tushare cleaning failed",
+                                **self._cleaning_result_fields(cleaning_result),
+                            }
+                        )
+                        continue
+                    cleaned_df = cleaning_result.get("cleaned_df")
+                    if isinstance(cleaned_df, pd.DataFrame):
+                        final_df = cleaned_df
+                else:
+                    cleaning_result = cleaning_skipped_fields
+
+                self._write_parquet_bars(
+                    final_df,
+                    source="CNFullMarketDownloader.download_daily_batch",
+                    metadata={
+                        "symbol": local_state.symbol,
+                        "category": category,
+                        "target_trade_date": effective_target_trade_date,
+                        "local_status": local_state.local_status,
+                        "mode": "daily_batch",
+                    },
+                )
+
+                cleaning_fields = self._cleaning_result_fields(cleaning_result)
+                latest_saved_ts = pd.NaT
+                if "trade_date" in final_df.columns:
+                    latest_saved_ts = pd.to_datetime(final_df["trade_date"], errors="coerce").max()
+                elif "date" in final_df.columns:
+                    latest_saved_ts = pd.to_datetime(final_df["date"], errors="coerce").max()
+                latest_saved_date = (
+                    latest_saved_ts.strftime("%Y%m%d")
+                    if pd.notna(latest_saved_ts)
+                    else local_state.latest_local_date
+                )
+                self.last_resolver_trace = self.resolver.snapshot()
+                if latest_saved_date and latest_saved_date < effective_target_trade_date:
+                    results.append(
+                        {
+                            "symbol": local_state.symbol,
+                            "category": category,
+                            "status": "stale_cached",
+                            "local_status": "stale_cached",
+                            "records": len(final_df),
+                            "mode": "stale_cached",
+                            "latest_local_date": latest_saved_date,
+                            "latest_trade_date": effective_target_trade_date,
+                            "resolved_path": str(filepath),
+                            "api_calls": 0,
+                            "batch_api_calls": batch_api_calls,
+                            "error": None,
+                            **cleaning_fields,
+                        }
+                    )
+                    continue
+
+                results.append(
+                    {
+                        "symbol": local_state.symbol,
+                        "category": category,
+                        "status": "updated",
+                        "local_status": "up_to_date",
+                        "records": len(final_df),
+                        "mode": "daily_batch",
+                        "latest_local_date": latest_saved_date,
+                        "latest_trade_date": effective_target_trade_date,
+                        "resolved_path": str(filepath),
+                        "api_calls": 0,
+                        "batch_api_calls": batch_api_calls,
+                        "error": None,
+                        **cleaning_fields,
+                    }
+                )
+            except Exception as exc:
+                results.append(
+                    {
+                        "symbol": local_state.symbol,
+                        "category": category,
+                        "status": "failed",
+                        "local_status": local_state.local_status,
+                        "records": existing_records,
+                        "mode": "daily_batch",
+                        "latest_local_date": local_state.latest_local_date,
+                        "latest_trade_date": effective_target_trade_date,
+                        "resolved_path": local_state.resolved_path,
+                        "api_calls": 0,
+                        "batch_api_calls": batch_api_calls,
+                        "error": str(exc)[:100],
+                        **cleaning_skipped_fields,
+                    }
+                )
+
+        index_updates: dict[str, str] = {}
+        for result in results:
+            self.stats["total"] += 1
+            status = str(result.get("status") or "")
+            if status == "updated":
+                self.stats["updated"] += 1
+            elif status == "cached":
+                self.stats["cached"] += 1
+            elif status == "stale_cached":
+                self.stats["stale_cached"] += 1
+            else:
+                self.stats["failed"] += 1
+
+            symbol = str(result.get("symbol") or "").strip().upper()
+            latest_date = str(result.get("latest_local_date") or "")
+            if symbol and latest_date and status in ("updated", "cached", "stale_cached"):
+                index_updates[symbol] = latest_date
+        self._flush_freshness_index(index_updates)
+        print(
+            f"✅ 批量补齐完成 | cached: {self.stats['cached']} | "
+            f"stale_cached: {self.stats['stale_cached']} | "
+            f"updated: {self.stats['updated']} | failed: {self.stats['failed']}"
+        )
+        return results
     
     def download_stock(
         self,
@@ -1137,12 +1642,7 @@ class CNFullMarketDownloader:
             suspended_symbols=suspended_symbols,
         )
         normalized_existing_df = local_state.frame.copy()
-        existing_df = pd.DataFrame()
-        if local_state.resolved_path:
-            try:
-                existing_df = pd.read_csv(local_state.resolved_path)
-            except Exception:
-                existing_df = pd.DataFrame()
+        existing_df = normalized_existing_df.copy()
         existing_records = len(existing_df) if not existing_df.empty else len(normalized_existing_df)
         self.last_resolver_trace = self.resolver.snapshot()
 
@@ -1229,6 +1729,36 @@ class CNFullMarketDownloader:
                     .reset_index(drop=True)
                 )
 
+            latest_candidate_ts = pd.NaT
+            if 'trade_date' in final_df.columns:
+                latest_candidate_ts = pd.to_datetime(final_df['trade_date'], errors='coerce').max()
+            elif 'date' in final_df.columns:
+                latest_candidate_ts = pd.to_datetime(final_df['date'], errors='coerce').max()
+            latest_candidate_date = (
+                latest_candidate_ts.strftime('%Y%m%d')
+                if pd.notna(latest_candidate_ts)
+                else local_state.latest_local_date
+            )
+            if (
+                latest_candidate_date
+                and latest_candidate_date < effective_target_trade_date
+                and existing_records > 0
+            ):
+                return {
+                    'symbol': local_state.symbol,
+                    'category': category,
+                    'status': 'stale_cached',
+                    'local_status': 'stale_cached',
+                    'records': len(final_df),
+                    'mode': 'stale_cached',
+                    'latest_local_date': latest_candidate_date,
+                    'latest_trade_date': effective_target_trade_date,
+                    'resolved_path': local_state.resolved_path,
+                    'api_calls': self.REQUESTS_PER_STOCK,
+                    'error': None,
+                    **cleaning_skipped_fields,
+                }
+
             Path(filepath).parent.mkdir(parents=True, exist_ok=True)
             cleaning_result: Mapping[str, Any] | None = None
             if config.TUSHARE_AUTO_CLEAN:
@@ -1236,7 +1766,7 @@ class CNFullMarketDownloader:
                     final_df,
                     canonical_path=filepath,
                     table_name="daily",
-                    promote=True,
+                    promote=False,
                     raw_backup_dir=config.TUSHARE_RAW_BACKUP_DIR,
                     quarantine_dir=config.TUSHARE_QUARANTINE_DIR,
                     report_dir=config.TUSHARE_CLEANING_REPORT_DIR,
@@ -1275,8 +1805,18 @@ class CNFullMarketDownloader:
                 if isinstance(cleaned_df, pd.DataFrame):
                     final_df = cleaned_df
             else:
-                final_df.to_csv(filepath, index=False)
                 cleaning_result = cleaning_skipped_fields
+            self._write_parquet_bars(
+                final_df,
+                source="CNFullMarketDownloader.download_stock",
+                metadata={
+                    "symbol": local_state.symbol,
+                    "category": category,
+                    "target_trade_date": effective_target_trade_date,
+                    "local_status": local_state.local_status,
+                    "mode": "incremental" if is_incremental else "full",
+                },
+            )
             cleaning_fields = self._cleaning_result_fields(cleaning_result)
             latest_saved_ts = pd.NaT
             if 'trade_date' in final_df.columns:

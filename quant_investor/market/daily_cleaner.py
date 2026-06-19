@@ -1,4 +1,4 @@
-"""Offline daily-bar cleaner for local CN/US market CSV snapshots."""
+"""Offline daily-bar cleaner for local CN/US market Parquet snapshots."""
 
 from __future__ import annotations
 
@@ -60,7 +60,7 @@ class FileCleanResult:
 
 
 def clean_market_daily_data(config: DailyCleanConfig) -> dict[str, Any]:
-    """Clean local market CSVs into a separate clean layer plus audit files."""
+    """Clean local market Parquet files into a separate clean layer plus audit files."""
 
     cleaner = MarketDailyCleaner(config)
     return cleaner.run()
@@ -102,7 +102,7 @@ class MarketDailyCleaner:
 
     def _discover_symbol_groups(self) -> dict[str, list[dict[str, Any]]]:
         groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for path in sorted(self.raw_dir.glob("*/*.csv")):
+        for path in sorted(self.raw_dir.glob("*/*.parquet")):
             if path.parent.name.startswith(".") or path.parent.name.startswith("_"):
                 continue
             category = path.parent.name
@@ -158,10 +158,10 @@ class MarketDailyCleaner:
         )
 
         try:
-            raw = pd.read_csv(path)
+            raw = pd.read_parquet(path)
         except Exception as exc:  # pragma: no cover - exercised by real corrupt files.
-            result.issue_counts["csv_unreadable"] = 1
-            result.quarantine_reasons.append("csv_unreadable")
+            result.issue_counts["parquet_unreadable"] = 1
+            result.quarantine_reasons.append("parquet_unreadable")
             result.issue_counts["exception"] = 1
             self._append_file_exception(result, exc)
             return result

@@ -27,6 +27,7 @@ from quant_investor.agents.base import BaseAgent
 from quant_investor.reporting.conclusion_renderer import ConclusionRenderer
 from quant_investor.reporting.diagnostics_bucketizer import DiagnosticsBucketizer
 from quant_investor.reporting.executive_summary import ExecutiveSummaryBuilder
+from quant_investor.reporting.theme_renderer import render_theme_rotation_markdown
 
 
 class NarratorAgent(BaseAgent):
@@ -75,6 +76,11 @@ class NarratorAgent(BaseAgent):
         portfolio_decision = self.copy_value(envelope.get("portfolio_decision"))
         bayesian_records = self.copy_value(envelope.get("bayesian_records") or [])
         funnel_summary = self.copy_value(envelope.get("funnel_summary") or {})
+        theme_rotation = self.copy_value(envelope.get("theme_rotation") or {})
+        if not theme_rotation and global_context is not None:
+            context_metadata = getattr(global_context, "metadata", {}) or {}
+            if isinstance(context_metadata, Mapping):
+                theme_rotation = self.copy_value(context_metadata.get("theme_rotation") or {})
 
         bucketed = DiagnosticsBucketizer(
             branch_summaries=branch_verdicts,
@@ -110,6 +116,7 @@ class NarratorAgent(BaseAgent):
             funnel_summary=funnel_summary,
             symbol_name_map=getattr(global_context, "symbol_name_map", {}) if global_context is not None else {},
         )
+        theme_section = render_theme_rotation_markdown(theme_rotation)
         run_context = ConclusionRenderer.render_run_context(
             model_role_metadata=model_role_metadata,
             execution_trace=execution_trace,
@@ -117,6 +124,8 @@ class NarratorAgent(BaseAgent):
         )
         if review_sections:
             markdown_report = markdown_report.rstrip() + "\n\n" + "\n".join(review_sections).strip() + "\n"
+        if theme_section:
+            markdown_report = markdown_report.rstrip() + "\n\n" + theme_section.strip() + "\n"
         if bayesian_section:
             markdown_report = markdown_report.rstrip() + "\n\n" + "\n".join(bayesian_section).strip() + "\n"
         if run_context:

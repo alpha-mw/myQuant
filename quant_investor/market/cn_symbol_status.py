@@ -7,7 +7,7 @@ import pandas as pd
 
 from quant_investor.agent_protocol import DataQualityIssue
 from quant_investor.market.cn_resolver import CNUniverseResolver
-from quant_investor.market.shared_csv_reader import SharedCSVReader
+from quant_investor.market.market_data_reader import MarketDataReader, MarketDataUnavailableError
 
 CNSymbolLocalStatus = Literal[
     "up_to_date",
@@ -108,7 +108,7 @@ def evaluate_symbol_local_status(
     *,
     category: str,
     resolver: CNUniverseResolver,
-    csv_reader: SharedCSVReader,
+    market_reader: MarketDataReader,
     latest_trade_date: str,
     allowed_stale_symbols: Iterable[str] | None,
     suspended_symbols: Iterable[str] | None,
@@ -129,11 +129,30 @@ def evaluate_symbol_local_status(
     # `resolver` stays in the signature so every CN caller is wired to the same resolver chain.
     _ = resolver
 
-    resolved_path = csv_reader.resolve_symbol_path(
-        normalized_symbol,
-        universe_key=universe_key,
-        category=normalized_category,
-    )
+    try:
+        resolved_path = market_reader.resolve_symbol_path(
+            normalized_symbol,
+            universe_key=universe_key,
+            category=normalized_category,
+        )
+    except MarketDataUnavailableError as exc:
+        base = CNSymbolLocalStatusResult(
+            symbol=normalized_symbol,
+            strict_trade_date=strict_trade_date,
+            stable_trade_date=stable_trade_date,
+            effective_target_trade_date=latest_trade_date,
+            freshness_mode=freshness_mode,
+            issues=[
+                DataQualityIssue(
+                    symbol=normalized_symbol,
+                    issue_type="missing_parquet_snapshot",
+                    severity="error",
+                    message=str(exc),
+                    metadata={"storage_layer": "parquet"},
+                )
+            ],
+        )
+        return base.with_local_status("missing", allowed_stale_symbols=allowed)
     if resolved_path is None:
         base = CNSymbolLocalStatusResult(
             symbol=normalized_symbol,
@@ -144,9 +163,9 @@ def evaluate_symbol_local_status(
         )
         return base.with_local_status("missing", allowed_stale_symbols=allowed)
 
-    # ── fast path: only peek the latest date from the tail of the CSV ──
+    # Fast path: only peek the latest date from the Parquet serving file.
     if fast_date_peek:
-        latest_local_date = csv_reader.peek_symbol_latest_date(
+        latest_local_date = market_reader.peek_symbol_latest_date(
             normalized_symbol,
             universe_key=universe_key,
             category=normalized_category,
@@ -169,7 +188,7 @@ def evaluate_symbol_local_status(
         return base.with_local_status("stale", allowed_stale_symbols=allowed)
 
     # ── full path: load complete DataFrame (needed for analysis, not just freshness) ──
-    read_result = csv_reader.read_symbol_frame(
+    read_result = market_reader.read_symbol_frame(
         normalized_symbol,
         universe_key=universe_key,
         category=normalized_category,
@@ -201,7 +220,7 @@ def evaluate_batch_completeness(
     *,
     category: str,
     resolver: CNUniverseResolver,
-    csv_reader: SharedCSVReader,
+    market_reader: MarketDataReader,
     latest_trade_date: str,
     allowed_stale_symbols: Iterable[str] | None = None,
     suspended_symbols: Iterable[str] | None = None,
@@ -222,7 +241,7 @@ def evaluate_batch_completeness(
             normalized,
             category=category,
             resolver=resolver,
-            csv_reader=csv_reader,
+            market_reader=market_reader,
             latest_trade_date=latest_trade_date,
             allowed_stale_symbols=allowed_stale_symbols,
             suspended_symbols=suspended_symbols,

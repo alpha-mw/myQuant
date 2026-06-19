@@ -1,0 +1,83 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from quant_investor.agent_protocol import ActionLabel
+from quant_investor.agents.theme_agent import ThemeAgent
+from quant_investor.bayesian.types import LikelihoodSet
+from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
+from quant_investor.config import Config, MAINLINE_ENV_DEFAULTS
+from quant_investor.market.dag.theme_context import persist_theme_rotation_snapshot
+
+
+def test_theme_config_defaults_are_off() -> None:
+    expected_default_off = {
+        "THEME_SCANNER_ENABLED": "0",
+        "THEME_FUNNEL_BOOST_ENABLED": "0",
+        "THEME_RISK_GUARD_ENABLED": "0",
+        "THEME_PORTFOLIO_CAP_ENABLED": "0",
+        "THEME_SNAPSHOT_ENABLED": "0",
+        "THEME_SNAPSHOT_SAVE_DISABLED": "0",
+    }
+
+    for key, expected in expected_default_off.items():
+        assert MAINLINE_ENV_DEFAULTS[key] == expected
+        if key not in os.environ:
+            assert getattr(Config, key) is False
+
+
+def test_no_theme_likelihood_in_bayesian_types() -> None:
+    likelihoods = LikelihoodSet(
+        quant_likelihood=0.61,
+        fundamental_likelihood=0.52,
+        intelligence_likelihood=0.49,
+    )
+
+    assert not hasattr(likelihoods, "theme_likelihood")
+    assert "theme_likelihood" not in likelihoods.to_dict()
+    assert likelihoods.as_list() == [
+        ("quant", 0.61),
+        ("fundamental", 0.52),
+        ("intelligence", 0.49),
+    ]
+    assert len(likelihoods.as_list()) == 3
+
+
+def test_canonical_branch_order_has_no_theme() -> None:
+    assert "theme" not in CANONICAL_BRANCH_ORDER
+    assert CANONICAL_BRANCH_ORDER == (
+        "quant",
+        "fundamental",
+        "intelligence",
+        "macro",
+    )
+
+
+def test_theme_agent_is_non_canonical_metadata_only() -> None:
+    verdict = ThemeAgent().run({"symbol": "000001.SZ"})
+
+    assert verdict.metadata["branch_name"] == "theme"
+    assert "theme" not in CANONICAL_BRANCH_ORDER
+    assert verdict.final_score == 0.0
+    assert verdict.final_confidence == 0.0
+    assert verdict.action == ActionLabel.HOLD
+    assert verdict.metadata["theme_data_available"] is False
+    assert "theme_data_unavailable" in verdict.diagnostic_notes
+
+
+def test_theme_snapshot_disabled_does_not_write(tmp_path: Path) -> None:
+    status = persist_theme_rotation_snapshot(
+        theme_rotation={"status": "success", "symbol_scores": {"000001.SZ": 0.8}},
+        enabled=False,
+        root_dir=tmp_path,
+        market="CN",
+        universe_key="full_a",
+        as_of="20260618",
+    )
+
+    assert status["enabled"] is False
+    assert status["status"] == "disabled"
+    assert status["path"] == ""
+    assert status["diagnostic_notes"] == ["theme_snapshot_disabled"]
+    assert list(tmp_path.rglob("*.json")) == []

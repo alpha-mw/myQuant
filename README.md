@@ -272,9 +272,9 @@ myQuant/
 │   │   ├── master_agent.py      # LLM IC 主席
 │   │   └── subagents/           # LLM 审阅子 agent
 │   ├── market/                  # 市场数据、全市场 DAG 和报告持久化
-│   │   ├── market_data_reader.py# Parquet/CSV 统一读取门面
-│   │   ├── market_data_store.py # canonical/clean storage validation helpers
-│   │   ├── shared_csv_reader.py # 批量 symbol 读取兼容 alias
+│   │   ├── market_data_reader.py# strict Parquet 读取门面
+│   │   ├── market_data_store.py # Parquet canonical storage validation helpers
+│   │   ├── read_result.py       # 市场数据读取结果类型
 │   │   ├── runtime_profile.py   # market run/analyze stage profile
 │   │   ├── dag/                 # context/research/Bayesian/control/reporting
 │   │   ├── dag_executor.py      # v13 全市场 DAG 执行器

@@ -48,7 +48,6 @@ from quant_investor.bayesian.posterior import BayesianPosteriorEngine
 from quant_investor.bayesian.prior import HierarchicalPriorBuilder
 from quant_investor.config import config
 from quant_investor.funnel.deterministic_funnel import DeterministicFunnel
-from quant_investor.market.cn_resolver import CNUniverseResolver
 from quant_investor.market.config import get_market_settings, normalize_categories, normalize_universe
 from quant_investor.market.data_snapshot import build_market_data_snapshot
 from quant_investor.market.data_quality import build_data_quality_diagnostics
@@ -82,7 +81,6 @@ from quant_investor.market.name_map import (
 )
 from quant_investor.market.provider_health import detect_provider_health
 from quant_investor.market.runtime_profile import profile_stage
-from quant_investor.market.shared_csv_reader import SharedCSVReader
 from quant_investor.market.us_market_cap_filter import USMarketCapFilter
 from quant_investor.llm_policy import llm_handoff_metadata, local_llm_disabled
 from quant_investor.llm_provider_priority import resolve_runtime_role_models
@@ -307,11 +305,7 @@ async def _execute_market_dag_async(
     )
     universe_key = universe or (selected_categories[0] if len(selected_categories) == 1 else "custom")
 
-    resolver = CNUniverseResolver(data_dir=settings.data_dir) if settings.market == "CN" else None
-    if settings.market == "CN":
-        shared_reader = MarketDataReader(market=settings.market)
-    else:
-        shared_reader = SharedCSVReader(market=settings.market, data_dir=settings.data_dir, resolver=resolver)
+    shared_reader = MarketDataReader(market=settings.market)
 
     explicit_symbols = list(dict.fromkeys(str(symbol).strip().upper() for symbol in (symbols or []) if str(symbol).strip()))
     market_cap_filter_metadata: dict[str, Any] = {}

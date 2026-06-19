@@ -4349,10 +4349,10 @@
         "registry_write_source": "manual_delegated_update",
         "candidate_maturity_start": true,
         "min_candidate_signal_coverage": 0.6,
-        "fundamental_mart_root": "data/clean/cn_fundamental",
+        "fundamental_mart_root": "data/parquet/cn",
         "legacy_fundamental_fallback_allowed": false,
         "pit_coverage": {
-          "mart_root": "data/clean/cn_fundamental",
+          "mart_root": "data/parquet/cn",
           "daily_rows": 1977886,
           "daily_blocker": "",
           "metrics_requested": [
@@ -4747,10 +4747,10 @@
         "registry_write_source": "manual_delegated_update",
         "candidate_maturity_start": true,
         "min_candidate_signal_coverage": 0.6,
-        "fundamental_mart_root": "data/clean/cn_fundamental",
+        "fundamental_mart_root": "data/parquet/cn",
         "legacy_fundamental_fallback_allowed": false,
         "pit_coverage": {
-          "mart_root": "data/clean/cn_fundamental",
+          "mart_root": "data/parquet/cn",
           "daily_rows": 1977886,
           "daily_blocker": "",
           "metrics_requested": [
@@ -4945,7 +4945,7 @@
           "close",
           "fin_ocf_to_profit"
         ],
-        "fundamental_mart_root": "data/clean/cn_fundamental",
+        "fundamental_mart_root": "data/parquet/cn",
         "allow_legacy_fundamental_fallback": false,
         "gate_evidence_required": true,
         "promotion_rule": "manual production_factor promotion only after all 8 gates pass on the current PIT mart readiness run"
@@ -4983,7 +4983,7 @@
           "close",
           "fin_ocf_to_profit"
         ],
-        "fundamental_mart_root": "data/clean/cn_fundamental",
+        "fundamental_mart_root": "data/parquet/cn",
         "allow_legacy_fundamental_fallback": false,
         "gate_evidence_required": true,
         "promotion_rule": "manual production_factor promotion only after all 8 gates pass on the current PIT mart readiness run"
@@ -5021,7 +5021,7 @@
           "close",
           "fin_ocf_to_profit"
         ],
-        "fundamental_mart_root": "data/clean/cn_fundamental",
+        "fundamental_mart_root": "data/parquet/cn",
         "allow_legacy_fundamental_fallback": false,
         "gate_evidence_required": true,
         "promotion_rule": "manual production_factor promotion only after all 8 gates pass on the current PIT mart readiness run"
@@ -5059,7 +5059,7 @@
           "close",
           "fin_ocf_to_profit"
         ],
-        "fundamental_mart_root": "data/clean/cn_fundamental",
+        "fundamental_mart_root": "data/parquet/cn",
         "allow_legacy_fundamental_fallback": false,
         "gate_evidence_required": true,
         "promotion_rule": "manual production_factor promotion only after all 8 gates pass on the current PIT mart readiness run"
@@ -5097,7 +5097,7 @@
           "close",
           "fin_ocf_to_profit"
         ],
-        "fundamental_mart_root": "data/clean/cn_fundamental",
+        "fundamental_mart_root": "data/parquet/cn",
         "allow_legacy_fundamental_fallback": false,
         "gate_evidence_required": true,
         "promotion_rule": "manual production_factor promotion only after all 8 gates pass on the current PIT mart readiness run"
@@ -5135,7 +5135,7 @@
           "close",
           "fin_ocf_to_profit"
         ],
-        "fundamental_mart_root": "data/clean/cn_fundamental",
+        "fundamental_mart_root": "data/parquet/cn",
         "allow_legacy_fundamental_fallback": false,
         "gate_evidence_required": true,
         "promotion_rule": "manual production_factor promotion only after all 8 gates pass on the current PIT mart readiness run"
@@ -5173,7 +5173,7 @@
           "close",
           "fin_ocf_to_profit"
         ],
-        "fundamental_mart_root": "data/clean/cn_fundamental",
+        "fundamental_mart_root": "data/parquet/cn",
         "allow_legacy_fundamental_fallback": false,
         "gate_evidence_required": true,
         "promotion_rule": "manual production_factor promotion only after all 8 gates pass on the current PIT mart readiness run"
@@ -5211,7 +5211,7 @@
           "close",
           "fin_ocf_to_profit"
         ],
-        "fundamental_mart_root": "data/clean/cn_fundamental",
+        "fundamental_mart_root": "data/parquet/cn",
         "allow_legacy_fundamental_fallback": false,
         "gate_evidence_required": true,
         "promotion_rule": "manual production_factor promotion only after all 8 gates pass on the current PIT mart readiness run"
@@ -5249,7 +5249,7 @@
           "close",
           "fin_ocf_to_profit"
         ],
-        "fundamental_mart_root": "data/clean/cn_fundamental",
+        "fundamental_mart_root": "data/parquet/cn",
         "allow_legacy_fundamental_fallback": false,
         "gate_evidence_required": true,
         "promotion_rule": "manual production_factor promotion only after all 8 gates pass on the current PIT mart readiness run"
@@ -5287,7 +5287,7 @@
           "close",
           "fin_ocf_to_profit"
         ],
-        "fundamental_mart_root": "data/clean/cn_fundamental",
+        "fundamental_mart_root": "data/parquet/cn",
         "allow_legacy_fundamental_fallback": false,
         "gate_evidence_required": true,
         "promotion_rule": "manual production_factor promotion only after all 8 gates pass on the current PIT mart readiness run"

@@ -753,8 +753,10 @@ with all eight gates passed. `paper_factor`, `research_candidate`, and
 `production_candidate` records remain skipped.
 
 `fin_ocf_to_profit` is loaded from the source-backed PIT helper at
-`quant_investor.factors.pit_fundamentals`. The canonical CSV is
-`data/metadata/fundamental_pit_series.csv` with fixed columns:
+`quant_investor.factors.pit_fundamentals`. Production reads use the strict
+Parquet fundamental mart under `data/parquet/cn/fundamental_daily` and
+`data/parquet/cn/fundamental_period`; legacy metadata CSV inputs are no longer
+production read ports after the Parquet cutover.
 
 ```text
 ts_code, report_period, availability_date, metric_name, value, source,

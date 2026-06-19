@@ -6,7 +6,7 @@ import csv
 import json
 import math
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -21,9 +21,10 @@ SOURCE_PUBLIC_FALLBACK = "public_structured_fallback"
 SOURCE_OFFLINE = "manual_offline_snapshot"
 SOURCE_PRIORITY_ORDER = (SOURCE_TUSHARE, SOURCE_PUBLIC_FALLBACK, SOURCE_OFFLINE)
 
-DEFAULT_FUNDAMENTAL_ROOT = Path("data/clean/cn_fundamental")
-DEFAULT_INTELLIGENCE_ROOT = Path("data/clean/cn_intelligence")
-DEFAULT_MACRO_ROOT = Path("data/clean/cn_macro")
+DEFAULT_PARQUET_CN_ROOT = Path("data/parquet/cn")
+DEFAULT_FUNDAMENTAL_ROOT = DEFAULT_PARQUET_CN_ROOT / "fundamental_daily"
+DEFAULT_INTELLIGENCE_ROOT = DEFAULT_PARQUET_CN_ROOT / "intelligence_daily"
+DEFAULT_MACRO_ROOT = DEFAULT_PARQUET_CN_ROOT / "macro_daily"
 DEFAULT_READINESS_ROOT = Path("reports/branch_readiness")
 
 QUANT_REQUIRED_FIELDS = ("open", "high", "low", "close", "volume", "amount")
@@ -71,6 +72,8 @@ def _json_safe(value: Any) -> Any:
         return str(value)
     if isinstance(value, pd.Timestamp):
         return value.strftime("%Y-%m-%d")
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
     if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
         return None
     return value
@@ -252,7 +255,7 @@ def assess_quant_readiness(
     if read_results:
         issue_count = sum(len(getattr(result, "issues", []) or []) for result in read_results.values())
         if issue_count:
-            unique_blockers.append("csv_read_diagnostics_present")
+            unique_blockers.append("market_data_read_diagnostics_present")
             status = STATUS_BLOCK
     return BranchDataReadiness(
         branch="quant",
@@ -261,14 +264,14 @@ def assess_quant_readiness(
         freshness_status=freshness,
         pit_status="daily_bar_snapshot",
         source_priority=SOURCE_TUSHARE,
-        source="local_cn_daily_tushare_clean",
+        source="strict_parquet_canonical_bars",
         as_of=_date_text(as_of),
         required_fields=list(QUANT_REQUIRED_FIELDS),
         missing_fields=sorted(missing_fields),
         blockers=unique_blockers,
         affected_symbols=sorted(set(affected)),
         fallback_used=False,
-        provider_status="local_snapshot",
+        provider_status="strict_parquet_snapshot",
         metadata={"latest_dates": latest_dates, "symbol_count": len(universe), "pass_count": len(pass_symbols)},
     )
 
@@ -284,14 +287,63 @@ def _read_latest_manifest(root: Path) -> dict[str, Any]:
     return dict(payload) if isinstance(payload, Mapping) else {}
 
 
-def _read_mart_csv(root: Path, filename: str) -> pd.DataFrame:
-    path = root / filename
-    if not path.exists():
+def _resolve_parquet_table_root(root: str | Path, table_name: str) -> Path:
+    path = Path(root).expanduser()
+    if path.suffix.lower() == ".parquet" or (path / "part.parquet").exists():
+        return path
+    if path.name == table_name:
+        return path
+    return path / table_name
+
+
+def _read_parquet_table(table_path: Path) -> pd.DataFrame:
+    if not table_path.exists():
         return pd.DataFrame()
+    if table_path.is_file():
+        try:
+            return pd.read_parquet(table_path)
+        except Exception:
+            return pd.DataFrame()
+    part_path = table_path / "part.parquet"
+    if part_path.exists():
+        try:
+            return pd.read_parquet(part_path)
+        except Exception:
+            return pd.DataFrame()
     try:
-        return pd.read_csv(path, dtype={"ts_code": str, "trade_date": str})
+        return pd.read_parquet(table_path)
     except Exception:
-        return pd.DataFrame()
+        frames: list[pd.DataFrame] = []
+        for path in sorted(table_path.rglob("*.parquet")):
+            try:
+                frames.append(pd.read_parquet(path))
+            except Exception:
+                continue
+        if not frames:
+            return pd.DataFrame()
+        return pd.concat(frames, ignore_index=True)
+
+
+def _manifest_from_parquet(table_name: str, frame: pd.DataFrame, table_path: Path) -> dict[str, Any]:
+    if frame.empty:
+        return {}
+    source = "parquet_canonical"
+    if "source" in frame.columns:
+        sources = frame["source"].dropna().astype(str).str.strip()
+        source = str(sources.iloc[0]) if not sources.empty else source
+    source_priority = ""
+    if "source_priority" in frame.columns:
+        priorities = frame["source_priority"].dropna().astype(str).str.strip()
+        source_priority = str(priorities.iloc[0]) if not priorities.empty else ""
+    return {
+        "provider_status": source,
+        "source": source,
+        "source_priority": source_priority or _source_priority(source),
+        "storage_backend": "parquet_canonical",
+        "table": table_name,
+        "table_path": str(table_path),
+        "daily_rows": int(len(frame)),
+    }
 
 
 def _latest_records_by_symbol(
@@ -325,9 +377,9 @@ def load_fundamental_records(
     as_of: str = "",
     root: str | Path = DEFAULT_FUNDAMENTAL_ROOT,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
-    data_root = Path(root)
-    frame = _read_mart_csv(data_root, "fundamental_daily.csv")
-    manifest = _read_latest_manifest(data_root)
+    table_path = _resolve_parquet_table_root(root, "fundamental_daily")
+    frame = _read_parquet_table(table_path)
+    manifest = _read_latest_manifest(table_path) or _manifest_from_parquet("fundamental_daily", frame, table_path)
     return _latest_records_by_symbol(frame, symbols=symbols, as_of=as_of), manifest
 
 
@@ -337,9 +389,9 @@ def load_intelligence_records(
     as_of: str = "",
     root: str | Path = DEFAULT_INTELLIGENCE_ROOT,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
-    data_root = Path(root)
-    frame = _read_mart_csv(data_root, "intelligence_daily.csv")
-    manifest = _read_latest_manifest(data_root)
+    table_path = _resolve_parquet_table_root(root, "intelligence_daily")
+    frame = _read_parquet_table(table_path)
+    manifest = _read_latest_manifest(table_path) or _manifest_from_parquet("intelligence_daily", frame, table_path)
     return _latest_records_by_symbol(frame, symbols=symbols, as_of=as_of), manifest
 
 
@@ -348,9 +400,9 @@ def load_macro_record(
     as_of: str = "",
     root: str | Path = DEFAULT_MACRO_ROOT,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    data_root = Path(root)
-    frame = _read_mart_csv(data_root, "macro_daily.csv")
-    manifest = _read_latest_manifest(data_root)
+    table_path = _resolve_parquet_table_root(root, "macro_daily")
+    frame = _read_parquet_table(table_path)
+    manifest = _read_latest_manifest(table_path) or _manifest_from_parquet("macro_daily", frame, table_path)
     if frame.empty:
         return {}, manifest
     working = frame.copy()
@@ -378,34 +430,46 @@ def _assess_symbol_records(
 ) -> BranchDataReadiness:
     universe = [_normalize_symbol(symbol) for symbol in symbols if _normalize_symbol(symbol)]
     affected: list[str] = []
+    partial_symbols: list[str] = []
     missing_fields: set[str] = set()
     pass_count = 0
+    record_count = 0
     for symbol in universe:
         record = dict(records.get(symbol, {}) or {})
-        symbol_missing = [field_name for field_name in required_fields if not _is_present(record.get(field_name))]
         if not record:
-            symbol_missing.append("record")
-        if symbol_missing:
+            symbol_missing = list(required_fields) + ["record"]
             affected.append(symbol)
-            missing_fields.update(symbol_missing)
         else:
-            pass_count += 1
-    coverage = pass_count / max(len(universe), 1)
-    source = str(manifest.get("provider_status") or manifest.get("source") or "local_mart")
+            record_count += 1
+            symbol_missing = [field_name for field_name in required_fields if not _is_present(record.get(field_name))]
+            if symbol_missing:
+                partial_symbols.append(symbol)
+            else:
+                pass_count += 1
+        if symbol_missing:
+            missing_fields.update(symbol_missing)
+    full_coverage = pass_count / max(len(universe), 1)
+    record_coverage = record_count / max(len(universe), 1)
+    source = str(manifest.get("provider_status") or manifest.get("source") or "parquet_canonical")
     priority = _source_priority(source, str(manifest.get("source_priority", "")))
     fallback_used = priority != SOURCE_TUSHARE
     blockers = []
     if not records:
-        blockers.append(f"{branch}_mart_missing_or_empty")
+        blockers.append(f"{branch}_parquet_table_missing_or_empty")
     if affected:
         blockers.append(f"{branch}_required_fields_missing")
     if fallback_used:
         blockers.append(f"{branch}_not_tushare_primary")
-    status = STATUS_PASS if coverage >= 1.0 and not blockers else STATUS_BLOCK
+    if blockers:
+        status = STATUS_BLOCK
+    elif partial_symbols:
+        status = STATUS_WARN
+    else:
+        status = STATUS_PASS if full_coverage >= 1.0 else STATUS_WARN
     return BranchDataReadiness(
         branch=branch,
         status=status,
-        coverage_ratio=coverage,
+        coverage_ratio=record_coverage if status == STATUS_WARN else full_coverage,
         freshness_status="fresh_or_pit_asof" if records else "unknown",
         pit_status="point_in_time" if records else "missing",
         source_priority=priority,
@@ -417,7 +481,15 @@ def _assess_symbol_records(
         affected_symbols=sorted(set(affected)),
         fallback_used=fallback_used,
         provider_status=str(manifest.get("provider_status") or "local_snapshot"),
-        metadata={"manifest": dict(manifest), "symbol_count": len(universe), "pass_count": pass_count},
+        metadata={
+            "manifest": dict(manifest),
+            "symbol_count": len(universe),
+            "record_count": record_count,
+            "pass_count": pass_count,
+            "partial_symbols": sorted(set(partial_symbols)),
+            "record_coverage_ratio": record_coverage,
+            "full_field_coverage_ratio": full_coverage,
+        },
     )
 
 
@@ -428,12 +500,12 @@ def assess_macro_readiness(
     as_of: str = "",
 ) -> BranchDataReadiness:
     missing = [field_name for field_name in MACRO_REQUIRED_FIELDS if not _is_present(macro_record.get(field_name))]
-    source = str(macro_record.get("source") or manifest.get("provider_status") or manifest.get("source") or "local_mart")
+    source = str(macro_record.get("source") or manifest.get("provider_status") or manifest.get("source") or "parquet_canonical")
     priority = _source_priority(source, str(macro_record.get("source_priority") or manifest.get("source_priority") or ""))
     fallback_used = priority != SOURCE_TUSHARE
     blockers = []
     if not macro_record:
-        blockers.append("macro_mart_missing_or_empty")
+        blockers.append("macro_parquet_table_missing_or_empty")
     if missing:
         blockers.append("macro_required_fields_missing")
     if fallback_used:

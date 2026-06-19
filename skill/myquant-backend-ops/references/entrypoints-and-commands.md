@@ -34,12 +34,15 @@ Use when:
 ### Full-market download
 
 ```bash
-quant-investor market download --market CN --years 3 --workers 4
+quant-investor market maintain --market CN --staged --resume --batch-size 200 --max-batches-per-run 1
 ```
 
 Use when:
-- 用户要补全本地市场数据
+- 用户要按有限批次补全 CN 本地市场数据
 - 用户问下载阶段或 `data/` 来源
+
+`quant-investor market download` remains a compatibility alias; prefer
+`market maintain --staged` for CN automation and formal-review preflight.
 
 ### Full-market analysis
 

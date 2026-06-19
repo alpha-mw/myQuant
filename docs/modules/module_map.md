@@ -23,9 +23,9 @@
 ### `quant_investor/market`
 
 - 角色：全市场维护、数据读取、分析、回测和报告持久化入口
-- 关键文件：`market_data_reader.py`、`market_data_store.py`、`shared_csv_reader.py`、`name_map.py`、`runtime_profile.py`、`full_report.py`、`report_persistence.py`、`legacy_synthesis.py`、`legacy_batch_analysis.py`、`dag_executor.py`
+- 关键文件：`market_data_reader.py`、`market_data_store.py`、`read_result.py`、`name_map.py`、`runtime_profile.py`、`full_report.py`、`report_persistence.py`、`legacy_synthesis.py`、`legacy_batch_analysis.py`、`dag_executor.py`
 - 子模块：`dag/context.py`、`dag/research.py`、`dag/shortlist.py`、`dag/decision.py`、`dag/reporting.py`
-- 说明：`run_market_analysis()` / `execute_market_dag()` 是当前 full-market 主线；生产读取以 strict Parquet canonical 为准，CSV 只作为兼容 alias、迁移备份或显式 restore 来源；`full_report.py` 负责全市场报告渲染，`report_persistence.py` 负责报告落盘和 runtime profile 写入，`legacy_synthesis.py` 只负责把 v13 DAG artifact 合成为旧报告批次结构并过滤退休分支字段；`legacy_batch_analysis.py` 仅承接旧 `QuantInvestor` batch/sample 兼容入口，不属于 v13 DAG runtime。
+- 说明：`run_market_analysis()` / `execute_market_dag()` 是当前 full-market 主线；生产读取以 strict Parquet canonical 和 JSON manifest 为准，CSV 只允许作为人工导出或显式一次性迁移输入；`full_report.py` 负责全市场报告渲染，`report_persistence.py` 负责报告落盘和 runtime profile 写入，`legacy_synthesis.py` 只负责把 v13 DAG artifact 合成为旧报告批次结构并过滤退休分支字段；`legacy_batch_analysis.py` 仅承接旧 `QuantInvestor` batch/sample 兼容入口，不属于 v13 DAG runtime。
 
 ### `quant_investor/learning`
 

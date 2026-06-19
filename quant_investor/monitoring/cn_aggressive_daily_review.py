@@ -13,7 +13,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from quant_investor.market.download import run_market_maintenance
+from quant_investor.market.download_cn import CNFullMarketDownloader
+from quant_investor.market.market_data_store import run_storage_validate
+from quant_investor.market.staged_maintenance import run_staged_maintenance
 from quant_investor.monitoring import cn_aggressive_portfolio_tracker as tracker
 
 
@@ -29,12 +31,119 @@ def _jsonable(value: Any) -> Any:
     return str(value)
 
 
+def _latest_healthy_snapshot(storage_validate: dict[str, Any]) -> dict[str, Any]:
+    if str(storage_validate.get("status") or "").lower() != "passed":
+        return {}
+    return {
+        "snapshot_id": str(storage_validate.get("snapshot_id") or ""),
+        "latest_complete_trade_date": str(storage_validate.get("latest_complete_trade_date") or ""),
+        "latest_trade_date": str(storage_validate.get("latest_trade_date") or ""),
+        "manifest_path": str(storage_validate.get("manifest_path") or ""),
+        "latest_pointer_path": str(storage_validate.get("latest_pointer_path") or ""),
+        "coverage": _jsonable(storage_validate.get("coverage") or {}),
+        "coverage_ratio": storage_validate.get("coverage_ratio"),
+    }
+
+
+def _storage_coverage_ratio(
+    storage_validate: dict[str, Any],
+    *,
+    expected_symbol_count: int | None = None,
+) -> float | None:
+    coverage = storage_validate.get("coverage") if isinstance(storage_validate.get("coverage"), dict) else {}
+    candidates = [
+        storage_validate.get("coverage_ratio"),
+        coverage.get("coverage_ratio"),
+    ]
+    for candidate in candidates:
+        try:
+            if candidate is not None:
+                return float(candidate)
+        except (TypeError, ValueError):
+            continue
+    try:
+        expected = int(expected_symbol_count or 0)
+        covered = int(coverage.get("symbol_count") or coverage.get("covered_count") or 0)
+        if expected > 0:
+            return min(1.0, max(0.0, covered / expected))
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def _expected_symbol_count(components: dict[str, Any], categories: list[str]) -> int:
+    symbols = {
+        str(symbol or "").strip().upper()
+        for category in categories
+        for symbol in components.get(category, []) or []
+        if str(symbol or "").strip()
+    }
+    if symbols:
+        return len(symbols)
+    stats = components.get("stats") if isinstance(components.get("stats"), dict) else {}
+    try:
+        return int(stats.get("total_unique") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _build_quick_preflight_probe(args: argparse.Namespace) -> dict[str, Any]:
+    downloader = CNFullMarketDownloader(
+        years=int(getattr(args, "maintenance_years", getattr(args, "years", 3))),
+        max_workers=int(getattr(args, "maintenance_workers", 4)),
+        batch_size=int(getattr(args, "maintenance_batch_size", 50)),
+    )
+    components = downloader.load_components()
+    categories = downloader._resolve_target_categories(
+        components,
+        getattr(args, "categories", None),
+    )
+    same_day_probe = downloader._probe_strict_same_day_close_availability(
+        components=components,
+        target_categories=categories,
+    )
+    explicit_target = str(getattr(args, "target_date", "auto") or "auto").strip()
+    if explicit_target.lower() != "auto":
+        effective_target = explicit_target
+        early_stop_reason = ""
+    elif same_day_probe.get("applicable") and same_day_probe.get("available") is False:
+        effective_target = downloader.stable_trade_date
+        early_stop_reason = "strict_same_day_unavailable"
+    else:
+        effective_target = downloader.latest_trade_date
+        early_stop_reason = ""
+    completeness = downloader.build_completeness_report(
+        components=components,
+        allowed_stale_symbols=list(getattr(args, "allowed_stale_symbols", []) or []),
+        categories=categories,
+        target_trade_date=effective_target,
+        early_stop_reason=early_stop_reason,
+    )
+    return {
+        "categories": categories,
+        "expected_symbol_count": _expected_symbol_count(components, categories),
+        "same_day_close_probe": same_day_probe,
+        "completeness": completeness,
+        "effective_target_trade_date": effective_target,
+        "early_stop_reason": early_stop_reason,
+    }
+
+
 def _run_maintenance_preflight(args: argparse.Namespace) -> dict[str, Any]:
     if bool(getattr(args, "skip_maintenance", False)):
         return {
             "attempted": False,
             "status": "skipped",
+            "maintenance_status": "skipped",
             "non_blocking": True,
+            "parquet_canonical_status": "not_checked",
+            "decision_data_status": "unknown",
+            "latest_healthy_snapshot": {},
+            "staged_progress": {},
+            "remaining_batches": None,
+            "failed_symbols": [],
+            "limitations": ["skip_maintenance_requested"],
+            "blockers": [],
             "error": "",
             "elapsed_sec": 0.0,
             "completeness": {},
@@ -42,32 +151,139 @@ def _run_maintenance_preflight(args: argparse.Namespace) -> dict[str, Any]:
 
     started = time.time()
     try:
-        result = run_market_maintenance(
+        storage = run_storage_validate(market="CN")
+        parquet_healthy = str(storage.get("status") or "").lower() == "passed"
+        latest_snapshot = _latest_healthy_snapshot(storage)
+        if not parquet_healthy:
+            blockers = list(storage.get("blockers") or [])
+            return {
+                "attempted": True,
+                "status": "failed_non_blocking",
+                "maintenance_status": "skipped_parquet_unhealthy",
+                "non_blocking": True,
+                "parquet_canonical_status": "unhealthy",
+                "decision_data_status": "unavailable",
+                "latest_healthy_snapshot": {},
+                "staged_progress": {},
+                "remaining_batches": None,
+                "failed_symbols": [],
+                "limitations": ["strict_parquet_unhealthy"],
+                "blockers": blockers,
+                "error": "; ".join(str(item) for item in blockers),
+                "elapsed_sec": round(time.time() - started, 2),
+                "storage_validate": _jsonable(storage),
+                "completeness": {},
+            }
+
+        probe = _build_quick_preflight_probe(args)
+        completeness = dict(probe.get("completeness", {}) or {})
+        coverage_ratio = _storage_coverage_ratio(
+            storage,
+            expected_symbol_count=int(probe.get("expected_symbol_count") or 0),
+        )
+        if coverage_ratio is None:
+            coverage_ratio = float(completeness.get("coverage_ratio") or 0.0)
+        min_success = float(getattr(args, "min_symbol_success_rate", 0.95))
+        same_day_probe = dict(probe.get("same_day_close_probe", {}) or {})
+        same_day_unavailable = same_day_probe.get("applicable") and same_day_probe.get("available") is False
+        if same_day_unavailable and coverage_ratio >= min_success:
+            return {
+                "attempted": True,
+                "status": "skipped",
+                "maintenance_status": "skipped_same_day_unavailable",
+                "non_blocking": True,
+                "parquet_canonical_status": "healthy",
+                "decision_data_status": "sufficient_limited",
+                "latest_healthy_snapshot": latest_snapshot,
+                "staged_progress": {},
+                "remaining_batches": None,
+                "failed_symbols": [],
+                "limitations": ["strict_same_day_unavailable", "using_latest_healthy_snapshot"],
+                "blockers": [],
+                "error": "",
+                "elapsed_sec": round(time.time() - started, 2),
+                "storage_validate": _jsonable(storage),
+                "same_day_close_probe": _jsonable(same_day_probe),
+                "categories": list(probe.get("categories", []) or []),
+                "completeness": _jsonable(completeness),
+            }
+
+        if completeness.get("complete"):
+            return {
+                "attempted": True,
+                "status": "complete",
+                "maintenance_status": "complete",
+                "non_blocking": True,
+                "parquet_canonical_status": "healthy",
+                "decision_data_status": "sufficient",
+                "latest_healthy_snapshot": latest_snapshot,
+                "staged_progress": {},
+                "remaining_batches": 0,
+                "failed_symbols": [],
+                "limitations": [],
+                "blockers": [],
+                "error": "",
+                "elapsed_sec": round(time.time() - started, 2),
+                "storage_validate": _jsonable(storage),
+                "same_day_close_probe": _jsonable(same_day_probe),
+                "categories": list(probe.get("categories", []) or []),
+                "completeness": _jsonable(completeness),
+            }
+
+        staged_result = run_staged_maintenance(
             market="CN",
             categories=getattr(args, "categories", None),
             years=int(getattr(args, "maintenance_years", getattr(args, "years", 3))),
             max_workers=int(getattr(args, "maintenance_workers", 4)),
             batch_size=int(getattr(args, "maintenance_batch_size", 50)),
-            max_rounds=int(getattr(args, "maintenance_max_rounds", 1)),
+            max_batches_per_run=int(getattr(args, "maintenance_max_batches_per_run", 1)),
+            min_symbol_success_rate=min_success,
+            target_date=str(getattr(args, "target_date", "auto") or "auto"),
+            daily_window=bool(getattr(args, "daily_window", True)),
+            resume=True,
             fail_on_incomplete=False,
             allowed_stale_symbols=list(getattr(args, "allowed_stale_symbols", []) or []),
+            storage_validate=storage,
         )
-        completeness = dict((result or {}).get("completeness", {}) or {})
-        status = "complete" if completeness.get("complete") else "incomplete"
+        staged_payload = dict(staged_result or {})
+        progress = dict(staged_payload.get("progress_summary", {}) or {})
+        decision_status = str(progress.get("decision_data_status") or "limited")
         return {
             "attempted": True,
-            "status": status,
+            "status": str(progress.get("status") or staged_payload.get("status") or "incomplete"),
+            "maintenance_status": str(
+                progress.get("maintenance_status") or staged_payload.get("maintenance_status") or "incomplete"
+            ),
             "non_blocking": True,
+            "parquet_canonical_status": "healthy",
+            "decision_data_status": decision_status,
+            "latest_healthy_snapshot": latest_snapshot,
+            "staged_progress": _jsonable(progress),
+            "remaining_batches": progress.get("remaining_batches"),
+            "failed_symbols": list(progress.get("failed_symbols") or staged_payload.get("failed_symbols") or []),
+            "limitations": list(progress.get("limitations") or ["maintenance_incomplete"]),
+            "blockers": list(progress.get("blockers") or []),
             "error": "",
             "elapsed_sec": round(time.time() - started, 2),
-            "categories": list((result or {}).get("categories", []) or []),
-            "completeness": _jsonable(completeness),
+            "storage_validate": _jsonable(storage),
+            "same_day_close_probe": _jsonable(same_day_probe),
+            "categories": list(staged_payload.get("categories", []) or probe.get("categories", []) or []),
+            "completeness": _jsonable(staged_payload.get("completeness") or completeness),
         }
     except Exception as exc:
         return {
             "attempted": True,
             "status": "failed_non_blocking",
+            "maintenance_status": "failed_non_blocking",
             "non_blocking": True,
+            "parquet_canonical_status": "unknown",
+            "decision_data_status": "unknown",
+            "latest_healthy_snapshot": {},
+            "staged_progress": {},
+            "remaining_batches": None,
+            "failed_symbols": [],
+            "limitations": ["maintenance_preflight_exception"],
+            "blockers": [str(exc)],
             "error": str(exc),
             "elapsed_sec": round(time.time() - started, 2),
             "completeness": {},
@@ -119,6 +335,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--maintenance-workers", type=int, default=4)
     parser.add_argument("--maintenance-batch-size", type=int, default=50)
     parser.add_argument("--maintenance-max-rounds", type=int, default=1)
+    parser.add_argument("--maintenance-max-batches-per-run", type=int, default=1)
+    parser.add_argument("--min-symbol-success-rate", type=float, default=0.95)
+    parser.add_argument("--target-date", default="auto")
+    parser.add_argument("--daily-window", action="store_true", default=True)
     parser.add_argument("--skip-maintenance", action="store_true")
     parser.add_argument(
         "--skip-market-metrics-prewarm",

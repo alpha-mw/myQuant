@@ -15,7 +15,6 @@ myQuant 每日 A 股自动分析脚本
 from __future__ import annotations
 
 import argparse
-import csv
 import importlib.util
 import logging
 import os
@@ -39,6 +38,12 @@ from quant_investor.research_run_config import ResolvedReviewModels
 # ── 项目根目录 ─────────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent.resolve()
 RUN_DIR_PATTERN = re.compile(r"^\d{8}_\d{3,6}$")
+
+
+def run_staged_maintenance(**kwargs: Any) -> dict[str, Any]:
+    from quant_investor.market.staged_maintenance import run_staged_maintenance as _run
+
+    return _run(**kwargs)
 
 
 def _legacy_review_model_fields(config: dict[str, Any]) -> list[str]:
@@ -131,7 +136,7 @@ def load_config(config_path: Optional[str] = None) -> dict[str, Any]:
         "master_fallback_model": "deepseek-reasoner",
         "master_reasoning_effort": "",
         "funnel_profile": runtime_config.FUNNEL_PROFILE,
-        "funnel_max_candidates": 200,
+        "funnel_max_candidates": runtime_config.FUNNEL_MAX_CANDIDATES,
         "trend_windows": list(runtime_config.FUNNEL_TREND_WINDOWS),
         "volume_spike_threshold": runtime_config.FUNNEL_VOLUME_SPIKE_THRESHOLD,
         "breakout_distance_pct": runtime_config.FUNNEL_BREAKOUT_DISTANCE_PCT,
@@ -146,6 +151,11 @@ def load_config(config_path: Optional[str] = None) -> dict[str, Any]:
         "skip_download": False,
         "years": 3,
         "workers": 4,
+        "maintenance_batch_size": 200,
+        "maintenance_max_batches_per_run": 1,
+        "maintenance_min_symbol_success_rate": 0.95,
+        "maintenance_target_date": "auto",
+        "maintenance_daily_window": True,
         "schedule_time": "17:30",
         "report_dir": "reports/daily",
     }
@@ -231,51 +241,31 @@ class HistoryLoader:
         return {"file": path.name, "excerpt_lines": excerpt_lines}
 
     def _parse_csv_summary(self, path: Path) -> dict[str, Any]:
-        columns: list[str] = []
-        symbols: list[str] = []
-        actions: list[str] = []
-        shares_sample: list[str] = []
-        price_sample: list[str] = []
-        row_count = 0
-
-        try:
-            with path.open("r", encoding="utf-8", newline="") as fh:
-                reader = csv.DictReader(fh)
-                columns = list(reader.fieldnames or [])
-                for row in reader:
-                    row_count += 1
-                    lowered = {str(key or "").lower(): value for key, value in row.items()}
-                    for key in ("symbol", "ticker", "code"):
-                        value = str(lowered.get(key, "") or "").strip()
-                        if value:
-                            symbols.append(value)
-                            break
-                    for key in ("action", "side", "direction"):
-                        value = str(lowered.get(key, "") or "").strip()
-                        if value:
-                            actions.append(value)
-                            break
-                    for key in ("shares", "quantity", "qty"):
-                        value = str(lowered.get(key, "") or "").strip()
-                        if value:
-                            shares_sample.append(value)
-                            break
-                    for key in ("price", "entry_price", "current_price", "target_price"):
-                        value = str(lowered.get(key, "") or "").strip()
-                        if value:
-                            price_sample.append(value)
-                            break
-        except Exception as exc:
-            return {"file": path.name, "error": str(exc)}
-
         return {
             "file": path.name,
-            "row_count": row_count,
-            "columns": columns[:12],
-            "symbols": _dedupe_text(symbols, limit=6),
-            "actions": _dedupe_text(actions, limit=6),
-            "shares_sample": shares_sample[:3],
-            "price_sample": price_sample[:3],
+            "size_bytes": path.stat().st_size if path.exists() else 0,
+            "note": "csv_export_not_read",
+        }
+
+    def _extract_markdown_summary(self, excerpt: dict[str, Any]) -> dict[str, Any]:
+        symbols: list[str] = []
+        actions: list[str] = []
+        for raw_line in excerpt.get("excerpt_lines", []):
+            line = str(raw_line or "").strip().lstrip("-*# ").strip()
+            match = re.match(r"^(symbol|action)\s*[:：]\s*(.+)$", line, flags=re.IGNORECASE)
+            if not match:
+                continue
+            value = match.group(2).strip()
+            if not value:
+                continue
+            if match.group(1).lower() == "symbol":
+                symbols.append(value)
+            else:
+                actions.append(value.lower())
+        return {
+            "file": str(excerpt.get("file", "") or ""),
+            "symbols": _dedupe_text(symbols, limit=10),
+            "actions": _dedupe_text(actions, limit=10),
         }
 
     def _collect_run_entry(self, market: str, run_dir: Path) -> Optional[dict[str, Any]]:
@@ -321,11 +311,25 @@ class HistoryLoader:
             "csv_summaries": csv_summaries,
             "latest_report_excerpt": latest_report_excerpt,
             "symbols": _dedupe_text(
-                [symbol for summary in csv_summaries for symbol in summary.get("symbols", [])],
+                [
+                    symbol
+                    for summary in [
+                        *csv_summaries,
+                        *(self._extract_markdown_summary(excerpt) for excerpt in markdown_excerpts),
+                    ]
+                    for symbol in summary.get("symbols", [])
+                ],
                 limit=10,
             ),
             "actions": _dedupe_text(
-                [action for summary in csv_summaries for action in summary.get("actions", [])],
+                [
+                    action
+                    for summary in [
+                        *csv_summaries,
+                        *(self._extract_markdown_summary(excerpt) for excerpt in markdown_excerpts),
+                    ]
+                    for action in summary.get("actions", [])
+                ],
                 limit=10,
             ),
         }
@@ -351,7 +355,10 @@ class HistoryLoader:
         )
         recent_actions: list[dict[str, str]] = []
         for item in runs:
-            for summary in item.get("csv_summaries", []):
+            for summary in [
+                *item.get("csv_summaries", []),
+                *(self._extract_markdown_summary(excerpt) for excerpt in item.get("markdown_excerpts", [])),
+            ]:
                 actions = summary.get("actions", [])
                 symbols = summary.get("symbols", [])
                 if not actions and not symbols:
@@ -434,6 +441,53 @@ class HistoryLoader:
 # 4. 分析执行
 # ══════════════════════════════════════════════════════════════════════════════
 
+
+def _maintenance_categories(config: dict[str, Any]) -> list[str]:
+    categories = config.get("categories")
+    if isinstance(categories, (list, tuple)):
+        normalized = [str(item or "").strip() for item in categories if str(item or "").strip()]
+        if normalized:
+            return normalized
+    universe = str(config.get("universe") or "full_a").strip()
+    return [universe or "full_a"]
+
+
+def _run_automation_data_update_preflight(config: dict[str, Any]) -> dict[str, Any]:
+    market = str(config.get("market") or "CN").strip().upper()
+    if market != "CN":
+        return {
+            "status": "skipped",
+            "maintenance_status": "skipped_non_cn",
+            "market": market,
+            "reason": "staged_batch_maintenance_cn_only",
+        }
+
+    try:
+        return run_staged_maintenance(
+            market="CN",
+            categories=_maintenance_categories(config),
+            batch_size=max(1, int(config.get("maintenance_batch_size", 200))),
+            max_batches_per_run=max(0, int(config.get("maintenance_max_batches_per_run", 1))),
+            min_symbol_success_rate=float(config.get("maintenance_min_symbol_success_rate", 0.95)),
+            target_date=str(config.get("maintenance_target_date", "auto") or "auto"),
+            daily_window=bool(config.get("maintenance_daily_window", True)),
+            resume=True,
+            fail_on_incomplete=False,
+            allowed_stale_symbols=list(config.get("allowed_stale_symbols", []) or []),
+            years=int(config.get("years", 3)),
+            max_workers=int(config.get("workers", 4)),
+        )
+    except Exception as exc:
+        log.warning("staged batch 数据维护失败，继续使用本地快照: %s", exc, exc_info=True)
+        return {
+            "status": "failed_non_blocking",
+            "maintenance_status": "failed_non_blocking",
+            "market": market,
+            "non_blocking": True,
+            "error": str(exc),
+        }
+
+
 class AnalysisRunner:
     """包装 run_unified_pipeline，执行全量 A 股分析。"""
 
@@ -469,7 +523,10 @@ class AnalysisRunner:
             "master": master_resolution.to_dict(),
         }
 
-        os.environ.setdefault("FUNNEL_MAX_CANDIDATES", str(config.get("funnel_max_candidates", 200)))
+        os.environ.setdefault(
+            "FUNNEL_MAX_CANDIDATES",
+            str(config.get("funnel_max_candidates", runtime_config.FUNNEL_MAX_CANDIDATES)),
+        )
         os.environ.setdefault("FUNNEL_PROFILE", str(config.get("funnel_profile", runtime_config.FUNNEL_PROFILE)))
         os.environ.setdefault(
             "FUNNEL_TREND_WINDOWS",
@@ -540,8 +597,19 @@ class AnalysisRunner:
                 verbose=True,
             )
 
+        automation_data_update: dict[str, Any] | None = None
+        if not bool(config["skip_download"]):
+            log.info(
+                "执行 staged batch 数据维护 | market=%s | categories=%s | batch_size=%s | max_batches=%s",
+                config["market"],
+                _maintenance_categories(config),
+                config.get("maintenance_batch_size", 200),
+                config.get("maintenance_max_batches_per_run", 1),
+            )
+            automation_data_update = _run_automation_data_update_preflight(config)
+
         try:
-            result = _call_pipeline(skip_dl=config["skip_download"])
+            result = _call_pipeline(skip_dl=True if automation_data_update is not None else bool(config["skip_download"]))
         except RuntimeError as exc:
             msg = str(exc)
             if "tushare" in msg and ("未安装" in msg or "not installed" in msg):
@@ -552,6 +620,12 @@ class AnalysisRunner:
                 result = _call_pipeline(skip_dl=True)
             else:
                 raise
+
+        if automation_data_update is not None:
+            result["automation_data_update"] = automation_data_update
+            download_stage = dict(result.get("download") or {})
+            download_stage["automation_data_update"] = automation_data_update
+            result["download"] = download_stage
 
         elapsed = time.time() - started
         log.info("分析完成，耗时 %.0f 秒（%.1f 分钟）", elapsed, elapsed / 60)
@@ -836,7 +910,7 @@ class ReportBuilder:
             f"- Master Agent 超时: {config['master_timeout']}s\n"
             f"- Agent Layer 启用: {'是' if config['enable_agent_layer'] else '否'}\n\n"
             f"**分析层级（统一 DAG）:** GlobalContext → 全市场分支（K线+量化） → "
-            f"漏斗压缩（{config.get('funnel_max_candidates', 200)} 候选） → 候选分支（基本面+智能融合） → "
+            f"漏斗压缩（{config.get('funnel_max_candidates', runtime_config.FUNNEL_MAX_CANDIDATES)} 候选） → 候选分支（基本面+智能融合） → "
             f"Bayesian 后验决策 → Master Discussion（Top {config.get('bayesian_shortlist_size', 50)}） → "
             f"确定性控制链 → 组合构建 → 报告生成"
         )

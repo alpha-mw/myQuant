@@ -8,15 +8,16 @@ LLM behavior, broker behavior, frontend behavior, or factor admission.
 ## Runtime Behavior
 
 `CNFullMarketDownloader.download_stock` assembles the merged daily DataFrame,
-then runs the cleaner before replacing the canonical CSV. The raw merged frame
+then runs the cleaner before writing Parquet canonical bars. The raw merged frame
 is written first under `data/raw_backups/tushare`. If cleaning fails, the
-existing canonical CSV remains unchanged and a failure report is written.
+existing Parquet canonical snapshot remains unchanged and a failure report is
+written.
 
-Canonical CSV remains the default storage contract. Cleaned CSV replaces the
-canonical file only after structural validation, row quarantine, de-duplication,
-sorting, and report writes succeed. The cleaner never forward-fills OHLCV, never
-synthesizes missing trading rows, and never winsorizes, neutralizes, ranks, or
-otherwise transforms factor values.
+Parquet is the default storage contract. The cleaned DataFrame reaches the
+canonical store only after structural validation, row quarantine,
+de-duplication, sorting, and report writes succeed. The cleaner never
+forward-fills OHLCV, never synthesizes missing trading rows, and never
+winsorizes, neutralizes, ranks, or otherwise transforms factor values.
 
 ## Artifacts
 
@@ -27,7 +28,8 @@ otherwise transforms factor values.
   `data/factor_readiness/tushare/<table>/`
 - Storage audit and Parquet migration reports:
   `data/cleaning_reports/tushare/<table>/storage/`
-- Optional Parquet shadows: `data/cn_market_parquet/<category>/`
+- Parquet canonical bars: `data/parquet/CN/bars/` and
+  `data/parquet_serving/CN/bars/`
 
 Row flags mark row-level invalid dates, invalid symbols, invalid prices,
 invalid OHLC relations, negative volume/amount, duplicate keys, quarantine, and
@@ -47,31 +49,26 @@ suspend data, or benchmark membership can keep readiness at `not_ready`.
 
 ## Storage Audit and Parquet
 
-The storage audit estimates CSV size, optional Parquet size, size-reduction
-ratio, backend support, and whether matrix-style tables such as `daily`,
-`adj_factor`, `daily_basic`, and `index_weight` should use Parquet for factor
-research. Parquet is useful for columnar scans and symbol/date matrix assembly,
-but CSV remains canonical by default for compatibility with existing readers and
-tests.
+The storage audit records backend support and whether matrix-style tables such
+as `daily`, `adj_factor`, `daily_basic`, and `index_weight` are ready for
+Parquet factor research. Production reads fail closed when Parquet snapshots or
+manifests are missing.
 
-Parquet shadow write is capability-detected through existing installed pandas
-backends (`pyarrow` or `fastparquet`). No dependency is added. If
-`MYQUANT_TUSHARE_PARQUET_CANONICAL=1` is set without an available backend, the
-download path falls back to CSV and records the issue in reports.
-
-The cleaner never deletes CSV files in this pass. Redundant CSV deletion is
-disabled by default and `MYQUANT_TUSHARE_DELETE_REDUNDANT_CSV=1` is rejected by
-the storage config unless canonical Parquet is also enabled.
+Parquet writes are handled by `MarketDataStore`; no CSV fallback is allowed for
+runtime reads. CSV outputs from this layer are limited to audit/report artifacts
+or explicit migration work.
 
 ## Environment Flags
 
 - `MYQUANT_TUSHARE_AUTO_CLEAN=0` disables the automatic post-download cleaner.
 - `MYQUANT_TUSHARE_FACTOR_READINESS=0` disables readiness sidecars.
 - `MYQUANT_TUSHARE_STORAGE_AUDIT=0` disables storage audit reports.
-- `MYQUANT_TUSHARE_PARQUET_SHADOW_WRITE=1` enables optional Parquet shadows.
-- `MYQUANT_TUSHARE_PARQUET_CANONICAL=1` requests canonical Parquet but does not
-  replace CSV by default when unsupported.
-- `MYQUANT_TUSHARE_DELETE_REDUNDANT_CSV=0` keeps CSV deletion disabled.
+- `MYQUANT_TUSHARE_PARQUET_SHADOW_WRITE=1` is retained for old audit reports;
+  canonical runtime writes use `MarketDataStore`.
+- `MYQUANT_TUSHARE_PARQUET_CANONICAL=1` is a legacy compatibility flag; runtime
+  reads are Parquet-only.
+- `MYQUANT_TUSHARE_DELETE_REDUNDANT_CSV=0` keeps legacy CSV artifact deletion
+  disabled.
 
 Directory flags:
 
@@ -92,7 +89,6 @@ Run a local cleanup pass without live provider calls:
   --table daily
 ```
 
-Use `--no-promote` to generate reports without replacing canonical CSVs. Use
-`--parquet-shadow-write` to attempt optional Parquet shadows. Tests for this
-layer use local temporary fixtures only and do not call Tushare, yfinance, LLM,
-broker, or provider APIs.
+Use `--no-promote` to generate reports without writing canonical storage. Tests
+for this layer use local temporary fixtures only and do not call Tushare,
+yfinance, LLM, broker, or provider APIs.

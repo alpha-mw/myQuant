@@ -10,16 +10,22 @@ from typing import Any
 import pandas as pd
 
 from quant_investor.market.config import get_market_settings, normalize_categories
-from quant_investor.market.legacy_batch_analysis import get_all_local_symbols
 from quant_investor.market.market_data_reader import MarketDataReader
 from quant_investor.portfolio_backtest import PortfolioBacktester
 
 
-def _parquet_data_root_from_market_dir(base_dir: Path) -> Path:
-    if (base_dir / "parquet" / "cn").exists():
-        return base_dir
-    if (base_dir.parent / "parquet" / "cn").exists():
-        return base_dir.parent
+def _parquet_data_root_from_market_dir(base_dir: Path, *, market: str) -> Path:
+    market_key = str(market or "").strip().lower()
+    for candidate in [
+        base_dir,
+        base_dir.parent,
+        base_dir.parent.parent,
+        base_dir.parent.parent.parent,
+    ]:
+        if (candidate / "parquet" / market_key).exists():
+            return candidate
+        if (candidate / "parquet_serving" / market_key).exists():
+            return candidate
     return Path("data")
 
 
@@ -58,46 +64,27 @@ def _load_market_frame(
     settings = get_market_settings(market)
     base_dir = Path(data_dir or settings.data_dir)
     frames: list[pd.DataFrame] = []
-    if settings.market == "CN":
-        reader = MarketDataReader(market="CN", data_root=_parquet_data_root_from_market_dir(base_dir))
-        for category in categories:
-            symbols = reader.list_symbols(category)
-            if sample_size:
-                symbols = symbols[:sample_size]
-            read_results = reader.read_symbol_frames(
-                symbols,
-                universe_key=category,
-                category=category,
-                columns=["ts_code", "trade_date", "close", "vol"],
-            )
-            for symbol, result in read_results.items():
-                normalized = _normalize_backtest_frame(symbol, result.frame)
-                if normalized.empty:
-                    continue
-                frames.append(normalized)
-        if not frames:
-            raise ValueError("未找到可回测的 Parquet serving 市场数据，请先执行 market maintain。")
-        frame = pd.concat(frames, ignore_index=True)
-        frame = frame.dropna(subset=["forward_ret_1d"]).sort_values(["date", "symbol"])
-        if frame.empty:
-            raise ValueError("Parquet serving 数据不足以构造回测标签，请检查时间跨度。")
-        return frame
-
+    reader = MarketDataReader(
+        market=settings.market,
+        data_root=_parquet_data_root_from_market_dir(base_dir, market=settings.market),
+    )
     for category in categories:
-        symbols = get_all_local_symbols(category, market=settings.market, data_dir=str(base_dir))
+        symbols = reader.list_symbols(category)
         if sample_size:
             symbols = symbols[:sample_size]
-        for symbol in symbols:
-            csv_path = base_dir / category / f"{symbol}.csv"
-            if not csv_path.exists():
-                continue
-            df = pd.read_csv(csv_path)
-            normalized = _normalize_backtest_frame(symbol, df)
+        read_results = reader.read_symbol_frames(
+            symbols,
+            universe_key=category,
+            category=category,
+            columns=["ts_code", "trade_date", "close", "vol"],
+        )
+        for symbol, result in read_results.items():
+            normalized = _normalize_backtest_frame(symbol, result.frame)
             if normalized.empty:
                 continue
             frames.append(normalized)
     if not frames:
-        raise ValueError("未找到可回测的本地市场数据，请先执行 market download。")
+        raise ValueError("未找到可回测的 Parquet serving 市场数据，请先执行 market maintain/download。")
     frame = pd.concat(frames, ignore_index=True)
     frame = frame.dropna(subset=["forward_ret_1d"]).sort_values(["date", "symbol"])
     if frame.empty:

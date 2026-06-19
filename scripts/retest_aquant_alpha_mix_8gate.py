@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -36,6 +37,7 @@ from quant_investor.factors.pit_fundamentals import (  # noqa: E402
     normalize_ts_code,
 )
 from quant_investor.factors.runtime import MinedFactorRegistry, score_with_mined_factors  # noqa: E402
+from quant_investor.market.market_data_reader import MarketDataReader  # noqa: E402
 
 DEFAULT_AQUANT_AUDIT_DIR = Path(
     "/Users/maxwell/mySpace/A_quant/output/factor_validation/"
@@ -116,36 +118,84 @@ def load_candidates(audit_dir: Path, candidate_set: str) -> tuple[list[Candidate
     return candidates, list(independent_names)
 
 
-def _read_daily_csv(path: Path) -> pd.DataFrame:
-    frame = pd.read_csv(path)
-    if "trade_date" in frame.columns:
-        frame["trade_date"] = pd.to_datetime(frame["trade_date"], errors="coerce")
-    elif "date" in frame.columns:
-        frame["trade_date"] = pd.to_datetime(frame["date"], errors="coerce")
+def _parquet_backend_requested() -> bool:
+    return (
+        str(os.environ.get("MYQUANT_MARKET_DATA_BACKEND", "parquet")).strip().lower()
+        == "parquet"
+    )
+
+
+def _normalize_daily_frame(frame: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    if frame is None or frame.empty:
+        return pd.DataFrame()
+    working = frame.copy()
+    if "trade_date" in working.columns:
+        working["trade_date"] = pd.to_datetime(
+            working["trade_date"],
+            errors="coerce",
+        )
+    elif "date" in working.columns:
+        working["trade_date"] = pd.to_datetime(working["date"], errors="coerce")
     else:
-        frame["trade_date"] = pd.to_datetime(frame.index, errors="coerce")
-    return frame.dropna(subset=["trade_date"]).sort_values("trade_date").reset_index(drop=True)
+        return pd.DataFrame()
+    if "symbol" not in working.columns:
+        if "ts_code" in working.columns:
+            working["symbol"] = working["ts_code"]
+        else:
+            working["symbol"] = symbol
+    return working.dropna(subset=["trade_date"]).sort_values(
+        "trade_date",
+    ).reset_index(drop=True)
 
 
-def load_daily_frames(data_root: Path, universes: Sequence[str]) -> tuple[dict[str, pd.DataFrame], dict[str, str]]:
+def _load_parquet_daily_frames(
+    data_root: Path,
+    universes: Sequence[str],
+) -> tuple[dict[str, pd.DataFrame], dict[str, str]]:
+    mode_policy = str(
+        os.environ.get("MYQUANT_MARKET_DATA_MODE_POLICY", "strict"),
+    ).strip().lower() or "strict"
+    reader = MarketDataReader(market="CN", data_root=data_root, mode_policy=mode_policy)
+    columns = [
+        "ts_code",
+        "trade_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "vol",
+        "amount",
+        "adj_close",
+    ]
     frames: dict[str, pd.DataFrame] = {}
     universe_by_symbol: dict[str, str] = {}
     for universe in universes:
-        directory = data_root / universe
-        if not directory.exists():
-            continue
-        for path in sorted(directory.glob("*.csv")):
-            try:
-                frame = _read_daily_csv(path)
-            except Exception:
-                continue
-            raw_symbol = frame["symbol"].iloc[0] if "symbol" in frame.columns and not frame.empty else path.stem
+        symbols = reader.list_symbols(category=str(universe))
+        results = reader.read_symbol_frames(
+            symbols,
+            universe_key=str(universe),
+            category=str(universe),
+            columns=columns,
+        )
+        for raw_symbol, result in results.items():
             symbol = normalize_ts_code(raw_symbol)
-            if not symbol or frame.empty or symbol in frames:
+            if not symbol or symbol in frames:
+                continue
+            frame = _normalize_daily_frame(
+                getattr(result, "frame", pd.DataFrame()),
+                symbol,
+            )
+            if frame.empty:
                 continue
             frames[symbol] = frame
             universe_by_symbol[symbol] = str(universe)
     return frames, universe_by_symbol
+
+
+def load_daily_frames(data_root: Path, universes: Sequence[str]) -> tuple[dict[str, pd.DataFrame], dict[str, str]]:
+    if _parquet_backend_requested():
+        return _load_parquet_daily_frames(data_root, universes)
+    raise RuntimeError("CN factor retest requires strict Parquet market data; CSV fallback is disabled")
 
 
 def _date_union(frames: Mapping[str, pd.DataFrame]) -> pd.DatetimeIndex:
@@ -212,6 +262,59 @@ def _rank_normalize_matrix(values: pd.DataFrame) -> pd.DataFrame:
     return values.rank(axis=1, pct=True).mul(2.0).sub(1.0)
 
 
+def _rank_pct_matrix(values: pd.DataFrame) -> pd.DataFrame:
+    return values.rank(axis=1, pct=True)
+
+
+def _min_periods(window: int) -> int:
+    return max(3, min(int(window), 5))
+
+
+def _blend_volstab_momentum_amihud_signal(
+    name: str,
+    adj_close: pd.DataFrame,
+    volume: pd.DataFrame,
+    amount: pd.DataFrame,
+) -> pd.DataFrame:
+    weight_text = name.rsplit("_w", 1)[-1]
+    outer_weight = float(weight_text) / 100.0
+    base_window = 19
+    smooth_window = 2
+    momentum_window = 90
+    amihud_window = 5
+    inner_momentum_weight = 0.60
+    mean = volume.rolling(
+        base_window,
+        min_periods=_min_periods(base_window),
+    ).mean()
+    std = volume.rolling(
+        base_window,
+        min_periods=_min_periods(base_window),
+    ).std(ddof=0)
+    vol_stability = (
+        -(std.div(mean.replace(0.0, np.nan)))
+        .rolling(
+            smooth_window,
+            min_periods=max(1, min(smooth_window, 3)),
+        )
+        .mean()
+    )
+    momentum = adj_close.div(adj_close.shift(momentum_window)).sub(1.0)
+    amihud = (
+        adj_close.pct_change()
+        .abs()
+        .div(amount.replace(0.0, np.nan))
+        .rolling(amihud_window, min_periods=_min_periods(amihud_window))
+        .mean()
+    )
+    inner = _rank_pct_matrix(momentum).mul(
+        inner_momentum_weight,
+    ) + _rank_pct_matrix(amihud).mul(1.0 - inner_momentum_weight)
+    return _rank_pct_matrix(vol_stability).mul(outer_weight) + _rank_pct_matrix(
+        inner,
+    ).mul(1.0 - outer_weight)
+
+
 def compute_existing_composite(
     registry: MinedFactorRegistry,
     adj_close: pd.DataFrame,
@@ -228,21 +331,32 @@ def compute_existing_composite(
         if not impl.startswith("price_volume:"):
             return None, f"unsupported_existing_factor_runtime:{factor.name}:{impl}"
         name = impl.split(":", 1)[1]
-        window = int(name.rsplit("_", 1)[1].removesuffix("d"))
-        if name.startswith("pv_short_reversal_"):
-            raw = -(adj_close.div(adj_close.shift(window)).sub(1.0))
-        elif name.startswith("pv_volume_stability_"):
-            mean = volume.rolling(window, min_periods=max(3, min(window, 5))).mean()
-            std = volume.rolling(window, min_periods=max(3, min(window, 5))).std(ddof=0)
-            raw = -(std.div(mean.replace(0.0, np.nan)))
-        elif name.startswith("pv_low_dollar_volume_"):
-            raw = -np.log(amount.rolling(window, min_periods=max(3, min(window, 5))).mean().replace(0.0, np.nan))
-        elif name.startswith("pv_amihud_illiquidity_"):
-            raw = adj_close.pct_change().abs().div(amount.replace(0.0, np.nan)).rolling(
-                window, min_periods=max(3, min(window, 5))
-            ).mean()
+        if name.startswith("pv_blend_volstab19x2_mom90_amihud5_w"):
+            try:
+                raw = _blend_volstab_momentum_amihud_signal(
+                    name,
+                    adj_close,
+                    volume,
+                    amount,
+                )
+            except ValueError:
+                return None, f"unsupported_existing_price_volume_factor:{name}"
         else:
-            return None, f"unsupported_existing_price_volume_factor:{name}"
+            window = int(name.rsplit("_", 1)[1].removesuffix("d"))
+            if name.startswith("pv_short_reversal_"):
+                raw = -(adj_close.div(adj_close.shift(window)).sub(1.0))
+            elif name.startswith("pv_volume_stability_"):
+                mean = volume.rolling(window, min_periods=max(3, min(window, 5))).mean()
+                std = volume.rolling(window, min_periods=max(3, min(window, 5))).std(ddof=0)
+                raw = -(std.div(mean.replace(0.0, np.nan)))
+            elif name.startswith("pv_low_dollar_volume_"):
+                raw = -np.log(amount.rolling(window, min_periods=max(3, min(window, 5))).mean().replace(0.0, np.nan))
+            elif name.startswith("pv_amihud_illiquidity_"):
+                raw = adj_close.pct_change().abs().div(amount.replace(0.0, np.nan)).rolling(
+                    window, min_periods=max(3, min(window, 5))
+                ).mean()
+            else:
+                return None, f"unsupported_existing_price_volume_factor:{name}"
         weight = float(factor.weight) * (1.0 if float(factor.direction) >= 0 else -1.0)
         composite = composite.add(_rank_normalize_matrix(raw).fillna(0.0).mul(weight), fill_value=0.0)
         total_weight += abs(weight)
@@ -984,7 +1098,7 @@ def render_markdown_report(payload: Mapping[str, Any]) -> str:
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--aquant-audit-dir", default=str(DEFAULT_AQUANT_AUDIT_DIR))
-    parser.add_argument("--data-root", default="data/clean/cn_daily")
+    parser.add_argument("--data-root", default="data")
     parser.add_argument("--metadata-dir", default="data/metadata")
     parser.add_argument("--fundamental-mart-root", default=str(DEFAULT_FUNDAMENTAL_MART_ROOT))
     parser.add_argument("--allow-legacy-fundamental-fallback", action="store_true")

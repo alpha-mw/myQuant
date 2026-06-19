@@ -344,7 +344,7 @@ def render_summary_markdown(payload: Mapping[str, Any]) -> str:
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-root", default="data/clean/cn_daily")
+    parser.add_argument("--data-root", default="data")
     parser.add_argument(
         "--fundamental-mart-root",
         default=str(DEFAULT_FUNDAMENTAL_MART_ROOT),

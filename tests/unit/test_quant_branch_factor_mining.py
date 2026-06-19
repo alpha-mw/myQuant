@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pandas as pd
 
+import scripts.retest_aquant_alpha_mix_8gate as retest
 from quant_investor.factors.governance import (
     FactorAdmissionDecision,
     FactorLifecycleState,
@@ -18,7 +20,10 @@ from scripts.mine_quant_branch_factors import (
     candidate_maturity_context,
     compute_formulaic_signal,
 )
-from scripts.retest_aquant_alpha_mix_8gate import RetestContext
+from scripts.retest_aquant_alpha_mix_8gate import (
+    RetestContext,
+    compute_existing_composite,
+)
 
 
 def _context() -> RetestContext:
@@ -91,6 +96,111 @@ def test_compute_formulaic_signal_rank_blends_primitives():
     ).mul(0.75)
 
     pd.testing.assert_frame_equal(actual, expected)
+
+
+def test_compute_existing_composite_supports_promoted_blend_factor():
+    dates = pd.date_range("2024-01-02", periods=120, freq="B")
+    columns = ["000001.SZ", "000002.SZ", "000003.SZ"]
+    adj_close = pd.DataFrame(
+        {
+            "000001.SZ": range(100, 220),
+            "000002.SZ": range(80, 200),
+            "000003.SZ": range(120, 240),
+        },
+        index=dates,
+        dtype=float,
+    )
+    volume = pd.DataFrame(
+        {
+            "000001.SZ": range(1000, 1120),
+            "000002.SZ": range(1200, 1320),
+            "000003.SZ": range(900, 1020),
+        },
+        index=dates,
+        dtype=float,
+    )
+    amount = adj_close.mul(volume)
+    record = FactorRecord(
+        name="pv_blend_volstab19x2_mom90_amihud5_w75",
+        state=FactorLifecycleState.PRODUCTION_FACTOR,
+        implementation="price_volume:pv_blend_volstab19x2_mom90_amihud5_w75",
+        weight=0.05,
+        gate_results=[GateResult.from_dict(row) for row in _gate_rows()],
+    )
+
+    composite, blocker = compute_existing_composite(
+        MinedFactorRegistry.from_records([record]),
+        adj_close,
+        volume,
+        amount,
+    )
+
+    assert blocker == ""
+    assert composite is not None
+    assert composite.index.equals(adj_close.index)
+    assert set(composite.columns) == set(columns)
+
+
+def test_load_daily_frames_uses_parquet_reader_when_backend_strict(
+    tmp_path,
+    monkeypatch,
+):
+    dates = pd.date_range("2026-01-02", periods=2, freq="B")
+
+    class FakeMarketDataReader:
+        def __init__(self, *, market, data_root, mode_policy):
+            assert market == "CN"
+            assert data_root == tmp_path / "missing_clean"
+            assert mode_policy == "strict"
+
+        def list_symbols(self, *, category):
+            return {
+                "hs300": ["000001.SZ"],
+                "zz500": ["600000.SH"],
+            }.get(category, [])
+
+        def read_symbol_frames(self, symbols, **_kwargs):
+            return {
+                symbol: SimpleNamespace(
+                    frame=pd.DataFrame(
+                        {
+                            "ts_code": [symbol, symbol],
+                            "trade_date": dates.strftime("%Y%m%d"),
+                            "close": [10.0, 11.0],
+                            "vol": [100.0, 110.0],
+                            "amount": [1000.0, 1210.0],
+                        }
+                    )
+                )
+                for symbol in symbols
+            }
+
+    monkeypatch.setenv("MYQUANT_MARKET_DATA_BACKEND", "parquet")
+    monkeypatch.setenv("MYQUANT_MARKET_DATA_MODE_POLICY", "strict")
+    monkeypatch.setattr(
+        retest,
+        "MarketDataReader",
+        FakeMarketDataReader,
+        raising=False,
+    )
+
+    frames, universe_by_symbol = retest.load_daily_frames(
+        tmp_path / "missing_clean",
+        ("hs300", "zz500"),
+    )
+
+    assert sorted(frames) == ["000001.SZ", "600000.SH"]
+    assert universe_by_symbol == {
+        "000001.SZ": "hs300",
+        "600000.SH": "zz500",
+    }
+    assert set(frames["000001.SZ"].columns) >= {
+        "symbol",
+        "trade_date",
+        "close",
+        "vol",
+        "amount",
+    }
 
 
 def _gate_rows() -> list[dict[str, object]]:

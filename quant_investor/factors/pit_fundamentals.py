@@ -1,8 +1,8 @@
 """Point-in-time fundamental helpers for governed factor research.
 
-The helper is intentionally source-backed and CSV based.  It does not depend on
-the pyc-only DataHub layer, and it keeps ``fetched_at`` as an audit field rather
-than a historical availability date when source announcement dates are present.
+Production fundamental marts are strict Parquet tables. Legacy metadata
+fallbacks are diagnostic-only and require explicit opt-in, and they must be
+Parquet sidecars.
 """
 
 from __future__ import annotations
@@ -32,8 +32,8 @@ PIT_COLUMNS = [
 ]
 
 DEFAULT_METADATA_DIR = Path("data/metadata")
-DEFAULT_FUNDAMENTAL_MART_ROOT = Path("data/clean/cn_fundamental")
-DEFAULT_PIT_SERIES_FILENAME = "fundamental_pit_series.csv"
+DEFAULT_FUNDAMENTAL_MART_ROOT = Path("data/parquet/cn")
+DEFAULT_PIT_SERIES_FILENAME = "fundamental_pit_series.parquet"
 OPERATING_CASHFLOW_METRIC = "operating_cashflow"
 NET_INCOME_METRIC = "net_income"
 FIN_OCF_TO_PROFIT_METRIC = "fin_ocf_to_profit"
@@ -102,6 +102,30 @@ def _pit_path(metadata_dir: str | Path | None = None, pit_series_path: str | Pat
     if pit_series_path is not None:
         return Path(pit_series_path).expanduser()
     return _metadata_dir(metadata_dir) / DEFAULT_PIT_SERIES_FILENAME
+
+
+def _resolve_parquet_table_path(root: str | Path | None, table_name: str) -> Path:
+    base = Path(root or DEFAULT_FUNDAMENTAL_MART_ROOT).expanduser()
+    if base.suffix.lower() == ".parquet":
+        return base
+    if base.name == table_name:
+        return base / "part.parquet"
+    return base / table_name / "part.parquet"
+
+
+def _read_fundamental_table(
+    root: str | Path | None,
+    table_name: str,
+    *,
+    columns: Sequence[str] | None = None,
+) -> pd.DataFrame:
+    path = _resolve_parquet_table_path(root, table_name)
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        return pd.read_parquet(path, columns=list(columns) if columns else None)
+    except Exception:
+        return pd.DataFrame()
 
 
 def _date_text(value: object) -> str:
@@ -179,9 +203,9 @@ def _record(
 
 
 def _rows_from_pit(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
+    if not path.exists() or path.suffix.lower() != ".parquet":
         return []
-    frame = pd.read_csv(path)
+    frame = pd.read_parquet(path)
     if frame.empty:
         return []
     for column in PIT_COLUMNS:
@@ -201,11 +225,9 @@ def _rows_from_pit(path: Path) -> list[dict[str, Any]]:
 
 
 def _rows_from_fundamental_mart(root: str | Path | None) -> list[dict[str, Any]]:
-    base = Path(root or DEFAULT_FUNDAMENTAL_MART_ROOT).expanduser()
-    period_path = base / "fundamental_period.csv"
-    if not period_path.exists():
+    frame = _read_fundamental_table(root, "fundamental_period")
+    if frame.empty:
         return []
-    frame = pd.read_csv(period_path)
     rows: list[dict[str, Any]] = []
     for _, item in frame.iterrows():
         for metric in FUNDAMENTAL_METRICS:
@@ -228,9 +250,9 @@ def _rows_from_fundamental_mart(root: str | Path | None) -> list[dict[str, Any]]
 
 
 def _rows_from_fundamental_series(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
+    if not path.exists() or path.suffix.lower() != ".parquet":
         return []
-    frame = pd.read_csv(path)
+    frame = pd.read_parquet(path)
     rows: list[dict[str, Any]] = []
     metric_map = {
         "operating_cashflow": OPERATING_CASHFLOW_METRIC,
@@ -278,9 +300,9 @@ def _iter_raw_json_records(raw_json: object) -> Iterable[tuple[str, Mapping[str,
 
 
 def _rows_from_snapshot_raw_json(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
+    if not path.exists() or path.suffix.lower() != ".parquet":
         return []
-    frame = pd.read_csv(path)
+    frame = pd.read_parquet(path)
     rows: list[dict[str, Any]] = []
     for _, snapshot in frame.iterrows():
         for table, item in _iter_raw_json_records(snapshot.get("raw_json")):
@@ -323,9 +345,9 @@ def _rows_from_snapshot_raw_json(path: Path) -> list[dict[str, Any]]:
 
 
 def _rows_from_snapshot_flat(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
+    if not path.exists() or path.suffix.lower() != ".parquet":
         return []
-    frame = pd.read_csv(path)
+    frame = pd.read_parquet(path)
     rows: list[dict[str, Any]] = []
     for _, item in frame.iterrows():
         fetched_at = str(item.get("fetched_at", "") or "")
@@ -356,7 +378,7 @@ def load_fundamental_pit_series(
     pit_series_path: str | Path | None = None,
     *,
     mart_root: str | Path | None = None,
-    allow_legacy_fallback: bool = True,
+    allow_legacy_fallback: bool = False,
 ) -> pd.DataFrame:
     """Load PIT rows.
 
@@ -371,9 +393,9 @@ def load_fundamental_pit_series(
     rows.extend(_rows_from_fundamental_mart(mart_root))
     rows.extend(_rows_from_pit(pit_path))
     if allow_legacy_fallback:
-        rows.extend(_rows_from_snapshot_raw_json(base_dir / "fundamental_snapshots.csv"))
-        rows.extend(_rows_from_snapshot_flat(base_dir / "fundamental_snapshots.csv"))
-        rows.extend(_rows_from_fundamental_series(base_dir / "fundamental_series.csv"))
+        rows.extend(_rows_from_snapshot_raw_json(base_dir / "fundamental_snapshots.parquet"))
+        rows.extend(_rows_from_snapshot_flat(base_dir / "fundamental_snapshots.parquet"))
+        rows.extend(_rows_from_fundamental_series(base_dir / "fundamental_series.parquet"))
     if not rows:
         return pd.DataFrame(columns=PIT_COLUMNS)
     frame = pd.DataFrame(rows, columns=PIT_COLUMNS)
@@ -395,7 +417,7 @@ def write_fundamental_pit_series(
     metadata_dir: str | Path | None = None,
     pit_series_path: str | Path | None = None,
 ) -> Path:
-    """Merge new PIT rows into the canonical CSV and return the written path."""
+    """Merge new PIT rows into the canonical Parquet sidecar and return the written path."""
 
     path = _pit_path(metadata_dir, pit_series_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -432,7 +454,7 @@ def write_fundamental_pit_series(
             ],
             keep="last",
         )
-    frame.to_csv(path, index=False)
+    frame.to_parquet(path, index=False)
     return path
 
 
@@ -444,23 +466,15 @@ def _fin_ocf_to_profit_from_daily_mart(
 ) -> tuple[pd.DataFrame, PitCoverageDiagnostics, bool]:
     matrix = pd.DataFrame(index=date_index, columns=normalized_symbols, dtype=float)
     diagnostics = PitCoverageDiagnostics(symbols_requested=list(normalized_symbols))
-    daily_path = Path(mart_root or DEFAULT_FUNDAMENTAL_MART_ROOT).expanduser() / "fundamental_daily.csv"
-    if not daily_path.exists():
-        return matrix, diagnostics, False
-
     needed = {"ts_code", "trade_date", FIN_OCF_TO_PROFIT_METRIC}
-    try:
-        header = set(pd.read_csv(daily_path, nrows=0).columns)
-    except Exception:
-        return matrix, diagnostics, False
-    if not needed.issubset(header):
-        return matrix, diagnostics, False
-
-    daily = pd.read_csv(daily_path, usecols=list(needed))
-    diagnostics.pit_rows = int(len(daily))
+    daily = _read_fundamental_table(mart_root, "fundamental_daily", columns=sorted(needed))
     if daily.empty:
-        diagnostics.blocker = "empty_fundamental_daily"
+        diagnostics.blocker = "missing_or_empty_fundamental_daily"
         return matrix, diagnostics, False
+    if not needed.issubset(set(daily.columns)):
+        diagnostics.blocker = "fundamental_daily_missing_key_columns"
+        return matrix, diagnostics, False
+    diagnostics.pit_rows = int(len(daily))
 
     symbol_set = set(normalized_symbols)
     daily["ts_code"] = daily["ts_code"].map(normalize_ts_code)
@@ -621,16 +635,12 @@ def _daily_mart_metric_matrices(
     mart_root: str | Path | None,
 ) -> tuple[dict[str, pd.DataFrame], dict[str, Any]]:
     root = Path(mart_root or DEFAULT_FUNDAMENTAL_MART_ROOT).expanduser()
-    daily_path = root / "fundamental_daily.csv"
     matrices = {metric: pd.DataFrame(index=dates, columns=symbols, dtype=float) for metric in metrics}
     diagnostics: dict[str, Any] = {"mart_root": str(root), "daily_rows": 0, "blocker": ""}
-    if not daily_path.exists():
-        diagnostics["blocker"] = "missing_fundamental_daily"
-        return matrices, diagnostics
-    try:
-        header = set(pd.read_csv(daily_path, nrows=0).columns)
-    except Exception as exc:
-        diagnostics["blocker"] = f"read_fundamental_daily_header_failed:{exc}"
+    daily = _read_fundamental_table(root, "fundamental_daily")
+    header = set(daily.columns)
+    if daily.empty:
+        diagnostics["blocker"] = "missing_or_empty_fundamental_daily"
         return matrices, diagnostics
     available_metrics = [metric for metric in metrics if metric in header]
     if not {"ts_code", "trade_date"}.issubset(header):
@@ -639,7 +649,7 @@ def _daily_mart_metric_matrices(
     if not available_metrics:
         diagnostics["blocker"] = "fundamental_daily_missing_requested_metrics"
         return matrices, diagnostics
-    daily = pd.read_csv(daily_path, usecols=["ts_code", "trade_date", *available_metrics])
+    daily = daily[["ts_code", "trade_date", *available_metrics]].copy()
     diagnostics["daily_rows"] = int(len(daily))
     if daily.empty:
         diagnostics["blocker"] = "empty_fundamental_daily"

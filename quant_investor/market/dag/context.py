@@ -20,14 +20,19 @@ from quant_investor.market.dag.packets import (
     _build_quant_branch_result,
     _build_symbol_tradability,
 )
+from quant_investor.market.dag.theme_context import (
+    build_disabled_theme_rotation_metadata,
+    build_theme_rotation_metadata,
+    persist_theme_rotation_snapshot,
+)
 from quant_investor.market.data_quality import build_data_quality_diagnostics
 from quant_investor.market.branch_readiness import (
     STATUS_BLOCK,
     assess_branch_data_readiness,
     write_branch_readiness_report,
 )
+from quant_investor.market.read_result import MarketDataReadResult
 from quant_investor.market.runtime_profile import profile_stage
-from quant_investor.market.shared_csv_reader import SharedCSVReadResult, SharedCSVReader
 from quant_investor.llm_gateway import detect_provider
 from quant_investor.model_roles import ModelRoleResolution
 from quant_investor.reporting.run_artifacts import build_model_role_metadata
@@ -50,7 +55,7 @@ DAG_RUNTIME_LOOKBACK_CALENDAR_DAYS = 420
 @dataclass
 class MarketContextState:
     all_symbols: list[str]
-    read_results: dict[str, SharedCSVReadResult]
+    read_results: dict[str, MarketDataReadResult]
     frames: dict[str, pd.DataFrame]
     tradability_snapshot: dict[str, dict[str, Any]]
     data_quality_issues: list[DataQualityIssue]
@@ -127,7 +132,7 @@ def _read_symbol_frames_with_projection(
     *,
     universe_key: str,
     start_date: str = "",
-) -> dict[str, SharedCSVReadResult]:
+) -> dict[str, MarketDataReadResult]:
     kwargs: dict[str, Any] = {"universe_key": universe_key}
     if _call_accepts_keyword(batch_reader, "columns"):
         kwargs["columns"] = DAG_RUNTIME_PRICE_VOLUME_COLUMNS
@@ -143,7 +148,7 @@ def _prepare_market_context(
     selected_categories: list[str],
     symbols: list[str],
     company_profile_map: Mapping[str, Mapping[str, Any]],
-    shared_reader: SharedCSVReader,
+    shared_reader: Any,
     scoped_data_snapshot: Mapping[str, Any],
     download_stage: Mapping[str, Any] | None,
     enable_agent_layer: bool,
@@ -170,7 +175,7 @@ def _prepare_market_context(
     all_symbols = list(symbols)
     resolver_snapshot = shared_reader.snapshot()
 
-    read_results: dict[str, SharedCSVReadResult] = {}
+    read_results: dict[str, MarketDataReadResult] = {}
     frames: dict[str, pd.DataFrame] = {}
     tradability_snapshot: dict[str, dict[str, Any]] = {}
     data_quality_issues: list[DataQualityIssue] = []
@@ -178,8 +183,8 @@ def _prepare_market_context(
     researchable_symbols: list[str] = []
     industry_map: dict[str, str] = {}
     symbol_market_state: dict[str, dict[str, Any]] = {}
-    batch_read_results: dict[str, SharedCSVReadResult] = {}
-    raw_read_results: dict[str, SharedCSVReadResult] = {}
+    batch_read_results: dict[str, MarketDataReadResult] = {}
+    raw_read_results: dict[str, MarketDataReadResult] = {}
     frame_summaries: dict[str, dict[str, Any]] = {}
     runtime_lookback_start_date = _runtime_lookback_start_date(
         scoped_data_snapshot.get("local_latest_trade_date")
@@ -427,6 +432,25 @@ def _prepare_market_context(
             target_exposure = min(target_exposure * 1.08, 0.72)
             max_single_weight = 0.14
 
+    if bool(getattr(config, "THEME_SCANNER_ENABLED", False)):
+        theme_rotation_metadata = build_theme_rotation_metadata(
+            frames=frames,
+            industry_map=industry_map,
+            symbol_market_state=symbol_market_state,
+            market=settings.market,
+            universe_key=universe_key,
+            as_of=effective_latest_trade_date,
+            min_member_count=int(getattr(config, "THEME_MIN_MEMBER_COUNT", 5)),
+            top_n=int(getattr(config, "THEME_TOP_N", 20)),
+            symbol_limit=int(getattr(config, "THEME_METADATA_SYMBOL_LIMIT", 300)),
+        )
+    else:
+        theme_rotation_metadata = build_disabled_theme_rotation_metadata(
+            market=settings.market,
+            universe_key=universe_key,
+            as_of=effective_latest_trade_date,
+        )
+
     provider_health = provider_health_detector(
         agent_model=branch_model_resolution.primary_model,
         master_model=master_model_resolution.primary_model,
@@ -494,6 +518,12 @@ def _prepare_market_context(
             "provider_health": {},
             "data_snapshot": dict(scoped_data_snapshot),
             "symbol_market_state": symbol_market_state,
+            "theme_rotation": theme_rotation_metadata,
+            "theme_scores": dict(theme_rotation_metadata.get("theme_scores", {}) or {}),
+            "symbol_theme_score": dict(theme_rotation_metadata.get("symbol_scores", {}) or {}),
+            "symbol_primary_theme": dict(theme_rotation_metadata.get("symbol_primary_theme", {}) or {}),
+            "symbol_theme_phase": dict(theme_rotation_metadata.get("symbol_phase", {}) or {}),
+            "theme_alerts": list(theme_rotation_metadata.get("diagnostic_notes", []) or []),
             "selection_profile": {
                 "funnel_profile": str(funnel_profile or "classic").strip().lower() or "classic",
                 "trend_windows": list(trend_windows),
@@ -510,6 +540,26 @@ def _prepare_market_context(
         import hashlib
 
         global_context.universe_hash = hashlib.sha256(",".join(sorted(symbols)).encode("utf-8")).hexdigest()[:16]
+    theme_rotation_payload = global_context.metadata.get("theme_rotation", {})
+    snapshot_status = persist_theme_rotation_snapshot(
+        theme_rotation=theme_rotation_payload if isinstance(theme_rotation_payload, Mapping) else {},
+        enabled=bool(getattr(config, "THEME_SNAPSHOT_ENABLED", False)),
+        root_dir=str(getattr(config, "THEME_SNAPSHOT_DIR", "results/theme_snapshots")),
+        market=settings.market,
+        universe_key=universe_key,
+        as_of=effective_latest_trade_date,
+        run_id=global_context.universe_hash
+        or str(scoped_data_snapshot.get("local_latest_trade_date") or ""),
+        save_disabled=bool(getattr(config, "THEME_SNAPSHOT_SAVE_DISABLED", False)),
+    )
+    global_context.metadata["theme_snapshot"] = snapshot_status
+    if isinstance(theme_rotation_payload, dict):
+        theme_rotation_payload["snapshot_status"] = str(snapshot_status.get("status") or "")
+        theme_rotation_payload["snapshot_path"] = (
+            str(snapshot_status.get("path") or "")
+            if str(snapshot_status.get("status") or "") == "success"
+            else ""
+        )
 
     role_metadata = {
         "resolver": resolver_snapshot,
@@ -556,12 +606,14 @@ def _prepare_market_context(
 
     funnel = funnel_cls(
         FunnelConfig(
-            max_candidates=int(max_candidates or getattr(config, "FUNNEL_MAX_CANDIDATES", 200) or 200),
+            max_candidates=int(max_candidates or getattr(config, "FUNNEL_MAX_CANDIDATES", 500) or 500),
             profile=str(funnel_profile or "classic").strip().lower() or "classic",
             trend_windows=tuple(int(item) for item in trend_windows if int(item) > 0) or tuple(getattr(config, "FUNNEL_TREND_WINDOWS", (20, 60, 120))),
             volume_spike_threshold=float(volume_spike_threshold),
             breakout_distance_pct=float(breakout_distance_pct),
             sector_bucket_limit=int(sector_bucket_limit if str(funnel_profile or "").strip().lower() == "momentum_leader" else 0),
+            theme_boost_enabled=bool(getattr(config, "THEME_FUNNEL_BOOST_ENABLED", False)),
+            theme_boost_cap=float(getattr(config, "THEME_SYMBOL_BOOST_CAP", 0.10)),
         )
     )
     with profile_stage(

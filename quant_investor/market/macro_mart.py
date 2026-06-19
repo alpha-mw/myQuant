@@ -11,7 +11,7 @@ import pandas as pd
 
 from quant_investor.market.branch_readiness import SOURCE_TUSHARE
 
-DEFAULT_MACRO_ROOT = Path("data/clean/cn_macro")
+DEFAULT_MACRO_ROOT = Path("data/parquet/cn/macro_daily")
 DEFAULT_RAW_SNAPSHOT_ROOT = Path("data/cn_market_full/_snapshots/macro")
 MACRO_FIELDS = ("macro_score", "liquidity_score", "volatility_percentile", "policy_signal")
 
@@ -53,9 +53,9 @@ def write_macro_mart(
         frame = pd.DataFrame([row])
     else:
         frame = pd.DataFrame(columns=["trade_date", *MACRO_FIELDS, "source", "source_priority", "pit_status", "fetched_at"])
-    daily_path = data_dir / "macro_daily.csv"
+    daily_path = data_dir / "part.parquet"
     raw_path = snapshot_dir / f"{run_id}.csv"
-    frame.to_csv(daily_path, index=False)
+    frame.to_parquet(daily_path, index=False)
     frame.to_csv(raw_path, index=False)
     coverage = 0.0 if frame.empty else float(frame[list(MACRO_FIELDS)].notna().sum().sum() / max(len(frame) * len(MACRO_FIELDS), 1))
     manifest = {
@@ -66,6 +66,8 @@ def write_macro_mart(
         "daily_rows": int(len(frame)),
         "field_set": list(MACRO_FIELDS),
         "coverage_rate": coverage,
+        "storage_backend": "parquet_canonical",
+        "table": "macro_daily",
         "macro_daily": str(daily_path),
         "raw_snapshot": str(raw_path),
         "provider_manifest": dict(provider_manifest or {}),

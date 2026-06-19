@@ -24,6 +24,7 @@ from quant_investor.factors.report import (
     render_factor_library_shadow_markdown,
 )
 from quant_investor.market.config import get_market_settings
+from quant_investor.market.dag_executor import execute_market_dag
 from quant_investor.market.download_cn import CNFullMarketDownloader
 from quant_investor.market.market_data_reader import MarketDataReader
 from quant_investor.monitoring import cn_aggressive_market_metrics as _market_metrics
@@ -47,7 +48,20 @@ DEFAULT_BASE_DIR = (
 )
 DEFAULT_NOTES_PATH = DEFAULT_BASE_DIR / "latest_notes_payload.md"
 DEFAULT_INITIAL_CAPITAL = 1_000_000.0
+INVALID_MANUAL_LEDGER_STATUS_MARKERS = ("invalidated_price_basis_no_execution",)
 QUOTE_TIMEOUT = 20
+REALTIME_EXECUTION_PRICE_FIELDS = (
+    "current",
+    "realtime_price",
+    "last",
+    "last_price",
+    "trade_price",
+    "bid",
+    "bid_price",
+    "ask",
+    "ask_price",
+    "price",
+)
 INDEX_QUOTES = {
     "sh000001": "上证指数",
     "sz399001": "深证成指",
@@ -65,13 +79,14 @@ THEME_BASKETS = {
     "电力设备": ["601179.SH", "600487.SH"],
     "光通信": ["601869.SH"],
 }
-CANDIDATE_POOL_PATH = PROJECT_ROOT / "results" / "cn_analysis_full" / "all_candidates.json"
 CATEGORY_THEME_LABELS = {
     "hs300": "大盘核心资产",
     "zz500": "中盘制造主线",
     "zz1000": "小盘成长弹性",
+    "full_a": "全市场 v13 DAG",
 }
 REQUIRED_DAG_BRANCHES = ("quant", "fundamental", "intelligence", "macro")
+CANDIDATE_DAG_TOP_K = 12
 MARKET_METRICS_CACHE_SCHEMA_VERSION = _market_metrics.MARKET_METRICS_CACHE_SCHEMA_VERSION
 MARKET_METRICS_COMPONENT_KEYS = _market_metrics.MARKET_METRICS_COMPONENT_KEYS
 MARKET_METRICS_CATEGORIES = _market_metrics.MARKET_METRICS_CATEGORIES
@@ -732,6 +747,7 @@ def _parse_quote_payload(line: str) -> dict[str, Any] | None:
 
     current = _safe_float(parts[3])
     prev_close = _safe_float(parts[4])
+    quote_time = parts[30].strip() if len(parts) > 30 else ""
     change = _safe_float(parts[31], current - prev_close) if len(parts) > 31 else current - prev_close
     change_pct = (
         _safe_float(parts[32], _safe_pct(change, prev_close) * 100.0)
@@ -740,16 +756,54 @@ def _parse_quote_payload(line: str) -> dict[str, Any] | None:
     )
     return {
         "quote_code": quote_code,
+        "source": "tencent_realtime_quote",
         "name": parts[1].strip() or quote_code,
         "current": current,
+        "realtime_price": current,
+        "realtime_price_field": "current",
         "prev_close": prev_close,
         "open": _safe_float(parts[5]),
         "high": _safe_float(parts[33]) if len(parts) > 33 else 0.0,
         "low": _safe_float(parts[34]) if len(parts) > 34 else 0.0,
-        "time": parts[30].strip() if len(parts) > 30 else "",
+        "time": quote_time,
+        "quote_timestamp": quote_time,
         "change": change,
         "change_pct": change_pct,
     }
+
+
+def _quote_timestamp(quote: dict[str, Any]) -> str:
+    for key in ("time", "quote_timestamp", "timestamp", "datetime", "fetched_at"):
+        value = str(quote.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _resolve_realtime_execution_price(quote: dict[str, Any]) -> tuple[float, str]:
+    """Return a validated realtime execution price and the field it came from."""
+    if not isinstance(quote, dict) or not quote:
+        return 0.0, ""
+    if not _quote_timestamp(quote):
+        return 0.0, ""
+
+    low = _safe_float(quote.get("low"), 0.0)
+    high = _safe_float(quote.get("high"), 0.0)
+    has_intraday_range = low > 0 and high > 0 and low <= high
+    fields = list(REALTIME_EXECUTION_PRICE_FIELDS)
+    declared_field = str(quote.get("realtime_price_field") or quote.get("execution_price_field") or "").strip()
+    if declared_field and declared_field not in fields:
+        fields.insert(0, declared_field)
+    for field in fields:
+        if field not in quote:
+            continue
+        price = _safe_float(quote.get(field), 0.0)
+        if price <= 0:
+            continue
+        if has_intraday_range and not (low <= price <= high):
+            continue
+        return price, field
+    return 0.0, ""
 
 
 def _fetch_tencent_quotes(quote_codes: list[str]) -> dict[str, dict[str, Any]]:
@@ -930,22 +984,65 @@ def _build_rebalance_plan(review: pd.DataFrame) -> list[ProposedOrder]:
     return orders
 
 
-def _load_local_candidate_symbols() -> list[str]:
-    if not CANDIDATE_POOL_PATH.exists():
-        return []
-    try:
-        payload = json.loads(CANDIDATE_POOL_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    values = payload.get("full_a")
-    if not isinstance(values, list):
-        return []
-    symbols: list[str] = []
-    for item in values:
-        symbol = str(item or "").strip().upper()
-        if symbol:
-            symbols.append(symbol)
-    return symbols
+def _risk_reduction_sell_gate(
+    *,
+    order: ProposedOrder,
+    effective_ledger: pd.DataFrame,
+    holdings_review: pd.DataFrame,
+) -> tuple[bool, str]:
+    """Classify sell-only orders that may bypass buy-side evidence gates.
+
+    This gate does not validate realtime execution price. It only separates
+    risk-reduction sell eligibility from new-risk buy/add/switch eligibility.
+    """
+    symbol = str(order.symbol or "").strip().upper()
+    if str(order.action).strip().lower() != "sell":
+        return False, "not_sell_order"
+    if not symbol:
+        return False, "missing_symbol"
+    if int(order.shares) <= 0:
+        return False, "non_positive_shares"
+    if int(order.shares) % 100 != 0:
+        return False, "non_board_lot_sell"
+    if effective_ledger.empty:
+        return False, "missing_effective_ledger"
+
+    ledger = effective_ledger.copy()
+    if "symbol" not in ledger.columns or "shares" not in ledger.columns:
+        return False, "invalid_effective_ledger_schema"
+    ledger["symbol"] = ledger["symbol"].astype(str).str.strip().str.upper()
+    ledger_row = ledger[ledger["symbol"] == symbol]
+    if ledger_row.empty:
+        return False, "symbol_not_in_effective_ledger"
+    held_shares = int(_safe_float(ledger_row.iloc[0].get("shares"), 0.0))
+    if int(order.shares) > held_shares:
+        return False, "sell_exceeds_effective_ledger_shares"
+
+    if holdings_review.empty:
+        return False, "missing_holdings_review"
+    review = holdings_review.copy()
+    if "symbol" not in review.columns:
+        return False, "invalid_holdings_review_schema"
+    review["symbol"] = review["symbol"].astype(str).str.strip().str.upper()
+    review_row = review[review["symbol"] == symbol]
+    if review_row.empty:
+        return False, "missing_holding_diagnostics"
+
+    row = review_row.iloc[0]
+    current_price = _safe_float(row.get("current_price"), 0.0)
+    stage_stop = _safe_float(row.get("stage_stop_price"), 0.0)
+    score = _safe_float(row.get("score_full_market"), 1.0)
+    action_text = str(row.get("recommended_action", "")).strip()
+    reason_text = str(row.get("reason", "")).strip()
+    below_stop = stage_stop > 0 and current_price > 0 and current_price < stage_stop
+    weak_score = score < 0.72
+    explicit_reduce = any(
+        marker in action_text or marker in reason_text
+        for marker in ("减仓", "清仓", "止损", "broken stop", "risk", "thesis invalidation")
+    )
+    if not (below_stop and weak_score) and not explicit_reduce:
+        return False, "no_risk_reduction_signal"
+    return True, "risk_reduction_sell_eligible_pending_realtime_quote"
 
 
 def _theme_label_for_symbol(symbol: str, category: str) -> str:
@@ -955,67 +1052,282 @@ def _theme_label_for_symbol(symbol: str, category: str) -> str:
     return CATEGORY_THEME_LABELS.get(category, "正式筛选候选")
 
 
-def _evidence_quality_label(
-    *,
-    completeness_passed: bool,
-    decision_data_sufficient: bool,
-    analysis_trade_date: str,
-    strict_trade_date: str,
-    source: str,
-) -> str:
-    if completeness_passed:
-        return "高"
-    if decision_data_sufficient:
-        return "中"
-    if source == "latest_formal_screening" and analysis_trade_date and analysis_trade_date == strict_trade_date:
-        return "中"
-    return "中等偏弱"
+def _mapping_payload(value: Any) -> dict[str, Any]:
+    payload = _jsonable(value)
+    return dict(payload) if isinstance(payload, dict) else {}
 
 
-def _build_candidate_pool(
+def _list_payloads(values: Any) -> list[dict[str, Any]]:
+    if not isinstance(values, list):
+        return []
+    return [_mapping_payload(item) for item in values]
+
+
+def _symbol_key(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _candidate_dag_branch_state(packet: dict[str, Any]) -> tuple[list[str], list[str], dict[str, float]]:
+    branch_payloads = _mapping_payload(packet.get("branch_verdicts"))
+    present = [
+        branch
+        for branch in REQUIRED_DAG_BRANCHES
+        if _branch_payload_present(branch_payloads.get(branch))
+    ]
+    missing = [branch for branch in REQUIRED_DAG_BRANCHES if branch not in present]
+    scores = {
+        branch: round(_safe_float(_mapping_payload(branch_payloads.get(branch)).get("final_score")), 6)
+        for branch in present
+    }
+    return present, missing, scores
+
+
+def _candidate_dag_status(
     *,
-    full_metrics: pd.DataFrame,
+    candidate_generation_status: str,
+    blocker: str,
+    evaluated_symbols: list[str],
+    accepted_symbols: list[str],
+    present_by_symbol: dict[str, list[str]],
+    missing_by_symbol: dict[str, list[str]],
+    bayesian_record_count: int,
+    shortlist_count: int,
+    portfolio_target_count: int,
+    error: str = "",
+    dag_executed: bool = True,
+) -> dict[str, Any]:
+    return {
+        "candidate_generation_status": candidate_generation_status,
+        "blocker": blocker,
+        "required_branches": list(REQUIRED_DAG_BRANCHES),
+        "candidate_source": "v13_full_market_dag",
+        "dag_pipeline": {
+            "universe": "full_a",
+            "deterministic_funnel": bool(dag_executed),
+            "candidate_level_four_branch": bool(dag_executed),
+            "bayesian_shortlist": bool(dag_executed),
+            "riskguard_ic_portfolio_constructor": bool(dag_executed),
+            "bayesian_record_count": int(bayesian_record_count),
+            "shortlist_count": int(shortlist_count),
+            "portfolio_target_count": int(portfolio_target_count),
+        },
+        "candidate_dag_four_branch_compliance": {
+            "complete": bool(accepted_symbols),
+            "evaluated_symbols": list(evaluated_symbols),
+            "accepted_symbols": list(accepted_symbols),
+            "present_branch_by_symbol": present_by_symbol,
+            "missing_branch_by_symbol": missing_by_symbol,
+            "required_branches": list(REQUIRED_DAG_BRANCHES),
+        },
+        "error": error,
+    }
+
+
+def _build_candidate_pool_from_v13_dag(
+    *,
+    dag_artifacts: dict[str, Any],
     held_symbols: list[str],
-    completeness_passed: bool,
-    decision_data_sufficient: bool,
-    analysis_trade_date: str,
-    strict_trade_date: str,
-) -> pd.DataFrame:
-    if full_metrics.empty:
-        return pd.DataFrame()
+    max_candidates: int = CANDIDATE_DAG_TOP_K,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    if not dag_artifacts:
+        status = _candidate_dag_status(
+            candidate_generation_status="blocked",
+            blocker="candidate_dag_incomplete",
+            evaluated_symbols=[],
+            accepted_symbols=[],
+            present_by_symbol={},
+            missing_by_symbol={},
+            bayesian_record_count=0,
+            shortlist_count=0,
+            portfolio_target_count=0,
+            error="missing_dag_artifacts",
+            dag_executed=False,
+        )
+        return pd.DataFrame(dtype=object), status
 
-    candidate_symbols = _load_local_candidate_symbols()
-    candidate_priority = {symbol: idx for idx, symbol in enumerate(candidate_symbols)}
-    held_set = {str(symbol).strip().upper() for symbol in held_symbols}
-    metrics = full_metrics.copy()
-    metrics["symbol"] = metrics["symbol"].astype(str).str.upper()
-    metrics = metrics[~metrics["symbol"].isin(held_set)].copy()
-    if metrics.empty:
-        return metrics
+    held_set = {_symbol_key(symbol) for symbol in held_symbols if _symbol_key(symbol)}
+    packets = {
+        _symbol_key(symbol): _mapping_payload(packet)
+        for symbol, packet in _mapping_payload(dag_artifacts.get("symbol_research_packets")).items()
+        if _symbol_key(symbol)
+    }
+    shortlist_rows = _list_payloads(dag_artifacts.get("shortlist"))
+    shortlist_by_symbol = {
+        _symbol_key(row.get("symbol")): row
+        for row in shortlist_rows
+        if _symbol_key(row.get("symbol"))
+    }
+    bayesian_rows = _list_payloads(dag_artifacts.get("bayesian_records"))
+    bayesian_by_symbol = {
+        _symbol_key(row.get("symbol")): row
+        for row in bayesian_rows
+        if _symbol_key(row.get("symbol"))
+    }
+    portfolio_payload = _mapping_payload(dag_artifacts.get("portfolio_decision"))
+    target_weights = {
+        _symbol_key(symbol): _safe_float(weight)
+        for symbol, weight in _mapping_payload(portfolio_payload.get("target_weights")).items()
+        if _symbol_key(symbol)
+    }
+    target_positions = {
+        _symbol_key(symbol): _safe_float(weight)
+        for symbol, weight in _mapping_payload(portfolio_payload.get("target_positions")).items()
+        if _symbol_key(symbol)
+    }
 
-    metrics["candidate_source"] = metrics["symbol"].map(
-        lambda symbol: "latest_formal_screening" if symbol in candidate_priority else "full_market_strength"
-    )
-    metrics["candidate_priority"] = metrics["symbol"].map(lambda symbol: candidate_priority.get(symbol, 999999))
-    metrics["theme_label"] = metrics.apply(
-        lambda row: _theme_label_for_symbol(str(row["symbol"]), str(row.get("category", ""))),
-        axis=1,
-    )
-    metrics["evidence_quality"] = metrics["candidate_source"].map(
-        lambda source: _evidence_quality_label(
-            completeness_passed=completeness_passed,
-            decision_data_sufficient=decision_data_sufficient,
-            analysis_trade_date=analysis_trade_date,
-            strict_trade_date=strict_trade_date,
-            source=str(source),
+    evaluated_symbols = [
+        symbol
+        for symbol in shortlist_by_symbol
+        if symbol not in held_set
+    ]
+    present_by_symbol: dict[str, list[str]] = {}
+    missing_by_symbol: dict[str, list[str]] = {}
+    rows: list[dict[str, Any]] = []
+    for symbol in evaluated_symbols:
+        packet = packets.get(symbol, {})
+        present, missing, branch_scores = _candidate_dag_branch_state(packet)
+        present_by_symbol[symbol] = present
+        if missing:
+            missing_by_symbol[symbol] = missing
+            continue
+        bayesian = bayesian_by_symbol.get(symbol)
+        if bayesian is None:
+            missing_by_symbol[symbol] = ["bayesian"]
+            continue
+        shortlist = shortlist_by_symbol[symbol]
+        target_weight = _safe_float(
+            target_weights.get(symbol),
+            _safe_float(target_positions.get(symbol), _safe_float(shortlist.get("suggested_weight"))),
+        )
+        if target_weight <= 0:
+            continue
+        category = str(packet.get("category") or shortlist.get("category") or "full_a")
+        rows.append(
+            {
+                "symbol": symbol,
+                "name": (
+                    str(packet.get("company_name") or shortlist.get("company_name") or bayesian.get("company_name") or "")
+                    or symbol
+                ),
+                "category": category,
+                "theme_label": _theme_label_for_symbol(symbol, category),
+                "candidate_source": "v13_full_market_dag",
+                "candidate_rank": 0,
+                "candidate_dag_four_branch_complete": True,
+                "present_branches": ",".join(REQUIRED_DAG_BRANCHES),
+                "missing_branches": "",
+                "evidence_quality": "高",
+                "bayesian_rank": int(_safe_float(bayesian.get("rank"), len(rows) + 1)),
+                "posterior_action_score": round(_safe_float(bayesian.get("posterior_action_score")), 6),
+                "posterior_win_rate": round(_safe_float(bayesian.get("posterior_win_rate")), 6),
+                "posterior_expected_alpha": round(_safe_float(bayesian.get("posterior_expected_alpha")), 6),
+                "posterior_confidence": round(_safe_float(bayesian.get("posterior_confidence")), 6),
+                "rank_score": round(_safe_float(shortlist.get("rank_score")), 6),
+                "shortlist_action": str(shortlist.get("action") or ""),
+                "shortlist_confidence": round(_safe_float(shortlist.get("confidence")), 6),
+                "expected_upside": round(_safe_float(shortlist.get("expected_upside")), 6),
+                "suggested_weight": round(_safe_float(shortlist.get("suggested_weight")), 6),
+                "portfolio_target_weight": round(target_weight, 6),
+                "portfolio_target_position": round(_safe_float(target_positions.get(symbol), target_weight), 6),
+                "risk_flags": "；".join(str(item).strip() for item in list(shortlist.get("risk_flags") or []) if str(item).strip()),
+                "rationale": "；".join(str(item).strip() for item in list(shortlist.get("rationale") or []) if str(item).strip()),
+                "branch_quant_score": branch_scores.get("quant"),
+                "branch_fundamental_score": branch_scores.get("fundamental"),
+                "branch_intelligence_score": branch_scores.get("intelligence"),
+                "branch_macro_score": branch_scores.get("macro"),
+            }
+        )
+
+    rows.sort(
+        key=lambda row: (
+            -float(row["portfolio_target_weight"]),
+            int(row["bayesian_rank"] or 999999),
+            -float(row["posterior_action_score"]),
+            str(row["symbol"]),
         )
     )
-    metrics = metrics.sort_values(
-        by=["candidate_priority", "score_full_market", "ret20", "ret60", "symbol"],
-        ascending=[True, False, False, False, True],
-    ).reset_index(drop=True)
-    metrics["candidate_rank"] = range(1, len(metrics) + 1)
-    return metrics.head(12).reset_index(drop=True)
+    rows = rows[: max(1, int(max_candidates))]
+    for index, row in enumerate(rows, start=1):
+        row["candidate_rank"] = index
+
+    if rows:
+        status_name = "complete"
+        blocker = ""
+    elif missing_by_symbol:
+        status_name = "blocked"
+        blocker = "candidate_dag_incomplete"
+    else:
+        status_name = "empty"
+        blocker = "no_candidate_selected_by_portfolio_constructor"
+    status = _candidate_dag_status(
+        candidate_generation_status=status_name,
+        blocker=blocker,
+        evaluated_symbols=evaluated_symbols,
+        accepted_symbols=[str(row["symbol"]) for row in rows],
+        present_by_symbol=present_by_symbol,
+        missing_by_symbol=missing_by_symbol,
+        bayesian_record_count=len(bayesian_rows),
+        shortlist_count=len(shortlist_rows),
+        portfolio_target_count=len([weight for weight in target_weights.values() if weight > 0]),
+    )
+    return pd.DataFrame(rows, dtype=object), status
+
+
+def _run_candidate_level_v13_dag(
+    *,
+    held_symbols: list[str],
+    analysis_trade_date: str,
+    completeness_report: dict[str, Any],
+    total_capital: float,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    llm_settings = _load_daily_config_llm_settings()
+    requested_agent_layer = bool(llm_settings.pop("enable_agent_layer", True))
+    review_models = ResolvedReviewModels.from_mapping(llm_settings)
+    data_snapshot = {
+        "local_latest_trade_date": analysis_trade_date,
+        "analysis_trade_date": analysis_trade_date,
+        "summary_text": "CN aggressive formal candidate generation uses strict v13 DAG.",
+        "completeness": _jsonable(completeness_report),
+    }
+    try:
+        dag_artifacts = execute_market_dag(
+            market="CN",
+            universe="full_a",
+            categories=None,
+            mode="batch",
+            batch_size=None,
+            total_capital=total_capital,
+            top_k=CANDIDATE_DAG_TOP_K,
+            shortlist_size=CANDIDATE_DAG_TOP_K,
+            data_snapshot=data_snapshot,
+            verbose=False,
+            enable_agent_layer=requested_agent_layer,
+            **review_models.to_runtime_kwargs(),
+            recall_context={
+                "strategy": "aggressive_tech_manufacturing",
+                "review_layer": "candidate_generation",
+                "analysis_trade_date": analysis_trade_date,
+            },
+        )
+    except Exception as exc:
+        status = _candidate_dag_status(
+            candidate_generation_status="blocked",
+            blocker="candidate_dag_execution_failed",
+            evaluated_symbols=[],
+            accepted_symbols=[],
+            present_by_symbol={},
+            missing_by_symbol={},
+            bayesian_record_count=0,
+            shortlist_count=0,
+            portfolio_target_count=0,
+            error=str(exc),
+            dag_executed=False,
+        )
+        return pd.DataFrame(dtype=object), status
+    return _build_candidate_pool_from_v13_dag(
+        dag_artifacts=dag_artifacts,
+        held_symbols=held_symbols,
+    )
 
 
 def _build_switch_plan(
@@ -1027,54 +1339,83 @@ def _build_switch_plan(
 ) -> pd.DataFrame:
     if holdings_review.empty or candidate_pool.empty:
         return pd.DataFrame()
+    required_candidate_columns = {
+        "candidate_source",
+        "candidate_dag_four_branch_complete",
+        "portfolio_target_weight",
+        "posterior_action_score",
+        "posterior_confidence",
+        "bayesian_rank",
+    }
+    if not required_candidate_columns.issubset(set(candidate_pool.columns)):
+        return pd.DataFrame()
+    dag_candidates = candidate_pool[
+        (candidate_pool["candidate_source"].astype(str) == "v13_full_market_dag")
+        & (candidate_pool["candidate_dag_four_branch_complete"].astype(bool))
+        & (candidate_pool["portfolio_target_weight"].map(lambda value: _safe_float(value) > 0))
+    ].copy()
+    if dag_candidates.empty:
+        return pd.DataFrame()
 
-    weak_holdings = holdings_review.sort_values(
-        by=["rank_full_market", "score_full_market", "today_change_pct"],
-        ascending=[False, True, True],
+    review = holdings_review.copy()
+    review["_switch_pressure"] = review.apply(
+        lambda row: (
+            (3 if "减仓" in str(row.get("recommended_action", "")) else 0)
+            + (2 if "降级" in str(row.get("position_role", "")) else 0)
+            + (
+                1
+                if _safe_float(row.get("stage_stop_price")) > 0
+                and _safe_float(row.get("current_price")) < _safe_float(row.get("stage_stop_price"))
+                else 0
+            )
+        ),
+        axis=1,
+    )
+    weak_holdings = review[review["_switch_pressure"] > 0].sort_values(
+        by=["_switch_pressure", "market_weight", "symbol"],
+        ascending=[False, False, True],
     ).head(3)
-    best_candidates = candidate_pool.sort_values(
-        by=["candidate_priority", "score_full_market", "ret20", "symbol"],
-        ascending=[True, False, False, True],
+    if weak_holdings.empty:
+        return pd.DataFrame()
+    best_candidates = dag_candidates.sort_values(
+        by=["portfolio_target_weight", "posterior_action_score", "posterior_confidence", "symbol"],
+        ascending=[False, False, False, True],
     ).head(3)
 
     rows: list[dict[str, Any]] = []
     for weak_row, candidate_row in zip(weak_holdings.itertuples(), best_candidates.itertuples()):
-        score_gap = round(float(candidate_row.score_full_market) - float(weak_row.score_full_market), 6)
-        ret20_gap = round(float(candidate_row.ret20) - float(weak_row.ret20), 6)
-        superior = (
-            score_gap >= 0.12
-            and int(candidate_row.rank_full_market) + 120 <= int(weak_row.rank_full_market)
-            and ret20_gap >= 0.08
-        )
+        target_weight = _safe_float(getattr(candidate_row, "portfolio_target_weight", 0.0))
+        posterior_score = _safe_float(getattr(candidate_row, "posterior_action_score", 0.0))
+        posterior_confidence = _safe_float(getattr(candidate_row, "posterior_confidence", 0.0))
+        superior = target_weight > 0 and posterior_score > 0 and posterior_confidence > 0
         actionable = superior and (completeness_passed or decision_data_sufficient)
         rows.append(
             {
                 "sell_symbol": weak_row.symbol,
                 "sell_name": weak_row.name,
                 "sell_role": weak_row.position_role,
-                "sell_rank_full_market": int(weak_row.rank_full_market),
-                "sell_score_full_market": round(float(weak_row.score_full_market), 6),
+                "sell_recommended_action": getattr(weak_row, "recommended_action", ""),
                 "buy_symbol": candidate_row.symbol,
                 "buy_name": candidate_row.name,
                 "buy_theme": candidate_row.theme_label,
-                "buy_rank_full_market": int(candidate_row.rank_full_market),
-                "buy_score_full_market": round(float(candidate_row.score_full_market), 6),
-                "score_gap": score_gap,
-                "ret20_gap": ret20_gap,
+                "buy_bayesian_rank": int(_safe_float(getattr(candidate_row, "bayesian_rank", 999999))),
+                "buy_posterior_action_score": round(posterior_score, 6),
+                "buy_posterior_confidence": round(posterior_confidence, 6),
+                "buy_portfolio_target_weight": round(target_weight, 6),
                 "candidate_source": candidate_row.candidate_source,
                 "evidence_quality": candidate_row.evidence_quality,
-                "priority": "high" if superior else "watch",
+                "priority": "high" if superior and target_weight >= 0.06 else "watch",
                 "action": "switch_now" if actionable else ("prepare_switch" if superior else "watch_only"),
                 "switch_ratio_hint": "20%" if actionable else "先观察，不执行",
                 "trigger_threshold": (
-                    "候选继续留在本地强度前120，且现持仓未收复阶段止损位"
+                    "候选保持 candidate-level v13 DAG 四分支完整，且 PortfolioConstructor 维持正目标权重；现持仓仍未解除降级/减仓信号"
                     if not actionable
-                    else "按20%试探性换仓，若候选继续强于卖出对象再递增"
+                    else "按20%试探性换仓；后续只在 candidate-level v13 DAG 仍完整且目标权重提升时递增"
                 ),
                 "no_switch_condition": (
                     "当前前日线+实时行情口径仍未满足决策数据要求，先不把结构优势直接转成实单"
                     if superior and not (completeness_passed or decision_data_sufficient)
-                    else "若现持仓重新回到前250名且候选优势收敛，则继续持有原仓"
+                    else "若现持仓解除减仓/降级信号，或候选 Bayesian/RiskGuard/PortfolioConstructor 不再支持正目标权重，则继续持有原仓"
                 ),
             }
         )
@@ -1131,11 +1472,136 @@ def _apply_orders(
     return updated, cash_after, round(realized_total, 2)
 
 
+def _manual_manifest_is_valid_baseline(manifest: dict[str, Any]) -> bool:
+    status_text = " ".join(
+        str(manifest.get(key) or "")
+        for key in ("status", "execution_status", "price_basis", "note")
+    )
+    return not any(marker in status_text for marker in INVALID_MANUAL_LEDGER_STATUS_MARKERS)
+
+
+def _resolve_manual_ledger_path(manifest_path: Path, manifest: dict[str, Any]) -> Path | None:
+    candidates: list[Path] = []
+    next_ledger = str(manifest.get("next_ledger_path") or "").strip()
+    if next_ledger:
+        next_path = Path(next_ledger)
+        resolved_next = next_path if next_path.is_absolute() else manifest_path.parent / next_path
+        if resolved_next.suffix.lower() == ".parquet":
+            candidates.append(resolved_next)
+        elif resolved_next.name == "ledger_after_manual_switch.csv":
+            candidates.append(resolved_next.with_suffix(".parquet"))
+            candidates.append(resolved_next)
+    candidates.append(manifest_path.parent / "ledger_after_manual_switch.parquet")
+    candidates.append(manifest_path.parent / "ledger_after_manual_switch.csv")
+
+    for candidate in candidates:
+        if (
+            candidate.stem == "ledger_after_manual_switch"
+            and candidate.suffix.lower() in {".parquet", ".csv"}
+            and candidate.exists()
+            and candidate.is_file()
+        ):
+            return candidate
+    return None
+
+
+def _read_manual_ledger(path: Path) -> pd.DataFrame:
+    if path.suffix.lower() == ".parquet":
+        return pd.read_parquet(path)
+    if path.name == "ledger_after_manual_switch.csv":
+        return pd.read_table(path, sep=",", encoding="utf-8-sig")
+    raise RuntimeError(f"manual ledger 只允许读取 ledger_after_manual_switch sidecar: {path}")
+
+
+def _build_effective_manual_pnl_summary(
+    *,
+    manual_manifest: dict[str, Any],
+    fallback_pnl_summary: pd.DataFrame,
+) -> pd.DataFrame:
+    if fallback_pnl_summary.empty:
+        row: dict[str, Any] = {}
+    else:
+        row = dict(fallback_pnl_summary.iloc[-1].to_dict())
+
+    manifest_to_pnl_fields = {
+        "cash_after": "cash_after",
+        "market_value_after": "market_value_after",
+        "total_value_after": "total_value_after",
+        "portfolio_pnl_after": "portfolio_pnl_after",
+        "portfolio_return_after": "portfolio_pnl_pct_after",
+        "realized_pnl_from_rebalance": "realized_pnl_from_rebalance",
+        "quote_snapshot": "quote_snapshot",
+    }
+    for manifest_key, pnl_key in manifest_to_pnl_fields.items():
+        value = manual_manifest.get(manifest_key)
+        if value not in (None, ""):
+            row[pnl_key] = value
+
+    return pd.DataFrame([row])
+
+
+def _load_latest_effective_manual_record(
+    base_dir: Path,
+    max_record_name: str | None = None,
+) -> tuple[pd.DataFrame, dict[str, Any], Path, Path]:
+    run_dirs = [
+        path
+        for path in base_dir.iterdir()
+        if path.is_dir()
+        and not path.name.startswith("_")
+        and (max_record_name is None or path.name <= max_record_name)
+    ]
+    for run_dir in sorted(run_dirs, key=lambda path: path.name, reverse=True):
+        manifest_path = run_dir / "manual_execution_manifest.json"
+        if not manifest_path.exists():
+            continue
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not _manual_manifest_is_valid_baseline(manifest):
+            continue
+        ledger_path = _resolve_manual_ledger_path(manifest_path, manifest)
+        if ledger_path is None:
+            continue
+        ledger = _read_manual_ledger(ledger_path)
+        required_columns = {"symbol", "shares", "avg_cost"}
+        if not required_columns.issubset(set(ledger.columns)):
+            raise RuntimeError(
+                "有效 manual ledger schema 缺失字段: "
+                + ", ".join(sorted(required_columns - set(ledger.columns)))
+                + f" ({ledger_path})"
+            )
+        return ledger, manifest, manifest_path, ledger_path
+
+    raise RuntimeError(
+        "策略目录下不存在有效本地/manual ledger_after_manual_switch sidecar；"
+        "formal ledger.csv 已停用，无法作为连续复盘或执行基线。"
+    )
+
+
+def _pnl_summary_path(record_dir: Path) -> Path | None:
+    parquet_path = record_dir / "pnl_summary.parquet"
+    if parquet_path.exists():
+        return parquet_path
+    return None
+
+
+def _read_pnl_summary(path: Path) -> pd.DataFrame:
+    if path.suffix.lower() != ".parquet":
+        raise RuntimeError(f"pnl_summary 只允许读取 Parquet sidecar: {path}")
+    return pd.read_parquet(path)
+
+
 def _load_previous_record(
     base_dir: Path,
     source_record: str | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any], pd.DataFrame]:
-    run_dirs = [path for path in base_dir.iterdir() if path.is_dir()]
+    run_dirs = [
+        path
+        for path in base_dir.iterdir()
+        if path.is_dir()
+        and not path.name.startswith("_")
+        and (path / "manifest.json").exists()
+        and _pnl_summary_path(path) is not None
+    ]
     if not run_dirs:
         raise RuntimeError("策略目录下不存在上一条正式记录，无法做连续复盘。")
 
@@ -1143,12 +1609,39 @@ def _load_previous_record(
         latest_dir = base_dir / source_record
         if not latest_dir.exists():
             raise RuntimeError(f"指定的 source_record 不存在: {source_record}")
+        missing_files = []
+        if not (latest_dir / "manifest.json").exists():
+            missing_files.append("manifest.json")
+        if _pnl_summary_path(latest_dir) is None:
+            missing_files.append("pnl_summary.parquet")
+        if missing_files:
+            raise RuntimeError(
+                f"指定的 source_record 缺失正式记录文件: {', '.join(missing_files)} ({source_record})"
+            )
     else:
         latest_dir = sorted(run_dirs, key=lambda path: path.name)[-1]
     manifest_path = latest_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    ledger = pd.read_csv(latest_dir / "ledger.csv", encoding="utf-8-sig")
-    pnl_summary = pd.read_csv(latest_dir / "pnl_summary.csv", encoding="utf-8-sig")
+    pnl_summary = _read_pnl_summary(_pnl_summary_path(latest_dir))
+    ledger, manual_manifest, manual_manifest_path, manual_ledger_path = _load_latest_effective_manual_record(
+        base_dir,
+        max_record_name=latest_dir.name,
+    )
+    manifest = {
+        **manifest,
+        "formal_source_record": latest_dir.name,
+        "effective_manual_manifest_path": str(manual_manifest_path),
+        "effective_manual_ledger_path": str(manual_ledger_path),
+        "effective_manual_status": str(
+            manual_manifest.get("status")
+            or manual_manifest.get("execution_status")
+            or ""
+        ),
+    }
+    pnl_summary = _build_effective_manual_pnl_summary(
+        manual_manifest=manual_manifest,
+        fallback_pnl_summary=pnl_summary,
+    )
     return ledger, manifest, pnl_summary
 
 
@@ -1247,15 +1740,20 @@ def _format_holding_advice_line(row: Any) -> str:
 
 
 def _format_candidate_advice_line(row: Any, switch_row: dict[str, Any] | None) -> str:
-    source_label = "最新正式筛选结果" if str(row.candidate_source) == "latest_formal_screening" else "本地全市场强度"
+    source_label = "全市场 v13 DAG"
     relative_advantage = (
-        f"相对 `{switch_row['sell_symbol']}` 更优，强度排名前移 `{int(switch_row['sell_rank_full_market']) - int(switch_row['buy_rank_full_market'])}` 位"
-        f"，20日动量高出 `{float(switch_row['ret20_gap']):+.2%}`；"
+        f"相对 `{switch_row['sell_symbol']}`，候选由 PortfolioConstructor 给出目标权重 "
+        f"`{float(switch_row['buy_portfolio_target_weight']):.2%}`，"
+        f"Bayesian action score `{float(switch_row['buy_posterior_action_score']):.3f}`；"
         if switch_row
-        else f"当前在本地候选中位列前 `{int(row.candidate_rank)}`，20日收益 `{float(row.ret20):+.2%}`；"
+        else (
+            f"Bayesian rank `{int(row.bayesian_rank)}`，PortfolioConstructor 目标权重 "
+            f"`{float(row.portfolio_target_weight):.2%}`；"
+        )
     )
+    risk_flags = str(getattr(row, "risk_flags", "") or "").strip()
     if str(row.evidence_quality) == "高":
-        major_risk = "若回撤跌破阶段止损位，短线强度可能失真；"
+        major_risk = f"{risk_flags or '若候选 DAG 任一分支转弱，必须降级出正式候选池'}；"
     elif str(row.evidence_quality) == "中":
         major_risk = "盘中采用前一交易日稳定日线结合实时行情，收盘后需用当日日线复核；"
     else:
@@ -1263,7 +1761,7 @@ def _format_candidate_advice_line(row: Any, switch_row: dict[str, Any] | None) -
     trigger = (
         str(switch_row["trigger_threshold"])
         if switch_row
-        else "若连续两次正式复盘仍在候选前列，可升级为优先观察对象"
+        else "若下一轮仍保持 candidate-level v13 DAG 完整且 PortfolioConstructor 正目标权重，可继续观察或准备换仓"
     )
     return (
         f"- `{row.symbol}`（{row.name}）：主线 `{row.theme_label}`，来源 `{source_label}`；"
@@ -1519,6 +2017,8 @@ def _write_outputs(
     ledger_path = run_dir / "ledger.csv"
     orders_path = run_dir / "orders.csv"
     pnl_path = run_dir / "pnl_summary.csv"
+    ledger_parquet_path = run_dir / "ledger.parquet"
+    pnl_parquet_path = run_dir / "pnl_summary.parquet"
     snapshot_path = run_dir / "market_snapshot.json"
     manifest_path = run_dir / "manifest.json"
     runtime_profile_path = run_dir / "runtime_profile.json"
@@ -1530,6 +2030,8 @@ def _write_outputs(
     ledger.to_csv(ledger_path, index=False, encoding="utf-8-sig")
     orders_df.to_csv(orders_path, index=False, encoding="utf-8-sig")
     pnl_summary_df.to_csv(pnl_path, index=False, encoding="utf-8-sig")
+    ledger.to_parquet(ledger_parquet_path, index=False)
+    pnl_summary_df.to_parquet(pnl_parquet_path, index=False)
     snapshot_path.write_text(json.dumps(market_snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
     runtime_profile = manifest.get("runtime_profile") or market_snapshot.get("runtime_profile") or {}
     if runtime_profile:
@@ -1549,6 +2051,225 @@ def _write_outputs(
     shutil.copy2(pnl_path, raw_dir / f"{prefix}_pnl_summary.csv")
     if runtime_profile_path.exists():
         shutil.copy2(runtime_profile_path, raw_dir / "runtime_profile.json")
+
+
+def _manual_order_rows(
+    *,
+    timestamp: str,
+    orders: list[ProposedOrder],
+    source_ledger: pd.DataFrame,
+    quote_by_symbol: dict[str, dict[str, Any]],
+    execution_price_rejections: list[dict[str, Any]],
+) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    source_by_symbol = {
+        str(row.symbol).strip().upper(): row
+        for row in source_ledger.itertuples()
+    }
+    for order in orders:
+        symbol = str(order.symbol).strip().upper()
+        source_row = source_by_symbol.get(symbol)
+        quote = quote_by_symbol.get(symbol, {})
+        rows.append(
+            {
+                "timestamp": timestamp,
+                "action": order.action,
+                "symbol": symbol,
+                "name": getattr(source_row, "name", ""),
+                "shares": int(order.shares),
+                "execution_price": round(float(order.price), 2),
+                "trade_value": round(float(order.trade_value), 2),
+                "realized_pnl": round(float(order.realized_pnl), 2),
+                "status": "filled",
+                "reason": order.reason,
+                "quote_source": str(quote.get("source") or ""),
+                "quote_timestamp": _quote_timestamp(quote),
+                "execution_price_field": str(
+                    quote.get("realtime_execution_price_field")
+                    or quote.get("realtime_price_field")
+                    or quote.get("execution_price_field")
+                    or ""
+                ),
+            }
+        )
+    for rejected in execution_price_rejections:
+        symbol = str(rejected.get("symbol") or "").strip().upper()
+        source_row = source_by_symbol.get(symbol)
+        rows.append(
+            {
+                "timestamp": timestamp,
+                "action": str(rejected.get("action") or ""),
+                "symbol": symbol,
+                "name": getattr(source_row, "name", ""),
+                "shares": int(_safe_float(rejected.get("shares"), 0.0)),
+                "execution_price": None,
+                "trade_value": None,
+                "realized_pnl": None,
+                "status": "rejected",
+                "reason": str(rejected.get("reason") or ""),
+                "quote_source": "",
+                "quote_timestamp": "",
+                "execution_price_field": "",
+            }
+        )
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "timestamp",
+            "action",
+            "symbol",
+            "name",
+            "shares",
+            "execution_price",
+            "trade_value",
+            "realized_pnl",
+            "status",
+            "reason",
+            "quote_source",
+            "quote_timestamp",
+            "execution_price_field",
+        ],
+    )
+
+
+def _write_manual_execution_outputs(
+    *,
+    run_dir: Path,
+    timestamp: str,
+    timestamp_long: str,
+    updated_ledger: pd.DataFrame,
+    pnl_summary: dict[str, Any],
+    source_ledger: pd.DataFrame,
+    orders: list[ProposedOrder],
+    execution_price_rejections: list[dict[str, Any]],
+    quote_by_symbol: dict[str, dict[str, Any]],
+    quote_snapshot: str,
+    quote_error: str,
+    completeness_passed: bool,
+    decision_data_sufficient: bool,
+    dag_four_branch_compliance: dict[str, Any],
+    execution_price_gate: dict[str, Any],
+) -> dict[str, Any]:
+    raw_dir = run_dir / "raw_exports"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    ledger_csv_path = run_dir / "ledger_after_manual_switch.csv"
+    ledger_parquet_path = run_dir / "ledger_after_manual_switch.parquet"
+    manual_orders_path = run_dir / "manual_switch_and_take_profit_orders.csv"
+    review_path = run_dir / "daily_execution_review.md"
+    manifest_path = run_dir / "manual_execution_manifest.json"
+
+    manual_orders = _manual_order_rows(
+        timestamp=timestamp_long,
+        orders=orders,
+        source_ledger=source_ledger,
+        quote_by_symbol=quote_by_symbol,
+        execution_price_rejections=execution_price_rejections,
+    )
+    updated_ledger.to_csv(ledger_csv_path, index=False, encoding="utf-8-sig")
+    updated_ledger.to_parquet(ledger_parquet_path, index=False)
+    manual_orders.to_csv(manual_orders_path, index=False, encoding="utf-8-sig")
+
+    applied_trades = manual_orders[manual_orders["status"] == "filled"].to_dict(orient="records")
+    rejected_trades = manual_orders[manual_orders["status"] != "filled"].to_dict(orient="records")
+    status = (
+        "filled_local_manual_paper_rebalance"
+        if applied_trades
+        else (
+            "rejected_no_fill_carry_forward"
+            if rejected_trades
+            else "no_action_carry_forward"
+        )
+    )
+    price_basis = (
+        "execution_time_realtime_quote"
+        if applied_trades
+        else (
+            "no_fill_realtime_quote_missing_or_gate_rejected"
+            if rejected_trades
+            else "no_fill_no_orders"
+        )
+    )
+    source_symbols = {
+        str(symbol).strip().upper()
+        for symbol in source_ledger.get("symbol", pd.Series(dtype=object)).tolist()
+        if str(symbol).strip()
+    }
+    next_symbols = {
+        str(symbol).strip().upper()
+        for symbol in updated_ledger.get("symbol", pd.Series(dtype=object)).tolist()
+        if str(symbol).strip()
+    }
+    manifest = {
+        "schema_version": "cn_aggressive_manual_execution.v2",
+        "status": status,
+        "execution_status": status,
+        "manual_execution_mode": "paper_only_local_manual_no_broker",
+        "record_timestamp": timestamp,
+        "recorded_at": timestamp_long,
+        "price_basis": price_basis,
+        "quote_source": "tencent_realtime_quote" if applied_trades else "",
+        "quote_snapshot": quote_snapshot,
+        "quote_fetch_error": quote_error or "",
+        "decision_data_sufficient": bool(decision_data_sufficient),
+        "completeness_passed": bool(completeness_passed),
+        "dag_four_branch_complete": bool(dag_four_branch_compliance.get("complete")),
+        "execution_price_gate": execution_price_gate,
+        "applied_local_trades": applied_trades,
+        "rejected_or_pending_trades": rejected_trades,
+        "effective_manual_ledger_path": str(ledger_csv_path),
+        "next_ledger_path": str(ledger_csv_path),
+        "ledger_after_manual_switch_csv": str(ledger_csv_path),
+        "ledger_after_manual_switch_parquet": str(ledger_parquet_path),
+        "manual_orders_path": str(manual_orders_path),
+        "daily_execution_review_path": str(review_path),
+        "effective_manual_holding_count": int(len(next_symbols)),
+        "source_manual_holding_count": int(len(source_symbols)),
+        "cash_after": pnl_summary.get("cash_after"),
+        "market_value_after": pnl_summary.get("market_value_after"),
+        "total_value_after": pnl_summary.get("total_value_after"),
+        "portfolio_pnl_after": pnl_summary.get("portfolio_pnl_after"),
+        "portfolio_return_after": pnl_summary.get("portfolio_pnl_pct_after"),
+        "realized_pnl_from_rebalance": pnl_summary.get("realized_pnl_from_rebalance"),
+        "no_broker_api_called": True,
+    }
+    review_lines = [
+        f"# 本地/manual执行复盘 {timestamp}",
+        "",
+        "- 执行状态："
+        + (
+            f"本地/manual paper 成交 `{len(applied_trades)}` 笔；无真实券商/API下单。"
+            if applied_trades
+            else "未成交；无真实券商/API下单。"
+        ),
+        f"- 有效 manual ledger：`{ledger_csv_path}`。",
+        f"- 有效持仓数：`{len(next_symbols)}`；组合纪律上限 `10`。",
+        f"- quote_snapshot：`{quote_snapshot or 'N/A'}`；价格口径 `{price_basis}`。",
+        f"- 数据闸门：decision_data_sufficient=`{bool(decision_data_sufficient)}`，completeness_passed=`{bool(completeness_passed)}`。",
+        f"- DAG 四分支：complete=`{bool(dag_four_branch_compliance.get('complete'))}`。",
+    ]
+    if applied_trades:
+        review_lines.append("- 已写入本地/manual成交：")
+        for row in applied_trades:
+            review_lines.append(
+                f"- `{row['symbol']}` {row['action']} {int(row['shares'])}股 "
+                f"@ {float(row['execution_price']):.2f}；{row['reason']}"
+            )
+    if rejected_trades:
+        review_lines.append("- 未成交/拒绝：")
+        for row in rejected_trades:
+            review_lines.append(
+                f"- `{row['symbol']}` {row['action']} {int(row['shares'])}股：{row['reason']}"
+            )
+    review_path.write_text("\n".join(review_lines) + "\n", encoding="utf-8")
+    manifest_path.write_text(json.dumps(_jsonable(manifest), ensure_ascii=False, indent=2), encoding="utf-8")
+
+    prefix = f"aggressive_portfolio_{timestamp}"
+    shutil.copy2(manifest_path, raw_dir / f"{prefix}_manual_execution_manifest.json")
+    shutil.copy2(manual_orders_path, raw_dir / f"{prefix}_manual_switch_and_take_profit_orders.csv")
+    shutil.copy2(ledger_csv_path, raw_dir / f"{prefix}_ledger_after_manual_switch.csv")
+    shutil.copy2(ledger_parquet_path, raw_dir / f"{prefix}_ledger_after_manual_switch.parquet")
+    shutil.copy2(review_path, raw_dir / f"{prefix}_daily_execution_review.md")
+    return manifest
 
 
 def _build_notes_payload(
@@ -1698,7 +2419,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         quote_payload = {}
         quote_error = str(exc)
     quote_snapshot = max(
-        [quote_payload.get(code, {}).get("time", "") for code in index_quote_codes + holding_quote_codes],
+        [_quote_timestamp(quote_payload.get(code, {})) for code in index_quote_codes + holding_quote_codes],
         default="",
     )
     diagnostic_completeness_after = {
@@ -1760,7 +2481,9 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         ).strip()
         llm_risk_flags = list(recommendation.get("risk_flags") or ic_hint.get("risk_flags") or [])
         llm_session_id = str(review_payload.get("llm_session_id", "") or "")
-        current_price = _safe_float(quote.get("current"), _safe_float(metric.get("latest_close"), getattr(row, "current_price", 0.0)))
+        realtime_execution_price, realtime_execution_price_field = _resolve_realtime_execution_price(quote)
+        fallback_price = _safe_float(metric.get("latest_close"), getattr(row, "current_price", 0.0))
+        current_price = realtime_execution_price if realtime_execution_price > 0 else fallback_price
         current_value = round(int(row.shares) * current_price, 2)
         buy_value = round(float(row.cost_basis), 2)
         unrealized = round(current_value - buy_value, 2)
@@ -1802,6 +2525,11 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
                 "llm_effective_calls": int(llm_effective_summary.get("call_count", 0) or 0),
                 "llm_confidence_source": llm_confidence_source,
                 "llm_degraded": bool(review_payload.get("llm_degraded", False)),
+                "realtime_quote_timestamp": _quote_timestamp(quote),
+                "realtime_quote_source": str(quote.get("source") or ""),
+                "realtime_quote_valid": realtime_execution_price > 0,
+                "realtime_execution_price": round(realtime_execution_price, 2) if realtime_execution_price > 0 else None,
+                "realtime_execution_price_field": realtime_execution_price_field,
             }
         )
 
@@ -1821,13 +2549,11 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         by=["score_full_market", "today_change_pct", "symbol"],
         ascending=[False, False, True],
     ).reset_index(drop=True)
-    candidate_pool = _build_candidate_pool(
-        full_metrics=full_metrics,
+    candidate_pool, candidate_level_dag_status = _run_candidate_level_v13_dag(
         held_symbols=holdings_review["symbol"].tolist(),
-        completeness_passed=completeness_passed,
-        decision_data_sufficient=decision_data_sufficient,
         analysis_trade_date=analysis_trade_date,
-        strict_trade_date=str(completeness_after.get("strict_trade_date") or ""),
+        completeness_report=completeness_after,
+        total_capital=initial_capital,
     )
     switch_plan_df = _build_switch_plan(
         holdings_review=holdings_review,
@@ -1839,10 +2565,100 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     theme_strength = _summarize_theme_strength(holdings_review)
     style_text = _market_style_conclusion(indices=indices, breadth=breadth)
     strongest_theme_text, weakest_theme_text = _tech_mainline_conclusion(theme_strength)
-    orders = _build_rebalance_plan(holdings_review)
+    proposed_orders = _build_rebalance_plan(holdings_review)
     # 当前策略仍以主线内部修复为主，只在出现明确弱化共振时执行减仓。
-    if len(orders) == 1 and theme_strength and theme_strength[0]["avg_score"] >= 0.8:
-        orders = []
+    if len(proposed_orders) == 1 and theme_strength and theme_strength[0]["avg_score"] >= 0.8:
+        proposed_orders = []
+    realtime_execution_prices = {
+        str(row["symbol"]): float(row["realtime_execution_price"])
+        for row in current_rows
+        if row.get("realtime_execution_price") is not None
+        and _safe_float(row.get("realtime_execution_price"), 0.0) > 0
+    }
+    quote_by_symbol = {
+        str(row.symbol).strip().upper(): quote_payload.get(_map_symbol_to_quote_code(str(row.symbol)), {})
+        for row in source_ledger.itertuples()
+    }
+    execution_price_rejections: list[dict[str, Any]] = []
+    validated_orders: list[ProposedOrder] = []
+    order_gate_decisions: list[dict[str, Any]] = []
+    data_gate_allows_new_risk = completeness_passed or decision_data_sufficient
+    for order in proposed_orders:
+        risk_sell_allowed, risk_sell_reason = _risk_reduction_sell_gate(
+            order=order,
+            effective_ledger=source_ledger,
+            holdings_review=holdings_review,
+        )
+        gate_reason = "data_gate_allows_new_risk"
+        if not data_gate_allows_new_risk:
+            if not risk_sell_allowed:
+                execution_price_rejections.append(
+                    {
+                        "symbol": order.symbol,
+                        "action": order.action,
+                        "shares": order.shares,
+                        "reason": "data_gate_blocked_non_risk_reduction_order",
+                        "data_gate_allows_new_risk": False,
+                        "risk_reduction_sell_gate": risk_sell_reason,
+                    }
+                )
+                continue
+            gate_reason = risk_sell_reason
+        elif risk_sell_allowed:
+            gate_reason = risk_sell_reason
+        order_gate_decisions.append(
+            {
+                "symbol": order.symbol,
+                "action": order.action,
+                "shares": order.shares,
+                "data_gate_allows_new_risk": bool(data_gate_allows_new_risk),
+                "risk_reduction_sell_gate": risk_sell_reason,
+                "execution_gate_reason": gate_reason,
+            }
+        )
+        execution_price = realtime_execution_prices.get(str(order.symbol))
+        if execution_price is None:
+            execution_price_rejections.append(
+                {
+                    "symbol": order.symbol,
+                    "action": order.action,
+                    "shares": order.shares,
+                    "reason": "missing_valid_realtime_execution_price",
+                    "data_gate_allows_new_risk": bool(data_gate_allows_new_risk),
+                    "risk_reduction_sell_gate": risk_sell_reason,
+                    "execution_gate_reason": gate_reason,
+                }
+            )
+            continue
+        source_row = source_ledger[source_ledger["symbol"] == order.symbol]
+        avg_cost = _safe_float(source_row["avg_cost"].iloc[0]) if not source_row.empty else order.price
+        trade_value = round(order.shares * execution_price, 2)
+        realized_pnl = (
+            round(order.shares * (execution_price - avg_cost), 2)
+            if order.action == "sell"
+            else order.realized_pnl
+        )
+        validated_orders.append(
+            ProposedOrder(
+                symbol=order.symbol,
+                action=order.action,
+                shares=order.shares,
+                price=round(execution_price, 2),
+                trade_value=trade_value,
+                realized_pnl=realized_pnl,
+                reason=order.reason,
+            )
+        )
+    orders = validated_orders
+    execution_price_gate = {
+        "accepted_price_fields": list(REALTIME_EXECUTION_PRICE_FIELDS),
+        "requires_realtime_quote_timestamp": True,
+        "rejects_static_daily_prices": True,
+        "data_gate_allows_new_risk": bool(data_gate_allows_new_risk),
+        "risk_reduction_sell_bypass_enabled": True,
+        "order_gate_decisions": order_gate_decisions,
+        "rejections": execution_price_rejections,
+    }
 
     order_rows = []
     for order in orders:
@@ -2099,6 +2915,14 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             f"- DAG 四分支执行状态：**{dag_four_branch_compliance['status']}**；"
             f"`complete={str(bool(dag_four_branch_compliance['complete'])).lower()}`"
         ),
+        (
+            f"- Candidate-level DAG：`{candidate_level_dag_status.get('candidate_generation_status', 'unknown')}`"
+            + (
+                f"，blocker=`{candidate_level_dag_status.get('blocker')}`"
+                if candidate_level_dag_status.get("blocker")
+                else ""
+            )
+        ),
         "",
         "## 0. 正式结果速览",
         "",
@@ -2106,6 +2930,11 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         f"- 报告展示标签：**`{decision_guardrail.display_label}`**",
         f"- 数据完整性状态：**{data_status}**",
         f"- 今日是否执行调仓：**{'是' if orders else '否'}**",
+        (
+            f"- 实时成交价门禁：**未通过 {len(execution_price_rejections)} 笔，未写成交**"
+            if execution_price_rejections
+            else "- 实时成交价门禁：**通过或无待执行订单**"
+        ),
         (
             f"- 今日是否执行换仓：**{'是' if switch_now else '否'}**"
             if switch_plan_df is not None
@@ -2346,9 +3175,13 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "### 5.5 备选投资建议",
             "",
             (
-                "- 本轮备选池来自本地 `results/cn_analysis_full/all_candidates.json` 与最新主导本地快照强度交叉筛选。"
+                "- 本轮备选池来自全市场 v13 DAG：DeterministicFunnel → candidate-level 四分支 → Bayesian → RiskGuard/IC/PortfolioConstructor。"
                 if not candidate_pool.empty
-                else "- 本轮未提取到有效备选池。"
+                else (
+                    "- 本轮未提取到有效备选池；"
+                    f"candidate_generation_status=`{candidate_level_dag_status.get('candidate_generation_status', 'unknown')}`，"
+                    f"blocker=`{candidate_level_dag_status.get('blocker') or 'none'}`。"
+                )
             ),
             *candidate_lines,
             "",
@@ -2377,8 +3210,9 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         for row in switch_plan_df.itertuples(index=False):
             report_lines.append(
                 f"- `{row.sell_symbol}`（{row.sell_name}） vs `{row.buy_symbol}`（{row.buy_name}）："
-                f"候选主线 `{row.buy_theme}`，强度分差 `{float(row.score_gap):+.3f}`，"
-                f"20日动量差 `{float(row.ret20_gap):+.2%}`；建议 `{row.action}`，"
+                f"候选主线 `{row.buy_theme}`，Bayesian rank `{int(row.buy_bayesian_rank)}`，"
+                f"posterior action score `{float(row.buy_posterior_action_score):.3f}`，"
+                f"PortfolioConstructor 目标权重 `{float(row.buy_portfolio_target_weight):.2%}`；建议 `{row.action}`，"
                 f"优先级 `{row.priority}`，比例提示 `{row.switch_ratio_hint}`；"
                 f"触发阈值：{row.trigger_threshold}；不换仓条件：{row.no_switch_condition}"
             )
@@ -2418,6 +3252,24 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     }
     pnl_summary_df = pd.DataFrame([pnl_summary])
 
+    manual_execution_manifest = _write_manual_execution_outputs(
+        run_dir=run_dir,
+        timestamp=timestamp,
+        timestamp_long=timestamp_long,
+        updated_ledger=updated_ledger,
+        pnl_summary=pnl_summary,
+        source_ledger=source_ledger,
+        orders=orders,
+        execution_price_rejections=execution_price_rejections,
+        quote_by_symbol=quote_by_symbol,
+        quote_snapshot=quote_snapshot,
+        quote_error=quote_error,
+        completeness_passed=completeness_passed,
+        decision_data_sufficient=decision_data_sufficient,
+        dag_four_branch_compliance=dag_four_branch_compliance,
+        execution_price_gate=execution_price_gate,
+    )
+
     notes_text = _build_notes_payload(
         trade_date=now.strftime("%Y-%m-%d"),
         data_status=data_status,
@@ -2436,6 +3288,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "typed_warning_codes": typed_warning_codes,
         "branch_diagnostics_by_symbol": _jsonable(branch_signals_by_symbol),
         "dag_four_branch_compliance": _jsonable(dag_four_branch_compliance),
+        "candidate_level_dag_status": _jsonable(candidate_level_dag_status),
     }
     runtime_profile = {
         "schema_version": "cn_aggressive_runtime_profile.v1",
@@ -2473,6 +3326,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "capital_cny": initial_capital,
         "quote_snapshot": quote_snapshot,
         "action_taken_today": bool(orders),
+        "execution_price_gate": execution_price_gate,
         "analysis_chain": "unified_dag_review_layer_per_holding",
         "analysis_input_policy": (
             "previous_day_daily_plus_realtime_no_backfill_no_gate"
@@ -2489,6 +3343,10 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "pnl_summary": "pnl_summary.csv",
             "market_snapshot": "market_snapshot.json",
             "runtime_profile": "runtime_profile.json",
+            "manual_execution_manifest": "manual_execution_manifest.json",
+            "manual_orders": "manual_switch_and_take_profit_orders.csv",
+            "ledger_after_manual_switch": "ledger_after_manual_switch.csv",
+            "daily_execution_review": "daily_execution_review.md",
         },
         "raw_exports": {
             "report": f"raw_exports/aggressive_portfolio_{timestamp}_formal_report.md",
@@ -2499,6 +3357,10 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "candidate_pool": f"raw_exports/aggressive_portfolio_{timestamp}_formal_candidate_pool.csv",
             "switch_plan": f"raw_exports/aggressive_portfolio_{timestamp}_formal_switch_plan.csv",
             "runtime_profile": "raw_exports/runtime_profile.json",
+            "manual_execution_manifest": f"raw_exports/aggressive_portfolio_{timestamp}_manual_execution_manifest.json",
+            "manual_orders": f"raw_exports/aggressive_portfolio_{timestamp}_manual_switch_and_take_profit_orders.csv",
+            "ledger_after_manual_switch": f"raw_exports/aggressive_portfolio_{timestamp}_ledger_after_manual_switch.csv",
+            "daily_execution_review": f"raw_exports/aggressive_portfolio_{timestamp}_daily_execution_review.md",
         },
         "data_snapshot": {
             "latest_trade_date": latest_trade_date,
@@ -2533,11 +3395,15 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "local_llm_disabled": bool(review_layer.get("local_llm_disabled", False)),
         },
         "dag_four_branch_compliance": _jsonable(dag_four_branch_compliance),
+        "candidate_level_dag_status": _jsonable(candidate_level_dag_status),
+        "candidate_generation_status": candidate_level_dag_status.get("candidate_generation_status"),
+        "blocker": candidate_level_dag_status.get("blocker"),
         "candidate_pool": candidate_pool.to_dict(orient="records"),
         "switch_plan": switch_plan_df.to_dict(orient="records"),
         "formal_diagnostics": formal_diagnostics_payload,
         "market_metrics_prewarm": _jsonable(market_metrics_cache_meta),
         "runtime_profile": runtime_profile,
+        "manual_execution": _jsonable(manual_execution_manifest),
     }
     market_snapshot = {
         "generated_at": now.strftime("%Y-%m-%d %H:%M:%S"),
@@ -2555,6 +3421,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             if decision_data_sufficient and not completeness_passed
             else "strict_daily"
         ),
+        "execution_price_gate": execution_price_gate,
         "portfolio": {
             "total_value": total_value_after,
             "portfolio_pnl": portfolio_pnl_after,
@@ -2578,9 +3445,13 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "local_llm_disabled": bool(review_layer.get("local_llm_disabled", False)),
         },
         "dag_four_branch_compliance": _jsonable(dag_four_branch_compliance),
+        "candidate_level_dag_status": _jsonable(candidate_level_dag_status),
+        "candidate_generation_status": candidate_level_dag_status.get("candidate_generation_status"),
+        "blocker": candidate_level_dag_status.get("blocker"),
         "formal_diagnostics": formal_diagnostics_payload,
         "download_report": str(download_report_path) if download_report_path else None,
         "quote_fetch_error": quote_error or None,
+        "manual_execution": _jsonable(manual_execution_manifest),
     }
 
     _write_outputs(
@@ -2621,9 +3492,13 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "weakest": weakest_theme_text,
         },
         "dag_four_branch_compliance": _jsonable(dag_four_branch_compliance),
+        "candidate_level_dag_status": _jsonable(candidate_level_dag_status),
+        "candidate_generation_status": candidate_level_dag_status.get("candidate_generation_status"),
+        "blocker": candidate_level_dag_status.get("blocker"),
         "formal_diagnostics": formal_diagnostics_payload,
         "market_metrics_prewarm": _jsonable(market_metrics_cache_meta),
         "full_market_metrics_cache": _jsonable(market_metrics_cache_meta),
+        "manual_execution": _jsonable(manual_execution_manifest),
         "pnl_summary": pnl_summary,
         "elapsed_sec": round(time.time() - started, 2),
     }

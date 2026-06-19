@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any, Mapping, Sequence
 
 import pandas as pd
@@ -146,11 +147,21 @@ class PortfolioConstructor(BaseAgent):
                 turnover_cap=turnover_cap,
             )
 
+        theme_cap_metadata: dict[str, Any] = {}
+        theme_cap_notes: list[str] = []
+        if risk_limits.get("theme_portfolio_cap_enabled"):
+            target_weights, theme_cap_metadata, theme_cap_notes = self._apply_theme_caps(
+                target_weights,
+                risk_limits,
+            )
+
         target_weights = self._cleanup_weights(target_weights)
         target_gross = round(sum(target_weights.values()), 6)
         target_net = target_gross
         turnover_estimate = self._estimate_turnover(baseline_weights, target_weights)
         concentration_metrics = self._build_concentration_metrics(target_weights, tradability)
+        if theme_cap_metadata:
+            concentration_metrics.update(theme_cap_metadata)
 
         construction_notes = [
             (
@@ -170,7 +181,21 @@ class PortfolioConstructor(BaseAgent):
                 )
         if risk_limits["sector_caps"]:
             construction_notes.append("行业权重按 sector_caps 做线性约束。")
+        if theme_cap_notes:
+            construction_notes.extend(theme_cap_notes)
         construction_notes.append("NarratorAgent 与 IC thesis 不可直接改写 target_weight。")
+
+        metadata = {
+            "risk_gross_cap": risk_limits["gross_exposure_cap"],
+            "macro_gross_cap": float(macro_verdict.metadata.get("target_gross_exposure", 1.0)),
+            "applied_gross_cap": gross_cap,
+            "reject_reasons": reject_reasons,
+            "baseline_weights": baseline_weights,
+            "rule_based": True,
+            "deterministic": True,
+        }
+        if theme_cap_metadata:
+            metadata.update(theme_cap_metadata)
 
         return PortfolioPlan(
             status=AgentStatus.SUCCESS if target_weights else AgentStatus.DEGRADED,
@@ -187,15 +212,7 @@ class PortfolioConstructor(BaseAgent):
             turnover_estimate=turnover_estimate,
             execution_notes=construction_notes,
             construction_notes=construction_notes,
-            metadata={
-                "risk_gross_cap": risk_limits["gross_exposure_cap"],
-                "macro_gross_cap": float(macro_verdict.metadata.get("target_gross_exposure", 1.0)),
-                "applied_gross_cap": gross_cap,
-                "reject_reasons": reject_reasons,
-                "baseline_weights": baseline_weights,
-                "rule_based": True,
-                "deterministic": True,
-            },
+            metadata=metadata,
         )
 
     @staticmethod
@@ -228,6 +245,12 @@ class PortfolioConstructor(BaseAgent):
                 "blocked_symbols": list(payload.blocked_symbols),
                 "sector_caps": {},
                 "turnover_cap": None,
+                "theme_portfolio_cap_enabled": False,
+                "theme_exposure_map": {},
+                "theme_caps": {},
+                "theme_names": {},
+                "theme_phases": {},
+                "theme_portfolio_diagnostic_notes": [],
             }
         if not isinstance(payload, Mapping):
             raise TypeError("risk_limits 必须是 Mapping 或 RiskDecision")
@@ -257,6 +280,21 @@ class PortfolioConstructor(BaseAgent):
             }
         )
         turnover_cap = payload.get("turnover_cap")
+        theme_enabled = self._truthy(payload.get("theme_portfolio_cap_enabled", False))
+        theme_exposure_map: dict[str, dict[str, Any]] = {}
+        theme_caps: dict[str, float] = {}
+        theme_names: dict[str, str] = {}
+        theme_phases: dict[str, str] = {}
+        theme_notes: list[str] = []
+        if theme_enabled:
+            theme_exposure_map, exposure_notes = self._normalize_theme_exposure_map(
+                payload.get("theme_exposure_map", {})
+            )
+            theme_caps, cap_notes = self._normalize_theme_caps(payload.get("theme_caps", {}))
+            theme_names = self._normalize_text_mapping(payload.get("theme_names", {}))
+            theme_phases = self._normalize_text_mapping(payload.get("theme_phases", {}))
+            theme_notes.extend(exposure_notes)
+            theme_notes.extend(cap_notes)
         return {
             "gross_exposure_cap": self.clamp(float(payload.get("gross_exposure_cap", 1.0)), 0.0, 1.0),
             "max_weight": self.clamp(float(payload.get("max_weight", 1.0)), 0.0, 1.0),
@@ -264,7 +302,106 @@ class PortfolioConstructor(BaseAgent):
             "blocked_symbols": blocked_symbols,
             "sector_caps": sector_caps,
             "turnover_cap": None if turnover_cap is None else float(turnover_cap),
+            "theme_portfolio_cap_enabled": theme_enabled,
+            "theme_exposure_map": theme_exposure_map,
+            "theme_caps": theme_caps,
+            "theme_names": theme_names,
+            "theme_phases": theme_phases,
+            "theme_portfolio_diagnostic_notes": theme_notes,
         }
+
+    @staticmethod
+    def _truthy(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    @classmethod
+    def _normalize_theme_exposure_map(cls, payload: Any) -> tuple[dict[str, dict[str, Any]], list[str]]:
+        if not isinstance(payload, Mapping):
+            return {}, ["theme_portfolio_cap_malformed_exposure_map"]
+
+        normalized: dict[str, dict[str, Any]] = {}
+        for symbol, metadata in payload.items():
+            symbol_text = str(symbol or "").strip()
+            if not symbol_text or not isinstance(metadata, Mapping):
+                continue
+            theme_id = str(metadata.get("primary_theme_id") or "").strip()
+            if not theme_id:
+                continue
+            normalized[symbol_text] = {
+                "primary_theme_id": theme_id,
+                "primary_theme_name": str(metadata.get("primary_theme_name") or ""),
+                "phase": str(metadata.get("phase") or ""),
+                "symbol_score": cls.clamp(
+                    cls._finite_float(metadata.get("symbol_score", 0.0)),
+                    0.0,
+                    1.0,
+                ),
+                "risk_flags": cls._normalize_text_list(metadata.get("risk_flags", [])),
+            }
+        return normalized, []
+
+    @classmethod
+    def _normalize_theme_caps(cls, payload: Any) -> tuple[dict[str, float], list[str]]:
+        if not isinstance(payload, Mapping):
+            return {}, ["theme_portfolio_cap_malformed_caps"]
+
+        normalized: dict[str, float] = {}
+        invalid_count = 0
+        for theme_id, raw_cap in payload.items():
+            theme_text = str(theme_id or "").strip()
+            cap = cls._optional_finite_float(raw_cap)
+            if not theme_text or cap is None:
+                invalid_count += 1
+                continue
+            normalized[theme_text] = cls.clamp(cap, 0.0, 1.0)
+
+        notes = ["theme_portfolio_cap_malformed_caps"] if invalid_count and not normalized else []
+        return normalized, notes
+
+    @staticmethod
+    def _normalize_text_mapping(payload: Any) -> dict[str, str]:
+        if not isinstance(payload, Mapping):
+            return {}
+        return {
+            str(key): str(value or "")
+            for key, value in payload.items()
+            if str(key or "").strip()
+        }
+
+    @staticmethod
+    def _normalize_text_list(payload: Any) -> list[str]:
+        if isinstance(payload, (str, bytes)):
+            return []
+        try:
+            items = list(payload or [])
+        except TypeError:
+            return []
+        result: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            text = str(item or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            result.append(text)
+        return result
+
+    @staticmethod
+    def _finite_float(value: Any, default: float = 0.0) -> float:
+        numeric = PortfolioConstructor._optional_finite_float(value)
+        return default if numeric is None else numeric
+
+    @staticmethod
+    def _optional_finite_float(value: Any) -> float | None:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return None
+        return numeric if math.isfinite(numeric) else None
 
     def _collect_symbol_intents(
         self,
@@ -685,6 +822,101 @@ class PortfolioConstructor(BaseAgent):
             for symbol in grouped[sector]:
                 adjusted[symbol] = round(adjusted[symbol] * scale, 6)
         return adjusted
+
+    def _apply_theme_caps(
+        self,
+        weights: Mapping[str, float],
+        risk_limits: Mapping[str, Any],
+    ) -> tuple[dict[str, float], dict[str, Any], list[str]]:
+        adjusted = {
+            str(symbol): float(weight)
+            for symbol, weight in weights.items()
+            if float(weight) > 0.0
+        }
+        exposure_map = risk_limits.get("theme_exposure_map", {})
+        theme_caps = risk_limits.get("theme_caps", {})
+        theme_names = risk_limits.get("theme_names", {})
+        theme_phases = risk_limits.get("theme_phases", {})
+        notes = [
+            str(note)
+            for note in risk_limits.get("theme_portfolio_diagnostic_notes", [])
+            if str(note).strip()
+        ]
+
+        exposures_before = self._theme_exposures(adjusted, exposure_map)
+        applied_count = 0
+
+        grouped: dict[str, list[str]] = {}
+        if isinstance(exposure_map, Mapping) and isinstance(theme_caps, Mapping):
+            for symbol in sorted(adjusted):
+                metadata = exposure_map.get(symbol)
+                if not isinstance(metadata, Mapping):
+                    continue
+                theme_id = str(metadata.get("primary_theme_id") or "").strip()
+                if theme_id and theme_id in theme_caps:
+                    grouped.setdefault(theme_id, []).append(symbol)
+
+        for theme_id in sorted(grouped):
+            cap = self._optional_finite_float(theme_caps.get(theme_id))
+            if cap is None:
+                continue
+            cap = self.clamp(cap, 0.0, 1.0)
+            total = sum(adjusted[symbol] for symbol in grouped[theme_id])
+            if total <= cap + 1e-8 or total <= 0.0:
+                continue
+            scale = cap / total
+            for symbol in grouped[theme_id]:
+                adjusted[symbol] = round(adjusted[symbol] * scale, 6)
+            applied_count += 1
+            after = sum(adjusted[symbol] for symbol in grouped[theme_id])
+            if after > cap + 1e-8:
+                overflow = after - cap
+                trim_symbol = sorted(
+                    grouped[theme_id],
+                    key=lambda symbol: (-adjusted[symbol], symbol),
+                )[0]
+                adjusted[trim_symbol] = round(max(0.0, adjusted[trim_symbol] - overflow), 6)
+                after = sum(adjusted[symbol] for symbol in grouped[theme_id])
+            notes.append(
+                f"theme_portfolio_cap_applied: {theme_id} "
+                f"cap={cap:.2f} before={total:.2f} after={after:.2f}"
+            )
+
+        exposures_after = self._theme_exposures(adjusted, exposure_map)
+        metadata = {
+            "theme_portfolio_cap_enabled": True,
+            "theme_exposures_before": exposures_before,
+            "theme_exposures_after": exposures_after,
+            "theme_caps": dict(theme_caps) if isinstance(theme_caps, Mapping) else {},
+            "theme_names": dict(theme_names) if isinstance(theme_names, Mapping) else {},
+            "theme_phases": dict(theme_phases) if isinstance(theme_phases, Mapping) else {},
+            "theme_exposure_map": dict(exposure_map) if isinstance(exposure_map, Mapping) else {},
+            "theme_cap_applied_count": applied_count,
+        }
+        return adjusted, metadata, notes
+
+    @staticmethod
+    def _theme_exposures(
+        weights: Mapping[str, float],
+        exposure_map: Any,
+    ) -> dict[str, float]:
+        if not isinstance(exposure_map, Mapping):
+            return {}
+
+        totals: dict[str, float] = {}
+        for symbol, weight in weights.items():
+            metadata = exposure_map.get(symbol)
+            if not isinstance(metadata, Mapping):
+                continue
+            theme_id = str(metadata.get("primary_theme_id") or "").strip()
+            if not theme_id:
+                continue
+            totals[theme_id] = totals.get(theme_id, 0.0) + float(weight)
+        return {
+            theme_id: round(total, 6)
+            for theme_id, total in sorted(totals.items())
+            if total > 1e-8
+        }
 
     def _apply_turnover_cap(
         self,

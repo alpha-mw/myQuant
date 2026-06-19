@@ -10,14 +10,11 @@ from typing import Any, Iterable, Mapping, Sequence
 import pandas as pd
 
 from quant_investor.agent_protocol import DataQualityIssue
-from quant_investor.market.shared_csv_reader import SharedCSVReadResult
+from quant_investor.market.read_result import MarketDataReadResult
 
 
 class MarketDataUnavailableError(RuntimeError):
     """Raised when strict Parquet market data is not healthy enough to read."""
-
-
-MarketDataReadResult = SharedCSVReadResult
 
 
 def _normalize_trade_date(value: Any) -> str:
@@ -208,10 +205,6 @@ class MarketDataReader:
         return dict(gate_payload)
 
     def _require_snapshot(self) -> ParquetSnapshot:
-        if self.market != "CN":
-            raise MarketDataUnavailableError(
-                f"MarketDataReader currently supports strict Parquet runtime for CN only: {self.market}"
-            )
         gate = self.clean_snapshot_gate()
         if not gate.get("healthy"):
             blockers = "; ".join(str(item) for item in gate.get("blockers", []) if str(item).strip())
@@ -284,6 +277,8 @@ class MarketDataReader:
         if component_symbols:
             serving_set = set(serving_symbols)
             return [symbol for symbol in _dedupe(component_symbols) if symbol in serving_set]
+        if self.market != "CN":
+            return serving_symbols
         return []
 
     def resolve_symbol_path(
@@ -325,9 +320,20 @@ class MarketDataReader:
             frame = frame.copy()
             frame["trade_date"] = frame["trade_date"].map(_normalize_trade_date)
             frame = frame.sort_values("trade_date").reset_index(drop=True)
+        elif "date" in frame.columns:
+            frame = frame.copy()
+            frame["trade_date"] = frame["date"].map(_normalize_trade_date)
+            frame = frame.sort_values("trade_date").reset_index(drop=True)
+        elif "Date" in frame.columns:
+            frame = frame.copy()
+            frame["trade_date"] = frame["Date"].map(_normalize_trade_date)
+            frame = frame.sort_values("trade_date").reset_index(drop=True)
         if "symbol" not in frame.columns and "ts_code" in frame.columns:
             frame = frame.copy()
             frame["symbol"] = frame["ts_code"].map(_normalize_symbol)
+        if "ts_code" not in frame.columns and "symbol" in frame.columns:
+            frame = frame.copy()
+            frame["ts_code"] = frame["symbol"].map(_normalize_symbol)
         return frame
 
     def _filter_frame(
@@ -382,7 +388,7 @@ class MarketDataReader:
             metadata={"snapshot": trace},
         )
         self.issues.append(issue)
-        return SharedCSVReadResult(
+        return MarketDataReadResult(
             path=path,
             symbol=normalized,
             category=str(category or ""),
@@ -405,10 +411,27 @@ class MarketDataReader:
         try:
             frame = pd.read_parquet(path, columns=["trade_date"])
         except Exception:
+            try:
+                frame = pd.read_parquet(path, columns=["date"])
+            except Exception:
+                try:
+                    frame = pd.read_parquet(path, columns=["Date"])
+                except Exception:
+                    return ""
+        if frame.empty:
             return ""
-        if frame.empty or "trade_date" not in frame.columns:
+        date_column = (
+            "trade_date"
+            if "trade_date" in frame.columns
+            else "date"
+            if "date" in frame.columns
+            else "Date"
+            if "Date" in frame.columns
+            else ""
+        )
+        if not date_column:
             return ""
-        return max((_normalize_trade_date(value) for value in frame["trade_date"]), default="")
+        return max((_normalize_trade_date(value) for value in frame[date_column]), default="")
 
     def read_symbol_frame(
         self,
@@ -456,7 +479,7 @@ class MarketDataReader:
                 metadata={"snapshot": resolver_trace},
             )
             self.issues.append(issue)
-            return SharedCSVReadResult(
+            return MarketDataReadResult(
                 path=str(path),
                 symbol=normalized,
                 category=str(category or ""),
@@ -465,7 +488,7 @@ class MarketDataReader:
                 issues=[issue],
                 metadata=self._metadata(snapshot, resolved=True, row_count=0),
             )
-        return SharedCSVReadResult(
+        return MarketDataReadResult(
             frame=frame,
             path=str(path),
             symbol=normalized,
@@ -563,7 +586,7 @@ class MarketDataReader:
                 if list(symbol_frame.columns) != available:
                     symbol_frame = symbol_frame.loc[:, available]
             symbol_frame = symbol_frame.reset_index(drop=True)
-            results[symbol] = SharedCSVReadResult(
+            results[symbol] = MarketDataReadResult(
                 frame=symbol_frame,
                 path=str(snapshot.table_root),
                 symbol=symbol,
@@ -608,7 +631,7 @@ class MarketDataReader:
                 metadata={"fallback_used": False},
             )
             self.issues.append(issue)
-            return SharedCSVReadResult(
+            return MarketDataReadResult(
                 path=str(parquet_path),
                 symbol=str(symbol or ""),
                 category=str(category or ""),
@@ -623,7 +646,7 @@ class MarketDataReader:
             end_date=end_date,
             columns=columns,
         )
-        return SharedCSVReadResult(
+        return MarketDataReadResult(
             frame=frame,
             path=str(parquet_path),
             symbol=str(symbol or ""),

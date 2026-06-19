@@ -20,6 +20,8 @@ from quant_investor.credential_utils import create_tushare_pro
 from quant_investor.market.us_market_cap_filter import (
     USMarketCapFilter,
 )
+from quant_investor.market.market_data_reader import MarketDataReader
+from quant_investor.market.market_data_store import MarketDataStore
 
 try:
     import yfinance as yf
@@ -59,6 +61,9 @@ class FullMarketDownloader:
             market_cap_cache_file: 市值缓存文件
         """
         self.data_dir = data_dir
+        self.data_root = self._resolve_data_root(data_dir)
+        self.store = MarketDataStore(market="US", data_root=self.data_root)
+        self.market_reader = MarketDataReader(market="US", data_root=self.data_root)
         self.years = years
         self.max_workers = max_workers
         self.batch_size = batch_size
@@ -112,6 +117,15 @@ class FullMarketDownloader:
             return provider
         return DEFAULT_US_PRICE_PROVIDER
 
+    @staticmethod
+    def _resolve_data_root(data_dir: str) -> Path:
+        path = Path(data_dir)
+        if path.name == "us_market_full":
+            return path.parent
+        if path.name in {"full_us", "large_cap", "mid_cap", "small_cap"}:
+            return path.parent.parent
+        return path
+
     def _provider_order(self) -> list[str]:
         """Return US OHLCV provider order. yfinance is default for bulk US runs."""
         if self.price_provider == "tushare":
@@ -137,7 +151,7 @@ class FullMarketDownloader:
 
     @staticmethod
     def _format_tushare_us_frame(df: pd.DataFrame) -> pd.DataFrame:
-        """标准化 Tushare us_daily 输出为本地 CSV 格式。"""
+        """标准化 Tushare us_daily 输出为本地 Parquet 写入格式。"""
         normalized = df.rename(
             columns={
                 "trade_date": "Date",
@@ -158,17 +172,20 @@ class FullMarketDownloader:
         ]
         return normalized[keep_cols].reset_index(drop=True)
 
-    def _latest_cached_date(self, filepath: str) -> Optional[date]:
+    def _latest_cached_date(self, symbol: str) -> Optional[date]:
         try:
-            frame = pd.read_csv(filepath, usecols=["Date"])
+            latest = self.market_reader.peek_symbol_latest_date(
+                symbol,
+                universe_key="full_us",
+            )
         except Exception:
             return None
-        if frame.empty:
+        if not latest:
             return None
-        dates = pd.to_datetime(frame["Date"], errors="coerce").dropna()
-        if dates.empty:
+        parsed = pd.to_datetime(latest, format="%Y%m%d", errors="coerce")
+        if pd.isna(parsed):
             return None
-        return dates.max().date()
+        return parsed.date()
 
     def _expected_latest_date(self) -> date:
         expected = self.end_date.date() - timedelta(days=1)
@@ -351,13 +368,11 @@ class FullMarketDownloader:
         return universe
 
     def _build_local_universe(self) -> Dict[str, List[str]]:
-        """从本地文件目录构建 full_us universe。"""
-        symbols = {
-            path.stem.strip()
-            for path in Path(self.data_dir).rglob("*.csv")
-            if path.suffix.lower() == ".csv" and "_snapshots" not in path.parts and path.stem.strip()
-        }
-        full_us = sorted(symbols)
+        """从本地 Parquet serving inventory 构建 full_us universe。"""
+        try:
+            full_us = self.market_reader.list_symbols("full_us")
+        except Exception:
+            full_us = []
         return {
             "full_us": full_us,
             "full_market": full_us,
@@ -408,23 +423,24 @@ class FullMarketDownloader:
         )
         return universe
     
-    def download_stock(self, symbol: str, category: str) -> Dict:
+    def download_stock(self, symbol: str, category: str, force_refresh: bool = False) -> Dict:
         """
         下载单只股票数据
         
         Returns:
             Dict with download result
         """
-        save_dir = self.dirs.get(category, self.dirs["full_us"])
-        filepath = f"{save_dir}/{symbol}.csv"
         expected_latest = self._expected_latest_date()
         cached_latest = None
         
         # 检查是否已存在且数据足够新鲜
-        if os.path.exists(filepath):
+        if not force_refresh:
             try:
-                existing_df = pd.read_csv(filepath)
-                cached_latest = self._latest_cached_date(filepath)
+                existing_df = self.market_reader.read_symbol_frame(
+                    symbol,
+                    universe_key="full_us",
+                ).frame
+                cached_latest = self._latest_cached_date(symbol)
                 if len(existing_df) > 200 and cached_latest and cached_latest >= expected_latest:
                     return {
                         'symbol': symbol,
@@ -503,7 +519,16 @@ class FullMarketDownloader:
                     'source': source,
                     'attempted_sources': attempted_sources,
                 }
-            df.to_csv(filepath, index=False)
+            parquet_frame = df.copy()
+            parquet_frame["symbol"] = str(symbol or "").strip().upper()
+            manifest = self.store.write_full_history_bars(
+                parquet_frame,
+                source=str(source or ""),
+                metadata={
+                    "category": category,
+                    "attempted_sources": attempted_sources,
+                },
+            )
             return {
                 'symbol': symbol,
                 'category': category,
@@ -513,6 +538,7 @@ class FullMarketDownloader:
                 'error': None,
                 'source': source,
                 'attempted_sources': attempted_sources,
+                'parquet_manifest_path': manifest.get("manifest_path", ""),
             }
         except Exception as e:
             return {
@@ -525,13 +551,19 @@ class FullMarketDownloader:
                 'attempted_sources': attempted_sources,
             }
     
-    def download_category(self, symbols: List[str], category: str) -> List[Dict]:
+    def download_category(
+        self,
+        symbols: List[str],
+        category: str,
+        force_refresh_symbols: Optional[set[str]] = None,
+    ) -> List[Dict]:
         """
         批量下载某一类别的股票数据
         
         Args:
             symbols: 股票代码列表
             category: 类别名称
+            force_refresh_symbols: 需要跳过本地缓存强制刷新检查的股票
         """
         print(f"\n{'='*80}")
         print(f"📥 下载 {category.upper()} ({len(symbols)} 只股票)")
@@ -556,9 +588,15 @@ class FullMarketDownloader:
             print(f"  批次 {batch_idx + 1}/{total_batches} ({batch_start+1}-{batch_end}/{len(symbols)})...")
             
             # 并行下载
+            force_refresh_set = {str(symbol).upper() for symbol in (force_refresh_symbols or set())}
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                 future_to_symbol = {
-                    executor.submit(self.download_stock, symbol, category): symbol 
+                    executor.submit(
+                        self.download_stock,
+                        symbol,
+                        category,
+                        symbol.upper() in force_refresh_set,
+                    ): symbol
                     for symbol in batch_symbols
                 }
                 

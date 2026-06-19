@@ -20,8 +20,8 @@ from quant_investor.market.branch_readiness import (
     SOURCE_TUSHARE,
 )
 from quant_investor.market.dag_executor import execute_market_dag
+from quant_investor.market.read_result import MarketDataReadResult
 from quant_investor.market.runtime_profile import MarketRuntimeProfiler
-from quant_investor.market.shared_csv_reader import SharedCSVReadResult
 from quant_investor.model_roles import ModelRoleResolution
 
 
@@ -85,7 +85,7 @@ class _FakeReader:
         }
 
     def _read_symbol_frame(self, symbol: str, *, universe_key: str = "full_a"):
-        return SharedCSVReadResult(
+        return MarketDataReadResult(
             frame=self._frames[symbol],
             path=f"/tmp/{symbol}.csv",
             symbol=symbol,
@@ -235,8 +235,6 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
             metadata={"funnel_summary": payload.get("funnel_summary", {})},
         )
 
-    monkeypatch.setattr(dag_module, "MarketDataReader", _FakeReader)
-    monkeypatch.setattr(dag_module, "SharedCSVReader", _FakeReader)
     monkeypatch.setattr(dag_module, "MarketDataReader", _FakeReader)
     monkeypatch.setattr(dag_packets, "_frame_summary", _counting_frame_summary)
     monkeypatch.setattr(dag_module, "DeterministicFunnel", _FakeFunnel)

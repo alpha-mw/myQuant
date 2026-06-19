@@ -17,7 +17,7 @@ from typing import Any
 from quant_investor.config import config
 from quant_investor.market.config import get_market_settings, normalize_categories, normalize_universe
 from quant_investor.market.market_data_reader import MarketDataReader
-from quant_investor.market.shared_csv_reader import SharedCSVReader
+from quant_investor.market.us_market_cap_filter import USMarketCapFilter
 
 _CN_PHYSICAL_DIRECTORIES: tuple[str, ...] = ("hs300", "zz500", "zz1000", "other")
 
@@ -36,6 +36,21 @@ def _freshness_mode_for_market(market: str) -> str:
         mode = str(getattr(config, "CN_FRESHNESS_MODE", "stable") or "stable").strip().lower()
         return mode if mode in {"stable", "strict"} else "stable"
     return "local_only"
+
+
+def _parquet_data_root_from_market_dir(base_dir: Path, *, market: str) -> Path:
+    market_key = str(market or "").strip().lower()
+    for candidate in [
+        base_dir,
+        base_dir.parent,
+        base_dir.parent.parent,
+        base_dir.parent.parent.parent,
+    ]:
+        if (candidate / "parquet" / market_key).exists():
+            return candidate
+        if (candidate / "parquet_serving" / market_key).exists():
+            return candidate
+    return Path("data")
 
 
 def _load_cn_freshness_index(data_dir: Path) -> dict[str, str]:
@@ -209,17 +224,52 @@ def _build_us_snapshot(
     requested_symbols: list[str],
     data_dir: Path,
 ) -> dict[str, Any]:
-    reader = SharedCSVReader(market="US", data_dir=data_dir)
+    data_root = _parquet_data_root_from_market_dir(data_dir, market="US")
+    reader = MarketDataReader(market="US", data_root=data_root)
+    gate = reader.clean_snapshot_gate()
+    if not gate.get("healthy"):
+        blockers = [str(item) for item in gate.get("blockers", []) if str(item).strip()]
+        return {
+            "market": "US",
+            "universe_key": universe_key,
+            "local_latest_trade_date": "",
+            "freshness_mode": _freshness_mode_for_market("US"),
+            "category_symbol_counts": {},
+            "market_cap_filter": {},
+            "date_distribution_top": [],
+            "data_directories": [],
+            "resolver_priority": list(selected_categories),
+            "data_quality_issue_count": len(blockers) or 1,
+            "summary_text": "本地 US Parquet 数据不可用；生产读取已禁止 CSV 回退。",
+            "missing_requested_symbols": list(requested_symbols),
+            "unreadable_requested_symbols": [],
+            "stale_requested_symbols": [],
+            "requested_symbol_count": len(requested_symbols),
+            "observed_symbol_count": 0,
+            "inventory_symbol_count": 0,
+            "storage_backend": "parquet",
+            "strict_parquet_gate": gate,
+            "fail_closed": True,
+        }
     symbols_by_category = {
         category: reader.list_symbols(category)
         for category in selected_categories
-        if (data_dir / category).exists()
     }
+    market_cap_filter_metadata: dict[str, Any] = {}
+    if not requested_symbols:
+        filtered_by_category: dict[str, list[str]] = {}
+        filter_metadata: dict[str, Any] = {}
+        market_cap_filter = USMarketCapFilter()
+        for category, symbols in symbols_by_category.items():
+            filtered_symbols, metadata = market_cap_filter.filter_symbols(symbols, fetch_missing=False)
+            filtered_by_category[category] = filtered_symbols
+            filter_metadata[category] = metadata
+        symbols_by_category = filtered_by_category
+        market_cap_filter_metadata = filter_metadata
     category_symbol_counts = {
         category: len(symbols)
         for category, symbols in symbols_by_category.items()
     }
-    market_cap_filter_metadata = dict(reader.last_market_cap_filter_metadata)
     symbols_to_check = requested_symbols or list(
         dict.fromkeys(
             symbol
@@ -248,7 +298,10 @@ def _build_us_snapshot(
         {"trade_date": trade_date, "symbol_count": int(symbol_count)}
         for trade_date, symbol_count in sorted(date_distribution.items(), key=lambda item: (-item[1], item[0]), reverse=False)[:5]
     ]
-    data_directories = [str(data_dir / category) for category in selected_categories if (data_dir / category).exists()]
+    data_directories = [
+        str(gate.get("table_root", "")),
+        str(gate.get("serving_root", "")),
+    ]
     return {
         "market": "US",
         "universe_key": universe_key,
@@ -267,6 +320,9 @@ def _build_us_snapshot(
         "requested_symbol_count": len(requested_symbols),
         "observed_symbol_count": len(observed_dates),
         "inventory_symbol_count": sum(category_symbol_counts.values()),
+        "storage_backend": "parquet",
+        "strict_parquet_gate": gate,
+        "fail_closed": False,
     }
 
 

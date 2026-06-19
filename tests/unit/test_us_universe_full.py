@@ -8,6 +8,8 @@ from pathlib import Path
 import pandas as pd
 
 from quant_investor.market.config import normalize_universe
+from quant_investor.market.market_data_reader import MarketDataReader
+from quant_investor.market.market_data_store import MarketDataStore
 
 
 def test_us_normalize_universe_uses_full_us():
@@ -65,10 +67,11 @@ def test_us_load_universe_canonicalizes_full_us(tmp_path, monkeypatch):
     assert universe["metadata"]["market_cap_filter"]["below_threshold_count"] == 1
 
 
-def _write_us_csv(path: Path, end: str, close: float = 1.0) -> None:
+def _write_us_parquet(data_root: Path, symbol: str, end: str, close: float = 1.0) -> None:
     dates = pd.bdate_range(end=end, periods=220)
     frame = pd.DataFrame(
         {
+            "symbol": symbol,
             "Date": dates.strftime("%Y-%m-%d"),
             "Open": close,
             "High": close,
@@ -77,8 +80,14 @@ def _write_us_csv(path: Path, end: str, close: float = 1.0) -> None:
             "Volume": 1000,
         }
     )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    frame.to_csv(path, index=False)
+    MarketDataStore(market="US", data_root=data_root).write_full_history_bars(
+        frame,
+        source="test_us_universe_full",
+    )
+
+
+def _read_us_frame(data_root: Path, symbol: str) -> pd.DataFrame:
+    return MarketDataReader(market="US", data_root=data_root).read_symbol_frame(symbol).frame
 
 
 def test_us_download_stock_refreshes_stale_cache(tmp_path, monkeypatch):
@@ -89,8 +98,7 @@ def test_us_download_stock_refreshes_stale_cache(tmp_path, monkeypatch):
 
     downloader = module.FullMarketDownloader(data_dir=str(tmp_path), years=3)
     downloader.end_date = datetime(2026, 5, 27)
-    path = tmp_path / "full_us" / "AAPL.csv"
-    _write_us_csv(path, "2026-05-22", close=1.0)
+    _write_us_parquet(tmp_path, "AAPL", "2026-05-22", close=1.0)
 
     fresh = pd.DataFrame(
         {
@@ -109,7 +117,7 @@ def test_us_download_stock_refreshes_stale_cache(tmp_path, monkeypatch):
 
     assert result["status"] == "success"
     assert result["latest_date"] == "2026-05-26"
-    assert pd.read_csv(path)["Date"].iloc[-1] == "2026-05-26"
+    assert _read_us_frame(tmp_path, "AAPL")["trade_date"].iloc[-1] == "20260526"
 
 
 def test_us_download_stock_keeps_cache_when_provider_is_stale(tmp_path, monkeypatch):
@@ -120,8 +128,7 @@ def test_us_download_stock_keeps_cache_when_provider_is_stale(tmp_path, monkeypa
 
     downloader = module.FullMarketDownloader(data_dir=str(tmp_path), years=3)
     downloader.end_date = datetime(2026, 5, 27)
-    path = tmp_path / "full_us" / "AAPL.csv"
-    _write_us_csv(path, "2026-05-22", close=1.0)
+    _write_us_parquet(tmp_path, "AAPL", "2026-05-22", close=1.0)
 
     stale = pd.DataFrame(
         {
@@ -140,7 +147,7 @@ def test_us_download_stock_keeps_cache_when_provider_is_stale(tmp_path, monkeypa
 
     assert result["status"] == "source_stale"
     assert result["latest_date"] == "2026-05-22"
-    assert pd.read_csv(path)["Close"].iloc[-1] == 1.0
+    assert _read_us_frame(tmp_path, "AAPL")["close"].iloc[-1] == 1.0
 
 
 def test_us_download_stock_uses_yfinance_before_tushare_by_default(tmp_path, monkeypatch):
@@ -229,6 +236,40 @@ def test_us_download_stock_can_force_tushare_first(tmp_path, monkeypatch):
     assert calls == ["tushare"]
 
 
+def test_us_download_category_accepts_forced_refresh_symbols(tmp_path, monkeypatch):
+    module = importlib.import_module("quant_investor.market.download_us")
+    monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "TUSHARE_AVAILABLE", False)
+
+    downloader = module.FullMarketDownloader(data_dir=str(tmp_path), years=3, batch_size=2, max_workers=1)
+    calls = []
+
+    def fake_download_stock(symbol: str, category: str, force_refresh: bool = False):
+        calls.append((symbol, category, force_refresh))
+        return {
+            "symbol": symbol,
+            "category": category,
+            "status": "success",
+            "records": 1,
+            "error": None,
+        }
+
+    monkeypatch.setattr(downloader, "download_stock", fake_download_stock)
+
+    results = downloader.download_category(
+        ["AAPL", "MSFT", "GOOG"],
+        "full_us",
+        force_refresh_symbols={"MSFT"},
+    )
+
+    assert len(results) == 3
+    assert sorted(calls) == [
+        ("AAPL", "full_us", False),
+        ("GOOG", "full_us", False),
+        ("MSFT", "full_us", True),
+    ]
+
+
 def test_us_tushare_quota_detection_handles_frequency_limit_text(tmp_path, monkeypatch):
     module = importlib.import_module("quant_investor.market.download_us")
     monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: None)
@@ -255,9 +296,9 @@ def test_us_local_symbol_listing_applies_market_cap_filter(tmp_path, monkeypatch
     )
     monkeypatch.setenv("MYQUANT_US_MARKET_CAP_CACHE_FILE", str(market_cap_cache))
 
-    _write_us_csv(tmp_path / "full_us" / "AAPL.csv", "2026-05-26")
-    _write_us_csv(tmp_path / "full_us" / "TINY.csv", "2026-05-26")
-    _write_us_csv(tmp_path / "full_us" / "GM.csv", "2026-05-26")
+    _write_us_parquet(tmp_path, "AAPL", "2026-05-26")
+    _write_us_parquet(tmp_path, "TINY", "2026-05-26")
+    _write_us_parquet(tmp_path, "GM", "2026-05-26")
 
     analyze_module = importlib.import_module("quant_investor.market.analyze")
 
@@ -289,9 +330,9 @@ def test_us_data_snapshot_uses_filtered_inventory_when_symbols_not_requested(tmp
         encoding="utf-8",
     )
     monkeypatch.setenv("MYQUANT_US_MARKET_CAP_CACHE_FILE", str(market_cap_cache))
-    _write_us_csv(tmp_path / "full_us" / "AAPL.csv", "2026-05-26")
-    _write_us_csv(tmp_path / "full_us" / "TINY.csv", "2026-05-25")
-    _write_us_csv(tmp_path / "full_us" / "GM.csv", "2026-05-26")
+    _write_us_parquet(tmp_path, "AAPL", "2026-05-26")
+    _write_us_parquet(tmp_path, "TINY", "2026-05-25")
+    _write_us_parquet(tmp_path, "GM", "2026-05-26")
 
     snapshot_module = importlib.import_module("quant_investor.market.data_snapshot")
     snapshot = snapshot_module.build_market_data_snapshot(

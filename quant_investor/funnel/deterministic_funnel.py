@@ -1,13 +1,14 @@
 """Deterministic funnel — compress full market to candidate set.
 
 Consumes the quant BranchResult and a GlobalContext, then applies gates and
-ranking to produce a compressed candidate set of ~200 symbols by default.
+ranking to produce a compressed candidate set of ~500 symbols by default.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Mapping
 
 from quant_investor.agent_protocol import GlobalContext
 from quant_investor.branch_contracts import BranchResult
@@ -21,15 +22,61 @@ from quant_investor.logger import get_logger
 _logger = get_logger("DeterministicFunnel")
 
 
+_THEME_PHASE_ADJUSTMENTS: dict[str, float] = {
+    "accumulation": 0.01,
+    "early_acceleration": 0.03,
+    "confirmed_rotation": 0.04,
+    "overextended": -0.05,
+    "distribution": -0.07,
+}
+_THEME_RISK_FLAG_PENALTIES: dict[str, float] = {
+    "theme_overextended": -0.03,
+    "theme_overextended_no_chase": -0.03,
+    "theme_fake_breakout_risk": -0.03,
+    "theme_low_breadth": -0.02,
+    "theme_distribution_risk": -0.04,
+}
+
+
 def _clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
     return max(lower, min(upper, float(value)))
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return default
+    return numeric if math.isfinite(numeric) else default
+
+
+def _mapping_or_empty(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _dedupe_flags(value: Any) -> list[str]:
+    if isinstance(value, (str, bytes)):
+        return []
+    try:
+        items = list(value or [])
+    except TypeError:
+        return []
+    flags: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        flag = str(item or "").strip()
+        if not flag or flag in seen:
+            continue
+        seen.add(flag)
+        flags.append(flag)
+    return flags
 
 
 @dataclass
 class FunnelConfig:
     """Tuning knobs for the deterministic funnel."""
 
-    max_candidates: int = 200
+    max_candidates: int = 500
     liquidity_percentile_min: float = 0.10
     min_composite_score: float = -1.0  # disabled by default
     profile: str = "classic"
@@ -37,6 +84,8 @@ class FunnelConfig:
     volume_spike_threshold: float = 1.35
     breakout_distance_pct: float = 0.06
     sector_bucket_limit: int = 0
+    theme_boost_enabled: bool = False
+    theme_boost_cap: float = 0.10
 
 
 @dataclass
@@ -83,6 +132,122 @@ class DeterministicFunnel:
     def _classic_score(symbol: str, quant_scores: dict[str, float]) -> float:
         return float(quant_scores.get(symbol, 0.0))
 
+    def _theme_boost_for_symbol(
+        self,
+        *,
+        symbol: str,
+        global_context: GlobalContext,
+    ) -> tuple[float, dict[str, Any]]:
+        if not bool(self.config.theme_boost_enabled):
+            return 0.0, {"enabled": False, "reason": "disabled"}
+
+        cap = max(
+            0.0,
+            _safe_float(getattr(self.config, "theme_boost_cap", 0.0), 0.0),
+        )
+        boost_metadata: dict[str, Any] = {
+            "enabled": True,
+            "available": False,
+            "symbol_score": 0.0,
+            "theme_strength": 0.0,
+            "primary_theme_id": "",
+            "phase": "",
+            "risk_flags": [],
+            "raw_boost": 0.0,
+            "phase_adjustment": 0.0,
+            "risk_penalty": 0.0,
+            "final_boost": 0.0,
+            "cap": cap,
+            "reason": "",
+        }
+        metadata = getattr(global_context, "metadata", {}) or {}
+        if not isinstance(metadata, Mapping):
+            boost_metadata["reason"] = "theme_metadata_missing"
+            return 0.0, boost_metadata
+
+        payload: Mapping[str, Any]
+        rotation_payload = metadata.get("theme_rotation")
+        if rotation_payload is not None:
+            if not isinstance(rotation_payload, Mapping):
+                boost_metadata["reason"] = "theme_rotation_malformed"
+                return 0.0, boost_metadata
+            status = str(rotation_payload.get("status") or "").strip().lower()
+            if status != "success":
+                boost_metadata["reason"] = "theme_rotation_not_success"
+                return 0.0, boost_metadata
+            payload = rotation_payload
+        else:
+            if not any(
+                key in metadata
+                for key in (
+                    "symbol_theme_score",
+                    "symbol_primary_theme",
+                    "symbol_theme_phase",
+                    "theme_scores",
+                )
+            ):
+                boost_metadata["reason"] = "theme_rotation_missing"
+                return 0.0, boost_metadata
+            payload = {
+                "symbol_scores": metadata.get("symbol_theme_score"),
+                "symbol_primary_theme": metadata.get("symbol_primary_theme"),
+                "symbol_phase": metadata.get("symbol_theme_phase"),
+                "symbol_risk_flags": metadata.get("symbol_risk_flags")
+                or metadata.get("symbol_theme_risk_flags"),
+                "theme_scores": metadata.get("theme_scores"),
+            }
+
+        symbol_scores = _mapping_or_empty(payload.get("symbol_scores"))
+        if symbol not in symbol_scores:
+            boost_metadata["reason"] = "symbol_theme_missing"
+            return 0.0, boost_metadata
+
+        symbol_score = _clamp(_safe_float(symbol_scores.get(symbol, 0.0)), 0.0, 1.0)
+        primary_theme_id = str(
+            _mapping_or_empty(payload.get("symbol_primary_theme")).get(symbol, "") or ""
+        )
+        phase = (
+            str(_mapping_or_empty(payload.get("symbol_phase")).get(symbol, "") or "")
+            .strip()
+            .lower()
+        )
+        if not phase and primary_theme_id:
+            theme_score = _mapping_or_empty(payload.get("theme_scores")).get(primary_theme_id)
+            if isinstance(theme_score, Mapping):
+                phase = str(theme_score.get("phase") or "").strip().lower()
+        risk_flags = _dedupe_flags(
+            _mapping_or_empty(payload.get("symbol_risk_flags")).get(symbol, [])
+        )
+
+        theme_strength = _clamp((symbol_score - 0.50) / 0.50, 0.0, 1.0)
+        raw_boost = 0.06 * theme_strength
+        phase_adjustment = float(_THEME_PHASE_ADJUSTMENTS.get(phase, 0.0))
+        risk_penalty = sum(
+            _THEME_RISK_FLAG_PENALTIES.get(flag, 0.0)
+            for flag in risk_flags
+        )
+        final_boost = _clamp(
+            raw_boost + phase_adjustment + risk_penalty,
+            -0.06,
+            cap,
+        )
+        boost_metadata.update(
+            {
+                "available": True,
+                "symbol_score": symbol_score,
+                "theme_strength": theme_strength,
+                "primary_theme_id": primary_theme_id,
+                "phase": phase,
+                "risk_flags": risk_flags,
+                "raw_boost": raw_boost,
+                "phase_adjustment": phase_adjustment,
+                "risk_penalty": risk_penalty,
+                "final_boost": final_boost,
+                "reason": "applied" if final_boost != 0.0 else "no_theme_boost",
+            }
+        )
+        return final_boost, boost_metadata
+
     def _momentum_leader_score(
         self,
         *,
@@ -124,6 +289,11 @@ class DeterministicFunnel:
             score -= 0.10 * fake_breakout_risk
         if breakout_readiness >= 0.75 and volume_confirmation >= 0.50:
             score += 0.05
+        theme_boost, _theme_meta = self._theme_boost_for_symbol(
+            symbol=symbol,
+            global_context=global_context,
+        )
+        score += theme_boost
         return round(score, 6)
 
     def _apply_sector_bucket_limit(
@@ -213,6 +383,18 @@ class DeterministicFunnel:
             if symbol in candidate_scores or symbol in all_excluded:
                 continue
             all_excluded[symbol] = "rank_cutoff"
+        theme_boost_available_count = 0
+        theme_boost_applied_count = 0
+        if profile == "momentum_leader" and bool(self.config.theme_boost_enabled):
+            for symbol in candidates:
+                theme_boost, theme_meta = self._theme_boost_for_symbol(
+                    symbol=symbol,
+                    global_context=global_context,
+                )
+                if bool(theme_meta.get("available")) or theme_boost != 0.0:
+                    theme_boost_available_count += 1
+                if theme_boost != 0.0:
+                    theme_boost_applied_count += 1
 
         _logger.info(
             "Funnel[%s]: %d total -> %d after gates -> %d candidates (max %d)",
@@ -239,5 +421,14 @@ class DeterministicFunnel:
                 "breakout_distance_pct": float(self.config.breakout_distance_pct),
                 "sector_bucket_limit": int(self.config.sector_bucket_limit),
                 "excluded_count": len(all_excluded),
+                "theme_boost_enabled": bool(self.config.theme_boost_enabled),
+                "theme_boost_cap": max(
+                    0.0,
+                    _safe_float(getattr(self.config, "theme_boost_cap", 0.0), 0.0),
+                ),
+                "theme_boost_profile": "momentum_leader_only",
+                "theme_boost_note": "disabled_by_default_capped_deterministic",
+                "theme_boost_available_count": theme_boost_available_count,
+                "theme_boost_applied_count": theme_boost_applied_count,
             },
         )

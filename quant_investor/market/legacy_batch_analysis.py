@@ -8,7 +8,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from quant_investor.market.cn_resolver import CNUniverseResolver
 from quant_investor.market.config import get_market_settings
 from quant_investor.market.full_report import (
     _derive_stock_conclusion,
@@ -19,7 +18,7 @@ from quant_investor.market.full_report import (
 )
 from quant_investor.market.market_data_reader import MarketDataReader
 from quant_investor.market.name_map import get_stock_name
-from quant_investor.market.shared_csv_reader import SharedCSVReader
+from quant_investor.market.us_market_cap_filter import USMarketCapFilter
 from quant_investor.pipeline import QuantInvestor
 
 
@@ -167,26 +166,37 @@ def get_us_stock_name(symbol: str) -> str:
 def _parquet_data_root_from_market_dir(
     base_dir: Path,
     *,
+    market: str = "CN",
     allow_default: bool = True,
 ) -> Path | None:
-    if (base_dir / "parquet" / "cn").exists():
-        return base_dir
-    if (base_dir.parent / "parquet" / "cn").exists():
-        return base_dir.parent
+    market_key = str(market or "").strip().lower()
+    candidates = [
+        base_dir,
+        base_dir.parent,
+        base_dir.parent.parent,
+        base_dir.parent.parent.parent,
+    ]
+    for candidate in candidates:
+        if (candidate / "parquet" / market_key).exists():
+            return candidate
+        if (candidate / "parquet_serving" / market_key).exists():
+            return candidate
     return Path("data") if allow_default else None
 
 
-def _list_local_cn_csv_symbols(category: str, base_dir: Path) -> list[str]:
-    key = str(category or "").strip().lower()
-    if key in {"full_a", "full_market", "all_a", "all", "full"}:
-        symbols, _paths = CNUniverseResolver(
-            data_dir=str(base_dir),
-        ).collect_full_a_inventory(local_union_fallback_used=True)
-        return symbols
-    category_dir = base_dir / key
-    if not category_dir.exists():
+def _list_parquet_symbols(category: str, *, market: str, data_root: Path | None) -> list[str]:
+    if data_root is None:
         return []
-    return sorted(path.stem for path in category_dir.glob("*.csv"))
+    try:
+        symbols = MarketDataReader(
+            market=market,
+            data_root=data_root,
+        ).list_symbols(category)
+        if str(market or "").strip().upper() == "US":
+            symbols, _metadata = USMarketCapFilter().filter_symbols(symbols, fetch_missing=False)
+        return symbols
+    except Exception:
+        return []
 
 
 def get_all_local_symbols(
@@ -197,26 +207,26 @@ def get_all_local_symbols(
     settings = get_market_settings(market)
     base_dir = Path(data_dir or settings.data_dir)
     if settings.market == "CN":
-        if data_dir is not None:
-            parquet_root = _parquet_data_root_from_market_dir(
-                base_dir,
-                allow_default=False,
-            )
-            if parquet_root is None:
-                return _list_local_cn_csv_symbols(category, base_dir)
-        return MarketDataReader(
+        return _list_parquet_symbols(
+            category,
             market="CN",
-            data_root=_parquet_data_root_from_market_dir(base_dir),
-        ).list_symbols(category)
+            data_root=_parquet_data_root_from_market_dir(
+                base_dir,
+                market="CN",
+                allow_default=data_dir is None,
+            ),
+        )
     if settings.market == "US":
-        return SharedCSVReader(
+        return _list_parquet_symbols(
+            category,
             market="US",
-            data_dir=base_dir,
-        ).list_symbols(category)
-    category_dir = base_dir / category
-    if not category_dir.exists():
-        return []
-    return sorted(path.stem for path in category_dir.glob("*.csv"))
+            data_root=_parquet_data_root_from_market_dir(
+                base_dir,
+                market="US",
+                allow_default=data_dir is None,
+            ),
+        )
+    return []
 
 
 def analyze_batch(

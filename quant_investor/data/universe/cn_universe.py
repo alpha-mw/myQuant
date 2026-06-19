@@ -19,12 +19,16 @@ class StockUniverse:
 
     def load_local_stock_list(self) -> pd.DataFrame:
         candidates = [
-            self.local_dir / "stock_list.csv",
-            Path("data/metadata/stock_list.csv"),
+            self.local_dir / "stock_list.parquet",
+            Path("data/metadata/stock_list.parquet"),
         ]
         for path in candidates:
             if path.exists():
-                return pd.read_csv(path, dtype={"ts_code": str, "symbol": str})
+                frame = pd.read_parquet(path)
+                for column in ("ts_code", "symbol"):
+                    if column in frame.columns:
+                        frame[column] = frame[column].astype(str)
+                return frame
         return pd.DataFrame(columns=["ts_code", "name", "industry", "market", "list_date"])
 
     def list_symbols(self) -> list[str]:

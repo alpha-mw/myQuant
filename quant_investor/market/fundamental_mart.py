@@ -19,11 +19,12 @@ import numpy as np
 import pandas as pd
 
 from quant_investor.factors.pit_fundamentals import normalize_ts_code
+from quant_investor.market.market_data_reader import MarketDataReader
 
-DEFAULT_FUNDAMENTAL_ROOT = Path("data/clean/cn_fundamental")
+DEFAULT_FUNDAMENTAL_ROOT = Path("data/parquet/cn")
 DEFAULT_RAW_SNAPSHOT_ROOT = Path("data/cn_market_full/_snapshots/fundamental")
 DEFAULT_READINESS_ROOT = Path("reports/fundamental_readiness")
-DEFAULT_DAILY_ROOT = Path("data/clean/cn_daily")
+DEFAULT_MARKET_DATA_ROOT = Path("data")
 DEFAULT_METADATA_ROOT = Path("data/metadata")
 DEFAULT_UNIVERSES = ("hs300", "zz500", "zz1000")
 FULL_A_UNIVERSE_KEYS = {"full_a", "full_market", "all_a", "all", "full"}
@@ -68,6 +69,17 @@ class FundamentalMartArtifacts:
     readiness_json_path: Path
     readiness_md_path: Path
     readiness_csv_path: Path
+
+
+def _resolve_data_base(data_root: str | Path) -> Path:
+    root = Path(data_root).expanduser()
+    if root.name in {"fundamental_daily", "fundamental_period", "fundamental_quarantine"}:
+        return root.parent
+    return root
+
+
+def _fundamental_table_path(data_root: str | Path, table_name: str) -> Path:
+    return _resolve_data_base(data_root) / table_name / "part.parquet"
 
 
 def _now_utc() -> datetime:
@@ -174,17 +186,18 @@ def _availability(row: Mapping[str, Any]) -> str:
 def _load_sector_map(metadata_root: Path | None = None) -> dict[str, str]:
     root = metadata_root or DEFAULT_METADATA_ROOT
     candidates = [
-        (root / "stock_list.csv", ("sector", "industry")),
-        (root / "stock_profiles.csv", ("sector", "industry")),
+        (root / "stock_list.parquet", ("sector", "industry")),
+        (root / "stock_profiles.parquet", ("sector", "industry")),
     ]
     sector_map: dict[str, str] = {}
     for path, columns in candidates:
         if not path.exists():
             continue
         try:
-            frame = pd.read_csv(path, usecols=lambda column: column in {"ts_code", "sector", "industry"})
+            frame = pd.read_parquet(path)
         except Exception:
             continue
+        frame = frame[[column for column in ["ts_code", "sector", "industry"] if column in frame.columns]]
         if "ts_code" not in frame.columns:
             continue
         working = frame.copy()
@@ -722,7 +735,7 @@ def write_fundamental_mart(
     provider_manifest: Mapping[str, Any] | None = None,
 ) -> tuple[FundamentalMartArtifacts, dict[str, Any]]:
     run_id = run_id or _run_id()
-    data_dir = Path(data_root).expanduser()
+    data_dir = _resolve_data_base(data_root)
     snapshot_dir = Path(raw_snapshot_root).expanduser()
     reports_dir = Path(reports_root).expanduser()
     for path in (data_dir, snapshot_dir, reports_dir):
@@ -735,9 +748,6 @@ def write_fundamental_mart(
         raw_dir = snapshot_dir / table
         raw_dir.mkdir(parents=True, exist_ok=True)
         frame.to_csv(raw_dir / f"{run_id}.csv", index=False)
-        local_raw_dir = data_dir / "raw" / table
-        local_raw_dir.mkdir(parents=True, exist_ok=True)
-        frame.to_csv(local_raw_dir / f"{run_id}.csv", index=False)
 
     period, quarantine = derive_fundamental_period(raw_tables, run_id=run_id, source=source)
     daily = build_fundamental_daily(
@@ -754,35 +764,35 @@ def write_fundamental_mart(
     if provider_manifest:
         readiness["provider_manifest"] = dict(provider_manifest)
 
-    period_path = data_dir / "fundamental_period.csv"
-    daily_path = data_dir / "fundamental_daily.csv"
-    quarantine_path = data_dir / "quarantine.csv"
+    period_path = _fundamental_table_path(data_dir, "fundamental_period")
+    daily_path = _fundamental_table_path(data_dir, "fundamental_daily")
+    quarantine_path = _fundamental_table_path(data_dir, "fundamental_quarantine")
     readiness_json = reports_dir / f"{run_id}.json"
     readiness_md = reports_dir / f"{run_id}.md"
     readiness_csv = reports_dir / f"{run_id}.csv"
-    period.to_csv(period_path, index=False)
-    daily.to_csv(daily_path, index=False)
-    quarantine.to_csv(quarantine_path, index=False)
+    for path in (period_path, daily_path, quarantine_path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+    period.to_parquet(period_path, index=False)
+    daily.to_parquet(daily_path, index=False)
+    quarantine.to_parquet(quarantine_path, index=False)
     readiness_json.write_text(json.dumps(readiness, ensure_ascii=False, indent=2), encoding="utf-8")
     readiness_md.write_text(_render_readiness_md(readiness), encoding="utf-8")
     _readiness_rows(readiness).to_csv(readiness_csv, index=False)
-    (data_dir / "latest_manifest.json").write_text(
-        json.dumps(
-            {
-                "run_id": run_id,
-                "provider_status": source,
-                "raw_row_counts": raw_row_counts,
-                "provider_manifest": dict(provider_manifest or {}),
-                "fundamental_period": str(period_path),
-                "fundamental_daily": str(daily_path),
-                "readiness": str(readiness_json),
-                "gate2_passed": readiness["gate2_passed"],
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    manifest = {
+        "run_id": run_id,
+        "provider_status": source,
+        "raw_row_counts": raw_row_counts,
+        "provider_manifest": dict(provider_manifest or {}),
+        "storage_backend": "parquet_canonical",
+        "fundamental_period": str(period_path),
+        "fundamental_daily": str(daily_path),
+        "fundamental_quarantine": str(quarantine_path),
+        "readiness": str(readiness_json),
+        "gate2_passed": readiness["gate2_passed"],
+    }
+    manifest_text = json.dumps(manifest, ensure_ascii=False, indent=2)
+    (data_dir / "latest_manifest.json").write_text(manifest_text, encoding="utf-8")
+    (daily_path.parent / "latest_manifest.json").write_text(manifest_text, encoding="utf-8")
     artifacts = FundamentalMartArtifacts(
         run_id=run_id,
         data_root=data_dir,
@@ -804,27 +814,27 @@ def _read_raw_input_dir(path: str | Path | None) -> dict[str, pd.DataFrame]:
     base = Path(path).expanduser()
     tables: dict[str, pd.DataFrame] = {}
     for table in SOURCE_TABLES:
-        csv_path = base / f"{table}.csv"
-        if csv_path.exists():
-            tables[table] = pd.read_csv(csv_path)
+        parquet_path = base / f"{table}.parquet"
+        if parquet_path.exists():
+            tables[table] = pd.read_parquet(parquet_path)
     return tables
 
 
-def _resolve_symbols_from_daily_root(daily_root: Path, universes: Sequence[str]) -> list[str]:
+def _resolve_symbols_from_parquet_universe(
+    data_root: str | Path,
+    universes: Sequence[str],
+) -> list[str]:
     symbols: list[str] = []
+    reader = MarketDataReader(market="CN", data_root=data_root, mode_policy="strict")
     for universe in universes:
-        normalized_universe = str(universe or "").strip().lower()
-        directories = (
-            [daily_root / name for name in FULL_A_PHYSICAL_DIRECTORIES]
-            if normalized_universe in FULL_A_UNIVERSE_KEYS
-            else [daily_root / normalized_universe]
-        )
-        for directory in directories:
-            if not directory.exists():
-                continue
-            for path in sorted(directory.glob("*.csv")):
-                symbols.append(normalize_ts_code(path.stem))
+        normalized_universe = str(universe or "").strip().lower() or "full_a"
+        symbols.extend(reader.list_symbols(universe_key=normalized_universe))
     return [symbol for symbol in dict.fromkeys(symbols) if symbol]
+
+
+def _resolve_symbols_from_daily_root(daily_root: Path, universes: Sequence[str]) -> list[str]:
+    """Compatibility wrapper; CN production symbols now come from Parquet."""
+    return _resolve_symbols_from_parquet_universe(daily_root, universes)
 
 
 def _fetch_tushare_tables(
@@ -998,7 +1008,7 @@ def run_cn_fundamental_maintenance(
                 provider_manifest = {"provider": "tushare", "provider_status": provider_status}
                 pro = None
         if pro is not None:
-            symbols = _resolve_symbols_from_daily_root(DEFAULT_DAILY_ROOT, universe_list)
+            symbols = _resolve_symbols_from_parquet_universe(DEFAULT_MARKET_DATA_ROOT, universe_list)
             tables, provider_manifest = _fetch_tushare_tables(
                 symbols,
                 years=int(years),

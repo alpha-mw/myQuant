@@ -157,7 +157,7 @@ def test_load_config_backfills_daily_defaults_without_web_runtime(tmp_path):
     assert cfg["enable_agent_layer"] is False
     assert cfg["skip_stage1"] is False
     assert cfg["funnel_profile"] == "momentum_leader"
-    assert cfg["funnel_max_candidates"] == 200
+    assert cfg["funnel_max_candidates"] == 500
     assert cfg["bayesian_shortlist_size"] == 50
     assert cfg["trend_windows"] == [20, 60, 120]
     assert cfg["volume_spike_threshold"] == 1.35
@@ -165,6 +165,11 @@ def test_load_config_backfills_daily_defaults_without_web_runtime(tmp_path):
     assert cfg["agent_timeout"] == 180.0
     assert cfg["master_timeout"] == 900.0
     assert cfg["kline_backend"] == "heuristic"
+    assert cfg["maintenance_batch_size"] == 200
+    assert cfg["maintenance_max_batches_per_run"] == 1
+    assert cfg["maintenance_min_symbol_success_rate"] == 0.95
+    assert cfg["maintenance_target_date"] == "auto"
+    assert cfg["maintenance_daily_window"] is True
     assert "agent_model" not in cfg
     assert "agent_fallback_model" not in cfg
     assert cfg["master_model"] == "moonshot-v1-128k"
@@ -316,6 +321,7 @@ def test_analysis_runner_forwards_review_priority_and_recall_context(monkeypatch
         captured.update(kwargs)
         return {"analysis": {}, "reports": {}, "download": {}, "timing": {}, "analysis_meta": {}}
 
+    monkeypatch.setattr(daily_runner, "run_staged_maintenance", lambda **_kwargs: {"status": "test"}, raising=False)
     monkeypatch.setattr(market_pipeline, "run_unified_pipeline", _fake_pipeline)
     monkeypatch.setattr("quant_investor.model_roles.has_provider_for_model", lambda _model: True)
 
@@ -361,6 +367,118 @@ def test_analysis_runner_forwards_review_priority_and_recall_context(monkeypatch
     assert captured["recall_context"] == {"source": "strategy_records", "recent_symbols": ["600000.SH"]}
 
 
+def test_analysis_runner_runs_staged_batch_update_when_download_enabled(monkeypatch):
+    captured: dict[str, object] = {}
+    staged_payload = {
+        "status": "running",
+        "maintenance_status": "running",
+        "run_id": "20260316T010203Z_abcd1234",
+        "remaining_batches": 2,
+        "completed_batches": 1,
+        "failed_symbols": [],
+    }
+
+    def _fake_staged(**kwargs):
+        captured["staged"] = kwargs
+        return staged_payload
+
+    def _fake_pipeline(**kwargs):
+        captured["pipeline"] = kwargs
+        return {
+            "analysis": {},
+            "reports": {},
+            "download": {"status": "snapshot_only", "reason": "analysis_uses_local_data_snapshot"},
+            "timing": {},
+            "analysis_meta": {},
+        }
+
+    monkeypatch.setattr(daily_runner, "run_staged_maintenance", _fake_staged, raising=False)
+    monkeypatch.setattr(market_pipeline, "run_unified_pipeline", _fake_pipeline)
+    monkeypatch.setattr("quant_investor.model_roles.has_provider_for_model", lambda _model: True)
+
+    runner = daily_runner.AnalysisRunner()
+    result = runner.run(
+        {
+            "market": "CN",
+            "universe": "full_a",
+            "review_model_priority": ["deepseek-chat", "moonshot-v1-128k"],
+            "master_model": "moonshot-v1-128k",
+            "master_fallback_model": "deepseek-reasoner",
+            "master_reasoning_effort": "high",
+            "agent_timeout": 20.0,
+            "master_timeout": 45.0,
+            "top_k": 12,
+            "total_capital": 1_000_000,
+            "years": 3,
+            "workers": 4,
+            "enable_agent_layer": False,
+            "skip_stage1": False,
+            "skip_download": False,
+            "maintenance_batch_size": 200,
+            "maintenance_max_batches_per_run": 1,
+            "maintenance_min_symbol_success_rate": 0.95,
+            "maintenance_target_date": "auto",
+            "maintenance_daily_window": True,
+        },
+        recall_context={"source": "strategy_records"},
+    )
+
+    assert captured["staged"] == {
+        "market": "CN",
+        "categories": ["full_a"],
+        "batch_size": 200,
+        "max_batches_per_run": 1,
+        "min_symbol_success_rate": 0.95,
+        "target_date": "auto",
+        "daily_window": True,
+        "resume": True,
+        "fail_on_incomplete": False,
+        "allowed_stale_symbols": [],
+        "years": 3,
+        "max_workers": 4,
+    }
+    assert captured["pipeline"]["skip_download"] is True
+    assert result["download"]["automation_data_update"] == staged_payload
+    assert result["automation_data_update"] == staged_payload
+
+
+def test_analysis_runner_skips_staged_batch_update_when_download_skipped(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def _fake_staged(**_kwargs):
+        raise AssertionError("skip_download=True should not run staged maintenance")
+
+    def _fake_pipeline(**kwargs):
+        captured["pipeline"] = kwargs
+        return {"analysis": {}, "reports": {}, "download": {}, "timing": {}, "analysis_meta": {}}
+
+    monkeypatch.setattr(daily_runner, "run_staged_maintenance", _fake_staged, raising=False)
+    monkeypatch.setattr(market_pipeline, "run_unified_pipeline", _fake_pipeline)
+    monkeypatch.setattr("quant_investor.model_roles.has_provider_for_model", lambda _model: True)
+
+    runner = daily_runner.AnalysisRunner()
+    result = runner.run(
+        {
+            "market": "CN",
+            "review_model_priority": ["deepseek-chat", "moonshot-v1-128k"],
+            "master_model": "moonshot-v1-128k",
+            "master_fallback_model": "deepseek-reasoner",
+            "agent_timeout": 20.0,
+            "master_timeout": 45.0,
+            "top_k": 12,
+            "total_capital": 1_000_000,
+            "years": 3,
+            "workers": 4,
+            "enable_agent_layer": False,
+            "skip_stage1": False,
+            "skip_download": True,
+        }
+    )
+
+    assert captured["pipeline"]["skip_download"] is True
+    assert "automation_data_update" not in result
+
+
 def test_analysis_runner_preserves_master_role_override_from_daily_config(monkeypatch):
     captured: dict[str, object] = {}
 
@@ -368,6 +486,7 @@ def test_analysis_runner_preserves_master_role_override_from_daily_config(monkey
         captured.update(kwargs)
         return {"analysis": {}, "reports": {}, "download": {}, "timing": {}, "analysis_meta": {}}
 
+    monkeypatch.setattr(daily_runner, "run_staged_maintenance", lambda **_kwargs: {"status": "test"}, raising=False)
     monkeypatch.setattr(market_pipeline, "run_unified_pipeline", _fake_pipeline)
     monkeypatch.setattr("quant_investor.model_roles.has_provider_for_model", lambda _model: True)
 

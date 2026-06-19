@@ -10,13 +10,14 @@ Fetch China A-Share Index Components - 获取A股指数成分股
 
 import os
 import json
+from pathlib import Path
 from typing import List, Dict
 from datetime import datetime
 
 from quant_investor.config import config
 from quant_investor.credential_utils import create_tushare_pro
-from quant_investor.market.cn_resolver import CNUniverseResolver
 from quant_investor.market.config import get_market_settings
+from quant_investor.market.market_data_reader import MarketDataReader, MarketDataUnavailableError
 
 try:  # pragma: no cover - optional dependency
     import tushare as ts  # type: ignore
@@ -117,6 +118,17 @@ def fetch_full_a(pro) -> List[str]:
     return []
 
 
+def _local_parquet_full_a_inventory() -> tuple[list[str], dict[str, object]]:
+    try:
+        settings = get_market_settings("CN")
+        settings_data_dir = Path(settings.data_dir)
+        data_root = settings_data_dir.parent if settings_data_dir.name != "data" else settings_data_dir
+        reader = MarketDataReader(market="CN", data_root=data_root, mode_policy="strict")
+        return reader.list_symbols("full_a"), reader.snapshot()
+    except (MarketDataUnavailableError, Exception) as exc:
+        return [], {"status": "blocked", "blockers": [str(exc)], "fallback_used": False}
+
+
 def get_all_components(pro=None) -> Dict[str, List[str]]:
     """获取全部A股指数成分股"""
     print("=" * 80)
@@ -133,28 +145,23 @@ def get_all_components(pro=None) -> Dict[str, List[str]]:
     zz500 = fetch_zz500(pro)
     zz1000 = fetch_zz1000(pro)
 
-    resolver = CNUniverseResolver(data_dir=get_market_settings("CN").data_dir)
-    resolver.trace.physical_directories_used_for_full_a = [
-        str(path) for path in resolver.physical_directories_for_full_a()
-    ]
+    local_inventory, local_inventory_snapshot = _local_parquet_full_a_inventory()
+    used_local_parquet_inventory = False
 
     if not full_a:
-        local_full_a, _ = resolver.collect_full_a_inventory(local_union_fallback_used=True)
-        if local_full_a:
-            print(f"⚠️ Tushare 全A股结果为空，回退到本地 CSV union: {len(local_full_a)} 只")
-            full_a = local_full_a
+        if local_inventory:
+            print(f"⚠️ Tushare 全A股结果为空，使用本地 Parquet serving inventory: {len(local_inventory)} 只")
+            full_a = local_inventory
+            used_local_parquet_inventory = True
 
     # 合并去重
     all_symbols = list(dict.fromkeys(full_a or (hs300 + zz500 + zz1000)))
     if not all_symbols:
-        all_symbols, _ = resolver.collect_full_a_inventory(local_union_fallback_used=True)
+        all_symbols = local_inventory
+        used_local_parquet_inventory = bool(local_inventory)
     if not full_a and all_symbols:
         print(f"⚠️ 使用指数篮子 union 作为 full_a canonical universe: {len(all_symbols)} 只")
         full_a = all_symbols
-        resolver.trace.local_union_fallback_used = True
-        resolver.trace.resolution_strategy = "index_bucket_union"
-    if full_a and not resolver.trace.resolution_strategy:
-        resolver.trace.resolution_strategy = "upstream_fetch"
     
     result = {
         'full_a': full_a,
@@ -172,7 +179,16 @@ def get_all_components(pro=None) -> Dict[str, List[str]]:
             'total_unique': len(all_symbols)
         },
         'fetch_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'resolver': resolver.snapshot(),
+        'resolver': {
+            "resolution_strategy": (
+                "parquet_serving_inventory"
+                if used_local_parquet_inventory
+                else "upstream_fetch"
+                if full_a
+                else "empty"
+            ),
+            "parquet_inventory": local_inventory_snapshot,
+        },
     }
     
     print()

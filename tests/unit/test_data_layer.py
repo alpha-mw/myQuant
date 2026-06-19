@@ -11,7 +11,7 @@ from datetime import datetime
 from quant_investor.enhanced_data_layer import (
     EnhancedDataLayer,
     USCompositeDataSource,
-    USLocalCSVDataSource,
+    USLocalParquetDataSource,
     _normalize_ohlcv_frame,
     normalize_kline_frame_for_model,
 )
@@ -122,24 +122,23 @@ class TestDataCleaning:
 class TestUSDataSources:
     """美股数据源测试"""
 
-    def test_local_us_csv_source_loads_and_normalizes(self, tmp_path):
-        """本地美股 CSV 应可被标准化读取。"""
-        data_dir = tmp_path / "data" / "us_market_full" / "large_cap"
+    def test_local_us_parquet_source_loads_and_normalizes(self, tmp_path):
+        """本地美股 Parquet 应可被标准化读取。"""
+        data_dir = tmp_path / "data" / "parquet_serving" / "us" / "bars" / "symbol=AAPL"
         data_dir.mkdir(parents=True)
-        csv_path = data_dir / "AAPL.csv"
-        csv_path.write_text(
-            "\n".join(
-                [
-                    "Date,Open,High,Low,Close,Volume",
-                    "2026-03-18,252,255,249,250,1000",
-                    "2026-03-19,249,252,247,249,1100",
-                    "2026-03-20,248,249,246,248,1200",
-                ]
-            ),
-            encoding="utf-8",
-        )
+        parquet_path = data_dir / "bars.parquet"
+        pd.DataFrame(
+            {
+                "Date": ["2026-03-18", "2026-03-19", "2026-03-20"],
+                "Open": [252, 249, 248],
+                "High": [255, 252, 249],
+                "Low": [249, 247, 246],
+                "Close": [250, 249, 248],
+                "Volume": [1000, 1100, 1200],
+            }
+        ).to_parquet(parquet_path, index=False)
 
-        source = USLocalCSVDataSource(str(tmp_path / "data" / "us_market_full"))
+        source = USLocalParquetDataSource(str(tmp_path / "data" / "parquet_serving" / "us" / "bars"))
         df = source.get_ohlcv("AAPL", "20260318", "20260320")
 
         assert not df.empty
@@ -150,26 +149,25 @@ class TestUSDataSources:
 
     def test_us_composite_source_prefers_local_cache(self, tmp_path):
         """美股复合数据源应优先使用本地缓存。"""
-        data_dir = tmp_path / "data" / "us_market_full" / "large_cap"
+        data_dir = tmp_path / "data" / "parquet_serving" / "us" / "bars" / "symbol=MSFT"
         data_dir.mkdir(parents=True)
-        csv_path = data_dir / "MSFT.csv"
-        csv_path.write_text(
-            "\n".join(
-                [
-                    "Date,Open,High,Low,Close,Volume",
-                    "2026-03-18,401,405,398,404,2000",
-                    "2026-03-19,404,407,400,402,2100",
-                    "2026-03-20,402,406,399,405,2200",
-                ]
-            ),
-            encoding="utf-8",
-        )
+        parquet_path = data_dir / "bars.parquet"
+        pd.DataFrame(
+            {
+                "Date": ["2026-03-18", "2026-03-19", "2026-03-20"],
+                "Open": [401, 404, 402],
+                "High": [405, 407, 406],
+                "Low": [398, 400, 399],
+                "Close": [404, 402, 405],
+                "Volume": [2000, 2100, 2200],
+            }
+        ).to_parquet(parquet_path, index=False)
 
-        source = USCompositeDataSource(local_data_dir=str(tmp_path / "data" / "us_market_full"))
+        source = USCompositeDataSource(local_data_dir=str(tmp_path / "data" / "parquet_serving" / "us" / "bars"))
         df = source.get_ohlcv("MSFT", "20260318", "20260321")
 
         assert not df.empty
-        assert source.last_ohlcv_source == "local_csv"
+        assert source.last_ohlcv_source == "local_parquet"
         assert df["close"].iloc[-1] == pytest.approx(405.0)
 
     def test_normalize_ohlcv_frame_strips_timezone(self):

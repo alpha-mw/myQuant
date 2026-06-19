@@ -13,6 +13,7 @@ __all__ = [
     "create_downloader",
     "run_download",
     "run_market_maintenance",
+    "run_staged_maintenance",
     "load_stock_names",
     "get_stock_name",
     "category_name",
@@ -80,8 +81,13 @@ def __getattr__(name: str) -> Any:
         "create_downloader",
         "run_download",
         "run_market_maintenance",
+        "run_staged_maintenance",
     }:
         from quant_investor.market import download as download_mod
 
+        if name == "run_staged_maintenance":
+            from quant_investor.market import staged_maintenance as staged_mod
+
+            return getattr(staged_mod, name)
         return getattr(download_mod, name)
     raise AttributeError(name)
