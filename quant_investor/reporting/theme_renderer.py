@@ -31,13 +31,17 @@ def render_theme_rotation_markdown(
     lines = [
         "## 主题轮动雷达",
         "",
-        "| 排名 | 主题 | 分数 | 阶段 | 置信度 | 成员数 | 龙头/强势标的 | 风险 |",
-        "|---:|---|---:|---|---:|---:|---|---|",
+        "| 排名 | 主题 | 当前分 | 10日热度 | 5日变化 | 持续天数 | 趋势状态 | 阶段 | 置信度 | 成员数 | 龙头/强势标的 | 风险 |",
+        "|---:|---|---:|---:|---:|---:|---|---|---:|---:|---|---|",
     ]
     for rank, theme in enumerate(top_themes, start=1):
         theme_id = str(_field(theme, "theme_id") or "")
         theme_name = str(_field(theme, "theme_name") or theme_id or "-")
         score = _format_float(_field(theme, "score"), digits=1)
+        heat_10d = _format_float(_field(theme, "heat_10d"), digits=1)
+        heat_delta_5d = _format_float(_field(theme, "heat_delta_5d"), digits=1)
+        persistence_count = _format_int(_field(theme, "persistence_count"))
+        trend_state = str(_field(theme, "trend_state") or "-")
         phase = str(_field(theme, "phase") or "-")
         confidence = _format_float(_field(theme, "confidence"), digits=2)
         member_count = _format_int(_field(theme, "member_count"))
@@ -50,6 +54,10 @@ def render_theme_rotation_markdown(
                     str(rank),
                     _cell(theme_name),
                     score,
+                    heat_10d,
+                    heat_delta_5d,
+                    persistence_count,
+                    _cell(trend_state),
                     _cell(phase),
                     confidence,
                     member_count,

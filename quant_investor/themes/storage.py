@@ -97,6 +97,24 @@ class ThemeSnapshotStore:
         market: str = "CN",
         universe_key: str | None = None,
     ) -> dict[str, Any] | None:
+        latest = self.load_latest_with_path(
+            market=market,
+            universe_key=universe_key,
+        )
+        if latest is None:
+            return None
+        return latest[1]
+
+    def load_latest_with_path(
+        self,
+        *,
+        market: str = "CN",
+        universe_key: str | None = None,
+        as_of: str | None = None,
+    ) -> tuple[Path, dict[str, Any]] | None:
+        target_date_segment = _date_segment(as_of or "") if as_of else ""
+        latest_any: dict[str, Any] | None = None
+        latest_any_path: Path | None = None
         for path in reversed(
             self.list_snapshots(market=market, universe_key=universe_key)
         ):
@@ -106,8 +124,58 @@ class ThemeSnapshotStore:
             except (OSError, TypeError, json.JSONDecodeError, UnicodeDecodeError):
                 continue
             if isinstance(payload, dict):
-                return payload
-        return None
+                if latest_any is None:
+                    latest_any = payload
+                    latest_any_path = path
+                if _is_load_latest_candidate(payload, universe_key=universe_key):
+                    if target_date_segment:
+                        rotation = payload.get("theme_rotation")
+                        rotation_as_of = (
+                            rotation.get("as_of")
+                            if isinstance(rotation, Mapping)
+                            else ""
+                        )
+                        payload_as_of = str(
+                            payload.get("as_of")
+                            or rotation_as_of
+                            or ""
+                        )
+                        if _date_segment(payload_as_of) != target_date_segment:
+                            continue
+                    return path, payload
+        if target_date_segment:
+            return None
+        if latest_any_path is None or latest_any is None:
+            return None
+        return latest_any_path, latest_any
+
+    def load_recent(
+        self,
+        *,
+        market: str = "CN",
+        universe_key: str | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        max_items = max(int(limit or 0), 0)
+        if max_items <= 0:
+            return []
+        payloads: list[dict[str, Any]] = []
+        for path in reversed(
+            self.list_snapshots(market=market, universe_key=universe_key)
+        ):
+            try:
+                with path.open("r", encoding="utf-8") as handle:
+                    payload = json.load(handle)
+            except (OSError, TypeError, json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if not _is_load_latest_candidate(payload, universe_key=universe_key):
+                continue
+            payloads.append(payload)
+            if len(payloads) >= max_items:
+                break
+        return list(reversed(payloads))
 
 
 def _safe_component(value: Any, default: str) -> str:
@@ -147,3 +215,32 @@ def _auto_run_id(theme_rotation: Mapping[str, Any]) -> str:
         if value:
             return str(value)
     return "snapshot"
+
+
+def _is_load_latest_candidate(
+    payload: Mapping[str, Any],
+    *,
+    universe_key: str | None,
+) -> bool:
+    if universe_key != "full_a":
+        return True
+    rotation = payload.get("theme_rotation")
+    if not isinstance(rotation, Mapping):
+        return True
+    metadata = rotation.get("metadata")
+    metadata = metadata if isinstance(metadata, Mapping) else {}
+    input_scope = str(metadata.get("input_scope") or "").strip()
+    if input_scope and input_scope != "full_market":
+        return False
+    scanned = _safe_int(metadata.get("scanned_symbol_count"))
+    member_min = _safe_int(metadata.get("member_count_min"))
+    if member_min > 0 and 0 < scanned < member_min:
+        return False
+    return True
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return 0

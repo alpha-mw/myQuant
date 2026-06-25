@@ -20,12 +20,29 @@ Core components:
   `industry_map`, computes deterministic breadth, momentum, acceleration,
   volume confirmation, overextension, and fake-breakout diagnostics, then emits
   `ThemeScanResult`.
+- `quant_investor/themes/smoothing.py`: pure SMA10 smoothing helpers for theme
+  heat, 5-day heat delta, persistence count, and trend state.
+- `quant_investor/themes/policy.py`: local JSONL policy event parser and
+  deterministic policy catalyst scorer. It reads only
+  `THEME_POLICY_EVENT_PATH` when `THEME_POLICY_CATALYST_ENABLED=1`.
 - `quant_investor/themes/types.py`: serializable `ThemePhase`, `ThemeScore`,
   and `ThemeScanResult` contracts.
 - `quant_investor/market/dag/theme_context.py`: metadata adapter that builds
   `global_context.metadata["theme_rotation"]`, extracts per-symbol theme
-  metadata, builds optional RiskGuard and portfolio constraints, and persists
-  optional snapshots.
+  metadata, builds optional RiskGuard and portfolio constraints, evaluates the
+  optional governance sidecar, and persists optional snapshots/artifacts.
+- `quant_investor/themes/governance.py`: pure sidecar evaluator that converts
+  existing `theme_rotation.v1` metadata into `theme_governance.v1` labels:
+  `admitted_shadow`, `watchlist_strong`, `watchlist_rebuild`, `rejected`,
+  `umbrella_only`, and `unavailable`.
+- `quant_investor/reporting/theme_governance_renderer.py`: compact markdown
+  renderer that states governance is shadow-only and the executable decision
+  remains baseline.
+- `quant_investor/market/full_report.py`: full-market summary/trade reports
+  append theme radar and governance sections when those payloads are present.
+- `scripts/run_theme_governance_diagnostics.py`: offline local CLI that loads a
+  saved theme snapshot or explicit JSON payload and writes governance JSON/MD
+  artifacts.
 - `quant_investor/agents/theme_agent.py`: standalone non-canonical
   `ThemeAgent` that reads theme metadata and returns a normal `BranchVerdict`
   with `metadata["branch_name"] == "theme"`. It is not wired into the canonical
@@ -50,10 +67,12 @@ Core components:
 ```text
 local OHLCV frames + industry_map
   -> ThemeScanner
+  -> optional local policy catalyst component
   -> ThemeScanResult
   -> build_theme_rotation_metadata
   -> GlobalContext.metadata["theme_rotation"]
   -> report renderer
+  -> optional governance sidecar/report/artifact
   -> BayesianDecisionRecord metadata passthrough
   -> optional funnel boost
   -> optional RiskGuard overlay
@@ -61,6 +80,12 @@ local OHLCV frames + industry_map
   -> optional local snapshot
   -> explicit offline replay/calibration
 ```
+
+Governance output is not fed into Bayesian likelihoods, RiskGuard,
+ICCoordinator, PortfolioConstructor, candidate ranking, branch weights, or final
+allocation. It is a sidecar answer to: which themes are observable mainlines,
+which are overheated or fragile, and which have insufficient samples or need
+rebuild.
 
 ## Non-Canonical Design
 
@@ -109,8 +134,17 @@ Important fields:
   `theme_id`, `theme_name`, `phase`, `score`, `confidence`, `member_count`,
   `breadth`, `momentum`, `acceleration`, `volume_confirmation`,
   `overextension_risk`, `fake_breakout_risk`, `top_symbols`, `risk_flags`,
-  `evidence`, and `metadata`.
+  `evidence`, and `metadata`. Scanner output also preserves `raw_score` and can
+  include `smoothed_score`, `heat_10d`, `heat_delta_5d`, `persistence_count`,
+  `trend_state`, and `smoothing_status`.
+- Policy catalyst fields are present with defaults and become active only when
+  `THEME_POLICY_CATALYST_ENABLED=1`: `policy_catalyst_score`,
+  `policy_confidence`, `policy_stage`, `policy_evidence`, and
+  `policy_risk_flags`.
 - `symbol_scores`: map of symbol to normalized theme score in `[0, 1]`.
+- `symbol_smoothed_scores`: separate normalized SMA10 theme score map when
+  enough local history exists; `symbol_scores` remains raw/current for
+  compatibility.
 - `symbol_primary_theme`: map of symbol to primary theme ID.
 - `symbol_phase`: map of symbol to phase.
 - `symbol_risk_flags`: map of symbol to theme risk flags.
@@ -123,23 +157,112 @@ The DAG also exposes compatibility aliases in `GlobalContext.metadata`:
 
 - `theme_scores`
 - `symbol_theme_score`
+- `symbol_theme_smoothed_score`
 - `symbol_primary_theme`
 - `symbol_theme_phase`
 - `theme_alerts`
 - `theme_snapshot`
+
+`global_context.metadata["theme_governance"]` uses schema
+`theme_governance.v1` when `THEME_GOVERNANCE_ENABLED=1`.
+
+Important fields:
+
+- `enabled`: whether governance evaluation was requested and available.
+- `status`: `success`, `disabled`, `error`, or `unavailable`.
+- `market`, `universe_key`, `as_of`: inherited scan scope.
+- `decisions` / `top_themes`: per-theme governance rows with gate label,
+  current/raw score, SMA10 heat, 5-day heat delta, persistence count, trend
+  state, confidence, breadth, member count, phase, risk flags, registry fields,
+  reasons, and diagnostics.
+- `summary_counts`: counts for all gate labels.
+- `diagnostic_notes`: registry/scanner/evaluator notes.
+- `metadata`: deterministic markers plus `shadow_only=true`.
+
+Optional registry support is JSON-only via
+`THEME_GOVERNANCE_REGISTRY_PATH`. The schema is:
+
+```json
+{
+  "themes": [
+    {
+      "theme_id": "industry::semiconductor",
+      "theme_type": "tradable",
+      "style_tag": "growth_cycle",
+      "parent_theme": "technology",
+      "theme_name": "Semiconductor",
+      "notes": "Optional local governance note."
+    }
+  ]
+}
+```
+
+`theme_type=umbrella` forces `umbrella_only`. If the registry is unset,
+missing, or malformed, the evaluator falls back to inferred `industry::...`
+themes as tradable and emits diagnostic notes instead of fabricating a healthier
+state.
+
+## Smoothing And Trend Confirmation
+
+Theme heat uses a deterministic 10-observation simple moving average:
+
+- Default window: `THEME_SMOOTHING_WINDOW=10`.
+- Minimum observations: `THEME_SMOOTHING_MIN_OBSERVATIONS=5`.
+- Trend states: `warming`, `cooling`, `stable`, `spike_unconfirmed`, and
+  `insufficient_history`.
+- Scanner output does not overwrite `score` or `symbol_scores`; it adds
+  smoothed fields beside the raw fields.
+- Governance admission uses confirmed smoothing when available. A raw one-day
+  spike without enough history becomes `watchlist_strong` with
+  `raw_spike_not_confirmed`, not `admitted_shadow`.
+- Governance can read recent local snapshots from `THEME_SNAPSHOT_DIR`; missing
+  history is diagnostic-only and never treated as healthy confirmation.
+
+## Policy Catalyst Layer
+
+The Policy Catalyst Layer is a deterministic ThemeScanner sidecar. It is
+default-off and reads only local JSONL policy-event fixtures or manually
+maintained caches from `THEME_POLICY_EVENT_PATH`.
+
+Input JSONL fields are:
+
+- `event_id`, `title`, `issuer`, `publish_date`, `effective_date`
+- `policy_level`, `policy_type`
+- `theme_tags`, `industry_tags`, `symbol_tags`
+- `evidence_text`, `source_url`
+
+The scorer matches events to already-scanned themes by normalized theme tags,
+industry tags, or symbol tags intersecting existing theme members. Symbol tags
+only improve beneficiary clarity; they do not create symbols, candidates, or a
+candidate-pool source.
+
+The policy component writes per-theme metadata and can add a capped score
+component of at most `THEME_POLICY_CATALYST_WEIGHT * 100`. Missing or malformed
+files set `policy_catalyst_status=unavailable` and leave theme scores
+unchanged. Policy evidence remains metadata; it is not a buy/sell signal, not a
+Bayesian likelihood, and not a canonical branch.
 
 ## Optional Consumers
 
 All behavior-changing consumers require explicit configuration:
 
 - Funnel boost: `THEME_FUNNEL_BOOST_ENABLED=1` can change momentum-leader
-  candidate scores, capped by `THEME_SYMBOL_BOOST_CAP`.
+  candidate scores, capped by `THEME_SYMBOL_BOOST_CAP`. It reads raw theme
+  scores by default. `THEME_FUNNEL_BOOST_SCORE_SOURCE=smoothed` must be set
+  explicitly to use `symbol_smoothed_scores`; if smoothed scores are missing,
+  no theme boost is applied for that symbol.
 - RiskGuard overlay: `THEME_RISK_GUARD_ENABLED=1` can tighten action, gross, or
   position limits for overextended, distribution, or fake-breakout theme risk.
 - Portfolio caps: `THEME_PORTFOLIO_CAP_ENABLED=1` can reduce final weights to
   respect single-theme exposure caps.
 - Snapshot persistence: `THEME_SNAPSHOT_ENABLED=1` writes local JSON snapshots
   under `THEME_SNAPSHOT_DIR`.
+- Governance sidecar: `THEME_GOVERNANCE_ENABLED=1` attaches
+  `theme_governance.v1` metadata. `THEME_GOVERNANCE_ARTIFACT_ENABLED=1` writes
+  a local governance JSON artifact under `THEME_GOVERNANCE_OUTPUT_DIR`.
+- Policy catalyst: `THEME_POLICY_CATALYST_ENABLED=1` reads local JSONL policy
+  events and adds only capped theme-score metadata. It does not bypass the v13
+  DAG or create candidate-pool entries.
 
 Offline-only consumers are explicit:
 
@@ -147,6 +270,22 @@ Offline-only consumers are explicit:
 - `ThemeCalibrationDataset` replays snapshots against local forward frames.
 - `ThemeCalibrationReport` summarizes phase, bucket, theme, risk-flag, and
   threshold diagnostics.
+- `run_theme_governance_diagnostics.py` renders governance JSON/MD from local
+  snapshots without changing executable decisions.
+
+## A_quant Inspiration Boundary
+
+The sidecar borrows A_quant-style operating discipline, not A_quant production
+inputs:
+
+- Used concepts: a lightweight ontology, separation of heat vs fragility,
+  four-way governance gating, and local artifact discipline.
+- Not used: A_quant current weights, DuckDB/Tushare storage paths, tactical
+  portfolio blends, or any promotion of theme labels into investment signals.
+
+The label `admitted_shadow` is intentional. It means observable governance
+admission only; it is not a buy/sell signal and does not change
+`final_decision_source`, which remains `baseline` in the shadow path.
 
 ## Fail-Safe Behavior
 
@@ -162,6 +301,14 @@ The system is designed to fail closed:
   when metadata is missing or malformed.
 - Disabled snapshot persistence writes no files and returns `status ==
   "disabled"`.
+- Disabled governance writes no governance artifact and returns a disabled
+  `theme_governance.v1` payload.
+- Missing or malformed policy event JSONL returns `policy_catalyst_status ==
+  "unavailable"` and leaves theme scores unchanged.
+- Missing or malformed registry JSON falls back to inferred local industry
+  themes and records diagnostics.
+- Missing or malformed per-theme numeric fields become `unavailable`, never
+  healthy labels.
 - Snapshot write failures return `status == "error"` with diagnostic notes
   instead of changing rankings, risk limits, or weights.
 - Snapshot loading skips malformed JSON and returns the latest valid snapshot or
@@ -173,10 +320,13 @@ The system is designed to fail closed:
 
 - MVP theme definitions start from `industry_map`; a full concept-board ontology
   is not yet integrated.
-- Live news, policy signals, capital-flow data, and concept-board membership are
-  not part of the scanner contract yet.
+- Live news, live policy feeds, capital-flow data, and concept-board membership
+  are not part of the scanner contract yet. Policy catalyst v1 accepts only
+  local fixtures or manually maintained JSONL caches.
 - No live LLM, provider, or network scoring is used.
 - Funnel boosts, risk overlays, and portfolio caps require offline replay and
   calibration before production enablement.
+- Governance thresholds are defaults for observation. Replay/calibration is
+  required before any future behavior toggle can be discussed.
 - Theme Rotation is observability-first; behavior changes must remain gated by
   explicit environment toggles and rollout evidence.

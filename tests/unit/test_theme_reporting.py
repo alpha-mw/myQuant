@@ -13,6 +13,7 @@ from quant_investor.agent_protocol import (
 )
 from quant_investor.agents.narrator_agent import NarratorAgent
 from quant_investor.market.dag.reporting import _build_reporting_artifacts
+from quant_investor.market.full_report import generate_full_report
 from quant_investor.reporting.theme_renderer import render_theme_rotation_markdown
 
 
@@ -25,6 +26,11 @@ def _theme_rotation() -> dict[str, object]:
                 "theme_id": "industry::AI",
                 "theme_name": "AI",
                 "score": 72.5,
+                "smoothed_score": 61.3,
+                "heat_10d": 61.3,
+                "heat_delta_5d": 4.2,
+                "persistence_count": 6,
+                "trend_state": "warming",
                 "phase": "confirmed_rotation",
                 "confidence": 0.66,
                 "member_count": 18,
@@ -40,12 +46,67 @@ def _theme_rotation() -> dict[str, object]:
     }
 
 
+def _theme_governance() -> dict[str, object]:
+    return {
+        "schema_version": "theme_governance.v1",
+        "enabled": True,
+        "status": "success",
+        "market": "CN",
+        "universe_key": "full_a",
+        "as_of": "20260618",
+        "summary_counts": {
+            "admitted_shadow": 1,
+            "watchlist_strong": 0,
+            "watchlist_rebuild": 1,
+            "rejected": 0,
+            "umbrella_only": 0,
+            "unavailable": 0,
+        },
+        "decisions": [
+            {
+                "theme_id": "industry::铜",
+                "theme_name": "铜",
+                "gate_label": "admitted_shadow",
+                "score": 60.4,
+                "confidence": 0.87,
+                "breadth": 0.83,
+                "member_count": 18,
+                "phase": "accumulation",
+                "style_tag": "",
+                "reasons": ["shadow_admission_defaults_passed"],
+            },
+            {
+                "theme_id": "industry::半导体",
+                "theme_name": "半导体",
+                "gate_label": "watchlist_rebuild",
+                "score": 46.1,
+                "confidence": 0.89,
+                "breadth": 0.79,
+                "member_count": 194,
+                "phase": "accumulation",
+                "style_tag": "",
+                "reasons": ["needs_rebuild_or_calibration"],
+            },
+        ],
+        "diagnostic_notes": [],
+        "metadata": {
+            "deterministic": True,
+            "no_llm": True,
+            "no_network": True,
+            "shadow_only": True,
+        },
+    }
+
+
 def test_render_theme_rotation_markdown_success():
     markdown = render_theme_rotation_markdown(_theme_rotation())
 
     assert "主题轮动雷达" in markdown
     assert "AI" in markdown
     assert "72.5" in markdown
+    assert "10日热度" in markdown
+    assert "61.3" in markdown
+    assert "warming" in markdown
     assert "confirmed_rotation" in markdown
     assert "theme_low_breadth" in markdown
     assert "不影响组合权重" in markdown
@@ -166,6 +227,15 @@ def test_reporting_artifacts_includes_theme_rotation_if_feasible():
         target_weights={"000001.SZ": 0.25},
         position_limits={"000001.SZ": 0.25},
     )
+    shortlist = [
+        ShortlistItem(
+            symbol="000001.SZ",
+            company_name="平安银行",
+            rank_score=0.9,
+            action=ActionLabel.BUY,
+            confidence=0.8,
+        )
+    ]
 
     state = _build_reporting_artifacts(
         market="CN",
@@ -192,7 +262,7 @@ def test_reporting_artifacts_includes_theme_rotation_if_feasible():
         portfolio_plan=portfolio_plan,
         portfolio_decision=PortfolioDecision(target_weights={"000001.SZ": 0.25}),
         symbol_research_packets={},
-        shortlist=[],
+        shortlist=shortlist,
         portfolio_master_output=None,
         portfolio_master_meta={},
         portfolio_master_reliability=0.0,
@@ -215,6 +285,71 @@ def test_reporting_artifacts_includes_theme_rotation_if_feasible():
     )
 
     assert FakeNarrator.payload["theme_rotation"] == theme_rotation
+    assert state.dag_artifacts["shortlist"] == shortlist
     assert state.dag_artifacts["theme_rotation"] == theme_rotation
     assert state.dag_artifacts["theme_scores"] == {"industry::AI": {"score": 72.5}}
     assert state.dag_artifacts["symbol_theme_score"] == {"000001.SZ": 0.78}
+
+
+def test_full_market_report_includes_theme_governance_section(tmp_path):
+    all_results = {
+        "full_a": [
+            {
+                "stock_count": 1,
+                "stocks": ["000001.SZ"],
+                "strategy": {
+                    "target_exposure": 0.0,
+                    "candidate_symbols": [],
+                },
+                "branches": {
+                    "quant": {
+                        "score": -0.1,
+                        "confidence": 0.5,
+                        "conclusion": "quant cautious",
+                    },
+                    "fundamental": {
+                        "score": 0.0,
+                        "confidence": 0.5,
+                        "conclusion": "fundamental neutral",
+                    },
+                    "intelligence": {
+                        "score": 0.1,
+                        "confidence": 0.4,
+                        "conclusion": "intelligence neutral",
+                    },
+                    "macro": {
+                        "score": 0.0,
+                        "confidence": 0.8,
+                        "conclusion": "macro neutral",
+                    },
+                },
+                "recommendations": [],
+                "execution_log": [],
+                "analysis_meta": {
+                    "market": "CN",
+                    "universe": "full_a",
+                    "theme_rotation": _theme_rotation(),
+                    "theme_governance": _theme_governance(),
+                    "data_snapshot": {"summary_text": "fixture snapshot"},
+                },
+            }
+        ]
+    }
+
+    paths = generate_full_report(
+        all_results,
+        market="CN",
+        output_dir=str(tmp_path),
+        total_capital=1_000_000,
+        top_k=12,
+    )
+
+    trade_report = tmp_path.joinpath(paths["trade_report"]).read_text(encoding="utf-8")
+    summary_report = tmp_path.joinpath(paths["summary_report"]).read_text(encoding="utf-8")
+
+    assert "Theme Governance Sidecar" in trade_report
+    assert "shadow/governance only" in trade_report
+    assert "final executable decision remains baseline" in trade_report
+    assert "铜" in trade_report
+    assert "admitted_shadow" in trade_report
+    assert "Theme Governance Sidecar" in summary_report

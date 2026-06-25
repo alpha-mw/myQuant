@@ -7,6 +7,13 @@ from typing import Any, Mapping
 import pandas as pd
 
 from quant_investor.themes import ThemeScanner, ThemeSnapshotStore
+from quant_investor.themes.governance import (
+    GOVERNANCE_METADATA,
+    GOVERNANCE_SCHEMA_VERSION,
+    evaluate_theme_governance,
+    load_theme_governance_registry,
+    write_theme_governance_artifact,
+)
 
 
 SCHEMA_VERSION = "theme_rotation.v1"
@@ -58,6 +65,8 @@ def build_theme_rotation_metadata(
     min_member_count: int = 5,
     top_n: int = 20,
     symbol_limit: int = 300,
+    smoothing_window: int = 10,
+    smoothing_min_observations: int = 5,
 ) -> dict[str, Any]:
     try:
         result = ThemeScanner().scan(
@@ -72,6 +81,8 @@ def build_theme_rotation_metadata(
             as_of=as_of,
             min_member_count=int(min_member_count),
             top_n=int(top_n),
+            smoothing_window=int(smoothing_window),
+            smoothing_min_observations=int(smoothing_min_observations),
         )
     except Exception as exc:
         return _empty_theme_rotation_metadata(
@@ -91,10 +102,19 @@ def build_theme_rotation_metadata(
         str(symbol): _safe_float(score)
         for symbol, score in dict(result.symbol_scores or {}).items()
     }
+    raw_symbol_smoothed_scores = {
+        str(symbol): _safe_float(score)
+        for symbol, score in dict(result.symbol_smoothed_scores or {}).items()
+    }
     selected_symbols = _bounded_symbols(raw_symbol_scores, symbol_limit)
     symbol_scores = {
         symbol: raw_symbol_scores[symbol]
         for symbol in selected_symbols
+    }
+    symbol_smoothed_scores = {
+        symbol: raw_symbol_smoothed_scores[symbol]
+        for symbol in selected_symbols
+        if symbol in raw_symbol_smoothed_scores
     }
     symbol_primary_theme = {
         symbol: str(result.symbol_primary_theme.get(symbol, ""))
@@ -138,6 +158,7 @@ def build_theme_rotation_metadata(
         "as_of": str(result.as_of or as_of),
         "theme_scores": theme_scores,
         "symbol_scores": symbol_scores,
+        "symbol_smoothed_scores": symbol_smoothed_scores,
         "symbol_primary_theme": symbol_primary_theme,
         "symbol_phase": symbol_phase,
         "symbol_risk_flags": symbol_risk_flags,
@@ -206,6 +227,134 @@ def persist_theme_rotation_snapshot(
             "path": "",
             "error": error,
             "diagnostic_notes": [f"theme_snapshot_error: {error}"],
+            "metadata": metadata,
+        }
+
+
+def build_disabled_theme_governance_metadata(
+    *,
+    market: str = "",
+    universe_key: str = "",
+    as_of: str = "",
+) -> dict[str, Any]:
+    return _empty_theme_governance_metadata(
+        enabled=False,
+        status="disabled",
+        market=market,
+        universe_key=universe_key,
+        as_of=as_of,
+        diagnostic_notes=["theme_governance_disabled"],
+    )
+
+
+def build_theme_governance_metadata(
+    *,
+    theme_rotation: Mapping[str, Any],
+    enabled: bool,
+    registry_path: str | Path | None = None,
+    snapshot_history: list[Mapping[str, Any]] | None = None,
+    snapshot_dir: str | Path | None = None,
+    history_limit: int = 10,
+    market: str = "",
+    universe_key: str = "",
+    as_of: str = "",
+) -> dict[str, Any]:
+    if not enabled:
+        return build_disabled_theme_governance_metadata(
+            market=market,
+            universe_key=universe_key,
+            as_of=as_of,
+        )
+    try:
+        registry = load_theme_governance_registry(registry_path)
+        history = list(snapshot_history or [])
+        if not history and snapshot_dir:
+            try:
+                history = ThemeSnapshotStore(snapshot_dir).load_recent(
+                    market=market or str(theme_rotation.get("market") or "CN"),
+                    universe_key=universe_key or str(theme_rotation.get("universe_key") or "") or None,
+                    limit=max(int(history_limit or 10), 0),
+                )
+            except Exception:
+                history = []
+        result = evaluate_theme_governance(
+            theme_rotation,
+            registry=registry,
+            history=history,
+        )
+        payload = result.to_dict()
+        payload["market"] = str(payload.get("market") or market or "")
+        payload["universe_key"] = str(payload.get("universe_key") or universe_key or "")
+        payload["as_of"] = str(payload.get("as_of") or as_of or "")
+        return payload
+    except Exception as exc:
+        return _empty_theme_governance_metadata(
+            enabled=True,
+            status="error",
+            market=market,
+            universe_key=universe_key,
+            as_of=as_of,
+            diagnostic_notes=[f"theme_governance_error: {exc}"],
+        )
+
+
+def persist_theme_governance_artifact(
+    *,
+    theme_governance: Mapping[str, Any],
+    enabled: bool,
+    root_dir: str | Path,
+    market: str,
+    universe_key: str,
+    as_of: str,
+    run_id: str = "",
+) -> dict[str, Any]:
+    metadata = dict(GOVERNANCE_METADATA)
+    if not enabled:
+        return {
+            "enabled": False,
+            "status": "disabled",
+            "path": "",
+            "error": "",
+            "diagnostic_notes": ["theme_governance_artifact_disabled"],
+            "metadata": metadata,
+        }
+    try:
+        governance_status = ""
+        if isinstance(theme_governance, Mapping):
+            governance_status = str(theme_governance.get("status") or "").strip().lower()
+        if governance_status == "disabled":
+            return {
+                "enabled": True,
+                "status": "skipped",
+                "path": "",
+                "error": "",
+                "diagnostic_notes": ["theme_governance_disabled_not_saved"],
+                "metadata": metadata,
+            }
+        path = write_theme_governance_artifact(
+            theme_governance,
+            root_dir=root_dir,
+            market=market,
+            universe_key=universe_key,
+            as_of=as_of,
+            run_id=run_id,
+        )
+        return {
+            "enabled": True,
+            "status": "success",
+            "path": str(path),
+            "error": "",
+            "diagnostic_notes": [],
+            "metadata": metadata,
+        }
+    except Exception as exc:
+        error = str(exc)
+        return {
+            "enabled": True,
+            "status": "error",
+            "path": "",
+            "error": error,
+            "diagnostic_notes": [f"theme_governance_artifact_error: {error}"],
             "metadata": metadata,
         }
 
@@ -545,12 +694,44 @@ def _empty_theme_rotation_metadata(
         "as_of": str(as_of or ""),
         "theme_scores": {},
         "symbol_scores": {},
+        "symbol_smoothed_scores": {},
         "symbol_primary_theme": {},
         "symbol_phase": {},
         "symbol_risk_flags": {},
         "top_themes": [],
         "diagnostic_notes": list(diagnostic_notes),
         "metadata": dict(_BASE_INTEGRATION_METADATA),
+    }
+
+
+def _empty_theme_governance_metadata(
+    *,
+    enabled: bool,
+    status: str,
+    market: str,
+    universe_key: str,
+    as_of: str,
+    diagnostic_notes: list[str],
+) -> dict[str, Any]:
+    return {
+        "schema_version": GOVERNANCE_SCHEMA_VERSION,
+        "enabled": bool(enabled),
+        "status": str(status),
+        "market": str(market or ""),
+        "universe_key": str(universe_key or ""),
+        "as_of": str(as_of or ""),
+        "decisions": [],
+        "top_themes": [],
+        "summary_counts": {
+            "admitted_shadow": 0,
+            "watchlist_strong": 0,
+            "watchlist_rebuild": 0,
+            "rejected": 0,
+            "umbrella_only": 0,
+            "unavailable": 0,
+        },
+        "diagnostic_notes": list(diagnostic_notes),
+        "metadata": dict(GOVERNANCE_METADATA),
     }
 
 
@@ -760,6 +941,16 @@ def _compact_top_theme(theme: Mapping[str, Any]) -> dict[str, Any]:
         "theme_id": str(theme.get("theme_id", "")),
         "theme_name": str(theme.get("theme_name", "")),
         "score": _safe_float(theme.get("score", 0.0)),
+        "raw_score": _safe_float(theme.get("raw_score", theme.get("score", 0.0))),
+        "smoothed_score": _optional_float(theme.get("smoothed_score")),
+        "heat_10d": _optional_float(theme.get("heat_10d")),
+        "heat_delta_5d": _optional_float(theme.get("heat_delta_5d")),
+        "persistence_count": int(_safe_float(theme.get("persistence_count", 0))),
+        "trend_state": str(theme.get("trend_state", "")),
+        "smoothing_observation_count": int(
+            _safe_float(theme.get("smoothing_observation_count", 0))
+        ),
+        "smoothing_status": str(theme.get("smoothing_status", "")),
         "phase": str(theme.get("phase", "")),
         "confidence": _safe_float(theme.get("confidence", 0.0)),
         "member_count": int(_safe_float(theme.get("member_count", 0))),

@@ -5,6 +5,7 @@ import json
 import pandas as pd
 
 from quant_investor.themes import ThemePhase, ThemeScanner, ThemeScore
+from quant_investor.market.dag.theme_context import build_theme_rotation_metadata
 
 
 def _frame(closes: list[float], volumes: list[float] | None = None) -> pd.DataFrame:
@@ -131,3 +132,51 @@ def test_theme_scanner_deterministic_tie_break():
     result = ThemeScanner().scan(frames=frames, industry_map=industry_map, min_member_count=5)
 
     assert list(result.theme_scores) == ["industry::alpha", "industry::beta"]
+
+
+def test_theme_scanner_adds_smoothing_fields_without_overwriting_raw_scores():
+    frames = {
+        f"S{idx:03d}.SZ": _frame(_trend(10.0, 12.0), _trend(1000.0, 2600.0))
+        for idx in range(6)
+    }
+    industry_map = {symbol: "Copper" for symbol in frames}
+
+    result = ThemeScanner().scan(
+        frames=frames,
+        industry_map=industry_map,
+        min_member_count=5,
+    )
+    payload = result.to_dict()
+    theme = payload["theme_scores"]["industry::copper"]
+
+    assert "smoothed_score" in theme
+    assert "heat_10d" in theme
+    assert theme["smoothing_observation_count"] >= 5
+    assert theme["smoothing_status"] == "success"
+    assert result.symbol_scores["S000.SZ"] == result.theme_scores["industry::copper"].score / 100.0
+    assert "S000.SZ" in result.symbol_smoothed_scores
+    assert result.symbol_smoothed_scores["S000.SZ"] != result.symbol_scores["S000.SZ"]
+
+
+def test_theme_rotation_metadata_exposes_symbol_smoothed_scores_separately():
+    frames = {
+        f"S{idx:03d}.SZ": _frame(_trend(10.0, 12.0), _trend(1000.0, 2600.0))
+        for idx in range(6)
+    }
+    industry_map = {symbol: "Copper" for symbol in frames}
+
+    payload = build_theme_rotation_metadata(
+        frames=frames,
+        industry_map=industry_map,
+        symbol_market_state={},
+        market="CN",
+        universe_key="full_a",
+        as_of="20260618",
+        min_member_count=5,
+        top_n=20,
+    )
+
+    assert payload["status"] == "success"
+    assert "symbol_smoothed_scores" in payload
+    assert payload["symbol_scores"]["S000.SZ"] != payload["symbol_smoothed_scores"]["S000.SZ"]
+    assert payload["top_themes"][0]["heat_10d"] == payload["top_themes"][0]["smoothed_score"]

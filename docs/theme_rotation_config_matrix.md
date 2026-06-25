@@ -12,7 +12,14 @@ weights, and file writes each require their own opt-in switch.
 | `THEME_MIN_MEMBER_COUNT` | `5` | int | `ThemeScanner` | Filters themes with fewer members than the threshold. | Keep default until theme definitions are reviewed; lower only for explicit small-theme diagnostics. |
 | `THEME_TOP_N` | `20` | int | `ThemeScanner`, metadata adapter | Limits ranked themes emitted in metadata/reporting. | Keep default for daily reports; increase only if metadata size is monitored. |
 | `THEME_METADATA_SYMBOL_LIMIT` | `300` | int | `theme_context.build_theme_rotation_metadata` | Limits per-symbol theme maps in metadata. | Keep bounded; monitor `truncated_symbol_count` before increasing. |
+| `THEME_SMOOTHING_WINDOW` | `10` | int | `ThemeScanner`, `themes/governance.py` | Adds SMA10 heat fields and controls governance history lookback. No behavior change by itself. | Keep default; shorten only for explicit diagnostics, not live decisions. |
+| `THEME_SMOOTHING_MIN_OBSERVATIONS` | `5` | int | `themes/smoothing.py`, `themes/governance.py` | Minimum observations required before a theme can be treated as trend-confirmed. | Keep at least 5; lower values make one-off spikes look more stable. |
+| `THEME_POLICY_CATALYST_ENABLED` | `0` | bool | `ThemeScanner`, `themes/policy.py` | Reads local policy JSONL and adds capped policy catalyst metadata/score component only. No branch, Bayesian, RiskGuard, portfolio, or candidate-pool authority. | Enable only for local paper diagnostics after reviewing the fixture source. |
+| `THEME_POLICY_CATALYST_WEIGHT` | `0.16` | float | `ThemeScanner` | Caps the maximum theme score addition from policy at `weight * 100`. Ignored when policy catalyst is disabled or unavailable. | Keep at or below default until replay evidence exists. |
+| `THEME_POLICY_LOOKBACK_DAYS` | `30` | int | `themes/policy.py` | Controls deterministic recency decay for local policy events. | Keep default for first pass; shorten only when old policy noise is observed. |
+| `THEME_POLICY_EVENT_PATH` | `data/theme_policy_events.jsonl` | string | `themes/policy.py` | Local JSONL fixture/cache path. Missing or malformed files return unavailable and do not fail the scanner. | Keep under local data/artifact governance; do not point to network paths. |
 | `THEME_FUNNEL_BOOST_ENABLED` | `0` | bool | `DeterministicFunnel` | Can change momentum-leader funnel scores and candidate ranking. | Use only in offline or paper A/B first; compare entered/dropped symbols before live rollout. |
+| `THEME_FUNNEL_BOOST_SCORE_SOURCE` | `raw` | enum | `DeterministicFunnel` | Chooses `raw` or `smoothed` theme score only after funnel boost is explicitly enabled. Missing smoothed scores fail closed to no boost. | Keep `raw` until SMA10 diagnostics are reviewed; use `smoothed` only for explicit paper A/B. |
 | `THEME_SYMBOL_BOOST_CAP` | `0.10` | float | `DeterministicFunnel` | Caps positive per-symbol theme boost when funnel boost is enabled. | Start below default for limited rollout; never raise without calibration evidence. |
 | `THEME_RISK_GUARD_ENABLED` | `0` | bool | `theme_context`, `RiskGuard` | Can tighten action cap, gross exposure cap, and per-symbol position limits. | Enable only after paper validation of overextended/distribution risk behavior. |
 | `THEME_RISK_OVEREXTENDED_GROSS_CAP` | `0.60` | float | `theme_context.build_theme_risk_constraints` | Gross exposure cap used for overextended themes when overlay is enabled. | Keep conservative; verify it does not mask existing hard veto behavior. |
@@ -27,13 +34,56 @@ weights, and file writes each require their own opt-in switch.
 | `THEME_SNAPSHOT_ENABLED` | `0` | bool | `theme_context`, `ThemeSnapshotStore` | Writes local JSON theme snapshots only. No ranking, risk, or portfolio behavior changes. | Enable after metadata looks stable; choose a local artifact directory. |
 | `THEME_SNAPSHOT_DIR` | `results/theme_snapshots` | string | `ThemeSnapshotStore` | Root directory for local snapshot JSON files. | Use a run-artifact path that is included in retention/cleanup policy. |
 | `THEME_SNAPSHOT_SAVE_DISABLED` | `0` | bool | `theme_context.persist_theme_rotation_snapshot` | When true, saves disabled scanner payloads if snapshot writes are enabled. | Leave off for normal runs; enable only to audit disabled-state pipelines. |
+| `THEME_GOVERNANCE_ENABLED` | `0` | bool | `theme_context`, `themes/governance.py`, reporting | Attaches `GlobalContext.metadata["theme_governance"]` only. No Bayesian, RiskGuard, portfolio, candidate, or weight behavior changes. | Enable after `theme_rotation.v1` snapshots are stable; review labels as shadow-only. |
+| `THEME_GOVERNANCE_REGISTRY_PATH` | empty | string | `themes/governance.py` | Optional JSON ontology for `theme_type`, `style_tag`, `parent_theme`, `theme_name`, and notes. Malformed files do not fail open. | Keep local JSON small and reviewed; use `theme_type=umbrella` for broad narratives. |
+| `THEME_GOVERNANCE_ARTIFACT_ENABLED` | `0` | bool | `theme_context.persist_theme_governance_artifact` | Writes local JSON governance artifact only. No executable behavior changes. | Enable only for offline audit/report runs; keep separate from theme snapshots. |
+| `THEME_GOVERNANCE_OUTPUT_DIR` | `results/theme_governance` | string | `themes/governance.py`, diagnostics CLI | Root directory for local governance JSON/MD artifacts. | Use a retention-managed artifact path. |
 
 ## Rollout Rules
 
 - `THEME_SCANNER_ENABLED=1` is metadata-only.
+- Smoothing variables add observability fields and governance confirmation; they
+  do not affect candidate ranking unless funnel boost is enabled and
+  `THEME_FUNNEL_BOOST_SCORE_SOURCE=smoothed`.
+- `THEME_POLICY_CATALYST_ENABLED=1` can change theme scores only, capped by
+  `THEME_POLICY_CATALYST_WEIGHT`; it does not create candidates, branches, or
+  likelihoods.
 - `THEME_FUNNEL_BOOST_ENABLED=1` can affect candidate ranking.
 - `THEME_RISK_GUARD_ENABLED=1` can affect risk limits.
 - `THEME_PORTFOLIO_CAP_ENABLED=1` can affect final weights.
 - `THEME_SNAPSHOT_ENABLED=1` writes local files only.
+- `THEME_GOVERNANCE_ENABLED=1` creates shadow-only governance metadata.
+- `THEME_GOVERNANCE_ARTIFACT_ENABLED=1` writes local governance files only.
 - Replay, calibration, and boost diagnostics are explicit offline tools, not
   production DAG imports.
+
+## Governance Registry JSON
+
+Only JSON is supported; YAML is intentionally not supported to avoid adding
+dependencies. Minimal example:
+
+```json
+{
+  "themes": [
+    {
+      "theme_id": "industry::ai",
+      "theme_type": "umbrella",
+      "style_tag": "broad_narrative",
+      "parent_theme": "technology",
+      "theme_name": "AI Umbrella",
+      "notes": "Observe only; too broad for direct admission."
+    }
+  ]
+}
+```
+
+If the registry is unset, missing, or malformed, governance falls back to
+inferred `industry::...` themes as tradable with empty style tags and records a
+diagnostic note.
+
+## A_quant Boundary
+
+The sidecar borrows A_quant concepts: ontology, heat/fragility separation,
+four-way gate thinking, and artifact discipline. It does not copy A_quant
+weights, DuckDB/Tushare paths, tactical portfolio blends, or investment-signal
+promotion into myQuant.

@@ -8,7 +8,10 @@ from quant_investor.agents.theme_agent import ThemeAgent
 from quant_investor.bayesian.types import LikelihoodSet
 from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
 from quant_investor.config import Config, MAINLINE_ENV_DEFAULTS
-from quant_investor.market.dag.theme_context import persist_theme_rotation_snapshot
+from quant_investor.market.dag.theme_context import (
+    persist_theme_governance_artifact,
+    persist_theme_rotation_snapshot,
+)
 
 
 def test_theme_config_defaults_are_off() -> None:
@@ -19,12 +22,18 @@ def test_theme_config_defaults_are_off() -> None:
         "THEME_PORTFOLIO_CAP_ENABLED": "0",
         "THEME_SNAPSHOT_ENABLED": "0",
         "THEME_SNAPSHOT_SAVE_DISABLED": "0",
+        "THEME_GOVERNANCE_ENABLED": "0",
+        "THEME_GOVERNANCE_ARTIFACT_ENABLED": "0",
     }
 
     for key, expected in expected_default_off.items():
         assert MAINLINE_ENV_DEFAULTS[key] == expected
         if key not in os.environ:
             assert getattr(Config, key) is False
+
+    assert MAINLINE_ENV_DEFAULTS["THEME_FUNNEL_BOOST_SCORE_SOURCE"] == "raw"
+    if "THEME_FUNNEL_BOOST_SCORE_SOURCE" not in os.environ:
+        assert Config.THEME_FUNNEL_BOOST_SCORE_SOURCE == "raw"
 
 
 def test_no_theme_likelihood_in_bayesian_types() -> None:
@@ -80,4 +89,25 @@ def test_theme_snapshot_disabled_does_not_write(tmp_path: Path) -> None:
     assert status["status"] == "disabled"
     assert status["path"] == ""
     assert status["diagnostic_notes"] == ["theme_snapshot_disabled"]
+    assert list(tmp_path.rglob("*.json")) == []
+
+
+def test_theme_governance_artifact_disabled_does_not_write(tmp_path: Path) -> None:
+    status = persist_theme_governance_artifact(
+        theme_governance={
+            "schema_version": "theme_governance.v1",
+            "status": "success",
+            "decisions": [],
+        },
+        enabled=False,
+        root_dir=tmp_path,
+        market="CN",
+        universe_key="full_a",
+        as_of="20260618",
+    )
+
+    assert status["enabled"] is False
+    assert status["status"] == "disabled"
+    assert status["path"] == ""
+    assert status["diagnostic_notes"] == ["theme_governance_artifact_disabled"]
     assert list(tmp_path.rglob("*.json")) == []

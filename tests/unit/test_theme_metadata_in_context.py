@@ -8,6 +8,7 @@ from quant_investor.market.dag.theme_context import (
     build_disabled_theme_rotation_metadata,
     build_theme_rotation_metadata,
 )
+from quant_investor.market.dag.context import _theme_snapshot_scope_metadata
 
 
 def _frame(closes: list[float], volumes: list[float] | None = None) -> pd.DataFrame:
@@ -149,3 +150,27 @@ def test_build_theme_rotation_metadata_error_safe(monkeypatch):
     assert metadata["status"] == "error"
     assert metadata["theme_scores"] == {}
     assert any("theme_scanner_error" in note for note in metadata["diagnostic_notes"])
+
+
+def test_theme_snapshot_scope_separates_holding_single_from_full_market():
+    full_market = _theme_snapshot_scope_metadata(
+        universe_key="full_a",
+        symbol_count=5500,
+        explicit_symbol_count=0,
+        unsampled_symbol_count=5500,
+        sampled=False,
+        recall_context={},
+    )
+    holding_single = _theme_snapshot_scope_metadata(
+        universe_key="full_a",
+        symbol_count=1,
+        explicit_symbol_count=1,
+        unsampled_symbol_count=1,
+        sampled=False,
+        recall_context={"holding_symbol": "688301.SH"},
+    )
+
+    assert full_market["input_scope"] == "full_market"
+    assert full_market["snapshot_universe_key"] == "full_a"
+    assert holding_single["input_scope"] == "holding_single"
+    assert holding_single["snapshot_universe_key"] == "full_a_holding_single"

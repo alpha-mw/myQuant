@@ -27,7 +27,11 @@ from quant_investor.agents.base import BaseAgent
 from quant_investor.reporting.conclusion_renderer import ConclusionRenderer
 from quant_investor.reporting.diagnostics_bucketizer import DiagnosticsBucketizer
 from quant_investor.reporting.executive_summary import ExecutiveSummaryBuilder
+from quant_investor.reporting.theme_governance_renderer import (
+    append_theme_governance_section_once,
+)
 from quant_investor.reporting.theme_renderer import render_theme_rotation_markdown
+from quant_investor.reporting.theme_shadow_renderer import append_theme_shadow_section_once
 
 
 class NarratorAgent(BaseAgent):
@@ -77,10 +81,16 @@ class NarratorAgent(BaseAgent):
         bayesian_records = self.copy_value(envelope.get("bayesian_records") or [])
         funnel_summary = self.copy_value(envelope.get("funnel_summary") or {})
         theme_rotation = self.copy_value(envelope.get("theme_rotation") or {})
+        theme_governance = self.copy_value(envelope.get("theme_governance") or {})
+        theme_shadow_monitor = self.copy_value(envelope.get("theme_shadow_monitor") or {})
         if not theme_rotation and global_context is not None:
             context_metadata = getattr(global_context, "metadata", {}) or {}
             if isinstance(context_metadata, Mapping):
                 theme_rotation = self.copy_value(context_metadata.get("theme_rotation") or {})
+        if not theme_governance and global_context is not None:
+            context_metadata = getattr(global_context, "metadata", {}) or {}
+            if isinstance(context_metadata, Mapping):
+                theme_governance = self.copy_value(context_metadata.get("theme_governance") or {})
 
         bucketed = DiagnosticsBucketizer(
             branch_summaries=branch_verdicts,
@@ -126,6 +136,14 @@ class NarratorAgent(BaseAgent):
             markdown_report = markdown_report.rstrip() + "\n\n" + "\n".join(review_sections).strip() + "\n"
         if theme_section:
             markdown_report = markdown_report.rstrip() + "\n\n" + theme_section.strip() + "\n"
+        markdown_report = append_theme_governance_section_once(
+            markdown_report,
+            theme_governance,
+        )
+        markdown_report = append_theme_shadow_section_once(
+            markdown_report,
+            theme_shadow_monitor,
+        )
         if bayesian_section:
             markdown_report = markdown_report.rstrip() + "\n\n" + "\n".join(bayesian_section).strip() + "\n"
         if run_context:
@@ -176,6 +194,16 @@ class NarratorAgent(BaseAgent):
                 "bayesian_record_count": len(bayesian_records),
                 "shortlist_count": len(shortlist),
                 "final_selected_count": len(getattr(portfolio_decision, "target_weights", {}) or {}),
+                "theme_shadow_monitor_status": (
+                    str(theme_shadow_monitor.get("status", ""))
+                    if isinstance(theme_shadow_monitor, Mapping)
+                    else ""
+                ),
+                "theme_governance_status": (
+                    str(theme_governance.get("status", ""))
+                    if isinstance(theme_governance, Mapping)
+                    else ""
+                ),
             },
         )
 

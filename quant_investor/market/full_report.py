@@ -11,6 +11,14 @@ from typing import Any, Mapping
 from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
 from quant_investor.market import name_map as _name_map
 from quant_investor.market.config import get_market_settings
+from quant_investor.reporting.theme_governance_renderer import (
+    append_theme_governance_section_once,
+)
+from quant_investor.reporting.theme_renderer import render_theme_rotation_markdown
+from quant_investor.reporting.theme_shadow_renderer import (
+    append_theme_production_overlay_section_once,
+    append_theme_shadow_section_once,
+)
 
 _STOCK_NAME_CACHE = _name_map._STOCK_NAME_CACHE
 get_stock_name = _name_map.get_stock_name
@@ -85,6 +93,87 @@ def _to_mapping(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return dict(value)
     return {}
+
+
+def _extract_theme_shadow_monitor(meta: Mapping[str, Any]) -> dict[str, Any]:
+    direct = meta.get("theme_shadow_monitor")
+    if isinstance(direct, Mapping):
+        return dict(direct)
+
+    global_context = meta.get("global_context")
+    if isinstance(global_context, Mapping):
+        context_metadata = global_context.get("metadata")
+        if isinstance(context_metadata, Mapping):
+            monitor = context_metadata.get("theme_shadow_monitor")
+            if isinstance(monitor, Mapping):
+                return dict(monitor)
+    return {}
+
+
+def _extract_theme_production_overlay(meta: Mapping[str, Any]) -> dict[str, Any]:
+    direct = meta.get("theme_production_overlay")
+    if isinstance(direct, Mapping):
+        return dict(direct)
+
+    global_context = meta.get("global_context")
+    if isinstance(global_context, Mapping):
+        context_metadata = global_context.get("metadata")
+        if isinstance(context_metadata, Mapping):
+            overlay = context_metadata.get("theme_production_overlay")
+            if isinstance(overlay, Mapping):
+                return dict(overlay)
+    review_bundle = meta.get("review_bundle")
+    if isinstance(review_bundle, Mapping):
+        bundle_metadata = review_bundle.get("metadata")
+        if isinstance(bundle_metadata, Mapping):
+            overlay = bundle_metadata.get("theme_production_overlay")
+            if isinstance(overlay, Mapping):
+                return dict(overlay)
+    return {}
+
+
+def _extract_theme_metadata_payload(
+    meta: Mapping[str, Any],
+    key: str,
+) -> dict[str, Any]:
+    direct = meta.get(key)
+    if isinstance(direct, Mapping):
+        return dict(direct)
+
+    global_context = meta.get("global_context")
+    if isinstance(global_context, Mapping):
+        context_metadata = global_context.get("metadata")
+        if isinstance(context_metadata, Mapping):
+            payload = context_metadata.get(key)
+            if isinstance(payload, Mapping):
+                return dict(payload)
+    return {}
+
+
+def _append_theme_sections_once(
+    markdown: str,
+    *,
+    theme_rotation: Mapping[str, Any] | None,
+    theme_governance: Mapping[str, Any] | None,
+    theme_production_overlay: Mapping[str, Any] | None,
+    theme_shadow_monitor: Mapping[str, Any] | None,
+    governance_max_rows: int = 20,
+) -> str:
+    text = str(markdown or "")
+    if "## 主题轮动雷达" not in text:
+        rotation_section = render_theme_rotation_markdown(theme_rotation)
+        if rotation_section:
+            text = text.rstrip() + "\n\n" + rotation_section.strip() + "\n"
+    text = append_theme_governance_section_once(
+        text,
+        theme_governance,
+        max_rows=governance_max_rows,
+    )
+    text = append_theme_production_overlay_section_once(
+        text,
+        theme_production_overlay,
+    )
+    return append_theme_shadow_section_once(text, theme_shadow_monitor)
 
 
 def _build_analysis_meta(
@@ -166,6 +255,24 @@ def _build_analysis_meta(
             first_meta.get("report_protocol_version", "")
         )
         meta["analysis_kwargs"] = dict(first_meta.get("analysis_kwargs", {}))
+        theme_shadow_monitor = _extract_theme_shadow_monitor(first_meta)
+        if theme_shadow_monitor:
+            meta["theme_shadow_monitor"] = theme_shadow_monitor
+        theme_production_overlay = _extract_theme_production_overlay(first_meta)
+        if theme_production_overlay:
+            meta["theme_production_overlay"] = theme_production_overlay
+        theme_rotation = _extract_theme_metadata_payload(
+            first_meta,
+            "theme_rotation",
+        )
+        if theme_rotation:
+            meta["theme_rotation"] = theme_rotation
+        theme_governance = _extract_theme_metadata_payload(
+            first_meta,
+            "theme_governance",
+        )
+        if theme_governance:
+            meta["theme_governance"] = theme_governance
     return meta
 
 
@@ -1422,10 +1529,26 @@ def generate_full_report(
     summary_file = target_dir / f"{settings.market}_Full_Report_{timestamp}.md"
     data_file = target_dir / f"{settings.market}_Trade_Data_{timestamp}.json"
     report_file = target_dir / f"{settings.market}_Trade_Report_{timestamp}.md"
+    summary_text = _append_theme_sections_once(
+        "".join(summary_lines),
+        theme_rotation=analysis_meta.get("theme_rotation"),
+        theme_governance=analysis_meta.get("theme_governance"),
+        theme_production_overlay=analysis_meta.get("theme_production_overlay"),
+        theme_shadow_monitor=analysis_meta.get("theme_shadow_monitor"),
+        governance_max_rows=8,
+    )
+    report_text = _append_theme_sections_once(
+        "".join(report_lines),
+        theme_rotation=analysis_meta.get("theme_rotation"),
+        theme_governance=analysis_meta.get("theme_governance"),
+        theme_production_overlay=analysis_meta.get("theme_production_overlay"),
+        theme_shadow_monitor=analysis_meta.get("theme_shadow_monitor"),
+        governance_max_rows=20,
+    )
     with open(summary_file, "w", encoding="utf-8") as file:
-        file.writelines(summary_lines)
+        file.write(summary_text)
     with open(report_file, "w", encoding="utf-8") as file:
-        file.writelines(report_lines)
+        file.write(report_text)
     with open(data_file, "w", encoding="utf-8") as file:
         json.dump(plan, file, indent=2, ensure_ascii=False)
 

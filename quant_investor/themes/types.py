@@ -59,6 +59,19 @@ class ThemeScore:
     volume_confirmation: float = 0.0
     overextension_risk: float = 0.0
     fake_breakout_risk: float = 0.0
+    raw_score: float | None = None
+    smoothed_score: float | None = None
+    heat_10d: float | None = None
+    heat_delta_5d: float | None = None
+    persistence_count: int = 0
+    trend_state: str = "insufficient_history"
+    smoothing_observation_count: int = 0
+    smoothing_status: str = "insufficient_history"
+    policy_catalyst_score: float = 0.0
+    policy_confidence: float = 0.0
+    policy_stage: str = "disabled"
+    policy_evidence: list[str] = field(default_factory=list)
+    policy_risk_flags: list[str] = field(default_factory=list)
     top_symbols: list[str] = field(default_factory=list)
     risk_flags: list[str] = field(default_factory=list)
     evidence: list[str] = field(default_factory=list)
@@ -78,6 +91,19 @@ class ThemeScore:
             "volume_confirmation": _jsonable(self.volume_confirmation),
             "overextension_risk": _jsonable(self.overextension_risk),
             "fake_breakout_risk": _jsonable(self.fake_breakout_risk),
+            "raw_score": _jsonable(self.raw_score if self.raw_score is not None else self.score),
+            "smoothed_score": _jsonable(self.smoothed_score),
+            "heat_10d": _jsonable(self.heat_10d),
+            "heat_delta_5d": _jsonable(self.heat_delta_5d),
+            "persistence_count": int(self.persistence_count),
+            "trend_state": str(self.trend_state or "insufficient_history"),
+            "smoothing_observation_count": int(self.smoothing_observation_count),
+            "smoothing_status": str(self.smoothing_status or "insufficient_history"),
+            "policy_catalyst_score": _jsonable(self.policy_catalyst_score),
+            "policy_confidence": _jsonable(self.policy_confidence),
+            "policy_stage": str(self.policy_stage or "disabled"),
+            "policy_evidence": _jsonable(self.policy_evidence),
+            "policy_risk_flags": _jsonable(self.policy_risk_flags),
             "top_symbols": _jsonable(self.top_symbols),
             "risk_flags": _jsonable(self.risk_flags),
             "evidence": _jsonable(self.evidence),
@@ -93,6 +119,7 @@ class ThemeScanResult:
     schema_version: str = "theme_rotation.v1"
     theme_scores: dict[str, ThemeScore] = field(default_factory=dict)
     symbol_scores: dict[str, float] = field(default_factory=dict)
+    symbol_smoothed_scores: dict[str, float] = field(default_factory=dict)
     symbol_primary_theme: dict[str, str] = field(default_factory=dict)
     symbol_phase: dict[str, str] = field(default_factory=dict)
     symbol_risk_flags: dict[str, list[str]] = field(default_factory=dict)
@@ -109,6 +136,7 @@ class ThemeScanResult:
                 for theme_id, score in self.theme_scores.items()
             },
             "symbol_scores": _jsonable(self.symbol_scores),
+            "symbol_smoothed_scores": _jsonable(self.symbol_smoothed_scores),
             "symbol_primary_theme": _jsonable(self.symbol_primary_theme),
             "symbol_phase": _jsonable(self.symbol_phase),
             "symbol_risk_flags": _jsonable(self.symbol_risk_flags),

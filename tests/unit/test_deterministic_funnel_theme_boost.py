@@ -15,11 +15,12 @@ def _theme_rotation(
     *,
     symbol: str = SYMBOL,
     symbol_score: float = 0.95,
+    symbol_smoothed_score: float | None = None,
     phase: str = "confirmed_rotation",
     risk_flags: list[str] | None = None,
     status: str = "success",
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "status": status,
         "symbol_scores": {symbol: symbol_score},
         "symbol_primary_theme": {symbol: "industry::semiconductor"},
@@ -33,6 +34,9 @@ def _theme_rotation(
             }
         },
     }
+    if symbol_smoothed_score is not None:
+        payload["symbol_smoothed_scores"] = {symbol: symbol_smoothed_score}
+    return payload
 
 
 def _market_state() -> dict[str, float]:
@@ -106,6 +110,7 @@ def test_theme_boost_confirmed_rotation_is_positive_and_capped():
     assert boost > 0.0
     assert boost <= 0.05
     assert metadata["reason"] == "applied"
+    assert metadata["score_source"] == "raw"
     assert metadata["phase"] == "confirmed_rotation"
     assert metadata["final_boost"] == boost
 
@@ -162,6 +167,52 @@ def test_theme_boost_distribution_penalizes():
     assert boost < 0.0
     assert metadata["phase"] == "distribution"
     assert metadata["risk_penalty"] < 0.0
+
+
+def test_theme_boost_smoothed_source_reads_symbol_smoothed_scores():
+    funnel = DeterministicFunnel(
+        FunnelConfig(
+            theme_boost_enabled=True,
+            theme_boost_cap=0.05,
+            theme_boost_score_source="smoothed",
+        )
+    )
+
+    boost, metadata = funnel._theme_boost_for_symbol(
+        symbol=SYMBOL,
+        global_context=_global_context(
+            {
+                "theme_rotation": _theme_rotation(
+                    symbol_score=0.95,
+                    symbol_smoothed_score=0.60,
+                )
+            }
+        ),
+    )
+
+    assert boost > 0.0
+    assert metadata["reason"] == "applied"
+    assert metadata["score_source"] == "smoothed"
+    assert metadata["symbol_score"] == 0.60
+
+
+def test_theme_boost_smoothed_source_missing_score_fails_closed():
+    funnel = DeterministicFunnel(
+        FunnelConfig(
+            theme_boost_enabled=True,
+            theme_boost_cap=0.05,
+            theme_boost_score_source="smoothed",
+        )
+    )
+
+    boost, metadata = funnel._theme_boost_for_symbol(
+        symbol=SYMBOL,
+        global_context=_global_context({"theme_rotation": _theme_rotation()}),
+    )
+
+    assert boost == 0.0
+    assert metadata["score_source"] == "smoothed"
+    assert metadata["reason"] == "smoothed_theme_score_missing"
 
 
 def test_momentum_leader_score_missing_theme_preserves_base_score():

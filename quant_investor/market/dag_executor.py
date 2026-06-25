@@ -20,6 +20,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Mapping
 
+import pandas as pd
+
 from quant_investor.agent_protocol import (
     ActionLabel,
     AgentStatus,
@@ -134,9 +136,10 @@ def _load_company_name_map(market: str) -> dict[str, str]:
 def _load_company_profile_map(market: str) -> dict[str, dict[str, str]]:
     if str(market or "").strip().upper() != "CN":
         return {}
+    result = _load_parquet_company_profile_map(market)
     db_path = Path(str(getattr(config, "DB_PATH", "") or "")).expanduser()
     if not db_path.exists():
-        return {}
+        return result
     try:
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
@@ -146,7 +149,7 @@ def _load_company_profile_map(market: str) -> dict[str, dict[str, str]]:
         }
         if "stock_list" not in tables and "stock_profiles" not in tables:
             conn.close()
-            return {}
+            return result
         query = """
             SELECT
                 s.ts_code AS ts_code,
@@ -159,8 +162,7 @@ def _load_company_profile_map(market: str) -> dict[str, dict[str, str]]:
         rows = conn.execute(query).fetchall() if "stock_list" in tables else []
         conn.close()
     except Exception:
-        return {}
-    result: dict[str, dict[str, str]] = {}
+        return result
     for row in rows:
         symbol = str(row["ts_code"] or "").strip().upper()
         if not symbol:
@@ -168,10 +170,47 @@ def _load_company_profile_map(market: str) -> dict[str, dict[str, str]]:
         name = str(row["name"] or "").strip()
         industry = str(row["industry"] or "").strip()
         sector = str(row["sector"] or industry or "").strip()
+        payload = result.setdefault(symbol, {})
+        if name and not str(payload.get("name") or "").strip():
+            payload["name"] = name
+        if industry and not str(payload.get("industry") or "").strip():
+            payload["industry"] = industry
+        if sector and not str(payload.get("sector") or "").strip():
+            payload["sector"] = sector
+        if not str(payload.get("profile_source") or "").strip():
+            payload["profile_source"] = "sqlite_profile"
+    return result
+
+
+def _load_parquet_company_profile_map(market: str) -> dict[str, dict[str, str]]:
+    market_key = str(market or "").strip().lower()
+    if market_key != "cn":
+        return {}
+    data_root = Path(str(getattr(config, "DATA_DIR", "data") or "data")).expanduser()
+    table_path = data_root / "parquet" / market_key / "dag_core_raw" / "table=stock_basic"
+    if not table_path.exists():
+        return {}
+    try:
+        frame = pd.read_parquet(table_path)
+    except Exception:
+        return {}
+    if not isinstance(frame, pd.DataFrame) or frame.empty or "ts_code" not in frame.columns:
+        return {}
+    result: dict[str, dict[str, str]] = {}
+    for row in frame.itertuples(index=False):
+        symbol = str(getattr(row, "ts_code", "") or "").strip().upper()
+        if not symbol:
+            continue
+        name = str(getattr(row, "name", "") or "").strip()
+        industry = str(getattr(row, "industry", "") or "").strip()
+        sector = str(getattr(row, "sector", "") or "").strip() or industry
+        if not any((name, industry, sector)):
+            continue
         result[symbol] = {
             "name": name,
             "industry": industry,
             "sector": sector,
+            "profile_source": "canonical_parquet_stock_basic",
         }
     return result
 
@@ -520,6 +559,10 @@ async def _execute_market_dag_async(
             funnel_cls=DeterministicFunnel,
             provider_health_detector=detect_provider_health,
             runtime_profiler=runtime_profiler,
+            explicit_symbol_count=len(explicit_symbols),
+            unsampled_symbol_count=unsampled_symbol_count,
+            sampled=bool(mode == "sample"),
+            recall_context=recall_context,
         )
         stage_metadata["researchable_count"] = len(context_state.researchable_symbols)
         stage_metadata["candidate_count"] = len(context_state.candidate_symbols)

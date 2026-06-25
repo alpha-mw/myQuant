@@ -1063,6 +1063,29 @@ def _list_payloads(values: Any) -> list[dict[str, Any]]:
     return [_mapping_payload(item) for item in values]
 
 
+def _artifact_member(value: Any, key: str) -> Any:
+    if isinstance(value, dict):
+        return value.get(key)
+    return getattr(value, key, None)
+
+
+def _shortlist_payloads_from_dag_artifacts(
+    dag_artifacts: dict[str, Any],
+) -> tuple[list[dict[str, Any]], str, bool]:
+    shortlist_rows = _list_payloads(dag_artifacts.get("shortlist"))
+    if shortlist_rows:
+        return shortlist_rows, "dag_artifacts.shortlist", False
+
+    for owner_key in ("report_bundle", "portfolio_decision"):
+        shortlist_rows = _list_payloads(
+            _artifact_member(dag_artifacts.get(owner_key), "shortlist")
+        )
+        if shortlist_rows:
+            return shortlist_rows, f"{owner_key}.shortlist", True
+
+    return [], "", False
+
+
 def _symbol_key(value: Any) -> str:
     return str(value or "").strip().upper()
 
@@ -1093,6 +1116,9 @@ def _candidate_dag_status(
     bayesian_record_count: int,
     shortlist_count: int,
     portfolio_target_count: int,
+    shortlist_source: str = "",
+    shortlist_fallback_used: bool = False,
+    shortlist_artifact_missing: bool = False,
     error: str = "",
     dag_executed: bool = True,
 ) -> dict[str, Any]:
@@ -1110,6 +1136,9 @@ def _candidate_dag_status(
             "bayesian_record_count": int(bayesian_record_count),
             "shortlist_count": int(shortlist_count),
             "portfolio_target_count": int(portfolio_target_count),
+            "shortlist_source": shortlist_source,
+            "shortlist_fallback_used": bool(shortlist_fallback_used),
+            "shortlist_artifact_missing": bool(shortlist_artifact_missing),
         },
         "candidate_dag_four_branch_compliance": {
             "complete": bool(accepted_symbols),
@@ -1151,7 +1180,9 @@ def _build_candidate_pool_from_v13_dag(
         for symbol, packet in _mapping_payload(dag_artifacts.get("symbol_research_packets")).items()
         if _symbol_key(symbol)
     }
-    shortlist_rows = _list_payloads(dag_artifacts.get("shortlist"))
+    shortlist_rows, shortlist_source, shortlist_fallback_used = (
+        _shortlist_payloads_from_dag_artifacts(dag_artifacts)
+    )
     shortlist_by_symbol = {
         _symbol_key(row.get("symbol")): row
         for row in shortlist_rows
@@ -1250,12 +1281,22 @@ def _build_candidate_pool_from_v13_dag(
     for index, row in enumerate(rows, start=1):
         row["candidate_rank"] = index
 
+    positive_target_count = len(
+        [weight for weight in target_weights.values() if weight > 0]
+    )
+    shortlist_artifact_missing = (
+        not shortlist_rows
+        and (bool(bayesian_rows) or positive_target_count > 0)
+    )
     if rows:
         status_name = "complete"
         blocker = ""
     elif missing_by_symbol:
         status_name = "blocked"
         blocker = "candidate_dag_incomplete"
+    elif shortlist_artifact_missing:
+        status_name = "blocked"
+        blocker = "candidate_artifact_shortlist_missing"
     else:
         status_name = "empty"
         blocker = "no_candidate_selected_by_portfolio_constructor"
@@ -1268,7 +1309,16 @@ def _build_candidate_pool_from_v13_dag(
         missing_by_symbol=missing_by_symbol,
         bayesian_record_count=len(bayesian_rows),
         shortlist_count=len(shortlist_rows),
-        portfolio_target_count=len([weight for weight in target_weights.values() if weight > 0]),
+        portfolio_target_count=positive_target_count,
+        shortlist_source=shortlist_source,
+        shortlist_fallback_used=shortlist_fallback_used,
+        shortlist_artifact_missing=shortlist_artifact_missing,
+        error=(
+            "shortlist artifact missing while Bayesian records or PortfolioConstructor "
+            "target weights are present"
+            if shortlist_artifact_missing
+            else ""
+        ),
     )
     return pd.DataFrame(rows, dtype=object), status
 
@@ -1716,6 +1766,94 @@ def _format_signed_money(value: float) -> str:
     return f"{value:+,.2f} 元"
 
 
+def _clamp(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, value))
+
+
+def _codex_rating_from_score(score: int) -> str:
+    if score >= 80:
+        return "强"
+    if score >= 70:
+        return "偏强"
+    if score >= 60:
+        return "观察"
+    return "偏弱"
+
+
+def _holding_codex_score(row: pd.Series) -> int:
+    rank = int(_safe_float(row.get("rank_full_market"), 9999.0))
+    today_change = _safe_float(row.get("today_change_pct"), 0.0)
+    ret5 = _safe_float(row.get("ret5"), 0.0)
+    ret20 = _safe_float(row.get("ret20"), 0.0)
+    ret60 = _safe_float(row.get("ret60"), 0.0)
+    current_price = _safe_float(row.get("current_price"), 0.0)
+    stop_price = _safe_float(row.get("stage_stop_price"), 0.0)
+    target_price = _safe_float(row.get("stage_target_price"), 0.0)
+    market_weight = _safe_float(row.get("market_weight"), 0.0)
+    realtime_quote_valid = bool(row.get("realtime_quote_valid"))
+    llm_degraded = bool(row.get("llm_degraded"))
+    recommended_action = str(row.get("recommended_action") or "").strip()
+
+    strength_points = 0.0
+    if rank > 0 and rank < 9999:
+        strength_points = 20.0 * (1.0 - _clamp((rank - 1.0) / 499.0, 0.0, 1.0))
+    score_full_market = _safe_float(row.get("score_full_market"), 0.0)
+    if strength_points <= 0.0:
+        strength_points = 8.0 + 8.0 * _clamp(score_full_market, 0.0, 1.0)
+
+    trend_signal = (
+        _clamp(today_change / 8.0, -1.0, 1.0)
+        + _clamp(ret5 / 0.15, -1.0, 1.0)
+        + _clamp(ret20 / 0.35, -1.0, 1.0)
+        + _clamp(ret60 / 0.60, -1.0, 1.0)
+    ) / 4.0
+    trend_points = 25.0 * (trend_signal + 1.0) / 2.0
+
+    stop_buffer = _safe_pct(current_price - stop_price, stop_price) if stop_price > 0 else 0.0
+    target_gap = _safe_pct(target_price - current_price, current_price) if current_price > 0 else 0.0
+    risk_points = 0.0
+    risk_points += 10.0 * _clamp((stop_buffer + 0.10) / 0.35, 0.0, 1.0)
+    risk_points += 10.0 * _clamp((target_gap + 0.05) / 0.25, 0.0, 1.0)
+
+    evidence_points = 10.0 if realtime_quote_valid else 5.0
+    if llm_degraded:
+        evidence_points -= 2.0
+
+    concentration_penalty = 6.0 * _clamp((market_weight - 0.18) / 0.12, 0.0, 1.0)
+    portfolio_fit_points = 10.0 - concentration_penalty
+
+    action_points_map = {
+        "继续持有": 15.0,
+        "继续观察": 10.0,
+        "减仓待确认": 5.0,
+    }
+    action_points = action_points_map.get(recommended_action, 8.0)
+
+    total = strength_points + trend_points + risk_points + evidence_points + portfolio_fit_points + action_points
+    return int(round(_clamp(total, 0.0, 100.0)))
+
+
+def _candidate_codex_score(row: pd.Series) -> int:
+    posterior_action_score = _safe_float(row.get("posterior_action_score"), 0.0)
+    posterior_confidence = _safe_float(row.get("posterior_confidence"), 0.0)
+    expected_upside = _safe_float(row.get("expected_upside"), 0.0)
+    portfolio_target_weight = _safe_float(row.get("portfolio_target_weight"), 0.0)
+    branch_complete = bool(row.get("candidate_dag_four_branch_complete"))
+    evidence_quality = str(row.get("evidence_quality") or "").strip()
+    risk_flags = str(row.get("risk_flags") or "").strip()
+
+    score = 0.0
+    score += 35.0 * _clamp(posterior_action_score / 0.65, 0.0, 1.0)
+    score += 20.0 * _clamp(posterior_confidence / 0.70, 0.0, 1.0)
+    score += 15.0 * _clamp(expected_upside / 0.03, 0.0, 1.0)
+    score += 10.0 * _clamp(portfolio_target_weight / 0.10, 0.0, 1.0)
+    score += 10.0 if branch_complete else 0.0
+    score += {"高": 10.0, "中": 6.0}.get(evidence_quality, 3.0)
+    if risk_flags:
+        score -= min(8.0, 2.0 * risk_flags.count("；"))
+    return int(round(_clamp(score, 0.0, 100.0)))
+
+
 def _format_holding_advice_line(row: Any) -> str:
     price = _safe_float(getattr(row, "current_price", 0.0), 0.0)
     buy_price = _safe_float(getattr(row, "buy_price", 0.0), 0.0)
@@ -1726,9 +1864,11 @@ def _format_holding_advice_line(row: Any) -> str:
     target_price = _safe_float(getattr(row, "stage_target_price", 0.0), 0.0)
     stop_buffer = _safe_pct(price - stop_price, stop_price)
     hard_signal = "未触发阶段止损" if price >= stop_price else "低于阶段止损，需跟踪减仓确认"
+    codex_score = int(_safe_float(getattr(row, "codex_recommendation_score", 0), 0.0))
+    codex_rating = str(getattr(row, "codex_recommendation_rating", "") or _codex_rating_from_score(codex_score))
     return (
         f"- `{row.symbol}`（{row.name}）：建议 `{row.recommended_action}`，"
-        f"持仓角色 `{row.position_role}`；当前价 `{price:.2f}`，"
+        f"持仓角色 `{row.position_role}`；Codex 评分 `{codex_score}/100`（`{codex_rating}`）；当前价 `{price:.2f}`，"
         f"持有成本 `{buy_price:.2f}`（成本金额 `{buy_value:,.2f} 元`），"
         f"阶段止损 `{stop_price:.2f}`（缓冲 {stop_buffer:+.2%}），"
         f"阶段目标 `{target_price:.2f}`；浮动 PNL `{_format_signed_money(unrealized_pnl)}`"
@@ -1763,8 +1903,11 @@ def _format_candidate_advice_line(row: Any, switch_row: dict[str, Any] | None) -
         if switch_row
         else "若下一轮仍保持 candidate-level v13 DAG 完整且 PortfolioConstructor 正目标权重，可继续观察或准备换仓"
     )
+    codex_score = int(_safe_float(getattr(row, "codex_recommendation_score", 0), 0.0))
+    codex_rating = str(getattr(row, "codex_recommendation_rating", "") or _codex_rating_from_score(codex_score))
     return (
         f"- `{row.symbol}`（{row.name}）：主线 `{row.theme_label}`，来源 `{source_label}`；"
+        f"Codex 评分 `{codex_score}/100`（`{codex_rating}`）；"
         f"{relative_advantage}主要风险：{major_risk}"
         f"触发条件：{trigger}；证据质量：`{row.evidence_quality}`。"
     )
@@ -1794,6 +1937,176 @@ def _format_trade_date(value: Any) -> str:
     if len(text) == 8 and text.isdigit():
         return f"{text[:4]}-{text[4:6]}-{text[6:]}"
     return text or "未知"
+
+
+def _compact_trade_date(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) == 8 and text.isdigit():
+        return text
+    digits = "".join(ch for ch in text if ch.isdigit())
+    return digits[:8] if len(digits) >= 8 else text.replace("-", "")
+
+
+def _normalize_review_symbol(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def build_parquet_canonical_completeness_report(
+    *,
+    reader: Any,
+    components: dict[str, Any],
+    categories: list[str] | tuple[str, ...] | None = None,
+    allowed_stale_symbols: list[str] | tuple[str, ...] | set[str] | None = None,
+    target_trade_date: str | None = None,
+    early_stop_reason: str = "",
+) -> dict[str, Any]:
+    """Build the formal-review completeness payload from strict canonical Parquet."""
+
+    snapshot = dict(reader.snapshot() or {})
+    if snapshot.get("healthy") is False:
+        blockers = [str(item) for item in snapshot.get("blockers", []) if str(item).strip()]
+        raise RuntimeError("; ".join(blockers) or "strict Parquet snapshot is not healthy")
+
+    effective_trade_date = _compact_trade_date(
+        target_trade_date
+        or snapshot.get("latest_complete_trade_date")
+        or snapshot.get("latest_trade_date")
+    )
+    if not effective_trade_date:
+        raise RuntimeError("strict Parquet latest_complete_trade_date is missing")
+
+    cross_section = reader.read_cross_section(
+        effective_trade_date,
+        universe_key="full_a",
+        columns=["ts_code", "trade_date"],
+    )
+    symbol_column = (
+        "symbol"
+        if "symbol" in cross_section.columns
+        else "ts_code"
+        if "ts_code" in cross_section.columns
+        else ""
+    )
+    available_symbols = {
+        _normalize_review_symbol(symbol)
+        for symbol in (cross_section[symbol_column].tolist() if symbol_column else [])
+        if _normalize_review_symbol(symbol)
+    }
+    allowed = {
+        _normalize_review_symbol(symbol)
+        for symbol in (allowed_stale_symbols or [])
+        if _normalize_review_symbol(symbol)
+    }
+    coverage_payload = dict(snapshot.get("coverage", {}) or {})
+    inactive_symbols = {
+        _normalize_review_symbol(symbol)
+        for symbol in coverage_payload.get("inactive_symbols", []) or []
+        if _normalize_review_symbol(symbol)
+    }
+    target_categories = list(categories or ["full_a", "hs300", "zz500", "zz1000"])
+
+    report: dict[str, Any] = {
+        "allowed_stale_symbols": sorted(allowed),
+        "complete": True,
+        "blocking_incomplete_count": 0,
+        "categories_checked": target_categories,
+        "categories": {},
+        "data_quality_issues": [],
+        "pre_listing_symbols": [],
+        "source": "strict_parquet_canonical",
+        "snapshot_id": str(snapshot.get("snapshot_id") or ""),
+        "latest_complete_trade_date": effective_trade_date,
+    }
+    coverage_complete_count = 0
+    expected_scope_count = 0
+
+    for category in target_categories:
+        category_symbols = [
+            _normalize_review_symbol(symbol)
+            for symbol in components.get(category, []) or []
+            if _normalize_review_symbol(symbol)
+        ]
+        category_symbols = list(dict.fromkeys(category_symbols))
+        target_set = set(category_symbols)
+        present = target_set & available_symbols
+        non_blocking_absent = ((allowed | inactive_symbols) & target_set) - present
+        missing = sorted(target_set - present - non_blocking_absent)
+        category_complete_count = len(present) + len(non_blocking_absent)
+        coverage_complete_count += category_complete_count
+        expected_count = len(category_symbols)
+        expected_scope_count += expected_count
+        blocking_count = len(missing)
+        if blocking_count:
+            report["complete"] = False
+            report["blocking_incomplete_count"] += blocking_count
+
+        status_counts: dict[str, int] = {}
+        if present:
+            status_counts["up_to_date"] = len(present)
+        if non_blocking_absent:
+            status_counts["inactive_or_allowed"] = len(non_blocking_absent)
+        if missing:
+            status_counts["missing"] = len(missing)
+        report["categories"][category] = {
+            "expected": expected_count,
+            "latest_trade_date": effective_trade_date,
+            "pre_listing_symbols": [],
+            "date_counts": {effective_trade_date: len(present)} if present else {},
+            "status_counts": status_counts,
+            "missing_symbols": missing,
+            "stale_symbols": [],
+            "suspended_stale_symbols": [],
+            "unreadable_symbols": [],
+            "blocking_missing_symbols": missing,
+            "blocking_stale_symbols": [],
+            "blocking_unreadable_symbols": [],
+            "blocking_incomplete_count": blocking_count,
+            "coverage_complete_count": category_complete_count,
+            "coverage_ratio": (
+                category_complete_count / expected_count
+                if expected_count
+                else 1.0
+            ),
+        }
+
+    coverage_ratio = (
+        coverage_complete_count / expected_scope_count
+        if expected_scope_count
+        else 1.0
+    )
+    report.update(
+        {
+            "latest_trade_date": effective_trade_date,
+            "strict_trade_date": effective_trade_date,
+            "stable_trade_date": effective_trade_date,
+            "effective_target_trade_date": effective_trade_date,
+            "freshness_mode": "strict_parquet_canonical",
+            "coverage_ratio": coverage_ratio,
+            "coverage_complete_count": coverage_complete_count,
+            "expected_scope_count": expected_scope_count,
+            "coverage_threshold": 0.95,
+            "early_stop_reason": early_stop_reason,
+            "resolver": {
+                "resolution_strategy": "strict_parquet_canonical",
+                "snapshot_id": str(snapshot.get("snapshot_id") or ""),
+                "latest_complete_trade_date": effective_trade_date,
+                "table_root": str(snapshot.get("table_root") or ""),
+                "serving_root": str(snapshot.get("serving_root") or ""),
+                "manifest_path": str(snapshot.get("manifest_path") or ""),
+                "latest_pointer_path": str(snapshot.get("latest_pointer_path") or ""),
+                "physical_directories_used_for_full_a": [],
+                "local_union_fallback_used": False,
+                "metadata": {
+                    "source": "strict_parquet_canonical",
+                    "fallback_used": False,
+                },
+            },
+            "data_quality_issue_count": 0,
+        }
+    )
+    return report
 
 
 def _dominant_trade_date(date_counts: dict[str, Any]) -> str:
@@ -2313,7 +2626,7 @@ def _build_notes_payload(
     else:
         top_rows = candidate_pool.head(3)
         candidate_text = "；".join(
-            f"{row.symbol}({row.name})/{row.theme_label}/证据{row.evidence_quality}"
+            f"{row.symbol}({row.name})/{row.theme_label}/评分{int(getattr(row, 'codex_recommendation_score', 0))}/证据{row.evidence_quality}"
             for row in top_rows.itertuples()
         )
 
@@ -2367,8 +2680,12 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         max_workers=4,
     )
     components = downloader.load_components()
-    completeness_before = downloader.build_completeness_report(
+    market_data_reader = MarketDataReader(market="CN", data_root=cn_data_root.parent)
+    review_categories = ["full_a", "hs300", "zz500", "zz1000"]
+    completeness_before = build_parquet_canonical_completeness_report(
+        reader=market_data_reader,
         components=components,
+        categories=review_categories,
         allowed_stale_symbols=args.allowed_stale_symbols,
     )
     attempted_backfill = False
@@ -2378,7 +2695,6 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     latest_trade_date = str(completeness_after.get("latest_trade_date") or "")
     analysis_trade_date = _resolve_analysis_trade_date(completeness_after)
     completeness_passed = bool(completeness_after["complete"])
-    market_data_reader = MarketDataReader(market="CN")
     skip_market_metrics_prewarm = bool(getattr(args, "skip_market_metrics_prewarm", False))
 
     market_metrics_bundle = _load_or_compute_market_metrics_bundle(
@@ -2545,6 +2861,10 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     holdings_review["position_role"] = holdings_review.apply(_position_role, axis=1)
     holdings_review["recommended_action"] = holdings_review.apply(_position_action, axis=1)
     holdings_review["reason"] = holdings_review.apply(_position_reason, axis=1)
+    holdings_review["codex_recommendation_score"] = holdings_review.apply(_holding_codex_score, axis=1)
+    holdings_review["codex_recommendation_rating"] = holdings_review["codex_recommendation_score"].map(
+        _codex_rating_from_score
+    )
     holdings_review = holdings_review.sort_values(
         by=["score_full_market", "today_change_pct", "symbol"],
         ascending=[False, False, True],
@@ -2555,12 +2875,24 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         completeness_report=completeness_after,
         total_capital=initial_capital,
     )
+    if not candidate_pool.empty:
+        candidate_pool = candidate_pool.copy()
+        candidate_pool["codex_recommendation_score"] = candidate_pool.apply(_candidate_codex_score, axis=1)
+        candidate_pool["codex_recommendation_rating"] = candidate_pool["codex_recommendation_score"].map(
+            _codex_rating_from_score
+        )
     switch_plan_df = _build_switch_plan(
         holdings_review=holdings_review,
         candidate_pool=candidate_pool,
         completeness_passed=completeness_passed,
         decision_data_sufficient=decision_data_sufficient,
     )
+    if not switch_plan_df.empty and not candidate_pool.empty:
+        score_map = candidate_pool.set_index("symbol")["codex_recommendation_score"].to_dict()
+        rating_map = candidate_pool.set_index("symbol")["codex_recommendation_rating"].to_dict()
+        switch_plan_df = switch_plan_df.copy()
+        switch_plan_df["buy_codex_recommendation_score"] = switch_plan_df["buy_symbol"].map(score_map)
+        switch_plan_df["buy_codex_recommendation_rating"] = switch_plan_df["buy_symbol"].map(rating_map)
 
     theme_strength = _summarize_theme_strength(holdings_review)
     style_text = _market_style_conclusion(indices=indices, breadth=breadth)

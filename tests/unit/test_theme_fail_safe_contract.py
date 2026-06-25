@@ -13,6 +13,7 @@ from quant_investor.themes.replay import (
     ThemeCalibrationDataset,
     build_theme_calibration_dataset,
 )
+from quant_investor.themes.governance import evaluate_theme_governance
 from quant_investor.themes.scanner import ThemeScanner
 from quant_investor.themes.storage import ThemeSnapshotStore
 
@@ -109,6 +110,29 @@ def test_theme_snapshot_store_bad_json_load_latest_safe(tmp_path: Path) -> None:
     bad_path.write_text("{bad json", encoding="utf-8")
 
     assert ThemeSnapshotStore(tmp_path).load_latest(market="CN", universe_key="full_a") is None
+
+
+def test_theme_governance_bad_metadata_safe() -> None:
+    payload = evaluate_theme_governance(
+        {
+            "schema_version": "theme_rotation.v1",
+            "enabled": True,
+            "status": "success",
+            "theme_scores": {
+                "industry::bad": {
+                    "theme_id": "industry::bad",
+                    "score": "bad",
+                    "confidence": 0.6,
+                    "breadth": 0.5,
+                    "member_count": 8,
+                }
+            },
+        }
+    ).to_dict()
+
+    assert payload["status"] == "success"
+    assert payload["decisions"][0]["gate_label"] == "unavailable"
+    assert payload["summary_counts"]["unavailable"] == 1
 
 
 def test_theme_replay_bad_snapshot_safe(tmp_path: Path) -> None:

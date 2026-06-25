@@ -4,6 +4,8 @@ import argparse
 import json
 from pathlib import Path
 
+import pytest
+
 import quant_investor.monitoring.cn_aggressive_daily_review as daily_review
 
 
@@ -58,6 +60,15 @@ class FakePreflightDownloader:
 
     def build_completeness_report(self, **_kwargs):
         return dict(self.completeness)
+
+
+@pytest.fixture(autouse=True)
+def _stub_parquet_preflight_completeness(monkeypatch):
+    monkeypatch.setattr(
+        daily_review.tracker,
+        "build_parquet_canonical_completeness_report",
+        lambda **_kwargs: dict(FakePreflightDownloader.completeness),
+    )
 
 
 def test_daily_review_skips_staged_maintenance_when_same_day_unavailable_and_snapshot_sufficient(

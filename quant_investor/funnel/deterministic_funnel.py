@@ -86,6 +86,7 @@ class FunnelConfig:
     sector_bucket_limit: int = 0
     theme_boost_enabled: bool = False
     theme_boost_cap: float = 0.10
+    theme_boost_score_source: str = "raw"
 
 
 @dataclass
@@ -158,6 +159,7 @@ class DeterministicFunnel:
             "risk_penalty": 0.0,
             "final_boost": 0.0,
             "cap": cap,
+            "score_source": "raw",
             "reason": "",
         }
         metadata = getattr(global_context, "metadata", {}) or {}
@@ -190,6 +192,7 @@ class DeterministicFunnel:
                 return 0.0, boost_metadata
             payload = {
                 "symbol_scores": metadata.get("symbol_theme_score"),
+                "symbol_smoothed_scores": metadata.get("symbol_theme_smoothed_score"),
                 "symbol_primary_theme": metadata.get("symbol_primary_theme"),
                 "symbol_phase": metadata.get("symbol_theme_phase"),
                 "symbol_risk_flags": metadata.get("symbol_risk_flags")
@@ -197,7 +200,22 @@ class DeterministicFunnel:
                 "theme_scores": metadata.get("theme_scores"),
             }
 
-        symbol_scores = _mapping_or_empty(payload.get("symbol_scores"))
+        score_source = str(
+            getattr(self.config, "theme_boost_score_source", "raw") or "raw"
+        ).strip().lower()
+        if score_source not in {"raw", "smoothed"}:
+            boost_metadata["score_source"] = score_source
+            boost_metadata["reason"] = "invalid_theme_boost_score_source"
+            return 0.0, boost_metadata
+        boost_metadata["score_source"] = score_source
+
+        if score_source == "smoothed":
+            symbol_scores = _mapping_or_empty(payload.get("symbol_smoothed_scores"))
+            if symbol not in symbol_scores:
+                boost_metadata["reason"] = "smoothed_theme_score_missing"
+                return 0.0, boost_metadata
+        else:
+            symbol_scores = _mapping_or_empty(payload.get("symbol_scores"))
         if symbol not in symbol_scores:
             boost_metadata["reason"] = "symbol_theme_missing"
             return 0.0, boost_metadata
@@ -426,6 +444,9 @@ class DeterministicFunnel:
                     0.0,
                     _safe_float(getattr(self.config, "theme_boost_cap", 0.0), 0.0),
                 ),
+                "theme_boost_score_source": str(
+                    getattr(self.config, "theme_boost_score_source", "raw") or "raw"
+                ).strip().lower(),
                 "theme_boost_profile": "momentum_leader_only",
                 "theme_boost_note": "disabled_by_default_capped_deterministic",
                 "theme_boost_available_count": theme_boost_available_count,

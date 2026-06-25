@@ -87,6 +87,24 @@ def _fake_empty_candidate_dag_status() -> dict[str, object]:
     }
 
 
+def _patch_parquet_completeness(
+    monkeypatch,
+    completeness: dict[str, object],
+    *,
+    assert_allowed_stale_symbols: list[str] | None = None,
+) -> None:
+    def _fake_parquet_completeness(**kwargs):
+        if assert_allowed_stale_symbols is not None:
+            assert kwargs.get("allowed_stale_symbols") == assert_allowed_stale_symbols
+        return dict(completeness)
+
+    monkeypatch.setattr(
+        tracker,
+        "build_parquet_canonical_completeness_report",
+        _fake_parquet_completeness,
+    )
+
+
 @pytest.fixture(autouse=True)
 def _stub_candidate_level_v13_dag(monkeypatch):
     monkeypatch.setattr(
@@ -105,6 +123,49 @@ def test_build_parser_accepts_allowed_stale_symbols():
 
     debug_args = parser.parse_args(["--skip-market-metrics-prewarm"])
     assert debug_args.skip_market_metrics_prewarm is True
+
+
+def test_parquet_canonical_completeness_drives_analysis_date_from_reader():
+    class _FakeReader:
+        def snapshot(self):
+            return {
+                "healthy": True,
+                "snapshot_id": "snap-20260618",
+                "latest_complete_trade_date": "20260618",
+                "latest_trade_date": "20260618",
+                "table_root": "/tmp/parquet/cn/bars",
+                "serving_root": "/tmp/parquet_serving/cn/bars",
+                "manifest_path": "/tmp/parquet/cn/_snapshots/snap-20260618.json",
+                "latest_pointer_path": "/tmp/parquet/cn/_latest.json",
+            }
+
+        def read_cross_section(self, trade_date, **kwargs):
+            assert trade_date == "20260618"
+            assert kwargs["universe_key"] == "full_a"
+            return pd.DataFrame(
+                {
+                    "ts_code": ["000001.SZ", "000002.SZ", "000003.SZ"],
+                    "trade_date": ["20260618", "20260618", "20260618"],
+                }
+            )
+
+    report = tracker.build_parquet_canonical_completeness_report(
+        reader=_FakeReader(),
+        components={
+            "full_a": ["000001.SZ", "000002.SZ"],
+            "hs300": ["000001.SZ"],
+            "zz500": ["000002.SZ"],
+            "zz1000": [],
+        },
+        categories=["full_a", "hs300", "zz500", "zz1000"],
+    )
+
+    assert report["source"] == "strict_parquet_canonical"
+    assert report["complete"] is True
+    assert report["latest_complete_trade_date"] == "20260618"
+    assert report["coverage_ratio"] == 1.0
+    assert tracker._resolve_analysis_trade_date(report) == "20260618"
+    assert report["resolver"]["physical_directories_used_for_full_a"] == []
 
 
 def test_realtime_execution_price_accepts_non_current_realtime_field():
@@ -543,6 +604,94 @@ def test_candidate_pool_from_v13_dag_requires_candidate_level_four_branches():
     }
 
 
+def test_candidate_pool_from_v13_dag_falls_back_to_report_bundle_shortlist():
+    complete_branches = {
+        branch: {"branch_name": branch, "final_score": 0.8, "final_confidence": 0.7}
+        for branch in tracker.REQUIRED_DAG_BRANCHES
+    }
+    shortlist = [
+        {
+            "symbol": "688301.SH",
+            "company_name": "奕瑞科技",
+            "category": "full_a",
+            "rank_score": 0.86,
+            "confidence": 0.72,
+            "expected_upside": 0.16,
+            "suggested_weight": 0.08,
+            "risk_flags": ["估值波动"],
+            "rationale": ["四分支共振"],
+        }
+    ]
+    dag_artifacts = {
+        "symbol_research_packets": {
+            "688301.SH": {
+                "symbol": "688301.SH",
+                "company_name": "奕瑞科技",
+                "category": "full_a",
+                "branch_verdicts": complete_branches,
+            },
+        },
+        "report_bundle": SimpleNamespace(shortlist=shortlist),
+        "bayesian_records": [
+            {
+                "symbol": "688301.SH",
+                "posterior_action_score": 0.74,
+                "posterior_win_rate": 0.62,
+                "posterior_expected_alpha": 0.08,
+                "posterior_confidence": 0.71,
+                "rank": 1,
+            }
+        ],
+        "portfolio_decision": {
+            "target_weights": {"688301.SH": 0.08},
+            "target_positions": {"688301.SH": 0.08},
+        },
+    }
+
+    candidate_pool, status = tracker._build_candidate_pool_from_v13_dag(
+        dag_artifacts=dag_artifacts,
+        held_symbols=[],
+    )
+
+    assert candidate_pool["symbol"].tolist() == ["688301.SH"]
+    assert status["candidate_generation_status"] == "complete"
+    assert status["blocker"] == ""
+    assert status["dag_pipeline"]["shortlist_source"] == "report_bundle.shortlist"
+    assert status["dag_pipeline"]["shortlist_fallback_used"] is True
+    assert status["dag_pipeline"]["shortlist_artifact_missing"] is False
+
+
+def test_candidate_pool_from_v13_dag_blocks_when_shortlist_artifact_missing():
+    dag_artifacts = {
+        "symbol_research_packets": {},
+        "bayesian_records": [
+            {
+                "symbol": "688301.SH",
+                "posterior_action_score": 0.74,
+                "posterior_win_rate": 0.62,
+                "posterior_expected_alpha": 0.08,
+                "posterior_confidence": 0.71,
+                "rank": 1,
+            }
+        ],
+        "portfolio_decision": {
+            "target_weights": {"688301.SH": 0.08},
+        },
+    }
+
+    candidate_pool, status = tracker._build_candidate_pool_from_v13_dag(
+        dag_artifacts=dag_artifacts,
+        held_symbols=[],
+    )
+
+    assert candidate_pool.empty
+    assert status["candidate_generation_status"] == "blocked"
+    assert status["blocker"] == "candidate_artifact_shortlist_missing"
+    assert status["dag_pipeline"]["shortlist_artifact_missing"] is True
+    assert status["dag_pipeline"]["shortlist_source"] == ""
+    assert "shortlist artifact missing" in status["error"]
+
+
 def test_risk_reduction_sell_gate_accepts_sell_only_broken_stop():
     order = tracker.ProposedOrder(
         symbol="688301.SH",
@@ -701,11 +850,17 @@ def test_run_tracker_forwards_allowed_stale_symbols(monkeypatch, tmp_path):
         def load_components(self):
             return {"full_a": []}
 
-        def build_completeness_report(self, components=None, allowed_stale_symbols=None):
-            assert allowed_stale_symbols == ["601989.SH"]
-            raise _Sentinel
-
     monkeypatch.setattr(tracker, "CNFullMarketDownloader", _FakeDownloader)
+
+    def _fake_parquet_completeness(**kwargs):
+        assert kwargs.get("allowed_stale_symbols") == ["601989.SH"]
+        raise _Sentinel
+
+    monkeypatch.setattr(
+        tracker,
+        "build_parquet_canonical_completeness_report",
+        _fake_parquet_completeness,
+    )
 
     args = argparse.Namespace(
         base_dir=str(tmp_path / "strategy_records"),
@@ -1194,15 +1349,16 @@ def test_run_tracker_invokes_unified_review_mainline(monkeypatch, tmp_path):
         def load_components(self):
             return {"full_a": []}
 
-        def build_completeness_report(self, components=None, allowed_stale_symbols=None):
-            return {
-                "complete": True,
-                "latest_trade_date": "20260407",
-                "blocking_incomplete_count": 0,
-                "suspension_evidence": {},
-            }
-
     monkeypatch.setattr(tracker, "CNFullMarketDownloader", _FakeDownloader)
+    _patch_parquet_completeness(
+        monkeypatch,
+        {
+            "complete": True,
+            "latest_trade_date": "20260407",
+            "blocking_incomplete_count": 0,
+            "suspension_evidence": {},
+        },
+    )
     monkeypatch.setattr(
         tracker,
         "_load_or_compute_market_metrics_bundle",
@@ -1280,18 +1436,19 @@ def test_run_tracker_keeps_formal_review_when_completeness_incomplete(monkeypatc
         def load_components(self):
             return {"full_a": []}
 
-        def build_completeness_report(self, components=None, allowed_stale_symbols=None):
-            return {
-                "complete": False,
-                "latest_trade_date": "20260407",
-                "blocking_incomplete_count": 12,
-            }
-
         def download_all(self, *args, **kwargs):
             calls["download_all"] += 1
             raise AssertionError("run_tracker should not auto-backfill before formal review")
 
     monkeypatch.setattr(tracker, "CNFullMarketDownloader", _FakeDownloader)
+    _patch_parquet_completeness(
+        monkeypatch,
+        {
+            "complete": False,
+            "latest_trade_date": "20260407",
+            "blocking_incomplete_count": 12,
+        },
+    )
     monkeypatch.setattr(
         tracker,
         "_load_or_compute_market_metrics_bundle",
@@ -1546,10 +1703,8 @@ def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypa
         def load_components(self):
             return {"full_a": ["601869.SH"], "hs300": ["601869.SH"], "zz500": [], "zz1000": []}
 
-        def build_completeness_report(self, components=None, allowed_stale_symbols=None):
-            return completeness
-
     monkeypatch.setattr(tracker, "CNFullMarketDownloader", _FakeDownloader)
+    _patch_parquet_completeness(monkeypatch, completeness)
     prewarmed_metrics = pd.DataFrame(
         [
             {
@@ -1724,6 +1879,7 @@ def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypa
     assert "DAG四分支完整执行" in report_text
     assert "stale_snapshot" in report_text
     assert "601869.SH(长飞光纤) 持有成本 `100.00`，PNL `+6,000.00 元`（+20.00%）" in report_text
+    assert "Codex 评分 `" in report_text
     assert "#### 5.4.3 证据质量与工程诊断" in report_text
     assert "provider、snapshot、旧 intelligence batch" in report_text
     assert "### 5.7 因子库状态（只读影子观察）" in report_text
@@ -1759,6 +1915,9 @@ def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypa
     assert (run_dir / "orders.csv").exists()
     assert (run_dir / "holdings_review.csv").exists()
     assert (run_dir / "raw_exports" / "runtime_profile.json").exists()
+    holdings_review = pd.read_csv(run_dir / "holdings_review.csv", encoding="utf-8-sig")
+    assert "codex_recommendation_score" in holdings_review.columns
+    assert "codex_recommendation_rating" in holdings_review.columns
 
 
 def test_run_tracker_auto_fills_risk_reduction_sell_with_realtime_quote(monkeypatch, tmp_path):
@@ -1863,10 +2022,8 @@ def test_run_tracker_auto_fills_risk_reduction_sell_with_realtime_quote(monkeypa
         def load_components(self):
             return {"full_a": ["688301.SH"], "hs300": [], "zz500": [], "zz1000": []}
 
-        def build_completeness_report(self, components=None, allowed_stale_symbols=None):
-            return completeness
-
     monkeypatch.setattr(tracker, "CNFullMarketDownloader", _FakeDownloader)
+    _patch_parquet_completeness(monkeypatch, completeness)
     prewarmed_metrics = pd.DataFrame(
         [
             {

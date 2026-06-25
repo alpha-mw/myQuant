@@ -9,11 +9,15 @@ audits.
 | Area | Tests | Contract |
 | --- | --- | --- |
 | Scanner | `tests/unit/test_theme_scanner.py` | Empty inputs are safe; ranking is deterministic; small themes are filtered; malformed local data does not raise. |
+| Smoothing | `tests/unit/test_theme_smoothing.py` | SMA10 heat, 5-day delta, persistence, warming/cooling/spike states, and insufficient-history fail-closed behavior. |
 | ThemeAgent | `tests/unit/test_theme_agent.py` | Standalone non-canonical verdicts; neutral without metadata; reads dict and dataclass payloads. |
 | Metadata/context | `tests/unit/test_theme_metadata_in_context.py` | Disabled, success, symbol-limit, empty-map, and scanner-error metadata payloads. |
 | Bayesian metadata | `tests/unit/test_bayesian_theme_metadata.py` | Per-symbol theme metadata can be extracted and passed through without changing likelihood schema. |
 | Reporting | `tests/unit/test_theme_reporting.py` | Theme radar markdown is presentation-only and safe for disabled/error/malformed payloads. |
-| Funnel boost | `tests/unit/test_deterministic_funnel_theme_boost.py` | Default disabled no-op; enabled boost is capped and deterministic. |
+| Governance | `tests/unit/test_theme_governance.py` | Theme governance sidecar labels admitted, strong-watch, rebuild-watch, rejected, umbrella-only, unavailable, disabled, error, malformed, registry-fallback, raw-spike-blocked, and history-confirmed cases. |
+| Governance reporting | `tests/unit/test_theme_governance_reporting.py` | Markdown explicitly says shadow/governance only and final executable decision remains baseline; duplicate append is avoided; current score, SMA10 heat, delta, persistence, and trend state are visible. |
+| Governance CLI | `tests/unit/test_theme_governance_cli.py` | Offline diagnostics load an explicit/local snapshot and write JSON plus markdown artifacts without live calls. |
+| Funnel boost | `tests/unit/test_deterministic_funnel_theme_boost.py` | Default disabled no-op; enabled boost is capped and deterministic; `raw` remains default score source; explicit `smoothed` uses `symbol_smoothed_scores` and fails closed when missing. |
 | Boost diagnostics | `tests/unit/test_theme_boost_diagnostics.py` | Offline baseline-vs-boosted comparison reports entered/dropped candidates and deltas. |
 | RiskGuard overlay | `tests/unit/test_theme_risk_constraints.py`, `tests/unit/test_risk_guard_theme.py` | Disabled no-op; enabled constraints tighten action, gross, or position limits without adding hard veto behavior. |
 | Portfolio caps | `tests/unit/test_theme_portfolio_caps.py`, `tests/unit/test_portfolio_constructor_theme_caps.py` | Disabled no-op; enabled caps reduce over-cap theme exposure deterministically. |
@@ -40,10 +44,14 @@ audits.
 ```bash
 ./.venv/bin/python -m pytest \
   tests/unit/test_theme_scanner.py \
+  tests/unit/test_theme_smoothing.py \
   tests/unit/test_theme_agent.py \
   tests/unit/test_theme_metadata_in_context.py \
   tests/unit/test_bayesian_theme_metadata.py \
   tests/unit/test_theme_reporting.py \
+  tests/unit/test_theme_governance.py \
+  tests/unit/test_theme_governance_reporting.py \
+  tests/unit/test_theme_governance_cli.py \
   tests/unit/test_deterministic_funnel_theme_boost.py \
   tests/unit/test_theme_boost_diagnostics.py \
   tests/unit/test_theme_risk_constraints.py \
@@ -99,3 +107,11 @@ Phase 6A contract tests are the safety gate before any feature is enabled:
 Do not enable funnel boost, RiskGuard overlay, or portfolio theme caps unless
 the focused contract tests and relevant feature-specific tests pass in the same
 worktree.
+
+Theme governance has the same default-off requirement, but it remains a
+sidecar-only metadata/report/artifact layer. It must not introduce
+`theme_likelihood`, a fifth canonical branch, or calls from Bayesian,
+RiskGuard, PortfolioConstructor, candidate ranking, or final allocation logic.
+Smoothing may influence candidate ranking only through the existing explicit
+funnel boost gate plus `THEME_FUNNEL_BOOST_SCORE_SOURCE=smoothed`; default
+candidate behavior must remain raw/no-op.

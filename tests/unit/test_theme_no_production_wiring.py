@@ -53,6 +53,22 @@ def test_theme_agent_not_imported_by_research_dag() -> None:
     assert "theme_agent" not in source
 
 
+def test_theme_governance_not_wired_into_authoritative_components() -> None:
+    checked_paths = [
+        REPO_ROOT / "quant_investor" / "bayesian" / "types.py",
+        REPO_ROOT / "quant_investor" / "bayesian" / "likelihood.py",
+        REPO_ROOT / "quant_investor" / "bayesian" / "posterior.py",
+        REPO_ROOT / "quant_investor" / "agents" / "risk_guard.py",
+        REPO_ROOT / "quant_investor" / "agents" / "portfolio_constructor.py",
+        REPO_ROOT / "quant_investor" / "branch_config.py",
+    ]
+
+    for path in checked_paths:
+        source = path.read_text(encoding="utf-8")
+        assert "theme_governance" not in source, path
+        assert "admitted_shadow" not in source, path
+
+
 def test_no_external_network_imports_in_theme_modules() -> None:
     scanned_paths = [
         *sorted((REPO_ROOT / "quant_investor" / "themes").rglob("*.py")),

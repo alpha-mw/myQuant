@@ -8,6 +8,8 @@ from typing import Any, Mapping
 
 import pandas as pd
 
+from quant_investor.themes.policy import PolicyCatalystScanner
+from quant_investor.themes.smoothing import ThemeSmoothingConfig, smooth_theme_series
 from quant_investor.themes.types import ThemePhase, ThemeScanResult, ThemeScore, clamp
 
 
@@ -29,12 +31,31 @@ class ThemeScanner:
         as_of: str = "",
         min_member_count: int = 5,
         top_n: int = 20,
+        smoothing_window: int = 10,
+        smoothing_min_observations: int = 5,
+        policy_catalyst_enabled: bool | None = None,
+        policy_catalyst_weight: float | None = None,
+        policy_lookback_days: int | None = None,
+        policy_event_path: str | None = None,
     ) -> ThemeScanResult:
         state_map = symbol_market_state or {}
         min_count = max(0, int(min_member_count))
         limit = max(0, int(top_n))
+        policy_config = _resolve_policy_config(
+            policy_catalyst_enabled=policy_catalyst_enabled,
+            policy_catalyst_weight=policy_catalyst_weight,
+            policy_lookback_days=policy_lookback_days,
+            policy_event_path=policy_event_path,
+        )
+        smoothing_config = ThemeSmoothingConfig(
+            window=max(int(smoothing_window or 10), 1),
+            min_observations=max(int(smoothing_min_observations or 5), 1),
+        )
         themes: dict[str, dict[str, Any]] = {}
         members_by_theme: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        history_members_by_theme: dict[str, dict[int, list[dict[str, Any]]]] = defaultdict(
+            lambda: defaultdict(list)
+        )
         scanned_symbol_count = 0
 
         for symbol in sorted(industry_map):
@@ -51,6 +72,13 @@ class ThemeScanner:
                 metrics = _neutral_symbol_metrics()
             metrics["symbol"] = symbol
             members_by_theme[theme_id].append(metrics)
+            for offset in range(smoothing_config.window):
+                if offset == 0:
+                    historical_metrics = dict(metrics)
+                else:
+                    historical_metrics = _symbol_metrics_at_offset(frame, state, offset)
+                    historical_metrics["symbol"] = symbol
+                history_members_by_theme[theme_id][offset].append(historical_metrics)
             scanned_symbol_count += 1
 
         scored: list[ThemeScore] = []
@@ -67,10 +95,27 @@ class ThemeScanner:
                 )
             )
 
+        policy_metadata = _apply_policy_catalysts(
+            theme_scores=scored,
+            members_by_theme=members_by_theme,
+            as_of=as_of,
+            enabled=policy_config["enabled"],
+            weight=policy_config["weight"],
+            lookback_days=policy_config["lookback_days"],
+            event_path=policy_config["event_path"],
+        )
         selected = sorted(scored, key=lambda item: (-item.score, item.theme_id))[:limit]
+        for theme_score in selected:
+            _apply_smoothing_to_theme_score(
+                theme_score=theme_score,
+                history_members_by_offset=history_members_by_theme.get(theme_score.theme_id, {}),
+                min_member_count=min_count,
+                config=smoothing_config,
+            )
         theme_scores = {score.theme_id: score for score in selected}
 
         symbol_scores: dict[str, float] = {}
+        symbol_smoothed_scores: dict[str, float] = {}
         symbol_primary_theme: dict[str, str] = {}
         symbol_phase: dict[str, str] = {}
         symbol_risk_flags: dict[str, list[str]] = {}
@@ -78,6 +123,8 @@ class ThemeScanner:
             for metrics in members_by_theme.get(theme_score.theme_id, []):
                 symbol = str(metrics["symbol"])
                 symbol_scores[symbol] = clamp(theme_score.score / 100.0)
+                if theme_score.smoothed_score is not None:
+                    symbol_smoothed_scores[symbol] = clamp(theme_score.smoothed_score / 100.0)
                 symbol_primary_theme[symbol] = theme_score.theme_id
                 symbol_phase[symbol] = theme_score.phase.value
                 symbol_risk_flags[symbol] = list(theme_score.risk_flags)
@@ -88,6 +135,7 @@ class ThemeScanner:
             as_of=as_of,
             theme_scores=theme_scores,
             symbol_scores=symbol_scores,
+            symbol_smoothed_scores=symbol_smoothed_scores,
             symbol_primary_theme=symbol_primary_theme,
             symbol_phase=symbol_phase,
             symbol_risk_flags=symbol_risk_flags,
@@ -96,6 +144,15 @@ class ThemeScanner:
                 "scanned_symbol_count": scanned_symbol_count,
                 "member_count_min": min_count,
                 "top_n": limit,
+                "smoothing_method": "sma",
+                "smoothing_window": smoothing_config.window,
+                "smoothing_min_observations": smoothing_config.min_observations,
+                "policy_catalyst_status": policy_metadata["status"],
+                "policy_catalyst_enabled": policy_metadata["enabled"],
+                "policy_catalyst_weight": policy_metadata["weight"],
+                "policy_catalyst_event_path": policy_metadata["event_path"],
+                "policy_catalyst_matched_theme_count": policy_metadata["matched_theme_count"],
+                "policy_catalyst_diagnostic_notes": policy_metadata["diagnostic_notes"],
                 "deterministic": True,
                 "no_llm": True,
                 "no_network": True,
@@ -156,6 +213,36 @@ def _symbol_metrics(
         else metrics["fake_breakout_proxy"]
     )
     return metrics
+
+
+def _symbol_metrics_at_offset(
+    frame: pd.DataFrame | None,
+    state: Mapping[str, Any] | None,
+    trailing_offset: int,
+) -> dict[str, Any]:
+    if trailing_offset <= 0:
+        return _symbol_metrics(frame, state)
+    prefix = _frame_prefix(frame, trailing_offset)
+    if prefix is None or prefix.empty:
+        return _neutral_symbol_metrics()
+    return _symbol_metrics(prefix, {})
+
+
+def _frame_prefix(frame: pd.DataFrame | None, trailing_offset: int) -> pd.DataFrame | None:
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return None
+    ordered = frame
+    for date_col in _DATE_COLUMNS:
+        if date_col in frame.columns:
+            try:
+                ordered = frame.sort_values(date_col, kind="mergesort")
+            except Exception:
+                ordered = frame
+            break
+    keep_count = len(ordered) - max(int(trailing_offset), 0)
+    if keep_count <= 0:
+        return None
+    return ordered.iloc[:keep_count]
 
 
 def _neutral_symbol_metrics() -> dict[str, Any]:
@@ -297,6 +384,206 @@ def _score_theme(
         evidence=evidence,
         metadata={"theme_return_5d": return_5d, "theme_return_20d": return_20d},
     )
+
+
+def _apply_smoothing_to_theme_score(
+    *,
+    theme_score: ThemeScore,
+    history_members_by_offset: Mapping[int, list[dict[str, Any]]],
+    min_member_count: int,
+    config: ThemeSmoothingConfig,
+) -> None:
+    score_history: list[float] = []
+    for offset in sorted(history_members_by_offset, reverse=True):
+        members = list(history_members_by_offset.get(offset, []) or [])
+        if len(members) < min_member_count:
+            continue
+        if _median_metric(members, "data_coverage") < 0.50:
+            continue
+        try:
+            historical_score = _score_theme(
+                theme_id=theme_score.theme_id,
+                theme_name=theme_score.theme_name,
+                members=members,
+                min_member_count=min_member_count,
+            )
+        except Exception:
+            continue
+        score_history.append(float(historical_score.score))
+
+    smoothing = smooth_theme_series(score_history, config)
+    theme_score.raw_score = float(theme_score.score)
+    theme_score.smoothed_score = smoothing.smoothed_score
+    theme_score.heat_10d = smoothing.heat_10d
+    theme_score.heat_delta_5d = smoothing.heat_delta_5d
+    theme_score.persistence_count = int(smoothing.persistence_count)
+    theme_score.trend_state = smoothing.trend_state
+    theme_score.smoothing_observation_count = int(smoothing.observation_count)
+    theme_score.smoothing_status = smoothing.status
+    theme_score.metadata = {
+        **dict(theme_score.metadata or {}),
+        "smoothing_method": "sma",
+        "smoothing_window": int(config.window),
+        "smoothing_min_observations": int(config.min_observations),
+        "smoothing_diagnostic_notes": list(smoothing.diagnostic_notes),
+    }
+
+
+def _resolve_policy_config(
+    *,
+    policy_catalyst_enabled: bool | None,
+    policy_catalyst_weight: float | None,
+    policy_lookback_days: int | None,
+    policy_event_path: str | None,
+) -> dict[str, Any]:
+    defaults: dict[str, Any] = {
+        "enabled": False,
+        "weight": 0.16,
+        "lookback_days": 30,
+        "event_path": "data/theme_policy_events.jsonl",
+    }
+    try:
+        from quant_investor.config import Config
+
+        defaults.update(
+            {
+                "enabled": bool(getattr(Config, "THEME_POLICY_CATALYST_ENABLED", False)),
+                "weight": _safe_float(
+                    getattr(Config, "THEME_POLICY_CATALYST_WEIGHT", 0.16),
+                    0.16,
+                ),
+                "lookback_days": max(
+                    int(getattr(Config, "THEME_POLICY_LOOKBACK_DAYS", 30) or 30),
+                    1,
+                ),
+                "event_path": str(
+                    getattr(
+                        Config,
+                        "THEME_POLICY_EVENT_PATH",
+                        "data/theme_policy_events.jsonl",
+                    )
+                    or "data/theme_policy_events.jsonl"
+                ),
+            }
+        )
+    except Exception:
+        pass
+
+    if policy_catalyst_enabled is not None:
+        defaults["enabled"] = bool(policy_catalyst_enabled)
+    if policy_catalyst_weight is not None:
+        defaults["weight"] = _safe_float(policy_catalyst_weight, defaults["weight"])
+    if policy_lookback_days is not None:
+        defaults["lookback_days"] = max(int(policy_lookback_days or 30), 1)
+    if policy_event_path is not None:
+        defaults["event_path"] = str(policy_event_path or defaults["event_path"])
+    defaults["weight"] = clamp(defaults["weight"])
+    return defaults
+
+
+def _apply_policy_catalysts(
+    *,
+    theme_scores: list[ThemeScore],
+    members_by_theme: Mapping[str, list[dict[str, Any]]],
+    as_of: str,
+    enabled: bool,
+    weight: float,
+    lookback_days: int,
+    event_path: str,
+) -> dict[str, Any]:
+    metadata = {
+        "enabled": bool(enabled),
+        "status": "disabled",
+        "weight": clamp(weight),
+        "event_path": str(event_path or ""),
+        "matched_theme_count": 0,
+        "diagnostic_notes": [],
+    }
+    if not enabled:
+        return metadata
+
+    scanner = PolicyCatalystScanner(
+        event_path=event_path or "data/theme_policy_events.jsonl",
+        lookback_days=lookback_days,
+    )
+    events = scanner.load_events()
+    metadata["diagnostic_notes"] = list(scanner.diagnostic_notes)
+    if scanner.status != "success":
+        metadata["status"] = "unavailable"
+        for theme_score in theme_scores:
+            theme_score.policy_stage = "unavailable"
+        return metadata
+
+    metadata["status"] = "success"
+    matched = 0
+    for theme_score in theme_scores:
+        member_symbols = [
+            str(member.get("symbol", ""))
+            for member in list(members_by_theme.get(theme_score.theme_id, []) or [])
+            if str(member.get("symbol", "")).strip()
+        ]
+        catalyst = scanner.score_theme(
+            theme_id=theme_score.theme_id,
+            theme_name=theme_score.theme_name,
+            member_symbols=member_symbols,
+            as_of=as_of,
+            events=events,
+        )
+        _apply_policy_score_to_theme(theme_score, catalyst.to_dict(), weight=weight)
+        if catalyst.policy_stage not in {"no_match", "unavailable"}:
+            matched += 1
+
+    metadata["matched_theme_count"] = matched
+    return metadata
+
+
+def _apply_policy_score_to_theme(
+    theme_score: ThemeScore,
+    catalyst: Mapping[str, Any],
+    *,
+    weight: float,
+) -> None:
+    policy_score = clamp(_safe_float(catalyst.get("policy_score"), 0.0))
+    policy_boost = policy_score * clamp(weight) * 100.0
+    theme_score.score = clamp(_safe_float(theme_score.score, 0.0) + policy_boost, 0.0, 100.0)
+    theme_score.policy_catalyst_score = policy_score
+    theme_score.policy_confidence = clamp(_safe_float(catalyst.get("confidence"), 0.0))
+    theme_score.policy_stage = str(catalyst.get("policy_stage") or "no_match")
+    theme_score.policy_evidence = [
+        str(item)
+        for item in list(catalyst.get("evidence", []) or [])
+        if str(item).strip()
+    ]
+    theme_score.policy_risk_flags = [
+        str(flag)
+        for flag in list(catalyst.get("risk_flags", []) or [])
+        if str(flag).startswith("policy_")
+    ]
+    theme_score.risk_flags = _dedupe_texts(
+        [*list(theme_score.risk_flags or []), *theme_score.policy_risk_flags]
+    )
+    theme_score.metadata = {
+        **dict(theme_score.metadata or {}),
+        "policy_catalyst": {
+            "policy_score": policy_score,
+            "confidence": theme_score.policy_confidence,
+            "stage": theme_score.policy_stage,
+            "score_component": policy_boost,
+            "weight_cap": clamp(weight),
+        },
+    }
+
+
+def _dedupe_texts(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        text = str(value).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        deduped.append(text)
+    return deduped
 
 
 def _median_metric(members: list[dict[str, Any]], key: str) -> float:

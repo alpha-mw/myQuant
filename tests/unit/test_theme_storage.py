@@ -99,3 +99,82 @@ def test_theme_snapshot_store_does_not_mutate_input(tmp_path):
     )
 
     assert theme_rotation == original
+
+
+def test_theme_snapshot_store_load_latest_skips_single_symbol_full_a(tmp_path):
+    store = ThemeSnapshotStore(tmp_path)
+    full_path = store.save(
+        {
+            "status": "success",
+            "metadata": {
+                "scanned_symbol_count": 78,
+                "member_count_min": 5,
+                "theme_count": 1,
+            },
+            "top_themes": [{"theme_id": "industry::auto-parts"}],
+        },
+        market="CN",
+        universe_key="full_a",
+        as_of="20260618",
+        run_id="a-full",
+    )
+    single_path = store.save(
+        {
+            "status": "success",
+            "metadata": {
+                "scanned_symbol_count": 1,
+                "member_count_min": 5,
+                "theme_count": 0,
+            },
+            "top_themes": [],
+        },
+        market="CN",
+        universe_key="full_a",
+        as_of="20260618",
+        run_id="z-single",
+    )
+
+    assert full_path.exists()
+    assert single_path.exists()
+    latest = store.load_latest(market="CN", universe_key="full_a")
+
+    assert latest is not None
+    assert latest["run_id"] == "a-full"
+
+
+def test_theme_snapshot_store_load_recent_returns_bounded_valid_history(tmp_path):
+    store = ThemeSnapshotStore(tmp_path)
+    for day, score in (("20260616", 54), ("20260617", 57), ("20260618", 60)):
+        store.save(
+            {
+                "status": "success",
+                "metadata": {
+                    "scanned_symbol_count": 78,
+                    "member_count_min": 5,
+                },
+                "theme_scores": {"industry::ai": {"score": score}},
+            },
+            market="CN",
+            universe_key="full_a",
+            as_of=day,
+            run_id=f"run-{day}",
+        )
+    store.save(
+        {
+            "status": "success",
+            "metadata": {
+                "scanned_symbol_count": 1,
+                "member_count_min": 5,
+            },
+            "theme_scores": {},
+        },
+        market="CN",
+        universe_key="full_a",
+        as_of="20260619",
+        run_id="single-symbol",
+    )
+
+    recent = store.load_recent(market="CN", universe_key="full_a", limit=2)
+
+    assert [payload["as_of"] for payload in recent] == ["20260617", "20260618"]
+    assert [payload["theme_rotation"]["theme_scores"]["industry::ai"]["score"] for payload in recent] == [57, 60]
