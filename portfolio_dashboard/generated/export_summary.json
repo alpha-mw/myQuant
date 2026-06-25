@@ -1,14 +1,14 @@
 {
-  "generated_at": "2026-06-24 16:12:39",
+  "generated_at": "2026-06-25 15:48:53",
   "source_root": "/Users/maxwell/mySpace/myQuant/results/strategy_records/CN/aggressive_tech_manufacturing",
   "dashboard_root": "/Users/maxwell/mySpace/myQuant/portfolio_dashboard",
-  "latest_record": "20260624_0940",
-  "record_count": 61,
-  "nav_rows": 61,
-  "positions_rows": 540,
+  "latest_record": "20260625_1456",
+  "record_count": 62,
+  "nav_rows": 62,
+  "positions_rows": 549,
   "trade_rows": 3,
   "warnings": [
-    "148 条持仓记录缺少显式 theme，已使用 stock_basic industry 生成 '行业: <sector>' 回退标签。",
+    "152 条持仓记录缺少显式 theme，已使用 stock_basic industry 生成 '行业: <sector>' 回退标签。",
     "benchmark_source_status=production_source_partial_missing_dates；source_system=tushare.index_daily；Dashboard benchmark 仅供临时展示，不是正式投委会口径。"
   ],
   "benchmark_source": {
@@ -25,13 +25,13 @@
     "source_system": "tushare.index_daily",
     "production_grade": false,
     "first_valid_date": "2026-03-18",
-    "last_valid_date": "2026-06-23",
+    "last_valid_date": "2026-06-24",
     "missing_date_count": 4,
     "missing_dates": [
       "2026-05-01",
       "2026-05-16",
       "2026-06-20",
-      "2026-06-24"
+      "2026-06-25"
     ],
     "field_missing_counts": {
       "benchmark_main_nav": 4,
@@ -48,7 +48,7 @@
       "若 latest strategy record 日期尚无 Tushare index_daily close，则该日期 benchmark 留空并降级为 partial。",
       "Tushare benchmark 未覆盖所有策略记录日期；缺失日期不按生产级 benchmark 标记。"
     ],
-    "raw_row_count": 325
+    "raw_row_count": 330
   },
   "files": {
     "nav": "/Users/maxwell/mySpace/myQuant/portfolio_dashboard/generated/nav_records.csv",

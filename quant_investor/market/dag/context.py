@@ -38,6 +38,7 @@ from quant_investor.market.runtime_profile import profile_stage
 from quant_investor.llm_gateway import detect_provider
 from quant_investor.model_roles import ModelRoleResolution
 from quant_investor.reporting.run_artifacts import build_model_role_metadata
+from quant_investor.regime.engine import MarkovRegimeEngine
 
 
 DAG_RUNTIME_PRICE_VOLUME_COLUMNS: tuple[str, ...] = (
@@ -501,6 +502,49 @@ def _prepare_market_context(
             target_exposure = min(target_exposure * 1.08, 0.72)
             max_single_weight = 0.14
 
+    macro_agent_regime = str(macro_verdict.metadata.get("regime", "neutral"))
+    markov_engine = MarkovRegimeEngine(
+        history_path=str(getattr(config, "MARKOV_REGIME_HISTORY_PATH", "results/regime/markov_regime_history.jsonl")),
+        enabled=bool(getattr(config, "MARKOV_REGIME_ENABLED", True)),
+        execution_target=str(getattr(config, "MARKOV_REGIME_EXECUTION_TARGET", "shadow") or "shadow"),
+        persist_enabled=bool(getattr(config, "MARKOV_REGIME_PERSIST_ENABLED", True)),
+    )
+    regime_signal = markov_engine.run(
+        market=settings.market,
+        universe_key=universe_key,
+        as_of=effective_latest_trade_date,
+        frames=frames,
+        tradability_snapshot=tradability_snapshot,
+        cross_section_quant=cross_section_quant,
+        macro_verdict=macro_verdict,
+        market_snapshot=market_snapshot,
+    )
+    markov_payload = regime_signal.to_dict()
+    markov_payload["execution_target"] = markov_engine.execution_target
+    markov_payload["enabled"] = markov_engine.enabled
+    effective_macro_regime = macro_agent_regime
+    risk_budget: dict[str, Any] = {
+        "target_exposure": target_exposure,
+        "max_single_weight": max_single_weight,
+        "sector_bucket_limit": int(sector_bucket_limit),
+    }
+    if markov_engine.enabled and markov_engine.execution_target == "production":
+        effective_macro_regime = regime_signal.dominant_regime
+        target_exposure = min(target_exposure, regime_signal.suggested_gross_exposure_cap)
+        max_single_weight = min(max_single_weight, regime_signal.suggested_max_single_weight)
+        risk_budget.update(
+            {
+                "target_exposure": target_exposure,
+                "max_single_weight": max_single_weight,
+                "markov_regime_enabled": True,
+                "markov_execution_target": "production",
+                "markov_dominant_regime": regime_signal.dominant_regime,
+                "markov_confidence": regime_signal.confidence,
+                "markov_transition_risk": regime_signal.transition_risk,
+                "turnover_cap": regime_signal.turnover_cap,
+            }
+        )
+
     theme_scope_metadata = _theme_snapshot_scope_metadata(
         universe_key=universe_key,
         symbol_count=len(all_symbols),
@@ -569,15 +613,11 @@ def _prepare_market_context(
             "liquidity_scores": liquidity_scores,
             "sector_bucket_limit": int(sector_bucket_limit),
         },
-        macro_regime=str(macro_verdict.metadata.get("regime", "neutral")),
+        macro_regime=effective_macro_regime,
         cross_section_quant={**cross_section_quant, "macro_score": float(macro_verdict.final_score)},
         style_exposures=style_exposures,
         correlation_matrix={},
-        risk_budget={
-            "target_exposure": target_exposure,
-            "max_single_weight": max_single_weight,
-            "sector_bucket_limit": int(sector_bucket_limit),
-        },
+        risk_budget=risk_budget,
         data_quality_issues=data_quality_issues,
         data_quality_diagnostics=build_data_quality_diagnostics(
             total_symbols=all_symbols,
@@ -595,6 +635,7 @@ def _prepare_market_context(
             completeness_payload.get("effective_target_trade_date")
             or effective_latest_trade_date
         ),
+        regime_params={"markov": markov_payload},
         universe_tiers={
             "total": list(all_symbols),
             "researchable": list(researchable_symbols),
@@ -622,6 +663,9 @@ def _prepare_market_context(
             "symbol_primary_theme": dict(theme_rotation_metadata.get("symbol_primary_theme", {}) or {}),
             "symbol_theme_phase": dict(theme_rotation_metadata.get("symbol_phase", {}) or {}),
             "theme_alerts": list(theme_rotation_metadata.get("diagnostic_notes", []) or []),
+            "markov_regime": markov_payload,
+            "markov_regime_diagnostic_notes": list(regime_signal.diagnostic_notes),
+            "macro_agent_regime": macro_agent_regime,
             "selection_profile": {
                 "funnel_profile": str(funnel_profile or "classic").strip().lower() or "classic",
                 "trend_windows": list(trend_windows),

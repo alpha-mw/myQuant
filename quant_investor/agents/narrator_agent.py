@@ -127,6 +127,7 @@ class NarratorAgent(BaseAgent):
             symbol_name_map=getattr(global_context, "symbol_name_map", {}) if global_context is not None else {},
         )
         theme_section = render_theme_rotation_markdown(theme_rotation)
+        regime_section = ConclusionRenderer.render_regime_section(global_context)
         run_context = ConclusionRenderer.render_run_context(
             model_role_metadata=model_role_metadata,
             execution_trace=execution_trace,
@@ -144,6 +145,8 @@ class NarratorAgent(BaseAgent):
             markdown_report,
             theme_shadow_monitor,
         )
+        if regime_section:
+            markdown_report = markdown_report.rstrip() + "\n\n" + "\n".join(regime_section).strip() + "\n"
         if bayesian_section:
             markdown_report = markdown_report.rstrip() + "\n\n" + "\n".join(bayesian_section).strip() + "\n"
         if run_context:

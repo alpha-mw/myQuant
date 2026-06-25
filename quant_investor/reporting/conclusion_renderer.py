@@ -284,6 +284,63 @@ class ConclusionRenderer:
         return lines
 
     @classmethod
+    def render_regime_section(cls, global_context: Any) -> list[str]:
+        if global_context is None:
+            return []
+        regime_params = getattr(global_context, "regime_params", {}) or {}
+        payload: dict[str, Any] = {}
+        if isinstance(regime_params, Mapping):
+            candidate = regime_params.get("markov")
+            if isinstance(candidate, Mapping):
+                payload = dict(candidate)
+        if not payload:
+            metadata = getattr(global_context, "metadata", {}) or {}
+            if isinstance(metadata, Mapping) and isinstance(metadata.get("markov_regime"), Mapping):
+                payload = dict(metadata.get("markov_regime", {}) or {})
+        if not payload:
+            return []
+
+        probabilities = cls._coerce_mapping(payload.get("probabilities"))
+        probability_text = "；".join(
+            f"{state}={float(probabilities.get(state, 0.0)):.1%}"
+            for state in ("趋势上涨", "震荡低波", "震荡高波", "趋势下跌", "未知")
+            if state in probabilities
+        )
+        feature_snapshot = cls._coerce_mapping(payload.get("feature_snapshot"))
+        feature_metadata = cls._coerce_mapping(feature_snapshot.get("metadata"))
+        execution_target = str(
+            payload.get("execution_target")
+            or feature_metadata.get("execution_target")
+            or "shadow"
+        )
+        notes = [
+            sanitize_report_text(str(item))
+            for item in list(payload.get("diagnostic_notes", []) or [])[:5]
+            if str(item).strip()
+        ]
+        lines = ["## Markov 市场状态"]
+        lines.append(f"- 主导状态: {payload.get('dominant_regime', '未知')}")
+        if probability_text:
+            lines.append(f"- 状态概率: {probability_text}")
+        lines.append(f"- 状态置信度: {float(payload.get('confidence', 0.0) or 0.0):.1%}")
+        lines.append(f"- 高风险转移概率: {float(payload.get('transition_risk', 0.0) or 0.0):.1%}")
+        lines.append(f"- 应用模式: {execution_target}")
+        lines.append(
+            "- 建议/应用 gross exposure cap: "
+            f"{float(payload.get('suggested_gross_exposure_cap', 0.0) or 0.0):.1%}"
+        )
+        lines.append(
+            "- 建议 max single weight: "
+            f"{float(payload.get('suggested_max_single_weight', 0.0) or 0.0):.1%}"
+        )
+        if payload.get("turnover_cap") is not None:
+            lines.append(f"- turnover cap: {float(payload.get('turnover_cap') or 0.0):.1%}")
+        if notes:
+            lines.append("- diagnostic notes: " + "；".join(notes))
+        lines.append("")
+        return lines
+
+    @classmethod
     def render_model_role_metadata(
         cls,
         model_role_metadata: ModelRoleMetadata | Mapping[str, Any] | None,

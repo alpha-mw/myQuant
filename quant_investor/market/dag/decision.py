@@ -46,6 +46,42 @@ def _is_codex_handoff_model_roles(model_roles: Any) -> bool:
     )
 
 
+def _compact_markov_regime_metadata(global_context: Any) -> dict[str, Any]:
+    regime_params = getattr(global_context, "regime_params", {}) or {}
+    markov_payload = {}
+    if isinstance(regime_params, Mapping):
+        candidate = regime_params.get("markov", {})
+        if isinstance(candidate, Mapping):
+            markov_payload = dict(candidate)
+    if not markov_payload:
+        metadata = getattr(global_context, "metadata", {}) or {}
+        if isinstance(metadata, Mapping) and isinstance(metadata.get("markov_regime"), Mapping):
+            markov_payload = dict(metadata.get("markov_regime", {}) or {})
+    if not markov_payload:
+        return {}
+    probabilities = markov_payload.get("probabilities", {})
+    compact_probabilities = (
+        {str(key): float(value) for key, value in probabilities.items()}
+        if isinstance(probabilities, Mapping)
+        else {}
+    )
+    return {
+        "dominant_regime": str(markov_payload.get("dominant_regime") or ""),
+        "confidence": float(markov_payload.get("confidence", 0.0) or 0.0),
+        "transition_risk": float(markov_payload.get("transition_risk", 0.0) or 0.0),
+        "probabilities": compact_probabilities,
+    }
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _run_bayesian_selection_phase(
     *,
     candidate_symbols: list[str],
@@ -85,6 +121,7 @@ def _run_bayesian_selection_phase(
     except TypeError:
         likelihood_mapper = likelihood_mapper_cls()
     posterior_engine = posterior_engine_cls()
+    markov_regime_metadata = _compact_markov_regime_metadata(global_context)
     bayesian_records: list[BayesianDecisionRecord] = []
     degraded_map = {
         "quant": False,
@@ -143,6 +180,7 @@ def _run_bayesian_selection_phase(
                         global_context=global_context,
                         symbol=symbol,
                     ),
+                    "markov_regime": markov_regime_metadata,
                 },
             )
         )
@@ -286,6 +324,10 @@ def _run_portfolio_construction_phase(
         "risk_flags": _dedupe_texts([issue.message for issue in data_quality_issues[:8]]),
         "data_quality_issue_count": len(data_quality_issues),
     }
+    turnover_cap_present = "turnover_cap" in dict(global_context.risk_budget or {})
+    turnover_cap = _optional_float(global_context.risk_budget.get("turnover_cap"))
+    if turnover_cap_present:
+        risk_constraints["turnover_cap"] = turnover_cap
     theme_risk_constraints = build_theme_risk_constraints(
         global_context=global_context,
         symbols=shortlisted_symbols,
@@ -372,6 +414,7 @@ def _run_portfolio_construction_phase(
         "position_limits": position_limits,
         "blocked_symbols": list(risk_decision.blocked_symbols),
         "sector_caps": sector_caps,
+        "turnover_cap": turnover_cap,
         "theme_portfolio_cap_enabled": theme_portfolio_constraints["theme_portfolio_cap_enabled"],
         "theme_exposure_map": theme_portfolio_constraints["theme_exposure_map"],
         "theme_caps": theme_portfolio_constraints["theme_caps"],
