@@ -65,7 +65,7 @@ MAINLINE_ENV_DEFAULTS: dict[str, str] = {
     "THEME_GOVERNANCE_ARTIFACT_ENABLED": "0",
     "THEME_GOVERNANCE_OUTPUT_DIR": "results/theme_governance",
     "MARKOV_REGIME_ENABLED": "1",
-    "MARKOV_REGIME_EXECUTION_TARGET": "shadow",
+    "MARKOV_REGIME_EXECUTION_TARGET": "production",
     "MARKOV_REGIME_HISTORY_PATH": "results/regime/markov_regime_history.jsonl",
     "MARKOV_REGIME_PERSIST_ENABLED": "1",
     "KIMI_API_KEY": "",
@@ -129,6 +129,17 @@ def _env_str(
     if raw_value is None:
         return str(default or "").strip() or default
     return str(raw_value or "").strip() or default
+
+
+def _env_markov_execution_target(
+    name: str,
+    default: str = "production",
+) -> str:
+    raw_value = _env_str(name, default)
+    normalized = str(raw_value or "").strip().lower()
+    if normalized == "disabled":
+        return "disabled"
+    return "production"
 
 
 def _env_int_list(name: str, default: tuple[int, ...]) -> tuple[int, ...]:
@@ -279,7 +290,10 @@ class Config:
     THEME_GOVERNANCE_ARTIFACT_ENABLED: bool = _env_bool('THEME_GOVERNANCE_ARTIFACT_ENABLED', False)
     THEME_GOVERNANCE_OUTPUT_DIR: str = _env_str('THEME_GOVERNANCE_OUTPUT_DIR', 'results/theme_governance')
     MARKOV_REGIME_ENABLED: bool = _env_bool('MARKOV_REGIME_ENABLED', True)
-    MARKOV_REGIME_EXECUTION_TARGET: str = _env_str('MARKOV_REGIME_EXECUTION_TARGET', 'shadow')
+    MARKOV_REGIME_EXECUTION_TARGET: str = _env_markov_execution_target(
+        'MARKOV_REGIME_EXECUTION_TARGET',
+        'production',
+    )
     MARKOV_REGIME_HISTORY_PATH: str = _env_str(
         'MARKOV_REGIME_HISTORY_PATH',
         'results/regime/markov_regime_history.jsonl',

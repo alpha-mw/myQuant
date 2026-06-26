@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from quant_investor.config import MAINLINE_ENV_DEFAULTS, config
 from quant_investor.regime.engine import MarkovRegimeEngine
 from quant_investor.regime.types import (
     REGIME_RANGE_HIGH_VOL,
@@ -11,6 +12,36 @@ from quant_investor.regime.types import (
     REGIME_TREND_UP,
     REGIME_UNKNOWN,
 )
+
+
+def test_markov_config_defaults_are_production_first() -> None:
+    assert MAINLINE_ENV_DEFAULTS["MARKOV_REGIME_ENABLED"] == "1"
+    assert MAINLINE_ENV_DEFAULTS["MARKOV_REGIME_EXECUTION_TARGET"] == "production"
+    assert config.MARKOV_REGIME_ENABLED is True
+    assert config.MARKOV_REGIME_EXECUTION_TARGET == "production"
+
+
+def test_markov_engine_defaults_and_shadow_target_normalize_to_production(tmp_path) -> None:
+    default_engine = MarkovRegimeEngine(history_path=str(tmp_path / "default.jsonl"))
+    assert default_engine.execution_target == "production"
+
+    shadow_engine = MarkovRegimeEngine(
+        history_path=str(tmp_path / "shadow.jsonl"),
+        execution_target="shadow",
+    )
+    signal = shadow_engine.run(
+        market="CN",
+        universe_key="full_a",
+        as_of="20260625",
+        frames={},
+        tradability_snapshot={},
+        cross_section_quant={},
+        macro_verdict=None,
+        market_snapshot={},
+    )
+
+    assert shadow_engine.execution_target == "production"
+    assert "markov_shadow_deprecated_normalized_to_production" in signal.diagnostic_notes
 
 
 def _tradability(

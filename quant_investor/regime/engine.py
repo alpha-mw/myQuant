@@ -42,15 +42,30 @@ class MarkovRegimeEngine:
         self,
         history_path: str = "results/regime/markov_regime_history.jsonl",
         enabled: bool = True,
-        execution_target: str = "shadow",
+        execution_target: str = "production",
         smoothing: float = 1.0,
         persist_enabled: bool = True,
     ) -> None:
         self.history_path = str(history_path or "results/regime/markov_regime_history.jsonl")
         self.enabled = bool(enabled)
-        target = str(execution_target or "shadow").strip().lower()
-        self.execution_target = target if target in {"shadow", "production"} else "shadow"
-        self._target_was_invalid = target not in {"shadow", "production"}
+        target = str(execution_target or "").strip().lower()
+        self._execution_target_diagnostics: list[str] = []
+        if target == "disabled":
+            self.execution_target = "disabled"
+            self.enabled = False
+            self._execution_target_diagnostics.append("markov_execution_target_disabled")
+        elif target == "shadow":
+            self.execution_target = "production"
+            self._execution_target_diagnostics.append(
+                "markov_shadow_deprecated_normalized_to_production"
+            )
+        elif target in {"", "production"}:
+            self.execution_target = "production"
+        else:
+            self.execution_target = "production"
+            self._execution_target_diagnostics.append(
+                "invalid_execution_target_normalized_to_production"
+            )
         self.smoothing = float(smoothing or 1.0)
         self.persist_enabled = bool(persist_enabled)
 
@@ -76,11 +91,13 @@ class MarkovRegimeEngine:
             macro_verdict=macro_verdict,
         )
         feature_snapshot.metadata["execution_target"] = self.execution_target
+        feature_snapshot.metadata["execution_mode"] = (
+            "production" if self.enabled else "disabled"
+        )
         feature_snapshot.metadata["enabled"] = self.enabled
         feature_snapshot.metadata["market_snapshot_key_count"] = len(market_snapshot or {})
         diagnostic_notes = list(feature_snapshot.diagnostics)
-        if self._target_was_invalid:
-            diagnostic_notes.append("invalid_execution_target_fallback_shadow")
+        diagnostic_notes.extend(self._execution_target_diagnostics)
 
         if not self.enabled:
             return RegimeSignal(

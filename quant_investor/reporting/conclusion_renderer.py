@@ -299,6 +299,12 @@ class ConclusionRenderer:
                 payload = dict(metadata.get("markov_regime", {}) or {})
         if not payload:
             return []
+        if payload.get("enabled") is False or payload.get("status") == "disabled":
+            return [
+                "## Markov 市场状态",
+                "- Markov regime disabled by config.",
+                "",
+            ]
 
         probabilities = cls._coerce_mapping(payload.get("probabilities"))
         probability_text = "；".join(
@@ -308,10 +314,30 @@ class ConclusionRenderer:
         )
         feature_snapshot = cls._coerce_mapping(payload.get("feature_snapshot"))
         feature_metadata = cls._coerce_mapping(feature_snapshot.get("metadata"))
-        execution_target = str(
-            payload.get("execution_target")
-            or feature_metadata.get("execution_target")
-            or "shadow"
+        risk_budget = cls._coerce_mapping(getattr(global_context, "risk_budget", {}))
+        execution_mode = str(
+            payload.get("execution_mode")
+            or feature_metadata.get("execution_mode")
+            or risk_budget.get("markov_execution_mode")
+            or "production"
+        ).strip().lower()
+        if execution_mode != "disabled":
+            execution_mode = "production"
+        applied_gross_exposure_cap = (
+            payload.get("applied_gross_exposure_cap")
+            if payload.get("applied_gross_exposure_cap") is not None
+            else risk_budget.get(
+                "markov_applied_gross_exposure_cap",
+                payload.get("suggested_gross_exposure_cap", 0.0),
+            )
+        )
+        applied_max_single_weight = (
+            payload.get("applied_max_single_weight")
+            if payload.get("applied_max_single_weight") is not None
+            else risk_budget.get(
+                "markov_applied_max_single_weight",
+                payload.get("suggested_max_single_weight", 0.0),
+            )
         )
         notes = [
             sanitize_report_text(str(item))
@@ -324,14 +350,14 @@ class ConclusionRenderer:
             lines.append(f"- 状态概率: {probability_text}")
         lines.append(f"- 状态置信度: {float(payload.get('confidence', 0.0) or 0.0):.1%}")
         lines.append(f"- 高风险转移概率: {float(payload.get('transition_risk', 0.0) or 0.0):.1%}")
-        lines.append(f"- 应用模式: {execution_target}")
+        lines.append(f"- 应用状态: {execution_mode}")
         lines.append(
-            "- 建议/应用 gross exposure cap: "
-            f"{float(payload.get('suggested_gross_exposure_cap', 0.0) or 0.0):.1%}"
+            "- 应用后的 gross exposure cap: "
+            f"{float(applied_gross_exposure_cap or 0.0):.1%}"
         )
         lines.append(
-            "- 建议 max single weight: "
-            f"{float(payload.get('suggested_max_single_weight', 0.0) or 0.0):.1%}"
+            "- 应用后的 max single weight: "
+            f"{float(applied_max_single_weight or 0.0):.1%}"
         )
         if payload.get("turnover_cap") is not None:
             lines.append(f"- turnover cap: {float(payload.get('turnover_cap') or 0.0):.1%}")

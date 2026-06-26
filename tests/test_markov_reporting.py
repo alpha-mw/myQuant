@@ -26,9 +26,11 @@ def _markov_payload() -> dict[str, object]:
         },
         "confidence": 0.45,
         "transition_risk": 0.65,
-        "execution_target": "shadow",
+        "execution_mode": "production",
         "suggested_gross_exposure_cap": 0.42,
         "suggested_max_single_weight": 0.09,
+        "applied_gross_exposure_cap": 0.40,
+        "applied_max_single_weight": 0.08,
         "turnover_cap": 0.30,
         "diagnostic_notes": ["fixture_note"],
     }
@@ -42,7 +44,21 @@ def test_render_regime_section_reads_global_context() -> None:
     text = "\n".join(lines)
     assert "## Markov 市场状态" in text
     assert REGIME_RANGE_HIGH_VOL in text
+    assert "应用状态: production" in text
+    assert "应用后的 gross exposure cap" in text
+    assert "应用后的 max single weight" in text
     assert "fixture_note" in text
+    assert "shadow" not in text.lower()
+
+
+def test_render_regime_section_can_show_disabled_marker() -> None:
+    lines = ConclusionRenderer.render_regime_section(
+        GlobalContext(
+            regime_params={"markov": {"enabled": False, "status": "disabled"}}
+        )
+    )
+
+    assert "Markov regime disabled by config." in "\n".join(lines)
 
 
 def test_narrator_includes_regime_section_before_bayesian() -> None:
@@ -101,3 +117,4 @@ def test_narrator_includes_regime_section_before_bayesian() -> None:
 
     assert "Markov 市场状态" in bundle.markdown_report
     assert bundle.markdown_report.index("Markov 市场状态") < bundle.markdown_report.index("Bayesian 决策分解")
+    assert "shadow" not in bundle.markdown_report.lower()

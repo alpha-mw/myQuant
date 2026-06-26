@@ -59,6 +59,8 @@ def _compact_markov_regime_metadata(global_context: Any) -> dict[str, Any]:
             markov_payload = dict(metadata.get("markov_regime", {}) or {})
     if not markov_payload:
         return {}
+    if markov_payload.get("enabled") is False or markov_payload.get("status") == "disabled":
+        return {}
     probabilities = markov_payload.get("probabilities", {})
     compact_probabilities = (
         {str(key): float(value) for key, value in probabilities.items()}
