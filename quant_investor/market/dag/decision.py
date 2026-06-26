@@ -60,7 +60,23 @@ def _compact_markov_regime_metadata(global_context: Any) -> dict[str, Any]:
     if not markov_payload:
         return {}
     if markov_payload.get("enabled") is False or markov_payload.get("status") == "disabled":
-        return {}
+        return {
+            "enabled": False,
+            "status": "disabled",
+        }
+    production_eligible = bool(markov_payload.get("production_eligible", False))
+    if not production_eligible:
+        return {
+            "enabled": True,
+            "execution_mode": str(markov_payload.get("execution_mode") or "production"),
+            "production_eligible": False,
+            "status": str(
+                markov_payload.get("status")
+                or "not_applied_insufficient_market_scope"
+            ),
+            "regime_scope": str(markov_payload.get("regime_scope") or ""),
+            "scope_key": str(markov_payload.get("scope_key") or ""),
+        }
     probabilities = markov_payload.get("probabilities", {})
     compact_probabilities = (
         {str(key): float(value) for key, value in probabilities.items()}
@@ -68,6 +84,11 @@ def _compact_markov_regime_metadata(global_context: Any) -> dict[str, Any]:
         else {}
     )
     return {
+        "enabled": True,
+        "execution_mode": str(markov_payload.get("execution_mode") or "production"),
+        "production_eligible": True,
+        "regime_scope": str(markov_payload.get("regime_scope") or ""),
+        "scope_key": str(markov_payload.get("scope_key") or ""),
         "dominant_regime": str(markov_payload.get("dominant_regime") or ""),
         "confidence": float(markov_payload.get("confidence", 0.0) or 0.0),
         "transition_risk": float(markov_payload.get("transition_risk", 0.0) or 0.0),

@@ -25,6 +25,7 @@
 - 单标的公开主线：`QuantInvestor` 调用全市场 DAG helper，并把 DAG artifacts 转为 `QuantInvestorPipelineResult`。
 - 全市场主线：`quant-investor market analyze/run` 走 `execute_market_dag()`。
 - DAG 顺序：`data_snapshot` / symbol list -> batch read -> `DeterministicFunnel` -> candidate branch research -> Bayesian selection -> control chain -> reporting artifacts。
+- 生产 Markov regime 在 DAG context 阶段读取市场状态；它只在 full-market 或 broad market-reference scope 生产合格时覆盖 `GlobalContext.macro_regime` 并收紧风险预算。
 - 可选 LLM review layer 只提供 advisory hints；缺 key 或本地禁用时降级为 Codex handoff，不改变 deterministic 控制链。
 - stage profile：`market analyze/run` 写入 snapshot、symbol list、batch read、funnel/context、candidate research、Bayesian、control chain、report persistence 等阶段耗时。
 - 兼容输出：`final_strategy`、`final_report`
@@ -61,6 +62,17 @@
   - 承载 deterministic 目标权重、敞口和执行说明。
 - `ReportBundle`
   - 承载 `NarratorAgent` 只读生成的结构化报告。
+
+## Markov Regime Production Contract
+
+- Markov 默认 production-first：`MARKOV_REGIME_ENABLED=1` 启用，`MARKOV_REGIME_ENABLED=0` 是紧急 kill switch。
+- `MARKOV_REGIME_EXECUTION_TARGET=shadow` 为兼容旧输入而保留，但运行时归一化为 production，并写入 `markov_shadow_deprecated_normalized_to_production` 诊断。
+- Market regime input 必须带结构化 scope：`regime_scope`、`scope_key`、`production_eligible`、`source_symbol_count`、`requested_symbol_count`、`explicit_symbol_count`、`sampled`、`source_universe_key`。
+- 显式小股票池、抽样过小的 universe、或缺失 broad reference 数据时，Markov 状态为 production-ineligible；DAG 保留 MacroAgent regime、baseline target exposure、baseline max single weight 和原控制链。
+- 当当前 DAG 输入不是 full-market 时，Markov 使用本地 strict/canonical market reference universe（CN 默认 `full_a`，US 默认 `full_us`），按稳定排序进行 deterministic sample，最多 `MARKOV_REGIME_MAX_REFERENCE_SYMBOLS`。
+- Markov 应用时只允许降低风险：target exposure 与 max single weight 都取 baseline 与 Markov 建议的 `min()`；turnover cap 只能新增或收紧，不直接写目标权重。
+- Regime features 必须按 `as_of` 截断 dated frames 后再计算 returns、volatility、breadth、momentum、drawdown、breakout 和 liquidity。
+- Regime history persistence 按 `market + scope_key + source_universe_key + as_of` 隔离；future records 不参与 posterior、transition estimation 或 duplicate-write decisions；无 scope 的 legacy records 不用于 production scoped history。
 
 ## Bucketization Rules
 

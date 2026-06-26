@@ -144,6 +144,11 @@ def test_bayesian_decision_record_metadata_includes_markov_regime() -> None:
         macro_regime=REGIME_RANGE_HIGH_VOL,
         regime_params={
             "markov": {
+                "enabled": True,
+                "execution_mode": "production",
+                "production_eligible": True,
+                "regime_scope": "full_market",
+                "scope_key": "CN:full_market:full_a:symbols_50",
                 "dominant_regime": REGIME_RANGE_HIGH_VOL,
                 "confidence": 0.61,
                 "transition_risk": 0.72,

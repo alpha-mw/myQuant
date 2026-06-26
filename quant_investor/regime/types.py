@@ -62,6 +62,22 @@ class RegimeSignal:
     feature_snapshot: dict[str, Any]
     diagnostic_notes: list[str]
     schema_version: str = "2026-06-25.markov-regime.v1"
+    execution_mode: str = "production"
+    enabled: bool = True
+    status: str = "active"
+    regime_scope: str = "full_market"
+    scope_key: str = ""
+    base_universe_key: str = ""
+    source_universe_key: str = ""
+    requested_symbol_count: int = 0
+    source_symbol_count: int = 0
+    explicit_symbol_count: int = 0
+    unsampled_symbol_count: int = 0
+    sampled: bool = False
+    production_eligible: bool = True
+    source_description: str = ""
+    history_record_count: int = 0
+    transition_matrix_source: str = "default"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

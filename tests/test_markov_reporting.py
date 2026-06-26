@@ -16,6 +16,13 @@ from quant_investor.reporting.conclusion_renderer import ConclusionRenderer
 
 def _markov_payload() -> dict[str, object]:
     return {
+        "enabled": True,
+        "production_eligible": True,
+        "status": "applied",
+        "regime_scope": "full_market",
+        "scope_key": "CN:full_market:full_a:symbols_300",
+        "source_universe_key": "full_a",
+        "source_symbol_count": 300,
         "dominant_regime": REGIME_RANGE_HIGH_VOL,
         "probabilities": {
             "趋势上涨": 0.12,
@@ -27,8 +34,11 @@ def _markov_payload() -> dict[str, object]:
         "confidence": 0.45,
         "transition_risk": 0.65,
         "execution_mode": "production",
+        "baseline_target_exposure": 0.50,
         "suggested_gross_exposure_cap": 0.42,
         "suggested_max_single_weight": 0.09,
+        "applied_target_exposure": 0.40,
+        "baseline_max_single_weight": 0.10,
         "applied_gross_exposure_cap": 0.40,
         "applied_max_single_weight": 0.08,
         "turnover_cap": 0.30,
@@ -44,9 +54,9 @@ def test_render_regime_section_reads_global_context() -> None:
     text = "\n".join(lines)
     assert "## Markov 市场状态" in text
     assert REGIME_RANGE_HIGH_VOL in text
-    assert "应用状态: production" in text
-    assert "应用后的 gross exposure cap" in text
-    assert "应用后的 max single weight" in text
+    assert "应用状态: production applied" in text
+    assert "applied exposure" in text
+    assert "applied max single weight" in text
     assert "fixture_note" in text
     assert "shadow" not in text.lower()
 

@@ -13,6 +13,16 @@ def _frame() -> pd.DataFrame:
     return pd.DataFrame({"close": [10.0, 10.2, 10.4], "volume": [100, 120, 140]})
 
 
+def _dated_frame(closes: list[float]) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "trade_date": ["20260623", "20260624", "20260625", "20260626"][: len(closes)],
+            "close": closes,
+            "vol": [100.0 + idx for idx in range(len(closes))],
+        }
+    )
+
+
 def test_build_regime_feature_snapshot_extracts_cross_section_and_tradability() -> None:
     snapshot = build_regime_feature_snapshot(
         market="CN",
@@ -106,3 +116,29 @@ def test_build_regime_feature_snapshot_accepts_mapping_macro_verdict() -> None:
     assert snapshot.average_volatility == pytest.approx(0.0)
     assert snapshot.macro_score == pytest.approx(1.0)
     assert snapshot.macro_target_gross_exposure == pytest.approx(1.0)
+
+
+def test_regime_feature_frames_are_truncated_to_as_of_before_metrics() -> None:
+    with_future = build_regime_feature_snapshot(
+        market="CN",
+        universe_key="full_a",
+        as_of="20260625",
+        frames={"000001.SZ": _dated_frame([10.0, 9.8, 9.6, 80.0])},
+        tradability_snapshot={},
+        cross_section_quant={"average_return": 1.0, "average_volatility": 1.0, "breadth": 1.0},
+        macro_verdict=None,
+    )
+    truncated = build_regime_feature_snapshot(
+        market="CN",
+        universe_key="full_a",
+        as_of="20260625",
+        frames={"000001.SZ": _dated_frame([10.0, 9.8, 9.6])},
+        tradability_snapshot={},
+        cross_section_quant={},
+        macro_verdict=None,
+    )
+
+    assert with_future.average_return == pytest.approx(truncated.average_return)
+    assert with_future.average_volatility == pytest.approx(truncated.average_volatility)
+    assert with_future.breadth == pytest.approx(truncated.breadth)
+    assert any("future_rows_truncated" in note for note in with_future.diagnostics)

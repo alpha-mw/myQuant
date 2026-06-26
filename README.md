@@ -54,6 +54,7 @@ LLM 审阅层（advisory-only，提供观点，不做决策）
 | 🏗 **三层数据协议** | `GlobalContext` → `SymbolResearchPacket` → `PortfolioDecision`，全程 Pydantic 结构化，可追溯 |
 | 🔬 **v13 四分支研究 DAG** | 本地快照 → quant-only `DeterministicFunnel` → 量化 · 基本面 · 情报 · 宏观 → Bayesian selection |
 | 🛡 **确定性风控** | RiskGuard 硬否决 → ICCoordinator 一致性校验 → PortfolioConstructor 权重分配 |
+| 🧭 **生产 Markov 市场状态** | 生产默认启用，必须使用 full-market 或 broad reference 数据；小股票池不会定义全局市场状态 |
 | 🤖 **可选 LLM 审阅层** | 支持 OpenAI / Claude / DeepSeek / Gemini / 通义 / Kimi，无 API Key 自动降级 |
 | 📈 **Parquet 全市场运行面** | strict canonical Parquet、canonical batch symbol 读取和含 exclusive/wall timing 的 stage runtime profile |
 | 🌏 **双市场覆盖** | A 股（Tushare Pro）+ 美股（yfinance），统一 pipeline |
@@ -120,6 +121,19 @@ GlobalContext              # 市场全局快照（宏观 + 市场结构）
             └── PortfolioDecision     # 组合决策 + 执行计划
                     └── ReportBundle       # 可读报告聚合
 ```
+
+### Markov 市场状态生产约束
+
+Markov regime layer 是 production-first 控制层：
+
+- 默认启用：`MARKOV_REGIME_ENABLED=1`。
+- 紧急关闭：`MARKOV_REGIME_ENABLED=0`，关闭后保留原 MacroAgent regime 与基线风险预算。
+- `MARKOV_REGIME_EXECUTION_TARGET=shadow` 已废弃，会归一化为 production 并写入诊断；不要把 scope guard 描述为 shadow mode。
+- Markov 只能在 `full_market` 或本地 broad `market_reference` 数据生产合格时应用。
+- 显式小股票池，例如 `["NVDA", "AMD", "AVGO"]` 或小型 A 股 watchlist，不会被当作整体市场。
+- 如果 broad reference 数据缺失或低于 `MARKOV_REGIME_MIN_MARKET_SAMPLE`，Markov fail closed：不覆盖 MacroAgent regime，不降低或提高基线风险预算，仅记录 `production_eligible=false` 和诊断。
+- 应用时 Markov 只能收紧风险：`applied_target_exposure = min(baseline, markov_cap)`，`applied_max_single_weight = min(baseline, markov_cap)`；不会绕过 RiskGuard 或 PortfolioConstructor。
+- 历史 JSONL 按 market scope/source universe/as_of 隔离，并过滤 future records。
 
 ---
 

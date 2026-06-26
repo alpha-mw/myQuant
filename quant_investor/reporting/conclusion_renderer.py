@@ -323,13 +323,29 @@ class ConclusionRenderer:
         ).strip().lower()
         if execution_mode != "disabled":
             execution_mode = "production"
+        production_eligible = bool(payload.get("production_eligible", False))
+        status = str(payload.get("status") or "").strip() or (
+            "applied" if production_eligible else "not_applied_insufficient_market_scope"
+        )
+        baseline_exposure = (
+            payload.get("baseline_target_exposure")
+            if payload.get("baseline_target_exposure") is not None
+            else risk_budget.get("markov_baseline_target_exposure", risk_budget.get("baseline_target_exposure", 0.0))
+        )
         applied_gross_exposure_cap = (
-            payload.get("applied_gross_exposure_cap")
+            payload.get("applied_target_exposure")
+            if payload.get("applied_target_exposure") is not None
+            else payload.get("applied_gross_exposure_cap")
             if payload.get("applied_gross_exposure_cap") is not None
             else risk_budget.get(
-                "markov_applied_gross_exposure_cap",
+                "markov_applied_target_exposure",
                 payload.get("suggested_gross_exposure_cap", 0.0),
             )
+        )
+        baseline_max_single_weight = (
+            payload.get("baseline_max_single_weight")
+            if payload.get("baseline_max_single_weight") is not None
+            else risk_budget.get("markov_baseline_max_single_weight", risk_budget.get("baseline_max_single_weight", 0.0))
         )
         applied_max_single_weight = (
             payload.get("applied_max_single_weight")
@@ -345,22 +361,45 @@ class ConclusionRenderer:
             if str(item).strip()
         ]
         lines = ["## Markov 市场状态"]
+        if production_eligible:
+            lines.append("- 应用状态: production applied")
+        else:
+            lines.append("- 应用状态: production not applied due to invalid market scope")
         lines.append(f"- 主导状态: {payload.get('dominant_regime', '未知')}")
         if probability_text:
             lines.append(f"- 状态概率: {probability_text}")
         lines.append(f"- 状态置信度: {float(payload.get('confidence', 0.0) or 0.0):.1%}")
         lines.append(f"- 高风险转移概率: {float(payload.get('transition_risk', 0.0) or 0.0):.1%}")
-        lines.append(f"- 应用状态: {execution_mode}")
+        lines.append(f"- execution mode: {execution_mode}")
+        lines.append(f"- status: {status}")
+        lines.append(f"- regime scope: {payload.get('regime_scope', 'n/a')}")
+        lines.append(f"- scope key: {payload.get('scope_key', 'n/a')}")
+        lines.append(f"- source universe: {payload.get('source_universe_key', 'n/a')}")
         lines.append(
-            "- 应用后的 gross exposure cap: "
+            "- source symbol count: "
+            f"{int(payload.get('source_symbol_count', 0) or 0)}"
+        )
+        lines.append(f"- production eligibility: {production_eligible}")
+        lines.append(f"- baseline exposure: {float(baseline_exposure or 0.0):.1%}")
+        lines.append(
+            "- applied exposure: "
             f"{float(applied_gross_exposure_cap or 0.0):.1%}"
         )
         lines.append(
-            "- 应用后的 max single weight: "
+            "- baseline max single weight: "
+            f"{float(baseline_max_single_weight or 0.0):.1%}"
+        )
+        lines.append(
+            "- applied max single weight: "
             f"{float(applied_max_single_weight or 0.0):.1%}"
         )
-        if payload.get("turnover_cap") is not None:
-            lines.append(f"- turnover cap: {float(payload.get('turnover_cap') or 0.0):.1%}")
+        turnover_cap = (
+            payload.get("applied_turnover_cap")
+            if payload.get("applied_turnover_cap") is not None
+            else payload.get("turnover_cap")
+        )
+        if turnover_cap is not None:
+            lines.append(f"- turnover cap: {float(turnover_cap or 0.0):.1%}")
         if notes:
             lines.append("- diagnostic notes: " + "；".join(notes))
         lines.append("")

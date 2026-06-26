@@ -3,6 +3,18 @@
 This staged upgrade path is offline by default. It adds contracts, ledgers, shadow
 artifacts, and audit reports before any runtime decision path changes.
 
+## Markov Regime Operations
+
+Markov regime is production-first in the v13 DAG.
+
+- Production default: `MARKOV_REGIME_ENABLED=1`.
+- Emergency disable: `MARKOV_REGIME_ENABLED=0`.
+- Deprecated `MARKOV_REGIME_EXECUTION_TARGET=shadow` is normalized to production with a diagnostic note; it is not a separate execution path.
+- Markov applies only when market-scope data is production eligible: full-market current input or a broad local market reference (`full_a` for CN, `full_us` for US by default).
+- Small explicit pools and watchlists never define the market regime. If broad reference data is unavailable or below `MARKOV_REGIME_MIN_MARKET_SAMPLE`, Markov records `production_eligible=false`, keeps MacroAgent regime and baseline risk caps, and does not forward turnover caps.
+- Markov can only tighten exposure and position limits. RiskGuard hard vetoes and PortfolioConstructor deterministic constraints remain authoritative.
+- Regime history is isolated by market scope/source universe and filtered by `as_of`; future records and legacy unscoped records are not used for production scoped history.
+
 ## Local Quality Gate Sequence
 
 Recommended single command:

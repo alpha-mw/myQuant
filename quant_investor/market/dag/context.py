@@ -39,6 +39,14 @@ from quant_investor.llm_gateway import detect_provider
 from quant_investor.model_roles import ModelRoleResolution
 from quant_investor.reporting.run_artifacts import build_model_role_metadata
 from quant_investor.regime.engine import MarkovRegimeEngine
+from quant_investor.regime.scope import (
+    REGIME_SCOPE_INSUFFICIENT,
+    REGIME_SCOPE_MARKET_REFERENCE,
+    RegimeScope,
+    build_regime_scope,
+    deterministic_symbol_sample,
+    reference_universe_key_for_market,
+)
 
 
 DAG_RUNTIME_PRICE_VOLUME_COLUMNS: tuple[str, ...] = (
@@ -76,6 +84,14 @@ class MarketContextState:
     resolver_snapshot: dict[str, Any] = field(default_factory=dict)
     branch_data_readiness: dict[str, Any] = field(default_factory=dict)
     branch_data_payload: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class _MarkovReferenceInput:
+    scope: RegimeScope
+    frames: dict[str, pd.DataFrame]
+    tradability_snapshot: dict[str, dict[str, Any]]
+    cross_section_quant: dict[str, Any]
 
 
 def _is_quarantined_read_result(read_result: Any) -> bool:
@@ -135,13 +151,261 @@ def _read_symbol_frames_with_projection(
     *,
     universe_key: str,
     start_date: str = "",
+    end_date: str = "",
 ) -> dict[str, MarketDataReadResult]:
     kwargs: dict[str, Any] = {"universe_key": universe_key}
     if _call_accepts_keyword(batch_reader, "columns"):
         kwargs["columns"] = DAG_RUNTIME_PRICE_VOLUME_COLUMNS
     if start_date and _call_accepts_keyword(batch_reader, "start_date"):
         kwargs["start_date"] = start_date
+    if end_date and _call_accepts_keyword(batch_reader, "end_date"):
+        kwargs["end_date"] = end_date
     return dict(batch_reader(symbols, **kwargs) or {})
+
+
+def _frame_summaries_from_tradability(
+    tradability_snapshot: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    summaries: dict[str, dict[str, Any]] = {}
+    for symbol, payload in tradability_snapshot.items():
+        state = dict(payload.get("market_state", {}) or {})
+        summaries[str(symbol)] = {
+            "rows": int(state.get("rows", 0) or 0),
+            "latest_close": float(state.get("latest_close", 0.0) or 0.0),
+            "average_return": float(state.get("average_return", 0.0) or 0.0),
+            "volatility": float(state.get("volatility", 0.0) or 0.0),
+        }
+    return summaries
+
+
+def _insufficient_markov_reference_input(
+    *,
+    market: str,
+    universe_key: str,
+    requested_symbol_count: int,
+    explicit_symbol_count: int,
+    unsampled_symbol_count: int,
+    sampled: bool,
+    min_market_sample: int,
+    diagnostics: list[str],
+) -> _MarkovReferenceInput:
+    scope = build_regime_scope(
+        market=market,
+        base_universe_key=universe_key,
+        source_universe_key=universe_key,
+        requested_symbol_count=requested_symbol_count,
+        source_symbol_count=0,
+        explicit_symbol_count=explicit_symbol_count,
+        unsampled_symbol_count=unsampled_symbol_count,
+        sampled=sampled,
+        min_market_sample=min_market_sample,
+        source_description="no_valid_market_reference",
+        diagnostics=diagnostics,
+        force_scope=REGIME_SCOPE_INSUFFICIENT,
+    )
+    return _MarkovReferenceInput(
+        scope=scope,
+        frames={},
+        tradability_snapshot={},
+        cross_section_quant={
+            "candidate_count": 0,
+            "sample_count": 0,
+            "average_return": 0.0,
+            "average_volatility": 0.0,
+            "breadth": 0.0,
+        },
+    )
+
+
+def _build_reference_tradability(
+    *,
+    read_results: Mapping[str, MarketDataReadResult],
+    trend_windows: tuple[int, ...],
+    volume_spike_threshold: float,
+    breakout_distance_pct: float,
+) -> tuple[dict[str, pd.DataFrame], dict[str, dict[str, Any]], list[str]]:
+    reference_frames: dict[str, pd.DataFrame] = {}
+    reference_tradability: dict[str, dict[str, Any]] = {}
+    diagnostics: list[str] = []
+    for symbol in sorted(read_results):
+        read_result = read_results[symbol]
+        if _is_quarantined_read_result(read_result):
+            diagnostics.append(f"markov_reference_symbol_quarantined:{symbol}")
+            continue
+        frame = read_result.frame
+        if frame is None or frame.empty:
+            diagnostics.append(f"markov_reference_symbol_empty:{symbol}")
+            continue
+        reference_frames[symbol] = frame
+        reference_tradability[symbol] = _build_symbol_tradability(
+            symbol,
+            read_result,
+            trend_windows=trend_windows,
+            volume_spike_threshold=volume_spike_threshold,
+            breakout_distance_pct=breakout_distance_pct,
+        )
+    return reference_frames, reference_tradability, diagnostics[:20]
+
+
+def _resolve_markov_reference_input(
+    *,
+    market: str,
+    universe_key: str,
+    requested_symbols: list[str],
+    current_frames: Mapping[str, pd.DataFrame],
+    current_tradability_snapshot: Mapping[str, Mapping[str, Any]],
+    current_cross_section_quant: Mapping[str, Any],
+    shared_reader: Any,
+    as_of: str,
+    runtime_lookback_start_date: str,
+    explicit_symbol_count: int,
+    unsampled_symbol_count: int,
+    sampled: bool,
+    trend_windows: tuple[int, ...],
+    volume_spike_threshold: float,
+    breakout_distance_pct: float,
+    runtime_profiler: Any | None = None,
+) -> _MarkovReferenceInput:
+    min_market_sample = max(int(getattr(config, "MARKOV_REGIME_MIN_MARKET_SAMPLE", 30) or 30), 1)
+    max_reference_symbols = max(
+        int(getattr(config, "MARKOV_REGIME_MAX_REFERENCE_SYMBOLS", 300) or 300),
+        min_market_sample,
+    )
+    requested_count = len(requested_symbols)
+    unsampled_count = int(unsampled_symbol_count or requested_count)
+    current_scope = build_regime_scope(
+        market=market,
+        base_universe_key=universe_key,
+        source_universe_key=universe_key,
+        requested_symbol_count=requested_count,
+        source_symbol_count=len(current_frames or {}),
+        explicit_symbol_count=explicit_symbol_count,
+        unsampled_symbol_count=unsampled_count,
+        sampled=sampled,
+        min_market_sample=min_market_sample,
+        source_description="dag_current_universe",
+    )
+    if current_scope.regime_scope == "full_market" and current_scope.production_eligible:
+        return _MarkovReferenceInput(
+            scope=current_scope,
+            frames=dict(current_frames),
+            tradability_snapshot={
+                str(symbol): dict(payload)
+                for symbol, payload in current_tradability_snapshot.items()
+            },
+            cross_section_quant=dict(current_cross_section_quant),
+        )
+
+    diagnostics = list(current_scope.diagnostics)
+    diagnostics.append(
+        f"markov_requested_pool_not_market_scope:{current_scope.regime_scope}"
+    )
+    reference_universe_key = reference_universe_key_for_market(market, config)
+    list_symbols = getattr(shared_reader, "list_symbols", None)
+    batch_reader = getattr(shared_reader, "read_symbol_frames", None)
+    if not callable(list_symbols) or not callable(batch_reader):
+        diagnostics.append("markov_reference_reader_unavailable")
+        return _insufficient_markov_reference_input(
+            market=market,
+            universe_key=universe_key,
+            requested_symbol_count=requested_count,
+            explicit_symbol_count=explicit_symbol_count,
+            unsampled_symbol_count=unsampled_count,
+            sampled=sampled,
+            min_market_sample=min_market_sample,
+            diagnostics=diagnostics,
+        )
+
+    try:
+        reference_symbols = list_symbols(reference_universe_key)
+    except Exception as exc:
+        diagnostics.append(f"markov_reference_universe_list_failed:{exc}")
+        return _insufficient_markov_reference_input(
+            market=market,
+            universe_key=universe_key,
+            requested_symbol_count=requested_count,
+            explicit_symbol_count=explicit_symbol_count,
+            unsampled_symbol_count=unsampled_count,
+            sampled=sampled,
+            min_market_sample=min_market_sample,
+            diagnostics=diagnostics,
+        )
+    selected_reference_symbols, reference_sampled, reference_unsampled_count = deterministic_symbol_sample(
+        reference_symbols,
+        max_reference_symbols,
+    )
+    if len(selected_reference_symbols) < min_market_sample:
+        diagnostics.append(
+            f"markov_reference_symbol_count_below_min:{len(selected_reference_symbols)}<{min_market_sample}"
+        )
+        return _insufficient_markov_reference_input(
+            market=market,
+            universe_key=universe_key,
+            requested_symbol_count=requested_count,
+            explicit_symbol_count=explicit_symbol_count,
+            unsampled_symbol_count=reference_unsampled_count,
+            sampled=reference_sampled,
+            min_market_sample=min_market_sample,
+            diagnostics=diagnostics,
+        )
+
+    with profile_stage(
+        runtime_profiler,
+        "dag_markov_reference_read",
+        {
+            "source_universe_key": reference_universe_key,
+            "source_symbol_count": len(selected_reference_symbols),
+            "sampled": reference_sampled,
+        },
+    ) as reference_metadata:
+        reference_metadata["min_market_sample"] = min_market_sample
+        reference_metadata["max_reference_symbols"] = max_reference_symbols
+        reference_metadata["unsampled_symbol_count"] = reference_unsampled_count
+        reference_read_results = _read_symbol_frames_with_projection(
+            batch_reader,
+            selected_reference_symbols,
+            universe_key=reference_universe_key,
+            start_date=runtime_lookback_start_date,
+            end_date=as_of,
+        )
+        reference_metadata["batch_result_count"] = len(reference_read_results)
+
+    reference_frames, reference_tradability, reference_notes = _build_reference_tradability(
+        read_results=reference_read_results,
+        trend_windows=trend_windows,
+        volume_spike_threshold=volume_spike_threshold,
+        breakout_distance_pct=breakout_distance_pct,
+    )
+    diagnostics.extend(reference_notes)
+    reference_frame_summaries = _frame_summaries_from_tradability(reference_tradability)
+    reference_cross_section = _build_cross_section_quant(
+        reference_frames,
+        frame_summaries=reference_frame_summaries,
+    )
+    reference_scope = build_regime_scope(
+        market=market,
+        base_universe_key=universe_key,
+        source_universe_key=reference_universe_key,
+        requested_symbol_count=requested_count,
+        source_symbol_count=len(reference_frames),
+        explicit_symbol_count=explicit_symbol_count,
+        unsampled_symbol_count=reference_unsampled_count,
+        sampled=reference_sampled,
+        min_market_sample=min_market_sample,
+        source_description="local_canonical_market_reference",
+        diagnostics=diagnostics,
+        force_scope=(
+            REGIME_SCOPE_MARKET_REFERENCE
+            if len(reference_frames) >= min_market_sample
+            else REGIME_SCOPE_INSUFFICIENT
+        ),
+    )
+    return _MarkovReferenceInput(
+        scope=reference_scope,
+        frames=reference_frames,
+        tradability_snapshot=reference_tradability,
+        cross_section_quant=reference_cross_section,
+    )
 
 
 def _theme_snapshot_scope_metadata(
@@ -256,10 +520,11 @@ def _prepare_market_context(
     batch_read_results: dict[str, MarketDataReadResult] = {}
     raw_read_results: dict[str, MarketDataReadResult] = {}
     frame_summaries: dict[str, dict[str, Any]] = {}
-    runtime_lookback_start_date = _runtime_lookback_start_date(
+    runtime_end_date = _compact_runtime_date(
         scoped_data_snapshot.get("local_latest_trade_date")
         or scoped_data_snapshot.get("latest_trade_date")
     )
+    runtime_lookback_start_date = _runtime_lookback_start_date(runtime_end_date)
     with profile_stage(
         runtime_profiler,
         "dag_batch_read",
@@ -277,6 +542,7 @@ def _prepare_market_context(
                 all_symbols,
                 universe_key=universe_key,
                 start_date=runtime_lookback_start_date,
+                end_date=runtime_end_date,
             )
         per_symbol_fallback_count = 0
         for symbol in all_symbols:
@@ -504,10 +770,14 @@ def _prepare_market_context(
 
     macro_agent_regime = str(macro_verdict.metadata.get("regime", "neutral"))
     effective_macro_regime = macro_agent_regime
+    baseline_target_exposure = float(target_exposure)
+    baseline_max_single_weight = float(max_single_weight)
     risk_budget: dict[str, Any] = {
         "target_exposure": target_exposure,
         "max_single_weight": max_single_weight,
         "sector_bucket_limit": int(sector_bucket_limit),
+        "baseline_target_exposure": baseline_target_exposure,
+        "baseline_max_single_weight": baseline_max_single_weight,
     }
     markov_target = str(
         getattr(config, "MARKOV_REGIME_EXECUTION_TARGET", "production") or "production"
@@ -516,8 +786,32 @@ def _prepare_market_context(
     markov_payload: dict[str, Any] = {
         "enabled": False,
         "status": "disabled",
+        "execution_mode": "disabled",
+        "production_eligible": False,
+        "baseline_target_exposure": baseline_target_exposure,
+        "applied_target_exposure": baseline_target_exposure,
+        "baseline_max_single_weight": baseline_max_single_weight,
+        "applied_max_single_weight": baseline_max_single_weight,
     }
     if markov_enabled:
+        markov_reference_input = _resolve_markov_reference_input(
+            market=settings.market,
+            universe_key=universe_key,
+            requested_symbols=list(all_symbols),
+            current_frames=frames,
+            current_tradability_snapshot=tradability_snapshot,
+            current_cross_section_quant=cross_section_quant,
+            shared_reader=shared_reader,
+            as_of=effective_latest_trade_date,
+            runtime_lookback_start_date=runtime_lookback_start_date,
+            explicit_symbol_count=explicit_symbol_count,
+            unsampled_symbol_count=unsampled_symbol_count,
+            sampled=sampled,
+            trend_windows=trend_windows,
+            volume_spike_threshold=volume_spike_threshold,
+            breakout_distance_pct=breakout_distance_pct,
+            runtime_profiler=runtime_profiler,
+        )
         markov_engine = MarkovRegimeEngine(
             history_path=str(getattr(config, "MARKOV_REGIME_HISTORY_PATH", "results/regime/markov_regime_history.jsonl")),
             enabled=True,
@@ -526,41 +820,75 @@ def _prepare_market_context(
         )
         regime_signal = markov_engine.run(
             market=settings.market,
-            universe_key=universe_key,
+            universe_key=markov_reference_input.scope.source_universe_key,
             as_of=effective_latest_trade_date,
-            frames=frames,
-            tradability_snapshot=tradability_snapshot,
-            cross_section_quant=cross_section_quant,
+            frames=markov_reference_input.frames,
+            tradability_snapshot=markov_reference_input.tradability_snapshot,
+            cross_section_quant=markov_reference_input.cross_section_quant,
             macro_verdict=macro_verdict,
             market_snapshot=market_snapshot,
+            scope=markov_reference_input.scope,
         )
         markov_payload = regime_signal.to_dict()
         markov_payload["execution_target"] = markov_engine.execution_target
         markov_payload["execution_mode"] = "production"
         markov_payload["enabled"] = True
-        markov_payload["status"] = "active"
-        effective_macro_regime = regime_signal.dominant_regime
-        target_exposure = min(target_exposure, regime_signal.suggested_gross_exposure_cap)
-        max_single_weight = min(max_single_weight, regime_signal.suggested_max_single_weight)
+        markov_payload["baseline_target_exposure"] = baseline_target_exposure
+        markov_payload["baseline_max_single_weight"] = baseline_max_single_weight
+        if regime_signal.production_eligible:
+            markov_payload["status"] = "applied"
+            effective_macro_regime = regime_signal.dominant_regime
+            target_exposure = min(
+                baseline_target_exposure,
+                regime_signal.suggested_gross_exposure_cap,
+            )
+            max_single_weight = min(
+                baseline_max_single_weight,
+                regime_signal.suggested_max_single_weight,
+            )
+            applied_turnover_cap = regime_signal.turnover_cap
+        else:
+            markov_payload["status"] = (
+                regime_signal.status or "not_applied_insufficient_market_scope"
+            )
+            target_exposure = baseline_target_exposure
+            max_single_weight = baseline_max_single_weight
+            applied_turnover_cap = None
+        markov_payload["applied_target_exposure"] = target_exposure
         markov_payload["applied_gross_exposure_cap"] = target_exposure
         markov_payload["applied_max_single_weight"] = max_single_weight
-        markov_payload["applied_turnover_cap"] = regime_signal.turnover_cap
+        markov_payload["applied_turnover_cap"] = applied_turnover_cap
         risk_budget.update(
             {
                 "target_exposure": target_exposure,
                 "max_single_weight": max_single_weight,
+                "markov_enabled": True,
                 "markov_regime_enabled": True,
                 "markov_execution_mode": "production",
+                "markov_production_eligible": bool(regime_signal.production_eligible),
+                "markov_status": str(markov_payload.get("status") or ""),
+                "markov_regime_scope": regime_signal.regime_scope,
+                "markov_scope_key": regime_signal.scope_key,
+                "markov_source_universe_key": regime_signal.source_universe_key,
+                "markov_source_symbol_count": regime_signal.source_symbol_count,
+                "markov_requested_symbol_count": regime_signal.requested_symbol_count,
                 "markov_dominant_regime": regime_signal.dominant_regime,
+                "markov_probabilities": dict(regime_signal.probabilities),
                 "markov_confidence": regime_signal.confidence,
                 "markov_transition_risk": regime_signal.transition_risk,
+                "markov_baseline_target_exposure": baseline_target_exposure,
+                "markov_applied_target_exposure": target_exposure,
                 "markov_applied_gross_exposure_cap": target_exposure,
+                "markov_baseline_max_single_weight": baseline_max_single_weight,
                 "markov_applied_max_single_weight": max_single_weight,
-                "markov_turnover_cap": regime_signal.turnover_cap,
+                "markov_turnover_cap": applied_turnover_cap,
+                "markov_history_record_count": regime_signal.history_record_count,
+                "markov_transition_matrix_source": regime_signal.transition_matrix_source,
+                "markov_diagnostic_notes": list(regime_signal.diagnostic_notes),
             }
         )
-        if regime_signal.turnover_cap is not None:
-            risk_budget["turnover_cap"] = regime_signal.turnover_cap
+        if applied_turnover_cap is not None:
+            risk_budget["turnover_cap"] = applied_turnover_cap
 
     theme_scope_metadata = _theme_snapshot_scope_metadata(
         universe_key=universe_key,

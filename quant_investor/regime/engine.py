@@ -6,7 +6,8 @@ import pandas as pd
 
 from quant_investor.agent_protocol import BranchVerdict
 from quant_investor.regime.features import build_regime_feature_snapshot
-from quant_investor.regime.persistence import append_regime_signal, load_regime_history
+from quant_investor.regime.persistence import append_regime_signal, load_regime_history_result
+from quant_investor.regime.scope import RegimeScope, scope_from_mapping
 from quant_investor.regime.transition import (
     bayesian_regime_update,
     default_transition_matrix,
@@ -80,6 +81,7 @@ class MarkovRegimeEngine:
         cross_section_quant: Mapping[str, Any],
         macro_verdict: BranchVerdict | Mapping[str, Any] | None,
         market_snapshot: Mapping[str, Any] | None = None,
+        scope: RegimeScope | Mapping[str, Any] | None = None,
     ) -> RegimeSignal:
         feature_snapshot = build_regime_feature_snapshot(
             market=market,
@@ -96,33 +98,44 @@ class MarkovRegimeEngine:
         )
         feature_snapshot.metadata["enabled"] = self.enabled
         feature_snapshot.metadata["market_snapshot_key_count"] = len(market_snapshot or {})
-        diagnostic_notes = list(feature_snapshot.diagnostics)
-        diagnostic_notes.extend(self._execution_target_diagnostics)
-
-        if not self.enabled:
-            return RegimeSignal(
-                as_of=feature_snapshot.as_of,
+        regime_scope = scope_from_mapping(
+            scope,
+            market=feature_snapshot.market,
+            universe_key=feature_snapshot.universe_key,
+            sample_count=feature_snapshot.sample_count,
+        )
+        if not regime_scope.scope_key:
+            regime_scope = scope_from_mapping(
+                regime_scope.to_dict()
+                | {
+                    "scope_key": f"{regime_scope.market}:legacy_scope:{regime_scope.source_universe_key}:symbols_{regime_scope.source_symbol_count}",
+                },
                 market=feature_snapshot.market,
                 universe_key=feature_snapshot.universe_key,
-                dominant_regime=REGIME_UNKNOWN,
-                probabilities={
-                    state: (1.0 if state == REGIME_UNKNOWN else 0.0)
-                    for state in REGIME_STATES
-                },
-                transition_matrix=default_transition_matrix(),
-                confidence=1.0,
-                transition_risk=0.0,
-                risk_on_score=0.0,
-                volatility_score=0.0,
-                pressure_score=0.0,
-                suggested_gross_exposure_cap=min(
-                    feature_snapshot.macro_target_gross_exposure,
-                    0.45,
-                ),
-                suggested_max_single_weight=0.12,
-                turnover_cap=None,
-                feature_snapshot=feature_snapshot.to_dict(),
+                sample_count=feature_snapshot.sample_count,
+            )
+        scope_payload = regime_scope.to_dict()
+        feature_snapshot.metadata.update(scope_payload)
+        diagnostic_notes = list(feature_snapshot.diagnostics)
+        diagnostic_notes.extend(self._execution_target_diagnostics)
+        diagnostic_notes.extend(regime_scope.diagnostics)
+
+        if not self.enabled:
+            return self._inactive_signal(
+                feature_snapshot=feature_snapshot,
+                regime_scope=regime_scope,
                 diagnostic_notes=diagnostic_notes + ["markov_regime_disabled"],
+                status="disabled",
+                enabled=False,
+            )
+
+        if not regime_scope.production_eligible:
+            return self._inactive_signal(
+                feature_snapshot=feature_snapshot,
+                regime_scope=regime_scope,
+                diagnostic_notes=diagnostic_notes + ["markov_scope_not_production_eligible"],
+                status="not_applied_insufficient_market_scope",
+                enabled=True,
             )
 
         risk_on_score, volatility_score, pressure_score = self._scores(feature_snapshot)
@@ -136,14 +149,21 @@ class MarkovRegimeEngine:
             sample_count=feature_snapshot.sample_count,
             diagnostics=diagnostic_notes,
         )
-        history = load_regime_history(
+        history_result = load_regime_history_result(
             self.history_path,
             market=feature_snapshot.market,
             universe_key=feature_snapshot.universe_key,
             before_or_equal_as_of=feature_snapshot.as_of,
             limit=252,
+            scope_key=regime_scope.scope_key,
+            source_universe_key=regime_scope.source_universe_key,
         )
+        diagnostic_notes.extend(history_result.diagnostics)
+        history = history_result.records
         previous_posterior = self._previous_posterior(history)
+        transition_matrix_source = (
+            "history_scoped" if len(self._valid_transition_records(history)) >= 2 else "default"
+        )
         transition_matrix = self._transition_matrix(history)
         posterior = bayesian_regime_update(previous_posterior, transition_matrix, likelihood)
         dominant_regime = max(
@@ -197,15 +217,77 @@ class MarkovRegimeEngine:
             turnover_cap=turnover_cap,
             feature_snapshot=feature_snapshot.to_dict(),
             diagnostic_notes=diagnostic_notes,
+            execution_mode=self.execution_target,
+            enabled=True,
+            status="active",
+            regime_scope=regime_scope.regime_scope,
+            scope_key=regime_scope.scope_key,
+            base_universe_key=regime_scope.base_universe_key,
+            source_universe_key=regime_scope.source_universe_key,
+            requested_symbol_count=regime_scope.requested_symbol_count,
+            source_symbol_count=regime_scope.source_symbol_count,
+            explicit_symbol_count=regime_scope.explicit_symbol_count,
+            unsampled_symbol_count=regime_scope.unsampled_symbol_count,
+            sampled=regime_scope.sampled,
+            production_eligible=regime_scope.production_eligible,
+            source_description=regime_scope.source_description,
+            history_record_count=len(history),
+            transition_matrix_source=transition_matrix_source,
         )
-        if self.persist_enabled and not self._latest_record_matches(
-            market=feature_snapshot.market,
-            universe_key=feature_snapshot.universe_key,
-            as_of=feature_snapshot.as_of,
-        ):
+        if self.persist_enabled:
             persistence_notes = append_regime_signal(self.history_path, signal)
             signal.diagnostic_notes.extend(persistence_notes)
         return signal
+
+    def _inactive_signal(
+        self,
+        *,
+        feature_snapshot: Any,
+        regime_scope: RegimeScope,
+        diagnostic_notes: list[str],
+        status: str,
+        enabled: bool,
+    ) -> RegimeSignal:
+        return RegimeSignal(
+            as_of=feature_snapshot.as_of,
+            market=feature_snapshot.market,
+            universe_key=feature_snapshot.universe_key,
+            dominant_regime=REGIME_UNKNOWN,
+            probabilities={
+                state: (1.0 if state == REGIME_UNKNOWN else 0.0)
+                for state in REGIME_STATES
+            },
+            transition_matrix=default_transition_matrix(),
+            confidence=1.0,
+            transition_risk=0.0,
+            risk_on_score=0.0,
+            volatility_score=0.0,
+            pressure_score=0.0,
+            suggested_gross_exposure_cap=min(
+                feature_snapshot.macro_target_gross_exposure,
+                0.45,
+            ),
+            suggested_max_single_weight=0.12,
+            turnover_cap=None,
+            feature_snapshot=feature_snapshot.to_dict(),
+            diagnostic_notes=diagnostic_notes,
+            execution_mode=self.execution_target if enabled else "disabled",
+            enabled=enabled,
+            status=status,
+            regime_scope=regime_scope.regime_scope,
+            scope_key=regime_scope.scope_key,
+            base_universe_key=regime_scope.base_universe_key,
+            source_universe_key=regime_scope.source_universe_key,
+            requested_symbol_count=regime_scope.requested_symbol_count,
+            source_symbol_count=regime_scope.source_symbol_count,
+            explicit_symbol_count=regime_scope.explicit_symbol_count,
+            unsampled_symbol_count=regime_scope.unsampled_symbol_count,
+            sampled=regime_scope.sampled,
+            production_eligible=False,
+            source_description=regime_scope.source_description,
+            history_record_count=0,
+            transition_matrix_source="not_applicable",
+        )
 
     @staticmethod
     def _scores(feature_snapshot: Any) -> tuple[float, float, float]:
@@ -304,11 +386,7 @@ class MarkovRegimeEngine:
         history: list[dict[str, Any]],
     ) -> dict[str, dict[str, float]]:
         default_matrix = default_transition_matrix()
-        valid_records = [
-            record
-            for record in history
-            if str(record.get("dominant_regime") or "") in REGIME_STATES
-        ]
+        valid_records = self._valid_transition_records(history)
         if len(valid_records) < 2:
             return default_matrix
         estimated = estimate_transition_matrix(valid_records, smoothing=self.smoothing)
@@ -326,14 +404,10 @@ class MarkovRegimeEngine:
             )
         return blended
 
-    def _latest_record_matches(self, *, market: str, universe_key: str, as_of: str) -> bool:
-        latest = load_regime_history(
-            self.history_path,
-            market=market,
-            universe_key=universe_key,
-            limit=1,
-        )
-        if not latest:
-            return False
-        record = latest[-1]
-        return str(record.get("as_of") or "") == str(as_of or "")
+    @staticmethod
+    def _valid_transition_records(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            record
+            for record in history
+            if str(record.get("dominant_regime") or "") in REGIME_STATES
+        ]

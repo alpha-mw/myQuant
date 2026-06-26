@@ -156,6 +156,7 @@ def test_markov_context_default_production_caps_risk_budget_and_preserves_macro_
     monkeypatch.setattr("quant_investor.market.dag.context.config.MARKOV_REGIME_EXECUTION_TARGET", "production")
     monkeypatch.setattr("quant_investor.market.dag.context.config.MARKOV_REGIME_HISTORY_PATH", str(tmp_path / "history.jsonl"))
     monkeypatch.setattr("quant_investor.market.dag.context.config.MARKOV_REGIME_PERSIST_ENABLED", False)
+    monkeypatch.setattr("quant_investor.market.dag.context.config.MARKOV_REGIME_MIN_MARKET_SAMPLE", 2)
 
     state = _prepare_market_context(**_context_kwargs())
 
@@ -180,6 +181,7 @@ def test_markov_context_shadow_target_is_normalized_to_production(monkeypatch: p
     monkeypatch.setattr("quant_investor.market.dag.context.config.MARKOV_REGIME_EXECUTION_TARGET", "shadow")
     monkeypatch.setattr("quant_investor.market.dag.context.config.MARKOV_REGIME_HISTORY_PATH", str(tmp_path / "history.jsonl"))
     monkeypatch.setattr("quant_investor.market.dag.context.config.MARKOV_REGIME_PERSIST_ENABLED", False)
+    monkeypatch.setattr("quant_investor.market.dag.context.config.MARKOV_REGIME_MIN_MARKET_SAMPLE", 2)
 
     state = _prepare_market_context(**_context_kwargs())
     markov = state.global_context.metadata["markov_regime"]
@@ -202,6 +204,7 @@ def test_markov_context_disabled_preserves_legacy_macro_and_risk_budget(monkeypa
     monkeypatch.setattr("quant_investor.market.dag.context.config.MARKOV_REGIME_ENABLED", False)
     monkeypatch.setattr("quant_investor.market.dag.context.config.MARKOV_REGIME_EXECUTION_TARGET", "production")
     monkeypatch.setattr("quant_investor.market.dag.context.config.MARKOV_REGIME_HISTORY_PATH", str(tmp_path / "history.jsonl"))
+    monkeypatch.setattr("quant_investor.market.dag.context.config.MARKOV_REGIME_MIN_MARKET_SAMPLE", 2)
 
     class ExplodingEngine:
         def __init__(self, *args: object, **kwargs: object) -> None:
@@ -216,10 +219,11 @@ def test_markov_context_disabled_preserves_legacy_macro_and_risk_budget(monkeypa
     assert state.global_context.risk_budget["max_single_weight"] == pytest.approx(0.12)
     assert "turnover_cap" not in state.global_context.risk_budget
     assert "markov_dominant_regime" not in state.global_context.risk_budget
-    assert state.global_context.metadata["markov_regime"] == {
-        "enabled": False,
-        "status": "disabled",
-    }
+    markov = state.global_context.metadata["markov_regime"]
+    assert markov["enabled"] is False
+    assert markov["status"] == "disabled"
+    assert markov["applied_target_exposure"] == pytest.approx(0.70)
+    assert markov["applied_max_single_weight"] == pytest.approx(0.12)
 
 
 def test_markov_context_forwards_turnover_cap_when_signal_sets_it(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -229,6 +233,7 @@ def test_markov_context_forwards_turnover_cap_when_signal_sets_it(monkeypatch: p
     monkeypatch.setattr("quant_investor.market.dag.context.config.MARKOV_REGIME_ENABLED", True)
     monkeypatch.setattr("quant_investor.market.dag.context.config.MARKOV_REGIME_EXECUTION_TARGET", "production")
     monkeypatch.setattr("quant_investor.market.dag.context.config.MARKOV_REGIME_HISTORY_PATH", str(tmp_path / "history.jsonl"))
+    monkeypatch.setattr("quant_investor.market.dag.context.config.MARKOV_REGIME_MIN_MARKET_SAMPLE", 2)
 
     class FakeEngine:
         execution_target = "production"
