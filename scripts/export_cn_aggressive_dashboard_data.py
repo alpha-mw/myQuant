@@ -70,6 +70,14 @@ class BenchmarkExport:
     normalization: str
     status_hint: str
     notes: list[str]
+    coverage_by_date: dict[str, dict[str, str]]
+    value_date_by_date: dict[str, dict[str, str]]
+
+
+@dataclass(frozen=True)
+class TradeCalendarDay:
+    is_open: bool
+    pretrade_date: str
 
 
 def read_csv_rows(path: Path) -> list[dict[str, str]]:
@@ -143,12 +151,46 @@ def benchmarks_from_snapshot(run_dir: Path) -> dict[str, float]:
     return values
 
 
+def load_tushare_trade_calendar(
+    pro: Any,
+    start_date: str,
+    end_date: str,
+) -> tuple[dict[str, TradeCalendarDay], list[str]]:
+    warnings: list[str] = []
+    try:
+        frame = pro.trade_cal(exchange="", start_date=start_date, end_date=end_date)
+    except TypeError:
+        try:
+            frame = pro.trade_cal(start_date=start_date, end_date=end_date)
+        except Exception as exc:  # pragma: no cover - live provider defensive guard.
+            return {}, [f"Tushare trade_cal 调用失败：{exc}"]
+    except Exception as exc:  # pragma: no cover - live provider defensive guard.
+        return {}, [f"Tushare trade_cal 调用失败：{exc}"]
+    if frame is None or getattr(frame, "empty", True):
+        return {}, ["Tushare trade_cal 未返回数据，非交易日 benchmark 不做前向填充。"]
+    if "cal_date" not in frame.columns or "is_open" not in frame.columns:
+        return {}, ["Tushare trade_cal 缺少 cal_date 或 is_open 字段，非交易日 benchmark 不做前向填充。"]
+    calendar: dict[str, TradeCalendarDay] = {}
+    for _, row in frame.iterrows():
+        iso_date = tushare_to_iso_date(row.get("cal_date"))
+        if not iso_date:
+            continue
+        is_open = str(row.get("is_open") or "").strip() in {"1", "1.0", "True", "true"}
+        pretrade_date = tushare_to_iso_date(row.get("pretrade_date"))
+        calendar[iso_date] = TradeCalendarDay(is_open=is_open, pretrade_date=pretrade_date)
+    if not calendar:
+        warnings.append("Tushare trade_cal 未返回有效交易日历，非交易日 benchmark 不做前向填充。")
+    return calendar, warnings
+
+
 def build_tushare_benchmark_export(runs: list[RecordRun], pro: Any) -> tuple[BenchmarkExport | None, list[str]]:
     warnings: list[str] = []
     if not runs:
         return None, ["没有可用策略记录，无法拉取 Tushare benchmark。"]
     start_date = iso_to_tushare_date(runs[0].date)
     end_date = iso_to_tushare_date(runs[-1].date)
+    trade_calendar, calendar_warnings = load_tushare_trade_calendar(pro, start_date, end_date)
+    warnings.extend(calendar_warnings)
     closes_by_field: dict[str, dict[str, float]] = {}
     raw_rows: list[dict[str, Any]] = []
     for ts_code, field in TUSHARE_INDEX_BENCHMARKS.items():
@@ -189,6 +231,8 @@ def build_tushare_benchmark_export(runs: list[RecordRun], pro: Any) -> tuple[Ben
                     "close": f"{close_by_date[iso_date]:.6f}",
                     "nav": f"{nav_value:.8f}",
                     "source_system": TUSHARE_BENCHMARK_SOURCE_SYSTEM,
+                    "value_date": iso_date,
+                    "coverage": "exact_close",
                 }
             )
 
@@ -201,13 +245,45 @@ def build_tushare_benchmark_export(runs: list[RecordRun], pro: Any) -> tuple[Ben
         if close_by_date
     }
     values_by_date: dict[str, dict[str, float]] = {}
+    coverage_by_date: dict[str, dict[str, str]] = {}
+    value_date_by_date: dict[str, dict[str, str]] = {}
     for run in runs:
         normalized: dict[str, float] = {}
+        coverage: dict[str, str] = {}
+        value_dates: dict[str, str] = {}
         for field, close_by_date in closes_by_field.items():
             close_value = close_by_date.get(run.date)
+            value_date = run.date
+            coverage_status = "exact_close"
+            if close_value is None:
+                calendar_day = trade_calendar.get(run.date)
+                if calendar_day and not calendar_day.is_open and calendar_day.pretrade_date:
+                    close_value = close_by_date.get(calendar_day.pretrade_date)
+                    if close_value is not None:
+                        value_date = calendar_day.pretrade_date
+                        coverage_status = "previous_trading_day_ffill"
             first_close = first_closes.get(field)
             if close_value and first_close:
                 normalized[field] = close_value / first_close
+                coverage[field] = coverage_status
+                value_dates[field] = value_date
+                if coverage_status == "previous_trading_day_ffill":
+                    raw_rows.append(
+                        {
+                            "date": run.date,
+                            "ts_code": next(
+                                ts_code
+                                for ts_code, benchmark_field in TUSHARE_INDEX_BENCHMARKS.items()
+                                if benchmark_field == field
+                            ),
+                            "field": field,
+                            "close": f"{close_value:.6f}",
+                            "nav": f"{normalized[field]:.8f}",
+                            "source_system": TUSHARE_BENCHMARK_SOURCE_SYSTEM,
+                            "value_date": value_date,
+                            "coverage": coverage_status,
+                        }
+                    )
         main_components = [
             ("star50_nav", 0.50),
             ("csi300_nav", 0.30),
@@ -219,21 +295,40 @@ def build_tushare_benchmark_export(runs: list[RecordRun], pro: Any) -> tuple[Ben
                 sum(normalized[field] * weight for field, weight in main_components if field in normalized)
                 / used_weight
             )
+            component_coverages = [
+                coverage[field] for field, _weight in main_components if field in normalized and field in coverage
+            ]
+            component_value_dates = [
+                value_dates[field] for field, _weight in main_components if field in normalized and field in value_dates
+            ]
+            coverage["benchmark_main_nav"] = (
+                "previous_trading_day_ffill"
+                if "previous_trading_day_ffill" in component_coverages
+                else "exact_close"
+            )
+            value_dates["benchmark_main_nav"] = min(component_value_dates) if component_value_dates else run.date
         if "csi300_nav" in normalized:
             normalized["benchmark_nav"] = normalized["csi300_nav"]
+            coverage["benchmark_nav"] = coverage.get("csi300_nav", "exact_close")
+            value_dates["benchmark_nav"] = value_dates.get("csi300_nav", run.date)
         if normalized:
             values_by_date[run.date] = normalized
+            coverage_by_date[run.date] = coverage
+            value_date_by_date[run.date] = value_dates
 
     return BenchmarkExport(
         values_by_date=values_by_date,
         raw_rows=raw_rows,
         source_system=TUSHARE_BENCHMARK_SOURCE_SYSTEM,
-        normalization="tushare_index_daily_close_divided_by_first_valid_close",
+        normalization="tushare_index_daily_close_divided_by_first_valid_close_with_trade_cal_previous_trading_day_ffill",
         status_hint="production_source",
         notes=[
             "benchmark 来自 Tushare index_daily 连续指数 close，并按 close/first_valid_close 归一化。",
-            "若 latest strategy record 日期尚无 Tushare index_daily close，则该日期 benchmark 留空并降级为 partial。",
+            "非交易日 strategy record 使用 Tushare trade_cal 的 pretrade_date 做 previous_trading_day_ffill，并在 coverage 中显式标记。",
+            "若交易日或 latest strategy record 日期尚无 Tushare index_daily close，则该日期 benchmark 留空并降级为 partial。",
         ],
+        coverage_by_date=coverage_by_date,
+        value_date_by_date=value_date_by_date,
     ), warnings
 
 
@@ -543,24 +638,51 @@ def benchmark_source_summary(
         )
         last_nav_date = str(nav_rows[-1].get("date") or "") if nav_rows else ""
         latest_only_missing = bool(missing_dates) and missing_dates == [last_nav_date]
-        if missing_date_count == 0:
+        ffill_dates = [
+            str(row.get("date") or "")
+            for row in nav_rows
+            if any(
+                benchmark_export.coverage_by_date.get(str(row.get("date") or ""), {}).get(field)
+                == "previous_trading_day_ffill"
+                for field in actual_snapshot_fields
+            )
+        ]
+        exact_dates = [
+            str(row.get("date") or "")
+            for row in nav_rows
+            if str(row.get("date") or "") not in missing_dates
+            and str(row.get("date") or "") not in ffill_dates
+        ]
+        if missing_date_count == 0 and not ffill_dates:
             status = "production_grade"
+        elif missing_date_count == 0 and ffill_dates:
+            status = "production_source_with_previous_trading_day_ffill"
         elif latest_only_missing:
             status = "production_source_partial_latest_unavailable"
         else:
             status = "production_source_partial_missing_dates"
         notes = list(benchmark_export.notes)
+        if ffill_dates:
+            notes.append("部分非交易日 benchmark 使用上一交易日真实 close 前向填充；Dashboard 展示连续，但投委会口径需区分 exact 与 ffill。")
         if missing_date_count:
             notes.append("Tushare benchmark 未覆盖所有策略记录日期；缺失日期不按生产级 benchmark 标记。")
         return {
             "benchmark_fields": benchmark_fields,
             "benchmark_source_status": status,
             "source_system": benchmark_export.source_system,
+            "calendar_source_system": "tushare.trade_cal",
             "production_grade": status == "production_grade",
+            "display_continuity_grade": missing_date_count == 0,
             "first_valid_date": min(valid_dates) if valid_dates else "",
             "last_valid_date": max(valid_dates) if valid_dates else "",
             "missing_date_count": missing_date_count,
             "missing_dates": missing_dates,
+            "exact_date_count": len(exact_dates),
+            "exact_dates": exact_dates,
+            "previous_trading_day_ffill_count": len(ffill_dates),
+            "previous_trading_day_ffill_dates": ffill_dates,
+            "coverage_by_date": benchmark_export.coverage_by_date,
+            "value_date_by_date": benchmark_export.value_date_by_date,
             "field_missing_counts": field_missing_counts,
             "normalization": benchmark_export.normalization,
             "notes": notes,
@@ -800,7 +922,7 @@ def export(record_root: Path, dashboard_root: Path, benchmark_source: str = "tus
     )
     write_csv(
         benchmark_path,
-        ["date", "ts_code", "field", "close", "nav", "source_system"],
+        ["date", "ts_code", "field", "close", "nav", "source_system", "value_date", "coverage"],
         benchmark_export.raw_rows if benchmark_export is not None else [],
     )
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

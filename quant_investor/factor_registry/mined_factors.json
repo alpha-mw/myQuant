@@ -17,20 +17,19 @@
     ],
     "production_factor_count": 14,
     "path": "quant_investor/factor_registry/mined_factors.json",
-    "last_factor_health_review_at": "2026-06-19T10:31:31Z",
-    "last_factor_health_report_json": "reports/factor_governance/health/factor_health_2026-06-19T103131Z.json",
-    "last_factor_health_report_markdown": "reports/factor_governance/health/factor_health_2026-06-19T103131Z.md",
+    "last_factor_health_review_at": "2026-06-26T11:54:22Z",
+    "last_factor_health_report_json": "reports/factor_governance/health/factor_health_2026-06-26T115422Z.json",
+    "last_factor_health_report_markdown": "reports/factor_governance/health/factor_health_2026-06-26T115422Z.md",
     "last_factor_health_action_counts": {
       "keep": 14
     },
-    "last_daily_factor_mining_at": "2026-06-20T20:19:35+08:00",
-    "last_daily_factor_mining_run_id": "daily_factor_mining_20260620_112621_codex",
-    "last_daily_factor_mining_report": "reports/factor_governance/daily_mining/daily_factor_mining_20260620_112621_codex/mining/quant_branch_factor_mining_results.json",
-    "last_daily_factor_mining_written": [
-      "pv_blend_volstab19x2_mom90_amihud5_w80",
-      "pv_volume_stability_90d"
+    "last_daily_factor_mining_at": "2026-06-27T04:36:29+08:00",
+    "last_daily_factor_mining_run_id": "daily_factor_mining_20260627_043314_codex",
+    "last_daily_factor_mining_report": "reports/factor_governance/daily_mining/daily_factor_mining_20260627_043314_codex/mining/quant_branch_factor_mining_results.json",
+    "last_daily_factor_mining_written": [],
+    "last_daily_factor_mining_updated": [
+      "pv_blend_volstab19x2_mom90_amihud5_w80"
     ],
-    "last_daily_factor_mining_updated": [],
     "daily_factor_mining_policy": "writes zero-weight production_candidate records only; manual production_factor promotion required"
   },
   "factors": [
@@ -255,12 +254,12 @@
           "literature_anchor": "trading_activity"
         },
         "health_monitor": {
-          "latest_reviewed_at": "2026-06-19T10:31:31Z",
+          "latest_reviewed_at": "2026-06-26T11:54:22Z",
           "status": "healthy",
           "action": "keep",
           "consecutive_failures": 0,
           "last_evaluation_id": "pv_volume_stability_15d",
-          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-19T103131Z.md",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-26T115422Z.md",
           "latest_reasons": [],
           "latest_health_metrics": {
             "coverage_rate": 0.9988936554526981,
@@ -373,6 +372,36 @@
             },
             {
               "reviewed_at": "2026-06-19T10:31:31Z",
+              "factor_name": "pv_volume_stability_15d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9988936554526981,
+                "nan_rate": 0.001106344547301874,
+                "icir": 0.6624746923687049,
+                "mean_rankic": 0.044408227762990846,
+                "positive_ic_ratio": 0.8,
+                "oos_positive_ratio": 0.8,
+                "top_bottom_spread": 0.06829295397373879,
+                "top_quantile_return": 0.22094942161730718,
+                "turnover": 7.227044505229436,
+                "cost_adjusted_return": 0.06106590946850935,
+                "capacity_pressure": 0.012529658563233199,
+                "neutralized_icir": 0.685358913031786,
+                "master_return_delta": 0.0009302848440279769,
+                "sharpe_delta": 0.0038752414069671993,
+                "max_drawdown_delta": 0.0005030226992757869,
+                "turnover_delta": 0.21681133515688308
+              },
+              "evaluation_id": "pv_volume_stability_15d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-26T11:54:22Z",
               "factor_name": "pv_volume_stability_15d",
               "status": "healthy",
               "action": "keep",
@@ -626,12 +655,12 @@
           "literature_anchor": "trading_activity"
         },
         "health_monitor": {
-          "latest_reviewed_at": "2026-06-19T10:31:31Z",
+          "latest_reviewed_at": "2026-06-26T11:54:22Z",
           "status": "healthy",
           "action": "keep",
           "consecutive_failures": 0,
           "last_evaluation_id": "pv_volume_stability_20d",
-          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-19T103131Z.md",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-26T115422Z.md",
           "latest_reasons": [],
           "latest_health_metrics": {
             "coverage_rate": 0.9985324000903139,
@@ -744,6 +773,36 @@
             },
             {
               "reviewed_at": "2026-06-19T10:31:31Z",
+              "factor_name": "pv_volume_stability_20d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9985324000903139,
+                "nan_rate": 0.0014675999096861595,
+                "icir": 0.6609294341298083,
+                "mean_rankic": 0.04401132324201341,
+                "positive_ic_ratio": 0.72,
+                "oos_positive_ratio": 0.6666666666666666,
+                "top_bottom_spread": 0.061985623256305356,
+                "top_quantile_return": 0.2218957074203365,
+                "turnover": 7.253082569516312,
+                "cost_adjusted_return": 0.054732540686789045,
+                "capacity_pressure": 0.012190578544895669,
+                "neutralized_icir": 0.7098406559826255,
+                "master_return_delta": 0.0009571256963318539,
+                "sharpe_delta": 0.004149962739458154,
+                "max_drawdown_delta": 0.0008243131395776237,
+                "turnover_delta": 0.21759247708548937
+              },
+              "evaluation_id": "pv_volume_stability_20d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-26T11:54:22Z",
               "factor_name": "pv_volume_stability_20d",
               "status": "healthy",
               "action": "keep",
@@ -997,12 +1056,12 @@
           "literature_anchor": "amihud_illiquidity"
         },
         "health_monitor": {
-          "latest_reviewed_at": "2026-06-19T10:31:31Z",
+          "latest_reviewed_at": "2026-06-26T11:54:22Z",
           "status": "healthy",
           "action": "keep",
           "consecutive_failures": 0,
           "last_evaluation_id": "pv_amihud_illiquidity_15d",
-          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-19T103131Z.md",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-26T115422Z.md",
           "latest_reasons": [],
           "latest_health_metrics": {
             "coverage_rate": 0.9987807631519531,
@@ -1115,6 +1174,36 @@
             },
             {
               "reviewed_at": "2026-06-19T10:31:31Z",
+              "factor_name": "pv_amihud_illiquidity_15d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9987807631519531,
+                "nan_rate": 0.0012192368480469632,
+                "icir": 0.5925763334773,
+                "mean_rankic": 0.06134304843601928,
+                "positive_ic_ratio": 0.72,
+                "oos_positive_ratio": 0.6666666666666666,
+                "top_bottom_spread": 0.16080865144390719,
+                "top_quantile_return": 0.28517576687863067,
+                "turnover": 3.638762299129605,
+                "cost_adjusted_return": 0.15716988914477759,
+                "capacity_pressure": 0.028489742983843457,
+                "neutralized_icir": 0.8301730147480666,
+                "master_return_delta": 0.002853315809964637,
+                "sharpe_delta": 0.00877543895492278,
+                "max_drawdown_delta": 0.0008673763263812084,
+                "turnover_delta": 0.10916286897388815
+              },
+              "evaluation_id": "pv_amihud_illiquidity_15d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-26T11:54:22Z",
               "factor_name": "pv_amihud_illiquidity_15d",
               "status": "healthy",
               "action": "keep",
@@ -1368,12 +1457,12 @@
           "literature_anchor": "turnover_liquidity_premium"
         },
         "health_monitor": {
-          "latest_reviewed_at": "2026-06-19T10:31:31Z",
+          "latest_reviewed_at": "2026-06-26T11:54:22Z",
           "status": "healthy",
           "action": "keep",
           "consecutive_failures": 0,
           "last_evaluation_id": "pv_low_dollar_volume_20d",
-          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-19T103131Z.md",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-26T115422Z.md",
           "latest_reasons": [],
           "latest_health_metrics": {
             "coverage_rate": 0.9985324000903139,
@@ -1486,6 +1575,36 @@
             },
             {
               "reviewed_at": "2026-06-19T10:31:31Z",
+              "factor_name": "pv_low_dollar_volume_20d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9985324000903139,
+                "nan_rate": 0.0014675999096861595,
+                "icir": 0.5921302834826092,
+                "mean_rankic": 0.08341974937879662,
+                "positive_ic_ratio": 0.72,
+                "oos_positive_ratio": 0.6666666666666666,
+                "top_bottom_spread": 0.09385356265626991,
+                "top_quantile_return": 0.25415840852043564,
+                "turnover": 4.071754158532981,
+                "cost_adjusted_return": 0.08978180849773694,
+                "capacity_pressure": 0.03168610878772719,
+                "neutralized_icir": 0.5509693143644411,
+                "master_return_delta": 0.0019250067293348288,
+                "sharpe_delta": 0.009310764877089685,
+                "max_drawdown_delta": 0.0015668240667471012,
+                "turnover_delta": 0.12215262475598943
+              },
+              "evaluation_id": "pv_low_dollar_volume_20d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-26T11:54:22Z",
               "factor_name": "pv_low_dollar_volume_20d",
               "status": "healthy",
               "action": "keep",
@@ -1739,12 +1858,12 @@
           "literature_anchor": "amihud_illiquidity"
         },
         "health_monitor": {
-          "latest_reviewed_at": "2026-06-19T10:31:31Z",
+          "latest_reviewed_at": "2026-06-26T11:54:22Z",
           "status": "healthy",
           "action": "keep",
           "consecutive_failures": 0,
           "last_evaluation_id": "pv_amihud_illiquidity_20d",
-          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-19T103131Z.md",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-26T115422Z.md",
           "latest_reasons": [],
           "latest_health_metrics": {
             "coverage_rate": 0.9984872431700158,
@@ -1857,6 +1976,36 @@
             },
             {
               "reviewed_at": "2026-06-19T10:31:31Z",
+              "factor_name": "pv_amihud_illiquidity_20d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9984872431700158,
+                "nan_rate": 0.0015127568299841952,
+                "icir": 0.5914276853994945,
+                "mean_rankic": 0.06101174310505294,
+                "positive_ic_ratio": 0.68,
+                "oos_positive_ratio": 0.6,
+                "top_bottom_spread": 0.15957587101546752,
+                "top_quantile_return": 0.28462454552823613,
+                "turnover": 3.380247330494309,
+                "cost_adjusted_return": 0.15619562368497322,
+                "capacity_pressure": 0.02830969512716046,
+                "neutralized_icir": 0.8423657248755558,
+                "master_return_delta": 0.002838495264806332,
+                "sharpe_delta": 0.00899684688962277,
+                "max_drawdown_delta": 0.0009210382064000188,
+                "turnover_delta": 0.10140741991482927
+              },
+              "evaluation_id": "pv_amihud_illiquidity_20d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-26T11:54:22Z",
               "factor_name": "pv_amihud_illiquidity_20d",
               "status": "healthy",
               "action": "keep",
@@ -2110,12 +2259,12 @@
           "literature_anchor": "amihud_illiquidity"
         },
         "health_monitor": {
-          "latest_reviewed_at": "2026-06-19T10:31:31Z",
+          "latest_reviewed_at": "2026-06-26T11:54:22Z",
           "status": "healthy",
           "action": "keep",
           "consecutive_failures": 0,
           "last_evaluation_id": "pv_amihud_illiquidity_10d",
-          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-19T103131Z.md",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-26T115422Z.md",
           "latest_reasons": [],
           "latest_health_metrics": {
             "coverage_rate": 0.9992774892752314,
@@ -2228,6 +2377,36 @@
             },
             {
               "reviewed_at": "2026-06-19T10:31:31Z",
+              "factor_name": "pv_amihud_illiquidity_10d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9992774892752314,
+                "nan_rate": 0.0007225107247685708,
+                "icir": 0.5901384362521785,
+                "mean_rankic": 0.061858609937607306,
+                "positive_ic_ratio": 0.72,
+                "oos_positive_ratio": 0.6666666666666666,
+                "top_bottom_spread": 0.14843441205427566,
+                "top_quantile_return": 0.274612837051832,
+                "turnover": 3.982681087630649,
+                "cost_adjusted_return": 0.14445173096664501,
+                "capacity_pressure": 0.028436581085211875,
+                "neutralized_icir": 0.7806825761806137,
+                "master_return_delta": 0.002536075164627442,
+                "sharpe_delta": 0.00798568563367395,
+                "max_drawdown_delta": 0.0007911679164227292,
+                "turnover_delta": 0.11948043262891946
+              },
+              "evaluation_id": "pv_amihud_illiquidity_10d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-26T11:54:22Z",
               "factor_name": "pv_amihud_illiquidity_10d",
               "status": "healthy",
               "action": "keep",
@@ -2481,12 +2660,12 @@
           "literature_anchor": "turnover_liquidity_premium"
         },
         "health_monitor": {
-          "latest_reviewed_at": "2026-06-19T10:31:31Z",
+          "latest_reviewed_at": "2026-06-26T11:54:22Z",
           "status": "healthy",
           "action": "keep",
           "consecutive_failures": 0,
           "last_evaluation_id": "pv_low_dollar_volume_15d",
-          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-19T103131Z.md",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-26T115422Z.md",
           "latest_reasons": [],
           "latest_health_metrics": {
             "coverage_rate": 0.9988936554526981,
@@ -2599,6 +2778,36 @@
             },
             {
               "reviewed_at": "2026-06-19T10:31:31Z",
+              "factor_name": "pv_low_dollar_volume_15d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9988936554526981,
+                "nan_rate": 0.001106344547301874,
+                "icir": 0.5874458091147465,
+                "mean_rankic": 0.08190587542657529,
+                "positive_ic_ratio": 0.68,
+                "oos_positive_ratio": 0.6,
+                "top_bottom_spread": 0.0931154735896354,
+                "top_quantile_return": 0.2494987598363704,
+                "turnover": 4.180124805117125,
+                "cost_adjusted_return": 0.08893534878451828,
+                "capacity_pressure": 0.03198483867471076,
+                "neutralized_icir": 0.5545622900190289,
+                "master_return_delta": 0.0017867649905998731,
+                "sharpe_delta": 0.008454022303573103,
+                "max_drawdown_delta": 0.0016126457949542316,
+                "turnover_delta": 0.12540374415351374
+              },
+              "evaluation_id": "pv_low_dollar_volume_15d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-26T11:54:22Z",
               "factor_name": "pv_low_dollar_volume_15d",
               "status": "healthy",
               "action": "keep",
@@ -2852,12 +3061,12 @@
           "literature_anchor": "turnover_liquidity_premium"
         },
         "health_monitor": {
-          "latest_reviewed_at": "2026-06-19T10:31:31Z",
+          "latest_reviewed_at": "2026-06-26T11:54:22Z",
           "status": "healthy",
           "action": "keep",
           "consecutive_failures": 0,
           "last_evaluation_id": "pv_low_dollar_volume_25d",
-          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-19T103131Z.md",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-26T115422Z.md",
           "latest_reasons": [],
           "latest_health_metrics": {
             "coverage_rate": 0.9981034093474825,
@@ -2970,6 +3179,36 @@
             },
             {
               "reviewed_at": "2026-06-19T10:31:31Z",
+              "factor_name": "pv_low_dollar_volume_25d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9981034093474825,
+                "nan_rate": 0.0018965906525174982,
+                "icir": 0.5747353480322996,
+                "mean_rankic": 0.08114441687576494,
+                "positive_ic_ratio": 0.72,
+                "oos_positive_ratio": 0.6666666666666666,
+                "top_bottom_spread": 0.08571783631905908,
+                "top_quantile_return": 0.25205675593233207,
+                "turnover": 3.9352044102499146,
+                "cost_adjusted_return": 0.08178263190880916,
+                "capacity_pressure": 0.031371068797255805,
+                "neutralized_icir": 0.5264225088926907,
+                "master_return_delta": 0.0018645632165100688,
+                "sharpe_delta": 0.009297510699296976,
+                "max_drawdown_delta": 0.0016103726434936881,
+                "turnover_delta": 0.11805613230749744
+              },
+              "evaluation_id": "pv_low_dollar_volume_25d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-26T11:54:22Z",
               "factor_name": "pv_low_dollar_volume_25d",
               "status": "healthy",
               "action": "keep",
@@ -3223,12 +3462,12 @@
           "literature_anchor": "amihud_illiquidity"
         },
         "health_monitor": {
-          "latest_reviewed_at": "2026-06-19T10:31:31Z",
+          "latest_reviewed_at": "2026-06-26T11:54:22Z",
           "status": "healthy",
           "action": "keep",
           "consecutive_failures": 0,
           "last_evaluation_id": "pv_amihud_illiquidity_25d",
-          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-19T103131Z.md",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-26T115422Z.md",
           "latest_reasons": [],
           "latest_health_metrics": {
             "coverage_rate": 0.9979679385865884,
@@ -3341,6 +3580,36 @@
             },
             {
               "reviewed_at": "2026-06-19T10:31:31Z",
+              "factor_name": "pv_amihud_illiquidity_25d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9979679385865884,
+                "nan_rate": 0.0020320614134116052,
+                "icir": 0.5744086696417071,
+                "mean_rankic": 0.057815412975474795,
+                "positive_ic_ratio": 0.68,
+                "oos_positive_ratio": 0.6,
+                "top_bottom_spread": 0.15534397296576136,
+                "top_quantile_return": 0.2861706734968363,
+                "turnover": 3.1904740303174126,
+                "cost_adjusted_return": 0.15215349893544394,
+                "capacity_pressure": 0.028060129124717094,
+                "neutralized_icir": 0.8310441326939998,
+                "master_return_delta": 0.002885468857963784,
+                "sharpe_delta": 0.009004445157275952,
+                "max_drawdown_delta": 0.000951690324371608,
+                "turnover_delta": 0.09571422090952238
+              },
+              "evaluation_id": "pv_amihud_illiquidity_25d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-26T11:54:22Z",
               "factor_name": "pv_amihud_illiquidity_25d",
               "status": "healthy",
               "action": "keep",
@@ -3594,12 +3863,12 @@
           "literature_anchor": "turnover_liquidity_premium"
         },
         "health_monitor": {
-          "latest_reviewed_at": "2026-06-19T10:31:31Z",
+          "latest_reviewed_at": "2026-06-26T11:54:22Z",
           "status": "healthy",
           "action": "keep",
           "consecutive_failures": 0,
           "last_evaluation_id": "pv_low_dollar_volume_30d",
-          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-19T103131Z.md",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-26T115422Z.md",
           "latest_reasons": [],
           "latest_health_metrics": {
             "coverage_rate": 0.9975389478437571,
@@ -3712,6 +3981,36 @@
             },
             {
               "reviewed_at": "2026-06-19T10:31:31Z",
+              "factor_name": "pv_low_dollar_volume_30d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9975389478437571,
+                "nan_rate": 0.0024610521562429444,
+                "icir": 0.5577843508280484,
+                "mean_rankic": 0.07913714236036058,
+                "positive_ic_ratio": 0.68,
+                "oos_positive_ratio": 0.6,
+                "top_bottom_spread": 0.08383973282071845,
+                "top_quantile_return": 0.251762639190165,
+                "turnover": 3.7439088298923444,
+                "cost_adjusted_return": 0.08009582399082611,
+                "capacity_pressure": 0.031040769210127116,
+                "neutralized_icir": 0.50674451802498,
+                "master_return_delta": 0.0018508023502062363,
+                "sharpe_delta": 0.009328308137774374,
+                "max_drawdown_delta": 0.0015071005435353078,
+                "turnover_delta": 0.11231726489677032
+              },
+              "evaluation_id": "pv_low_dollar_volume_30d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-26T11:54:22Z",
               "factor_name": "pv_low_dollar_volume_30d",
               "status": "healthy",
               "action": "keep",
@@ -3965,12 +4264,12 @@
           "literature_anchor": "short_term_reversal"
         },
         "health_monitor": {
-          "latest_reviewed_at": "2026-06-19T10:31:31Z",
+          "latest_reviewed_at": "2026-06-26T11:54:22Z",
           "status": "healthy",
           "action": "keep",
           "consecutive_failures": 0,
           "last_evaluation_id": "pv_short_reversal_5d",
-          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-19T103131Z.md",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-26T115422Z.md",
           "latest_reasons": [],
           "latest_health_metrics": {
             "coverage_rate": 0.9996387446376157,
@@ -4083,6 +4382,36 @@
             },
             {
               "reviewed_at": "2026-06-19T10:31:31Z",
+              "factor_name": "pv_short_reversal_5d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9996387446376157,
+                "nan_rate": 0.0003612553623842854,
+                "icir": 0.5545397059626963,
+                "mean_rankic": 0.07597409254266303,
+                "positive_ic_ratio": 0.76,
+                "oos_positive_ratio": 0.6666666666666666,
+                "top_bottom_spread": 0.12212635675512817,
+                "top_quantile_return": 0.28847145731966906,
+                "turnover": 7.4922521394943224,
+                "cost_adjusted_return": 0.11463410461563385,
+                "capacity_pressure": 0.009376315482411688,
+                "neutralized_icir": 0.5831239166222666,
+                "master_return_delta": 0.002957130926827831,
+                "sharpe_delta": 0.007402024525876714,
+                "max_drawdown_delta": 0.0,
+                "turnover_delta": 0.22476756418482965
+              },
+              "evaluation_id": "pv_short_reversal_5d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-26T11:54:22Z",
               "factor_name": "pv_short_reversal_5d",
               "status": "healthy",
               "action": "keep",
@@ -4336,12 +4665,12 @@
           "literature_anchor": "trading_activity"
         },
         "health_monitor": {
-          "latest_reviewed_at": "2026-06-19T10:31:31Z",
+          "latest_reviewed_at": "2026-06-26T11:54:22Z",
           "status": "healthy",
           "action": "keep",
           "consecutive_failures": 0,
           "last_evaluation_id": "pv_volume_stability_10d",
-          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-19T103131Z.md",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-26T115422Z.md",
           "latest_reasons": [],
           "latest_health_metrics": {
             "coverage_rate": 0.9993678031158275,
@@ -4454,6 +4783,36 @@
             },
             {
               "reviewed_at": "2026-06-19T10:31:31Z",
+              "factor_name": "pv_volume_stability_10d",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9993678031158275,
+                "nan_rate": 0.0006321968841724994,
+                "icir": 0.5463430230849419,
+                "mean_rankic": 0.03596699803535473,
+                "positive_ic_ratio": 0.72,
+                "oos_positive_ratio": 0.6666666666666666,
+                "top_bottom_spread": 0.045018341727859776,
+                "top_quantile_return": 0.21023326739015077,
+                "turnover": 7.364000111079247,
+                "cost_adjusted_return": 0.03765434161678053,
+                "capacity_pressure": 0.012828154165459925,
+                "neutralized_icir": 0.5781506484415131,
+                "master_return_delta": 0.0006078517136496472,
+                "sharpe_delta": 0.0027791453161006762,
+                "max_drawdown_delta": 0.0006695133861222602,
+                "turnover_delta": 0.2209200033323774
+              },
+              "evaluation_id": "pv_volume_stability_10d",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-26T11:54:22Z",
               "factor_name": "pv_volume_stability_10d",
               "status": "healthy",
               "action": "keep",
@@ -4764,12 +5123,12 @@
           "formula": "outer_weight * cs_rank(volume_stability_smooth_19d_2d) + (1 - outer_weight) * cs_rank(0.60 * cs_rank(momentum_90) + 0.40 * cs_rank(amihud_5))"
         },
         "health_monitor": {
-          "latest_reviewed_at": "2026-06-19T10:31:31Z",
+          "latest_reviewed_at": "2026-06-26T11:54:22Z",
           "status": "healthy",
           "action": "keep",
           "consecutive_failures": 0,
           "last_evaluation_id": "pv_blend_volstab19x2_mom90_amihud5_w75",
-          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-19T103131Z.md",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-26T115422Z.md",
           "latest_reasons": [],
           "latest_health_metrics": {
             "coverage_rate": 0.9793333333333333,
@@ -4882,6 +5241,36 @@
             },
             {
               "reviewed_at": "2026-06-19T10:31:31Z",
+              "factor_name": "pv_blend_volstab19x2_mom90_amihud5_w75",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9793333333333333,
+                "nan_rate": 0.020666666666666722,
+                "icir": 0.5739981398295194,
+                "mean_rankic": 0.0382760018453762,
+                "positive_ic_ratio": 0.6857142857142857,
+                "oos_positive_ratio": 1.0,
+                "top_bottom_spread": 0.014624970093241457,
+                "top_quantile_return": 0.019735698997263105,
+                "turnover": 9.993150623077057,
+                "cost_adjusted_return": 0.014541693838049149,
+                "capacity_pressure": 0.0600203172375068,
+                "neutralized_icir": 0.5838753733054006,
+                "master_return_delta": 4.179928299870295e-05,
+                "sharpe_delta": 0.0026652294265984144,
+                "max_drawdown_delta": 0.0004534471761843406,
+                "turnover_delta": 0.29979451869231166
+              },
+              "evaluation_id": "pv_blend_volstab19x2_mom90_amihud5_w75",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-26T11:54:22Z",
               "factor_name": "pv_blend_volstab19x2_mom90_amihud5_w75",
               "status": "healthy",
               "action": "keep",
@@ -5192,12 +5581,12 @@
           "formula": "outer_weight * cs_rank(volume_stability_smooth_19d_2d) + (1 - outer_weight) * cs_rank(0.60 * cs_rank(momentum_90) + 0.40 * cs_rank(amihud_5))"
         },
         "health_monitor": {
-          "latest_reviewed_at": "2026-06-19T10:31:31Z",
+          "latest_reviewed_at": "2026-06-26T11:54:22Z",
           "status": "healthy",
           "action": "keep",
           "consecutive_failures": 0,
           "last_evaluation_id": "pv_blend_volstab19x2_mom90_amihud5_w70",
-          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-19T103131Z.md",
+          "last_report_path": "reports/factor_governance/health/factor_health_2026-06-26T115422Z.md",
           "latest_reasons": [],
           "latest_health_metrics": {
             "coverage_rate": 0.9793333333333333,
@@ -5310,6 +5699,36 @@
             },
             {
               "reviewed_at": "2026-06-19T10:31:31Z",
+              "factor_name": "pv_blend_volstab19x2_mom90_amihud5_w70",
+              "status": "healthy",
+              "action": "keep",
+              "consecutive_failures": 0,
+              "reasons": [],
+              "gate_failures": [],
+              "health_metrics": {
+                "coverage_rate": 0.9793333333333333,
+                "nan_rate": 0.020666666666666722,
+                "icir": 0.5358172983413233,
+                "mean_rankic": 0.03720901023331961,
+                "positive_ic_ratio": 0.6857142857142857,
+                "oos_positive_ratio": 1.0,
+                "top_bottom_spread": 0.01496573374282096,
+                "top_quantile_return": 0.019588146423295556,
+                "turnover": 9.852769028497125,
+                "cost_adjusted_return": 0.01488362733425015,
+                "capacity_pressure": 0.06112475490348591,
+                "neutralized_icir": 0.5466785298398653,
+                "master_return_delta": 3.737270577967508e-05,
+                "sharpe_delta": 0.002274128366452466,
+                "max_drawdown_delta": 0.0004181695016854947,
+                "turnover_delta": 0.29558307085491375
+              },
+              "evaluation_id": "pv_blend_volstab19x2_mom90_amihud5_w70",
+              "current_weight": 0.05,
+              "new_weight": 0.05
+            },
+            {
+              "reviewed_at": "2026-06-26T11:54:22Z",
               "factor_name": "pv_blend_volstab19x2_mom90_amihud5_w70",
               "status": "healthy",
               "action": "keep",
@@ -5724,7 +6143,7 @@
     },
     {
       "name": "pv_blend_volstab19x2_mom90_amihud5_w80",
-      "version": "v20260620",
+      "version": "v20260627",
       "state": "production_candidate",
       "category": "trading_activity_momentum_liquidity",
       "implementation": "price_volume:pv_blend_volstab19x2_mom90_amihud5_w80",
@@ -5785,11 +6204,11 @@
             "IC/RankIC 达到观察门槛，且方向未显示单一年份依赖。"
           ],
           "metrics": {
-            "icir": 0.5357523944541791,
-            "mean_rankic": 0.03498038058945637,
+            "icir": 0.526598163010441,
+            "mean_rankic": 0.03420501597164233,
             "positive_ic_ratio": 0.7037037037037037,
             "rankic_direction_stable": true,
-            "max_single_year_ic_contribution": 0.40923092789966947
+            "max_single_year_ic_contribution": 0.4185074381714868
           },
           "severity": "info"
         },
@@ -5802,9 +6221,9 @@
             "分组收益、top quantile 与 long-short spread 通过。"
           ],
           "metrics": {
-            "top_bottom_spread": 0.01839668834811667,
-            "top_quantile_return": 0.026723234195810915,
-            "monotonicity": 0.6388888888888888,
+            "top_bottom_spread": 0.017528971409915283,
+            "top_quantile_return": 0.025664971572575055,
+            "monotonicity": 0.6296296296296297,
             "long_short_from_long_side": true
           },
           "severity": "info"
@@ -5818,11 +6237,11 @@
             "交易成本、滑点、换手与容量通过。"
           ],
           "metrics": {
-            "turnover": 9.916120509130083,
-            "cost_adjusted_return": 0.018314054010540586,
+            "turnover": 9.962001802531146,
+            "cost_adjusted_return": 0.017445954728227523,
             "slippage_sensitivity_ok": true,
             "execution_realism": true,
-            "capacity_pressure": 0.04715462308357246
+            "capacity_pressure": 0.04720802131506365
           },
           "severity": "info"
         },
@@ -5835,7 +6254,7 @@
             "中性化后仍有 alpha，且与现有因子不过度重合。"
           ],
           "metrics": {
-            "neutralized_icir": 0.5383580796540146,
+            "neutralized_icir": 0.5289768401283754,
             "existing_factor_corr": 0.5023288880029445,
             "style_exposure_only": false
           },
@@ -5868,11 +6287,11 @@
             "baseline + new factor 相对 baseline 有组合级增量。"
           ],
           "metrics": {
-            "master_return_delta": 0.0002588756345138221,
-            "sharpe_delta": 0.0139533524033717,
-            "max_drawdown_delta": 0.007614795241553396,
-            "turnover_delta": 0.2974836152739025,
-            "execution_cost_delta": 2.4790301272825207e-06,
+            "master_return_delta": 0.00023043131749100887,
+            "sharpe_delta": 0.012344113115507649,
+            "max_drawdown_delta": 0.006938182197358533,
+            "turnover_delta": 0.29886005407593436,
+            "execution_cost_delta": 2.4905004506327864e-06,
             "correlation_with_existing_signals": 0.5023288880029445
           },
           "severity": "info"
@@ -5891,21 +6310,21 @@
         "max_sector_coverage_share": 0.5565459610027855,
         "max_size_bucket_coverage_share": 0.5565459610027855,
         "extreme_value_ratio": 0.0,
-        "icir": 0.5357523944541791,
-        "mean_rankic": 0.03498038058945637,
+        "icir": 0.526598163010441,
+        "mean_rankic": 0.03420501597164233,
         "positive_ic_ratio": 0.7037037037037037,
         "rankic_direction_stable": true,
-        "max_single_year_ic_contribution": 0.40923092789966947,
-        "top_bottom_spread": 0.01839668834811667,
-        "top_quantile_return": 0.026723234195810915,
-        "monotonicity": 0.6388888888888888,
+        "max_single_year_ic_contribution": 0.4185074381714868,
+        "top_bottom_spread": 0.017528971409915283,
+        "top_quantile_return": 0.025664971572575055,
+        "monotonicity": 0.6296296296296297,
         "long_short_from_long_side": true,
-        "turnover": 9.916120509130083,
-        "cost_adjusted_return": 0.018314054010540586,
+        "turnover": 9.962001802531146,
+        "cost_adjusted_return": 0.017445954728227523,
         "slippage_sensitivity_ok": true,
         "execution_realism": true,
-        "capacity_pressure": 0.04715462308357246,
-        "neutralized_icir": 0.5383580796540146,
+        "capacity_pressure": 0.04720802131506365,
+        "neutralized_icir": 0.5289768401283754,
         "existing_factor_corr": 0.5023288880029445,
         "style_exposure_only": false,
         "oos_positive_ratio": 1.0,
@@ -5914,23 +6333,23 @@
         "rebalance_frequency_robustness": true,
         "universe_robustness": true,
         "regime_robustness": true,
-        "master_return_delta": 0.0002588756345138221,
-        "sharpe_delta": 0.0139533524033717,
-        "max_drawdown_delta": 0.007614795241553396,
-        "turnover_delta": 0.2974836152739025,
-        "execution_cost_delta": 2.4790301272825207e-06,
+        "master_return_delta": 0.00023043131749100887,
+        "sharpe_delta": 0.012344113115507649,
+        "max_drawdown_delta": 0.006938182197358533,
+        "turnover_delta": 0.29886005407593436,
+        "execution_cost_delta": 2.4905004506327864e-06,
         "correlation_with_existing_signals": 0.5023288880029445,
         "rank_ic_count": 27,
         "mean_rankic_biweekly": 0.0358521139354871,
         "universe_mean_rankic": {
-          "hs300": 0.016188936467462653,
-          "zz500": 0.028889324378738906,
-          "zz1000": 0.04014196369416709
+          "hs300": 0.01671016815946243,
+          "zz500": 0.027733313114800952,
+          "zz1000": 0.03901470933609456
         },
         "year_mean_rankic": {
           "2024": 0.03865064473864842,
           "2025": 0.015941919397807827,
-          "2026": 0.07333215915102882
+          "2026": 0.06914519021483298
         },
         "blockers": []
       },
@@ -5941,10 +6360,10 @@
       "approved_at": "",
       "deprecated_reason": "",
       "metadata": {
-        "source_report": "reports/factor_governance/daily_mining/daily_factor_mining_20260620_112621_codex/mining/quant_branch_factor_mining_results.json",
+        "source_report": "reports/factor_governance/daily_mining/daily_factor_mining_20260627_043314_codex/mining/quant_branch_factor_mining_results.json",
         "registry_write_source": "daily_factor_mining_automation",
-        "registry_write_run_id": "daily_factor_mining_20260620_112621_codex",
-        "registry_write_at": "2026-06-20T20:19:35+08:00",
+        "registry_write_run_id": "daily_factor_mining_20260627_043314_codex",
+        "registry_write_at": "2026-06-27T04:36:29+08:00",
         "effective_analysis_start_date": "2024-03-29",
         "expression": "",
         "params": {
@@ -5960,25 +6379,25 @@
             "title": "SHANGHAI STOCK EXCHANGE",
             "url": "https://english.sse.com.cn/markets/equities/overview/",
             "source_type": "exchange_market_data",
-            "observed_at": "2026-06-20T17:30:44+08:00",
+            "observed_at": "2026-06-27T04:33:14+08:00",
             "idea_dimension": "recent_market_state_liquidity_breadth",
             "local_computable_mapping": "Use local Parquet amount, volume, turnover, breadth, suspension and limit masks, and benchmark-relative returns; no external prices imported.",
             "notes": "Chrome observed the SSE public equities overview page. Use only as market-state and liquidity breadth context for locally computed CN candidates."
           },
           {
-            "title": "https://www.csindex.com.cn/en/indices/index-detail/000300",
+            "title": "csindex.com.cn/en/indices/index-detail/000300#/",
             "url": "https://www.csindex.com.cn/en/indices/index-detail/000300#/",
             "source_type": "index_provider",
-            "observed_at": "2026-06-20T17:30:44+08:00",
+            "observed_at": "2026-06-27T04:33:14+08:00",
             "idea_dimension": "benchmark_relative_strength_universe_context",
-            "local_computable_mapping": "Use local benchmark-relative returns, universe membership labels, trend quality versus broad A-share benchmarks, and neutralization checks.",
+            "local_computable_mapping": "Use local benchmark-relative returns, broad-market context, trend quality versus A-share benchmarks, and neutralization checks.",
             "notes": "Chrome observed the CSI 300 public index detail page. Use only for benchmark and universe context, not as an external factor input."
           },
           {
             "title": "Factor Investing | MSCI",
             "url": "https://www.msci.com/data-and-analytics/factor-investing",
             "source_type": "institutional_research",
-            "observed_at": "2026-06-20T17:30:44+08:00",
+            "observed_at": "2026-06-27T04:33:14+08:00",
             "idea_dimension": "value_quality_momentum_low_vol_size_factor_taxonomy",
             "local_computable_mapping": "Map taxonomy to local value, quality, growth, volatility, momentum, and size or capacity templates using PIT and local fields only.",
             "notes": "Chrome observed the MSCI factor investing page. Use as factor-family coverage guidance only."
@@ -5987,7 +6406,7 @@
             "title": "Kenneth R. French - Data Library",
             "url": "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html",
             "source_type": "academic_data_library",
-            "observed_at": "2026-06-20T17:30:44+08:00",
+            "observed_at": "2026-06-27T04:33:14+08:00",
             "idea_dimension": "size_value_profitability_investment_momentum_research_baseline",
             "local_computable_mapping": "Map to local size or capacity, book-to-market or value, profitability or quality, investment or growth, and momentum candidates where PIT fields exist.",
             "notes": "Chrome observed the Ken French public data library. Use as canonical factor-family definition context, not as imported return data."
@@ -5996,34 +6415,34 @@
             "title": "Momentum Crashes | NBER",
             "url": "https://www.nber.org/papers/w20439",
             "source_type": "academic_research",
-            "observed_at": "2026-06-20T17:30:44+08:00",
+            "observed_at": "2026-06-27T04:33:14+08:00",
             "idea_dimension": "momentum_crash_downside_tail_risk",
             "local_computable_mapping": "Use local momentum with downside-risk, skew, drawdown, reversal, and crash-risk gates; validate incremental portfolio evidence after costs.",
             "notes": "Chrome observed the NBER Momentum Crashes page. Use as motivation for risk-controlled momentum candidates."
           },
           {
-            "title": "CSRC",
-            "url": "https://www.csrc.gov.cn/csrc_en/index.shtml",
-            "source_type": "regulator",
-            "observed_at": "2026-06-20T17:30:44+08:00",
-            "idea_dimension": "market_structure_governance_disclosure_constraints",
-            "local_computable_mapping": "Use as governance context for fail-closed PIT, disclosure and financial-data discipline, tradability constraints, and auditability; no external values imported.",
-            "notes": "Chrome observed the CSRC public English site. Use as regulatory context for A-share market structure and governance constraints."
-          },
-          {
             "title": "Betting Against Beta | NBER",
             "url": "https://www.nber.org/papers/w16601",
             "source_type": "academic_research",
-            "observed_at": "2026-06-20T17:30:44+08:00",
+            "observed_at": "2026-06-27T04:33:14+08:00",
             "idea_dimension": "low_beta_low_vol_defensive_downside_risk",
             "local_computable_mapping": "Use local rolling beta, idiosyncratic volatility, downside volatility, and drawdown proxies from canonical Parquet bars.",
             "notes": "Chrome observed the NBER Betting Against Beta page. Use as academic support for locally tested low-beta and low-volatility candidates."
           },
           {
+            "title": "Replicating Anomalies | NBER",
+            "url": "https://www.nber.org/papers/w23394",
+            "source_type": "academic_research",
+            "observed_at": "2026-06-27T04:33:14+08:00",
+            "idea_dimension": "factor_redundancy_multiple_testing_persistence",
+            "local_computable_mapping": "Use local cross-sectional IC, return spread, redundancy correlation, family coverage, and portfolio incremental gates to reject fragile anomalies.",
+            "notes": "Chrome observed the NBER Replicating Anomalies page. Use as methodology pressure for robustness and replication checks."
+          },
+          {
             "title": "FTSE Global Factor Index Series | LSEG",
             "url": "https://www.lseg.com/en/ftse-russell/indices/factor",
             "source_type": "index_provider",
-            "observed_at": "2026-06-20T17:30:44+08:00",
+            "observed_at": "2026-06-27T04:33:14+08:00",
             "idea_dimension": "factor_index_taxonomy_quality_value_momentum_low_vol_size",
             "local_computable_mapping": "Map FTSE Russell factor taxonomy to local quality, value, momentum, low-volatility, size or capacity, and liquidity checks.",
             "notes": "Chrome observed the LSEG FTSE Russell factor index page. Use as global factor taxonomy cross-check only."
