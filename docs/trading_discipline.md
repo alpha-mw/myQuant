@@ -68,6 +68,71 @@ candidate DAG branches, weak candidate persistence, or `prepare_switch` state
 must not block the sell leg. Those limitations block only new-risk actions such
 as `buy_now`, `add_now`, `switch_now`, or any paired replacement buy.
 
+## Sell-Point Return Impact Discipline
+
+Sell timing is an independent portfolio-return decision. A sell does not need a
+replacement candidate when the action only reduces risk; cash is a valid
+position when no v13-complete candidate passes the new-risk gates.
+
+Every formal review must classify weak, over-target, stopped, or oversized
+holdings into one of these sell states:
+
+- `hold_with_trailing_stop`: keep the holding, but raise the explicit trailing
+  stop or review trigger.
+- `reduce_risk`: sell a valid A-share lot to lower position risk or protect
+  accumulated profit.
+- `clear_risk`: exit the holding when the stop, thesis, data, or portfolio
+  risk case is broken.
+- `cash_hold`: sell without replacement and hold cash when no buy/switch
+  candidate passes all new-risk gates.
+- `no_sell_signal`: keep the position because the sell trigger is not present.
+
+The review must not treat "no suitable candidate" as a reason to keep a broken
+or oversized holding. It must separately ask whether holding the existing
+position still improves expected portfolio return after drawdown risk, Markov
+or RiskGuard caps, theme concentration, and opportunity cost are considered.
+
+Sell triggers:
+
+- Hard risk sell: broken stage stop plus weak score, or explicit stop-loss,
+  risk event, hard data failure, or thesis invalidation.
+- Weak-holding sell: score below 60 in two of the last three valid reviews, or
+  below 50 with no complete four-branch support.
+- Profit-protection trim: materially above target or cost basis, while score is
+  falling, trend breadth weakens, position weight is oversized, or Markov /
+  RiskGuard / theme caps tighten.
+- Concentration sell: a single position or theme exceeds the active risk budget
+  even if the name remains profitable.
+- No-candidate cash sell: any of the sell triggers above fires, but replacement
+  candidates remain `watch_only`, `tracking`, or `prepare_switch`.
+
+Every sell, rejected sell, and missed sell must receive a return-impact audit in
+`trade_learning_review.md` or the daily execution review. Use the effective
+manual ledger and strict Parquet / realtime quote fields to compare:
+
+- realized PNL and released cash;
+- sell price versus later 1, 3, 5, and 10 trading-day closes when available;
+- avoided drawdown after the sell;
+- opportunity cost if the sold shares outperformed cash or the replacement;
+- cash drag while replacement candidates remain unqualified;
+- replacement alpha if a paired buy was filled;
+- whether a partial trim would have beaten a full clear or full hold.
+
+Process quality is judged at the portfolio level. A disciplined sell that later
+underperforms a full hold can still be acceptable when it reduced concentration,
+stop-loss, data, or regime risk. An undisciplined hold is negative process
+quality when a stop or thesis break was present, even if a later rebound hides
+the error.
+
+Local audit note as of 2026-06-29: reviewing valid local/manual sell records
+against strict Parquet closes through 2026-06-26 showed both effects. Weak-stock
+sales in symbols such as `601179.SH`, `600903.SH`, `600578.SH`, `002608.SZ`,
+and `688301.SH` avoided later drawdown, while early trims in strong continuing
+trends such as `600487.SH`, `002008.SZ`, `301377.SZ`, and `600888.SH` created
+opportunity cost. The rule is therefore asymmetric: sell broken or oversized
+risk without waiting for a buy candidate, but do not mechanically take profit
+from a strong winner without a trend, score, concentration, or risk-cap trigger.
+
 ## Realtime Quote Gate
 
 Static report prices, daily `close`, `prev_close`, or candidate-pool
