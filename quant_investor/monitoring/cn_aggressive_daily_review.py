@@ -100,7 +100,7 @@ def _build_quick_preflight_probe(args: argparse.Namespace) -> dict[str, Any]:
     downloader = CNFullMarketDownloader(
         years=int(getattr(args, "maintenance_years", getattr(args, "years", 3))),
         max_workers=int(getattr(args, "maintenance_workers", 4)),
-        batch_size=int(getattr(args, "maintenance_batch_size", 50)),
+        batch_size=int(getattr(args, "maintenance_batch_size", 200)),
     )
     components = downloader.load_components()
     categories = downloader._resolve_target_categories(
@@ -248,8 +248,8 @@ def _run_maintenance_preflight(args: argparse.Namespace) -> dict[str, Any]:
             categories=getattr(args, "categories", None),
             years=int(getattr(args, "maintenance_years", getattr(args, "years", 3))),
             max_workers=int(getattr(args, "maintenance_workers", 4)),
-            batch_size=int(getattr(args, "maintenance_batch_size", 50)),
-            max_batches_per_run=int(getattr(args, "maintenance_max_batches_per_run", 1)),
+            batch_size=int(getattr(args, "maintenance_batch_size", 200)),
+            max_batches_per_run=int(getattr(args, "maintenance_max_batches_per_run", 200)),
             min_symbol_success_rate=min_success,
             target_date=str(getattr(args, "target_date", "auto") or "auto"),
             daily_window=bool(getattr(args, "daily_window", True)),
@@ -828,9 +828,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--category", action="append", dest="categories")
     parser.add_argument("--maintenance-years", type=int, default=3)
     parser.add_argument("--maintenance-workers", type=int, default=4)
-    parser.add_argument("--maintenance-batch-size", type=int, default=50)
+    parser.add_argument("--maintenance-batch-size", type=int, default=200)
     parser.add_argument("--maintenance-max-rounds", type=int, default=1)
-    parser.add_argument("--maintenance-max-batches-per-run", type=int, default=1)
+    parser.add_argument("--maintenance-max-batches-per-run", type=int, default=200)
     parser.add_argument("--min-symbol-success-rate", type=float, default=0.95)
     parser.add_argument("--target-date", default="auto")
     parser.add_argument("--daily-window", action="store_true", default=True)

@@ -125,7 +125,7 @@ def test_markov_engine_bearish_high_vol_features_prefer_defensive_regime(tmp_pat
 
     assert signal.dominant_regime in {REGIME_TREND_DOWN, REGIME_RANGE_HIGH_VOL}
     assert signal.transition_risk >= 0.50
-    assert signal.suggested_max_single_weight <= 0.09
+    assert signal.suggested_max_single_weight == pytest.approx(0.50)
     assert signal.turnover_cap is not None
 
 

@@ -130,3 +130,85 @@ def test_tushare_benchmark_non_trading_record_uses_previous_trading_day_ffill():
     assert summary["coverage_by_date"]["2026-03-21"]["csi300_nav"] == "previous_trading_day_ffill"
     assert summary["value_date_by_date"]["2026-03-21"]["csi300_nav"] == "2026-03-20"
     assert nav_rows[1]["csi300_nav"] == "1.05000000"
+
+
+def test_tushare_benchmark_snapshot_gap_fill_is_not_production_grade():
+    exporter = _load_exporter()
+    runs = [
+        exporter.RecordRun(
+            "20260318_0930",
+            "2026-03-18",
+            Path("r1"),
+            "",
+            100.0,
+            100.0,
+            {
+                "csi300_nav": 1000.0,
+                "csi500_nav": 2000.0,
+                "csi1000_nav": 3000.0,
+                "star50_nav": 4000.0,
+                "chinext_nav": 5000.0,
+            },
+        ),
+        exporter.RecordRun(
+            "20260320_0930",
+            "2026-03-20",
+            Path("r2"),
+            "",
+            100.0,
+            101.0,
+            {
+                "csi300_nav": 1020.0,
+                "csi500_nav": 2040.0,
+                "csi1000_nav": 3060.0,
+                "star50_nav": 4080.0,
+                "chinext_nav": 5100.0,
+            },
+        ),
+        exporter.RecordRun(
+            "20260323_0930",
+            "2026-03-23",
+            Path("r3"),
+            "",
+            100.0,
+            102.0,
+            {
+                "csi300_nav": 1100.0,
+                "csi500_nav": 2200.0,
+                "csi1000_nav": 3300.0,
+                "star50_nav": 4400.0,
+                "chinext_nav": 5500.0,
+            },
+        ),
+    ]
+
+    benchmark_export, warnings = exporter.build_tushare_benchmark_export(
+        runs,
+        _FakeTusharePro(),
+        snapshot_gap_fill=True,
+    )
+    assert warnings == []
+    assert benchmark_export is not None
+
+    nav_rows, nav_warnings, fieldnames = exporter.build_nav_rows(runs, benchmark_export)
+    assert nav_warnings == []
+    summary = exporter.benchmark_source_summary(nav_rows, fieldnames, benchmark_export)
+
+    assert summary["benchmark_source_status"] == "not_production_grade"
+    assert summary["production_grade"] is False
+    assert summary["display_continuity_grade"] is True
+    assert summary["missing_dates"] == []
+    assert summary["snapshot_gap_fill_dates"] == ["2026-03-20"]
+    assert "2026-03-20" not in summary["exact_dates"]
+    assert summary["snapshot_gap_fill_by_date"]["2026-03-20"] == [
+        "csi300_nav",
+        "csi500_nav",
+        "csi1000_nav",
+        "star50_nav",
+        "chinext_nav",
+    ]
+    assert (
+        summary["coverage_by_date"]["2026-03-20"]["csi300_nav"]
+        == "strategy_record_snapshot_gap_fill"
+    )
+    assert nav_rows[1]["csi300_nav"] == "1.02000000"

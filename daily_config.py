@@ -44,7 +44,7 @@ DAILY_CONFIG = {
     "years": 3,                    # 历史数据年数
     "workers": 4,                  # 并发下载线程数
     "maintenance_batch_size": 200,  # 每批最多处理的 symbol 数
-    "maintenance_max_batches_per_run": 1,  # 每次自动化最多跑的批次数
+    "maintenance_max_batches_per_run": 200,  # 每次自动化最多跑的批次数
     "maintenance_min_symbol_success_rate": 0.95,
     "maintenance_target_date": "auto",
     "maintenance_daily_window": True,

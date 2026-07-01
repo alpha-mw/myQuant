@@ -207,9 +207,9 @@ def _context_with_signal(
 @pytest.mark.parametrize(
     ("suggested_gross", "suggested_weight", "expected_gross", "expected_weight"),
     [
-        (0.95, 0.25, 0.70, 0.12),
+        (0.95, 0.75, 0.70, 0.50),
         (0.40, 0.08, 0.40, 0.08),
-        (0.70, 0.12, 0.70, 0.12),
+        (0.70, 0.50, 0.70, 0.50),
     ],
 )
 def test_markov_can_only_tighten_baseline_caps(
@@ -241,7 +241,7 @@ def test_markov_turnover_cap_is_forwarded_only_when_applied(
         monkeypatch,
         tmp_path,
         gross_cap=0.45,
-        max_weight=0.09,
+        max_weight=0.50,
         turnover_cap=0.30,
         dominant_regime=REGIME_RANGE_HIGH_VOL,
     )
@@ -366,5 +366,5 @@ def test_disabled_markov_preserves_legacy_macro_and_risk_budget(
 
     assert state.global_context.macro_regime == "趋势上涨"
     assert state.global_context.risk_budget["target_exposure"] == pytest.approx(0.70)
-    assert state.global_context.risk_budget["max_single_weight"] == pytest.approx(0.12)
+    assert state.global_context.risk_budget["max_single_weight"] == pytest.approx(0.50)
     assert state.global_context.metadata["markov_regime"]["status"] == "disabled"

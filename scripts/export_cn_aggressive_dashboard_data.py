@@ -24,6 +24,7 @@ DEFAULT_INITIAL_BENCHMARK = 1.0
 DEFAULT_STOCK_BASIC_ROOT = PROJECT_ROOT / "data" / "parquet" / "cn" / "dag_core_raw" / "table=stock_basic"
 SNAPSHOT_BENCHMARK_STATUS = "not_production_grade"
 SNAPSHOT_BENCHMARK_SOURCE_SYSTEM = "strategy_record.market_snapshot.indices"
+SNAPSHOT_GAP_FILL_COVERAGE = "strategy_record_snapshot_gap_fill"
 INDEX_BENCHMARK_FIELDS = {
     "sh000300": "csi300_nav",
     "sz399905": "csi500_nav",
@@ -72,6 +73,7 @@ class BenchmarkExport:
     notes: list[str]
     coverage_by_date: dict[str, dict[str, str]]
     value_date_by_date: dict[str, dict[str, str]]
+    snapshot_gap_fill_by_date: dict[str, list[str]] | None = None
 
 
 @dataclass(frozen=True)
@@ -183,7 +185,12 @@ def load_tushare_trade_calendar(
     return calendar, warnings
 
 
-def build_tushare_benchmark_export(runs: list[RecordRun], pro: Any) -> tuple[BenchmarkExport | None, list[str]]:
+def build_tushare_benchmark_export(
+    runs: list[RecordRun],
+    pro: Any,
+    *,
+    snapshot_gap_fill: bool = False,
+) -> tuple[BenchmarkExport | None, list[str]]:
     warnings: list[str] = []
     if not runs:
         return None, ["没有可用策略记录，无法拉取 Tushare benchmark。"]
@@ -244,9 +251,17 @@ def build_tushare_benchmark_export(runs: list[RecordRun], pro: Any) -> tuple[Ben
         for field, close_by_date in closes_by_field.items()
         if close_by_date
     }
+    snapshot_first_values = {
+        field: (
+            first_closes.get(field)
+            or next((run.benchmark_values[field] for run in runs if run.benchmark_values.get(field)), None)
+        )
+        for field in closes_by_field
+    }
     values_by_date: dict[str, dict[str, float]] = {}
     coverage_by_date: dict[str, dict[str, str]] = {}
     value_date_by_date: dict[str, dict[str, str]] = {}
+    snapshot_gap_fill_by_date: dict[str, list[str]] = {}
     for run in runs:
         normalized: dict[str, float] = {}
         coverage: dict[str, str] = {}
@@ -284,6 +299,31 @@ def build_tushare_benchmark_export(runs: list[RecordRun], pro: Any) -> tuple[Ben
                             "coverage": coverage_status,
                         }
                     )
+                continue
+            if snapshot_gap_fill:
+                snapshot_value = run.benchmark_values.get(field)
+                snapshot_first = snapshot_first_values.get(field)
+                if snapshot_value and snapshot_first:
+                    normalized[field] = snapshot_value / snapshot_first
+                    coverage[field] = SNAPSHOT_GAP_FILL_COVERAGE
+                    value_dates[field] = run.date
+                    snapshot_gap_fill_by_date.setdefault(run.date, []).append(field)
+                    raw_rows.append(
+                        {
+                            "date": run.date,
+                            "ts_code": next(
+                                ts_code
+                                for ts_code, benchmark_field in TUSHARE_INDEX_BENCHMARKS.items()
+                                if benchmark_field == field
+                            ),
+                            "field": field,
+                            "close": f"{snapshot_value:.6f}",
+                            "nav": f"{normalized[field]:.8f}",
+                            "source_system": SNAPSHOT_BENCHMARK_SOURCE_SYSTEM,
+                            "value_date": run.date,
+                            "coverage": SNAPSHOT_GAP_FILL_COVERAGE,
+                        }
+                    )
         main_components = [
             ("star50_nav", 0.50),
             ("csi300_nav", 0.30),
@@ -302,9 +342,13 @@ def build_tushare_benchmark_export(runs: list[RecordRun], pro: Any) -> tuple[Ben
                 value_dates[field] for field, _weight in main_components if field in normalized and field in value_dates
             ]
             coverage["benchmark_main_nav"] = (
-                "previous_trading_day_ffill"
-                if "previous_trading_day_ffill" in component_coverages
-                else "exact_close"
+                SNAPSHOT_GAP_FILL_COVERAGE
+                if SNAPSHOT_GAP_FILL_COVERAGE in component_coverages
+                else (
+                    "previous_trading_day_ffill"
+                    if "previous_trading_day_ffill" in component_coverages
+                    else "exact_close"
+                )
             )
             value_dates["benchmark_main_nav"] = min(component_value_dates) if component_value_dates else run.date
         if "csi300_nav" in normalized:
@@ -329,10 +373,15 @@ def build_tushare_benchmark_export(runs: list[RecordRun], pro: Any) -> tuple[Ben
         ],
         coverage_by_date=coverage_by_date,
         value_date_by_date=value_date_by_date,
+        snapshot_gap_fill_by_date=snapshot_gap_fill_by_date,
     ), warnings
 
 
-def load_tushare_benchmark_export(runs: list[RecordRun]) -> tuple[BenchmarkExport | None, list[str]]:
+def load_tushare_benchmark_export(
+    runs: list[RecordRun],
+    *,
+    snapshot_gap_fill: bool = False,
+) -> tuple[BenchmarkExport | None, list[str]]:
     try:
         import tushare as ts  # type: ignore[import-not-found]
     except Exception as exc:  # pragma: no cover - depends on local environment.
@@ -344,7 +393,7 @@ def load_tushare_benchmark_export(runs: list[RecordRun]) -> tuple[BenchmarkExpor
     pro = create_tushare_pro(ts, Config.TUSHARE_TOKEN, Config.TUSHARE_URL)
     if pro is None:
         return None, ["TUSHARE_TOKEN 未设置，无法拉取生产 benchmark。"]
-    return build_tushare_benchmark_export(runs, pro)
+    return build_tushare_benchmark_export(runs, pro, snapshot_gap_fill=snapshot_gap_fill)
 
 
 @contextmanager
@@ -626,6 +675,8 @@ def benchmark_source_summary(
             ],
         }
     if benchmark_export is not None:
+        snapshot_gap_fill_by_date = benchmark_export.snapshot_gap_fill_by_date or {}
+        snapshot_gap_fill_dates = sorted(snapshot_gap_fill_by_date)
         missing_dates = [
             str(row.get("date") or "")
             for row in nav_rows
@@ -652,6 +703,7 @@ def benchmark_source_summary(
             for row in nav_rows
             if str(row.get("date") or "") not in missing_dates
             and str(row.get("date") or "") not in ffill_dates
+            and str(row.get("date") or "") not in snapshot_gap_fill_dates
         ]
         if missing_date_count == 0 and not ffill_dates:
             status = "production_grade"
@@ -661,15 +713,24 @@ def benchmark_source_summary(
             status = "production_source_partial_latest_unavailable"
         else:
             status = "production_source_partial_missing_dates"
+        if snapshot_gap_fill_dates:
+            status = SNAPSHOT_BENCHMARK_STATUS
         notes = list(benchmark_export.notes)
         if ffill_dates:
             notes.append("部分非交易日 benchmark 使用上一交易日真实 close 前向填充；Dashboard 展示连续，但投委会口径需区分 exact 与 ffill。")
         if missing_date_count:
             notes.append("Tushare benchmark 未覆盖所有策略记录日期；缺失日期不按生产级 benchmark 标记。")
+        if snapshot_gap_fill_dates:
+            notes.append(
+                "部分 Tushare 缺口使用 strategy_record.market_snapshot.indices 实时快照补齐，仅用于 Dashboard 连续展示；不是连续真实指数 close。"
+            )
+        source_system = benchmark_export.source_system
+        if snapshot_gap_fill_dates:
+            source_system = f"{benchmark_export.source_system}+{SNAPSHOT_BENCHMARK_SOURCE_SYSTEM}"
         return {
             "benchmark_fields": benchmark_fields,
             "benchmark_source_status": status,
-            "source_system": benchmark_export.source_system,
+            "source_system": source_system,
             "calendar_source_system": "tushare.trade_cal",
             "production_grade": status == "production_grade",
             "display_continuity_grade": missing_date_count == 0,
@@ -677,6 +738,9 @@ def benchmark_source_summary(
             "last_valid_date": max(valid_dates) if valid_dates else "",
             "missing_date_count": missing_date_count,
             "missing_dates": missing_dates,
+            "snapshot_gap_fill_count": len(snapshot_gap_fill_dates),
+            "snapshot_gap_fill_dates": snapshot_gap_fill_dates,
+            "snapshot_gap_fill_by_date": snapshot_gap_fill_by_date,
             "exact_date_count": len(exact_dates),
             "exact_dates": exact_dates,
             "previous_trading_day_ffill_count": len(ffill_dates),
@@ -850,13 +914,21 @@ def csv_text(path: Path) -> str:
     return path.read_text(encoding="utf-8").rstrip("\n")
 
 
-def export(record_root: Path, dashboard_root: Path, benchmark_source: str = "tushare") -> dict[str, Any]:
+def export(
+    record_root: Path,
+    dashboard_root: Path,
+    benchmark_source: str = "tushare",
+    benchmark_gap_fill: str = "snapshot",
+) -> dict[str, Any]:
     runs, warnings = discover_record_runs(record_root)
     if not runs:
         raise SystemExit(f"No usable records found under {record_root}")
     benchmark_export: BenchmarkExport | None = None
     if benchmark_source in {"auto", "tushare"}:
-        benchmark_export, tushare_warnings = load_tushare_benchmark_export(runs)
+        benchmark_export, tushare_warnings = load_tushare_benchmark_export(
+            runs,
+            snapshot_gap_fill=benchmark_gap_fill == "snapshot",
+        )
         warnings.extend(tushare_warnings)
         if benchmark_export is None and benchmark_source == "tushare":
             warnings.append("已按 fail-closed 降级为 strategy_record.market_snapshot.indices benchmark；不得标记为生产级。")
@@ -973,8 +1045,17 @@ def main() -> None:
         default=os.environ.get("CN_DASHBOARD_BENCHMARK_SOURCE", "tushare"),
         help="Benchmark source for dashboard NAV fields. Defaults to Tushare index_daily.",
     )
+    parser.add_argument(
+        "--benchmark-gap-fill",
+        choices=["snapshot", "none"],
+        default=os.environ.get("CN_DASHBOARD_BENCHMARK_GAP_FILL", "snapshot"),
+        help=(
+            "Fill Tushare benchmark gaps from strategy_record.market_snapshot.indices for display continuity. "
+            "Any snapshot fill forces non-production benchmark provenance."
+        ),
+    )
     args = parser.parse_args()
-    summary = export(args.record_root, args.dashboard_root, args.benchmark_source)
+    summary = export(args.record_root, args.dashboard_root, args.benchmark_source, args.benchmark_gap_fill)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 

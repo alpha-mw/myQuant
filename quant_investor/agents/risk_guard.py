@@ -19,6 +19,9 @@ from quant_investor.agent_protocol import (
 from quant_investor.agents.base import BaseAgent
 
 
+RISK_GUARD_SINGLE_NAME_WEIGHT_CAP = 0.50
+
+
 class RiskGuard(BaseAgent):
     """读取结构化分支结论并施加硬约束。"""
 
@@ -51,7 +54,7 @@ class RiskGuard(BaseAgent):
             if macro_verdict.final_score <= -0.2:
                 action_cap = self.more_restrictive_action(action_cap, ActionLabel.HOLD)
                 gross_cap = min(gross_cap, 0.5)
-                max_weight = min(max_weight, 0.1)
+                max_weight = min(max_weight, RISK_GUARD_SINGLE_NAME_WEIGHT_CAP)
 
         veto = bool(constraints.get("force_veto")) or self._has_veto_keyword(risk_texts, constraints)
         blocked_symbols = {str(symbol) for symbol in constraints.get("blocked_symbols", [])}
@@ -66,7 +69,7 @@ class RiskGuard(BaseAgent):
         if not veto and len(risk_texts) >= 3:
             action_cap = self.more_restrictive_action(action_cap, ActionLabel.HOLD)
             gross_cap = min(gross_cap, 0.6)
-            max_weight = min(max_weight, 0.12)
+            max_weight = min(max_weight, RISK_GUARD_SINGLE_NAME_WEIGHT_CAP)
 
         theme_enabled = self._as_bool(constraints.get("theme_risk_guard_enabled", False))
         theme_risk_flags: list[str] = []

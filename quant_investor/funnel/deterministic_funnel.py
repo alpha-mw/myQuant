@@ -17,6 +17,10 @@ from quant_investor.funnel.candidate_filter import (
     LiquidityGate,
     TradabilityGate,
 )
+from quant_investor.funnel.theme_candidate_pool import (
+    ThemeCandidatePoolBuilder,
+    ThemePoolConfig,
+)
 from quant_investor.logger import get_logger
 
 _logger = get_logger("DeterministicFunnel")
@@ -84,6 +88,23 @@ class FunnelConfig:
     volume_spike_threshold: float = 1.35
     breakout_distance_pct: float = 0.06
     sector_bucket_limit: int = 0
+    theme_pool_enabled: bool = False
+    theme_pool_required: bool = True
+    theme_pool_use_markov_policy: bool = True
+    theme_pool_score_source: str = "smoothed"
+    theme_pool_fallback_to_raw_score: bool = True
+    theme_pool_min_theme_score: float = 0.58
+    theme_pool_min_symbol_score: float = 0.55
+    theme_pool_top_themes: int = 8
+    theme_pool_max_symbols_per_theme: int = 30
+    theme_pool_residual_ratio: float = 0.25
+    theme_pool_min_residual_symbols: int = 20
+    theme_pool_min_admitted_themes: int = 2
+    theme_pool_allow_unthemed_residual: bool = False
+    theme_pool_include_risk_watch: bool = True
+    theme_pool_risk_watch_max_ratio: float = 0.20
+    theme_pool_symbol_gate_mode: str = "classify"
+    theme_pool_min_member_count: int = 0
     theme_boost_enabled: bool = False
     theme_boost_cap: float = 0.10
     theme_boost_score_source: str = "raw"
@@ -348,6 +369,12 @@ class DeterministicFunnel:
     ) -> FunnelOutput:
         all_symbols = list(global_context.universe_tiers.get("researchable", global_context.universe_symbols))
         all_excluded: dict[str, str] = {}
+        quant_scores = quant_result.symbol_scores or {}
+        theme_pool_metadata: dict[str, Any] = {
+            "enabled": bool(self.config.theme_pool_enabled),
+            "required": bool(self.config.theme_pool_required),
+            "status": "disabled",
+        }
 
         # Gate 1: data quality
         symbols, excluded = DataQualityGate().filter(all_symbols, global_context)
@@ -362,9 +389,51 @@ class DeterministicFunnel:
             percentile_min=self.config.liquidity_percentile_min,
         ).filter(symbols, global_context)
         all_excluded.update(excluded)
+        after_liquidity_gates = len(symbols)
+
+        # Gate 4: production theme candidate pool.
+        if bool(self.config.theme_pool_enabled):
+            theme_pool_output = ThemeCandidatePoolBuilder(
+                ThemePoolConfig(
+                    enabled=bool(self.config.theme_pool_enabled),
+                    required=bool(self.config.theme_pool_required),
+                    use_markov_policy=bool(self.config.theme_pool_use_markov_policy),
+                    score_source=str(self.config.theme_pool_score_source or "smoothed"),
+                    fallback_to_raw_score=bool(self.config.theme_pool_fallback_to_raw_score),
+                    base_min_theme_score=float(self.config.theme_pool_min_theme_score),
+                    base_min_symbol_score=float(self.config.theme_pool_min_symbol_score),
+                    base_top_themes=int(self.config.theme_pool_top_themes),
+                    max_symbols_per_theme=int(self.config.theme_pool_max_symbols_per_theme),
+                    residual_ratio=float(self.config.theme_pool_residual_ratio),
+                    min_residual_symbols=int(self.config.theme_pool_min_residual_symbols),
+                    min_admitted_themes=int(self.config.theme_pool_min_admitted_themes),
+                    allow_unthemed_residual=bool(self.config.theme_pool_allow_unthemed_residual),
+                    include_risk_watch=bool(self.config.theme_pool_include_risk_watch),
+                    risk_watch_max_ratio=float(self.config.theme_pool_risk_watch_max_ratio),
+                    symbol_gate_mode=str(self.config.theme_pool_symbol_gate_mode or "classify"),
+                    allowed_phases=(
+                        "accumulation",
+                        "early_acceleration",
+                        "confirmed_rotation",
+                    ),
+                    blocked_phases=("distribution",),
+                    blocked_flags=(
+                        "theme_distribution_risk",
+                        "theme_fake_breakout_risk",
+                    ),
+                    min_member_count=int(self.config.theme_pool_min_member_count),
+                )
+            ).build(
+                symbols=symbols,
+                global_context=global_context,
+                quant_scores=quant_scores,
+                max_candidates=int(self.config.max_candidates),
+            )
+            symbols = list(theme_pool_output.symbols)
+            all_excluded.update(theme_pool_output.excluded_symbols)
+            theme_pool_metadata = dict(theme_pool_output.metadata or {})
 
         # Score: quant branch plus deterministic tradability/momentum context.
-        quant_scores = quant_result.symbol_scores or {}
         profile = str(self.config.profile or "classic").strip().lower() or "classic"
 
         composite: dict[str, float] = {}
@@ -377,6 +446,14 @@ class DeterministicFunnel:
                 )
             else:
                 composite[symbol] = self._classic_score(symbol, quant_scores)
+
+        theme_pool_symbols = theme_pool_metadata.get("symbols", {})
+        if isinstance(theme_pool_symbols, Mapping):
+            for symbol in list(composite):
+                payload = theme_pool_symbols.get(symbol, {})
+                if not isinstance(payload, Mapping):
+                    continue
+                composite[symbol] -= _safe_float(payload.get("score_penalty"), 0.0)
 
         # Filter by minimum composite score
         if self.config.min_composite_score > -1.0:
@@ -429,6 +506,8 @@ class DeterministicFunnel:
             excluded_symbols=all_excluded,
             funnel_metadata={
                 "total_universe": len(all_symbols),
+                "after_liquidity_gates": after_liquidity_gates,
+                "after_theme_pool": len(symbols),
                 "after_gates": len(composite),
                 "final_candidates": len(candidates),
                 "max_candidates": self.config.max_candidates,
@@ -439,6 +518,10 @@ class DeterministicFunnel:
                 "breakout_distance_pct": float(self.config.breakout_distance_pct),
                 "sector_bucket_limit": int(self.config.sector_bucket_limit),
                 "excluded_count": len(all_excluded),
+                "theme_pool_enabled": bool(self.config.theme_pool_enabled),
+                "theme_pool_required": bool(self.config.theme_pool_required),
+                "theme_pool_status": str(theme_pool_metadata.get("status") or "disabled"),
+                "theme_pool": theme_pool_metadata,
                 "theme_boost_enabled": bool(self.config.theme_boost_enabled),
                 "theme_boost_cap": max(
                     0.0,

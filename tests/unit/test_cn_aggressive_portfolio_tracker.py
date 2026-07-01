@@ -110,7 +110,7 @@ def _stub_candidate_level_v13_dag(monkeypatch):
     monkeypatch.setattr(
         tracker,
         "_run_candidate_level_v13_dag",
-        lambda **_kwargs: (pd.DataFrame(dtype=object), _fake_empty_candidate_dag_status()),
+        lambda **_kwargs: (pd.DataFrame(dtype=object), _fake_empty_candidate_dag_status(), {}),
     )
 
 
@@ -523,7 +523,65 @@ def test_candidate_pool_from_v13_dag_requires_candidate_level_four_branches():
         "macro": {"branch_name": "macro", "final_score": 0.7, "final_confidence": 0.6},
     }
     dag_artifacts = {
-        "funnel_summary": {"candidate_count": 2},
+        "funnel_summary": {
+            "candidate_count": 2,
+            "funnel_metadata": {
+                "theme_pool_status": "applied",
+                "theme_pool": {
+                    "enabled": True,
+                    "required": True,
+                    "status": "applied",
+                    "policy": {"regime": "趋势下跌", "top_themes": 4},
+                    "admitted_theme_count": 1,
+                    "rejected_theme_count": 1,
+                    "core_symbol_count": 1,
+                    "residual_symbol_count": 1,
+                    "excluded_symbol_count": 1,
+                    "admitted_themes": [
+                        {
+                            "theme_id": "industry::半导体",
+                            "theme_rank_score": 0.91,
+                            "theme_score": 88.0,
+                            "phase": "expansion",
+                        }
+                    ],
+                    "rejected_themes": [
+                        {
+                            "theme_id": "industry::白酒",
+                            "reason": "below_policy_threshold",
+                        }
+                    ],
+                    "score_source": "smoothed",
+                    "fallback_to_raw_score": True,
+                    "symbols": {
+                        "688301.SH": {
+                            "admitted": True,
+                            "source": "core",
+                            "primary_theme_id": "industry::半导体",
+                            "theme_pool_score": 0.88,
+                            "theme_policy_regime": "趋势下跌",
+                            "theme_pool_reason": "admitted",
+                        },
+                        "002409.SZ": {
+                            "admitted": True,
+                            "source": "residual",
+                            "primary_theme_id": "industry::半导体",
+                            "theme_pool_score": 0.66,
+                            "theme_policy_regime": "趋势下跌",
+                            "theme_pool_reason": "admitted",
+                        },
+                        "600519.SH": {
+                            "admitted": False,
+                            "source": "none",
+                            "primary_theme_id": "industry::白酒",
+                            "theme_pool_score": 0.20,
+                            "theme_policy_regime": "趋势下跌",
+                            "theme_pool_reason": "theme_pool_theme_not_admitted",
+                        },
+                    },
+                },
+            },
+        },
         "symbol_research_packets": {
             "688301.SH": {
                 "symbol": "688301.SH",
@@ -602,6 +660,84 @@ def test_candidate_pool_from_v13_dag_requires_candidate_level_four_branches():
     assert status["candidate_dag_four_branch_compliance"]["missing_branch_by_symbol"] == {
         "002409.SZ": ["fundamental", "intelligence"]
     }
+    theme_pool = status["theme_candidate_pool"]
+    assert theme_pool["status"] == "applied"
+    assert theme_pool["policy_regime"] == "趋势下跌"
+    assert theme_pool["admitted_theme_count"] == 1
+    assert theme_pool["rejected_theme_count"] == 1
+    assert theme_pool["core_symbol_count"] == 1
+    assert theme_pool["residual_symbol_count"] == 1
+    assert theme_pool["excluded_symbol_count"] == 1
+    assert theme_pool["excluded_reason_counts"] == {"theme_pool_theme_not_admitted": 1}
+    assert theme_pool["admitted_symbols_by_source_sample"]["core"] == ["688301.SH"]
+    assert theme_pool["admitted_symbols_by_source_sample"]["residual"] == ["002409.SZ"]
+    assert theme_pool["excluded_symbols_by_reason_sample"][
+        "theme_pool_theme_not_admitted"
+    ] == ["600519.SH"]
+
+
+def test_write_outputs_persists_theme_pool_audit(tmp_path: Path) -> None:
+    run_dir = tmp_path / "strategy_records" / "20260630_theme_pool"
+    manifest = {
+        "timestamp": "20260630_theme_pool",
+        "files": {"analysis_report": "analysis_report.md"},
+        "raw_exports": {},
+    }
+    market_snapshot = {"analysis_trade_date": "20260629"}
+    theme_pool_audit = {
+        "schema_version": tracker.THEME_POOL_AUDIT_SCHEMA_VERSION,
+        "summary": {
+            "status": "applied",
+            "admitted_theme_count": 1,
+            "rejected_theme_count": 1,
+            "core_symbol_count": 1,
+            "residual_symbol_count": 0,
+            "excluded_symbol_count": 1,
+            "excluded_reason_counts": {"theme_pool_theme_not_admitted": 1},
+        },
+        "symbols": {
+            "688301.SH": {"admitted": True, "source": "core"},
+            "600519.SH": {
+                "admitted": False,
+                "source": "none",
+                "theme_pool_reason": "theme_pool_theme_not_admitted",
+            },
+        },
+    }
+
+    tracker._write_outputs(
+        base_dir=tmp_path / "strategy_records",
+        run_dir=run_dir,
+        report_text="# report\n",
+        holdings_review=pd.DataFrame([{"symbol": "688301.SH"}]),
+        candidate_pool=pd.DataFrame([{"symbol": "688301.SH"}]),
+        switch_plan_df=pd.DataFrame([{"buy_symbol": "688301.SH"}]),
+        ledger=pd.DataFrame([{"symbol": "688301.SH"}]),
+        orders_df=pd.DataFrame([{"symbol": "688301.SH"}]),
+        pnl_summary_df=pd.DataFrame([{"total_value_after": 1.0}]),
+        manifest=manifest,
+        market_snapshot=market_snapshot,
+        theme_pool_audit=theme_pool_audit,
+    )
+
+    written_manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    written_snapshot = json.loads((run_dir / "market_snapshot.json").read_text(encoding="utf-8"))
+    written_audit = json.loads((run_dir / "theme_pool_audit.json").read_text(encoding="utf-8"))
+
+    assert written_manifest["files"]["theme_pool_audit"] == "theme_pool_audit.json"
+    assert written_manifest["raw_exports"]["theme_pool_audit"] == (
+        "raw_exports/aggressive_portfolio_20260630_theme_pool_formal_theme_pool_audit.json"
+    )
+    assert written_manifest["theme_pool_audit"]["file"] == "theme_pool_audit.json"
+    assert written_snapshot["theme_pool_audit"]["file"] == "theme_pool_audit.json"
+    assert written_audit["summary"]["excluded_reason_counts"] == {
+        "theme_pool_theme_not_admitted": 1
+    }
+    assert (
+        run_dir
+        / "raw_exports"
+        / "aggressive_portfolio_20260630_theme_pool_formal_theme_pool_audit.json"
+    ).exists()
 
 
 def test_candidate_pool_from_v13_dag_falls_back_to_report_bundle_shortlist():
@@ -1149,6 +1285,34 @@ def test_build_dag_four_branch_compliance_marks_complete_when_all_branches_prese
     assert result["complete"] is True
     assert result["status"] == "DAG四分支完整执行"
     assert result["missing_branch_by_symbol"]["601869.SH"] == []
+
+
+def test_serialize_reviewed_branch_verdicts_backfills_all_canonical_summaries():
+    result = SimpleNamespace(
+        reviewed_research_by_symbol={},
+        reviewed_branch_summaries={
+            branch_name: {"branch_name": branch_name, "status": "success"}
+            for branch_name in tracker.REQUIRED_DAG_BRANCHES
+        },
+    )
+
+    reviewed = tracker._serialize_reviewed_branch_verdicts(result, "601869.SH")
+
+    assert set(reviewed) == set(tracker.REQUIRED_DAG_BRANCHES)
+
+
+def test_serialize_reviewed_branch_verdicts_does_not_invent_missing_branches():
+    result = SimpleNamespace(
+        reviewed_research_by_symbol={},
+        reviewed_branch_summaries={
+            "quant": {"branch_name": "quant", "status": "success"},
+            "macro": {"branch_name": "macro", "status": "success"},
+        },
+    )
+
+    reviewed = tracker._serialize_reviewed_branch_verdicts(result, "601869.SH")
+
+    assert set(reviewed) == {"quant", "macro"}
 
 
 def test_dag_compliance_does_not_mark_governed_quant_limited():

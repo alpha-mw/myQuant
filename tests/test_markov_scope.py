@@ -258,7 +258,7 @@ def test_missing_reference_data_fails_closed_and_preserves_baseline(
     assert markov["status"] == "not_applied_insufficient_market_scope"
     assert state.global_context.macro_regime == "趋势上涨"
     assert state.global_context.risk_budget["target_exposure"] == pytest.approx(0.70)
-    assert state.global_context.risk_budget["max_single_weight"] == pytest.approx(0.12)
+    assert state.global_context.risk_budget["max_single_weight"] == pytest.approx(0.50)
     assert "turnover_cap" not in state.global_context.risk_budget
     assert any("below_min" in note or "insufficient" in note for note in markov["diagnostic_notes"])
 

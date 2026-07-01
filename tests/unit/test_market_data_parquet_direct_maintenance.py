@@ -33,10 +33,15 @@ def test_cn_auto_maintenance_uses_parquet_direct(monkeypatch):
 
     monkeypatch.setattr(download_module, "CNParquetBatchMaintainer", FakeMaintainer)
 
-    result = download_module.run_market_maintenance(market="CN", categories=["full_a"])
+    result = download_module.run_market_maintenance(
+        market="CN",
+        categories=["full_a"],
+        target_date="20260316",
+    )
 
     assert result["storage_mode"] == "parquet-direct"
     assert captured["maintain"]["categories"] == ["full_a"]
+    assert captured["maintain"]["target_date"] == "20260316"
 
 
 def _write_seed_snapshot(root: Path) -> None:
@@ -317,3 +322,117 @@ def test_run_market_maintenance_parquet_direct_upserts_and_writes_audit_artifact
     assert progress["status"] == "OK"
     assert progress["daily_basic_coverage"]["coverage_ratio"] == 0.5
     assert failed["failed_batch_count"] == 0
+
+
+def test_parquet_direct_explicit_historical_target_preserves_latest_pointer(monkeypatch, tmp_path):
+    _write_seed_snapshot(tmp_path)
+    audit_root = tmp_path / "cn_market_full"
+
+    class FakePro:
+        def stock_basic(self, **_kwargs):
+            return pd.DataFrame(
+                [
+                    {"ts_code": "000001.SZ", "list_date": "20200101"},
+                    {"ts_code": "000002.SZ", "list_date": "20200101"},
+                ]
+            )
+
+        def trade_cal(self, **_kwargs):
+            return pd.DataFrame(
+                [
+                    {"cal_date": "20260314", "is_open": 1},
+                    {"cal_date": "20260315", "is_open": 1},
+                ]
+            )
+
+        def suspend_d(self, **_kwargs):
+            return pd.DataFrame()
+
+        def daily(self, trade_date=None, **_kwargs):
+            assert trade_date == "20260314"
+            return pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000001.SZ",
+                        "trade_date": "20260314",
+                        "open": 9.0,
+                        "high": 9.6,
+                        "low": 8.9,
+                        "close": 9.4,
+                        "pre_close": 9.2,
+                        "change": 0.2,
+                        "pct_chg": 2.17,
+                        "vol": 800,
+                        "amount": 8200.0,
+                    },
+                    {
+                        "ts_code": "000002.SZ",
+                        "trade_date": "20260314",
+                        "open": 19.0,
+                        "high": 19.8,
+                        "low": 18.8,
+                        "close": 19.4,
+                        "pre_close": 19.2,
+                        "change": 0.2,
+                        "pct_chg": 1.04,
+                        "vol": 1800,
+                        "amount": 18200.0,
+                    },
+                ]
+            )
+
+        def adj_factor(self, trade_date=None, **_kwargs):
+            assert trade_date == "20260314"
+            return pd.DataFrame(
+                [
+                    {"ts_code": "000001.SZ", "trade_date": "20260314", "adj_factor": 1.1},
+                    {"ts_code": "000002.SZ", "trade_date": "20260314", "adj_factor": 1.0},
+                ]
+            )
+
+        def daily_basic(self, trade_date=None, **_kwargs):
+            assert trade_date == "20260314"
+            return pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000001.SZ",
+                        "trade_date": "20260314",
+                        "turnover_rate": 1.0,
+                        "volume_ratio": 1.0,
+                        "pe": 12.0,
+                        "pb": 1.5,
+                        "total_mv": 100000.0,
+                        "circ_mv": 90000.0,
+                    },
+                    {
+                        "ts_code": "000002.SZ",
+                        "trade_date": "20260314",
+                        "turnover_rate": 1.0,
+                        "volume_ratio": 1.0,
+                        "pe": 10.0,
+                        "pb": 1.2,
+                        "total_mv": 200000.0,
+                        "circ_mv": 190000.0,
+                    },
+                ]
+            )
+
+    monkeypatch.setattr(download_module.config, "TUSHARE_TOKEN", "dummy-token")
+    monkeypatch.setattr(download_module.config, "TUSHARE_URL", "http://example.invalid")
+    monkeypatch.setattr(download_module.config, "MARKET_DATA_BASE_DIR", str(tmp_path), raising=False)
+    monkeypatch.setattr(download_module.config, "CN_FRESHNESS_MODE", "strict")
+    monkeypatch.setattr(download_cn_module, "create_tushare_pro", lambda *_args, **_kwargs: FakePro())
+
+    result = download_module.run_market_maintenance(
+        market="CN",
+        categories=["full_a"],
+        storage_mode="parquet-direct",
+        target_date="20260314",
+        data_dir=str(audit_root),
+    )
+
+    assert result["completeness"]["effective_target_trade_date"] == "20260314"
+    assert result["parquet_commit"]["status"] == "OK"
+    assert result["parquet_commit"]["latest_complete_trade_date"] == "20260315"
+    latest = json.loads((tmp_path / "parquet" / "cn" / "_latest.json").read_text(encoding="utf-8"))
+    assert latest["latest_complete_trade_date"] == "20260315"

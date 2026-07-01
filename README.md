@@ -133,6 +133,7 @@ Markov regime layer 是 production-first 控制层：
 - 显式小股票池，例如 `["NVDA", "AMD", "AVGO"]` 或小型 A 股 watchlist，不会被当作整体市场。
 - 如果 broad reference 数据缺失或低于 `MARKOV_REGIME_MIN_MARKET_SAMPLE`，Markov fail closed：不覆盖 MacroAgent regime，不降低或提高基线风险预算，仅记录 `production_eligible=false` 和诊断。
 - 应用时 Markov 只能收紧风险：`applied_target_exposure = min(baseline, markov_cap)`，`applied_max_single_weight = min(baseline, markov_cap)`；不会绕过 RiskGuard 或 PortfolioConstructor。
+- 当前 DAG/Markov 单票持仓上限基线为 50%，用于支持集中持仓；更低的显式 RiskGuard/Theme/流动性约束仍可继续收紧。
 - 历史 JSONL 按 market scope/source universe/as_of 隔离，并过滤 future records。
 
 ---

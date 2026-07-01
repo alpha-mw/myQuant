@@ -33,6 +33,8 @@ DEFAULT_REGIME_PRIOR = {
     REGIME_UNKNOWN: 0.05,
 }
 
+MARKOV_SINGLE_NAME_WEIGHT_CAP = 0.50
+
 
 def _clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
     return max(lower, min(upper, float(value)))
@@ -183,16 +185,7 @@ class MarkovRegimeEngine:
             + posterior.get(REGIME_TREND_DOWN, 0.0) * 0.25
             + posterior.get(REGIME_UNKNOWN, 0.0) * 0.45,
         )
-        if posterior.get(REGIME_TREND_DOWN, 0.0) >= 0.45:
-            suggested_max_single_weight = 0.07
-        elif (
-            posterior.get(REGIME_RANGE_HIGH_VOL, 0.0)
-            + posterior.get(REGIME_TREND_DOWN, 0.0)
-            >= 0.55
-        ):
-            suggested_max_single_weight = 0.09
-        else:
-            suggested_max_single_weight = 0.12
+        suggested_max_single_weight = MARKOV_SINGLE_NAME_WEIGHT_CAP
         if transition_risk >= 0.60:
             turnover_cap: float | None = 0.30
         elif confidence < 0.45:
@@ -267,7 +260,7 @@ class MarkovRegimeEngine:
                 feature_snapshot.macro_target_gross_exposure,
                 0.45,
             ),
-            suggested_max_single_weight=0.12,
+            suggested_max_single_weight=MARKOV_SINGLE_NAME_WEIGHT_CAP,
             turnover_cap=None,
             feature_snapshot=feature_snapshot.to_dict(),
             diagnostic_notes=diagnostic_notes,

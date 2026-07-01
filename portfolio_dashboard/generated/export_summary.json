@@ -1,15 +1,15 @@
 {
-  "generated_at": "2026-06-26 21:56:37",
+  "generated_at": "2026-06-30 15:58:57",
   "source_root": "/Users/maxwell/mySpace/myQuant/results/strategy_records/CN/aggressive_tech_manufacturing",
   "dashboard_root": "/Users/maxwell/mySpace/myQuant/portfolio_dashboard",
-  "latest_record": "20260626_0932",
-  "record_count": 63,
-  "nav_rows": 63,
-  "positions_rows": 558,
+  "latest_record": "20260630_1516",
+  "record_count": 65,
+  "nav_rows": 65,
+  "positions_rows": 576,
   "trade_rows": 3,
   "warnings": [
-    "156 条持仓记录缺少显式 theme，已使用 stock_basic industry 生成 '行业: <sector>' 回退标签。",
-    "benchmark_source_status=production_source_partial_missing_dates；source_system=tushare.index_daily；Dashboard benchmark 仅供临时展示，不是正式投委会口径。"
+    "164 条持仓记录缺少显式 theme，已使用 stock_basic industry 生成 '行业: <sector>' 回退标签。",
+    "benchmark_source_status=not_production_grade；source_system=tushare.index_daily+strategy_record.market_snapshot.indices；Dashboard benchmark 仅供临时展示，不是正式投委会口径。"
   ],
   "benchmark_source": {
     "benchmark_fields": [
@@ -21,18 +21,48 @@
       "star50_nav",
       "chinext_nav"
     ],
-    "benchmark_source_status": "production_source_partial_missing_dates",
-    "source_system": "tushare.index_daily",
+    "benchmark_source_status": "not_production_grade",
+    "source_system": "tushare.index_daily+strategy_record.market_snapshot.indices",
     "calendar_source_system": "tushare.trade_cal",
     "production_grade": false,
-    "display_continuity_grade": false,
+    "display_continuity_grade": true,
     "first_valid_date": "2026-03-18",
-    "last_valid_date": "2026-06-25",
-    "missing_date_count": 2,
-    "missing_dates": [
+    "last_valid_date": "2026-06-30",
+    "missing_date_count": 0,
+    "missing_dates": [],
+    "snapshot_gap_fill_count": 4,
+    "snapshot_gap_fill_dates": [
       "2026-06-25",
-      "2026-06-26"
+      "2026-06-26",
+      "2026-06-29",
+      "2026-06-30"
     ],
+    "snapshot_gap_fill_by_date": {
+      "2026-06-25": [
+        "star50_nav"
+      ],
+      "2026-06-26": [
+        "csi300_nav",
+        "csi500_nav",
+        "csi1000_nav",
+        "star50_nav",
+        "chinext_nav"
+      ],
+      "2026-06-29": [
+        "csi300_nav",
+        "csi500_nav",
+        "csi1000_nav",
+        "star50_nav",
+        "chinext_nav"
+      ],
+      "2026-06-30": [
+        "csi300_nav",
+        "csi500_nav",
+        "csi1000_nav",
+        "star50_nav",
+        "chinext_nav"
+      ]
+    },
     "exact_date_count": 58,
     "exact_dates": [
       "2026-03-18",
@@ -654,9 +684,37 @@
         "csi300_nav": "exact_close",
         "csi500_nav": "exact_close",
         "csi1000_nav": "exact_close",
+        "star50_nav": "strategy_record_snapshot_gap_fill",
         "chinext_nav": "exact_close",
-        "benchmark_main_nav": "exact_close",
+        "benchmark_main_nav": "strategy_record_snapshot_gap_fill",
         "benchmark_nav": "exact_close"
+      },
+      "2026-06-26": {
+        "csi300_nav": "strategy_record_snapshot_gap_fill",
+        "csi500_nav": "strategy_record_snapshot_gap_fill",
+        "csi1000_nav": "strategy_record_snapshot_gap_fill",
+        "star50_nav": "strategy_record_snapshot_gap_fill",
+        "chinext_nav": "strategy_record_snapshot_gap_fill",
+        "benchmark_main_nav": "strategy_record_snapshot_gap_fill",
+        "benchmark_nav": "strategy_record_snapshot_gap_fill"
+      },
+      "2026-06-29": {
+        "csi300_nav": "strategy_record_snapshot_gap_fill",
+        "csi500_nav": "strategy_record_snapshot_gap_fill",
+        "csi1000_nav": "strategy_record_snapshot_gap_fill",
+        "star50_nav": "strategy_record_snapshot_gap_fill",
+        "chinext_nav": "strategy_record_snapshot_gap_fill",
+        "benchmark_main_nav": "strategy_record_snapshot_gap_fill",
+        "benchmark_nav": "strategy_record_snapshot_gap_fill"
+      },
+      "2026-06-30": {
+        "csi300_nav": "strategy_record_snapshot_gap_fill",
+        "csi500_nav": "strategy_record_snapshot_gap_fill",
+        "csi1000_nav": "strategy_record_snapshot_gap_fill",
+        "star50_nav": "strategy_record_snapshot_gap_fill",
+        "chinext_nav": "strategy_record_snapshot_gap_fill",
+        "benchmark_main_nav": "strategy_record_snapshot_gap_fill",
+        "benchmark_nav": "strategy_record_snapshot_gap_fill"
       }
     },
     "value_date_by_date": {
@@ -1213,19 +1271,47 @@
         "csi300_nav": "2026-06-25",
         "csi500_nav": "2026-06-25",
         "csi1000_nav": "2026-06-25",
+        "star50_nav": "2026-06-25",
         "chinext_nav": "2026-06-25",
         "benchmark_main_nav": "2026-06-25",
         "benchmark_nav": "2026-06-25"
+      },
+      "2026-06-26": {
+        "csi300_nav": "2026-06-26",
+        "csi500_nav": "2026-06-26",
+        "csi1000_nav": "2026-06-26",
+        "star50_nav": "2026-06-26",
+        "chinext_nav": "2026-06-26",
+        "benchmark_main_nav": "2026-06-26",
+        "benchmark_nav": "2026-06-26"
+      },
+      "2026-06-29": {
+        "csi300_nav": "2026-06-29",
+        "csi500_nav": "2026-06-29",
+        "csi1000_nav": "2026-06-29",
+        "star50_nav": "2026-06-29",
+        "chinext_nav": "2026-06-29",
+        "benchmark_main_nav": "2026-06-29",
+        "benchmark_nav": "2026-06-29"
+      },
+      "2026-06-30": {
+        "csi300_nav": "2026-06-30",
+        "csi500_nav": "2026-06-30",
+        "csi1000_nav": "2026-06-30",
+        "star50_nav": "2026-06-30",
+        "chinext_nav": "2026-06-30",
+        "benchmark_main_nav": "2026-06-30",
+        "benchmark_nav": "2026-06-30"
       }
     },
     "field_missing_counts": {
-      "benchmark_main_nav": 1,
-      "benchmark_nav": 1,
-      "csi300_nav": 1,
-      "csi500_nav": 1,
-      "csi1000_nav": 1,
-      "star50_nav": 2,
-      "chinext_nav": 1
+      "benchmark_main_nav": 0,
+      "benchmark_nav": 0,
+      "csi300_nav": 0,
+      "csi500_nav": 0,
+      "csi1000_nav": 0,
+      "star50_nav": 0,
+      "chinext_nav": 0
     },
     "normalization": "tushare_index_daily_close_divided_by_first_valid_close_with_trade_cal_previous_trading_day_ffill",
     "notes": [
@@ -1233,9 +1319,9 @@
       "非交易日 strategy record 使用 Tushare trade_cal 的 pretrade_date 做 previous_trading_day_ffill，并在 coverage 中显式标记。",
       "若交易日或 latest strategy record 日期尚无 Tushare index_daily close，则该日期 benchmark 留空并降级为 partial。",
       "部分非交易日 benchmark 使用上一交易日真实 close 前向填充；Dashboard 展示连续，但投委会口径需区分 exact 与 ffill。",
-      "Tushare benchmark 未覆盖所有策略记录日期；缺失日期不按生产级 benchmark 标记。"
+      "部分 Tushare 缺口使用 strategy_record.market_snapshot.indices 实时快照补齐，仅用于 Dashboard 连续展示；不是连续真实指数 close。"
     ],
-    "raw_row_count": 349
+    "raw_row_count": 365
   },
   "files": {
     "nav": "/Users/maxwell/mySpace/myQuant/portfolio_dashboard/generated/nav_records.csv",

@@ -62,6 +62,39 @@ def test_risk_guard_theme_disabled_preserves_baseline():
     assert with_disabled_theme.position_limits == baseline.position_limits
 
 
+def test_risk_guard_weak_macro_preserves_concentrated_single_name_cap():
+    payload = _payload({"max_weight": 0.50})
+    payload["macro_verdict"] = BranchVerdict(
+        agent_name="macro",
+        thesis="macro weak",
+        final_score=-0.30,
+        metadata={"target_gross_exposure": 0.90},
+    )
+
+    result = RiskGuard().run(payload)
+
+    assert result.action_cap == ActionLabel.HOLD
+    assert result.gross_exposure_cap == pytest.approx(0.50)
+    assert result.max_weight == pytest.approx(0.50)
+    assert result.position_limits[SYMBOL] == pytest.approx(0.50)
+
+
+def test_risk_guard_multiple_risks_preserve_concentrated_single_name_cap():
+    result = RiskGuard().run(
+        _payload(
+            {
+                "max_weight": 0.50,
+                "risk_flags": ["risk one", "risk two", "risk three"],
+            }
+        )
+    )
+
+    assert result.action_cap == ActionLabel.HOLD
+    assert result.gross_exposure_cap == pytest.approx(0.60)
+    assert result.max_weight == pytest.approx(0.50)
+    assert result.position_limits[SYMBOL] == pytest.approx(0.50)
+
+
 def test_risk_guard_applies_overextended_theme_overlay():
     result = RiskGuard().run(
         _payload(

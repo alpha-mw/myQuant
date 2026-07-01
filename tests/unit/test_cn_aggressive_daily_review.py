@@ -19,9 +19,9 @@ def _args(tmp_path: Path) -> argparse.Namespace:
         categories=None,
         maintenance_years=3,
         maintenance_workers=4,
-        maintenance_batch_size=50,
+        maintenance_batch_size=200,
         maintenance_max_rounds=1,
-        maintenance_max_batches_per_run=1,
+        maintenance_max_batches_per_run=200,
         min_symbol_success_rate=0.95,
         target_date="auto",
         daily_window=True,
@@ -130,7 +130,7 @@ def test_daily_review_skips_staged_maintenance_when_same_day_unavailable_and_sna
     assert manifest["maintenance_preflight"]["staged_progress"] == {}
 
 
-def test_daily_review_runs_one_staged_batch_when_stable_target_has_gaps(monkeypatch, tmp_path):
+def test_daily_review_runs_configured_staged_batches_when_stable_target_has_gaps(monkeypatch, tmp_path):
     calls: list[dict[str, object]] = []
     FakePreflightDownloader.probe = {"applicable": False}
     FakePreflightDownloader.completeness = {
@@ -178,8 +178,8 @@ def test_daily_review_runs_one_staged_batch_when_stable_target_has_gaps(monkeypa
 
     result = daily_review.run_daily_review(_args(tmp_path))
 
-    assert calls and calls[0]["max_batches_per_run"] == 1
-    assert calls[0]["batch_size"] == 50
+    assert calls and calls[0]["max_batches_per_run"] == 200
+    assert calls[0]["batch_size"] == 200
     assert calls[0]["resume"] is True
     assert result["maintenance_preflight"]["maintenance_status"] == "running"
     assert result["maintenance_preflight"]["staged_progress"]["remaining_batches"] == 4

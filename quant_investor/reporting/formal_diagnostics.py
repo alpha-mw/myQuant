@@ -164,6 +164,16 @@ def _has_quote_snapshot(value: Any) -> bool:
     return bool(text and text.upper() not in {"N/A", "NONE", "NULL"})
 
 
+def _quote_snapshot_trade_date(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if len(text) >= 8 and text[:8].isdigit():
+        try:
+            return datetime.strptime(text[:8], "%Y%m%d").date().isoformat()
+        except ValueError:
+            return None
+    return _normalize_date_text(text)
+
+
 def _dominant_full_a_coverage_ratio(completeness: Mapping[str, Any], dominant_date: str | None) -> float:
     normalized_dominant = (_normalize_date_text(dominant_date) or "").replace("-", "")
     categories = _coerce_mapping(completeness.get("categories"))
@@ -188,15 +198,19 @@ def is_previous_day_realtime_decision_sufficient(
     completeness = _coerce_mapping(completeness_state)
     normalized_target = _normalize_date_text(target_date)
     normalized_dominant = _normalize_date_text(dominant_local_snapshot_date)
+    normalized_quote_date = _quote_snapshot_trade_date(quote_snapshot or completeness.get("quote_snapshot"))
     normalized_stable = _normalize_date_text(completeness.get("stable_trade_date"))
     normalized_strict = _normalize_date_text(completeness.get("strict_trade_date"))
     if not normalized_target or not normalized_dominant:
         return False
-    if not _is_date_before(normalized_dominant, normalized_target):
+    decision_target = normalized_target
+    if normalized_quote_date and _is_date_before(decision_target, normalized_quote_date):
+        decision_target = normalized_quote_date
+    if not _is_date_before(normalized_dominant, decision_target):
         return False
     if normalized_stable and normalized_dominant != normalized_stable:
         return False
-    if normalized_strict and normalized_strict != normalized_target:
+    if normalized_strict and normalized_strict not in {normalized_dominant, normalized_target, decision_target}:
         return False
     if not _has_quote_snapshot(quote_snapshot or completeness.get("quote_snapshot")):
         return False

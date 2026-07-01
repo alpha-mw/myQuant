@@ -96,6 +96,60 @@ def _compact_markov_regime_metadata(global_context: Any) -> dict[str, Any]:
     }
 
 
+def _compact_theme_pool_symbol_metadata(
+    *,
+    funnel_output: Any,
+    symbol: str,
+) -> dict[str, Any]:
+    funnel_metadata = getattr(funnel_output, "funnel_metadata", {}) or {}
+    if not isinstance(funnel_metadata, Mapping):
+        return {}
+    theme_pool = funnel_metadata.get("theme_pool", {})
+    if not isinstance(theme_pool, Mapping) or not theme_pool:
+        return {}
+    symbol_map = theme_pool.get("symbols", {})
+    policy = theme_pool.get("policy", {})
+    symbol_payload = (
+        dict(symbol_map.get(symbol, {}) or {})
+        if isinstance(symbol_map, Mapping)
+        else {}
+    )
+    policy_payload = policy if isinstance(policy, Mapping) else {}
+    risk_flags = symbol_payload.get("risk_flags", [])
+    if isinstance(risk_flags, (str, bytes)):
+        compact_risk_flags: list[str] = []
+    else:
+        try:
+            compact_risk_flags = [
+                str(item)
+                for item in list(risk_flags or [])
+                if str(item or "").strip()
+            ]
+        except TypeError:
+            compact_risk_flags = []
+    return {
+        "admitted": bool(symbol_payload.get("admitted", False)),
+        "source": str(symbol_payload.get("source") or "none"),
+        "primary_theme_id": str(symbol_payload.get("primary_theme_id") or ""),
+        "primary_theme_name": str(symbol_payload.get("primary_theme_name") or ""),
+        "theme_score": float(symbol_payload.get("theme_score", 0.0) or 0.0),
+        "symbol_theme_score": float(symbol_payload.get("symbol_theme_score", 0.0) or 0.0),
+        "theme_pool_score": float(symbol_payload.get("theme_pool_score", 0.0) or 0.0),
+        "bucket": str(symbol_payload.get("bucket") or "none"),
+        "phase": str(symbol_payload.get("phase") or ""),
+        "risk_flags": compact_risk_flags,
+        "candidate_intent": str(symbol_payload.get("candidate_intent") or ""),
+        "score_penalty": float(symbol_payload.get("score_penalty", 0.0) or 0.0),
+        "theme_forced_admission": bool(symbol_payload.get("theme_forced_admission", False)),
+        "theme_policy_regime": str(
+            symbol_payload.get("theme_policy_regime")
+            or policy_payload.get("regime")
+            or ""
+        ),
+        "theme_pool_reason": str(symbol_payload.get("theme_pool_reason") or ""),
+    }
+
+
 def _optional_float(value: Any) -> float | None:
     if value is None:
         return None
@@ -201,6 +255,10 @@ def _run_bayesian_selection_phase(
                     "sector": str((posterior.metadata or {}).get("sector", "")) if isinstance(getattr(posterior, "metadata", {}), Mapping) else "",
                     "theme_rotation": extract_symbol_theme_metadata(
                         global_context=global_context,
+                        symbol=symbol,
+                    ),
+                    "theme_pool": _compact_theme_pool_symbol_metadata(
+                        funnel_output=funnel_output,
                         symbol=symbol,
                     ),
                     "markov_regime": markov_regime_metadata,

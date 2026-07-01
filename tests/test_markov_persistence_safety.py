@@ -44,7 +44,7 @@ def _signal(**overrides: object) -> RegimeSignal:
         "volatility_score": 0.1,
         "pressure_score": 0.1,
         "suggested_gross_exposure_cap": 0.60,
-        "suggested_max_single_weight": 0.12,
+        "suggested_max_single_weight": 0.50,
         "turnover_cap": None,
         "feature_snapshot": {},
         "diagnostic_notes": [],

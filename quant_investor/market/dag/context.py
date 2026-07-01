@@ -61,6 +61,7 @@ DAG_RUNTIME_PRICE_VOLUME_COLUMNS: tuple[str, ...] = (
     "adj_close",
 )
 DAG_RUNTIME_LOOKBACK_CALENDAR_DAYS = 420
+DAG_SINGLE_NAME_WEIGHT_CAP = 0.50
 
 
 @dataclass
@@ -453,6 +454,23 @@ def _theme_snapshot_scope_metadata(
     }
 
 
+def _holding_single_review_active(
+    *,
+    recall_context: Mapping[str, Any] | None,
+    symbols: list[str],
+) -> bool:
+    context = recall_context if isinstance(recall_context, Mapping) else {}
+    holding_symbol = str(context.get("holding_symbol") or "").strip().upper()
+    if not holding_symbol:
+        return False
+    normalized = [
+        str(symbol).strip().upper()
+        for symbol in symbols
+        if str(symbol).strip()
+    ]
+    return len(normalized) == 1 and normalized[0] == holding_symbol
+
+
 def _annotate_theme_rotation_scope(
     theme_rotation: dict[str, Any],
     *,
@@ -757,16 +775,14 @@ def _prepare_market_context(
         or "stable"
     )
     target_exposure = float(macro_verdict.metadata.get("target_gross_exposure", 0.5))
-    max_single_weight = 0.12
+    max_single_weight = DAG_SINGLE_NAME_WEIGHT_CAP
     if str(funnel_profile or "").strip().lower() == "momentum_leader":
         breadth = float(cross_section_quant.get("breadth", 0.0))
         weak_regime = str(macro_verdict.metadata.get("regime", "neutral")) in {"趋势下跌", "震荡高波"}
         if weak_regime or float(macro_verdict.final_score) < 0.0 or breadth < 0.48:
             target_exposure = min(target_exposure, 0.45) * 0.75
-            max_single_weight = 0.10
         elif str(macro_verdict.metadata.get("regime", "neutral")) == "趋势上涨" and breadth > 0.55:
             target_exposure = min(target_exposure * 1.08, 0.72)
-            max_single_weight = 0.14
 
     macro_agent_regime = str(macro_verdict.metadata.get("regime", "neutral"))
     effective_macro_regime = macro_agent_regime
@@ -1118,6 +1134,23 @@ def _prepare_market_context(
             volume_spike_threshold=float(volume_spike_threshold),
             breakout_distance_pct=float(breakout_distance_pct),
             sector_bucket_limit=int(sector_bucket_limit if str(funnel_profile or "").strip().lower() == "momentum_leader" else 0),
+            theme_pool_enabled=bool(getattr(config, "THEME_POOL_ENABLED", False)),
+            theme_pool_required=bool(getattr(config, "THEME_POOL_REQUIRED", True)),
+            theme_pool_use_markov_policy=bool(getattr(config, "THEME_POOL_USE_MARKOV_POLICY", True)),
+            theme_pool_score_source=str(getattr(config, "THEME_POOL_SCORE_SOURCE", "smoothed") or "smoothed"),
+            theme_pool_fallback_to_raw_score=bool(getattr(config, "THEME_POOL_FALLBACK_TO_RAW_SCORE", True)),
+            theme_pool_min_theme_score=float(getattr(config, "THEME_POOL_MIN_THEME_SCORE", 0.58)),
+            theme_pool_min_symbol_score=float(getattr(config, "THEME_POOL_MIN_SYMBOL_SCORE", 0.55)),
+            theme_pool_top_themes=int(getattr(config, "THEME_POOL_TOP_THEMES", 8)),
+            theme_pool_max_symbols_per_theme=int(getattr(config, "THEME_POOL_MAX_SYMBOLS_PER_THEME", 30)),
+            theme_pool_residual_ratio=float(getattr(config, "THEME_POOL_RESIDUAL_RATIO", 0.25)),
+            theme_pool_min_residual_symbols=int(getattr(config, "THEME_POOL_MIN_RESIDUAL_SYMBOLS", 20)),
+            theme_pool_min_admitted_themes=int(getattr(config, "THEME_POOL_MIN_ADMITTED_THEMES", 2)),
+            theme_pool_allow_unthemed_residual=bool(getattr(config, "THEME_POOL_ALLOW_UNTHEMED_RESIDUAL", False)),
+            theme_pool_include_risk_watch=bool(getattr(config, "THEME_POOL_INCLUDE_RISK_WATCH", True)),
+            theme_pool_risk_watch_max_ratio=float(getattr(config, "THEME_POOL_RISK_WATCH_MAX_RATIO", 0.20)),
+            theme_pool_symbol_gate_mode=str(getattr(config, "THEME_POOL_SYMBOL_GATE_MODE", "classify") or "classify"),
+            theme_pool_min_member_count=int(getattr(config, "THEME_MIN_MEMBER_COUNT", 0)),
             theme_boost_enabled=bool(getattr(config, "THEME_FUNNEL_BOOST_ENABLED", False)),
             theme_boost_cap=float(getattr(config, "THEME_SYMBOL_BOOST_CAP", 0.10)),
             theme_boost_score_source=str(getattr(config, "THEME_FUNNEL_BOOST_SCORE_SOURCE", "raw") or "raw"),
@@ -1135,7 +1168,18 @@ def _prepare_market_context(
         stage_metadata["candidate_count"] = len(getattr(funnel_output, "candidates", []) or [])
         stage_metadata["excluded_count"] = len(getattr(funnel_output, "excluded_symbols", {}) or {})
     candidate_symbols = [symbol for symbol in funnel_output.candidates if symbol in researchable_symbols]
-    if not candidate_symbols:
+    theme_pool_metadata = (
+        funnel_output.funnel_metadata.get("theme_pool", {})
+        if isinstance(getattr(funnel_output, "funnel_metadata", {}), Mapping)
+        else {}
+    )
+    theme_pool_required_applied = (
+        isinstance(theme_pool_metadata, Mapping)
+        and bool(theme_pool_metadata.get("enabled"))
+        and bool(theme_pool_metadata.get("required"))
+        and str(theme_pool_metadata.get("status") or "") == "applied"
+    )
+    if not candidate_symbols and not theme_pool_required_applied:
         candidate_symbols = list(researchable_symbols)
     with profile_stage(
         runtime_profiler,
@@ -1159,15 +1203,21 @@ def _prepare_market_context(
     macro_ready = branch_governance_report.readiness.get("macro")
     macro_blocked = bool(macro_ready and macro_ready.status == STATUS_BLOCK)
     blocked_symbols = set(branch_governance_report.blocked_symbols)
+    holding_review_readiness_override = _holding_single_review_active(
+        recall_context=recall_context,
+        symbols=candidate_symbols,
+    )
     for symbol in list(blocked_symbols):
         if symbol in candidate_symbols:
             funnel_output.excluded_symbols.setdefault(symbol, "branch_data_readiness_block")
     if macro_blocked:
         for symbol in candidate_symbols:
             funnel_output.excluded_symbols.setdefault(symbol, "macro_data_readiness_block")
-        candidate_symbols = []
+        if not holding_review_readiness_override:
+            candidate_symbols = []
     else:
-        candidate_symbols = [symbol for symbol in candidate_symbols if symbol not in blocked_symbols]
+        if not holding_review_readiness_override:
+            candidate_symbols = [symbol for symbol in candidate_symbols if symbol not in blocked_symbols]
     funnel_output.candidates = list(candidate_symbols)
     funnel_output.candidate_scores = {
         symbol: score
@@ -1183,6 +1233,7 @@ def _prepare_market_context(
             },
             "branch_data_blocked_count": len(branch_governance_report.blocked_symbols),
             "macro_data_readiness_block": macro_blocked,
+            "holding_review_branch_readiness_override": holding_review_readiness_override,
         }
     )
     if branch_data_payload.get("macro_data"):
@@ -1208,6 +1259,7 @@ def _prepare_market_context(
     global_context.metadata["branch_readiness_artifacts"] = branch_governance_artifacts
     global_context.metadata["four_branch_fusion_blocked"] = macro_blocked
     global_context.metadata["blocked_branch_symbols"] = list(branch_governance_report.blocked_symbols[:128])
+    global_context.metadata["holding_review_branch_readiness_override"] = holding_review_readiness_override
     global_context.metadata["quantifiable_universe_count"] = len(branch_governance_report.quantifiable_universe)
     global_context.metadata["investable_universe_count"] = len(branch_governance_report.investable_universe)
     candidate_sector_counts: dict[str, int] = {}

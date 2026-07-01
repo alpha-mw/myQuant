@@ -6,6 +6,7 @@ from quant_investor.reporting.formal_diagnostics import (
     apply_report_decision_guardrail,
     build_holding_decision_diagnostics,
     collect_formal_report_warnings,
+    is_previous_day_realtime_decision_sufficient,
     render_holding_diagnostic_markdown_table,
     reconcile_branch_vs_final,
 )
@@ -207,6 +208,46 @@ def test_intraday_previous_day_realtime_cover_keeps_clean_decision_label():
     assert diagnostics[0].branch_vs_final in {"unknown", "aligned"}
     assert guardrail.display_label == "no_action"
     assert guardrail.material_warning_count == 0
+
+
+def test_previous_day_history_plus_same_day_realtime_is_decision_sufficient():
+    assert is_previous_day_realtime_decision_sufficient(
+        target_date="20260630",
+        dominant_local_snapshot_date="20260630",
+        quote_snapshot="20260701094730",
+        completeness_state={
+            "complete": False,
+            "strict_trade_date": "20260630",
+            "stable_trade_date": "20260630",
+            "coverage_threshold": 0.95,
+            "categories": {
+                "full_a": {
+                    "expected": 5502,
+                    "date_counts": {"20260630": 5502},
+                }
+            },
+        },
+    )
+
+
+def test_previous_day_realtime_decision_requires_healthy_history_coverage():
+    assert not is_previous_day_realtime_decision_sufficient(
+        target_date="20260630",
+        dominant_local_snapshot_date="20260630",
+        quote_snapshot="20260701094730",
+        completeness_state={
+            "complete": False,
+            "strict_trade_date": "20260630",
+            "stable_trade_date": "20260630",
+            "coverage_threshold": 0.95,
+            "categories": {
+                "full_a": {
+                    "expected": 5502,
+                    "date_counts": {"20260630": 50},
+                }
+            },
+        },
+    )
 
 
 def test_collect_warnings_distinguishes_provider_and_snapshot_missing():

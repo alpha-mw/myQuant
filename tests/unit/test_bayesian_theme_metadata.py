@@ -240,7 +240,32 @@ def test_bayesian_record_metadata_integration_if_feasible():
         data_quality_issues=[],
         top_k=1,
         all_symbols=["000001.SZ"],
-        funnel_output=SimpleNamespace(excluded_symbols=[], funnel_metadata={}),
+        funnel_output=SimpleNamespace(
+            excluded_symbols=[],
+            funnel_metadata={
+                "theme_pool": {
+                    "policy": {"regime": "震荡低波"},
+                    "symbols": {
+                        "000001.SZ": {
+                            "admitted": True,
+                            "source": "risk_watch",
+                            "primary_theme_id": "industry::AI",
+                            "primary_theme_name": "AI",
+                            "theme_score": 0.725,
+                            "symbol_theme_score": 0.78,
+                            "theme_pool_score": 0.42,
+                            "bucket": "risk_watch_fake_breakout",
+                            "phase": "confirmed_rotation",
+                            "risk_flags": ["theme_fake_breakout_risk"],
+                            "candidate_intent": "research_candidate_not_buy_signal",
+                            "score_penalty": 0.22,
+                            "theme_forced_admission": True,
+                            "theme_pool_reason": "admitted",
+                        }
+                    },
+                }
+            },
+        ),
         provider_health={},
         master_timeout=0.0,
         master_reasoning_effort="",
@@ -259,3 +284,8 @@ def test_bayesian_record_metadata_integration_if_feasible():
     assert record.posterior_action_score == pytest.approx(0.432)
     assert record.metadata["theme_rotation"]["available"] is True
     assert record.metadata["theme_rotation"]["primary_theme_id"] == "industry::AI"
+    assert record.metadata["theme_pool"]["bucket"] == "risk_watch_fake_breakout"
+    assert record.metadata["theme_pool"]["source"] == "risk_watch"
+    assert record.metadata["theme_pool"]["risk_flags"] == ["theme_fake_breakout_risk"]
+    assert record.metadata["theme_pool"]["score_penalty"] == pytest.approx(0.22)
+    assert record.metadata["theme_pool"]["theme_forced_admission"] is True

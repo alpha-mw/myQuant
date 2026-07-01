@@ -218,16 +218,29 @@ class CNParquetBatchMaintainer:
         categories: list[str] | None = None,
         fail_on_incomplete: bool = False,
         allowed_stale_symbols: list[str] | None = None,
+        target_date: str = "auto",
     ) -> dict[str, Any]:
         components = self.downloader.load_components()
         target_categories = self.downloader._resolve_target_categories(components, categories)
-        same_day_probe = self.downloader._probe_strict_same_day_close_availability(
-            components=components,
-            target_categories=target_categories,
-        )
-        target_trade_date = self.downloader.latest_trade_date
+        explicit_target_date = _compact_trade_date(target_date)
+        if explicit_target_date and str(target_date).strip().lower() != "auto":
+            same_day_probe = {
+                "applicable": False,
+                "available": True,
+                "reason": "explicit_target_date",
+                "trade_date": explicit_target_date,
+            }
+            target_trade_date = explicit_target_date
+        else:
+            same_day_probe = self.downloader._probe_strict_same_day_close_availability(
+                components=components,
+                target_categories=target_categories,
+            )
+            target_trade_date = self.downloader.latest_trade_date
         early_stop_reason = ""
-        if same_day_probe.get("applicable") and same_day_probe.get("available") is False:
+        if explicit_target_date and str(target_date).strip().lower() != "auto":
+            early_stop_reason = "explicit_target_date"
+        elif same_day_probe.get("applicable") and same_day_probe.get("available") is False:
             target_trade_date = self.downloader.stable_trade_date
             early_stop_reason = "strict_same_day_unavailable"
 
@@ -290,6 +303,28 @@ class CNParquetBatchMaintainer:
         coverage_complete_count = len((daily_symbols & target_symbols) | non_blocking_absent)
         coverage_ratio = coverage_complete_count / expected_count if expected_count else 1.0
         complete = not blockers
+        existing_latest_available = ""
+        existing_latest_complete = ""
+        if complete:
+            existing_validation = self.store.validate_latest()
+            existing_coverage = existing_validation.get("coverage") if isinstance(existing_validation, dict) else {}
+            if not isinstance(existing_coverage, dict):
+                existing_coverage = {}
+            existing_latest_available = (
+                _compact_trade_date(existing_coverage.get("latest_available_trade_date"))
+                or _compact_trade_date(existing_validation.get("latest_trade_date") if isinstance(existing_validation, dict) else "")
+            )
+            existing_latest_complete = _compact_trade_date(
+                existing_validation.get("latest_complete_trade_date") if isinstance(existing_validation, dict) else ""
+            )
+        commit_latest_available = max(
+            [date for date in [target_trade_date, existing_latest_available] if date],
+            default=target_trade_date,
+        )
+        commit_latest_complete = max(
+            [date for date in [target_trade_date, existing_latest_complete] if date],
+            default=target_trade_date,
+        )
         completeness = self._completeness_payload(
             target_categories=target_categories,
             target_trade_date=target_trade_date,
@@ -323,8 +358,8 @@ class CNParquetBatchMaintainer:
                 metadata={
                     "status": "OK",
                     "storage_mode": "parquet-direct",
-                    "latest_available_trade_date": target_trade_date,
-                    "latest_complete_trade_date": target_trade_date,
+                    "latest_available_trade_date": commit_latest_available,
+                    "latest_complete_trade_date": commit_latest_complete,
                     "coverage": {
                         "complete": True,
                         "coverage_ratio": coverage_ratio,
@@ -332,8 +367,9 @@ class CNParquetBatchMaintainer:
                         "expected_scope_count": expected_count,
                         "blocking_incomplete_count": 0,
                         "categories_checked": list(target_categories),
-                        "latest_available_trade_date": target_trade_date,
-                        "latest_complete_trade_date": target_trade_date,
+                        "latest_available_trade_date": commit_latest_available,
+                        "latest_complete_trade_date": commit_latest_complete,
+                        "upsert_target_trade_date": target_trade_date,
                         "inactive_symbols": sorted(inactive_symbols & target_symbols),
                         "daily_basic_coverage": daily_basic_coverage,
                         "adj_factor_coverage": adj_factor_coverage,
@@ -689,6 +725,7 @@ def run_market_maintenance(
             categories=selected_categories,
             fail_on_incomplete=fail_on_incomplete,
             allowed_stale_symbols=allowed_stale_symbols,
+            target_date=target_date,
         )
 
     if settings.market == "CN":

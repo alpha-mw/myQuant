@@ -74,6 +74,29 @@ Sell timing is an independent portfolio-return decision. A sell does not need a
 replacement candidate when the action only reduces risk; cash is a valid
 position when no v13-complete candidate passes the new-risk gates.
 
+Trailing profit protection is a primary review tool for profitable holdings.
+Every formal review must compute a moving take-profit status when enough local
+price history exists. Use the highest valid close or execution-time realtime
+price since the effective manual-ledger buy as the profit peak, then compare the
+current verified price with that peak:
+
+- `peak_unrealized_profit = max(peak_price - buy_price, 0) * shares`
+- `current_unrealized_profit = max(current_price - buy_price, 0) * shares`
+- `profit_giveback_ratio = (peak_unrealized_profit - current_unrealized_profit)
+  / peak_unrealized_profit`
+
+If the profit peak or current realtime price is unavailable, mark the trailing
+take-profit status `unconfirmed` and do not infer a sell. A
+`profit_giveback_ratio >= 20%` is a mandatory review trigger, not an automatic
+fill. It should at least move the holding to `hold_with_trailing_stop` and
+force an explicit reason in the daily review. It becomes a `reduce_risk`
+candidate when the 20% giveback is accompanied by a falling Codex score,
+weakening trend breadth, oversized position weight, theme crowding, or Markov /
+RiskGuard / Theme risk tightening. A giveback above roughly 35%, or any
+giveback combined with a broken stage stop, thesis break, or score below 60,
+can justify reducing 50% or more, or `clear_risk` when the risk case is broken.
+All quantities still need A-share lot rounding and a fresh realtime quote gate.
+
 Every formal review must classify weak, over-target, stopped, or oversized
 holdings into one of these sell states:
 
@@ -98,13 +121,29 @@ Sell triggers:
   risk event, hard data failure, or thesis invalidation.
 - Weak-holding sell: score below 60 in two of the last three valid reviews, or
   below 50 with no complete four-branch support.
-- Profit-protection trim: materially above target or cost basis, while score is
-  falling, trend breadth weakens, position weight is oversized, or Markov /
-  RiskGuard / theme caps tighten.
+- Profit-protection trim: materially above target or cost basis, or trailing
+  profit giveback reaches the review threshold, while score is falling, trend
+  breadth weakens, position weight is oversized, or Markov / RiskGuard / theme
+  caps tighten.
 - Concentration sell: a single position or theme exceeds the active risk budget
   even if the name remains profitable.
 - No-candidate cash sell: any of the sell triggers above fires, but replacement
   candidates remain `watch_only`, `tracking`, or `prepare_switch`.
+
+Concentration calibration for this strategy:
+
+- The target portfolio shape is concentrated: ideally 3 to 5 effective
+  holdings, with no more than 8 effective holdings.
+- A 25% to 35% single-name weight is not a sell trigger by itself when the
+  holding still has valid thesis support, complete review evidence, acceptable
+  trend health, and no stop-loss or liquidity risk trigger.
+- Concentration sell requires concentration plus deterioration: weakening score
+  or trend, broken stop or thesis, theme crowding, liquidity/fill risk, a need
+  to reduce gross exposure, or an explicit active-risk-budget override.
+- Markov, RiskGuard, and Theme caps must still be disclosed. When those caps are
+  tighter than the concentrated target shape, the report must separate model
+  risk-cap pressure from the human strategy target instead of using
+  concentration alone as a sell reason.
 
 Every sell, rejected sell, and missed sell must receive a return-impact audit in
 `trade_learning_review.md` or the daily execution review. Use the effective

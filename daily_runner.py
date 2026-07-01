@@ -152,7 +152,7 @@ def load_config(config_path: Optional[str] = None) -> dict[str, Any]:
         "years": 3,
         "workers": 4,
         "maintenance_batch_size": 200,
-        "maintenance_max_batches_per_run": 1,
+        "maintenance_max_batches_per_run": 200,
         "maintenance_min_symbol_success_rate": 0.95,
         "maintenance_target_date": "auto",
         "maintenance_daily_window": True,
@@ -467,7 +467,7 @@ def _run_automation_data_update_preflight(config: dict[str, Any]) -> dict[str, A
             market="CN",
             categories=_maintenance_categories(config),
             batch_size=max(1, int(config.get("maintenance_batch_size", 200))),
-            max_batches_per_run=max(0, int(config.get("maintenance_max_batches_per_run", 1))),
+            max_batches_per_run=max(0, int(config.get("maintenance_max_batches_per_run", 200))),
             min_symbol_success_rate=float(config.get("maintenance_min_symbol_success_rate", 0.95)),
             target_date=str(config.get("maintenance_target_date", "auto") or "auto"),
             daily_window=bool(config.get("maintenance_daily_window", True)),
@@ -604,7 +604,7 @@ class AnalysisRunner:
                 config["market"],
                 _maintenance_categories(config),
                 config.get("maintenance_batch_size", 200),
-                config.get("maintenance_max_batches_per_run", 1),
+                config.get("maintenance_max_batches_per_run", 200),
             )
             automation_data_update = _run_automation_data_update_preflight(config)
 

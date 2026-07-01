@@ -14,17 +14,29 @@ from quant_investor.market.dag.theme_context import (
 )
 
 
-def test_theme_config_defaults_are_off() -> None:
+def test_theme_production_config_defaults_are_on_without_shadow() -> None:
+    expected_default_on = {
+        "THEME_SCANNER_ENABLED": "1",
+        "THEME_FUNNEL_BOOST_ENABLED": "1",
+        "THEME_RISK_GUARD_ENABLED": "1",
+        "THEME_PORTFOLIO_CAP_ENABLED": "1",
+        "THEME_SNAPSHOT_ENABLED": "1",
+        "THEME_POOL_ENABLED": "1",
+        "THEME_POOL_REQUIRED": "1",
+        "THEME_POOL_USE_MARKOV_POLICY": "1",
+        "THEME_POOL_FALLBACK_TO_RAW_SCORE": "1",
+    }
     expected_default_off = {
-        "THEME_SCANNER_ENABLED": "0",
-        "THEME_FUNNEL_BOOST_ENABLED": "0",
-        "THEME_RISK_GUARD_ENABLED": "0",
-        "THEME_PORTFOLIO_CAP_ENABLED": "0",
-        "THEME_SNAPSHOT_ENABLED": "0",
         "THEME_SNAPSHOT_SAVE_DISABLED": "0",
+        "THEME_SHADOW_MODE_ENABLED": "0",
         "THEME_GOVERNANCE_ENABLED": "0",
         "THEME_GOVERNANCE_ARTIFACT_ENABLED": "0",
     }
+
+    for key, expected in expected_default_on.items():
+        assert MAINLINE_ENV_DEFAULTS[key] == expected
+        if key not in os.environ:
+            assert getattr(Config, key) is True
 
     for key, expected in expected_default_off.items():
         assert MAINLINE_ENV_DEFAULTS[key] == expected
@@ -34,6 +46,11 @@ def test_theme_config_defaults_are_off() -> None:
     assert MAINLINE_ENV_DEFAULTS["THEME_FUNNEL_BOOST_SCORE_SOURCE"] == "raw"
     if "THEME_FUNNEL_BOOST_SCORE_SOURCE" not in os.environ:
         assert Config.THEME_FUNNEL_BOOST_SCORE_SOURCE == "raw"
+    assert MAINLINE_ENV_DEFAULTS["THEME_POOL_SCORE_SOURCE"] == "smoothed"
+    if "THEME_POOL_SCORE_SOURCE" not in os.environ:
+        assert Config.THEME_POOL_SCORE_SOURCE == "smoothed"
+    assert MAINLINE_ENV_DEFAULTS["THEME_POOL_MIN_THEME_SCORE"] == "0.58"
+    assert MAINLINE_ENV_DEFAULTS["THEME_POOL_MIN_SYMBOL_SCORE"] == "0.55"
 
 
 def test_no_theme_likelihood_in_bayesian_types() -> None:

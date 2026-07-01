@@ -166,7 +166,7 @@ def test_load_config_backfills_daily_defaults_without_web_runtime(tmp_path):
     assert cfg["master_timeout"] == 900.0
     assert cfg["kline_backend"] == "heuristic"
     assert cfg["maintenance_batch_size"] == 200
-    assert cfg["maintenance_max_batches_per_run"] == 1
+    assert cfg["maintenance_max_batches_per_run"] == 200
     assert cfg["maintenance_min_symbol_success_rate"] == 0.95
     assert cfg["maintenance_target_date"] == "auto"
     assert cfg["maintenance_daily_window"] is True
@@ -415,7 +415,7 @@ def test_analysis_runner_runs_staged_batch_update_when_download_enabled(monkeypa
             "skip_stage1": False,
             "skip_download": False,
             "maintenance_batch_size": 200,
-            "maintenance_max_batches_per_run": 1,
+            "maintenance_max_batches_per_run": 200,
             "maintenance_min_symbol_success_rate": 0.95,
             "maintenance_target_date": "auto",
             "maintenance_daily_window": True,
@@ -427,7 +427,7 @@ def test_analysis_runner_runs_staged_batch_update_when_download_enabled(monkeypa
         "market": "CN",
         "categories": ["full_a"],
         "batch_size": 200,
-        "max_batches_per_run": 1,
+        "max_batches_per_run": 200,
         "min_symbol_success_rate": 0.95,
         "target_date": "auto",
         "daily_window": True,

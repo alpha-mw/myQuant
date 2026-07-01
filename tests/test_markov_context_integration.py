@@ -169,7 +169,7 @@ def test_markov_context_default_production_caps_risk_budget_and_preserves_macro_
     assert state.global_context.risk_budget["markov_execution_mode"] == "production"
     assert state.global_context.risk_budget["markov_dominant_regime"] == markov["dominant_regime"]
     assert state.global_context.risk_budget["target_exposure"] <= 0.70
-    assert state.global_context.risk_budget["max_single_weight"] <= 0.12
+    assert state.global_context.risk_budget["max_single_weight"] <= 0.50
     assert state.global_context.risk_budget["markov_applied_gross_exposure_cap"] == state.global_context.risk_budget["target_exposure"]
     assert state.global_context.risk_budget["markov_applied_max_single_weight"] == state.global_context.risk_budget["max_single_weight"]
     assert markov["execution_mode"] == "production"
@@ -216,14 +216,14 @@ def test_markov_context_disabled_preserves_legacy_macro_and_risk_budget(monkeypa
 
     assert state.global_context.macro_regime == "趋势上涨"
     assert state.global_context.risk_budget["target_exposure"] == pytest.approx(0.70)
-    assert state.global_context.risk_budget["max_single_weight"] == pytest.approx(0.12)
+    assert state.global_context.risk_budget["max_single_weight"] == pytest.approx(0.50)
     assert "turnover_cap" not in state.global_context.risk_budget
     assert "markov_dominant_regime" not in state.global_context.risk_budget
     markov = state.global_context.metadata["markov_regime"]
     assert markov["enabled"] is False
     assert markov["status"] == "disabled"
     assert markov["applied_target_exposure"] == pytest.approx(0.70)
-    assert markov["applied_max_single_weight"] == pytest.approx(0.12)
+    assert markov["applied_max_single_weight"] == pytest.approx(0.50)
 
 
 def test_markov_context_forwards_turnover_cap_when_signal_sets_it(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -314,7 +314,7 @@ def test_markov_context_never_increases_baseline_risk_budget(monkeypatch: pytest
                 volatility_score=0.10,
                 pressure_score=0.05,
                 suggested_gross_exposure_cap=0.95,
-                suggested_max_single_weight=0.25,
+                suggested_max_single_weight=0.75,
                 turnover_cap=None,
                 feature_snapshot={},
                 diagnostic_notes=[],
@@ -325,4 +325,4 @@ def test_markov_context_never_increases_baseline_risk_budget(monkeypatch: pytest
     state = _prepare_market_context(**_context_kwargs())
 
     assert state.global_context.risk_budget["target_exposure"] == pytest.approx(0.70)
-    assert state.global_context.risk_budget["max_single_weight"] == pytest.approx(0.12)
+    assert state.global_context.risk_budget["max_single_weight"] == pytest.approx(0.50)

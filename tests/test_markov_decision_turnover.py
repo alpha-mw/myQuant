@@ -33,8 +33,8 @@ def test_turnover_cap_is_forwarded_to_risk_guard_and_portfolio_constructor() -> 
                 status=AgentStatus.SUCCESS,
                 action_cap=ActionLabel.BUY,
                 gross_exposure_cap=0.45,
-                max_weight=0.09,
-                position_limits={"000001.SZ": 0.09},
+                max_weight=0.50,
+                position_limits={"000001.SZ": 0.50},
             )
 
     class FakeICCoordinator:
@@ -66,7 +66,7 @@ def test_turnover_cap_is_forwarded_to_risk_guard_and_portfolio_constructor() -> 
         global_context=GlobalContext(
             risk_budget={
                 "target_exposure": 0.45,
-                "max_single_weight": 0.09,
+                "max_single_weight": 0.50,
                 "turnover_cap": 0.30,
             }
         ),
