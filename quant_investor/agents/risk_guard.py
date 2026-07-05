@@ -21,6 +21,31 @@ from quant_investor.agents.base import BaseAgent
 
 RISK_GUARD_SINGLE_NAME_WEIGHT_CAP = 0.50
 
+# Default hard-veto keywords, matched as case-insensitive substrings against
+# branch/macro ``investment_risks`` texts and ``constraints["risk_flags"]``.
+# CN-market branches emit risk texts in Chinese, so the default set must be
+# bilingual or the one-vote veto silently fails for A-share runs.
+# ``constraints["veto_keywords"]`` still replaces this set when provided.
+DEFAULT_VETO_KEYWORDS: tuple[str, ...] = (
+    # English
+    "fraud",
+    "halt",
+    "delist",
+    "hard veto",
+    "veto",
+    "liquidity freeze",
+    # Chinese (A-share regulatory / delisting triggers)
+    "退市",        # delisting (covers 退市风险 / 强制退市 / 退市整理 / 退市风险警示)
+    "停牌",        # trading halt / suspension
+    "造假",        # fabrication (covers 财务造假 / 数据造假)
+    "欺诈",        # fraud (covers 欺诈发行)
+    "立案调查",    # regulatory investigation formally filed
+    "风险警示",    # ST / *ST risk-warning designation (退市风险警示 / 其他风险警示)
+    "*st",         # explicit *ST marker; bare "st" would over-match English text
+    "流动性冻结",  # liquidity freeze
+    "一票否决",    # explicit one-vote veto phrase
+)
+
 
 class RiskGuard(BaseAgent):
     """读取结构化分支结论并施加硬约束。"""
@@ -333,12 +358,14 @@ class RiskGuard(BaseAgent):
     @staticmethod
     def _has_veto_keyword(risk_texts: list[str], constraints: Mapping[str, Any]) -> bool:
         keywords = {
-            str(keyword).lower()
-            for keyword in constraints.get(
-                "veto_keywords",
-                ["fraud", "halt", "delist", "hard veto", "veto", "liquidity freeze"],
-            )
+            str(keyword).strip().lower()
+            for keyword in constraints.get("veto_keywords", DEFAULT_VETO_KEYWORDS)
+            # An empty keyword would substring-match every text and force a
+            # permanent veto, so blank entries are dropped defensively.
+            if str(keyword).strip()
         }
+        if not keywords:
+            return False
         for text in risk_texts:
             lowered = text.lower()
             if any(keyword in lowered for keyword in keywords):

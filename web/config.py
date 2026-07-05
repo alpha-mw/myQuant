@@ -20,11 +20,49 @@ if _env_file.exists():
                     os.environ[_key] = _val
 
 # API settings
-API_HOST = os.environ.get("API_HOST", "0.0.0.0")
+#
+# The workspace API has no built-in multi-user auth, so it binds loopback by
+# default. Opt into LAN/remote exposure explicitly via API_HOST, and set
+# WORKSPACE_AUTH_TOKEN when doing so (enforced as a Bearer token on /api/*).
+API_HOST = os.environ.get("API_HOST", "127.0.0.1")
 API_PORT = int(os.environ.get("API_PORT", "8000"))
 
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def workspace_auth_token() -> str:
+    """Read the optional workspace Bearer token at call time (test-friendly)."""
+
+    return os.environ.get("WORKSPACE_AUTH_TOKEN", "").strip()
+
+
+def warn_if_insecure_binding(host: str | None) -> None:
+    """Warn loudly when binding beyond loopback without an auth token."""
+
+    resolved_host = (host or API_HOST).strip()
+    if resolved_host in _LOOPBACK_HOSTS:
+        return
+    if workspace_auth_token():
+        return
+    import logging
+
+    logging.getLogger("web.config").warning(
+        "myQuant workspace is binding to %s with NO authentication configured. "
+        "Anyone who can reach this host can trigger analysis jobs, read masked "
+        "credential status, and overwrite API keys via /api/settings. Set "
+        "WORKSPACE_AUTH_TOKEN, or bind API_HOST=127.0.0.1.",
+        resolved_host,
+    )
+
+
 # CORS
-CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",")
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get(
+        "CORS_ORIGINS", "http://localhost:5173,http://localhost:3000"
+    ).split(",")
+    if origin.strip()
+]
 
 # Database paths
 STOCK_DB_PATH = os.environ.get("DB_PATH", str(PROJECT_ROOT / "data" / "stock_database.db"))
