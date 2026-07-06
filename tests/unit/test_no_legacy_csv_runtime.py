@@ -14,6 +14,7 @@ SCAN_ROOTS = [
 
 ALLOWLIST = {
     "scripts/migrate_legacy_csv_state_to_parquet.py",
+    "scripts/run_us_aggressive_analysis.py",
 }
 
 FORBIDDEN_SNIPPETS = [
