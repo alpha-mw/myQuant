@@ -35,12 +35,12 @@ def _write_fixture(path: Path) -> None:
                 "adj_factor": 1.0,
             },
         ]
-    ).to_csv(path, index=False)
+    ).to_parquet(path, index=False)
 
 
 def test_clean_tushare_downloads_cli_writes_artifacts(tmp_path):
     root = tmp_path / "market"
-    _write_fixture(root / "hs300" / "000001.SZ.csv")
+    _write_fixture(root / "hs300" / "000001.SZ.parquet")
     report_dir = tmp_path / "reports"
     raw_dir = tmp_path / "raw"
     quarantine_dir = tmp_path / "quarantine"
@@ -86,7 +86,7 @@ def test_clean_tushare_downloads_cli_writes_artifacts(tmp_path):
 
 def test_clean_tushare_downloads_cli_parquet_flag_is_non_blocking(tmp_path):
     root = tmp_path / "market"
-    _write_fixture(root / "hs300" / "000001.SZ.csv")
+    _write_fixture(root / "hs300" / "000001.SZ.parquet")
 
     proc = subprocess.run(
         [

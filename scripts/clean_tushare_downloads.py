@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Clean local Tushare download CSVs and emit factor-readiness sidecars."""
+"""Clean local Tushare download Parquet files and emit factor-readiness sidecars."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from quant_investor.market.tushare_data_cleaning import (
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Offline clean Tushare daily download CSVs with factor-readiness and storage reports."
+        description="Offline clean Tushare daily download Parquet files with factor-readiness and storage reports."
     )
     parser.add_argument("--root-dir", default=config.CN_MARKET_DATA_DIR)
     parser.add_argument("--table", default="daily")

@@ -81,7 +81,7 @@ Directory flags:
 
 ## Offline Utility
 
-Run a local cleanup pass without live provider calls:
+Run a local Parquet cleanup pass without live provider calls:
 
 ```bash
 ./.venv/bin/python scripts/clean_tushare_downloads.py \

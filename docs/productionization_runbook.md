@@ -385,7 +385,7 @@ Focused gate:
 PYTHON=./.venv/bin/python scripts/tushare_data_cleaning_quality_gate.sh
 ```
 
-Manual offline cleanup:
+Manual offline Parquet cleanup:
 
 ```bash
 ./.venv/bin/python scripts/clean_tushare_downloads.py \

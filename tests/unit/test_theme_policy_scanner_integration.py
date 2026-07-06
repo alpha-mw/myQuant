@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import ast
+import importlib
 import json
 from pathlib import Path
 
 import pandas as pd
 
 from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
-from quant_investor.config import Config
 from quant_investor.market.dag.theme_context import build_theme_rotation_metadata
 from quant_investor.themes import ThemeScanner
 
@@ -160,10 +160,11 @@ def test_policy_metadata_appears_in_theme_rotation_v1_payload(
 ) -> None:
     frames, industry_map = _theme_inputs()
     policy_path = _write_policy(tmp_path / "policy.jsonl")
-    monkeypatch.setattr(Config, "THEME_POLICY_CATALYST_ENABLED", True)
-    monkeypatch.setattr(Config, "THEME_POLICY_CATALYST_WEIGHT", 0.16)
-    monkeypatch.setattr(Config, "THEME_POLICY_LOOKBACK_DAYS", 30)
-    monkeypatch.setattr(Config, "THEME_POLICY_EVENT_PATH", str(policy_path))
+    config_module = importlib.import_module("quant_investor.config")
+    monkeypatch.setattr(config_module.Config, "THEME_POLICY_CATALYST_ENABLED", True)
+    monkeypatch.setattr(config_module.Config, "THEME_POLICY_CATALYST_WEIGHT", 0.16)
+    monkeypatch.setattr(config_module.Config, "THEME_POLICY_LOOKBACK_DAYS", 30)
+    monkeypatch.setattr(config_module.Config, "THEME_POLICY_EVENT_PATH", str(policy_path))
 
     payload = build_theme_rotation_metadata(
         frames=frames,

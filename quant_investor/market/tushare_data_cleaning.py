@@ -2592,7 +2592,7 @@ def clean_tushare_download_directory(
     storage_config: TushareStorageOptimizationConfig | None = None,
 ) -> dict[str, Any]:
     root = Path(root_dir)
-    files = sorted(path for path in root.rglob("*.csv") if path.is_file())
+    files = sorted(path for path in root.rglob("*.parquet") if path.is_file())
     selected: list[Path] = []
     for path in files:
         rel = str(path.relative_to(root))
