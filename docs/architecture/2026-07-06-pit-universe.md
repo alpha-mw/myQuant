@@ -1,7 +1,10 @@
 # Point-In-Time CN Universe Design For Delisting Survivorship
 
-Status: Phase 9a design only. This is a STOP-gate document. Do not implement
-Phase 9b until both approvals are explicit:
+Status: Phase 9a design approved. Phase 9b implementation was authorized on
+2026-07-06 with a one-time online Tushare membership refresh window.
+
+Historical note: this document was originally a STOP-gate design. Phase 9b was
+not permitted until both approvals were explicit:
 
 1. Design approval for this document.
 2. One-time online backfill-window approval, because Phase 9b must call
@@ -48,6 +51,44 @@ Existing useful hooks already exist:
 - No deletion of existing current-serving bars or dashboard artifacts.
 - No attempt to infer delist prices, liquidation prices, or synthetic bars from
   current data. Missing historical prices remain blockers or sensitivity inputs.
+
+## Phase 9b Implementation Status
+
+Phase 9b implements the PIT membership layer and default-off integration points:
+
+- `quant_investor/market/pit_universe.py` stores and evaluates `L`, `D`, and
+  `P` listing membership, with pure `listing_status`, `is_listed`,
+  `build_pit_universe_mask`, and `build_pit_delisted_field` helpers.
+- `scripts/refresh_pit_universe.py` is the explicit online refresh entrypoint.
+  It is dry-run by default, requires `--allow-online`, and writes only when
+  `--execute` is combined with `PIT_UNIVERSE_BACKFILL_ENABLED=1`.
+- `MarketDataReader.list_symbols(..., as_of=date)` can filter by PIT membership
+  when `PIT_UNIVERSE_ENABLED=1`; flags off preserve existing serving-inventory
+  behavior.
+- `market/dag_executor.py`, `funnel/candidate_filter.py`, and
+  `market/download_cn.py` consume PIT metadata when enabled and keep current
+  behavior when disabled.
+- `stock_database.py` remains unchanged in Phase 9b because its `stock_list`
+  table has no `delist_date` / `list_status` columns. The independent PIT
+  reference store is the canonical historical membership source until a
+  separate schema migration is approved.
+- Full historical bar backfill for delisted symbols is not attempted in one
+  step. Phase 9b records a deterministic cost estimate and lands the membership
+  artifact needed to stage later date-scoped repairs.
+
+Approved local refresh evidence from the 2026-07-06 online window:
+
+- `source_run_id`: `pit-universe-20260706-ebe1b3e02745`
+- `stock_basic` provider calls: 3 (`L`, `D`, `P`)
+- Row counts: `L=5534`, `D=328`, `P=0`, total `5862`
+- Local artifacts:
+  `data/parquet/cn/reference/stock_basic_membership.parquet`,
+  `data/parquet/cn/reference/stock_basic_membership_latest.json`,
+  `data/cn_universe/stock_basic_membership_latest.json`,
+  `data/cn_universe/raw/stock_basic_pit_snapshot_20260706_ebe1b3e02745.jsonl`,
+  `results/pit_universe/refresh_execute_20260706.json`
+- The artifact paths are under ignored `data/` / `results/` roots and are local
+  evidence, not forced into the code commit.
 
 ## Source Pull And Landing Plan
 
@@ -193,7 +234,7 @@ Funnel gates:
 - `DataQualityGate`: exclude symbols with `missing_pit_record` or
   `conflicting_status_rows` when required.
 - `TradabilityGate`: exclude symbols whose `listing_status(...).tradable` is
-  false, using reason `delisted`, `pre_listing`, or `pending_listing_status`.
+  false, using reason `delisted`, `pre_listing`, or `pending`.
 - `LiquidityGate`: unchanged; it should receive only PIT-valid candidates.
 
 Theme replay / calibration:
@@ -325,8 +366,9 @@ This is a temporary disclosure method, not a substitute for PIT bars.
 - Synthetic PIT fixture covers active, pre-listing, delisted, pending, missing,
   and conflicting rows.
 - `is_listed` and `listing_status` are pure and deterministic.
-- `MatrixDataBundle.universe_mask` and tradability `delisted` tests prove that
-  factor backtests exclude pre-listing and post-delist cells.
+- PIT mask helpers plus `MatrixDataBundle.universe_mask` and tradability
+  `delisted` tests prove that factor backtests can exclude pre-listing and
+  post-delist cells when the PIT layer is explicitly injected.
 - DAG/funnel tests prove PIT-missing records are quarantined when required.
 - Old snapshots and old backtest artifacts remain readable.
 - Online tests are not part of normal CI; provider calls require the explicit

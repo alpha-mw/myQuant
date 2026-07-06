@@ -15,6 +15,12 @@ import pandas as pd
 
 from quant_investor.market.market_data_reader import MarketDataReader
 from quant_investor.market.market_data_store import MarketDataStore
+from quant_investor.market.pit_universe import (
+    LIST_STATUS_DELISTED,
+    LIST_STATUS_LISTED,
+    PITUniverseRecord,
+    PITUniverseStore,
+)
 
 
 def _load_module(
@@ -786,6 +792,60 @@ def test_build_completeness_report_records_suspend_probe_exception(
     assert issue["issue_type"] == "suspend_lookup_exception"
     assert issue["severity"] == "warning"
     assert issue["message"] == "suspend probe failed"
+
+
+def test_load_active_listing_dates_uses_pit_universe_when_enabled(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_module(monkeypatch, freshness_mode="strict")
+    fake_pro = FakePro()
+    stock_basic_calls = {"count": 0}
+
+    def _count_stock_basic(**_kwargs):
+        stock_basic_calls["count"] += 1
+        return pd.DataFrame(columns=["ts_code", "list_date"])
+
+    fake_pro.stock_basic = _count_stock_basic
+    monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
+
+    pit_root = tmp_path / "parquet" / "cn" / "reference"
+    PITUniverseStore(
+        root_dir=pit_root,
+        raw_root=tmp_path / "pit_raw",
+        compatibility_path=tmp_path / "pit_compat.json",
+    ).write_snapshot(
+        raw_records=[
+            PITUniverseRecord(
+                symbol="000001.SZ",
+                source_list_status=LIST_STATUS_LISTED,
+                list_date="20200101",
+                observed_at="2026-07-06T00:00:00Z",
+                source_run_id="unit-test",
+            ),
+            PITUniverseRecord(
+                symbol="000002.SZ",
+                source_list_status=LIST_STATUS_DELISTED,
+                list_date="20210101",
+                delist_date="20250102",
+                observed_at="2026-07-06T00:00:00Z",
+                source_run_id="unit-test",
+            ),
+        ],
+        observed_at="2026-07-06T00:00:00Z",
+        source_run_id="unit-test",
+    )
+    monkeypatch.setattr(module.config, "PIT_UNIVERSE_ENABLED", True, raising=False)
+    monkeypatch.setattr(module.config, "PIT_UNIVERSE_REQUIRED", False, raising=False)
+    monkeypatch.setattr(module.config, "PIT_UNIVERSE_SOURCE_ROOT", str(pit_root), raising=False)
+
+    downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
+
+    assert downloader._load_active_listing_dates() == {
+        "000001.SZ": "20200101",
+        "000002.SZ": "20210101",
+    }
+    assert stock_basic_calls["count"] == 0
 
 
 def test_main_scopes_check_complete_to_selected_category(monkeypatch):

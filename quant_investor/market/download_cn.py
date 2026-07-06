@@ -287,6 +287,32 @@ class CNFullMarketDownloader:
         """Load current active-listing dates as {SYMBOL: YYYYMMDD}."""
         if self._active_listing_dates_cache is not None:
             return self._active_listing_dates_cache
+        if bool(getattr(config, "PIT_UNIVERSE_ENABLED", False)):
+            try:
+                from quant_investor.market.pit_universe import PITUniverseStore
+
+                records = PITUniverseStore.from_config().load_latest_records()
+                listing_dates = {
+                    record.symbol: record.list_date
+                    for record in records
+                    if record.symbol and record.list_date
+                }
+                if listing_dates:
+                    self._active_listing_dates_cache = listing_dates
+                    return self._active_listing_dates_cache
+                if bool(getattr(config, "PIT_UNIVERSE_REQUIRED", False)):
+                    self._active_listing_dates_cache = {}
+                    return self._active_listing_dates_cache
+            except Exception as exc:
+                self._record_data_quality_exception(
+                    func_name="_load_active_listing_dates",
+                    exc=exc,
+                    issue_type="pit_universe_listing_exception",
+                    metadata={"source_root": getattr(config, "PIT_UNIVERSE_SOURCE_ROOT", "")},
+                )
+                if bool(getattr(config, "PIT_UNIVERSE_REQUIRED", False)):
+                    self._active_listing_dates_cache = {}
+                    return self._active_listing_dates_cache
         if self.pro is None:
             self._active_listing_dates_cache = {}
             return self._active_listing_dates_cache
