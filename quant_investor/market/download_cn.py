@@ -22,7 +22,13 @@ import time
 
 from quant_investor.config import config
 from quant_investor.credential_utils import create_tushare_pro
+from quant_investor.data_quality_contract import (
+    DataQualityIssue,
+    ISSUE_SEVERITY_WARNING,
+    make_issue_id,
+)
 from quant_investor.fetch_cn_index_components import get_all_components, save_components
+from quant_investor.logger import get_logger
 from quant_investor.market.cn_resolver import CNUniverseResolver
 from quant_investor.market.config import get_market_settings
 from quant_investor.market.cn_symbol_status import evaluate_symbol_local_status, CNSymbolLocalStatusResult
@@ -43,6 +49,7 @@ except ImportError:
 # Tushare配置
 TUSHARE_TOKEN = config.TUSHARE_TOKEN
 TUSHARE_URL = config.TUSHARE_URL
+_logger = get_logger("download_cn", verbose=False)
 
 
 class CNFullMarketDownloader:
@@ -104,6 +111,7 @@ class CNFullMarketDownloader:
         # 计算日期范围
         self.end_date = datetime.now()
         self.start_date = self.end_date - timedelta(days=years*365 + 30)
+        self._download_data_quality_issues: list[DataQualityIssue] = []
         
         # 初始化 Tushare（内存模式，不落盘 token）
         self.pro = None
@@ -184,6 +192,68 @@ class CNFullMarketDownloader:
                 normalized.add(str(symbol).strip().upper())
         return normalized
 
+    def _record_data_quality_exception(
+        self,
+        *,
+        func_name: str,
+        exc: Exception,
+        issue_type: str,
+        symbol: str = "",
+        as_of: str | None = None,
+        field_name: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> DataQualityIssue:
+        """Record a swallowed download exception without changing control flow."""
+        normalized_symbol = str(symbol or "").strip().upper()
+        effective_as_of = str(
+            as_of
+            or getattr(self, "latest_trade_date", "")
+            or getattr(self, "strict_trade_date", "")
+            or ""
+        ).strip()
+        source = f"download_cn.{func_name}"
+        issue = DataQualityIssue(
+            issue_id=make_issue_id(
+                symbol=normalized_symbol,
+                market="CN",
+                as_of=effective_as_of,
+                issue_type=issue_type,
+                field_name=field_name,
+            ),
+            symbol=normalized_symbol,
+            market="CN",
+            as_of=effective_as_of,
+            field_name=field_name,
+            issue_type=issue_type,
+            severity=ISSUE_SEVERITY_WARNING,
+            message=str(exc),
+            source=source,
+            metadata={
+                **dict(metadata or {}),
+                "exception_type": exc.__class__.__name__,
+            },
+        )
+        if not hasattr(self, "_download_data_quality_issues"):
+            self._download_data_quality_issues = []
+        self._download_data_quality_issues.append(issue)
+        _logger.debug("%s swallowed exception: %s", source, exc)
+        return issue
+
+    def _append_download_data_quality_issues(self, report: Dict[str, Any]) -> None:
+        existing_ids = {
+            str(issue.get("issue_id") or "")
+            for issue in report.get("data_quality_issues", [])
+            if isinstance(issue, Mapping)
+        }
+        for issue in getattr(self, "_download_data_quality_issues", []):
+            payload = issue.to_dict()
+            issue_id = str(payload.get("issue_id") or "")
+            if issue_id and issue_id in existing_ids:
+                continue
+            report.setdefault("data_quality_issues", []).append(payload)
+            if issue_id:
+                existing_ids.add(issue_id)
+
     @classmethod
     def _normalize_categories(cls, categories: Optional[List[str]]) -> List[str]:
         """标准化待处理分类列表。"""
@@ -227,7 +297,13 @@ class CNFullMarketDownloader:
                 list_status="L",
                 fields="ts_code,list_date",
             )
-        except Exception:
+        except Exception as exc:
+            self._record_data_quality_exception(
+                func_name="_load_active_listing_dates",
+                exc=exc,
+                issue_type="stock_basic_listing_exception",
+                metadata={"list_status": "L"},
+            )
             stock_basic = None
 
         if stock_basic is None or stock_basic.empty:
@@ -283,7 +359,14 @@ class CNFullMarketDownloader:
                 payload = json.loads(cache_path.read_text(encoding="utf-8"))
                 if payload.get("cached_on") == today:
                     return str(payload["strict"]), str(payload["stable"])
-        except Exception:
+        except Exception as exc:
+            self._record_data_quality_exception(
+                func_name="_resolve_trade_date_targets",
+                exc=exc,
+                issue_type="trade_date_cache_read_exception",
+                as_of=today,
+                metadata={"cache_path": str(cache_path)},
+            )
             pass
 
         strict_fallback = self.end_date.strftime('%Y%m%d')
@@ -312,11 +395,24 @@ class CNFullMarketDownloader:
                     ),
                     encoding="utf-8",
                 )
-            except Exception:
+            except Exception as exc:
+                self._record_data_quality_exception(
+                    func_name="_resolve_trade_date_targets",
+                    exc=exc,
+                    issue_type="trade_date_cache_write_exception",
+                    as_of=strict_trade_date,
+                    metadata={"cache_path": str(cache_path)},
+                )
                 pass
 
             return strict_trade_date, stable_trade_date
-        except Exception:
+        except Exception as exc:
+            self._record_data_quality_exception(
+                func_name="_resolve_trade_date_targets",
+                exc=exc,
+                issue_type="trade_calendar_exception",
+                as_of=strict_fallback,
+            )
             return strict_fallback, stable_fallback
 
     def _fetch_trade_date_close_probe(self, target_trade_date: str) -> tuple[pd.DataFrame, str, str]:
@@ -469,14 +565,24 @@ class CNFullMarketDownloader:
         """Infer latest local trade date from the strict Parquet pointer."""
         try:
             return self.market_reader.latest_trade_date("full_a")
-        except Exception:
+        except Exception as exc:
+            self._record_data_quality_exception(
+                func_name="_resolve_latest_trade_date_from_local_cache",
+                exc=exc,
+                issue_type="latest_trade_date_cache_exception",
+            )
             return ""
 
     def _build_local_symbol_universe(self) -> Dict[str, List[str]]:
         """从本地 Parquet serving 文件构建不依赖 Tushare 的组件字典。"""
         try:
             full_a_symbols = self.market_reader.list_symbols("full_a")
-        except Exception:
+        except Exception as exc:
+            self._record_data_quality_exception(
+                func_name="_build_local_symbol_universe",
+                exc=exc,
+                issue_type="local_symbol_universe_exception",
+            )
             full_a_symbols = []
         category_lists: Dict[str, Set[str]] = {category: set() for category in self.SUPPORTED_CATEGORIES}
         category_lists["full_a"].update(full_a_symbols)
@@ -533,7 +639,12 @@ class CNFullMarketDownloader:
             return
         try:
             components = self.load_components()
-        except Exception:
+        except Exception as exc:
+            self._record_data_quality_exception(
+                func_name="_ensure_full_a_write_categories",
+                exc=exc,
+                issue_type="component_load_exception",
+            )
             return
         self._refresh_full_a_write_categories(components)
 
@@ -791,11 +902,12 @@ class CNFullMarketDownloader:
         )
         report['resolver'] = self.resolver.snapshot()
         self.last_resolver_trace = dict(report['resolver'])
-        report['data_quality_issue_count'] = len(report['data_quality_issues'])
 
         # Persist any date discoveries from the slow path so the next call
         # can use the fast (index) path for those symbols.
         self._flush_freshness_index(index_updates)
+        self._append_download_data_quality_issues(report)
+        report['data_quality_issue_count'] = len(report['data_quality_issues'])
 
         return report
 
@@ -887,7 +999,14 @@ class CNFullMarketDownloader:
                     }
                     self._latest_suspended_symbols_cache[target_trade_date] = symbols
                     return symbols
-        except Exception:
+        except Exception as exc:
+            self._record_data_quality_exception(
+                func_name="_load_latest_suspended_symbols",
+                exc=exc,
+                issue_type="suspend_cache_read_exception",
+                as_of=target_trade_date,
+                metadata={"cache_path": str(disk_path)},
+            )
             pass
 
         if self.pro is None:
@@ -921,7 +1040,15 @@ class CNFullMarketDownloader:
             for query in ({"suspend_date": target_trade_date}, {"trade_date": target_trade_date}):
                 try:
                     suspend_df = self.pro.suspend_d(**query)
-                except TypeError:
+                except TypeError as exc:
+                    self._record_data_quality_exception(
+                        func_name="_load_latest_suspended_symbols",
+                        exc=exc,
+                        issue_type="suspend_query_exception",
+                        as_of=target_trade_date,
+                        field_name=next(iter(query)),
+                        metadata={"query": query},
+                    )
                     continue
                 query_symbols = _extract_target_symbols(suspend_df)
                 if query_symbols:
@@ -943,12 +1070,25 @@ class CNFullMarketDownloader:
                     ),
                     encoding="utf-8",
                 )
-            except Exception:
+            except Exception as exc:
+                self._record_data_quality_exception(
+                    func_name="_load_latest_suspended_symbols",
+                    exc=exc,
+                    issue_type="suspend_cache_write_exception",
+                    as_of=target_trade_date,
+                    metadata={"cache_path": str(disk_path)},
+                )
                 pass
 
             self._latest_suspended_symbols_cache[target_trade_date] = symbols
             return symbols
-        except Exception:
+        except Exception as exc:
+            self._record_data_quality_exception(
+                func_name="_load_latest_suspended_symbols",
+                exc=exc,
+                issue_type="suspend_lookup_exception",
+                as_of=target_trade_date,
+            )
             self._latest_suspended_symbols_cache[target_trade_date] = set()
             return self._latest_suspended_symbols_cache[target_trade_date]
 
@@ -973,7 +1113,13 @@ class CNFullMarketDownloader:
             for future in as_completed(futures):
                 try:
                     future.result()
-                except Exception:
+                except Exception as exc:
+                    self._record_data_quality_exception(
+                        func_name="_prefetch_suspended_symbols",
+                        exc=exc,
+                        issue_type="suspend_prefetch_exception",
+                        as_of=futures[future],
+                    )
                     pass
 
     # ── Freshness index ──────────────────────────────────────────────────────────
@@ -993,7 +1139,13 @@ class CNFullMarketDownloader:
                         for k, v in data["symbols"].items()
                         if k and v
                     }
-        except Exception:
+        except Exception as exc:
+            self._record_data_quality_exception(
+                func_name="_load_freshness_index",
+                exc=exc,
+                issue_type="freshness_index_read_exception",
+                metadata={"cache_path": str(path)},
+            )
             pass
         return {}
 
@@ -1024,7 +1176,13 @@ class CNFullMarketDownloader:
             tmp_path = path.with_name(path.name + ".tmp")
             tmp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
             tmp_path.replace(path)
-        except Exception:
+        except Exception as exc:
+            self._record_data_quality_exception(
+                func_name="_flush_freshness_index",
+                exc=exc,
+                issue_type="freshness_index_write_exception",
+                metadata={"cache_path": str(path)},
+            )
             pass
 
     # ── Stock frame fetch ─────────────────────────────────────────────────────
@@ -1205,9 +1363,23 @@ class CNFullMarketDownloader:
             try:
                 adj_df = self.pro.adj_factor(trade_date=target_trade_date)
                 api_calls += 1
-            except Exception:
+            except Exception as exc:
+                self._record_data_quality_exception(
+                    func_name="_fetch_daily_batch_frame",
+                    exc=exc,
+                    issue_type="daily_adj_factor_exception",
+                    as_of=target_trade_date,
+                    metadata={"mode": "retry_without_fields"},
+                )
                 adj_df = pd.DataFrame()
-        except Exception:
+        except Exception as exc:
+            self._record_data_quality_exception(
+                func_name="_fetch_daily_batch_frame",
+                exc=exc,
+                issue_type="daily_adj_factor_exception",
+                as_of=target_trade_date,
+                metadata={"mode": "fields"},
+            )
             adj_df = pd.DataFrame()
 
         if adj_df is not None and not adj_df.empty:
@@ -1236,9 +1408,23 @@ class CNFullMarketDownloader:
             try:
                 basic_df = self.pro.daily_basic(trade_date=target_trade_date)
                 api_calls += 1
-            except Exception:
+            except Exception as exc:
+                self._record_data_quality_exception(
+                    func_name="_fetch_daily_batch_frame",
+                    exc=exc,
+                    issue_type="daily_basic_exception",
+                    as_of=target_trade_date,
+                    metadata={"mode": "retry_without_fields"},
+                )
                 basic_df = pd.DataFrame()
-        except Exception:
+        except Exception as exc:
+            self._record_data_quality_exception(
+                func_name="_fetch_daily_batch_frame",
+                exc=exc,
+                issue_type="daily_basic_exception",
+                as_of=target_trade_date,
+                metadata={"mode": "fields"},
+            )
             basic_df = pd.DataFrame()
 
         if basic_df is not None and not basic_df.empty:
