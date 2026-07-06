@@ -117,6 +117,7 @@ MAINLINE_ENV_DEFAULTS: dict[str, str] = {
     "COMMISSION_RATE": "0.0003",
     "STAMP_DUTY_RATE": "0.001",
     "SLIPPAGE": "0.001",
+    "EXECUTION_COST_MODEL_ENABLED": "0",
 }
 
 MAINLINE_ENV_KEYS: tuple[str, ...] = tuple(MAINLINE_ENV_DEFAULTS)
@@ -270,6 +271,7 @@ class Config:
     CN_FRESHNESS_COVERAGE_THRESHOLD: float = _env_float('CN_FRESHNESS_COVERAGE_THRESHOLD', 0.95)
     CN_STRICT_EARLY_STOP_SAMPLE_SIZE: int = _env_int('CN_STRICT_EARLY_STOP_SAMPLE_SIZE', 10)
     CN_STRICT_EARLY_STOP_STALE_RATIO: float = _env_float('CN_STRICT_EARLY_STOP_STALE_RATIO', 0.80)
+    EXECUTION_COST_MODEL_ENABLED: bool = _env_bool('EXECUTION_COST_MODEL_ENABLED', False)
 
     # Pipeline mode: "bayesian" (new 7-layer) or "legacy" (original 3-layer)
     PIPELINE_MODE: str = os.environ.get('PIPELINE_MODE', 'bayesian')

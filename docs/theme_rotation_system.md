@@ -342,14 +342,18 @@ deterministic artifacts under `results/theme_calibration/`:
   --price-dir <local-symbol-frame-dir> \
   --output-dir results/theme_calibration \
   --market CN \
-  --universe-key full_a
+  --universe-key full_a \
+  --execution-cost-bps 0
 ```
 
 The runner does not fetch data, call providers, or mutate trading decisions.
 It emits `threshold_sweep_<date>.json` and `.md` with threshold rows for
-forward alpha and hit-rate evidence. Current constants are registered below;
-the evidence cells are placeholders until a real local snapshot/history run is
-approved and reviewed.
+gross forward alpha, net-of-cost forward alpha, and hit-rate evidence. Net
+alpha subtracts `--execution-cost-bps` from each horizon's gross forward alpha;
+the default is `0`, so existing offline sweeps remain numerically unchanged
+unless an explicit cost assumption is supplied. Current constants are
+registered below; the evidence cells are placeholders until a real local
+snapshot/history run is approved and reviewed.
 
 | Constant | Current Value | Sweep Evidence |
 | --- | --- | --- |

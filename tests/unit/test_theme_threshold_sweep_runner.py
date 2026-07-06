@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from quant_investor.themes.storage import ThemeSnapshotStore
 from scripts.run_theme_threshold_sweep import (
@@ -103,7 +104,50 @@ def test_theme_threshold_sweep_runner_outputs_deterministic_schema(tmp_path: Pat
         "selected_count",
         "available_count",
         "avg_forward_alpha_5d",
+        "avg_forward_alpha_5d_gross",
+        "avg_forward_alpha_5d_net",
+        "avg_forward_alpha_10d_gross",
+        "avg_forward_alpha_10d_net",
+        "avg_forward_alpha_20d_gross",
+        "avg_forward_alpha_20d_net",
         "hit_rate_5d",
         "recommended_action",
     }.issubset(payload["threshold_rows"][0])
+    assert payload["threshold_rows"][0]["avg_forward_alpha_5d_net"] == (
+        payload["threshold_rows"][0]["avg_forward_alpha_5d_gross"]
+    )
     assert "## Theme Threshold Sweep" in Path(first["markdown_path"]).read_text(encoding="utf-8")
+
+
+def test_theme_threshold_sweep_runner_outputs_net_of_cost_alpha(tmp_path: Path):
+    snapshot_dir = tmp_path / "snapshots"
+    output_dir = tmp_path / "calibration"
+    _save_snapshot(snapshot_dir)
+    frames = {
+        "000001.SZ": _frame([10.0, 10.5, 10.8, 11.0, 11.5, 12.0]),
+        "000002.SZ": _frame([10.0, 9.8, 9.6, 9.4, 9.2, 9.0]),
+    }
+    config = ThemeThresholdSweepConfig(
+        snapshot_dir=snapshot_dir,
+        output_dir=output_dir,
+        market="CN",
+        universe_key="full_a",
+        history_limit=10,
+        min_sample=1,
+        execution_cost_bps=25.0,
+    )
+
+    result = run_threshold_sweep(config, frames=frames)
+    payload = result["payload"]
+    row = next(
+        item
+        for item in payload["threshold_rows"]
+        if item["threshold_name"] == "symbol_theme_score >= 0.70"
+    )
+
+    assert row["avg_forward_alpha_5d_net"] == pytest.approx(
+        row["avg_forward_alpha_5d_gross"] - 0.0025
+    )
+    assert payload["metadata"]["execution_cost_bps"] == 25.0
+    markdown = Path(result["markdown_path"]).read_text(encoding="utf-8")
+    assert "net_alpha5" in markdown

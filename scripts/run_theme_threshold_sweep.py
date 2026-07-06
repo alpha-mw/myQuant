@@ -109,6 +109,7 @@ class ThemeThresholdSweepConfig:
     min_sample: int = 10
     as_of: str = ""
     price_dir: Path | str | None = None
+    execution_cost_bps: float = 0.0
 
 
 def run_threshold_sweep(
@@ -135,7 +136,12 @@ def run_threshold_sweep(
         benchmark_horizons=(5, 10, 20),
     )
     records = list(dataset.records or [])
-    threshold_rows = _build_threshold_rows(records, min_sample=int(config.min_sample or 10))
+    execution_cost_bps = _non_negative_float(config.execution_cost_bps)
+    threshold_rows = _build_threshold_rows(
+        records,
+        min_sample=int(config.min_sample or 10),
+        execution_cost_bps=execution_cost_bps,
+    )
     output_date = _output_date(config.as_of or _latest_as_of(snapshot_payloads))
     payload = {
         "schema_version": SCHEMA_VERSION,
@@ -151,6 +157,8 @@ def run_threshold_sweep(
             "history_limit": int(config.history_limit or 10),
             "pit_industry_labels": False,
             "industry_label_note": PIT_INDUSTRY_LABEL_NOTE,
+            "execution_cost_bps": execution_cost_bps,
+            "net_alpha_method": "gross_forward_alpha_minus_execution_cost_bps",
         },
         "grid_parameters": _GRID_PARAMETERS,
         "dataset": {
@@ -194,6 +202,7 @@ def _build_threshold_rows(
     records: list[ThemeReplayRecord],
     *,
     min_sample: int,
+    execution_cost_bps: float = 0.0,
 ) -> list[dict[str, Any]]:
     specs: list[tuple[str, float | str, Callable[[ThemeReplayRecord], bool]]] = []
     for value in (0.45, 0.55, 0.70, 0.85):
@@ -257,6 +266,10 @@ def _build_threshold_rows(
             for record in selected
             if record.data_available
         )
+        _attach_net_alpha_columns(
+            row,
+            execution_cost_return=execution_cost_bps / 10_000.0,
+        )
         rows.append(_jsonable_mapping(row))
     return rows
 
@@ -286,8 +299,8 @@ def _render_markdown(payload: Mapping[str, Any]) -> str:
         [
             "",
             "### Threshold Evidence",
-            "| threshold | value | selected | available | alpha5 | alpha10 | alpha20 | hit5 | hit10 | action |",
-            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+            "| threshold | value | selected | available | alpha5 | net_alpha5 | alpha10 | net_alpha10 | alpha20 | net_alpha20 | hit5 | hit10 | action |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
         ]
     )
     for row in list(payload.get("threshold_rows", []) or []):
@@ -299,9 +312,12 @@ def _render_markdown(payload: Mapping[str, Any]) -> str:
             f"{row.get('threshold_value', '')} | "
             f"{row.get('selected_count', 0)} | "
             f"{row.get('available_count', 0)} | "
-            f"{_format_optional(row.get('avg_forward_alpha_5d'))} | "
-            f"{_format_optional(row.get('avg_forward_alpha_10d'))} | "
-            f"{_format_optional(row.get('avg_forward_alpha_20d'))} | "
+            f"{_format_optional(row.get('avg_forward_alpha_5d_gross'))} | "
+            f"{_format_optional(row.get('avg_forward_alpha_5d_net'))} | "
+            f"{_format_optional(row.get('avg_forward_alpha_10d_gross'))} | "
+            f"{_format_optional(row.get('avg_forward_alpha_10d_net'))} | "
+            f"{_format_optional(row.get('avg_forward_alpha_20d_gross'))} | "
+            f"{_format_optional(row.get('avg_forward_alpha_20d_net'))} | "
             f"{_format_optional(row.get('hit_rate_5d'))} | "
             f"{_format_optional(row.get('hit_rate_10d'))} | "
             f"{row.get('recommended_action', '')} |"
@@ -353,6 +369,37 @@ def _safe_float(value: Any) -> float:
     return numeric if math.isfinite(numeric) else -math.inf
 
 
+def _non_negative_float(value: Any) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(numeric) or numeric < 0.0:
+        return 0.0
+    return numeric
+
+
+def _attach_net_alpha_columns(
+    row: dict[str, Any],
+    *,
+    execution_cost_return: float,
+) -> None:
+    cost = max(0.0, float(execution_cost_return or 0.0))
+    for horizon in (5, 10, 20):
+        base_key = f"avg_forward_alpha_{horizon}d"
+        gross = _optional_finite(row.get(base_key))
+        row[f"{base_key}_gross"] = gross
+        row[f"{base_key}_net"] = (gross - cost) if gross is not None else None
+
+
+def _optional_finite(value: Any) -> float | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return numeric if math.isfinite(numeric) else None
+
+
 def _jsonable_mapping(payload: Mapping[str, Any]) -> dict[str, Any]:
     return {str(key): _jsonable(value) for key, value in payload.items()}
 
@@ -395,6 +442,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--history-limit", type=int, default=10)
     parser.add_argument("--min-sample", type=int, default=10)
     parser.add_argument("--as-of", default="")
+    parser.add_argument("--execution-cost-bps", type=float, default=0.0)
     return parser.parse_args(argv)
 
 
@@ -409,6 +457,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         min_sample=int(args.min_sample or 10),
         as_of=str(args.as_of or ""),
         price_dir=Path(args.price_dir) if args.price_dir else None,
+        execution_cost_bps=float(args.execution_cost_bps or 0.0),
     )
     result = run_threshold_sweep(config)
     print(f"json_path: {result['json_path']}")
