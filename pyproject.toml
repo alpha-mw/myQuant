@@ -99,13 +99,11 @@ exclude = [
     '^quant_investor/fetch_.*\.py$',
     '^quant_investor/alpha.*\.py$',
     '^quant_investor/stock_database\.py$',
-    '^quant_investor/news_analysis\.py$',
     '^quant_investor/macro_terminal_tushare\.py$',
     '^quant_investor/agents/subagents/',
     '^quant_investor/agents/orchestrator\.py$',
     '^quant_investor/agents/narrator_agent\.py$',
     '^quant_investor/agent_orchestrator\.py$',
-    '^quant_investor/factor_analyzer\.py$',
 ]
 
 [tool.pytest.ini_options]
