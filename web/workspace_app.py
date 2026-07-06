@@ -10,6 +10,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
+from quant_investor.env_loading import load_env_file
 from quant_investor.versioning import ARCHITECTURE_VERSION
 from web.config import CORS_ORIGINS, PROJECT_ROOT, workspace_auth_token
 from web.api.data import router as data_router
@@ -62,13 +63,7 @@ def _serve_frontend_asset(
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    try:
-        from dotenv import load_dotenv
-
-        load_dotenv()
-    except ImportError:
-        pass
-
+    load_env_file(PROJECT_ROOT / ".env")
     history_store.init_db()
     yield
 

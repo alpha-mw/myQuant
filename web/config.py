@@ -4,20 +4,12 @@ import os
 import sys
 from pathlib import Path
 
+from quant_investor.env_loading import load_env_file
+
 # Project root
 PROJECT_ROOT = Path(__file__).parent.parent
 
-# Load .env file
-_env_file = PROJECT_ROOT / ".env"
-if _env_file.exists():
-    with open(_env_file) as _f:
-        for _line in _f:
-            _stripped = _line.strip()
-            if _stripped and not _stripped.startswith("#") and "=" in _stripped:
-                _key, _, _val = _stripped.partition("=")
-                _key, _val = _key.strip(), _val.strip()
-                if _key and _key not in os.environ:
-                    os.environ[_key] = _val
+load_env_file(PROJECT_ROOT / ".env")
 
 # API settings
 #

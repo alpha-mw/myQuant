@@ -4,9 +4,9 @@ Quant-Investor V7.0 配置管理模块
 """
 
 import os
-from pathlib import Path
 
 from quant_investor.credential_utils import get_secret
+from quant_investor.env_loading import load_env_file
 
 MAINLINE_ENV_DEFAULTS: dict[str, str] = {
     "TUSHARE_TOKEN": "",
@@ -126,14 +126,7 @@ MAINLINE_ENV_DEFAULTS: dict[str, str] = {
 
 MAINLINE_ENV_KEYS: tuple[str, ...] = tuple(MAINLINE_ENV_DEFAULTS)
 
-# 尝试加载 .env 文件
-try:
-    from dotenv import load_dotenv
-    env_path = Path(__file__).resolve().parent.parent / '.env'
-    if env_path.exists():
-        load_dotenv(env_path)
-except ImportError:
-    pass
+load_env_file()
 
 def _env_float(name: str, default: float) -> float:
     try:
