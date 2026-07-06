@@ -15,10 +15,16 @@ _DATE_COLUMNS = ("trade_date", "date")
 _CLOSE_COLUMNS = ("close", "Close")
 _DEFAULT_HORIZONS = (1, 3, 5, 10, 20)
 _DEFAULT_BENCHMARK_HORIZONS = (5, 10, 20)
+PIT_INDUSTRY_LABEL_NOTE = (
+    "industry labels are as-of run date, not point-in-time; "
+    "replay carries mild reclassification look-ahead"
+)
 _BASE_METADATA = {
     "deterministic": True,
     "no_llm": True,
     "no_network": True,
+    "pit_industry_labels": False,
+    "industry_label_note": PIT_INDUSTRY_LABEL_NOTE,
 }
 
 
@@ -104,6 +110,7 @@ class ThemeCalibrationDataset:
             "",
             f"Record count: {len(self.records)}",
             f"Available forward data count: {available_count}",
+            f"Industry label note: {PIT_INDUSTRY_LABEL_NOTE}",
             "",
             "### Phase Summary",
         ]

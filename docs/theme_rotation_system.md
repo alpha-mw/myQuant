@@ -340,6 +340,10 @@ Offline-only consumers are explicit:
 - `run_theme_governance_diagnostics.py` renders governance JSON/MD from local
   snapshots without changing executable decisions.
 
+Replay and calibration outputs explicitly mark `pit_industry_labels=false`:
+industry labels are as-of run date, not point-in-time; replay carries mild
+reclassification look-ahead. This is a disclosed limitation, not a data repair.
+
 ## Holding-side Guard
 
 Holding-side Guard closes the gap between theme entry metadata and existing
@@ -420,6 +424,9 @@ The system is designed to fail closed:
 
 - MVP theme definitions start from `industry_map`; a full concept-board ontology
   is not yet integrated.
+- `industry_map` labels are as-of the run date, not point-in-time. Historical
+  replay/calibration therefore carries mild reclassification look-ahead until a
+  PIT membership source is introduced.
 - Live news, live policy feeds, capital-flow data, and concept-board membership
   are not part of the scanner contract yet. Policy catalyst v1 accepts only
   local fixtures or manually maintained JSONL caches.
