@@ -313,7 +313,7 @@ def test_distribution_and_fake_breakout_are_candidates_with_risk_watch_metadata(
     assert output.metadata["risk_watch_symbol_count"] == 2
 
 
-def test_residual_pool_is_theme_residual_not_unthemed_quant_escape() -> None:
+def test_hard_filter_excludes_theme_residual_and_unthemed_quant_escape() -> None:
     symbols = ["CORE", "RESIDUAL", "UNTHEMED_HIGH"]
     rotation = _rotation(
         theme_scores={
@@ -340,11 +340,105 @@ def test_residual_pool_is_theme_residual_not_unthemed_quant_escape() -> None:
     )
 
     assert "CORE" in output.symbols
-    assert "RESIDUAL" in output.symbols
+    assert "RESIDUAL" not in output.symbols
     assert "UNTHEMED_HIGH" not in output.symbols
-    assert output.metadata["symbols"]["RESIDUAL"]["bucket"] == "residual_theme_alpha"
-    assert output.metadata["symbols"]["RESIDUAL"]["source"] == "residual_theme"
+    assert output.symbols == ["CORE"]
+    assert output.metadata["residual_symbol_count"] == 0
+    assert output.metadata["symbols"]["RESIDUAL"]["admitted"] is False
+    assert output.metadata["symbols"]["RESIDUAL"]["source"] == "none"
+    assert output.excluded_symbols["RESIDUAL"] == "theme_pool_theme_not_admitted"
     assert output.excluded_symbols["UNTHEMED_HIGH"] == "theme_pool_missing_theme_membership"
+
+
+def test_hard_filter_excludes_non_admitted_theme_residuals() -> None:
+    symbols = ["CORE", "TAIL", "UNTHEMED_HIGH"]
+    rotation = _rotation(
+        theme_scores={
+            "core": _theme("core", score=0.92),
+            "tail": _theme("tail", score=0.88),
+        },
+        symbol_theme={"CORE": "core", "TAIL": "tail"},
+        symbol_scores={"CORE": 0.90, "TAIL": 0.91},
+    )
+
+    output = ThemeCandidatePoolBuilder(
+        _config(
+            use_markov_policy=False,
+            base_top_themes=1,
+            min_admitted_themes=1,
+            residual_ratio=1.00,
+            min_residual_symbols=2,
+        )
+    ).build(
+        symbols=symbols,
+        global_context=_context(symbols, rotation, _markov("趋势上涨")),
+        quant_scores={"CORE": 0.2, "TAIL": 0.99, "UNTHEMED_HIGH": 1.0},
+        max_candidates=3,
+    )
+
+    assert output.symbols == ["CORE"]
+    assert output.metadata["core_symbol_count"] == 1
+    assert output.metadata["residual_symbol_count"] == 0
+    assert output.metadata["residual_theme_alpha_candidates"] == []
+    assert output.excluded_symbols["TAIL"] == "theme_pool_theme_not_admitted"
+    assert output.excluded_symbols["UNTHEMED_HIGH"] == "theme_pool_missing_theme_membership"
+    assert output.metadata["symbols"]["TAIL"]["admitted"] is False
+    assert output.metadata["symbols"]["TAIL"]["source"] == "none"
+
+
+def test_forced_minimum_themes_enter_core_pool_without_residuals() -> None:
+    symbols = ["SEMI1", "BIO1", "TAIL1"]
+    rotation = _rotation(
+        theme_scores={
+            "semi": _theme("semi", score=0.60, phase="accumulation"),
+            "bio": _theme("bio", score=0.58, phase="accumulation"),
+            "tail": _theme("tail", score=0.57, phase="accumulation"),
+        },
+        symbol_theme={
+            "SEMI1": "semi",
+            "BIO1": "bio",
+            "TAIL1": "tail",
+        },
+        symbol_scores={
+            "SEMI1": 0.30,
+            "BIO1": 0.28,
+            "TAIL1": 0.95,
+        },
+        symbol_phase={
+            "SEMI1": "accumulation",
+            "BIO1": "accumulation",
+            "TAIL1": "accumulation",
+        },
+    )
+
+    output = ThemeCandidatePoolBuilder(
+        _config(
+            use_markov_policy=False,
+            base_min_theme_score=0.70,
+            base_min_symbol_score=0.65,
+            base_top_themes=3,
+            min_admitted_themes=2,
+            residual_ratio=1.00,
+            min_residual_symbols=2,
+            allowed_phases=("confirmed_rotation",),
+        )
+    ).build(
+        symbols=symbols,
+        global_context=_context(symbols, rotation, _markov("趋势下跌")),
+        quant_scores={symbol: 0.5 for symbol in symbols},
+        max_candidates=5,
+    )
+
+    assert output.metadata["natural_admitted_theme_count"] == 0
+    assert output.metadata["forced_theme_count"] == 2
+    assert output.metadata["core_symbol_count"] == 2
+    assert output.metadata["residual_symbol_count"] == 0
+    assert set(output.symbols) == {"SEMI1", "BIO1"}
+    admitted_themes = output.metadata["admitted_themes"]
+    assert {theme["theme_id"] for theme in admitted_themes} == {"semi", "bio"}
+    assert all(theme["forced"] is True for theme in admitted_themes)
+    assert all(theme["original_rejection_reason"] for theme in admitted_themes)
+    assert output.excluded_symbols["TAIL1"] == "theme_pool_theme_not_admitted"
 
 
 def test_risk_watch_ratio_cap_is_deterministic() -> None:

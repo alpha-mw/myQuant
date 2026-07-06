@@ -20,6 +20,7 @@ DEFAULT_RECORD_ROOT = (
     PROJECT_ROOT / "results" / "strategy_records" / "CN" / "aggressive_tech_manufacturing"
 )
 DEFAULT_DASHBOARD_ROOT = PROJECT_ROOT / "portfolio_dashboard"
+DEFAULT_BENCHMARK_SOURCE = "auto"
 DEFAULT_INITIAL_BENCHMARK = 1.0
 DEFAULT_STOCK_BASIC_ROOT = PROJECT_ROOT / "data" / "parquet" / "cn" / "dag_core_raw" / "table=stock_basic"
 SNAPSHOT_BENCHMARK_STATUS = "not_production_grade"
@@ -39,6 +40,14 @@ TUSHARE_INDEX_BENCHMARKS = {
     "000688.SH": "star50_nav",
     "399006.SZ": "chinext_nav",
 }
+LOCAL_BENCHMARK_REQUIRED_COLUMNS = {"date", "ts_code", "close", "source_system"}
+LOCAL_BENCHMARK_COVERAGE_VALUES = {"exact_close", "previous_trading_day_ffill"}
+LOCAL_BENCHMARK_FORBIDDEN_SOURCE_TOKENS = (
+    "sample",
+    "mock",
+    "demo",
+    SNAPSHOT_BENCHMARK_SOURCE_SYSTEM,
+)
 BENCHMARK_FIELD_ORDER = [
     "benchmark_main_nav",
     "benchmark_nav",
@@ -74,6 +83,7 @@ class BenchmarkExport:
     coverage_by_date: dict[str, dict[str, str]]
     value_date_by_date: dict[str, dict[str, str]]
     snapshot_gap_fill_by_date: dict[str, list[str]] | None = None
+    calendar_source_system: str = ""
 
 
 @dataclass(frozen=True)
@@ -374,6 +384,188 @@ def build_tushare_benchmark_export(
         coverage_by_date=coverage_by_date,
         value_date_by_date=value_date_by_date,
         snapshot_gap_fill_by_date=snapshot_gap_fill_by_date,
+        calendar_source_system="tushare.trade_cal",
+    ), warnings
+
+
+def _is_forbidden_local_benchmark_source(source_system: str) -> bool:
+    text = source_system.strip().lower()
+    return any(token.lower() in text for token in LOCAL_BENCHMARK_FORBIDDEN_SOURCE_TOKENS)
+
+
+def _with_composite_benchmark_fields(
+    normalized: dict[str, float],
+    coverage: dict[str, str],
+    value_dates: dict[str, str],
+    *,
+    run_date: str,
+) -> None:
+    main_components = [
+        ("star50_nav", 0.50),
+        ("csi300_nav", 0.30),
+        ("chinext_nav", 0.20),
+    ]
+    used_weight = sum(weight for field, weight in main_components if field in normalized)
+    if used_weight:
+        normalized["benchmark_main_nav"] = (
+            sum(normalized[field] * weight for field, weight in main_components if field in normalized)
+            / used_weight
+        )
+        component_coverages = [
+            coverage[field] for field, _weight in main_components if field in normalized and field in coverage
+        ]
+        component_value_dates = [
+            value_dates[field] for field, _weight in main_components if field in normalized and field in value_dates
+        ]
+        coverage["benchmark_main_nav"] = (
+            SNAPSHOT_GAP_FILL_COVERAGE
+            if SNAPSHOT_GAP_FILL_COVERAGE in component_coverages
+            else (
+                "previous_trading_day_ffill"
+                if "previous_trading_day_ffill" in component_coverages
+                else "exact_close"
+            )
+        )
+        value_dates["benchmark_main_nav"] = min(component_value_dates) if component_value_dates else run_date
+    if "csi300_nav" in normalized:
+        normalized["benchmark_nav"] = normalized["csi300_nav"]
+        coverage["benchmark_nav"] = coverage.get("csi300_nav", "exact_close")
+        value_dates["benchmark_nav"] = value_dates.get("csi300_nav", run_date)
+
+
+def load_local_benchmark_export(
+    runs: list[RecordRun],
+    benchmark_file: Path,
+) -> tuple[BenchmarkExport | None, list[str]]:
+    warnings: list[str] = []
+    if not runs:
+        return None, ["没有可用策略记录，无法读取本地 benchmark。"]
+    if not benchmark_file.exists():
+        return None, [f"未找到本地 benchmark 文件：{benchmark_file}"]
+
+    rows = read_csv_rows(benchmark_file)
+    if not rows:
+        return None, [f"本地 benchmark 文件为空：{benchmark_file}"]
+    missing_columns = sorted(LOCAL_BENCHMARK_REQUIRED_COLUMNS - set(rows[0]))
+    if missing_columns:
+        return None, [f"本地 benchmark 文件缺少字段：{', '.join(missing_columns)}"]
+
+    start_date = runs[0].date
+    end_date = runs[-1].date
+    required_fields = set(TUSHARE_INDEX_BENCHMARKS.values())
+    parsed_rows: dict[tuple[str, str], dict[str, Any]] = {}
+    source_systems: set[str] = set()
+    forbidden_sources: set[str] = set()
+    invalid_row_count = 0
+    ignored_code_count = 0
+    for row_number, row in enumerate(rows, start=2):
+        iso_date = tushare_to_iso_date(row.get("date"))
+        if not iso_date or iso_date < start_date or iso_date > end_date:
+            continue
+        ts_code = str(row.get("ts_code") or "").strip()
+        field = TUSHARE_INDEX_BENCHMARKS.get(ts_code)
+        if not field:
+            ignored_code_count += 1
+            continue
+        close_value = parse_float(row.get("close"))
+        source_system = str(row.get("source_system") or "").strip()
+        coverage = str(row.get("coverage") or "exact_close").strip()
+        value_date = tushare_to_iso_date(row.get("value_date") or iso_date)
+        if close_value is None or close_value <= 0 or not source_system:
+            invalid_row_count += 1
+            continue
+        if _is_forbidden_local_benchmark_source(source_system):
+            forbidden_sources.add(source_system)
+            continue
+        if coverage not in LOCAL_BENCHMARK_COVERAGE_VALUES:
+            warnings.append(f"本地 benchmark 第 {row_number} 行 coverage={coverage} 无效，已跳过。")
+            invalid_row_count += 1
+            continue
+        parsed_rows[(iso_date, field)] = {
+            "date": iso_date,
+            "ts_code": ts_code,
+            "field": field,
+            "close": close_value,
+            "source_system": source_system,
+            "value_date": value_date,
+            "coverage": coverage,
+        }
+        source_systems.add(source_system)
+
+    if forbidden_sources:
+        sources = ", ".join(sorted(forbidden_sources))
+        return None, [f"本地 benchmark source_system 包含 sample/mock/演示来源：{sources}，不得标记为生产级。"]
+    if invalid_row_count:
+        warnings.append(f"本地 benchmark 有 {invalid_row_count} 行缺少有效 date/ts_code/close/source_system/coverage，已跳过。")
+    if ignored_code_count:
+        warnings.append(f"本地 benchmark 有 {ignored_code_count} 行非 Dashboard benchmark 指数代码，已忽略。")
+
+    fields_present = {field for _date, field in parsed_rows}
+    missing_fields = sorted(required_fields - fields_present)
+    if missing_fields:
+        return None, warnings + [f"本地 benchmark 缺少必需指数字段：{', '.join(missing_fields)}"]
+    if not parsed_rows:
+        return None, warnings + ["本地 benchmark 未提供可用的真实指数 close。"]
+
+    first_closes: dict[str, float] = {}
+    for field in required_fields:
+        field_dates = sorted(date for date, candidate_field in parsed_rows if candidate_field == field)
+        if field_dates:
+            first_closes[field] = float(parsed_rows[(field_dates[0], field)]["close"])
+
+    raw_rows: list[dict[str, Any]] = []
+    for (iso_date, field), row in sorted(parsed_rows.items()):
+        first_close = first_closes.get(field)
+        if not first_close:
+            continue
+        nav_value = row["close"] / first_close
+        raw_rows.append(
+            {
+                "date": iso_date,
+                "ts_code": row["ts_code"],
+                "field": field,
+                "close": f"{row['close']:.6f}",
+                "nav": f"{nav_value:.8f}",
+                "source_system": row["source_system"],
+                "value_date": row["value_date"],
+                "coverage": row["coverage"],
+            }
+        )
+
+    values_by_date: dict[str, dict[str, float]] = {}
+    coverage_by_date: dict[str, dict[str, str]] = {}
+    value_date_by_date: dict[str, dict[str, str]] = {}
+    for run in runs:
+        normalized: dict[str, float] = {}
+        coverage: dict[str, str] = {}
+        value_dates: dict[str, str] = {}
+        for field in required_fields:
+            row = parsed_rows.get((run.date, field))
+            first_close = first_closes.get(field)
+            if not row or not first_close:
+                continue
+            normalized[field] = row["close"] / first_close
+            coverage[field] = row["coverage"]
+            value_dates[field] = row["value_date"]
+        _with_composite_benchmark_fields(normalized, coverage, value_dates, run_date=run.date)
+        if normalized:
+            values_by_date[run.date] = normalized
+            coverage_by_date[run.date] = coverage
+            value_date_by_date[run.date] = value_dates
+
+    return BenchmarkExport(
+        values_by_date=values_by_date,
+        raw_rows=raw_rows,
+        source_system="+".join(sorted(source_systems)),
+        normalization="local_index_close_divided_by_first_valid_close",
+        status_hint="production_source",
+        notes=[
+            f"benchmark 来自本地真实指数 close 文件：{benchmark_file}",
+            "本地 benchmark close 按 close/first_valid_close 归一化；sample/mock/strategy snapshot 来源会被拒绝。",
+            "非交易日记录必须在本地文件中显式标记 coverage=previous_trading_day_ffill 和 value_date。",
+        ],
+        coverage_by_date=coverage_by_date,
+        value_date_by_date=value_date_by_date,
     ), warnings
 
 
@@ -719,7 +911,12 @@ def benchmark_source_summary(
         if ffill_dates:
             notes.append("部分非交易日 benchmark 使用上一交易日真实 close 前向填充；Dashboard 展示连续，但投委会口径需区分 exact 与 ffill。")
         if missing_date_count:
-            notes.append("Tushare benchmark 未覆盖所有策略记录日期；缺失日期不按生产级 benchmark 标记。")
+            source_label = (
+                "Tushare benchmark"
+                if benchmark_export.source_system == TUSHARE_BENCHMARK_SOURCE_SYSTEM
+                else "benchmark source"
+            )
+            notes.append(f"{source_label} 未覆盖所有策略记录日期；缺失日期不按生产级 benchmark 标记。")
         if snapshot_gap_fill_dates:
             notes.append(
                 "部分 Tushare 缺口使用 strategy_record.market_snapshot.indices 实时快照补齐，仅用于 Dashboard 连续展示；不是连续真实指数 close。"
@@ -731,7 +928,7 @@ def benchmark_source_summary(
             "benchmark_fields": benchmark_fields,
             "benchmark_source_status": status,
             "source_system": source_system,
-            "calendar_source_system": "tushare.trade_cal",
+            "calendar_source_system": benchmark_export.calendar_source_system,
             "production_grade": status == "production_grade",
             "display_continuity_grade": missing_date_count == 0,
             "first_valid_date": min(valid_dates) if valid_dates else "",
@@ -914,24 +1111,44 @@ def csv_text(path: Path) -> str:
     return path.read_text(encoding="utf-8").rstrip("\n")
 
 
+def resolve_local_benchmark_file(dashboard_root: Path, benchmark_file: Path | None) -> Path:
+    if benchmark_file is not None:
+        return benchmark_file
+    dashboard_candidate = dashboard_root / "inputs" / "cn_index_benchmark.csv"
+    if dashboard_candidate.exists():
+        return dashboard_candidate
+    default_candidate = DEFAULT_DASHBOARD_ROOT / "inputs" / "cn_index_benchmark.csv"
+    if default_candidate.exists():
+        return default_candidate
+    return dashboard_candidate
+
+
 def export(
     record_root: Path,
     dashboard_root: Path,
-    benchmark_source: str = "tushare",
+    benchmark_source: str = DEFAULT_BENCHMARK_SOURCE,
     benchmark_gap_fill: str = "snapshot",
+    benchmark_file: Path | None = None,
 ) -> dict[str, Any]:
     runs, warnings = discover_record_runs(record_root)
     if not runs:
         raise SystemExit(f"No usable records found under {record_root}")
     benchmark_export: BenchmarkExport | None = None
-    if benchmark_source in {"auto", "tushare"}:
-        benchmark_export, tushare_warnings = load_tushare_benchmark_export(
-            runs,
-            snapshot_gap_fill=benchmark_gap_fill == "snapshot",
-        )
-        warnings.extend(tushare_warnings)
-        if benchmark_export is None and benchmark_source == "tushare":
+    local_benchmark_file = resolve_local_benchmark_file(dashboard_root, benchmark_file)
+    if benchmark_source in {"auto", "local"} and (benchmark_source == "local" or local_benchmark_file.exists()):
+        benchmark_export, local_warnings = load_local_benchmark_export(runs, local_benchmark_file)
+        warnings.extend(local_warnings)
+        if benchmark_export is None and benchmark_source == "local":
             warnings.append("已按 fail-closed 降级为 strategy_record.market_snapshot.indices benchmark；不得标记为生产级。")
+    if benchmark_source in {"auto", "tushare"}:
+        if benchmark_export is None:
+            benchmark_export, tushare_warnings = load_tushare_benchmark_export(
+                runs,
+                snapshot_gap_fill=benchmark_gap_fill == "snapshot",
+            )
+            warnings.extend(tushare_warnings)
+            if benchmark_export is None and benchmark_source == "tushare":
+                warnings.append("已按 fail-closed 降级为 strategy_record.market_snapshot.indices benchmark；不得标记为生产级。")
     if benchmark_source == "snapshot":
         warnings.append("benchmark_source=snapshot：按显式参数使用 strategy_record.market_snapshot.indices，非生产级。")
     nav_rows, nav_warnings, nav_fieldnames = build_nav_rows(runs, benchmark_export)
@@ -1041,9 +1258,19 @@ def main() -> None:
     parser.add_argument("--dashboard-root", type=Path, default=DEFAULT_DASHBOARD_ROOT)
     parser.add_argument(
         "--benchmark-source",
-        choices=["tushare", "auto", "snapshot"],
-        default=os.environ.get("CN_DASHBOARD_BENCHMARK_SOURCE", "tushare"),
-        help="Benchmark source for dashboard NAV fields. Defaults to Tushare index_daily.",
+        choices=["tushare", "auto", "snapshot", "local"],
+        default=os.environ.get("CN_DASHBOARD_BENCHMARK_SOURCE", DEFAULT_BENCHMARK_SOURCE),
+        help="Benchmark source for dashboard NAV fields. Defaults to local-first auto mode.",
+    )
+    benchmark_file_env = os.environ.get("CN_DASHBOARD_BENCHMARK_FILE")
+    parser.add_argument(
+        "--benchmark-file",
+        type=Path,
+        default=Path(benchmark_file_env) if benchmark_file_env else None,
+        help=(
+            "Local real index close CSV for --benchmark-source local/auto. "
+            "Required columns: date, ts_code, close, source_system; optional: coverage, value_date."
+        ),
     )
     parser.add_argument(
         "--benchmark-gap-fill",
@@ -1055,7 +1282,13 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
-    summary = export(args.record_root, args.dashboard_root, args.benchmark_source, args.benchmark_gap_fill)
+    summary = export(
+        args.record_root,
+        args.dashboard_root,
+        args.benchmark_source,
+        args.benchmark_gap_fill,
+        args.benchmark_file,
+    )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 

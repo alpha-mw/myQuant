@@ -58,13 +58,49 @@ portfolio_dashboard/js/generated_records.js
 
 双击 `portfolio_dashboard/index.html` 时，页面会自动加载 `js/generated_records.js` 中的本地记录数据，并在顶部显示“当前使用本地记录数据”。每日更新时，在新的策略记录目录生成后重新运行上述脚本即可刷新 Dashboard。
 
+导出后建议运行只读校验，确认 `generated_records.js` 能解析、不会回退到 sample data，并核对 `export_summary.json` 的行数和 benchmark provenance：
+
+```bash
+./.venv/bin/python scripts/check_cn_dashboard_export.py
+```
+
+如果本次数据包要作为正式投委会 benchmark 口径，还需要强制要求 production-grade benchmark：
+
+```bash
+./.venv/bin/python scripts/check_cn_dashboard_export.py --require-production-benchmark
+```
+
+当前本地真实指数 close 尚未补齐时，这个强制命令会失败；这表示 Dashboard 展示数据可用，但 benchmark 仍不是正式投委会口径。
+
 当前导出逻辑采用保守映射：
 
 - NAV 来自每个记录目录的 `pnl_summary.csv`，`portfolio_nav = total_value_after / initial_capital`
-- Benchmark 默认用 Tushare `index_daily` 拉取真实指数 close 并归一化；当前支持 `000300.SH -> csi300_nav`、`000905.SH -> csi500_nav`、`000852.SH -> csi1000_nav`、`000688.SH -> star50_nav`、`399006.SZ -> chinext_nav`
-- 非交易日记录日期会用 Tushare `trade_cal.pretrade_date` 对齐到上一交易日真实 close，并在 `export_summary.json` / `benchmark_records.csv` 中标记 `previous_trading_day_ffill`；交易日缺 close 仍保持缺失并降级，不做静默填充
-- `benchmark_main_nav` 由可用的 `star50_nav`、`csi300_nav`、`chinext_nav` 组合生成；若 Tushare 不可用或交易日记录日期没有指数 close，`export_summary.json` 会降级标记为非 production-grade，不会伪造数据
-- `benchmark_records.csv` 保存 Tushare close、归一化 NAV、`value_date` 和 `coverage`，便于审计 exact close 与 previous-trading-day ffill；如需完全离线旧口径，可运行 `CN_DASHBOARD_BENCHMARK_SOURCE=snapshot ./.venv/bin/python scripts/export_cn_aggressive_dashboard_data.py`
+- Benchmark 默认使用 local-first `auto`：优先读取 `portfolio_dashboard/inputs/cn_index_benchmark.csv` 中的本地真实指数 close；本地文件不存在时才尝试 `tushare` source；当前支持 `000300.SH -> csi300_nav`、`000905.SH -> csi500_nav`、`000852.SH -> csi1000_nav`、`000688.SH -> star50_nav`、`399006.SZ -> chinext_nav`
+- 本地 benchmark 文件中的非交易日记录需要显式写 `coverage=previous_trading_day_ffill` 和真实 `value_date`；交易日缺 close 仍保持缺失并降级，不做静默填充
+- `benchmark_main_nav` 由可用的 `star50_nav`、`csi300_nav`、`chinext_nav` 组合生成；若本地 benchmark 或 Tushare 不可用，或交易日记录日期没有指数 close，`export_summary.json` 会降级标记为非 production-grade，不会伪造数据
+- `benchmark_records.csv` 保存真实 close、归一化 NAV、`value_date` 和 `coverage`，便于审计 exact close 与 previous-trading-day ffill；如需完全离线旧口径，可运行 `CN_DASHBOARD_BENCHMARK_SOURCE=snapshot ./.venv/bin/python scripts/export_cn_aggressive_dashboard_data.py`
+- 如果需要显式在线读取 Tushare `index_daily`，可运行 `./.venv/bin/python scripts/export_cn_aggressive_dashboard_data.py --benchmark-source tushare`；自动化维护默认不需要这个路径
+- 如果已经有 Wind、Choice、iFinD、Bloomberg、Tushare 离线导出或内部数据库生成的真实指数 close CSV，可用本地 benchmark 输入：
+
+```bash
+./.venv/bin/python scripts/export_cn_aggressive_dashboard_data.py \
+  --benchmark-source local \
+  --benchmark-file portfolio_dashboard/inputs/cn_index_benchmark.csv
+```
+
+本地 benchmark CSV 必需字段：
+
+```csv
+date,ts_code,close,source_system
+```
+
+可选字段：
+
+```csv
+coverage,value_date
+```
+
+本地文件至少要覆盖 `000300.SH`、`000905.SH`、`000852.SH`、`000688.SH`、`399006.SZ`。`close` 必须为正数，`source_system` 必须是真实来源；`sample`、`mock`、`demo` 或 `strategy_record.market_snapshot.indices` 会被拒绝，不能标记为 production-grade。非交易日如使用上一交易日 close，需要显式写 `coverage=previous_trading_day_ffill` 和真实 `value_date`。
 - 持仓来自 `ledger_after_manual_switch.csv`，缺失时回退到 `ledger.csv`
 - 个股日收益优先来自同目录 `holdings_review.csv` 的 `today_change_pct`
 - 旧版 `metric,value` 纵表格式 `pnl_summary.csv` 会自动转成宽表指标；`initial_capital` 缺失时仅从同目录 `market_snapshot.json` 的组合总值和 PnL 推导

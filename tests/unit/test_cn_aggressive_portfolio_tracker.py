@@ -473,6 +473,76 @@ def test_load_previous_record_skips_invalidated_manual_manifest(tmp_path):
     assert pnl_summary.iloc[0]["cash_after"] == 42.0
 
 
+def test_load_previous_record_prefers_latest_manual_manifest_recorded_at(tmp_path):
+    base_dir = tmp_path / "strategy_records"
+    base_dir.mkdir()
+    filled_dir = base_dir / "20260703_0932"
+    carry_dir = base_dir / "20260703_1100"
+    filled_dir.mkdir()
+    carry_dir.mkdir()
+
+    for record_dir in (filled_dir, carry_dir):
+        (record_dir / "manifest.json").write_text(
+            json.dumps({"timestamp": record_dir.name, "capital_cny": 1_000_000.0}),
+            encoding="utf-8",
+        )
+        pd.DataFrame([{"cash_after": 10.0, "total_value_after": 130.0}]).to_parquet(
+            record_dir / "pnl_summary.parquet",
+            index=False,
+        )
+
+    pd.DataFrame(
+        [
+            {"symbol": "603078.SH", "name": "江化微", "shares": 1300, "avg_cost": 52.10},
+            {"symbol": "002008.SZ", "name": "大族激光", "shares": 1400, "avg_cost": 65.30},
+        ]
+    ).to_parquet(filled_dir / "ledger_after_manual_switch.parquet", index=False)
+    (filled_dir / "manual_execution_manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "filled_local_manual_paper_rebalance",
+                "recorded_at": "2026-07-03 11:06:56 CST",
+                "next_ledger_path": "ledger_after_manual_switch.parquet",
+                "cash_after": 1_001_341.0,
+                "total_value_after": 1_674_627.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pd.DataFrame(
+        [
+            {"symbol": "688519.SH", "name": "南亚新材", "shares": 900, "avg_cost": 130.2973},
+            {"symbol": "688525.SH", "name": "佰维存储", "shares": 700, "avg_cost": 238.77},
+        ]
+    ).to_parquet(carry_dir / "ledger_after_manual_switch.parquet", index=False)
+    (carry_dir / "manual_execution_manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "no_action_carry_forward",
+                "recorded_at": "2026-07-03 11:00:39 CST",
+                "next_ledger_path": "ledger_after_manual_switch.parquet",
+                "cash_after": 429_343.0,
+                "total_value_after": 1_668_845.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    ledger, manifest, pnl_summary = tracker._load_previous_record(
+        base_dir,
+        source_record="20260703_1100",
+    )
+
+    assert manifest["timestamp"] == "20260703_1100"
+    assert manifest["effective_manual_manifest_path"].endswith(
+        "20260703_0932/manual_execution_manifest.json"
+    )
+    assert set(ledger["symbol"]) == {"603078.SH", "002008.SZ"}
+    assert pnl_summary.iloc[0]["cash_after"] == 1_001_341.0
+    assert pnl_summary.iloc[0]["total_value_after"] == 1_674_627.0
+
+
 def test_switch_plan_rejects_price_strength_candidate_without_candidate_dag():
     holdings_review = pd.DataFrame(
         [
@@ -740,6 +810,99 @@ def test_write_outputs_persists_theme_pool_audit(tmp_path: Path) -> None:
     ).exists()
 
 
+def test_theme_pool_report_lines_expose_forced_core_candidates() -> None:
+    theme_pool_summary = {
+        "status": "applied",
+        "policy_regime": "震荡高波",
+        "admitted_theme_count": 2,
+        "natural_admitted_theme_count": 0,
+        "forced_theme_count": 2,
+        "min_admitted_themes": 2,
+        "rejected_theme_count": 18,
+        "core_symbol_count": 274,
+        "residual_symbol_count": 0,
+        "excluded_symbol_count": 5267,
+        "excluded_reason_counts": {
+            "theme_pool_missing_theme_membership": 5241,
+            "theme_pool_theme_not_admitted": 26,
+        },
+        "admitted_symbols_by_source_sample": {
+            "core": ["603078.SH", "688046.SH"],
+        },
+        "admitted_themes": [
+            {
+                "theme_id": "industry::半导体",
+                "theme_name": "半导体",
+                "theme_score": 0.4718297977,
+                "theme_rank_score": 0.4639796609,
+                "phase": "accumulation",
+                "forced": True,
+                "force_reason": "forced_top_theme_min_admitted_themes",
+                "original_rejection_reason": "theme_pool_theme_quality_gate_failed",
+                "quality_flags": ["theme_score_below_threshold", "phase_not_allowed"],
+            },
+            {
+                "theme_id": "industry::生物制药",
+                "theme_name": "生物制药",
+                "theme_score": 0.4320757745,
+                "phase": "accumulation",
+                "forced": True,
+                "force_reason": "forced_top_theme_min_admitted_themes",
+                "original_rejection_reason": "theme_pool_theme_quality_gate_failed",
+                "quality_flags": ["theme_score_below_threshold", "phase_not_allowed"],
+            },
+        ],
+        "rejected_themes": [
+            {
+                "theme_name": "证券",
+                "reason": "theme_pool_theme_quality_gate_failed",
+                "score": 0.357023681,
+                "phase": "unclassified",
+            }
+        ],
+    }
+    candidate_pool = pd.DataFrame(
+        [
+            {
+                "symbol": "603078.SH",
+                "name": "江化微",
+                "codex_recommendation_score": 68,
+            }
+        ]
+    )
+    theme_symbols = {
+        "603078.SH": {
+            "admitted": True,
+            "source": "core",
+            "primary_theme_id": "industry::半导体",
+            "theme_pool_score": 0.395369,
+            "theme_pool_reason": "admitted",
+        }
+    }
+
+    lines = tracker._format_theme_pool_report_lines(
+        theme_pool_summary,
+        candidate_pool=candidate_pool,
+        theme_symbols=theme_symbols,
+    )
+    text = "\n".join(lines)
+
+    assert "Theme 强制准入说明" in text
+    assert "未自然通过 ThemeGatePolicy" in text
+    assert "不等同于自然合格主题" in text
+    assert "自然通过=false" in text
+    assert "强制准入=true" in text
+    assert "硬加入=true" in text
+    assert "半导体" in text
+    assert "生物制药" in text
+    assert "original_rejection=theme_pool_theme_quality_gate_failed" in text
+    assert "core样本=`603078.SH, 688046.SH`" in text
+    assert "603078.SH 江化微" in text
+    assert "theme=`industry::半导体`" in text
+    assert "source=`core`" in text
+    assert "证券" in text
+
+
 def test_candidate_pool_from_v13_dag_falls_back_to_report_bundle_shortlist():
     complete_branches = {
         branch: {"branch_name": branch, "final_score": 0.8, "final_confidence": 0.7}
@@ -826,6 +989,217 @@ def test_candidate_pool_from_v13_dag_blocks_when_shortlist_artifact_missing():
     assert status["dag_pipeline"]["shortlist_artifact_missing"] is True
     assert status["dag_pipeline"]["shortlist_source"] == ""
     assert "shortlist artifact missing" in status["error"]
+
+
+def test_candidate_pool_from_v13_dag_empty_when_no_shortlist_or_positive_targets():
+    complete_branches = {
+        branch: {"branch_name": branch, "final_score": 0.5, "final_confidence": 0.6}
+        for branch in tracker.REQUIRED_DAG_BRANCHES
+    }
+    dag_artifacts = {
+        "symbol_research_packets": {
+            "688301.SH": {
+                "symbol": "688301.SH",
+                "company_name": "奕瑞科技",
+                "category": "full_a",
+                "branch_verdicts": complete_branches,
+            },
+        },
+        "bayesian_records": [
+            {
+                "symbol": "688301.SH",
+                "posterior_action_score": 0.34,
+                "posterior_win_rate": 0.48,
+                "posterior_expected_alpha": -0.02,
+                "posterior_confidence": 0.52,
+                "rank": 1,
+            }
+        ],
+        "portfolio_decision": {
+            "target_weights": {"688301.SH": 0.0},
+        },
+    }
+
+    candidate_pool, status = tracker._build_candidate_pool_from_v13_dag(
+        dag_artifacts=dag_artifacts,
+        held_symbols=[],
+    )
+
+    assert candidate_pool.empty
+    assert status["candidate_generation_status"] == "empty"
+    assert status["blocker"] == "no_candidate_selected_by_portfolio_constructor"
+    assert status["dag_pipeline"]["bayesian_record_count"] == 1
+    assert status["dag_pipeline"]["portfolio_target_count"] == 0
+    assert status["dag_pipeline"]["shortlist_artifact_missing"] is False
+    assert status["error"] == ""
+
+
+def test_trailing_take_profit_review_sets_explicit_watch_from_entry_date():
+    holdings_review = pd.DataFrame(
+        [
+            {
+                "symbol": "000001.SZ",
+                "name": "平安银行",
+                "shares_before": 100,
+                "buy_price": 100.0,
+                "current_price": 150.0,
+                "stage_stop_price": 120.0,
+                "score_full_market": 0.82,
+                "market_weight": 0.10,
+                "realtime_quote_valid": True,
+                "manual_entry_trade_date": "20260101",
+            }
+        ]
+    )
+
+    class _FakeReader:
+        def read_symbol_frames(self, symbols, **_kwargs):
+            assert symbols == ["000001.SZ"]
+            return {
+                "000001.SZ": SimpleNamespace(
+                    frame=pd.DataFrame(
+                        [
+                            {"trade_date": "20260101", "high": 100.0, "close": 100.0},
+                            {"trade_date": "20260110", "high": 170.0, "close": 166.0},
+                            {"trade_date": "20260120", "high": 151.0, "close": 150.0},
+                        ]
+                    )
+                )
+            }
+
+    reviewed = tracker._apply_trailing_take_profit_review(
+        holdings_review,
+        reader=_FakeReader(),
+        analysis_trade_date="20260120",
+    )
+    row = reviewed.iloc[0]
+
+    assert row["trailing_take_profit_status"] == "hold_with_trailing_stop"
+    assert bool(row["trailing_take_profit_confirmed"]) is True
+    assert row["trailing_profit_peak_price"] == pytest.approx(170.0)
+    assert row["profit_giveback_ratio"] == pytest.approx((70.0 - 50.0) / 70.0)
+    assert row["trailing_stop_price"] == pytest.approx(156.0)
+    assert tracker._position_action(row) == "移动止盈观察"
+
+
+def test_trailing_take_profit_review_falls_back_to_symbol_serving_history():
+    holdings_review = pd.DataFrame(
+        [
+            {
+                "symbol": "000001.SZ",
+                "name": "平安银行",
+                "shares_before": 100,
+                "buy_price": 100.0,
+                "current_price": 150.0,
+                "stage_stop_price": 120.0,
+                "score_full_market": 0.82,
+                "market_weight": 0.10,
+                "realtime_quote_valid": True,
+                "manual_entry_trade_date": "20260101",
+            }
+        ]
+    )
+
+    class _FakeReader:
+        def read_symbol_frames(self, symbols, **_kwargs):
+            return {"000001.SZ": SimpleNamespace(frame=pd.DataFrame())}
+
+        def read_symbol_frame(self, symbol, **_kwargs):
+            assert symbol == "000001.SZ"
+            return SimpleNamespace(
+                frame=pd.DataFrame(
+                    [
+                        {"trade_date": "20260101", "high": 100.0, "close": 100.0},
+                        {"trade_date": "20260110", "high": 170.0, "close": 166.0},
+                    ]
+                )
+            )
+
+    reviewed = tracker._apply_trailing_take_profit_review(
+        holdings_review,
+        reader=_FakeReader(),
+        analysis_trade_date="20260120",
+    )
+
+    assert reviewed.iloc[0]["trailing_profit_peak_price"] == pytest.approx(170.0)
+    assert reviewed.iloc[0]["trailing_take_profit_status"] == "hold_with_trailing_stop"
+
+
+def test_trailing_take_profit_review_missing_entry_date_is_unanchored_watch_not_reduce():
+    holdings_review = pd.DataFrame(
+        [
+            {
+                "symbol": "000001.SZ",
+                "name": "平安银行",
+                "shares_before": 100,
+                "buy_price": 100.0,
+                "current_price": 120.0,
+                "stage_stop_price": 105.0,
+                "score_full_market": 0.80,
+                "market_weight": 0.10,
+                "realtime_quote_valid": True,
+            }
+        ]
+    )
+
+    class _FakeReader:
+        def read_symbol_frames(self, symbols, **_kwargs):
+            return {
+                "000001.SZ": SimpleNamespace(
+                    frame=pd.DataFrame(
+                        [
+                            {"trade_date": "20250101", "high": 200.0, "close": 198.0},
+                            {"trade_date": "20260120", "high": 121.0, "close": 120.0},
+                        ]
+                    )
+                )
+            }
+
+    reviewed = tracker._apply_trailing_take_profit_review(
+        holdings_review,
+        reader=_FakeReader(),
+        analysis_trade_date="20260120",
+    )
+    row = reviewed.iloc[0]
+
+    assert row["trailing_take_profit_status"] == "hold_with_trailing_stop"
+    assert bool(row["trailing_take_profit_confirmed"]) is False
+    assert "unanchored" in row["trailing_take_profit_basis"]
+    assert "缺少 ledger 买入日期" in row["trailing_take_profit_reason"]
+    assert tracker._position_action(row) == "移动止盈观察"
+
+
+def test_trailing_take_profit_review_unconfirmed_when_peak_history_unavailable():
+    holdings_review = pd.DataFrame(
+        [
+            {
+                "symbol": "000001.SZ",
+                "name": "平安银行",
+                "shares_before": 100,
+                "buy_price": 100.0,
+                "current_price": 120.0,
+                "stage_stop_price": 105.0,
+                "score_full_market": 0.80,
+                "market_weight": 0.10,
+                "realtime_quote_valid": True,
+            }
+        ]
+    )
+
+    class _BrokenReader:
+        def read_symbol_frames(self, symbols, **_kwargs):
+            raise RuntimeError("history unavailable")
+
+    reviewed = tracker._apply_trailing_take_profit_review(
+        holdings_review,
+        reader=_BrokenReader(),
+        analysis_trade_date="20260120",
+    )
+    row = reviewed.iloc[0]
+
+    assert row["trailing_take_profit_status"] == "unconfirmed"
+    assert row["trailing_profit_peak_price"] == 0.0
+    assert "history unavailable" in row["trailing_take_profit_basis"]
 
 
 def test_risk_reduction_sell_gate_accepts_sell_only_broken_stop():
