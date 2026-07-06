@@ -72,6 +72,20 @@ class ThemeScore:
     policy_stage: str = "disabled"
     policy_evidence: list[str] = field(default_factory=list)
     policy_risk_flags: list[str] = field(default_factory=list)
+    theme_turnover_share: float = 0.0
+    turnover_share_sma10: float | None = None
+    turnover_share_stretch: float = 0.0
+    turnover_share_delta_5d: float | None = None
+    turnover_share_trend: str = "disabled"
+    theme_limitup_ratio: float = 0.0
+    limitup_norm: float = 0.0
+    member_turnover_concentration: float = 0.0
+    crowding_risk: float = 0.0
+    crowding_status: str = "disabled"
+    crowding_diagnostic_notes: list[str] = field(default_factory=list)
+    theme_type: str = "industry"
+    membership_source: str = "industry_map"
+    pit_membership: bool = False
     top_symbols: list[str] = field(default_factory=list)
     risk_flags: list[str] = field(default_factory=list)
     evidence: list[str] = field(default_factory=list)
@@ -104,6 +118,20 @@ class ThemeScore:
             "policy_stage": str(self.policy_stage or "disabled"),
             "policy_evidence": _jsonable(self.policy_evidence),
             "policy_risk_flags": _jsonable(self.policy_risk_flags),
+            "theme_turnover_share": _jsonable(self.theme_turnover_share),
+            "turnover_share_sma10": _jsonable(self.turnover_share_sma10),
+            "turnover_share_stretch": _jsonable(self.turnover_share_stretch),
+            "turnover_share_delta_5d": _jsonable(self.turnover_share_delta_5d),
+            "turnover_share_trend": str(self.turnover_share_trend or "disabled"),
+            "theme_limitup_ratio": _jsonable(self.theme_limitup_ratio),
+            "limitup_norm": _jsonable(self.limitup_norm),
+            "member_turnover_concentration": _jsonable(self.member_turnover_concentration),
+            "crowding_risk": _jsonable(self.crowding_risk),
+            "crowding_status": str(self.crowding_status or "disabled"),
+            "crowding_diagnostic_notes": _jsonable(self.crowding_diagnostic_notes),
+            "theme_type": str(self.theme_type or "industry"),
+            "membership_source": str(self.membership_source or "industry_map"),
+            "pit_membership": bool(self.pit_membership),
             "top_symbols": _jsonable(self.top_symbols),
             "risk_flags": _jsonable(self.risk_flags),
             "evidence": _jsonable(self.evidence),
@@ -121,6 +149,7 @@ class ThemeScanResult:
     symbol_scores: dict[str, float] = field(default_factory=dict)
     symbol_smoothed_scores: dict[str, float] = field(default_factory=dict)
     symbol_primary_theme: dict[str, str] = field(default_factory=dict)
+    symbol_theme_memberships: dict[str, list[str]] = field(default_factory=dict)
     symbol_phase: dict[str, str] = field(default_factory=dict)
     symbol_risk_flags: dict[str, list[str]] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -138,6 +167,7 @@ class ThemeScanResult:
             "symbol_scores": _jsonable(self.symbol_scores),
             "symbol_smoothed_scores": _jsonable(self.symbol_smoothed_scores),
             "symbol_primary_theme": _jsonable(self.symbol_primary_theme),
+            "symbol_theme_memberships": _jsonable(self.symbol_theme_memberships),
             "symbol_phase": _jsonable(self.symbol_phase),
             "symbol_risk_flags": _jsonable(self.symbol_risk_flags),
             "metadata": _jsonable(self.metadata),

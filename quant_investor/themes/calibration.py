@@ -7,6 +7,7 @@ from typing import Any, Callable, Iterable
 import pandas as pd
 
 from quant_investor.themes.replay import (
+    PIT_INDUSTRY_LABEL_NOTE,
     ThemeCalibrationDataset,
     ThemeReplayRecord,
 )
@@ -17,6 +18,8 @@ _BASE_METADATA = {
     "no_llm": True,
     "no_network": True,
     "offline_only": True,
+    "pit_industry_labels": False,
+    "industry_label_note": PIT_INDUSTRY_LABEL_NOTE,
 }
 _PHASE_THRESHOLDS = (
     "accumulation",
@@ -155,6 +158,7 @@ class ThemeCalibrationReport:
             f"Available forward data count: {self.available_count}",
             "",
             "This report is offline calibration only and does not change trading behavior.",
+            f"Industry label note: {PIT_INDUSTRY_LABEL_NOTE}",
             "",
             "### Phase Summaries",
         ]
@@ -713,6 +717,7 @@ def _format_optional(value: Any) -> str:
 
 __all__ = [
     "CalibrationMetricSummary",
+    "PIT_INDUSTRY_LABEL_NOTE",
     "ThemeCalibrationReport",
     "ThresholdDiagnostic",
     "build_theme_calibration_report",

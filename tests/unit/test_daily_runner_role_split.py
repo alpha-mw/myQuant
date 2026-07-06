@@ -762,6 +762,38 @@ def test_print_last_report_reads_latest_strategy_record(tmp_path, monkeypatch, c
     assert "older us report" not in out
 
 
+def test_dry_run_reports_config_and_strategy_record_context(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(daily_runner, "ROOT", tmp_path)
+    _write_strategy_record(
+        tmp_path,
+        market="CN",
+        strategy="alpha_one",
+        timestamp="20260403_1730",
+        report_title="dry run report",
+        symbol="600000.SH",
+        action="buy",
+    )
+
+    daily_runner.dry_run(
+        {
+            "market": "CN",
+            "review_model_priority": ["deepseek-chat"],
+            "master_reasoning_effort": "",
+        }
+    )
+    out = capsys.readouterr().out
+
+    assert "=== DRY RUN 模式 ===" in out
+    assert "✓ 配置加载成功" in out
+    assert f"market_root: {tmp_path / 'results' / 'strategy_records' / 'CN'}" in out
+    assert "✓ 市场策略记录目录存在" in out
+    assert "✓ 最近 5 个日期共解析 1 条策略记录" in out
+    assert "window_dates: ['20260403']" in out
+    assert "recent_symbols: ['600000.SH']" in out
+    assert "Review 模型优先级: deepseek-chat" in out
+    assert "DRY RUN 完成。" in out
+
+
 def test_daily_main_backend_only_flag_is_removed(monkeypatch):
     monkeypatch.setattr(daily_runner.sys, "argv", ["daily_runner.py", "--backend-only"])
 

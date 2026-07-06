@@ -15,6 +15,12 @@ import pandas as pd
 
 from quant_investor.market.market_data_reader import MarketDataReader
 from quant_investor.market.market_data_store import MarketDataStore
+from quant_investor.market.pit_universe import (
+    LIST_STATUS_DELISTED,
+    LIST_STATUS_LISTED,
+    PITUniverseRecord,
+    PITUniverseStore,
+)
 
 
 def _load_module(
@@ -126,6 +132,9 @@ class FakePro:
 
     def suspend_d(self, **_kwargs):
         return pd.DataFrame(columns=["ts_code", "trade_date", "suspend_type"])
+
+    def stock_basic(self, **_kwargs):
+        return pd.DataFrame(columns=["ts_code", "list_date"])
 
 
 class BatchFakePro(FakePro):
@@ -755,6 +764,88 @@ def test_build_completeness_report_coverage_uses_scope_expected_and_counts_suspe
     assert report["categories"]["hs300"]["expected"] == 3
     assert report["categories"]["hs300"]["coverage_complete_count"] == 2
     assert report["categories"]["hs300"]["coverage_ratio"] == 2 / 3
+
+
+def test_build_completeness_report_records_suspend_probe_exception(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_module(monkeypatch, freshness_mode="strict")
+    fake_pro = FakePro()
+
+    def _raise_suspend_error(**_kwargs):
+        raise RuntimeError("suspend probe failed")
+
+    fake_pro.suspend_d = _raise_suspend_error
+    monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
+
+    downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
+    _write_cn_parquet_row(tmp_path, "000001.SZ", "2026-03-16")
+
+    components = {"hs300": ["000001.SZ"], "zz500": [], "zz1000": []}
+    report = downloader.build_completeness_report(components=components)
+
+    assert report["complete"] is True
+    assert report["data_quality_issue_count"] == 1
+    issue = report["data_quality_issues"][0]
+    assert issue["source"] == "download_cn._load_latest_suspended_symbols"
+    assert issue["issue_type"] == "suspend_lookup_exception"
+    assert issue["severity"] == "warning"
+    assert issue["message"] == "suspend probe failed"
+
+
+def test_load_active_listing_dates_uses_pit_universe_when_enabled(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_module(monkeypatch, freshness_mode="strict")
+    fake_pro = FakePro()
+    stock_basic_calls = {"count": 0}
+
+    def _count_stock_basic(**_kwargs):
+        stock_basic_calls["count"] += 1
+        return pd.DataFrame(columns=["ts_code", "list_date"])
+
+    fake_pro.stock_basic = _count_stock_basic
+    monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
+
+    pit_root = tmp_path / "parquet" / "cn" / "reference"
+    PITUniverseStore(
+        root_dir=pit_root,
+        raw_root=tmp_path / "pit_raw",
+        compatibility_path=tmp_path / "pit_compat.json",
+    ).write_snapshot(
+        raw_records=[
+            PITUniverseRecord(
+                symbol="000001.SZ",
+                source_list_status=LIST_STATUS_LISTED,
+                list_date="20200101",
+                observed_at="2026-07-06T00:00:00Z",
+                source_run_id="unit-test",
+            ),
+            PITUniverseRecord(
+                symbol="000002.SZ",
+                source_list_status=LIST_STATUS_DELISTED,
+                list_date="20210101",
+                delist_date="20250102",
+                observed_at="2026-07-06T00:00:00Z",
+                source_run_id="unit-test",
+            ),
+        ],
+        observed_at="2026-07-06T00:00:00Z",
+        source_run_id="unit-test",
+    )
+    monkeypatch.setattr(module.config, "PIT_UNIVERSE_ENABLED", True, raising=False)
+    monkeypatch.setattr(module.config, "PIT_UNIVERSE_REQUIRED", False, raising=False)
+    monkeypatch.setattr(module.config, "PIT_UNIVERSE_SOURCE_ROOT", str(pit_root), raising=False)
+
+    downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
+
+    assert downloader._load_active_listing_dates() == {
+        "000001.SZ": "20200101",
+        "000002.SZ": "20210101",
+    }
+    assert stock_basic_calls["count"] == 0
 
 
 def test_main_scopes_check_complete_to_selected_category(monkeypatch):
@@ -1558,6 +1649,22 @@ def test_freshness_index_fast_path_skips_file_peek(monkeypatch, tmp_path):
     # Even though there is no CSV file, the index says up-to-date
     assert report["complete"] is True
     assert report["categories"]["hs300"]["date_counts"] == {"20260316": 1}
+
+
+def test_freshness_index_read_exception_records_diagnostic(monkeypatch, tmp_path):
+    module = _load_module(monkeypatch)
+    fake_pro = FakePro()
+    monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
+
+    downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
+    cache_path = tmp_path / ".cache" / "freshness_index.json"
+    cache_path.mkdir(parents=True)
+
+    assert downloader._load_freshness_index() == {}
+    issue = downloader._download_data_quality_issues[-1]
+    assert issue.source == "download_cn._load_freshness_index"
+    assert issue.issue_type == "freshness_index_read_exception"
+    assert issue.severity == "warning"
 
 
 def test_freshness_index_written_after_download(monkeypatch, tmp_path):

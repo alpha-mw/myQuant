@@ -261,11 +261,27 @@ class MarketDataReader:
         self._components_payload = {}
         return {}
 
-    def list_symbols(self, universe_key: str = "full_a", category: str | None = None) -> list[str]:
+    def list_symbols(
+        self,
+        universe_key: str = "full_a",
+        category: str | None = None,
+        as_of: str | None = None,
+    ) -> list[str]:
         snapshot = self._require_snapshot()
         serving_symbols = self._serving_symbols(snapshot)
         key = str(category or universe_key or "full_a").strip().lower()
         if key in {"", "all", "full", "full_a", "all_a", "full_market"}:
+            if self.market == "CN" and as_of:
+                from quant_investor.config import config
+                from quant_investor.market.pit_universe import PITUniverseStore
+
+                if bool(getattr(config, "PIT_UNIVERSE_ENABLED", False)):
+                    pit_symbols = PITUniverseStore.from_config().listed_symbols(as_of)
+                    if pit_symbols:
+                        serving_set = set(serving_symbols)
+                        return [symbol for symbol in pit_symbols if symbol in serving_set]
+                    if bool(getattr(config, "PIT_UNIVERSE_REQUIRED", False)):
+                        return []
             return serving_symbols
 
         components = self._load_components()
@@ -276,7 +292,21 @@ class MarketDataReader:
         ]
         if component_symbols:
             serving_set = set(serving_symbols)
-            return [symbol for symbol in _dedupe(component_symbols) if symbol in serving_set]
+            symbols = [symbol for symbol in _dedupe(component_symbols) if symbol in serving_set]
+            if self.market == "CN" and as_of:
+                from quant_investor.config import config
+                from quant_investor.market.pit_universe import filter_symbols_by_pit_status, PITUniverseStore
+
+                if bool(getattr(config, "PIT_UNIVERSE_ENABLED", False)):
+                    records = PITUniverseStore.from_config().records_by_symbol()
+                    filtered = filter_symbols_by_pit_status(
+                        symbols,
+                        as_of=as_of,
+                        records=records,
+                        required=bool(getattr(config, "PIT_UNIVERSE_REQUIRED", False)),
+                    )
+                    return filtered.symbols
+            return symbols
         if self.market != "CN":
             return serving_symbols
         return []

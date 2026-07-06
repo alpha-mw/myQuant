@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from quant_investor.themes.calibration import (
+    PIT_INDUSTRY_LABEL_NOTE,
+    build_theme_calibration_report,
     evidence_quality,
     score_bucket,
     summarize_records,
     theme_score_bucket,
 )
-from quant_investor.themes.replay import ThemeReplayRecord
+from quant_investor.themes.replay import ThemeCalibrationDataset, ThemeReplayRecord
 
 
 def _record(
@@ -83,3 +85,14 @@ def test_theme_score_bucket_boundaries():
     assert theme_score_bucket(55.0) == "55-70"
     assert theme_score_bucket(70.0) == "70-85"
     assert theme_score_bucket(85.0) == "85-100"
+
+
+def test_calibration_report_marks_industry_labels_non_pit():
+    dataset = ThemeCalibrationDataset(records=[_record(symbol="000001.SZ")])
+
+    report = build_theme_calibration_report(dataset, min_sample=1)
+    payload = report.to_dict()
+
+    assert payload["metadata"]["pit_industry_labels"] is False
+    assert payload["metadata"]["industry_label_note"] == PIT_INDUSTRY_LABEL_NOTE
+    assert PIT_INDUSTRY_LABEL_NOTE in report.to_markdown()

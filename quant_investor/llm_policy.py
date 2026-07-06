@@ -9,17 +9,13 @@ centralized so provider keys alone do not imply local LLM calls are allowed.
 from __future__ import annotations
 
 import os
-from pathlib import Path
+
+from quant_investor.env_loading import load_env_file
 
 TRUE_VALUES = {"1", "true", "yes", "on", "codex"}
 FALSE_VALUES = {"0", "false", "no", "off", "local", "none", ""}
 
-try:
-    from dotenv import load_dotenv
-
-    load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
-except ImportError:
-    pass
+load_env_file()
 
 
 def _env_flag(name: str, *, default: bool = False) -> bool:

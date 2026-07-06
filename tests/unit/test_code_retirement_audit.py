@@ -10,6 +10,21 @@ from scripts.workspace_layout import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
+PHASE7_RETIRED_STEMS = {
+    "advanced_risk_metrics",
+    "factor_analyzer",
+    "news_analysis",
+    "sentiment_analysis",
+    "signal_calibration",
+    "stress_tester",
+    "var_calculator",
+    "financial_analysis",
+    "risk_management_layer",
+}
+PHASE7_RETIRED_MODULES = {
+    "quant_investor/" + stem + ".py"
+    for stem in PHASE7_RETIRED_STEMS
+}
 
 
 def test_repository_retirement_candidates_have_no_production_references():
@@ -33,7 +48,7 @@ def test_repository_retired_runtime_sources_are_removed_from_code_tree():
         if candidate["exists"]
     }
 
-    assert manifest["candidate_count"] == 8
+    assert manifest["candidate_count"] == 17
     assert present == set()
 
 
@@ -44,9 +59,22 @@ def test_code_retirement_audit_keeps_missing_candidates_in_manifest(tmp_path):
         for candidate in manifest["candidates"]
     }
 
-    assert manifest["candidate_count"] == 8
+    assert manifest["candidate_count"] == 17
     assert candidates["quant_investor/kronos_predictor.py"]["exists"] is False
     assert candidates["quant_investor/kronos_predictor.py"]["reference_count"] == 0
+
+
+def test_phase7_retired_modules_are_removed_and_unreferenced():
+    manifest = build_code_retirement_reference_audit(ROOT)
+    candidates = {
+        candidate["relative_path"]: candidate
+        for candidate in manifest["candidates"]
+    }
+
+    assert PHASE7_RETIRED_MODULES <= set(candidates)
+    for relative_path in PHASE7_RETIRED_MODULES:
+        assert candidates[relative_path]["exists"] is False
+        assert candidates[relative_path]["reference_count"] == 0
 
 
 def test_code_retirement_audit_classifies_reference_contexts(tmp_path):

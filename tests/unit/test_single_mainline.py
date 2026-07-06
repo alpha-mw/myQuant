@@ -6,9 +6,9 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-import quant_investor.agent_orchestrator as agent_orchestrator_module
+import quant_investor.control_chain as control_chain_module
 import quant_investor.pipeline.mainline as mainline_module
-from quant_investor.agent_orchestrator import AgentOrchestrator
+from quant_investor.control_chain import AgentOrchestrator
 from quant_investor.agent_protocol import (
     ActionLabel,
     AgentStatus,
@@ -291,7 +291,7 @@ def test_precomputed_research_bridge_reuses_macro_branch_context_without_second_
     def _unexpected_macro_run(self, payload):
         raise AssertionError(f"unexpected macro rerun: {payload}")
 
-    monkeypatch.setattr(agent_orchestrator_module.MacroAgent, "run", _unexpected_macro_run)
+    monkeypatch.setattr(control_chain_module.MacroAgent, "run", _unexpected_macro_run)
 
     orchestration = AgentOrchestrator().run_with_precomputed_research(
         data_bundle=_make_data_bundle(symbols),

@@ -1179,7 +1179,13 @@ def _prepare_market_context(
         and bool(theme_pool_metadata.get("required"))
         and str(theme_pool_metadata.get("status") or "") == "applied"
     )
-    if not candidate_symbols and not theme_pool_required_applied:
+    holding_review_funnel_override = _holding_single_review_active(
+        recall_context=recall_context,
+        symbols=researchable_symbols,
+    )
+    if holding_review_funnel_override:
+        candidate_symbols = list(researchable_symbols)
+    elif not candidate_symbols and not theme_pool_required_applied:
         candidate_symbols = list(researchable_symbols)
     with profile_stage(
         runtime_profiler,
@@ -1233,6 +1239,7 @@ def _prepare_market_context(
             },
             "branch_data_blocked_count": len(branch_governance_report.blocked_symbols),
             "macro_data_readiness_block": macro_blocked,
+            "holding_review_funnel_override": holding_review_funnel_override,
             "holding_review_branch_readiness_override": holding_review_readiness_override,
         }
     )
@@ -1259,6 +1266,7 @@ def _prepare_market_context(
     global_context.metadata["branch_readiness_artifacts"] = branch_governance_artifacts
     global_context.metadata["four_branch_fusion_blocked"] = macro_blocked
     global_context.metadata["blocked_branch_symbols"] = list(branch_governance_report.blocked_symbols[:128])
+    global_context.metadata["holding_review_funnel_override"] = holding_review_funnel_override
     global_context.metadata["holding_review_branch_readiness_override"] = holding_review_readiness_override
     global_context.metadata["quantifiable_universe_count"] = len(branch_governance_report.quantifiable_universe)
     global_context.metadata["investable_universe_count"] = len(branch_governance_report.investable_universe)

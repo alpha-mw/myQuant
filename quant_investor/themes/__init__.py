@@ -40,6 +40,12 @@ from quant_investor.themes.policy import (
     PolicyCatalystScore,
     PolicyEvent,
 )
+from quant_investor.themes.membership import (
+    ThemeMembership,
+    ThemeMembershipLoadResult,
+    ThemeMembershipStore,
+    active_memberships_by_symbol,
+)
 from quant_investor.themes.policy_validation import (
     PolicyEventValidationIssue,
     validate_policy_event_jsonl,
@@ -60,6 +66,9 @@ __all__ = [
     "ThemeGovernanceRegistry",
     "ThemeGovernanceRegistryEntry",
     "ThemeGovernanceResult",
+    "ThemeMembership",
+    "ThemeMembershipLoadResult",
+    "ThemeMembershipStore",
     "ThemePhase",
     "ThemeReplayRecord",
     "ThemeScore",
@@ -77,6 +86,7 @@ __all__ = [
     "build_theme_shadow_monitor",
     "build_threshold_diagnostics",
     "evaluate_theme_governance",
+    "active_memberships_by_symbol",
     "evaluate_threshold",
     "load_theme_governance_registry",
     "smooth_numeric_series",

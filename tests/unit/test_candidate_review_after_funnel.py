@@ -560,3 +560,215 @@ def test_holding_single_review_runs_branches_when_readiness_blocks_symbol(monkey
     }
     assert result["global_context"].metadata["holding_review_branch_readiness_override"] is True
     assert result["global_context"].universe_tiers["shortlistable"] == ["A"]
+
+
+def test_holding_single_review_runs_branches_when_funnel_excludes_symbol(monkeypatch):
+    import quant_investor.market.dag_executor as dag_module
+    import quant_investor.market.dag.context as dag_context
+
+    reviewed: dict[str, list[str]] = {"fundamental": [], "intelligence": []}
+
+    class _EmptyRequiredThemeFunnel:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def run(self, *, quant_result, global_context):
+            return _FakeFunnelOutput(
+                candidates=[],
+                candidate_scores={},
+                excluded_symbols={"A": "theme_pool_not_core"},
+                funnel_metadata={
+                    "after_gates": 1,
+                    "final_candidates": 0,
+                    "theme_pool": {
+                        "enabled": True,
+                        "required": True,
+                        "status": "applied",
+                    },
+                },
+            )
+
+    def _fake_fundamental_run(self, payload):
+        symbol = list(payload["stock_pool"])[0]
+        reviewed["fundamental"].append(symbol)
+        return BranchVerdict(
+            agent_name="fundamental",
+            thesis=f"fundamental {symbol}",
+            symbol=symbol,
+            final_score=0.2,
+            final_confidence=0.4,
+        )
+
+    def _fake_intelligence_run(self, payload):
+        symbol = list(payload["stock_pool"])[0]
+        reviewed["intelligence"].append(symbol)
+        return BranchVerdict(
+            agent_name="intelligence",
+            thesis=f"intelligence {symbol}",
+            symbol=symbol,
+            final_score=0.1,
+            final_confidence=0.35,
+        )
+
+    def _fake_macro_run(self, payload):
+        return BranchVerdict(
+            agent_name="macro",
+            thesis="macro stable",
+            final_score=0.2,
+            final_confidence=0.8,
+            metadata={"regime": "neutral", "target_gross_exposure": 0.5},
+        )
+
+    def _fake_prior(self, symbol, global_context):
+        return PriorSet(composite_prior=0.5)
+
+    def _fake_likelihoods(self, *, branch_results, symbol, candidate_symbols=None):
+        return LikelihoodSet(
+            quant_likelihood=0.5,
+            fundamental_likelihood=0.4,
+            intelligence_likelihood=0.4,
+        )
+
+    def _fake_posterior(
+        self,
+        prior,
+        likelihoods,
+        *,
+        symbol,
+        company_name,
+        regime,
+        is_degraded,
+    ):
+        return PosteriorResult(
+            symbol=symbol,
+            company_name=company_name,
+            prior=prior,
+            likelihoods=likelihoods,
+            posterior_win_rate=0.5,
+            posterior_expected_alpha=0.0,
+            posterior_confidence=0.4,
+            posterior_action_score=0.3,
+            posterior_edge_after_costs=0.0,
+            evidence_sources=["quant", "fundamental", "intelligence"],
+            action_threshold_used=0.55,
+        )
+
+    def _fake_risk_run(self, payload):
+        return RiskDecision(
+            gross_exposure_cap=0.5,
+            target_exposure_cap=0.5,
+            max_weight=0.2,
+            blocked_symbols=["A"],
+        )
+
+    def _fake_ic_run(self, payload):
+        return ICDecision(action=ActionLabel.HOLD, final_score=0.3, final_confidence=0.4)
+
+    def _fake_portfolio_run(self, payload):
+        return PortfolioPlan(target_exposure=0.0, target_gross_exposure=0.0, cash_ratio=1.0)
+
+    def _fake_narrator_run(self, payload):
+        return ReportBundle(
+            markdown_report="# report",
+            shortlist=list(payload.get("shortlist", [])),
+            portfolio_decision=payload.get("portfolio_decision"),
+            execution_trace=payload.get("execution_trace"),
+            what_if_plan=payload.get("what_if_plan"),
+        )
+
+    monkeypatch.setattr(dag_module, "MarketDataReader", _FakeReader)
+    monkeypatch.setattr(dag_module, "DeterministicFunnel", _EmptyRequiredThemeFunnel)
+    monkeypatch.setattr(dag_module.FundamentalAgent, "run", _fake_fundamental_run)
+    monkeypatch.setattr(dag_module.IntelligenceAgent, "run", _fake_intelligence_run)
+    monkeypatch.setattr(dag_module.MacroAgent, "run", _fake_macro_run)
+    monkeypatch.setattr(dag_module.HierarchicalPriorBuilder, "build_prior", _fake_prior)
+    monkeypatch.setattr(
+        dag_module.SignalLikelihoodMapper,
+        "compute_likelihoods",
+        _fake_likelihoods,
+    )
+    monkeypatch.setattr(
+        dag_module.BayesianPosteriorEngine,
+        "compute_posterior",
+        _fake_posterior,
+    )
+    monkeypatch.setattr(
+        dag_module,
+        "_portfolio_master_advisory",
+        lambda *args, **kwargs: (None, {"status": "fallback"}),
+    )
+    monkeypatch.setattr(dag_module.RiskGuard, "run", _fake_risk_run)
+    monkeypatch.setattr(dag_module.ICCoordinator, "run", _fake_ic_run)
+    monkeypatch.setattr(dag_module.PortfolioConstructor, "run", _fake_portfolio_run)
+    monkeypatch.setattr(dag_module.NarratorAgent, "run", _fake_narrator_run)
+    monkeypatch.setattr(dag_module, "_load_company_name_map", lambda market: {"A": "Alpha"})
+    monkeypatch.setattr(dag_module, "detect_provider_health", lambda **_kwargs: {})
+    monkeypatch.setattr(
+        dag_context,
+        "assess_branch_data_readiness",
+        lambda **kwargs: BranchGovernanceReport(
+            run_id="fixture",
+            market="CN",
+            category="full_a",
+            as_of="2026-03-01",
+            readiness={
+                "quant": BranchDataReadiness(
+                    branch="quant",
+                    status=STATUS_PASS,
+                    coverage_ratio=1.0,
+                    source_priority=SOURCE_TUSHARE,
+                ),
+                "fundamental": BranchDataReadiness(
+                    branch="fundamental",
+                    status=STATUS_PASS,
+                    coverage_ratio=1.0,
+                    source_priority=SOURCE_TUSHARE,
+                ),
+                "intelligence": BranchDataReadiness(
+                    branch="intelligence",
+                    status=STATUS_PASS,
+                    coverage_ratio=1.0,
+                    source_priority=SOURCE_TUSHARE,
+                ),
+                "macro": BranchDataReadiness(
+                    branch="macro",
+                    status=STATUS_PASS,
+                    coverage_ratio=1.0,
+                    source_priority=SOURCE_TUSHARE,
+                ),
+            },
+            blocked_symbols=[],
+            quantifiable_universe=["A"],
+            investable_universe=["A"],
+            branch_data={},
+        ),
+    )
+    monkeypatch.setattr(
+        dag_context,
+        "write_branch_readiness_report",
+        lambda report: {"json": "fixture.json", "md": "fixture.md", "csv": "fixture.csv"},
+    )
+
+    result = execute_market_dag(
+        market="CN",
+        symbols=["A"],
+        universe="full_a",
+        mode="sample",
+        batch_size=1,
+        total_capital=1_000_000,
+        top_k=1,
+        data_snapshot={"local_latest_trade_date": "20260301", "freshness_mode": "stable"},
+        enable_agent_layer=False,
+        verbose=False,
+        recall_context={"holding_symbol": "A"},
+    )
+
+    assert reviewed == {"fundamental": ["A"], "intelligence": ["A"]}
+    assert set(result["branch_verdicts_by_symbol"]["A"]) == {
+        "quant",
+        "fundamental",
+        "intelligence",
+        "macro",
+    }
+    assert result["global_context"].metadata["holding_review_funnel_override"] is True
+    assert result["global_context"].universe_tiers["shortlistable"] == ["A"]

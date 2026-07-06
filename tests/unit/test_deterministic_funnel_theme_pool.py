@@ -148,7 +148,9 @@ def test_theme_pool_generates_theme_member_candidates_before_ranking() -> None:
     assert theme_pool["unthemed_exclusion_count"] == 1
     assert theme_pool["symbols"]["RISKY"]["bucket"] == "risk_watch_fake_breakout"
     assert theme_pool["symbols"]["RISKY"]["candidate_intent"] == "research_candidate_not_buy_signal"
-    assert theme_pool["symbols"]["LOW_SCORE"]["bucket"] in {"extended_low_score", "extended"}
+    assert theme_pool["symbols"]["LOW_SCORE"]["bucket"] == "forced_theme"
+    assert theme_pool["symbols"]["LOW_SCORE"]["source"] == "core"
+    assert theme_pool["residual_symbol_count"] == 0
 
 
 def test_theme_pool_required_does_not_silently_fallback_to_baseline() -> None:

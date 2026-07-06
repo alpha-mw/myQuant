@@ -4,9 +4,9 @@ Quant-Investor V7.0 配置管理模块
 """
 
 import os
-from pathlib import Path
 
 from quant_investor.credential_utils import get_secret
+from quant_investor.env_loading import load_env_file
 
 MAINLINE_ENV_DEFAULTS: dict[str, str] = {
     "TUSHARE_TOKEN": "",
@@ -39,6 +39,15 @@ MAINLINE_ENV_DEFAULTS: dict[str, str] = {
     "THEME_SNAPSHOT_ENABLED": "1",
     "THEME_SNAPSHOT_DIR": "results/theme_snapshots",
     "THEME_SNAPSHOT_SAVE_DISABLED": "0",
+    "THEME_HOLDING_GUARD_ENABLED": "0",
+    "THEME_HOLDING_GUARD_TIGHTEN_RATIO": "0.5",
+    "THEME_CROWDING_ENABLED": "0",
+    "THEME_CROWDING_MIN_UNIVERSE": "30",
+    "THEME_CONCEPT_MEMBERSHIP_ENABLED": "0",
+    "THEME_CONCEPT_MEMBERSHIP_PATH": "data/theme_membership.jsonl",
+    "THEME_CONCEPT_MEMBERSHIP_REQUIRED": "0",
+    "THEME_CONCEPT_PRIMARY_MARGIN": "0.05",
+    "THEME_STAT_CLUSTER_ENABLED": "0",
     "THEME_FUNNEL_BOOST_ENABLED": "1",
     "THEME_FUNNEL_BOOST_SCORE_SOURCE": "raw",
     "THEME_SYMBOL_BOOST_CAP": "0.10",
@@ -88,12 +97,17 @@ MAINLINE_ENV_DEFAULTS: dict[str, str] = {
     "MARKOV_REGIME_MAX_REFERENCE_SYMBOLS": "300",
     "MARKOV_REGIME_REFERENCE_UNIVERSE_CN": "full_a",
     "MARKOV_REGIME_REFERENCE_UNIVERSE_US": "full_us",
+    "PIT_UNIVERSE_ENABLED": "0",
+    "PIT_UNIVERSE_REQUIRED": "0",
+    "PIT_UNIVERSE_SOURCE_ROOT": "data/parquet/cn/reference",
+    "PIT_UNIVERSE_BACKFILL_ENABLED": "0",
     "KIMI_API_KEY": "",
     "DEEPSEEK_API_KEY": "",
     "DASHSCOPE_API_KEY": "",
     "FRED_API_KEY": "",
-    "API_HOST": "0.0.0.0",
+    "API_HOST": "127.0.0.1",
     "API_PORT": "8000",
+    "WORKSPACE_AUTH_TOKEN": "",
     "CORS_ORIGINS": "http://localhost:5173,http://localhost:3000",
     "DB_PATH": "data/stock_database.db",
     "APP_DB_PATH": "data/app.db",
@@ -107,18 +121,12 @@ MAINLINE_ENV_DEFAULTS: dict[str, str] = {
     "COMMISSION_RATE": "0.0003",
     "STAMP_DUTY_RATE": "0.001",
     "SLIPPAGE": "0.001",
+    "EXECUTION_COST_MODEL_ENABLED": "0",
 }
 
 MAINLINE_ENV_KEYS: tuple[str, ...] = tuple(MAINLINE_ENV_DEFAULTS)
 
-# 尝试加载 .env 文件
-try:
-    from dotenv import load_dotenv
-    env_path = Path(__file__).resolve().parent.parent / '.env'
-    if env_path.exists():
-        load_dotenv(env_path)
-except ImportError:
-    pass
+load_env_file()
 
 def _env_float(name: str, default: float) -> float:
     try:
@@ -260,6 +268,7 @@ class Config:
     CN_FRESHNESS_COVERAGE_THRESHOLD: float = _env_float('CN_FRESHNESS_COVERAGE_THRESHOLD', 0.95)
     CN_STRICT_EARLY_STOP_SAMPLE_SIZE: int = _env_int('CN_STRICT_EARLY_STOP_SAMPLE_SIZE', 10)
     CN_STRICT_EARLY_STOP_STALE_RATIO: float = _env_float('CN_STRICT_EARLY_STOP_STALE_RATIO', 0.80)
+    EXECUTION_COST_MODEL_ENABLED: bool = _env_bool('EXECUTION_COST_MODEL_ENABLED', False)
 
     # Pipeline mode: "bayesian" (new 7-layer) or "legacy" (original 3-layer)
     PIPELINE_MODE: str = os.environ.get('PIPELINE_MODE', 'bayesian')
@@ -290,6 +299,15 @@ class Config:
     )
     THEME_SNAPSHOT_DIR: str = _env_str('THEME_SNAPSHOT_DIR', 'results/theme_snapshots')
     THEME_SNAPSHOT_SAVE_DISABLED: bool = _env_bool('THEME_SNAPSHOT_SAVE_DISABLED', False)
+    THEME_HOLDING_GUARD_ENABLED: bool = _env_bool('THEME_HOLDING_GUARD_ENABLED', False)
+    THEME_HOLDING_GUARD_TIGHTEN_RATIO: float = _env_float('THEME_HOLDING_GUARD_TIGHTEN_RATIO', 0.5)
+    THEME_CROWDING_ENABLED: bool = _env_bool('THEME_CROWDING_ENABLED', False)
+    THEME_CROWDING_MIN_UNIVERSE: int = _env_int('THEME_CROWDING_MIN_UNIVERSE', 30)
+    THEME_CONCEPT_MEMBERSHIP_ENABLED: bool = _env_bool('THEME_CONCEPT_MEMBERSHIP_ENABLED', False)
+    THEME_CONCEPT_MEMBERSHIP_PATH: str = _env_str('THEME_CONCEPT_MEMBERSHIP_PATH', 'data/theme_membership.jsonl')
+    THEME_CONCEPT_MEMBERSHIP_REQUIRED: bool = _env_bool('THEME_CONCEPT_MEMBERSHIP_REQUIRED', False)
+    THEME_CONCEPT_PRIMARY_MARGIN: float = _env_float('THEME_CONCEPT_PRIMARY_MARGIN', 0.05)
+    THEME_STAT_CLUSTER_ENABLED: bool = _env_bool('THEME_STAT_CLUSTER_ENABLED', False)
     THEME_FUNNEL_BOOST_ENABLED: bool = _env_bool(
         'THEME_FUNNEL_BOOST_ENABLED',
         MAINLINE_ENV_DEFAULTS['THEME_FUNNEL_BOOST_ENABLED'] == '1',
@@ -402,6 +420,10 @@ class Config:
     MARKOV_REGIME_MAX_REFERENCE_SYMBOLS: int = _env_int('MARKOV_REGIME_MAX_REFERENCE_SYMBOLS', 300)
     MARKOV_REGIME_REFERENCE_UNIVERSE_CN: str = _env_str('MARKOV_REGIME_REFERENCE_UNIVERSE_CN', 'full_a')
     MARKOV_REGIME_REFERENCE_UNIVERSE_US: str = _env_str('MARKOV_REGIME_REFERENCE_UNIVERSE_US', 'full_us')
+    PIT_UNIVERSE_ENABLED: bool = _env_bool('PIT_UNIVERSE_ENABLED', False)
+    PIT_UNIVERSE_REQUIRED: bool = _env_bool('PIT_UNIVERSE_REQUIRED', False)
+    PIT_UNIVERSE_SOURCE_ROOT: str = _env_str('PIT_UNIVERSE_SOURCE_ROOT', 'data/parquet/cn/reference')
+    PIT_UNIVERSE_BACKFILL_ENABLED: bool = _env_bool('PIT_UNIVERSE_BACKFILL_ENABLED', False)
     DEFAULT_AGENT_TIMEOUT_SECONDS: float = _env_float('AGENT_TIMEOUT_SECONDS', 180.0)
     DEFAULT_MASTER_TIMEOUT_SECONDS: float = _env_float('MASTER_TIMEOUT_SECONDS', 900.0)
     DEFAULT_AGENT_TOTAL_TIMEOUT_SECONDS: float = _env_float('TOTAL_TIMEOUT_SECONDS', 2400.0)

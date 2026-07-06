@@ -261,6 +261,13 @@ factor library into official scoring, stock selection, posterior scoring,
 `RiskGuard`, `PortfolioConstructor`, target weights, orders, providers, LLMs,
 brokers, or execution.
 
+`portfolio_backtest.TransactionCostModel` has an optional participation-impact
+adapter behind `EXECUTION_COST_MODEL_ENABLED=0` by default, or an explicit
+constructor flag for offline backtest experiments. When disabled, the legacy
+flat-bps backtest cost path is preserved exactly. When enabled, the adapter can
+consume `FactorExecutionCostConfig` plus local symbol amount/record inputs to
+charge participation-based impact inside backtest accounting only.
+
 ## Expected Artifact Directories
 
 - `data/bayesian_outcome_ledger`

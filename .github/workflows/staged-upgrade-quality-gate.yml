@@ -37,7 +37,7 @@ jobs:
             tests/unit/test_observability.py \
             tests/unit/test_bayesian_posterior.py \
             tests/unit/test_version_naming_consistency.py \
-            --override-ini addopts='' -q
+            -q
 
       - name: Run focused staged-upgrade mypy
         run: |

@@ -132,9 +132,10 @@ def run_web_api(
 ) -> None:
     import uvicorn
 
-    from web.config import API_HOST, API_PORT
+    from web.config import API_HOST, API_PORT, warn_if_insecure_binding
 
     web_dir = Path(__file__).resolve().parents[2] / "web"
+    warn_if_insecure_binding(host or API_HOST)
     uvicorn.run(
         "web.main:app",
         host=host or API_HOST,

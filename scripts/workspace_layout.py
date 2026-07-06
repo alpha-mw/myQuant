@@ -41,6 +41,11 @@ DERIVED_ARTIFACT_DIRS = {
     Path("results") / "htmlcov",
 }
 
+
+def _retired_module_path(stem: str) -> Path:
+    return Path("quant_investor") / f"{stem}.py"
+
+
 PROTECTED_INVENTORY_PATHS: tuple[tuple[Path, str, str], ...] = (
     (
         Path("data") / "parquet" / "cn" / "_latest.json",
@@ -126,6 +131,51 @@ PROTECTED_INVENTORY_PATHS: tuple[tuple[Path, str, str], ...] = (
         Path("quant_investor") / "agents" / "subagents" / "kline_agent.py",
         "code_retirement_candidate",
         "retired kline subagent surface; explicit legacy imports only until removal",
+    ),
+    (
+        _retired_module_path("advanced_risk_metrics"),
+        "code_retirement_candidate",
+        "retired orphaned advanced risk helper; single mainline uses canonical risk metadata",
+    ),
+    (
+        _retired_module_path("factor_analyzer"),
+        "code_retirement_candidate",
+        "retired orphaned standalone factor analyzer; governed factor pipelines use package modules",
+    ),
+    (
+        _retired_module_path("news_analysis"),
+        "code_retirement_candidate",
+        "retired orphaned news analyzer; runtime intelligence path must not call external news APIs here",
+    ),
+    (
+        _retired_module_path("sentiment_analysis"),
+        "code_retirement_candidate",
+        "retired orphaned sentiment analyzer; canonical intelligence path owns text sentiment metadata",
+    ),
+    (
+        _retired_module_path("signal_calibration"),
+        "code_retirement_candidate",
+        "retired orphaned signal calibration helper; calibration lives in governed local modules",
+    ),
+    (
+        _retired_module_path("stress_tester"),
+        "code_retirement_candidate",
+        "retired orphaned stochastic stress helper; avoid random-noise stress tests outside governed risk paths",
+    ),
+    (
+        _retired_module_path("var_calculator"),
+        "code_retirement_candidate",
+        "retired orphaned VaR helper; restore only after rewrite with seeded rng, ddof=1, and minimum-sample guards",
+    ),
+    (
+        _retired_module_path("financial_analysis"),
+        "code_retirement_candidate",
+        "retired orphaned financial analysis helper; canonical fundamental branch owns financial metadata",
+    ),
+    (
+        _retired_module_path("risk_management_layer"),
+        "code_retirement_candidate",
+        "retired orphaned risk management layer; canonical RiskGuard/risk tensor paths own runtime risk control",
     ),
 )
 _PATH_AUDIT_FILES = (

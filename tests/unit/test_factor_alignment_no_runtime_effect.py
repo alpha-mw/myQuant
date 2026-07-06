@@ -7,6 +7,11 @@ ROOT = Path(__file__).resolve().parents[2]
 
 FORBIDDEN_RUNTIME_MODULES = [
     ROOT / "daily_runner.py",
+    ROOT / "quant_investor" / "automation" / "daily_runner.py",
+    ROOT / "quant_investor" / "automation" / "analysis_runner.py",
+    ROOT / "quant_investor" / "automation" / "history_loader.py",
+    ROOT / "quant_investor" / "automation" / "persistence.py",
+    ROOT / "quant_investor" / "automation" / "report_builder.py",
     ROOT / "quant_investor" / "portfolio_optimizer.py",
     ROOT / "quant_investor" / "agents" / "risk_guard.py",
     ROOT / "quant_investor" / "agents" / "portfolio_constructor.py",

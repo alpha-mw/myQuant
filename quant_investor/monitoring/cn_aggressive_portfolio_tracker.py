@@ -50,6 +50,43 @@ DEFAULT_NOTES_PATH = DEFAULT_BASE_DIR / "latest_notes_payload.md"
 DEFAULT_INITIAL_CAPITAL = 1_000_000.0
 MAX_EFFECTIVE_HOLDING_COUNT = 8
 INVALID_MANUAL_LEDGER_STATUS_MARKERS = ("invalidated_price_basis_no_execution",)
+TRAILING_TAKE_PROFIT_REVIEW_GIVEBACK_RATIO = 0.20
+TRAILING_TAKE_PROFIT_REDUCE_GIVEBACK_RATIO = 0.35
+TRAILING_TAKE_PROFIT_ENTRY_DATE_COLUMNS = (
+    "manual_entry_trade_date",
+    "entry_trade_date",
+    "entry_date",
+    "buy_trade_date",
+    "buy_date",
+    "first_buy_date",
+    "open_date",
+)
+TRAILING_TAKE_PROFIT_PEAK_PRICE_COLUMNS = (
+    "trailing_profit_peak_price",
+    "profit_peak_price",
+    "peak_price",
+)
+TRAILING_TAKE_PROFIT_PEAK_DATE_COLUMNS = (
+    "trailing_profit_peak_trade_date",
+    "profit_peak_trade_date",
+    "peak_trade_date",
+)
+TRAILING_TAKE_PROFIT_LEDGER_COLUMNS = (
+    "manual_entry_trade_date",
+    "trailing_profit_tracking_start_date",
+    "trailing_take_profit_status",
+    "trailing_take_profit_confirmed",
+    "trailing_take_profit_basis",
+    "trailing_profit_peak_price",
+    "trailing_profit_peak_trade_date",
+    "peak_unrealized_profit",
+    "current_unrealized_profit",
+    "profit_giveback_ratio",
+    "trailing_profit_review_price",
+    "trailing_profit_reduce_price",
+    "trailing_stop_price",
+    "trailing_take_profit_reason",
+)
 QUOTE_TIMEOUT = 20
 REALTIME_EXECUTION_PRICE_FIELDS = (
     "current",
@@ -718,6 +755,359 @@ def _safe_pct(value: float, base: float) -> float:
     return value / base
 
 
+def _trailing_take_profit_row_date(row: Any, columns: tuple[str, ...]) -> str:
+    for column in columns:
+        value = row.get(column) if isinstance(row, pd.Series) else getattr(row, column, "")
+        trade_date = _compact_trade_date(value)
+        if trade_date:
+            return trade_date
+    return ""
+
+
+def _trailing_take_profit_row_float(row: Any, columns: tuple[str, ...]) -> float:
+    for column in columns:
+        value = row.get(column) if isinstance(row, pd.Series) else getattr(row, column, None)
+        number = _safe_float(value, 0.0)
+        if number > 0:
+            return number
+    return 0.0
+
+
+def _trailing_take_profit_peak_from_history(
+    frame: pd.DataFrame,
+    *,
+    start_date: str,
+    end_date: str,
+    current_price: float,
+) -> tuple[float, str, str]:
+    if frame.empty or "trade_date" not in frame.columns:
+        return 0.0, "", ""
+
+    price_column = "high" if "high" in frame.columns else "close" if "close" in frame.columns else ""
+    if not price_column:
+        return 0.0, "", ""
+
+    work = frame.copy()
+    work["trade_date"] = work["trade_date"].map(_compact_trade_date)
+    work = work[work["trade_date"].str.len().eq(8)].copy()
+    if start_date:
+        work = work[work["trade_date"] >= start_date].copy()
+    if end_date:
+        work = work[work["trade_date"] <= end_date].copy()
+    if work.empty:
+        return 0.0, "", ""
+
+    work["_trailing_price"] = pd.to_numeric(work[price_column], errors="coerce")
+    work = work[work["_trailing_price"] > 0].copy()
+    if work.empty:
+        return 0.0, "", ""
+
+    peak_idx = work["_trailing_price"].idxmax()
+    peak_price = _safe_float(work.loc[peak_idx, "_trailing_price"], 0.0)
+    peak_trade_date = str(work.loc[peak_idx, "trade_date"] or "")
+    peak_source = price_column
+    if current_price > peak_price:
+        peak_price = current_price
+        peak_trade_date = end_date or peak_trade_date
+        peak_source = "realtime_current"
+    return round(peak_price, 6), peak_trade_date, peak_source
+
+
+def _classify_trailing_take_profit(
+    *,
+    current_price: float,
+    buy_price: float,
+    shares: int,
+    peak_price: float,
+    stage_stop_price: float,
+    score_full_market: float,
+    market_weight: float,
+    realtime_quote_valid: bool,
+    confirmed_basis: bool,
+) -> dict[str, Any]:
+    peak_unrealized_profit = max(peak_price - buy_price, 0.0) * shares
+    current_unrealized_profit = max(current_price - buy_price, 0.0) * shares
+    giveback_ratio = (
+        (peak_unrealized_profit - current_unrealized_profit) / peak_unrealized_profit
+        if peak_unrealized_profit > 0
+        else 0.0
+    )
+    review_price = (
+        buy_price + (1.0 - TRAILING_TAKE_PROFIT_REVIEW_GIVEBACK_RATIO) * (peak_price - buy_price)
+        if peak_price > buy_price
+        else 0.0
+    )
+    reduce_price = (
+        buy_price + (1.0 - TRAILING_TAKE_PROFIT_REDUCE_GIVEBACK_RATIO) * (peak_price - buy_price)
+        if peak_price > buy_price
+        else 0.0
+    )
+    trailing_stop = max(stage_stop_price, review_price) if review_price > 0 else stage_stop_price
+
+    if not realtime_quote_valid or current_price <= 0 or buy_price <= 0 or shares <= 0 or peak_price <= 0:
+        status = "unconfirmed"
+        reason = "实时价、持仓成本、股数或利润峰值不可验证，移动止盈不推导卖出。"
+    elif peak_unrealized_profit <= 0:
+        status = "no_sell_signal"
+        reason = "尚无正向利润峰值，移动止盈沿用阶段止损。"
+    elif giveback_ratio >= TRAILING_TAKE_PROFIT_REDUCE_GIVEBACK_RATIO and confirmed_basis:
+        status = "reduce_risk"
+        reason = (
+            f"利润峰值回吐 {giveback_ratio:.2%} 已超过 "
+            f"{TRAILING_TAKE_PROFIT_REDUCE_GIVEBACK_RATIO:.0%} 风险线，需用实时 quote 和人工确认减仓。"
+        )
+    elif (
+        giveback_ratio > 0
+        and confirmed_basis
+        and (current_price < stage_stop_price or score_full_market < 0.60)
+    ):
+        status = "clear_risk"
+        reason = "利润回吐叠加阶段止损/评分破位，需确认是否退出风险仓。"
+    elif giveback_ratio >= TRAILING_TAKE_PROFIT_REVIEW_GIVEBACK_RATIO:
+        status = "hold_with_trailing_stop"
+        reason = (
+            f"利润峰值回吐 {giveback_ratio:.2%} 已达到 "
+            f"{TRAILING_TAKE_PROFIT_REVIEW_GIVEBACK_RATIO:.0%} 复核线，设置移动止盈观察。"
+        )
+    elif market_weight >= 0.18 and current_unrealized_profit > 0 and current_price <= trailing_stop:
+        status = "hold_with_trailing_stop"
+        reason = "盈利仓位较大且接近移动止盈复核价，需重点观察但不自动成交。"
+    else:
+        status = "no_sell_signal"
+        reason = (
+            f"利润峰值回吐 {giveback_ratio:.2%} 未达到 "
+            f"{TRAILING_TAKE_PROFIT_REVIEW_GIVEBACK_RATIO:.0%} 复核线。"
+        )
+
+    return {
+        "trailing_take_profit_status": status,
+        "peak_unrealized_profit": round(peak_unrealized_profit, 2),
+        "current_unrealized_profit": round(current_unrealized_profit, 2),
+        "profit_giveback_ratio": round(max(giveback_ratio, 0.0), 6),
+        "trailing_profit_review_price": round(review_price, 2) if review_price > 0 else 0.0,
+        "trailing_profit_reduce_price": round(reduce_price, 2) if reduce_price > 0 else 0.0,
+        "trailing_stop_price": round(trailing_stop, 2) if trailing_stop > 0 else 0.0,
+        "trailing_take_profit_reason": reason,
+    }
+
+
+def _apply_trailing_take_profit_review(
+    holdings_review: pd.DataFrame,
+    *,
+    reader: Any,
+    analysis_trade_date: str,
+) -> pd.DataFrame:
+    if holdings_review.empty:
+        return holdings_review
+
+    result = holdings_review.copy()
+    symbols = [
+        str(symbol).strip().upper()
+        for symbol in result.get("symbol", pd.Series(dtype=object)).tolist()
+        if str(symbol).strip()
+    ]
+    history_by_symbol: dict[str, pd.DataFrame] = {}
+    history_error = ""
+    history_error_by_symbol: dict[str, str] = {}
+    try:
+        read_results = reader.read_symbol_frames(
+            symbols,
+            universe_key="full_a",
+            end_date=analysis_trade_date,
+            columns=["ts_code", "symbol", "trade_date", "high", "close"],
+        )
+        for symbol, read_result in dict(read_results or {}).items():
+            history_by_symbol[str(symbol).strip().upper()] = read_result.frame.copy()
+    except Exception as exc:
+        history_error = str(exc)
+    for symbol in symbols:
+        if not history_by_symbol.get(symbol, pd.DataFrame()).empty:
+            continue
+        if not hasattr(reader, "read_symbol_frame"):
+            if history_error:
+                history_error_by_symbol[symbol] = history_error
+            continue
+        try:
+            read_result = reader.read_symbol_frame(
+                symbol,
+                universe_key="full_a",
+                end_date=analysis_trade_date,
+                columns=["ts_code", "symbol", "trade_date", "high", "close"],
+            )
+            history_by_symbol[symbol] = read_result.frame.copy()
+        except Exception as exc:
+            history_error_by_symbol[symbol] = str(exc)
+
+    rows: list[dict[str, Any]] = []
+    end_date = _compact_trade_date(analysis_trade_date)
+    for _, row in result.iterrows():
+        symbol = str(row.get("symbol") or "").strip().upper()
+        current_price = _safe_float(row.get("current_price"), 0.0)
+        buy_price = _safe_float(row.get("buy_price"), 0.0)
+        shares = int(_safe_float(row.get("shares_before"), 0.0))
+        stage_stop = _safe_float(row.get("stage_stop_price"), 0.0)
+        score = _safe_float(row.get("score_full_market"), 0.0)
+        market_weight = _safe_float(row.get("market_weight"), 0.0)
+        realtime_quote_valid = bool(row.get("realtime_quote_valid", True))
+
+        manual_entry_date = _trailing_take_profit_row_date(
+            row,
+            TRAILING_TAKE_PROFIT_ENTRY_DATE_COLUMNS,
+        )
+        previous_basis = str(row.get("trailing_take_profit_basis") or "").strip()
+        previous_tracking_start = _compact_trade_date(row.get("trailing_profit_tracking_start_date"))
+        tracking_start_date = manual_entry_date or previous_tracking_start or end_date
+        carried_peak_price = _trailing_take_profit_row_float(
+            row,
+            TRAILING_TAKE_PROFIT_PEAK_PRICE_COLUMNS,
+        )
+        carried_peak_trade_date = _trailing_take_profit_row_date(
+            row,
+            TRAILING_TAKE_PROFIT_PEAK_DATE_COLUMNS,
+        )
+
+        history_frame = history_by_symbol.get(symbol, pd.DataFrame())
+        history_peak_price = 0.0
+        history_peak_trade_date = ""
+        history_peak_source = ""
+        if not history_frame.empty:
+            history_start_date = manual_entry_date if manual_entry_date else ""
+            history_peak_price, history_peak_trade_date, history_peak_source = (
+                _trailing_take_profit_peak_from_history(
+                    history_frame,
+                    start_date=history_start_date,
+                    end_date=end_date,
+                    current_price=current_price,
+                )
+            )
+
+        if manual_entry_date:
+            peak_price = max(history_peak_price, carried_peak_price, current_price)
+            peak_trade_date = (
+                history_peak_trade_date
+                if history_peak_price >= carried_peak_price
+                else carried_peak_trade_date
+            ) or end_date
+            basis = "manual_ledger_entry_date"
+            confirmed_basis = True
+        elif carried_peak_price > 0:
+            peak_price = max(carried_peak_price, current_price)
+            peak_trade_date = carried_peak_trade_date or end_date
+            basis = previous_basis or "carried_forward_manual_ledger_peak"
+            confirmed_basis = "unanchored" not in basis and "missing_entry_date" not in basis
+        elif history_peak_price > 0:
+            peak_price = max(history_peak_price, current_price)
+            peak_trade_date = history_peak_trade_date or end_date
+            basis = "strict_parquet_available_history_unanchored_missing_entry_date"
+            confirmed_basis = False
+        else:
+            peak_price = 0.0
+            peak_trade_date = end_date
+            symbol_history_error = history_error_by_symbol.get(symbol) or history_error
+            basis = (
+                f"unconfirmed_history_unavailable:{symbol_history_error}"
+                if symbol_history_error
+                else "unconfirmed_history_unavailable"
+            )
+            confirmed_basis = False
+
+        classified = _classify_trailing_take_profit(
+            current_price=current_price,
+            buy_price=buy_price,
+            shares=shares,
+            peak_price=peak_price,
+            stage_stop_price=stage_stop,
+            score_full_market=score,
+            market_weight=market_weight,
+            realtime_quote_valid=realtime_quote_valid,
+            confirmed_basis=confirmed_basis,
+        )
+        reason = str(classified["trailing_take_profit_reason"])
+        if "unanchored" in basis and classified["trailing_take_profit_status"] != "unconfirmed":
+            reason = (
+                reason
+                + " 峰值来自 strict Parquet 可得历史但缺少 ledger 买入日期，"
+                "仅作为移动止盈观察，不作为自动卖出依据。"
+            )
+
+        rows.append(
+            {
+                "manual_entry_trade_date": manual_entry_date,
+                "trailing_profit_tracking_start_date": tracking_start_date,
+                "trailing_take_profit_confirmed": bool(confirmed_basis),
+                "trailing_take_profit_basis": basis,
+                "trailing_profit_peak_price": round(peak_price, 2) if peak_price > 0 else 0.0,
+                "trailing_profit_peak_trade_date": peak_trade_date,
+                "trailing_profit_peak_source": history_peak_source or ("carried" if carried_peak_price > 0 else ""),
+                **classified,
+                "trailing_take_profit_reason": reason,
+            }
+        )
+
+    trailing_frame = pd.DataFrame(rows)
+    for column in trailing_frame.columns:
+        result[column] = trailing_frame[column].values
+    return result
+
+
+def _summarize_trailing_take_profit(holdings_review: pd.DataFrame) -> dict[str, Any]:
+    if holdings_review.empty or "trailing_take_profit_status" not in holdings_review.columns:
+        return {
+            "schema_version": "cn_aggressive_trailing_take_profit.v1",
+            "status": "missing",
+            "review_giveback_ratio": TRAILING_TAKE_PROFIT_REVIEW_GIVEBACK_RATIO,
+            "reduce_giveback_ratio": TRAILING_TAKE_PROFIT_REDUCE_GIVEBACK_RATIO,
+            "status_counts": {},
+            "watch_symbols": [],
+            "unconfirmed_symbols": [],
+            "records": [],
+        }
+
+    records = holdings_review.to_dict(orient="records")
+    status_counts = Counter(str(row.get("trailing_take_profit_status") or "unknown") for row in records)
+    watch_statuses = {"hold_with_trailing_stop", "reduce_risk", "clear_risk", "cash_hold"}
+    watch_symbols = [
+        str(row.get("symbol"))
+        for row in records
+        if str(row.get("trailing_take_profit_status") or "") in watch_statuses
+    ]
+    unconfirmed_symbols = [
+        str(row.get("symbol"))
+        for row in records
+        if str(row.get("trailing_take_profit_status") or "") == "unconfirmed"
+    ]
+    return {
+        "schema_version": "cn_aggressive_trailing_take_profit.v1",
+        "status": "success",
+        "review_giveback_ratio": TRAILING_TAKE_PROFIT_REVIEW_GIVEBACK_RATIO,
+        "reduce_giveback_ratio": TRAILING_TAKE_PROFIT_REDUCE_GIVEBACK_RATIO,
+        "status_counts": dict(sorted(status_counts.items())),
+        "watch_symbols": watch_symbols,
+        "unconfirmed_symbols": unconfirmed_symbols,
+        "max_profit_giveback_ratio": round(
+            max((_safe_float(row.get("profit_giveback_ratio"), 0.0) for row in records), default=0.0),
+            6,
+        ),
+        "records": [
+            {
+                "symbol": row.get("symbol"),
+                "name": row.get("name"),
+                "status": row.get("trailing_take_profit_status"),
+                "confirmed": bool(row.get("trailing_take_profit_confirmed")),
+                "basis": row.get("trailing_take_profit_basis"),
+                "peak_price": row.get("trailing_profit_peak_price"),
+                "current_price": row.get("current_price"),
+                "profit_giveback_ratio": row.get("profit_giveback_ratio"),
+                "trailing_stop_price": row.get("trailing_stop_price"),
+                "review_price": row.get("trailing_profit_review_price"),
+                "reduce_price": row.get("trailing_profit_reduce_price"),
+                "reason": row.get("trailing_take_profit_reason"),
+            }
+            for row in records
+        ],
+    }
+
+
 def _map_symbol_to_quote_code(symbol: str) -> str:
     text = str(symbol).strip().upper()
     if text.startswith(("SH", "SZ")) and "." not in text:
@@ -917,8 +1307,15 @@ def _position_action(row: pd.Series) -> str:
     price = float(row["current_price"])
     stop_price = float(row["stage_stop_price"])
     score = float(row["score_full_market"])
+    trailing_status = str(row.get("trailing_take_profit_status") or "").strip()
+    if trailing_status == "clear_risk":
+        return "清仓待确认"
     if price < stop_price and score < 0.72:
         return "减仓待确认"
+    if trailing_status == "reduce_risk":
+        return "减仓待确认"
+    if trailing_status == "hold_with_trailing_stop":
+        return "移动止盈观察"
     if price < stop_price:
         return "继续观察"
     return "继续持有"
@@ -930,11 +1327,25 @@ def _position_reason(row: pd.Series) -> str:
     today = float(row["today_change_pct"])
     price = float(row["current_price"])
     stop_price = float(row["stage_stop_price"])
+    trailing_status = str(row.get("trailing_take_profit_status") or "").strip()
+    trailing_reason = str(row.get("trailing_take_profit_reason") or "").strip()
+    trailing_stop = _safe_float(row.get("trailing_stop_price"), 0.0)
+    giveback_ratio = _safe_float(row.get("profit_giveback_ratio"), 0.0)
 
+    if trailing_status == "clear_risk":
+        return (
+            f"{trailing_reason} 当前价 {price:.2f}，移动止盈/复核价 {trailing_stop:.2f}，"
+            f"利润回吐 {giveback_ratio:.2%}。"
+        )
     if price < stop_price and score < 0.72:
         return (
             f"盘中 {today:+.2f}% 且仍低于阶段止损位 {stop_price:.2f}，"
             f"完整日线强度只在全市场第 {rank} 位，需把减仓判断留在下一次确认。"
+        )
+    if trailing_status in {"reduce_risk", "hold_with_trailing_stop"}:
+        return (
+            f"{trailing_reason} 当前价 {price:.2f}，移动止盈/复核价 {trailing_stop:.2f}，"
+            f"利润回吐 {giveback_ratio:.2%}。"
         )
     if rank <= 20:
         return (
@@ -1041,7 +1452,18 @@ def _risk_reduction_sell_gate(
     weak_score = score < 0.72
     explicit_reduce = any(
         marker in action_text or marker in reason_text
-        for marker in ("减仓", "清仓", "止损", "broken stop", "risk", "thesis invalidation")
+        for marker in (
+            "减仓",
+            "清仓",
+            "止损",
+            "移动止盈",
+            "profit_giveback",
+            "reduce_risk",
+            "clear_risk",
+            "broken stop",
+            "risk",
+            "thesis invalidation",
+        )
     )
     if not (below_stop and weak_score) and not explicit_reduce:
         return False, "no_risk_reduction_signal"
@@ -1205,6 +1627,132 @@ def _theme_pool_audit_from_dag_artifacts(dag_artifacts: dict[str, Any]) -> dict[
         "admitted_symbols_by_source": _jsonable(admitted_symbols_by_source),
         "excluded_symbols_by_reason": _jsonable(excluded_symbols_by_reason),
     }
+
+
+def _theme_label_from_theme_record(theme: dict[str, Any]) -> str:
+    return str(
+        theme.get("theme_name")
+        or theme.get("name")
+        or theme.get("theme_id")
+        or "unknown_theme"
+    )
+
+
+def _format_theme_pool_report_lines(
+    theme_pool_summary: dict[str, Any],
+    *,
+    candidate_pool: pd.DataFrame,
+    theme_symbols: dict[str, Any] | None = None,
+) -> list[str]:
+    theme_summary = _mapping_payload(theme_pool_summary)
+    if not theme_summary:
+        return ["- Theme Candidate Pool：正式 DAG artifacts 未发现可审计 metadata，需视为可观测性缺口。"]
+
+    theme_symbols = _mapping_payload(theme_symbols)
+    reason_counts = _mapping_payload(theme_summary.get("excluded_reason_counts"))
+    reason_text = (
+        "；".join(f"{reason}={count}" for reason, count in reason_counts.items())
+        if reason_counts
+        else "无"
+    )
+    lines = [
+        (
+            f"- Theme Candidate Pool：status=`{theme_summary.get('status') or 'unknown'}`，"
+            f"policy_regime=`{theme_summary.get('policy_regime') or 'unknown'}`，"
+            f"admitted_themes=`{theme_summary.get('admitted_theme_count', 0)}`，"
+            f"natural=`{theme_summary.get('natural_admitted_theme_count', 0)}`，"
+            f"forced=`{theme_summary.get('forced_theme_count', 0)}`，"
+            f"min_themes=`{theme_summary.get('min_admitted_themes', 0)}`，"
+            f"rejected_themes=`{theme_summary.get('rejected_theme_count', 0)}`，"
+            f"core=`{theme_summary.get('core_symbol_count', 0)}`，"
+            f"residual=`{theme_summary.get('residual_symbol_count', 0)}`，"
+            f"excluded=`{theme_summary.get('excluded_symbol_count', 0)}`，"
+            f"excluded_reasons=`{reason_text}`。"
+        )
+    ]
+    forced_theme_count = _int_payload(theme_summary.get("forced_theme_count"))
+    if forced_theme_count > 0:
+        lines.append(
+            "- Theme 强制准入说明："
+            f"forced=`{forced_theme_count}` 表示这些主题未自然通过 ThemeGatePolicy，"
+            "只是因 `min_admitted_themes` 硬约束进入 Theme core 候选池；"
+            "应按“硬加入/强制准入”解读，不等同于自然合格主题。"
+        )
+
+    admitted_themes = _list_payloads(theme_summary.get("admitted_themes"))
+    if admitted_themes:
+        admitted_parts = []
+        for theme in admitted_themes[:5]:
+            forced = _bool_payload(theme.get("forced"))
+            admitted_parts.append(
+                f"{_theme_label_from_theme_record(theme)} "
+                f"自然通过={str(not forced).lower()} "
+                f"强制准入={str(forced).lower()} "
+                f"硬加入={str(forced).lower()} "
+                f"score={_safe_float(theme.get('theme_score')):.3f} "
+                f"rank_score={_safe_float(theme.get('theme_rank_score')):.3f} "
+                f"phase={theme.get('phase') or 'unknown'} "
+                f"force_reason={theme.get('force_reason') or 'none'} "
+                f"original_rejection={theme.get('original_rejection_reason') or 'none'} "
+                f"quality_flags={','.join(str(flag) for flag in (theme.get('quality_flags') or [])) or 'none'}"
+            )
+        admitted_text = "；".join(admitted_parts)
+        lines.append(f"- Theme admitted 明细：{admitted_text}。")
+
+    admitted_sample = _mapping_payload(theme_summary.get("admitted_symbols_by_source_sample"))
+    candidate_core_symbols: list[str] = []
+    if not candidate_pool.empty:
+        for row in candidate_pool.head(12).itertuples():
+            symbol = str(getattr(row, "symbol", "") or "").strip().upper()
+            metadata = _mapping_payload(theme_symbols.get(symbol))
+            if symbol and str(metadata.get("source") or "") == "core":
+                candidate_core_symbols.append(symbol)
+    core_sample = []
+    for symbol in [
+        *candidate_core_symbols,
+        *[str(symbol).strip().upper() for symbol in admitted_sample.get("core", [])],
+    ]:
+        if symbol and symbol not in core_sample:
+            core_sample.append(symbol)
+    if core_sample:
+        lines.append(
+            "- Theme core候选样本："
+            f"core样本=`{', '.join(core_sample[:20])}`。"
+        )
+
+    if not candidate_pool.empty:
+        candidate_parts: list[str] = []
+        for row in candidate_pool.head(5).itertuples():
+            symbol = str(getattr(row, "symbol", "") or "").strip().upper()
+            if not symbol:
+                continue
+            metadata = _mapping_payload(theme_symbols.get(symbol))
+            if not metadata:
+                continue
+            name = str(getattr(row, "name", "") or "UNKNOWN_NAME")
+            candidate_parts.append(
+                f"{symbol} {name}: source=`{metadata.get('source') or 'none'}`，"
+                f"theme=`{metadata.get('primary_theme_id') or ''}`，"
+                f"score=`{_safe_float(metadata.get('theme_pool_score')):.6f}`，"
+                f"reason=`{metadata.get('theme_pool_reason') or ''}`"
+            )
+        if candidate_parts:
+            lines.append("- 正式候选 Theme Pool 归属：" + "；".join(candidate_parts) + "。")
+
+    rejected_themes = _list_payloads(theme_summary.get("rejected_themes"))
+    if rejected_themes:
+        rejected_text = "；".join(
+            (
+                f"{_theme_label_from_theme_record(theme)} "
+                f"reason={theme.get('reason') or 'unknown'} "
+                f"score={_safe_float(theme.get('score')):.3f} "
+                f"phase={theme.get('phase') or 'unknown'}"
+            )
+            for theme in rejected_themes[:5]
+        )
+        lines.append(f"- Theme rejected 前列：{rejected_text}。")
+
+    return lines
 
 
 def _shortlist_payloads_from_dag_artifacts(
@@ -1432,7 +1980,7 @@ def _build_candidate_pool_from_v13_dag(
     )
     shortlist_artifact_missing = (
         not shortlist_rows
-        and (bool(bayesian_rows) or positive_target_count > 0)
+        and positive_target_count > 0
     )
     if rows:
         status_name = "complete"
@@ -1679,6 +2227,32 @@ def _manual_manifest_is_valid_baseline(manifest: dict[str, Any]) -> bool:
     return not any(marker in status_text for marker in INVALID_MANUAL_LEDGER_STATUS_MARKERS)
 
 
+def _compact_datetime_key(value: Any) -> str:
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    if len(digits) >= 14:
+        return digits[:14]
+    if len(digits) == 12:
+        return f"{digits}00"
+    if len(digits) == 8:
+        return f"{digits}000000"
+    return digits
+
+
+def _manual_manifest_order_key(run_dir: Path, manifest: dict[str, Any]) -> tuple[str, str]:
+    for key in (
+        "recorded_at",
+        "executed_at",
+        "updated_at",
+        "quote_snapshot",
+        "timestamp_long",
+        "record_timestamp",
+    ):
+        normalized = _compact_datetime_key(manifest.get(key))
+        if normalized:
+            return normalized, run_dir.name
+    return _compact_datetime_key(run_dir.name), run_dir.name
+
+
 def _resolve_manual_ledger_path(manifest_path: Path, manifest: dict[str, Any]) -> Path | None:
     candidates: list[Path] = []
     next_ledger = str(manifest.get("next_ledger_path") or "").strip()
@@ -1750,7 +2324,8 @@ def _load_latest_effective_manual_record(
         and not path.name.startswith("_")
         and (max_record_name is None or path.name <= max_record_name)
     ]
-    for run_dir in sorted(run_dirs, key=lambda path: path.name, reverse=True):
+    candidates: list[tuple[tuple[str, str], Path, dict[str, Any], Path]] = []
+    for run_dir in run_dirs:
         manifest_path = run_dir / "manual_execution_manifest.json"
         if not manifest_path.exists():
             continue
@@ -1760,6 +2335,13 @@ def _load_latest_effective_manual_record(
         ledger_path = _resolve_manual_ledger_path(manifest_path, manifest)
         if ledger_path is None:
             continue
+        candidates.append((_manual_manifest_order_key(run_dir, manifest), manifest_path, manifest, ledger_path))
+
+    for _, manifest_path, manifest, ledger_path in sorted(
+        candidates,
+        key=lambda item: item[0],
+        reverse=True,
+    ):
         ledger = _read_manual_ledger(ledger_path)
         required_columns = {"symbol", "shares", "avg_cost"}
         if not required_columns.issubset(set(ledger.columns)):
@@ -1973,8 +2555,10 @@ def _holding_codex_score(row: pd.Series) -> int:
 
     action_points_map = {
         "继续持有": 15.0,
+        "移动止盈观察": 12.0,
         "继续观察": 10.0,
         "减仓待确认": 5.0,
+        "清仓待确认": 2.0,
     }
     action_points = action_points_map.get(recommended_action, 8.0)
 
@@ -2013,6 +2597,16 @@ def _format_holding_advice_line(row: Any) -> str:
     target_price = _safe_float(getattr(row, "stage_target_price", 0.0), 0.0)
     stop_buffer = _safe_pct(price - stop_price, stop_price)
     hard_signal = "未触发阶段止损" if price >= stop_price else "低于阶段止损，需跟踪减仓确认"
+    trailing_status = str(getattr(row, "trailing_take_profit_status", "") or "unconfirmed")
+    trailing_peak = _safe_float(getattr(row, "trailing_profit_peak_price", 0.0), 0.0)
+    trailing_stop = _safe_float(getattr(row, "trailing_stop_price", 0.0), 0.0)
+    trailing_giveback = _safe_float(getattr(row, "profit_giveback_ratio", 0.0), 0.0)
+    trailing_basis = str(getattr(row, "trailing_take_profit_basis", "") or "")
+    trailing_text = (
+        f"移动止盈 `{trailing_status}`，峰值 `{trailing_peak:.2f}`，"
+        f"复核/止盈价 `{trailing_stop:.2f}`，利润回吐 `{trailing_giveback:.2%}`"
+        + ("（峰值未锚定买入日）" if "unanchored" in trailing_basis else "")
+    )
     codex_score = int(_safe_float(getattr(row, "codex_recommendation_score", 0), 0.0))
     codex_rating = str(getattr(row, "codex_recommendation_rating", "") or _codex_rating_from_score(codex_score))
     return (
@@ -2024,6 +2618,7 @@ def _format_holding_advice_line(row: Any) -> str:
         f"（{unrealized_pnl_pct:+.2%}），"
         f"较上一条记录 `{_format_signed_money(float(row.delta_vs_source_record))}`；"
         f"全市场强度排名 `{int(row.rank_full_market)}`，今日涨跌 `{float(row.today_change_pct):+.2f}%`；"
+        f"{trailing_text}；"
         f"{hard_signal}。"
     )
 
@@ -2770,6 +3365,8 @@ def _build_notes_payload(
     switch_plan_df: pd.DataFrame,
     candidate_pool: pd.DataFrame,
     tomorrow_focus: list[str],
+    theme_pool_summary: dict[str, Any] | None = None,
+    theme_symbols: dict[str, Any] | None = None,
 ) -> str:
     if orders:
         order_text = "；".join(
@@ -2805,9 +3402,18 @@ def _build_notes_payload(
             f"{row.symbol}({row.name})/{row.theme_label}/评分{int(getattr(row, 'codex_recommendation_score', 0))}/证据{row.evidence_quality}"
             for row in top_rows.itertuples()
         )
+    theme_exposure_text = ""
+    if theme_pool_summary:
+        theme_lines = _format_theme_pool_report_lines(
+            theme_pool_summary,
+            candidate_pool=candidate_pool,
+            theme_symbols=theme_symbols or {},
+        )
+        theme_exposure_text = "；".join(
+            line.removeprefix("- ").rstrip("。") for line in theme_lines[:4]
+        )
 
-    return "\n".join(
-        [
+    notes_lines = [
             f"# A股日度复盘 {trade_date}",
             "",
             f"- 数据完整性：{data_status}",
@@ -2825,8 +3431,10 @@ def _build_notes_payload(
             f"- 是否换仓：{switch_text}",
             f"- 换仓内容：{switch_detail_text}",
             f"- 明日观察重点：{'；'.join(tomorrow_focus)}",
-        ]
-    )
+    ]
+    if theme_exposure_text:
+        notes_lines.insert(6, f"- Theme 候选暴露：{theme_exposure_text}")
+    return "\n".join(notes_lines)
 
 
 def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
@@ -2982,6 +3590,9 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         today_change_pct = round(_safe_float(quote.get("change_pct")), 2)
         staged_target = round(_safe_float(metric.get("stage_target_price"), getattr(row, "stage_target_price", current_price * 1.1)), 2)
         staged_stop = round(_safe_float(metric.get("stage_stop_price"), getattr(row, "stage_stop_price", current_price * 0.94)), 2)
+        manual_entry_trade_date = _trailing_take_profit_row_date(row, TRAILING_TAKE_PROFIT_ENTRY_DATE_COLUMNS)
+        carried_trailing_peak_price = _trailing_take_profit_row_float(row, TRAILING_TAKE_PROFIT_PEAK_PRICE_COLUMNS)
+        carried_trailing_peak_trade_date = _trailing_take_profit_row_date(row, TRAILING_TAKE_PROFIT_PEAK_DATE_COLUMNS)
         current_rows.append(
             {
                 "symbol": symbol,
@@ -3006,6 +3617,17 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
                 "score_full_market": round(_safe_float(metric.get("score_full_market")), 6),
                 "stage_target_price": staged_target,
                 "stage_stop_price": staged_stop,
+                "manual_entry_trade_date": manual_entry_trade_date,
+                "trailing_profit_tracking_start_date": _compact_trade_date(
+                    getattr(row, "trailing_profit_tracking_start_date", "")
+                ),
+                "trailing_take_profit_basis": str(getattr(row, "trailing_take_profit_basis", "") or ""),
+                "trailing_profit_peak_price": (
+                    round(carried_trailing_peak_price, 2)
+                    if carried_trailing_peak_price > 0
+                    else 0.0
+                ),
+                "trailing_profit_peak_trade_date": carried_trailing_peak_trade_date,
                 "delta_vs_source_record": round(current_value - previous_value_map.get(symbol, 0.0), 2),
                 "llm_action": llm_action,
                 "llm_confidence": round(llm_confidence, 6) if llm_confidence is not None else None,
@@ -3034,6 +3656,11 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         ).round(6)
     else:
         holdings_review["market_weight"] = 0.0
+    holdings_review = _apply_trailing_take_profit_review(
+        holdings_review,
+        reader=market_data_reader,
+        analysis_trade_date=analysis_trade_date,
+    )
     holdings_review["position_role"] = holdings_review.apply(_position_role, axis=1)
     holdings_review["recommended_action"] = holdings_review.apply(_position_action, axis=1)
     holdings_review["reason"] = holdings_review.apply(_position_reason, axis=1)
@@ -3045,6 +3672,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         by=["score_full_market", "today_change_pct", "symbol"],
         ascending=[False, False, True],
     ).reset_index(drop=True)
+    trailing_take_profit_summary = _summarize_trailing_take_profit(holdings_review)
     candidate_pool, candidate_level_dag_status, theme_pool_audit = _run_candidate_level_v13_dag(
         held_symbols=holdings_review["symbol"].tolist(),
         analysis_trade_date=analysis_trade_date,
@@ -3197,9 +3825,18 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         cash_before=cash_before,
         quote_prices=quote_prices,
     )
-    ledger_meta = holdings_review[
-        ["symbol", "stage_target_price", "stage_stop_price", "position_role"]
-    ].rename(columns={"position_role": "thesis_status"})
+    ledger_meta_columns = [
+        "symbol",
+        "stage_target_price",
+        "stage_stop_price",
+        "position_role",
+        *[
+            column
+            for column in TRAILING_TAKE_PROFIT_LEDGER_COLUMNS
+            if column in holdings_review.columns
+        ],
+    ]
+    ledger_meta = holdings_review[ledger_meta_columns].rename(columns={"position_role": "thesis_status"})
     updated_ledger = updated_ledger.merge(ledger_meta, on="symbol", how="left")
 
     total_market_value_after = round(float(updated_ledger["current_value"].sum()), 2)
@@ -3225,6 +3862,17 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "继续观察 `大族激光 / 中国西电` 是否能重新站回阶段止损位",
         "跟踪科创50 相对沪深300 的强弱差，判断资金是否继续偏向硬科技",
     ]
+    trailing_watch_symbols = list(trailing_take_profit_summary.get("watch_symbols", []) or [])
+    trailing_unconfirmed_symbols = list(trailing_take_profit_summary.get("unconfirmed_symbols", []) or [])
+    if trailing_watch_symbols:
+        tomorrow_focus.insert(
+            0,
+            "逐票复核移动止盈：`" + "，".join(trailing_watch_symbols[:5]) + "` 已进入利润回吐/移动止盈观察",
+        )
+    elif trailing_unconfirmed_symbols:
+        tomorrow_focus.append(
+            "补齐 manual ledger 买入/跟踪起始日期，避免移动止盈峰值只停留在 unconfirmed 估算"
+        )
     if not completeness_passed and decision_data_sufficient:
         tomorrow_focus.insert(
             0,
@@ -3405,28 +4053,10 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     top_switch_action = str(switch_plan_df.iloc[0]["action"]) if not switch_plan_df.empty else ""
     switch_now = top_switch_action == "switch_now"
     switch_prepare = top_switch_action == "prepare_switch"
-    theme_pool_reason_counts = _mapping_payload(theme_pool_summary.get("excluded_reason_counts"))
-    theme_pool_reason_text = (
-        "；".join(f"{reason}={count}" for reason, count in theme_pool_reason_counts.items())
-        if theme_pool_reason_counts
-        else "无"
-    )
-    theme_pool_report_line = (
-        (
-            f"- Theme Candidate Pool：status=`{theme_pool_summary.get('status') or 'unknown'}`，"
-            f"policy_regime=`{theme_pool_summary.get('policy_regime') or 'unknown'}`，"
-            f"admitted_themes=`{theme_pool_summary.get('admitted_theme_count', 0)}`，"
-            f"natural=`{theme_pool_summary.get('natural_admitted_theme_count', 0)}`，"
-            f"forced=`{theme_pool_summary.get('forced_theme_count', 0)}`，"
-            f"min_themes=`{theme_pool_summary.get('min_admitted_themes', 0)}`，"
-            f"rejected_themes=`{theme_pool_summary.get('rejected_theme_count', 0)}`，"
-            f"core=`{theme_pool_summary.get('core_symbol_count', 0)}`，"
-            f"residual=`{theme_pool_summary.get('residual_symbol_count', 0)}`，"
-            f"excluded=`{theme_pool_summary.get('excluded_symbol_count', 0)}`，"
-            f"excluded_reasons=`{theme_pool_reason_text}`。"
-        )
-        if theme_pool_summary
-        else "- Theme Candidate Pool：正式 DAG artifacts 未发现可审计 metadata，需视为可观测性缺口。"
+    theme_pool_report_lines = _format_theme_pool_report_lines(
+        theme_pool_summary,
+        candidate_pool=candidate_pool,
+        theme_symbols=_mapping_payload(theme_pool_audit.get("symbols")),
     )
 
     report_lines = [
@@ -3603,6 +4233,34 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
                 f"- `{row.symbol}` 当前价 {row.current_price:.2f} 仍低于阶段止损位 {row.stage_stop_price:.2f}，"
                 f"状态 `{row.position_role}`。"
             )
+    if "trailing_take_profit_status" in holdings_review.columns:
+        trailing_watch_rows = holdings_review[
+            holdings_review["trailing_take_profit_status"].astype(str).isin(
+                ["hold_with_trailing_stop", "reduce_risk", "clear_risk", "cash_hold"]
+            )
+        ]
+        trailing_unconfirmed_rows = holdings_review[
+            holdings_review["trailing_take_profit_status"].astype(str).eq("unconfirmed")
+        ]
+        if trailing_watch_rows.empty:
+            report_lines.append("- 移动止盈：本轮未触发 20% 利润峰值回吐；逐票阈值已写入 holdings_review。")
+        else:
+            report_lines.append(
+                "- 移动止盈触发/观察："
+                + "；".join(
+                    f"`{row.symbol}` 状态 `{row.trailing_take_profit_status}`，"
+                    f"回吐 {float(row.profit_giveback_ratio):.2%}，复核价 {float(row.trailing_stop_price):.2f}"
+                    for row in trailing_watch_rows.itertuples()
+                )
+            )
+        if not trailing_unconfirmed_rows.empty:
+            report_lines.append(
+                "- 移动止盈未确认："
+                + "；".join(
+                    f"`{row.symbol}` {row.trailing_take_profit_basis}"
+                    for row in trailing_unconfirmed_rows.itertuples()
+                )
+            )
 
     report_lines.extend(
         [
@@ -3716,7 +4374,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
                 )
             ),
             *candidate_lines,
-            theme_pool_report_line,
+            *theme_pool_report_lines,
             "",
             "### 5.6 现持仓与备选标的换仓比较",
             "",
@@ -3812,6 +4470,8 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         switch_plan_df=switch_plan_df,
         candidate_pool=candidate_pool,
         tomorrow_focus=tomorrow_focus,
+        theme_pool_summary=theme_pool_summary,
+        theme_symbols=_mapping_payload(theme_pool_audit.get("symbols")),
     )
     DEFAULT_NOTES_PATH.write_text(notes_text, encoding="utf-8")
     formal_diagnostics_payload = {
@@ -3823,6 +4483,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "dag_four_branch_compliance": _jsonable(dag_four_branch_compliance),
         "candidate_level_dag_status": _jsonable(candidate_level_dag_status),
         "theme_candidate_pool": _jsonable(theme_pool_summary),
+        "trailing_take_profit": _jsonable(trailing_take_profit_summary),
     }
     runtime_profile = {
         "schema_version": "cn_aggressive_runtime_profile.v1",
@@ -3933,6 +4594,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "candidate_generation_status": candidate_level_dag_status.get("candidate_generation_status"),
         "blocker": candidate_level_dag_status.get("blocker"),
         "theme_candidate_pool": _jsonable(theme_pool_summary),
+        "trailing_take_profit": _jsonable(trailing_take_profit_summary),
         "candidate_pool": candidate_pool.to_dict(orient="records"),
         "switch_plan": switch_plan_df.to_dict(orient="records"),
         "formal_diagnostics": formal_diagnostics_payload,
@@ -3984,6 +4646,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "candidate_generation_status": candidate_level_dag_status.get("candidate_generation_status"),
         "blocker": candidate_level_dag_status.get("blocker"),
         "theme_candidate_pool": _jsonable(theme_pool_summary),
+        "trailing_take_profit": _jsonable(trailing_take_profit_summary),
         "formal_diagnostics": formal_diagnostics_payload,
         "download_report": str(download_report_path) if download_report_path else None,
         "quote_fetch_error": quote_error or None,

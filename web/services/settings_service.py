@@ -9,6 +9,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from quant_investor.env_loading import read_env_file_values
 from web.config import PROJECT_ROOT
 from web.services.run_history_store import history_store
 
@@ -132,17 +133,12 @@ def get_settings() -> dict:
 
 def update_env_file(updates: dict[str, str]) -> None:
     """Update .env file with new values. Creates the file if missing."""
-    existing: dict[str, str] = {}
+    existing: dict[str, str] = read_env_file_values(ENV_FILE)
     raw_lines: list[str] = []
 
     if ENV_FILE.exists():
         with open(ENV_FILE) as f:
-            for line in f:
-                raw_lines.append(line)
-                stripped = line.strip()
-                if stripped and not stripped.startswith("#") and "=" in stripped:
-                    key, _, val = stripped.partition("=")
-                    existing[key.strip()] = val.strip()
+            raw_lines = list(f)
 
     # Merge updates
     for key, value in updates.items():
