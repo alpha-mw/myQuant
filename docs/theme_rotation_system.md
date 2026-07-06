@@ -276,6 +276,35 @@ The deterministic funnel recognizes those two flags only inside the already
 enabled `THEME_FUNNEL_BOOST_ENABLED` path: `theme_crowded` applies `-0.03` and
 `theme_narrow_leadership` applies `-0.02`.
 
+## Evidence
+
+`scripts/run_theme_threshold_sweep.py` is the offline evidence runner for theme
+thresholds. It reads local snapshots through `ThemeSnapshotStore.load_recent`,
+joins them to local price frames, calls the calibration API, and writes
+deterministic artifacts under `results/theme_calibration/`:
+
+```bash
+./.venv/bin/python scripts/run_theme_threshold_sweep.py \
+  --snapshot-dir results/theme_snapshots \
+  --price-dir <local-symbol-frame-dir> \
+  --output-dir results/theme_calibration \
+  --market CN \
+  --universe-key full_a
+```
+
+The runner does not fetch data, call providers, or mutate trading decisions.
+It emits `threshold_sweep_<date>.json` and `.md` with threshold rows for
+forward alpha and hit-rate evidence. Current constants are registered below;
+the evidence cells are placeholders until a real local snapshot/history run is
+approved and reviewed.
+
+| Constant | Current Value | Sweep Evidence |
+| --- | --- | --- |
+| Momentum normalization | `(theme_return_20d + 0.10) / 0.30` | TODO: fill from latest `threshold_sweep_<date>` |
+| Overextension start | `theme_return_5d >= 0.08` | TODO: fill from latest `threshold_sweep_<date>` |
+| Phase score gates | `35 / 55 / 70` | TODO: fill from latest `threshold_sweep_<date>` |
+| Crowding weights | `0.45 turnover_share_stretch / 0.35 limitup_norm / 0.20 concentration` | TODO: fill from latest `threshold_sweep_<date>` |
+
 ## Policy Catalyst Layer
 
 The Policy Catalyst Layer is a deterministic ThemeScanner sidecar. It is
