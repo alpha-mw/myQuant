@@ -58,6 +58,10 @@ class ThemeMembership:
         )
         if not membership.theme_id:
             raise ValueError("theme_id is required")
+        if not membership.theme_id.startswith("concept::"):
+            raise ValueError("theme_id must start with concept::")
+        if membership.theme_type.strip().lower() != "concept":
+            raise ValueError("theme_type must be concept")
         if not membership.symbol:
             raise ValueError("symbol is required")
         if not membership.effective_from:

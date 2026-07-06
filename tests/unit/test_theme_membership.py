@@ -106,3 +106,51 @@ def test_theme_membership_store_missing_file_is_fail_open(tmp_path: Path):
     assert result.status == "missing"
     assert result.memberships == []
     assert "theme_membership_file_missing" in result.diagnostic_notes
+
+
+def test_theme_membership_rejects_non_concept_records(tmp_path: Path):
+    path = tmp_path / "theme_membership.jsonl"
+    _write_jsonl(
+        path,
+        [
+            {
+                "schema_version": "theme_membership.v1",
+                "membership_id": "bad-industry-record",
+                "theme_id": "industry::machinery",
+                "theme_name": "Machinery",
+                "theme_type": "industry",
+                "symbol": "000001.SZ",
+                "effective_from": "2026-01-01",
+            }
+        ],
+    )
+
+    result = ThemeMembershipStore(path).load()
+
+    assert result.status == "error"
+    assert result.memberships == []
+    assert any("theme_id must start with concept::" in note for note in result.diagnostic_notes)
+
+
+def test_theme_membership_rejects_non_concept_theme_type(tmp_path: Path):
+    path = tmp_path / "theme_membership.jsonl"
+    _write_jsonl(
+        path,
+        [
+            {
+                "schema_version": "theme_membership.v1",
+                "membership_id": "bad-type-record",
+                "theme_id": "concept::machinery",
+                "theme_name": "Machinery",
+                "theme_type": "industry",
+                "symbol": "000001.SZ",
+                "effective_from": "2026-01-01",
+            }
+        ],
+    )
+
+    result = ThemeMembershipStore(path).load()
+
+    assert result.status == "error"
+    assert result.memberships == []
+    assert any("theme_type must be concept" in note for note in result.diagnostic_notes)

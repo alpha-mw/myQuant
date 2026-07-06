@@ -2,8 +2,11 @@
 
 Date: 2026-07-06
 
-Status: Phase 5a design only. Do not implement until Phase 5b is explicitly
-approved.
+Status: Phase 5a design was approved for Phase 5b implementation. Phase 5b
+implements the Route B subset: local `theme_membership.v1` JSONL parsing,
+point-in-time active membership resolution, default-off scanner integration,
+metadata preservation, and replay/calibration compatibility hooks. Route A
+statistical clustering remains out of runtime scope unless separately approved.
 
 ## Goal
 
