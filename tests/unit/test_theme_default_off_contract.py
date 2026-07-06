@@ -30,6 +30,9 @@ def test_theme_production_config_defaults_are_on_without_shadow() -> None:
         "THEME_SNAPSHOT_SAVE_DISABLED": "0",
         "THEME_HOLDING_GUARD_ENABLED": "0",
         "THEME_CROWDING_ENABLED": "0",
+        "THEME_CONCEPT_MEMBERSHIP_ENABLED": "0",
+        "THEME_CONCEPT_MEMBERSHIP_REQUIRED": "0",
+        "THEME_STAT_CLUSTER_ENABLED": "0",
         "THEME_SHADOW_MODE_ENABLED": "0",
         "THEME_GOVERNANCE_ENABLED": "0",
         "THEME_GOVERNANCE_ARTIFACT_ENABLED": "0",
@@ -55,6 +58,8 @@ def test_theme_production_config_defaults_are_on_without_shadow() -> None:
     assert MAINLINE_ENV_DEFAULTS["THEME_POOL_MIN_SYMBOL_SCORE"] == "0.55"
     assert MAINLINE_ENV_DEFAULTS["THEME_HOLDING_GUARD_TIGHTEN_RATIO"] == "0.5"
     assert MAINLINE_ENV_DEFAULTS["THEME_CROWDING_MIN_UNIVERSE"] == "30"
+    assert MAINLINE_ENV_DEFAULTS["THEME_CONCEPT_MEMBERSHIP_PATH"] == "data/theme_membership.jsonl"
+    assert MAINLINE_ENV_DEFAULTS["THEME_CONCEPT_PRIMARY_MARGIN"] == "0.05"
 
 
 def test_no_theme_likelihood_in_bayesian_types() -> None:

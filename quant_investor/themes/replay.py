@@ -37,6 +37,10 @@ class ThemeReplayRecord:
     symbol: str = ""
     primary_theme_id: str = ""
     primary_theme_name: str = ""
+    theme_type: str = "industry"
+    membership_source: str = "industry_map"
+    pit_membership: bool = False
+    theme_memberships: list[str] = field(default_factory=list)
     phase: str = ""
     symbol_theme_score: float = 0.0
     theme_score: float | None = None
@@ -269,6 +273,7 @@ def extract_snapshot_theme_rows(snapshot_payload: Mapping[str, Any]) -> list[dic
         primary_theme_map = _mapping_or_empty(rotation.get("symbol_primary_theme"))
         phase_map = _mapping_or_empty(rotation.get("symbol_phase"))
         risk_flag_map = _mapping_or_empty(rotation.get("symbol_risk_flags"))
+        membership_map = _mapping_or_empty(rotation.get("symbol_theme_memberships"))
         theme_scores = _mapping_or_empty(rotation.get("theme_scores"))
 
         rows: list[dict[str, Any]] = []
@@ -289,6 +294,12 @@ def extract_snapshot_theme_rows(snapshot_payload: Mapping[str, Any]) -> list[dic
                     "primary_theme_name": str(
                         theme_payload.get("theme_name") or theme_id
                     ),
+                    "theme_type": str(theme_payload.get("theme_type") or "industry"),
+                    "membership_source": str(
+                        theme_payload.get("membership_source") or "industry_map"
+                    ),
+                    "pit_membership": bool(theme_payload.get("pit_membership", False)),
+                    "theme_memberships": _string_list(membership_map.get(symbol_text)),
                     "phase": str(phase_map.get(symbol_text) or ""),
                     "risk_flags": _string_list(risk_flag_map.get(symbol_text)),
                     "theme_score": _optional_float(theme_payload.get("score")),
@@ -388,6 +399,10 @@ def build_theme_calibration_dataset(
                     symbol=symbol,
                     primary_theme_id=str(row.get("primary_theme_id") or ""),
                     primary_theme_name=str(row.get("primary_theme_name") or ""),
+                    theme_type=str(row.get("theme_type") or "industry"),
+                    membership_source=str(row.get("membership_source") or "industry_map"),
+                    pit_membership=bool(row.get("pit_membership", False)),
+                    theme_memberships=_string_list(row.get("theme_memberships")),
                     phase=str(row.get("phase") or ""),
                     symbol_theme_score=_safe_float(
                         row.get("symbol_theme_score"),

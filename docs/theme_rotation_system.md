@@ -25,6 +25,9 @@ Core components:
 - `quant_investor/themes/policy.py`: local JSONL policy event parser and
   deterministic policy catalyst scorer. It reads only
   `THEME_POLICY_EVENT_PATH` when `THEME_POLICY_CATALYST_ENABLED=1`.
+- `quant_investor/themes/membership.py`: local `theme_membership.v1` JSONL
+  parser for point-in-time concept memberships. It is read only when
+  `THEME_CONCEPT_MEMBERSHIP_ENABLED=1`.
 - `quant_investor/themes/types.py`: serializable `ThemePhase`, `ThemeScore`,
   and `ThemeScanResult` contracts.
 - `quant_investor/market/dag/theme_context.py`: metadata adapter that builds
@@ -69,6 +72,7 @@ Core components:
 
 ```text
 local OHLCV frames + industry_map
+  + optional local PIT concept membership JSONL
   -> ThemeScanner
   -> optional local policy catalyst component
   -> ThemeScanResult
@@ -135,8 +139,9 @@ Important fields:
 - `status`: `success`, `disabled`, or `error`.
 - `market`, `universe_key`, `as_of`: scan scope.
 - `theme_scores`: map of theme ID to score payload. Each payload includes
-  `theme_id`, `theme_name`, `phase`, `score`, `confidence`, `member_count`,
-  `breadth`, `momentum`, `acceleration`, `volume_confirmation`,
+  `theme_id`, `theme_name`, `theme_type`, `membership_source`,
+  `pit_membership`, `phase`, `score`, `confidence`, `member_count`, `breadth`,
+  `momentum`, `acceleration`, `volume_confirmation`,
   `overextension_risk`, `fake_breakout_risk`, `top_symbols`, `risk_flags`,
   `evidence`, and `metadata`. Scanner output also preserves `raw_score` and can
   include `smoothed_score`, `heat_10d`, `heat_delta_5d`, `persistence_count`,
@@ -157,6 +162,8 @@ Important fields:
   enough local history exists; `symbol_scores` remains raw/current for
   compatibility.
 - `symbol_primary_theme`: map of symbol to primary theme ID.
+- `symbol_theme_memberships`: map of symbol to selected theme IDs, preserving
+  industry and concept co-membership when concept membership is enabled.
 - `symbol_phase`: map of symbol to phase.
 - `symbol_risk_flags`: map of symbol to theme risk flags.
 - `top_themes`: compact ranked theme list for report rendering.
@@ -265,9 +272,9 @@ crowding_risk =
 ```
 
 The score is clamped to `[0, 1]`. If the scanned universe is smaller than
-`THEME_CROWDING_MIN_UNIVERSE` (default `30`), the scanner sets
-`crowding_status="insufficient_universe"`, records diagnostics, and keeps risk
-fields neutral. When enabled and eligible, crowding contributes
+  `THEME_CROWDING_MIN_UNIVERSE` (default `30`), the scanner sets
+  `crowding_status="insufficient_universe"`, records diagnostics, and keeps risk
+  fields neutral. When enabled and eligible, crowding contributes
 `0.30 * crowding_risk` to `overextension_risk`. `crowding_risk >= 0.70` adds
 `theme_crowded`; `theme_limitup_ratio >= 0.20` with breadth below `0.40` adds
 `theme_narrow_leadership`.
@@ -275,6 +282,52 @@ fields neutral. When enabled and eligible, crowding contributes
 The deterministic funnel recognizes those two flags only inside the already
 enabled `THEME_FUNNEL_BOOST_ENABLED` path: `theme_crowded` applies `-0.03` and
 `theme_narrow_leadership` applies `-0.02`.
+
+## Concept Membership
+
+Concept Membership implements the approved Route B design: a manually or
+semi-automatically maintained local JSONL source with explicit point-in-time
+effective dates. It does not use current Tushare concept constituents to replay
+history, and it does not implement statistical clustering in this phase.
+
+The local file defaults to `data/theme_membership.jsonl` and each line uses
+`theme_membership.v1`:
+
+```json
+{
+  "schema_version": "theme_membership.v1",
+  "membership_id": "low-altitude-000001-20260101",
+  "theme_id": "concept::low-altitude-economy",
+  "theme_name": "Low-altitude Economy",
+  "theme_type": "concept",
+  "symbol": "000001.SZ",
+  "symbol_name": "Example Co",
+  "effective_from": "2026-01-01",
+  "effective_to": "",
+  "membership_status": "active",
+  "confidence": 0.8,
+  "source_type": "manual_review",
+  "source_ref": "policy_event:low-altitude-plan",
+  "evidence_text": "Optional local PIT source note."
+}
+```
+
+When `THEME_CONCEPT_MEMBERSHIP_ENABLED=0`, supplied memberships are ignored and
+scanner output remains industry-only. When enabled, active records are filtered
+by `effective_from <= as_of < effective_to` and merged beside the existing
+`industry_map`; concept and industry themes can coexist for the same symbol.
+The primary theme remains the industry theme unless the best non-distribution
+concept theme beats the industry theme by `THEME_CONCEPT_PRIMARY_MARGIN`
+(default `0.05`, interpreted as normalized score points). This keeps concept
+promotion explicit and deterministic while preserving co-membership evidence in
+`symbol_theme_memberships`.
+
+Missing or malformed membership files fail open by default: scanner output
+records concept diagnostics and falls back to industry themes. Setting
+`THEME_CONCEPT_MEMBERSHIP_REQUIRED=1` turns missing/malformed membership input
+into a `theme_rotation` error payload, which is reserved for workflows that
+require PIT concept labels. `THEME_STAT_CLUSTER_ENABLED=0` is an inert design
+placeholder for the statistical-clustering route and has no runtime path.
 
 ## Evidence
 
@@ -359,6 +412,10 @@ All behavior-changing consumers require explicit configuration:
 - Crowding diagnostics: `THEME_CROWDING_ENABLED=1` lets the scanner add local
   crowding metrics and gated risk flags. `THEME_CROWDING_MIN_UNIVERSE` defaults
   to `30`; smaller scanned universes produce diagnostics only.
+- Concept membership: `THEME_CONCEPT_MEMBERSHIP_ENABLED=1` lets the scanner add
+  local point-in-time concept memberships from `THEME_CONCEPT_MEMBERSHIP_PATH`.
+  It is default-off, fail-open unless `THEME_CONCEPT_MEMBERSHIP_REQUIRED=1`,
+  and never fetches online concept constituents.
 
 Offline-only consumers are explicit:
 
@@ -436,6 +493,9 @@ The system is designed to fail closed:
 - Disabled crowding diagnostics keep neutral fields and emit no crowding risk
   flags. Missing `amount`, missing `pct_chg`, insufficient snapshot history, or
   insufficient universe are diagnostic-only and do not interrupt the scan.
+- Disabled concept membership ignores supplied concept records. Missing or
+  malformed concept membership JSONL fails open unless
+  `THEME_CONCEPT_MEMBERSHIP_REQUIRED=1`.
 - Missing or malformed registry JSON falls back to inferred local industry
   themes and records diagnostics.
 - Missing or malformed per-theme numeric fields become `unavailable`, never
@@ -451,13 +511,13 @@ The system is designed to fail closed:
 
 ## Limitations
 
-- MVP theme definitions start from `industry_map`; a full concept-board ontology
-  is not yet integrated.
+- Default theme definitions start from `industry_map`; concept membership is a
+  local PIT overlay and only participates when explicitly enabled.
 - `industry_map` labels are as-of the run date, not point-in-time. Historical
   replay/calibration therefore carries mild reclassification look-ahead until a
-  PIT membership source is introduced.
-- Live news, live policy feeds, capital-flow data, and concept-board membership
-  are not part of the scanner contract yet. Policy catalyst v1 accepts only
+  PIT industry-label source is introduced.
+- Live news, live policy feeds, capital-flow data, and online concept-board
+  membership are not part of the scanner contract. Policy catalyst v1 accepts only
   local fixtures or manually maintained JSONL caches.
 - Crowding limit-up detection is an approximation from local bars. Code-prefix
   thresholds cover STAR/ChiNext, Beijing, and regular boards; ST 5% limits are

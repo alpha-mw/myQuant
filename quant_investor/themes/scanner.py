@@ -8,6 +8,7 @@ from typing import Any, Mapping, Sequence
 
 import pandas as pd
 
+from quant_investor.themes.membership import active_memberships_by_symbol
 from quant_investor.themes.policy import PolicyCatalystScanner
 from quant_investor.themes.smoothing import (
     ThemeSmoothingConfig,
@@ -52,6 +53,9 @@ class ThemeScanner:
         crowding_enabled: bool | None = None,
         crowding_min_universe: int | None = None,
         snapshot_history: Sequence[Mapping[str, Any]] | None = None,
+        concept_membership_enabled: bool | None = None,
+        concept_primary_margin: float | None = None,
+        theme_memberships: Sequence[Mapping[str, Any]] | None = None,
     ) -> ThemeScanResult:
         state_map = symbol_market_state or {}
         min_count = max(0, int(min_member_count))
@@ -66,6 +70,10 @@ class ThemeScanner:
             crowding_enabled=crowding_enabled,
             crowding_min_universe=crowding_min_universe,
         )
+        concept_config = _resolve_concept_config(
+            concept_membership_enabled=concept_membership_enabled,
+            concept_primary_margin=concept_primary_margin,
+        )
         smoothing_config = ThemeSmoothingConfig(
             window=max(int(smoothing_window or 10), 1),
             min_observations=max(int(smoothing_min_observations or 5), 1),
@@ -75,14 +83,27 @@ class ThemeScanner:
         history_members_by_theme: dict[str, dict[int, list[dict[str, Any]]]] = defaultdict(
             lambda: defaultdict(list)
         )
+        theme_ids_by_symbol: dict[str, list[str]] = {}
         scanned_symbol_count = 0
+        universe_members: list[dict[str, Any]] = []
+        concept_diagnostic_notes: list[str] = []
+        active_concept_memberships = (
+            active_memberships_by_symbol(theme_memberships or (), as_of=as_of)
+            if concept_config["enabled"]
+            else {}
+        )
+        concept_membership_count = sum(
+            len(memberships) for memberships in active_concept_memberships.values()
+        )
+        concept_status = "disabled"
+        if concept_config["enabled"]:
+            concept_status = "success" if concept_membership_count else "empty"
+            if not concept_membership_count:
+                concept_diagnostic_notes.append("theme_membership_no_active_members")
+        all_symbols = set(str(symbol) for symbol in dict(industry_map or {}))
+        all_symbols.update(active_concept_memberships)
 
-        for symbol in sorted(industry_map):
-            theme_name = _valid_theme_name(industry_map.get(symbol))
-            if theme_name is None:
-                continue
-            theme_id = f"industry::{_normalize_theme_id(theme_name)}"
-            themes.setdefault(theme_id, {"theme_id": theme_id, "theme_name": theme_name})
+        for symbol in sorted(all_symbols):
             state = state_map.get(symbol, {})
             frame = frames.get(symbol)
             try:
@@ -90,7 +111,60 @@ class ThemeScanner:
             except Exception:
                 metrics = _neutral_symbol_metrics()
             metrics["symbol"] = symbol
-            members_by_theme[theme_id].append(metrics)
+            assigned_theme_ids: list[str] = []
+
+            theme_name = _valid_theme_name(industry_map.get(symbol))
+            if theme_name is not None:
+                theme_id = f"industry::{_normalize_theme_id(theme_name)}"
+                themes.setdefault(
+                    theme_id,
+                    {
+                        "theme_id": theme_id,
+                        "theme_name": theme_name,
+                        "theme_type": "industry",
+                        "membership_source": "industry_map",
+                        "pit_membership": False,
+                    },
+                )
+                industry_metrics = {
+                    **dict(metrics),
+                    "theme_type": "industry",
+                    "membership_source": "industry_map",
+                    "pit_membership": False,
+                }
+                members_by_theme[theme_id].append(industry_metrics)
+                assigned_theme_ids.append(theme_id)
+
+            for membership in active_concept_memberships.get(symbol, []):
+                concept_theme_id = str(membership.theme_id or "").strip()
+                if not concept_theme_id:
+                    continue
+                concept_theme_name = str(membership.theme_name or concept_theme_id)
+                themes.setdefault(
+                    concept_theme_id,
+                    {
+                        "theme_id": concept_theme_id,
+                        "theme_name": concept_theme_name,
+                        "theme_type": str(membership.theme_type or "concept"),
+                        "membership_source": "theme_membership.v1",
+                        "pit_membership": True,
+                    },
+                )
+                concept_metrics = {
+                    **dict(metrics),
+                    "theme_type": str(membership.theme_type or "concept"),
+                    "membership_source": "theme_membership.v1",
+                    "pit_membership": True,
+                    "membership_id": str(membership.membership_id or ""),
+                    "membership_confidence": clamp(membership.confidence),
+                }
+                members_by_theme[concept_theme_id].append(concept_metrics)
+                assigned_theme_ids.append(concept_theme_id)
+
+            if not assigned_theme_ids:
+                continue
+            theme_ids_by_symbol[symbol] = list(assigned_theme_ids)
+            universe_members.append(dict(metrics))
             for offset in range(smoothing_config.window):
                 if offset == 0:
                     historical_metrics = dict(metrics)
@@ -102,17 +176,15 @@ class ThemeScanner:
                         symbol=symbol,
                     )
                     historical_metrics["symbol"] = symbol
-                history_members_by_theme[theme_id][offset].append(historical_metrics)
+                for assigned_theme_id in assigned_theme_ids:
+                    history_members_by_theme[assigned_theme_id][offset].append(
+                        dict(historical_metrics)
+                    )
             scanned_symbol_count += 1
 
-        all_members = [
-            member
-            for members in members_by_theme.values()
-            for member in members
-        ]
         universe_amount = sum(
             max(0.0, _safe_float(member.get("latest_amount"), 0.0))
-            for member in all_members
+            for member in universe_members
         )
         scored: list[ThemeScore] = []
         for theme_id in sorted(members_by_theme):
@@ -123,6 +195,12 @@ class ThemeScanner:
                 _score_theme(
                     theme_id=theme_id,
                     theme_name=themes.get(theme_id, {}).get("theme_name", theme_id),
+                    theme_type=themes.get(theme_id, {}).get("theme_type", "industry"),
+                    membership_source=themes.get(theme_id, {}).get(
+                        "membership_source",
+                        "industry_map",
+                    ),
+                    pit_membership=bool(themes.get(theme_id, {}).get("pit_membership", False)),
                     members=members,
                     min_member_count=min_count,
                     crowding_enabled=crowding_config["enabled"],
@@ -156,17 +234,31 @@ class ThemeScanner:
         symbol_scores: dict[str, float] = {}
         symbol_smoothed_scores: dict[str, float] = {}
         symbol_primary_theme: dict[str, str] = {}
+        symbol_theme_memberships: dict[str, list[str]] = {}
         symbol_phase: dict[str, str] = {}
         symbol_risk_flags: dict[str, list[str]] = {}
-        for theme_score in selected:
-            for metrics in members_by_theme.get(theme_score.theme_id, []):
-                symbol = str(metrics["symbol"])
-                symbol_scores[symbol] = clamp(theme_score.score / 100.0)
-                if theme_score.smoothed_score is not None:
-                    symbol_smoothed_scores[symbol] = clamp(theme_score.smoothed_score / 100.0)
-                symbol_primary_theme[symbol] = theme_score.theme_id
-                symbol_phase[symbol] = theme_score.phase.value
-                symbol_risk_flags[symbol] = list(theme_score.risk_flags)
+        for symbol in sorted(theme_ids_by_symbol):
+            memberships = [
+                theme_id
+                for theme_id in theme_ids_by_symbol.get(symbol, [])
+                if theme_id in theme_scores
+            ]
+            if not memberships:
+                continue
+            primary = _choose_primary_theme(
+                memberships=memberships,
+                theme_scores=theme_scores,
+                concept_primary_margin=concept_config["primary_margin"],
+            )
+            if primary is None:
+                continue
+            symbol_theme_memberships[symbol] = list(memberships)
+            symbol_scores[symbol] = clamp(primary.score / 100.0)
+            if primary.smoothed_score is not None:
+                symbol_smoothed_scores[symbol] = clamp(primary.smoothed_score / 100.0)
+            symbol_primary_theme[symbol] = primary.theme_id
+            symbol_phase[symbol] = primary.phase.value
+            symbol_risk_flags[symbol] = list(primary.risk_flags)
 
         return ThemeScanResult(
             market=market,
@@ -176,6 +268,7 @@ class ThemeScanner:
             symbol_scores=symbol_scores,
             symbol_smoothed_scores=symbol_smoothed_scores,
             symbol_primary_theme=symbol_primary_theme,
+            symbol_theme_memberships=symbol_theme_memberships,
             symbol_phase=symbol_phase,
             symbol_risk_flags=symbol_risk_flags,
             metadata={
@@ -197,6 +290,11 @@ class ThemeScanner:
                 "crowding_universe_amount": universe_amount,
                 "crowding_weight_model": dict(_THEME_CROWDING_WEIGHTS),
                 "crowding_diagnostic_notes": _crowding_result_notes(scored),
+                "concept_membership_enabled": concept_config["enabled"],
+                "concept_membership_status": concept_status,
+                "concept_membership_count": concept_membership_count,
+                "concept_primary_margin": concept_config["primary_margin"],
+                "concept_membership_diagnostic_notes": concept_diagnostic_notes,
                 "deterministic": True,
                 "no_llm": True,
                 "no_network": True,
@@ -514,6 +612,9 @@ def _score_theme(
     *,
     theme_id: str,
     theme_name: str,
+    theme_type: str = "industry",
+    membership_source: str = "industry_map",
+    pit_membership: bool = False,
     members: list[dict[str, Any]],
     min_member_count: int,
     crowding_enabled: bool = False,
@@ -599,6 +700,9 @@ def _score_theme(
     return ThemeScore(
         theme_id=theme_id,
         theme_name=theme_name,
+        theme_type=str(theme_type or "industry"),
+        membership_source=str(membership_source or "industry_map"),
+        pit_membership=bool(pit_membership),
         phase=phase,
         score=score,
         confidence=confidence,
@@ -672,6 +776,85 @@ def _apply_smoothing_to_theme_score(
         "smoothing_min_observations": int(config.min_observations),
         "smoothing_diagnostic_notes": list(smoothing.diagnostic_notes),
     }
+
+
+def _choose_primary_theme(
+    *,
+    memberships: Sequence[str],
+    theme_scores: Mapping[str, ThemeScore],
+    concept_primary_margin: float,
+) -> ThemeScore | None:
+    candidates = [
+        theme_scores[theme_id]
+        for theme_id in list(memberships or [])
+        if theme_id in theme_scores
+    ]
+    if not candidates:
+        return None
+
+    industry = next(
+        (
+            score
+            for score in candidates
+            if str(score.theme_type or "").strip().lower() == "industry"
+        ),
+        None,
+    )
+    if industry is None:
+        return sorted(candidates, key=lambda score: (-score.score, score.theme_id))[0]
+
+    margin_points = clamp(_safe_float(concept_primary_margin, 0.05)) * 100.0
+    concept_candidates = [
+        score
+        for score in candidates
+        if str(score.theme_type or "").strip().lower() != "industry"
+        and score.phase != ThemePhase.DISTRIBUTION
+    ]
+    if not concept_candidates:
+        return industry
+
+    best_concept = sorted(
+        concept_candidates,
+        key=lambda score: (-score.score, score.theme_id),
+    )[0]
+    if best_concept.score >= industry.score + margin_points:
+        return best_concept
+    return industry
+
+
+def _resolve_concept_config(
+    *,
+    concept_membership_enabled: bool | None,
+    concept_primary_margin: float | None,
+) -> dict[str, Any]:
+    defaults: dict[str, Any] = {
+        "enabled": False,
+        "primary_margin": 0.05,
+    }
+    try:
+        from quant_investor.config import Config
+
+        defaults.update(
+            {
+                "enabled": bool(getattr(Config, "THEME_CONCEPT_MEMBERSHIP_ENABLED", False)),
+                "primary_margin": _safe_float(
+                    getattr(Config, "THEME_CONCEPT_PRIMARY_MARGIN", 0.05),
+                    0.05,
+                ),
+            }
+        )
+    except Exception:
+        pass
+
+    if concept_membership_enabled is not None:
+        defaults["enabled"] = bool(concept_membership_enabled)
+    if concept_primary_margin is not None:
+        defaults["primary_margin"] = _safe_float(
+            concept_primary_margin,
+            defaults["primary_margin"],
+        )
+    defaults["primary_margin"] = clamp(defaults["primary_margin"])
+    return defaults
 
 
 def _resolve_crowding_config(

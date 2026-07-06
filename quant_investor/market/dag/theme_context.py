@@ -6,7 +6,7 @@ from typing import Any, Mapping
 
 import pandas as pd
 
-from quant_investor.themes import ThemeScanner, ThemeSnapshotStore
+from quant_investor.themes import ThemeMembershipStore, ThemeScanner, ThemeSnapshotStore
 from quant_investor.themes.governance import (
     GOVERNANCE_METADATA,
     GOVERNANCE_SCHEMA_VERSION,
@@ -70,6 +70,11 @@ def build_theme_rotation_metadata(
     snapshot_history: list[Mapping[str, Any]] | None = None,
     snapshot_dir: str | Path | None = None,
     history_limit: int = 10,
+    concept_membership_enabled: bool | None = None,
+    concept_membership_path: str | Path | None = None,
+    concept_membership_required: bool | None = None,
+    concept_primary_margin: float | None = None,
+    theme_memberships: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     try:
         crowding_context = _resolve_crowding_scan_context(
@@ -79,6 +84,31 @@ def build_theme_rotation_metadata(
             market=market,
             universe_key=universe_key,
         )
+        concept_context = _resolve_concept_membership_scan_context(
+            concept_membership_enabled=concept_membership_enabled,
+            concept_membership_path=concept_membership_path,
+            concept_membership_required=concept_membership_required,
+            concept_primary_margin=concept_primary_margin,
+            theme_memberships=theme_memberships,
+        )
+        if (
+            concept_context["enabled"]
+            and concept_context["required"]
+            and concept_context["status"] != "success"
+        ):
+            payload = _empty_theme_rotation_metadata(
+                enabled=True,
+                status="error",
+                market=market,
+                universe_key=universe_key,
+                as_of=as_of,
+                diagnostic_notes=list(concept_context["diagnostic_notes"]),
+            )
+            payload["metadata"] = {
+                **dict(payload.get("metadata", {}) or {}),
+                **_concept_membership_metadata(concept_context),
+            }
+            return payload
         result = ThemeScanner().scan(
             frames=dict(frames or {}),
             industry_map=dict(industry_map or {}),
@@ -96,6 +126,9 @@ def build_theme_rotation_metadata(
             crowding_enabled=crowding_context["enabled"],
             crowding_min_universe=crowding_context["min_universe"],
             snapshot_history=crowding_context["snapshot_history"],
+            concept_membership_enabled=concept_context["enabled"],
+            concept_primary_margin=concept_context["primary_margin"],
+            theme_memberships=concept_context["memberships"],
         )
     except Exception as exc:
         return _empty_theme_rotation_metadata(
@@ -134,6 +167,14 @@ def build_theme_rotation_metadata(
         for symbol in selected_symbols
         if symbol in result.symbol_primary_theme
     }
+    symbol_theme_memberships = {
+        symbol: [
+            str(theme_id)
+            for theme_id in list(result.symbol_theme_memberships.get(symbol, []) or [])
+        ]
+        for symbol in selected_symbols
+        if symbol in result.symbol_theme_memberships
+    }
     symbol_phase = {
         symbol: str(result.symbol_phase.get(symbol, ""))
         for symbol in selected_symbols
@@ -162,6 +203,16 @@ def build_theme_rotation_metadata(
         "symbol_limit": max(int(symbol_limit), 0),
         "truncated_symbol_count": max(len(raw_symbol_scores) - len(selected_symbols), 0),
     }
+    metadata = {
+        **metadata,
+        **_concept_membership_metadata(concept_context),
+        "concept_membership_diagnostic_notes": _dedupe_flags(
+            [
+                *list(metadata.get("concept_membership_diagnostic_notes", []) or []),
+                *list(concept_context.get("diagnostic_notes", []) or []),
+            ]
+        ),
+    }
     return {
         "schema_version": SCHEMA_VERSION,
         "enabled": True,
@@ -173,6 +224,7 @@ def build_theme_rotation_metadata(
         "symbol_scores": symbol_scores,
         "symbol_smoothed_scores": symbol_smoothed_scores,
         "symbol_primary_theme": symbol_primary_theme,
+        "symbol_theme_memberships": symbol_theme_memberships,
         "symbol_phase": symbol_phase,
         "symbol_risk_flags": symbol_risk_flags,
         "top_themes": top_themes,
@@ -709,6 +761,7 @@ def _empty_theme_rotation_metadata(
         "symbol_scores": {},
         "symbol_smoothed_scores": {},
         "symbol_primary_theme": {},
+        "symbol_theme_memberships": {},
         "symbol_phase": {},
         "symbol_risk_flags": {},
         "top_themes": [],
@@ -990,10 +1043,112 @@ def _resolve_crowding_scan_context(
     }
 
 
+def _resolve_concept_membership_scan_context(
+    *,
+    concept_membership_enabled: bool | None,
+    concept_membership_path: str | Path | None,
+    concept_membership_required: bool | None,
+    concept_primary_margin: float | None,
+    theme_memberships: list[Mapping[str, Any]] | None,
+) -> dict[str, Any]:
+    enabled = False
+    required = False
+    path = "data/theme_membership.jsonl"
+    primary_margin = 0.05
+    try:
+        from quant_investor.config import Config
+
+        enabled = bool(getattr(Config, "THEME_CONCEPT_MEMBERSHIP_ENABLED", False))
+        required = bool(getattr(Config, "THEME_CONCEPT_MEMBERSHIP_REQUIRED", False))
+        path = str(
+            getattr(Config, "THEME_CONCEPT_MEMBERSHIP_PATH", path)
+            or "data/theme_membership.jsonl"
+        )
+        primary_margin = _clamp(
+            _safe_float(getattr(Config, "THEME_CONCEPT_PRIMARY_MARGIN", 0.05), 0.05),
+            0.0,
+            1.0,
+        )
+    except Exception:
+        pass
+
+    if concept_membership_enabled is not None:
+        enabled = bool(concept_membership_enabled)
+    if concept_membership_required is not None:
+        required = bool(concept_membership_required)
+    if concept_membership_path is not None:
+        path = str(concept_membership_path)
+    if concept_primary_margin is not None:
+        primary_margin = _clamp(_safe_float(concept_primary_margin, primary_margin), 0.0, 1.0)
+
+    if not enabled:
+        return {
+            "enabled": False,
+            "required": required,
+            "path": path,
+            "primary_margin": primary_margin,
+            "memberships": [],
+            "membership_count": 0,
+            "status": "disabled",
+            "diagnostic_notes": [],
+        }
+
+    if theme_memberships is not None:
+        memberships = list(theme_memberships or [])
+        return {
+            "enabled": True,
+            "required": required,
+            "path": "inline",
+            "primary_margin": primary_margin,
+            "memberships": memberships,
+            "membership_count": len(memberships),
+            "status": "success" if memberships else "empty",
+            "diagnostic_notes": (
+                [f"theme_membership_count={len(memberships)}"]
+                if memberships
+                else ["theme_membership_inline_empty"]
+            ),
+        }
+
+    result = ThemeMembershipStore(path).load()
+    return {
+        "enabled": True,
+        "required": required,
+        "path": path,
+        "primary_margin": primary_margin,
+        "memberships": list(result.memberships),
+        "membership_count": len(result.memberships),
+        "status": str(result.status or "missing"),
+        "diagnostic_notes": list(result.diagnostic_notes or []),
+    }
+
+
+def _concept_membership_metadata(context: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "concept_membership_enabled": bool(context.get("enabled", False)),
+        "concept_membership_required": bool(context.get("required", False)),
+        "concept_membership_path": str(context.get("path") or ""),
+        "concept_membership_status": str(context.get("status") or "disabled"),
+        "concept_membership_count": int(
+            _safe_float(context.get("membership_count", 0), 0.0)
+        ),
+        "concept_primary_margin": _clamp(
+            _safe_float(context.get("primary_margin", 0.05), 0.05),
+            0.0,
+            1.0,
+        ),
+    }
+
+
 def _compact_top_theme(theme: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "theme_id": str(theme.get("theme_id", "")),
         "theme_name": str(theme.get("theme_name", "")),
+        "theme_type": str(theme.get("theme_type", "industry") or "industry"),
+        "membership_source": str(
+            theme.get("membership_source", "industry_map") or "industry_map"
+        ),
+        "pit_membership": bool(theme.get("pit_membership", False)),
         "score": _safe_float(theme.get("score", 0.0)),
         "raw_score": _safe_float(theme.get("raw_score", theme.get("score", 0.0))),
         "smoothed_score": _optional_float(theme.get("smoothed_score")),
