@@ -8,6 +8,7 @@ A股激进科技制造策略日度正式复盘编排入口。
 from __future__ import annotations
 
 import argparse
+import csv
 import os
 import json
 import time
@@ -20,6 +21,9 @@ from quant_investor.market.download_cn import CNFullMarketDownloader
 from quant_investor.market.market_data_store import run_storage_validate
 from quant_investor.market.staged_maintenance import run_staged_maintenance
 from quant_investor.monitoring import cn_aggressive_portfolio_tracker as tracker
+from quant_investor.monitoring.theme_holding_guard import (
+    evaluate_holding_theme_guard,
+)
 from quant_investor.reporting.theme_shadow_renderer import (
     append_theme_production_overlay_section_once,
     append_theme_shadow_section_once,
@@ -713,6 +717,208 @@ def _append_theme_visibility_sections(
     return append_theme_shadow_section_once(text, theme_shadow_monitor)
 
 
+def _theme_holding_guard_enabled() -> bool:
+    return bool(getattr(config, "THEME_HOLDING_GUARD_ENABLED", False))
+
+
+def _theme_holding_guard_tighten_ratio() -> float:
+    try:
+        ratio = float(getattr(config, "THEME_HOLDING_GUARD_TIGHTEN_RATIO", 0.5))
+    except (TypeError, ValueError):
+        return 0.5
+    return max(0.0, ratio)
+
+
+def _guard_float(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _read_holding_guard_rows(run_path: Path) -> list[dict[str, str]]:
+    path = run_path / "holdings_review.csv"
+    if not path.exists():
+        return []
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            return [dict(row) for row in csv.DictReader(handle)]
+    except (OSError, UnicodeDecodeError, csv.Error):
+        return []
+
+
+def _holding_guard_display_stop(row: Mapping[str, Any], ratio: float) -> float:
+    current_price = _guard_float(row.get("current_price"))
+    stage_stop = _guard_float(row.get("stage_stop_price"))
+    if current_price <= 0 or stage_stop <= 0:
+        return stage_stop
+    buffer = max(current_price - stage_stop, 0.0)
+    return round(current_price - buffer * ratio, 2)
+
+
+def _build_theme_holding_guard_payload(
+    *,
+    rows: list[dict[str, str]],
+    theme_snapshot: Mapping[str, Any],
+    theme_rotation: Mapping[str, Any],
+    snapshot_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    if not _theme_holding_guard_enabled():
+        return {"enabled": False, "status": "disabled", "signals": []}
+    if not rows:
+        return {
+            "enabled": True,
+            "status": "no_holdings_review",
+            "signals": [],
+            "diagnostic_notes": ["holdings_review_unavailable"],
+        }
+    if not snapshot_payload and not theme_rotation:
+        return {
+            "enabled": True,
+            "status": "snapshot_unavailable",
+            "signals": [],
+            "diagnostic_notes": ["theme snapshot unavailable"],
+        }
+
+    symbols = [str(row.get("symbol") or "").strip().upper() for row in rows]
+    payload = dict(snapshot_payload or {})
+    if theme_rotation and "theme_rotation" not in payload:
+        payload["theme_rotation"] = dict(theme_rotation)
+    signals = evaluate_holding_theme_guard(symbols, payload)
+    serialized = [signal.to_dict() for signal in signals.values()]
+    return {
+        "enabled": True,
+        "status": "success",
+        "tighten_count": sum(1 for signal in signals.values() if signal.guard_level == "tighten"),
+        "watch_count": sum(1 for signal in signals.values() if signal.guard_level == "watch"),
+        "signals": serialized,
+        "theme_snapshot_status": str(theme_snapshot.get("status") or ""),
+        "diagnostic_notes": [],
+    }
+
+
+def _theme_holding_guard_section(
+    *,
+    rows: list[dict[str, str]],
+    payload: Mapping[str, Any],
+    ratio: float,
+) -> str:
+    if not payload.get("enabled"):
+        return ""
+    lines = ["## 主题状态守卫"]
+    status = str(payload.get("status") or "")
+    if status == "snapshot_unavailable":
+        lines.append("- theme snapshot unavailable")
+        return "\n".join(lines) + "\n"
+    if status == "no_holdings_review":
+        lines.append("- holdings_review unavailable")
+        return "\n".join(lines) + "\n"
+
+    rows_by_symbol = {
+        str(row.get("symbol") or "").strip().upper(): row
+        for row in rows
+        if str(row.get("symbol") or "").strip()
+    }
+    active = [
+        signal
+        for signal in list(payload.get("signals") or [])
+        if isinstance(signal, Mapping) and str(signal.get("guard_level") or "") in {"watch", "tighten"}
+    ]
+    if not active:
+        lines.append("- 当前持仓主题阶段未触发 watch/tighten。")
+        return "\n".join(lines) + "\n"
+
+    for signal in active:
+        symbol = str(signal.get("symbol") or "").strip().upper()
+        row = rows_by_symbol.get(symbol, {})
+        name = str(row.get("name") or "").strip()
+        phase = str(signal.get("phase") or "")
+        guard_level = str(signal.get("guard_level") or "")
+        theme_name = str(signal.get("primary_theme_name") or signal.get("primary_theme_id") or "")
+        reasons = ", ".join(str(item) for item in list(signal.get("reasons") or []))
+        prefix = f"- `{symbol}` {name}".rstrip()
+        if guard_level == "tighten":
+            stage_stop = _guard_float(row.get("stage_stop_price"))
+            display_stop = _holding_guard_display_stop(row, ratio)
+            lines.append(
+                f"{prefix}: guard=tighten；theme={theme_name}；phase={phase}；"
+                f"原止损 {stage_stop:.2f} -> 展示止损 {display_stop:.2f}；"
+                f"主题转弱（{phase}），止损缓冲收紧；原因 {reasons}"
+            )
+        else:
+            lines.append(
+                f"{prefix}: guard=watch；theme={theme_name}；phase={phase}；原因 {reasons}"
+            )
+    return "\n".join(lines) + "\n"
+
+
+def _append_theme_holding_guard_section(markdown: str, section: str) -> str:
+    if not section or "## 主题状态守卫" in markdown:
+        return markdown
+    return f"{markdown.rstrip()}\n\n{section}".rstrip() + "\n"
+
+
+def _attach_theme_holding_guard_payload(
+    run_path: Path,
+    payload: Mapping[str, Any],
+) -> None:
+    for name in ("manifest.json", "market_snapshot.json"):
+        path = run_path / name
+        if not path.exists():
+            continue
+        record = _read_json_mapping(path)
+        if not record:
+            continue
+        record["theme_holding_guard"] = _jsonable(payload)
+        diagnostics = record.get("formal_diagnostics")
+        if not isinstance(diagnostics, dict):
+            diagnostics = {}
+            record["formal_diagnostics"] = diagnostics
+        diagnostics["theme_holding_guard"] = _jsonable(payload)
+        path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _apply_theme_holding_guard_to_record(
+    run_dir: str | Path,
+    *,
+    theme_snapshot: Mapping[str, Any],
+    theme_rotation: Mapping[str, Any],
+    snapshot_payload: Mapping[str, Any],
+) -> None:
+    if not _theme_holding_guard_enabled():
+        return
+    run_path = Path(run_dir)
+    rows = _read_holding_guard_rows(run_path)
+    payload = _build_theme_holding_guard_payload(
+        rows=rows,
+        theme_snapshot=theme_snapshot,
+        theme_rotation=theme_rotation,
+        snapshot_payload=snapshot_payload,
+    )
+    _attach_theme_holding_guard_payload(run_path, payload)
+    section = _theme_holding_guard_section(
+        rows=rows,
+        payload=payload,
+        ratio=_theme_holding_guard_tighten_ratio(),
+    )
+
+    report_paths = [run_path / "analysis_report.md"]
+    manifest_payload = _read_json_mapping(run_path / "manifest.json")
+    raw_exports = manifest_payload.get("raw_exports") if isinstance(manifest_payload, dict) else {}
+    if isinstance(raw_exports, dict) and raw_exports.get("report"):
+        report_paths.append(run_path / str(raw_exports["report"]))
+    notes_path = run_path.parent / "latest_notes_payload.md"
+    if notes_path.exists():
+        report_paths.append(notes_path)
+    for report_path in report_paths:
+        if not report_path.exists():
+            continue
+        text = report_path.read_text(encoding="utf-8")
+        updated = _append_theme_holding_guard_section(text, section)
+        if updated != text:
+            report_path.write_text(updated, encoding="utf-8")
+
+
 def _attach_theme_overlay_to_record(
     run_dir: str | Path,
     overlay: dict[str, Any],
@@ -784,6 +990,12 @@ def _attach_theme_overlay_to_record(
         )
         if updated != report_text:
             report_path.write_text(updated, encoding="utf-8")
+    _apply_theme_holding_guard_to_record(
+        run_path,
+        theme_snapshot=theme_snapshot,
+        theme_rotation=theme_rotation,
+        snapshot_payload=snapshot_payload,
+    )
 
 
 def run_daily_review(args: argparse.Namespace) -> dict[str, Any]:

@@ -58,6 +58,9 @@ Core components:
 - `quant_investor/agents/portfolio_constructor.py`: optional theme exposure
   caps when `theme_portfolio_cap_enabled` is true.
 - `quant_investor/themes/storage.py`: local JSON snapshot store.
+- `quant_investor/monitoring/theme_holding_guard.py`: pure holding-side guard
+  evaluator that maps already-held symbols to theme phase/risk signals for
+  daily review display.
 - `quant_investor/themes/replay.py` and
   `quant_investor/themes/calibration.py`: explicit offline replay and
   calibration diagnostics.
@@ -78,6 +81,7 @@ local OHLCV frames + industry_map
   -> optional RiskGuard overlay
   -> optional PortfolioConstructor caps
   -> optional local snapshot
+  -> optional holding-side daily-review guard
   -> explicit offline replay/calibration
 ```
 
@@ -257,6 +261,12 @@ All behavior-changing consumers require explicit configuration:
   respect single-theme exposure caps.
 - Snapshot persistence: `THEME_SNAPSHOT_ENABLED=1` writes local JSON snapshots
   under `THEME_SNAPSHOT_DIR`.
+- Holding-side guard: `THEME_HOLDING_GUARD_ENABLED=1` lets the CN aggressive
+  daily review read the latest persisted theme snapshot and show watch/tighten
+  diagnostics for existing holdings whose primary theme has moved to
+  `overextended` or `distribution`. `THEME_HOLDING_GUARD_TIGHTEN_RATIO`
+  defaults to `0.5` and only changes the report display stop for tighten rows;
+  it does not rewrite source ledgers, target weights, or executable orders.
 - Governance sidecar: `THEME_GOVERNANCE_ENABLED=1` attaches
   `theme_governance.v1` metadata. `THEME_GOVERNANCE_ARTIFACT_ENABLED=1` writes
   a local governance JSON artifact under `THEME_GOVERNANCE_OUTPUT_DIR`.
@@ -272,6 +282,34 @@ Offline-only consumers are explicit:
   threshold diagnostics.
 - `run_theme_governance_diagnostics.py` renders governance JSON/MD from local
   snapshots without changing executable decisions.
+
+## Holding-side Guard
+
+Holding-side Guard closes the gap between theme entry metadata and existing
+portfolio review. It is default-off and runs only inside the CN aggressive daily
+review after tracker artifacts have been written.
+
+Inputs:
+
+- existing `holdings_review.csv` rows for held symbols and display prices;
+- latest local `theme_snapshot.v1` loaded through `ThemeSnapshotStore`;
+- `theme_rotation.v1` maps: `symbol_primary_theme`, `symbol_phase`,
+  `symbol_risk_flags`, and `theme_scores`.
+
+Rules are deterministic and advisory:
+
+- `distribution` phase or `theme_distribution_risk` => `tighten`;
+- `overextended` phase or `theme_overextended`,
+  `theme_overextended_no_chase`, `theme_fake_breakout_risk` => `watch`;
+- missing snapshot, missing mapping, blank phase, or `unclassified` =>
+  `none` with diagnostics.
+
+When enabled, the report gains a `主题状态守卫` section. Tighten rows show the
+original stage stop and a display-only tightened stop computed by shrinking the
+current-price-to-stage-stop buffer by `THEME_HOLDING_GUARD_TIGHTEN_RATIO`.
+This is intentionally read-only: it affects review text and diagnostics, not
+the persisted holding ledger, broker state, PortfolioConstructor target
+weights, or RiskGuard gates.
 
 ## A_quant Inspiration Boundary
 
@@ -313,6 +351,8 @@ The system is designed to fail closed:
   instead of changing rankings, risk limits, or weights.
 - Snapshot loading skips malformed JSON and returns the latest valid snapshot or
   `None`.
+- Holding-side guard fails open: missing snapshots or unmapped holdings only add
+  diagnostics and do not block daily review or synthesize sell orders.
 - Replay/calibration handle malformed snapshots and empty datasets with
   metadata counters and warnings.
 
