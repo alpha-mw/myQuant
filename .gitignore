@@ -79,6 +79,7 @@ quant_investor/data/storage/*
 !quant_investor/data/storage/csv_reader.py
 !quant_investor/data/storage/csv_store.py
 reports/
+portfolio_dashboard/generated/
 # Root-anchored: the unanchored `models/` pattern silently blocked the
 # web/models/ source package (Pydantic schemas) from ever being committed.
 /models/
