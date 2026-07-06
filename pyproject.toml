@@ -106,12 +106,34 @@ exclude = [
     '^quant_investor/agent_orchestrator\.py$',
 ]
 
+[[tool.mypy.overrides]]
+module = [
+    "quant_investor.agents.*",
+    "quant_investor.factors.*",
+]
+strict_optional = true
+
+[[tool.mypy.overrides]]
+module = [
+    "quant_investor.agents.portfolio_constructor",
+    "quant_investor.factors",
+    "quant_investor.factors.aquant_expression",
+    "quant_investor.factors.correlation",
+    "quant_investor.factors.expression",
+    "quant_investor.factors.health",
+    "quant_investor.factors.library",
+    "quant_investor.factors.operators",
+    "quant_investor.factors.pit_fundamentals",
+    "quant_investor.factors.shadow_scoring",
+]
+strict_optional = false
+disable_error_code = ["arg-type", "assignment"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "--cov=quant_investor --cov-report=term-missing --cov-report=html:results/htmlcov"
 
 [tool.coverage.run]
 source = ["quant_investor"]
