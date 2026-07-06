@@ -67,8 +67,18 @@ def build_theme_rotation_metadata(
     symbol_limit: int = 300,
     smoothing_window: int = 10,
     smoothing_min_observations: int = 5,
+    snapshot_history: list[Mapping[str, Any]] | None = None,
+    snapshot_dir: str | Path | None = None,
+    history_limit: int = 10,
 ) -> dict[str, Any]:
     try:
+        crowding_context = _resolve_crowding_scan_context(
+            snapshot_history=snapshot_history,
+            snapshot_dir=snapshot_dir,
+            history_limit=history_limit,
+            market=market,
+            universe_key=universe_key,
+        )
         result = ThemeScanner().scan(
             frames=dict(frames or {}),
             industry_map=dict(industry_map or {}),
@@ -83,6 +93,9 @@ def build_theme_rotation_metadata(
             top_n=int(top_n),
             smoothing_window=int(smoothing_window),
             smoothing_min_observations=int(smoothing_min_observations),
+            crowding_enabled=crowding_context["enabled"],
+            crowding_min_universe=crowding_context["min_universe"],
+            snapshot_history=crowding_context["snapshot_history"],
         )
     except Exception as exc:
         return _empty_theme_rotation_metadata(
@@ -936,6 +949,47 @@ def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
 
 
+def _resolve_crowding_scan_context(
+    *,
+    snapshot_history: list[Mapping[str, Any]] | None,
+    snapshot_dir: str | Path | None,
+    history_limit: int,
+    market: str,
+    universe_key: str,
+) -> dict[str, Any]:
+    enabled = False
+    min_universe = 30
+    resolved_snapshot_dir = snapshot_dir
+    try:
+        from quant_investor.config import Config
+
+        enabled = bool(getattr(Config, "THEME_CROWDING_ENABLED", False))
+        min_universe = max(int(getattr(Config, "THEME_CROWDING_MIN_UNIVERSE", 30) or 30), 1)
+        if resolved_snapshot_dir is None:
+            resolved_snapshot_dir = str(
+                getattr(Config, "THEME_SNAPSHOT_DIR", "results/theme_snapshots")
+                or "results/theme_snapshots"
+            )
+    except Exception:
+        pass
+
+    history = list(snapshot_history or [])
+    if enabled and not history and resolved_snapshot_dir:
+        try:
+            history = ThemeSnapshotStore(resolved_snapshot_dir).load_recent(
+                market=market or "CN",
+                universe_key=universe_key or None,
+                limit=max(int(history_limit or 10), 0),
+            )
+        except Exception:
+            history = []
+    return {
+        "enabled": enabled,
+        "min_universe": min_universe,
+        "snapshot_history": history,
+    }
+
+
 def _compact_top_theme(theme: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "theme_id": str(theme.get("theme_id", "")),
@@ -956,6 +1010,21 @@ def _compact_top_theme(theme: Mapping[str, Any]) -> dict[str, Any]:
         "member_count": int(_safe_float(theme.get("member_count", 0))),
         "top_symbols": [str(symbol) for symbol in list(theme.get("top_symbols", []) or [])],
         "risk_flags": [str(flag) for flag in list(theme.get("risk_flags", []) or [])],
+        "theme_turnover_share": _safe_float(theme.get("theme_turnover_share", 0.0)),
+        "turnover_share_sma10": _optional_float(theme.get("turnover_share_sma10")),
+        "turnover_share_stretch": _safe_float(theme.get("turnover_share_stretch", 0.0)),
+        "turnover_share_delta_5d": _optional_float(theme.get("turnover_share_delta_5d")),
+        "turnover_share_trend": str(theme.get("turnover_share_trend", "")),
+        "theme_limitup_ratio": _safe_float(theme.get("theme_limitup_ratio", 0.0)),
+        "limitup_norm": _safe_float(theme.get("limitup_norm", 0.0)),
+        "member_turnover_concentration": _safe_float(
+            theme.get("member_turnover_concentration", 0.0)
+        ),
+        "crowding_risk": _safe_float(theme.get("crowding_risk", 0.0)),
+        "crowding_status": str(theme.get("crowding_status", "")),
+        "crowding_diagnostic_notes": [
+            str(note) for note in list(theme.get("crowding_diagnostic_notes", []) or [])
+        ],
     }
 
 

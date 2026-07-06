@@ -145,6 +145,13 @@ Important fields:
   `THEME_POLICY_CATALYST_ENABLED=1`: `policy_catalyst_score`,
   `policy_confidence`, `policy_stage`, `policy_evidence`, and
   `policy_risk_flags`.
+- Crowding diagnostic fields are present with neutral defaults and become
+  active only when `THEME_CROWDING_ENABLED=1`: `theme_turnover_share`,
+  `turnover_share_sma10`, `turnover_share_stretch`,
+  `turnover_share_delta_5d`, `turnover_share_trend`,
+  `theme_limitup_ratio`, `limitup_norm`,
+  `member_turnover_concentration`, `crowding_risk`, `crowding_status`, and
+  `crowding_diagnostic_notes`.
 - `symbol_scores`: map of symbol to normalized theme score in `[0, 1]`.
 - `symbol_smoothed_scores`: separate normalized SMA10 theme score map when
   enough local history exists; `symbol_scores` remains raw/current for
@@ -222,6 +229,53 @@ Theme heat uses a deterministic 10-observation simple moving average:
 - Governance can read recent local snapshots from `THEME_SNAPSHOT_DIR`; missing
   history is diagnostic-only and never treated as healthy confirmation.
 
+## Crowding Diagnostics
+
+Crowding Diagnostics are default-off and use only the same local market frames
+already provided to `ThemeScanner`. When `THEME_CROWDING_ENABLED=0`, all new
+fields remain neutral, no new risk flags are emitted, and no overextension or
+funnel score is changed.
+
+When enabled, the scanner computes three local metrics per theme:
+
+- `theme_turnover_share`: latest theme member turnover divided by latest
+  scanned-universe turnover. If `amount` is missing, the scanner approximates
+  it with `close * vol` and records `amount_approximated`.
+- `theme_limitup_ratio`: latest limit-up member count divided by theme member
+  count. Limit-up is approximated from local `pct_chg`, `close`, and `high`;
+  `pct_chg` values with absolute max above `1` are treated as percentage
+  points, otherwise as decimal returns. If `pct_chg` is missing, it is derived
+  from local close history.
+- `member_turnover_concentration`: top-three member turnover divided by theme
+  turnover. Themes with fewer than four members use `1.0` and record a
+  diagnostic note.
+
+Recent snapshot history from `THEME_SNAPSHOT_DIR` supplies the
+`theme_turnover_share` SMA10 baseline through `smooth_numeric_series`; missing
+or old snapshots keep `turnover_share_stretch=0` and record
+`turnover_share_smoothing_status=insufficient_history`.
+
+The combined score is:
+
+```text
+crowding_risk =
+  0.45 * turnover_share_stretch
+  + 0.35 * limitup_norm
+  + 0.20 * member_turnover_concentration
+```
+
+The score is clamped to `[0, 1]`. If the scanned universe is smaller than
+`THEME_CROWDING_MIN_UNIVERSE` (default `30`), the scanner sets
+`crowding_status="insufficient_universe"`, records diagnostics, and keeps risk
+fields neutral. When enabled and eligible, crowding contributes
+`0.30 * crowding_risk` to `overextension_risk`. `crowding_risk >= 0.70` adds
+`theme_crowded`; `theme_limitup_ratio >= 0.20` with breadth below `0.40` adds
+`theme_narrow_leadership`.
+
+The deterministic funnel recognizes those two flags only inside the already
+enabled `THEME_FUNNEL_BOOST_ENABLED` path: `theme_crowded` applies `-0.03` and
+`theme_narrow_leadership` applies `-0.02`.
+
 ## Policy Catalyst Layer
 
 The Policy Catalyst Layer is a deterministic ThemeScanner sidecar. It is
@@ -273,6 +327,9 @@ All behavior-changing consumers require explicit configuration:
 - Policy catalyst: `THEME_POLICY_CATALYST_ENABLED=1` reads local JSONL policy
   events and adds only capped theme-score metadata. It does not bypass the v13
   DAG or create candidate-pool entries.
+- Crowding diagnostics: `THEME_CROWDING_ENABLED=1` lets the scanner add local
+  crowding metrics and gated risk flags. `THEME_CROWDING_MIN_UNIVERSE` defaults
+  to `30`; smaller scanned universes produce diagnostics only.
 
 Offline-only consumers are explicit:
 
@@ -343,6 +400,9 @@ The system is designed to fail closed:
   `theme_governance.v1` payload.
 - Missing or malformed policy event JSONL returns `policy_catalyst_status ==
   "unavailable"` and leaves theme scores unchanged.
+- Disabled crowding diagnostics keep neutral fields and emit no crowding risk
+  flags. Missing `amount`, missing `pct_chg`, insufficient snapshot history, or
+  insufficient universe are diagnostic-only and do not interrupt the scan.
 - Missing or malformed registry JSON falls back to inferred local industry
   themes and records diagnostics.
 - Missing or malformed per-theme numeric fields become `unavailable`, never
@@ -363,6 +423,9 @@ The system is designed to fail closed:
 - Live news, live policy feeds, capital-flow data, and concept-board membership
   are not part of the scanner contract yet. Policy catalyst v1 accepts only
   local fixtures or manually maintained JSONL caches.
+- Crowding limit-up detection is an approximation from local bars. Code-prefix
+  thresholds cover STAR/ChiNext, Beijing, and regular boards; ST 5% limits are
+  not reliably identifiable from code alone and are not modeled in this phase.
 - No live LLM, provider, or network scoring is used.
 - Funnel boosts, risk overlays, and portfolio caps require offline replay and
   calibration before production enablement.

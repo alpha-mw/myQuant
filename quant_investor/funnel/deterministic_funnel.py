@@ -39,6 +39,8 @@ _THEME_RISK_FLAG_PENALTIES: dict[str, float] = {
     "theme_fake_breakout_risk": -0.03,
     "theme_low_breadth": -0.02,
     "theme_distribution_risk": -0.04,
+    "theme_crowded": -0.03,
+    "theme_narrow_leadership": -0.02,
 }
 
 

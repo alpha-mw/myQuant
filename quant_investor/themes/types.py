@@ -72,6 +72,17 @@ class ThemeScore:
     policy_stage: str = "disabled"
     policy_evidence: list[str] = field(default_factory=list)
     policy_risk_flags: list[str] = field(default_factory=list)
+    theme_turnover_share: float = 0.0
+    turnover_share_sma10: float | None = None
+    turnover_share_stretch: float = 0.0
+    turnover_share_delta_5d: float | None = None
+    turnover_share_trend: str = "disabled"
+    theme_limitup_ratio: float = 0.0
+    limitup_norm: float = 0.0
+    member_turnover_concentration: float = 0.0
+    crowding_risk: float = 0.0
+    crowding_status: str = "disabled"
+    crowding_diagnostic_notes: list[str] = field(default_factory=list)
     top_symbols: list[str] = field(default_factory=list)
     risk_flags: list[str] = field(default_factory=list)
     evidence: list[str] = field(default_factory=list)
@@ -104,6 +115,17 @@ class ThemeScore:
             "policy_stage": str(self.policy_stage or "disabled"),
             "policy_evidence": _jsonable(self.policy_evidence),
             "policy_risk_flags": _jsonable(self.policy_risk_flags),
+            "theme_turnover_share": _jsonable(self.theme_turnover_share),
+            "turnover_share_sma10": _jsonable(self.turnover_share_sma10),
+            "turnover_share_stretch": _jsonable(self.turnover_share_stretch),
+            "turnover_share_delta_5d": _jsonable(self.turnover_share_delta_5d),
+            "turnover_share_trend": str(self.turnover_share_trend or "disabled"),
+            "theme_limitup_ratio": _jsonable(self.theme_limitup_ratio),
+            "limitup_norm": _jsonable(self.limitup_norm),
+            "member_turnover_concentration": _jsonable(self.member_turnover_concentration),
+            "crowding_risk": _jsonable(self.crowding_risk),
+            "crowding_status": str(self.crowding_status or "disabled"),
+            "crowding_diagnostic_notes": _jsonable(self.crowding_diagnostic_notes),
             "top_symbols": _jsonable(self.top_symbols),
             "risk_flags": _jsonable(self.risk_flags),
             "evidence": _jsonable(self.evidence),

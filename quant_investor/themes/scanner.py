@@ -3,20 +3,32 @@ from __future__ import annotations
 import math
 import re
 from collections import defaultdict
-from statistics import median
-from typing import Any, Mapping
+from statistics import mean, median
+from typing import Any, Mapping, Sequence
 
 import pandas as pd
 
 from quant_investor.themes.policy import PolicyCatalystScanner
-from quant_investor.themes.smoothing import ThemeSmoothingConfig, smooth_theme_series
+from quant_investor.themes.smoothing import (
+    ThemeSmoothingConfig,
+    smooth_numeric_series,
+    smooth_theme_series,
+)
 from quant_investor.themes.types import ThemePhase, ThemeScanResult, ThemeScore, clamp
 
 
 _INVALID_THEME_NAMES = {"", "unknown", "none", "nan", "null"}
 _DATE_COLUMNS = ("trade_date", "date", "Date", "datetime", "time")
 _CLOSE_COLUMNS = ("close", "Close")
+_HIGH_COLUMNS = ("high", "High")
 _VOLUME_COLUMNS = ("volume", "vol")
+_AMOUNT_COLUMNS = ("amount", "Amount", "turnover")
+_PCT_CHG_COLUMNS = ("pct_chg", "pct_change", "pctChange", "change_pct")
+_THEME_CROWDING_WEIGHTS: dict[str, float] = {
+    "turnover_share_stretch": 0.45,
+    "limitup_norm": 0.35,
+    "member_turnover_concentration": 0.20,
+}
 
 
 class ThemeScanner:
@@ -37,6 +49,9 @@ class ThemeScanner:
         policy_catalyst_weight: float | None = None,
         policy_lookback_days: int | None = None,
         policy_event_path: str | None = None,
+        crowding_enabled: bool | None = None,
+        crowding_min_universe: int | None = None,
+        snapshot_history: Sequence[Mapping[str, Any]] | None = None,
     ) -> ThemeScanResult:
         state_map = symbol_market_state or {}
         min_count = max(0, int(min_member_count))
@@ -46,6 +61,10 @@ class ThemeScanner:
             policy_catalyst_weight=policy_catalyst_weight,
             policy_lookback_days=policy_lookback_days,
             policy_event_path=policy_event_path,
+        )
+        crowding_config = _resolve_crowding_config(
+            crowding_enabled=crowding_enabled,
+            crowding_min_universe=crowding_min_universe,
         )
         smoothing_config = ThemeSmoothingConfig(
             window=max(int(smoothing_window or 10), 1),
@@ -67,7 +86,7 @@ class ThemeScanner:
             state = state_map.get(symbol, {})
             frame = frames.get(symbol)
             try:
-                metrics = _symbol_metrics(frame, state)
+                metrics = _symbol_metrics(frame, state, symbol=symbol)
             except Exception:
                 metrics = _neutral_symbol_metrics()
             metrics["symbol"] = symbol
@@ -76,11 +95,25 @@ class ThemeScanner:
                 if offset == 0:
                     historical_metrics = dict(metrics)
                 else:
-                    historical_metrics = _symbol_metrics_at_offset(frame, state, offset)
+                    historical_metrics = _symbol_metrics_at_offset(
+                        frame,
+                        state,
+                        offset,
+                        symbol=symbol,
+                    )
                     historical_metrics["symbol"] = symbol
                 history_members_by_theme[theme_id][offset].append(historical_metrics)
             scanned_symbol_count += 1
 
+        all_members = [
+            member
+            for members in members_by_theme.values()
+            for member in members
+        ]
+        universe_amount = sum(
+            max(0.0, _safe_float(member.get("latest_amount"), 0.0))
+            for member in all_members
+        )
         scored: list[ThemeScore] = []
         for theme_id in sorted(members_by_theme):
             members = members_by_theme[theme_id]
@@ -92,6 +125,12 @@ class ThemeScanner:
                     theme_name=themes.get(theme_id, {}).get("theme_name", theme_id),
                     members=members,
                     min_member_count=min_count,
+                    crowding_enabled=crowding_config["enabled"],
+                    crowding_min_universe=crowding_config["min_universe"],
+                    scanned_symbol_count=scanned_symbol_count,
+                    universe_amount=universe_amount,
+                    snapshot_history=snapshot_history or (),
+                    smoothing_config=smoothing_config,
                 )
             )
 
@@ -153,6 +192,11 @@ class ThemeScanner:
                 "policy_catalyst_event_path": policy_metadata["event_path"],
                 "policy_catalyst_matched_theme_count": policy_metadata["matched_theme_count"],
                 "policy_catalyst_diagnostic_notes": policy_metadata["diagnostic_notes"],
+                "crowding_enabled": crowding_config["enabled"],
+                "crowding_min_universe": crowding_config["min_universe"],
+                "crowding_universe_amount": universe_amount,
+                "crowding_weight_model": dict(_THEME_CROWDING_WEIGHTS),
+                "crowding_diagnostic_notes": _crowding_result_notes(scored),
                 "deterministic": True,
                 "no_llm": True,
                 "no_network": True,
@@ -180,10 +224,15 @@ def _normalize_theme_id(value: str) -> str:
 def _symbol_metrics(
     frame: pd.DataFrame | None,
     state: Mapping[str, Any] | None,
+    *,
+    symbol: str = "",
 ) -> dict[str, Any]:
     metrics = _neutral_symbol_metrics()
     state = state if isinstance(state, Mapping) else {}
-    close, volume = _ordered_series(frame)
+    market_data = _ordered_market_data(frame)
+    close = market_data["close"]
+    high = market_data["high"] or close
+    volume = market_data["volume"]
 
     if close:
         metrics["return_3d"] = _window_return(close, 3)
@@ -206,6 +255,31 @@ def _symbol_metrics(
             metrics["volume_ratio"] = ratio
             metrics["symbol_volume_confirmation"] = clamp((ratio - 1.0) / 1.5)
 
+    if close:
+        metrics["latest_close"] = close[-1]
+    if high:
+        metrics["latest_high"] = high[-1]
+    if volume:
+        metrics["latest_volume"] = volume[-1]
+    amount, approximated = _latest_amount(close=close, volume=volume, amount=market_data["amount"])
+    metrics["latest_amount"] = amount
+    metrics["amount_approximated"] = approximated
+    metrics["pct_chg_derived"] = bool(market_data["pct_chg_derived"])
+    pct_chg = market_data["pct_chg"]
+    normalized_pct_chg = _pct_chg_values_for_unit(
+        pct_chg,
+        unit=str(market_data.get("pct_chg_unit") or "auto"),
+    )
+    if normalized_pct_chg:
+        metrics["latest_pct_chg"] = normalized_pct_chg[-1]
+    metrics["limitup_hit"] = _is_limitup_latest(
+        symbol,
+        close=close,
+        high=high,
+        pct_chg=pct_chg,
+        pct_chg_unit=str(market_data.get("pct_chg_unit") or "auto"),
+    )
+
     state_fake_risk = _state_float(state, "fake_breakout_risk", math.nan)
     metrics["fake_breakout_risk"] = (
         clamp(state_fake_risk)
@@ -219,13 +293,15 @@ def _symbol_metrics_at_offset(
     frame: pd.DataFrame | None,
     state: Mapping[str, Any] | None,
     trailing_offset: int,
+    *,
+    symbol: str = "",
 ) -> dict[str, Any]:
     if trailing_offset <= 0:
-        return _symbol_metrics(frame, state)
+        return _symbol_metrics(frame, state, symbol=symbol)
     prefix = _frame_prefix(frame, trailing_offset)
     if prefix is None or prefix.empty:
         return _neutral_symbol_metrics()
-    return _symbol_metrics(prefix, {})
+    return _symbol_metrics(prefix, {}, symbol=symbol)
 
 
 def _frame_prefix(frame: pd.DataFrame | None, trailing_offset: int) -> pd.DataFrame | None:
@@ -257,16 +333,45 @@ def _neutral_symbol_metrics() -> dict[str, Any]:
         "fake_breakout_proxy": 0.0,
         "fake_breakout_risk": 0.0,
         "data_coverage": 0.0,
+        "latest_close": 0.0,
+        "latest_high": 0.0,
+        "latest_volume": 0.0,
+        "latest_amount": 0.0,
+        "latest_pct_chg": 0.0,
+        "amount_approximated": False,
+        "pct_chg_derived": False,
+        "limitup_hit": False,
     }
 
 
 def _ordered_series(frame: pd.DataFrame | None) -> tuple[list[float], list[float]]:
+    market_data = _ordered_market_data(frame)
+    return market_data["close"], market_data["volume"]
+
+
+def _ordered_market_data(frame: pd.DataFrame | None) -> dict[str, Any]:
     if not isinstance(frame, pd.DataFrame) or frame.empty:
-        return [], []
+        return {
+            "close": [],
+            "high": [],
+            "volume": [],
+            "amount": [],
+            "pct_chg": [],
+            "pct_chg_derived": False,
+            "pct_chg_unit": "auto",
+        }
 
     close_col = _first_column(frame, _CLOSE_COLUMNS)
     if close_col is None:
-        return [], []
+        return {
+            "close": [],
+            "high": [],
+            "volume": [],
+            "amount": [],
+            "pct_chg": [],
+            "pct_chg_derived": False,
+            "pct_chg_unit": "auto",
+        }
 
     ordered = frame
     for date_col in _DATE_COLUMNS:
@@ -278,9 +383,24 @@ def _ordered_series(frame: pd.DataFrame | None) -> tuple[list[float], list[float
             break
 
     close = _finite_values(ordered[close_col])
+    high_col = _first_column(ordered, _HIGH_COLUMNS)
+    high = _finite_values(ordered[high_col]) if high_col is not None else list(close)
     volume_col = _first_column(ordered, _VOLUME_COLUMNS)
     volume = _finite_values(ordered[volume_col]) if volume_col is not None else []
-    return close, [value for value in volume if value >= 0.0]
+    amount_col = _first_column(ordered, _AMOUNT_COLUMNS)
+    amount = _finite_values(ordered[amount_col]) if amount_col is not None else []
+    pct_col = _first_column(ordered, _PCT_CHG_COLUMNS)
+    pct_chg_derived = pct_col is None
+    pct_chg = _finite_values(ordered[pct_col]) if pct_col is not None else _pct_chg_from_close(close)
+    return {
+        "close": close,
+        "high": high,
+        "volume": [value for value in volume if value >= 0.0],
+        "amount": [value for value in amount if value >= 0.0],
+        "pct_chg": pct_chg,
+        "pct_chg_derived": pct_chg_derived,
+        "pct_chg_unit": "percent" if pct_chg_derived else "auto",
+    }
 
 
 def _first_column(frame: pd.DataFrame, candidates: tuple[str, ...]) -> str | None:
@@ -293,6 +413,91 @@ def _first_column(frame: pd.DataFrame, candidates: tuple[str, ...]) -> str | Non
 def _finite_values(series: pd.Series) -> list[float]:
     values = pd.to_numeric(series, errors="coerce").dropna().tolist()
     return [float(value) for value in values if math.isfinite(float(value))]
+
+
+def _latest_amount(
+    *,
+    close: Sequence[float],
+    volume: Sequence[float],
+    amount: Sequence[float],
+) -> tuple[float, bool]:
+    amount_values = [float(value) for value in amount if math.isfinite(float(value))]
+    if amount_values:
+        return max(0.0, amount_values[-1]), False
+    if close and volume:
+        latest_close = _safe_float(close[-1], 0.0)
+        latest_volume = _safe_float(volume[-1], 0.0)
+        if latest_close > 0.0 and latest_volume >= 0.0:
+            return latest_close * latest_volume, True
+    return 0.0, False
+
+
+def _normalized_pct_chg_values(values: Sequence[float]) -> list[float]:
+    pct_values = [
+        float(value)
+        for value in values
+        if math.isfinite(_safe_float(value, math.nan))
+    ]
+    if not pct_values:
+        return []
+    max_abs = max(abs(value) for value in pct_values)
+    if max_abs <= 1.0:
+        return [value * 100.0 for value in pct_values]
+    return pct_values
+
+
+def _pct_chg_values_for_unit(values: Sequence[float], *, unit: str = "auto") -> list[float]:
+    pct_values = [
+        float(value)
+        for value in values
+        if math.isfinite(_safe_float(value, math.nan))
+    ]
+    if str(unit or "auto").strip().lower() == "percent":
+        return pct_values
+    return _normalized_pct_chg_values(pct_values)
+
+
+def _pct_chg_from_close(close: Sequence[float]) -> list[float]:
+    values = [float(value) for value in close if math.isfinite(float(value))]
+    if len(values) < 2:
+        return []
+    changes: list[float] = []
+    for previous, current in zip(values[:-1], values[1:]):
+        if previous <= 0.0:
+            changes.append(0.0)
+            continue
+        changes.append((current / previous - 1.0) * 100.0)
+    return changes
+
+
+def _limitup_threshold_pct(symbol: str) -> float:
+    code = str(symbol or "").strip().split(".", 1)[0]
+    if code.startswith(("688", "689", "300", "301")):
+        return 19.5
+    if code.startswith(("8", "4")):
+        return 29.5
+    return 9.5
+
+
+def _is_limitup_latest(
+    symbol: str,
+    *,
+    close: Sequence[float],
+    high: Sequence[float],
+    pct_chg: Sequence[float],
+    pct_chg_unit: str = "auto",
+) -> bool:
+    pct_values = _pct_chg_values_for_unit(pct_chg, unit=pct_chg_unit)
+    if not close or not pct_values:
+        return False
+    latest_close = _safe_float(close[-1], 0.0)
+    latest_high = _safe_float(high[-1] if high else close[-1], 0.0)
+    if latest_close <= 0.0 or latest_high <= 0.0:
+        return False
+    return (
+        pct_values[-1] >= _limitup_threshold_pct(symbol)
+        and latest_close >= latest_high * (1.0 - 0.002)
+    )
 
 
 def _window_return(values: list[float], lookback: int) -> float:
@@ -311,6 +516,12 @@ def _score_theme(
     theme_name: str,
     members: list[dict[str, Any]],
     min_member_count: int,
+    crowding_enabled: bool = False,
+    crowding_min_universe: int = 30,
+    scanned_symbol_count: int = 0,
+    universe_amount: float = 0.0,
+    snapshot_history: Sequence[Mapping[str, Any]] = (),
+    smoothing_config: ThemeSmoothingConfig | None = None,
 ) -> ThemeScore:
     member_count = len(members)
     return_20d = _median_metric(members, "return_20d")
@@ -321,7 +532,23 @@ def _score_theme(
     acceleration = clamp(0.75 * acceleration_base + 0.25 * volume_confirmation)
     breadth = _theme_breadth(members)
     fake_breakout_risk = _median_metric(members, "fake_breakout_risk")
-    overextension_risk = _theme_overextension_risk(return_5d, breadth, volume_confirmation)
+    crowding = _theme_crowding_metrics(
+        theme_id=theme_id,
+        members=members,
+        enabled=crowding_enabled,
+        min_universe=crowding_min_universe,
+        scanned_symbol_count=scanned_symbol_count,
+        universe_amount=universe_amount,
+        snapshot_history=snapshot_history,
+        smoothing_config=smoothing_config or ThemeSmoothingConfig(),
+    )
+    overextension_risk = _theme_overextension_risk(
+        return_5d,
+        breadth,
+        volume_confirmation,
+        crowding_risk=crowding["crowding_risk"],
+        crowding_enabled=crowding_enabled,
+    )
     raw = (
         0.30 * momentum
         + 0.24 * acceleration
@@ -357,6 +584,8 @@ def _score_theme(
         fake_breakout_risk=fake_breakout_risk,
         member_count=member_count,
         min_member_count=min_member_count,
+        crowding_risk=crowding["crowding_risk"],
+        limitup_ratio=crowding["theme_limitup_ratio"],
     )
     top_symbols = _top_symbols(members)
 
@@ -365,6 +594,7 @@ def _score_theme(
         f"momentum={momentum:.3f}",
         f"breadth={breadth:.3f}",
         f"volume_confirmation={volume_confirmation:.3f}",
+        f"crowding_risk={crowding['crowding_risk']:.3f}",
     ]
     return ThemeScore(
         theme_id=theme_id,
@@ -382,7 +612,22 @@ def _score_theme(
         top_symbols=top_symbols,
         risk_flags=risk_flags,
         evidence=evidence,
-        metadata={"theme_return_5d": return_5d, "theme_return_20d": return_20d},
+        theme_turnover_share=crowding["theme_turnover_share"],
+        turnover_share_sma10=crowding["turnover_share_sma10"],
+        turnover_share_stretch=crowding["turnover_share_stretch"],
+        turnover_share_delta_5d=crowding["turnover_share_delta_5d"],
+        turnover_share_trend=crowding["turnover_share_trend"],
+        theme_limitup_ratio=crowding["theme_limitup_ratio"],
+        limitup_norm=crowding["limitup_norm"],
+        member_turnover_concentration=crowding["member_turnover_concentration"],
+        crowding_risk=crowding["crowding_risk"],
+        crowding_status=crowding["crowding_status"],
+        crowding_diagnostic_notes=list(crowding["crowding_diagnostic_notes"]),
+        metadata={
+            "theme_return_5d": return_5d,
+            "theme_return_20d": return_20d,
+            "crowding_weight_model": dict(_THEME_CROWDING_WEIGHTS),
+        },
     )
 
 
@@ -427,6 +672,197 @@ def _apply_smoothing_to_theme_score(
         "smoothing_min_observations": int(config.min_observations),
         "smoothing_diagnostic_notes": list(smoothing.diagnostic_notes),
     }
+
+
+def _resolve_crowding_config(
+    *,
+    crowding_enabled: bool | None,
+    crowding_min_universe: int | None,
+) -> dict[str, Any]:
+    defaults: dict[str, Any] = {
+        "enabled": False,
+        "min_universe": 30,
+    }
+    try:
+        from quant_investor.config import Config
+
+        defaults.update(
+            {
+                "enabled": bool(getattr(Config, "THEME_CROWDING_ENABLED", False)),
+                "min_universe": max(
+                    int(getattr(Config, "THEME_CROWDING_MIN_UNIVERSE", 30) or 30),
+                    1,
+                ),
+            }
+        )
+    except Exception:
+        pass
+
+    if crowding_enabled is not None:
+        defaults["enabled"] = bool(crowding_enabled)
+    if crowding_min_universe is not None:
+        defaults["min_universe"] = max(int(crowding_min_universe or 30), 1)
+    return defaults
+
+
+def _theme_crowding_metrics(
+    *,
+    theme_id: str,
+    members: list[dict[str, Any]],
+    enabled: bool,
+    min_universe: int,
+    scanned_symbol_count: int,
+    universe_amount: float,
+    snapshot_history: Sequence[Mapping[str, Any]],
+    smoothing_config: ThemeSmoothingConfig,
+) -> dict[str, Any]:
+    neutral = _neutral_crowding_metrics(status="disabled")
+    if not enabled:
+        return neutral
+
+    notes: list[str] = []
+    min_universe = max(int(min_universe or 30), 1)
+    if int(scanned_symbol_count or 0) < min_universe:
+        return {
+            **_neutral_crowding_metrics(status="insufficient_universe"),
+            "crowding_diagnostic_notes": [
+                f"insufficient_universe:{int(scanned_symbol_count or 0)}/{min_universe}"
+            ],
+        }
+
+    total_amount = max(0.0, _safe_float(universe_amount, 0.0))
+    if total_amount <= 0.0:
+        return {
+            **_neutral_crowding_metrics(status="unavailable"),
+            "crowding_diagnostic_notes": ["universe_amount_unavailable"],
+        }
+
+    member_amounts = [
+        max(0.0, _safe_float(member.get("latest_amount"), 0.0))
+        for member in list(members or [])
+    ]
+    theme_amount = sum(member_amounts)
+    turnover_share = clamp(theme_amount / total_amount)
+    if any(bool(member.get("amount_approximated")) for member in list(members or [])):
+        notes.append("amount_approximated")
+    if any(bool(member.get("pct_chg_derived")) for member in list(members or [])):
+        notes.append("pct_chg_derived_from_close")
+
+    share_history = _turnover_share_history(theme_id, snapshot_history)
+    share_sma = smooth_numeric_series(
+        share_history,
+        lower=0.0,
+        upper=1.0,
+        config=smoothing_config,
+    )
+    if share_sma is None or share_sma <= 0.0:
+        stretch = 0.0
+        notes.append("turnover_share_smoothing_status=insufficient_history")
+    else:
+        stretch = clamp((turnover_share / share_sma - 1.0) / 1.0)
+    delta_5d = _turnover_share_delta_5d(share_history)
+    trend = _turnover_share_trend(delta_5d)
+
+    member_count = len(members)
+    limitup_count = sum(1 for member in list(members or []) if bool(member.get("limitup_hit")))
+    limitup_ratio = (limitup_count / member_count) if member_count else 0.0
+    limitup_norm = clamp(limitup_ratio / 0.30)
+    if member_count < 4:
+        concentration = 1.0
+        notes.append("member_turnover_concentration_small_theme")
+    elif theme_amount <= 0.0:
+        concentration = 0.0
+        notes.append("theme_amount_unavailable")
+    else:
+        concentration = clamp(sum(sorted(member_amounts, reverse=True)[:3]) / theme_amount)
+
+    crowding_risk = clamp(
+        _THEME_CROWDING_WEIGHTS["turnover_share_stretch"] * stretch
+        + _THEME_CROWDING_WEIGHTS["limitup_norm"] * limitup_norm
+        + _THEME_CROWDING_WEIGHTS["member_turnover_concentration"] * concentration
+    )
+    return {
+        "theme_turnover_share": round(turnover_share, 6),
+        "turnover_share_sma10": share_sma,
+        "turnover_share_stretch": round(stretch, 6),
+        "turnover_share_delta_5d": delta_5d,
+        "turnover_share_trend": trend,
+        "theme_limitup_ratio": round(limitup_ratio, 6),
+        "limitup_norm": round(limitup_norm, 6),
+        "member_turnover_concentration": round(concentration, 6),
+        "crowding_risk": round(crowding_risk, 6),
+        "crowding_status": "success",
+        "crowding_diagnostic_notes": _dedupe_texts(notes),
+    }
+
+
+def _neutral_crowding_metrics(*, status: str) -> dict[str, Any]:
+    return {
+        "theme_turnover_share": 0.0,
+        "turnover_share_sma10": None,
+        "turnover_share_stretch": 0.0,
+        "turnover_share_delta_5d": None,
+        "turnover_share_trend": status,
+        "theme_limitup_ratio": 0.0,
+        "limitup_norm": 0.0,
+        "member_turnover_concentration": 0.0,
+        "crowding_risk": 0.0,
+        "crowding_status": status,
+        "crowding_diagnostic_notes": [],
+    }
+
+
+def _turnover_share_history(
+    theme_id: str,
+    snapshot_history: Sequence[Mapping[str, Any]],
+) -> list[float]:
+    values: list[float] = []
+    for snapshot in list(snapshot_history or []):
+        if not isinstance(snapshot, Mapping):
+            continue
+        rotation = snapshot.get("theme_rotation")
+        payload = rotation if isinstance(rotation, Mapping) else snapshot
+        scores = payload.get("theme_scores") if isinstance(payload, Mapping) else None
+        if not isinstance(scores, Mapping):
+            continue
+        theme_payload = scores.get(theme_id)
+        if not isinstance(theme_payload, Mapping):
+            continue
+        numeric = _safe_float(theme_payload.get("theme_turnover_share"), math.nan)
+        if math.isfinite(numeric):
+            values.append(clamp(numeric))
+    return values
+
+
+def _turnover_share_delta_5d(values: Sequence[float]) -> float | None:
+    cleaned = [
+        clamp(_safe_float(value, math.nan))
+        for value in list(values or [])
+        if math.isfinite(_safe_float(value, math.nan))
+    ]
+    if len(cleaned) <= 5:
+        return None
+    previous = cleaned[-6:-1]
+    if not previous:
+        return None
+    return round(cleaned[-1] - mean(previous), 6)
+
+
+def _turnover_share_trend(delta_5d: float | None) -> str:
+    if delta_5d is None:
+        return "insufficient_history"
+    if delta_5d >= 0.02:
+        return "warming"
+    if delta_5d <= -0.02:
+        return "cooling"
+    return "stable"
+
+
+def _crowding_result_notes(theme_scores: Sequence[ThemeScore]) -> list[str]:
+    notes: list[str] = []
+    for score in list(theme_scores or []):
+        notes.extend(str(note) for note in list(score.crowding_diagnostic_notes or []))
+    return _dedupe_texts(notes)
 
 
 def _resolve_policy_config(
@@ -622,10 +1058,15 @@ def _theme_overextension_risk(
     theme_return_5d: float,
     breadth: float,
     volume_confirmation: float,
+    *,
+    crowding_risk: float = 0.0,
+    crowding_enabled: bool = False,
 ) -> float:
     risk = clamp((theme_return_5d - 0.08) / 0.12)
     if volume_confirmation > 0.85 and breadth < 0.50:
         risk = clamp(risk + 0.15)
+    if crowding_enabled:
+        risk = clamp(risk + 0.30 * clamp(crowding_risk))
     return risk
 
 
@@ -662,6 +1103,8 @@ def _risk_flags(
     fake_breakout_risk: float,
     member_count: int,
     min_member_count: int,
+    crowding_risk: float = 0.0,
+    limitup_ratio: float = 0.0,
 ) -> list[str]:
     flags: list[str] = []
     if overextension_risk >= 0.70:
@@ -672,6 +1115,10 @@ def _risk_flags(
         flags.append("theme_low_breadth")
     if member_count < min_member_count:
         flags.append("theme_low_member_count")
+    if crowding_risk >= 0.70:
+        flags.append("theme_crowded")
+    if limitup_ratio >= 0.20 and breadth < 0.40:
+        flags.append("theme_narrow_leadership")
     return flags
 
 
