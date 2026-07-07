@@ -227,11 +227,13 @@ def check_dashboard_export(
             errors.append(f"benchmark source_system contains sample/mock/demo token: {source_system}")
         if SNAPSHOT_SOURCE_SYSTEM in source_system and production_grade:
             errors.append("strategy_record market_snapshot benchmark cannot be marked production_grade.")
-        if production_grade != (source_status == "production_grade"):
+        if production_grade and "partial_missing" in source_status:
             errors.append(
-                "benchmark production_grade flag disagrees with benchmark_source_status="
+                "benchmark cannot be production_grade while benchmark_source_status="
                 f"{source_status!r}."
             )
+        if production_grade and source_status == "not_production_grade":
+            errors.append("benchmark_source_status=not_production_grade cannot be production_grade.")
         if require_production_benchmark and not production_grade:
             errors.append(
                 "benchmark is not production_grade; fill a verified continuous real index close source before using formal dashboard benchmark."

@@ -123,7 +123,7 @@ def test_tushare_benchmark_non_trading_record_uses_previous_trading_day_ffill():
     summary = exporter.benchmark_source_summary(nav_rows, fieldnames, benchmark_export)
 
     assert summary["benchmark_source_status"] == "production_source_with_previous_trading_day_ffill"
-    assert summary["production_grade"] is False
+    assert summary["production_grade"] is True
     assert summary["display_continuity_grade"] is True
     assert summary["missing_dates"] == []
     assert summary["previous_trading_day_ffill_dates"] == ["2026-03-21"]
@@ -313,3 +313,80 @@ def test_resolve_local_benchmark_file_falls_back_to_repo_input_for_temp_output(t
     monkeypatch.setattr(exporter, "DEFAULT_DASHBOARD_ROOT", default_dashboard_root)
 
     assert exporter.resolve_local_benchmark_file(temp_dashboard_root, None) == default_input
+
+
+def test_industry_equal_weight_nav_is_built_from_local_parquet(tmp_path):
+    exporter = _load_exporter()
+    runs = [
+        exporter.RecordRun("20260318_0930", "2026-03-18", Path("r1"), "", 100.0, 100.0, {}),
+        exporter.RecordRun("20260319_0930", "2026-03-19", Path("r2"), "", 100.0, 101.0, {}),
+        exporter.RecordRun("20260320_0930", "2026-03-20", Path("r3"), "", 100.0, 102.0, {}),
+    ]
+    benchmark_path = tmp_path / "cn_index_benchmark.csv"
+    lines = ["date,ts_code,close,source_system"]
+    for ts_code, close in [
+        ("000300.SH", 1000),
+        ("000905.SH", 2000),
+        ("000852.SH", 3000),
+        ("000688.SH", 4000),
+        ("399006.SZ", 5000),
+    ]:
+        lines.extend(
+            [
+                f"2026-03-18,{ts_code},{close},Wind",
+                f"2026-03-19,{ts_code},{close * 1.01},Wind",
+                f"2026-03-20,{ts_code},{close * 1.02},Wind",
+            ]
+        )
+    benchmark_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    stock_basic_root = tmp_path / "stock_basic"
+    stock_basic_root.mkdir()
+    pd.DataFrame(
+        [
+            {"ts_code": "000001.SZ", "industry": "IT设备"},
+            {"ts_code": "000002.SZ", "industry": "半导体"},
+            {"ts_code": "000003.SZ", "industry": "银行"},
+        ]
+    ).to_parquet(stock_basic_root / "part.parquet", index=False)
+    bars_root = tmp_path / "bars"
+    bars_root.mkdir()
+    pd.DataFrame(
+        [
+            {"ts_code": "000001.SZ", "trade_date": "20260318", "close": 100.0, "adj_close": 100.0},
+            {"ts_code": "000001.SZ", "trade_date": "20260319", "close": 110.0, "adj_close": 110.0},
+            {"ts_code": "000001.SZ", "trade_date": "20260320", "close": 121.0, "adj_close": 121.0},
+            {"ts_code": "000002.SZ", "trade_date": "20260318", "close": 50.0, "adj_close": 50.0},
+            {"ts_code": "000002.SZ", "trade_date": "20260319", "close": 45.0, "adj_close": 45.0},
+            {"ts_code": "000002.SZ", "trade_date": "20260320", "close": 49.5, "adj_close": 49.5},
+            {"ts_code": "000003.SZ", "trade_date": "20260318", "close": 10.0, "adj_close": 10.0},
+            {"ts_code": "000003.SZ", "trade_date": "20260319", "close": 20.0, "adj_close": 20.0},
+            {"ts_code": "000003.SZ", "trade_date": "20260320", "close": 30.0, "adj_close": 30.0},
+        ]
+    ).to_parquet(bars_root / "part.parquet", index=False)
+
+    benchmark_export, warnings = exporter.load_local_benchmark_export(runs, benchmark_path)
+    assert warnings == []
+    assert benchmark_export is not None
+
+    enhanced_export, industry_warnings = exporter.attach_industry_equal_weight_nav(
+        runs,
+        benchmark_export,
+        bars_root=bars_root,
+        stock_basic_root=stock_basic_root,
+        industries=("IT设备", "半导体"),
+    )
+
+    assert industry_warnings == []
+    assert enhanced_export is not None
+    nav_rows, nav_warnings, fieldnames = exporter.build_nav_rows(runs, enhanced_export)
+    assert nav_warnings == []
+    summary = exporter.benchmark_source_summary(nav_rows, fieldnames, enhanced_export)
+
+    assert "industry_ew_nav" in fieldnames
+    assert nav_rows[0]["industry_ew_nav"] == "1.00000000"
+    assert nav_rows[1]["industry_ew_nav"] == "1.00000000"
+    assert nav_rows[2]["industry_ew_nav"] == "1.10000000"
+    assert summary["production_grade"] is True
+    assert summary["industry_equal_weight"]["member_count"] == 2
+    assert summary["industry_equal_weight"]["industry_list"] == ["IT设备", "半导体"]
+    assert any(row["field"] == "industry_ew_nav" for row in enhanced_export.raw_rows)

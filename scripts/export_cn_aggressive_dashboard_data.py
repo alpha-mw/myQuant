@@ -23,9 +23,37 @@ DEFAULT_DASHBOARD_ROOT = PROJECT_ROOT / "portfolio_dashboard"
 DEFAULT_BENCHMARK_SOURCE = "auto"
 DEFAULT_INITIAL_BENCHMARK = 1.0
 DEFAULT_STOCK_BASIC_ROOT = PROJECT_ROOT / "data" / "parquet" / "cn" / "dag_core_raw" / "table=stock_basic"
+DEFAULT_CN_BARS_ROOT = PROJECT_ROOT / "data" / "parquet" / "cn" / "bars"
 SNAPSHOT_BENCHMARK_STATUS = "not_production_grade"
 SNAPSHOT_BENCHMARK_SOURCE_SYSTEM = "strategy_record.market_snapshot.indices"
 SNAPSHOT_GAP_FILL_COVERAGE = "strategy_record_snapshot_gap_fill"
+INDUSTRY_EW_NAV_FIELD = "industry_ew_nav"
+INDUSTRY_EW_SOURCE_SYSTEM = "local_parquet.industry_equal_weight"
+INDUSTRY_EW_TS_CODE = "LOCAL_INDUSTRY_EW"
+SUPPLEMENTAL_BENCHMARK_FIELDS = {INDUSTRY_EW_NAV_FIELD}
+DEFAULT_TECH_MANUFACTURING_INDUSTRIES = (
+    "IT设备",
+    "互联网",
+    "元器件",
+    "专用机械",
+    "化工机械",
+    "半导体",
+    "工程机械",
+    "机床制造",
+    "机械基件",
+    "新型电力",
+    "汽车整车",
+    "汽车配件",
+    "电器仪表",
+    "电气设备",
+    "航空",
+    "船舶",
+    "软件服务",
+    "轻工机械",
+    "运输设备",
+    "通信设备",
+    "生物制药",
+)
 INDEX_BENCHMARK_FIELDS = {
     "sh000300": "csi300_nav",
     "sz399905": "csi500_nav",
@@ -56,6 +84,7 @@ BENCHMARK_FIELD_ORDER = [
     "csi1000_nav",
     "star50_nav",
     "chinext_nav",
+    INDUSTRY_EW_NAV_FIELD,
 ]
 TUSHARE_BENCHMARK_SOURCE_SYSTEM = "tushare.index_daily"
 os.environ.setdefault("ARROW_USER_SIMD_LEVEL", "NONE")
@@ -84,6 +113,7 @@ class BenchmarkExport:
     value_date_by_date: dict[str, dict[str, str]]
     snapshot_gap_fill_by_date: dict[str, list[str]] | None = None
     calendar_source_system: str = ""
+    metadata: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -730,6 +760,227 @@ def load_sector_map(stock_basic_root: Path) -> tuple[dict[str, dict[str, str]], 
     return mapping, []
 
 
+def _load_industry_member_symbols(
+    stock_basic_root: Path,
+    industries: tuple[str, ...],
+) -> tuple[set[str], list[str]]:
+    warnings: list[str] = []
+    if not stock_basic_root.exists():
+        return set(), [f"未找到 stock_basic 行业映射目录：{stock_basic_root}，无法构建 industry_ew_nav。"]
+    try:
+        with suppress_native_stderr():
+            import pandas as pd  # type: ignore[import-not-found]
+    except ImportError:
+        return set(), ["当前 Python 环境未安装 pandas/pyarrow，无法构建 industry_ew_nav；可用 ./.venv/bin/python 运行。"]
+    try:
+        with suppress_native_stderr():
+            frame = pd.read_parquet(stock_basic_root, columns=["ts_code", "industry"])
+    except Exception as exc:
+        return set(), [f"读取 stock_basic 行业映射失败：{exc}，无法构建 industry_ew_nav。"]
+    if frame.empty:
+        return set(), [f"stock_basic 行业映射为空：{stock_basic_root}，无法构建 industry_ew_nav。"]
+    frame["ts_code"] = frame["ts_code"].astype(str).str.strip()
+    frame["industry"] = frame["industry"].astype(str).str.strip()
+    industry_set = set(industries)
+    selected = frame[frame["industry"].isin(industry_set)]
+    symbols = {symbol for symbol in selected["ts_code"].tolist() if symbol}
+    missing_industries = sorted(industry_set - set(selected["industry"].dropna().unique().tolist()))
+    if missing_industries:
+        warnings.append(f"industry_ew_nav 行业映射中未找到行业：{', '.join(missing_industries)}。")
+    return symbols, warnings
+
+
+def _read_industry_bar_frame(
+    bars_root: Path,
+    symbols: set[str],
+    start_date: str,
+    end_date: str,
+) -> tuple[Any | None, list[str]]:
+    warnings: list[str] = []
+    if not bars_root.exists():
+        return None, [f"未找到本地 bars Parquet 目录：{bars_root}，无法构建 industry_ew_nav。"]
+    try:
+        with suppress_native_stderr():
+            import pandas as pd  # type: ignore[import-not-found]
+    except ImportError:
+        return None, ["当前 Python 环境未安装 pandas/pyarrow，无法构建 industry_ew_nav；可用 ./.venv/bin/python 运行。"]
+    columns = ["ts_code", "trade_date", "close", "adj_close"]
+    start_key = iso_to_tushare_date(start_date)
+    end_key = iso_to_tushare_date(end_date)
+    filters = [
+        ("trade_date", ">=", start_key),
+        ("trade_date", "<=", end_key),
+        ("ts_code", "in", sorted(symbols)),
+    ]
+    try:
+        with suppress_native_stderr():
+            frame = pd.read_parquet(bars_root, columns=columns, filters=filters)
+    except Exception:
+        try:
+            with suppress_native_stderr():
+                frame = pd.read_parquet(
+                    bars_root,
+                    columns=columns,
+                    filters=[("trade_date", ">=", start_key), ("trade_date", "<=", end_key)],
+                )
+        except Exception as exc:
+            return None, [f"读取本地 bars Parquet 失败：{exc}，无法构建 industry_ew_nav。"]
+        warnings.append("bars Parquet 不支持 symbol 下推过滤，已在内存中过滤 industry_ew_nav 成分。")
+    if frame.empty:
+        return frame, warnings
+    frame["ts_code"] = frame["ts_code"].astype(str).str.strip()
+    frame["trade_date"] = frame["trade_date"].astype(str).str.replace("-", "", regex=False)
+    frame = frame[
+        frame["ts_code"].isin(symbols)
+        & (frame["trade_date"] >= start_key)
+        & (frame["trade_date"] <= end_key)
+    ].copy()
+    return frame, warnings
+
+
+def _industry_equal_weight_nav_from_bars(
+    bars_frame: Any,
+) -> tuple[dict[str, float], dict[str, int]]:
+    if bars_frame is None or bars_frame.empty:
+        return {}, {}
+    import pandas as pd  # type: ignore[import-not-found]
+
+    frame = bars_frame.copy()
+    frame["date"] = frame["trade_date"].map(tushare_to_iso_date)
+    close = pd.to_numeric(frame.get("close"), errors="coerce")
+    if "adj_close" in frame:
+        adj_close = pd.to_numeric(frame.get("adj_close"), errors="coerce")
+        frame["price"] = adj_close.where(adj_close.notna() & (adj_close > 0), close)
+    else:
+        frame["price"] = close
+    frame = frame.dropna(subset=["date", "ts_code", "price"])
+    frame = frame[frame["price"] > 0]
+    if frame.empty:
+        return {}, {}
+    frame = frame.drop_duplicates(["ts_code", "date"], keep="last")
+    frame = frame.sort_values(["ts_code", "date"]).reset_index(drop=True)
+    frame["daily_return"] = frame.groupby("ts_code", sort=False)["price"].pct_change()
+    daily_return = frame.dropna(subset=["daily_return"]).groupby("date")["daily_return"].mean().sort_index()
+    daily_member_count = (
+        frame.dropna(subset=["daily_return"]).groupby("date")["ts_code"].nunique().sort_index().astype(int).to_dict()
+    )
+    nav_by_date: dict[str, float] = {}
+    current_nav = DEFAULT_INITIAL_BENCHMARK
+    for date in sorted(frame["date"].dropna().unique().tolist()):
+        if date in daily_return:
+            current_nav *= 1.0 + float(daily_return.loc[date])
+        nav_by_date[date] = current_nav
+    return nav_by_date, {str(date): int(count) for date, count in daily_member_count.items()}
+
+
+def attach_industry_equal_weight_nav(
+    runs: list[RecordRun],
+    benchmark_export: BenchmarkExport | None,
+    *,
+    bars_root: Path = DEFAULT_CN_BARS_ROOT,
+    stock_basic_root: Path = DEFAULT_STOCK_BASIC_ROOT,
+    industries: tuple[str, ...] = DEFAULT_TECH_MANUFACTURING_INDUSTRIES,
+) -> tuple[BenchmarkExport | None, list[str]]:
+    if benchmark_export is None:
+        return None, []
+    if not runs:
+        return benchmark_export, ["没有可用策略记录，无法构建 industry_ew_nav。"]
+    warnings: list[str] = []
+    symbols, symbol_warnings = _load_industry_member_symbols(stock_basic_root, industries)
+    warnings.extend(symbol_warnings)
+    if not symbols:
+        return benchmark_export, warnings + ["industry_ew_nav 成分为空，已跳过。"]
+    bars_frame, bar_warnings = _read_industry_bar_frame(bars_root, symbols, runs[0].date, runs[-1].date)
+    warnings.extend(bar_warnings)
+    nav_by_date, daily_member_count = _industry_equal_weight_nav_from_bars(bars_frame)
+    if not nav_by_date:
+        return benchmark_export, warnings + ["industry_ew_nav 未从本地 bars 生成任何有效 NAV，已跳过。"]
+
+    values_by_date = {date: dict(values) for date, values in benchmark_export.values_by_date.items()}
+    coverage_by_date = {date: dict(values) for date, values in benchmark_export.coverage_by_date.items()}
+    value_date_by_date = {date: dict(values) for date, values in benchmark_export.value_date_by_date.items()}
+    raw_rows = list(benchmark_export.raw_rows)
+    nav_dates = sorted(nav_by_date)
+    ffill_rows: list[dict[str, Any]] = []
+    for run in runs:
+        run_values = values_by_date.setdefault(run.date, {})
+        run_coverage = coverage_by_date.setdefault(run.date, {})
+        run_value_dates = value_date_by_date.setdefault(run.date, {})
+        value_date = run.date if run.date in nav_by_date else ""
+        if not value_date:
+            earlier_dates = [date for date in nav_dates if date <= run.date]
+            if not earlier_dates:
+                continue
+            value_date = earlier_dates[-1]
+        coverage = "exact_close" if value_date == run.date else "previous_trading_day_ffill"
+        nav_value = nav_by_date[value_date]
+        run_values[INDUSTRY_EW_NAV_FIELD] = nav_value
+        run_coverage[INDUSTRY_EW_NAV_FIELD] = coverage
+        run_value_dates[INDUSTRY_EW_NAV_FIELD] = value_date
+        if coverage == "previous_trading_day_ffill":
+            ffill_rows.append(
+                {
+                    "date": run.date,
+                    "ts_code": INDUSTRY_EW_TS_CODE,
+                    "field": INDUSTRY_EW_NAV_FIELD,
+                    "close": f"{nav_value:.8f}",
+                    "nav": f"{nav_value:.8f}",
+                    "source_system": INDUSTRY_EW_SOURCE_SYSTEM,
+                    "value_date": value_date,
+                    "coverage": coverage,
+                }
+            )
+    for date in nav_dates:
+        nav_value = nav_by_date[date]
+        raw_rows.append(
+            {
+                "date": date,
+                "ts_code": INDUSTRY_EW_TS_CODE,
+                "field": INDUSTRY_EW_NAV_FIELD,
+                "close": f"{nav_value:.8f}",
+                "nav": f"{nav_value:.8f}",
+                "source_system": INDUSTRY_EW_SOURCE_SYSTEM,
+                "value_date": date,
+                "coverage": "exact_close",
+            }
+        )
+    raw_rows.extend(ffill_rows)
+    metadata = dict(benchmark_export.metadata or {})
+    metadata["industry_equal_weight"] = {
+        "field": INDUSTRY_EW_NAV_FIELD,
+        "source_system": INDUSTRY_EW_SOURCE_SYSTEM,
+        "member_count": len(symbols),
+        "industry_list": list(industries),
+        "valid_date_count": len(nav_by_date),
+        "start_date": min(nav_dates),
+        "end_date": max(nav_dates),
+        "min_daily_member_count": min(daily_member_count.values()) if daily_member_count else 0,
+        "max_daily_member_count": max(daily_member_count.values()) if daily_member_count else 0,
+    }
+    source_systems = [benchmark_export.source_system]
+    if INDUSTRY_EW_SOURCE_SYSTEM not in benchmark_export.source_system.split("+"):
+        source_systems.append(INDUSTRY_EW_SOURCE_SYSTEM)
+    return BenchmarkExport(
+        values_by_date=values_by_date,
+        raw_rows=raw_rows,
+        source_system="+".join(source_systems),
+        normalization=benchmark_export.normalization,
+        status_hint=benchmark_export.status_hint,
+        notes=[
+            *benchmark_export.notes,
+            (
+                "industry_ew_nav 来自本地 bars Parquet 与 stock_basic.industry，"
+                f"对 {len(symbols)} 个策略行业域成员按日收益等权复合。"
+            ),
+        ],
+        coverage_by_date=coverage_by_date,
+        value_date_by_date=value_date_by_date,
+        snapshot_gap_fill_by_date=benchmark_export.snapshot_gap_fill_by_date,
+        calendar_source_system=benchmark_export.calendar_source_system,
+        metadata=metadata,
+    ), warnings
+
+
 def build_nav_rows(
     runs: list[RecordRun],
     benchmark_export: BenchmarkExport | None = None,
@@ -840,6 +1091,7 @@ def benchmark_source_summary(
         field
         for field in benchmark_fields
         if field not in {"benchmark_main_nav", "benchmark_nav"}
+        and field not in SUPPLEMENTAL_BENCHMARK_FIELDS
         and any(str(row.get(field) or "").strip() for row in nav_rows)
     ]
     field_missing_counts = {
@@ -924,12 +1176,12 @@ def benchmark_source_summary(
         source_system = benchmark_export.source_system
         if snapshot_gap_fill_dates:
             source_system = f"{benchmark_export.source_system}+{SNAPSHOT_BENCHMARK_SOURCE_SYSTEM}"
-        return {
+        summary = {
             "benchmark_fields": benchmark_fields,
             "benchmark_source_status": status,
             "source_system": source_system,
             "calendar_source_system": benchmark_export.calendar_source_system,
-            "production_grade": status == "production_grade",
+            "production_grade": missing_date_count == 0 and not snapshot_gap_fill_dates,
             "display_continuity_grade": missing_date_count == 0,
             "first_valid_date": min(valid_dates) if valid_dates else "",
             "last_valid_date": max(valid_dates) if valid_dates else "",
@@ -949,6 +1201,9 @@ def benchmark_source_summary(
             "notes": notes,
             "raw_row_count": len(benchmark_export.raw_rows),
         }
+        for key, value in (benchmark_export.metadata or {}).items():
+            summary[key] = value
+        return summary
     return {
         "benchmark_fields": benchmark_fields,
         "benchmark_source_status": SNAPSHOT_BENCHMARK_STATUS,
@@ -1151,6 +1406,9 @@ def export(
                 warnings.append("已按 fail-closed 降级为 strategy_record.market_snapshot.indices benchmark；不得标记为生产级。")
     if benchmark_source == "snapshot":
         warnings.append("benchmark_source=snapshot：按显式参数使用 strategy_record.market_snapshot.indices，非生产级。")
+    if benchmark_export is not None:
+        benchmark_export, industry_warnings = attach_industry_equal_weight_nav(runs, benchmark_export)
+        warnings.extend(industry_warnings)
     nav_rows, nav_warnings, nav_fieldnames = build_nav_rows(runs, benchmark_export)
     benchmark_summary = benchmark_source_summary(nav_rows, nav_fieldnames, benchmark_export)
     sector_map, sector_warnings = load_sector_map(DEFAULT_STOCK_BASIC_ROOT)
