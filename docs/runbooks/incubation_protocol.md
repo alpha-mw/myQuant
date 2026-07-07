@@ -31,6 +31,10 @@
 8. 对科创50 `star50_nav` 的回归 beta、年化 alpha、alpha t 值与 R²。
 9. 信息比率 IR（日频，同时留存年化换算）。
 10. 暴露合规率：实际总暴露 ≤ Markov/系统建议总暴露上限的天数占比。
+11. 选择 alpha：实际所选标的收益 − 当日 shortlist 菜单等权收益。
+12. 毛/净双口径全窗口收益与周度成本拖累估计。
+13. 两条影子账本差值：`shadow_nav_cap050` vs actual、`shadow_nav_machine_exit` vs actual。
+14. 决策日志完整率：`advisory` 与 `human_action` 有同日配对记录的比例。
 
 ## 4. Kill / 加仓规则占位
 

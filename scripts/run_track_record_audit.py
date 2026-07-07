@@ -918,6 +918,284 @@ def _counterfactual2_decomposition(
     }
 
 
+def _candidate_pool_rows(record: Record) -> list[dict[str, str]]:
+    rows = _read_csv_rows(record.path / "candidate_pool.csv")
+    if rows:
+        return rows
+    for path in sorted((record.path / "raw_exports").glob("*candidate_pool.csv")):
+        rows = _read_csv_rows(path)
+        if rows:
+            return rows
+    return []
+
+
+def _selection_alpha(
+    records: list[Record],
+    trades: list[dict[str, Any]],
+    prices: dict[str, dict[str, float]],
+    window_end: str,
+) -> dict[str, Any]:
+    record_by_date = {record.date: record for record in records}
+    rows: list[dict[str, Any]] = []
+    missing = 0
+    actual_returns: list[float] = []
+    menu_returns: list[float] = []
+    buy_trades = [trade for trade in trades if trade.get("action") == "buy" and trade.get("status") == "filled"]
+    for trade in buy_trades:
+        record = record_by_date.get(str(trade.get("date")))
+        menu = _candidate_pool_rows(record) if record is not None else []
+        symbols = sorted({str(row.get("symbol") or "").strip().upper() for row in menu if str(row.get("symbol") or "").strip()})
+        actual_symbol = str(trade.get("symbol") or "").strip().upper()
+        if not symbols:
+            missing += 1
+            rows.append(
+                {
+                    "date": trade.get("date"),
+                    "symbol": actual_symbol,
+                    "coverage_status": "missing_shortlist",
+                    "actual_return": None,
+                    "menu_equal_weight_return": None,
+                    "selection_alpha": None,
+                }
+            )
+            continue
+
+        def hold_return(symbol: str) -> float | None:
+            series = prices.get(symbol, {})
+            start_pair = _price_at_or_after(series, str(trade.get("date") or ""))
+            end_pair = _price_at_or_before(series, window_end)
+            if start_pair is None or end_pair is None or start_pair[1] <= 0:
+                return None
+            return end_pair[1] / start_pair[1] - 1.0
+
+        actual_return = hold_return(actual_symbol)
+        menu_values = [value for value in (hold_return(symbol) for symbol in symbols) if value is not None]
+        menu_return = statistics.mean(menu_values) if menu_values else None
+        selection = actual_return - menu_return if actual_return is not None and menu_return is not None else None
+        if actual_return is not None:
+            actual_returns.append(actual_return)
+        if menu_return is not None:
+            menu_returns.append(menu_return)
+        rows.append(
+            {
+                "date": trade.get("date"),
+                "symbol": actual_symbol,
+                "coverage_status": "covered" if selection is not None else "price_missing",
+                "menu_size": len(symbols),
+                "actual_return": actual_return,
+                "menu_equal_weight_return": menu_return,
+                "selection_alpha": selection,
+            }
+        )
+    covered = [row for row in rows if row.get("selection_alpha") is not None]
+    selection_alpha = (
+        statistics.mean([row["selection_alpha"] for row in covered])
+        if covered
+        else None
+    )
+    triggered_line = "缺少足够菜单覆盖，无法判读"
+    if selection_alpha is not None:
+        if abs(selection_alpha) < 0.01:
+            triggered_line = "选择 α ≈ 0 → 价值在菜单生成，不在挑选"
+        elif selection_alpha > 0:
+            triggered_line = "选择 α 显著为正 → 路由环节（人或会话代理）存在增量"
+        else:
+            triggered_line = "选择 α 为负 → 路由环节减损菜单价值"
+    return {
+        "buy_trade_count": len(buy_trades),
+        "covered_count": len(covered),
+        "missing_shortlist_count": missing,
+        "coverage_rate": len(covered) / len(buy_trades) if buy_trades else None,
+        "selected_mean_return": statistics.mean(actual_returns) if actual_returns else None,
+        "menu_mean_return": statistics.mean(menu_returns) if menu_returns else None,
+        "selection_alpha": selection_alpha,
+        "interpretation_line": triggered_line,
+        "rows": rows,
+    }
+
+
+def _symbol_return_on_date(
+    prices: dict[str, dict[str, float]],
+    symbol: str,
+    prev_date: str,
+    current_date: str,
+) -> float | None:
+    series = prices.get(symbol, {})
+    prev_pair = _price_at_or_before(series, prev_date)
+    current_pair = _price_at_or_before(series, current_date)
+    if prev_pair is None or current_pair is None or prev_pair[1] <= 0:
+        return None
+    return current_pair[1] / prev_pair[1] - 1.0
+
+
+def _weights_from_record(record: Record) -> dict[str, float]:
+    exposure = _record_exposure(record)
+    total_value = _safe_float(exposure.get("total_value"))
+    if total_value <= 0:
+        return {}
+    weights: dict[str, float] = {}
+    for row in record.holdings:
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        value = _safe_float(row.get("current_value"))
+        if value > 0:
+            weights[symbol] = value / total_value
+    return weights
+
+
+def _cap_and_rescale_weights(weights: dict[str, float], cap: float) -> dict[str, float]:
+    if not weights:
+        return {}
+    gross = sum(max(0.0, value) for value in weights.values())
+    capped = {symbol: min(max(0.0, value), cap) for symbol, value in weights.items()}
+    capped_gross = sum(capped.values())
+    if capped_gross <= 0 or gross <= 0:
+        return capped
+    scale = min(gross / capped_gross, cap / max(capped.values(), default=cap))
+    scaled = {symbol: min(value * scale, cap) for symbol, value in capped.items()}
+    return scaled
+
+
+def _shadow_cap_nav(
+    records: list[Record],
+    nav_rows: list[dict[str, Any]],
+    prices: dict[str, dict[str, float]],
+    cap: float,
+) -> dict[str, float]:
+    record_by_run_id = {record.run_id: record for record in records}
+    result: dict[str, float] = {}
+    if not nav_rows:
+        return result
+    nav = 1.0
+    result[str(nav_rows[0]["date"])] = nav
+    for prev_row, current_row in zip(nav_rows, nav_rows[1:]):
+        prev_record = record_by_run_id.get(str(prev_row.get("run_id")))
+        weights = _cap_and_rescale_weights(_weights_from_record(prev_record), cap) if prev_record else {}
+        daily_return = 0.0
+        covered_weight = 0.0
+        for symbol, weight in weights.items():
+            ret = _symbol_return_on_date(prices, symbol, str(prev_row.get("date")), str(current_row.get("date")))
+            if ret is None:
+                continue
+            daily_return += weight * ret
+            covered_weight += weight
+        if covered_weight <= 0:
+            prev_nav = _safe_float(prev_row.get("nav"))
+            current_nav = _safe_float(current_row.get("nav"))
+            daily_return = current_nav / prev_nav - 1.0 if prev_nav > 0 and current_nav > 0 else 0.0
+        nav *= 1.0 + daily_return
+        result[str(current_row["date"])] = nav
+    return result
+
+
+def _manual_proxy_trades(trades: list[dict[str, Any]], attribution: dict[str, Any]) -> list[dict[str, Any]]:
+    if not attribution:
+        return []
+    proposal_symbols = {
+        str(row.get("symbol") or "").strip().upper()
+        for row in trades
+        if row.get("source") == "orders"
+    }
+    result: list[dict[str, Any]] = []
+    for trade in trades:
+        if trade.get("action") != "sell" or trade.get("status") != "filled":
+            continue
+        symbol = str(trade.get("symbol") or "").strip().upper()
+        if trade.get("source") != "orders" or symbol not in proposal_symbols:
+            result.append(trade)
+    return result
+
+
+def _stop_price_by_symbol_date(records: list[Record]) -> dict[tuple[str, str], float]:
+    stops: dict[tuple[str, str], float] = {}
+    for record in records:
+        for row in _read_csv_rows(record.path / "holdings_review.csv"):
+            symbol = str(row.get("symbol") or "").strip().upper()
+            stop = _safe_float(row.get("stage_stop_price"))
+            if symbol and stop > 0:
+                stops[(record.date, symbol)] = stop
+    return stops
+
+
+def _machine_exit_shadow(
+    records: list[Record],
+    trades: list[dict[str, Any]],
+    prices: dict[str, dict[str, float]],
+    nav_rows: list[dict[str, Any]],
+    attribution: dict[str, Any],
+) -> dict[str, Any]:
+    stops = _stop_price_by_symbol_date(records)
+    manual_sells = _manual_proxy_trades(trades, attribution)
+    end_date = str(nav_rows[-1]["date"]) if nav_rows else ""
+    initial = _safe_float(nav_rows[0].get("initial_capital"), 1.0) if nav_rows else 1.0
+    rows: list[dict[str, Any]] = []
+    total_delta = 0.0
+    for trade in manual_sells:
+        symbol = str(trade.get("symbol") or "").strip().upper()
+        trade_date = str(trade.get("date") or "")
+        trade_price = _safe_float(trade.get("price"))
+        shares = _safe_int(trade.get("shares"))
+        stop_price = stops.get((trade_date, symbol))
+        series = prices.get(symbol, {})
+        trigger_date = None
+        trigger_price = None
+        if stop_price and trade_price > 0:
+            for row_date in sorted(date_key for date_key in series if date_key >= trade_date):
+                price = series[row_date]
+                if price <= stop_price:
+                    trigger_date = row_date
+                    trigger_price = price
+                    break
+        if trigger_price is None:
+            end_pair = _price_at_or_before(series, end_date)
+            if end_pair is not None:
+                trigger_date, trigger_price = end_pair
+        delta = (trigger_price - trade_price) * shares if trigger_price is not None else None
+        if delta is not None:
+            total_delta += delta
+        rows.append(
+            {
+                "date": trade_date,
+                "symbol": symbol,
+                "shares": shares,
+                "manual_exit_price": trade_price,
+                "machine_exit_date": trigger_date,
+                "machine_exit_price": trigger_price,
+                "stage_stop_price": stop_price,
+                "delta_vs_manual_pnl": delta,
+            }
+        )
+    return {
+        "method": "manual_proxy sell is hypothetically held until recorded stage_stop_price triggers; if not triggered, window-end close is used.",
+        "rows": rows,
+        "current_difference_vs_actual": total_delta / max(initial, 1.0),
+        "manual_proxy_sell_count": len(manual_sells),
+    }
+
+
+def _shadow_ledgers(
+    records: list[Record],
+    nav_rows: list[dict[str, Any]],
+    trades: list[dict[str, Any]],
+    prices: dict[str, dict[str, float]],
+    attribution: dict[str, Any],
+) -> dict[str, Any]:
+    cap050 = _shadow_cap_nav(records, nav_rows, prices, 0.50)
+    actual_start = _safe_float(nav_rows[0].get("nav"), 1.0) if nav_rows else 1.0
+    actual_end = _safe_float(nav_rows[-1].get("nav"), actual_start) if nav_rows else actual_start
+    cap050_end = _safe_float(cap050.get(str(nav_rows[-1]["date"])), 1.0) if nav_rows else 1.0
+    machine_exit = _machine_exit_shadow(records, trades, prices, nav_rows, attribution)
+    return {
+        "shadow_nav_cap050": cap050,
+        "shadow_cap050_return": cap050_end - 1.0,
+        "actual_return": actual_end / actual_start - 1.0 if actual_start > 0 else 0.0,
+        "cap050_current_difference_vs_actual": cap050_end - (actual_end / actual_start if actual_start > 0 else 1.0),
+        "shadow_nav_machine_exit": machine_exit,
+        "machine_exit_current_difference_vs_actual": machine_exit.get("current_difference_vs_actual"),
+    }
+
+
 def _entry_dates(records: list[Record], trades: list[dict[str, Any]]) -> dict[str, str]:
     entries: dict[str, str] = {}
     for trade in trades:
@@ -995,6 +1273,181 @@ def _counterparty_quality(
     return result
 
 
+def _counterparty_quality_by_exit_bucket(
+    trades: list[dict[str, Any]],
+    prices: dict[str, dict[str, float]],
+    attribution: dict[str, Any],
+) -> dict[str, Any]:
+    manual_keys = {
+        (
+            trade.get("date"),
+            trade.get("symbol"),
+            trade.get("shares"),
+            round(_safe_float(trade.get("price")), 4),
+        )
+        for trade in _manual_proxy_trades(trades, attribution)
+    }
+    buckets = {"manual_proxy_sell": [], "system_sell": []}
+    for trade in trades:
+        if trade.get("action") != "sell" or trade.get("status") != "filled":
+            continue
+        key = (
+            trade.get("date"),
+            trade.get("symbol"),
+            trade.get("shares"),
+            round(_safe_float(trade.get("price")), 4),
+        )
+        bucket = "manual_proxy_sell" if key in manual_keys else "system_sell"
+        series = prices.get(str(trade.get("symbol")))
+        if not series:
+            continue
+        row = {"date": trade["date"], "symbol": trade["symbol"]}
+        for horizon in (5, 10, 20):
+            row[f"ret_{horizon}d"] = _forward_return(series, trade["date"], horizon)
+        buckets[bucket].append(row)
+    result: dict[str, Any] = {}
+    for bucket, rows in buckets.items():
+        summary: dict[str, Any] = {"count": len(rows), "rows": rows}
+        for horizon in (5, 10, 20):
+            values = [row[f"ret_{horizon}d"] for row in rows if row.get(f"ret_{horizon}d") is not None]
+            summary[f"ret_{horizon}d"] = {
+                "mean": statistics.mean(values) if values else None,
+                "median": statistics.median(values) if values else None,
+                "negative_share": sum(1 for value in values if value < 0) / len(values) if values else None,
+            }
+        result[bucket] = summary
+    return result
+
+
+def _peak_weights(records: list[Record], symbols: Iterable[str]) -> dict[str, Any]:
+    wanted = {str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()}
+    peaks = {
+        symbol: {"peak_weight": None, "date": "", "run_id": ""}
+        for symbol in sorted(wanted)
+    }
+    for record in records:
+        weights = _weights_from_record(record)
+        for symbol in wanted:
+            weight = weights.get(symbol)
+            if weight is None:
+                continue
+            current_peak = peaks[symbol]["peak_weight"]
+            if current_peak is None or weight > current_peak:
+                peaks[symbol] = {
+                    "peak_weight": weight,
+                    "date": record.date,
+                    "run_id": record.run_id,
+                }
+    return peaks
+
+
+def _read_amount_panel(
+    symbols: Iterable[str],
+    start_date: str,
+    end_date: str,
+    bars_root: Path,
+) -> tuple[dict[str, dict[str, float]], list[str]]:
+    warnings: list[str] = []
+    symbol_set = {str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()}
+    if not symbol_set or not bars_root.exists():
+        return {}, warnings
+    try:
+        import pandas as pd  # type: ignore[import-not-found]
+    except ImportError:
+        return {}, ["pandas/pyarrow unavailable; execution-cost amount panel skipped."]
+    filters = [
+        ("trade_date", ">=", _compact_date(start_date)),
+        ("trade_date", "<=", _compact_date(end_date)),
+    ]
+    try:
+        with _suppress_native_stderr():
+            frame = pd.read_parquet(bars_root, columns=["ts_code", "trade_date", "amount"], filters=filters)
+    except Exception as exc:
+        return {}, [f"failed to read amount panel for execution-cost estimate: {exc}"]
+    if frame.empty or "amount" not in frame:
+        return {}, warnings
+    frame["ts_code"] = frame["ts_code"].astype(str).str.strip().str.upper()
+    frame = frame[frame["ts_code"].isin(symbol_set)].copy()
+    frame["date"] = frame["trade_date"].astype(str).map(_iso_from_any)
+    frame["amount"] = pd.to_numeric(frame["amount"], errors="coerce")
+    amounts: dict[str, dict[str, float]] = defaultdict(dict)
+    for row in frame.dropna(subset=["amount"]).itertuples():
+        if float(row.amount) > 0:
+            amounts[str(row.ts_code)][str(row.date)] = float(row.amount)
+    return dict(amounts), warnings
+
+
+def _estimated_execution_cost(
+    trades: list[dict[str, Any]],
+    nav_rows: list[dict[str, Any]],
+    bars_root: Path,
+) -> dict[str, Any]:
+    symbols = sorted({str(trade.get("symbol") or "").strip().upper() for trade in trades if trade.get("symbol")})
+    dates = [str(row.get("date") or "") for row in nav_rows]
+    amount_panel, warnings = _read_amount_panel(symbols, dates[0], dates[-1], bars_root) if dates else ({}, [])
+    try:
+        from quant_investor.factors.execution_cost import (  # type: ignore[import-not-found]
+            FactorExecutionCostConfig,
+            estimate_market_impact_bps,
+            estimate_participation_rate,
+        )
+        config = FactorExecutionCostConfig(config_id="phase14-audit-estimated-cost")
+    except Exception as exc:
+        return {"available": False, "reason": f"execution cost helpers unavailable: {exc}", "warnings": warnings}
+    nav_by_date = {str(row.get("date")): _safe_float(row.get("total_value_after")) for row in nav_rows}
+    total_cost = 0.0
+    rows: list[dict[str, Any]] = []
+    for trade in trades:
+        if trade.get("status") != "filled":
+            continue
+        symbol = str(trade.get("symbol") or "").strip().upper()
+        trade_value = abs(_safe_float(trade.get("trade_value")))
+        if trade_value <= 0:
+            trade_value = abs(_safe_float(trade.get("price")) * _safe_int(trade.get("shares")))
+        portfolio_value = nav_by_date.get(str(trade.get("date"))) or statistics.mean(nav_by_date.values())
+        amount = _safe_float(amount_panel.get(symbol, {}).get(str(trade.get("date"))), None)
+        participation = estimate_participation_rate(
+            trade_weight=trade_value / portfolio_value if portfolio_value else 0.0,
+            portfolio_value=portfolio_value,
+            amount=amount,
+        )
+        impact_bps = estimate_market_impact_bps(participation_rate=participation, config=config)
+        side = str(trade.get("action"))
+        bps = config.commission_bps + config.exchange_fee_bps + config.slippage_bps + config.spread_bps + impact_bps
+        if side == "sell" and config.apply_stamp_tax_on_sell_only:
+            bps += config.stamp_tax_bps
+        cost = trade_value * bps / 10000.0
+        total_cost += cost
+        rows.append(
+            {
+                "date": trade.get("date"),
+                "symbol": symbol,
+                "action": side,
+                "trade_value": trade_value,
+                "participation_rate": participation,
+                "estimated_bps": bps,
+                "estimated_cost": cost,
+            }
+        )
+    initial = _safe_float(nav_rows[0].get("initial_capital"), 1.0) if nav_rows else 1.0
+    actual_return = _safe_float(nav_rows[-1]["nav"]) / _safe_float(nav_rows[0]["nav"], 1.0) - 1.0 if nav_rows else 0.0
+    avg_nav = statistics.mean(_safe_float(row.get("total_value_after")) for row in nav_rows) if nav_rows else 0.0
+    sample_days = max(len(nav_rows) - 1, 1)
+    return {
+        "available": True,
+        "config": config.to_dict(),
+        "trade_count": len(rows),
+        "gross_full_window_return": actual_return,
+        "estimated_total_cost": total_cost,
+        "net_full_window_return": actual_return - total_cost / max(initial, 1.0),
+        "estimated_cost_drag": total_cost / avg_nav if avg_nav > 0 else None,
+        "annualized_cost_drag": (total_cost / avg_nav) * (244.0 / sample_days) if avg_nav > 0 else None,
+        "rows": rows,
+        "warnings": warnings,
+        "note": "审计层模型估计，未改变成交、组合或运行时成本模型。",
+    }
+
+
 def _execution_quality(records: list[Record], trades: list[dict[str, Any]], rejections: list[dict[str, Any]]) -> dict[str, Any]:
     proposal_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
     for record in records:
@@ -1040,6 +1493,36 @@ def _execution_quality(records: list[Record], trades: list[dict[str, Any]], reje
         "rejection_count": len(rejections),
         "rejection_reasons": dict(sorted(rejection_reasons.items())),
         "estimated_cost_drag": total_slippage_cost / avg_nav if avg_nav > 0 else None,
+    }
+
+
+def _slippage_zero_root_cause(execution_quality: dict[str, Any]) -> dict[str, Any]:
+    slippage = execution_quality.get("slippage_bps", {})
+    counts = sum(int(data.get("count", 0) or 0) for data in slippage.values() if isinstance(data, dict))
+    nonzero = [
+        data
+        for data in slippage.values()
+        if isinstance(data, dict)
+        and (
+            abs(_safe_float(data.get("mean"))) > 1e-12
+            or abs(_safe_float(data.get("median"))) > 1e-12
+        )
+    ]
+    if counts > 0 and not nonzero:
+        conclusion = (
+            "F=0 is caused by the local/manual simulation design: proposal and execution rows share "
+            "the same realtime/current price field for matched paper fills, so this audit has no "
+            "independent broker fill price for empirical slippage."
+        )
+    else:
+        conclusion = "F slippage is non-zero or unavailable; no zero-slippage root-cause conclusion."
+    return {
+        "conclusion": conclusion,
+        "evidence": [
+            "scripts/run_track_record_audit.py:_execution_quality compares orders.csv price to filled trade price.",
+            "Record schema stores local/manual fills in manual_switch_and_take_profit_orders.csv with price/current quote basis.",
+        ],
+        "matched_slippage_count": counts,
     }
 
 
@@ -1462,6 +1945,12 @@ def _render_report(metrics: dict[str, Any]) -> str:
     beta_adjusted = metrics["beta_adjusted_excess"]
     exposure = metrics["regime_exposure_compliance"]
     cf2 = metrics["counterfactual2_decomposition"]
+    selection = metrics["selection_alpha"]
+    shadow = metrics["shadow_ledgers"]
+    exit_split = metrics["counterparty_exit_split"]
+    cost = metrics["estimated_execution_cost"]
+    peak_weights = metrics["top3_peak_weights"]
+    f_root = metrics["slippage_zero_root_cause"]
     lines = [
         "# Phase 12 Track-Record Audit",
         "",
@@ -1673,6 +2162,67 @@ def _render_report(metrics: dict[str, Any]) -> str:
                 ],
             ),
             "",
+            "## K. 选择 α（菜单 vs 所选）",
+            "",
+            _markdown_table(
+                ["Metric", "Value"],
+                [
+                    ["实际买入笔数", selection.get("buy_trade_count")],
+                    ["覆盖笔数", selection.get("covered_count")],
+                    ["覆盖率", _pct(selection.get("coverage_rate"))],
+                    ["所选均值收益", _pct(selection.get("selected_mean_return"))],
+                    ["菜单均值收益", _pct(selection.get("menu_mean_return"))],
+                    ["选择 α", _pct(selection.get("selection_alpha"))],
+                ],
+            ),
+            f"判读：{selection.get('interpretation_line')}",
+            "",
+            "## L. 影子账本",
+            "",
+            _markdown_table(
+                ["Shadow", "Current Difference vs Actual"],
+                [
+                    ["cap050", _pct(shadow.get("cap050_current_difference_vs_actual"))],
+                    ["machine_exit", _pct(shadow.get("machine_exit_current_difference_vs_actual"))],
+                ],
+            ),
+            "",
+            "## M. 毛/净执行成本估计",
+            "",
+            f"F=0 根因：{f_root.get('conclusion')}",
+            _markdown_table(
+                ["Metric", "Value"],
+                [
+                    ["毛口径全窗口收益", _pct(cost.get("gross_full_window_return"))],
+                    ["净口径全窗口收益", _pct(cost.get("net_full_window_return"))],
+                    ["估计总成本", _money(cost.get("estimated_total_cost"))],
+                    ["年化成本拖累", _pct(cost.get("annualized_cost_drag"))],
+                ],
+            ),
+            "### E 拆分",
+            _markdown_table(
+                ["Bucket", "Horizon", "Mean", "Median", "Negative Share"],
+                [
+                    [
+                        bucket,
+                        f"{horizon}d",
+                        _pct(exit_split[bucket][f"ret_{horizon}d"].get("mean")),
+                        _pct(exit_split[bucket][f"ret_{horizon}d"].get("median")),
+                        _pct(exit_split[bucket][f"ret_{horizon}d"].get("negative_share")),
+                    ]
+                    for bucket in ("manual_proxy_sell", "system_sell")
+                    for horizon in (5, 10, 20)
+                ],
+            ),
+            "### Top3 峰值权重",
+            _markdown_table(
+                ["Symbol", "Peak Weight", "Date", "Run"],
+                [
+                    [symbol, _pct(data.get("peak_weight")), data.get("date", ""), data.get("run_id", "")]
+                    for symbol, data in peak_weights.items()
+                ],
+            ),
+            "",
             "## 附录：中报证伪数据支持",
             "",
             "产业实质判断（真订单/真产能 vs 纯故事）由人工完成，本表只提供数据。",
@@ -1754,7 +2304,20 @@ def run_audit(
     trades, rejections = _extract_trades(records)
     dates = [row["date"] for row in nav_rows]
     entries = _entry_dates(daily_records, trades)
-    prices, price_warnings = _read_price_panel(entries.keys(), dates[0], dates[-1], bars_root)
+    audit_symbols = set(entries)
+    audit_symbols.update(str(trade.get("symbol") or "").strip().upper() for trade in trades if trade.get("symbol"))
+    for record in daily_records:
+        audit_symbols.update(
+            str(row.get("symbol") or "").strip().upper()
+            for row in record.holdings
+            if str(row.get("symbol") or "").strip()
+        )
+        audit_symbols.update(
+            str(row.get("symbol") or "").strip().upper()
+            for row in _candidate_pool_rows(record)
+            if str(row.get("symbol") or "").strip()
+        )
+    prices, price_warnings = _read_price_panel(audit_symbols, dates[0], dates[-1], bars_root)
     warnings.extend(price_warnings)
     benchmarks, benchmark_meta, benchmark_warnings = _benchmark_navs(dates, benchmark_file, bars_root, stock_basic_root)
     warnings.extend(benchmark_warnings)
@@ -1762,6 +2325,10 @@ def run_audit(
     final_holdings = _holdings_by_date(daily_records).get(dates[-1], {})
     version_events = _version_events()
     latest_record = daily_records[-1]
+    manual_system = _manual_system_attribution(trades, records)
+    execution_quality = _execution_quality(records, trades, rejections)
+    top3_symbols = [str(item.get("symbol")) for item in _concentration(daily_records, nav_rows, trades).get("top3", [])]
+    concentration = _concentration(daily_records, nav_rows, trades)
     metrics = {
         "schema_version": "track_record_audit.v2",
         "record_root": str(record_root),
@@ -1776,12 +2343,15 @@ def run_audit(
         "benchmarks": _benchmark_metrics(nav_rows, benchmarks),
         "counterfactual1_nav": counterfactual_nav,
         "decomposition": _decomposition(nav_rows, benchmarks, counterfactual_nav),
-        "concentration": _concentration(daily_records, nav_rows, trades),
+        "concentration": concentration,
         "counterparty_quality": _counterparty_quality(trades, prices),
-        "execution_quality": _execution_quality(records, trades, rejections),
+        "counterparty_exit_split": _counterparty_quality_by_exit_bucket(trades, prices, manual_system),
+        "execution_quality": execution_quality,
+        "slippage_zero_root_cause": _slippage_zero_root_cause(execution_quality),
+        "estimated_execution_cost": _estimated_execution_cost(trades, nav_rows, bars_root),
         "version_events": version_events,
         "version_segments": _version_segment_metrics(nav_rows, benchmarks, version_events),
-        "manual_system_attribution": _manual_system_attribution(trades, records),
+        "manual_system_attribution": manual_system,
         "funding_nature": _funding_nature(records),
         "markov_diagnostics": _markov_diagnostics(regime_history),
         "fundamentals_appendix": _fundamentals_appendix(final_holdings, fundamentals_root),
@@ -1795,6 +2365,9 @@ def run_audit(
             prices,
             entries.keys(),
         ),
+        "selection_alpha": _selection_alpha(daily_records, trades, prices, dates[-1]),
+        "shadow_ledgers": _shadow_ledgers(daily_records, nav_rows, trades, prices, manual_system),
+        "top3_peak_weights": _peak_weights(daily_records, top3_symbols),
     }
     _write_outputs(metrics, output_dir, generate_plots=generate_plots)
     return metrics
