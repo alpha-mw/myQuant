@@ -28,6 +28,9 @@
 5. Markov regime 触发次数、`ThemeGatePolicy.from_markov` 档位变化次数、相位闸门触发次数。
 6. 单票权重超过 `RISK_GUARD_SINGLE_NAME_WEIGHT_CAP` 的存量提示数量与最大超限幅度。
 7. 相位择时 alpha、组内选股 alpha、配置 beta 的滚动对账。
+8. 对科创50 `star50_nav` 的回归 beta、年化 alpha、alpha t 值与 R²。
+9. 信息比率 IR（日频，同时留存年化换算）。
+10. 暴露合规率：实际总暴露 ≤ Markov/系统建议总暴露上限的天数占比。
 
 ## 4. Kill / 加仓规则占位
 
@@ -39,6 +42,12 @@
 - Kill rule：若出场后 10/20 日收益滚动均值显著为正并超过 `TODO(maxwell)`，则判定卖出偏早，暂停相位出场规则扩展。
 - Add rule：若连续 `TODO(maxwell)` 周对科创50周超额高于 `TODO(maxwell)`，且相位择时 alpha 高于 `TODO(maxwell)`，可进入小额加仓评估。
 - Add rule：若 Markov/相位闸门在回撤期触发并使最大回撤低于科创50 `TODO(maxwell)`，可评估提高资金上限。
+
+<!-- PROPOSAL (Claude, 2026-07-07) — 示例值，未生效，须 Maxwell 改定后移入正式字段并提交
+- 回撤阶梯示例：峰值回撤 -20% -> 目标暴露减半；峰值回撤 -30% -> 清仓并强制 30 日复盘。
+- 评审触发示例：滚动 60 日超额 vs 科创50 < 0 -> 触发策略评审。
+- 执行审查示例：周均滑点 > 冻结起始基线 2 倍 -> 触发执行审查。
+-->
 
 ## 5. 期满评估模板
 

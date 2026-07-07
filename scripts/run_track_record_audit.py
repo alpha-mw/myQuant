@@ -577,6 +577,75 @@ def _counterfactual_nav(
     return result
 
 
+def _return_pairs(
+    nav_rows: list[dict[str, Any]],
+    benchmarks: dict[str, dict[str, float]],
+    field: str,
+) -> list[dict[str, Any]]:
+    pairs: list[dict[str, Any]] = []
+    for prev, current in zip(nav_rows, nav_rows[1:]):
+        prev_nav = _safe_float(prev.get("nav"))
+        current_nav = _safe_float(current.get("nav"))
+        prev_bench = _safe_float(benchmarks.get(str(prev.get("date")), {}).get(field), None)
+        current_bench = _safe_float(benchmarks.get(str(current.get("date")), {}).get(field), None)
+        if (
+            prev_nav <= 0
+            or current_nav <= 0
+            or prev_bench is None
+            or current_bench is None
+            or prev_bench <= 0
+        ):
+            continue
+        pairs.append(
+            {
+                "date": current.get("date"),
+                "portfolio_return": current_nav / prev_nav - 1.0,
+                "benchmark_return": current_bench / prev_bench - 1.0,
+            }
+        )
+    return pairs
+
+
+def _ols_alpha_beta(
+    y_values: list[float],
+    x_values: list[float],
+) -> dict[str, float | int | None]:
+    n = len(y_values)
+    if n == 0:
+        return {"n": 0, "alpha_daily": None, "beta": None, "alpha_t": None, "r_squared": None}
+    mean_y = statistics.mean(y_values)
+    mean_x = statistics.mean(x_values)
+    sxx = sum((x - mean_x) ** 2 for x in x_values)
+    if n < 2 or sxx <= 0:
+        return {
+            "n": n,
+            "alpha_daily": mean_y,
+            "beta": None,
+            "alpha_t": None,
+            "r_squared": None,
+        }
+    sxy = sum((x - mean_x) * (y - mean_y) for x, y in zip(x_values, y_values))
+    beta = sxy / sxx
+    alpha = mean_y - beta * mean_x
+    residuals = [y - (alpha + beta * x) for x, y in zip(x_values, y_values)]
+    sse = sum(value * value for value in residuals)
+    sst = sum((y - mean_y) ** 2 for y in y_values)
+    r_squared = 1.0 - sse / sst if sst > 0 else None
+    alpha_t = None
+    if n > 2:
+        sigma2 = sse / (n - 2)
+        se_alpha = math.sqrt(max(0.0, sigma2 * (1.0 / n + mean_x * mean_x / sxx)))
+        if se_alpha > 0:
+            alpha_t = alpha / se_alpha
+    return {
+        "n": n,
+        "alpha_daily": alpha,
+        "beta": beta,
+        "alpha_t": alpha_t,
+        "r_squared": r_squared,
+    }
+
+
 def _benchmark_navs(
     dates: list[str],
     benchmark_file: Path,
@@ -702,6 +771,66 @@ def _benchmark_metrics(
     return rows
 
 
+def _benchmark_return_between(
+    benchmarks: dict[str, dict[str, float]],
+    field: str,
+    start_date: str,
+    end_date: str,
+) -> float | None:
+    start = _safe_float(benchmarks.get(start_date, {}).get(field), None)
+    end = _safe_float(benchmarks.get(end_date, {}).get(field), None)
+    if start is None or end is None or start <= 0:
+        return None
+    return end / start - 1.0
+
+
+def _beta_adjusted_excess(
+    nav_rows: list[dict[str, Any]],
+    benchmarks: dict[str, dict[str, float]],
+) -> dict[str, Any]:
+    pairs = _return_pairs(nav_rows, benchmarks, "star50_nav")
+    y_values = [_safe_float(row["portfolio_return"]) for row in pairs]
+    x_values = [_safe_float(row["benchmark_return"]) for row in pairs]
+    regression = _ols_alpha_beta(y_values, x_values)
+    alpha_daily = regression.get("alpha_daily")
+    excess = [y - x for x, y in zip(x_values, y_values)]
+    excess_std = statistics.pstdev(excess) if len(excess) > 1 else 0.0
+    ir_daily = statistics.mean(excess) / excess_std if excess and excess_std > 0 else None
+    actual_return = _safe_float(nav_rows[-1]["nav"]) / _safe_float(nav_rows[0]["nav"], 1.0) - 1.0 if nav_rows else None
+    star50_return = (
+        _benchmark_return_between(benchmarks, "star50_nav", nav_rows[0]["date"], nav_rows[-1]["date"])
+        if nav_rows
+        else None
+    )
+    beta = regression.get("beta")
+    beta_times_star50 = (
+        beta * star50_return
+        if beta is not None and star50_return is not None
+        else None
+    )
+    triggered = (
+        beta_times_star50 is not None
+        and actual_return is not None
+        and beta_times_star50 >= actual_return
+    )
+    return {
+        **regression,
+        "alpha_annualized": alpha_daily * 244.0 if alpha_daily is not None else None,
+        "standard_ir_daily": ir_daily,
+        "standard_ir_annualized": ir_daily * math.sqrt(244.0) if ir_daily is not None else None,
+        "actual_return": actual_return,
+        "star50_return": star50_return,
+        "beta_times_star50_return": beta_times_star50,
+        "interpretation_triggered": triggered,
+        "interpretation_line": (
+            "β 调整后 vs 科创50 无正 α，原始超额来自杠杆性暴露而非风险调整后技能，待冻结期复验。"
+            if triggered
+            else "未触发"
+        ),
+        "fixed_sample_note": "n=69 交易日，单一政权样本，t 值与 IR 仅作描述，不作推断。",
+    }
+
+
 def _decomposition(
     nav_rows: list[dict[str, Any]],
     benchmarks: dict[str, dict[str, float]],
@@ -737,6 +866,55 @@ def _decomposition(
         "total_excess_vs_csi300": total_excess,
         "explained_sum": explained,
         "reconciliation_residual": total_excess - explained,
+    }
+
+
+def _counterfactual2_decomposition(
+    nav_rows: list[dict[str, Any]],
+    benchmarks: dict[str, dict[str, float]],
+    counterfactual1_nav: dict[str, float],
+    prices: dict[str, dict[str, float]],
+    symbols: Iterable[str],
+) -> dict[str, Any]:
+    dates = [row["date"] for row in nav_rows]
+    start_date = dates[0]
+    end_date = dates[-1]
+    symbol_list = sorted({str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()})
+    counterfactual2_nav = _counterfactual_nav(
+        dates,
+        {symbol: start_date for symbol in symbol_list},
+        prices,
+    )
+    adjustments: list[dict[str, Any]] = []
+    for symbol in symbol_list:
+        pair = _price_at_or_after(prices.get(symbol, {}), start_date)
+        if pair is not None and pair[0] > start_date:
+            adjustments.append(
+                {
+                    "symbol": symbol,
+                    "window_start": start_date,
+                    "first_tradeable_date": pair[0],
+                    "note": "首日未上市/停牌或本地行情不可得，使用首个可交易日。",
+                }
+            )
+    cf2_start = _safe_float(counterfactual2_nav.get(start_date), 1.0)
+    cf2_end = _safe_float(counterfactual2_nav.get(end_date), cf2_start)
+    cf1_start = _safe_float(counterfactual1_nav.get(start_date), 1.0)
+    cf1_end = _safe_float(counterfactual1_nav.get(end_date), cf1_start)
+    cf2_return = cf2_end / cf2_start - 1.0 if cf2_start > 0 else 0.0
+    cf1_return = cf1_end / cf1_start - 1.0 if cf1_start > 0 else 0.0
+    industry_return = _benchmark_return_between(benchmarks, "industry_ew_nav", start_date, end_date)
+    if industry_return is None:
+        industry_return = 0.0
+    return {
+        "counterfactual2_nav": counterfactual2_nav,
+        "counterfactual2_return": cf2_return,
+        "industry_ew_return": industry_return,
+        "pure_name_stock_alpha": cf2_return - industry_return,
+        "entry_timing_contribution": cf1_return - cf2_return,
+        "counterfactual1_return": cf1_return,
+        "delayed_entry_adjustments": adjustments,
+        "symbol_count": len(symbol_list),
     }
 
 
@@ -979,6 +1157,184 @@ def _funding_nature(records: list[Record]) -> dict[str, Any]:
     }
 
 
+def _record_exposure(record: Record) -> dict[str, Any]:
+    total_value = _safe_float(record.pnl.get("total_value_after"))
+    cash = _safe_float(record.pnl.get("cash_after"), None)
+    market_value = 0.0
+    holding_count = 0
+    for row in record.holdings:
+        shares = _safe_int(row.get("shares") or row.get("shares_before"))
+        if shares <= 0:
+            continue
+        holding_count += 1
+        market_value += _safe_float(row.get("current_value"))
+    if market_value <= 0:
+        market_value = _safe_float(record.pnl.get("market_value_after"))
+    if cash is None and total_value > 0:
+        cash = max(0.0, total_value - market_value)
+    return {
+        "date": record.date,
+        "run_id": record.run_id,
+        "total_value": total_value,
+        "market_value": market_value,
+        "cash": cash,
+        "actual_total_exposure": market_value / total_value if total_value > 0 else None,
+        "holding_count": holding_count,
+        "cash_ratio": cash / total_value if cash is not None and total_value > 0 else None,
+    }
+
+
+def _current_status(record: Record) -> dict[str, Any]:
+    return _record_exposure(record)
+
+
+def _quantile(values: list[float], q: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    pos = (len(ordered) - 1) * q
+    lower = math.floor(pos)
+    upper = math.ceil(pos)
+    if lower == upper:
+        return ordered[int(pos)]
+    weight = pos - lower
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
+
+def _load_regime_rows_by_date(regime_history: Path, start_date: str) -> dict[str, dict[str, Any]]:
+    if not regime_history.exists():
+        return {}
+    rows_by_date: dict[str, list[tuple[int, dict[str, Any]]]] = defaultdict(list)
+    with regime_history.open(encoding="utf-8") as handle:
+        for index, line in enumerate(handle):
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            as_of = _iso_from_any(payload.get("as_of"))
+            if as_of and as_of >= start_date:
+                rows_by_date[as_of].append((index, payload))
+
+    def priority(indexed_row: tuple[int, dict[str, Any]]) -> tuple[int, int, int, int, int]:
+        index, row = indexed_row
+        scope = str(row.get("regime_scope") or "")
+        source_count = _safe_int(row.get("source_symbol_count"))
+        return (
+            1 if row.get("production_eligible") is True else 0,
+            2 if scope == "full_market" else (1 if scope == "market_reference" else 0),
+            source_count,
+            0 if row.get("sampled") else 1,
+            index,
+        )
+
+    return {
+        row_date: max(indexed_rows, key=priority)[1]
+        for row_date, indexed_rows in rows_by_date.items()
+    }
+
+
+def _regime_exposure_compliance(
+    records: list[Record],
+    nav_rows: list[dict[str, Any]],
+    regime_history: Path,
+) -> dict[str, Any]:
+    if not nav_rows:
+        return {"available": False, "reason": "no nav rows"}
+    start_date = nav_rows[0]["date"]
+    regimes = _load_regime_rows_by_date(regime_history, start_date)
+    record_by_run_id = {record.run_id: record for record in records}
+    timeline: list[dict[str, Any]] = []
+    state_counts: dict[str, int] = defaultdict(int)
+    violation_margins: list[float] = []
+    previous_state: str | None = None
+    switch_dates: list[dict[str, str]] = []
+    compliance_by_date: dict[str, str] = {}
+    for nav_row in nav_rows:
+        record = record_by_run_id.get(str(nav_row.get("run_id")))
+        exposure = _record_exposure(record) if record is not None else {}
+        row_date = str(nav_row.get("date") or "")
+        regime = regimes.get(row_date)
+        cap = _safe_float(regime.get("suggested_gross_exposure_cap"), None) if regime else None
+        actual = exposure.get("actual_total_exposure")
+        covered = regime is not None and cap is not None
+        violation = bool(covered and actual is not None and actual > cap)
+        compliance_status = "missing_regime_snapshot"
+        margin = None
+        state = None
+        if covered:
+            state = str(regime.get("dominant_regime") or "unknown")
+            state_counts[state] += 1
+            if previous_state is not None and state != previous_state:
+                switch_dates.append({"date": row_date, "from": previous_state, "to": state})
+            previous_state = state
+            margin = actual - cap if actual is not None else None
+            if violation and margin is not None:
+                violation_margins.append(margin)
+                compliance_status = "violation"
+            else:
+                compliance_status = "compliant"
+        compliance_by_date[row_date] = compliance_status
+        timeline.append(
+            {
+                "date": row_date,
+                "run_id": nav_row.get("run_id"),
+                "dominant_regime": state,
+                "suggested_gross_exposure_cap": cap,
+                "actual_total_exposure": actual,
+                "compliance_status": compliance_status,
+                "excess_exposure": margin if violation else None,
+                "regime_scope": regime.get("regime_scope") if regime else None,
+                "source_symbol_count": regime.get("source_symbol_count") if regime else None,
+                "diagnostic_notes": regime.get("diagnostic_notes") if regime else ["missing_regime_snapshot"],
+            }
+        )
+    covered_count = sum(1 for row in timeline if row["compliance_status"] in {"compliant", "violation"})
+    violation_count = sum(1 for row in timeline if row["compliance_status"] == "violation")
+    coverage_rate = covered_count / len(timeline) if timeline else None
+    violation_ratio = violation_count / covered_count if covered_count else None
+    compliant_product = 1.0
+    violation_product = 1.0
+    for prev, current in zip(nav_rows, nav_rows[1:]):
+        prev_nav = _safe_float(prev.get("nav"))
+        current_nav = _safe_float(current.get("nav"))
+        if prev_nav <= 0 or current_nav <= 0:
+            continue
+        ret = current_nav / prev_nav - 1.0
+        status = compliance_by_date.get(str(current.get("date")))
+        if status == "compliant":
+            compliant_product *= 1.0 + ret
+        elif status == "violation":
+            violation_product *= 1.0 + ret
+    triggered = violation_ratio is not None and violation_ratio > 0.30
+    return {
+        "available": bool(regimes),
+        "timeline": timeline,
+        "state_day_distribution": dict(sorted(state_counts.items())),
+        "state_switch_count": len(switch_dates),
+        "state_switch_dates": switch_dates,
+        "covered_days": covered_count,
+        "total_days": len(timeline),
+        "coverage_rate": coverage_rate,
+        "violation_days": violation_count,
+        "violation_ratio": violation_ratio,
+        "excess_exposure_quantiles": {
+            "p50": _quantile(violation_margins, 0.50),
+            "p90": _quantile(violation_margins, 0.90),
+            "max": max(violation_margins) if violation_margins else None,
+        },
+        "interpretation_triggered": triggered,
+        "interpretation_line": (
+            "窗口内战绩相当部分产生于闸门约束之外，'系统的钱'份额需按合规日子集重算"
+            if triggered
+            else "未触发"
+        ),
+        "compliant_nav_return_contribution": compliant_product - 1.0,
+        "violation_nav_return_contribution": violation_product - 1.0,
+    }
+
+
 def _markov_diagnostics(regime_history: Path, start_date: str = "2026-06-15") -> dict[str, Any]:
     if not regime_history.exists():
         return {"available": False, "reason": f"not found: {regime_history}"}
@@ -1102,12 +1458,17 @@ def _render_report(metrics: dict[str, Any]) -> str:
     funding = metrics["funding_nature"]
     markov = metrics["markov_diagnostics"]
     counterparty = metrics["counterparty_quality"]
+    current_status = metrics["current_status"]
+    beta_adjusted = metrics["beta_adjusted_excess"]
+    exposure = metrics["regime_exposure_compliance"]
+    cf2 = metrics["counterfactual2_decomposition"]
     lines = [
         "# Phase 12 Track-Record Audit",
         "",
         f"- Funding nature: **{funding['funding_nature']}**",
         f"- 判断依据：{funding['basis']}",
         f"- 样本交易日：{perf.get('sample_trading_days', 0)}；样本 <90 交易日，Sharpe/Calmar 统计稳定性有限。",
+        f"- 当前状态（{current_status.get('date')}）：实际总暴露 {_pct(current_status.get('actual_total_exposure'))}；持仓数 {current_status.get('holding_count')}；现金比例 {_pct(current_status.get('cash_ratio'))}。",
         "",
         "## A. 基础绩效",
         "",
@@ -1250,6 +1611,68 @@ def _render_report(metrics: dict[str, Any]) -> str:
             "### Markov Regime Diagnostics",
             f"可用：{markov.get('available')}；7月初状态是否未变：{markov.get('july_pullback_state_unchanged')}",
             "",
+            "## H. β 调整后的超额（vs 科创50）",
+            "",
+            beta_adjusted["fixed_sample_note"],
+            _markdown_table(
+                ["Metric", "Value"],
+                [
+                    ["样本收益点数", beta_adjusted.get("n")],
+                    ["β", _money(beta_adjusted.get("beta"))],
+                    ["日频 α", _pct(beta_adjusted.get("alpha_daily"))],
+                    ["年化 α（×244）", _pct(beta_adjusted.get("alpha_annualized"))],
+                    ["α t 值", _money(beta_adjusted.get("alpha_t"))],
+                    ["R²", _money(beta_adjusted.get("r_squared"))],
+                    ["IR（日频）", _money(beta_adjusted.get("standard_ir_daily"))],
+                    ["IR（年化 ×√244）", _money(beta_adjusted.get("standard_ir_annualized"))],
+                    ["β × 科创50收益", _pct(beta_adjusted.get("beta_times_star50_return"))],
+                ],
+            ),
+            f"判读：{beta_adjusted['interpretation_line']}",
+            "",
+            "## I. 全窗口 regime 时间线与暴露合规",
+            "",
+            _markdown_table(
+                ["Metric", "Value"],
+                [
+                    ["覆盖天数/总天数", f"{exposure.get('covered_days')}/{exposure.get('total_days')}"],
+                    ["覆盖率", _pct(exposure.get("coverage_rate"))],
+                    ["违规天数", exposure.get("violation_days")],
+                    ["违规占比", _pct(exposure.get("violation_ratio"))],
+                    ["状态切换次数", exposure.get("state_switch_count")],
+                    ["超限幅度 P50", _pct(exposure.get("excess_exposure_quantiles", {}).get("p50"))],
+                    ["超限幅度 P90", _pct(exposure.get("excess_exposure_quantiles", {}).get("p90"))],
+                    ["超限幅度 Max", _pct(exposure.get("excess_exposure_quantiles", {}).get("max"))],
+                    ["合规日 NAV 收益贡献", _pct(exposure.get("compliant_nav_return_contribution"))],
+                    ["违规日 NAV 收益贡献", _pct(exposure.get("violation_nav_return_contribution"))],
+                ],
+            ),
+            _markdown_table(
+                ["Regime", "Days"],
+                [[name, count] for name, count in exposure.get("state_day_distribution", {}).items()],
+            ),
+            _markdown_table(
+                ["Date", "From", "To"],
+                [
+                    [row.get("date", ""), row.get("from", ""), row.get("to", "")]
+                    for row in exposure.get("state_switch_dates", [])
+                ],
+            ),
+            f"判读：{exposure['interpretation_line']}",
+            "",
+            "## J. 选股 α 的第二对照",
+            "",
+            _markdown_table(
+                ["Metric", "Value"],
+                [
+                    ["反事实2收益", _pct(cf2.get("counterfactual2_return"))],
+                    ["选股（纯名字）= 反事实2 - industry_ew_nav", _pct(cf2.get("pure_name_stock_alpha"))],
+                    ["入场时点贡献 = 反事实1 - 反事实2", _pct(cf2.get("entry_timing_contribution"))],
+                    ["反事实标的数", cf2.get("symbol_count")],
+                    ["首日不可交易调整数", len(cf2.get("delayed_entry_adjustments", []))],
+                ],
+            ),
+            "",
             "## 附录：中报证伪数据支持",
             "",
             "产业实质判断（真订单/真产能 vs 纯故事）由人工完成，本表只提供数据。",
@@ -1338,8 +1761,9 @@ def run_audit(
     counterfactual_nav = _counterfactual_nav(dates, entries, prices)
     final_holdings = _holdings_by_date(daily_records).get(dates[-1], {})
     version_events = _version_events()
+    latest_record = daily_records[-1]
     metrics = {
-        "schema_version": "track_record_audit.v1",
+        "schema_version": "track_record_audit.v2",
         "record_root": str(record_root),
         "output_dir": str(output_dir),
         "warnings": warnings,
@@ -1361,6 +1785,16 @@ def run_audit(
         "funding_nature": _funding_nature(records),
         "markov_diagnostics": _markov_diagnostics(regime_history),
         "fundamentals_appendix": _fundamentals_appendix(final_holdings, fundamentals_root),
+        "current_status": _current_status(latest_record),
+        "beta_adjusted_excess": _beta_adjusted_excess(nav_rows, benchmarks),
+        "regime_exposure_compliance": _regime_exposure_compliance(daily_records, nav_rows, regime_history),
+        "counterfactual2_decomposition": _counterfactual2_decomposition(
+            nav_rows,
+            benchmarks,
+            counterfactual_nav,
+            prices,
+            entries.keys(),
+        ),
     }
     _write_outputs(metrics, output_dir, generate_plots=generate_plots)
     return metrics

@@ -154,6 +154,113 @@ def _write_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
     return record_root, benchmark, bars_root, stock_basic, fundamentals_root, regime
 
 
+def _write_phase13_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path, Path]:
+    record_root = tmp_path / "phase13_records"
+    totals = [
+        ("20260102_1000", 100.0),
+        ("20260105_1000", 111.0),
+        ("20260106_1000", 117.66),
+        ("20260107_1000", 138.8388),
+    ]
+    for run_id, total in totals:
+        _write_record(record_root, run_id, total)
+    (record_root / "20260106_1000" / "manual_switch_and_take_profit_orders.csv").write_text(
+        "timestamp,action,symbol,name,shares,execution_price,trade_value,realized_pnl,status,reason\n"
+        "2026-01-06 10:00:00,buy,BBB.SZ,Beta,100,20,2000,0,filled,unit\n",
+        encoding="utf-8",
+    )
+
+    benchmark = tmp_path / "phase13_cn_index_benchmark.csv"
+    benchmark.write_text(
+        "\n".join(
+            [
+                "date,ts_code,close,source_system,value_date,coverage",
+                "2026-01-02,000300.SH,100,unit,2026-01-02,exact_close",
+                "2026-01-05,000300.SH,100,unit,2026-01-05,exact_close",
+                "2026-01-06,000300.SH,100,unit,2026-01-06,exact_close",
+                "2026-01-07,000300.SH,100,unit,2026-01-07,exact_close",
+                "2026-01-02,000688.SH,100,unit,2026-01-02,exact_close",
+                "2026-01-05,000688.SH,105,unit,2026-01-05,exact_close",
+                "2026-01-06,000688.SH,107.1,unit,2026-01-06,exact_close",
+                "2026-01-07,000688.SH,115.668,unit,2026-01-07,exact_close",
+                "2026-01-02,399006.SZ,100,unit,2026-01-02,exact_close",
+                "2026-01-05,399006.SZ,100,unit,2026-01-05,exact_close",
+                "2026-01-06,399006.SZ,100,unit,2026-01-06,exact_close",
+                "2026-01-07,399006.SZ,100,unit,2026-01-07,exact_close",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    bars_root = tmp_path / "phase13_bars"
+    bars_root.mkdir()
+    pd.DataFrame(
+        [
+            {"ts_code": "AAA.SZ", "trade_date": "20260102", "close": 10.0, "adj_close": 10.0},
+            {"ts_code": "AAA.SZ", "trade_date": "20260105", "close": 11.1, "adj_close": 11.1},
+            {"ts_code": "AAA.SZ", "trade_date": "20260106", "close": 11.766, "adj_close": 11.766},
+            {"ts_code": "AAA.SZ", "trade_date": "20260107", "close": 13.88388, "adj_close": 13.88388},
+            {"ts_code": "BBB.SZ", "trade_date": "20260102", "close": 10.0, "adj_close": 10.0},
+            {"ts_code": "BBB.SZ", "trade_date": "20260105", "close": 20.0, "adj_close": 20.0},
+            {"ts_code": "BBB.SZ", "trade_date": "20260106", "close": 20.0, "adj_close": 20.0},
+            {"ts_code": "BBB.SZ", "trade_date": "20260107", "close": 20.0, "adj_close": 20.0},
+        ]
+    ).to_parquet(bars_root / "part.parquet", index=False)
+    stock_basic = tmp_path / "phase13_stock_basic"
+    stock_basic.mkdir()
+    pd.DataFrame(
+        [
+            {"ts_code": "AAA.SZ", "industry": "IT设备"},
+            {"ts_code": "BBB.SZ", "industry": "半导体"},
+        ]
+    ).to_parquet(stock_basic / "part.parquet", index=False)
+    fundamentals_root = tmp_path / "phase13_fundamental_raw"
+    (fundamentals_root / "table=fina_indicator").mkdir(parents=True)
+    regime = tmp_path / "phase13_markov_regime_history.jsonl"
+    regime.write_text(
+        "\n".join(
+            json.dumps(row, ensure_ascii=False)
+            for row in [
+                {
+                    "as_of": "20260102",
+                    "dominant_regime": "趋势上涨",
+                    "suggested_gross_exposure_cap": 1.2,
+                    "regime_scope": "full_market",
+                    "production_eligible": True,
+                    "source_symbol_count": 100,
+                },
+                {
+                    "as_of": "20260105",
+                    "dominant_regime": "趋势上涨",
+                    "suggested_gross_exposure_cap": 0.9,
+                    "regime_scope": "full_market",
+                    "production_eligible": True,
+                    "source_symbol_count": 100,
+                },
+                {
+                    "as_of": "20260106",
+                    "dominant_regime": "趋势下跌",
+                    "suggested_gross_exposure_cap": 0.8,
+                    "regime_scope": "full_market",
+                    "production_eligible": True,
+                    "source_symbol_count": 100,
+                },
+                {
+                    "as_of": "20260107",
+                    "dominant_regime": "趋势下跌",
+                    "suggested_gross_exposure_cap": 1.1,
+                    "regime_scope": "full_market",
+                    "production_eligible": True,
+                    "source_symbol_count": 100,
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return record_root, benchmark, bars_root, stock_basic, fundamentals_root, regime
+
+
 def test_track_record_audit_decomposition_read_only_and_deterministic(tmp_path):
     audit = _load_audit()
     record_root, benchmark, bars_root, stock_basic, fundamentals_root, regime = _write_inputs(tmp_path)
@@ -202,6 +309,50 @@ def test_track_record_audit_decomposition_read_only_and_deterministic(tmp_path):
     assert "## B. 基准与超额" in report
     assert "## C. 三分解" in report
     assert metrics["fundamentals_appendix"]["rows"][0]["h1_schedule"] == "披露日需人工补充"
+
+
+def test_phase13_beta_regime_and_second_counterfactual_sections(tmp_path):
+    audit = _load_audit()
+    record_root, benchmark, bars_root, stock_basic, fundamentals_root, regime = _write_phase13_inputs(tmp_path)
+
+    metrics = audit.run_audit(
+        record_root=record_root,
+        output_root=tmp_path / "audit",
+        benchmark_file=benchmark,
+        bars_root=bars_root,
+        stock_basic_root=stock_basic,
+        fundamentals_root=fundamentals_root,
+        regime_history=regime,
+        as_of_date="20260108",
+        generate_plots=False,
+    )
+
+    beta = metrics["beta_adjusted_excess"]
+    assert beta["n"] == 3
+    assert beta["beta"] > 1.0
+    assert beta["alpha_annualized"] is not None
+    assert beta["standard_ir_daily"] is not None
+
+    exposure = metrics["regime_exposure_compliance"]
+    assert exposure["covered_days"] == 4
+    assert exposure["violation_days"] == 2
+    assert exposure["violation_ratio"] == 0.5
+    assert exposure["interpretation_triggered"] is True
+    assert exposure["state_day_distribution"] == {"趋势上涨": 2, "趋势下跌": 2}
+    assert exposure["state_switch_dates"] == [{"date": "2026-01-06", "from": "趋势上涨", "to": "趋势下跌"}]
+    assert exposure["violation_nav_return_contribution"] > 0
+
+    cf2 = metrics["counterfactual2_decomposition"]
+    assert cf2["symbol_count"] == 2
+    assert cf2["counterfactual2_return"] > cf2["counterfactual1_return"]
+    assert cf2["entry_timing_contribution"] < 0
+
+    report = (tmp_path / "audit" / "20260108" / "audit_report.md").read_text(encoding="utf-8")
+    assert "## H. β 调整后的超额（vs 科创50）" in report
+    assert "n=69 交易日，单一政权样本，t 值与 IR 仅作描述，不作推断。" in report
+    assert "## I. 全窗口 regime 时间线与暴露合规" in report
+    assert "窗口内战绩相当部分产生于闸门约束之外，'系统的钱'份额需按合规日子集重算" in report
+    assert "## J. 选股 α 的第二对照" in report
 
 
 def test_track_record_audit_refuses_output_inside_record_root(tmp_path):
