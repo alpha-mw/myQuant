@@ -6,8 +6,9 @@ Walk-Forward Portfolio Backtesting Engine
 from __future__ import annotations
 
 import warnings
+import math
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Mapping, Optional
 
 import numpy as np
 import pandas as pd
@@ -22,6 +23,48 @@ def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
 
 
+def _is_finite_number(value: Any) -> bool:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(numeric)
+
+
+def _optional_float(value: Any) -> float | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return numeric if math.isfinite(numeric) else None
+
+
+def _record_value(record: Any, key: str) -> Any:
+    if record is None:
+        return None
+    if isinstance(record, Mapping):
+        return record.get(key)
+    return getattr(record, key, None)
+
+
+def _bps_to_decimal(value: Any) -> float:
+    numeric = _optional_float(value)
+    if numeric is None or numeric < 0.0:
+        return 0.0
+    return numeric / 10_000.0
+
+
+class _FallbackExecutionCostConfig:
+    commission_bps = 3.0
+    stamp_tax_bps = 10.0
+    exchange_fee_bps = 0.0
+    slippage_bps = 5.0
+    spread_bps = 0.0
+    impact_model = "linear_participation"
+    impact_coefficient = 0.0
+    apply_stamp_tax_on_sell_only = True
+
+
 @dataclass
 class TransactionCostModel:
     """A 股真实交易成本。"""
@@ -30,12 +73,145 @@ class TransactionCostModel:
     stamp_duty: float = 0.001
     slippage_rate: float = 0.0005
     market_impact_k: float = 0.1
+    execution_cost_model_enabled: bool | None = None
+    execution_cost_config: Any | None = None
+    execution_amount_by_symbol: Mapping[str, float] | None = None
+    execution_cost_records_by_symbol: Mapping[str, Any] | None = None
 
-    def total_cost(self, trade_value: float, side: str = "buy") -> float:
+    def __post_init__(self) -> None:
+        if self.execution_cost_model_enabled is None:
+            enabled = False
+            try:
+                from quant_investor.config import Config
+
+                enabled = bool(getattr(Config, "EXECUTION_COST_MODEL_ENABLED", False))
+            except Exception:
+                enabled = False
+            self.execution_cost_model_enabled = enabled
+        else:
+            self.execution_cost_model_enabled = bool(self.execution_cost_model_enabled)
+        self.execution_amount_by_symbol = {
+            str(symbol): float(amount)
+            for symbol, amount in dict(self.execution_amount_by_symbol or {}).items()
+            if _is_finite_number(amount) and float(amount) > 0.0
+        }
+        self.execution_cost_records_by_symbol = {
+            str(symbol): record
+            for symbol, record in dict(self.execution_cost_records_by_symbol or {}).items()
+        }
+
+    def total_cost(
+        self,
+        trade_value: float,
+        side: str = "buy",
+        *,
+        symbol: str = "",
+        amount: float | None = None,
+        participation_rate: float | None = None,
+    ) -> float:
+        if not bool(self.execution_cost_model_enabled):
+            return self._flat_cost(trade_value, side)
+        return self._execution_cost(
+            trade_value,
+            side,
+            symbol=symbol,
+            amount=amount,
+            participation_rate=participation_rate,
+        )
+
+    def _flat_cost(self, trade_value: float, side: str = "buy") -> float:
         commission = abs(trade_value) * self.commission_rate
         stamp = abs(trade_value) * self.stamp_duty if side == "sell" else 0.0
         slippage = abs(trade_value) * self.slippage_rate
         return commission + stamp + slippage
+
+    def _execution_cost(
+        self,
+        trade_value: float,
+        side: str,
+        *,
+        symbol: str,
+        amount: float | None,
+        participation_rate: float | None,
+    ) -> float:
+        config = self._execution_config()
+        abs_trade_value = abs(float(trade_value or 0.0))
+        if abs_trade_value <= 0.0:
+            return 0.0
+
+        stamp_applies = (
+            not bool(getattr(config, "apply_stamp_tax_on_sell_only", True))
+            or str(side or "").lower() == "sell"
+        )
+        commission = abs_trade_value * _bps_to_decimal(getattr(config, "commission_bps", 0.0))
+        stamp = (
+            abs_trade_value * _bps_to_decimal(getattr(config, "stamp_tax_bps", 0.0))
+            if stamp_applies
+            else 0.0
+        )
+        exchange_fee = abs_trade_value * _bps_to_decimal(
+            getattr(config, "exchange_fee_bps", 0.0)
+        )
+        slippage = abs_trade_value * _bps_to_decimal(getattr(config, "slippage_bps", 0.0))
+        spread = abs_trade_value * _bps_to_decimal(getattr(config, "spread_bps", 0.0))
+        impact_bps = self._impact_bps(
+            config=config,
+            trade_value=abs_trade_value,
+            symbol=symbol,
+            amount=amount,
+            participation_rate=participation_rate,
+        )
+        impact = abs_trade_value * _bps_to_decimal(impact_bps)
+        return commission + stamp + exchange_fee + slippage + spread + impact
+
+    def _execution_config(self) -> Any:
+        config = self.execution_cost_config
+        try:
+            from quant_investor.factors.execution_cost import FactorExecutionCostConfig
+
+            if isinstance(config, FactorExecutionCostConfig):
+                return config
+            if isinstance(config, Mapping):
+                payload = dict(config)
+                payload.setdefault("config_id", "portfolio-backtest-execution-cost")
+                return FactorExecutionCostConfig.from_dict(payload)
+            return FactorExecutionCostConfig(config_id="portfolio-backtest-execution-cost")
+        except Exception:
+            return _FallbackExecutionCostConfig()
+
+    def _impact_bps(
+        self,
+        *,
+        config: Any,
+        trade_value: float,
+        symbol: str,
+        amount: float | None,
+        participation_rate: float | None,
+    ) -> float:
+        participation = _optional_float(participation_rate)
+        record = dict(self.execution_cost_records_by_symbol or {}).get(str(symbol or ""))
+        if participation is None:
+            participation = _optional_float(_record_value(record, "participation_rate"))
+        resolved_amount = _optional_float(amount)
+        if resolved_amount is None:
+            resolved_amount = _optional_float(_record_value(record, "amount"))
+        if resolved_amount is None:
+            resolved_amount = dict(self.execution_amount_by_symbol or {}).get(str(symbol or ""))
+        if participation is None and resolved_amount is not None and resolved_amount > 0.0:
+            participation = abs(float(trade_value or 0.0)) / resolved_amount
+        if participation is None or participation < 0.0:
+            return 0.0
+
+        try:
+            from quant_investor.factors.execution_cost import estimate_market_impact_bps
+
+            impact_bps = estimate_market_impact_bps(
+                participation_rate=participation,
+                config=config,
+            )
+            return max(0.0, float(impact_bps))
+        except Exception:
+            return max(0.0, float(getattr(config, "impact_coefficient", 0.0)) * participation)
 
 
 @dataclass
@@ -555,7 +731,11 @@ class PortfolioBacktester:
             if abs(trade_value) <= 1e-10:
                 continue
             side = "buy" if trade_value > 0 else "sell"
-            transaction_cost += self.costs.total_cost(float(abs(trade_value)), side)
+            transaction_cost += self.costs.total_cost(
+                float(abs(trade_value)),
+                side,
+                symbol=str(symbol),
+            )
 
         if target_values.sum() + transaction_cost > nav_before:
             available = max(nav_before - transaction_cost, 0.0)
@@ -568,7 +748,11 @@ class PortfolioBacktester:
                 if abs(trade_value) <= 1e-10:
                     continue
                 side = "buy" if trade_value > 0 else "sell"
-                transaction_cost += self.costs.total_cost(float(abs(trade_value)), side)
+                transaction_cost += self.costs.total_cost(
+                    float(abs(trade_value)),
+                    side,
+                    symbol=str(symbol),
+                )
 
         new_positions: dict[str, float] = {}
         for symbol, target_value in target_values.items():

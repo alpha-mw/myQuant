@@ -212,3 +212,104 @@ def test_tushare_benchmark_snapshot_gap_fill_is_not_production_grade():
         == "strategy_record_snapshot_gap_fill"
     )
     assert nav_rows[1]["csi300_nav"] == "1.02000000"
+
+
+def test_local_benchmark_file_exact_closes_can_be_production_grade(tmp_path):
+    exporter = _load_exporter()
+    runs = [
+        exporter.RecordRun("20260318_0930", "2026-03-18", Path("r1"), "", 100.0, 100.0, {}),
+        exporter.RecordRun("20260320_0930", "2026-03-20", Path("r2"), "", 100.0, 101.0, {}),
+        exporter.RecordRun("20260323_0930", "2026-03-23", Path("r3"), "", 100.0, 102.0, {}),
+    ]
+    benchmark_path = tmp_path / "cn_index_benchmark.csv"
+    benchmark_path.write_text(
+        "\n".join(
+            [
+                "date,ts_code,close,source_system",
+                "2026-03-18,000300.SH,1000,Wind",
+                "2026-03-20,000300.SH,1050,Wind",
+                "2026-03-23,000300.SH,1100,Wind",
+                "2026-03-18,000905.SH,2000,Wind",
+                "2026-03-20,000905.SH,2100,Wind",
+                "2026-03-23,000905.SH,2200,Wind",
+                "2026-03-18,000852.SH,3000,Wind",
+                "2026-03-20,000852.SH,3150,Wind",
+                "2026-03-23,000852.SH,3300,Wind",
+                "2026-03-18,000688.SH,4000,Wind",
+                "2026-03-20,000688.SH,4200,Wind",
+                "2026-03-23,000688.SH,4400,Wind",
+                "2026-03-18,399006.SZ,5000,Wind",
+                "2026-03-20,399006.SZ,5250,Wind",
+                "2026-03-23,399006.SZ,5500,Wind",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    benchmark_export, warnings = exporter.load_local_benchmark_export(runs, benchmark_path)
+    assert warnings == []
+    assert benchmark_export is not None
+    assert len(benchmark_export.raw_rows) == 15
+
+    nav_rows, nav_warnings, fieldnames = exporter.build_nav_rows(runs, benchmark_export)
+    assert nav_warnings == []
+    summary = exporter.benchmark_source_summary(nav_rows, fieldnames, benchmark_export)
+
+    assert summary["source_system"] == "Wind"
+    assert summary["benchmark_source_status"] == "production_grade"
+    assert summary["production_grade"] is True
+    assert summary["display_continuity_grade"] is True
+    assert summary["calendar_source_system"] == ""
+    assert summary["missing_dates"] == []
+    assert summary["previous_trading_day_ffill_dates"] == []
+    assert summary["normalization"] == "local_index_close_divided_by_first_valid_close"
+    assert nav_rows[0]["csi300_nav"] == "1.00000000"
+    assert nav_rows[1]["csi300_nav"] == "1.05000000"
+    assert nav_rows[2]["csi300_nav"] == "1.10000000"
+
+
+def test_local_benchmark_file_rejects_sample_or_mock_sources(tmp_path):
+    exporter = _load_exporter()
+    runs = [
+        exporter.RecordRun("20260318_0930", "2026-03-18", Path("r1"), "", 100.0, 100.0, {}),
+    ]
+    benchmark_path = tmp_path / "cn_index_benchmark.csv"
+    benchmark_path.write_text(
+        "\n".join(
+            [
+                "date,ts_code,close,source_system",
+                "2026-03-18,000300.SH,1000,sample",
+                "2026-03-18,000905.SH,2000,sample",
+                "2026-03-18,000852.SH,3000,sample",
+                "2026-03-18,000688.SH,4000,sample",
+                "2026-03-18,399006.SZ,5000,sample",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    benchmark_export, warnings = exporter.load_local_benchmark_export(runs, benchmark_path)
+
+    assert benchmark_export is None
+    assert any("sample/mock" in warning for warning in warnings)
+
+
+def test_default_benchmark_source_prefers_auto_local_file():
+    exporter = _load_exporter()
+
+    assert exporter.DEFAULT_BENCHMARK_SOURCE == "auto"
+
+
+def test_resolve_local_benchmark_file_falls_back_to_repo_input_for_temp_output(tmp_path, monkeypatch):
+    exporter = _load_exporter()
+    default_dashboard_root = tmp_path / "portfolio_dashboard"
+    default_input = default_dashboard_root / "inputs" / "cn_index_benchmark.csv"
+    default_input.parent.mkdir(parents=True)
+    default_input.write_text("date,ts_code,close,source_system\n", encoding="utf-8")
+    temp_dashboard_root = tmp_path / "temp_dashboard"
+
+    monkeypatch.setattr(exporter, "DEFAULT_DASHBOARD_ROOT", default_dashboard_root)
+
+    assert exporter.resolve_local_benchmark_file(temp_dashboard_root, None) == default_input

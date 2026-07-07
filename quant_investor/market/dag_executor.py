@@ -81,6 +81,7 @@ from quant_investor.market.market_data_reader import MarketDataReader
 from quant_investor.market.name_map import (
     load_company_name_map as _load_cached_company_name_map,
 )
+from quant_investor.market.pit_universe import PITUniverseStore, filter_symbols_by_pit_status
 from quant_investor.market.provider_health import detect_provider_health
 from quant_investor.market.runtime_profile import profile_stage
 from quant_investor.market.us_market_cap_filter import USMarketCapFilter
@@ -404,6 +405,32 @@ async def _execute_market_dag_async(
     )
     if market_cap_filter_metadata:
         scoped_data_snapshot["market_cap_filter"] = market_cap_filter_metadata
+    pit_universe_metadata: dict[str, Any] = {
+        "enabled": bool(getattr(config, "PIT_UNIVERSE_ENABLED", False)),
+        "required": bool(getattr(config, "PIT_UNIVERSE_REQUIRED", False)),
+        "status": "disabled",
+    }
+    if settings.market == "CN" and bool(getattr(config, "PIT_UNIVERSE_ENABLED", False)):
+        pit_as_of = str(
+            scoped_data_snapshot.get("local_latest_trade_date")
+            or scoped_data_snapshot.get("latest_trade_date")
+            or ""
+        )
+        pit_store = PITUniverseStore.from_config()
+        pit_records = pit_store.records_by_symbol()
+        pit_filter = filter_symbols_by_pit_status(
+            symbols,
+            as_of=pit_as_of,
+            records=pit_records,
+            required=bool(getattr(config, "PIT_UNIVERSE_REQUIRED", False)),
+        )
+        symbols = pit_filter.symbols
+        pit_universe_metadata = dict(pit_filter.metadata)
+        pit_universe_metadata["status"] = "applied" if pit_records else "missing_store"
+        pit_universe_metadata["snapshot_id"] = str(pit_store.load_manifest().get("source_run_id", ""))
+        pit_universe_metadata["quarantine_symbols"] = list(pit_filter.quarantine_symbols)
+        pit_universe_metadata["untradable_symbols"] = list(pit_filter.untradable_symbols)
+        scoped_data_snapshot["pit_universe"] = pit_universe_metadata
 
     if not symbols:
         empty_context = GlobalContext(
@@ -417,6 +444,7 @@ async def _execute_market_dag_async(
                 "resolver": shared_reader.snapshot(),
                 "data_snapshot": scoped_data_snapshot,
                 "market_cap_filter": market_cap_filter_metadata,
+                "pit_universe": pit_universe_metadata,
                 "selection_profile": {
                     "funnel_profile": str(funnel_profile or config.FUNNEL_PROFILE).strip().lower() or config.FUNNEL_PROFILE,
                     "trend_windows": list(trend_windows or config.FUNNEL_TREND_WINDOWS),

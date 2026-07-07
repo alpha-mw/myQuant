@@ -12,6 +12,12 @@ from quant_investor.market.market_data_reader import (
 )
 from quant_investor.market.backtest import _load_market_frame
 from quant_investor.market.market_data_store import MarketDataStore
+from quant_investor.market.pit_universe import (
+    LIST_STATUS_DELISTED,
+    LIST_STATUS_LISTED,
+    PITUniverseRecord,
+    PITUniverseStore,
+)
 
 
 def _write_parquet_fixture(root: Path, *, status: str = "OK") -> dict[str, Path]:
@@ -139,6 +145,56 @@ def test_strict_parquet_reader_reads_symbol_batch_cross_section_and_catalog_tabl
     )
     assert daily_basic["total_mv"].sum() == 300.0
     assert set(daily_basic["trade_date"]) == {"20260103"}
+
+
+def test_reader_list_symbols_filters_by_pit_universe_only_when_enabled(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _write_parquet_fixture(tmp_path)
+    pit_store = PITUniverseStore(
+        root_dir=tmp_path / "parquet" / "cn" / "reference",
+        raw_root=tmp_path / "pit_raw",
+        compatibility_path=tmp_path / "pit_compat.json",
+    )
+    pit_store.write_snapshot(
+        raw_records=[
+            PITUniverseRecord(
+                symbol="000001.SZ",
+                source_list_status=LIST_STATUS_LISTED,
+                list_date="20200101",
+                observed_at="2026-07-06T00:00:00Z",
+                source_run_id="unit-test",
+            ),
+            PITUniverseRecord(
+                symbol="000002.SZ",
+                source_list_status=LIST_STATUS_DELISTED,
+                list_date="20200101",
+                delist_date="20260102",
+                observed_at="2026-07-06T00:00:00Z",
+                source_run_id="unit-test",
+            ),
+        ],
+        observed_at="2026-07-06T00:00:00Z",
+        source_run_id="unit-test",
+    )
+    reader = MarketDataReader(market="CN", data_root=tmp_path)
+
+    from quant_investor.config import config as runtime_config
+
+    monkeypatch.setattr(runtime_config, "PIT_UNIVERSE_ENABLED", False, raising=False)
+    monkeypatch.setattr(
+        runtime_config,
+        "PIT_UNIVERSE_SOURCE_ROOT",
+        str(tmp_path / "parquet" / "cn" / "reference"),
+        raising=False,
+    )
+    assert reader.list_symbols("full_a", as_of="20260103") == ["000001.SZ", "000002.SZ"]
+
+    monkeypatch.setattr(runtime_config, "PIT_UNIVERSE_ENABLED", True, raising=False)
+    monkeypatch.setattr(runtime_config, "PIT_UNIVERSE_REQUIRED", False, raising=False)
+    assert reader.list_symbols("full_a", as_of="20260103") == ["000001.SZ"]
+    assert reader.list_symbols("zz500", as_of="20260103") == []
 
 
 def test_reader_reuses_snapshot_and_symbol_inventory_for_repeated_runtime_reads(

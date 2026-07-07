@@ -16,6 +16,7 @@ ALLOWLIST = {
     # Dashboard export reads strategy-record CSV artifacts, not runtime market data.
     "scripts/export_cn_aggressive_dashboard_data.py",
     "scripts/migrate_legacy_csv_state_to_parquet.py",
+    "scripts/run_us_aggressive_analysis.py",
 }
 
 FORBIDDEN_SNIPPETS = [

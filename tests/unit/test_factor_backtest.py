@@ -43,6 +43,12 @@ from quant_investor.factors.schema import (
     FactorBacktestResult,
     make_backtest_config_id,
 )
+from quant_investor.market.pit_universe import (
+    LIST_STATUS_DELISTED,
+    LIST_STATUS_LISTED,
+    PITUniverseRecord,
+    build_pit_universe_mask,
+)
 from quant_investor.versioning import FACTOR_BACKTEST_SCHEMA_VERSION
 
 
@@ -272,6 +278,28 @@ def test_quantile_weight_matrix_long_short_equal_booksize_and_masks() -> None:
         config,
     )
     assert tradability_weights.long_weights[0][0] == 0.0
+
+
+def test_pit_universe_mask_excludes_post_delist_cells_from_factor_weights() -> None:
+    matrix = _factor_matrix()
+    records = [
+        PITUniverseRecord(symbol=symbol, source_list_status=LIST_STATUS_LISTED, list_date="20260101")
+        for symbol in SYMBOLS
+    ]
+    records[1] = PITUniverseRecord(
+        symbol=SYMBOLS[1],
+        source_list_status=LIST_STATUS_DELISTED,
+        list_date="20260101",
+        delist_date="20260103",
+    )
+    universe_mask = build_pit_universe_mask(SYMBOLS, DATES, records, required=True)
+    baseline = build_quantile_weight_matrix(matrix, _bundle(), _config())
+
+    weights = build_quantile_weight_matrix(matrix, _bundle(universe_mask=universe_mask), _config())
+
+    assert baseline.short_weights[1][2] < 0.0
+    assert universe_mask[1][2] is False
+    assert weights.short_weights[1][2] == 0.0
 
 
 def test_quantile_weight_matrix_long_only_expected_direction_and_input_immutability() -> None:

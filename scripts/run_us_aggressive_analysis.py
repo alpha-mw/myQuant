@@ -17,7 +17,7 @@ from pathlib import Path
 # ──────────────────────────────────────────────
 # 路径配置
 # ──────────────────────────────────────────────
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 KRONOS_DATA_DIR = Path(
     os.environ.get("KRONOS_DATA_DIR", PROJECT_ROOT / "data" / "us_market_full")
 ).expanduser()

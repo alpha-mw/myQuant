@@ -15,19 +15,27 @@ def _make_context(
     quarantine: list[str] | None = None,
     suspended: list[str] | None = None,
     illiquid: list[str] | None = None,
+    liquidity_extra: dict | None = None,
+    metadata: dict | None = None,
     industry_map: dict[str, str] | None = None,
     symbol_market_state: dict[str, dict[str, float]] | None = None,
 ) -> GlobalContext:
+    liquidity_filter = {
+        "suspended": suspended or [],
+        "illiquid": illiquid or [],
+    }
+    if liquidity_extra:
+        liquidity_filter.update(liquidity_extra)
+    context_metadata = {"symbol_market_state": symbol_market_state or {}}
+    if metadata:
+        context_metadata.update(metadata)
     return GlobalContext(
         universe_symbols=symbols,
         universe_tiers={"researchable": symbols, "total": symbols},
         industry_map=industry_map or {},
         data_quality_quarantine=quarantine or [],
-        liquidity_filter={
-            "suspended": suspended or [],
-            "illiquid": illiquid or [],
-        },
-        metadata={"symbol_market_state": symbol_market_state or {}},
+        liquidity_filter=liquidity_filter,
+        metadata=context_metadata,
     )
 
 
@@ -42,11 +50,70 @@ class TestGates:
         assert passed == ["A", "C"]
         assert excluded == {"B": "data_quality_quarantine"}
 
+    def test_data_quality_gate_excludes_required_pit_quarantine(self):
+        ctx = _make_context(
+            ["A", "B", "C"],
+            metadata={
+                "data_snapshot": {
+                    "pit_universe": {
+                        "required": True,
+                        "reasons": {
+                            "A": "listed",
+                            "B": "missing_pit_record",
+                            "C": "conflicting_status_rows",
+                        },
+                    }
+                }
+            },
+        )
+        passed, excluded = DataQualityGate().filter(["A", "B", "C"], ctx)
+        assert passed == ["A"]
+        assert excluded == {
+            "B": "missing_pit_record",
+            "C": "conflicting_status_rows",
+        }
+
+    def test_data_quality_gate_keeps_optional_missing_pit_records(self):
+        ctx = _make_context(
+            ["A", "B", "C"],
+            metadata={
+                "data_snapshot": {
+                    "pit_universe": {
+                        "required": False,
+                        "reasons": {
+                            "A": "listed",
+                            "B": "missing_pit_record",
+                            "C": "conflicting_status_rows",
+                        },
+                    }
+                }
+            },
+        )
+        passed, excluded = DataQualityGate().filter(["A", "B", "C"], ctx)
+        assert passed == ["A", "B"]
+        assert excluded == {"C": "conflicting_status_rows"}
+
     def test_tradability_gate_excludes_suspended(self):
         ctx = _make_context(["A", "B"], suspended=["A"])
         passed, excluded = TradabilityGate().filter(["A", "B"], ctx)
         assert passed == ["B"]
         assert "A" in excluded
+
+    def test_tradability_gate_excludes_pit_untradable(self):
+        ctx = _make_context(
+            ["A", "B"],
+            metadata={
+                "data_snapshot": {
+                    "pit_universe": {
+                        "untradable_symbols": ["A"],
+                        "reasons": {"A": "pending"},
+                    }
+                }
+            },
+        )
+        passed, excluded = TradabilityGate().filter(["A", "B"], ctx)
+        assert passed == ["B"]
+        assert excluded == {"A": "pending"}
 
     def test_liquidity_gate_excludes_illiquid(self):
         ctx = _make_context(["A", "B"], illiquid=["B"])

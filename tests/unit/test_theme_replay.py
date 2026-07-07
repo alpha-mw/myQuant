@@ -3,6 +3,8 @@ from __future__ import annotations
 import pandas as pd
 
 from quant_investor.themes.replay import (
+    PIT_INDUSTRY_LABEL_NOTE,
+    build_theme_calibration_dataset,
     build_benchmark_forward_returns,
     compute_forward_metrics,
     extract_snapshot_theme_rows,
@@ -94,6 +96,10 @@ def test_extract_snapshot_theme_rows_from_wrapper():
             "symbol_theme_score": 0.7,
             "primary_theme_id": "industry::banking",
             "primary_theme_name": "Banking",
+            "theme_type": "industry",
+            "membership_source": "industry_map",
+            "pit_membership": False,
+            "theme_memberships": [],
             "phase": "confirmed_rotation",
             "risk_flags": ["theme_low_breadth"],
             "theme_score": 70.0,
@@ -106,3 +112,40 @@ def test_extract_snapshot_theme_rows_from_wrapper():
 def test_extract_snapshot_theme_rows_malformed_safe():
     assert extract_snapshot_theme_rows({"theme_rotation": "bad"}) == []
     assert extract_snapshot_theme_rows({"symbol_scores": "bad"}) == []
+
+
+def test_theme_calibration_dataset_marks_industry_labels_non_pit():
+    snapshot = {
+        "market": "CN",
+        "universe_key": "full_a",
+        "as_of": "20260101",
+        "theme_rotation": {
+            "market": "CN",
+            "universe_key": "full_a",
+            "as_of": "20260101",
+            "symbol_scores": {"000001.SZ": 0.7},
+            "symbol_primary_theme": {"000001.SZ": "industry::banking"},
+            "symbol_phase": {"000001.SZ": "confirmed_rotation"},
+            "symbol_risk_flags": {"000001.SZ": []},
+            "theme_scores": {
+                "industry::banking": {
+                    "theme_name": "Banking",
+                    "score": 70.0,
+                    "confidence": 0.8,
+                    "member_count": 12,
+                }
+            },
+        },
+    }
+
+    dataset = build_theme_calibration_dataset(
+        snapshots=[snapshot],
+        frames={"000001.SZ": _frame([10.0, 11.0, 12.0, 13.0, 14.0, 15.0])},
+        horizons=(1, 3, 5),
+        benchmark_horizons=(5,),
+    )
+    payload = dataset.to_dict()
+
+    assert payload["metadata"]["pit_industry_labels"] is False
+    assert payload["metadata"]["industry_label_note"] == PIT_INDUSTRY_LABEL_NOTE
+    assert PIT_INDUSTRY_LABEL_NOTE in dataset.to_markdown()

@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import hmac
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
+from quant_investor.env_loading import load_env_file
 from quant_investor.versioning import ARCHITECTURE_VERSION
-from web.config import CORS_ORIGINS, PROJECT_ROOT
+from web.config import CORS_ORIGINS, PROJECT_ROOT, workspace_auth_token
 from web.api.data import router as data_router
 from web.routers import presets, research, settings, universe
 from web.services.run_history_store import history_store
@@ -61,23 +63,32 @@ def _serve_frontend_asset(
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    try:
-        from dotenv import load_dotenv
-
-        load_dotenv()
-    except ImportError:
-        pass
-
+    load_env_file(PROJECT_ROOT / ".env")
     history_store.init_db()
     yield
 
 
-def create_app(frontend_dist: Path | None = None) -> FastAPI:
+AUTH_EXEMPT_API_PATHS = {"/api/health"}
+
+
+def create_app(
+    frontend_dist: Path | None = None,
+    *,
+    auth_token: str | None = None,
+) -> FastAPI:
     app = FastAPI(
         title="myQuant Research Workspace",
         version=WORKSPACE_API_VERSION,
         lifespan=lifespan,
     )
+
+    # allow_credentials=True combined with a wildcard origin is an unsafe CORS
+    # configuration (and one Starlette silently mishandles), so fail closed.
+    if any(str(origin).strip() == "*" for origin in CORS_ORIGINS):
+        raise RuntimeError(
+            "CORS_ORIGINS must not contain '*' while allow_credentials=True; "
+            "list explicit origins instead."
+        )
 
     app.add_middleware(
         CORSMiddleware,
@@ -86,6 +97,31 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Optional single-token auth for the API surface. Resolved once at app
+    # creation: explicit argument first (tests), then WORKSPACE_AUTH_TOKEN.
+    resolved_token = (
+        auth_token if auth_token is not None else workspace_auth_token()
+    ).strip()
+    if resolved_token:
+
+        @app.middleware("http")
+        async def _require_bearer_token(request: Request, call_next):
+            path = request.url.path
+            if (
+                path.startswith("/api/")
+                and path not in AUTH_EXEMPT_API_PATHS
+                and request.method != "OPTIONS"  # CORS preflight carries no auth
+            ):
+                supplied = request.headers.get("Authorization", "")
+                expected = f"Bearer {resolved_token}"
+                if not hmac.compare_digest(supplied, expected):
+                    return JSONResponse(
+                        status_code=401,
+                        content={"detail": "Unauthorized"},
+                        headers={"WWW-Authenticate": "Bearer"},
+                    )
+            return await call_next(request)
 
     app.include_router(research.router)
     app.include_router(presets.router)

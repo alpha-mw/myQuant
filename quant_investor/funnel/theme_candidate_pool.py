@@ -322,8 +322,8 @@ class ThemeGatePolicy:
             "blocked_phases": list(self.blocked_phases),
             "blocked_flags": list(self.blocked_flags),
             "residual_ratio": float(self.residual_ratio),
-            "residual_enabled": bool(self.residual_ratio > 0.0),
-            "residual_concept": "residual_theme_alpha",
+            "residual_enabled": False,
+            "residual_concept": "disabled_by_theme_pool_hard_filter",
             "hard_theme_constraint": True,
             "max_symbols_per_theme": int(self.max_symbols_per_theme),
             "risk_watch_max_ratio": float(self.risk_watch_max_ratio),
@@ -664,14 +664,15 @@ class ThemeCandidatePoolBuilder:
             )
             candidates.append(replace(candidate, quality_flags=quality_flags))
         ranked = sorted(candidates, key=lambda item: (-item.rank_score, item.theme_id))
-        admitted = ranked[: max(int(policy.top_themes), 0)]
+        eligible = [item for item in ranked if not item.quality_flags]
+        admitted = eligible[: max(int(policy.top_themes), 0)]
         admitted_ids = {item.theme_id for item in admitted}
         rejected: list[dict[str, Any]] = []
         rejected_candidates: list[_ThemeCandidate] = []
         for item in ranked:
             if item.theme_id in admitted_ids:
                 continue
-            reason = "theme_pool_theme_rank_cutoff"
+            reason = _theme_rejection_reason(item)
             rejected.append(_theme_rejection_entry(item, reason))
             rejected_candidates.append(replace(item, original_rejection_reason=reason))
         return admitted, rejected, rejected_candidates, ranked
@@ -802,29 +803,10 @@ class ThemeCandidatePoolBuilder:
         candidates: list[_SymbolCandidate] = []
         initial_exclusions: dict[str, str] = {}
         residual_pool: list[_SymbolCandidate] = []
-        residual_target = self._residual_theme_target(max_candidates, policy)
         for symbol in input_symbols:
             theme_id = str(symbol_primary_theme.get(symbol, "") or "")
             if not theme_id:
-                if self.config.allow_unthemed_residual:
-                    candidates.append(
-                        self._symbol_candidate(
-                            symbol=symbol,
-                            theme=None,
-                            theme_id="",
-                            bucket="residual_theme_alpha",
-                            symbol_scores=symbol_scores,
-                            symbol_smoothed_scores=symbol_smoothed_scores,
-                            symbol_phase=symbol_phase,
-                            symbol_risk_flags=symbol_risk_flags,
-                            symbol_market_state=symbol_market_state,
-                            liquidity_scores=liquidity_scores,
-                            quant_scores=quant_scores,
-                            policy=policy,
-                        )
-                    )
-                else:
-                    initial_exclusions[symbol] = "theme_pool_missing_theme_membership"
+                initial_exclusions[symbol] = "theme_pool_missing_theme_membership"
                 continue
             theme = theme_by_id.get(theme_id)
             if theme is None:
@@ -857,14 +839,9 @@ class ThemeCandidatePoolBuilder:
             if theme_id in admitted_theme_ids:
                 candidates.append(candidate)
             else:
-                residual_pool.append(candidate)
+                initial_exclusions[symbol] = "theme_pool_theme_not_admitted"
 
-        residual_pool.sort(key=_symbol_sort_key)
-        selected_residual = residual_pool[: max(residual_target, 0)]
-        for candidate in residual_pool[max(residual_target, 0):]:
-            initial_exclusions.setdefault(candidate.symbol, "theme_pool_residual_theme_rank_cutoff")
-        candidates.extend(selected_residual)
-        return candidates, initial_exclusions, selected_residual
+        return candidates, initial_exclusions, residual_pool
 
     def _residual_theme_target(self, max_candidates: int, policy: ThemeGatePolicy) -> int:
         target = max(
@@ -898,6 +875,8 @@ class ThemeCandidatePoolBuilder:
                 return "risk_watch_overextended"
         if is_residual_theme:
             return "residual_theme_alpha"
+        if theme.forced:
+            return "forced_theme"
         symbol_score = self._symbol_theme_score(
             symbol=symbol,
             symbol_scores=symbol_scores,
@@ -908,8 +887,6 @@ class ThemeCandidatePoolBuilder:
         breadth_min = 0.45 if policy.regime in {"震荡高波", "趋势下跌"} else 0.35
         if "theme_low_breadth" in flags or _safe_float(theme.payload.get("breadth"), 0.0) < breadth_min:
             return "extended_low_breadth"
-        if theme.forced:
-            return "forced_theme"
         if theme.score < policy.min_theme_score:
             return "extended"
         if phase != "confirmed_rotation":
@@ -1118,6 +1095,12 @@ def _theme_rejection_entry(candidate: _ThemeCandidate, reason: str) -> dict[str,
     }
 
 
+def _theme_rejection_reason(candidate: _ThemeCandidate) -> str:
+    if candidate.quality_flags:
+        return "theme_pool_theme_quality_gate_failed"
+    return "theme_pool_theme_rank_cutoff"
+
+
 def _theme_metadata(theme: _ThemeCandidate) -> dict[str, Any]:
     return {
         "theme_id": theme.theme_id,
@@ -1178,6 +1161,8 @@ def _symbol_risk_flags(
 
 def _source_for_bucket(bucket: str) -> str:
     if bucket == "core":
+        return "core"
+    if bucket == "forced_theme":
         return "core"
     if bucket == "residual_theme_alpha":
         return "residual_theme"

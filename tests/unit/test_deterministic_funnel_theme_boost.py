@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+import pytest
+
 from quant_investor.agent_protocol import GlobalContext
 from quant_investor.branch_contracts import BranchResult
 from quant_investor.funnel.deterministic_funnel import DeterministicFunnel, FunnelConfig
@@ -167,6 +169,30 @@ def test_theme_boost_distribution_penalizes():
     assert boost < 0.0
     assert metadata["phase"] == "distribution"
     assert metadata["risk_penalty"] < 0.0
+
+
+def test_theme_boost_crowding_flag_penalizes_inside_existing_gate():
+    funnel = DeterministicFunnel(
+        FunnelConfig(theme_boost_enabled=True, theme_boost_cap=0.10)
+    )
+
+    base_boost, _base_metadata = funnel._theme_boost_for_symbol(
+        symbol=SYMBOL,
+        global_context=_global_context({"theme_rotation": _theme_rotation()}),
+    )
+    crowded_boost, crowded_metadata = funnel._theme_boost_for_symbol(
+        symbol=SYMBOL,
+        global_context=_global_context(
+            {
+                "theme_rotation": _theme_rotation(
+                    risk_flags=["theme_crowded"],
+                )
+            }
+        ),
+    )
+
+    assert crowded_metadata["risk_penalty"] == -0.03
+    assert crowded_boost == pytest.approx(base_boost - 0.03)
 
 
 def test_theme_boost_smoothed_source_reads_symbol_smoothed_scores():

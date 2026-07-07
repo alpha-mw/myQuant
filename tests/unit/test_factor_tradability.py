@@ -47,6 +47,12 @@ from quant_investor.factors.tradability import (
     normalize_float_matrix,
     render_tradability_audit_markdown,
 )
+from quant_investor.market.pit_universe import (
+    LIST_STATUS_DELISTED,
+    LIST_STATUS_LISTED,
+    PITUniverseRecord,
+    build_pit_delisted_field,
+)
 
 
 SYMBOLS = ["AAA", "BBB"]
@@ -219,6 +225,28 @@ def test_tradability_mask_applies_ashare_blockers_and_warnings() -> None:
     assert mask.issue_codes_by_cell[1][2] == [TRADABILITY_ISSUE_NO_VALID_PRICE]
     assert mask.can_trade_mask[1][3] is False
     assert mask.issue_codes_by_cell[1][3] == [TRADABILITY_ISSUE_NO_VALID_VOLUME]
+
+
+def test_pit_delisted_field_feeds_existing_tradability_blocker() -> None:
+    fields = _clean_fields()
+    records = [
+        PITUniverseRecord(symbol=SYMBOLS[0], source_list_status=LIST_STATUS_LISTED, list_date="20260101"),
+        PITUniverseRecord(
+            symbol=SYMBOLS[1],
+            source_list_status=LIST_STATUS_DELISTED,
+            list_date="20260101",
+            delist_date="20260103",
+        ),
+    ]
+    fields[FIELD_DELISTED] = build_pit_delisted_field(SYMBOLS, DATES, records)
+
+    mask = build_ashare_tradability_mask(_bundle(fields), config=_config())
+
+    assert fields[FIELD_DELISTED][1] == [False, False, True, True]
+    assert mask.can_trade_mask[1][2] is False
+    assert mask.can_hold_mask[1][2] is False
+    assert mask.issue_codes_by_cell[1][2] == [TRADABILITY_ISSUE_DELISTED]
+    assert mask.issue_codes_by_cell[1][3] == [TRADABILITY_ISSUE_DELISTED]
 
 
 def test_tradability_audit_report_counts_verdicts_and_markdown() -> None:

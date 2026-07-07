@@ -25,6 +25,9 @@ Core components:
 - `quant_investor/themes/policy.py`: local JSONL policy event parser and
   deterministic policy catalyst scorer. It reads only
   `THEME_POLICY_EVENT_PATH` when `THEME_POLICY_CATALYST_ENABLED=1`.
+- `quant_investor/themes/membership.py`: local `theme_membership.v1` JSONL
+  parser for point-in-time concept memberships. It is read only when
+  `THEME_CONCEPT_MEMBERSHIP_ENABLED=1`.
 - `quant_investor/themes/types.py`: serializable `ThemePhase`, `ThemeScore`,
   and `ThemeScanResult` contracts.
 - `quant_investor/market/dag/theme_context.py`: metadata adapter that builds
@@ -58,6 +61,9 @@ Core components:
 - `quant_investor/agents/portfolio_constructor.py`: optional theme exposure
   caps when `theme_portfolio_cap_enabled` is true.
 - `quant_investor/themes/storage.py`: local JSON snapshot store.
+- `quant_investor/monitoring/theme_holding_guard.py`: pure holding-side guard
+  evaluator that maps already-held symbols to theme phase/risk signals for
+  daily review display.
 - `quant_investor/themes/replay.py` and
   `quant_investor/themes/calibration.py`: explicit offline replay and
   calibration diagnostics.
@@ -66,6 +72,7 @@ Core components:
 
 ```text
 local OHLCV frames + industry_map
+  + optional local PIT concept membership JSONL
   -> ThemeScanner
   -> optional local policy catalyst component
   -> ThemeScanResult
@@ -78,6 +85,7 @@ local OHLCV frames + industry_map
   -> optional RiskGuard overlay
   -> optional PortfolioConstructor caps
   -> optional local snapshot
+  -> optional holding-side daily-review guard
   -> explicit offline replay/calibration
 ```
 
@@ -131,8 +139,9 @@ Important fields:
 - `status`: `success`, `disabled`, or `error`.
 - `market`, `universe_key`, `as_of`: scan scope.
 - `theme_scores`: map of theme ID to score payload. Each payload includes
-  `theme_id`, `theme_name`, `phase`, `score`, `confidence`, `member_count`,
-  `breadth`, `momentum`, `acceleration`, `volume_confirmation`,
+  `theme_id`, `theme_name`, `theme_type`, `membership_source`,
+  `pit_membership`, `phase`, `score`, `confidence`, `member_count`, `breadth`,
+  `momentum`, `acceleration`, `volume_confirmation`,
   `overextension_risk`, `fake_breakout_risk`, `top_symbols`, `risk_flags`,
   `evidence`, and `metadata`. Scanner output also preserves `raw_score` and can
   include `smoothed_score`, `heat_10d`, `heat_delta_5d`, `persistence_count`,
@@ -141,11 +150,20 @@ Important fields:
   `THEME_POLICY_CATALYST_ENABLED=1`: `policy_catalyst_score`,
   `policy_confidence`, `policy_stage`, `policy_evidence`, and
   `policy_risk_flags`.
+- Crowding diagnostic fields are present with neutral defaults and become
+  active only when `THEME_CROWDING_ENABLED=1`: `theme_turnover_share`,
+  `turnover_share_sma10`, `turnover_share_stretch`,
+  `turnover_share_delta_5d`, `turnover_share_trend`,
+  `theme_limitup_ratio`, `limitup_norm`,
+  `member_turnover_concentration`, `crowding_risk`, `crowding_status`, and
+  `crowding_diagnostic_notes`.
 - `symbol_scores`: map of symbol to normalized theme score in `[0, 1]`.
 - `symbol_smoothed_scores`: separate normalized SMA10 theme score map when
   enough local history exists; `symbol_scores` remains raw/current for
   compatibility.
 - `symbol_primary_theme`: map of symbol to primary theme ID.
+- `symbol_theme_memberships`: map of symbol to selected theme IDs, preserving
+  industry and concept co-membership when concept membership is enabled.
 - `symbol_phase`: map of symbol to phase.
 - `symbol_risk_flags`: map of symbol to theme risk flags.
 - `top_themes`: compact ranked theme list for report rendering.
@@ -218,6 +236,132 @@ Theme heat uses a deterministic 10-observation simple moving average:
 - Governance can read recent local snapshots from `THEME_SNAPSHOT_DIR`; missing
   history is diagnostic-only and never treated as healthy confirmation.
 
+## Crowding Diagnostics
+
+Crowding Diagnostics are default-off and use only the same local market frames
+already provided to `ThemeScanner`. When `THEME_CROWDING_ENABLED=0`, all new
+fields remain neutral, no new risk flags are emitted, and no overextension or
+funnel score is changed.
+
+When enabled, the scanner computes three local metrics per theme:
+
+- `theme_turnover_share`: latest theme member turnover divided by latest
+  scanned-universe turnover. If `amount` is missing, the scanner approximates
+  it with `close * vol` and records `amount_approximated`.
+- `theme_limitup_ratio`: latest limit-up member count divided by theme member
+  count. Limit-up is approximated from local `pct_chg`, `close`, and `high`;
+  `pct_chg` values with absolute max above `1` are treated as percentage
+  points, otherwise as decimal returns. If `pct_chg` is missing, it is derived
+  from local close history.
+- `member_turnover_concentration`: top-three member turnover divided by theme
+  turnover. Themes with fewer than four members use `1.0` and record a
+  diagnostic note.
+
+Recent snapshot history from `THEME_SNAPSHOT_DIR` supplies the
+`theme_turnover_share` SMA10 baseline through `smooth_numeric_series`; missing
+or old snapshots keep `turnover_share_stretch=0` and record
+`turnover_share_smoothing_status=insufficient_history`.
+
+The combined score is:
+
+```text
+crowding_risk =
+  0.45 * turnover_share_stretch
+  + 0.35 * limitup_norm
+  + 0.20 * member_turnover_concentration
+```
+
+The score is clamped to `[0, 1]`. If the scanned universe is smaller than
+  `THEME_CROWDING_MIN_UNIVERSE` (default `30`), the scanner sets
+  `crowding_status="insufficient_universe"`, records diagnostics, and keeps risk
+  fields neutral. When enabled and eligible, crowding contributes
+`0.30 * crowding_risk` to `overextension_risk`. `crowding_risk >= 0.70` adds
+`theme_crowded`; `theme_limitup_ratio >= 0.20` with breadth below `0.40` adds
+`theme_narrow_leadership`.
+
+The deterministic funnel recognizes those two flags only inside the already
+enabled `THEME_FUNNEL_BOOST_ENABLED` path: `theme_crowded` applies `-0.03` and
+`theme_narrow_leadership` applies `-0.02`.
+
+## Concept Membership
+
+Concept Membership implements the approved Route B design: a manually or
+semi-automatically maintained local JSONL source with explicit point-in-time
+effective dates. It does not use current Tushare concept constituents to replay
+history, and it does not implement statistical clustering in this phase.
+
+The local file defaults to `data/theme_membership.jsonl` and each line uses
+`theme_membership.v1`:
+
+```json
+{
+  "schema_version": "theme_membership.v1",
+  "membership_id": "low-altitude-000001-20260101",
+  "theme_id": "concept::low-altitude-economy",
+  "theme_name": "Low-altitude Economy",
+  "theme_type": "concept",
+  "symbol": "000001.SZ",
+  "symbol_name": "Example Co",
+  "effective_from": "2026-01-01",
+  "effective_to": "",
+  "membership_status": "active",
+  "confidence": 0.8,
+  "source_type": "manual_review",
+  "source_ref": "policy_event:low-altitude-plan",
+  "evidence_text": "Optional local PIT source note."
+}
+```
+
+When `THEME_CONCEPT_MEMBERSHIP_ENABLED=0`, supplied memberships are ignored and
+scanner output remains industry-only. When enabled, active records are filtered
+by `effective_from <= as_of < effective_to` and merged beside the existing
+`industry_map`; concept and industry themes can coexist for the same symbol.
+The primary theme remains the industry theme unless the best non-distribution
+concept theme beats the industry theme by `THEME_CONCEPT_PRIMARY_MARGIN`
+(default `0.05`, interpreted as normalized score points). This keeps concept
+promotion explicit and deterministic while preserving co-membership evidence in
+`symbol_theme_memberships`.
+
+Missing or malformed membership files fail open by default: scanner output
+records concept diagnostics and falls back to industry themes. Setting
+`THEME_CONCEPT_MEMBERSHIP_REQUIRED=1` turns missing/malformed membership input
+into a `theme_rotation` error payload, which is reserved for workflows that
+require PIT concept labels. `THEME_STAT_CLUSTER_ENABLED=0` is an inert design
+placeholder for the statistical-clustering route and has no runtime path.
+
+## Evidence
+
+`scripts/run_theme_threshold_sweep.py` is the offline evidence runner for theme
+thresholds. It reads local snapshots through `ThemeSnapshotStore.load_recent`,
+joins them to local price frames, calls the calibration API, and writes
+deterministic artifacts under `results/theme_calibration/`:
+
+```bash
+./.venv/bin/python scripts/run_theme_threshold_sweep.py \
+  --snapshot-dir results/theme_snapshots \
+  --price-dir <local-symbol-frame-dir> \
+  --output-dir results/theme_calibration \
+  --market CN \
+  --universe-key full_a \
+  --execution-cost-bps 0
+```
+
+The runner does not fetch data, call providers, or mutate trading decisions.
+It emits `threshold_sweep_<date>.json` and `.md` with threshold rows for
+gross forward alpha, net-of-cost forward alpha, and hit-rate evidence. Net
+alpha subtracts `--execution-cost-bps` from each horizon's gross forward alpha;
+the default is `0`, so existing offline sweeps remain numerically unchanged
+unless an explicit cost assumption is supplied. Current constants are
+registered below; the evidence cells are placeholders until a real local
+snapshot/history run is approved and reviewed.
+
+| Constant | Current Value | Sweep Evidence |
+| --- | --- | --- |
+| Momentum normalization | `(theme_return_20d + 0.10) / 0.30` | TODO: fill from latest `threshold_sweep_<date>` |
+| Overextension start | `theme_return_5d >= 0.08` | TODO: fill from latest `threshold_sweep_<date>` |
+| Phase score gates | `35 / 55 / 70` | TODO: fill from latest `threshold_sweep_<date>` |
+| Crowding weights | `0.45 turnover_share_stretch / 0.35 limitup_norm / 0.20 concentration` | TODO: fill from latest `threshold_sweep_<date>` |
+
 ## Policy Catalyst Layer
 
 The Policy Catalyst Layer is a deterministic ThemeScanner sidecar. It is
@@ -257,12 +401,25 @@ All behavior-changing consumers require explicit configuration:
   respect single-theme exposure caps.
 - Snapshot persistence: `THEME_SNAPSHOT_ENABLED=1` writes local JSON snapshots
   under `THEME_SNAPSHOT_DIR`.
+- Holding-side guard: `THEME_HOLDING_GUARD_ENABLED=1` lets the CN aggressive
+  daily review read the latest persisted theme snapshot and show watch/tighten
+  diagnostics for existing holdings whose primary theme has moved to
+  `overextended` or `distribution`. `THEME_HOLDING_GUARD_TIGHTEN_RATIO`
+  defaults to `0.5` and only changes the report display stop for tighten rows;
+  it does not rewrite source ledgers, target weights, or executable orders.
 - Governance sidecar: `THEME_GOVERNANCE_ENABLED=1` attaches
   `theme_governance.v1` metadata. `THEME_GOVERNANCE_ARTIFACT_ENABLED=1` writes
   a local governance JSON artifact under `THEME_GOVERNANCE_OUTPUT_DIR`.
 - Policy catalyst: `THEME_POLICY_CATALYST_ENABLED=1` reads local JSONL policy
   events and adds only capped theme-score metadata. It does not bypass the v13
   DAG or create candidate-pool entries.
+- Crowding diagnostics: `THEME_CROWDING_ENABLED=1` lets the scanner add local
+  crowding metrics and gated risk flags. `THEME_CROWDING_MIN_UNIVERSE` defaults
+  to `30`; smaller scanned universes produce diagnostics only.
+- Concept membership: `THEME_CONCEPT_MEMBERSHIP_ENABLED=1` lets the scanner add
+  local point-in-time concept memberships from `THEME_CONCEPT_MEMBERSHIP_PATH`.
+  It is default-off, fail-open unless `THEME_CONCEPT_MEMBERSHIP_REQUIRED=1`,
+  and never fetches online concept constituents.
 
 Offline-only consumers are explicit:
 
@@ -272,6 +429,38 @@ Offline-only consumers are explicit:
   threshold diagnostics.
 - `run_theme_governance_diagnostics.py` renders governance JSON/MD from local
   snapshots without changing executable decisions.
+
+Replay and calibration outputs explicitly mark `pit_industry_labels=false`:
+industry labels are as-of run date, not point-in-time; replay carries mild
+reclassification look-ahead. This is a disclosed limitation, not a data repair.
+
+## Holding-side Guard
+
+Holding-side Guard closes the gap between theme entry metadata and existing
+portfolio review. It is default-off and runs only inside the CN aggressive daily
+review after tracker artifacts have been written.
+
+Inputs:
+
+- existing `holdings_review.csv` rows for held symbols and display prices;
+- latest local `theme_snapshot.v1` loaded through `ThemeSnapshotStore`;
+- `theme_rotation.v1` maps: `symbol_primary_theme`, `symbol_phase`,
+  `symbol_risk_flags`, and `theme_scores`.
+
+Rules are deterministic and advisory:
+
+- `distribution` phase or `theme_distribution_risk` => `tighten`;
+- `overextended` phase or `theme_overextended`,
+  `theme_overextended_no_chase`, `theme_fake_breakout_risk` => `watch`;
+- missing snapshot, missing mapping, blank phase, or `unclassified` =>
+  `none` with diagnostics.
+
+When enabled, the report gains a `主题状态守卫` section. Tighten rows show the
+original stage stop and a display-only tightened stop computed by shrinking the
+current-price-to-stage-stop buffer by `THEME_HOLDING_GUARD_TIGHTEN_RATIO`.
+This is intentionally read-only: it affects review text and diagnostics, not
+the persisted holding ledger, broker state, PortfolioConstructor target
+weights, or RiskGuard gates.
 
 ## A_quant Inspiration Boundary
 
@@ -305,6 +494,12 @@ The system is designed to fail closed:
   `theme_governance.v1` payload.
 - Missing or malformed policy event JSONL returns `policy_catalyst_status ==
   "unavailable"` and leaves theme scores unchanged.
+- Disabled crowding diagnostics keep neutral fields and emit no crowding risk
+  flags. Missing `amount`, missing `pct_chg`, insufficient snapshot history, or
+  insufficient universe are diagnostic-only and do not interrupt the scan.
+- Disabled concept membership ignores supplied concept records. Missing or
+  malformed concept membership JSONL fails open unless
+  `THEME_CONCEPT_MEMBERSHIP_REQUIRED=1`.
 - Missing or malformed registry JSON falls back to inferred local industry
   themes and records diagnostics.
 - Missing or malformed per-theme numeric fields become `unavailable`, never
@@ -313,16 +508,24 @@ The system is designed to fail closed:
   instead of changing rankings, risk limits, or weights.
 - Snapshot loading skips malformed JSON and returns the latest valid snapshot or
   `None`.
+- Holding-side guard fails open: missing snapshots or unmapped holdings only add
+  diagnostics and do not block daily review or synthesize sell orders.
 - Replay/calibration handle malformed snapshots and empty datasets with
   metadata counters and warnings.
 
 ## Limitations
 
-- MVP theme definitions start from `industry_map`; a full concept-board ontology
-  is not yet integrated.
-- Live news, live policy feeds, capital-flow data, and concept-board membership
-  are not part of the scanner contract yet. Policy catalyst v1 accepts only
+- Default theme definitions start from `industry_map`; concept membership is a
+  local PIT overlay and only participates when explicitly enabled.
+- `industry_map` labels are as-of the run date, not point-in-time. Historical
+  replay/calibration therefore carries mild reclassification look-ahead until a
+  PIT industry-label source is introduced.
+- Live news, live policy feeds, capital-flow data, and online concept-board
+  membership are not part of the scanner contract. Policy catalyst v1 accepts only
   local fixtures or manually maintained JSONL caches.
+- Crowding limit-up detection is an approximation from local bars. Code-prefix
+  thresholds cover STAR/ChiNext, Beijing, and regular boards; ST 5% limits are
+  not reliably identifiable from code alone and are not modeled in this phase.
 - No live LLM, provider, or network scoring is used.
 - Funnel boosts, risk overlays, and portfolio caps require offline replay and
   calibration before production enablement.

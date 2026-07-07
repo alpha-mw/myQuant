@@ -130,7 +130,7 @@ MASTER_SYSTEM_PROMPT = """\
 
 # ---------------------------------------------------------------------------
 # Backward-compat stubs — subagent.py is no longer called but still imported
-# by agent_orchestrator.py via agents/__init__.py.
+# by the control chain via agents/__init__.py.
 # ---------------------------------------------------------------------------
 
 CONVICTION_DEVIATION_CAP: dict[str, float] = {

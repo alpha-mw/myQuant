@@ -3,6 +3,11 @@ from pathlib import Path
 
 RUNTIME_FILES = [
     "daily_runner.py",
+    "quant_investor/automation/daily_runner.py",
+    "quant_investor/automation/analysis_runner.py",
+    "quant_investor/automation/history_loader.py",
+    "quant_investor/automation/persistence.py",
+    "quant_investor/automation/report_builder.py",
     "quant_investor/pipeline/mainline.py",
     "quant_investor/monitoring/cn_aggressive_daily_review.py",
     "quant_investor/monitoring/cn_aggressive_portfolio_tracker.py",

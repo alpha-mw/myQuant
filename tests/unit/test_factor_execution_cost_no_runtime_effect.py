@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
+from quant_investor.config import Config, MAINLINE_ENV_DEFAULTS
 
 
 ROOT = Path(__file__).resolve().parents[2]
 
 FORBIDDEN_RUNTIME_MODULES = [
     ROOT / "daily_runner.py",
+    ROOT / "quant_investor" / "automation" / "daily_runner.py",
+    ROOT / "quant_investor" / "automation" / "analysis_runner.py",
+    ROOT / "quant_investor" / "automation" / "history_loader.py",
+    ROOT / "quant_investor" / "automation" / "persistence.py",
+    ROOT / "quant_investor" / "automation" / "report_builder.py",
     ROOT / "quant_investor" / "portfolio_optimizer.py",
     ROOT / "quant_investor" / "agents" / "risk_guard.py",
     ROOT / "quant_investor" / "agents" / "portfolio_constructor.py",
@@ -57,3 +65,9 @@ def test_execution_cost_does_not_touch_order_action_or_weight_paths() -> None:
         assert helper_name not in tracker_text
     assert "orders.csv" in tracker_text
     assert "action_taken_today" in tracker_text
+
+
+def test_execution_cost_model_flag_is_default_off() -> None:
+    assert MAINLINE_ENV_DEFAULTS["EXECUTION_COST_MODEL_ENABLED"] == "0"
+    if "EXECUTION_COST_MODEL_ENABLED" not in os.environ:
+        assert Config.EXECUTION_COST_MODEL_ENABLED is False

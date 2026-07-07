@@ -7,6 +7,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from quant_investor.factors.execution_cost import FactorExecutionCostConfig
 from quant_investor.portfolio_backtest import PortfolioBacktester, PortfolioConstructor, TransactionCostModel
 
 
@@ -62,6 +63,82 @@ def test_higher_costs_reduce_final_nav():
 
     assert float(high.full_portfolio_nav.iloc[-1]) <= float(low.full_portfolio_nav.iloc[-1])
     assert high.combined_metrics.total_transaction_cost >= low.combined_metrics.total_transaction_cost
+
+
+def test_execution_cost_model_disabled_matches_flat_bps_baseline():
+    df = _make_backtest_frame(periods=120)
+    baseline = PortfolioBacktester(
+        df,
+        rebalance_freq="W",
+        n_holdings=2,
+        cost_model=TransactionCostModel(),
+    ).run_simple()
+    disabled = PortfolioBacktester(
+        df,
+        rebalance_freq="W",
+        n_holdings=2,
+        cost_model=TransactionCostModel(
+            execution_cost_model_enabled=False,
+            execution_cost_config=FactorExecutionCostConfig(
+                config_id="disabled-participation",
+                impact_coefficient=1000.0,
+            ),
+            execution_amount_by_symbol={symbol: 1.0 for symbol in ["AAA", "BBB", "CCC", "DDD"]},
+        ),
+    ).run_simple()
+
+    pd.testing.assert_series_equal(
+        disabled.full_portfolio_nav,
+        baseline.full_portfolio_nav,
+        check_exact=True,
+    )
+    assert [state.transaction_cost for state in disabled.state_history] == [
+        state.transaction_cost for state in baseline.state_history
+    ]
+    assert disabled.combined_metrics.total_transaction_cost == (
+        baseline.combined_metrics.total_transaction_cost
+    )
+
+
+def test_execution_cost_model_enabled_charges_more_for_high_participation():
+    df = _make_backtest_frame(periods=120)
+    config = FactorExecutionCostConfig(
+        config_id="enabled-participation",
+        commission_bps=0.0,
+        stamp_tax_bps=0.0,
+        exchange_fee_bps=0.0,
+        slippage_bps=0.0,
+        impact_coefficient=200.0,
+    )
+    low_participation = PortfolioBacktester(
+        df,
+        rebalance_freq="W",
+        n_holdings=2,
+        initial_capital=1_000_000.0,
+        cost_model=TransactionCostModel(
+            execution_cost_model_enabled=True,
+            execution_cost_config=config,
+            execution_amount_by_symbol={symbol: 1_000_000_000.0 for symbol in ["AAA", "BBB", "CCC", "DDD"]},
+        ),
+    ).run_simple()
+    high_participation = PortfolioBacktester(
+        df,
+        rebalance_freq="W",
+        n_holdings=2,
+        initial_capital=1_000_000.0,
+        cost_model=TransactionCostModel(
+            execution_cost_model_enabled=True,
+            execution_cost_config=config,
+            execution_amount_by_symbol={symbol: 1_000_000.0 for symbol in ["AAA", "BBB", "CCC", "DDD"]},
+        ),
+    ).run_simple()
+
+    assert high_participation.combined_metrics.total_transaction_cost > (
+        low_participation.combined_metrics.total_transaction_cost
+    )
+    assert float(high_participation.full_portfolio_nav.iloc[-1]) < float(
+        low_participation.full_portfolio_nav.iloc[-1]
+    )
 
 
 def test_rebalance_frequency_changes_turnover():
