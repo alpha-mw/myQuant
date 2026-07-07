@@ -6,7 +6,11 @@ import pandas as pd
 import pytest
 
 from quant_investor.themes import ThemeScanner, ThemeScore
-from quant_investor.themes.scanner import _is_limitup_latest, _limitup_threshold_pct
+from quant_investor.themes.scanner import (
+    _is_limitup_latest,
+    _limitup_threshold_pct,
+    st_limit_ratio,
+)
 
 
 def _frame(
@@ -98,6 +102,19 @@ def test_limitup_detection_handles_board_thresholds_and_pct_chg_units():
     assert _limitup_threshold_pct("300001.SZ") == pytest.approx(19.5)
     assert _limitup_threshold_pct("430001.BJ") == pytest.approx(29.5)
     assert _limitup_threshold_pct("600001.SH") == pytest.approx(9.5)
+    assert st_limit_ratio("2026-07-05") == pytest.approx(0.05)
+    assert st_limit_ratio("20260706") == pytest.approx(0.10)
+    assert _limitup_threshold_pct(
+        "600001.SH",
+        trade_date="2026-07-05",
+        is_st=True,
+    ) == pytest.approx(4.9)
+    assert _limitup_threshold_pct(
+        "600001.SH",
+        trade_date="2026-07-06",
+        name="ST样本",
+    ) == pytest.approx(9.5)
+    assert _limitup_threshold_pct("600001.SH", trade_date="2026-07-05") == pytest.approx(9.5)
 
     assert _is_limitup_latest(
         "300001.SZ",
@@ -116,6 +133,22 @@ def test_limitup_detection_handles_board_thresholds_and_pct_chg_units():
         close=[10.0, 10.98],
         high=[10.0, 11.20],
         pct_chg=[0.0, 9.8],
+    )
+    assert _is_limitup_latest(
+        "600001.SH",
+        close=[10.0, 10.495],
+        high=[10.0, 10.495],
+        pct_chg=[0.0, 4.95],
+        trade_date="2026-07-05",
+        is_st=True,
+    )
+    assert not _is_limitup_latest(
+        "600001.SH",
+        close=[10.0, 10.495],
+        high=[10.0, 10.495],
+        pct_chg=[0.0, 4.95],
+        trade_date="2026-07-06",
+        is_st=True,
     )
 
 

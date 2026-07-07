@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import math
+import os
 from typing import Any, Mapping
 
 from quant_investor.agent_protocol import (
@@ -19,7 +20,9 @@ from quant_investor.agent_protocol import (
 from quant_investor.agents.base import BaseAgent
 
 
-RISK_GUARD_SINGLE_NAME_WEIGHT_CAP = 0.50
+RISK_GUARD_SINGLE_NAME_WEIGHT_CAP_ENV = "RISK_GUARD_SINGLE_NAME_WEIGHT_CAP"
+RISK_GUARD_SINGLE_NAME_WEIGHT_CAP_DEFAULT = 0.15
+RISK_GUARD_SINGLE_NAME_WEIGHT_CAP = RISK_GUARD_SINGLE_NAME_WEIGHT_CAP_DEFAULT
 
 # Default hard-veto keywords, matched as case-insensitive substrings against
 # branch/macro ``investment_risks`` texts and ``constraints["risk_flags"]``.
@@ -47,6 +50,23 @@ DEFAULT_VETO_KEYWORDS: tuple[str, ...] = (
 )
 
 
+def risk_guard_single_name_weight_cap() -> float:
+    """Return the fail-safe RiskGuard single-name cap, with env rollback support."""
+
+    raw_value = os.environ.get(RISK_GUARD_SINGLE_NAME_WEIGHT_CAP_ENV)
+    try:
+        value = float(
+            raw_value
+            if raw_value is not None
+            else RISK_GUARD_SINGLE_NAME_WEIGHT_CAP_DEFAULT
+        )
+    except (TypeError, ValueError):
+        value = RISK_GUARD_SINGLE_NAME_WEIGHT_CAP_DEFAULT
+    if not math.isfinite(value):
+        value = RISK_GUARD_SINGLE_NAME_WEIGHT_CAP_DEFAULT
+    return max(0.0, min(1.0, value))
+
+
 class RiskGuard(BaseAgent):
     """读取结构化分支结论并施加硬约束。"""
 
@@ -63,6 +83,7 @@ class RiskGuard(BaseAgent):
 
         candidate_symbols = self._collect_candidate_symbols(branch_verdicts, portfolio_state)
         risk_texts = self._collect_risk_texts(branch_verdicts, macro_verdict, constraints)
+        single_name_cap = risk_guard_single_name_weight_cap()
 
         explicit_action_cap = constraints.get("action_cap", ActionLabel.BUY)
         action_cap = (
@@ -79,7 +100,7 @@ class RiskGuard(BaseAgent):
             if macro_verdict.final_score <= -0.2:
                 action_cap = self.more_restrictive_action(action_cap, ActionLabel.HOLD)
                 gross_cap = min(gross_cap, 0.5)
-                max_weight = min(max_weight, RISK_GUARD_SINGLE_NAME_WEIGHT_CAP)
+                max_weight = min(max_weight, single_name_cap)
 
         veto = bool(constraints.get("force_veto")) or self._has_veto_keyword(risk_texts, constraints)
         blocked_symbols = {str(symbol) for symbol in constraints.get("blocked_symbols", [])}
@@ -94,7 +115,7 @@ class RiskGuard(BaseAgent):
         if not veto and len(risk_texts) >= 3:
             action_cap = self.more_restrictive_action(action_cap, ActionLabel.HOLD)
             gross_cap = min(gross_cap, 0.6)
-            max_weight = min(max_weight, RISK_GUARD_SINGLE_NAME_WEIGHT_CAP)
+            max_weight = min(max_weight, single_name_cap)
 
         theme_enabled = self._as_bool(constraints.get("theme_risk_guard_enabled", False))
         theme_risk_flags: list[str] = []
@@ -187,6 +208,7 @@ class RiskGuard(BaseAgent):
             "candidate_symbols": list(candidate_symbols),
             "unblocked_symbols": list(unblocked_symbols),
             "rule_based": True,
+            "single_name_weight_cap": single_name_cap,
         }
         if theme_enabled:
             metadata.update(
