@@ -1,0 +1,1408 @@
+#!/usr/bin/env python3
+"""Offline four-month track-record audit for CN/aggressive_tech_manufacturing.
+
+Learned record schema, based on
+``quant_investor/monitoring/cn_aggressive_portfolio_tracker.py`` and current
+``results/strategy_records/CN/aggressive_tech_manufacturing`` records:
+
+* ``pnl_summary.csv`` / ``pnl_summary.parquet`` holds the NAV snapshot. Newer
+  records are one-row wide tables with ``initial_capital`` and
+  ``total_value_after``; some June records use ``metric,value`` and must be
+  pivoted.
+* ``ledger_after_manual_switch.csv`` is the effective execution ledger when a
+  valid ``manual_execution_manifest.json`` exists. ``ledger.csv`` is only a
+  fallback for older formal records.
+* ``manual_execution_manifest.json`` stores funding/execution provenance:
+  ``manual_execution_mode``, ``price_basis``, ``quote_source``,
+  ``execution_price_gate``, ``applied_local_trades``,
+  ``rejected_or_pending_trades``, and ``no_broker_api_called``. Latest records
+  identify local/manual paper execution as
+  ``paper_only_local_manual_no_broker``.
+* ``manual_switch_and_take_profit_orders.csv`` is the best filled/rejected
+  execution tape when present. Historical headers differ: some use
+  ``execution_price``/``quote_timestamp`` while later post-review files use
+  ``price``/``price_basis``/``quote_time`` and quote OHLC fields.
+* ``orders.csv`` contains only realtime-price-gate accepted formal orders with
+  ``timestamp,action,symbol,name,shares,price,trade_value,realized_pnl,reason``.
+  Proposed orders rejected by the realtime execution-price gate are not written
+  there; they appear in ``manual_switch_and_take_profit_orders.csv`` and
+  ``manual_execution_manifest.execution_price_gate.rejections``.
+* ``holdings_review.csv`` contains per-position review state, including
+  ``current_price``, ``current_value``, ``market_weight``, LLM/review fields,
+  and, from 2026-06-23 onward, ``realtime_execution_price`` plus
+  ``realtime_execution_price_field``.
+* ``market_snapshot.json`` stores portfolio, index snapshots, breadth,
+  ``theme_strength``, Markov/theme metadata, ``execution_price_gate`` and
+  ``manual_execution`` mirrors.
+* ``theme_pool_audit.json`` stores the production Theme Candidate Pool audit:
+  ``summary``, ``admitted_themes``, ``rejected_themes``,
+  ``excluded_symbols_by_reason``, and symbol-level theme metadata.
+
+This script is deterministic, offline, and read-only for strategy records. It
+only writes audit outputs under ``results/track_record_audit/<YYYYMMDD>/`` (or a
+caller supplied output root) and refuses an output directory inside the record
+root.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import math
+import os
+import statistics
+import subprocess
+from collections import defaultdict
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import date, datetime
+from pathlib import Path
+from typing import Any, Iterable
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_RECORD_ROOT = (
+    PROJECT_ROOT / "results" / "strategy_records" / "CN" / "aggressive_tech_manufacturing"
+)
+DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "results" / "track_record_audit"
+DEFAULT_BENCHMARK_FILE = PROJECT_ROOT / "portfolio_dashboard" / "inputs" / "cn_index_benchmark.csv"
+DEFAULT_BARS_ROOT = PROJECT_ROOT / "data" / "parquet" / "cn" / "bars"
+DEFAULT_STOCK_BASIC_ROOT = PROJECT_ROOT / "data" / "parquet" / "cn" / "dag_core_raw" / "table=stock_basic"
+DEFAULT_FUNDAMENTALS_ROOT = PROJECT_ROOT / "data" / "parquet" / "cn" / "fundamental_raw"
+DEFAULT_REGIME_HISTORY = PROJECT_ROOT / "results" / "regime" / "markov_regime_history.jsonl"
+os.environ.setdefault("ARROW_USER_SIMD_LEVEL", "NONE")
+os.environ.setdefault("MPLCONFIGDIR", str(PROJECT_ROOT / "results" / "track_record_audit" / ".matplotlib"))
+PREREGISTERED_FAILURE_CONCLUSION = (
+    "日频机器未在战略先验之上增值，优势主张不成立，待冻结期复验。"
+)
+BENCHMARK_CODE_TO_FIELD = {
+    "000300.SH": "csi300_nav",
+    "000688.SH": "star50_nav",
+    "399006.SZ": "chinext_nav",
+}
+TECH_MANUFACTURING_INDUSTRIES = (
+    "IT设备",
+    "互联网",
+    "元器件",
+    "专用机械",
+    "化工机械",
+    "半导体",
+    "工程机械",
+    "机床制造",
+    "机械基件",
+    "新型电力",
+    "汽车整车",
+    "汽车配件",
+    "电器仪表",
+    "电气设备",
+    "航空",
+    "船舶",
+    "软件服务",
+    "轻工机械",
+    "运输设备",
+    "通信设备",
+    "生物制药",
+)
+
+
+@contextmanager
+def _suppress_native_stderr():
+    saved_fd = os.dup(2)
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(devnull_fd, 2)
+        yield
+    finally:
+        os.dup2(saved_fd, 2)
+        os.close(saved_fd)
+        os.close(devnull_fd)
+
+
+@dataclass(frozen=True)
+class Record:
+    run_id: str
+    date: str
+    path: Path
+    manifest: dict[str, Any]
+    manual_manifest: dict[str, Any]
+    market_snapshot: dict[str, Any]
+    pnl: dict[str, Any]
+    holdings: list[dict[str, Any]]
+    orders: list[dict[str, Any]]
+    manual_orders: list[dict[str, Any]]
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    try:
+        text = str(value).replace(",", "").strip()
+        if not text:
+            return default
+        return float(text)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    return int(round(_safe_float(value, float(default))))
+
+
+def _pct(value: float | None) -> str:
+    if value is None or not math.isfinite(value):
+        return "N/A"
+    return f"{value * 100:.2f}%"
+
+
+def _money(value: float | None) -> str:
+    if value is None or not math.isfinite(value):
+        return "N/A"
+    return f"{value:,.2f}"
+
+
+def _iso_from_any(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+        return text[:10]
+    digits = "".join(ch for ch in text if ch.isdigit())
+    if len(digits) >= 8:
+        return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+    return ""
+
+
+def _compact_date(value: str) -> str:
+    return str(value or "").replace("-", "")[:8]
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _read_csv_rows(path: Path) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+    with path.open(newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        return [{str(k or "").strip(): str(v or "").strip() for k, v in row.items()} for row in reader]
+
+
+def _read_pnl(path: Path) -> dict[str, Any]:
+    rows = _read_csv_rows(path / "pnl_summary.csv")
+    if not rows:
+        return {}
+    if {"metric", "value"}.issubset(rows[0]):
+        return {row.get("metric", ""): row.get("value", "") for row in rows if row.get("metric")}
+    return rows[-1]
+
+
+def _record_date(run_id: str, manifest: dict[str, Any], pnl: dict[str, Any]) -> str:
+    for value in (
+        pnl.get("record_time"),
+        manifest.get("recorded_at"),
+        manifest.get("timestamp"),
+        run_id,
+    ):
+        parsed = _iso_from_any(value)
+        if parsed:
+            return parsed
+    return ""
+
+
+def _load_records(record_root: Path) -> tuple[list[Record], list[str]]:
+    warnings: list[str] = []
+    if not record_root.exists():
+        return [], [f"record_root not found: {record_root}"]
+    records: list[Record] = []
+    for path in sorted(p for p in record_root.iterdir() if p.is_dir()):
+        manifest = _read_json(path / "manifest.json")
+        pnl = _read_pnl(path)
+        record_date = _record_date(path.name, manifest, pnl)
+        if not record_date or not pnl:
+            continue
+        records.append(
+            Record(
+                run_id=path.name,
+                date=record_date,
+                path=path,
+                manifest=manifest,
+                manual_manifest=_read_json(path / "manual_execution_manifest.json"),
+                market_snapshot=_read_json(path / "market_snapshot.json"),
+                pnl=pnl,
+                holdings=_read_csv_rows(path / "ledger_after_manual_switch.csv")
+                or _read_csv_rows(path / "ledger.csv")
+                or _read_csv_rows(path / "holdings_review.csv"),
+                orders=_read_csv_rows(path / "orders.csv"),
+                manual_orders=_read_csv_rows(path / "manual_switch_and_take_profit_orders.csv"),
+            )
+        )
+    if not records:
+        warnings.append("No auditable records with manifest/pnl_summary were found.")
+    return records, warnings
+
+
+def _latest_daily_records(records: Iterable[Record]) -> list[Record]:
+    by_date: dict[str, Record] = {}
+    for record in sorted(records, key=lambda item: (item.date, item.run_id)):
+        by_date[record.date] = record
+    return [by_date[key] for key in sorted(by_date)]
+
+
+def _nav_series(records: list[Record]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        initial = _safe_float(record.pnl.get("initial_capital") or record.manifest.get("capital_cny"))
+        total = _safe_float(record.pnl.get("total_value_after"))
+        if initial <= 0 or total <= 0:
+            continue
+        rows.append(
+            {
+                "date": record.date,
+                "run_id": record.run_id,
+                "initial_capital": initial,
+                "total_value_after": total,
+                "nav": total / initial,
+            }
+        )
+    return rows
+
+
+def _daily_returns(nav_rows: list[dict[str, Any]]) -> list[float]:
+    returns: list[float] = []
+    for prev, current in zip(nav_rows, nav_rows[1:]):
+        prev_nav = _safe_float(prev.get("nav"))
+        current_nav = _safe_float(current.get("nav"))
+        if prev_nav > 0 and current_nav > 0:
+            returns.append(current_nav / prev_nav - 1.0)
+    return returns
+
+
+def _max_drawdown(nav_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    peak = -math.inf
+    peak_date = ""
+    max_dd = 0.0
+    trough_date = ""
+    dd_start = ""
+    for row in nav_rows:
+        nav = _safe_float(row.get("nav"))
+        if nav > peak:
+            peak = nav
+            peak_date = str(row.get("date") or "")
+        if peak > 0:
+            drawdown = nav / peak - 1.0
+            if drawdown < max_dd:
+                max_dd = drawdown
+                dd_start = peak_date
+                trough_date = str(row.get("date") or "")
+    return {"max_drawdown": max_dd, "start": dd_start, "end": trough_date}
+
+
+def _performance_metrics(nav_rows: list[dict[str, Any]], trades: list[dict[str, Any]]) -> dict[str, Any]:
+    if not nav_rows:
+        return {}
+    returns = _daily_returns(nav_rows)
+    cumulative = _safe_float(nav_rows[-1].get("nav")) / _safe_float(nav_rows[0].get("nav"), 1.0) - 1.0
+    annual_return = (1.0 + cumulative) ** (252.0 / max(len(nav_rows) - 1, 1)) - 1.0
+    vol = statistics.pstdev(returns) * math.sqrt(252.0) if returns else 0.0
+    daily_std = statistics.pstdev(returns) if returns else 0.0
+    sharpe = (statistics.mean(returns) / daily_std * math.sqrt(252.0)) if daily_std > 0 else None
+    drawdown = _max_drawdown(nav_rows)
+    avg_nav_value = statistics.mean(_safe_float(row.get("total_value_after")) for row in nav_rows)
+    filled_trades = [trade for trade in trades if trade.get("status") == "filled"]
+    sell_trades = [trade for trade in filled_trades if str(trade.get("action")).lower() == "sell"]
+    trade_value = sum(abs(_safe_float(trade.get("trade_value"))) for trade in filled_trades)
+    week_count = max(1.0, len(nav_rows) / 5.0)
+    weekly_turnover = trade_value / max(avg_nav_value, 1.0) / week_count
+    realized = [_safe_float(trade.get("realized_pnl")) for trade in sell_trades if "realized_pnl" in trade]
+    wins = [value for value in realized if value > 0]
+    losses = [value for value in realized if value < 0]
+    hit_rate = len(wins) / len(realized) if realized else None
+    pl_ratio = (
+        (statistics.mean(wins) / abs(statistics.mean(losses)))
+        if wins and losses
+        else None
+    )
+    return {
+        "sample_trading_days": len(nav_rows),
+        "cumulative_return": cumulative,
+        "annualized_return": annual_return,
+        "annualized_volatility": vol,
+        "max_drawdown": drawdown["max_drawdown"],
+        "max_drawdown_start": drawdown["start"],
+        "max_drawdown_end": drawdown["end"],
+        "calmar": annual_return / abs(drawdown["max_drawdown"]) if drawdown["max_drawdown"] < 0 else None,
+        "daily_sharpe": sharpe,
+        "weekly_turnover": weekly_turnover,
+        "annualized_turnover": weekly_turnover * 52.0,
+        "closed_trade_count": len(realized),
+        "closed_trade_hit_rate": hit_rate,
+        "closed_trade_profit_loss_ratio": pl_ratio,
+    }
+
+
+def _normalize_action(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"buy", "b", "买入"}:
+        return "buy"
+    if text in {"sell", "s", "卖出"}:
+        return "sell"
+    return text
+
+
+def _trade_from_row(row: dict[str, str], record: Record, source: str) -> dict[str, Any]:
+    price = _safe_float(row.get("execution_price") or row.get("price"))
+    status = str(row.get("status") or "filled").strip().lower()
+    if status in {"filled", "done", "成交"}:
+        status = "filled"
+    elif not status:
+        status = "filled"
+    else:
+        status = "rejected"
+    return {
+        "date": record.date,
+        "run_id": record.run_id,
+        "timestamp": row.get("timestamp") or record.manifest.get("recorded_at") or record.run_id,
+        "source": source,
+        "action": _normalize_action(row.get("action")),
+        "symbol": str(row.get("symbol") or "").strip().upper(),
+        "name": row.get("name") or "",
+        "shares": _safe_int(row.get("shares")),
+        "price": price,
+        "trade_value": _safe_float(row.get("trade_value"), price * _safe_int(row.get("shares"))),
+        "realized_pnl": _safe_float(row.get("realized_pnl")),
+        "status": status,
+        "reason": row.get("reason") or "",
+        "quote_source": row.get("quote_source") or "",
+        "quote_timestamp": row.get("quote_timestamp") or row.get("quote_time") or "",
+        "price_basis": row.get("price_basis") or row.get("execution_price_field") or "",
+    }
+
+
+def _extract_trades(records: list[Record]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    trades: list[dict[str, Any]] = []
+    rejections: list[dict[str, Any]] = []
+    seen_trades: set[tuple[Any, ...]] = set()
+    seen_rejections: set[tuple[Any, ...]] = set()
+    for record in records:
+        source_rows = record.manual_orders if record.manual_orders else record.orders
+        source = "manual_switch_and_take_profit_orders" if record.manual_orders else "orders"
+        for row in source_rows:
+            trade = _trade_from_row(row, record, source)
+            if not trade["symbol"]:
+                continue
+            if trade["status"] == "filled":
+                key = (
+                    trade["date"],
+                    trade["action"],
+                    trade["symbol"],
+                    trade["shares"],
+                    round(float(trade["price"]), 4),
+                    round(float(trade["trade_value"]), 2),
+                    trade["reason"],
+                )
+                if key not in seen_trades:
+                    seen_trades.add(key)
+                    trades.append(trade)
+            else:
+                key = (trade["date"], trade["action"], trade["symbol"], trade["shares"], trade["reason"])
+                if key not in seen_rejections:
+                    seen_rejections.add(key)
+                    rejections.append(trade)
+        gate = record.manual_manifest.get("execution_price_gate") or record.manifest.get("execution_price_gate") or {}
+        for rejected in gate.get("rejections", []) or []:
+            if isinstance(rejected, dict):
+                rejection = {
+                    "date": record.date,
+                    "run_id": record.run_id,
+                    "source": "execution_price_gate",
+                    "action": _normalize_action(rejected.get("action")),
+                    "symbol": str(rejected.get("symbol") or "").strip().upper(),
+                    "shares": _safe_int(rejected.get("shares")),
+                    "status": "rejected",
+                    "reason": str(rejected.get("reason") or ""),
+                }
+                if rejection["symbol"]:
+                    key = (rejection["date"], rejection["action"], rejection["symbol"], rejection["shares"], rejection["reason"])
+                    if key not in seen_rejections:
+                        seen_rejections.add(key)
+                        rejections.append(rejection)
+    return sorted(trades, key=lambda item: (item["date"], item["run_id"], item["symbol"], item["action"])), rejections
+
+
+def _holdings_by_date(records: list[Record]) -> dict[str, dict[str, dict[str, Any]]]:
+    by_date: dict[str, dict[str, dict[str, Any]]] = {}
+    for record in records:
+        rows: dict[str, dict[str, Any]] = {}
+        for row in record.holdings:
+            symbol = str(row.get("symbol") or "").strip().upper()
+            shares = _safe_int(row.get("shares") or row.get("shares_before"))
+            if not symbol or shares <= 0:
+                continue
+            rows[symbol] = {
+                "symbol": symbol,
+                "name": row.get("name") or "",
+                "shares": shares,
+                "current_value": _safe_float(row.get("current_value")),
+                "current_price": _safe_float(row.get("current_price")),
+                "unrealized_pnl": _safe_float(row.get("unrealized_pnl")),
+                "market_weight": _safe_float(row.get("market_weight")),
+            }
+        by_date[record.date] = rows
+    return by_date
+
+
+def _holding_periods(records: list[Record]) -> dict[str, Any]:
+    holdings = _holdings_by_date(records)
+    first_seen: dict[str, str] = {}
+    last_seen: dict[str, str] = {}
+    for row_date, rows in holdings.items():
+        for symbol in rows:
+            first_seen.setdefault(symbol, row_date)
+            last_seen[symbol] = row_date
+    periods: list[int] = []
+    for symbol, start in first_seen.items():
+        end = last_seen.get(symbol, start)
+        try:
+            periods.append((datetime.fromisoformat(end) - datetime.fromisoformat(start)).days + 1)
+        except ValueError:
+            continue
+    if not periods:
+        return {"count": 0, "median_days": None, "min_days": None, "max_days": None}
+    return {
+        "count": len(periods),
+        "median_days": statistics.median(periods),
+        "min_days": min(periods),
+        "max_days": max(periods),
+    }
+
+
+def _read_price_panel(
+    symbols: Iterable[str],
+    start_date: str,
+    end_date: str,
+    bars_root: Path,
+) -> tuple[dict[str, dict[str, float]], list[str]]:
+    warnings: list[str] = []
+    symbol_set = {str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()}
+    if not symbol_set or not bars_root.exists():
+        return {}, warnings
+    try:
+        import pandas as pd  # type: ignore[import-not-found]
+    except ImportError:
+        return {}, ["pandas/pyarrow unavailable; local bar based attribution skipped."]
+    filters = [
+        ("trade_date", ">=", _compact_date(start_date)),
+        ("trade_date", "<=", _compact_date(end_date)),
+    ]
+    try:
+        with _suppress_native_stderr():
+            frame = pd.read_parquet(bars_root, columns=["ts_code", "trade_date", "close", "adj_close"], filters=filters)
+    except Exception as exc:
+        return {}, [f"failed to read local bars: {exc}"]
+    if frame.empty:
+        return {}, warnings
+    frame["ts_code"] = frame["ts_code"].astype(str).str.strip().str.upper()
+    frame = frame[frame["ts_code"].isin(symbol_set)].copy()
+    if frame.empty:
+        return {}, warnings
+    close = pd.to_numeric(frame["close"], errors="coerce")
+    adj_close = pd.to_numeric(frame.get("adj_close"), errors="coerce") if "adj_close" in frame else close
+    frame["price"] = adj_close.where(adj_close.notna() & (adj_close > 0), close)
+    frame["date"] = frame["trade_date"].astype(str).map(_iso_from_any)
+    frame = frame.dropna(subset=["price"]).sort_values(["ts_code", "date"])
+    prices: dict[str, dict[str, float]] = defaultdict(dict)
+    for row in frame.itertuples():
+        if float(row.price) > 0:
+            prices[str(row.ts_code)][str(row.date)] = float(row.price)
+    return dict(prices), warnings
+
+
+def _price_at_or_after(series: dict[str, float], target: str) -> tuple[str, float] | None:
+    for row_date in sorted(series):
+        if row_date >= target and series[row_date] > 0:
+            return row_date, series[row_date]
+    return None
+
+
+def _price_at_or_before(series: dict[str, float], target: str) -> tuple[str, float] | None:
+    candidates = [row_date for row_date in sorted(series) if row_date <= target and series[row_date] > 0]
+    if not candidates:
+        return None
+    row_date = candidates[-1]
+    return row_date, series[row_date]
+
+
+def _forward_return(series: dict[str, float], start: str, horizon: int) -> float | None:
+    start_pair = _price_at_or_after(series, start)
+    if start_pair is None:
+        return None
+    dates = sorted(date_key for date_key in series if date_key >= start_pair[0])
+    if len(dates) <= horizon:
+        return None
+    end_price = series[dates[horizon]]
+    if start_pair[1] <= 0 or end_price <= 0:
+        return None
+    return end_price / start_pair[1] - 1.0
+
+
+def _counterfactual_nav(
+    dates: list[str],
+    entries: dict[str, str],
+    prices: dict[str, dict[str, float]],
+) -> dict[str, float]:
+    result: dict[str, float] = {}
+    entry_prices: dict[str, tuple[str, float]] = {}
+    for symbol, entry_date in entries.items():
+        series = prices.get(symbol, {})
+        pair = _price_at_or_after(series, entry_date)
+        if pair is not None:
+            entry_prices[symbol] = pair
+    for row_date in dates:
+        values: list[float] = []
+        for symbol, (first_date, first_price) in entry_prices.items():
+            if row_date < first_date:
+                continue
+            pair = _price_at_or_before(prices.get(symbol, {}), row_date)
+            if pair is not None and first_price > 0:
+                values.append(pair[1] / first_price)
+        result[row_date] = statistics.mean(values) if values else 1.0
+    return result
+
+
+def _benchmark_navs(
+    dates: list[str],
+    benchmark_file: Path,
+    bars_root: Path,
+    stock_basic_root: Path,
+) -> tuple[dict[str, dict[str, float]], dict[str, Any], list[str]]:
+    warnings: list[str] = []
+    by_field: dict[str, dict[str, float]] = defaultdict(dict)
+    sources: set[str] = set()
+    for row in _read_csv_rows(benchmark_file):
+        field = BENCHMARK_CODE_TO_FIELD.get(str(row.get("ts_code") or "").strip())
+        if not field:
+            continue
+        close = _safe_float(row.get("close"))
+        row_date = _iso_from_any(row.get("date"))
+        if row_date and close > 0:
+            by_field[field][row_date] = close
+            sources.add(row.get("source_system") or "")
+    navs: dict[str, dict[str, float]] = defaultdict(dict)
+    for field, closes in by_field.items():
+        first = _price_at_or_after(closes, dates[0]) if dates else None
+        if first is None:
+            continue
+        for row_date in dates:
+            pair = _price_at_or_before(closes, row_date)
+            if pair is not None:
+                navs[row_date][field] = pair[1] / first[1]
+    industry_nav, industry_meta, industry_warnings = _industry_ew_nav(dates, bars_root, stock_basic_root)
+    warnings.extend(industry_warnings)
+    for row_date, nav in industry_nav.items():
+        navs[row_date]["industry_ew_nav"] = nav
+    metadata = {
+        "source_system": "+".join(sorted(source for source in sources if source)),
+        "industry_equal_weight": industry_meta,
+    }
+    return dict(navs), metadata, warnings
+
+
+def _industry_ew_nav(
+    dates: list[str],
+    bars_root: Path,
+    stock_basic_root: Path,
+) -> tuple[dict[str, float], dict[str, Any], list[str]]:
+    if not dates or not bars_root.exists() or not stock_basic_root.exists():
+        return {}, {}, []
+    try:
+        import pandas as pd  # type: ignore[import-not-found]
+    except ImportError:
+        return {}, {}, ["pandas/pyarrow unavailable; industry_ew_nav skipped."]
+    try:
+        with _suppress_native_stderr():
+            stock_basic = pd.read_parquet(stock_basic_root, columns=["ts_code", "industry"])
+    except Exception as exc:
+        return {}, {}, [f"failed to read stock_basic for industry_ew_nav: {exc}"]
+    stock_basic["industry"] = stock_basic["industry"].astype(str).str.strip()
+    stock_basic["ts_code"] = stock_basic["ts_code"].astype(str).str.strip().str.upper()
+    members = set(stock_basic[stock_basic["industry"].isin(TECH_MANUFACTURING_INDUSTRIES)]["ts_code"].tolist())
+    prices, warnings = _read_price_panel(members, dates[0], dates[-1], bars_root)
+    if not prices:
+        return {}, {"member_count": len(members), "industry_list": list(TECH_MANUFACTURING_INDUSTRIES)}, warnings
+    returns_by_date: dict[str, list[float]] = defaultdict(list)
+    for series in prices.values():
+        ordered = sorted(series)
+        for prev_date, row_date in zip(ordered, ordered[1:]):
+            prev = series[prev_date]
+            current = series[row_date]
+            if prev > 0 and current > 0:
+                returns_by_date[row_date].append(current / prev - 1.0)
+    nav_by_calendar: dict[str, float] = {}
+    nav = 1.0
+    for row_date in sorted(set().union(*[set(series) for series in prices.values()])):
+        if row_date in returns_by_date and returns_by_date[row_date]:
+            nav *= 1.0 + statistics.mean(returns_by_date[row_date])
+        nav_by_calendar[row_date] = nav
+    result: dict[str, float] = {}
+    for row_date in dates:
+        pair = _price_at_or_before(nav_by_calendar, row_date)
+        if pair is not None:
+            result[row_date] = pair[1]
+    meta = {
+        "member_count": len(members),
+        "industry_list": list(TECH_MANUFACTURING_INDUSTRIES),
+        "valid_date_count": len(nav_by_calendar),
+        "start_date": min(nav_by_calendar) if nav_by_calendar else "",
+        "end_date": max(nav_by_calendar) if nav_by_calendar else "",
+    }
+    return result, meta, warnings
+
+
+def _benchmark_metrics(
+    nav_rows: list[dict[str, Any]],
+    benchmarks: dict[str, dict[str, float]],
+) -> dict[str, Any]:
+    actual_return = _safe_float(nav_rows[-1]["nav"]) / _safe_float(nav_rows[0]["nav"], 1.0) - 1.0
+    rows: dict[str, Any] = {}
+    dates = [row["date"] for row in nav_rows]
+    for field in ("star50_nav", "chinext_nav", "csi300_nav", "industry_ew_nav"):
+        values = [benchmarks.get(row_date, {}).get(field) for row_date in dates]
+        valid = [(date_value, value) for date_value, value in zip(dates, values) if value and value > 0]
+        if len(valid) < 2:
+            rows[field] = {"available": False}
+            continue
+        bench_return = valid[-1][1] / valid[0][1] - 1.0
+        rolling: list[dict[str, Any]] = []
+        for index in range(19, len(valid)):
+            start_value = valid[index - 19][1]
+            end_value = valid[index][1]
+            actual_start = _safe_float(nav_rows[dates.index(valid[index - 19][0])]["nav"])
+            actual_end = _safe_float(nav_rows[dates.index(valid[index][0])]["nav"])
+            if start_value > 0 and actual_start > 0:
+                rolling.append(
+                    {
+                        "date": valid[index][0],
+                        "rolling_20d_excess": (actual_end / actual_start - 1.0) - (end_value / start_value - 1.0),
+                    }
+                )
+        rows[field] = {
+            "available": True,
+            "benchmark_return": bench_return,
+            "full_window_excess": actual_return - bench_return,
+            "rolling_20d_excess": rolling,
+        }
+    return rows
+
+
+def _decomposition(
+    nav_rows: list[dict[str, Any]],
+    benchmarks: dict[str, dict[str, float]],
+    counterfactual_nav: dict[str, float],
+) -> dict[str, Any]:
+    start_date = nav_rows[0]["date"]
+    end_date = nav_rows[-1]["date"]
+    actual_return = _safe_float(nav_rows[-1]["nav"]) / _safe_float(nav_rows[0]["nav"], 1.0) - 1.0
+
+    def bench_return(field: str) -> float:
+        start = _safe_float(benchmarks.get(start_date, {}).get(field), 1.0)
+        end = _safe_float(benchmarks.get(end_date, {}).get(field), start)
+        return end / start - 1.0 if start > 0 else 0.0
+
+    csi300_return = bench_return("csi300_nav")
+    industry_return = bench_return("industry_ew_nav")
+    cf_start = _safe_float(counterfactual_nav.get(start_date), 1.0)
+    cf_end = _safe_float(counterfactual_nav.get(end_date), cf_start)
+    cf_return = cf_end / cf_start - 1.0 if cf_start > 0 else 0.0
+    config_beta = industry_return - csi300_return
+    stock_alpha = cf_return - industry_return
+    timing_alpha = actual_return - cf_return
+    total_excess = actual_return - csi300_return
+    explained = config_beta + stock_alpha + timing_alpha
+    return {
+        "actual_return": actual_return,
+        "csi300_return": csi300_return,
+        "industry_ew_return": industry_return,
+        "counterfactual1_return": cf_return,
+        "config_beta": config_beta,
+        "stock_alpha": stock_alpha,
+        "phase_timing_alpha": timing_alpha,
+        "total_excess_vs_csi300": total_excess,
+        "explained_sum": explained,
+        "reconciliation_residual": total_excess - explained,
+    }
+
+
+def _entry_dates(records: list[Record], trades: list[dict[str, Any]]) -> dict[str, str]:
+    entries: dict[str, str] = {}
+    for trade in trades:
+        if trade.get("status") == "filled" and trade.get("action") == "buy":
+            entries.setdefault(str(trade["symbol"]), str(trade["date"]))
+    for record in records:
+        for row in record.holdings:
+            symbol = str(row.get("symbol") or "").strip().upper()
+            shares = _safe_int(row.get("shares") or row.get("shares_before"))
+            if symbol and shares > 0:
+                entries.setdefault(symbol, record.date)
+    return entries
+
+
+def _concentration(
+    records: list[Record],
+    nav_rows: list[dict[str, Any]],
+    trades: list[dict[str, Any]],
+) -> dict[str, Any]:
+    contribution: dict[str, float] = defaultdict(float)
+    for trade in trades:
+        if trade.get("action") == "sell":
+            contribution[str(trade["symbol"])] += _safe_float(trade.get("realized_pnl"))
+    final_holdings = _holdings_by_date(records).get(nav_rows[-1]["date"], {}) if nav_rows else {}
+    for symbol, row in final_holdings.items():
+        contribution[symbol] += _safe_float(row.get("unrealized_pnl"))
+    ranked = sorted(
+        [{"symbol": symbol, "contribution_pnl": pnl} for symbol, pnl in contribution.items()],
+        key=lambda item: item["contribution_pnl"],
+        reverse=True,
+    )
+    total_positive = sum(max(0.0, item["contribution_pnl"]) for item in ranked)
+    top3 = ranked[:3]
+    top3_pnl = sum(item["contribution_pnl"] for item in top3)
+    top3_share = top3_pnl / total_positive if total_positive > 0 else None
+    initial = _safe_float(nav_rows[0].get("initial_capital"), 1.0) if nav_rows else 1.0
+    actual_return = _safe_float(nav_rows[-1]["nav"]) / _safe_float(nav_rows[0]["nav"], 1.0) - 1.0 if nav_rows else 0.0
+    return {
+        "ranked_contributors": ranked,
+        "top3": top3,
+        "top3_positive_contribution_share": top3_share,
+        "return_excluding_top3_estimate": actual_return - top3_pnl / max(initial, 1.0),
+    }
+
+
+def _counterparty_quality(
+    trades: list[dict[str, Any]],
+    prices: dict[str, dict[str, float]],
+) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for side_name, action in (("entries", "buy"), ("exits", "sell")):
+        rows: list[dict[str, Any]] = []
+        for trade in trades:
+            if trade.get("action") != action:
+                continue
+            series = prices.get(str(trade.get("symbol")))
+            if not series:
+                continue
+            row = {"date": trade["date"], "symbol": trade["symbol"]}
+            for horizon in (5, 10, 20):
+                row[f"ret_{horizon}d"] = _forward_return(series, trade["date"], horizon)
+            rows.append(row)
+        summary: dict[str, Any] = {"count": len(rows), "rows": rows}
+        for horizon in (5, 10, 20):
+            values = [row[f"ret_{horizon}d"] for row in rows if row.get(f"ret_{horizon}d") is not None]
+            summary[f"ret_{horizon}d"] = {
+                "mean": statistics.mean(values) if values else None,
+                "median": statistics.median(values) if values else None,
+                "negative_share": sum(1 for value in values if value < 0) / len(values) if values else None,
+            }
+        result[side_name] = summary
+    result["interpretation_rule"] = (
+        "出场后收益显著为负 => 卖给晚期追高者；显著为正 => 我方卖早。"
+    )
+    return result
+
+
+def _execution_quality(records: list[Record], trades: list[dict[str, Any]], rejections: list[dict[str, Any]]) -> dict[str, Any]:
+    proposal_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for record in records:
+        for row in record.orders:
+            symbol = str(row.get("symbol") or "").strip().upper()
+            action = _normalize_action(row.get("action"))
+            if symbol:
+                proposal_by_key[(record.run_id, symbol, action)] = row
+    slippage: dict[str, list[float]] = {"buy": [], "sell": []}
+    total_slippage_cost = 0.0
+    for trade in trades:
+        proposal = proposal_by_key.get((trade["run_id"], trade["symbol"], trade["action"]))
+        if not proposal:
+            continue
+        proposal_price = _safe_float(proposal.get("price"))
+        actual_price = _safe_float(trade.get("price"))
+        if proposal_price <= 0 or actual_price <= 0:
+            continue
+        if trade["action"] == "buy":
+            bps = (actual_price / proposal_price - 1.0) * 10000.0
+            total_slippage_cost += (actual_price - proposal_price) * _safe_int(trade.get("shares"))
+        else:
+            bps = (proposal_price / actual_price - 1.0) * 10000.0
+            total_slippage_cost += (proposal_price - actual_price) * _safe_int(trade.get("shares"))
+        slippage.setdefault(trade["action"], []).append(bps)
+    rejection_reasons: dict[str, int] = defaultdict(int)
+    for rejection in rejections:
+        rejection_reasons[str(rejection.get("reason") or "unknown")] += 1
+    avg_nav = statistics.mean(
+        _safe_float(record.pnl.get("total_value_after"))
+        for record in records
+        if _safe_float(record.pnl.get("total_value_after")) > 0
+    ) if records else 0.0
+    return {
+        "slippage_bps": {
+            side: {
+                "count": len(values),
+                "mean": statistics.mean(values) if values else None,
+                "median": statistics.median(values) if values else None,
+            }
+            for side, values in slippage.items()
+        },
+        "rejection_count": len(rejections),
+        "rejection_reasons": dict(sorted(rejection_reasons.items())),
+        "estimated_cost_drag": total_slippage_cost / avg_nav if avg_nav > 0 else None,
+    }
+
+
+def _version_events() -> list[dict[str, str]]:
+    try:
+        output = subprocess.check_output(
+            ["git", "log", "--format=%ci %s"],
+            cwd=PROJECT_ROOT,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return []
+    keywords = ("kline", "v13", "runbook", "Phase 12", "retire", "merge")
+    events: list[dict[str, str]] = []
+    for line in output.splitlines():
+        if any(keyword.lower() in line.lower() for keyword in keywords) or "2026-07-05" in line or "2026-07-06" in line:
+            events.append({"date": _iso_from_any(line[:25]), "subject": line[26:]})
+        if len(events) >= 40:
+            break
+    return events
+
+
+def _version_segment_metrics(
+    nav_rows: list[dict[str, Any]],
+    benchmarks: dict[str, dict[str, float]],
+    version_events: list[dict[str, str]],
+) -> list[dict[str, Any]]:
+    if len(nav_rows) < 2:
+        return []
+    start = nav_rows[0]["date"]
+    end = nav_rows[-1]["date"]
+    cut_dates = sorted({event["date"] for event in version_events if start < event.get("date", "") < end})
+    boundaries = [start, *cut_dates, end]
+    segments: list[dict[str, Any]] = []
+    for index, segment_start in enumerate(boundaries[:-1]):
+        segment_end = boundaries[index + 1]
+        rows = [row for row in nav_rows if segment_start <= row["date"] <= segment_end]
+        if len(rows) < 2:
+            continue
+        actual = _safe_float(rows[-1]["nav"]) / _safe_float(rows[0]["nav"], 1.0) - 1.0
+        segment: dict[str, Any] = {
+            "start": rows[0]["date"],
+            "end": rows[-1]["date"],
+            "actual_return": actual,
+        }
+        for field in ("star50_nav", "csi300_nav", "industry_ew_nav"):
+            start_value = _safe_float(benchmarks.get(rows[0]["date"], {}).get(field))
+            end_value = _safe_float(benchmarks.get(rows[-1]["date"], {}).get(field))
+            if start_value > 0 and end_value > 0:
+                bench_return = end_value / start_value - 1.0
+                segment[f"{field}_return"] = bench_return
+                segment[f"excess_vs_{field}"] = actual - bench_return
+        segments.append(segment)
+    return segments
+
+
+def _manual_system_attribution(trades: list[dict[str, Any]], records: list[Record]) -> dict[str, Any]:
+    proposal_keys = {
+        (record.run_id, str(row.get("symbol") or "").strip().upper(), _normalize_action(row.get("action")))
+        for record in records
+        for row in record.orders
+    }
+    buckets: dict[str, list[dict[str, Any]]] = {"system": [], "manual_proxy": []}
+    for trade in trades:
+        key = (trade["run_id"], trade["symbol"], trade["action"])
+        if key in proposal_keys and trade.get("source") == "orders":
+            buckets["system"].append(trade)
+        elif key in proposal_keys and trade.get("source") == "manual_switch_and_take_profit_orders":
+            buckets["system"].append(trade)
+        else:
+            buckets["manual_proxy"].append(trade)
+    summary: dict[str, Any] = {
+        "classification_method": (
+            "source fields are sparse; unmatched filled manual rows or fills after rejected proposals are classified as manual_proxy."
+        )
+    }
+    for name, rows in buckets.items():
+        realized = [_safe_float(row.get("realized_pnl")) for row in rows if row.get("action") == "sell"]
+        summary[name] = {
+            "trade_count": len(rows),
+            "realized_pnl": sum(realized),
+            "hit_rate": sum(1 for value in realized if value > 0) / len(realized) if realized else None,
+        }
+    return summary
+
+
+def _funding_nature(records: list[Record]) -> dict[str, Any]:
+    modes = {
+        str(record.manual_manifest.get("manual_execution_mode") or record.manifest.get("manual_execution", {}).get("manual_execution_mode") or "")
+        for record in records
+    }
+    broker_flags = [
+        record.manual_manifest.get("broker_api_called")
+        for record in records
+        if "broker_api_called" in record.manual_manifest
+    ]
+    no_broker_flags = [
+        record.manual_manifest.get("no_broker_api_called")
+        for record in records
+        if "no_broker_api_called" in record.manual_manifest
+    ]
+    if any(flag is True for flag in broker_flags):
+        nature = "mixed_or_real_broker_execution_detected"
+    elif any("paper_only_local_manual_no_broker" in mode for mode in modes) or any(flag is True for flag in no_broker_flags):
+        nature = "local_manual_paper_no_broker"
+    else:
+        nature = "undetermined_early_records"
+    return {
+        "funding_nature": nature,
+        "manual_execution_modes": sorted(mode for mode in modes if mode),
+        "broker_api_called_values": broker_flags,
+        "no_broker_api_called_values": no_broker_flags,
+        "basis": "manual_execution_manifest/manual_execution_mode, no_broker_api_called, broker_api_called, and price_basis fields.",
+    }
+
+
+def _markov_diagnostics(regime_history: Path, start_date: str = "2026-06-15") -> dict[str, Any]:
+    if not regime_history.exists():
+        return {"available": False, "reason": f"not found: {regime_history}"}
+    rows: list[dict[str, Any]] = []
+    with regime_history.open(encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            as_of = _iso_from_any(payload.get("as_of"))
+            if as_of and as_of >= start_date:
+                rows.append(payload)
+    rows = sorted(rows, key=lambda item: (str(item.get("as_of") or ""), str(item.get("regime_scope") or "")))
+    timeline = [
+        {
+            "as_of": _iso_from_any(row.get("as_of")),
+            "dominant_regime": row.get("dominant_regime"),
+            "confidence": row.get("confidence"),
+            "transition_risk": row.get("transition_risk"),
+            "suggested_gross_exposure_cap": row.get("suggested_gross_exposure_cap"),
+            "turnover_cap": row.get("turnover_cap"),
+            "regime_scope": row.get("regime_scope"),
+            "diagnostic_notes": row.get("diagnostic_notes") or [],
+        }
+        for row in rows
+    ]
+    july_rows = [row for row in timeline if "2026-07-01" <= row["as_of"] <= "2026-07-07"]
+    states = {row.get("dominant_regime") for row in july_rows}
+    unchanged = len(states) <= 1 if july_rows else None
+    latest = rows[-1] if rows else {}
+    return {
+        "available": True,
+        "timeline": timeline,
+        "july_pullback_state_unchanged": unchanged,
+        "july_pullback_summary": (
+            "state unchanged; feature_snapshot dumped for verification"
+            if unchanged
+            else "state changed or insufficient July rows"
+        ),
+        "latest_feature_snapshot_if_unchanged": latest.get("feature_snapshot") if unchanged else None,
+    }
+
+
+def _fundamentals_appendix(holdings: dict[str, dict[str, Any]], fundamentals_root: Path) -> dict[str, Any]:
+    symbols = set(holdings)
+    if not symbols or not fundamentals_root.exists():
+        return {"available": False, "rows": [], "note": "披露日需人工补充"}
+    try:
+        import pandas as pd  # type: ignore[import-not-found]
+    except ImportError:
+        return {"available": False, "rows": [], "note": "pandas unavailable; 披露日需人工补充"}
+    candidates = [
+        fundamentals_root / "table=fina_indicator",
+        fundamentals_root / "table=income",
+    ]
+    frame = None
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            with _suppress_native_stderr():
+                loaded = pd.read_parquet(path)
+        except Exception:
+            continue
+        if "ts_code" in loaded.columns:
+            frame = loaded
+            break
+    if frame is None or frame.empty:
+        return {"available": False, "rows": [], "note": "local PIT fundamentals unavailable; 披露日需人工补充"}
+    frame["ts_code"] = frame["ts_code"].astype(str).str.strip().str.upper()
+    frame = frame[frame["ts_code"].isin(symbols)].copy()
+    if frame.empty:
+        return {"available": False, "rows": [], "note": "current holdings not found in local PIT fundamentals; 披露日需人工补充"}
+    date_col = "ann_date" if "ann_date" in frame.columns else ("end_date" if "end_date" in frame.columns else None)
+    if date_col:
+        frame[date_col] = frame[date_col].astype(str)
+        frame = frame.sort_values(["ts_code", date_col])
+    rows: list[dict[str, Any]] = []
+    for symbol, group in frame.groupby("ts_code", sort=True):
+        latest = group.iloc[-1].to_dict()
+        revenue_yoy = next(
+            (_safe_float(latest.get(col), None) for col in ("tr_yoy", "revenue_yoy", "oper_rev_yoy") if col in latest),
+            None,
+        )
+        profit_yoy = next(
+            (_safe_float(latest.get(col), None) for col in ("netprofit_yoy", "netprofit_yoy_dt", "profit_yoy") if col in latest),
+            None,
+        )
+        rows.append(
+            {
+                "symbol": symbol,
+                "name": holdings.get(symbol, {}).get("name", ""),
+                "period": _iso_from_any(latest.get("end_date")),
+                "ann_date": _iso_from_any(latest.get("ann_date")),
+                "revenue_yoy": revenue_yoy,
+                "net_profit_yoy": profit_yoy,
+                "h1_schedule": "披露日需人工补充",
+            }
+        )
+    return {
+        "available": True,
+        "note": "产业实质判断（真订单/真产能 vs 纯故事）由人工完成，本表只提供数据。",
+        "rows": rows,
+    }
+
+
+def _markdown_table(headers: list[str], rows: list[list[Any]]) -> str:
+    lines = ["| " + " | ".join(headers) + " |", "| " + " | ".join(["---"] * len(headers)) + " |"]
+    for row in rows:
+        lines.append("| " + " | ".join(str(item) for item in row) + " |")
+    return "\n".join(lines)
+
+
+def _render_report(metrics: dict[str, Any]) -> str:
+    perf = metrics["performance"]
+    bench = metrics["benchmarks"]
+    decomp = metrics["decomposition"]
+    concentration = metrics["concentration"]
+    execution = metrics["execution_quality"]
+    funding = metrics["funding_nature"]
+    markov = metrics["markov_diagnostics"]
+    counterparty = metrics["counterparty_quality"]
+    lines = [
+        "# Phase 12 Track-Record Audit",
+        "",
+        f"- Funding nature: **{funding['funding_nature']}**",
+        f"- 判断依据：{funding['basis']}",
+        f"- 样本交易日：{perf.get('sample_trading_days', 0)}；样本 <90 交易日，Sharpe/Calmar 统计稳定性有限。",
+        "",
+        "## A. 基础绩效",
+        "",
+        _markdown_table(
+            ["Metric", "Value"],
+            [
+                ["累计收益", _pct(perf.get("cumulative_return"))],
+                ["年化波动", _pct(perf.get("annualized_volatility"))],
+                [
+                    "最大回撤",
+                    f"{_pct(perf.get('max_drawdown'))} ({perf.get('max_drawdown_start') or 'N/A'} -> {perf.get('max_drawdown_end') or 'N/A'})",
+                ],
+                ["Calmar", _money(perf.get("calmar"))],
+                ["日频 Sharpe", _money(perf.get("daily_sharpe"))],
+                ["周换手率", _pct(perf.get("weekly_turnover"))],
+                ["年化换手", _pct(perf.get("annualized_turnover"))],
+                ["逐笔平仓命中率", _pct(perf.get("closed_trade_hit_rate"))],
+                ["盈亏比", _money(perf.get("closed_trade_profit_loss_ratio"))],
+            ],
+        ),
+        "",
+        "## B. 基准与超额",
+        "",
+    ]
+    bench_rows = []
+    for field in ("star50_nav", "chinext_nav", "csi300_nav", "industry_ew_nav"):
+        row = bench.get(field, {})
+        bench_rows.append(
+            [
+                field,
+                _pct(row.get("benchmark_return")) if row.get("available") else "N/A",
+                _pct(row.get("full_window_excess")) if row.get("available") else "N/A",
+                len(row.get("rolling_20d_excess", [])) if row.get("available") else 0,
+            ]
+        )
+    lines.extend(
+        [
+            "科创50（`star50_nav`）是主考官。",
+            _markdown_table(["Benchmark", "全窗口收益", "全窗口超额", "20日滚动点数"], bench_rows),
+            "",
+            "## C. 三分解",
+            "",
+            _markdown_table(
+                ["Component", "Return"],
+                [
+                    ["配置 beta = industry_ew_nav - csi300_nav", _pct(decomp["config_beta"])],
+                    ["组内选股 alpha = 反事实组合1 - industry_ew_nav", _pct(decomp["stock_alpha"])],
+                    ["相位择时 alpha = 实际 NAV - 反事实组合1", _pct(decomp["phase_timing_alpha"])],
+                    ["总超额 vs csi300", _pct(decomp["total_excess_vs_csi300"])],
+                    ["三项合计", _pct(decomp["explained_sum"])],
+                    ["交叉/残差项", _pct(decomp["reconciliation_residual"])],
+                ],
+            ),
+            "",
+            "## D. 集中度与稳健性",
+            "",
+            _markdown_table(
+                ["Symbol", "Contribution P&L"],
+                [[item["symbol"], _money(item["contribution_pnl"])] for item in concentration.get("top3", [])],
+            ),
+            f"Top3 正贡献占比：{_pct(concentration.get('top3_positive_contribution_share'))}；剔除 Top3 估算收益：{_pct(concentration.get('return_excluding_top3_estimate'))}",
+            "",
+            "## E. 把货卖给了谁",
+            "",
+            counterparty["interpretation_rule"],
+            _markdown_table(
+                ["Side", "Horizon", "Mean", "Median", "Negative Share"],
+                [
+                    [
+                        side,
+                        f"{horizon}d",
+                        _pct(counterparty[side][f"ret_{horizon}d"].get("mean")),
+                        _pct(counterparty[side][f"ret_{horizon}d"].get("median")),
+                        _pct(counterparty[side][f"ret_{horizon}d"].get("negative_share")),
+                    ]
+                    for side in ("entries", "exits")
+                    for horizon in (5, 10, 20)
+                ],
+            ),
+            "",
+            "## F. 执行质量",
+            "",
+            _markdown_table(
+                ["Side", "Count", "Mean bps", "Median bps"],
+                [
+                    [
+                        side,
+                        data.get("count"),
+                        _money(data.get("mean")),
+                        _money(data.get("median")),
+                    ]
+                    for side, data in execution["slippage_bps"].items()
+                ],
+            ),
+            f"门禁拒绝单量：{execution['rejection_count']}；总成本拖累估算：{_pct(execution.get('estimated_cost_drag'))}",
+            _markdown_table(
+                ["Reject Reason", "Count"],
+                [[reason, count] for reason, count in execution.get("rejection_reasons", {}).items()],
+            ),
+            "",
+            "## G. 归因切分",
+            "",
+            f"人工/系统识别方法：{metrics['manual_system_attribution']['classification_method']}",
+            _markdown_table(
+                ["Bucket", "Trades", "Realized P&L", "Hit Rate"],
+                [
+                    [
+                        bucket,
+                        data["trade_count"],
+                        _money(data["realized_pnl"]),
+                        _pct(data["hit_rate"]),
+                    ]
+                    for bucket, data in metrics["manual_system_attribution"].items()
+                    if isinstance(data, dict) and "trade_count" in data
+                ],
+            ),
+            "",
+            "### Version Cut Candidates",
+            _markdown_table(
+                ["Date", "Subject"],
+                [[event.get("date", ""), event.get("subject", "")] for event in metrics["version_events"][:8]],
+            ),
+            "",
+            "### Version Segments",
+            _markdown_table(
+                ["Start", "End", "Actual", "Excess vs Star50", "Excess vs CSI300", "Excess vs Industry EW"],
+                [
+                    [
+                        segment.get("start", ""),
+                        segment.get("end", ""),
+                        _pct(segment.get("actual_return")),
+                        _pct(segment.get("excess_vs_star50_nav")),
+                        _pct(segment.get("excess_vs_csi300_nav")),
+                        _pct(segment.get("excess_vs_industry_ew_nav")),
+                    ]
+                    for segment in metrics.get("version_segments", [])
+                ],
+            ),
+            "",
+            "### Markov Regime Diagnostics",
+            f"可用：{markov.get('available')}；7月初状态是否未变：{markov.get('july_pullback_state_unchanged')}",
+            "",
+            "## 附录：中报证伪数据支持",
+            "",
+            "产业实质判断（真订单/真产能 vs 纯故事）由人工完成，本表只提供数据。",
+            _markdown_table(
+                ["Symbol", "Name", "Period", "Ann Date", "Revenue YoY", "Net Profit YoY", "H1 Schedule"],
+                [
+                    [
+                        row.get("symbol", ""),
+                        row.get("name", ""),
+                        row.get("period", ""),
+                        row.get("ann_date", ""),
+                        _pct(row.get("revenue_yoy") / 100.0 if row.get("revenue_yoy") is not None and abs(row.get("revenue_yoy")) > 2 else row.get("revenue_yoy")),
+                        _pct(row.get("net_profit_yoy") / 100.0 if row.get("net_profit_yoy") is not None and abs(row.get("net_profit_yoy")) > 2 else row.get("net_profit_yoy")),
+                        row.get("h1_schedule", "披露日需人工补充"),
+                    ]
+                    for row in metrics["fundamentals_appendix"].get("rows", [])
+                ],
+            ),
+        ]
+    )
+    star50_excess = bench.get("star50_nav", {}).get("full_window_excess")
+    if star50_excess is not None and star50_excess <= 0 and decomp["phase_timing_alpha"] <= 0:
+        lines.extend(["", "## 结论", "", PREREGISTERED_FAILURE_CONCLUSION])
+    return "\n".join(lines) + "\n"
+
+
+def _write_outputs(metrics: dict[str, Any], output_dir: Path, generate_plots: bool = True) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "audit_metrics.json").write_text(
+        json.dumps(metrics, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    (output_dir / "audit_report.md").write_text(_render_report(metrics), encoding="utf-8")
+    if not generate_plots:
+        return
+    try:
+        import matplotlib.pyplot as plt  # type: ignore[import-not-found]
+    except Exception:
+        return
+    nav_rows = metrics.get("nav_rows", [])
+    if not nav_rows:
+        return
+    plt.figure(figsize=(8, 4))
+    plt.plot([row["date"] for row in nav_rows], [row["nav"] for row in nav_rows], label="portfolio_nav")
+    plt.xticks(rotation=45, ha="right")
+    plt.tight_layout()
+    plt.legend()
+    plt.savefig(output_dir / "nav_curve.png", dpi=120, metadata={"Software": "run_track_record_audit.py"})
+    plt.close()
+
+
+def _assert_output_not_inside_records(record_root: Path, output_dir: Path) -> None:
+    record_resolved = record_root.resolve()
+    output_resolved = output_dir.resolve()
+    if output_resolved == record_resolved or record_resolved in output_resolved.parents:
+        raise ValueError("Audit output directory must not be inside strategy record root.")
+
+
+def run_audit(
+    *,
+    record_root: Path = DEFAULT_RECORD_ROOT,
+    output_root: Path = DEFAULT_OUTPUT_ROOT,
+    benchmark_file: Path = DEFAULT_BENCHMARK_FILE,
+    bars_root: Path = DEFAULT_BARS_ROOT,
+    stock_basic_root: Path = DEFAULT_STOCK_BASIC_ROOT,
+    fundamentals_root: Path = DEFAULT_FUNDAMENTALS_ROOT,
+    regime_history: Path = DEFAULT_REGIME_HISTORY,
+    as_of_date: str | None = None,
+    generate_plots: bool = False,
+) -> dict[str, Any]:
+    as_of = as_of_date or date.today().strftime("%Y%m%d")
+    output_dir = output_root / as_of
+    _assert_output_not_inside_records(record_root, output_dir)
+    records, warnings = _load_records(record_root)
+    daily_records = _latest_daily_records(records)
+    nav_rows = _nav_series(daily_records)
+    if len(nav_rows) < 2:
+        raise ValueError("Need at least two NAV records for track-record audit.")
+    trades, rejections = _extract_trades(records)
+    dates = [row["date"] for row in nav_rows]
+    entries = _entry_dates(daily_records, trades)
+    prices, price_warnings = _read_price_panel(entries.keys(), dates[0], dates[-1], bars_root)
+    warnings.extend(price_warnings)
+    benchmarks, benchmark_meta, benchmark_warnings = _benchmark_navs(dates, benchmark_file, bars_root, stock_basic_root)
+    warnings.extend(benchmark_warnings)
+    counterfactual_nav = _counterfactual_nav(dates, entries, prices)
+    final_holdings = _holdings_by_date(daily_records).get(dates[-1], {})
+    version_events = _version_events()
+    metrics = {
+        "schema_version": "track_record_audit.v1",
+        "record_root": str(record_root),
+        "output_dir": str(output_dir),
+        "warnings": warnings,
+        "nav_rows": nav_rows,
+        "trade_count": len(trades),
+        "rejection_count": len(rejections),
+        "performance": _performance_metrics(nav_rows, trades),
+        "holding_periods": _holding_periods(daily_records),
+        "benchmark_metadata": benchmark_meta,
+        "benchmarks": _benchmark_metrics(nav_rows, benchmarks),
+        "counterfactual1_nav": counterfactual_nav,
+        "decomposition": _decomposition(nav_rows, benchmarks, counterfactual_nav),
+        "concentration": _concentration(daily_records, nav_rows, trades),
+        "counterparty_quality": _counterparty_quality(trades, prices),
+        "execution_quality": _execution_quality(records, trades, rejections),
+        "version_events": version_events,
+        "version_segments": _version_segment_metrics(nav_rows, benchmarks, version_events),
+        "manual_system_attribution": _manual_system_attribution(trades, records),
+        "funding_nature": _funding_nature(records),
+        "markov_diagnostics": _markov_diagnostics(regime_history),
+        "fundamentals_appendix": _fundamentals_appendix(final_holdings, fundamentals_root),
+    }
+    _write_outputs(metrics, output_dir, generate_plots=generate_plots)
+    return metrics
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--record-root", type=Path, default=DEFAULT_RECORD_ROOT)
+    parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
+    parser.add_argument("--benchmark-file", type=Path, default=DEFAULT_BENCHMARK_FILE)
+    parser.add_argument("--bars-root", type=Path, default=DEFAULT_BARS_ROOT)
+    parser.add_argument("--stock-basic-root", type=Path, default=DEFAULT_STOCK_BASIC_ROOT)
+    parser.add_argument("--fundamentals-root", type=Path, default=DEFAULT_FUNDAMENTALS_ROOT)
+    parser.add_argument("--regime-history", type=Path, default=DEFAULT_REGIME_HISTORY)
+    parser.add_argument("--as-of-date")
+    parser.add_argument("--plots", action="store_true", help="Opt in to matplotlib PNG output when the local cache is safe.")
+    parser.add_argument("--no-plots", action="store_true")
+    args = parser.parse_args()
+    metrics = run_audit(
+        record_root=args.record_root,
+        output_root=args.output_root,
+        benchmark_file=args.benchmark_file,
+        bars_root=args.bars_root,
+        stock_basic_root=args.stock_basic_root,
+        fundamentals_root=args.fundamentals_root,
+        regime_history=args.regime_history,
+        as_of_date=args.as_of_date,
+        generate_plots=bool(args.plots and not args.no_plots),
+    )
+    print(
+        json.dumps(
+            {
+                "output_dir": metrics["output_dir"],
+                "record_count": len(metrics["nav_rows"]),
+                "production_benchmark_source": metrics["benchmark_metadata"].get("source_system", ""),
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
+if __name__ == "__main__":
+    main()
