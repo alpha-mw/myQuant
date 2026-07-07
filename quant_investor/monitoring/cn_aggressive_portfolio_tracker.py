@@ -3177,6 +3177,56 @@ def _write_outputs(
         shutil.copy2(theme_pool_audit_path, raw_dir / f"{prefix}_theme_pool_audit.json")
 
 
+def _holdings_review_ledger_invariant(
+    holdings_review: pd.DataFrame,
+    effective_ledger: pd.DataFrame,
+) -> dict[str, Any]:
+    review_symbols = {
+        str(symbol).strip().upper()
+        for symbol in holdings_review.get("symbol", pd.Series(dtype=object)).tolist()
+        if str(symbol).strip()
+    }
+    ledger_symbols = {
+        str(symbol).strip().upper()
+        for symbol in effective_ledger.get("symbol", pd.Series(dtype=object)).tolist()
+        if str(symbol).strip()
+    }
+    extra = sorted(review_symbols - ledger_symbols)
+    missing = sorted(ledger_symbols - review_symbols)
+    return {
+        "schema_version": "cn_aggressive_holdings_review_ledger_invariant.v1",
+        "status": "ok" if not extra else "warning",
+        "rule": "holdings_review symbols must be a subset of ledger_after_manual_switch symbols",
+        "review_symbol_count": len(review_symbols),
+        "ledger_symbol_count": len(ledger_symbols),
+        "extra_review_symbols": extra,
+        "missing_review_symbols": missing,
+    }
+
+
+def _prune_holdings_review_to_effective_ledger(
+    holdings_review: pd.DataFrame,
+    effective_ledger: pd.DataFrame,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    invariant = _holdings_review_ledger_invariant(holdings_review, effective_ledger)
+    if holdings_review.empty or "symbol" not in holdings_review.columns:
+        return holdings_review.copy(), invariant
+    ledger_symbols = {
+        str(symbol).strip().upper()
+        for symbol in effective_ledger.get("symbol", pd.Series(dtype=object)).tolist()
+        if str(symbol).strip()
+    }
+    if not ledger_symbols:
+        return holdings_review.copy(), invariant
+    pruned = holdings_review.copy()
+    pruned["_symbol_key"] = pruned["symbol"].astype(str).str.strip().str.upper()
+    pruned = pruned[pruned["_symbol_key"].isin(ledger_symbols)].drop(columns=["_symbol_key"]).reset_index(drop=True)
+    post_invariant = _holdings_review_ledger_invariant(pruned, effective_ledger)
+    post_invariant["pre_prune"] = invariant
+    post_invariant["pruned_extra_review_symbols"] = invariant.get("extra_review_symbols", [])
+    return pruned, post_invariant
+
+
 def _manual_order_rows(
     *,
     timestamp: str,
@@ -4513,6 +4563,10 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         dag_four_branch_compliance=dag_four_branch_compliance,
         execution_price_gate=execution_price_gate,
     )
+    holdings_review_output, holdings_review_invariant = _prune_holdings_review_to_effective_ledger(
+        holdings_review,
+        updated_ledger,
+    )
 
     notes_text = _build_notes_payload(
         trade_date=now.strftime("%Y-%m-%d"),
@@ -4537,6 +4591,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "candidate_level_dag_status": _jsonable(candidate_level_dag_status),
         "theme_candidate_pool": _jsonable(theme_pool_summary),
         "trailing_take_profit": _jsonable(trailing_take_profit_summary),
+        "holdings_review_ledger_invariant": _jsonable(holdings_review_invariant),
     }
     runtime_profile = {
         "schema_version": "cn_aggressive_runtime_profile.v1",
@@ -4651,6 +4706,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "candidate_pool": candidate_pool.to_dict(orient="records"),
         "switch_plan": switch_plan_df.to_dict(orient="records"),
         "formal_diagnostics": formal_diagnostics_payload,
+        "holdings_review_ledger_invariant": _jsonable(holdings_review_invariant),
         "market_metrics_prewarm": _jsonable(market_metrics_cache_meta),
         "runtime_profile": runtime_profile,
         "manual_execution": _jsonable(manual_execution_manifest),
@@ -4701,6 +4757,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "theme_candidate_pool": _jsonable(theme_pool_summary),
         "trailing_take_profit": _jsonable(trailing_take_profit_summary),
         "formal_diagnostics": formal_diagnostics_payload,
+        "holdings_review_ledger_invariant": _jsonable(holdings_review_invariant),
         "download_report": str(download_report_path) if download_report_path else None,
         "quote_fetch_error": quote_error or None,
         "manual_execution": _jsonable(manual_execution_manifest),
@@ -4710,7 +4767,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         base_dir=base_dir,
         run_dir=run_dir,
         report_text=report_text,
-        holdings_review=holdings_review,
+        holdings_review=holdings_review_output,
         candidate_pool=candidate_pool,
         switch_plan_df=switch_plan_df,
         ledger=updated_ledger,
@@ -4750,6 +4807,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "blocker": candidate_level_dag_status.get("blocker"),
         "theme_candidate_pool": _jsonable(theme_pool_summary),
         "formal_diagnostics": formal_diagnostics_payload,
+        "holdings_review_ledger_invariant": _jsonable(holdings_review_invariant),
         "market_metrics_prewarm": _jsonable(market_metrics_cache_meta),
         "full_market_metrics_cache": _jsonable(market_metrics_cache_meta),
         "manual_execution": _jsonable(manual_execution_manifest),

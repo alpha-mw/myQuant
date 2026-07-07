@@ -86,7 +86,7 @@ def _latest_regime(path: Path) -> dict[str, Any]:
 
 
 def _effective_holdings(record_dir: Path) -> tuple[list[dict[str, str]], str]:
-    for filename in ("ledger_after_manual_switch.csv", "ledger.csv", "holdings_review.csv"):
+    for filename in ("ledger_after_manual_switch.csv", "holdings_review.csv"):
         rows = [
             row for row in _read_csv(record_dir / filename)
             if _safe_int(row.get("shares") or row.get("shares_before")) > 0

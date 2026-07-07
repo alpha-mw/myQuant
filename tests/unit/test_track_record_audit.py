@@ -391,6 +391,68 @@ def test_phase13_beta_regime_and_second_counterfactual_sections(tmp_path):
     assert "## M. 毛/净执行成本估计" in report
 
 
+def test_trade_calendar_excludes_weekend_paper_fill_from_default_machine_exit(tmp_path):
+    audit = _load_audit()
+    bars_root = tmp_path / "bars"
+    bars_root.mkdir()
+    pd.DataFrame(
+        [
+            {"ts_code": "AAA.SZ", "trade_date": "20260703", "close": 10.0, "adj_close": 20.0},
+            {"ts_code": "AAA.SZ", "trade_date": "20260706", "close": 8.0, "adj_close": 16.0},
+        ]
+    ).to_parquet(bars_root / "part.parquet", index=False)
+    trades = [
+        {
+            "date": "2026-07-04",
+            "symbol": "AAA.SZ",
+            "action": "sell",
+            "status": "filled",
+            "shares": 100,
+            "price": 10.0,
+            "source": "manual_execution_manifest",
+        }
+    ]
+
+    annotated, diagnostics = audit._annotate_trade_calendar_status(
+        trades,
+        ["2026-07-03", "2026-07-06"],
+        bars_root,
+    )
+    raw_prices, _warnings = audit._read_price_panel(
+        ["AAA.SZ"],
+        "2026-07-03",
+        "2026-07-06",
+        bars_root,
+        prefer_adjusted=False,
+    )
+    adjusted_prices, _warnings = audit._read_price_panel(
+        ["AAA.SZ"],
+        "2026-07-03",
+        "2026-07-06",
+        bars_root,
+    )
+    nav_rows = [{"date": "2026-07-03", "initial_capital": 1000.0}, {"date": "2026-07-06"}]
+
+    default_shadow = audit._machine_exit_shadow([], annotated, raw_prices, nav_rows, {"manual": True})
+    sensitivity_shadow = audit._machine_exit_shadow(
+        [],
+        annotated,
+        raw_prices,
+        nav_rows,
+        {"manual": True},
+        include_non_trading=True,
+    )
+
+    assert diagnostics["weekend_paper_fill_count"] == 1
+    assert annotated[0]["calendar_status"] == "weekend_paper_fill"
+    assert raw_prices["AAA.SZ"]["2026-07-06"] == 8.0
+    assert adjusted_prices["AAA.SZ"]["2026-07-06"] == 16.0
+    assert default_shadow["manual_proxy_sell_count"] == 0
+    assert default_shadow["excluded_non_trading_count"] == 1
+    assert sensitivity_shadow["manual_proxy_sell_count"] == 1
+    assert sensitivity_shadow["rows"][0]["delta_vs_manual_pnl"] == -200.0
+
+
 def test_track_record_audit_refuses_output_inside_record_root(tmp_path):
     audit = _load_audit()
     record_root, benchmark, bars_root, stock_basic, fundamentals_root, regime = _write_inputs(tmp_path)

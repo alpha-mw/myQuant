@@ -489,6 +489,8 @@ def _read_price_panel(
     start_date: str,
     end_date: str,
     bars_root: Path,
+    *,
+    prefer_adjusted: bool = True,
 ) -> tuple[dict[str, dict[str, float]], list[str]]:
     warnings: list[str] = []
     symbol_set = {str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()}
@@ -515,7 +517,10 @@ def _read_price_panel(
         return {}, warnings
     close = pd.to_numeric(frame["close"], errors="coerce")
     adj_close = pd.to_numeric(frame.get("adj_close"), errors="coerce") if "adj_close" in frame else close
-    frame["price"] = adj_close.where(adj_close.notna() & (adj_close > 0), close)
+    if prefer_adjusted:
+        frame["price"] = adj_close.where(adj_close.notna() & (adj_close > 0), close)
+    else:
+        frame["price"] = close
     frame["date"] = frame["trade_date"].astype(str).map(_iso_from_any)
     frame = frame.dropna(subset=["price"]).sort_values(["ts_code", "date"])
     prices: dict[str, dict[str, float]] = defaultdict(dict)
@@ -523,6 +528,89 @@ def _read_price_panel(
         if float(row.price) > 0:
             prices[str(row.ts_code)][str(row.date)] = float(row.price)
     return dict(prices), warnings
+
+
+def _read_open_dates(start_date: str, end_date: str, bars_root: Path) -> tuple[set[str], list[str]]:
+    if not bars_root.exists():
+        return set(), []
+    try:
+        import pandas as pd  # type: ignore[import-not-found]
+    except ImportError:
+        return set(), ["pandas/pyarrow unavailable; local trade-calendar annotation skipped."]
+    filters = [
+        ("trade_date", ">=", _compact_date(start_date)),
+        ("trade_date", "<=", _compact_date(end_date)),
+    ]
+    try:
+        with _suppress_native_stderr():
+            frame = pd.read_parquet(bars_root, columns=["trade_date"], filters=filters)
+    except Exception as exc:
+        return set(), [f"failed to read local open-date calendar from bars: {exc}"]
+    if frame.empty or "trade_date" not in frame:
+        return set(), []
+    return {_iso_from_any(value) for value in frame["trade_date"].dropna().astype(str).unique()}, []
+
+
+def _annotate_trade_calendar_status(
+    trades: list[dict[str, Any]],
+    dates: list[str],
+    bars_root: Path,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not dates:
+        return [dict(trade) for trade in trades], {"available": False, "reason": "missing_nav_dates"}
+    open_dates, warnings = _read_open_dates(dates[0], dates[-1], bars_root)
+    annotated: list[dict[str, Any]] = []
+    weekend_rows: list[dict[str, Any]] = []
+    non_open_rows: list[dict[str, Any]] = []
+    for trade in trades:
+        row = dict(trade)
+        trade_date = str(row.get("date") or "")
+        status = "unclassified"
+        reason = ""
+        if row.get("status") != "filled":
+            status = "not_filled"
+        elif open_dates and trade_date not in open_dates:
+            try:
+                weekday = datetime.strptime(trade_date, "%Y-%m-%d").weekday()
+            except ValueError:
+                weekday = -1
+            status = "weekend_paper_fill" if weekday >= 5 else "non_trading_paper_fill"
+            reason = "date_not_in_local_bars_open_dates"
+            payload = {
+                "date": trade_date,
+                "symbol": row.get("symbol"),
+                "action": row.get("action"),
+                "shares": row.get("shares"),
+                "price": row.get("price"),
+                "calendar_status": status,
+            }
+            non_open_rows.append(payload)
+            if status == "weekend_paper_fill":
+                weekend_rows.append(payload)
+        else:
+            status = "trading_day"
+        row["calendar_status"] = status
+        row["calendar_exclusion_reason"] = reason
+        row["excluded_from_phase14_e_l_default"] = status in {"weekend_paper_fill", "non_trading_paper_fill"}
+        annotated.append(row)
+    diagnostics = {
+        "available": bool(open_dates),
+        "source": "local_bars_trade_date_set",
+        "open_date_count": len(open_dates),
+        "weekend_paper_fill_count": len(weekend_rows),
+        "non_open_paper_fill_count": len(non_open_rows),
+        "weekend_paper_fills": weekend_rows,
+        "non_open_paper_fills": non_open_rows,
+        "warnings": warnings,
+    }
+    return annotated, diagnostics
+
+
+def _calendar_eligible_trade(trade: dict[str, Any]) -> bool:
+    return str(trade.get("calendar_status") or "trading_day") not in {
+        "weekend_paper_fill",
+        "non_trading_paper_fill",
+    }
 
 
 def _price_at_or_after(series: dict[str, float], target: str) -> tuple[str, float] | None:
@@ -1089,7 +1177,12 @@ def _shadow_cap_nav(
     return result
 
 
-def _manual_proxy_trades(trades: list[dict[str, Any]], attribution: dict[str, Any]) -> list[dict[str, Any]]:
+def _manual_proxy_trades(
+    trades: list[dict[str, Any]],
+    attribution: dict[str, Any],
+    *,
+    include_non_trading: bool = False,
+) -> list[dict[str, Any]]:
     if not attribution:
         return []
     proposal_symbols = {
@@ -1100,6 +1193,8 @@ def _manual_proxy_trades(trades: list[dict[str, Any]], attribution: dict[str, An
     result: list[dict[str, Any]] = []
     for trade in trades:
         if trade.get("action") != "sell" or trade.get("status") != "filled":
+            continue
+        if not include_non_trading and not _calendar_eligible_trade(trade):
             continue
         symbol = str(trade.get("symbol") or "").strip().upper()
         if trade.get("source") != "orders" or symbol not in proposal_symbols:
@@ -1124,9 +1219,23 @@ def _machine_exit_shadow(
     prices: dict[str, dict[str, float]],
     nav_rows: list[dict[str, Any]],
     attribution: dict[str, Any],
+    *,
+    include_non_trading: bool = False,
 ) -> dict[str, Any]:
     stops = _stop_price_by_symbol_date(records)
-    manual_sells = _manual_proxy_trades(trades, attribution)
+    all_manual_sells = _manual_proxy_trades(trades, attribution, include_non_trading=True)
+    manual_sells = _manual_proxy_trades(trades, attribution, include_non_trading=include_non_trading)
+    excluded_non_trading = [
+        {
+            "date": trade.get("date"),
+            "symbol": trade.get("symbol"),
+            "shares": trade.get("shares"),
+            "price": trade.get("price"),
+            "calendar_status": trade.get("calendar_status"),
+        }
+        for trade in all_manual_sells
+        if not _calendar_eligible_trade(trade)
+    ]
     end_date = str(nav_rows[-1]["date"]) if nav_rows else ""
     initial = _safe_float(nav_rows[0].get("initial_capital"), 1.0) if nav_rows else 1.0
     rows: list[dict[str, Any]] = []
@@ -1179,6 +1288,9 @@ def _machine_exit_shadow(
         "rows": rows,
         "current_difference_vs_actual": total_delta / max(initial, 1.0),
         "manual_proxy_sell_count": len(manual_sells),
+        "include_non_trading": include_non_trading,
+        "excluded_non_trading_count": 0 if include_non_trading else len(excluded_non_trading),
+        "excluded_non_trading_rows": [] if include_non_trading else excluded_non_trading,
     }
 
 
@@ -1187,13 +1299,22 @@ def _shadow_ledgers(
     nav_rows: list[dict[str, Any]],
     trades: list[dict[str, Any]],
     prices: dict[str, dict[str, float]],
+    execution_prices: dict[str, dict[str, float]],
     attribution: dict[str, Any],
 ) -> dict[str, Any]:
     cap050 = _shadow_cap_nav(records, nav_rows, prices, 0.50)
     actual_start = _safe_float(nav_rows[0].get("nav"), 1.0) if nav_rows else 1.0
     actual_end = _safe_float(nav_rows[-1].get("nav"), actual_start) if nav_rows else actual_start
     cap050_end = _safe_float(cap050.get(str(nav_rows[-1]["date"])), 1.0) if nav_rows else 1.0
-    machine_exit = _machine_exit_shadow(records, trades, prices, nav_rows, attribution)
+    machine_exit = _machine_exit_shadow(records, trades, execution_prices, nav_rows, attribution)
+    machine_exit_with_non_trading = _machine_exit_shadow(
+        records,
+        trades,
+        execution_prices,
+        nav_rows,
+        attribution,
+        include_non_trading=True,
+    )
     return {
         "shadow_nav_cap050": cap050,
         "shadow_cap050_return": cap050_end - 1.0,
@@ -1201,6 +1322,7 @@ def _shadow_ledgers(
         "cap050_current_difference_vs_actual": cap050_end - (actual_end / actual_start if actual_start > 0 else 1.0),
         "shadow_nav_machine_exit": machine_exit,
         "machine_exit_current_difference_vs_actual": machine_exit.get("current_difference_vs_actual"),
+        "machine_exit_sensitivity_including_non_trading": machine_exit_with_non_trading,
     }
 
 
@@ -1259,6 +1381,8 @@ def _counterparty_quality(
         for trade in trades:
             if trade.get("action") != action:
                 continue
+            if not _calendar_eligible_trade(trade):
+                continue
             series = prices.get(str(trade.get("symbol")))
             if not series:
                 continue
@@ -1298,6 +1422,8 @@ def _counterparty_quality_by_exit_bucket(
     buckets = {"manual_proxy_sell": [], "system_sell": []}
     for trade in trades:
         if trade.get("action") != "sell" or trade.get("status") != "filled":
+            continue
+        if not _calendar_eligible_trade(trade):
             continue
         key = (
             trade.get("date"),
@@ -2192,7 +2318,19 @@ def _render_report(metrics: dict[str, Any]) -> str:
                 [
                     ["cap050", _pct(shadow.get("cap050_current_difference_vs_actual"))],
                     ["machine_exit", _pct(shadow.get("machine_exit_current_difference_vs_actual"))],
+                    [
+                        "machine_exit_sensitive_including_non_trading",
+                        _pct(
+                            shadow.get("machine_exit_sensitivity_including_non_trading", {}).get(
+                                "current_difference_vs_actual"
+                            )
+                        ),
+                    ],
                 ],
+            ),
+            (
+                "注：machine_exit 默认剔除 `weekend_paper_fill` / `non_trading_paper_fill`；"
+                "敏感性行仅用于显示历史幽灵成交进入影子口径时的影响。"
             ),
             _markdown_table(
                 ["Date", "Symbol", "Status", "Delta", "Contribution", "Share"],
@@ -2323,8 +2461,9 @@ def run_audit(
     nav_rows = _nav_series(daily_records)
     if len(nav_rows) < 2:
         raise ValueError("Need at least two NAV records for track-record audit.")
-    trades, rejections = _extract_trades(records)
     dates = [row["date"] for row in nav_rows]
+    trades, rejections = _extract_trades(records)
+    trades, trade_calendar_diagnostics = _annotate_trade_calendar_status(trades, dates, bars_root)
     entries = _entry_dates(daily_records, trades)
     audit_symbols = set(entries)
     audit_symbols.update(str(trade.get("symbol") or "").strip().upper() for trade in trades if trade.get("symbol"))
@@ -2341,6 +2480,14 @@ def run_audit(
         )
     prices, price_warnings = _read_price_panel(audit_symbols, dates[0], dates[-1], bars_root)
     warnings.extend(price_warnings)
+    execution_prices, execution_price_warnings = _read_price_panel(
+        audit_symbols,
+        dates[0],
+        dates[-1],
+        bars_root,
+        prefer_adjusted=False,
+    )
+    warnings.extend(execution_price_warnings)
     benchmarks, benchmark_meta, benchmark_warnings = _benchmark_navs(dates, benchmark_file, bars_root, stock_basic_root)
     warnings.extend(benchmark_warnings)
     counterfactual_nav = _counterfactual_nav(dates, entries, prices)
@@ -2358,6 +2505,7 @@ def run_audit(
         "warnings": warnings,
         "nav_rows": nav_rows,
         "trade_count": len(trades),
+        "trade_calendar_diagnostics": trade_calendar_diagnostics,
         "rejection_count": len(rejections),
         "performance": _performance_metrics(nav_rows, trades),
         "holding_periods": _holding_periods(daily_records),
@@ -2388,7 +2536,7 @@ def run_audit(
             entries.keys(),
         ),
         "selection_alpha": _selection_alpha(daily_records, trades, prices, dates[-1]),
-        "shadow_ledgers": _shadow_ledgers(daily_records, nav_rows, trades, prices, manual_system),
+        "shadow_ledgers": _shadow_ledgers(daily_records, nav_rows, trades, prices, execution_prices, manual_system),
         "top3_peak_weights": _peak_weights(daily_records, top3_symbols),
     }
     _write_outputs(metrics, output_dir, generate_plots=generate_plots)

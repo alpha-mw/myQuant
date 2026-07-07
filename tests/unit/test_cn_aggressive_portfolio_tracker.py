@@ -2485,6 +2485,30 @@ def test_legacy_overweight_holding_warning_only_does_not_force_sell():
     assert "只提示，不强制卖出" in lines[0]
 
 
+def test_prune_holdings_review_to_effective_ledger_removes_exited_symbols():
+    holdings_review = pd.DataFrame(
+        [
+            {"symbol": "688301.SH", "name": "奕瑞科技", "current_value": 100.0},
+            {"symbol": "300285.SZ", "name": "国瓷材料", "current_value": 50.0},
+        ]
+    )
+    effective_ledger = pd.DataFrame(
+        [
+            {"symbol": "688301.SH", "name": "奕瑞科技", "current_value": 100.0},
+        ]
+    )
+
+    pruned, invariant = tracker._prune_holdings_review_to_effective_ledger(
+        holdings_review,
+        effective_ledger,
+    )
+
+    assert pruned["symbol"].tolist() == ["688301.SH"]
+    assert invariant["status"] == "ok"
+    assert invariant["pruned_extra_review_symbols"] == ["300285.SZ"]
+    assert invariant["pre_prune"]["status"] == "warning"
+
+
 def test_run_tracker_auto_fills_risk_reduction_sell_with_realtime_quote(monkeypatch, tmp_path):
     ledger = pd.DataFrame(
         [

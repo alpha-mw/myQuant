@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -86,14 +87,16 @@ def test_trade_tradability_flags_one_price_limit_and_missing_bar(tmp_path):
             {"date": "2026-07-03", "symbol": "AAA.SZ", "action": "buy", "status": "filled", "shares": 100, "price": 11},
             {"date": "2026-07-03", "symbol": "BBB.SZ", "action": "sell", "status": "filled", "shares": 100, "price": 10.5},
             {"date": "2026-07-03", "symbol": "CCC.SZ", "action": "sell", "status": "filled", "shares": 100, "price": 10.5},
+            {"date": "2026-07-04", "symbol": "DDD.SZ", "action": "sell", "status": "filled", "shares": 100, "price": 10.5},
         ],
         bars_root,
     )
 
-    assert result["trade_count"] == 3
-    assert [row["symbol"] for row in result["violations"]] == ["AAA.SZ", "CCC.SZ"]
+    assert result["trade_count"] == 4
+    assert [row["symbol"] for row in result["violations"]] == ["AAA.SZ", "CCC.SZ", "DDD.SZ"]
     assert "buy_blocked_by_one_price_limit_up" in result["violations"][0]["flags"]
     assert "missing_bar_or_possible_suspension" in result["violations"][1]["flags"]
+    assert "weekend_paper_fill" in result["violations"][2]["flags"]
 
 
 def test_machine_exit_breakdown_adds_status_and_contribution_fields():
@@ -130,3 +133,115 @@ def test_machine_exit_breakdown_adds_status_and_contribution_fields():
     assert result["rows"][0]["exit_status"] == "stop_triggered_exit"
     assert result["rows"][1]["exit_status"] == "not_closed_marked_to_window_end"
     assert result["rows"][1]["contribution_pct_of_initial"] == 0.3
+
+
+def test_price_audit_688301_uses_raw_close_and_reports_adjusted_mismatch(tmp_path):
+    mod = _load_module()
+    bars_root = tmp_path / "bars"
+    bars_root.mkdir()
+    pd.DataFrame(
+        [
+            {"ts_code": "688301.SH", "trade_date": "20260617", "close": 120.85, "adj_close": 483.702125},
+            {"ts_code": "688301.SH", "trade_date": "20260706", "close": 110.47, "adj_close": 442.156175},
+        ]
+    ).to_parquet(bars_root / "part.parquet", index=False)
+    metrics = {
+        "nav_rows": [{"date": "2026-06-17", "initial_capital": 1_000_000}, {"date": "2026-07-06"}],
+        "shadow_ledgers": {
+            "shadow_nav_machine_exit": {"rows": []},
+            "machine_exit_sensitivity_including_non_trading": {
+                "rows": [{"date": "2026-06-20", "symbol": "688301.SH"}]
+            },
+        },
+    }
+
+    result = mod.price_audit_688301(
+        metrics,
+        [
+            {
+                "date": "2026-06-23",
+                "symbol": "688301.SH",
+                "action": "sell",
+                "status": "filled",
+                "shares": 400,
+                "price": 112.14,
+            },
+            {
+                "date": "2026-06-20",
+                "symbol": "688301.SH",
+                "action": "sell",
+                "status": "filled",
+                "shares": 100,
+                "price": 120.6,
+                "calendar_status": "weekend_paper_fill",
+            },
+        ],
+        bars_root,
+    )
+
+    recompute = result["manual_recompute"]
+    assert recompute["shares_unit"] == "股"
+    assert abs(recompute["raw_contribution_pct"] - (-0.000668)) < 1e-9
+    assert abs(recompute["adjusted_close_mismatch_contribution_pct"] - 0.13200647) < 1e-9
+    assert result["ghost_20260620"]["included_in_current_default_shadow"] is False
+    assert result["ghost_20260620"]["included_in_sensitivity_shadow"] is True
+
+
+def test_theme_guardrail_replay_finds_first_hard_filter_residual_trigger(tmp_path):
+    mod = _load_module()
+    record_root = tmp_path / "records"
+    first = record_root / "20260702_1357"
+    first.mkdir(parents=True)
+    (first / "theme_pool_audit.json").write_text(
+        json.dumps(
+            {
+                "summary": {
+                    "policy": {"hard_theme_constraint": True, "residual_enabled": True},
+                    "core_symbol_count": 0,
+                    "residual_symbol_count": 6,
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (first / "market_snapshot.json").write_text(
+        json.dumps({"blocker": "theme_pool_hard_filter_regression"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    result = mod.theme_guardrail_replay(record_root)
+
+    assert result["first_trigger"]["record_id"] == "20260702_1357"
+    assert "zero upper bound" in result["residual_6_violation"]
+
+
+def test_exit_record_audit_requires_manifest_and_order_rows(tmp_path):
+    mod = _load_module()
+    record_root = tmp_path / "records"
+    run_dir = record_root / "20260707_1046"
+    run_dir.mkdir(parents=True)
+    (run_dir / "manual_execution_manifest.json").write_text(
+        json.dumps(
+            {
+                "applied_local_trades": [
+                    {"symbol": "300285.SZ", "action": "clear_risk_sell", "shares": 700, "price": 88.28}
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "manual_switch_and_take_profit_orders.csv").write_text(
+        "timestamp,status,action,symbol,shares,price\n"
+        "2026-07-07,filled_local_manual,clear_risk_sell,300285.SZ,700,88.28\n",
+        encoding="utf-8",
+    )
+
+    result = mod.exit_record_audit(record_root, symbols=["300285.SZ", "600487.SH"])
+
+    by_symbol = {row["symbol"]: row for row in result["rows"]}
+    assert by_symbol["300285.SZ"]["status"] == "complete_exit_record"
+    assert by_symbol["300285.SZ"]["nav_breakpoint_risk"] is False
+    assert by_symbol["600487.SH"]["status"] == "missing_exit_record"
+    assert "600487.SH" in result["nav_breakpoint_risk_symbols"]
