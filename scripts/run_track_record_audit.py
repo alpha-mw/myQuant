@@ -1140,12 +1140,14 @@ def _machine_exit_shadow(
         series = prices.get(symbol, {})
         trigger_date = None
         trigger_price = None
+        stop_triggered = False
         if stop_price and trade_price > 0:
             for row_date in sorted(date_key for date_key in series if date_key >= trade_date):
                 price = series[row_date]
                 if price <= stop_price:
                     trigger_date = row_date
                     trigger_price = price
+                    stop_triggered = True
                     break
         if trigger_price is None:
             end_pair = _price_at_or_before(series, end_date)
@@ -1164,8 +1166,14 @@ def _machine_exit_shadow(
                 "machine_exit_price": trigger_price,
                 "stage_stop_price": stop_price,
                 "delta_vs_manual_pnl": delta,
+                "stop_triggered": stop_triggered,
+                "exit_status": "stop_triggered_exit" if stop_triggered else "not_closed_marked_to_window_end",
+                "contribution_pct_of_initial": delta / max(initial, 1.0) if delta is not None else None,
             }
         )
+    for row in rows:
+        delta = _safe_float(row.get("delta_vs_manual_pnl"), None)
+        row["share_of_shadow_delta"] = delta / total_delta if delta is not None and total_delta else None
     return {
         "method": "manual_proxy sell is hypothetically held until recorded stage_stop_price triggers; if not triggered, window-end close is used.",
         "rows": rows,
@@ -2184,6 +2192,20 @@ def _render_report(metrics: dict[str, Any]) -> str:
                 [
                     ["cap050", _pct(shadow.get("cap050_current_difference_vs_actual"))],
                     ["machine_exit", _pct(shadow.get("machine_exit_current_difference_vs_actual"))],
+                ],
+            ),
+            _markdown_table(
+                ["Date", "Symbol", "Status", "Delta", "Contribution", "Share"],
+                [
+                    [
+                        row.get("date"),
+                        row.get("symbol"),
+                        row.get("exit_status"),
+                        _money(row.get("delta_vs_manual_pnl")),
+                        _pct(row.get("contribution_pct_of_initial")),
+                        _pct(row.get("share_of_shadow_delta")),
+                    ]
+                    for row in shadow.get("shadow_nav_machine_exit", {}).get("rows", [])
                 ],
             ),
             "",

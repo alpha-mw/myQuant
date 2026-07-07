@@ -374,6 +374,10 @@ def test_phase13_beta_regime_and_second_counterfactual_sections(tmp_path):
     assert metrics["estimated_execution_cost"]["net_full_window_return"] < (
         metrics["estimated_execution_cost"]["gross_full_window_return"]
     )
+    machine_rows = metrics["shadow_ledgers"]["shadow_nav_machine_exit"]["rows"]
+    assert machine_rows[0]["exit_status"] in {"stop_triggered_exit", "not_closed_marked_to_window_end"}
+    assert "contribution_pct_of_initial" in machine_rows[0]
+    assert "share_of_shadow_delta" in machine_rows[0]
     assert "local/manual simulation design" in metrics["slippage_zero_root_cause"]["conclusion"]
 
     report = (tmp_path / "audit" / "20260108" / "audit_report.md").read_text(encoding="utf-8")
