@@ -25,6 +25,9 @@ from quant_investor.funnel.theme_candidate_pool import (  # noqa: E402
     ThemeCandidatePoolBuilder,
     ThemePoolConfig,
 )
+from quant_investor.monitoring.cn_aggressive_portfolio_tracker import (  # noqa: E402
+    _build_candidate_decay_waterfall,
+)
 from print_pipeline_state import DEFAULT_RECORD_ROOT, build_state  # noqa: E402
 from run_track_record_audit import (  # noqa: E402
     DEFAULT_BARS_ROOT,
@@ -759,6 +762,83 @@ def daily_pipeline_proof(record_root: Path, proof_record_id: str = "20260708_091
     }
 
 
+def phase14_4_candidate_decay_waterfall(
+    record_root: Path,
+    proof_record_id: str = "20260708_0910",
+) -> dict[str, Any]:
+    run_dir = record_root / proof_record_id
+    if not run_dir.exists():
+        return {
+            "record_id": proof_record_id,
+            "status": "missing",
+            "conclusion": "record not found; cannot build candidate decay waterfall.",
+        }
+    theme_summary = _theme_pool_summary_from_record(run_dir)
+    market = _read_json_file(run_dir / "market_snapshot.json")
+    manifest = _read_json_file(run_dir / "manifest.json")
+    candidate_status = dict(
+        market.get("candidate_level_dag_status")
+        or manifest.get("candidate_level_dag_status")
+        or {}
+    )
+    if not candidate_status:
+        candidate_status = {
+            "candidate_generation_status": (
+                market.get("candidate_generation_status")
+                or manifest.get("candidate_generation_status")
+            ),
+            "blocker": market.get("blocker") or manifest.get("blocker"),
+            "dag_pipeline": {},
+        }
+    if theme_summary and not candidate_status.get("theme_candidate_pool"):
+        candidate_status["theme_candidate_pool"] = theme_summary
+    waterfall = dict(candidate_status.get("candidate_decay_waterfall") or {})
+    if not waterfall:
+        waterfall = _build_candidate_decay_waterfall(
+            candidate_status=candidate_status,
+            dag_artifacts=None,
+            accepted_count=0,
+            missing_by_symbol={},
+            zero_target_symbols=[],
+        )
+    classification = dict(waterfall.get("classification") or {})
+    stage_rows = list(waterfall.get("stages") or [])
+    core_stage = next(
+        (
+            row
+            for row in stage_rows
+            if str(row.get("stage") or "") in {"core_to_bayesian_record", "deterministic_score_gate"}
+        ),
+        {},
+    )
+    core_input = _safe_int(
+        core_stage.get("input_count"),
+        _safe_int(theme_summary.get("admitted_symbol_count"), _safe_int(theme_summary.get("core_symbol_count"))),
+    )
+    single_reason = str(classification.get("classification") or "") == "single_reason_requires_constraint_review"
+    conclusion = (
+        "single mechanical reason >=95%; inspect constraint snapshot before any freeze-exception behavior fix."
+        if single_reason
+        else (
+            "20260708_0910 historical artifact shows Theme hard-filter core was nonempty, "
+            "but post-core per-row reasons were not persisted; current fix is measurement/report-only."
+        )
+    )
+    return {
+        "schema_version": "phase14_4_candidate_decay_waterfall.v1",
+        "record_id": proof_record_id,
+        "status": "available",
+        "source": "candidate_level_dag_status_or_artifact_only_reconstruction",
+        "core_start_count": core_input,
+        "waterfall": waterfall,
+        "classification": classification,
+        "constraint_snapshot": waterfall.get("constraint_snapshot", {}),
+        "single_mechanical_reason_requires_fix": single_reason,
+        "daily_report_integration": "empty shortlist attaches candidate_decay_waterfall table by default",
+        "conclusion": conclusion,
+    }
+
+
 def system_sell_post_exit_triple(metrics: dict[str, Any]) -> dict[str, Any]:
     system_sell = dict(metrics.get("counterparty_exit_split", {}).get("system_sell") or {})
     return {
@@ -1040,6 +1120,9 @@ def build_micro_report(
             "shadow_denominator_check": shadow_denominator_check(metrics),
             "session_forensics_688301": session_forensics_688301_excerpt(session_root),
         },
+        "phase14_4": {
+            "candidate_decay_waterfall": phase14_4_candidate_decay_waterfall(record_root, proof_record_id),
+        },
     }
 
 
@@ -1063,6 +1146,11 @@ def render_markdown(payload: dict[str, Any]) -> str:
     system_sell = phase14_3.get("system_sell_post_exit_triple", {})
     denominator = phase14_3.get("shadow_denominator_check", {})
     forensics = phase14_3.get("session_forensics_688301", {})
+    phase14_4 = payload.get("phase14_4", {})
+    decay = phase14_4.get("candidate_decay_waterfall", {})
+    decay_waterfall = dict(decay.get("waterfall") or {})
+    decay_classification = dict(decay.get("classification") or {})
+    decay_constraints = dict(decay.get("constraint_snapshot") or {})
     lines = [
         "# Phase 14 Micro Checks",
         "",
@@ -1203,6 +1291,38 @@ def render_markdown(payload: dict[str, Any]) -> str:
             f"- blocker: {daily_proof.get('blocker')}",
             f"- theme_pool: {daily_proof.get('theme_pool')}",
             f"- conclusion: {daily_proof.get('conclusion')}",
+            "",
+            "## Phase 14.4 Candidate Decay Waterfall",
+            f"- record_id: {decay.get('record_id')}",
+            f"- core_start_count: {decay.get('core_start_count')}",
+            f"- classification: {decay_classification.get('classification')}",
+            f"- dominant_reason: {decay_classification.get('dominant_reason')} "
+            f"({_pct(decay_classification.get('dominant_reason_share'))})",
+            f"- daily_report_integration: {decay.get('daily_report_integration')}",
+            f"- conclusion: {decay.get('conclusion')}",
+            "| stage | input | output | rejected | top reasons |",
+            "|---|---:|---:|---:|---|",
+        ]
+    )
+    for row in decay_waterfall.get("stages", []):
+        reasons = dict(row.get("rejection_reasons") or {})
+        reason_text = "；".join(
+            f"{reason}={count}"
+            for reason, count in sorted(reasons.items(), key=lambda item: (-_safe_float(item[1]), str(item[0])))[:5]
+        ) or "none"
+        lines.append(
+            f"| {row.get('label') or row.get('stage')} | {row.get('input_count')} | "
+            f"{row.get('output_count')} | {row.get('rejected_count')} | {reason_text} |"
+        )
+    lines.extend(
+        [
+            "",
+            f"- constraints: min_weight={decay_constraints.get('min_weight')}; "
+            f"whole_lot={decay_constraints.get('whole_lot')}; "
+            f"gross_cap={decay_constraints.get('gross_cap')}; "
+            f"single_name_cap_env={decay_constraints.get('single_name_cap_env')}; "
+            f"portfolio_max_weight={decay_constraints.get('portfolio_max_weight')}; "
+            f"theme_min_symbol_score={decay_constraints.get('theme_min_symbol_score')}",
             "",
             "## Phase 14.3 E Split System Sell",
             f"- count: {system_sell.get('count')}",

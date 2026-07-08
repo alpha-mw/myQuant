@@ -389,6 +389,67 @@ def test_daily_pipeline_proof_distinguishes_hard_filter_pool_from_final_shortlis
     assert result["blocker"] == "no_candidate_selected_by_portfolio_constructor"
 
 
+def test_phase14_4_candidate_decay_waterfall_reconstructs_artifact_only_counts(tmp_path):
+    mod = _load_module()
+    run_dir = tmp_path / "records" / "20260708_0910"
+    run_dir.mkdir(parents=True)
+    theme_summary = {
+        "policy": {
+            "regime": "震荡高波",
+            "min_symbol_score": 0.63,
+            "min_theme_score": 0.73,
+            "hard_theme_constraint": True,
+        },
+        "symbol_count": 5541,
+        "admitted_symbol_count": 228,
+        "core_symbol_count": 228,
+        "residual_symbol_count": 0,
+        "excluded_reason_counts": {
+            "theme_pool_missing_theme_membership": 5241,
+            "theme_pool_theme_not_admitted": 72,
+        },
+    }
+    (run_dir / "theme_pool_audit.json").write_text(
+        json.dumps({"summary": theme_summary}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (run_dir / "market_snapshot.json").write_text(
+        json.dumps(
+            {
+                "candidate_level_dag_status": {
+                    "candidate_generation_status": "empty",
+                    "blocker": "no_candidate_selected_by_portfolio_constructor",
+                    "dag_pipeline": {
+                        "bayesian_record_count": 2,
+                        "shortlist_count": 0,
+                        "portfolio_target_count": 0,
+                    },
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = mod.phase14_4_candidate_decay_waterfall(tmp_path / "records", "20260708_0910")
+
+    assert result["status"] == "available"
+    assert result["core_start_count"] == 228
+    stages = {
+        row["stage"]: row
+        for row in result["waterfall"]["stages"]
+    }
+    assert stages["theme_pool"]["input_count"] == 5541
+    assert stages["theme_pool"]["output_count"] == 228
+    assert stages["core_to_bayesian_record"]["input_count"] == 228
+    assert stages["core_to_bayesian_record"]["output_count"] == 2
+    assert stages["bayesian_shortlist"]["input_count"] == 2
+    assert stages["bayesian_shortlist"]["output_count"] == 0
+    assert result["classification"]["classification"] == "by_design_or_artifact_limited"
+    assert result["single_mechanical_reason_requires_fix"] is False
+    assert result["constraint_snapshot"]["theme_min_symbol_score"] == 0.63
+
+
 def test_shadow_denominator_check_explains_window_return_gap():
     mod = _load_module()
     result = mod.shadow_denominator_check(

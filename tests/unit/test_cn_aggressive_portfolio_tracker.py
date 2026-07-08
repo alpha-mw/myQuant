@@ -1054,6 +1054,15 @@ def test_candidate_pool_from_v13_dag_empty_when_no_shortlist_or_positive_targets
     assert status["dag_pipeline"]["portfolio_target_count"] == 0
     assert status["dag_pipeline"]["shortlist_artifact_missing"] is False
     assert status["error"] == ""
+    waterfall = status["candidate_decay_waterfall"]
+    assert waterfall["schema_version"] == tracker.CANDIDATE_DECAY_WATERFALL_SCHEMA_VERSION
+    stages = {row["stage"]: row for row in waterfall["stages"]}
+    assert stages["bayesian_shortlist"]["input_count"] == 1
+    assert stages["bayesian_shortlist"]["output_count"] == 0
+    assert waterfall["classification"]["classification"] == "single_reason_requires_constraint_review"
+    lines = tracker._format_candidate_decay_waterfall_report_lines(status)
+    assert any("空 shortlist 衰减瀑布" in line for line in lines)
+    assert any("Bayesian records -> shortlist" in line for line in lines)
 
 
 def test_trailing_take_profit_review_sets_explicit_watch_from_entry_date():

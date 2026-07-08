@@ -126,6 +126,8 @@ CATEGORY_THEME_LABELS = {
 }
 REQUIRED_DAG_BRANCHES = ("quant", "fundamental", "intelligence", "macro")
 CANDIDATE_DAG_TOP_K = 12
+CANDIDATE_DECAY_WATERFALL_SCHEMA_VERSION = "cn_aggressive_candidate_decay_waterfall.v1"
+CANDIDATE_DECAY_SINGLE_REASON_THRESHOLD = 0.95
 THEME_POOL_AUDIT_SCHEMA_VERSION = "cn_aggressive_theme_pool_audit.v1"
 THEME_POOL_AUDIT_SYMBOL_SAMPLE_LIMIT = 50
 MARKET_METRICS_CACHE_SCHEMA_VERSION = _market_metrics.MARKET_METRICS_CACHE_SCHEMA_VERSION
@@ -1808,6 +1810,372 @@ def _candidate_dag_branch_state(packet: dict[str, Any]) -> tuple[list[str], list
     return present, missing, scores
 
 
+def _positive_reason_counts(value: Any) -> dict[str, int]:
+    payload = _mapping_payload(value)
+    result: dict[str, int] = {}
+    for reason, count in payload.items():
+        text = str(reason or "").strip()
+        numeric = _int_payload(count)
+        if text and numeric > 0:
+            result[text] = numeric
+    return dict(sorted(result.items()))
+
+
+def _candidate_decay_stage(
+    *,
+    name: str,
+    label: str,
+    input_count: int,
+    output_count: int,
+    rejection_reasons: dict[str, int] | None = None,
+    note: str = "",
+) -> dict[str, Any]:
+    input_count = max(_int_payload(input_count), 0)
+    output_count = max(_int_payload(output_count), 0)
+    rejected_count = max(input_count - output_count, 0)
+    reasons = _positive_reason_counts(rejection_reasons or {})
+    reason_total = sum(reasons.values())
+    if rejected_count > 0 and reason_total < rejected_count:
+        reasons["unattributed_remainder"] = rejected_count - reason_total
+    return {
+        "stage": name,
+        "label": label,
+        "input_count": input_count,
+        "output_count": output_count,
+        "rejected_count": rejected_count,
+        "rejection_reasons": reasons,
+        "note": note,
+    }
+
+
+def _candidate_decay_constraint_snapshot(
+    *,
+    theme_pool_summary: dict[str, Any],
+    dag_artifacts: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    dag_artifacts = dag_artifacts or {}
+    policy = _mapping_payload(theme_pool_summary.get("policy"))
+    funnel_summary = _mapping_payload(dag_artifacts.get("funnel_summary"))
+    funnel_metadata = _mapping_payload(funnel_summary.get("funnel_metadata"))
+    portfolio_payload = _mapping_payload(dag_artifacts.get("portfolio_decision"))
+    risk_constraints = _mapping_payload(portfolio_payload.get("risk_constraints"))
+    risk_decision = _mapping_payload(risk_constraints.get("risk_decision"))
+    portfolio_metadata = _mapping_payload(portfolio_payload.get("metadata"))
+    market_settings = get_market_settings("CN")
+    gross_cap_value = risk_decision.get("gross_exposure_cap")
+    if gross_cap_value is None:
+        gross_cap_value = portfolio_payload.get("target_gross_exposure")
+    portfolio_max_weight = risk_decision.get("max_weight")
+    candidate_symbols = portfolio_metadata.get("candidate_symbols")
+    return {
+        "min_weight": "not_applied_in_candidate_dag_weight_path",
+        "whole_lot": int(getattr(market_settings, "lot_size", 100) or 100),
+        "gross_cap": (
+            _safe_float(gross_cap_value)
+            if gross_cap_value is not None
+            else "not_recorded"
+        ),
+        "single_name_cap_env": round(risk_guard_single_name_weight_cap(), 6),
+        "portfolio_max_weight": (
+            _safe_float(portfolio_max_weight)
+            if portfolio_max_weight is not None
+            else "not_recorded"
+        ),
+        "theme_policy_regime": str(
+            theme_pool_summary.get("policy_regime") or policy.get("regime") or ""
+        ),
+        "theme_min_symbol_score": _safe_float(policy.get("min_symbol_score"), 0.0),
+        "theme_min_theme_score": _safe_float(policy.get("min_theme_score"), 0.0),
+        "theme_effective_max_candidates": _int_payload(
+            theme_pool_summary.get("effective_max_candidates")
+        ),
+        "theme_requested_max_candidates": _int_payload(
+            theme_pool_summary.get("requested_max_candidates")
+        ),
+        "funnel_max_candidates": _int_payload(funnel_metadata.get("max_candidates")),
+        "funnel_min_composite_score": funnel_metadata.get("min_composite_score", "not_recorded"),
+        "portfolio_candidate_symbols": len(candidate_symbols) if isinstance(candidate_symbols, list) else 0,
+    }
+
+
+def _candidate_decay_classification(stages: list[dict[str, Any]]) -> dict[str, Any]:
+    post_theme_reasons: Counter[str] = Counter()
+    for stage in stages:
+        if stage.get("stage") == "theme_pool":
+            continue
+        for reason, count in _positive_reason_counts(stage.get("rejection_reasons")).items():
+            if reason == "unattributed_remainder":
+                continue
+            post_theme_reasons[reason] += count
+    total = sum(post_theme_reasons.values())
+    if total <= 0:
+        return {
+            "classification": "no_post_theme_decay",
+            "dominant_reason": "",
+            "dominant_reason_share": 0.0,
+            "decision": "no candidate decay after Theme Pool was observed.",
+        }
+    dominant_reason, dominant_count = sorted(
+        post_theme_reasons.items(),
+        key=lambda item: (-item[1], item[0]),
+    )[0]
+    share = dominant_count / total if total else 0.0
+    artifact_limited = dominant_reason.startswith("artifact_only_")
+    if share >= CANDIDATE_DECAY_SINGLE_REASON_THRESHOLD and not artifact_limited:
+        return {
+            "classification": "single_reason_requires_constraint_review",
+            "dominant_reason": dominant_reason,
+            "dominant_reason_share": round(share, 6),
+            "decision": "single reason >=95%; print constraint snapshot and review as freeze-exception before behavior changes.",
+        }
+    return {
+        "classification": "by_design_or_artifact_limited",
+        "dominant_reason": dominant_reason,
+        "dominant_reason_share": round(share, 6),
+        "decision": "causes are dispersed or historical artifacts lack per-row detail; treat empty shortlist as reportable by-design unless future waterfall isolates one mechanical cause.",
+    }
+
+
+def _build_candidate_decay_waterfall(
+    *,
+    candidate_status: dict[str, Any],
+    dag_artifacts: dict[str, Any] | None = None,
+    accepted_count: int = 0,
+    missing_by_symbol: dict[str, list[str]] | None = None,
+    zero_target_symbols: list[str] | None = None,
+) -> dict[str, Any]:
+    status = _mapping_payload(candidate_status)
+    pipeline = _mapping_payload(status.get("dag_pipeline"))
+    theme_summary = _mapping_payload(status.get("theme_candidate_pool"))
+    dag_artifacts = dag_artifacts or {}
+    funnel_summary = _mapping_payload(dag_artifacts.get("funnel_summary"))
+    funnel_metadata = _mapping_payload(funnel_summary.get("funnel_metadata"))
+    portfolio_payload = _mapping_payload(dag_artifacts.get("portfolio_decision"))
+    portfolio_metadata = _mapping_payload(portfolio_payload.get("metadata"))
+    candidate_symbols = [
+        str(symbol).strip().upper()
+        for symbol in list(portfolio_metadata.get("candidate_symbols") or [])
+        if str(symbol).strip()
+    ]
+
+    symbol_count = _int_payload(theme_summary.get("symbol_count"))
+    theme_output = _int_payload(
+        theme_summary.get("admitted_symbol_count"),
+        _int_payload(theme_summary.get("core_symbol_count")),
+    )
+    bayesian_count = _int_payload(pipeline.get("bayesian_record_count"))
+    shortlist_count = _int_payload(pipeline.get("shortlist_count"))
+    portfolio_target_count = _int_payload(pipeline.get("portfolio_target_count"))
+    accepted_count = max(_int_payload(accepted_count), 0)
+    stages: list[dict[str, Any]] = []
+
+    if symbol_count or theme_output:
+        stages.append(
+            _candidate_decay_stage(
+                name="theme_pool",
+                label="full universe -> Theme Pool admitted core",
+                input_count=symbol_count,
+                output_count=theme_output,
+                rejection_reasons=_positive_reason_counts(theme_summary.get("excluded_reason_counts")),
+                note="Theme Pool hard filter; this includes non-hard-tech/non-admitted-theme exclusions.",
+            )
+        )
+
+    after_theme_pool = _int_payload(funnel_metadata.get("after_theme_pool"), theme_output)
+    after_score_gates = _int_payload(funnel_metadata.get("after_gates"))
+    final_funnel_candidates = _int_payload(
+        funnel_metadata.get("final_candidates"),
+        _int_payload(funnel_summary.get("candidates_count"), len(candidate_symbols)),
+    )
+    if after_score_gates > 0:
+        stages.append(
+            _candidate_decay_stage(
+                name="deterministic_score_gate",
+                label="Theme Pool admitted core -> score/risk gates",
+                input_count=after_theme_pool,
+                output_count=after_score_gates,
+                rejection_reasons={
+                    "deterministic_funnel_below_min_score_or_theme_penalty": max(
+                        after_theme_pool - after_score_gates,
+                        0,
+                    )
+                },
+                note="Deterministic composite score, theme penalty, and local market-state gates.",
+            )
+        )
+    if final_funnel_candidates > 0 and after_score_gates > 0:
+        stages.append(
+            _candidate_decay_stage(
+                name="deterministic_rank_cutoff",
+                label="score/risk gate survivors -> ranked funnel candidates",
+                input_count=after_score_gates,
+                output_count=final_funnel_candidates,
+                rejection_reasons={
+                    "deterministic_funnel_rank_cutoff_or_sector_bucket_limit": max(
+                        after_score_gates - final_funnel_candidates,
+                        0,
+                    )
+                },
+                note="Top-N rank cutoff and optional sector bucket limit.",
+            )
+        )
+    elif theme_output and bayesian_count < theme_output:
+        stages.append(
+            _candidate_decay_stage(
+                name="core_to_bayesian_record",
+                label="Theme Pool admitted core -> Bayesian records",
+                input_count=theme_output,
+                output_count=bayesian_count,
+                rejection_reasons={
+                    "artifact_only_not_materialized_as_bayesian_record": max(
+                        theme_output - bayesian_count,
+                        0,
+                    )
+                },
+                note="Historical record lacks in-memory DAG per-symbol reasons for deterministic score/rank/readiness decay.",
+            )
+        )
+
+    if final_funnel_candidates > 0 and bayesian_count < final_funnel_candidates:
+        stages.append(
+            _candidate_decay_stage(
+                name="branch_readiness",
+                label="ranked funnel candidates -> Bayesian records",
+                input_count=final_funnel_candidates,
+                output_count=bayesian_count,
+                rejection_reasons={
+                    "branch_or_macro_readiness_block": max(final_funnel_candidates - bayesian_count, 0)
+                },
+                note="Branch readiness or macro readiness can remove candidates before Bayesian posterior.",
+            )
+        )
+
+    bayesian_kill_switch_count = 0
+    for row in _list_payloads(dag_artifacts.get("bayesian_records")):
+        metadata = _mapping_payload(row.get("metadata"))
+        if bool(metadata.get("kill_switch")):
+            bayesian_kill_switch_count += 1
+    bayesian_rejected = max(bayesian_count - shortlist_count, 0)
+    bayesian_reasons = (
+        {"bayesian_kill_switch": bayesian_kill_switch_count}
+        if bayesian_kill_switch_count == bayesian_rejected and bayesian_rejected > 0
+        else {"bayesian_shortlist_not_selected_or_kill_switch": bayesian_rejected}
+    )
+    stages.append(
+        _candidate_decay_stage(
+            name="bayesian_shortlist",
+            label="Bayesian records -> shortlist",
+            input_count=bayesian_count,
+            output_count=shortlist_count,
+            rejection_reasons=bayesian_reasons,
+            note="Bayesian posterior shortlist; historical rows may only expose aggregate counts.",
+        )
+    )
+
+    zero_target_symbols = list(zero_target_symbols or [])
+    portfolio_rejected = max(shortlist_count - portfolio_target_count, 0)
+    stages.append(
+        _candidate_decay_stage(
+            name="portfolio_constructor",
+            label="shortlist -> positive target weights",
+            input_count=shortlist_count,
+            output_count=portfolio_target_count,
+            rejection_reasons={
+                "portfolio_constructor_zero_target_weight_or_reject": portfolio_rejected,
+                "portfolio_constructor_zero_target_symbols": len(zero_target_symbols),
+            },
+            note="RiskGuard/ICCoordinator/PortfolioConstructor deterministic control chain.",
+        )
+    )
+
+    missing_by_symbol = missing_by_symbol or {}
+    missing_counter: Counter[str] = Counter()
+    for branches in missing_by_symbol.values():
+        for branch in branches:
+            missing_counter[f"candidate_pool_missing_{branch}"] += 1
+    if portfolio_target_count or accepted_count:
+        stages.append(
+            _candidate_decay_stage(
+                name="candidate_pool_materialization",
+                label="positive target weights -> report candidate rows",
+                input_count=portfolio_target_count,
+                output_count=accepted_count,
+                rejection_reasons=dict(missing_counter),
+                note="Final report materialization excludes incomplete branch/Bayesian rows and existing holdings.",
+            )
+        )
+
+    classification = _candidate_decay_classification(stages)
+    return {
+        "schema_version": CANDIDATE_DECAY_WATERFALL_SCHEMA_VERSION,
+        "record_scope": "candidate_level_dag",
+        "single_reason_threshold": CANDIDATE_DECAY_SINGLE_REASON_THRESHOLD,
+        "stages": stages,
+        "classification": classification,
+        "constraint_snapshot": _candidate_decay_constraint_snapshot(
+            theme_pool_summary=theme_summary,
+            dag_artifacts=dag_artifacts,
+        ),
+    }
+
+
+def _format_candidate_decay_waterfall_report_lines(
+    candidate_status: dict[str, Any],
+) -> list[str]:
+    waterfall = _mapping_payload(candidate_status.get("candidate_decay_waterfall"))
+    if not waterfall:
+        return []
+    stages = [
+        stage
+        for stage in _list_payloads(waterfall.get("stages"))
+        if _int_payload(stage.get("input_count")) or _int_payload(stage.get("output_count"))
+    ]
+    if not stages:
+        return []
+    classification = _mapping_payload(waterfall.get("classification"))
+    constraints = _mapping_payload(waterfall.get("constraint_snapshot"))
+    lines = [
+        "",
+        "#### 空 shortlist 衰减瀑布（report-only）",
+        "",
+        "| stage | input | output | rejected | top rejection reasons |",
+        "|---|---:|---:|---:|---|",
+    ]
+    for stage in stages:
+        reasons = _positive_reason_counts(stage.get("rejection_reasons"))
+        reason_text = "；".join(
+            f"{reason}={count}"
+            for reason, count in sorted(reasons.items(), key=lambda item: (-item[1], item[0]))[:5]
+        ) or "无"
+        lines.append(
+            f"| {stage.get('label') or stage.get('stage')} | "
+            f"{_int_payload(stage.get('input_count'))} | "
+            f"{_int_payload(stage.get('output_count'))} | "
+            f"{_int_payload(stage.get('rejected_count'))} | {reason_text} |"
+        )
+    lines.extend(
+        [
+            "",
+            (
+                f"- 瀑布判定：`{classification.get('classification') or 'unknown'}`，"
+                f"dominant_reason=`{classification.get('dominant_reason') or 'none'}`，"
+                f"share={_safe_float(classification.get('dominant_reason_share')):.2%}。"
+            ),
+            f"- 判读：{classification.get('decision') or 'N/A'}",
+            (
+                "- 约束快照："
+                f"min_weight=`{constraints.get('min_weight', 'N/A')}`，"
+                f"整手=`{constraints.get('whole_lot', 'N/A')}`，"
+                f"gross_cap=`{constraints.get('gross_cap', 'N/A')}`，"
+                f"single_name_cap_env=`{constraints.get('single_name_cap_env', 'N/A')}`，"
+                f"portfolio_max_weight=`{constraints.get('portfolio_max_weight', 'N/A')}`，"
+                f"theme_min_symbol_score=`{constraints.get('theme_min_symbol_score', 'N/A')}`。"
+            ),
+        ]
+    )
+    return lines
+
+
 def _candidate_dag_status(
     *,
     candidate_generation_status: str,
@@ -1925,6 +2293,7 @@ def _build_candidate_pool_from_v13_dag(
     present_by_symbol: dict[str, list[str]] = {}
     missing_by_symbol: dict[str, list[str]] = {}
     rows: list[dict[str, Any]] = []
+    zero_target_symbols: list[str] = []
     for symbol in evaluated_symbols:
         packet = packets.get(symbol, {})
         present, missing, branch_scores = _candidate_dag_branch_state(packet)
@@ -1942,6 +2311,7 @@ def _build_candidate_pool_from_v13_dag(
             _safe_float(target_positions.get(symbol), _safe_float(shortlist.get("suggested_weight"))),
         )
         if target_weight <= 0:
+            zero_target_symbols.append(symbol)
             continue
         category = str(packet.get("category") or shortlist.get("category") or "full_a")
         rows.append(
@@ -2031,6 +2401,13 @@ def _build_candidate_pool_from_v13_dag(
             if shortlist_artifact_missing
             else ""
         ),
+    )
+    status["candidate_decay_waterfall"] = _build_candidate_decay_waterfall(
+        candidate_status=status,
+        dag_artifacts=dag_artifacts,
+        accepted_count=len(rows),
+        missing_by_symbol=missing_by_symbol,
+        zero_target_symbols=zero_target_symbols,
     )
     return pd.DataFrame(rows, dtype=object), status
 
@@ -4182,6 +4559,9 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         candidate_pool=candidate_pool,
         theme_symbols=_mapping_payload(theme_pool_audit.get("symbols")),
     )
+    candidate_waterfall_lines = _format_candidate_decay_waterfall_report_lines(
+        candidate_level_dag_status
+    )
     legacy_overweight_lines = _format_legacy_overweight_holding_lines(holdings_review)
     legacy_overweight_summary_lines = (
         [
@@ -4511,6 +4891,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
                 )
             ),
             *candidate_lines,
+            *candidate_waterfall_lines,
             *theme_pool_report_lines,
             "",
             "### 5.6 现持仓与备选标的换仓比较",
