@@ -490,6 +490,9 @@ class CNParquetBatchMaintainer:
             work = work.loc[work["ts_code"].isin(target_symbols)].copy()
             if work.empty:
                 continue
+            if "list_date" in work.columns:
+                list_dates = work["list_date"].map(_compact_trade_date)
+                inactive.update(work.loc[list_dates.ne("") & list_dates.gt(target_date), "ts_code"].astype(str))
             if "delist_date" in work.columns:
                 delist_dates = work["delist_date"].map(_compact_trade_date)
                 delisted_by_target = delist_dates.ne("") & delist_dates.le(target_date)
@@ -497,6 +500,8 @@ class CNParquetBatchMaintainer:
                 if list_status == "D":
                     inactive.update(work.loc[delist_dates.eq(""), "ts_code"].astype(str))
             elif list_status == "D":
+                inactive.update(work["ts_code"].astype(str))
+            if list_status == "P":
                 inactive.update(work["ts_code"].astype(str))
         return inactive & target_symbols
 

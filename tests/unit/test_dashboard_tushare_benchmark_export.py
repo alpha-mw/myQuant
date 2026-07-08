@@ -315,6 +315,62 @@ def test_resolve_local_benchmark_file_falls_back_to_repo_input_for_temp_output(t
     assert exporter.resolve_local_benchmark_file(temp_dashboard_root, None) == default_input
 
 
+def test_positions_do_not_fallback_to_legacy_ledger_csv(tmp_path):
+    exporter = _load_exporter()
+    run_dir = tmp_path / "20260318_0930"
+    run_dir.mkdir()
+    (run_dir / "ledger.csv").write_text(
+        "symbol,name,current_value,market_weight\n000001.SZ,Legacy,100,1\n",
+        encoding="utf-8",
+    )
+    runs = [
+        exporter.RecordRun(
+            "20260318_0930",
+            "2026-03-18",
+            run_dir,
+            "",
+            100.0,
+            100.0,
+            {},
+        )
+    ]
+
+    rows, warnings = exporter.build_positions_rows(runs, {})
+
+    assert rows == []
+    assert any("ledger.csv 已停用" in warning for warning in warnings)
+
+
+def test_record_discovery_skips_dirs_without_manual_baseline_and_keeps_latest_valid(tmp_path):
+    exporter = _load_exporter()
+    older_valid = tmp_path / "20260318_0930"
+    older_valid.mkdir()
+    (older_valid / "pnl_summary.csv").write_text(
+        "initial_capital,total_value_after,record_time\n100,101,2026-03-18 09:30:00\n",
+        encoding="utf-8",
+    )
+    (older_valid / "ledger_after_manual_switch.csv").write_text(
+        "symbol,name,current_value,market_weight\n000001.SZ,Valid,101,1\n",
+        encoding="utf-8",
+    )
+    (older_valid / "manual_execution_manifest.json").write_text('{"status":"ok"}\n', encoding="utf-8")
+    later_invalid = tmp_path / "20260318_1530"
+    later_invalid.mkdir()
+    (later_invalid / "pnl_summary.csv").write_text(
+        "initial_capital,total_value_after,record_time\n100,102,2026-03-18 15:30:00\n",
+        encoding="utf-8",
+    )
+    (later_invalid / "ledger.csv").write_text(
+        "symbol,name,current_value,market_weight\n000002.SZ,Legacy,102,1\n",
+        encoding="utf-8",
+    )
+
+    runs, warnings = exporter.discover_record_runs(tmp_path)
+
+    assert [run.run_id for run in runs] == ["20260318_0930"]
+    assert any("20260318_1530" in warning and "ledger_after_manual_switch.csv" in warning for warning in warnings)
+
+
 def test_industry_equal_weight_nav_is_built_from_local_parquet(tmp_path):
     exporter = _load_exporter()
     runs = [

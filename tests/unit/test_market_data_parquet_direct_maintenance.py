@@ -436,3 +436,140 @@ def test_parquet_direct_explicit_historical_target_preserves_latest_pointer(monk
     assert result["parquet_commit"]["latest_complete_trade_date"] == "20260315"
     latest = json.loads((tmp_path / "parquet" / "cn" / "_latest.json").read_text(encoding="utf-8"))
     assert latest["latest_complete_trade_date"] == "20260315"
+
+
+def test_parquet_direct_historical_target_excludes_prelisting_symbols(monkeypatch, tmp_path):
+    _write_seed_snapshot(tmp_path)
+    audit_root = tmp_path / "cn_market_full"
+
+    class FakePro:
+        def stock_basic(self, list_status="L", **_kwargs):
+            if list_status != "L":
+                return pd.DataFrame(columns=["ts_code", "name", "list_status", "list_date", "delist_date"])
+            return pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000001.SZ",
+                        "name": "One",
+                        "list_status": "L",
+                        "list_date": "20200101",
+                        "delist_date": "",
+                    },
+                    {
+                        "ts_code": "000002.SZ",
+                        "name": "Two",
+                        "list_status": "L",
+                        "list_date": "20200101",
+                        "delist_date": "",
+                    },
+                    {
+                        "ts_code": "000003.SZ",
+                        "name": "Future",
+                        "list_status": "L",
+                        "list_date": "20260316",
+                        "delist_date": "",
+                    },
+                ]
+            )
+
+        def trade_cal(self, **_kwargs):
+            return pd.DataFrame(
+                [
+                    {"cal_date": "20260314", "is_open": 1},
+                    {"cal_date": "20260315", "is_open": 1},
+                ]
+            )
+
+        def suspend_d(self, **_kwargs):
+            return pd.DataFrame()
+
+        def daily(self, trade_date=None, **_kwargs):
+            assert trade_date == "20260314"
+            return pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000001.SZ",
+                        "trade_date": "20260314",
+                        "open": 9.0,
+                        "high": 9.6,
+                        "low": 8.9,
+                        "close": 9.4,
+                        "pre_close": 9.2,
+                        "change": 0.2,
+                        "pct_chg": 2.17,
+                        "vol": 800,
+                        "amount": 8200.0,
+                    },
+                    {
+                        "ts_code": "000002.SZ",
+                        "trade_date": "20260314",
+                        "open": 19.0,
+                        "high": 19.8,
+                        "low": 18.8,
+                        "close": 19.4,
+                        "pre_close": 19.2,
+                        "change": 0.2,
+                        "pct_chg": 1.04,
+                        "vol": 1800,
+                        "amount": 18200.0,
+                    },
+                ]
+            )
+
+        def adj_factor(self, trade_date=None, **_kwargs):
+            assert trade_date == "20260314"
+            return pd.DataFrame(
+                [
+                    {"ts_code": "000001.SZ", "trade_date": "20260314", "adj_factor": 1.1},
+                    {"ts_code": "000002.SZ", "trade_date": "20260314", "adj_factor": 1.0},
+                ]
+            )
+
+        def daily_basic(self, trade_date=None, **_kwargs):
+            assert trade_date == "20260314"
+            return pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000001.SZ",
+                        "trade_date": "20260314",
+                        "turnover_rate": 1.0,
+                        "volume_ratio": 1.0,
+                        "pe": 12.0,
+                        "pb": 1.5,
+                        "total_mv": 100000.0,
+                        "circ_mv": 90000.0,
+                    },
+                    {
+                        "ts_code": "000002.SZ",
+                        "trade_date": "20260314",
+                        "turnover_rate": 1.0,
+                        "volume_ratio": 1.0,
+                        "pe": 10.0,
+                        "pb": 1.2,
+                        "total_mv": 200000.0,
+                        "circ_mv": 190000.0,
+                    },
+                ]
+            )
+
+    monkeypatch.setattr(download_module.config, "TUSHARE_TOKEN", "dummy-token")
+    monkeypatch.setattr(download_module.config, "TUSHARE_URL", "http://example.invalid")
+    monkeypatch.setattr(download_module.config, "MARKET_DATA_BASE_DIR", str(tmp_path), raising=False)
+    monkeypatch.setattr(download_module.config, "CN_FRESHNESS_MODE", "strict")
+    monkeypatch.setattr(download_cn_module, "create_tushare_pro", lambda *_args, **_kwargs: FakePro())
+
+    result = download_module.run_market_maintenance(
+        market="CN",
+        categories=["full_a"],
+        storage_mode="parquet-direct",
+        target_date="20260314",
+        data_dir=str(audit_root),
+    )
+
+    assert result["parquet_commit"]["status"] == "OK"
+    coverage = result["parquet_commit"]["coverage"]
+    assert coverage["expected_scope_count"] == 3
+    assert coverage["coverage_complete_count"] == 3
+    assert coverage["inactive_symbols"] == ["000003.SZ"]
+    table = pd.read_parquet(tmp_path / "parquet" / "cn" / "bars" / "year=2026" / "month=03" / "part.parquet")
+    assert set(table.loc[table["trade_date"].eq("20260314"), "ts_code"]) == {"000001.SZ", "000002.SZ"}

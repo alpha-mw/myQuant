@@ -678,14 +678,39 @@ def infer_initial_capital(run_dir: Path, pnl_row: dict[str, str]) -> float | Non
     return None
 
 
+def validate_manual_execution_baseline(run_dir: Path) -> tuple[bool, str]:
+    ledger_path = run_dir / "ledger_after_manual_switch.csv"
+    if not ledger_path.exists():
+        return False, "缺少 ledger_after_manual_switch.csv"
+    if not read_csv_rows(ledger_path):
+        return False, "ledger_after_manual_switch.csv 无可用行"
+    manifest_path = run_dir / "manual_execution_manifest.json"
+    if not manifest_path.exists():
+        return False, "缺少 manual_execution_manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return False, "manual_execution_manifest.json 不是有效 JSON"
+    if not isinstance(manifest, dict) or not manifest:
+        return False, "manual_execution_manifest.json 为空或格式无效"
+    return True, ""
+
+
 def discover_record_runs(record_root: Path) -> tuple[list[RecordRun], list[str]]:
     warnings: list[str] = []
     runs: list[RecordRun] = []
     for run_dir in sorted(record_root.iterdir() if record_root.exists() else []):
         if not run_dir.is_dir() or not run_dir.name[:8].isdigit():
             continue
+        baseline_ok, baseline_reason = validate_manual_execution_baseline(run_dir)
+        if not baseline_ok:
+            warnings.append(
+                f"{run_dir.name}: {baseline_reason}，已跳过；ledger.csv 已停用且不得作为 Dashboard 回退。"
+            )
+            continue
         pnl_rows = read_csv_rows(run_dir / "pnl_summary.csv")
         if not pnl_rows:
+            warnings.append(f"{run_dir.name}: 缺少 pnl_summary.csv，已跳过。")
             continue
         row = normalize_pnl_row(pnl_rows)
         initial_capital = infer_initial_capital(run_dir, row)
@@ -1234,10 +1259,14 @@ def build_positions_rows(
     for run in runs:
         ledger_path = run.path / "ledger_after_manual_switch.csv"
         if not ledger_path.exists():
-            ledger_path = run.path / "ledger.csv"
+            warnings.append(
+                f"{run.run_id}: 缺少 ledger_after_manual_switch.csv，positions 已跳过；"
+                "ledger.csv 已停用且不得作为 Dashboard 持仓回退。"
+            )
+            continue
         ledger_rows = read_csv_rows(ledger_path)
         if not ledger_rows:
-            warnings.append(f"{run.run_id}: 未找到可用 ledger，positions 已跳过。")
+            warnings.append(f"{run.run_id}: ledger_after_manual_switch.csv 无可用行，positions 已跳过。")
             continue
         holdings_review = {
             row.get("symbol", ""): row
