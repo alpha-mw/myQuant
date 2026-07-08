@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import pandas as pd
 import requests
@@ -1198,6 +1198,22 @@ def _resolve_realtime_execution_price(quote: dict[str, Any]) -> tuple[float, str
             continue
         return price, field
     return 0.0, ""
+
+
+def _fallback_current_price(metric: Mapping[str, Any], row: Any) -> float:
+    row_price = _safe_float(getattr(row, "current_price", 0.0), 0.0)
+    return _safe_float(metric.get("latest_close"), row_price)
+
+
+def _fallback_metric_or_row_price(
+    metric: Mapping[str, Any],
+    metric_field: str,
+    row: Any,
+    row_field: str,
+    default: float,
+) -> float:
+    row_price = _safe_float(getattr(row, row_field, default), default)
+    return _safe_float(metric.get(metric_field), row_price)
 
 
 def _fetch_tencent_quotes(quote_codes: list[str]) -> dict[str, dict[str, Any]]:
@@ -3672,14 +3688,32 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         llm_risk_flags = list(recommendation.get("risk_flags") or ic_hint.get("risk_flags") or [])
         llm_session_id = str(review_payload.get("llm_session_id", "") or "")
         realtime_execution_price, realtime_execution_price_field = _resolve_realtime_execution_price(quote)
-        fallback_price = _safe_float(metric.get("latest_close"), getattr(row, "current_price", 0.0))
+        fallback_price = _fallback_current_price(metric, row)
         current_price = realtime_execution_price if realtime_execution_price > 0 else fallback_price
         current_value = round(int(row.shares) * current_price, 2)
         buy_value = round(float(row.cost_basis), 2)
         unrealized = round(current_value - buy_value, 2)
         today_change_pct = round(_safe_float(quote.get("change_pct")), 2)
-        staged_target = round(_safe_float(metric.get("stage_target_price"), getattr(row, "stage_target_price", current_price * 1.1)), 2)
-        staged_stop = round(_safe_float(metric.get("stage_stop_price"), getattr(row, "stage_stop_price", current_price * 0.94)), 2)
+        staged_target = round(
+            _fallback_metric_or_row_price(
+                metric,
+                "stage_target_price",
+                row,
+                "stage_target_price",
+                current_price * 1.1,
+            ),
+            2,
+        )
+        staged_stop = round(
+            _fallback_metric_or_row_price(
+                metric,
+                "stage_stop_price",
+                row,
+                "stage_stop_price",
+                current_price * 0.94,
+            ),
+            2,
+        )
         manual_entry_trade_date = _trailing_take_profit_row_date(row, TRAILING_TAKE_PROFIT_ENTRY_DATE_COLUMNS)
         carried_trailing_peak_price = _trailing_take_profit_row_float(row, TRAILING_TAKE_PROFIT_PEAK_PRICE_COLUMNS)
         carried_trailing_peak_trade_date = _trailing_take_profit_row_date(row, TRAILING_TAKE_PROFIT_PEAK_DATE_COLUMNS)

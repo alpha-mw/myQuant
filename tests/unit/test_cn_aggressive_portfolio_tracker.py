@@ -218,6 +218,28 @@ def test_realtime_execution_price_rejects_static_daily_price_only():
     assert field == ""
 
 
+def test_fallback_current_price_numeric_when_metric_missing_and_row_value_is_string():
+    row = SimpleNamespace(current_price="123.45")
+
+    price = tracker._fallback_current_price({}, row)
+
+    assert price == pytest.approx(123.45)
+
+
+def test_fallback_metric_or_row_price_numeric_when_metric_missing_and_row_value_is_string():
+    row = SimpleNamespace(stage_target_price="150.25")
+
+    price = tracker._fallback_metric_or_row_price(
+        {},
+        "stage_target_price",
+        row,
+        "stage_target_price",
+        120.0,
+    )
+
+    assert price == pytest.approx(150.25)
+
+
 def test_parse_quote_payload_marks_current_as_realtime_price():
     parts = [""] * 35
     parts[1] = "测试股份"

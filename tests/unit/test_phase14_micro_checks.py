@@ -245,3 +245,192 @@ def test_exit_record_audit_requires_manifest_and_order_rows(tmp_path):
     assert by_symbol["300285.SZ"]["nav_breakpoint_risk"] is False
     assert by_symbol["600487.SH"]["status"] == "missing_exit_record"
     assert "600487.SH" in result["nav_breakpoint_risk_symbols"]
+
+
+def _theme_payload(theme_id: str, score: float) -> dict[str, object]:
+    return {
+        "theme_id": theme_id,
+        "theme_name": theme_id.split("::")[-1],
+        "score": score,
+        "phase": "accumulation",
+        "breadth": 0.6,
+        "confidence": 0.8,
+        "member_count": 8,
+        "risk_flags": [],
+    }
+
+
+def test_phase14_3_residual_source_audit_and_current_replay_classify_stale_artifact(tmp_path):
+    mod = _load_module()
+    run_dir = tmp_path / "records" / "20260707_1046"
+    run_dir.mkdir(parents=True)
+    (run_dir / "theme_pool_audit.json").write_text(
+        json.dumps(
+            {
+                "summary": {
+                    "policy": {"hard_theme_constraint": True, "residual_enabled": True},
+                    "policy_regime": "趋势下跌",
+                    "residual_symbol_count": 1,
+                    "admitted_symbol_count": 2,
+                    "admitted_symbols_by_source_sample": {"residual_theme": ["AAA.SZ"]},
+                },
+                "symbols": {
+                    "AAA.SZ": {
+                        "admitted": True,
+                        "source": "residual_theme",
+                        "primary_theme_id": "industry::农业综合",
+                        "theme_pool_score": 0.12,
+                        "theme_policy_regime": "趋势下跌",
+                        "theme_pool_reason": "admitted",
+                    },
+                    "BBB.SZ": {
+                        "admitted": True,
+                        "source": "core",
+                        "primary_theme_id": "industry::生物制药",
+                        "theme_pool_score": 0.90,
+                    },
+                },
+                "admitted_symbols_by_source": {"residual_theme": ["AAA.SZ"], "core": ["BBB.SZ"]},
+                "excluded_symbols_by_reason": {},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "market_snapshot.json").write_text(
+        json.dumps(
+            {
+                "candidate_level_dag_status": {
+                    "theme_candidate_pool": {
+                        "admitted_symbols_by_source_sample": {"residual_theme": ["AAA.SZ"]}
+                    }
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "theme_snapshot.json").write_text(
+        json.dumps(
+            {
+                "stored_snapshot": {
+                    "theme_rotation": {
+                        "status": "success",
+                        "universe_key": "full_a",
+                        "theme_scores": {
+                            "industry::农业综合": _theme_payload("industry::农业综合", 0.42),
+                            "industry::生物制药": _theme_payload("industry::生物制药", 0.52),
+                        },
+                        "symbol_scores": {"AAA.SZ": 0.12, "BBB.SZ": 0.90},
+                        "symbol_smoothed_scores": {"AAA.SZ": 0.12, "BBB.SZ": 0.90},
+                        "symbol_primary_theme": {
+                            "AAA.SZ": "industry::农业综合",
+                            "BBB.SZ": "industry::生物制药",
+                        },
+                        "symbol_phase": {"AAA.SZ": "accumulation", "BBB.SZ": "accumulation"},
+                        "symbol_risk_flags": {"AAA.SZ": [], "BBB.SZ": []},
+                    }
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    source_audit = mod.residual_symbol_source_audit(run_dir)
+    replay = mod.current_theme_pool_replay(run_dir)
+
+    assert source_audit["residual_symbols"] == ["AAA.SZ"]
+    assert any(
+        path == "theme_pool_audit.json:admitted_symbols_by_source.residual_theme"
+        for path in source_audit["rows"][0]["source_paths"]
+    )
+    assert replay["classification"] == "stale_artifact_pollution_or_historical_old_code_behavior"
+    assert replay["residual_symbol_count"] == 0
+
+
+def test_daily_pipeline_proof_distinguishes_hard_filter_pool_from_final_shortlist(tmp_path):
+    mod = _load_module()
+    run_dir = tmp_path / "records" / "20260708_0910"
+    run_dir.mkdir(parents=True)
+    (run_dir / "theme_pool_audit.json").write_text(
+        json.dumps(
+            {
+                "summary": {
+                    "policy": {"hard_theme_constraint": True, "residual_enabled": False},
+                    "core_symbol_count": 228,
+                    "residual_symbol_count": 0,
+                    "forced_theme_count": 2,
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "market_snapshot.json").write_text(
+        json.dumps(
+            {
+                "candidate_level_dag_status": {
+                    "candidate_generation_status": "empty",
+                    "blocker": "no_candidate_selected_by_portfolio_constructor",
+                    "candidate_pool": [],
+                    "dag_pipeline": {"shortlist_count": 0, "portfolio_target_count": 0},
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = mod.daily_pipeline_proof(tmp_path / "records", "20260708_0910")
+
+    assert result["hard_filter_pool_restored_nonempty"] is True
+    assert result["final_shortlist_restored_nonempty"] is False
+    assert result["blocker"] == "no_candidate_selected_by_portfolio_constructor"
+
+
+def test_shadow_denominator_check_explains_window_return_gap():
+    mod = _load_module()
+    result = mod.shadow_denominator_check(
+        {
+            "nav_rows": [
+                {
+                    "date": "2026-03-18",
+                    "initial_capital": 1_000_000,
+                    "nav": 1.023097,
+                    "total_value_after": 1_023_097,
+                },
+                {
+                    "date": "2026-07-08",
+                    "initial_capital": 1_000_000,
+                    "nav": 1.649461,
+                    "total_value_after": 1_649_461,
+                },
+            ]
+        }
+    )
+
+    assert result["initial_capital"] == 1_000_000
+    assert result["last_nav_times_initial_capital"] == 1_649_461
+    assert round(result["window_return_from_first_nav"], 6) == 0.612223
+    assert result["gap_vs_last_total_if_window_return_is_misused"] > 37_000
+    assert "No deposit-injection" in result["conclusion"]
+
+
+def test_session_forensics_688301_excerpt_requires_advice_verb_near_symbol(tmp_path):
+    mod = _load_module()
+    session_dir = tmp_path / "sessions" / "2026" / "06" / "19"
+    session_dir.mkdir(parents=True)
+    lines = ["noise"] * 30
+    lines[8] = "688301.SH appears without advice nearby"
+    lines[20] = "复盘 688301 奕瑞，出现减仓建议，触发止盈纪律"
+    (session_dir / "rollout-2026-06-19.jsonl").write_text("\n".join(lines), encoding="utf-8")
+
+    result = mod.session_forensics_688301_excerpt(
+        tmp_path / "sessions" / "2026",
+        context_lines=5,
+        max_matches=3,
+    )
+
+    assert result["match_count"] == 1
+    assert result["matches"][0]["date"] == "2026-06-19"

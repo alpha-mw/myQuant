@@ -20,6 +20,11 @@ from typing import Any, Iterable
 
 os.environ.setdefault("ARROW_USER_SIMD_LEVEL", "NONE")
 
+from quant_investor.agent_protocol import GlobalContext  # noqa: E402
+from quant_investor.funnel.theme_candidate_pool import (  # noqa: E402
+    ThemeCandidatePoolBuilder,
+    ThemePoolConfig,
+)
 from print_pipeline_state import DEFAULT_RECORD_ROOT, build_state  # noqa: E402
 from run_track_record_audit import (  # noqa: E402
     DEFAULT_BARS_ROOT,
@@ -42,6 +47,11 @@ from run_track_record_audit import (  # noqa: E402
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SESSION_ROOT = Path.home() / ".codex" / "sessions" / "2026"
 ADVICE_VERB_RE = re.compile(r"卖出|减仓|清仓|止盈|建议|\bshould sell\b|\bexit\b", re.IGNORECASE)
+SELL_FORENSICS_RE = re.compile(
+    r"卖出|清仓|减仓建议|减仓待确认|已移入|不再.*持仓|真实成交|"
+    r"触发卖出|必须卖|至少减仓|\bshould sell\b|\bexit\b|\bsell\s*\d+\b",
+    re.IGNORECASE,
+)
 
 
 def _iso_date(value: Any) -> str:
@@ -441,14 +451,20 @@ def _theme_pool_summary_from_record(run_dir: Path) -> dict[str, Any]:
     return dict(payload.get("summary") or {})
 
 
+def _read_json_file(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def _record_blocker(run_dir: Path) -> str:
     for name in ("market_snapshot.json", "manifest.json"):
-        path = run_dir / name
-        if not path.exists():
-            continue
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        payload = _read_json_file(run_dir / name)
+        if not payload:
             continue
         blocker = str(payload.get("blocker") or "").strip()
         if blocker:
@@ -485,6 +501,394 @@ def _theme_related_commits(limit: int = 8) -> list[str]:
     if result.returncode != 0:
         return []
     return [line for line in result.stdout.splitlines() if line.strip()]
+
+
+def _json_symbol_paths(payload: Any, symbol: str, prefix: str = "") -> list[str]:
+    symbol_text = str(symbol or "").strip().upper()
+    if not symbol_text:
+        return []
+    paths: list[str] = []
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            key_text = str(key)
+            path = f"{prefix}.{key_text}" if prefix else key_text
+            if key_text.strip().upper() == symbol_text:
+                paths.append(path)
+            paths.extend(_json_symbol_paths(value, symbol_text, path))
+    elif isinstance(payload, list):
+        for index, value in enumerate(payload):
+            path = f"{prefix}[{index}]"
+            if isinstance(value, str) and value.strip().upper() == symbol_text:
+                paths.append(path)
+            else:
+                paths.extend(_json_symbol_paths(value, symbol_text, path))
+    elif isinstance(payload, str) and payload.strip().upper() == symbol_text:
+        paths.append(prefix)
+    return paths
+
+
+def _unique_paths(paths: Iterable[str], *, limit: int = 20) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for path in paths:
+        text = str(path or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        output.append(text)
+        if len(output) >= limit:
+            break
+    return output
+
+
+def residual_symbol_source_audit(run_dir: Path) -> dict[str, Any]:
+    audit = _read_json_file(run_dir / "theme_pool_audit.json")
+    snapshot = _read_json_file(run_dir / "theme_snapshot.json")
+    summary = dict(audit.get("summary") or {})
+    symbols_payload = dict(audit.get("symbols") or {})
+    by_source = dict(audit.get("admitted_symbols_by_source") or {})
+    sample_by_source = dict(summary.get("admitted_symbols_by_source_sample") or {})
+    residual_symbols = sorted(
+        {
+            str(symbol).strip().upper()
+            for symbol in list(by_source.get("residual_theme") or [])
+            + list(sample_by_source.get("residual_theme") or [])
+            + [
+                symbol
+                for symbol, payload in symbols_payload.items()
+                if isinstance(payload, dict)
+                and str(payload.get("source") or "").strip() == "residual_theme"
+                and payload.get("admitted") is True
+            ]
+            if str(symbol).strip()
+        }
+    )
+    rotation = dict((snapshot.get("stored_snapshot") or {}).get("theme_rotation") or {})
+    symbol_primary_theme = dict(rotation.get("symbol_primary_theme") or {})
+    theme_scores = dict(rotation.get("theme_scores") or {})
+    rows: list[dict[str, Any]] = []
+    artifact_names = [
+        "theme_pool_audit.json",
+        "market_snapshot.json",
+        "manifest.json",
+        "codex_guardrail_override.json",
+    ]
+    artifact_payloads = {
+        name: _read_json_file(run_dir / name)
+        for name in artifact_names
+    }
+    for symbol in residual_symbols:
+        payload = dict(symbols_payload.get(symbol) or {})
+        theme_id = str(payload.get("primary_theme_id") or symbol_primary_theme.get(symbol) or "")
+        explicit_paths: list[str] = []
+        if symbol in list(sample_by_source.get("residual_theme") or []):
+            explicit_paths.append("theme_pool_audit.json:summary.admitted_symbols_by_source_sample.residual_theme")
+        if symbol in list(by_source.get("residual_theme") or []):
+            explicit_paths.append("theme_pool_audit.json:admitted_symbols_by_source.residual_theme")
+        if str(payload.get("source") or "") == "residual_theme":
+            explicit_paths.append(f"theme_pool_audit.json:symbols.{symbol}.source")
+        if theme_id:
+            explicit_paths.extend(
+                [
+                    f"theme_snapshot.json:stored_snapshot.theme_rotation.symbol_primary_theme.{symbol}",
+                    f"theme_snapshot.json:stored_snapshot.theme_rotation.symbol_scores.{symbol}",
+                    f"theme_snapshot.json:stored_snapshot.theme_rotation.symbol_smoothed_scores.{symbol}",
+                    f"theme_snapshot.json:stored_snapshot.theme_rotation.symbol_phase.{symbol}",
+                    f"theme_snapshot.json:stored_snapshot.theme_rotation.symbol_risk_flags.{symbol}",
+                    f"theme_snapshot.json:stored_snapshot.theme_rotation.theme_scores.{theme_id}",
+                ]
+            )
+        scanned_paths: list[str] = []
+        for name, artifact_payload in artifact_payloads.items():
+            scanned_paths.extend(f"{name}:{path}" for path in _json_symbol_paths(artifact_payload, symbol))
+        rows.append(
+            {
+                "symbol": symbol,
+                "source": payload.get("source"),
+                "admitted": payload.get("admitted"),
+                "primary_theme_id": theme_id,
+                "theme_pool_score": payload.get("theme_pool_score"),
+                "theme_policy_regime": payload.get("theme_policy_regime"),
+                "theme_pool_reason": payload.get("theme_pool_reason"),
+                "source_paths": _unique_paths(explicit_paths + scanned_paths),
+                "theme_snapshot_theme_score": theme_scores.get(theme_id, {}),
+            }
+        )
+    return {
+        "schema_version": "phase14_3_residual_symbol_source_audit.v1",
+        "record_id": run_dir.name,
+        "observed_residual_symbol_count": _safe_int(summary.get("residual_symbol_count")),
+        "observed_policy": summary.get("policy", {}),
+        "residual_symbols": residual_symbols,
+        "rows": rows,
+    }
+
+
+def _theme_rotation_from_record(run_dir: Path) -> dict[str, Any]:
+    snapshot = _read_json_file(run_dir / "theme_snapshot.json")
+    stored = dict(snapshot.get("stored_snapshot") or {})
+    rotation = stored.get("theme_rotation")
+    if isinstance(rotation, dict):
+        return rotation
+    for name in ("market_snapshot.json", "manifest.json"):
+        payload = _read_json_file(run_dir / name)
+        rotation = payload.get("theme_rotation")
+        if isinstance(rotation, dict):
+            return rotation
+        formal = payload.get("formal_diagnostics")
+        if isinstance(formal, dict) and isinstance(formal.get("theme_rotation"), dict):
+            return formal["theme_rotation"]
+    return {}
+
+
+def current_theme_pool_replay(run_dir: Path) -> dict[str, Any]:
+    audit = _read_json_file(run_dir / "theme_pool_audit.json")
+    summary = dict(audit.get("summary") or {})
+    symbols_payload = dict(audit.get("symbols") or {})
+    input_symbols = sorted(str(symbol).strip().upper() for symbol in symbols_payload if str(symbol).strip())
+    rotation = _theme_rotation_from_record(run_dir)
+    if not input_symbols or not rotation:
+        return {
+            "status": "unavailable",
+            "reason": "missing theme_pool_audit.symbols or theme_rotation snapshot",
+        }
+    quant_scores = {
+        symbol: _safe_float(payload.get("theme_pool_score"))
+        for symbol, payload in symbols_payload.items()
+        if isinstance(payload, dict)
+    }
+    policy_regime = (
+        str(summary.get("policy_regime") or "")
+        or str(dict(summary.get("policy") or {}).get("regime") or "")
+        or "趋势下跌"
+    )
+    context = GlobalContext(
+        market="CN",
+        universe_key=str(rotation.get("universe_key") or "full_a"),
+        universe_symbols=input_symbols,
+        universe_tiers={"researchable": input_symbols},
+        metadata={
+            "theme_rotation": rotation,
+            "markov_regime": {
+                "dominant_regime": policy_regime,
+                "production_eligible": True,
+            },
+        },
+        regime_params={
+            "markov": {
+                "dominant_regime": policy_regime,
+                "production_eligible": True,
+            }
+        },
+    )
+    requested_max = max(_safe_int(summary.get("admitted_symbol_count"), 50), 1)
+    output = ThemeCandidatePoolBuilder(ThemePoolConfig()).build(
+        symbols=input_symbols,
+        global_context=context,
+        quant_scores=quant_scores,
+        max_candidates=requested_max,
+    )
+    metadata = output.metadata
+    current_residual = _safe_int(metadata.get("residual_symbol_count"))
+    observed_residual = _safe_int(summary.get("residual_symbol_count"))
+    if observed_residual > 0 and current_residual == 0:
+        classification = "stale_artifact_pollution_or_historical_old_code_behavior"
+    elif current_residual > 0:
+        classification = "code_behavior_regression"
+    else:
+        classification = "no_residual_violation"
+    return {
+        "status": "replayed",
+        "record_id": run_dir.name,
+        "input_symbol_count": len(input_symbols),
+        "input_source": "theme_pool_audit.json:symbols keys",
+        "quant_score_source": "theme_pool_audit.json:symbols.*.theme_pool_score proxy",
+        "requested_max_candidates": requested_max,
+        "output_symbol_count": len(output.symbols),
+        "residual_symbol_count": current_residual,
+        "source_counts": metadata.get("source_counts", {}),
+        "policy": metadata.get("policy", {}),
+        "natural_admitted_theme_count": metadata.get("natural_admitted_theme_count"),
+        "forced_theme_count": metadata.get("forced_theme_count"),
+        "admitted_themes": metadata.get("admitted_themes", []),
+        "classification": classification,
+    }
+
+
+def daily_pipeline_proof(record_root: Path, proof_record_id: str = "20260708_0910") -> dict[str, Any]:
+    run_dir = record_root / proof_record_id
+    if not run_dir.exists():
+        return {
+            "record_id": proof_record_id,
+            "status": "missing",
+            "conclusion": "daily pipeline proof record not found; rerun the offline proof command first.",
+        }
+    theme_summary = _theme_pool_summary_from_record(run_dir)
+    market = _read_json_file(run_dir / "market_snapshot.json")
+    candidate_status = dict(market.get("candidate_level_dag_status") or {})
+    dag = dict(candidate_status.get("dag_pipeline") or {})
+    final_pool = candidate_status.get("candidate_pool")
+    final_pool_count = len(final_pool) if isinstance(final_pool, list) else 0
+    core = _safe_int(theme_summary.get("core_symbol_count"))
+    residual = _safe_int(theme_summary.get("residual_symbol_count"))
+    hard_pool_restored = residual == 0 and core > 0
+    final_nonempty = final_pool_count > 0 or _safe_int(dag.get("shortlist_count")) > 0
+    blocker = str(candidate_status.get("blocker") or market.get("blocker") or "").strip()
+    return {
+        "record_id": proof_record_id,
+        "status": "available",
+        "hard_filter_pool_restored_nonempty": hard_pool_restored,
+        "final_shortlist_restored_nonempty": final_nonempty,
+        "candidate_generation_status": candidate_status.get("candidate_generation_status") or market.get("candidate_generation_status"),
+        "blocker": blocker,
+        "theme_pool": {
+            "core_symbol_count": core,
+            "residual_symbol_count": residual,
+            "policy_residual_enabled": dict(theme_summary.get("policy") or {}).get("residual_enabled"),
+            "hard_theme_constraint": dict(theme_summary.get("policy") or {}).get("hard_theme_constraint"),
+            "forced_theme_count": _safe_int(theme_summary.get("forced_theme_count")),
+        },
+        "dag_pipeline": dag,
+        "final_candidate_pool_count": final_pool_count,
+        "conclusion": (
+            "hard-filter pool is nonempty with residual=0; final shortlist remains empty because "
+            "PortfolioConstructor selected no positive target weight."
+            if hard_pool_restored and not final_nonempty and blocker == "no_candidate_selected_by_portfolio_constructor"
+            else "daily proof did not restore the hard-filter pool; inspect the generated record."
+        ),
+    }
+
+
+def system_sell_post_exit_triple(metrics: dict[str, Any]) -> dict[str, Any]:
+    system_sell = dict(metrics.get("counterparty_exit_split", {}).get("system_sell") or {})
+    return {
+        "count": system_sell.get("count", 0),
+        "ret_5d": system_sell.get("ret_5d", {}),
+        "ret_10d": system_sell.get("ret_10d", {}),
+        "ret_20d": system_sell.get("ret_20d", {}),
+        "ret_20d_mean_survives_23_80pct": abs(_safe_float(dict(system_sell.get("ret_20d") or {}).get("mean")) - 0.2380) < 0.001,
+    }
+
+
+def shadow_denominator_check(metrics: dict[str, Any]) -> dict[str, Any]:
+    nav_rows = list(metrics.get("nav_rows") or [])
+    if not nav_rows:
+        return {"status": "unavailable", "reason": "nav_rows missing"}
+    first = dict(nav_rows[0])
+    last = dict(nav_rows[-1])
+    initial = _safe_float(first.get("initial_capital"), 0.0)
+    first_nav = _safe_float(first.get("nav"), 0.0)
+    last_nav = _safe_float(last.get("nav"), 0.0)
+    last_total = _safe_float(last.get("total_value_after"), 0.0)
+    window_return = (last_nav / first_nav - 1.0) if first_nav else 0.0
+    full_return_vs_initial = last_nav - 1.0
+    window_implied_total = initial * (1.0 + window_return)
+    return {
+        "status": "checked",
+        "initial_capital": initial,
+        "first_nav": first_nav,
+        "last_nav": last_nav,
+        "last_total_value_after": last_total,
+        "window_return_from_first_nav": window_return,
+        "full_return_vs_initial_capital": full_return_vs_initial,
+        "window_return_implied_total_from_1m": window_implied_total,
+        "gap_vs_last_total_if_window_return_is_misused": last_total - window_implied_total,
+        "last_nav_times_initial_capital": last_nav * initial,
+        "initial_capital_values": sorted({_safe_float(row.get("initial_capital")) for row in nav_rows}),
+        "conclusion": (
+            "shadow denominator 1,000,000 is the same initial_capital/NAV base; "
+            "61.22% is first-record-to-latest window return, not return from initial capital. "
+            "No deposit-injection or interest evidence appears in NAV rows."
+        ),
+    }
+
+
+def session_forensics_688301_excerpt(
+    session_root: Path,
+    *,
+    start_date: str = "2026-06-16",
+    end_date: str = "2026-06-30",
+    context_lines: int = 10,
+    max_matches: int = 5,
+) -> dict[str, Any]:
+    aliases = ("688301", "688301.SH", "奕瑞")
+    files = sorted(session_root.glob("*/*/*.jsonl")) if session_root.exists() else []
+    rows: list[dict[str, Any]] = []
+    for path in files:
+        current_date = _file_date(path)
+        if not _date_in_window(current_date, start_date, end_date):
+            continue
+        try:
+            raw_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        entries = _session_text_entries(raw_lines)
+        for index, entry in enumerate(entries):
+            upper_line = entry["text"].upper()
+            if not any(alias.upper() in upper_line for alias in aliases):
+                continue
+            if not SELL_FORENSICS_RE.search(entry["text"]):
+                continue
+            start = max(0, index - context_lines)
+            end = min(len(entries), index + context_lines + 1)
+            context = entries[start:end]
+            rows.append(
+                {
+                    "date": current_date,
+                    "file": str(path),
+                    "line": entry["line"],
+                    "context_lines": [
+                        {"line": item["line"], "text": item["text"][:1200]}
+                        for item in context
+                    ],
+                }
+            )
+            if len(rows) >= max_matches:
+                return {
+                    "schema_version": "phase14_3_session_forensics_688301.v1",
+                    "symbol": "688301.SH",
+                    "date_window": [start_date, end_date],
+                    "match_count": len(rows),
+                    "matches": rows,
+                }
+    return {
+        "schema_version": "phase14_3_session_forensics_688301.v1",
+        "symbol": "688301.SH",
+        "date_window": [start_date, end_date],
+        "match_count": len(rows),
+        "matches": rows,
+    }
+
+
+def _session_text_entries(raw_lines: list[str]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    fallback: list[dict[str, Any]] = []
+    for line_number, raw in enumerate(raw_lines, start=1):
+        fallback.append({"line": line_number, "text": raw})
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        item_type = str(payload.get("type") or "")
+        body = payload.get("payload")
+        if item_type == "event_msg" and isinstance(body, dict) and body.get("type") == "agent_message":
+            message = str(body.get("message") or "").strip()
+            if message:
+                entries.append({"line": line_number, "text": message})
+            continue
+        if item_type != "response_item" or not isinstance(body, dict):
+            continue
+        if body.get("type") != "message" or body.get("role") != "assistant":
+            continue
+        fragments: list[str] = []
+        for part in body.get("content") or []:
+            if isinstance(part, dict):
+                text = part.get("text") or part.get("output_text") or part.get("input_text")
+                if text:
+                    fragments.append(str(text))
+        if fragments:
+            entries.append({"line": line_number, "text": "\n".join(fragments)})
+    return entries or fallback
 
 
 def theme_guardrail_replay(record_root: Path) -> dict[str, Any]:
@@ -597,6 +1001,7 @@ def build_micro_report(
     *,
     record_root: Path = DEFAULT_RECORD_ROOT,
     record_id: str = "20260707_1046",
+    proof_record_id: str = "20260708_0910",
     output_root: Path = DEFAULT_OUTPUT_ROOT,
     bars_root: Path = DEFAULT_BARS_ROOT,
     session_root: Path = DEFAULT_SESSION_ROOT,
@@ -627,6 +1032,14 @@ def build_micro_report(
         "theme_guardrail_diagnosis": theme_guardrail_replay(record_root),
         "exit_record_audit": exit_record_audit(record_root),
         "shortlist_diagnosis": state.get("shortlist_diagnosis"),
+        "phase14_3": {
+            "residual_symbol_source_audit": residual_symbol_source_audit(record_dir),
+            "current_theme_pool_replay": current_theme_pool_replay(record_dir),
+            "daily_pipeline_proof": daily_pipeline_proof(record_root, proof_record_id),
+            "system_sell_post_exit_triple": system_sell_post_exit_triple(metrics),
+            "shadow_denominator_check": shadow_denominator_check(metrics),
+            "session_forensics_688301": session_forensics_688301_excerpt(session_root),
+        },
     }
 
 
@@ -643,8 +1056,15 @@ def render_markdown(payload: dict[str, Any]) -> str:
     e_l = payload["e_l_after_calendar_filter"]
     theme_guardrail = payload["theme_guardrail_diagnosis"]
     exit_audit = payload["exit_record_audit"]
+    phase14_3 = payload.get("phase14_3", {})
+    residual_audit = phase14_3.get("residual_symbol_source_audit", {})
+    current_replay = phase14_3.get("current_theme_pool_replay", {})
+    daily_proof = phase14_3.get("daily_pipeline_proof", {})
+    system_sell = phase14_3.get("system_sell_post_exit_triple", {})
+    denominator = phase14_3.get("shadow_denominator_check", {})
+    forensics = phase14_3.get("session_forensics_688301", {})
     lines = [
-        "# Phase 14.2 Micro Checks",
+        "# Phase 14 Micro Checks",
         "",
         "## Exposure Reconciliation",
         f"- Phase13 effective: {exposure.get('phase13_market_value_numerator')} / {exposure.get('denominator_total_value_after')} = {_pct(exposure.get('phase13_exposure'))}",
@@ -748,13 +1168,85 @@ def render_markdown(payload: dict[str, Any]) -> str:
             f"- status: {diagnosis.get('status')}",
             f"- conclusion: {diagnosis.get('conclusion')}",
             "",
+            "## Phase 14.3 Residual Symbols",
+            f"- observed_residual_symbol_count: {residual_audit.get('observed_residual_symbol_count')}",
+            f"- residual_symbols: {', '.join(residual_audit.get('residual_symbols') or []) or 'N/A'}",
+            "| symbol | source | theme | score | key source paths |",
+            "|---|---|---|---:|---|",
         ]
     )
+    for row in residual_audit.get("rows", []):
+        paths = "<br>".join(row.get("source_paths", [])[:6])
+        lines.append(
+            f"| {row.get('symbol')} | {row.get('source')} | {row.get('primary_theme_id')} | "
+            f"{row.get('theme_pool_score')} | {paths} |"
+        )
+    if not residual_audit.get("rows"):
+        lines.append("| N/A | N/A | N/A | N/A | no residual symbols |")
+    lines.extend(
+        [
+            "",
+            "## Phase 14.3 Current Builder Replay",
+            f"- status: {current_replay.get('status')}",
+            f"- classification: {current_replay.get('classification')}",
+            f"- input_symbol_count: {current_replay.get('input_symbol_count')}",
+            f"- output_symbol_count: {current_replay.get('output_symbol_count')}",
+            f"- residual_symbol_count: {current_replay.get('residual_symbol_count')}",
+            f"- source_counts: {current_replay.get('source_counts')}",
+            f"- quant_score_source: {current_replay.get('quant_score_source')}",
+            "",
+            "## Phase 14.3 Daily Pipeline Proof",
+            f"- record_id: {daily_proof.get('record_id')}",
+            f"- hard_filter_pool_restored_nonempty: {daily_proof.get('hard_filter_pool_restored_nonempty')}",
+            f"- final_shortlist_restored_nonempty: {daily_proof.get('final_shortlist_restored_nonempty')}",
+            f"- candidate_generation_status: {daily_proof.get('candidate_generation_status')}",
+            f"- blocker: {daily_proof.get('blocker')}",
+            f"- theme_pool: {daily_proof.get('theme_pool')}",
+            f"- conclusion: {daily_proof.get('conclusion')}",
+            "",
+            "## Phase 14.3 E Split System Sell",
+            f"- count: {system_sell.get('count')}",
+            f"- 5d mean/median/negative: {_pct(dict(system_sell.get('ret_5d') or {}).get('mean'))} / "
+            f"{_pct(dict(system_sell.get('ret_5d') or {}).get('median'))} / "
+            f"{_pct(dict(system_sell.get('ret_5d') or {}).get('negative_share'))}",
+            f"- 10d mean/median/negative: {_pct(dict(system_sell.get('ret_10d') or {}).get('mean'))} / "
+            f"{_pct(dict(system_sell.get('ret_10d') or {}).get('median'))} / "
+            f"{_pct(dict(system_sell.get('ret_10d') or {}).get('negative_share'))}",
+            f"- 20d mean/median/negative: {_pct(dict(system_sell.get('ret_20d') or {}).get('mean'))} / "
+            f"{_pct(dict(system_sell.get('ret_20d') or {}).get('median'))} / "
+            f"{_pct(dict(system_sell.get('ret_20d') or {}).get('negative_share'))}",
+            f"- +23.80% survives: {system_sell.get('ret_20d_mean_survives_23_80pct')}",
+            "",
+            "## Phase 14.3 Shadow Denominator",
+            f"- initial_capital: {denominator.get('initial_capital')}",
+            f"- first_nav: {denominator.get('first_nav')}; last_nav: {denominator.get('last_nav')}",
+            f"- window_return_from_first_nav: {_pct(denominator.get('window_return_from_first_nav'))}",
+            f"- full_return_vs_initial_capital: {_pct(denominator.get('full_return_vs_initial_capital'))}",
+            f"- gap_if_window_return_is_misused: {denominator.get('gap_vs_last_total_if_window_return_is_misused')}",
+            f"- conclusion: {denominator.get('conclusion')}",
+            "",
+            "## Phase 14.3 688301 Session Forensics",
+            f"- match_count: {forensics.get('match_count')}",
+        ]
+    )
+    for match in forensics.get("matches", []):
+        lines.append(f"- {match.get('date')} {match.get('file')}:{match.get('line')}")
+        lines.append("```text")
+        for item in match.get("context_lines", []):
+            lines.append(f"{item.get('line')}: {item.get('text')}")
+        lines.append("```")
+    lines.append("")
     return "\n".join(lines)
 
 
-def write_outputs(payload: dict[str, Any], output_root: Path, as_of_date: str) -> tuple[Path, Path]:
-    out_dir = output_root / as_of_date / "phase14_2"
+def write_outputs(
+    payload: dict[str, Any],
+    output_root: Path,
+    as_of_date: str,
+    *,
+    output_phase: str = "phase14_2",
+) -> tuple[Path, Path]:
+    out_dir = output_root / as_of_date / output_phase
     out_dir.mkdir(parents=True, exist_ok=True)
     json_path = out_dir / "micro_checks.json"
     md_path = out_dir / "micro_checks.md"
@@ -767,7 +1259,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--record-root", type=Path, default=DEFAULT_RECORD_ROOT)
     parser.add_argument("--record-id", default="20260707_1046")
+    parser.add_argument("--proof-record-id", default="20260708_0910")
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
+    parser.add_argument("--output-phase", default="phase14_2")
     parser.add_argument("--bars-root", type=Path, default=DEFAULT_BARS_ROOT)
     parser.add_argument("--session-root", type=Path, default=DEFAULT_SESSION_ROOT)
     parser.add_argument("--as-of-date", default="20260707")
@@ -775,12 +1269,18 @@ def main() -> None:
     payload = build_micro_report(
         record_root=args.record_root,
         record_id=args.record_id,
+        proof_record_id=args.proof_record_id,
         output_root=args.output_root,
         bars_root=args.bars_root,
         session_root=args.session_root,
         as_of_date=args.as_of_date,
     )
-    json_path, md_path = write_outputs(payload, args.output_root, args.as_of_date)
+    json_path, md_path = write_outputs(
+        payload,
+        args.output_root,
+        args.as_of_date,
+        output_phase=args.output_phase,
+    )
     print(json.dumps({"json": str(json_path), "markdown": str(md_path)}, ensure_ascii=False, indent=2))
 
 

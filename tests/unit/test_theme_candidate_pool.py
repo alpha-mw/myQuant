@@ -386,6 +386,41 @@ def test_hard_filter_excludes_non_admitted_theme_residuals() -> None:
     assert output.metadata["symbols"]["TAIL"]["source"] == "none"
 
 
+def test_hard_filter_residual_zero_upper_bound_is_locked_in_metadata() -> None:
+    symbols = ["CORE", "TAIL_A", "TAIL_B"]
+    rotation = _rotation(
+        theme_scores={
+            "core": _theme("core", score=0.92),
+            "tail": _theme("tail", score=0.89),
+        },
+        symbol_theme={"CORE": "core", "TAIL_A": "tail", "TAIL_B": "tail"},
+        symbol_scores={"CORE": 0.90, "TAIL_A": 0.95, "TAIL_B": 0.94},
+    )
+
+    output = ThemeCandidatePoolBuilder(
+        _config(
+            use_markov_policy=False,
+            base_top_themes=1,
+            min_admitted_themes=1,
+            residual_ratio=1.00,
+            min_residual_symbols=2,
+        )
+    ).build(
+        symbols=symbols,
+        global_context=_context(symbols, rotation, _markov("趋势上涨")),
+        quant_scores={"CORE": 0.2, "TAIL_A": 0.99, "TAIL_B": 0.98},
+        max_candidates=3,
+    )
+
+    assert output.metadata["policy"]["hard_theme_constraint"] is True
+    assert output.metadata["policy"]["residual_enabled"] is False
+    assert output.metadata["policy"]["residual_concept"] == "disabled_by_theme_pool_hard_filter"
+    assert output.metadata["residual_symbol_count"] == 0
+    assert output.metadata["source_counts"].get("residual_theme", 0) == 0
+    assert output.metadata["residual_theme_alpha_candidates"] == []
+    assert all(source != "residual_theme" for source in output.symbol_sources.values())
+
+
 def test_forced_minimum_themes_enter_core_pool_without_residuals() -> None:
     symbols = ["SEMI1", "BIO1", "TAIL1"]
     rotation = _rotation(
