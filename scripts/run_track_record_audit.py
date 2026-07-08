@@ -836,6 +836,14 @@ def _benchmark_metrics(
         if len(valid) < 2:
             rows[field] = {"available": False}
             continue
+        aligned_series = [
+            {
+                "date": date_value,
+                "actual_nav": _safe_float(nav_rows[dates.index(date_value)]["nav"]),
+                "benchmark_nav": value,
+            }
+            for date_value, value in valid
+        ]
         bench_return = valid[-1][1] / valid[0][1] - 1.0
         rolling: list[dict[str, Any]] = []
         for index in range(19, len(valid)):
@@ -855,6 +863,7 @@ def _benchmark_metrics(
             "benchmark_return": bench_return,
             "full_window_excess": actual_return - bench_return,
             "rolling_20d_excess": rolling,
+            "aligned_series": aligned_series,
         }
     return rows
 
@@ -1621,6 +1630,7 @@ def _execution_quality(records: list[Record], trades: list[dict[str, Any]], reje
                 "count": len(values),
                 "mean": statistics.mean(values) if values else None,
                 "median": statistics.median(values) if values else None,
+                "p90": _quantile(values, 0.90),
             }
             for side, values in slippage.items()
         },
