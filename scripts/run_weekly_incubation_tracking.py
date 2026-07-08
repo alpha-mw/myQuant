@@ -15,6 +15,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from build_holdings_fundamental_sheet import build_holdings_fundamental_sheet
 from run_track_record_audit import DEFAULT_OUTPUT_ROOT, run_audit
 
 
@@ -341,6 +342,7 @@ def build_weekly_record(
     warning: str = "",
     previous_records: list[dict[str, Any]] | None = None,
     thresholds: IncubationThresholds = DEFAULT_THRESHOLDS,
+    fundamentals: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     benchmarks = metrics.get("benchmarks", {})
     star50 = benchmarks.get("star50_nav", {})
@@ -375,6 +377,12 @@ def build_weekly_record(
         "shadow_machine_exit_difference_vs_actual": shadow.get("machine_exit_current_difference_vs_actual"),
         "selection_alpha": selection.get("selection_alpha"),
         "decision_log_completeness": decision_log_completeness(decision_events or []),
+        "fundamental_tracking": {
+            "available": fundamentals is not None,
+            "output_dir": fundamentals.get("output_dir") if fundamentals else None,
+            "pending_disclosure_symbols": fundamentals.get("pending_disclosure_symbols", []) if fundamentals else [],
+            "high_scrutiny_symbols": fundamentals.get("high_scrutiny_symbols", []) if fundamentals else [],
+        },
         **threshold_status,
     }
 
@@ -430,6 +438,8 @@ def render_weekly_report(record: dict[str, Any]) -> str:
             f"- shadow_machine_exit_difference_vs_actual: {record.get('shadow_machine_exit_difference_vs_actual')}",
             f"- decision_log_paired_ratio: {record.get('decision_log_completeness', {}).get('paired_ratio')}",
             f"- post_exit_negative_share: {json.dumps(record.get('post_exit_negative_share'), ensure_ascii=False, sort_keys=True)}",
+            f"- high_scrutiny_symbols: {', '.join(record.get('fundamental_tracking', {}).get('high_scrutiny_symbols', [])) or 'none'}",
+            f"- pending_disclosure_symbols: {', '.join(record.get('fundamental_tracking', {}).get('pending_disclosure_symbols', [])) or 'none'}",
         ]
     )
     lines.extend(["", "## Kill Conditions", ""])
@@ -460,6 +470,11 @@ def main() -> None:
         print(warning)
     audit_as_of = args.audit_as_of or date.today().strftime("%Y%m%d")
     metrics = run_audit(output_root=DEFAULT_OUTPUT_ROOT, as_of_date=audit_as_of, generate_plots=False)
+    fundamentals = build_holdings_fundamental_sheet(
+        output_root=DEFAULT_OUTPUT_ROOT,
+        as_of=audit_as_of,
+        write=True,
+    )
     previous_records = [
         row for row in load_existing_weekly_records(args.tracking_root)
         if row.get("week_end") != (args.week_end or week_end_for(audit_as_of))
@@ -470,6 +485,7 @@ def main() -> None:
         decision_events=_load_decision_events(args.decision_log),
         warning=warning,
         previous_records=previous_records,
+        fundamentals=fundamentals,
     )
     jsonl_path, report_path = write_weekly_outputs(args.tracking_root, record)
     print(json.dumps({"weekly_jsonl": str(jsonl_path), "weekly_report": str(report_path)}, ensure_ascii=False, indent=2))

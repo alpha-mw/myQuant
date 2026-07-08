@@ -79,6 +79,11 @@ def test_weekly_record_metrics_and_decision_pairing():
             {"event_type": "human_action", "trade_date": "2026-07-07"},
         ],
         warning="warn",
+        fundamentals={
+            "output_dir": "results/track_record_audit/20260710/fundamentals",
+            "pending_disclosure_symbols": ["002008.SZ"],
+            "high_scrutiny_symbols": ["002008.SZ", "002851.SZ"],
+        },
     )
 
     assert record["warning"] == "warn"
@@ -90,6 +95,10 @@ def test_weekly_record_metrics_and_decision_pairing():
     assert record["kill_review_triggered"] is False
     assert record["add_eligible"] is False
     assert record["post_exit_negative_share"]["ret_10d"] == 0.5
+    assert record["fundamental_tracking"]["high_scrutiny_symbols"] == ["002008.SZ", "002851.SZ"]
+    report = mod.render_weekly_report(record)
+    assert "high_scrutiny_symbols: 002008.SZ, 002851.SZ" in report
+    assert "pending_disclosure_symbols: 002008.SZ" in report
 
 
 def test_weekly_write_is_idempotent_for_same_week(tmp_path):
