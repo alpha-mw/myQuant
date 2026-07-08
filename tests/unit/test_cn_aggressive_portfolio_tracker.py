@@ -218,6 +218,28 @@ def test_realtime_execution_price_rejects_static_daily_price_only():
     assert field == ""
 
 
+def test_fallback_current_price_numeric_when_metric_missing_and_row_value_is_string():
+    row = SimpleNamespace(current_price="123.45")
+
+    price = tracker._fallback_current_price({}, row)
+
+    assert price == pytest.approx(123.45)
+
+
+def test_fallback_metric_or_row_price_numeric_when_metric_missing_and_row_value_is_string():
+    row = SimpleNamespace(stage_target_price="150.25")
+
+    price = tracker._fallback_metric_or_row_price(
+        {},
+        "stage_target_price",
+        row,
+        "stage_target_price",
+        120.0,
+    )
+
+    assert price == pytest.approx(150.25)
+
+
 def test_parse_quote_payload_marks_current_as_realtime_price():
     parts = [""] * 35
     parts[1] = "测试股份"
@@ -1032,6 +1054,15 @@ def test_candidate_pool_from_v13_dag_empty_when_no_shortlist_or_positive_targets
     assert status["dag_pipeline"]["portfolio_target_count"] == 0
     assert status["dag_pipeline"]["shortlist_artifact_missing"] is False
     assert status["error"] == ""
+    waterfall = status["candidate_decay_waterfall"]
+    assert waterfall["schema_version"] == tracker.CANDIDATE_DECAY_WATERFALL_SCHEMA_VERSION
+    stages = {row["stage"]: row for row in waterfall["stages"]}
+    assert stages["bayesian_shortlist"]["input_count"] == 1
+    assert stages["bayesian_shortlist"]["output_count"] == 0
+    assert waterfall["classification"]["classification"] == "single_reason_requires_constraint_review"
+    lines = tracker._format_candidate_decay_waterfall_report_lines(status)
+    assert any("空 shortlist 衰减瀑布" in line for line in lines)
+    assert any("Bayesian records -> shortlist" in line for line in lines)
 
 
 def test_trailing_take_profit_review_sets_explicit_watch_from_entry_date():
@@ -2483,6 +2514,30 @@ def test_legacy_overweight_holding_warning_only_does_not_force_sell():
     assert "当前权重 22.00%" in lines[0]
     assert "上限 15.00%" in lines[0]
     assert "只提示，不强制卖出" in lines[0]
+
+
+def test_prune_holdings_review_to_effective_ledger_removes_exited_symbols():
+    holdings_review = pd.DataFrame(
+        [
+            {"symbol": "688301.SH", "name": "奕瑞科技", "current_value": 100.0},
+            {"symbol": "300285.SZ", "name": "国瓷材料", "current_value": 50.0},
+        ]
+    )
+    effective_ledger = pd.DataFrame(
+        [
+            {"symbol": "688301.SH", "name": "奕瑞科技", "current_value": 100.0},
+        ]
+    )
+
+    pruned, invariant = tracker._prune_holdings_review_to_effective_ledger(
+        holdings_review,
+        effective_ledger,
+    )
+
+    assert pruned["symbol"].tolist() == ["688301.SH"]
+    assert invariant["status"] == "ok"
+    assert invariant["pruned_extra_review_symbols"] == ["300285.SZ"]
+    assert invariant["pre_prune"]["status"] == "warning"
 
 
 def test_run_tracker_auto_fills_risk_reduction_sell_with_realtime_quote(monkeypatch, tmp_path):

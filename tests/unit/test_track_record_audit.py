@@ -169,6 +169,27 @@ def _write_phase13_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path,
         "2026-01-06 10:00:00,buy,BBB.SZ,Beta,100,20,2000,0,filled,unit\n",
         encoding="utf-8",
     )
+    (record_root / "20260106_1000" / "orders.csv").write_text(
+        "timestamp,action,symbol,name,shares,price,trade_value,realized_pnl,reason\n"
+        "2026-01-06 10:00:00,buy,BBB.SZ,Beta,100,20,2000,0,unit\n",
+        encoding="utf-8",
+    )
+    (record_root / "20260106_1000" / "candidate_pool.csv").write_text(
+        "symbol,name,candidate_rank,portfolio_target_weight,codex_recommendation_score\n"
+        "AAA.SZ,Alpha,1,0.5,80\n"
+        "BBB.SZ,Beta,2,0.5,70\n",
+        encoding="utf-8",
+    )
+    (record_root / "20260107_1000" / "manual_switch_and_take_profit_orders.csv").write_text(
+        "timestamp,action,symbol,name,shares,execution_price,trade_value,realized_pnl,status,reason\n"
+        "2026-01-07 10:00:00,sell,AAA.SZ,Alpha,10,13.88388,138.8388,38.8388,filled,unit_manual_exit\n",
+        encoding="utf-8",
+    )
+    (record_root / "20260107_1000" / "orders.csv").write_text(
+        "timestamp,action,symbol,name,shares,price,trade_value,realized_pnl,reason\n"
+        "2026-01-07 10:00:00,sell,AAA.SZ,Alpha,10,13.88388,138.8388,38.8388,unit_manual_exit\n",
+        encoding="utf-8",
+    )
 
     benchmark = tmp_path / "phase13_cn_index_benchmark.csv"
     benchmark.write_text(
@@ -346,6 +367,18 @@ def test_phase13_beta_regime_and_second_counterfactual_sections(tmp_path):
     assert cf2["symbol_count"] == 2
     assert cf2["counterfactual2_return"] > cf2["counterfactual1_return"]
     assert cf2["entry_timing_contribution"] < 0
+    assert metrics["selection_alpha"]["covered_count"] == 1
+    assert metrics["selection_alpha"]["selection_alpha"] < 0
+    assert metrics["counterparty_exit_split"]["manual_proxy_sell"]["count"] == 1
+    assert metrics["estimated_execution_cost"]["available"] is True
+    assert metrics["estimated_execution_cost"]["net_full_window_return"] < (
+        metrics["estimated_execution_cost"]["gross_full_window_return"]
+    )
+    machine_rows = metrics["shadow_ledgers"]["shadow_nav_machine_exit"]["rows"]
+    assert machine_rows[0]["exit_status"] in {"stop_triggered_exit", "not_closed_marked_to_window_end"}
+    assert "contribution_pct_of_initial" in machine_rows[0]
+    assert "share_of_shadow_delta" in machine_rows[0]
+    assert "local/manual simulation design" in metrics["slippage_zero_root_cause"]["conclusion"]
 
     report = (tmp_path / "audit" / "20260108" / "audit_report.md").read_text(encoding="utf-8")
     assert "## H. β 调整后的超额（vs 科创50）" in report
@@ -353,6 +386,71 @@ def test_phase13_beta_regime_and_second_counterfactual_sections(tmp_path):
     assert "## I. 全窗口 regime 时间线与暴露合规" in report
     assert "窗口内战绩相当部分产生于闸门约束之外，'系统的钱'份额需按合规日子集重算" in report
     assert "## J. 选股 α 的第二对照" in report
+    assert "## K. 选择 α（菜单 vs 所选）" in report
+    assert "## L. 影子账本" in report
+    assert "## M. 毛/净执行成本估计" in report
+
+
+def test_trade_calendar_excludes_weekend_paper_fill_from_default_machine_exit(tmp_path):
+    audit = _load_audit()
+    bars_root = tmp_path / "bars"
+    bars_root.mkdir()
+    pd.DataFrame(
+        [
+            {"ts_code": "AAA.SZ", "trade_date": "20260703", "close": 10.0, "adj_close": 20.0},
+            {"ts_code": "AAA.SZ", "trade_date": "20260706", "close": 8.0, "adj_close": 16.0},
+        ]
+    ).to_parquet(bars_root / "part.parquet", index=False)
+    trades = [
+        {
+            "date": "2026-07-04",
+            "symbol": "AAA.SZ",
+            "action": "sell",
+            "status": "filled",
+            "shares": 100,
+            "price": 10.0,
+            "source": "manual_execution_manifest",
+        }
+    ]
+
+    annotated, diagnostics = audit._annotate_trade_calendar_status(
+        trades,
+        ["2026-07-03", "2026-07-06"],
+        bars_root,
+    )
+    raw_prices, _warnings = audit._read_price_panel(
+        ["AAA.SZ"],
+        "2026-07-03",
+        "2026-07-06",
+        bars_root,
+        prefer_adjusted=False,
+    )
+    adjusted_prices, _warnings = audit._read_price_panel(
+        ["AAA.SZ"],
+        "2026-07-03",
+        "2026-07-06",
+        bars_root,
+    )
+    nav_rows = [{"date": "2026-07-03", "initial_capital": 1000.0}, {"date": "2026-07-06"}]
+
+    default_shadow = audit._machine_exit_shadow([], annotated, raw_prices, nav_rows, {"manual": True})
+    sensitivity_shadow = audit._machine_exit_shadow(
+        [],
+        annotated,
+        raw_prices,
+        nav_rows,
+        {"manual": True},
+        include_non_trading=True,
+    )
+
+    assert diagnostics["weekend_paper_fill_count"] == 1
+    assert annotated[0]["calendar_status"] == "weekend_paper_fill"
+    assert raw_prices["AAA.SZ"]["2026-07-06"] == 8.0
+    assert adjusted_prices["AAA.SZ"]["2026-07-06"] == 16.0
+    assert default_shadow["manual_proxy_sell_count"] == 0
+    assert default_shadow["excluded_non_trading_count"] == 1
+    assert sensitivity_shadow["manual_proxy_sell_count"] == 1
+    assert sensitivity_shadow["rows"][0]["delta_vs_manual_pnl"] == -200.0
 
 
 def test_track_record_audit_refuses_output_inside_record_root(tmp_path):

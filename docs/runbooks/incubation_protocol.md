@@ -4,8 +4,9 @@
 
 - 冻结版本：`v13-frozen-20260707`
 - 策略对象：`CN/aggressive_tech_manufacturing`
-- 起始条件：Phase 12 的 12.1-12.3 提交、验收命令与本协议提交完成，并由 `maxwell` 在冻结起始前填写第 4 节 `TODO(maxwell)` 数值阈值后再次 commit。
-- 冻结期：60-90 个交易日，以 A 股交易日历为准。
+- `freeze_start_date = 2026-07-07`
+- `incubation_length_trading_days = 90`
+- `weekly_tracking_time = 周五 17:30`
 
 ## 2. 冻结期代码规则
 
@@ -16,40 +17,90 @@
 3. PR 描述必须说明 bug、影响面、为何不改变策略主张、验证命令与结果。
 4. 不允许引入新 alpha、风险偏好放宽、参数主动优化、数据口径替换、择时规则重写或人工事后调参。
 5. `results/strategy_records/`、`results/track_record_audit/`、benchmark CSV、审计报告/JSON/PNG 继续不得 commit。
+6. `freeze_exception_approver = tests_green_plus_codex_review`
+7. `freeze_exception_merge_gate = maxwell_explicit_confirmation`。任何 freeze-exception 的合并进 main 动作，须 Maxwell 在会话中原文确认后方可执行。冻结期边界不应由被冻结方（Codex）自行把守合并动作；审批可自动化，合并须人肉。
+8. `github_branch_protection = disabled`。这是 Maxwell 选择；上述人肉合并门为其补偿性控制。
 
 ## 3. 周度预登记追踪指标
 
 每周收盘后固定复跑 Phase 12 审计结构，至少记录：
 
 1. 对科创50 `star50_nav` 的周超额收益。
-2. 滑点漂移：按买/卖方向统计提案价 vs 实际成交价 bps 均值、中位数、P90。
-3. 周换手率与滚动 4 周换手率。
-4. 出场后 5/10/20 日收益滚动均值与中位数。
-5. Markov regime 触发次数、`ThemeGatePolicy.from_markov` 档位变化次数、相位闸门触发次数。
-6. 单票权重超过 `RISK_GUARD_SINGLE_NAME_WEIGHT_CAP` 的存量提示数量与最大超限幅度。
-7. 相位择时 alpha、组内选股 alpha、配置 beta 的滚动对账。
-8. 对科创50 `star50_nav` 的回归 beta、年化 alpha、alpha t 值与 R²。
-9. 信息比率 IR（日频，同时留存年化换算）。
-10. 暴露合规率：实际总暴露 ≤ Markov/系统建议总暴露上限的天数占比。
+2. 对科创50 `star50_nav` 的滚动 8 週累计超额收益。
+3. 滑点漂移：按买/卖方向统计提案价 vs 实际成交价 bps 均值、中位数、P90。
+4. 周换手率与滚动 4 周换手率。
+5. 出场后 5/10/20 日收益滚动均值、中位数与为负占比。
+6. Markov regime 触发次数、`ThemeGatePolicy.from_markov` 档位变化次数、相位闸门触发次数。
+7. 单票权重超过 `RISK_GUARD_SINGLE_NAME_WEIGHT_CAP` 的存量提示数量与最大超限幅度。
+8. 当前 peak-to-trough NAV drawdown 档位。
+9. 相位择时 alpha、组内选股 alpha、配置 beta 的滚动对账。
+10. 60 日相位择时 alpha。
+11. 对科创50 `star50_nav` 的回归 beta、年化 alpha、alpha t 值与 R²。
+12. 信息比率 IR（日频，同时留存年化换算）。
+13. 暴露合规率：实际总暴露 ≤ Markov/系统建议总暴露上限的天数占比。
+14. 选择 alpha：实际所选标的收益 − 当日 shortlist 菜单等权收益。
+15. 毛/净双口径全窗口收益与周度成本拖累估计。
+16. 两条影子账本差值：`shadow_nav_cap050` vs actual、`shadow_nav_machine_exit` vs actual。
+17. 决策日志完整率：`advisory` 与 `human_action` 有同日配对记录的比例。
 
-## 4. Kill / 加仓规则占位
+## 4. Kill / 加仓规则
 
-以下阈值必须由 `maxwell` 在冻结正式起始前填写并 commit。未填写前，本协议只完成登记，不视为生效。
+以下阈值为 `maxwell` 的预登记风险偏好输入。本节生效后，90 个交易日冻结期评估只能按这些事先规则打分，不允许事后重写解释口径。
 
-- Kill rule：若连续 `TODO(maxwell)` 周对科创50周超额低于 `TODO(maxwell)`，则进入冻结期复核/停止新增资金。
-- Kill rule：若滚动 `TODO(maxwell)` 日相位择时 alpha 低于 `TODO(maxwell)`，则停止机器日频调仓主张。
-- Kill rule：若滑点漂移买入或卖出方向 P90 超过 `TODO(maxwell)` bps，且持续 `TODO(maxwell)` 周，则冻结新增交易。
-- Kill rule：若出场后 10/20 日收益滚动均值显著为正并超过 `TODO(maxwell)`，则判定卖出偏早，暂停相位出场规则扩展。
-- Add rule：若连续 `TODO(maxwell)` 周对科创50周超额高于 `TODO(maxwell)`，且相位择时 alpha 高于 `TODO(maxwell)`，可进入小额加仓评估。
-- Add rule：若 Markov/相位闸门在回撤期触发并使最大回撤低于科创50 `TODO(maxwell)`，可评估提高资金上限。
+### 回撤阶梯
 
-<!-- PROPOSAL (Claude, 2026-07-07) — 示例值，未生效，须 Maxwell 改定后移入正式字段并提交
-- 回撤阶梯示例：峰值回撤 -20% -> 目标暴露减半；峰值回撤 -30% -> 清仓并强制 30 日复盘。
-- 评审触发示例：滚动 60 日超额 vs 科创50 < 0 -> 触发策略评审。
-- 执行审查示例：周均滑点 > 冻结起始基线 2 倍 -> 触发执行审查。
--->
+峰值口径 = 从历史最高 NAV 起算的回撤；口径为 peak-to-trough NAV drawdown。四档为暴露上限动作，非强制平仓；结合 `overweight_handling = notify_only_no_forced_sell`，减半/减 1/4 指下调目标暴露上限并提示，不强制卖出既有超限持仓，除 -40% 清仓档为逐票人工确认清仓。
 
-## 5. 期满评估模板
+- `drawdown_tier_1_review = -12%`：触发强制人工复核，附衰减瀑布，不动仓（软哨兵）。
+- `drawdown_tier_2_half = -20%`：目标暴露减半。
+- `drawdown_tier_3_quarter = -30%`：目标暴露减至 ≤ 1/4。
+- `drawdown_tier_4_clear = -40%`：清仓并强制 30 日复盘。
+
+### Kill 规则
+
+任一触发 → 进入 kill 评审，非自动清仓；评审动作 = 逐票人工复核。
+
+- `kill_excess_window_weeks = 8`；`kill_excess_cumulative_threshold = -10%`：滚动 8 週累计超额 vs 科创50（`star50_nav`）低于 -10%。
+- `kill_phase_alpha_window_days = 60`；`kill_phase_alpha_threshold = -5%`：60 日相位择时 α 低于 -5%。
+- `kill_slippage_p90_bps = 50`；`kill_slippage_sustain_weeks = 2`：滑点 P90 > 50bps 持续 2 週。
+
+### Add 规则
+
+放宽暴露/加倉的前置条件，与 kill 共用 8 週窗口。
+
+- `add_excess_window_weeks = 8`；`add_excess_cumulative_threshold = +5%`：滚动 8 週累计超额 vs 科创50 > +5%。
+- `add_phase_alpha_threshold = +5%`：相位择时 α > +5%。
+- `add_size_limit_pct_nav = 10%`：单次加倉不超过 NAV 10%。
+
+### 其余生效值
+
+- `markov_drawdown_advantage_pct = 5`：回撤期组合相对基准占优的期望验证值，仅追踪不作动作。
+- `post_exit_positive_threshold = 30%`：出场后 5/10/20 日为负占比的监控上界，仅追踪。
+- `funding_nature = mixed_per_trade_labeled`
+- `overweight_handling = notify_only_no_forced_sell`
+- `add_new_capital = manual_review_required`
+- `freeze_new_trades = manual_override_required`
+- `machine_daily_advice = risk_reducing_sell_allowed`
+- `Codex` 仅在 `maxwell` 确认后记录人工动作；`advisory` 与 `human_action` 需要同日配对。
+- Phase 5b/9b：冻结后再议，冻结期内不作为加仓或策略改写理由。
+
+## 5. 设计说明
+
+kill/add 均采用「长窗口(8週) + 累计 + 有符号阈值」，与 60 日相位 α 哲学统一；不用逐週 0% 阈值。原因：本策略为集中型（审计实测 Top3 贡献 80.8%、命中率 30.77%、年化波动 56%），沉闷週跑输指数是形态特征而非病态，逐週阈值会误杀健康策略。回撤四档间距按 56% 年化波动校准，避免「满仓→半仓→清仓」三段跳在快速下行中脱节。
+
+## 6. 当前持仓人工输入附录
+
+产业实质判断（真订单/真产能 vs 纯故事）由 `maxwell` 人工完成；本表只记录冻结起点的人为输入与披露日缺口。
+
+| 标的 | 公司 | 产业实质判断 | H1 披露日 |
+| --- | --- | --- | --- |
+| `002008.SZ` | 大族激光 | 看不清 | 披露日需人工补充 |
+| `002384.SZ` | 东山精密 | 真订单 | 披露日需人工补充 |
+| `002463.SZ` | 沪电股份 | 真订单 | 披露日需人工补充 |
+| `002851.SZ` | 麦格米特 | 看不清 | 披露日需人工补充 |
+| `605358.SH` | 立昂微 | 真订单 | 披露日需人工补充 |
+
+## 7. 期满评估模板
 
 期满后按 Phase 12.2 报告结构复跑并对比冻结起点：
 
