@@ -57,7 +57,7 @@ def test_cn_cleaner_drops_invalid_rows_and_quarantines_adjustment_gaps(tmp_path)
                 "adj_close": None,
             },
         ]
-    ).to_csv(source_dir / "000001.SZ.csv", index=False)
+    ).to_parquet(source_dir / "000001.SZ.parquet", index=False)
 
     manifest = clean_market_daily_data(
         DailyCleanConfig(
@@ -94,7 +94,7 @@ def test_us_cleaner_uses_full_us_as_canonical_and_records_membership(tmp_path):
                 "Volume": 1000,
             }
         ]
-    ).to_csv(raw_dir / "full_us" / "ABC.csv", index=False)
+    ).to_parquet(raw_dir / "full_us" / "ABC.parquet", index=False)
     pd.DataFrame(
         [
             {
@@ -106,7 +106,7 @@ def test_us_cleaner_uses_full_us_as_canonical_and_records_membership(tmp_path):
                 "Volume": 100,
             }
         ]
-    ).to_csv(raw_dir / "small_cap" / "ABC.csv", index=False)
+    ).to_parquet(raw_dir / "small_cap" / "ABC.parquet", index=False)
 
     manifest = clean_market_daily_data(
         DailyCleanConfig(

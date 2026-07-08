@@ -202,6 +202,34 @@ def test_dashboard_export_check_can_require_production_benchmark(tmp_path):
     assert any("not production_grade" in error for error in result["errors"])
 
 
+def test_dashboard_export_check_allows_previous_trading_day_ffill_as_production(tmp_path):
+    checker = _load_checker()
+    summary_file = tmp_path / "export_summary.json"
+    generated_js = tmp_path / "generated_records.js"
+    nav_csv, positions_csv, trades_csv = _valid_csvs()
+    _write_summary(
+        summary_file,
+        source_status="production_source_with_previous_trading_day_ffill",
+        source_system="tushare.index_daily+eastmoney.push2his.kline",
+        production_grade=True,
+    )
+    _write_generated_js(
+        generated_js,
+        nav_csv=nav_csv,
+        positions_csv=positions_csv,
+        trades_csv=trades_csv,
+    )
+
+    result = checker.check_dashboard_export(
+        summary_file,
+        generated_js,
+        require_production_benchmark=True,
+    )
+
+    assert result["ok"] is True
+    assert result["warnings"] == []
+
+
 def test_dashboard_export_check_fails_when_generated_records_are_empty(tmp_path):
     checker = _load_checker()
     summary_file = tmp_path / "export_summary.json"

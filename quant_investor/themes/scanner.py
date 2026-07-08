@@ -25,6 +25,9 @@ _HIGH_COLUMNS = ("high", "High")
 _VOLUME_COLUMNS = ("volume", "vol")
 _AMOUNT_COLUMNS = ("amount", "Amount", "turnover")
 _PCT_CHG_COLUMNS = ("pct_chg", "pct_change", "pctChange", "change_pct")
+_NAME_COLUMNS = ("name", "stock_name", "sec_name", "证券简称")
+_ST_COLUMNS = ("is_st", "st", "is_ST", "risk_warning")
+_ST_LIMIT_CHANGE_DATE = "20260706"
 _THEME_CROWDING_WEIGHTS: dict[str, float] = {
     "turnover_share_stretch": 0.45,
     "limitup_norm": 0.35,
@@ -376,6 +379,9 @@ def _symbol_metrics(
         high=high,
         pct_chg=pct_chg,
         pct_chg_unit=str(market_data.get("pct_chg_unit") or "auto"),
+        trade_date=market_data.get("latest_trade_date"),
+        name=market_data.get("latest_name"),
+        is_st=market_data.get("latest_is_st"),
     )
 
     state_fake_risk = _state_float(state, "fake_breakout_risk", math.nan)
@@ -457,6 +463,9 @@ def _ordered_market_data(frame: pd.DataFrame | None) -> dict[str, Any]:
             "pct_chg": [],
             "pct_chg_derived": False,
             "pct_chg_unit": "auto",
+            "latest_trade_date": "",
+            "latest_name": "",
+            "latest_is_st": None,
         }
 
     close_col = _first_column(frame, _CLOSE_COLUMNS)
@@ -469,15 +478,22 @@ def _ordered_market_data(frame: pd.DataFrame | None) -> dict[str, Any]:
             "pct_chg": [],
             "pct_chg_derived": False,
             "pct_chg_unit": "auto",
+            "latest_trade_date": "",
+            "latest_name": "",
+            "latest_is_st": None,
         }
 
     ordered = frame
+    latest_trade_date: Any = ""
     for date_col in _DATE_COLUMNS:
         if date_col in frame.columns:
             try:
                 ordered = frame.sort_values(date_col, kind="mergesort")
             except Exception:
                 ordered = frame
+            non_null_dates = ordered[date_col].dropna()
+            if not non_null_dates.empty:
+                latest_trade_date = non_null_dates.iloc[-1]
             break
 
     close = _finite_values(ordered[close_col])
@@ -490,6 +506,18 @@ def _ordered_market_data(frame: pd.DataFrame | None) -> dict[str, Any]:
     pct_col = _first_column(ordered, _PCT_CHG_COLUMNS)
     pct_chg_derived = pct_col is None
     pct_chg = _finite_values(ordered[pct_col]) if pct_col is not None else _pct_chg_from_close(close)
+    name_col = _first_column(ordered, _NAME_COLUMNS)
+    latest_name = ""
+    if name_col is not None:
+        names = ordered[name_col].dropna()
+        if not names.empty:
+            latest_name = str(names.iloc[-1])
+    st_col = _first_column(ordered, _ST_COLUMNS)
+    latest_is_st = None
+    if st_col is not None:
+        st_values = ordered[st_col].dropna()
+        if not st_values.empty:
+            latest_is_st = _coerce_st_flag(st_values.iloc[-1])
     return {
         "close": close,
         "high": high,
@@ -498,6 +526,9 @@ def _ordered_market_data(frame: pd.DataFrame | None) -> dict[str, Any]:
         "pct_chg": pct_chg,
         "pct_chg_derived": pct_chg_derived,
         "pct_chg_unit": "percent" if pct_chg_derived else "auto",
+        "latest_trade_date": latest_trade_date,
+        "latest_name": latest_name,
+        "latest_is_st": latest_is_st,
     }
 
 
@@ -568,7 +599,60 @@ def _pct_chg_from_close(close: Sequence[float]) -> list[float]:
     return changes
 
 
-def _limitup_threshold_pct(symbol: str) -> float:
+def _trade_date_key(trade_date: Any) -> str:
+    if trade_date is None:
+        return ""
+    if hasattr(trade_date, "strftime"):
+        try:
+            return str(trade_date.strftime("%Y%m%d"))
+        except Exception:
+            pass
+    digits = re.sub(r"\D", "", str(trade_date or ""))
+    return digits[:8] if len(digits) >= 8 else digits
+
+
+def st_limit_ratio(trade_date: Any) -> float:
+    trade_date_key = _trade_date_key(trade_date)
+    if trade_date_key and trade_date_key >= _ST_LIMIT_CHANGE_DATE:
+        return 0.10
+    return 0.05
+
+
+def _coerce_st_flag(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "st", "*st", "风险警示"}:
+        return True
+    if text in {"0", "false", "no", "n", "", "nan", "none"}:
+        return False
+    try:
+        return bool(float(text))
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_st_designated(*, name: Any = None, is_st: Any = None) -> bool:
+    coerced = _coerce_st_flag(is_st)
+    if coerced is not None:
+        return coerced
+    # ``ts_code`` alone does not encode historical ST status; require name/flag evidence.
+    name_text = str(name or "").strip().upper()
+    return bool(name_text and ("ST" in name_text or "风险警示" in name_text))
+
+
+def _limitup_threshold_pct(
+    symbol: str,
+    *,
+    trade_date: Any = None,
+    name: Any = None,
+    is_st: Any = None,
+) -> float:
+    if _is_st_designated(name=name, is_st=is_st):
+        ratio = st_limit_ratio(trade_date)
+        return 4.9 if ratio <= 0.05 else 9.5
     code = str(symbol or "").strip().split(".", 1)[0]
     if code.startswith(("688", "689", "300", "301")):
         return 19.5
@@ -584,6 +668,9 @@ def _is_limitup_latest(
     high: Sequence[float],
     pct_chg: Sequence[float],
     pct_chg_unit: str = "auto",
+    trade_date: Any = None,
+    name: Any = None,
+    is_st: Any = None,
 ) -> bool:
     pct_values = _pct_chg_values_for_unit(pct_chg, unit=pct_chg_unit)
     if not close or not pct_values:
@@ -593,7 +680,12 @@ def _is_limitup_latest(
     if latest_close <= 0.0 or latest_high <= 0.0:
         return False
     return (
-        pct_values[-1] >= _limitup_threshold_pct(symbol)
+        pct_values[-1] >= _limitup_threshold_pct(
+            symbol,
+            trade_date=trade_date,
+            name=name,
+            is_st=is_st,
+        )
         and latest_close >= latest_high * (1.0 - 0.002)
     )
 

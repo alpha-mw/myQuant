@@ -89,7 +89,7 @@ pytest tests/unit/test_theme_holding_guard.py tests/unit/test_cn_aggressive_dail
 
 **指标定义**（universe = 本次扫描全部标的，M = 主题成员）：
 1. `theme_turnover_share = sum(amount, M 最新日) / sum(amount, universe 最新日)`；`amount` 缺列用 `close×vol` 近似并记 `amount_approximated=true`。历史基线复用 `themes/smoothing.py` 的 `smooth_numeric_series` 对快照历史（`theme_context.py` 已经通过 `ThemeSnapshotStore.load_recent` 传入 `snapshot_history`，limit 10）做 SMA10/Δ5d/trend——零新增存储；`turnover_share_stretch = clamp((share_today/share_sma10 − 1)/1.0)`，历史不足 stretch=0 并记 smoothing_status。
-2. `theme_limitup_ratio` = 当日涨停成员数 / member_count。涨停近似判定：阈值按 `ts_code` 前缀（`688/689`、`300/301`→19.5%；`8`/`4` 开头北交所→29.5%；其余→9.5%；ST 的 5% 档无法由代码判别，写入文档局限）；条件 `pct_chg ≥ 阈值` 且 `close ≥ high×(1−0.002)`；**量纲探测**：Tushare `pct_chg` 是百分数（9.98 非 0.0998），序列绝对值最大 >1 视为百分数；`pct_chg` 缺列由 close 序列自算。`limitup_norm = clamp(ratio/0.30)`。
+2. `theme_limitup_ratio` = 当日涨停成员数 / member_count。涨停近似判定：阈值按 `ts_code` 前缀（`688/689`、`300/301`→19.5%；`8`/`4` 开头北交所→29.5%；其余→9.5%）；若调用方提供可靠 ST 名称/标识，则按交易日分段（2026-07-06 前 5% 制度、当日及以后 10% 制度），仅有 `ts_code` 时不得推断历史 ST 状态；条件 `pct_chg ≥ 阈值` 且 `close ≥ high×(1−0.002)`；**量纲探测**：Tushare `pct_chg` 是百分数（9.98 非 0.0998），序列绝对值最大 >1 视为百分数；`pct_chg` 缺列由 close 序列自算。`limitup_norm = clamp(ratio/0.30)`。
 3. `member_turnover_concentration` = 主题内当日成交额 Top3 之和 / 主题成交额（member_count<4 记 1.0 并打诊断）。
 
 组合分：`crowding_risk = clamp(0.45×stretch + 0.35×limitup_norm + 0.20×concentration)`；权重放模块级 dict（与 `_THEME_PHASE_ADJUSTMENTS` 同风格），供 Phase 4 扫描。

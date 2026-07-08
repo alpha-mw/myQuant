@@ -5,11 +5,20 @@ from types import SimpleNamespace
 import pytest
 
 from quant_investor.agent_protocol import ActionLabel, AgentStatus, BranchVerdict
-from quant_investor.agents.risk_guard import RiskGuard
+from quant_investor.agents.risk_guard import (
+    RISK_GUARD_SINGLE_NAME_WEIGHT_CAP_ENV,
+    RiskGuard,
+    risk_guard_single_name_weight_cap,
+)
 from quant_investor.market.dag.theme_context import build_theme_risk_constraints
 
 
 SYMBOL = "000001.SZ"
+
+
+@pytest.fixture(autouse=True)
+def _clear_risk_guard_single_name_cap(monkeypatch):
+    monkeypatch.delenv(RISK_GUARD_SINGLE_NAME_WEIGHT_CAP_ENV, raising=False)
 
 
 def _payload(constraints: dict[str, object] | None = None) -> dict[str, object]:
@@ -62,7 +71,7 @@ def test_risk_guard_theme_disabled_preserves_baseline():
     assert with_disabled_theme.position_limits == baseline.position_limits
 
 
-def test_risk_guard_weak_macro_preserves_concentrated_single_name_cap():
+def test_risk_guard_weak_macro_uses_default_single_name_cap():
     payload = _payload({"max_weight": 0.50})
     payload["macro_verdict"] = BranchVerdict(
         agent_name="macro",
@@ -75,11 +84,12 @@ def test_risk_guard_weak_macro_preserves_concentrated_single_name_cap():
 
     assert result.action_cap == ActionLabel.HOLD
     assert result.gross_exposure_cap == pytest.approx(0.50)
-    assert result.max_weight == pytest.approx(0.50)
-    assert result.position_limits[SYMBOL] == pytest.approx(0.50)
+    assert result.max_weight == pytest.approx(0.15)
+    assert result.position_limits[SYMBOL] == pytest.approx(0.15)
+    assert result.metadata["single_name_weight_cap"] == pytest.approx(0.15)
 
 
-def test_risk_guard_multiple_risks_preserve_concentrated_single_name_cap():
+def test_risk_guard_multiple_risks_use_default_single_name_cap():
     result = RiskGuard().run(
         _payload(
             {
@@ -91,8 +101,25 @@ def test_risk_guard_multiple_risks_preserve_concentrated_single_name_cap():
 
     assert result.action_cap == ActionLabel.HOLD
     assert result.gross_exposure_cap == pytest.approx(0.60)
-    assert result.max_weight == pytest.approx(0.50)
-    assert result.position_limits[SYMBOL] == pytest.approx(0.50)
+    assert result.max_weight == pytest.approx(0.15)
+    assert result.position_limits[SYMBOL] == pytest.approx(0.15)
+
+
+def test_risk_guard_single_name_cap_env_override(monkeypatch):
+    monkeypatch.setenv(RISK_GUARD_SINGLE_NAME_WEIGHT_CAP_ENV, "0.33")
+
+    result = RiskGuard().run(
+        _payload(
+            {
+                "max_weight": 0.50,
+                "risk_flags": ["risk one", "risk two", "risk three"],
+            }
+        )
+    )
+
+    assert risk_guard_single_name_weight_cap() == pytest.approx(0.33)
+    assert result.max_weight == pytest.approx(0.33)
+    assert result.position_limits[SYMBOL] == pytest.approx(0.33)
 
 
 def test_risk_guard_applies_overextended_theme_overlay():

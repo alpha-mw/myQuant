@@ -2458,6 +2458,33 @@ def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypa
     assert "codex_recommendation_rating" in holdings_review.columns
 
 
+def test_legacy_overweight_holding_warning_only_does_not_force_sell():
+    review = pd.DataFrame(
+        [
+            {
+                "symbol": "688519.SH",
+                "name": "南亚新材",
+                "shares_before": 1000,
+                "buy_price": 20.0,
+                "current_price": 50.0,
+                "stage_stop_price": 30.0,
+                "score_full_market": 0.90,
+                "today_change_pct": 2.0,
+                "market_weight": 0.22,
+            }
+        ]
+    )
+
+    assert tracker._build_rebalance_plan(review) == []
+    lines = tracker._format_legacy_overweight_holding_lines(review, cap=0.15)
+
+    assert len(lines) == 1
+    assert "超限存量持仓" in lines[0]
+    assert "当前权重 22.00%" in lines[0]
+    assert "上限 15.00%" in lines[0]
+    assert "只提示，不强制卖出" in lines[0]
+
+
 def test_run_tracker_auto_fills_risk_reduction_sell_with_realtime_quote(monkeypatch, tmp_path):
     ledger = pd.DataFrame(
         [

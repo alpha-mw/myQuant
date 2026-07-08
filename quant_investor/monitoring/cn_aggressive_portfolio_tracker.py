@@ -23,6 +23,7 @@ from quant_investor.factors.report import (
     load_factor_library_shadow_status,
     render_factor_library_shadow_markdown,
 )
+from quant_investor.agents.risk_guard import risk_guard_single_name_weight_cap
 from quant_investor.market.config import get_market_settings
 from quant_investor.market.dag_executor import execute_market_dag
 from quant_investor.market.download_cn import CNFullMarketDownloader
@@ -2501,6 +2502,45 @@ def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
 
 
+def _format_legacy_overweight_holding_lines(
+    holdings_review: pd.DataFrame,
+    *,
+    cap: float | None = None,
+) -> list[str]:
+    if not isinstance(holdings_review, pd.DataFrame) or holdings_review.empty:
+        return []
+    if "market_weight" not in holdings_review.columns:
+        return []
+    limit = risk_guard_single_name_weight_cap() if cap is None else float(cap)
+    if limit <= 0.0:
+        return []
+
+    rows: list[tuple[str, str, float]] = []
+    for _, row in holdings_review.iterrows():
+        weight = _safe_float(row.get("market_weight"), 0.0)
+        if weight <= limit + 1e-9:
+            continue
+        symbol = str(row.get("symbol") or "").strip() or "UNKNOWN"
+        name = str(row.get("name") or "").strip()
+        rows.append((symbol, name, weight))
+
+    if not rows:
+        return []
+    rows.sort(key=lambda item: (-item[2], item[0]))
+    return [
+        (
+            f"- 超限存量持仓提示：`{symbol}`"
+            + (f"（{name}）" if name else "")
+            + (
+                f"当前权重 {weight:.2%}，上限 {limit:.2%}；"
+                "只提示，不强制卖出。建议路径：暂停新增买入，优先用新增资金与自然回撤稀释；"
+                "若后续确认减仓，则分批降至上限。"
+            )
+        )
+        for symbol, name, weight in rows
+    ]
+
+
 def _codex_rating_from_score(score: int) -> str:
     if score >= 80:
         return "强"
@@ -4058,6 +4098,17 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         candidate_pool=candidate_pool,
         theme_symbols=_mapping_payload(theme_pool_audit.get("symbols")),
     )
+    legacy_overweight_lines = _format_legacy_overweight_holding_lines(holdings_review)
+    legacy_overweight_summary_lines = (
+        [
+            (
+                f"- 超限存量持仓：{len(legacy_overweight_lines)} 笔；"
+                "本报告只提示，不强制卖出或改写目标，详见 5.2。"
+            )
+        ]
+        if legacy_overweight_lines
+        else ["- 超限存量持仓：无"]
+    )
 
     report_lines = [
         "# A股激进科技制造策略正式复盘报告",
@@ -4092,6 +4143,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         f"- 报告展示标签：**`{decision_guardrail.display_label}`**",
         f"- 数据完整性状态：**{data_status}**",
         f"- 今日是否执行调仓：**{'是' if orders else '否'}**",
+        *legacy_overweight_summary_lines,
         (
             f"- 实时成交价门禁：**未通过 {len(execution_price_rejections)} 笔，未写成交**"
             if execution_price_rejections
@@ -4233,6 +4285,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
                 f"- `{row.symbol}` 当前价 {row.current_price:.2f} 仍低于阶段止损位 {row.stage_stop_price:.2f}，"
                 f"状态 `{row.position_role}`。"
             )
+    report_lines.extend(legacy_overweight_lines)
     if "trailing_take_profit_status" in holdings_review.columns:
         trailing_watch_rows = holdings_review[
             holdings_review["trailing_take_profit_status"].astype(str).isin(
