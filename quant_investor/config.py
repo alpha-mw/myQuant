@@ -47,6 +47,20 @@ MAINLINE_ENV_DEFAULTS: dict[str, str] = {
     "THEME_CONCEPT_MEMBERSHIP_PATH": "data/theme_membership.jsonl",
     "THEME_CONCEPT_MEMBERSHIP_REQUIRED": "0",
     "THEME_CONCEPT_PRIMARY_MARGIN": "0.05",
+    "THEME_MEMBERSHIP_V2_ENABLED": "1",
+    "THEME_MEMBERSHIP_V2_PATH": "private/theme_knowledge/theme_membership.v2.jsonl",
+    "THEME_MEMBERSHIP_V2_REQUIRED": "0",
+    "THEME_MEMBERSHIP_V2_EXPECTED_SHA256": "",
+    "THEME_PROTOCOL_V2_ENABLED": "1",
+    "THEME_TAXONOMY_V2_PATH": "quant_investor/themes/data/theme_taxonomy.v2.json",
+    "THEME_EVIDENCE_EVENT_V1_PATH": "private/theme_knowledge/theme_evidence_events.jsonl",
+    "THEME_PEVC_CANONICAL_PATH": "private/theme_knowledge/pevc_theses.jsonl",
+    "THEME_V2_FORMAL_ENABLED": "0",
+    "THEME_V2_FORMAL_KILL_SWITCH": "1",
+    "THEME_FORMAL_RECONCILIATION_PERSIST_ENABLED": "0",
+    "THEME_FORMAL_RECONCILIATION_DIR": "private/theme_reconciliation",
+    "THEME_V2_JOINT_MANIFEST_PATH": "",
+    "THEME_V2_EXPECTED_JOINT_MANIFEST_SHA256": "",
     "THEME_STAT_CLUSTER_ENABLED": "0",
     "THEME_FUNNEL_BOOST_ENABLED": "1",
     "THEME_FUNNEL_BOOST_SCORE_SOURCE": "raw",
@@ -85,7 +99,7 @@ MAINLINE_ENV_DEFAULTS: dict[str, str] = {
     "THEME_POOL_MAX_SYMBOLS_PER_THEME": "30",
     "THEME_POOL_RESIDUAL_RATIO": "0.25",
     "THEME_POOL_MIN_RESIDUAL_SYMBOLS": "20",
-    "THEME_POOL_MIN_ADMITTED_THEMES": "2",
+    "THEME_POOL_MIN_ADMITTED_THEMES": "0",
     "THEME_POOL_ALLOW_UNTHEMED_RESIDUAL": "0",
     "THEME_POOL_INCLUDE_RISK_WATCH": "1",
     "THEME_POOL_RISK_WATCH_MAX_RATIO": "0.20",
@@ -308,6 +322,43 @@ class Config:
     THEME_CONCEPT_MEMBERSHIP_PATH: str = _env_str('THEME_CONCEPT_MEMBERSHIP_PATH', 'data/theme_membership.jsonl')
     THEME_CONCEPT_MEMBERSHIP_REQUIRED: bool = _env_bool('THEME_CONCEPT_MEMBERSHIP_REQUIRED', False)
     THEME_CONCEPT_PRIMARY_MARGIN: float = _env_float('THEME_CONCEPT_PRIMARY_MARGIN', 0.05)
+    THEME_MEMBERSHIP_V2_ENABLED: bool = _env_bool('THEME_MEMBERSHIP_V2_ENABLED', True)
+    THEME_MEMBERSHIP_V2_PATH: str = _env_str(
+        'THEME_MEMBERSHIP_V2_PATH',
+        'private/theme_knowledge/theme_membership.v2.jsonl',
+    )
+    THEME_MEMBERSHIP_V2_REQUIRED: bool = _env_bool('THEME_MEMBERSHIP_V2_REQUIRED', False)
+    THEME_MEMBERSHIP_V2_EXPECTED_SHA256: str = _env_str(
+        'THEME_MEMBERSHIP_V2_EXPECTED_SHA256',
+        '',
+    )
+    THEME_PROTOCOL_V2_ENABLED: bool = _env_bool('THEME_PROTOCOL_V2_ENABLED', True)
+    THEME_TAXONOMY_V2_PATH: str = _env_str(
+        'THEME_TAXONOMY_V2_PATH',
+        'quant_investor/themes/data/theme_taxonomy.v2.json',
+    )
+    THEME_EVIDENCE_EVENT_V1_PATH: str = _env_str(
+        'THEME_EVIDENCE_EVENT_V1_PATH',
+        'private/theme_knowledge/theme_evidence_events.jsonl',
+    )
+    THEME_PEVC_CANONICAL_PATH: str = _env_str(
+        'THEME_PEVC_CANONICAL_PATH',
+        'private/theme_knowledge/pevc_theses.jsonl',
+    )
+    THEME_V2_FORMAL_ENABLED: bool = _env_bool('THEME_V2_FORMAL_ENABLED', False)
+    THEME_V2_FORMAL_KILL_SWITCH: bool = _env_bool('THEME_V2_FORMAL_KILL_SWITCH', True)
+    THEME_FORMAL_RECONCILIATION_PERSIST_ENABLED: bool = _env_bool(
+        'THEME_FORMAL_RECONCILIATION_PERSIST_ENABLED', False
+    )
+    THEME_FORMAL_RECONCILIATION_DIR: str = _env_str(
+        'THEME_FORMAL_RECONCILIATION_DIR', 'private/theme_reconciliation'
+    )
+    THEME_V2_JOINT_MANIFEST_PATH: str = _env_str(
+        'THEME_V2_JOINT_MANIFEST_PATH', ''
+    )
+    THEME_V2_EXPECTED_JOINT_MANIFEST_SHA256: str = _env_str(
+        'THEME_V2_EXPECTED_JOINT_MANIFEST_SHA256', ''
+    )
     THEME_STAT_CLUSTER_ENABLED: bool = _env_bool('THEME_STAT_CLUSTER_ENABLED', False)
     THEME_FUNNEL_BOOST_ENABLED: bool = _env_bool(
         'THEME_FUNNEL_BOOST_ENABLED',

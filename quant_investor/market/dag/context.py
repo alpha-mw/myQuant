@@ -685,19 +685,6 @@ def _prepare_market_context(
         market_snapshot.update(macro_overview)
         with profile_stage(
             runtime_profiler,
-            "dag_global_quant_verdict",
-            {"researchable_count": len(symbols), "universe_key": universe_key},
-        ) as global_quant_metadata:
-            global_quant_verdict = _build_global_quant_verdict(
-                cross_section_quant=cross_section_quant,
-                symbol_count=len(symbols),
-            )
-            global_quant_metadata["global_quant_score"] = float(global_quant_verdict.final_score)
-            global_quant_metadata["global_quant_confidence"] = float(
-                global_quant_verdict.final_confidence
-            )
-        with profile_stage(
-            runtime_profiler,
             "dag_quant_branch_result",
             {"researchable_count": len(symbols), "frame_count": len(frames)},
         ) as quant_branch_metadata:
@@ -706,6 +693,23 @@ def _prepare_market_context(
                 frame_summaries=frame_summaries,
             )
             quant_branch_metadata["scored_symbol_count"] = len(quant_result.symbol_scores)
+        with profile_stage(
+            runtime_profiler,
+            "dag_global_quant_verdict",
+            {"researchable_count": len(symbols), "universe_key": universe_key},
+        ) as global_quant_metadata:
+            global_quant_verdict = _build_global_quant_verdict(
+                cross_section_quant=cross_section_quant,
+                symbol_count=len(symbols),
+                quant_result=quant_result,
+            )
+            global_quant_metadata["global_quant_score"] = float(global_quant_verdict.final_score)
+            global_quant_metadata["global_quant_confidence"] = float(
+                global_quant_verdict.final_confidence
+            )
+            global_quant_metadata["production_quant_evidence"] = bool(
+                global_quant_verdict.metadata.get("production_quant_evidence", False)
+            )
         stage_metadata["macro_regime"] = str(macro_verdict.metadata.get("regime", "neutral"))
         stage_metadata["breadth"] = float(cross_section_quant.get("breadth", 0.0))
     liquidity_scores = {
@@ -930,6 +934,54 @@ def _prepare_market_context(
             symbol_limit=int(getattr(config, "THEME_METADATA_SYMBOL_LIMIT", 300)),
             smoothing_window=int(getattr(config, "THEME_SMOOTHING_WINDOW", 10)),
             smoothing_min_observations=int(getattr(config, "THEME_SMOOTHING_MIN_OBSERVATIONS", 5)),
+            membership_v2_enabled=bool(
+                getattr(config, "THEME_MEMBERSHIP_V2_ENABLED", True)
+            ),
+            membership_v2_path=str(
+                getattr(
+                    config,
+                    "THEME_MEMBERSHIP_V2_PATH",
+                    "private/theme_knowledge/theme_membership.v2.jsonl",
+                )
+            ),
+            membership_v2_required=bool(
+                getattr(config, "THEME_MEMBERSHIP_V2_REQUIRED", False)
+            ),
+            membership_v2_expected_sha256=str(
+                getattr(
+                    config,
+                    "THEME_MEMBERSHIP_V2_EXPECTED_SHA256",
+                    "",
+                )
+                or ""
+            ),
+            protocol_v2_enabled=bool(getattr(config, "THEME_PROTOCOL_V2_ENABLED", True)),
+            taxonomy_v2_path=str(
+                getattr(
+                    config,
+                    "THEME_TAXONOMY_V2_PATH",
+                    "quant_investor/themes/data/theme_taxonomy.v2.json",
+                )
+            ),
+            evidence_event_v1_path=str(
+                getattr(
+                    config,
+                    "THEME_EVIDENCE_EVENT_V1_PATH",
+                    "private/theme_knowledge/theme_evidence_events.jsonl",
+                )
+            ),
+            pevc_canonical_path=str(
+                getattr(
+                    config,
+                    "THEME_PEVC_CANONICAL_PATH",
+                    "private/theme_knowledge/pevc_theses.jsonl",
+                )
+            ),
+            markov_regime=str(markov_payload.get("dominant_regime") or ""),
+            formal_v2_enabled=bool(getattr(config, "THEME_V2_FORMAL_ENABLED", False)),
+            formal_v2_kill_switch=bool(
+                getattr(config, "THEME_V2_FORMAL_KILL_SWITCH", True)
+            ),
         )
     else:
         theme_rotation_metadata = build_disabled_theme_rotation_metadata(
@@ -1145,12 +1197,15 @@ def _prepare_market_context(
             theme_pool_max_symbols_per_theme=int(getattr(config, "THEME_POOL_MAX_SYMBOLS_PER_THEME", 30)),
             theme_pool_residual_ratio=float(getattr(config, "THEME_POOL_RESIDUAL_RATIO", 0.25)),
             theme_pool_min_residual_symbols=int(getattr(config, "THEME_POOL_MIN_RESIDUAL_SYMBOLS", 20)),
-            theme_pool_min_admitted_themes=int(getattr(config, "THEME_POOL_MIN_ADMITTED_THEMES", 2)),
+            theme_pool_min_admitted_themes=int(getattr(config, "THEME_POOL_MIN_ADMITTED_THEMES", 0)),
             theme_pool_allow_unthemed_residual=bool(getattr(config, "THEME_POOL_ALLOW_UNTHEMED_RESIDUAL", False)),
             theme_pool_include_risk_watch=bool(getattr(config, "THEME_POOL_INCLUDE_RISK_WATCH", True)),
             theme_pool_risk_watch_max_ratio=float(getattr(config, "THEME_POOL_RISK_WATCH_MAX_RATIO", 0.20)),
             theme_pool_symbol_gate_mode=str(getattr(config, "THEME_POOL_SYMBOL_GATE_MODE", "classify") or "classify"),
             theme_pool_min_member_count=int(getattr(config, "THEME_MIN_MEMBER_COUNT", 0)),
+            theme_pool_protocol_v2_formal_enabled=bool(
+                getattr(config, "THEME_V2_FORMAL_ENABLED", False)
+            ),
             theme_boost_enabled=bool(getattr(config, "THEME_FUNNEL_BOOST_ENABLED", False)),
             theme_boost_cap=float(getattr(config, "THEME_SYMBOL_BOOST_CAP", 0.10)),
             theme_boost_score_source=str(getattr(config, "THEME_FUNNEL_BOOST_SCORE_SOURCE", "raw") or "raw"),

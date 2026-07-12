@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "theme_evidence_event.v1",
+  "type": "object",
+  "required": ["schema_version", "event_id", "theme_id", "event_type", "event_date", "available_at", "direction", "strength", "confidence"],
+  "properties": {
+    "schema_version": {"const": "theme_evidence_event.v1"},
+    "event_id": {"type": "string", "minLength": 1},
+    "theme_id": {"type": "string", "pattern": "::"},
+    "event_type": {"enum": ["order", "capacity", "certification", "policy", "attention", "product", "customer_validation", "kill"]},
+    "event_date": {"type": "string", "format": "date"},
+    "available_at": {"type": "string", "format": "date"},
+    "direction": {"enum": [-1, 1]},
+    "strength": {"type": "number", "minimum": 0, "maximum": 1},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "source_ref": {"type": "string"},
+    "summary": {"type": "string"},
+    "expires_at": {"type": "string"}
+  },
+  "additionalProperties": false
+}

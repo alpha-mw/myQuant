@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from quant_investor.factors.governance import (
     FactorGateEvaluator,
@@ -8,6 +9,7 @@ from quant_investor.factors.governance import (
 )
 from quant_investor.factors.runtime import (
     MinedFactorRegistry,
+    REPORT_ONLY_SHADOW_RUNTIME_MODE,
     score_with_mined_factors,
 )
 
@@ -31,6 +33,9 @@ def _base_metrics(**overrides):
         "positive_ic_ratio": 0.58,
         "rankic_direction_stable": True,
         "max_single_year_ic_contribution": 0.35,
+        "family_fdr_method": "benjamini_hochberg_by_family",
+        "family_fdr_q_value": 0.08,
+        "family_fdr_passed": True,
         "top_bottom_spread": 0.08,
         "top_quantile_return": 0.05,
         "monotonicity": 0.55,
@@ -49,12 +54,26 @@ def _base_metrics(**overrides):
         "rebalance_frequency_robustness": True,
         "universe_robustness": True,
         "regime_robustness": True,
+        "walk_forward_purged": True,
+        "walk_forward_purge_days": 30,
+        "walk_forward_embargo_days": 30,
+        "walk_forward_fold_count": 4,
+        "walk_forward_evidence_hash": "1" * 64,
         "master_return_delta": 0.025,
         "sharpe_delta": 0.10,
         "max_drawdown_delta": -0.01,
         "turnover_delta": 0.05,
         "execution_cost_delta": 0.002,
         "signal_corr": 0.20,
+        "gate8_evidence_schema": "factor-governance-replay-evidence.v2",
+        "gate8_evidence_hash": "2" * 64,
+        "full_control_chain_evaluated": True,
+        "gate8_arm_hashes": {
+            "A": "a" * 64,
+            "B": "b" * 64,
+            "C": "c" * 64,
+            "D": "d" * 64,
+        },
     }
     metrics.update(overrides)
     return metrics
@@ -77,6 +96,95 @@ def test_all_gates_passed_becomes_production_candidate_not_production_factor():
     )
     assert review.decision.value == "production_candidate"
     assert review.target_state == FactorLifecycleState.PRODUCTION_CANDIDATE
+
+
+@pytest.mark.parametrize(
+    ("field", "gate_id"),
+    [
+        *((field, 1) for field in (
+            "no_future_leakage",
+            "uses_availability_date",
+            "point_in_time_rebalance",
+            "adjusted_price_consistent",
+            "tradability_rules_defined",
+            "missingness_explained",
+        )),
+        *((field, 2) for field in (
+            "coverage_rate",
+            "nan_rate",
+            "monthly_coverage_min",
+            "max_sector_coverage_share",
+            "max_size_bucket_coverage_share",
+            "extreme_value_ratio",
+        )),
+        *((field, 3) for field in (
+            "icir",
+            "mean_rankic",
+            "positive_ic_ratio",
+            "rankic_direction_stable",
+            "max_single_year_ic_contribution",
+            "family_fdr_method",
+            "family_fdr_q_value",
+            "family_fdr_passed",
+        )),
+        *((field, 4) for field in (
+            "top_bottom_spread",
+            "top_quantile_return",
+            "monotonicity",
+            "long_short_from_long_side",
+        )),
+        *((field, 5) for field in (
+            "turnover",
+            "cost_adjusted_return",
+            "slippage_sensitivity_ok",
+            "execution_realism",
+            "capacity_pressure",
+        )),
+        *((field, 6) for field in (
+            "neutralized_icir",
+            "existing_factor_corr",
+            "style_exposure_only",
+        )),
+        *((field, 7) for field in (
+            "oos_positive_ratio",
+            "parameter_stability",
+            "date_range_robustness",
+            "rebalance_frequency_robustness",
+            "universe_robustness",
+            "regime_robustness",
+            "walk_forward_purged",
+            "walk_forward_purge_days",
+            "walk_forward_embargo_days",
+            "walk_forward_fold_count",
+            "walk_forward_evidence_hash",
+        )),
+        *((field, 8) for field in (
+            "master_return_delta",
+            "sharpe_delta",
+            "max_drawdown_delta",
+            "turnover_delta",
+            "execution_cost_delta",
+            "signal_corr",
+            "gate8_evidence_schema",
+            "gate8_evidence_hash",
+            "full_control_chain_evaluated",
+            "gate8_arm_hashes",
+        )),
+    ],
+)
+def test_each_gate_fails_closed_when_critical_evidence_is_missing(
+    field,
+    gate_id,
+):
+    metrics = _base_metrics()
+    metrics.pop(field)
+    review = FactorGateEvaluator().evaluate(
+        factor_name="missing-critical-evidence",
+        metrics=metrics,
+    )
+
+    assert review.gate_results[gate_id - 1].passed is False
+    assert review.decision.value != "production_candidate"
 
 
 def test_initial_backtest_without_oos_stays_paper_factor():
@@ -129,7 +237,9 @@ def test_quant_runtime_only_consumes_production_factor_with_all_gates_passed():
         ),
     }
     result = score_with_mined_factors(
-        frames, registry=MinedFactorRegistry.from_records([production, paper])
+        frames,
+        registry=MinedFactorRegistry.from_records([production, paper]),
+        runtime_mode=REPORT_ONLY_SHADOW_RUNTIME_MODE,
     )
     assert result.factor_count == 1
     assert result.factors_used == ["momentum_1m"]
@@ -176,6 +286,7 @@ def test_quant_runtime_consumes_price_volume_production_factor():
     result = score_with_mined_factors(
         frames,
         registry=MinedFactorRegistry.from_records([production]),
+        runtime_mode=REPORT_ONLY_SHADOW_RUNTIME_MODE,
     )
     assert result.factor_count == 1
     assert result.factors_used == ["pv_short_reversal_5d"]
@@ -240,6 +351,7 @@ def test_quant_runtime_batches_price_volume_frame_preparation(monkeypatch):
     result = score_with_mined_factors(
         frames,
         registry=MinedFactorRegistry.from_records(factors),
+        runtime_mode=REPORT_ONLY_SHADOW_RUNTIME_MODE,
     )
 
     assert result.factor_count == 3
@@ -409,6 +521,7 @@ def test_quant_runtime_passes_price_volume_required_lookback(monkeypatch):
     result = score_with_mined_factors(
         frames,
         registry=MinedFactorRegistry.from_records(factors),
+        runtime_mode=REPORT_ONLY_SHADOW_RUNTIME_MODE,
     )
 
     assert result.factor_count == 2
@@ -470,6 +583,7 @@ def test_quant_runtime_computes_prepared_amihud_base_without_pandas_pct_change(m
     result = score_with_mined_factors(
         frames,
         registry=MinedFactorRegistry.from_records(factors),
+        runtime_mode=REPORT_ONLY_SHADOW_RUNTIME_MODE,
     )
 
     assert result.factor_count == 3
@@ -539,6 +653,7 @@ def test_quant_runtime_reuses_amihud_illiquidity_windows(monkeypatch):
     result = score_with_mined_factors(
         frames,
         registry=MinedFactorRegistry.from_records(factors),
+        runtime_mode=REPORT_ONLY_SHADOW_RUNTIME_MODE,
     )
 
     assert result.factor_count == 4
@@ -607,6 +722,7 @@ def test_quant_runtime_reuses_volume_stability_windows(monkeypatch):
     result = score_with_mined_factors(
         frames,
         registry=MinedFactorRegistry.from_records(factors),
+        runtime_mode=REPORT_ONLY_SHADOW_RUNTIME_MODE,
     )
 
     assert result.factor_count == 3
@@ -676,6 +792,7 @@ def test_quant_runtime_reuses_low_dollar_volume_windows(monkeypatch):
     result = score_with_mined_factors(
         frames,
         registry=MinedFactorRegistry.from_records(factors),
+        runtime_mode=REPORT_ONLY_SHADOW_RUNTIME_MODE,
     )
 
     assert result.factor_count == 4
@@ -759,6 +876,7 @@ def test_quant_runtime_reuses_blend_components_across_weight_variants(monkeypatc
     result = score_with_mined_factors(
         frames,
         registry=MinedFactorRegistry.from_records(factors),
+        runtime_mode=REPORT_ONLY_SHADOW_RUNTIME_MODE,
     )
 
     assert result.factor_count == 2
@@ -802,6 +920,7 @@ def test_quant_runtime_single_symbol_coverage_uses_factor_availability():
     result = score_with_mined_factors(
         frames,
         registry=MinedFactorRegistry.from_records([production]),
+        runtime_mode=REPORT_ONLY_SHADOW_RUNTIME_MODE,
     )
 
     assert result.factor_count == 1
@@ -860,6 +979,7 @@ def test_quant_runtime_consumes_blended_price_volume_factor():
     result = score_with_mined_factors(
         frames,
         registry=MinedFactorRegistry.from_records([production]),
+        runtime_mode=REPORT_ONLY_SHADOW_RUNTIME_MODE,
     )
 
     assert result.factor_count == 1
@@ -871,18 +991,18 @@ def test_quant_runtime_consumes_blended_price_volume_factor():
     assert set(result.symbol_scores) == {"AAA", "BBB", "CCC"}
 
 
-def test_default_registry_keeps_only_current_full_a_champion():
+def test_default_registry_metadata_matches_current_selectable_set_without_restoration():
     registry = MinedFactorRegistry.load()
-    selectable = {factor.name: factor for factor in registry.selectable_factors()}
+    selectable = registry.selectable_factors()
+    manifest = registry.selectable_manifest()
 
-    name = "pv_low_dollar_volume_5d"
-    factor = selectable[name]
-    assert factor.state == FactorLifecycleState.PRODUCTION_FACTOR
-    assert factor.weight == 0.05
-    assert factor.all_gates_passed()
-    assert factor.implementation == f"price_volume:{name}"
-
-    by_name = {factor.name: factor for factor in registry.factors}
-    deprecated = by_name["pv_blend_volstab19x2_mom90_amihud5_w70"]
-    assert deprecated.state == FactorLifecycleState.DEPRECATED
-    assert deprecated.weight == 0.0
+    assert len(selectable) == 1
+    for key, value in manifest.items():
+        assert registry.metadata[key] == value
+    assert selectable[0].state == FactorLifecycleState.PRODUCTION_FACTOR
+    assert selectable[0].weight != 0.0
+    assert selectable[0].all_gates_passed()
+    assert any(
+        factor.state == FactorLifecycleState.DEPRECATED
+        for factor in registry.factors
+    )

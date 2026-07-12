@@ -1,12 +1,14 @@
 """Runtime scoring adapter for governed mined factors.
 
 Only production factors that passed all eight governance gates are allowed to
-feed the quant branch.  If the registry is empty or no factor is selectable,
-the caller should fall back to the legacy deterministic quant proxy.
+feed the quant branch. If the registry is empty or no factor is selectable,
+the Quant branch is governance-blocked; callers must not manufacture a legacy
+proxy score.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import dataclass, field
@@ -22,6 +24,21 @@ from quant_investor.factors.governance import FactorLifecycleState, FactorRecord
 DEFAULT_REGISTRY_PATH = (
     Path(__file__).resolve().parents[1] / "factor_registry" / "mined_factors.json"
 )
+PRODUCTION_RUNTIME_MODE = "production"
+REPORT_ONLY_SHADOW_RUNTIME_MODE = "report_only_shadow"
+
+
+def production_factor_set_sha256(names: Sequence[str]) -> str:
+    """Hash the sorted selectable factor-name set for metadata/readback checks."""
+
+    normalized = sorted({str(name).strip() for name in names if str(name).strip()})
+    raw = json.dumps(
+        normalized,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
 
 
 @dataclass
@@ -63,6 +80,14 @@ class MinedFactorRegistry:
     def selectable_factors(self) -> list[FactorRecord]:
         return [factor for factor in self.factors if factor.selectable_in_quant_branch()]
 
+    def selectable_manifest(self) -> dict[str, Any]:
+        names = sorted(factor.name for factor in self.selectable_factors())
+        return {
+            "production_factor_count": len(names),
+            "production_factor_names": names,
+            "production_factor_set_sha256": production_factor_set_sha256(names),
+        }
+
     def non_selectable_reasons(self) -> dict[str, str]:
         reasons: dict[str, str] = {}
         for factor in self.factors:
@@ -90,6 +115,12 @@ class RuntimeFactorScore:
     factor_coverages: dict[str, float] = field(default_factory=dict)
     skipped_factors: dict[str, str] = field(default_factory=dict)
     registry_metadata: dict[str, Any] = field(default_factory=dict)
+    governance_status: str = "governance_blocked"
+    factor_mode: str = "governance_blocked"
+    confidence_multiplier: float = 0.0
+    production_eligible: bool = False
+    runtime_mode: str = PRODUCTION_RUNTIME_MODE
+    runtime_blockers: list[str] = field(default_factory=list)
 
     @property
     def coverage_rate(self) -> float:
@@ -124,6 +155,13 @@ class RuntimeFactorScore:
             if applied_to_score
             else 0.0,
             "registry": dict(self.registry_metadata),
+            "governance_status": self.governance_status,
+            "factor_mode": self.factor_mode,
+            "confidence_multiplier": float(self.confidence_multiplier),
+            "production_eligible": bool(self.production_eligible),
+            "runtime_mode": self.runtime_mode,
+            "runtime_blockers": list(self.runtime_blockers),
+            "legacy_fallback_allowed": False,
         }
 
 
@@ -196,21 +234,118 @@ def _price_volume_required_lookback_rows(names: Sequence[str]) -> int:
 class MinedFactorScorer:
     """Compute latest cross-sectional scores from governed production factors."""
 
-    def __init__(self, registry: MinedFactorRegistry | None = None) -> None:
+    def __init__(
+        self,
+        registry: MinedFactorRegistry | None = None,
+        *,
+        runtime_mode: str = PRODUCTION_RUNTIME_MODE,
+    ) -> None:
         self.registry = registry or MinedFactorRegistry.load()
+        normalized_mode = str(runtime_mode or "").strip()
+        if normalized_mode not in {
+            PRODUCTION_RUNTIME_MODE,
+            REPORT_ONLY_SHADOW_RUNTIME_MODE,
+        }:
+            raise ValueError(f"unsupported factor runtime mode: {runtime_mode!r}")
+        self.runtime_mode = normalized_mode
+
+    def _runtime_contract(self) -> tuple[list[FactorRecord], dict[str, Any]]:
+        if self.runtime_mode == REPORT_ONLY_SHADOW_RUNTIME_MODE:
+            candidates = (
+                self.registry.factors
+                if self.registry.metadata.get("historical_shadow_only") is True
+                else self.registry.selectable_factors()
+            )
+            active = [
+                record
+                for record in candidates
+                if str(record.name).strip()
+                and str(record.implementation).strip()
+                and abs(float(record.weight)) > 1e-12
+            ]
+            blockers = [] if active else ["report_only_shadow_factor_set_empty"]
+            return active, {
+                "status": "report_only" if active else "governance_blocked",
+                "factor_mode": (
+                    "historical_shadow_report_only"
+                    if active
+                    else "governance_blocked"
+                ),
+                "confidence_multiplier": 0.0,
+                "production_eligible": False,
+                "legacy_fallback_allowed": False,
+                "blockers": blockers,
+            }
+
+        # Local import avoids the module-load cycle: protocol v2 owns the
+        # complete production readiness contract and imports this registry type.
+        from quant_investor.factors.governance_protocol_v2 import (
+            governance_runtime_status,
+        )
+
+        status = governance_runtime_status(self.registry)
+        active = self.registry.selectable_factors() if status["status"] == "ready" else []
+        return active, {
+            **status,
+            "production_eligible": status["status"] == "ready",
+        }
+
+    def _empty_score(
+        self,
+        symbols: Sequence[str],
+        *,
+        skipped: Mapping[str, str],
+        runtime_status: Mapping[str, Any],
+    ) -> RuntimeFactorScore:
+        return RuntimeFactorScore(
+            symbol_scores={str(symbol): 0.0 for symbol in symbols},
+            skipped_factors=dict(skipped),
+            registry_metadata={
+                **dict(self.registry.metadata),
+                "governance_runtime": dict(runtime_status),
+            },
+            governance_status=str(
+                runtime_status.get("status") or "governance_blocked"
+            ),
+            factor_mode=str(
+                runtime_status.get("factor_mode") or "governance_blocked"
+            ),
+            confidence_multiplier=float(
+                runtime_status.get("confidence_multiplier") or 0.0
+            ),
+            production_eligible=bool(
+                runtime_status.get("production_eligible", False)
+            ),
+            runtime_mode=self.runtime_mode,
+            runtime_blockers=[
+                str(item)
+                for item in runtime_status.get("blockers", []) or []
+                if str(item)
+            ],
+        )
 
     def score(self, frames: Mapping[str, pd.DataFrame]) -> RuntimeFactorScore:
         symbols = [str(symbol) for symbol in frames if str(symbol).strip()]
+        active, runtime_status = self._runtime_contract()
+        non_selectable = self.registry.non_selectable_reasons()
+        active_names = {record.name for record in active}
+        skipped = {
+            name: reason
+            for name, reason in non_selectable.items()
+            if name not in active_names
+        }
         if not symbols:
-            return RuntimeFactorScore(registry_metadata=dict(self.registry.metadata))
+            return self._empty_score(
+                [],
+                skipped=skipped,
+                runtime_status=runtime_status,
+            )
 
-        active = self.registry.selectable_factors()
-        skipped = self.registry.non_selectable_reasons()
         if not active:
-            return RuntimeFactorScore(
-                symbol_scores={symbol: 0.0 for symbol in symbols},
-                skipped_factors=skipped,
-                registry_metadata=dict(self.registry.metadata),
+            return self._empty_score(
+                symbols,
+                skipped=skipped,
+                runtime_status=runtime_status,
             )
 
         weighted_scores = pd.Series(0.0, index=symbols, dtype=float)
@@ -278,10 +413,21 @@ class MinedFactorScorer:
             )
 
         if total_weight <= 1e-12 or not factors_used:
-            return RuntimeFactorScore(
-                symbol_scores={symbol: 0.0 for symbol in symbols},
-                skipped_factors=skipped,
-                registry_metadata=dict(self.registry.metadata),
+            runtime_status = {
+                **runtime_status,
+                "status": "governance_blocked",
+                "factor_mode": "governance_blocked",
+                "confidence_multiplier": 0.0,
+                "production_eligible": False,
+                "blockers": [
+                    *list(runtime_status.get("blockers", []) or []),
+                    "no_runtime_factor_completed",
+                ],
+            }
+            return self._empty_score(
+                symbols,
+                skipped=skipped,
+                runtime_status=runtime_status,
             )
 
         symbol_scores = (weighted_scores / total_weight).clip(-1.0, 1.0).fillna(0.0)
@@ -292,7 +438,24 @@ class MinedFactorScorer:
             factor_weights=factor_weights,
             factor_coverages=factor_coverages,
             skipped_factors=skipped,
-            registry_metadata=dict(self.registry.metadata),
+            registry_metadata={
+                **dict(self.registry.metadata),
+                "governance_runtime": dict(runtime_status),
+            },
+            governance_status=str(runtime_status["status"]),
+            factor_mode=str(runtime_status["factor_mode"]),
+            confidence_multiplier=float(
+                runtime_status.get("confidence_multiplier") or 0.0
+            ),
+            production_eligible=bool(
+                runtime_status.get("production_eligible", False)
+            ),
+            runtime_mode=self.runtime_mode,
+            runtime_blockers=[
+                str(item)
+                for item in runtime_status.get("blockers", []) or []
+                if str(item)
+            ],
         )
 
     def _compute_factor(
@@ -440,8 +603,13 @@ class MinedFactorScorer:
 def score_with_mined_factors(
     frames: Mapping[str, pd.DataFrame],
     registry: MinedFactorRegistry | None = None,
+    *,
+    runtime_mode: str = PRODUCTION_RUNTIME_MODE,
 ) -> RuntimeFactorScore:
-    return MinedFactorScorer(registry=registry).score(frames)
+    return MinedFactorScorer(
+        registry=registry,
+        runtime_mode=runtime_mode,
+    ).score(frames)
 
 
 def _close_series(frame: pd.DataFrame) -> pd.Series:
@@ -467,6 +635,9 @@ __all__ = [
     "DEFAULT_REGISTRY_PATH",
     "MinedFactorRegistry",
     "MinedFactorScorer",
+    "PRODUCTION_RUNTIME_MODE",
+    "REPORT_ONLY_SHADOW_RUNTIME_MODE",
     "RuntimeFactorScore",
+    "production_factor_set_sha256",
     "score_with_mined_factors",
 ]

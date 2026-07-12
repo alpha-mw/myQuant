@@ -1,5 +1,10 @@
 # Theme Rotation System
 
+> Theme Protocol v2 contracts, observer/formal mode, PE/VC knowledge governance,
+> and the no-forced-admission rule are documented in
+> [theme_protocol_v2.md](theme_protocol_v2.md). This document describes the
+> legacy rotation/scanner surface retained for compatibility.
+
 ## Purpose
 
 The Theme Rotation system is a deterministic A-share observability layer for

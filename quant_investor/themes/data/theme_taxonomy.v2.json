@@ -1,0 +1,78 @@
+{
+  "schema_version": "theme_taxonomy.v2",
+  "taxonomy_id": "myquant-tech-v2",
+  "version": "2.0.0",
+  "nodes": [
+    {
+      "theme_id": "tech::ai",
+      "name": "人工智能",
+      "aliases": ["AI", "大模型", "生成式AI"],
+      "mandate": "technology",
+      "tradable_node": true,
+      "supply_chain_roles": ["compute", "model", "application", "data", "infrastructure"]
+    },
+    {
+      "theme_id": "tech::ai-compute",
+      "name": "AI算力",
+      "parent_id": "tech::ai",
+      "aliases": ["算力基础设施", "智算中心", "AI服务器"],
+      "mandate": "technology",
+      "tradable_node": true,
+      "supply_chain_roles": ["accelerator", "server", "power", "cooling", "network"]
+    },
+    {
+      "theme_id": "tech::semiconductor",
+      "name": "半导体",
+      "aliases": ["芯片", "集成电路"],
+      "mandate": "technology",
+      "tradable_node": true,
+      "supply_chain_roles": ["design", "equipment", "materials", "foundry", "packaging", "testing"]
+    },
+    {
+      "theme_id": "tech::semiconductor-equipment",
+      "name": "半导体设备",
+      "parent_id": "tech::semiconductor",
+      "aliases": ["晶圆设备", "国产设备"],
+      "mandate": "advanced_manufacturing",
+      "tradable_node": true,
+      "supply_chain_roles": ["lithography", "etch", "deposition", "cleaning", "metrology"]
+    },
+    {
+      "theme_id": "tech::semiconductor-materials",
+      "name": "半导体材料",
+      "parent_id": "tech::semiconductor",
+      "aliases": ["晶圆材料", "电子特气", "光刻胶"],
+      "mandate": "advanced_manufacturing",
+      "tradable_node": true,
+      "supply_chain_roles": ["wafer", "photoresist", "gas", "target", "packaging_material"]
+    },
+    {
+      "theme_id": "tech::optical-interconnect",
+      "name": "光互联",
+      "aliases": ["光模块", "CPO", "硅光", "光通信"],
+      "mandate": "technology",
+      "tradable_node": true,
+      "supply_chain_roles": ["optical_chip", "laser", "module", "connector", "switch", "testing"]
+    },
+    {
+      "theme_id": "tech::commercial-space",
+      "name": "商业航天",
+      "aliases": ["卫星互联网", "低轨卫星", "民营火箭"],
+      "mandate": "advanced_manufacturing",
+      "tradable_node": true,
+      "supply_chain_roles": ["satellite", "launch", "payload", "ground_station", "components", "operations"]
+    },
+    {
+      "theme_id": "tech::humanoid-robot",
+      "name": "人形机器人",
+      "aliases": ["具身智能", "机器人", "Humanoid"],
+      "mandate": "advanced_manufacturing",
+      "tradable_node": true,
+      "supply_chain_roles": ["reducer", "servo", "motion_control", "sensor", "dexterous_hand", "body", "software"]
+    }
+  ],
+  "metadata": {
+    "pit_required": true,
+    "initial_scope": "AI, semiconductors, optical interconnect, commercial space, humanoid robotics"
+  }
+}

@@ -1,6 +1,142 @@
 # Factor Governance
 
+## FactorGovernanceProtocol v2 (v13.1 freeze exception)
+
+FactorGovernanceProtocol v2 freezes the research and mutation method, not the
+factor identities. Weekly mining and health runs are report-only. The current
+branch does **not** permit a new production transition: the available replay
+normalizer does not read back the actual bytes of every v13 DAG artifact, so
+`canonical_full_chain_replay_producer_unavailable` is a hard blocker. Once a
+readback-bound producer exists, the protocol still permits at most one
+one-for-one slot transition on the last valid trading day of a month. The
+stable local policy hash is
+available from `quant_investor.factors.governance_protocol_v2.protocol_hash()`.
+Retrieve it without touching the registry with:
+
+```bash
+python -c 'from quant_investor.factors.governance_protocol_v2 import PROTOCOL_HASH; print(PROTOCOL_HASH)'
+```
+
+The versioned contracts are:
+
+- `FactorSlot` (`factor-slot.v2`): `family + dominant_primitive_cluster`, one
+  incumbent and one reserve.
+- `FactorEvidenceWindow` (`factor-evidence-window.v2`): snapshot, data/code/cost
+  hashes, actual non-overlapping forward-cohort intervals, purge/embargo
+  settings, fold count and evaluation hash.
+- `FactorTransitionPlan` (`factor-transition-plan.v2`): incumbent, challenger,
+  the complete canonical A/B/C/D evidence artifact and its hash,
+  before/after weights, blockers and rollback contract.
+- `RegistryMutationPlan` (`registry-mutation-plan.v2`): exact target records,
+  expected registry SHA, protected metadata, evidence/challenger payload,
+  independent mutation-budget-ledger path, WAL path and required inverse patch.
+
+Candidate maturity is at least 12 distinct month-end RankIC observations or
+eight non-overlapping 30-day forward cohorts. Mining applies Benjamini-Hochberg
+within each family at `q <= 0.10`. A walk-forward claim must be purged with a
+30-day embargo and carry per-fold evidence hashes. `data_blocked` neither adds
+nor clears an independent alpha-failure streak; two distinct mature failures
+make an incumbent reduced/watch eligible, and three make it deprecation
+eligible.
+
+A C-arm replacement will be accepted only from a future readback-bound
+canonical producer and a full `Quant -> Theme -> Bayesian -> RiskGuard ->
+PortfolioConstructor` replay. The current JSON normalizer verifies structure,
+self-hashes, strict-snapshot calendar/hash, and A/B/C/D arm hashes for research
+reports, but caller-provided 64-hex hashes are not proof of actual DAG artifact
+bytes and therefore cannot authorize mutation. Paired after-cost daily deltas,
+coverage and drawdown
+are recomputed from the incumbent/challenger return arrays; caller-supplied
+pass booleans or delta scalars are ignored. The delta uses a deterministic moving-block
+bootstrap (minimum 60 samples, fixed seed/block length/resample count recorded
+and hashed). The 95% CI lower bound must be positive; computed annualized net
+excess improvement must be at least one percentage point; drawdown worsening
+must be at most two percentage points; challenger coverage must be at least 95%
+of incumbent coverage; and turnover, slippage and tail-risk evidence must stay
+inside the strategy limits.
+
+Normalized absolute risk budgets are capped at 20% per factor and 35% per
+family. Insufficient evidence retains the prior weights; it never writes a
+fixed nominal fallback. The baseline registry is intentionally not restored:
+the current selectable set remains one factor while historical records remain
+non-live comparison evidence. The corrected metadata count/names/name-set hash
+must exactly match the selectable set; this is a baseline consistency repair,
+not a transition.
+
+Production runtime uses the same fail-closed boundary. A non-empty selectable
+set is not sufficient. `governance_runtime_status()` also requires the registry
+protocol version/hash to equal the local v2 policy, exact production-set
+count/names/hash metadata, a non-empty family and dominant-primitive cluster
+for every live record, one incumbent per slot, valid 20%/35% normalized risk
+budgets, and canonical readback-bound evidence marked production eligible.
+Until the canonical producer exists, the current one-factor baseline therefore
+reports `governance_blocked`, confidence `0`, and no legacy fallback. Explicit
+report-only shadow scoring may still compute comparison ranks, but it carries
+`factor_mode=historical_shadow_report_only`, confidence `0`, and
+`production_eligible=false`; it cannot enter the production DAG as evidence.
+
+Produce a deterministic, private **report-only** evidence artifact from a local
+full-chain replay:
+
+```bash
+python scripts/build_factor_governance_replay_evidence.py \
+  --full-chain-replay-json <private-full-chain-replay.json> \
+  --output-json <private-canonical-evidence.json>
+```
+
+The normalizer output is content-addressed and mode `0600`, but it is marked
+`production_apply_eligible=false`. Hand-written transition/mutation envelopes
+are not accepted. Supplying all apply arguments below still exits blocked with
+`canonical_full_chain_replay_producer_unavailable` until the real producer is
+implemented:
+
+```bash
+python scripts/daily_factor_mining_automation.py \
+  --apply-governed-transitions \
+  --protocol-version v2 \
+  --expected-protocol-hash <exact-local-policy-hash> \
+  --governed-evidence-json <private-canonical-evidence.json> \
+  --mutation-budget-ledger <private-monthly-budget-ledger.jsonl>
+```
+
+The CLI re-verifies normalized evidence and internally builds a report-only
+transition/mutation plan. It cannot reserve the monthly budget, write a WAL, or
+touch the registry while the producer blocker is active. Any apply request
+exits non-zero. Inverse-WAL rollback remains available for an already-existing
+valid mutation and never deletes or refunds its monthly reservation.
+
+Rollback is dry-run by default. It requires the exact current registry SHA,
+input WAL SHA, protocol/transition/mutation/evidence hashes, and the same
+append-only budget ledger. Add `--apply-rollback --rollback-wal <new-wal>` only
+after reviewing the dry run:
+
+```bash
+python scripts/rollback_factor_governance_transition.py \
+  --registry-path quant_investor/factor_registry/mined_factors.json \
+  --inverse-wal <inverse-wal.json> \
+  --mutation-budget-ledger <private-monthly-budget-ledger.jsonl> \
+  --protocol-version v2 \
+  --expected-protocol-hash <protocol-sha256> \
+  --expected-current-registry-sha256 <registry-sha256> \
+  --expected-inverse-wal-sha256 <wal-sha256> \
+  --expected-transition-hash <transition-sha256> \
+  --expected-mutation-plan-hash <mutation-plan-sha256> \
+  --expected-evidence-hash <evidence-sha256>
+```
+
+Both the legacy bulk "current champion equals the production pool" reconciler
+and `mine_quant_branch_factors.py --write-production-candidates` are retired;
+either direct-write request exits blocked without changing the registry. A zero-selectable-factor
+registry produces `governance_blocked`, zero Quant confidence and no legacy
+proxy fallback.
+
 ## Objective
+
+> Legacy offline-library reference: the Pass 1-Pass 13 sections below document
+> older manual admission and research-library contracts. They are not an
+> activation authority for FactorGovernanceProtocol v2. The v2 freeze-exception
+> section above, its protocol hash, canonical evidence gate, and month-end
+> mutation budget take precedence.
 
 Phase 9 Pass 1 adds an offline factor governance layer for defining factor
 contracts, validating existing backtest summaries against explicit thresholds,
@@ -12,15 +148,15 @@ LLMs, or connect factors to stock selection or portfolio construction.
 
 ## Lifecycle States
 
-- `draft`: initial idea or incomplete definition.
-- `research_candidate`: definition is complete enough for research review.
-- `backtested`: an offline backtest result has been attached.
-- `validated_research`: validation gates passed, but production is not approved.
-- `paper_trading`: approved for offline or shadow monitoring.
-- `production`: manually admitted to the production factor library.
-- `deprecated`: retired and retained for audit history.
-- `rejected`: rejected after validation or review.
-- `disabled`: disabled by governance or operator decision.
+The mined-factor runtime v2 path uses:
+
+`research_candidate -> shadow -> mature_candidate -> production_candidate ->
+production_factor -> watch/reduced/deprecated`.
+
+The older offline factor-library schema still retains `draft`, `backtested`,
+`validated_research`, `paper_trading`, `production`, `rejected` and `disabled`
+for historical research artifacts. Those library labels do not authorize a v2
+registry transition.
 
 ## Production Factor Hard Rules
 
@@ -86,9 +222,10 @@ directories. If the pointer, manifest, table dataset, serving cache, PIT input,
 or readback is unavailable, the run fails closed as
 `parquet_canonical_unavailable` or a specific fresh-evaluation blocker.
 
-`--apply-registry-actions` is not permitted in the scheduled automation. A
-future operator-directed action requires both fresh flags, an atomic batch, and
-explicit review; registry evidence alone is always report-only.
+`--apply-registry-actions` is a retired compatibility flag: it emits a blocked,
+report-only health result and can never mutate the registry. Health evidence
+feeds the v2 transition plan; only the v2 month-end apply path may change
+production membership. Registry evidence alone is always report-only.
 
 ## Quant Factor Selection Shadow
 
@@ -98,10 +235,40 @@ selected candidate in memory only, and recomputes exact `MinedFactorScorer`
 components and Quant-score Top-20/Top-50 rankings. It writes no registry,
 strategy, portfolio, order, or execution record.
 
+The A arm no longer derives its identity from `selectable_factors()`. It
+requires an explicit historical baseline manifest. The manifest lists every
+factor and shadow weight, hashes the raw JSON content of each named registry
+record, and self-hashes the complete list. Loading it builds a separate
+in-memory report-only registry; it does not change record state, selectable
+membership, weights, or bytes in the formal registry. Missing manifests,
+duplicate names, count drift, record drift, or manifest-hash drift block the
+run. This permits the current one incumbent plus thirteen historical records
+to reconstruct the old-14 comparison without reviving those thirteen factors.
+
+Build the private mode-`0600` manifest from an explicit reviewed list (repeat
+`--factor` exactly 14 times), then pass it explicitly to the shadow runner:
+
+```bash
+python scripts/build_factor_historical_shadow_manifest.py \
+  --registry-path quant_investor/factor_registry/mined_factors.json \
+  --baseline-id old14-reviewed-20260712 \
+  --factor <factor-1>=0.05 \
+  --factor <factor-2>=0.05 \
+  --output-json <private-old14-manifest.json>
+
+python scripts/run_quant_factor_selection_shadow.py \
+  --historical-baseline-manifest <private-old14-manifest.json> \
+  --expected-production-factor-count 14
+```
+
+The retained `--expected-production-factor-count` flag name is legacy CLI
+compatibility; in this runner it now means the manifest-bound historical
+baseline count, not the current selectable production count.
+
 The pre-registered arms are:
 
-- A: all current selectable production factors at their registry weights.
-- B_i: A with one production factor removed.
+- A: all explicit manifest-bound historical factors at manifest shadow weights.
+- B_i: A with one historical baseline factor removed.
 - C_i: B_i plus the candidate at the removed factor's actual absolute weight.
 - D: A plus a dynamically calculated candidate nominal weight that produces an
   exact 3% effective absolute-weight share.
@@ -111,14 +278,15 @@ membership changes, candidate coverage, and covered-versus-uncovered selection
 rates. It does not substitute the mining Gate 8 linear return overlay for a
 runtime rerank.
 
-The v2 create-once preregistration file locks the arms, maturity rule, effective
-3% weight, production-factor count, lookback, and all coverage thresholds.
-Unregistered sensitivity overrides block the governed series. A separate v2
-create-once baseline contract locks those experiment parameters plus production
-factor identities, weights and record hashes; candidate version,
+The v3 create-once preregistration file locks the arms, maturity rule, effective
+3% weight, historical-baseline count, lookback, and all coverage thresholds.
+Unregistered sensitivity overrides block the governed series. A separate v3
+create-once baseline contract locks those experiment parameters plus the
+historical manifest hash, factor identities, weights and source-record hashes;
+candidate version,
 implementation, expression and record hash; strict PIT policy; runtime code
 hashes; and Top-N profile. Future market snapshots may advance, but contract
-drift blocks the observation. The append-once v2 ledger key includes
+drift blocks the observation. The append-once v3 ledger key includes
 `snapshot/as_of/candidate/baseline_contract_hash`; ledger rows are lineage and
 deduplication evidence only and can never raise candidate maturity.
 
@@ -166,11 +334,12 @@ The current writer accepts only `mined-factor-registry.v1` and rejects unknown
 record fields, so a future schema or extension cannot be silently truncated by
 a health or mining rewrite.
 
-All work in these sections is a `v13-frozen-20260707` measurement or mutation-
-safety exception. It does not alter production factor weights, lifecycle,
-selection behavior, portfolio construction, strategy records, orders, or live
-trading. Any future promotion, reduction, deprecation, merge, or production
-behavior change still requires explicit governance and Maxwell confirmation.
+All work in these sections is a `v13-frozen-20260707` freeze exception. A
+protocol-valid v2 month-end transition no longer needs case-by-case manual
+approval, but the protocol, PIT, maturity, mutation budget and deterministic
+risk gates remain mandatory. Merging this freeze-exception branch still
+requires Maxwell's explicit confirmation. No factor workflow calls a broker or
+creates orders/trades.
 
 ## Admission Gates
 
@@ -806,10 +975,10 @@ Current limitations:
 
 ## Governed Mined Factor Runtime Admission
 
-The quant branch now has a narrow runtime adapter for mined factors. This
-adapter is intentionally fail-closed: a mined factor can affect quant scoring
-only after it is manually promoted in `quant_investor/factor_registry/
-mined_factors.json`.
+This section describes the older v1 registry-admission mechanics only. It is
+not authority for v2 production activation. The v2 runtime contract and
+automatic month-end transition protocol above supersede the former manual
+promotion workflow.
 
 Mined-factor lifecycle states are:
 
@@ -828,9 +997,9 @@ Automated review decisions are limited to:
 - `paper_factor`
 - `production_candidate`
 
-`production_factor` is not an automated review decision. A
-`production_candidate` still requires manual registry promotion before it can be
-consumed by runtime selection.
+`production_factor` was not an automated v1 review decision. Under v2, only the
+hash-bound month-end transition engine may create a production transition;
+manual editing or the old direct writer is not an activation path.
 
 The mined-factor evaluator records eight gate results:
 
@@ -858,8 +1027,10 @@ scorer consumes only factors where:
 
 All `draft`, `research_candidate`, `paper_factor`, and `production_candidate`
 records are skipped by design. If the registry has no selectable
-`production_factor`, the DAG quant branch and standalone `QuantAgent` fall back
-to the legacy `short_term_return` / `volatility_penalty` deterministic proxy.
+`production_factor`, or if any v2 registry/protocol/slot/budget/evidence check
+fails, the DAG quant branch and standalone `QuantAgent` enter
+`governance_blocked` with zero confidence. They never fall back to the legacy
+`short_term_return` / `volatility_penalty` deterministic proxy.
 
 ## A_quant Expression Retest Bridge
 
@@ -941,6 +1112,11 @@ The default registry is empty:
 
 ## Mining Candidate Diversity Admission
 
+The admission/diversity calculations below remain useful report evidence, but
+their former direct registry-write and bulk production-reconciliation behavior
+is retired. They may feed a v2 challenger/evidence plan only; they cannot
+authorize production runtime or bypass the one-slot monthly mutation budget.
+
 The weekly mining writer applies `candidate-diversity-policy.v1` after a
 candidate has positive evidence and passes all eight gates. Registry admission
 then requires three additional deterministic checks:
@@ -974,18 +1150,9 @@ Existing zero-weight candidates are not deleted or rewritten. Each mining run
 emits `legacy_candidate_redundancy_audit.json`; they remain non-live unless a
 new current full-A run selects them as a champion.
 
-The scheduled wrapper defaults to the exact `full_a` universe and performs one
-registry transaction, not a candidate-write transaction followed by a second
-production transaction. It independently verifies the strict Parquet pointer,
-complete symbol readback, source-report hash, exact gates 1-8, supported runtime
-implementation, positive evidence, and the current diversity policy/hash. In
-one CAS/atomic/WAL mutation it promotes new champions to `production_factor`
-at weight `0.05`, keeps current champions at the same weight, and deprecates
-displaced production factors with weight zero and an explicit reason. The
-manifest lists `promoted_factors`, `kept_factors`, `deprecated_factors`, and
-`skipped_factors` plus before/after hashes.
-
-Production exposure evidence is also fail-closed. Industry uses the strict
+Weekly mining defaults to the exact `full_a` universe and publishes fail-closed
+challenger evidence, but it is report-only and cannot mutate the registry.
+Production exposure evidence uses the strict
 Parquet `dag_core_raw/stock_basic` reference. Size uses same-trade-date
 `daily_basic.total_mv` where available, then a bounded reconstruction from
 strict `dag_core_raw/daily_basic_ext.total_share` times same-day unadjusted
@@ -999,16 +1166,18 @@ PIT. Exposure is recomputed from the restricted analysis context used for
 candidate metrics; publishing the full-history context's exposure metadata is
 invalid. Its first evaluation date must not precede the resolved analysis start.
 
-If no new 8-gate challenger survives and a valid production incumbent exists,
-the mining job writes `status=no_registry_changes`, lists the incumbent in
-`kept_factors`, preserves the registry hash, and exits successfully. Incumbent
-health and retirement remain the separate factor-health workflow's concern.
-Subset evidence, incomplete full-A readback, malformed evidence, no incumbent
-and no champion, or a CAS conflict leaves the registry unchanged and makes
-strict scheduled execution exit nonzero. `--no-registry-write` remains the
-report-only rollback. Manual promotion remains available only for
-operator-directed workflows outside the scheduled reconciliation path, for
-example:
+The former scheduled-mining direct production reconciliation is retained only
+as historical documentation. Current CLIs are report-only unless the explicit
+FactorGovernanceProtocol v2 apply arguments are supplied, and even then the
+canonical producer gate, one-slot plan, CAS/WAL and monthly budget must pass.
+Strict evidence failure is `data_blocked`: it leaves the registry byte-identical
+and does not advance or clear an incumbent failure streak. Factor health is also
+report-only and cannot retire, carry forward, promote, or reweight production
+records. The retired bulk/direct writers return a structured blocker instead of
+silently applying their historical semantics.
+
+The following record shape is a legacy schema example, not an activation
+instruction. Do not manually promote it:
 
 ```json
 {

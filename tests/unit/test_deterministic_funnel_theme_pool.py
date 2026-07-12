@@ -148,8 +148,9 @@ def test_theme_pool_generates_theme_member_candidates_before_ranking() -> None:
     assert theme_pool["unthemed_exclusion_count"] == 1
     assert theme_pool["symbols"]["RISKY"]["bucket"] == "risk_watch_fake_breakout"
     assert theme_pool["symbols"]["RISKY"]["candidate_intent"] == "research_candidate_not_buy_signal"
-    assert theme_pool["symbols"]["LOW_SCORE"]["bucket"] == "forced_theme"
-    assert theme_pool["symbols"]["LOW_SCORE"]["source"] == "core"
+    assert "LOW_SCORE" not in output.candidates
+    assert output.excluded_symbols["LOW_SCORE"] == "theme_pool_theme_not_admitted"
+    assert theme_pool["forced_theme_count"] == 0
     assert theme_pool["residual_symbol_count"] == 0
 
 

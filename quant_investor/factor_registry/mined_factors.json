@@ -2,20 +2,24 @@
   "schema_version": "mined-factor-registry.v1",
   "metadata": {
     "description": "Governed mined-factor registry. Quant branch only consumes production_factor entries with all 8 gates passed.",
-    "default_policy": "Scheduled full-A mining promotes only current strict 8/8 diversity champions; all other mined factors are non-live.",
+    "default_policy": "FactorGovernanceProtocol v2 is the only production transition authority; weekly mining and health are report-only.",
     "restored_at": "2026-06-02T03:38:47Z",
-    "restored_from": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
+    "restored_from": "reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
     "restored_factor_count": 12,
     "runtime_implementation": "price_volume:<factor_name>",
     "known_limitation": "Offline neutralization uses hs300/zz500/zz1000 universe buckets because complete industry map was unavailable in the local snapshot.",
     "last_manual_promotion_at": "2026-06-05T01:06:42Z",
     "last_manual_promotion_by": "user_requested_codex_delegated_promotion_20260605",
-    "last_manual_promotion_source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/quant_branch_factor_mining_20260604_220329/quant_branch_factor_mining_results.json",
+    "last_manual_promotion_source_report": "reports/factor_governance/quant_branch_factor_mining_20260604_220329/quant_branch_factor_mining_results.json",
     "last_manual_promotion_factors": [
       "pv_blend_volstab19x2_mom90_amihud5_w75",
       "pv_blend_volstab19x2_mom90_amihud5_w70"
     ],
     "production_factor_count": 1,
+    "production_factor_names": [
+      "pv_low_dollar_volume_5d"
+    ],
+    "production_factor_set_sha256": "9ebccfa6b6a4c736739377616e8ce5681e5c9709fe15565e37a4d5fcda7ea0b0",
     "path": "quant_investor/factor_registry/mined_factors.json",
     "last_factor_health_review_at": "2026-07-11T13:09:41Z",
     "last_factor_health_report_json": "reports/factor_governance/health/factor_health_2026-07-11T130941Z.json",
@@ -34,14 +38,14 @@
       "fund_fin_net_profit_yoy_60d"
     ],
     "last_daily_factor_mining_updated": [],
-    "daily_factor_mining_policy": "writes zero-weight production_candidate records only; manual production_factor promotion required",
+    "daily_factor_mining_policy": "weekly mining and health are report-only; production transition requires FactorGovernanceProtocol v2 governed apply and canonical evidence",
     "last_production_family_governance_at": "2026-07-12T13:59:25+08:00",
     "last_production_family_governance_run_id": "weekly_factor_auto_promotion_20260712_v4",
     "last_production_family_governance_report": "reports/factor_governance/daily_mining/weekly_factor_auto_promotion_20260712_v4/mining/quant_branch_factor_mining_results.json",
     "last_production_family_champions": [
       "pv_low_dollar_volume_5d"
     ],
-    "production_family_policy": "single CAS/WAL transaction; exact full-A 8-gate evidence; one alpha-first diversity champion per family"
+    "production_family_policy": "historical full-A 8-gate and diversity evidence retained; direct weekly mutation retired; FactorGovernanceProtocol v2 is the sole transition authority"
   },
   "factors": [
     {
@@ -263,7 +267,7 @@
       "approved_at": "2026-05-29T05:30:16Z",
       "deprecated_reason": "current_8gate_not_passed",
       "metadata": {
-        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
+        "source_report": "reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
         "recovery_reason": "registry was empty although 2026-05-29 promoted mining report and health reports show 12 production_factor entries",
         "validation_note": "Neutralization uses hs300/zz500/zz1000 universe buckets as a local size/liquidity proxy because no complete industry map is available in the offline data snapshot.",
         "spec": {
@@ -745,7 +749,7 @@
       "approved_at": "2026-05-29T05:30:16Z",
       "deprecated_reason": "current_8gate_not_passed",
       "metadata": {
-        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
+        "source_report": "reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
         "recovery_reason": "registry was empty although 2026-05-29 promoted mining report and health reports show 12 production_factor entries",
         "validation_note": "Neutralization uses hs300/zz500/zz1000 universe buckets as a local size/liquidity proxy because no complete industry map is available in the offline data snapshot.",
         "spec": {
@@ -1228,7 +1232,7 @@
       "approved_at": "2026-05-29T05:30:16Z",
       "deprecated_reason": "current_8gate_not_passed",
       "metadata": {
-        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
+        "source_report": "reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
         "recovery_reason": "registry was empty although 2026-05-29 promoted mining report and health reports show 12 production_factor entries",
         "validation_note": "Neutralization uses hs300/zz500/zz1000 universe buckets as a local size/liquidity proxy because no complete industry map is available in the offline data snapshot.",
         "spec": {
@@ -1713,7 +1717,7 @@
       "approved_at": "2026-05-29T05:30:16Z",
       "deprecated_reason": "current_8gate_not_passed",
       "metadata": {
-        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
+        "source_report": "reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
         "recovery_reason": "registry was empty although 2026-05-29 promoted mining report and health reports show 12 production_factor entries",
         "validation_note": "Neutralization uses hs300/zz500/zz1000 universe buckets as a local size/liquidity proxy because no complete industry map is available in the offline data snapshot.",
         "spec": {
@@ -2196,7 +2200,7 @@
       "approved_at": "2026-05-29T05:30:16Z",
       "deprecated_reason": "current_8gate_not_passed",
       "metadata": {
-        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
+        "source_report": "reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
         "recovery_reason": "registry was empty although 2026-05-29 promoted mining report and health reports show 12 production_factor entries",
         "validation_note": "Neutralization uses hs300/zz500/zz1000 universe buckets as a local size/liquidity proxy because no complete industry map is available in the offline data snapshot.",
         "spec": {
@@ -2679,7 +2683,7 @@
       "approved_at": "2026-05-29T05:30:16Z",
       "deprecated_reason": "current_8gate_not_passed",
       "metadata": {
-        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
+        "source_report": "reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
         "recovery_reason": "registry was empty although 2026-05-29 promoted mining report and health reports show 12 production_factor entries",
         "validation_note": "Neutralization uses hs300/zz500/zz1000 universe buckets as a local size/liquidity proxy because no complete industry map is available in the offline data snapshot.",
         "spec": {
@@ -3164,7 +3168,7 @@
       "approved_at": "2026-05-29T05:30:16Z",
       "deprecated_reason": "current_8gate_not_passed",
       "metadata": {
-        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
+        "source_report": "reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
         "recovery_reason": "registry was empty although 2026-05-29 promoted mining report and health reports show 12 production_factor entries",
         "validation_note": "Neutralization uses hs300/zz500/zz1000 universe buckets as a local size/liquidity proxy because no complete industry map is available in the offline data snapshot.",
         "spec": {
@@ -3649,7 +3653,7 @@
       "approved_at": "2026-05-29T05:30:16Z",
       "deprecated_reason": "current_8gate_not_passed",
       "metadata": {
-        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
+        "source_report": "reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
         "recovery_reason": "registry was empty although 2026-05-29 promoted mining report and health reports show 12 production_factor entries",
         "validation_note": "Neutralization uses hs300/zz500/zz1000 universe buckets as a local size/liquidity proxy because no complete industry map is available in the offline data snapshot.",
         "spec": {
@@ -4132,7 +4136,7 @@
       "approved_at": "2026-05-29T05:30:16Z",
       "deprecated_reason": "current_8gate_not_passed",
       "metadata": {
-        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
+        "source_report": "reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
         "recovery_reason": "registry was empty although 2026-05-29 promoted mining report and health reports show 12 production_factor entries",
         "validation_note": "Neutralization uses hs300/zz500/zz1000 universe buckets as a local size/liquidity proxy because no complete industry map is available in the offline data snapshot.",
         "spec": {
@@ -4617,7 +4621,7 @@
       "approved_at": "2026-05-29T05:30:16Z",
       "deprecated_reason": "current_8gate_not_passed",
       "metadata": {
-        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
+        "source_report": "reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
         "recovery_reason": "registry was empty although 2026-05-29 promoted mining report and health reports show 12 production_factor entries",
         "validation_note": "Neutralization uses hs300/zz500/zz1000 universe buckets as a local size/liquidity proxy because no complete industry map is available in the offline data snapshot.",
         "spec": {
@@ -5106,7 +5110,7 @@
       "approved_at": "2026-05-29T05:30:16Z",
       "deprecated_reason": "current_8gate_not_passed",
       "metadata": {
-        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
+        "source_report": "reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
         "recovery_reason": "registry was empty although 2026-05-29 promoted mining report and health reports show 12 production_factor entries",
         "validation_note": "Neutralization uses hs300/zz500/zz1000 universe buckets as a local size/liquidity proxy because no complete industry map is available in the offline data snapshot.",
         "spec": {
@@ -5588,7 +5592,7 @@
       "approved_at": "2026-05-29T05:30:16Z",
       "deprecated_reason": "current_8gate_not_passed",
       "metadata": {
-        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
+        "source_report": "reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
         "recovery_reason": "registry was empty although 2026-05-29 promoted mining report and health reports show 12 production_factor entries",
         "validation_note": "Neutralization uses hs300/zz500/zz1000 universe buckets as a local size/liquidity proxy because no complete industry map is available in the offline data snapshot.",
         "spec": {
@@ -6073,7 +6077,7 @@
       "approved_at": "2026-06-05T01:06:42Z",
       "deprecated_reason": "current_8gate_not_passed",
       "metadata": {
-        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/quant_branch_factor_mining_20260604_220329/quant_branch_factor_mining_results.json",
+        "source_report": "reports/factor_governance/quant_branch_factor_mining_20260604_220329/quant_branch_factor_mining_results.json",
         "source_run_timestamp": "2026-06-04T22:03:29",
         "source_conclusion": "manual_production_factor_review_candidate",
         "effective_analysis_start_date": "2023-06-30",
@@ -6602,7 +6606,7 @@
       "approved_at": "2026-06-05T01:06:42Z",
       "deprecated_reason": "current_8gate_not_passed",
       "metadata": {
-        "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/quant_branch_factor_mining_20260604_220329/quant_branch_factor_mining_results.json",
+        "source_report": "reports/factor_governance/quant_branch_factor_mining_20260604_220329/quant_branch_factor_mining_results.json",
         "source_run_timestamp": "2026-06-04T22:03:29",
         "source_conclusion": "manual_production_factor_review_candidate",
         "effective_analysis_start_date": "2023-06-30",

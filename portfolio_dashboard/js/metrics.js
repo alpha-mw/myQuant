@@ -42,6 +42,61 @@
     return Math.pow(base, TRADING_DAYS_PER_YEAR / tradingDays) - 1;
   }
 
+  function formalOpenDates(calendar, startDate, endDate, excludeStart) {
+    if (!calendar || calendar.status !== "available" || !Array.isArray(calendar.expected_open_dates)) return [];
+    return calendar.expected_open_dates.filter(function (date) {
+      if (startDate && (excludeStart ? date <= startDate : date < startDate)) return false;
+      if (endDate && date > endDate) return false;
+      return true;
+    });
+  }
+
+  function returnDateSet(returns) {
+    var dates = {};
+    (returns || []).forEach(function (row) {
+      if (finite(row.daily_return)) dates[row.date] = true;
+    });
+    return dates;
+  }
+
+  function annualizationEligibility(firstPoint, lastPoint, returns, calendar) {
+    var expectedDates = firstPoint && lastPoint
+      ? formalOpenDates(calendar, firstPoint.date, lastPoint.date, true)
+      : [];
+    var validDates = returnDateSet(returns);
+    var validReturnCount = expectedDates.filter(function (date) { return validDates[date]; }).length;
+    var coverage = expectedDates.length > 0 ? validReturnCount / expectedDates.length : 0;
+    var calendarAvailable = Boolean(calendar && calendar.status === "available");
+    var eligible = calendarAvailable && validReturnCount >= 60 && coverage >= 0.95;
+    return {
+      eligible: eligible,
+      status: !calendarAvailable ? "formal_trading_calendar_missing" : eligible ? "eligible" : "insufficient_daily_history",
+      validReturnCount: validReturnCount,
+      expectedOpenDayCount: expectedDates.length,
+      openDayCoverage: coverage,
+      coverageBasis: "strict_parquet_trade_date_mask"
+    };
+  }
+
+  function strictMaskedReturns(returns, calendar, startDate, endDate) {
+    var allowed = {};
+    formalOpenDates(calendar, startDate, endDate, true).forEach(function (date) {
+      allowed[date] = true;
+    });
+    return (returns || []).filter(function (row) {
+      return allowed[row.date] && finite(row.daily_return);
+    });
+  }
+
+  function strictSeriesPoints(series, calendar) {
+    if (!calendar || calendar.status !== "available") return series || [];
+    var allowed = {};
+    (calendar.expected_open_dates || []).forEach(function (date) {
+      allowed[date] = true;
+    });
+    return (series || []).filter(function (point) { return allowed[point.date]; });
+  }
+
   function covariance(xs, ys) {
     var pairs = [];
     xs.forEach(function (x, index) {
@@ -73,15 +128,15 @@
     });
   }
 
-  function ensureNavReturns(navRows, benchmarkField) {
+  function ensureNavReturns(navRows, benchmarkField, recomputeFromPoints) {
     var previousBenchmarkNav = null;
     return navRows.map(function (row, index) {
       var prev = navRows[index - 1];
       var rawBenchmarkNav = benchmarkField && finite(row[benchmarkField]) ? row[benchmarkField] : null;
       var benchmarkNav = rawBenchmarkNav;
       if (rawBenchmarkNav === null && previousBenchmarkNav !== null) benchmarkNav = previousBenchmarkNav;
-      var portfolioReturn = finite(row.portfolio_return) ? row.portfolio_return : null;
-      var benchmarkReturn = benchmarkField === "benchmark_nav" && rawBenchmarkNav !== null && finite(row.benchmark_return) ? row.benchmark_return : null;
+      var portfolioReturn = !recomputeFromPoints && finite(row.portfolio_return) ? row.portfolio_return : null;
+      var benchmarkReturn = !recomputeFromPoints && benchmarkField === "benchmark_nav" && rawBenchmarkNav !== null && finite(row.benchmark_return) ? row.benchmark_return : null;
       if (portfolioReturn === null && prev && finite(prev.portfolio_nav) && prev.portfolio_nav !== 0) {
         portfolioReturn = row.portfolio_nav / prev.portfolio_nav - 1;
       }
@@ -191,7 +246,8 @@
     return rows;
   }
 
-  function seriesStats(navSeries) {
+  function seriesStats(navSeries, tradingCalendar) {
+    navSeries = strictSeriesPoints(navSeries, tradingCalendar);
     var endpoints = firstLastValid(navSeries);
     if (!endpoints.first || !endpoints.last || endpoints.first.value === 0) {
       return {
@@ -201,16 +257,31 @@
         maxDrawdown: null,
         sharpeRatio: null,
         returns: calculateReturnsFromNav(navSeries),
-        tradingDays: 0
+        tradingDays: 0,
+        annualization: {
+          eligible: false,
+          status: "insufficient_daily_history",
+          validReturnCount: 0,
+          expectedOpenDayCount: 0,
+          openDayCoverage: 0,
+          coverageBasis: "strict_parquet_trade_date_mask"
+        }
       };
     }
     var returns = calculateReturnsFromNav(navSeries);
-    var returnValues = returns.map(function (row) { return row.daily_return; }).filter(finite);
+    var maskedReturns = strictMaskedReturns(
+      returns,
+      tradingCalendar,
+      endpoints.first.date,
+      endpoints.last.date
+    );
+    var returnValues = maskedReturns.map(function (row) { return row.daily_return; });
     var totalReturn = endpoints.last.value / endpoints.first.value - 1;
     var tradingDays = returnValues.length;
-    var annualizedReturn = annualizedFromTotalReturn(totalReturn, tradingDays);
+    var eligibility = annualizationEligibility(endpoints.first, endpoints.last, returns, tradingCalendar);
+    var annualizedReturn = eligibility.eligible ? annualizedFromTotalReturn(totalReturn, eligibility.validReturnCount) : null;
     var volatility = std(returnValues);
-    var annualizedVolatility = volatility === null ? null : volatility * Math.sqrt(TRADING_DAYS_PER_YEAR);
+    var annualizedVolatility = eligibility.eligible && volatility !== null ? volatility * Math.sqrt(TRADING_DAYS_PER_YEAR) : null;
     var drawdowns = calculateDrawdown(navSeries).map(function (point) { return point.value; }).filter(finite);
     var maxDrawdown = drawdowns.length ? Math.min.apply(null, drawdowns) : null;
     return {
@@ -220,7 +291,8 @@
       maxDrawdown: maxDrawdown,
       sharpeRatio: annualizedVolatility && annualizedReturn !== null ? annualizedReturn / annualizedVolatility : null,
       returns: returns,
-      tradingDays: tradingDays
+      tradingDays: tradingDays,
+      annualization: eligibility
     };
   }
 
@@ -228,27 +300,54 @@
     var pairs = pairedReturns(portfolioReturns, benchmarkReturns);
     var excessNav = 1;
     return pairs.map(function (row) {
-      excessNav *= 1 + (row.portfolio - row.benchmark);
+      if (1 + row.benchmark <= 0) return { date: row.date, dateObj: null, value: null };
+      excessNav *= (1 + row.portfolio) / (1 + row.benchmark);
       return { date: row.date, dateObj: portfolioReturns.find(function (item) { return item.date === row.date; }).dateObj, value: excessNav };
     });
   }
 
-  function calculateBenchmarkMetrics(portfolioSeries, benchmarkSeries) {
-    var portfolioStats = seriesStats(portfolioSeries);
-    var benchmarkStats = seriesStats(benchmarkSeries);
+  function calculateBenchmarkMetrics(portfolioSeries, benchmarkSeries, tradingCalendar) {
+    var portfolioStats = seriesStats(portfolioSeries, tradingCalendar);
+    var benchmarkStats = seriesStats(benchmarkSeries, tradingCalendar);
     var pairs = pairedReturns(portfolioStats.returns, benchmarkStats.returns);
+    var portfolioEndpoints = firstLastValid(portfolioSeries);
+    var strictDates = {};
+    if (portfolioEndpoints.first && portfolioEndpoints.last) {
+      formalOpenDates(
+        tradingCalendar,
+        portfolioEndpoints.first.date,
+        portfolioEndpoints.last.date,
+        true
+      ).forEach(function (date) { strictDates[date] = true; });
+    }
+    pairs = pairs.filter(function (row) { return strictDates[row.date]; });
     var portfolioValues = pairs.map(function (row) { return row.portfolio; });
     var benchmarkValues = pairs.map(function (row) { return row.benchmark; });
     var dailyExcess = pairs.map(function (row) { return row.portfolio - row.benchmark; });
     var trackingErrorRaw = std(dailyExcess);
-    var trackingError = trackingErrorRaw === null ? null : trackingErrorRaw * Math.sqrt(TRADING_DAYS_PER_YEAR);
+    var pairedReturnRows = pairs.map(function (row) {
+      return { date: row.date, daily_return: row.portfolio - row.benchmark };
+    });
+    var endpoints = portfolioEndpoints;
+    var pairedEligibility = annualizationEligibility(
+      endpoints.first,
+      endpoints.last,
+      pairedReturnRows,
+      tradingCalendar
+    );
+    var trackingError = pairedEligibility.eligible && trackingErrorRaw !== null
+      ? trackingErrorRaw * Math.sqrt(TRADING_DAYS_PER_YEAR)
+      : null;
     var benchmarkVariance = variance(benchmarkValues);
     var portfolioBenchmarkCovariance = covariance(portfolioValues, benchmarkValues);
     var betaValue = benchmarkVariance && portfolioBenchmarkCovariance !== null
       ? portfolioBenchmarkCovariance / benchmarkVariance
       : null;
-    var annualizedExcessReturn = finite(portfolioStats.annualizedReturn) && finite(benchmarkStats.annualizedReturn)
-      ? portfolioStats.annualizedReturn - benchmarkStats.annualizedReturn
+    var relativeTotal = finite(portfolioStats.totalReturn) && finite(benchmarkStats.totalReturn) && 1 + benchmarkStats.totalReturn > 0
+      ? (1 + portfolioStats.totalReturn) / (1 + benchmarkStats.totalReturn) - 1
+      : null;
+    var annualizedExcessReturn = pairedEligibility.eligible
+      ? annualizedFromTotalReturn(relativeTotal, pairedEligibility.validReturnCount)
       : null;
     return {
       totalReturn: benchmarkStats.totalReturn,
@@ -260,15 +359,13 @@
       beta: betaValue,
       trackingError: trackingError,
       informationRatio: trackingError ? annualizedExcessReturn / trackingError : null,
-      excessReturn: finite(portfolioStats.totalReturn) && finite(benchmarkStats.totalReturn)
-        ? portfolioStats.totalReturn - benchmarkStats.totalReturn
-        : null,
+      excessReturn: relativeTotal,
       annualizedExcessReturn: annualizedExcessReturn,
       pairedCount: pairs.length
     };
   }
 
-  function computePerformance(navRows, benchmarkField) {
+  function computePerformance(navRows, benchmarkField, monthlyAnchor, tradingCalendar) {
     if (navRows.length < 2) {
       return {
         kpis: {},
@@ -281,28 +378,74 @@
         monthly: []
       };
     }
-    var rows = ensureNavReturns(navRows, benchmarkField);
+    // Compress raw NAV and benchmark points to the canonical open-day mask
+    // before deriving returns.  Returns computed across weekend/non-open
+    // snapshots can otherwise move a jump to the wrong trading day and
+    // contaminate every downstream metric.
+    var rows = strictSeriesPoints(navRows, tradingCalendar);
+    rows = ensureNavReturns(rows, benchmarkField, Boolean(tradingCalendar && tradingCalendar.status === "available"));
+    if (rows.length < 2) {
+      return {
+        kpis: {},
+        navSeries: [],
+        benchmarkSeries: [],
+        excessSeries: [],
+        drawdownSeries: [],
+        rolling20Vol: [],
+        rolling60Beta: [],
+        monthly: []
+      };
+    }
     var first = rows[0];
     var last = rows[rows.length - 1];
-    var returns = rows.slice(1).map(function (row) { return row.portfolio_return_calc; }).filter(finite);
-    var benchmarkReturns = rows.slice(1).map(function (row) { return row.benchmark_return_calc; }).filter(finite);
     var totalReturn = last.portfolio_nav / first.portfolio_nav - 1;
     var benchmarkSeries = rows.map(function (row) { return { date: row.date, dateObj: row.dateObj, value: row.benchmark_nav_selected }; });
     var benchmarkEndpoints = firstLastValid(benchmarkSeries);
     var benchmarkTotalReturn = benchmarkEndpoints.first && benchmarkEndpoints.last && benchmarkEndpoints.first.value !== 0
       ? benchmarkEndpoints.last.value / benchmarkEndpoints.first.value - 1
       : null;
-    var annualizedReturn = annualizedFromTotalReturn(totalReturn, returns.length);
-    var benchmarkAnnualizedReturn = benchmarkEndpoints.first && benchmarkEndpoints.last && benchmarkEndpoints.first.value !== 0
-      ? annualizedFromTotalReturn(benchmarkTotalReturn, benchmarkReturns.length)
+    var portfolioReturnRows = rows.slice(1).map(function (row) {
+      return { date: row.date, daily_return: row.portfolio_return_calc };
+    });
+    var benchmarkReturnRows = rows.slice(1).map(function (row) {
+      return { date: row.date, daily_return: row.benchmark_return_calc };
+    });
+    var returns = strictMaskedReturns(
+      portfolioReturnRows,
+      tradingCalendar,
+      first.date,
+      last.date
+    ).map(function (row) { return row.daily_return; });
+    var benchmarkReturns = benchmarkEndpoints.first && benchmarkEndpoints.last
+      ? strictMaskedReturns(
+        benchmarkReturnRows,
+        tradingCalendar,
+        benchmarkEndpoints.first.date,
+        benchmarkEndpoints.last.date
+      ).map(function (row) { return row.daily_return; })
+      : [];
+    var annualization = annualizationEligibility(first, last, portfolioReturnRows, tradingCalendar);
+    var benchmarkAnnualization = benchmarkEndpoints.first && benchmarkEndpoints.last
+      ? annualizationEligibility(benchmarkEndpoints.first, benchmarkEndpoints.last, benchmarkReturnRows, tradingCalendar)
+      : annualizationEligibility(null, null, [], tradingCalendar);
+    var annualizedReturn = annualization.eligible ? annualizedFromTotalReturn(totalReturn, annualization.validReturnCount) : null;
+    var benchmarkAnnualizedReturn = benchmarkEndpoints.first && benchmarkEndpoints.last && benchmarkEndpoints.first.value !== 0 && benchmarkAnnualization.eligible
+      ? annualizedFromTotalReturn(benchmarkTotalReturn, benchmarkAnnualization.validReturnCount)
       : null;
     var volatility = std(returns);
     var benchmarkVolatility = std(benchmarkReturns);
-    var annualizedVolatility = volatility === null ? null : volatility * Math.sqrt(TRADING_DAYS_PER_YEAR);
-    var benchmarkAnnualizedVolatility = benchmarkVolatility === null ? null : benchmarkVolatility * Math.sqrt(TRADING_DAYS_PER_YEAR);
+    var annualizedVolatility = annualization.eligible && volatility !== null ? volatility * Math.sqrt(TRADING_DAYS_PER_YEAR) : null;
+    var benchmarkAnnualizedVolatility = benchmarkAnnualization.eligible && benchmarkVolatility !== null ? benchmarkVolatility * Math.sqrt(TRADING_DAYS_PER_YEAR) : null;
     var sharpe = annualizedVolatility && annualizedVolatility !== 0 && annualizedReturn !== null ? annualizedReturn / annualizedVolatility : null;
-    var winCount = returns.filter(function (value) { return value > 0; }).length;
-    var winRate = returns.length ? winCount / returns.length : null;
+    var formalReturnDates = {};
+    formalOpenDates(tradingCalendar, first.date, last.date, true).forEach(function (date) {
+      formalReturnDates[date] = true;
+    });
+    var formalReturnValues = portfolioReturnRows.filter(function (row) {
+      return formalReturnDates[row.date] && finite(row.daily_return);
+    }).map(function (row) { return row.daily_return; });
+    var winCount = formalReturnValues.filter(function (value) { return value > 0; }).length;
+    var winRate = formalReturnValues.length ? winCount / formalReturnValues.length : null;
 
     var runningMax = -Infinity;
     var maxDrawdown = 0;
@@ -320,21 +463,41 @@
 
     var cumulativeExcess = 1;
     var excessSeries = rows.map(function (row) {
-      if (finite(row.daily_excess_return)) cumulativeExcess *= 1 + row.daily_excess_return;
+      if (finite(row.portfolio_return_calc) && finite(row.benchmark_return_calc) && 1 + row.benchmark_return_calc > 0) {
+        cumulativeExcess *= (1 + row.portfolio_return_calc) / (1 + row.benchmark_return_calc);
+      }
       return { date: row.date, dateObj: row.dateObj, value: cumulativeExcess };
     });
 
     var rolling20Vol = [];
     var rolling60Beta = [];
-    rows.forEach(function (row, index) {
-      if (index >= 20) {
-        var windowReturns = rows.slice(index - 19, index + 1).map(function (item) { return item.portfolio_return_calc; });
+    var portfolioReturnByDate = {};
+    var benchmarkReturnByDate = {};
+    rows.forEach(function (row) {
+      if (finite(row.portfolio_return_calc)) portfolioReturnByDate[row.date] = row.portfolio_return_calc;
+      if (finite(row.benchmark_return_calc)) benchmarkReturnByDate[row.date] = row.benchmark_return_calc;
+    });
+    var allExpectedDates = formalOpenDates(
+      tradingCalendar,
+      rows.length ? rows[0].date : "",
+      rows.length ? rows[rows.length - 1].date : "",
+      true
+    );
+    rows.forEach(function (row) {
+      var expectedThroughDate = allExpectedDates.filter(function (date) { return date <= row.date; });
+      var expected20 = expectedThroughDate.slice(-20);
+      var windowReturns = expected20.map(function (date) { return portfolioReturnByDate[date]; }).filter(finite);
+      if (expected20.length === 20 && windowReturns.length / 20 >= 0.95) {
         var vol = std(windowReturns);
         if (vol !== null) rolling20Vol.push({ date: row.date, dateObj: row.dateObj, value: vol * Math.sqrt(TRADING_DAYS_PER_YEAR) });
       }
-      if (index >= 60) {
-        var p = rows.slice(index - 59, index + 1).map(function (item) { return item.portfolio_return_calc; });
-        var b = rows.slice(index - 59, index + 1).map(function (item) { return item.benchmark_return_calc; });
+      var expected60 = expectedThroughDate.slice(-60);
+      var pairedDates = expected60.filter(function (date) {
+        return finite(portfolioReturnByDate[date]) && finite(benchmarkReturnByDate[date]);
+      });
+      if (expected60.length === 60 && pairedDates.length / 60 >= 0.95) {
+        var p = pairedDates.map(function (date) { return portfolioReturnByDate[date]; });
+        var b = pairedDates.map(function (date) { return benchmarkReturnByDate[date]; });
         var cov = covariance(p, b);
         var v = variance(b);
         if (cov !== null && v) rolling60Beta.push({ date: row.date, dateObj: row.dateObj, value: cov / v });
@@ -347,24 +510,46 @@
       if (!monthlyMap[key]) monthlyMap[key] = { month: key, first: row, last: row };
       monthlyMap[key].last = row;
     });
+    var previousMonthEnd = monthlyAnchor && finite(monthlyAnchor.portfolio_nav) ? monthlyAnchor.portfolio_nav : null;
     var monthly = Object.keys(monthlyMap).sort().map(function (key) {
       var bucket = monthlyMap[key];
+      var value = finite(previousMonthEnd) && previousMonthEnd !== 0
+        ? bucket.last.portfolio_nav / previousMonthEnd - 1
+        : null;
+      previousMonthEnd = bucket.last.portfolio_nav;
       return {
         month: key,
         year: key.slice(0, 4),
         monthNumber: Number(key.slice(5, 7)),
-        value: bucket.last.portfolio_nav / bucket.first.portfolio_nav - 1
+        value: value,
+        anchor: "previous_month_end"
       };
     });
+
+    var relativeTotalReturn = finite(benchmarkTotalReturn) && 1 + benchmarkTotalReturn > 0
+      ? (1 + totalReturn) / (1 + benchmarkTotalReturn) - 1
+      : null;
+    var relativeReturnRows = rows.slice(1).map(function (row) {
+      return {
+        date: row.date,
+        daily_return: finite(row.portfolio_return_calc) && finite(row.benchmark_return_calc) && 1 + row.benchmark_return_calc > 0
+          ? (1 + row.portfolio_return_calc) / (1 + row.benchmark_return_calc) - 1
+          : null
+      };
+    });
+    var relativeAnnualization = annualizationEligibility(first, last, relativeReturnRows, tradingCalendar);
+    var annualizedRelativeReturn = relativeAnnualization.eligible
+      ? annualizedFromTotalReturn(relativeTotalReturn, relativeAnnualization.validReturnCount)
+      : null;
 
     return {
       kpis: {
         total_return: totalReturn,
         benchmark_total_return: benchmarkTotalReturn,
-        excess_return: finite(benchmarkTotalReturn) ? totalReturn - benchmarkTotalReturn : null,
+        excess_return: relativeTotalReturn,
         annualized_return: annualizedReturn,
         benchmark_annualized_return: benchmarkAnnualizedReturn,
-        annualized_excess_return: finite(benchmarkAnnualizedReturn) ? annualizedReturn - benchmarkAnnualizedReturn : null,
+        annualized_excess_return: annualizedRelativeReturn,
         annualized_volatility: annualizedVolatility,
         benchmark_annualized_volatility: benchmarkAnnualizedVolatility,
         sharpe_ratio: sharpe,
@@ -375,7 +560,11 @@
         drawdown_duration: maxDuration,
         start_date: first.date,
         end_date: last.date,
-        trading_days: returns.length
+        trading_days: formalReturnValues.length,
+        annualization_status: annualization.status,
+        open_day_coverage: annualization.openDayCoverage,
+        expected_open_day_count: annualization.expectedOpenDayCount,
+        annualization_coverage_basis: annualization.coverageBasis
       },
       enrichedNav: rows,
       navSeries: rows.map(function (row) { return { date: row.date, dateObj: row.dateObj, value: row.portfolio_nav }; }),
@@ -462,6 +651,12 @@
       return b.weight - a.weight;
     });
     var currentThemeWeight = groupSum(latestRows, "theme", "weight").sort(function (a, b) { return b.value - a.value; });
+    var equitySleeveTotal = latestRows.reduce(function (total, row) {
+      return total + (finite(row.equity_sleeve_weight) ? row.equity_sleeve_weight : 0);
+    }, 0);
+    var navExposure = latestRows.reduce(function (total, row) {
+      return total + (finite(row.nav_weight) ? row.nav_weight : 0);
+    }, 0);
     var currentSectorWeight = groupSum(latestRows.filter(function (row) { return row.sector; }), "sector", "weight")
       .sort(function (a, b) { return b.value - a.value; });
     var marketValueTheme = groupSum(latestRows.filter(function (row) { return finite(row.market_value); }), "theme", "market_value")
@@ -495,7 +690,9 @@
       concentrationTrend: concentrationTrend,
       top5Weight: concentrationTrend.length ? concentrationTrend[concentrationTrend.length - 1].top5 : null,
       top10Weight: concentrationTrend.length ? concentrationTrend[concentrationTrend.length - 1].top10 : null,
-      hhi: concentrationTrend.length ? concentrationTrend[concentrationTrend.length - 1].hhi : null
+      hhi: concentrationTrend.length ? concentrationTrend[concentrationTrend.length - 1].hhi : null,
+      navExposure: navExposure,
+      equitySleeveTotal: equitySleeveTotal
     };
   }
 
@@ -528,7 +725,11 @@
 
   function buildClosedTradeRecord(sell, aggregate, unmatchedQuantity) {
     var matchedQty = aggregate.matchedQuantity;
-    var costBasis = aggregate.buyCost + aggregate.buyFee;
+    var netCostBasis = aggregate.feesKnown ? aggregate.buyCost + aggregate.buyFee : null;
+    var grossRealizedPnl = aggregate.sellProceeds - aggregate.buyCost;
+    var netRealizedPnl = aggregate.feesKnown
+      ? grossRealizedPnl - aggregate.buyFee - aggregate.sellFee
+      : null;
     return {
       trade_date: sell.trade_date,
       dateObj: sell.dateObj,
@@ -542,11 +743,16 @@
       sell_price: finite(sell.price) ? sell.price : matchedQty ? aggregate.sellProceeds / matchedQty : null,
       buy_cost: aggregate.buyCost,
       sell_proceeds: aggregate.sellProceeds,
-      buy_fee: aggregate.buyFee,
-      sell_fee: aggregate.sellFee,
-      total_fee: aggregate.buyFee + aggregate.sellFee,
-      realized_pnl: aggregate.realizedPnl,
-      realized_return: costBasis ? aggregate.realizedPnl / costBasis : null,
+      fee_known: aggregate.feesKnown,
+      buy_fee: aggregate.feesKnown ? aggregate.buyFee : null,
+      sell_fee: aggregate.feesKnown ? aggregate.sellFee : null,
+      total_fee: aggregate.feesKnown ? aggregate.buyFee + aggregate.sellFee : null,
+      gross_realized_pnl: grossRealizedPnl,
+      gross_realized_return: aggregate.buyCost ? grossRealizedPnl / aggregate.buyCost : null,
+      net_realized_pnl: netRealizedPnl,
+      net_realized_return: netCostBasis ? netRealizedPnl / netCostBasis : null,
+      realized_pnl: netRealizedPnl,
+      realized_return: netCostBasis ? netRealizedPnl / netCostBasis : null,
       holding_days: matchedQty ? aggregate.holdingDayQuantity / matchedQty : null,
       match_count: aggregate.matchCount,
       opening_matched_quantity: aggregate.openingMatchedQuantity,
@@ -627,6 +833,7 @@
         remainingQuantity: openingQuantity,
         remainingCost: avgCost * openingQuantity,
         remainingFee: 0,
+        feeKnown: false,
         source: row,
         sourceType: "opening_position"
       });
@@ -671,6 +878,10 @@
       };
     }
     var warnings = [];
+    var unknownFeeCount = trades.filter(function (row) { return !finite(row.fee); }).length;
+    if (unknownFeeCount) {
+      warnings.push(unknownFeeCount + " 笔交易费用未知；费用后收益和费用拖累指标已禁用。");
+    }
     var unmatchedSells = [];
     var closedTrades = [];
     var orderedTrades = trades.slice().sort(function (a, b) {
@@ -688,6 +899,7 @@
       var ticker = row.ticker || "UNKNOWN_TICKER";
       if (!lotsByTicker[ticker]) lotsByTicker[ticker] = [];
       var fee = finite(row.fee) ? Math.max(0, row.fee) : 0;
+      var feeKnown = finite(row.fee);
       if (row.side === "buy") {
         lotsByTicker[ticker].push({
           ticker: ticker,
@@ -697,6 +909,7 @@
           remainingQuantity: qty,
           remainingCost: amount,
           remainingFee: fee,
+          feeKnown: feeKnown,
           source: row
         });
         return;
@@ -712,7 +925,7 @@
         sellProceeds: 0,
         buyFee: 0,
         sellFee: 0,
-        realizedPnl: 0,
+        feesKnown: feeKnown,
         holdingDayQuantity: 0,
         matchCount: 0,
         openingMatchedQuantity: 0
@@ -728,14 +941,13 @@
         var buyFee = lot.remainingFee * lotRatio;
         var sellProceeds = amount * sellRatio;
         var sellFee = fee * sellRatio;
-        var pnl = sellProceeds - sellFee - buyCost - buyFee;
         var holdingDays = Math.max(0, Math.round((row.dateObj - lot.dateObj) / MS_PER_DAY));
         aggregate.matchedQuantity += matched;
         aggregate.buyCost += buyCost;
         aggregate.sellProceeds += sellProceeds;
         aggregate.buyFee += buyFee;
         aggregate.sellFee += sellFee;
-        aggregate.realizedPnl += pnl;
+        aggregate.feesKnown = aggregate.feesKnown && lot.feeKnown === true;
         aggregate.holdingDayQuantity += holdingDays * matched;
         aggregate.matchCount += 1;
         if (lot.sourceType === "opening_position") aggregate.openingMatchedQuantity += matched;
@@ -763,10 +975,21 @@
     });
     var buyCount = trades.filter(function (row) { return row.side === "buy"; }).length;
     var sellCount = trades.filter(function (row) { return row.side === "sell"; }).length;
-    var wins = closedTrades.filter(function (row) { return row.realized_pnl > 0; });
-    var losses = closedTrades.filter(function (row) { return row.realized_pnl < 0; });
-    var grossProfit = wins.reduce(function (total, row) { return total + row.realized_pnl; }, 0);
-    var grossLoss = losses.reduce(function (total, row) { return total + row.realized_pnl; }, 0);
+    var closedUnknownFeeCount = closedTrades.filter(function (row) { return row.fee_known !== true; }).length;
+    var netMetricsComplete = closedTrades.length > 0 && closedUnknownFeeCount === 0;
+    if (closedUnknownFeeCount) {
+      warnings.push(
+        closedUnknownFeeCount + " 笔平仓缺少买入或卖出费用；净实现盈亏、净胜率和净盈亏比保持 unavailable。"
+      );
+    }
+    var wins = netMetricsComplete ? closedTrades.filter(function (row) { return row.net_realized_pnl > 0; }) : [];
+    var losses = netMetricsComplete ? closedTrades.filter(function (row) { return row.net_realized_pnl < 0; }) : [];
+    var netProfit = wins.reduce(function (total, row) { return total + row.net_realized_pnl; }, 0);
+    var netLoss = losses.reduce(function (total, row) { return total + row.net_realized_pnl; }, 0);
+    var grossWins = closedTrades.filter(function (row) { return row.gross_realized_pnl > 0; });
+    var grossLosses = closedTrades.filter(function (row) { return row.gross_realized_pnl < 0; });
+    var grossProfit = grossWins.reduce(function (total, row) { return total + row.gross_realized_pnl; }, 0);
+    var grossLoss = grossLosses.reduce(function (total, row) { return total + row.gross_realized_pnl; }, 0);
     var matchedQuantity = closedTrades.reduce(function (total, row) {
       return total + (finite(row.matched_quantity) ? row.matched_quantity : 0);
     }, 0);
@@ -800,16 +1023,22 @@
         buy_count: buyCount,
         sell_count: sellCount,
         trade_amount: sum(trades, "trade_amount"),
-        fee: sum(trades, "fee"),
+        fee: unknownFeeCount ? null : sum(trades, "fee"),
+        fee_unknown_count: unknownFeeCount,
+        closed_fee_unknown_count: closedUnknownFeeCount,
         trade_count: trades.length,
         closed_trade_count: closedTrades.length,
-        realized_pnl: closedTrades.reduce(function (total, row) { return total + row.realized_pnl; }, 0),
-        trade_win_rate: closedTrades.length ? wins.length / closedTrades.length : null,
-        profit_factor: grossLoss < 0 ? grossProfit / Math.abs(grossLoss) : null,
-        avg_win: wins.length ? grossProfit / wins.length : null,
-        avg_loss: losses.length ? grossLoss / losses.length : null,
-        max_trade_profit: wins.length ? Math.max.apply(null, wins.map(function (row) { return row.realized_pnl; })) : null,
-        max_trade_loss: losses.length ? Math.min.apply(null, losses.map(function (row) { return row.realized_pnl; })) : null,
+        gross_realized_pnl: closedTrades.reduce(function (total, row) { return total + row.gross_realized_pnl; }, 0),
+        gross_trade_win_rate: closedTrades.length ? grossWins.length / closedTrades.length : null,
+        gross_profit_factor: grossLoss < 0 ? grossProfit / Math.abs(grossLoss) : null,
+        net_realized_pnl: netMetricsComplete ? closedTrades.reduce(function (total, row) { return total + row.net_realized_pnl; }, 0) : null,
+        realized_pnl: netMetricsComplete ? closedTrades.reduce(function (total, row) { return total + row.net_realized_pnl; }, 0) : null,
+        trade_win_rate: netMetricsComplete ? wins.length / closedTrades.length : null,
+        profit_factor: netMetricsComplete && netLoss < 0 ? netProfit / Math.abs(netLoss) : null,
+        avg_win: netMetricsComplete && wins.length ? netProfit / wins.length : null,
+        avg_loss: netMetricsComplete && losses.length ? netLoss / losses.length : null,
+        max_trade_profit: netMetricsComplete && wins.length ? Math.max.apply(null, wins.map(function (row) { return row.net_realized_pnl; })) : null,
+        max_trade_loss: netMetricsComplete && losses.length ? Math.min.apply(null, losses.map(function (row) { return row.net_realized_pnl; })) : null,
         avg_holding_days: matchedQuantity ? weightedHoldingDays / matchedQuantity : null,
         unmatched_sell_count: unmatchedSells.length,
         unmatched_quantity: unmatchedSells.reduce(function (total, row) {
@@ -870,21 +1099,33 @@
     };
   }
 
-  function enrichPerformanceWithTradingCosts(performance, tradeReview, marketValueStats) {
+  function enrichPerformanceWithTradingCosts(performance, tradeReview, marketValueStats, navProvenance) {
     var kpis = performance.kpis || {};
     var totals = tradeReview.totals || {};
     var warnings = [];
     var avgMarketValue = marketValueStats.average;
+    navProvenance = navProvenance || {};
+    kpis.nav_return_basis = navProvenance.return_method || "unknown";
+    kpis.nav_gross_or_net = navProvenance.gross_or_net || "unknown";
+    kpis.nav_trade_fee_inclusion = navProvenance.trade_fee_inclusion || "unknown";
     kpis.average_portfolio_market_value = avgMarketValue;
     kpis.turnover_ratio = finite(avgMarketValue) && avgMarketValue > 0 ? (totals.trade_amount || 0) / avgMarketValue : null;
-    kpis.fee_drag_on_nav = finite(avgMarketValue) && avgMarketValue > 0 ? (totals.fee || 0) / avgMarketValue : null;
+    var feesComplete = !totals.fee_unknown_count && finite(totals.fee);
+    kpis.fee_drag_on_nav = feesComplete && finite(avgMarketValue) && avgMarketValue > 0 ? totals.fee / avgMarketValue : null;
     var profitBase = finite(kpis.total_return) && finite(avgMarketValue) ? Math.abs(kpis.total_return * avgMarketValue) : null;
-    kpis.fee_drag_on_profit = profitBase && profitBase > 0 ? (totals.fee || 0) / profitBase : null;
-    kpis.fee_adjusted_total_return = finite(kpis.total_return) && finite(kpis.fee_drag_on_nav)
+    kpis.fee_drag_on_profit = feesComplete && profitBase && profitBase > 0 ? totals.fee / profitBase : null;
+    var secondaryAdjustmentAllowed = navProvenance.secondary_fee_adjustment_allowed === true && navProvenance.gross_or_net === "gross";
+    kpis.fee_adjusted_total_return = secondaryAdjustmentAllowed && finite(kpis.total_return) && finite(kpis.fee_drag_on_nav)
       ? kpis.total_return - kpis.fee_drag_on_nav
       : null;
     if (!finite(avgMarketValue) || avgMarketValue <= 0) {
       warnings.push("positions.csv 缺少可用 market_value，费用拖累和换手率无法按组合市值计算。");
+    }
+    if (tradeReview.available && !feesComplete) {
+      warnings.push("交易费用存在 unknown，费用后业绩指标保持 unavailable，不按 0 估算。");
+    }
+    if (!secondaryAdjustmentAllowed) {
+      warnings.push("NAV gross/net 或费用嵌入口径未明确，禁止再次从 TWR 扣减交易费用。");
     }
     return warnings;
   }
@@ -904,17 +1145,17 @@
     return map;
   }
 
-  function computeCorrelationMatrix(seriesItems) {
+  function computeCorrelationMatrix(seriesItems, tradingCalendar) {
     var matrix = [];
     seriesItems.forEach(function (rowItem) {
-      var rowStats = seriesStats(rowItem.series);
+      var rowStats = seriesStats(rowItem.series, tradingCalendar);
       var row = {
         field: rowItem.field,
         label: rowItem.label,
         values: []
       };
       seriesItems.forEach(function (colItem) {
-        var colStats = seriesStats(colItem.series);
+        var colStats = seriesStats(colItem.series, tradingCalendar);
         var pairs = pairedReturns(rowStats.returns, colStats.returns);
         row.values.push({
           field: colItem.field,
@@ -930,7 +1171,7 @@
     return matrix;
   }
 
-  function computeBenchmarkComparison(navRows, benchmarks, mainField, selectedFields) {
+  function computeBenchmarkComparison(navRows, benchmarks, mainField, selectedFields, tradingCalendar) {
     var benchmarkMap = benchmarkByField(benchmarks);
     var availableFields = (benchmarks || []).map(function (benchmark) { return benchmark.field; });
     var benchmarkField = mainField || defaultBenchmarkField(benchmarks);
@@ -940,33 +1181,34 @@
     });
     if (!selected.length && !hasExplicitSelection) selected = availableFields.slice(0, 3);
 
-    var portfolioSeries = (navRows || []).map(function (row) {
+    var strictRows = strictSeriesPoints(navRows || [], tradingCalendar);
+    var portfolioSeries = strictRows.map(function (row) {
       return { date: row.date, dateObj: row.dateObj, value: row.portfolio_nav, field: "portfolio_nav", label: "Portfolio" };
     });
-    var portfolioStats = seriesStats(portfolioSeries);
+    var portfolioStats = seriesStats(portfolioSeries, tradingCalendar);
     var benchmarkSeriesMap = {};
     availableFields.forEach(function (field) {
       var label = benchmarkMap[field] ? benchmarkMap[field].label : field;
-      benchmarkSeriesMap[field] = forwardFillSeries(navRows, field, label);
+      benchmarkSeriesMap[field] = forwardFillSeries(strictRows, field, label);
     });
     var selectedBenchmarks = selected.map(function (field) {
       var meta = benchmarkMap[field] || { field: field, label: field };
       var series = benchmarkSeriesMap[field] || [];
-      var metrics = calculateBenchmarkMetrics(portfolioSeries, series);
+      var metrics = calculateBenchmarkMetrics(portfolioSeries, series, tradingCalendar);
       return {
         field: field,
         label: meta.label,
         isMain: field === benchmarkField,
         series: series,
-        returns: seriesStats(series).returns,
+        returns: seriesStats(series, tradingCalendar).returns,
         drawdown: calculateDrawdown(series),
-        excessSeries: calculateExcessNav(portfolioStats.returns, seriesStats(series).returns),
+        excessSeries: calculateExcessNav(portfolioStats.returns, seriesStats(series, tradingCalendar).returns),
         metrics: metrics
       };
     });
     var comparisonRows = availableFields.map(function (field) {
       var meta = benchmarkMap[field] || { field: field, label: field };
-      var metrics = calculateBenchmarkMetrics(portfolioSeries, benchmarkSeriesMap[field]);
+      var metrics = calculateBenchmarkMetrics(portfolioSeries, benchmarkSeriesMap[field], tradingCalendar);
       return Object.assign({
         field: field,
         name: meta.label,
@@ -1019,31 +1261,84 @@
       comparisonRows: comparisonRows,
       portfolioRow: portfolioRow,
       scatterRows: scatterRows,
-      correlationMatrix: computeCorrelationMatrix(matrixItems),
+      correlationMatrix: computeCorrelationMatrix(matrixItems, tradingCalendar),
       alignedSeries: alignSeriesByDate([{ field: "portfolio_nav", points: portfolioSeries }].concat(selectedBenchmarks.map(function (benchmark) {
         return { field: benchmark.field, points: benchmark.series };
       })))
     };
   }
 
+  function formalChartAnalysisCap(dataset) {
+    var contract = dataset && dataset.contract ? dataset.contract : {};
+    var blockers = Array.isArray(contract.blockers) ? contract.blockers : [];
+    var asOf = contract.as_of_matrix || {};
+    var hasFutureAsOfBlocker = blockers.some(function (blocker) {
+      return /_after_analysis_date$/.test(String(blocker || ""));
+    });
+    return hasFutureAsOfBlocker && /^\d{4}-\d{2}-\d{2}$/.test(String(asOf.analysis_trading_date || ""))
+      ? asOf.analysis_trading_date
+      : "";
+  }
+
   function computeDashboard(dataset, filters) {
     var startDate = filters.startDate || "";
     var endDate = filters.endDate || "";
+    var analysisCap = formalChartAnalysisCap(dataset);
+    var formalEndDate = analysisCap && (!endDate || analysisCap < endDate)
+      ? analysisCap
+      : endDate;
     var benchmarkField = filters.benchmarkField || defaultBenchmarkField(dataset.benchmarks || []);
-    var navRows = byDateRange(dataset.nav || [], startDate, endDate, "date");
+    var strictDatasetNav = strictSeriesPoints(
+      dataset.nav || [],
+      dataset.tradingCalendar
+    );
+    var navRows = byDateRange(strictDatasetNav, startDate, formalEndDate, "date");
+    var monthlyAnchor = null;
+    if (navRows.length) {
+      strictDatasetNav.forEach(function (row) {
+        if (row.date < navRows[0].date && (!monthlyAnchor || row.date > monthlyAnchor.date)) {
+          monthlyAnchor = row;
+        }
+      });
+    }
     var positions = byDateRange(dataset.positions || [], startDate, endDate, "date");
     var trades = byDateRange(dataset.trades || [], startDate, endDate, "trade_date");
-    var performance = computePerformance(navRows, benchmarkField);
+    var performance = computePerformance(
+      navRows,
+      benchmarkField,
+      monthlyAnchor,
+      dataset.tradingCalendar
+    );
     var attribution = computeAttribution(positions);
     var holdings = computeHoldings(positions);
+	if (performance.kpis) {
+	  performance.kpis.nav_exposure = holdings.navExposure;
+	  performance.kpis.equity_sleeve_weight = holdings.equitySleeveTotal;
+	  var latestNav = navRows.length ? navRows[navRows.length - 1] : null;
+	  performance.kpis.cash_weight = latestNav && finite(latestNav.cash_weight)
+	    ? latestNav.cash_weight
+	    : finite(holdings.navExposure) ? 1 - holdings.navExposure : null;
+	}
 	    var tradeReview = computeTrades(trades, { positions: dataset.positions || [] });
     var marketValueStats = computePortfolioMarketValueStats(positions);
-    var metricWarnings = enrichPerformanceWithTradingCosts(performance, tradeReview, marketValueStats);
+    var metricWarnings = enrichPerformanceWithTradingCosts(
+      performance,
+      tradeReview,
+      marketValueStats,
+      dataset.navReturnProvenance
+    );
+    if (analysisCap && formalEndDate === analysisCap) {
+      metricWarnings.push(
+        "formal NAV/benchmark charts capped at analysis_trading_date=" + analysisCap +
+        " because a future as-of blocker is active."
+      );
+    }
     var benchmarkComparison = computeBenchmarkComparison(
       navRows,
       dataset.benchmarks || [],
       benchmarkField,
-      filters.selectedBenchmarkFields
+      filters.selectedBenchmarkFields,
+      dataset.tradingCalendar
     );
     return {
       filters: filters,

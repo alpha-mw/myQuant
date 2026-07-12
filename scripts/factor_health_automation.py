@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Periodic health checks for governed mined factors.
 
-The default run is offline and report-only.  It reads the local mined-factor
-registry and uses approved registry evidence for legacy report-only
-classification.  It also runs a strict Parquet runtime smoke check.  Registry
-writes require an atomic strict-fresh batch plus ``--apply-registry-actions``.
+The run is offline and report-only. It reads the local mined-factor registry,
+uses approved registry evidence for classification, and runs a strict Parquet
+runtime smoke check. The retired ``--apply-registry-actions`` compatibility
+flag returns blocked and cannot write; FactorGovernanceProtocol v2 is the only
+production reconciliation authority.
 """
 
 from __future__ import annotations
@@ -36,13 +37,9 @@ from quant_investor.factors.governance import (  # noqa: E402
 )
 from quant_investor.factors.health import (  # noqa: E402
     active_failure_maturity_window_ids,
-    apply_health_decision,
     classify_factor_health,
 )
 from quant_investor.factors.registry_store import (  # noqa: E402
-    METADATA_ABSENT,
-    FactorRegistryStoreError,
-    apply_factor_record_patch,
     load_registry_snapshot_strict,
 )
 from quant_investor.factors.runtime import MinedFactorRegistry  # noqa: E402
@@ -81,8 +78,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--apply-registry-actions",
         action="store_true",
         help=(
-            "Apply conservative de-risking actions such as metadata updates, "
-            "weight reduction, or deprecation."
+            "Retired compatibility flag. The run remains report-only and "
+            "returns blocked; use daily_factor_mining_automation.py with the "
+            "three explicit FactorGovernanceProtocol v2 apply arguments."
         ),
     )
     parser.add_argument(
@@ -273,53 +271,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         monitored_factor_count=len(monitored),
     )
     runtime_smoke_success = not runtime_smoke_blockers
-    registry_actions_eligible = bool(
-        args.apply_registry_actions
-        and fresh_atomic_success
-        and runtime_smoke_success
-    )
-    if registry_actions_eligible:
-        for factor, decision, row in zip(
-            monitored,
-            decisions,
-            decision_rows,
-        ):
-            apply_health_decision(
-                factor,
-                decision,
-                reviewed_at=timestamp,
-                report_path=str(md_path),
-            )
-            evidence_end_date = str(
-                row.get("evidence_end_date", "") or ""
-            ).strip()
-            if decision.status.value != "data_blocked" and evidence_end_date:
-                monitor = dict(
-                    (factor.metadata or {}).get("health_monitor", {}) or {}
-                )
-                monitor["last_alpha_evidence_end_date"] = evidence_end_date
-                factor.metadata = {
-                    **dict(factor.metadata or {}),
-                    "health_monitor": monitor,
-                }
+    legacy_apply_requested = bool(args.apply_registry_actions)
+    # FactorGovernanceProtocol v2 is the only production reconciliation
+    # authority. Keep the legacy option observable but permanently incapable of
+    # mutating records, even when its old fresh/runtime preconditions pass.
+    registry_actions_eligible = False
     status_counts = Counter(decision.status.value for decision in decisions)
     action_counts = Counter(decision.action.value for decision in decisions)
     evaluation_source_counts = Counter(
         str(row.get("evaluation_source", "missing")) for row in decision_rows
     )
     evidence_age_summary = _evidence_age_summary(decision_rows)
-    run_blocked = bool(
+    run_blocked = legacy_apply_requested or bool(
         args.strict_fresh_evaluation
         and (not fresh_atomic_success or not runtime_smoke_success)
     )
     registry_actions_applied = False
     registry_update_status = (
-        "pending"
-        if registry_actions_eligible
-        else "blocked_fresh_evaluation"
-        if args.apply_registry_actions and not fresh_atomic_success
-        else "blocked_runtime_smoke"
-        if args.apply_registry_actions and not runtime_smoke_success
+        "retired_protocol_v2_required"
+        if legacy_apply_requested
         else "not_requested"
     )
     promotion_blockers = []
@@ -377,87 +347,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         "runtime_smoke_success": runtime_smoke_success,
         "registry_mutation_manifest": None,
         "registry_mutation_manifest_path": "",
-        "registry_blockers": [],
+        "registry_blockers": (
+            [
+                "legacy_apply_registry_actions_retired_use_"
+                "factor_governance_protocol_v2"
+            ]
+            if legacy_apply_requested
+            else []
+        ),
     }
-    mutation_path = (
-        output_dir / f"registry_mutation_{timestamp.replace(':', '')}.json"
-        if registry_actions_eligible
-        else None
-    )
-    if mutation_path is not None:
-        payload["registry_mutation_manifest_path"] = str(mutation_path)
-
     json_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default) + "\n",
         encoding="utf-8",
     )
     md_path.write_text(render_markdown(payload), encoding="utf-8")
-
-    if registry_actions_eligible:
-        metadata_updates = {
-            "last_factor_health_review_at": timestamp,
-            "last_factor_health_report_json": str(json_path),
-            "last_factor_health_report_markdown": str(md_path),
-            "last_factor_health_action_counts": dict(action_counts),
-        }
-        metadata_updates = {
-            key: value
-            for key, value in metadata_updates.items()
-            if registry_snapshot.metadata_payload.get(key, METADATA_ABSENT)
-            != value
-        }
-        try:
-            mutation_manifest = apply_factor_record_patch(
-                registry_path,
-                {
-                    factor.name: {
-                        **registry_snapshot.record_payloads[factor.name],
-                        **factor.to_dict(),
-                    }
-                    for factor in monitored
-                },
-                expected_registry_sha256=(
-                    registry_snapshot.registry_sha256
-                ),
-                expected_record_sha256s={
-                    factor.name: registry_snapshot.record_sha256s[factor.name]
-                    for factor in monitored
-                },
-                metadata_updates=metadata_updates,
-                expected_metadata_values={
-                    key: registry_snapshot.metadata_payload.get(
-                        key,
-                        METADATA_ABSENT,
-                    )
-                    for key in metadata_updates
-                },
-                mutation_id=f"factor-health:{timestamp}",
-                reason="strict-fresh governed factor health actions",
-                journal_path=mutation_path,
-                write=True,
-            )
-        except (FactorRegistryStoreError, OSError) as exc:
-            blocker = f"registry_store_blocked:{exc}"
-            payload["registry_update_status"] = "blocked_registry_store"
-            payload["registry_blockers"] = [blocker]
-            payload["run_status"] = "blocked"
-            run_blocked = True
-        else:
-            payload["registry_actions_applied"] = True
-            payload["registry_update_status"] = "applied"
-            payload["registry_mutation_manifest"] = mutation_manifest
-
-        json_path.write_text(
-            json.dumps(
-                payload,
-                ensure_ascii=False,
-                indent=2,
-                default=_json_default,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        md_path.write_text(render_markdown(payload), encoding="utf-8")
 
     print(f"report_json={json_path}")
     print(f"report_markdown={md_path}")

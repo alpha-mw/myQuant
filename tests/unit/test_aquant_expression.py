@@ -11,7 +11,11 @@ from quant_investor.factors.aquant_expression import (
 )
 from quant_investor.factors.governance import FactorLifecycleState, FactorRecord, GateResult
 from quant_investor.factors.pit_fundamentals import PIT_COLUMNS, write_fundamental_pit_series
-from quant_investor.factors.runtime import MinedFactorRegistry, score_with_mined_factors
+from quant_investor.factors.runtime import (
+    MinedFactorRegistry,
+    REPORT_ONLY_SHADOW_RUNTIME_MODE,
+    score_with_mined_factors,
+)
 from quant_investor.market.fundamental_mart import write_fundamental_mart
 
 
@@ -211,7 +215,9 @@ def test_runtime_route_consumes_only_production_aquant_expression(tmp_path):
     )
 
     result = score_with_mined_factors(
-        _frames(), registry=MinedFactorRegistry.from_records([production, paper])
+        _frames(),
+        registry=MinedFactorRegistry.from_records([production, paper]),
+        runtime_mode=REPORT_ONLY_SHADOW_RUNTIME_MODE,
     )
 
     assert result.factor_count == 1

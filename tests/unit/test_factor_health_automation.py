@@ -19,7 +19,6 @@ from quant_investor.factors.health import (
     apply_health_decision,
     classify_factor_health,
 )
-from quant_investor.factors.registry_store import FactorRegistryConflictError
 from quant_investor.factors.runtime import MinedFactorRegistry
 from scripts import factor_health_automation
 
@@ -401,7 +400,10 @@ def test_strict_fresh_incomplete_batch_blocks_without_registry_fallback(
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["run_status"] == "blocked"
     assert payload["registry_actions_applied"] is False
-    assert payload["registry_update_status"] == "blocked_fresh_evaluation"
+    assert payload["registry_update_status"] == "retired_protocol_v2_required"
+    assert payload["registry_blockers"] == [
+        "legacy_apply_registry_actions_retired_use_factor_governance_protocol_v2"
+    ]
     assert payload["fresh_evaluation"]["atomic_success"] is False
     assert payload["fresh_evaluation"]["missing_factors"] == [record.name]
     assert payload["fresh_evaluation"]["data_blocked_factors"] == [record.name]
@@ -661,7 +663,7 @@ def test_alternating_failure_windows_are_counted_only_once(
                 "--apply-registry-actions",
             ]
         )
-        assert exit_code == 0
+        assert exit_code == 2
         payload = json.loads(
             next(output_dir.glob("factor_health_*.json")).read_text(
                 encoding="utf-8"
@@ -673,11 +675,9 @@ def test_alternating_failure_windows_are_counted_only_once(
         observed_actions.append(payload["decisions"][0]["action"])
 
     written = json.loads(registry_path.read_text(encoding="utf-8"))
-    monitor = written["factors"][0]["metadata"]["health_monitor"]
-    assert observed_counts == [1, 2, 2]
-    assert observed_actions == ["watchlist", "reduce_weight", "observe"]
-    assert monitor["consecutive_failures"] == 2
-    assert monitor["active_failure_maturity_window_ids"] == ["w1", "w2"]
+    assert observed_counts == [1, 1, 1]
+    assert observed_actions == ["watchlist", "watchlist", "watchlist"]
+    assert "health_monitor" not in written["factors"][0]["metadata"]
 
 
 def test_old_healthy_evidence_cannot_reset_newer_failure_streak(
@@ -829,7 +829,7 @@ def test_strict_fresh_incomplete_gate_set_blocks_registry_write(
             encoding="utf-8"
         )
     )
-    assert payload["registry_update_status"] == "blocked_fresh_evaluation"
+    assert payload["registry_update_status"] == "retired_protocol_v2_required"
     assert any(
         "gate_ids_expected_1_to_8" in blocker
         for blocker in payload["fresh_evaluation"]["blockers"]
@@ -884,7 +884,7 @@ def test_leave_one_out_composite_removes_candidate_self_inclusion():
     pd.testing.assert_frame_equal(leave_one_out, expected)
 
 
-def test_strict_fresh_apply_uses_atomic_store_and_saves_manifest(
+def test_retired_health_apply_flag_is_report_only_and_never_writes_manifest(
     monkeypatch,
     tmp_path,
 ):
@@ -936,27 +936,19 @@ def test_strict_fresh_apply_uses_atomic_store_and_saves_manifest(
         ]
     )
 
-    assert exit_code == 0
+    assert exit_code == 2
     report = next(output_dir.glob("factor_health_*.json"))
     payload = json.loads(report.read_text(encoding="utf-8"))
-    mutation_path = Path(payload["registry_mutation_manifest_path"])
-    assert payload["registry_actions_applied"] is True
-    assert payload["registry_update_status"] == "applied"
-    assert payload["registry_mutation_manifest"]["status"] == "applied"
-    assert mutation_path.exists()
-    mutation = json.loads(mutation_path.read_text(encoding="utf-8"))
-    assert mutation["before_registry_sha256"] != mutation[
-        "after_registry_sha256"
-    ]
+    assert payload["registry_actions_applied"] is False
+    assert payload["registry_actions_eligible"] is False
+    assert payload["registry_update_status"] == "retired_protocol_v2_required"
+    assert payload["registry_mutation_manifest"] is None
+    assert payload["registry_mutation_manifest_path"] == ""
     written = json.loads(registry_path.read_text(encoding="utf-8"))
-    assert written["metadata"]["last_factor_health_review_at"]
-    assert written["factors"][0]["metadata"]["health_monitor"]["history"]
-    assert written["factors"][0]["metadata"]["health_monitor"][
-        "last_alpha_evidence_end_date"
-    ] == "2026-06-30"
+    assert written == before
 
 
-def test_strict_fresh_apply_cas_failure_leaves_registry_unchanged(
+def test_retired_health_apply_never_reaches_legacy_cas_writer(
     monkeypatch,
     tmp_path,
 ):
@@ -997,14 +989,7 @@ def test_strict_fresh_apply_cas_failure_leaves_registry_unchanged(
         },
     )
 
-    def raise_conflict(*_args, **_kwargs):
-        raise FactorRegistryConflictError("fixture CAS conflict")
-
-    monkeypatch.setattr(
-        factor_health_automation,
-        "apply_factor_record_patch",
-        raise_conflict,
-    )
+    assert not hasattr(factor_health_automation, "apply_factor_record_patch")
     output_dir = tmp_path / "reports"
 
     exit_code = factor_health_automation.main(
@@ -1024,9 +1009,9 @@ def test_strict_fresh_apply_cas_failure_leaves_registry_unchanged(
     report = next(output_dir.glob("factor_health_*.json"))
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["registry_actions_applied"] is False
-    assert payload["registry_update_status"] == "blocked_registry_store"
+    assert payload["registry_update_status"] == "retired_protocol_v2_required"
     assert payload["registry_blockers"] == [
-        "registry_store_blocked:fixture CAS conflict"
+        "legacy_apply_registry_actions_retired_use_factor_governance_protocol_v2"
     ]
 
 
@@ -1091,7 +1076,7 @@ def test_strict_runtime_smoke_failure_blocks_apply_and_report_only(
     payload = json.loads(apply_report.read_text(encoding="utf-8"))
     assert payload["registry_actions_applied"] is False
     assert payload["registry_actions_eligible"] is False
-    assert payload["registry_update_status"] == "blocked_runtime_smoke"
+    assert payload["registry_update_status"] == "retired_protocol_v2_required"
     assert payload["run_status"] == "blocked"
     assert "runtime_smoke_snapshot_unhealthy" in payload[
         "runtime_smoke_blockers"

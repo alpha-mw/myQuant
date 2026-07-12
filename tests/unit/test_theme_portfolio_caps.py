@@ -14,6 +14,8 @@ def _context_with_theme_rotation(
     symbol_phase: dict[str, str] | None = None,
     symbol_risk_flags: dict[str, list[str]] | None = None,
     theme_scores: dict[str, dict[str, object]] | None = None,
+    symbol_theme_memberships: dict[str, list[str]] | None = None,
+    protocol_v2: dict[str, object] | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         metadata={
@@ -25,7 +27,9 @@ def _context_with_theme_rotation(
                 "symbol_primary_theme": symbol_primary_theme or {},
                 "symbol_phase": symbol_phase or {},
                 "symbol_risk_flags": symbol_risk_flags or {},
+                "symbol_theme_memberships": symbol_theme_memberships or {},
                 "theme_scores": theme_scores or {},
+                "protocol_v2": protocol_v2 or {},
                 "top_themes": [],
             }
         }
@@ -137,3 +141,193 @@ def test_build_theme_portfolio_constraints_malformed_safe() -> None:
     assert result["theme_exposure_map"] == {}
     assert result["theme_caps"] == {}
     assert "theme_portfolio_cap_no_theme_data" in result["diagnostic_notes"]
+
+
+def test_build_theme_portfolio_constraints_exposes_executable_tactical_lane() -> None:
+    protocol = {
+        "status": "formal",
+        "formal_enabled": True,
+        "formal_kill_switch": False,
+        "protocol_hash": "a" * 64,
+        "as_of": "2026-07-10",
+        "prequalified_pool": ["tech::ai", "tactical::gold"],
+        "tactical_lane_cap": {
+            "regime": "震荡低波",
+            "non_tech_nav_cap": 0.10,
+            "non_tech_max_positions": 1,
+            "enabled": True,
+        },
+        "states": {
+            "tech::ai": {"mandate": "technology"},
+            "tactical::gold": {"mandate": "tactical"},
+        },
+    }
+    context = _context_with_theme_rotation(
+        symbol_scores={"TECH": 0.9, "GOLD": 0.8},
+        symbol_primary_theme={
+            "TECH": "tech::ai",
+            "GOLD": "tactical::gold",
+        },
+        symbol_theme_memberships={
+            "TECH": ["tech::ai"],
+            "GOLD": ["tactical::gold"],
+        },
+        symbol_phase={"TECH": "confirmed_rotation", "GOLD": "confirmed_rotation"},
+        symbol_risk_flags={"TECH": [], "GOLD": []},
+        theme_scores={
+            "tech::ai": {"theme_name": "AI"},
+            "tactical::gold": {"theme_name": "Gold"},
+        },
+        protocol_v2=protocol,
+    )
+    context.metadata["theme_rotation"]["symbol_theme_membership_details"] = {
+        "TECH": [
+            {
+                "schema_version": "theme_membership.v2",
+                "membership_id": "tech",
+                "theme_id": "tech::ai",
+                "theme_name": "AI",
+                "theme_type": "technology",
+                "symbol": "TECH",
+                "effective_from": "2026-01-01",
+                "available_at": "2026-07-01",
+                "confidence": 0.9,
+            }
+        ],
+        "GOLD": [
+            {
+                "schema_version": "theme_membership.v2",
+                "membership_id": "gold",
+                "theme_id": "tactical::gold",
+                "theme_name": "Gold",
+                "theme_type": "concept",
+                "symbol": "GOLD",
+                "effective_from": "2026-01-01",
+                "available_at": "2026-07-01",
+                "confidence": 0.9,
+            }
+        ],
+    }
+
+    result = build_theme_portfolio_constraints(
+        global_context=context,
+        symbols=["TECH", "GOLD"],
+        enabled=True,
+    )
+
+    tactical = result["theme_tactical_lane"]
+    assert tactical["enabled"] is True
+    assert tactical["status"] == "active"
+    assert tactical["regime"] == "震荡低波"
+    assert tactical["non_tech_symbols"] == ["GOLD"]
+    assert tactical["nav_cap"] == pytest.approx(0.10)
+    assert tactical["max_positions"] == 1
+    assert tactical["protocol_hash"] == "a" * 64
+
+
+def test_tactical_lane_downtrend_remains_enforced_while_channel_is_closed() -> None:
+    protocol = {
+        "status": "formal",
+        "formal_enabled": True,
+        "formal_kill_switch": False,
+        "protocol_hash": "b" * 64,
+        "tactical_lane_cap": {
+            "regime": "趋势下跌",
+            "non_tech_nav_cap": 0.0,
+            "non_tech_max_positions": 0,
+            "enabled": False,
+        },
+        "states": {"tactical::gold": {"mandate": "tactical"}},
+    }
+    context = _context_with_theme_rotation(
+        symbol_scores={"GOLD": 0.8},
+        symbol_primary_theme={"GOLD": "tactical::gold"},
+        symbol_theme_memberships={"GOLD": ["tactical::gold"]},
+        symbol_phase={"GOLD": "confirmed_rotation"},
+        symbol_risk_flags={"GOLD": []},
+        theme_scores={"tactical::gold": {"theme_name": "Gold"}},
+        protocol_v2=protocol,
+    )
+
+    tactical = build_theme_portfolio_constraints(
+        global_context=context,
+        symbols=["GOLD"],
+        enabled=True,
+    )["theme_tactical_lane"]
+
+    assert tactical["enabled"] is True
+    assert tactical["channel_open"] is False
+    assert tactical["status"] == "closed_by_markov"
+    assert tactical["nav_cap"] == 0.0
+    assert tactical["max_positions"] == 0
+    assert tactical["non_tech_symbols"] == ["GOLD"]
+
+
+def test_prequalified_tactical_classification_ignores_unadmitted_tech_secondary() -> None:
+    protocol = {
+        "status": "prequalified",
+        "formal_enabled": True,
+        "formal_kill_switch": False,
+        "protocol_hash": "c" * 64,
+        "as_of": "2026-07-10",
+        "prequalified_pool": ["tactical::gold"],
+        "tactical_lane_cap": {
+            "regime": "趋势上涨",
+            "non_tech_nav_cap": 0.15,
+            "non_tech_max_positions": 2,
+            "enabled": True,
+        },
+        "states": {
+            "tactical::gold": {"mandate": "tactical"},
+            "tech::ai": {"mandate": "technology"},
+        },
+    }
+    context = _context_with_theme_rotation(
+        symbol_scores={"MIXED": 0.8},
+        symbol_primary_theme={"MIXED": "tactical::gold"},
+        symbol_theme_memberships={"MIXED": ["tactical::gold", "tech::ai"]},
+        symbol_phase={"MIXED": "confirmed_rotation"},
+        symbol_risk_flags={"MIXED": []},
+        theme_scores={
+            "tactical::gold": {"theme_name": "Gold"},
+            "tech::ai": {"theme_name": "AI"},
+        },
+        protocol_v2=protocol,
+    )
+    context.metadata["theme_rotation"]["symbol_theme_membership_details"] = {
+        "MIXED": [
+            {
+                "schema_version": "theme_membership.v2",
+                "membership_id": "gold",
+                "theme_id": "tactical::gold",
+                "theme_name": "Gold",
+                "theme_type": "concept",
+                "symbol": "MIXED",
+                "effective_from": "2026-01-01",
+                "available_at": "2026-07-01",
+                "confidence": 0.9,
+            },
+            {
+                "schema_version": "theme_membership.v2",
+                "membership_id": "ai",
+                "theme_id": "tech::ai",
+                "theme_name": "AI",
+                "theme_type": "technology",
+                "symbol": "MIXED",
+                "effective_from": "2026-01-01",
+                "available_at": "2026-07-01",
+                "confidence": 0.9,
+            },
+        ]
+    }
+
+    tactical = build_theme_portfolio_constraints(
+        global_context=context,
+        symbols=["MIXED"],
+        enabled=True,
+    )["theme_tactical_lane"]
+
+    assert tactical["enabled"] is True
+    assert tactical["status"] == "active"
+    assert tactical["non_tech_symbols"] == ["MIXED"]
+    assert tactical["source"] == "prospective_prequalified_pit_memberships"

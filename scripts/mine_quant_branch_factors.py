@@ -31,14 +31,13 @@ from quant_investor.factors.pit_fundamentals import (  # noqa: E402
 from quant_investor.factors.governance import (  # noqa: E402
     FactorAdmissionDecision,
     FactorLifecycleState,
-    FactorRecord,
-    GateResult,
 )
 from quant_investor.factors.registry_store import (  # noqa: E402
-    METADATA_ABSENT,
-    FactorRegistryStoreError,
-    apply_factor_record_patch,
     load_registry_snapshot_strict,
+)
+from quant_investor.factors.governance_protocol_v2 import (  # noqa: E402
+    FDR_Q,
+    benjamini_hochberg_by_family,
 )
 from scripts.retest_aquant_alpha_mix_8gate import (  # noqa: E402
     _failed_gate_ids,
@@ -55,7 +54,6 @@ from scripts.retest_aquant_alpha_mix_8gate import (  # noqa: E402
 
 DEFAULT_UNIVERSES = ("full_a",)
 DEFAULT_REGISTRY_PATH = "quant_investor/factor_registry/mined_factors.json"
-DEFAULT_PRODUCTION_FACTOR_WEIGHT = 0.05
 
 
 @dataclass(frozen=True)
@@ -347,7 +345,9 @@ def _auto_analysis_start_date(
         if maximum_observable >= 20
         else max(1, int(np.ceil(maximum_observable * 0.60)))
     )
-    coverage = valid_mask.sum(axis=1).div(observable_count.replace(0.0, np.nan))
+    coverage = valid_mask.sum(axis=1).div(
+        observable_count.replace(0.0, np.nan)
+    )
     ready = coverage[
         (coverage >= float(min_price_coverage))
         & (observable_count >= minimum_cross_section)
@@ -394,10 +394,6 @@ def restrict_context_to_analysis_window(
             ],
             existing_composite=existing,
             existing_blocker=context.existing_blocker,
-            sector_by_symbol=dict(context.sector_by_symbol),
-            size_bucket_by_symbol=dict(context.size_bucket_by_symbol),
-            size_bucket_by_date=context.size_bucket_by_date.reindex(dates),
-            exposure_metadata=dict(context.exposure_metadata),
         ),
         start.strftime("%Y-%m-%d"),
     )
@@ -429,10 +425,6 @@ def _restrict_context_from_start(
         ],
         existing_composite=existing,
         existing_blocker=context.existing_blocker,
-        sector_by_symbol=dict(context.sector_by_symbol),
-        size_bucket_by_symbol=dict(context.size_bucket_by_symbol),
-        size_bucket_by_date=context.size_bucket_by_date.reindex(dates),
-        exposure_metadata=dict(context.exposure_metadata),
     )
 
 
@@ -1352,6 +1344,46 @@ def _set_parameter_stability(results: list[dict[str, Any]]) -> None:
         item["summary"] = review.summary
 
 
+def _set_family_fdr(results: list[dict[str, Any]]) -> None:
+    """Attach family-scoped BH evidence from the actually computed RankIC p-value."""
+
+    rows = []
+    for item in results:
+        metrics = dict(item.get("metrics", {}) or {})
+        rows.append(
+            {
+                "name": str(item.get("name", "")),
+                "family": str(item.get("family", "") or "unknown"),
+                "p_value": _safe_float(metrics.get("rank_ic_p_value"), 1.0),
+            }
+        )
+    adjusted = {
+        row["name"]: row
+        for row in benjamini_hochberg_by_family(rows, q=FDR_Q)
+    }
+    for item in results:
+        evidence = adjusted[str(item.get("name", ""))]
+        metrics = dict(item.get("metrics", {}) or {})
+        metrics.update(
+            {
+                "family_fdr_method": evidence["fdr_method"],
+                "family_fdr_q": evidence["bh_q"],
+                "family_fdr_q_value": evidence["bh_q_value"],
+                "family_fdr_passed": evidence["fdr_passed"],
+                "family_test_count": evidence["bh_family_test_count"],
+            }
+        )
+        review = evaluate_with_myquant_gate(str(item["name"]), metrics)
+        item["metrics"] = metrics
+        item["decision"] = review.decision.value
+        item["target_state"] = review.target_state.value
+        item["gates_passed"] = len(_passed_gate_ids(review))
+        item["passed_gate_ids"] = _passed_gate_ids(review)
+        item["failed_gate_ids"] = _failed_gate_ids(review)
+        item["gate_results"] = _gate_rows(review)
+        item["summary"] = review.summary
+
+
 def _alpha_champion_key(item: Mapping[str, Any]) -> tuple[Any, ...]:
     metrics = dict(item.get("metrics", {}) or {})
     return (
@@ -1657,142 +1689,17 @@ def _load_source_notes(path_text: str) -> list[dict[str, Any]]:
     return []
 
 
-def _record_from_result(
-    result: Mapping[str, Any],
-    *,
-    run_timestamp: str,
-    run_id: str,
-    report_path: str,
-    owner: str,
-    source_notes: Sequence[Mapping[str, Any]],
-    horizon_days: int,
-) -> FactorRecord:
-    metrics = dict(result.get("metrics", {}) or {})
-    metadata = {
-        "source_report": report_path,
-        "registry_write_source": "daily_factor_mining_automation",
-        "registry_write_run_id": run_id,
-        "registry_write_at": run_timestamp,
-        "effective_analysis_start_date": result.get(
-            "effective_analysis_start_date", ""
-        ),
-        "expression": result.get("expression", ""),
-        "params": dict(result.get("params", {}) or {}),
-        "primitive_lineage": list(result.get("primitive_lineage", []) or []),
-        "primitive_contributions": dict(
-            result.get("primitive_contributions", {}) or {}
-        ),
-        "dominant_primitives": list(
-            result.get("dominant_primitives", []) or []
-        ),
-        "diversity_selection": dict(
-            result.get("diversity_selection", {}) or {}
-        ),
-        "source_notes": [dict(item) for item in source_notes],
-        "manual_promotion_required": True,
-        "runtime_effect": "none_until_manual_production_factor_promotion",
-    }
-    return FactorRecord(
-        name=str(result.get("name", "")).strip(),
-        version="v" + run_timestamp[:10].replace("-", ""),
-        state=FactorLifecycleState.PRODUCTION_CANDIDATE,
-        category=str(result.get("category", "custom") or "custom"),
-        implementation=str(result.get("implementation", "") or ""),
-        weight=0.0,
-        direction=1.0,
-        horizon_days=int(metrics.get("horizon_days") or horizon_days),
-        owner=owner,
-        description=str(result.get("description", "") or ""),
-        tags=[
-            "daily_factor_mining",
-            str(result.get("family", "") or "unknown_family"),
-            str(result.get("category", "") or "custom"),
-        ],
-        gate_results=[
-            GateResult.from_dict(item)
-            for item in result.get("gate_results", [])
-            if isinstance(item, Mapping)
-        ],
-        metrics=metrics,
-        admission_decision=FactorAdmissionDecision.PRODUCTION_CANDIDATE,
-        metadata=metadata,
-    )
-
-
-def _production_candidate_gate_blocker(
-    result: Mapping[str, Any],
-) -> str:
-    gate_results = result.get("gate_results")
-    if not isinstance(gate_results, list):
-        return "gate_results_not_list"
-    gate_ids: list[int] = []
-    for gate in gate_results:
-        if not isinstance(gate, Mapping):
-            return "gate_result_not_object"
-        try:
-            gate_ids.append(int(gate.get("gate_id", 0) or 0))
-        except (TypeError, ValueError):
-            return "gate_id_invalid"
-        if gate.get("passed") is not True:
-            return f"gate_{gate_ids[-1]}_not_passed"
-    if sorted(gate_ids) != list(range(1, 9)):
-        return "gate_ids_not_exactly_1_to_8"
-    return ""
-
-
-def _production_candidate_diversity_blocker(
-    result: Mapping[str, Any],
-    *,
-    policy: CandidateDiversityPolicy = DEFAULT_DIVERSITY_POLICY,
-) -> str:
-    if result.get("runtime_write_eligible") is not True:
-        return "runtime_write_ineligible"
-    if result.get("lineage_extraction_status") != "complete":
-        return "lineage_evidence_missing"
-    if not result.get("dominant_primitives"):
-        return "dominant_primitive_missing"
-    selection = result.get("diversity_selection")
-    if not isinstance(selection, Mapping):
-        return "diversity_selection_missing"
-    if selection.get("policy_version") != policy.version:
-        return "diversity_policy_version_mismatch"
-    if selection.get("policy_hash") != policy.policy_hash:
-        return "diversity_policy_hash_mismatch"
-    if selection.get("final_registry_write_eligible") is not True:
-        return str(selection.get("skip_reason") or "not_diversity_champion")
-    if selection.get("status") not in {
-        "champion",
-        "champion_not_applicable_single_candidate",
-    }:
-        return "diversity_status_not_champion"
-    return ""
-
-
-def _production_positive_evidence_blocker(
-    result: Mapping[str, Any],
-) -> str:
-    metrics = dict(result.get("metrics", {}) or {})
-    positive_fields = (
-        "mean_rankic",
-        "top_bottom_spread",
-        "top_quantile_return",
-        "cost_adjusted_return",
-        "master_return_delta",
-        "sharpe_delta",
-    )
-    values = [_safe_float(metrics.get(key), float("nan")) for key in positive_fields]
-    if not any(np.isfinite(value) and value > 0.0 for value in values):
-        return "positive_evidence_missing"
-    return ""
-
-
 def _production_market_evidence_blocker(
     *,
     universes: Sequence[str],
     market_evidence: Mapping[str, Any],
 ) -> str:
+    """Validate strict full-A evidence before any future governed apply."""
+
     normalized = [
-        str(item or "").strip().lower() for item in universes if str(item or "").strip()
+        str(item or "").strip().lower()
+        for item in universes
+        if str(item or "").strip()
     ]
     if normalized != ["full_a"]:
         return "production_universe_not_exact_full_a"
@@ -1824,27 +1731,15 @@ def _production_market_evidence_blocker(
         "same_trade_date_total_mv_then_asof_total_share_times_close"
     ):
         return "factor_exposure_size_policy_mismatch"
-    if (
-        float(exposure.get("evaluation_date_coverage_ratio", 0.0) or 0.0)
-        < 0.95
-    ):
+    if float(exposure.get("evaluation_date_coverage_ratio", 0.0) or 0.0) < 0.95:
         return "factor_exposure_date_coverage_below_95pct"
-    if (
-        float(exposure.get("min_cross_section_coverage_ratio", 0.0) or 0.0)
-        < 0.95
-    ):
+    if float(exposure.get("min_cross_section_coverage_ratio", 0.0) or 0.0) < 0.95:
         return "factor_exposure_cross_section_coverage_below_95pct"
-    if (
-        float(exposure.get("combined_size_pair_coverage_ratio", 0.0) or 0.0)
-        < 0.95
-    ):
+    if float(exposure.get("combined_size_pair_coverage_ratio", 0.0) or 0.0) < 0.95:
         return "factor_exposure_combined_size_coverage_below_95pct"
     if float(exposure.get("pit_size_pair_coverage_ratio", 0.0) or 0.0) < 0.60:
         return "factor_exposure_exact_pit_size_coverage_below_60pct"
-    if (
-        float(exposure.get("reconstructed_size_pair_ratio", 1.0) or 1.0)
-        > 0.35
-    ):
+    if float(exposure.get("reconstructed_size_pair_ratio", 1.0) or 1.0) > 0.35:
         return "factor_exposure_reconstruction_above_35pct"
     if exposure.get("share_reference_covers_evaluation_end") is not True:
         return "factor_exposure_share_reference_stale_for_evaluation"
@@ -1873,11 +1768,20 @@ def apply_production_candidate_registry_updates(
     journal_path: str | Path | None = None,
     write: bool = True,
 ) -> dict[str, Any]:
-    """Write qualified factors as zero-weight production candidates only."""
+    """Compatibility shim: direct mining writes are retired under protocol v2."""
 
+    del (
+        run_timestamp,
+        owner,
+        source_notes,
+        horizon_days,
+        journal_path,
+    )
     path = Path(registry_path).expanduser()
-    manifest: dict[str, Any] = {
-        "requested": bool(write),
+    snapshot = load_registry_snapshot_strict(path)
+    requested = bool(write)
+    return {
+        "requested": requested,
         "registry_path": str(path),
         "run_id": run_id,
         "source_report": report_path,
@@ -1889,250 +1793,38 @@ def apply_production_candidate_registry_updates(
         "diversity_skipped_factors": [],
         "written_count": 0,
         "updated_count": 0,
-        "skipped_count": 0,
+        "skipped_count": len(qualified_results) if requested else 0,
         "written_factors": [],
         "updated_factors": [],
-        "skipped_factors": [],
-        "registry_mutation_manifest": None,
-        "registry_mutation_manifest_path": (
-            str(Path(journal_path).expanduser()) if journal_path else ""
+        "skipped_factors": (
+            [
+                {
+                    "name": str(item.get("name", "") or ""),
+                    "reason": "direct_candidate_registry_write_retired",
+                }
+                for item in qualified_results
+            ]
+            if requested
+            else []
         ),
-        "before_registry_sha256": "",
-        "after_registry_sha256": "",
-        "status": "not_requested" if not write else "pending",
+        "registry_mutation_manifest": None,
+        "registry_mutation_manifest_path": "",
+        "before_registry_sha256": snapshot.registry_sha256,
+        "after_registry_sha256": snapshot.registry_sha256,
+        "status": "blocked" if requested else "report_only",
+        "fail_closed_reason": (
+            "direct_candidate_registry_write_retired_use_"
+            "factor_governance_protocol_v2"
+            if requested
+            else ""
+        ),
+        "replacement_command": (
+            "scripts/daily_factor_mining_automation.py "
+            "--apply-governed-transitions --protocol-version v2 "
+            "--expected-protocol-hash <hash> "
+            "--governed-evidence-json <canonical-evidence.json>"
+        ),
     }
-    if not write:
-        return manifest
-    if journal_path is None or not str(journal_path).strip():
-        raise ValueError("journal_path is required for registry writes")
-    if not qualified_results:
-        manifest["status"] = "no_qualified_candidates"
-        return manifest
-
-    hard_diversity_blockers: list[dict[str, str]] = []
-    champion_claims: list[Mapping[str, Any]] = []
-    for item in qualified_results:
-        selection = item.get("diversity_selection")
-        blocker = _production_candidate_diversity_blocker(item)
-        if not blocker:
-            champion_claims.append(item)
-            continue
-        if blocker == "same_family_redundant" and isinstance(
-            selection, Mapping
-        ):
-            continue
-        if (
-            blocker == "runtime_write_ineligible"
-            and isinstance(selection, Mapping)
-            and selection.get("status") == "runtime_ineligible"
-            and selection.get("skip_reason")
-            == "implementation_not_supported_by_runtime"
-        ):
-            continue
-        hard_diversity_blockers.append(
-            {"name": str(item.get("name", "")), "reason": blocker}
-        )
-    duplicate_claims: list[dict[str, str]] = []
-    for field, reason in (
-        ("family", "duplicate_family_champion"),
-        ("lineage_component_id", "duplicate_lineage_champion"),
-        ("correlation_cluster_id", "duplicate_correlation_cluster_champion"),
-    ):
-        seen: dict[str, str] = {}
-        for item in champion_claims:
-            selection = dict(item.get("diversity_selection", {}) or {})
-            value = (
-                str(item.get("family", ""))
-                if field == "family"
-                else str(selection.get(field, ""))
-            )
-            if not value:
-                continue
-            if value in seen:
-                duplicate_claims.append(
-                    {"name": str(item.get("name", "")), "reason": reason}
-                )
-            else:
-                seen[value] = str(item.get("name", ""))
-    if hard_diversity_blockers or duplicate_claims:
-        manifest["skipped_factors"] = [
-            *hard_diversity_blockers,
-            *duplicate_claims,
-        ]
-        manifest["diversity_skipped_factors"] = list(
-            manifest["skipped_factors"]
-        )
-        manifest["skipped_count"] = len(manifest["skipped_factors"])
-        manifest["status"] = "no_registry_changes"
-        manifest["fail_closed_reason"] = (
-            "diversity_batch_validation_failed"
-        )
-        return manifest
-
-    snapshot = load_registry_snapshot_strict(path)
-    registry = snapshot.registry
-    by_name = {factor.name: factor for factor in registry.factors}
-    changed = False
-    record_patches: dict[str, FactorRecord] = {}
-    expected_record_sha256s: dict[str, str | None] = {}
-    selected_count = 0
-    seen_families: set[str] = set()
-    seen_lineage_components: set[str] = set()
-    seen_correlation_clusters: set[str] = set()
-    for item in qualified_results:
-        name = str(item.get("name", "") or "").strip()
-        if not name:
-            manifest["skipped_factors"].append(
-                {"name": "", "reason": "missing_name"}
-            )
-            continue
-        if (
-            item.get("decision")
-            != FactorAdmissionDecision.PRODUCTION_CANDIDATE.value
-        ):
-            manifest["skipped_factors"].append(
-                {"name": name, "reason": f"decision={item.get('decision')}"}
-            )
-            continue
-        gate_blocker = _production_candidate_gate_blocker(item)
-        if gate_blocker:
-            manifest["skipped_factors"].append(
-                {"name": name, "reason": gate_blocker}
-            )
-            continue
-        diversity_blocker = _production_candidate_diversity_blocker(item)
-        if diversity_blocker:
-            skipped = {"name": name, "reason": diversity_blocker}
-            selection = item.get("diversity_selection")
-            if isinstance(selection, Mapping):
-                skipped["redundancy_stage"] = str(
-                    selection.get("redundancy_stage", "")
-                )
-                skipped["champion_name"] = str(
-                    selection.get("cluster_champion")
-                    or selection.get("lineage_champion")
-                    or selection.get("family_champion")
-                    or ""
-                )
-            manifest["skipped_factors"].append(skipped)
-            manifest["diversity_skipped_factors"].append(skipped)
-            continue
-        if selected_count >= max(int(max_candidates), 0):
-            skipped = {"name": name, "reason": "max_registry_candidates"}
-            manifest["skipped_factors"].append(skipped)
-            manifest["diversity_skipped_factors"].append(skipped)
-            continue
-        selection = dict(item.get("diversity_selection", {}) or {})
-        family = str(item.get("family", ""))
-        lineage_component = str(selection.get("lineage_component_id", ""))
-        correlation_cluster = str(
-            selection.get("correlation_cluster_id", "")
-        )
-        duplicate_reason = ""
-        if family in seen_families:
-            duplicate_reason = "duplicate_family_champion"
-        elif (
-            lineage_component
-            and lineage_component in seen_lineage_components
-        ):
-            duplicate_reason = "duplicate_lineage_champion"
-        elif (
-            correlation_cluster
-            and correlation_cluster in seen_correlation_clusters
-        ):
-            duplicate_reason = "duplicate_correlation_cluster_champion"
-        if duplicate_reason:
-            manifest["skipped_factors"].append(
-                {"name": name, "reason": duplicate_reason}
-            )
-            continue
-        existing = by_name.get(name)
-        if (
-            existing
-            and existing.state == FactorLifecycleState.PRODUCTION_FACTOR
-        ):
-            manifest["skipped_factors"].append(
-                {"name": name, "reason": "existing_production_factor"}
-            )
-            continue
-        record = _record_from_result(
-            item,
-            run_timestamp=run_timestamp,
-            run_id=run_id,
-            report_path=report_path,
-            owner=owner,
-            source_notes=source_notes,
-            horizon_days=horizon_days,
-        )
-        record_patches[name] = record
-        selected_count += 1
-        seen_families.add(family)
-        if lineage_component:
-            seen_lineage_components.add(lineage_component)
-        if correlation_cluster:
-            seen_correlation_clusters.add(correlation_cluster)
-        manifest["selected_champions"].append(name)
-        expected_record_sha256s[name] = snapshot.record_sha256s.get(name)
-        if existing:
-            manifest["updated_factors"].append(name)
-            manifest["updated_count"] += 1
-        else:
-            manifest["written_factors"].append(name)
-            manifest["written_count"] += 1
-        changed = True
-
-    manifest["skipped_count"] = len(manifest["skipped_factors"])
-    if changed:
-        metadata_updates = {
-            "last_daily_factor_mining_at": run_timestamp,
-            "last_daily_factor_mining_run_id": run_id,
-            "last_daily_factor_mining_report": report_path,
-            "last_daily_factor_mining_written": list(
-                manifest["written_factors"]
-            ),
-            "last_daily_factor_mining_updated": list(
-                manifest["updated_factors"]
-            ),
-            "daily_factor_mining_policy": (
-                "writes zero-weight production_candidate records only; "
-                "manual production_factor promotion required"
-            ),
-            "last_daily_factor_mining_diversity_policy_version": (
-                DEFAULT_DIVERSITY_POLICY.version
-            ),
-            "last_daily_factor_mining_diversity_policy_hash": (
-                DEFAULT_DIVERSITY_POLICY.policy_hash
-            ),
-        }
-        mutation_manifest = apply_factor_record_patch(
-            path,
-            record_patches,
-            expected_registry_sha256=snapshot.registry_sha256,
-            expected_record_sha256s=expected_record_sha256s,
-            metadata_updates=metadata_updates,
-            expected_metadata_values={
-                key: snapshot.metadata_payload.get(key, METADATA_ABSENT)
-                for key in metadata_updates
-            },
-            mutation_id=f"daily-factor-mining:{run_id}",
-            reason=(
-                "governed daily mining writes zero-weight "
-                "production_candidate records"
-            ),
-            journal_path=journal_path,
-            write=True,
-        )
-        manifest["registry_mutation_manifest"] = mutation_manifest
-        manifest["before_registry_sha256"] = mutation_manifest[
-            "before_registry_sha256"
-        ]
-        manifest["after_registry_sha256"] = mutation_manifest[
-            "after_registry_sha256"
-        ]
-        manifest["status"] = "updated"
-    else:
-        manifest["status"] = "no_registry_changes"
-    return manifest
 
 
 def build_legacy_candidate_redundancy_audit(
@@ -2236,301 +1928,34 @@ def apply_production_family_governance(
     run_id: str,
     report_path: str,
     journal_path: str | Path,
-    universes: Sequence[str],
-    market_evidence: Mapping[str, Any],
-    owner: str,
-    source_notes: Sequence[Mapping[str, Any]] = (),
-    horizon_days: int = 30,
-    max_champions: int = 5,
-    production_weight: float = DEFAULT_PRODUCTION_FACTOR_WEIGHT,
     write: bool = True,
 ) -> dict[str, Any]:
-    """Atomically reconcile current full-A champions into production."""
+    """Retired bulk reconciler retained as a fail-closed compatibility shim.
 
-    path = Path(registry_path).expanduser()
-    snapshot = load_registry_snapshot_strict(path)
-    active = [
-        record
-        for record in snapshot.registry.factors
-        if record.state == FactorLifecycleState.PRODUCTION_FACTOR
-    ]
-    by_name = {record.name: record for record in snapshot.registry.factors}
-    result_names = [str(item.get("name", "")).strip() for item in results]
-    duplicate_names = sorted(
-        {name for name in result_names if name and result_names.count(name) > 1}
-    )
-    by_result = {
-        str(item.get("name", "")).strip(): item
-        for item in results
-        if str(item.get("name", "")).strip()
-    }
-    market_blocker = _production_market_evidence_blocker(
-        universes=universes,
-        market_evidence=market_evidence,
-    )
-    report_file = Path(report_path).expanduser()
-    report_payload: Mapping[str, Any] = {}
-    report_blocker = ""
-    source_report_sha256 = ""
-    if not report_file.exists() or not report_file.is_file():
-        report_blocker = "source_report_missing"
-    else:
-        try:
-            report_payload = json.loads(report_file.read_text(encoding="utf-8"))
-            source_report_sha256 = hashlib.sha256(report_file.read_bytes()).hexdigest()
-        except Exception as exc:
-            report_blocker = f"source_report_invalid:{exc}"
-    if not report_blocker:
-        if str(report_payload.get("run_id", "")) != str(run_id):
-            report_blocker = "source_report_run_id_mismatch"
-        elif list(report_payload.get("universes", []) or []) != list(universes):
-            report_blocker = "source_report_universe_mismatch"
-        elif [
-            str(item.get("name", ""))
-            for item in list(report_payload.get("results", []) or [])
-            if isinstance(item, Mapping)
-        ] != result_names:
-            report_blocker = "source_report_result_names_mismatch"
+    A mining batch is not the production pool.  FactorGovernanceProtocol v2
+    permits only a month-end, one-for-one slot transition through a versioned
+    transition plan and record-scoped CAS/WAL.  Keeping this callable blocked
+    prevents an older automation prompt from deprecating unrelated factors.
+    """
 
-    eligible: list[Mapping[str, Any]] = []
-    skipped: list[dict[str, str]] = []
-    for item in results:
-        name = str(item.get("name", "")).strip()
-        if not name:
-            continue
-        blocker = ""
-        if item.get("decision") != FactorAdmissionDecision.PRODUCTION_CANDIDATE.value:
-            blocker = f"decision={item.get('decision')}"
-        if not blocker:
-            blocker = _production_candidate_gate_blocker(item)
-        if not blocker:
-            blocker = _production_candidate_diversity_blocker(item)
-        if not blocker:
-            blocker = _production_positive_evidence_blocker(item)
-        if blocker:
-            skipped.append({"name": name, "reason": blocker})
-            continue
-        eligible.append(item)
-
-    families: dict[str, list[Mapping[str, Any]]] = {}
-    for item in eligible:
-        families.setdefault(str(item.get("family", "unknown")), []).append(
-            item
-        )
-    champions: dict[str, str] = {
-        family: str(sorted(members, key=_alpha_champion_key)[0]["name"])
-        for family, members in families.items()
-    }
-    champion_names = set(champions.values())
-    manifest: dict[str, Any] = {
+    del results, run_timestamp, journal_path
+    snapshot = load_registry_snapshot_strict(Path(registry_path).expanduser())
+    return {
         "requested": bool(write),
-        "registry_path": str(path),
+        "registry_path": str(Path(registry_path).expanduser()),
         "run_id": run_id,
         "source_report": report_path,
-        "source_report_sha256": source_report_sha256,
-        "snapshot_id": market_evidence.get("snapshot_id"),
-        "universes": list(universes),
-        "market_evidence": dict(market_evidence),
-        "diversity_policy_version": DEFAULT_DIVERSITY_POLICY.version,
-        "diversity_policy_hash": DEFAULT_DIVERSITY_POLICY.policy_hash,
-        "production_weight": float(production_weight),
-        "active_before_count": len(active),
-        "eligible_8gate_count": len(eligible),
-        "champion_count": len(champion_names),
-        "champions_by_family": dict(sorted(champions.items())),
-        "promoted_factors": [],
-        "kept_factors": [],
+        "status": "blocked" if write else "report_only_retired",
+        "fail_closed_reason": (
+            "bulk_family_reconciliation_retired_use_"
+            "factor_governance_protocol_v2"
+        ),
+        "before_registry_sha256": snapshot.registry_sha256,
+        "after_registry_sha256": snapshot.registry_sha256,
+        "changed_record_names": [],
         "deprecated_factors": [],
-        "skipped_factors": skipped,
-        "status": "not_requested" if not write else "pending",
         "registry_mutation_manifest": None,
-        "registry_mutation_manifest_path": str(journal_path),
     }
-    if not write:
-        return manifest
-    precondition_blocker = (
-        market_blocker
-        or report_blocker
-        or ("duplicate_result_names:" + ",".join(duplicate_names) if duplicate_names else "")
-    )
-    if precondition_blocker:
-        manifest["status"] = "blocked"
-        manifest["fail_closed_reason"] = precondition_blocker
-        return manifest
-    if not champion_names:
-        manifest["status"] = "blocked"
-        manifest["fail_closed_reason"] = "no_current_8gate_family_champion"
-        return manifest
-    if len(champion_names) > max(int(max_champions), 0):
-        manifest["status"] = "blocked"
-        manifest["fail_closed_reason"] = "champion_count_exceeds_limit"
-        return manifest
-    if not np.isfinite(float(production_weight)) or float(production_weight) <= 0.0:
-        manifest["status"] = "blocked"
-        manifest["fail_closed_reason"] = "production_weight_invalid"
-        return manifest
-
-    patches: dict[str, FactorRecord] = {}
-    expected_hashes: dict[str, str | None] = {}
-    target_names = sorted({record.name for record in active}.union(champion_names))
-    for name in target_names:
-        existing = by_name.get(name)
-        item = by_result.get(name)
-        if existing is None:
-            if item is None:
-                manifest["status"] = "blocked"
-                manifest["fail_closed_reason"] = f"champion_record_missing:{name}"
-                return manifest
-            updated = _record_from_result(
-                item,
-                run_timestamp=run_timestamp,
-                run_id=run_id,
-                report_path=report_path,
-                owner=owner,
-                source_notes=source_notes,
-                horizon_days=horizon_days,
-            )
-        else:
-            updated = FactorRecord.from_dict(existing.to_dict())
-        if item is None:
-            reason = "current_governed_evidence_missing"
-        elif name not in champion_names:
-            gate_blocker = _production_candidate_gate_blocker(item)
-            if gate_blocker:
-                reason = "current_8gate_not_passed"
-            else:
-                family = str(item.get("family", "unknown"))
-                reason = f"same_family_redundant:{champions.get(family, '')}"
-        else:
-            reason = ""
-
-        if item is not None:
-            updated.gate_results = [
-                GateResult.from_dict(row)
-                for row in item.get("gate_results", [])
-                if isinstance(row, Mapping)
-            ]
-            updated.metrics = dict(item.get("metrics", {}) or {})
-            updated.metadata = {
-                **dict(updated.metadata or {}),
-                "governance_family": str(item.get("family", "unknown")),
-                "primitive_lineage": list(
-                    item.get("primitive_lineage", []) or []
-                ),
-                "dominant_primitives": list(
-                    item.get("dominant_primitives", []) or []
-                ),
-                "latest_production_family_governance": {
-                    "run_id": run_id,
-                    "run_timestamp": run_timestamp,
-                    "source_report": report_path,
-                    "decision": item.get("decision"),
-                    "gates_passed": item.get("gates_passed"),
-                    "family_champion": champions.get(
-                        str(item.get("family", "unknown")), ""
-                    ),
-                    "source_report_sha256": source_report_sha256,
-                    "snapshot_id": market_evidence.get("snapshot_id"),
-                    "diversity_policy_hash": DEFAULT_DIVERSITY_POLICY.policy_hash,
-                },
-            }
-        if reason:
-            updated.state = FactorLifecycleState.DEPRECATED
-            updated.weight = 0.0
-            updated.deprecated_reason = reason
-            manifest["deprecated_factors"].append(
-                {"name": name, "reason": reason}
-            )
-        else:
-            updated.state = FactorLifecycleState.PRODUCTION_FACTOR
-            updated.weight = float(production_weight)
-            updated.deprecated_reason = ""
-            updated.category = str(item.get("category", updated.category) or updated.category)
-            updated.implementation = str(
-                item.get("implementation", updated.implementation)
-                or updated.implementation
-            )
-            updated.description = str(
-                item.get("description", updated.description)
-                or updated.description
-            )
-            updated.approved_by = "scheduled_full_a_8gate_family_governance"
-            updated.approved_at = run_timestamp
-            updated.metadata = {
-                **dict(updated.metadata or {}),
-                "manual_promotion_required": False,
-                "runtime_effect": "production_quant_branch",
-                "automatic_promotion_policy": "full_a_8gate_diversity_champion",
-            }
-            if existing and existing.state == FactorLifecycleState.PRODUCTION_FACTOR:
-                manifest["kept_factors"].append(name)
-            else:
-                manifest["promoted_factors"].append(name)
-        patches[name] = updated
-        expected_hashes[name] = snapshot.record_sha256s.get(name)
-
-    metadata_updates = {
-        "last_production_family_governance_at": run_timestamp,
-        "last_production_family_governance_run_id": run_id,
-        "last_production_family_governance_report": report_path,
-        "last_production_family_champions": sorted(champion_names),
-        "production_factor_count": len(champion_names),
-        "default_policy": (
-            "Scheduled full-A mining promotes only current strict 8/8 "
-            "diversity champions; all other mined factors are non-live."
-        ),
-        "production_family_policy": (
-            "single CAS/WAL transaction; exact full-A 8-gate evidence; "
-            "one alpha-first diversity champion per family"
-        ),
-    }
-    record_changes = {
-        name: record
-        for name, record in patches.items()
-        if snapshot.record_payloads.get(name) != record.to_dict()
-    }
-    metadata_changes = {
-        key: value
-        for key, value in metadata_updates.items()
-        if snapshot.metadata_payload.get(key, METADATA_ABSENT) != value
-    }
-    if not record_changes and not metadata_changes:
-        manifest["status"] = "no_registry_changes"
-        manifest["active_after_count"] = len(champion_names)
-        manifest["before_registry_sha256"] = snapshot.registry_sha256
-        manifest["after_registry_sha256"] = snapshot.registry_sha256
-        return manifest
-    try:
-        mutation = apply_factor_record_patch(
-            path,
-            record_changes,
-            expected_registry_sha256=snapshot.registry_sha256,
-            expected_record_sha256s={
-                name: expected_hashes[name] for name in record_changes
-            },
-            metadata_updates=metadata_changes,
-            expected_metadata_values={
-                key: snapshot.metadata_payload.get(key, METADATA_ABSENT)
-                for key in metadata_changes
-            },
-            mutation_id=f"production-family-governance:{run_id}",
-            reason=(
-                "direct user-authorized full-A 8-gate production champion "
-                "reconciliation"
-            ),
-            journal_path=journal_path,
-            write=True,
-        )
-    except FactorRegistryStoreError as exc:
-        manifest["status"] = "blocked"
-        manifest["fail_closed_reason"] = f"registry_mutation_failed:{exc}"
-        return manifest
-    manifest["registry_mutation_manifest"] = mutation
-    manifest["status"] = "updated"
-    manifest["active_after_count"] = len(champion_names)
-    manifest["before_registry_sha256"] = mutation["before_registry_sha256"]
-    manifest["after_registry_sha256"] = mutation["after_registry_sha256"]
-    return manifest
 
 
 def run_mining(args: argparse.Namespace) -> dict[str, Any]:
@@ -2570,7 +1995,11 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
     ) = load_fundamental_exposure_maps(
         mart_root=Path(args.fundamental_mart_root).expanduser(),
         symbols=list(context.frames),
-        as_of=(context.adj_close.index.max() if not context.adj_close.empty else None),
+        as_of=(
+            context.adj_close.index.max()
+            if not context.adj_close.empty
+            else None
+        ),
         evaluation_dates=exposure_dates,
         close_by_date=close_by_date,
     )
@@ -2678,6 +2107,7 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
         )
 
     _set_parameter_stability(results)
+    _set_family_fdr(results)
     results.sort(
         key=lambda item: (
             int(item.get("gates_passed", 0)),
@@ -2923,9 +2353,9 @@ def render_markdown_report(payload: Mapping[str, Any]) -> str:
         "",
         "Passing here only opens manual production-factor review.",
         (
-            "This runner can write zero-weight production_candidate records "
-            "only when explicitly requested; it never promotes "
-            "production_factor."
+            "This runner is evidence-only and cannot mutate the registry. "
+            "A production change requires canonical FactorGovernanceProtocol "
+            "v2 replay evidence through daily_factor_mining_automation.py."
         ),
         "",
         "## Top Results",
@@ -3071,15 +2501,23 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--write-production-candidates",
         action="store_true",
         help=(
-            "Write qualified factors as zero-weight production_candidate "
-            "records. Never promotes production_factor."
+            "Retired compatibility flag. Direct registry writes are blocked; "
+            "use FactorGovernanceProtocol v2 canonical evidence and apply CLI."
         ),
     )
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    payload = run_mining(parse_args(argv))
+    args = parse_args(argv)
+    if args.write_production_candidates:
+        print(
+            "direct_candidate_registry_write_retired_use_"
+            "factor_governance_protocol_v2",
+            file=sys.stderr,
+        )
+        return 2
+    payload = run_mining(args)
     print(payload["output_dir"])
     print(
         json.dumps(
