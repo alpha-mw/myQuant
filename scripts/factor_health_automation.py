@@ -296,7 +296,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.allow_production_promotion and int(args.max_new_production) > 0:
         promotion_blockers.append(
             "production promotion is intentionally disabled in health automation; "
-            "promote production_factor records through manual registry review"
+            "production changes require the explicit FactorGovernanceProtocol v2 "
+            "month-end targeted transition path"
         )
 
     payload = {

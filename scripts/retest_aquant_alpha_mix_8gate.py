@@ -1472,9 +1472,10 @@ def run_retest(args: argparse.Namespace) -> dict[str, Any]:
         "independent_factor_names": independent_names,
         "qualified_count": len(qualified),
         "qualified_independent_count": sum(1 for item in qualified if item["independent"]),
-        "manual_review_required": bool(qualified),
+        "manual_review_required": False,
+        "governance_protocol_review_required": bool(qualified),
         "conclusion": (
-            "manual_production_factor_review_candidate"
+            "factor_governance_v2_evidence_candidate"
             if qualified
             else "no_candidate_passed_myquant_8gate"
         ),

@@ -2219,9 +2219,10 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
         "diverse_positive_champions": list(
             diversity_governance["selected_champions"]
         ),
-        "manual_review_required": bool(qualified),
+        "manual_review_required": False,
+        "governance_protocol_review_required": bool(qualified),
         "conclusion": (
-            "manual_production_factor_review_candidate"
+            "factor_governance_v2_evidence_candidate"
             if qualified
             else "no_candidate_passed_myquant_8gate"
         ),

@@ -804,7 +804,9 @@ class FactorGateEvaluator:
                     FactorAdmissionDecision.PRODUCTION_CANDIDATE,
                     FactorLifecycleState.PRODUCTION_CANDIDATE,
                     [
-                        "8 道门全部通过，达到 production candidate 标准；仍需人工确认后才能成为 production_factor。"
+                        "8 道门全部通过，达到 production candidate 标准；"
+                        "只有 FactorGovernanceProtocol v2 的成熟度、FDR、全链回放、"
+                        "slot 预算与月末单次 transition 全部通过后才能成为 production_factor。"
                     ],
                 )
             return (
