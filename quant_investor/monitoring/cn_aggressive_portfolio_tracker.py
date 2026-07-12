@@ -584,8 +584,8 @@ def _render_dag_compliance_markdown(compliance: dict[str, Any]) -> list[str]:
         f"- required_branches：`{', '.join(compliance.get('required_branches', REQUIRED_DAG_BRANCHES))}`",
         f"- status：`{compliance.get('status', 'unknown')}`",
         f"- complete：`{str(bool(compliance.get('complete', False))).lower()}`",
-        f"- present_branch_by_symbol：见下表。",
-        f"- missing_branch_by_symbol：见下表。",
+        "- present_branch_by_symbol：见下表。",
+        "- missing_branch_by_symbol：见下表。",
         f"- limited_evidence_branch_by_symbol：{limited_by_symbol or {}}",
         f"- 原因：{compliance.get('reason', '')}",
         f"- 执行影响：{compliance.get('evidence_quality_adjustment', '')}",
@@ -853,6 +853,9 @@ def _classify_trailing_take_profit(
     elif peak_unrealized_profit <= 0:
         status = "no_sell_signal"
         reason = "尚无正向利润峰值，移动止盈沿用阶段止损。"
+    elif not confirmed_basis:
+        status = "unconfirmed"
+        reason = "利润峰值缺少可验证的建仓锚点，仅保留诊断，不推导卖出。"
     elif giveback_ratio >= TRAILING_TAKE_PROFIT_REDUCE_GIVEBACK_RATIO and confirmed_basis:
         status = "reduce_risk"
         reason = (
@@ -917,7 +920,7 @@ def _apply_trailing_take_profit_review(
             symbols,
             universe_key="full_a",
             end_date=analysis_trade_date,
-            columns=["ts_code", "symbol", "trade_date", "high", "close"],
+            columns=["ts_code", "trade_date", "high", "close"],
         )
         for symbol, read_result in dict(read_results or {}).items():
             history_by_symbol[str(symbol).strip().upper()] = read_result.frame.copy()
@@ -935,7 +938,7 @@ def _apply_trailing_take_profit_review(
                 symbol,
                 universe_key="full_a",
                 end_date=analysis_trade_date,
-                columns=["ts_code", "symbol", "trade_date", "high", "close"],
+                columns=["ts_code", "trade_date", "high", "close"],
             )
             history_by_symbol[symbol] = read_result.frame.copy()
         except Exception as exc:
@@ -950,7 +953,7 @@ def _apply_trailing_take_profit_review(
         shares = int(_safe_float(row.get("shares_before"), 0.0))
         stage_stop = _safe_float(row.get("stage_stop_price"), 0.0)
         score = _safe_float(row.get("score_full_market"), 0.0)
-        market_weight = _safe_float(row.get("market_weight"), 0.0)
+        nav_weight = _safe_float(row.get("nav_weight"), _safe_float(row.get("market_weight"), 0.0))
         realtime_quote_valid = bool(row.get("realtime_quote_valid", True))
 
         manual_entry_date = _trailing_take_profit_row_date(
@@ -970,6 +973,7 @@ def _apply_trailing_take_profit_review(
         )
 
         history_frame = history_by_symbol.get(symbol, pd.DataFrame())
+        history_record_count = int(len(history_frame.index)) if not history_frame.empty else 0
         history_peak_price = 0.0
         history_peak_trade_date = ""
         history_peak_source = ""
@@ -996,12 +1000,14 @@ def _apply_trailing_take_profit_review(
         elif carried_peak_price > 0:
             peak_price = max(carried_peak_price, current_price)
             peak_trade_date = carried_peak_trade_date or end_date
-            basis = previous_basis or "carried_forward_manual_ledger_peak"
-            confirmed_basis = "unanchored" not in basis and "missing_entry_date" not in basis
+            basis = "unconfirmed_missing_entry_anchor"
+            if previous_basis:
+                basis += f":{previous_basis}"
+            confirmed_basis = False
         elif history_peak_price > 0:
             peak_price = max(history_peak_price, current_price)
             peak_trade_date = history_peak_trade_date or end_date
-            basis = "strict_parquet_available_history_unanchored_missing_entry_date"
+            basis = "strict_parquet_available_history_unconfirmed_missing_entry_anchor"
             confirmed_basis = False
         else:
             peak_price = 0.0
@@ -1021,17 +1027,26 @@ def _apply_trailing_take_profit_review(
             peak_price=peak_price,
             stage_stop_price=stage_stop,
             score_full_market=score,
-            market_weight=market_weight,
+            market_weight=nav_weight,
             realtime_quote_valid=realtime_quote_valid,
             confirmed_basis=confirmed_basis,
         )
         reason = str(classified["trailing_take_profit_reason"])
-        if "unanchored" in basis and classified["trailing_take_profit_status"] != "unconfirmed":
+        if not confirmed_basis and classified["trailing_take_profit_status"] != "unconfirmed":
             reason = (
                 reason
                 + " 峰值来自 strict Parquet 可得历史但缺少 ledger 买入日期，"
                 "仅作为移动止盈观察，不作为自动卖出依据。"
             )
+
+        if stage_stop <= 0:
+            stop_loss_status = "missing_stop"
+        elif not realtime_quote_valid or current_price <= 0:
+            stop_loss_status = "pending_unverified_quote"
+        elif current_price <= stage_stop:
+            stop_loss_status = "triggered_at_or_below_stage_stop"
+        else:
+            stop_loss_status = "not_triggered_above_stage_stop"
 
         rows.append(
             {
@@ -1042,7 +1057,11 @@ def _apply_trailing_take_profit_review(
                 "trailing_profit_peak_price": round(peak_price, 2) if peak_price > 0 else 0.0,
                 "trailing_profit_peak_trade_date": peak_trade_date,
                 "trailing_profit_peak_source": history_peak_source or ("carried" if carried_peak_price > 0 else ""),
+                "history_record_count": history_record_count,
+                "stop_loss_status": stop_loss_status,
                 **classified,
+                "trailing_profit_reduce_price_20": classified["trailing_profit_review_price"],
+                "trailing_profit_reduce_price_35": classified["trailing_profit_reduce_price"],
                 "trailing_take_profit_reason": reason,
             }
         )
@@ -2412,6 +2431,67 @@ def _build_candidate_pool_from_v13_dag(
     return pd.DataFrame(rows, dtype=object), status
 
 
+def _attach_candidate_quote_gate(
+    candidate_pool: pd.DataFrame,
+    *,
+    quote_payload: dict[str, dict[str, Any]],
+    analysis_trade_date: str,
+) -> pd.DataFrame:
+    if candidate_pool.empty:
+        return candidate_pool
+    result = candidate_pool.copy()
+    statuses: list[str] = []
+    timestamps: list[str] = []
+    prices: list[float | None] = []
+    eligible: list[bool] = []
+    blockers: list[str] = []
+    analysis_date = _compact_trade_date(analysis_trade_date)
+    payload_quote_dates = [
+        "".join(ch for ch in _quote_timestamp(quote) if ch.isdigit())[:8]
+        for quote in quote_payload.values()
+    ]
+    latest_quote_date = max((date for date in payload_quote_dates if len(date) == 8), default="")
+    for row in result.itertuples(index=False):
+        symbol = str(getattr(row, "symbol", "") or "").strip().upper()
+        quote = quote_payload.get(_map_symbol_to_quote_code(symbol), {})
+        quote_time = _quote_timestamp(quote)
+        price, _ = _resolve_realtime_execution_price(quote)
+        quote_date = "".join(ch for ch in quote_time if ch.isdigit())[:8]
+        quote_fresh = bool(
+            price > 0
+            and len(quote_date) == 8
+            and quote_date == latest_quote_date
+            and (not analysis_date or quote_date >= analysis_date)
+        )
+        expected_alpha = _safe_float(getattr(row, "posterior_expected_alpha", 0.0))
+        action = (
+            str(getattr(row, "shortlist_action", "") or "")
+            .strip()
+            .lower()
+            .removeprefix("actionlabel.")
+        )
+        row_blockers: list[str] = []
+        if action != "buy":
+            row_blockers.append("recommendation_not_buy")
+        if expected_alpha <= 0:
+            row_blockers.append("non_positive_expected_alpha")
+        if not quote_fresh:
+            row_blockers.append("candidate_quote_not_fresh")
+        statuses.append("fresh" if quote_fresh else ("stale" if quote_time else "missing"))
+        timestamps.append(quote_time)
+        prices.append(round(price, 4) if price > 0 else None)
+        eligible.append(not row_blockers)
+        blockers.append(";".join(row_blockers))
+    result["candidate_quote_status"] = statuses
+    result["candidate_quote_timestamp"] = timestamps
+    result["candidate_quote_price"] = prices
+    result["new_position_eligible"] = eligible
+    result["eligibility_blockers"] = blockers
+    result["manual_override_required"] = True
+    result["actionable"] = False
+    return result
+
+
 def _run_candidate_level_v13_dag(
     *,
     held_symbols: list[str],
@@ -2528,8 +2608,24 @@ def _build_switch_plan(
         target_weight = _safe_float(getattr(candidate_row, "portfolio_target_weight", 0.0))
         posterior_score = _safe_float(getattr(candidate_row, "posterior_action_score", 0.0))
         posterior_confidence = _safe_float(getattr(candidate_row, "posterior_confidence", 0.0))
-        superior = target_weight > 0 and posterior_score > 0 and posterior_confidence > 0
-        actionable = superior and (completeness_passed or decision_data_sufficient)
+        expected_alpha = _safe_float(getattr(candidate_row, "posterior_expected_alpha", 0.0))
+        shortlist_action = (
+            str(getattr(candidate_row, "shortlist_action", "") or "")
+            .strip()
+            .lower()
+            .removeprefix("actionlabel.")
+        )
+        quote_status = str(getattr(candidate_row, "candidate_quote_status", "missing") or "missing")
+        quote_fresh = quote_status == "fresh"
+        superior = (
+            target_weight > 0
+            and posterior_score > 0
+            and posterior_confidence > 0
+            and expected_alpha > 0
+            and shortlist_action == "buy"
+        )
+        data_ready = completeness_passed or decision_data_sufficient
+        actionable = superior and data_ready and quote_fresh
         rows.append(
             {
                 "sell_symbol": weak_row.symbol,
@@ -2542,12 +2638,17 @@ def _build_switch_plan(
                 "buy_bayesian_rank": int(_safe_float(getattr(candidate_row, "bayesian_rank", 999999))),
                 "buy_posterior_action_score": round(posterior_score, 6),
                 "buy_posterior_confidence": round(posterior_confidence, 6),
+                "buy_posterior_expected_alpha": round(expected_alpha, 6),
                 "buy_portfolio_target_weight": round(target_weight, 6),
+                "candidate_quote_status": quote_status,
+                "new_position_eligible": bool(superior and data_ready and quote_fresh),
+                "manual_override_required": True,
+                "actionable": False,
                 "candidate_source": candidate_row.candidate_source,
                 "evidence_quality": candidate_row.evidence_quality,
                 "priority": "high" if superior and target_weight >= 0.06 else "watch",
-                "action": "switch_now" if actionable else ("prepare_switch" if superior else "watch_only"),
-                "switch_ratio_hint": "20%" if actionable else "先观察，不执行",
+                "action": "pending_manual_override" if actionable else ("prepare_switch" if superior else "watch_only"),
+                "switch_ratio_hint": "等待 Maxwell 人工 override" if actionable else "先观察，不执行",
                 "trigger_threshold": (
                     "候选保持 candidate-level v13 DAG 四分支完整，且 PortfolioConstructor 维持正目标权重；现持仓仍未解除降级/减仓信号"
                     if not actionable
@@ -2570,7 +2671,13 @@ def _apply_orders(
     quote_prices: dict[str, float],
 ) -> tuple[pd.DataFrame, float, float]:
     ledger = source_ledger.copy()
-    ledger = ledger.drop(columns=[column for column in ["market_weight"] if column in ledger.columns])
+    ledger = ledger.drop(
+        columns=[
+            column
+            for column in ["nav_weight", "equity_sleeve_weight"]
+            if column in ledger.columns
+        ]
+    )
     ledger["shares"] = ledger["shares"].astype(int)
     cash_after = round(cash_before, 2)
     realized_total = 0.0
@@ -2606,10 +2713,17 @@ def _apply_orders(
 
     updated = pd.DataFrame(updated_rows)
     invested = float(updated["current_value"].sum()) if not updated.empty else 0.0
+    total_value = invested + cash_after
     if invested > 0:
-        updated["market_weight"] = (updated["current_value"] / invested).round(6)
+        updated["equity_sleeve_weight"] = (updated["current_value"] / invested).round(6)
+        updated["market_weight"] = updated["equity_sleeve_weight"]
     else:
+        updated["equity_sleeve_weight"] = 0.0
         updated["market_weight"] = 0.0
+    if total_value > 0:
+        updated["nav_weight"] = (updated["current_value"] / total_value).round(6)
+    else:
+        updated["nav_weight"] = 0.0
     return updated, cash_after, round(realized_total, 2)
 
 
@@ -2902,7 +3016,7 @@ def _format_legacy_overweight_holding_lines(
 ) -> list[str]:
     if not isinstance(holdings_review, pd.DataFrame) or holdings_review.empty:
         return []
-    if "market_weight" not in holdings_review.columns:
+    if "nav_weight" not in holdings_review.columns:
         return []
     limit = risk_guard_single_name_weight_cap() if cap is None else float(cap)
     if limit <= 0.0:
@@ -2910,7 +3024,7 @@ def _format_legacy_overweight_holding_lines(
 
     rows: list[tuple[str, str, float]] = []
     for _, row in holdings_review.iterrows():
-        weight = _safe_float(row.get("market_weight"), 0.0)
+        weight = _safe_float(row.get("nav_weight"), 0.0)
         if weight <= limit + 1e-9:
             continue
         symbol = str(row.get("symbol") or "").strip() or "UNKNOWN"
@@ -2953,7 +3067,7 @@ def _holding_codex_score(row: pd.Series) -> int:
     current_price = _safe_float(row.get("current_price"), 0.0)
     stop_price = _safe_float(row.get("stage_stop_price"), 0.0)
     target_price = _safe_float(row.get("stage_target_price"), 0.0)
-    market_weight = _safe_float(row.get("market_weight"), 0.0)
+    market_weight = _safe_float(row.get("nav_weight"), _safe_float(row.get("market_weight"), 0.0))
     realtime_quote_valid = bool(row.get("realtime_quote_valid"))
     llm_degraded = bool(row.get("llm_degraded"))
     recommended_action = str(row.get("recommended_action") or "").strip()
@@ -3118,7 +3232,7 @@ def _format_trade_date(value: Any) -> str:
 
 def _compact_trade_date(value: Any) -> str:
     text = str(value or "").strip()
-    if not text:
+    if not text or text.lower() in {"nan", "nat", "none", "null", "<na>"}:
         return ""
     if len(text) == 8 and text.isdigit():
         return text
@@ -3506,10 +3620,8 @@ def _write_outputs(
     holdings_path = run_dir / "holdings_review.csv"
     candidate_path = run_dir / "candidate_pool.csv"
     switch_path = run_dir / "switch_plan.csv"
-    ledger_path = run_dir / "ledger.csv"
     orders_path = run_dir / "orders.csv"
     pnl_path = run_dir / "pnl_summary.csv"
-    ledger_parquet_path = run_dir / "ledger.parquet"
     pnl_parquet_path = run_dir / "pnl_summary.parquet"
     snapshot_path = run_dir / "market_snapshot.json"
     manifest_path = run_dir / "manifest.json"
@@ -3520,10 +3632,8 @@ def _write_outputs(
     holdings_review.to_csv(holdings_path, index=False, encoding="utf-8-sig")
     candidate_pool.to_csv(candidate_path, index=False, encoding="utf-8-sig")
     switch_plan_df.to_csv(switch_path, index=False, encoding="utf-8-sig")
-    ledger.to_csv(ledger_path, index=False, encoding="utf-8-sig")
     orders_df.to_csv(orders_path, index=False, encoding="utf-8-sig")
     pnl_summary_df.to_csv(pnl_path, index=False, encoding="utf-8-sig")
-    ledger.to_parquet(ledger_parquet_path, index=False)
     pnl_summary_df.to_parquet(pnl_parquet_path, index=False)
     snapshot_path.write_text(json.dumps(market_snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
     runtime_profile = manifest.get("runtime_profile") or market_snapshot.get("runtime_profile") or {}
@@ -3561,7 +3671,6 @@ def _write_outputs(
     shutil.copy2(holdings_path, raw_dir / f"{prefix}_holdings_review.csv")
     shutil.copy2(candidate_path, raw_dir / f"{prefix}_candidate_pool.csv")
     shutil.copy2(switch_path, raw_dir / f"{prefix}_switch_plan.csv")
-    shutil.copy2(ledger_path, raw_dir / f"{prefix}_ledger.csv")
     shutil.copy2(orders_path, raw_dir / f"{prefix}_orders.csv")
     shutil.copy2(pnl_path, raw_dir / f"{prefix}_pnl_summary.csv")
     if runtime_profile_path.exists():
@@ -4141,6 +4250,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
                 "llm_confidence_source": llm_confidence_source,
                 "llm_degraded": bool(review_payload.get("llm_degraded", False)),
                 "realtime_quote_timestamp": _quote_timestamp(quote),
+                "quote_time": _quote_timestamp(quote),
                 "realtime_quote_source": str(quote.get("source") or ""),
                 "realtime_quote_valid": realtime_execution_price > 0,
                 "realtime_execution_price": round(realtime_execution_price, 2) if realtime_execution_price > 0 else None,
@@ -4152,11 +4262,19 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     total_market_value_before = round(float(holdings_review["current_value"].sum()), 2)
     total_value_before = round(total_market_value_before + cash_before, 2)
     if total_market_value_before > 0:
-        holdings_review["market_weight"] = (
+        holdings_review["equity_sleeve_weight"] = (
             holdings_review["current_value"] / total_market_value_before
         ).round(6)
+        holdings_review["market_weight"] = holdings_review["equity_sleeve_weight"]
     else:
+        holdings_review["equity_sleeve_weight"] = 0.0
         holdings_review["market_weight"] = 0.0
+    if total_value_before > 0:
+        holdings_review["nav_weight"] = (
+            holdings_review["current_value"] / total_value_before
+        ).round(6)
+    else:
+        holdings_review["nav_weight"] = 0.0
     holdings_review = _apply_trailing_take_profit_review(
         holdings_review,
         reader=market_data_reader,
@@ -4182,6 +4300,21 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     )
     theme_pool_summary = _mapping_payload(theme_pool_audit.get("summary"))
     if not candidate_pool.empty:
+        candidate_quote_codes = [
+            _map_symbol_to_quote_code(str(symbol))
+            for symbol in candidate_pool["symbol"].tolist()
+        ]
+        missing_quote_codes = [code for code in candidate_quote_codes if code not in quote_payload]
+        if missing_quote_codes:
+            try:
+                quote_payload.update(_fetch_tencent_quotes(missing_quote_codes))
+            except Exception as exc:
+                quote_error = "; ".join(item for item in [quote_error, str(exc)] if item)
+        candidate_pool = _attach_candidate_quote_gate(
+            candidate_pool,
+            quote_payload=quote_payload,
+            analysis_trade_date=analysis_trade_date,
+        )
         candidate_pool = candidate_pool.copy()
         candidate_pool["codex_recommendation_score"] = candidate_pool.apply(_candidate_codex_score, axis=1)
         candidate_pool["codex_recommendation_rating"] = candidate_pool["codex_recommendation_score"].map(
@@ -4995,7 +5128,10 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         theme_pool_summary=theme_pool_summary,
         theme_symbols=_mapping_payload(theme_pool_audit.get("symbols")),
     )
-    DEFAULT_NOTES_PATH.write_text(notes_text, encoding="utf-8")
+    (base_dir / "latest_notes_payload.md").write_text(
+        notes_text,
+        encoding="utf-8",
+    )
     formal_diagnostics_payload = {
         "warnings": [_jsonable(item.to_dict()) for item in formal_warnings],
         "holding_diagnostics": [_jsonable(item.to_dict()) for item in holding_diagnostics],
@@ -5057,7 +5193,6 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "candidate_pool": "candidate_pool.csv",
             "switch_plan": "switch_plan.csv",
             "orders": "orders.csv",
-            "ledger": "ledger.csv",
             "pnl_summary": "pnl_summary.csv",
             "market_snapshot": "market_snapshot.json",
             "runtime_profile": "runtime_profile.json",
@@ -5069,7 +5204,6 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "raw_exports": {
             "report": f"raw_exports/aggressive_portfolio_{timestamp}_formal_report.md",
             "orders": f"raw_exports/aggressive_portfolio_{timestamp}_formal_orders.csv",
-            "ledger": f"raw_exports/aggressive_portfolio_{timestamp}_formal_ledger.csv",
             "pnl_summary": f"raw_exports/aggressive_portfolio_{timestamp}_formal_pnl_summary.csv",
             "holdings_review": f"raw_exports/aggressive_portfolio_{timestamp}_formal_holdings_review.csv",
             "candidate_pool": f"raw_exports/aggressive_portfolio_{timestamp}_formal_candidate_pool.csv",

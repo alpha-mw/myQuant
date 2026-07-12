@@ -42,6 +42,36 @@ def test_bayesian_shortlist_is_ranked_before_master_pack_build():
     assert [item.company_name for item in shortlist] == ["平安银行", "万科A"]
 
 
+def test_bayesian_shortlist_excludes_hold_and_non_positive_net_edge():
+    hold = _posterior("000003.SZ", "国农科技", 0.20, 1)
+    negative_edge = _posterior("000004.SZ", "国华网安", 0.80, 2)
+    negative_edge.metadata["posterior_edge_after_costs"] = -0.01
+
+    shortlist = _build_shortlist_from_bayesian_records(
+        posterior_results=[hold, negative_edge],
+        company_name_map={},
+        top_k=2,
+    )
+
+    assert shortlist == []
+
+
+def test_bayesian_shortlist_keeps_forced_theme_as_diagnostic_only():
+    forced = _posterior("000004.SZ", "国华网安", 0.80, 1)
+    forced.metadata["theme_pool"] = {
+        "theme_forced_admission": True,
+        "candidate_intent": "research_candidate_not_buy_signal",
+    }
+
+    shortlist = _build_shortlist_from_bayesian_records(
+        posterior_results=[forced],
+        company_name_map={},
+        top_k=1,
+    )
+
+    assert shortlist == []
+
+
 def test_master_evidence_pack_uses_bayesian_shortlist_fields():
     records = [
         _posterior("000001.SZ", "平安银行", 0.93, 1),

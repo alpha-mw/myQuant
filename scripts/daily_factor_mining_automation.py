@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Daily governed factor-mining wrapper for myQuant CN factor automation."""
+"""Weekly factor mining; forward apply is blocked pending a trusted producer."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -17,7 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.mine_quant_branch_factors import (  # noqa: E402
     DEFAULT_REGISTRY_PATH,
-    apply_production_candidate_registry_updates,
+    _production_market_evidence_blocker,
     parse_args as parse_mining_args,
     run_mining,
     write_outputs,
@@ -25,6 +26,19 @@ from scripts.mine_quant_branch_factors import (  # noqa: E402
 from scripts.retest_aquant_alpha_mix_8gate import _json_default  # noqa: E402
 from quant_investor.factors.pit_fundamentals import (  # noqa: E402
     DEFAULT_FUNDAMENTAL_MART_ROOT,
+)
+from quant_investor.factors.governance_protocol_v2 import (  # noqa: E402
+    PROTOCOL_VERSION,
+    apply_governed_transition,
+    canonical_replay_producer_control,
+    protocol_hash,
+)
+from quant_investor.factors.governance_evidence import (  # noqa: E402
+    build_registry_mutation_plan_from_evidence,
+    load_governance_replay_evidence,
+)
+from quant_investor.factors.registry_store import (  # noqa: E402
+    load_registry_snapshot_strict,
 )
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
@@ -116,6 +130,66 @@ def compact_download_status(
             "expected_count": same_day_probe.get("expected_count"),
             "coverage_ratio": same_day_probe.get("coverage_ratio"),
         },
+    }
+
+
+def strict_full_a_market_evidence(
+    *,
+    data_root: str | Path,
+    universes: str,
+    loaded_symbol_count: int,
+) -> dict[str, Any]:
+    """Read strict-Parquet lineage used to gate any future governed apply."""
+
+    root = Path(data_root).expanduser()
+    parquet_root = (
+        root
+        if root.name == "cn" and root.parent.name == "parquet"
+        else root / "parquet" / "cn"
+    )
+    pointer_path = parquet_root / "_latest.json"
+    pointer = _load_json(pointer_path) if pointer_path.exists() else {}
+    coverage = dict(pointer.get("coverage", {}) or {})
+    expected = int(
+        coverage.get("expected_scope_count")
+        or coverage.get("coverage_complete_count")
+        or 0
+    )
+    table_root_text = str(pointer.get("table_root", "") or "").strip()
+    serving_root_text = str(
+        pointer.get("derived_serving_root", "") or ""
+    ).strip()
+    manifest_path_text = str(
+        pointer.get("manifest_path", "") or ""
+    ).strip()
+    return {
+        "backend": str(
+            os.getenv("MYQUANT_MARKET_DATA_BACKEND", "parquet")
+        ).lower(),
+        "mode_policy": str(
+            os.getenv("MYQUANT_MARKET_DATA_MODE_POLICY", "strict")
+        ).lower(),
+        "requested_universes": [
+            item.strip().lower()
+            for item in str(universes).split(",")
+            if item.strip()
+        ],
+        "pointer_path": str(pointer_path),
+        "pointer_status": pointer.get("status"),
+        "snapshot_id": pointer.get("snapshot_id"),
+        "latest_complete_trade_date": pointer.get(
+            "latest_complete_trade_date"
+        ),
+        "coverage_complete": coverage.get("complete") is True,
+        "coverage_ratio": coverage.get("coverage_ratio"),
+        "expected_symbol_count": expected,
+        "loaded_symbol_count": int(loaded_symbol_count),
+        "table_root_exists": bool(table_root_text)
+        and Path(table_root_text).exists(),
+        "serving_root_exists": bool(serving_root_text)
+        and Path(serving_root_text).exists(),
+        "manifest_exists": bool(manifest_path_text)
+        and Path(manifest_path_text).exists(),
     }
 
 
@@ -227,10 +301,19 @@ def evidence_counts(results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     qualified_positive = [
         result for result in qualified if _has_positive_evidence(result)
     ]
+    diverse_champions = [
+        result
+        for result in qualified_positive
+        if dict(result.get("diversity_selection", {}) or {}).get(
+            "final_registry_write_eligible"
+        )
+        is True
+    ]
     return {
         "positive_evidence_count": len(positive),
         "qualified_count": len(qualified),
         "positive_candidate_count": len(qualified_positive),
+        "diverse_positive_champion_count": len(diverse_champions),
         "positive_factors": [
             str(result.get("name", "")) for result in positive
         ],
@@ -239,6 +322,9 @@ def evidence_counts(results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         ],
         "positive_candidate_factors": [
             str(result.get("name", "")) for result in qualified_positive
+        ],
+        "diverse_positive_champions": [
+            str(result.get("name", "")) for result in diverse_champions
         ],
         "family_coverage": _factor_sets(results),
     }
@@ -275,6 +361,9 @@ def _registry_manifest_for_failed_gate(
 def render_summary_markdown(payload: Mapping[str, Any]) -> str:
     counts = dict(payload.get("evidence_counts", {}) or {})
     registry = dict(payload.get("registry_update_manifest", {}) or {})
+    production_governance = dict(
+        payload.get("production_family_governance_manifest", {}) or {}
+    )
     lines = [
         "# myQuant Daily Factor Mining Automation",
         "",
@@ -289,18 +378,29 @@ def render_summary_markdown(payload: Mapping[str, Any]) -> str:
         f"- Positive evidence count: {counts.get('positive_evidence_count')}",
         "- Positive production-candidate count: "
         f"{counts.get('positive_candidate_count')}",
+        "- Diverse positive champion count: "
+        f"{counts.get('diverse_positive_champion_count')}",
         f"- Qualified count: {counts.get('qualified_count')}",
-        f"- Success gate passed: {payload.get('success_gate_passed')}",
+        "- Mining evidence gate passed (not a mutation): "
+        f"{payload.get('success_gate_passed')}",
         f"- Fail-closed reason: {payload.get('fail_closed_reason') or '-'}",
+        f"- Run mode: {payload.get('run_mode')}",
         f"- Registry update status: {registry.get('status')}",
+        "- Factor protocol v2 transition status: "
+        f"{production_governance.get('status')}",
+        "- Production transition applied: "
+        f"{payload.get('factor_protocol', {}).get('transition_applied')}",
+        f"- Protocol hash: `{payload.get('factor_protocol', {}).get('protocol_hash', '')}`",
+        "- Transition blockers: "
+        f"{', '.join(production_governance.get('blockers', [])) or '-'}",
         "",
         (
-            "Registry writes are limited to zero-weight "
-            "production_candidate records."
+            "Weekly mining is report-only. Registry mutation is available only "
+            "for one protocol-v2 month-end targeted transition."
         ),
         (
-            "No production_factor promotion, portfolio run, broker action, "
-            "or strategy record is performed."
+            "No portfolio run, broker action, live provider call, or strategy "
+            "record is performed by this wrapper."
         ),
         "",
         "## Positive Candidate Factors",
@@ -361,7 +461,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--source-notes-json", default="")
     parser.add_argument("--run-id", default="")
-    parser.add_argument("--universes", default="hs300,zz500,zz1000")
+    parser.add_argument("--universes", default="full_a")
     parser.add_argument("--windows", default="5,10,15,20,25,30,40,60,90,120")
     parser.add_argument("--horizon-days", type=int, default=30)
     parser.add_argument("--warmup-days", type=int, default=260)
@@ -374,7 +474,42 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--max-registry-candidates", type=int, default=5)
     parser.add_argument("--min-positive-candidates", type=int, default=1)
-    parser.add_argument("--no-registry-write", action="store_true")
+    parser.add_argument(
+        "--no-registry-write",
+        action="store_true",
+        help="Deprecated compatibility flag; report-only is already the default.",
+    )
+    parser.add_argument(
+        "--apply-governed-transitions",
+        action="store_true",
+        help="Apply one validated FactorGovernanceProtocol v2 month-end slot swap.",
+    )
+    parser.add_argument(
+        "--protocol-version",
+        default="",
+        help="Required and must equal v2 when applying a governed transition.",
+    )
+    parser.add_argument(
+        "--expected-protocol-hash",
+        default="",
+        help="Required current protocol hash when applying a governed transition.",
+    )
+    parser.add_argument(
+        "--governed-evidence-json",
+        default="",
+        help=(
+            "Canonical output from build_factor_governance_replay_evidence.py. "
+            "Hand-written mutation-plan envelopes are not accepted."
+        ),
+    )
+    parser.add_argument(
+        "--mutation-budget-ledger",
+        default=(
+            "reports/factor_governance/state/"
+            "monthly_mutation_budget.v1.jsonl"
+        ),
+        help="Independent append-only monthly mutation reservation ledger.",
+    )
     parser.add_argument(
         "--strict-positive-evidence",
         action="store_true",
@@ -384,7 +519,38 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "evidence."
         ),
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.apply_governed_transitions:
+        if args.no_registry_write:
+            parser.error(
+                "--apply-governed-transitions conflicts with --no-registry-write"
+            )
+        if args.protocol_version != PROTOCOL_VERSION:
+            parser.error(
+                f"--apply-governed-transitions requires --protocol-version {PROTOCOL_VERSION}"
+            )
+        if not str(args.expected_protocol_hash or "").strip():
+            parser.error(
+                "--apply-governed-transitions requires --expected-protocol-hash"
+            )
+        if args.expected_protocol_hash != protocol_hash():
+            parser.error("--expected-protocol-hash does not match the local v2 policy")
+        if not str(args.governed_evidence_json or "").strip():
+            parser.error(
+                "--apply-governed-transitions requires --governed-evidence-json"
+            )
+    elif any(
+        str(value or "").strip()
+        for value in (
+            args.protocol_version,
+            args.expected_protocol_hash,
+            args.governed_evidence_json,
+        )
+    ):
+        parser.error(
+            "protocol/apply options require --apply-governed-transitions"
+        )
+    return args
 
 
 def run_daily_automation(args: argparse.Namespace) -> dict[str, Any]:
@@ -448,58 +614,186 @@ def run_daily_automation(args: argparse.Namespace) -> dict[str, Any]:
         if isinstance(item, Mapping)
     ]
     counts = evidence_counts(results)
-    positive_candidate_count = int(counts["positive_candidate_count"])
-    success_gate_passed = positive_candidate_count >= int(
+    market_evidence = strict_full_a_market_evidence(
+        data_root=args.data_root,
+        universes=str(args.universes),
+        loaded_symbol_count=int(
+            mining_payload.get("loaded_symbol_count", 0)
+        ),
+    )
+    market_evidence["factor_exposure_evidence"] = dict(
+        mining_payload.get("factor_exposure_evidence", {}) or {}
+    )
+    requested_universes = [
+        item.strip()
+        for item in str(args.universes).split(",")
+        if item.strip()
+    ]
+    market_evidence_blocker = _production_market_evidence_blocker(
+        universes=requested_universes,
+        market_evidence=market_evidence,
+    )
+    diverse_positive_champion_count = int(
+        counts["diverse_positive_champion_count"]
+    )
+    candidate_evidence_gate_passed = diverse_positive_champion_count >= int(
         args.min_positive_candidates
     )
+    success_gate_passed = bool(
+        candidate_evidence_gate_passed and not market_evidence_blocker
+    )
     fail_closed_reason = ""
-    if not success_gate_passed:
+    if not candidate_evidence_gate_passed:
         fail_closed_reason = (
-            "no_qualified_positive_candidate"
-            if int(counts["positive_evidence_count"]) > 0
-            else "no_positive_ic_or_return_evidence"
+            "no_diverse_registry_champion"
+            if int(counts["positive_candidate_count"]) > 0
+            else (
+                "no_qualified_positive_candidate"
+                if int(counts["positive_evidence_count"]) > 0
+                else "no_positive_ic_or_return_evidence"
+            )
         )
+    if market_evidence_blocker:
+        fail_closed_reason = market_evidence_blocker
 
-    registry_write_requested = not bool(args.no_registry_write)
+    registry_write_requested = bool(args.apply_governed_transitions)
     report_json_path = (
         Path(mining_payload["output_dir"])
         / "quant_branch_factor_mining_results.json"
     )
-    if success_gate_passed and registry_write_requested:
-        qualified_positive = [
-            item
-            for item in results
-            if item.get("decision") == "production_candidate"
-            and _has_positive_evidence(item)
-        ]
-        registry_manifest = apply_production_candidate_registry_updates(
-            registry_path=str(args.registry_path),
-            qualified_results=qualified_positive,
-            run_timestamp=run_timestamp,
-            run_id=run_id,
-            report_path=str(report_json_path),
-            owner=str(args.registry_owner),
-            source_notes=source_notes,
-            horizon_days=int(args.horizon_days),
-            max_candidates=int(args.max_registry_candidates),
+    if registry_write_requested and market_evidence_blocker:
+        snapshot = load_registry_snapshot_strict(str(args.registry_path))
+        production_governance_manifest = {
+            "schema_version": "factor-governance-protocol.v2",
+            "protocol_version": PROTOCOL_VERSION,
+            "protocol_hash": protocol_hash(),
+            "apply_requested": True,
+            "registry_path": str(args.registry_path),
+            "run_id": run_id,
+            "source_report": str(report_json_path),
+            "status": "blocked",
+            "blockers": [market_evidence_blocker],
+            "before_registry_sha256": snapshot.registry_sha256,
+            "after_registry_sha256": snapshot.registry_sha256,
+            "inverse_wal_path": "",
+            "changed_record_names": [],
+            "canonical_replay_producer_control": (
+                canonical_replay_producer_control()
+            ),
+        }
+    elif registry_write_requested:
+        governed_evidence = load_governance_replay_evidence(
+            str(args.governed_evidence_json)
+        )
+        transition_plan, valid_trading_days = (
+            build_registry_mutation_plan_from_evidence(
+                registry_path=str(args.registry_path),
+                evidence=governed_evidence,
+                wal_path=(
+                    mining_output_dir
+                    / f"protocol_v2_transition_{timestamp_slug}.json"
+                ),
+                budget_ledger_path=str(args.mutation_budget_ledger),
+            )
+        )
+        production_governance_manifest = apply_governed_transition(
+            str(args.registry_path),
+            transition_plan,
+            expected_protocol_hash=str(args.expected_protocol_hash),
+            valid_trading_days=valid_trading_days,
             write=True,
         )
     else:
-        registry_manifest = _registry_manifest_for_failed_gate(
-            registry_path=str(args.registry_path),
-            run_id=run_id,
-            report_path=str(report_json_path),
-            max_candidates=int(args.max_registry_candidates),
-            qualified_count=int(counts["qualified_count"]),
-            requested=registry_write_requested,
-            fail_closed_reason=fail_closed_reason,
-        )
+        snapshot = load_registry_snapshot_strict(str(args.registry_path))
+        producer_control = canonical_replay_producer_control()
+        production_governance_manifest = {
+            "schema_version": "factor-governance-protocol.v2",
+            "protocol_version": PROTOCOL_VERSION,
+            "protocol_hash": protocol_hash(),
+            "apply_requested": False,
+            "registry_path": str(args.registry_path),
+            "run_id": run_id,
+            "source_report": str(report_json_path),
+            "status": "report_only",
+            "blockers": (
+                [market_evidence_blocker]
+                if market_evidence_blocker
+                else []
+            ),
+            "before_registry_sha256": snapshot.registry_sha256,
+            "after_registry_sha256": snapshot.registry_sha256,
+            "inverse_wal_path": "",
+            "changed_record_names": [],
+            "canonical_replay_producer_control": producer_control,
+        }
+    registry_manifest = production_governance_manifest
 
     mining_payload["registry_write_requested"] = registry_write_requested
     mining_payload["registry_write"] = (
-        registry_manifest.get("status") == "updated"
+        registry_manifest.get("status") == "applied"
     )
     mining_payload["registry_update_manifest"] = registry_manifest
+    mining_payload["production_family_governance_manifest"] = (
+        production_governance_manifest
+    )
+    factor_protocol_summary = {
+        "protocol_version": PROTOCOL_VERSION,
+        "protocol_hash": protocol_hash(),
+        "apply_requested": registry_write_requested,
+        "status": production_governance_manifest.get("status"),
+        "transition_applied": (
+            production_governance_manifest.get("status") == "applied"
+        ),
+        "canonical_replay_producer_control": (
+            production_governance_manifest.get(
+                "canonical_replay_producer_control",
+                canonical_replay_producer_control(),
+            )
+        ),
+        "transition_id": production_governance_manifest.get(
+            "transition_id", ""
+        ),
+        "transition_hash": production_governance_manifest.get(
+            "transition_hash", ""
+        ),
+        "mutation_plan_hash": production_governance_manifest.get(
+            "mutation_plan_hash", ""
+        ),
+        "evidence_hash": production_governance_manifest.get(
+            "evidence_hash", ""
+        ),
+        "governed_evidence_path": (
+            str(args.governed_evidence_json)
+            if registry_write_requested
+            else ""
+        ),
+        "mutation_budget_ledger_path": (
+            production_governance_manifest.get(
+                "mutation_budget_ledger_path",
+                str(args.mutation_budget_ledger),
+            )
+            if registry_write_requested
+            else ""
+        ),
+        "mutation_budget_reservation": (
+            production_governance_manifest.get(
+                "mutation_budget_reservation"
+            )
+        ),
+        "blockers": list(
+            production_governance_manifest.get("blockers", []) or []
+        ),
+        "before_registry_sha256": production_governance_manifest.get(
+            "before_registry_sha256", ""
+        ),
+        "after_registry_sha256": production_governance_manifest.get(
+            "after_registry_sha256", ""
+        ),
+        "inverse_wal_path": production_governance_manifest.get(
+            "inverse_wal_path", ""
+        ),
+    }
+    mining_payload["factor_protocol"] = factor_protocol_summary
     write_outputs(Path(mining_payload["output_dir"]), mining_payload)
 
     payload: dict[str, Any] = {
@@ -517,12 +811,21 @@ def run_daily_automation(args: argparse.Namespace) -> dict[str, Any]:
         "source_notes_status": source_status,
         "source_note_count": len(source_notes),
         "market_data_status": market_status,
+        "production_market_evidence": market_evidence,
+        "market_evidence_blocker": market_evidence_blocker,
         "candidate_count": int(mining_payload.get("candidate_count", 0)),
         "evidence_counts": counts,
         "success_gate_passed": success_gate_passed,
         "fail_closed_reason": fail_closed_reason,
         "registry_write_requested": registry_write_requested,
+        "run_mode": (
+            "governed_apply" if registry_write_requested else "report_only"
+        ),
         "registry_update_manifest": registry_manifest,
+        "production_family_governance_manifest": (
+            production_governance_manifest
+        ),
+        "factor_protocol": factor_protocol_summary,
         "mining_conclusion": mining_payload.get("conclusion", ""),
     }
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -545,12 +848,17 @@ def run_daily_automation(args: argparse.Namespace) -> dict[str, Any]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    payload = run_daily_automation(args)
+    try:
+        payload = run_daily_automation(args)
+    except (OSError, ValueError) as exc:
+        print(f"factor_governance_apply_blocked={exc}", file=sys.stderr)
+        return 2
     print(payload["summary_report_path"])
     print(
         json.dumps(
             {
                 "success_gate_passed": payload["success_gate_passed"],
+                "run_mode": payload["run_mode"],
                 "fail_closed_reason": payload["fail_closed_reason"],
                 "candidate_count": payload["candidate_count"],
                 "positive_evidence_count": payload["evidence_counts"][
@@ -559,12 +867,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "positive_candidate_count": payload["evidence_counts"][
                     "positive_candidate_count"
                 ],
+                "diverse_positive_champion_count": payload[
+                    "evidence_counts"
+                ]["diverse_positive_champion_count"],
                 "qualified_count": payload["evidence_counts"][
                     "qualified_count"
                 ],
                 "registry_update_status": payload["registry_update_manifest"][
                     "status"
                 ],
+                "production_family_governance_status": payload[
+                    "production_family_governance_manifest"
+                ]["status"],
+                "factor_protocol_status": payload["factor_protocol"][
+                    "status"
+                ],
+                "production_transition_applied": payload[
+                    "factor_protocol"
+                ]["transition_applied"],
             },
             ensure_ascii=False,
             indent=2,
@@ -572,6 +892,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     )
     if args.strict_positive_evidence and not payload["success_gate_passed"]:
+        return 2
+    if args.apply_governed_transitions and payload["factor_protocol"][
+        "status"
+    ] != "applied":
         return 2
     return 0
 

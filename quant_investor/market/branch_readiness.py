@@ -12,6 +12,11 @@ from typing import Any, Mapping, Sequence
 
 import pandas as pd
 
+from quant_investor.market.fundamental_generation import (
+    load_fundamental_pointer,
+    resolve_fundamental_table_path,
+)
+
 
 STATUS_PASS = "pass"
 STATUS_WARN = "warn"
@@ -289,8 +294,15 @@ def _read_latest_manifest(root: Path) -> dict[str, Any]:
 
 def _resolve_parquet_table_root(root: str | Path, table_name: str) -> Path:
     path = Path(root).expanduser()
-    if path.suffix.lower() == ".parquet" or (path / "part.parquet").exists():
+    if path.suffix.lower() == ".parquet":
         return path
+    if table_name == "fundamental_daily":
+        if load_fundamental_pointer(path) is not None:
+            return resolve_fundamental_table_path(path, table_name)
+    if (path / "part.parquet").exists():
+        return path
+    if table_name == "fundamental_daily":
+        return resolve_fundamental_table_path(path, table_name)
     if path.name == table_name:
         return path
     return path / table_name
@@ -379,7 +391,20 @@ def load_fundamental_records(
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     table_path = _resolve_parquet_table_root(root, "fundamental_daily")
     frame = _read_parquet_table(table_path)
-    manifest = _read_latest_manifest(table_path) or _manifest_from_parquet("fundamental_daily", frame, table_path)
+    pointer = load_fundamental_pointer(root)
+    manifest = (
+        dict(pointer.get("metadata", {}) or {})
+        if pointer is not None
+        else _read_latest_manifest(table_path)
+    ) or _manifest_from_parquet("fundamental_daily", frame, table_path)
+    if pointer is not None:
+        manifest.update(
+            {
+                "generation_id": pointer.get("generation_id"),
+                "pointer_path": pointer.get("pointer_path"),
+                "storage_backend": "parquet_canonical_generation",
+            }
+        )
     return _latest_records_by_symbol(frame, symbols=symbols, as_of=as_of), manifest
 
 

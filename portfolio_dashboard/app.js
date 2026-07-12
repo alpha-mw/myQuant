@@ -16,46 +16,80 @@
   }
 
   function initialCsvBundle() {
+    var bundle;
     if (hasGeneratedRecords(Generated)) {
-      return {
+      bundle = {
         nav: Generated.csv.nav,
         positions: Generated.csv.positions,
         trades: Generated.csv.trades || ""
       };
+    } else {
+      bundle = {
+        nav: Data.SAMPLE_CSV.nav,
+        positions: Data.SAMPLE_CSV.positions,
+        trades: Data.SAMPLE_CSV.trades
+      };
     }
-    return {
-      nav: Data.SAMPLE_CSV.nav,
-      positions: Data.SAMPLE_CSV.positions,
-      trades: Data.SAMPLE_CSV.trades
-    };
+    return bundle;
   }
 
   function initialSource() {
-    if (hasGeneratedRecords(Generated)) {
-      return { nav: "records", positions: "records", trades: Generated.csv.trades ? "records" : "sample" };
-    }
-    return { nav: "sample", positions: "sample", trades: "sample" };
+    var source = hasGeneratedRecords(Generated)
+      ? { nav: "records", positions: "records", trades: Generated.csv.trades ? "records" : "sample" }
+      : { nav: "sample", positions: "sample", trades: "sample" };
+    return source;
   }
+
+  function initialFileNames() {
+    var names = hasGeneratedRecords(Generated)
+      ? { nav: "generated_records.js", positions: "generated_records.js", trades: Generated.csv.trades ? "generated_records.js" : "trades_sample.csv" }
+      : { nav: "nav_sample.csv", positions: "positions_sample.csv", trades: "trades_sample.csv" };
+    return names;
+  }
+
+  function readHashState() {
+    var raw = String(window.location.hash || "").replace(/^#/, "");
+    var parts = raw.split("?");
+    var workspace = parts[0] || "overview";
+    if (["overview", "holdings", "trades", "theme", "factor", "audit"].indexOf(workspace) < 0) {
+      workspace = "overview";
+    }
+    var params = new URLSearchParams(parts[1] || "");
+    return {
+      workspace: workspace,
+      startDate: params.get("start") || "",
+      endDate: params.get("end") || "",
+      benchmarkField: params.get("benchmark") || "",
+      selectedBenchmarkFields: (params.get("compare") || "").split(",").filter(Boolean),
+      overviewLens: params.get("lens") || "nav"
+    };
+  }
+
+  var initialHash = readHashState();
 
   var state = {
     csvBundle: initialCsvBundle(),
     source: initialSource(),
-    fileNames: hasGeneratedRecords(Generated)
-      ? { nav: "generated_records.js", positions: "generated_records.js", trades: Generated.csv.trades ? "generated_records.js" : "trades_sample.csv" }
-      : { nav: "nav_sample.csv", positions: "positions_sample.csv", trades: "trades_sample.csv" },
+    fileNames: initialFileNames(),
     filters: {
-      startDate: "",
-      endDate: "",
-      benchmarkField: "",
-      selectedBenchmarkFields: [],
+      startDate: initialHash.startDate,
+      endDate: initialHash.endDate,
+      benchmarkField: initialHash.benchmarkField,
+      selectedBenchmarkFields: initialHash.selectedBenchmarkFields,
       showPortfolioCurve: true,
       showExcessCurve: true
     },
     view: {
-      overviewLens: "nav",
+      activeWorkspace: initialHash.workspace,
+      overviewLens: initialHash.overviewLens,
       benchmarkSortField: "totalReturn",
       benchmarkSortDirection: "desc",
-      benchmarkSelectionTouched: false
+      benchmarkSelectionTouched: false,
+      tableExpanded: {
+        holdings: false,
+        trades: false,
+        closedTrades: false
+      }
     },
     dataset: null,
     metrics: null
@@ -63,6 +97,31 @@
 
   function $(id) {
     return document.getElementById(id);
+  }
+
+  function syncHashState() {
+    var params = new URLSearchParams();
+    if (state.filters.startDate) params.set("start", state.filters.startDate);
+    if (state.filters.endDate) params.set("end", state.filters.endDate);
+    if (state.filters.benchmarkField) params.set("benchmark", state.filters.benchmarkField);
+    if ((state.filters.selectedBenchmarkFields || []).length) {
+      params.set("compare", state.filters.selectedBenchmarkFields.join(","));
+    }
+    if (state.view.overviewLens && state.view.overviewLens !== "nav") {
+      params.set("lens", state.view.overviewLens);
+    }
+    var hash = "#" + state.view.activeWorkspace + (params.toString() ? "?" + params.toString() : "");
+    if (window.history && window.history.replaceState) window.history.replaceState(null, "", hash);
+    else window.location.hash = hash;
+  }
+
+  function applyWorkspaceVisibility() {
+    document.querySelectorAll("[data-workspace]").forEach(function (section) {
+      section.hidden = section.dataset.workspace !== state.view.activeWorkspace;
+    });
+    document.querySelectorAll("[data-workspace-tab]").forEach(function (tab) {
+      tab.classList.toggle("active", tab.dataset.workspaceTab === state.view.activeWorkspace);
+    });
   }
 
   function csvEscape(value) {
@@ -224,7 +283,10 @@
 
   function refresh(options) {
     options = options || {};
-    state.dataset = Data.parseDataset(state.csvBundle);
+    state.dataset = Data.parseDataset(
+      state.csvBundle,
+      window.DashboardSnapshotV2 || Generated.contract || null
+    );
     if (options.resetDateRange) {
       state.filters.startDate = "";
       state.filters.endDate = "";
@@ -234,11 +296,12 @@
     updateBenchmarkControls(state.dataset.benchmarks);
     syncDateInputsToDataset();
     state.metrics = Metrics.computeDashboard(state.dataset, state.filters);
+    applyWorkspaceVisibility();
     renderCurrentDashboard();
     var infos = [];
     var usingUser = Object.keys(state.source).some(function (key) { return state.source[key] === "user"; });
     var usingRecords = !usingUser && Object.keys(state.source).some(function (key) { return state.source[key] === "records"; });
-    var warnings = state.dataset.warnings.slice();
+    var warnings = state.dataset.warnings.slice().concat((state.metrics && state.metrics.warnings) || []);
     if (usingRecords) {
       infos.push("已自动加载本地记录数据：" + (Generated.latestRecord || "latest") + "；生成时间：" + (Generated.generatedAt || "-") + "。");
       infos.push("所有计算仍在浏览器本地完成；records 数据来自本机 strategy_records 导出。");
@@ -246,14 +309,33 @@
         infos.push("已识别 " + state.dataset.benchmarks.length + " 个 benchmark NAV 字段，可在顶部多选对比。");
       }
       warnings = warnings.concat(Generated.warnings || []);
+      infos = infos.concat(Generated.infos || []);
+      var contract = window.DashboardSnapshotV2 || Generated.contract || {};
+      if ((contract.blockers || []).length) {
+        warnings.unshift(
+          "Dashboard Contract v2：" + contract.blockers.length +
+          " 个 blocker，当前状态 " + (contract.status || "blocked") +
+          "；展开查看完整明细，交易前先看归因与数据审计。"
+        );
+        warnings.push("Dashboard Contract v2 blocker detail: " + contract.blockers.join(", "));
+      }
+      if (contract.as_of_matrix) {
+        infos.unshift(
+          "as-of：策略 " + (contract.as_of_matrix.strategy_record_date || "-") +
+          "；分析 " + (contract.as_of_matrix.analysis_trading_date || "-") +
+          "；quote " + (contract.as_of_matrix.quote_at || "-") +
+          "；Theme " + (contract.as_of_matrix.theme_date || "-") + "。"
+        );
+      }
     } else if (usingUser) {
-      infos.push("已加载用户上传 CSV；未上传的模块保留当前数据源，所有计算在浏览器本地完成。");
+      infos.push("已加载当前会话中的用户 CSV；刷新或关闭页面即清除，不写入浏览器持久存储。");
     } else {
       infos.push("示例数据和 sample benchmark 均为模拟数据，仅用于演示，不代表真实业绩或真实指数；所有计算在浏览器本地完成。");
     }
     UI.renderMessages(state.dataset.errors, warnings, infos);
     setUploadNames();
     setStatus();
+    syncHashState();
   }
 
   function handleFileUpload(kind, file) {
@@ -294,9 +376,11 @@
       showExcessCurve: true
     };
     state.view.overviewLens = "nav";
+    state.view.activeWorkspace = "overview";
     state.view.benchmarkSortField = "totalReturn";
     state.view.benchmarkSortDirection = "desc";
     state.view.benchmarkSelectionTouched = false;
+    state.view.tableExpanded = { holdings: false, trades: false, closedTrades: false };
     syncOverviewLensTabs();
     refresh({ resetDateRange: true });
   }
@@ -382,6 +466,7 @@
     bindOverviewLens();
     bindSectionTabs();
     bindTableFilters();
+    bindTableToggles();
     window.addEventListener("resize", debounce(function () {
       if (state.metrics) renderCurrentDashboard();
     }, 160));
@@ -412,35 +497,37 @@
   }
 
   function bindSectionTabs() {
-    var tabs = Array.from(document.querySelectorAll(".section-tab"));
-    var sections = tabs.map(function (tab) {
-      var href = tab.getAttribute("href") || "";
-      return { tab: tab, section: href.charAt(0) === "#" ? document.querySelector(href) : null };
-    }).filter(function (item) { return item.section; });
-    function setActive(hash) {
-      tabs.forEach(function (tab) {
-        tab.classList.toggle("active", tab.getAttribute("href") === hash);
-      });
-    }
-    tabs.forEach(function (tab) {
-      tab.addEventListener("click", function () {
-        setActive(tab.getAttribute("href"));
+    document.querySelectorAll("[data-workspace-tab]").forEach(function (tab) {
+      tab.addEventListener("click", function (event) {
+        event.preventDefault();
+        state.view.activeWorkspace = tab.dataset.workspaceTab || "overview";
+        applyWorkspaceVisibility();
+        syncHashState();
+        renderCurrentDashboard();
+        window.scrollTo({ top: 0, behavior: "smooth" });
       });
     });
-    if ("IntersectionObserver" in window && sections.length) {
-      var observer = new IntersectionObserver(function (entries) {
-        var visible = entries.filter(function (entry) { return entry.isIntersecting; })
-          .sort(function (a, b) { return b.intersectionRatio - a.intersectionRatio; })[0];
-        if (visible) setActive("#" + visible.target.id);
-      }, { rootMargin: "-20% 0px -68% 0px", threshold: [0.12, 0.3, 0.6] });
-      sections.forEach(function (item) { observer.observe(item.section); });
-    }
   }
 
   function bindTableFilters() {
     document.querySelectorAll("input[data-filter-table]").forEach(function (input) {
       input.addEventListener("input", function () {
         filterTable(input.dataset.filterTable, input.value);
+      });
+    });
+  }
+
+  function bindTableToggles() {
+    [
+      ["toggleHoldingsRows", "holdings"],
+      ["toggleTradesRows", "trades"],
+      ["toggleClosedTradesRows", "closedTrades"]
+    ].forEach(function (item) {
+      var button = $(item[0]);
+      if (!button) return;
+      button.addEventListener("click", function () {
+        state.view.tableExpanded[item[1]] = !state.view.tableExpanded[item[1]];
+        renderCurrentDashboard();
       });
     });
   }
@@ -474,6 +561,7 @@
 
   document.addEventListener("DOMContentLoaded", function () {
     bindEvents();
-    refresh({ resetDateRange: true });
+    applyWorkspaceVisibility();
+    refresh({ resetDateRange: !state.filters.startDate && !state.filters.endDate });
   });
 })();

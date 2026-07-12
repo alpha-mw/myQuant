@@ -25,6 +25,7 @@ wheels/
 
 # Environment
 .env
+.agent/CONTINUITY.md
 .venv
 env/
 venv/
@@ -70,6 +71,10 @@ htmlcov/
 
 # Directories with data/reports
 data/
+private/
+!quant_investor/themes/data/
+!quant_investor/themes/data/theme_taxonomy.v2.json
+!quant_investor/themes/data/theme_policy_events.example.jsonl
 !quant_investor/data/
 quant_investor/data/*
 !quant_investor/data/**/
@@ -79,6 +84,7 @@ quant_investor/data/storage/*
 !quant_investor/data/storage/csv_reader.py
 !quant_investor/data/storage/csv_store.py
 reports/
+quant_investor/factor_registry/*.lock
 portfolio_dashboard/generated/
 # Root-anchored: the unanchored `models/` pattern silently blocked the
 # web/models/ source package (Pydantic schemas) from ever being committed.

@@ -1,5 +1,9 @@
 # Theme Rotation PR Summary
 
+> Legacy Phase 6 change summary. Its default-off list records that historical
+> rollout only; v13.1 operations follow `docs/runbooks/v13_1_freeze_exception.md`
+> and keep the portfolio cap enabled while Theme v2 formal remains off.
+
 ## What Changed
 
 - Added a deterministic Theme Rotation scanner for local A-share OHLCV frames

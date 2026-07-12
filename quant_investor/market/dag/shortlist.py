@@ -3,7 +3,7 @@ from __future__ import annotations
 from statistics import fmean
 from typing import Any, Mapping
 
-from quant_investor.agent_protocol import BranchVerdict, ShortlistItem
+from quant_investor.agent_protocol import ActionLabel, BranchVerdict, ShortlistItem
 from quant_investor.market.dag.common import _dedupe_texts, _score_to_action
 
 
@@ -104,6 +104,17 @@ def _build_shortlist_from_bayesian_records(
         )
         if bool(metadata.get("kill_switch", False)):
             continue
+        theme_pool = metadata.get("theme_pool", {})
+        if isinstance(theme_pool, Mapping) and (
+            bool(theme_pool.get("theme_forced_admission", False))
+            or str(theme_pool.get("candidate_intent") or "").strip()
+            == "research_candidate_not_buy_signal"
+        ):
+            continue
+        action = _score_to_action(action_score)
+        edge_after_costs = float(metadata.get("posterior_edge_after_costs", expected_alpha) or 0.0)
+        if action is not ActionLabel.BUY or expected_alpha <= 0.0 or edge_after_costs <= 0.0:
+            continue
         risk_flags: list[str] = []
         fake_breakout_penalty = float(metadata.get("fake_breakout_penalty", 0.0) or 0.0)
         setup_failure_penalty = float(metadata.get("setup_failure_penalty", 0.0) or 0.0)
@@ -120,7 +131,7 @@ def _build_shortlist_from_bayesian_records(
                 company_name=company_name,
                 category=str(metadata.get("category", "")),
                 rank_score=action_score,
-                action=_score_to_action(action_score),
+                action=action,
                 confidence=confidence,
                 expected_upside=max(expected_alpha, 0.0),
                 suggested_weight=max(
@@ -145,7 +156,7 @@ def _build_shortlist_from_bayesian_records(
                     "posterior_win_rate": win_rate,
                     "posterior_confidence": confidence,
                     "posterior_expected_alpha": expected_alpha,
-                    "posterior_edge_after_costs": float(metadata.get("posterior_edge_after_costs", 0.0)),
+                    "posterior_edge_after_costs": edge_after_costs,
                     "posterior_capacity_penalty": float(metadata.get("posterior_capacity_penalty", 0.0)),
                     "rank": int(getattr(record, "rank", 0) if not isinstance(record, dict) else record.get("rank", 0)),
                 },

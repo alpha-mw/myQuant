@@ -84,7 +84,7 @@ def test_concept_memberships_add_pit_theme_and_can_become_primary():
 
     concept = payload["theme_scores"]["concept::low-altitude-economy"]
     assert concept["theme_type"] == "concept"
-    assert concept["membership_source"] == "theme_membership.v1"
+    assert concept["membership_source"] == "theme_membership.v2"
     assert concept["pit_membership"] is True
     assert payload["symbol_theme_memberships"]["000001.SZ"] == [
         "industry::machinery",

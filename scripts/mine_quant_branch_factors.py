@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import ast
+import hashlib
 import json
+import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -28,23 +31,76 @@ from quant_investor.factors.pit_fundamentals import (  # noqa: E402
 from quant_investor.factors.governance import (  # noqa: E402
     FactorAdmissionDecision,
     FactorLifecycleState,
-    FactorRecord,
-    GateResult,
 )
-from quant_investor.factors.runtime import MinedFactorRegistry  # noqa: E402
+from quant_investor.factors.registry_store import (  # noqa: E402
+    load_registry_snapshot_strict,
+)
+from quant_investor.factors.governance_protocol_v2 import (  # noqa: E402
+    FDR_Q,
+    benjamini_hochberg_by_family,
+)
 from scripts.retest_aquant_alpha_mix_8gate import (  # noqa: E402
     _failed_gate_ids,
     _json_default,
+    _matrix_from_frames,
     _passed_gate_ids,
     _safe_float,
     RetestContext,
     build_context,
     candidate_metrics,
     evaluate_with_myquant_gate,
+    load_fundamental_exposure_maps,
 )
 
-DEFAULT_UNIVERSES = ("hs300", "zz500", "zz1000")
+DEFAULT_UNIVERSES = ("full_a",)
 DEFAULT_REGISTRY_PATH = "quant_investor/factor_registry/mined_factors.json"
+
+
+@dataclass(frozen=True)
+class CandidateDiversityPolicy:
+    version: str = "candidate-diversity-policy.v1"
+    max_per_family: int = 1
+    dominant_primitive_threshold: float = 0.50
+    pairwise_abs_spearman_threshold: float = 0.70
+    min_common_symbols_per_date: int = 20
+    min_common_rebalance_dates: int = 3
+    use_absolute_correlation: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "lineage_schema": "primitive-lineage.v1",
+            "correlation_metric": (
+                "median_monthly_cross_sectional_abs_spearman"
+            ),
+            "max_per_family": self.max_per_family,
+            "dominant_primitive_threshold": self.dominant_primitive_threshold,
+            "pairwise_abs_spearman_threshold": (
+                self.pairwise_abs_spearman_threshold
+            ),
+            "min_common_symbols_per_date": self.min_common_symbols_per_date,
+            "min_common_rebalance_dates": self.min_common_rebalance_dates,
+            "use_absolute_correlation": self.use_absolute_correlation,
+            "champion_order": [
+                "icir_desc",
+                "mean_rankic_desc",
+                "cost_adjusted_return_desc",
+                "master_return_delta_desc",
+                "turnover_asc",
+                "existing_factor_corr_abs_asc",
+                "name_asc",
+            ],
+        }
+
+    @property
+    def policy_hash(self) -> str:
+        payload = json.dumps(
+            self.to_dict(), sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+
+DEFAULT_DIVERSITY_POLICY = CandidateDiversityPolicy()
 
 
 @dataclass(frozen=True)
@@ -57,6 +113,170 @@ class MiningCandidate:
     expression: str = ""
     window: int | None = None
     params: Mapping[str, Any] | None = None
+
+
+_FUNDAMENTAL_PRIMITIVES = {
+    "fin_roe",
+    "fin_roa",
+    "fin_debt_to_assets",
+    "fin_net_profit_yoy",
+    "fin_ocf_to_profit",
+    "fin_fcf_to_profit",
+    "fcf_to_price",
+}
+
+
+def _canonical_formula_primitive(name: str) -> tuple[str, list[str]]:
+    value = str(name or "").strip()
+    transforms: list[str] = []
+    if value.endswith("_resid_existing"):
+        value = value[: -len("_resid_existing")]
+        transforms.append("residualized_against_existing")
+    patterns = (
+        (r"^momentum_(\d+)$", "price_momentum", "lookback"),
+        (r"^amihud_(\d+)$", "amihud_illiquidity", "lookback"),
+        (r"^(?:low|high)_amount_(\d+)$", "traded_amount", "lookback"),
+        (r"^volume_stability_(\d+)$", "volume", "stability_window"),
+        (r"^volatility_(\d+)$", "close_return", "volatility_window"),
+        (r"^price_efficiency_(\d+)$", "close_return", "efficiency_window"),
+    )
+    for pattern, primitive, transform in patterns:
+        match = re.match(pattern, value)
+        if match:
+            transforms.append(f"{transform}:{match.group(1)}")
+            return primitive, transforms
+    if value.startswith("volume_growth_"):
+        transforms.append(
+            f"growth_windows:{value.removeprefix('volume_growth_')}"
+        )
+        return "traded_amount", transforms
+    if value == "low_debt_to_assets":
+        transforms.append("direction:lower_is_better")
+        return "fin_debt_to_assets", transforms
+    return value, transforms
+
+
+def candidate_primitive_lineage(
+    candidate: MiningCandidate,
+    *,
+    policy: CandidateDiversityPolicy = DEFAULT_DIVERSITY_POLICY,
+) -> dict[str, Any]:
+    contributions: dict[str, float] = {}
+    transforms: dict[str, list[str]] = {}
+
+    def add(name: str, weight: float, extra: Sequence[str] = ()) -> None:
+        primitive, detected = _canonical_formula_primitive(name)
+        if not primitive:
+            return
+        contributions[primitive] = contributions.get(primitive, 0.0) + abs(
+            float(weight)
+        )
+        transforms.setdefault(primitive, []).extend([*detected, *extra])
+
+    if candidate.implementation == "research_formula:rank_blend":
+        params = dict(candidate.params or {})
+        left_weight = _safe_float(params.get("left_weight"), 0.5)
+        add(str(params.get("left", "")), left_weight)
+        add(str(params.get("right", "")), 1.0 - left_weight)
+    elif candidate.implementation.startswith("aquant_expression:"):
+        try:
+            tree = ast.parse(candidate.expression or "", mode="eval")
+        except SyntaxError as exc:
+            return {
+                "primitive_lineage": [],
+                "primitive_contributions": {},
+                "dominant_primitives": [],
+                "lineage_transforms": {},
+                "lineage_extraction_status": f"error:{exc.msg}",
+            }
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Name)
+                and node.id in _FUNDAMENTAL_PRIMITIVES
+            ):
+                add(node.id, 1.0)
+        if "ts_mean" in candidate.expression:
+            for primitive in contributions:
+                transforms.setdefault(primitive, []).append(
+                    f"rolling_mean:{candidate.window or 'expression'}"
+                )
+    elif candidate.implementation.startswith("price_volume:"):
+        family_map = {
+            "momentum": "price_momentum",
+            "short_reversal": "close_return",
+            "short_term_return": "close_return",
+            "volume_stability": "volume",
+            "volume_stability_smooth": "volume",
+            "low_dollar_volume": "traded_amount",
+            "high_dollar_volume": "traded_amount",
+            "amihud_illiquidity": "amihud_illiquidity",
+            "volatility_penalty": "close_return",
+            "downside_volatility": "downside_return",
+            "price_efficiency": "close_return",
+            "dollar_volume_growth": "traded_amount",
+        }
+        primitive = family_map.get(candidate.family)
+        if primitive:
+            add(primitive, 1.0, [f"family:{candidate.family}"])
+        elif candidate.family == "volstab_momentum_illiquidity_blend":
+            params = dict(candidate.params or {})
+            outer_weight = _safe_float(
+                params.get("outer_volume_stability_weight"), 0.5
+            )
+            inner_weight = _safe_float(
+                params.get("inner_momentum_weight"), 0.5
+            )
+            remainder = 1.0 - outer_weight
+            add("volume", outer_weight, ["transform:volume_stability"])
+            add("price_momentum", remainder * inner_weight)
+            add("amihud_illiquidity", remainder * (1.0 - inner_weight))
+        else:
+            # Composite price-volume implementations declare their primitive
+            # inputs in params so differently named wrappers cannot evade
+            # lineage governance.
+            params = dict(candidate.params or {})
+            declared = [
+                key
+                for key in params
+                if key.endswith("_window") or key.endswith("_weight")
+            ]
+            for key in declared:
+                if "momentum" in key:
+                    add("price_momentum", params.get(key, 1.0))
+                elif "amihud" in key or "illiquidity" in key:
+                    add("amihud_illiquidity", params.get(key, 1.0))
+                elif "volume" in key:
+                    add("volume", params.get(key, 1.0))
+    total = sum(contributions.values())
+    if total <= 0.0:
+        return {
+            "primitive_lineage": [],
+            "primitive_contributions": {},
+            "dominant_primitives": [],
+            "lineage_transforms": transforms,
+            "lineage_extraction_status": "evidence_missing",
+        }
+    normalized = {key: value / total for key, value in contributions.items()}
+    dominant = sorted(
+        key
+        for key, value in normalized.items()
+        if value >= policy.dominant_primitive_threshold
+    )
+    if not dominant:
+        maximum = max(normalized.values())
+        dominant = sorted(
+            key for key, value in normalized.items() if value == maximum
+        )
+    return {
+        "primitive_lineage": sorted(normalized),
+        "primitive_contributions": dict(sorted(normalized.items())),
+        "dominant_primitives": dominant,
+        "lineage_transforms": {
+            key: sorted(set(value))
+            for key, value in sorted(transforms.items())
+        },
+        "lineage_extraction_status": "complete",
+    }
 
 
 def _min_periods(window: int) -> int:
@@ -88,12 +308,50 @@ def _auto_analysis_start_date(
 ) -> pd.Timestamp | None:
     if context.adj_close.empty:
         return None
-    valid = (
-        context.adj_close.notna()
-        .sum(axis=1)
-        .div(max(context.adj_close.shape[1], 1))
+    valid_mask = context.adj_close.notna()
+    date_values = context.adj_close.index.values.astype("datetime64[ns]")
+    first_values = np.array(
+        [
+            context.adj_close[column].first_valid_index().to_datetime64()
+            if context.adj_close[column].first_valid_index() is not None
+            else np.datetime64("NaT")
+            for column in context.adj_close.columns
+        ],
+        dtype="datetime64[ns]",
     )
-    ready = valid[valid >= float(min_price_coverage)]
+    last_values = np.array(
+        [
+            context.adj_close[column].last_valid_index().to_datetime64()
+            if context.adj_close[column].last_valid_index() is not None
+            else np.datetime64("NaT")
+            for column in context.adj_close.columns
+        ],
+        dtype="datetime64[ns]",
+    )
+    observable = (
+        (date_values[:, None] >= first_values[None, :])
+        & (date_values[:, None] <= last_values[None, :])
+        & ~np.isnat(first_values[None, :])
+        & ~np.isnat(last_values[None, :])
+    )
+    observable_count = pd.Series(
+        observable.sum(axis=1),
+        index=context.adj_close.index,
+        dtype=float,
+    )
+    maximum_observable = int(observable_count.max())
+    minimum_cross_section = (
+        max(20, int(maximum_observable * 0.60))
+        if maximum_observable >= 20
+        else max(1, int(np.ceil(maximum_observable * 0.60)))
+    )
+    coverage = valid_mask.sum(axis=1).div(
+        observable_count.replace(0.0, np.nan)
+    )
+    ready = coverage[
+        (coverage >= float(min_price_coverage))
+        & (observable_count >= minimum_cross_section)
+    ]
     if ready.empty:
         return None
     return pd.Timestamp(ready.index[0])
@@ -976,6 +1234,26 @@ def compute_formulaic_signal(
     )
 
 
+def compute_candidate_signal(
+    candidate: MiningCandidate,
+    *,
+    context: RetestContext,
+    expression_inputs: Any | None,
+    formulaic_primitives: Mapping[str, pd.DataFrame],
+) -> pd.DataFrame:
+    if candidate.implementation.startswith("aquant_expression:"):
+        if expression_inputs is None:
+            raise ValueError("fundamental expression inputs were not built")
+        signal = evaluate_aquant_expression(
+            candidate.expression, expression_inputs
+        )
+    elif candidate.implementation.startswith("research_formula:"):
+        signal = compute_formulaic_signal(candidate, formulaic_primitives)
+    else:
+        signal = compute_price_volume_signal(candidate, context)
+    return _coerce_signal(signal, context)
+
+
 def build_candidate_catalog(
     windows: Sequence[int],
     *,
@@ -1066,6 +1344,336 @@ def _set_parameter_stability(results: list[dict[str, Any]]) -> None:
         item["summary"] = review.summary
 
 
+def _set_family_fdr(results: list[dict[str, Any]]) -> None:
+    """Attach family-scoped BH evidence from the actually computed RankIC p-value."""
+
+    rows = []
+    for item in results:
+        metrics = dict(item.get("metrics", {}) or {})
+        rows.append(
+            {
+                "name": str(item.get("name", "")),
+                "family": str(item.get("family", "") or "unknown"),
+                "p_value": _safe_float(metrics.get("rank_ic_p_value"), 1.0),
+            }
+        )
+    adjusted = {
+        row["name"]: row
+        for row in benjamini_hochberg_by_family(rows, q=FDR_Q)
+    }
+    for item in results:
+        evidence = adjusted[str(item.get("name", ""))]
+        metrics = dict(item.get("metrics", {}) or {})
+        metrics.update(
+            {
+                "family_fdr_method": evidence["fdr_method"],
+                "family_fdr_q": evidence["bh_q"],
+                "family_fdr_q_value": evidence["bh_q_value"],
+                "family_fdr_passed": evidence["fdr_passed"],
+                "family_test_count": evidence["bh_family_test_count"],
+            }
+        )
+        review = evaluate_with_myquant_gate(str(item["name"]), metrics)
+        item["metrics"] = metrics
+        item["decision"] = review.decision.value
+        item["target_state"] = review.target_state.value
+        item["gates_passed"] = len(_passed_gate_ids(review))
+        item["passed_gate_ids"] = _passed_gate_ids(review)
+        item["failed_gate_ids"] = _failed_gate_ids(review)
+        item["gate_results"] = _gate_rows(review)
+        item["summary"] = review.summary
+
+
+def _alpha_champion_key(item: Mapping[str, Any]) -> tuple[Any, ...]:
+    metrics = dict(item.get("metrics", {}) or {})
+    return (
+        -_safe_float(metrics.get("icir")),
+        -_safe_float(metrics.get("mean_rankic")),
+        -_safe_float(metrics.get("cost_adjusted_return")),
+        -_safe_float(metrics.get("master_return_delta")),
+        _safe_float(metrics.get("turnover"), float("inf")),
+        abs(_safe_float(metrics.get("existing_factor_corr"), 1.0)),
+        str(item.get("name", "")),
+    )
+
+
+def _connected_components(
+    names: Sequence[str], edges: Sequence[tuple[str, str]]
+) -> list[list[str]]:
+    parent = {name: name for name in names}
+
+    def find(name: str) -> str:
+        while parent[name] != name:
+            parent[name] = parent[parent[name]]
+            name = parent[name]
+        return name
+
+    def union(left: str, right: str) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[max(left_root, right_root)] = min(left_root, right_root)
+
+    for left, right in edges:
+        union(left, right)
+    groups: dict[str, list[str]] = {}
+    for name in names:
+        groups.setdefault(find(name), []).append(name)
+    return [sorted(group) for group in groups.values()]
+
+
+def _pairwise_candidate_correlation(
+    left: pd.DataFrame,
+    right: pd.DataFrame,
+    rebalance_dates: Sequence[pd.Timestamp],
+    policy: CandidateDiversityPolicy,
+) -> dict[str, Any]:
+    correlations: list[float] = []
+    common_dates = left.index.intersection(right.index)
+    allowed_dates = set(pd.Timestamp(item) for item in rebalance_dates)
+    common_columns = left.columns.intersection(right.columns)
+    for date in common_dates:
+        if pd.Timestamp(date) not in allowed_dates:
+            continue
+        lhs = left.loc[date, common_columns].replace(
+            [np.inf, -np.inf], np.nan
+        )
+        rhs = right.loc[date, common_columns].replace(
+            [np.inf, -np.inf], np.nan
+        )
+        valid = lhs.notna() & rhs.notna()
+        if int(valid.sum()) < policy.min_common_symbols_per_date:
+            continue
+        correlation = lhs[valid].corr(rhs[valid], method="spearman")
+        if pd.notna(correlation):
+            correlations.append(float(correlation))
+    value = (
+        float(np.median(np.abs(correlations)))
+        if correlations and policy.use_absolute_correlation
+        else float(np.median(correlations)) if correlations else None
+    )
+    return {
+        "median_abs_spearman": value,
+        "valid_common_date_count": len(correlations),
+        "evidence_complete": (
+            len(correlations) >= policy.min_common_rebalance_dates
+        ),
+    }
+
+
+def apply_candidate_diversity_governance(
+    results: list[dict[str, Any]],
+    *,
+    candidates_by_name: Mapping[str, MiningCandidate],
+    signals_by_name: Mapping[str, pd.DataFrame],
+    rebalance_dates: Sequence[pd.Timestamp],
+    policy: CandidateDiversityPolicy = DEFAULT_DIVERSITY_POLICY,
+) -> dict[str, Any]:
+    """Annotate candidates and choose deterministic write champions."""
+
+    policy_hash = policy.policy_hash
+    qualified = [
+        item
+        for item in results
+        if item.get("decision")
+        == FactorAdmissionDecision.PRODUCTION_CANDIDATE.value
+    ]
+    by_name = {str(item.get("name", "")): item for item in qualified}
+    for item in qualified:
+        name = str(item.get("name", ""))
+        candidate = candidates_by_name.get(name)
+        lineage = (
+            candidate_primitive_lineage(candidate, policy=policy)
+            if candidate is not None
+            else {
+                "primitive_lineage": [],
+                "primitive_contributions": {},
+                "dominant_primitives": [],
+                "lineage_transforms": {},
+                "lineage_extraction_status": "evidence_missing",
+            }
+        )
+        item.update(lineage)
+        implementation = str(item.get("implementation", ""))
+        runtime_eligible = implementation.startswith(
+            ("price_volume:", "aquant_expression:")
+        )
+        blockers: list[str] = []
+        if not runtime_eligible:
+            blockers.append("implementation_not_supported_by_runtime")
+        if lineage["lineage_extraction_status"] != "complete":
+            blockers.append("lineage_evidence_missing")
+        if name not in signals_by_name:
+            blockers.append("candidate_signal_evidence_missing")
+        item["runtime_write_eligible"] = runtime_eligible and not blockers
+        item["runtime_write_blockers"] = blockers
+        item["diversity_selection"] = {
+            "policy_version": policy.version,
+            "policy_hash": policy_hash,
+            "status": "pending" if not blockers else "runtime_ineligible",
+            "skip_reason": blockers[0] if blockers else "",
+            "redundancy_stage": "",
+            "family_champion": "",
+            "lineage_component_id": "",
+            "lineage_champion": "",
+            "correlation_cluster_id": "",
+            "cluster_champion": "",
+            "max_abs_candidate_corr": None,
+            "valid_corr_date_count": 0,
+            "final_registry_write_eligible": False,
+        }
+
+    eligible = [item for item in qualified if item["runtime_write_eligible"]]
+
+    family_survivors: list[dict[str, Any]] = []
+    families: dict[str, list[dict[str, Any]]] = {}
+    for item in eligible:
+        families.setdefault(str(item.get("family", "")), []).append(item)
+    for family, members in sorted(families.items()):
+        champion = sorted(members, key=_alpha_champion_key)[0]
+        champion_name = str(champion["name"])
+        family_survivors.append(champion)
+        for item in members:
+            selection = item["diversity_selection"]
+            selection["family_champion"] = champion_name
+            if item is not champion:
+                selection.update(
+                    status="research_only_redundant",
+                    skip_reason="same_family_redundant",
+                    redundancy_stage="family",
+                )
+
+    lineage_edges: list[tuple[str, str]] = []
+    for index, left in enumerate(family_survivors):
+        left_set = set(left.get("dominant_primitives", []))
+        for right in family_survivors[index + 1:]:
+            if left_set.intersection(right.get("dominant_primitives", [])):
+                lineage_edges.append((str(left["name"]), str(right["name"])))
+    lineage_survivors: list[dict[str, Any]] = []
+    lineage_components = _connected_components(
+        [str(item["name"]) for item in family_survivors], lineage_edges
+    )
+    for component_index, names in enumerate(lineage_components, start=1):
+        members = [by_name[name] for name in names]
+        champion = sorted(members, key=_alpha_champion_key)[0]
+        champion_name = str(champion["name"])
+        lineage_survivors.append(champion)
+        component_id = f"lineage-{component_index:03d}"
+        for item in members:
+            selection = item["diversity_selection"]
+            selection["lineage_component_id"] = component_id
+            selection["lineage_champion"] = champion_name
+            if item is not champion:
+                selection.update(
+                    status="research_only_redundant",
+                    skip_reason="same_family_redundant",
+                    redundancy_stage="primitive_lineage",
+                )
+
+    correlation_pairs: list[dict[str, Any]] = []
+    correlation_edges: list[tuple[str, str]] = []
+    incomplete_required_pairs: list[tuple[str, str]] = []
+    for index, left in enumerate(lineage_survivors):
+        left_name = str(left["name"])
+        for right in lineage_survivors[index + 1:]:
+            right_name = str(right["name"])
+            evidence = _pairwise_candidate_correlation(
+                signals_by_name[left_name],
+                signals_by_name[right_name],
+                rebalance_dates,
+                policy,
+            )
+            row = {"left": left_name, "right": right_name, **evidence}
+            correlation_pairs.append(row)
+            if not evidence["evidence_complete"]:
+                incomplete_required_pairs.append((left_name, right_name))
+            elif _safe_float(evidence["median_abs_spearman"]) >= (
+                policy.pairwise_abs_spearman_threshold
+            ):
+                correlation_edges.append((left_name, right_name))
+
+    champions: list[dict[str, Any]] = []
+    if incomplete_required_pairs:
+        affected = {
+            name for pair in incomplete_required_pairs for name in pair
+        }
+        for item in lineage_survivors:
+            if str(item["name"]) in affected:
+                item["diversity_selection"].update(
+                    status="evidence_missing",
+                    skip_reason=(
+                        "candidate_pairwise_correlation_evidence_missing"
+                    ),
+                )
+    else:
+        components = _connected_components(
+            [str(item["name"]) for item in lineage_survivors],
+            correlation_edges,
+        )
+        for component_index, names in enumerate(components, start=1):
+            members = [by_name[name] for name in names]
+            champion = sorted(members, key=_alpha_champion_key)[0]
+            champion_name = str(champion["name"])
+            champions.append(champion)
+            component_id = f"correlation-{component_index:03d}"
+            for item in members:
+                name = str(item["name"])
+                related = [
+                    row
+                    for row in correlation_pairs
+                    if name in {row["left"], row["right"]}
+                ]
+                selection = item["diversity_selection"]
+                selection.update(
+                    correlation_cluster_id=component_id,
+                    cluster_champion=champion_name,
+                    max_abs_candidate_corr=max(
+                        (
+                            _safe_float(row["median_abs_spearman"])
+                            for row in related
+                            if row["median_abs_spearman"] is not None
+                        ),
+                        default=None,
+                    ),
+                    valid_corr_date_count=min(
+                        (
+                            int(row["valid_common_date_count"])
+                            for row in related
+                        ),
+                        default=0,
+                    ),
+                )
+                if item is champion:
+                    selection.update(
+                        status=(
+                            "champion"
+                            if len(lineage_survivors) > 1
+                            else "champion_not_applicable_single_candidate"
+                        ),
+                        final_registry_write_eligible=True,
+                    )
+                else:
+                    selection.update(
+                        status="research_only_redundant",
+                        skip_reason="same_family_redundant",
+                        redundancy_stage="signal_cluster",
+                    )
+
+    return {
+        "policy": policy.to_dict(),
+        "policy_hash": policy_hash,
+        "raw_qualified_count": len(qualified),
+        "runtime_eligible_count": len(eligible),
+        "family_champion_count": len(family_survivors),
+        "lineage_champion_count": len(lineage_survivors),
+        "correlation_champion_count": len(champions),
+        "selected_champions": [str(item["name"]) for item in champions],
+        "correlation_pairs": correlation_pairs,
+        "incomplete_required_pairs": [
+            list(pair) for pair in incomplete_required_pairs
+        ],
+    }
+
+
 def _load_source_notes(path_text: str) -> list[dict[str, Any]]:
     path = Path(str(path_text or "")).expanduser()
     if not str(path_text or "").strip() or not path.exists():
@@ -1081,73 +1689,69 @@ def _load_source_notes(path_text: str) -> list[dict[str, Any]]:
     return []
 
 
-def _write_registry(path: Path, registry: MinedFactorRegistry) -> None:
-    path.write_text(
-        json.dumps(
-            {
-                "schema_version": registry.schema_version,
-                "metadata": registry.metadata,
-                "factors": [record.to_dict() for record in registry.factors],
-            },
-            ensure_ascii=False,
-            indent=2,
-            default=_json_default,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-
-def _record_from_result(
-    result: Mapping[str, Any],
+def _production_market_evidence_blocker(
     *,
-    run_timestamp: str,
-    run_id: str,
-    report_path: str,
-    owner: str,
-    source_notes: Sequence[Mapping[str, Any]],
-    horizon_days: int,
-) -> FactorRecord:
-    metrics = dict(result.get("metrics", {}) or {})
-    metadata = {
-        "source_report": report_path,
-        "registry_write_source": "daily_factor_mining_automation",
-        "registry_write_run_id": run_id,
-        "registry_write_at": run_timestamp,
-        "effective_analysis_start_date": result.get(
-            "effective_analysis_start_date", ""
-        ),
-        "expression": result.get("expression", ""),
-        "params": dict(result.get("params", {}) or {}),
-        "source_notes": [dict(item) for item in source_notes],
-        "manual_promotion_required": True,
-        "runtime_effect": "none_until_manual_production_factor_promotion",
-    }
-    return FactorRecord(
-        name=str(result.get("name", "")).strip(),
-        version="v" + run_timestamp[:10].replace("-", ""),
-        state=FactorLifecycleState.PRODUCTION_CANDIDATE,
-        category=str(result.get("category", "custom") or "custom"),
-        implementation=str(result.get("implementation", "") or ""),
-        weight=0.0,
-        direction=1.0,
-        horizon_days=int(metrics.get("horizon_days") or horizon_days),
-        owner=owner,
-        description=str(result.get("description", "") or ""),
-        tags=[
-            "daily_factor_mining",
-            str(result.get("family", "") or "unknown_family"),
-            str(result.get("category", "") or "custom"),
-        ],
-        gate_results=[
-            GateResult.from_dict(item)
-            for item in result.get("gate_results", [])
-            if isinstance(item, Mapping)
-        ],
-        metrics=metrics,
-        admission_decision=FactorAdmissionDecision.PRODUCTION_CANDIDATE,
-        metadata=metadata,
+    universes: Sequence[str],
+    market_evidence: Mapping[str, Any],
+) -> str:
+    """Validate strict full-A evidence before any future governed apply."""
+
+    normalized = [
+        str(item or "").strip().lower()
+        for item in universes
+        if str(item or "").strip()
+    ]
+    if normalized != ["full_a"]:
+        return "production_universe_not_exact_full_a"
+    if str(market_evidence.get("backend", "")).lower() != "parquet":
+        return "production_backend_not_parquet"
+    if str(market_evidence.get("mode_policy", "")).lower() != "strict":
+        return "production_mode_policy_not_strict"
+    if str(market_evidence.get("pointer_status", "")).upper() != "OK":
+        return "parquet_latest_pointer_not_ok"
+    if not str(market_evidence.get("snapshot_id", "")).strip():
+        return "parquet_snapshot_id_missing"
+    if market_evidence.get("coverage_complete") is not True:
+        return "full_a_snapshot_coverage_incomplete"
+    for key in ("table_root_exists", "serving_root_exists", "manifest_exists"):
+        if market_evidence.get(key) is not True:
+            return f"parquet_{key}_false"
+    exposure = dict(
+        market_evidence.get("factor_exposure_evidence", {}) or {}
     )
+    if exposure.get("status") != "ready":
+        return "factor_exposure_evidence_not_ready"
+    if exposure.get("source") != "strict_parquet_hybrid_market_cap_exposure":
+        return "factor_exposure_source_not_strict_parquet"
+    if float(exposure.get("coverage_ratio", 0.0) or 0.0) < 0.95:
+        return "factor_exposure_coverage_below_95pct"
+    if exposure.get("catalog_validated") is not True:
+        return "factor_exposure_catalog_not_validated"
+    if exposure.get("size_policy") != (
+        "same_trade_date_total_mv_then_asof_total_share_times_close"
+    ):
+        return "factor_exposure_size_policy_mismatch"
+    if float(exposure.get("evaluation_date_coverage_ratio", 0.0) or 0.0) < 0.95:
+        return "factor_exposure_date_coverage_below_95pct"
+    if float(exposure.get("min_cross_section_coverage_ratio", 0.0) or 0.0) < 0.95:
+        return "factor_exposure_cross_section_coverage_below_95pct"
+    if float(exposure.get("combined_size_pair_coverage_ratio", 0.0) or 0.0) < 0.95:
+        return "factor_exposure_combined_size_coverage_below_95pct"
+    if float(exposure.get("pit_size_pair_coverage_ratio", 0.0) or 0.0) < 0.60:
+        return "factor_exposure_exact_pit_size_coverage_below_60pct"
+    if float(exposure.get("reconstructed_size_pair_ratio", 1.0) or 1.0) > 0.35:
+        return "factor_exposure_reconstruction_above_35pct"
+    if exposure.get("share_reference_covers_evaluation_end") is not True:
+        return "factor_exposure_share_reference_stale_for_evaluation"
+    if int(exposure.get("sector_count", 0) or 0) < 2:
+        return "factor_exposure_sector_count_below_2"
+    if int(exposure.get("size_bucket_count", 0) or 0) < 3:
+        return "factor_exposure_size_bucket_count_below_3"
+    expected = int(market_evidence.get("expected_symbol_count", 0) or 0)
+    loaded = int(market_evidence.get("loaded_symbol_count", 0) or 0)
+    if expected <= 0 or loaded < expected:
+        return f"full_a_symbol_readback_incomplete:{loaded}/{expected}"
+    return ""
 
 
 def apply_production_candidate_registry_updates(
@@ -1161,100 +1765,197 @@ def apply_production_candidate_registry_updates(
     source_notes: Sequence[Mapping[str, Any]] = (),
     horizon_days: int = 30,
     max_candidates: int = 5,
+    journal_path: str | Path | None = None,
     write: bool = True,
 ) -> dict[str, Any]:
-    """Write qualified factors as zero-weight production candidates only."""
+    """Compatibility shim: direct mining writes are retired under protocol v2."""
 
+    del (
+        run_timestamp,
+        owner,
+        source_notes,
+        horizon_days,
+        journal_path,
+    )
     path = Path(registry_path).expanduser()
-    manifest: dict[str, Any] = {
-        "requested": bool(write),
+    snapshot = load_registry_snapshot_strict(path)
+    requested = bool(write)
+    return {
+        "requested": requested,
         "registry_path": str(path),
         "run_id": run_id,
         "source_report": report_path,
         "max_candidates": int(max_candidates),
         "qualified_count": len(qualified_results),
+        "diversity_policy_version": DEFAULT_DIVERSITY_POLICY.version,
+        "diversity_policy_hash": DEFAULT_DIVERSITY_POLICY.policy_hash,
+        "selected_champions": [],
+        "diversity_skipped_factors": [],
         "written_count": 0,
         "updated_count": 0,
-        "skipped_count": 0,
+        "skipped_count": len(qualified_results) if requested else 0,
         "written_factors": [],
         "updated_factors": [],
-        "skipped_factors": [],
-        "status": "not_requested" if not write else "pending",
-    }
-    if not write:
-        return manifest
-    if not qualified_results:
-        manifest["status"] = "no_qualified_candidates"
-        return manifest
-
-    registry = MinedFactorRegistry.load(path)
-    by_name = {factor.name: factor for factor in registry.factors}
-    changed = False
-    selected = list(qualified_results)[: max(int(max_candidates), 0)]
-    for item in selected:
-        name = str(item.get("name", "") or "").strip()
-        if not name:
-            manifest["skipped_factors"].append(
-                {"name": "", "reason": "missing_name"}
-            )
-            continue
-        if item.get("decision") != FactorAdmissionDecision.PRODUCTION_CANDIDATE.value:
-            manifest["skipped_factors"].append(
-                {"name": name, "reason": f"decision={item.get('decision')}"}
-            )
-            continue
-        existing = by_name.get(name)
-        if existing and existing.state == FactorLifecycleState.PRODUCTION_FACTOR:
-            manifest["skipped_factors"].append(
-                {"name": name, "reason": "existing_production_factor"}
-            )
-            continue
-        record = _record_from_result(
-            item,
-            run_timestamp=run_timestamp,
-            run_id=run_id,
-            report_path=report_path,
-            owner=owner,
-            source_notes=source_notes,
-            horizon_days=horizon_days,
-        )
-        if existing:
-            registry.factors = [
-                record if factor.name == name else factor
-                for factor in registry.factors
+        "skipped_factors": (
+            [
+                {
+                    "name": str(item.get("name", "") or ""),
+                    "reason": "direct_candidate_registry_write_retired",
+                }
+                for item in qualified_results
             ]
-            manifest["updated_factors"].append(name)
-            manifest["updated_count"] += 1
-        else:
-            registry.factors.append(record)
-            manifest["written_factors"].append(name)
-            manifest["written_count"] += 1
-        changed = True
+            if requested
+            else []
+        ),
+        "registry_mutation_manifest": None,
+        "registry_mutation_manifest_path": "",
+        "before_registry_sha256": snapshot.registry_sha256,
+        "after_registry_sha256": snapshot.registry_sha256,
+        "status": "blocked" if requested else "report_only",
+        "fail_closed_reason": (
+            "direct_candidate_registry_write_retired_use_"
+            "factor_governance_protocol_v2"
+            if requested
+            else ""
+        ),
+        "replacement_command": (
+            "scripts/daily_factor_mining_automation.py "
+            "--apply-governed-transitions --protocol-version v2 "
+            "--expected-protocol-hash <hash> "
+            "--governed-evidence-json <canonical-evidence.json>"
+        ),
+    }
 
-    manifest["skipped_count"] = len(manifest["skipped_factors"])
-    if changed:
-        registry.metadata.update(
+
+def build_legacy_candidate_redundancy_audit(
+    registry_path: str | Path,
+    *,
+    policy: CandidateDiversityPolicy = DEFAULT_DIVERSITY_POLICY,
+) -> dict[str, Any]:
+    snapshot = load_registry_snapshot_strict(Path(registry_path).expanduser())
+    rows: list[dict[str, Any]] = []
+    for record in snapshot.registry.factors:
+        if record.state != FactorLifecycleState.PRODUCTION_CANDIDATE:
+            continue
+        metadata = dict(record.metadata or {})
+        tags = list(record.tags or [])
+        family = str(
+            tags[1] if len(tags) > 1 else record.category or "unknown"
+        )
+        candidate = MiningCandidate(
+            name=record.name,
+            family=family,
+            category=record.category,
+            implementation=record.implementation,
+            description=record.description,
+            expression=str(metadata.get("expression", "") or ""),
+            params=dict(metadata.get("params", {}) or {}),
+        )
+        lineage = candidate_primitive_lineage(candidate, policy=policy)
+        rows.append(
             {
-                "last_daily_factor_mining_at": run_timestamp,
-                "last_daily_factor_mining_run_id": run_id,
-                "last_daily_factor_mining_report": report_path,
-                "last_daily_factor_mining_written": list(
-                    manifest["written_factors"]
-                ),
-                "last_daily_factor_mining_updated": list(
-                    manifest["updated_factors"]
-                ),
-                "daily_factor_mining_policy": (
-                    "writes zero-weight production_candidate records only; "
-                    "manual production_factor promotion required"
-                ),
+                "name": record.name,
+                "family": family,
+                "implementation": record.implementation,
+                "metrics": dict(record.metrics or {}),
+                **lineage,
+                "status": "pending",
+                "skip_reason": "",
+                "champion_name": "",
+                "promotion_eligible": False,
             }
         )
-        _write_registry(path, registry)
-        manifest["status"] = "updated"
-    else:
-        manifest["status"] = "no_registry_changes"
-    return manifest
+    complete = [
+        row for row in rows if row["lineage_extraction_status"] == "complete"
+    ]
+    edges: list[tuple[str, str]] = []
+    for index, left in enumerate(complete):
+        for right in complete[index + 1:]:
+            if set(left["dominant_primitives"]).intersection(
+                right["dominant_primitives"]
+            ):
+                edges.append((str(left["name"]), str(right["name"])))
+    by_name = {str(row["name"]): row for row in rows}
+    for names in _connected_components(
+        [str(row["name"]) for row in complete], edges
+    ):
+        members = [by_name[name] for name in names]
+        runtime_members = [
+            row
+            for row in members
+            if str(row["implementation"]).startswith(
+                ("price_volume:", "aquant_expression:")
+            )
+        ]
+        champion = (
+            sorted(runtime_members, key=_alpha_champion_key)[0]
+            if runtime_members
+            else None
+        )
+        for row in members:
+            row["champion_name"] = champion["name"] if champion else ""
+            if champion is None:
+                row["status"] = "legacy_runtime_evidence_missing"
+                row["skip_reason"] = "runtime_write_ineligible"
+            elif row is champion:
+                row["status"] = "legacy_lineage_champion_requires_fresh_audit"
+            else:
+                row["status"] = "research_only_redundant"
+                row["skip_reason"] = "same_family_redundant"
+    for row in rows:
+        if row["lineage_extraction_status"] != "complete":
+            row["status"] = "legacy_evidence_missing"
+            row["skip_reason"] = "legacy_evidence_missing"
+    return {
+        "policy_version": policy.version,
+        "policy_hash": policy.policy_hash,
+        "registry_path": str(registry_path),
+        "registry_sha256": snapshot.registry_sha256,
+        "record_count": len(rows),
+        "registry_mutated": False,
+        "promotion_policy": (
+            "latest complete diversity audit champion evidence required"
+        ),
+        "records": rows,
+    }
+
+
+def apply_production_family_governance(
+    *,
+    registry_path: str | Path,
+    results: Sequence[Mapping[str, Any]],
+    run_timestamp: str,
+    run_id: str,
+    report_path: str,
+    journal_path: str | Path,
+    write: bool = True,
+) -> dict[str, Any]:
+    """Retired bulk reconciler retained as a fail-closed compatibility shim.
+
+    A mining batch is not the production pool.  FactorGovernanceProtocol v2
+    permits only a month-end, one-for-one slot transition through a versioned
+    transition plan and record-scoped CAS/WAL.  Keeping this callable blocked
+    prevents an older automation prompt from deprecating unrelated factors.
+    """
+
+    del results, run_timestamp, journal_path
+    snapshot = load_registry_snapshot_strict(Path(registry_path).expanduser())
+    return {
+        "requested": bool(write),
+        "registry_path": str(Path(registry_path).expanduser()),
+        "run_id": run_id,
+        "source_report": report_path,
+        "status": "blocked" if write else "report_only_retired",
+        "fail_closed_reason": (
+            "bulk_family_reconciliation_retired_use_"
+            "factor_governance_protocol_v2"
+        ),
+        "before_registry_sha256": snapshot.registry_sha256,
+        "after_registry_sha256": snapshot.registry_sha256,
+        "changed_record_names": [],
+        "deprecated_factors": [],
+        "registry_mutation_manifest": None,
+    }
 
 
 def run_mining(args: argparse.Namespace) -> dict[str, Any]:
@@ -1271,11 +1972,36 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
         universes=universes,
         horizon_days=int(args.horizon_days),
         warmup_days=int(args.warmup_days),
+        fundamental_mart_root=Path(args.fundamental_mart_root).expanduser(),
     )
     context, resolved_analysis_start = restrict_context_to_analysis_window(
         full_context,
         analysis_start_date=str(args.analysis_start_date),
         min_price_coverage=float(args.min_analysis_price_coverage),
+    )
+    exposure_dates = sorted(
+        set(context.rebalance_dates) | set(context.biweekly_dates)
+    )
+    close_by_date = _matrix_from_frames(
+        context.frames,
+        pd.DatetimeIndex(exposure_dates),
+        ("close",),
+    )
+    (
+        context.sector_by_symbol,
+        context.size_bucket_by_symbol,
+        context.size_bucket_by_date,
+        context.exposure_metadata,
+    ) = load_fundamental_exposure_maps(
+        mart_root=Path(args.fundamental_mart_root).expanduser(),
+        symbols=list(context.frames),
+        as_of=(
+            context.adj_close.index.max()
+            if not context.adj_close.empty
+            else None
+        ),
+        evaluation_dates=exposure_dates,
+        close_by_date=close_by_date,
     )
     expression_inputs = None
     candidates: list[MiningCandidate] = []
@@ -1305,22 +2031,12 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
         blockers: list[str] = []
         effective_start = resolved_analysis_start
         try:
-            if candidate.implementation.startswith("aquant_expression:"):
-                if expression_inputs is None:
-                    raise ValueError(
-                        "fundamental expression inputs were not built"
-                    )
-                signal = evaluate_aquant_expression(
-                    candidate.expression, expression_inputs
-                )
-            elif candidate.implementation.startswith("research_formula:"):
-                signal = compute_formulaic_signal(
-                    candidate,
-                    formulaic_primitives,
-                )
-            else:
-                signal = compute_price_volume_signal(candidate, full_context)
-            signal = _coerce_signal(signal, full_context)
+            signal = compute_candidate_signal(
+                candidate,
+                context=full_context,
+                expression_inputs=expression_inputs,
+                formulaic_primitives=formulaic_primitives,
+            )
             metrics_context = context
             if args.candidate_maturity_start:
                 metrics_context, effective_start = candidate_maturity_context(
@@ -1391,6 +2107,7 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
         )
 
     _set_parameter_stability(results)
+    _set_family_fdr(results)
     results.sort(
         key=lambda item: (
             int(item.get("gates_passed", 0)),
@@ -1402,6 +2119,29 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
     qualified = [
         item for item in results if item["decision"] == "production_candidate"
     ]
+    candidates_by_name = {
+        candidate.name: candidate for candidate in candidates
+    }
+    signals_by_name: dict[str, pd.DataFrame] = {}
+    for item in qualified:
+        candidate = candidates_by_name[str(item["name"])]
+        try:
+            signals_by_name[candidate.name] = compute_candidate_signal(
+                candidate,
+                context=full_context,
+                expression_inputs=expression_inputs,
+                formulaic_primitives=formulaic_primitives,
+            )
+        except Exception as exc:
+            item.setdefault("blockers", []).append(
+                f"diversity_signal_compute_error:{exc}"
+            )
+    diversity_governance = apply_candidate_diversity_governance(
+        results,
+        candidates_by_name=candidates_by_name,
+        signals_by_name=signals_by_name,
+        rebalance_dates=context.rebalance_dates,
+    )
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = (
         Path(args.output_dir).expanduser()
@@ -1413,10 +2153,16 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     run_timestamp = datetime.now().isoformat(timespec="seconds")
-    run_id = str(args.run_id or "").strip() or f"quant_branch_factor_mining_{timestamp}"
+    run_id = (
+        str(args.run_id or "").strip()
+        or f"quant_branch_factor_mining_{timestamp}"
+    )
     source_notes = _load_source_notes(str(args.source_notes_json))
     results_json_path = output_dir / "quant_branch_factor_mining_results.json"
     registry_write_requested = bool(args.write_production_candidates)
+    registry_mutation_path = output_dir / (
+        f"registry_mutation_{timestamp}.json"
+    )
     registry_manifest = apply_production_candidate_registry_updates(
         registry_path=str(args.registry_path),
         qualified_results=qualified,
@@ -1427,7 +2173,13 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
         source_notes=source_notes,
         horizon_days=int(args.horizon_days),
         max_candidates=int(args.max_registry_candidates),
+        journal_path=(
+            registry_mutation_path if registry_write_requested else None
+        ),
         write=registry_write_requested,
+    )
+    legacy_candidate_redundancy_audit = (
+        build_legacy_candidate_redundancy_audit(str(args.registry_path))
     )
     payload = {
         "run_timestamp": run_timestamp,
@@ -1436,6 +2188,7 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
         "fundamental_mart_root": str(args.fundamental_mart_root),
         "legacy_fundamental_fallback_allowed": False,
         "universes": list(universes),
+        "loaded_symbol_count": len(full_context.frames),
         "horizon_days": int(args.horizon_days),
         "warmup_days": int(args.warmup_days),
         "analysis_start_date": str(args.analysis_start_date),
@@ -1451,11 +2204,21 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
         "registry_write": registry_manifest["status"] == "updated",
         "registry_write_requested": registry_write_requested,
         "registry_update_manifest": registry_manifest,
+        "legacy_candidate_redundancy_audit": (
+            legacy_candidate_redundancy_audit
+        ),
         "source_notes": source_notes,
         "existing_composite_blocker": context.existing_blocker,
         "candidate_count": len(results),
         "qualified_count": len(qualified),
         "qualified_factors": [item["name"] for item in qualified],
+        "diversity_governance": diversity_governance,
+        "diverse_positive_champion_count": int(
+            diversity_governance["correlation_champion_count"]
+        ),
+        "diverse_positive_champions": list(
+            diversity_governance["selected_champions"]
+        ),
         "manual_review_required": bool(qualified),
         "conclusion": (
             "manual_production_factor_review_candidate"
@@ -1467,6 +2230,7 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
             if expression_inputs is not None
             else {"status": "not_requested"}
         ),
+        "factor_exposure_evidence": dict(context.exposure_metadata),
         "results": results,
     }
     write_outputs(output_dir, payload)
@@ -1483,6 +2247,26 @@ def write_outputs(output_dir: Path, payload: Mapping[str, Any]) -> None:
     (output_dir / "registry_update_manifest.json").write_text(
         json.dumps(
             payload.get("registry_update_manifest", {}),
+            ensure_ascii=False,
+            indent=2,
+            default=_json_default,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (output_dir / "legacy_candidate_redundancy_audit.json").write_text(
+        json.dumps(
+            payload.get("legacy_candidate_redundancy_audit", {}),
+            ensure_ascii=False,
+            indent=2,
+            default=_json_default,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (output_dir / "production_family_governance_manifest.json").write_text(
+        json.dumps(
+            payload.get("production_family_governance_manifest", {}),
             ensure_ascii=False,
             indent=2,
             default=_json_default,
@@ -1518,6 +2302,15 @@ def write_outputs(output_dir: Path, payload: Mapping[str, Any]) -> None:
                 "master_return_delta": metrics.get("master_return_delta"),
                 "sharpe_delta": metrics.get("sharpe_delta"),
                 "turnover": metrics.get("turnover"),
+                "dominant_primitives": ",".join(
+                    item.get("dominant_primitives", [])
+                ),
+                "diversity_status": dict(
+                    item.get("diversity_selection", {}) or {}
+                ).get("status"),
+                "diversity_skip_reason": dict(
+                    item.get("diversity_selection", {}) or {}
+                ).get("skip_reason"),
                 "blockers": ";".join(item.get("blockers", [])),
             }
         )
@@ -1560,8 +2353,9 @@ def render_markdown_report(payload: Mapping[str, Any]) -> str:
         "",
         "Passing here only opens manual production-factor review.",
         (
-            "This runner can write zero-weight production_candidate records "
-            "only when explicitly requested; it never promotes production_factor."
+            "This runner is evidence-only and cannot mutate the registry. "
+            "A production change requires canonical FactorGovernanceProtocol "
+            "v2 replay evidence through daily_factor_mining_automation.py."
         ),
         "",
         "## Top Results",
@@ -1707,15 +2501,23 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--write-production-candidates",
         action="store_true",
         help=(
-            "Write qualified factors as zero-weight production_candidate "
-            "records. Never promotes production_factor."
+            "Retired compatibility flag. Direct registry writes are blocked; "
+            "use FactorGovernanceProtocol v2 canonical evidence and apply CLI."
         ),
     )
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    payload = run_mining(parse_args(argv))
+    args = parse_args(argv)
+    if args.write_production_candidates:
+        print(
+            "direct_candidate_registry_write_retired_use_"
+            "factor_governance_protocol_v2",
+            file=sys.stderr,
+        )
+        return 2
+    payload = run_mining(args)
     print(payload["output_dir"])
     print(
         json.dumps(

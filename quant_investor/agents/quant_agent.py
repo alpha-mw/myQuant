@@ -45,7 +45,12 @@ class QuantAgent(BaseAgent):
         stock_pool = list(envelope.get("stock_pool") or data_bundle.symbols)
         frames = {symbol: data_bundle.symbol_data.get(symbol) for symbol in stock_pool}
         mined = score_with_mined_factors(frames)
-        if mined.factor_count > 0:
+        runtime_ready = bool(
+            mined.factor_count > 0
+            and mined.production_eligible
+            and mined.governance_status == "ready"
+        )
+        if runtime_ready:
             symbol_scores = dict(mined.symbol_scores)
             factors_used = list(mined.factors_used)
             factor_mode = "governed_mined_factors"
@@ -64,36 +69,45 @@ class QuantAgent(BaseAgent):
             diagnostic_notes = ["mined_factor_registry_enforced"]
             reliability = self.clamp(0.72 + min(mined.factor_count, 5) * 0.03, 0.0, 0.90)
         else:
-            symbol_scores = {}
-            for symbol in stock_pool:
-                summary = self._frame_summary(data_bundle.symbol_data.get(symbol))
-                score = summary["average_return"] * 8.0 - summary["volatility"] * 2.0
-                symbol_scores[symbol] = self.clamp(score, -1.0, 1.0)
-            factors_used = ["short_term_return", "volatility_penalty"]
-            factor_mode = "legacy_proxy_fallback"
-            conclusion = "量化分支未发现可用 production mined factors，回退到收益/波动率代理。"
+            symbol_scores = {symbol: 0.0 for symbol in stock_pool}
+            factors_used = []
+            factor_mode = "governance_blocked"
+            conclusion = (
+                "量化分支没有通过 FactorGovernanceProtocol v2 完整运行时契约的因子，"
+                "按治理协议阻断量化证据；"
+                "不会回退到 legacy proxy。"
+            )
             investment_risks = [
-                "没有已通过 8 道门并被人工确认为 production_factor 的 mined factor。",
-                "当前仅使用 legacy short-term-return / volatility-penalty proxy。",
+                "当前 selectable 记录未通过 v2 protocol/set/slot/budget/evidence 完整门禁。",
+                "量化分支置信度为 0；不得以收益/波动率代理替代缺失 alpha。",
             ]
             coverage_notes = [
                 f"symbols={len(symbol_scores)}",
-                "legacy_fallback_until_factor_approval",
+                "governance_blocked_no_protocol_eligible_production_factor",
             ]
             diagnostic_notes = [
-                "legacy_proxy_fallback",
-                "mined_factor_registry_empty_or_not_selectable",
+                "mined_factor_runtime_contract_not_ready",
+                "legacy_fallback_forbidden",
+                *[f"factor_runtime_blocker:{item}" for item in mined.runtime_blockers],
             ]
-            reliability = 0.55
+            reliability = 0.0
+
+        branch_confidence = (
+            self.clamp(
+                0.38
+                + min(len(symbol_scores), 20) / 50.0
+                + min(mined.factor_count, 5) * 0.02,
+                0.0,
+                1.0,
+            )
+            if runtime_ready
+            else 0.0
+        )
 
         result = BranchResult(
             branch_name="quant",
             final_score=float(fmean(symbol_scores.values()) if symbol_scores else 0.0),
-            final_confidence=self.clamp(
-                0.38 + min(len(symbol_scores), 20) / 50.0 + min(mined.factor_count, 5) * 0.02,
-                0.0,
-                1.0,
-            ),
+            final_confidence=branch_confidence,
             symbol_scores=symbol_scores,
             conclusion=conclusion,
             signals={
@@ -122,7 +136,7 @@ class QuantAgent(BaseAgent):
             -self.MAX_CONFIDENCE_ADJUSTMENT,
             self.MAX_CONFIDENCE_ADJUSTMENT,
         )
-        if score_adjustment or confidence_adjustment:
+        if (score_adjustment or confidence_adjustment) and runtime_ready:
             result.final_score = self.clamp(float(result.score) + score_adjustment, -1.0, 1.0)
             result.final_confidence = self.clamp(
                 float(result.confidence) + confidence_adjustment,
@@ -132,6 +146,10 @@ class QuantAgent(BaseAgent):
             result.diagnostic_notes.append(
                 "QuantAgent 仅对 deterministic 量化结论施加了 bounded adjustment / confidence 修正。"
             )
+        elif score_adjustment or confidence_adjustment:
+            result.diagnostic_notes.append(
+                "governance_blocked_adjustment_ignored"
+            )
 
         thesis = self._build_thesis(result)
         return self.branch_result_to_verdict(
@@ -140,7 +158,7 @@ class QuantAgent(BaseAgent):
             metadata={
                 "alpha_factors": list(result.signals.get("alpha_factors", [])),
                 "deterministic_primary": True,
-                "factor_mode": result.signals.get("factor_mode", "legacy_proxy_fallback"),
+                "factor_mode": result.signals.get("factor_mode", "governance_blocked"),
             },
         )
 

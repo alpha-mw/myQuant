@@ -1,13 +1,45 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
+import json
 import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _write_valid_manual_manifest(
+    run_dir: Path,
+    *,
+    recorded_at: str,
+    total_value_after: float,
+    status: str = "filled_local_manual_paper_rebalance",
+) -> Path:
+    ledger_path = run_dir / "ledger_after_manual_switch.csv"
+    ledger_sha = hashlib.sha256(ledger_path.read_bytes()).hexdigest()
+    manifest_path = run_dir / "manual_execution_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "cn_aggressive_manual_execution.v2",
+                "status": status,
+                "execution_status": status,
+                "recorded_at": recorded_at,
+                "next_ledger_path": ledger_path.name,
+                "ledger_after_manual_switch_csv_sha256": ledger_sha,
+                "effective_manual_holding_count": 1,
+                "total_value_after": total_value_after,
+                "no_broker_api_called": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return manifest_path
 
 
 def _load_exporter():
@@ -115,7 +147,7 @@ def test_tushare_benchmark_non_trading_record_uses_previous_trading_day_ffill():
     ]
 
     benchmark_export, warnings = exporter.build_tushare_benchmark_export(runs, _FakeTushareProWithWeekendFill())
-    assert warnings == []
+    assert all("UNSPECIFIED_RECORD_THEME" not in warning for warning in warnings)
     assert benchmark_export is not None
 
     nav_rows, nav_warnings, fieldnames = exporter.build_nav_rows(runs, benchmark_export)
@@ -299,7 +331,7 @@ def test_local_benchmark_file_rejects_sample_or_mock_sources(tmp_path):
 def test_default_benchmark_source_prefers_auto_local_file():
     exporter = _load_exporter()
 
-    assert exporter.DEFAULT_BENCHMARK_SOURCE == "auto"
+    assert exporter.DEFAULT_BENCHMARK_SOURCE == "local"
 
 
 def test_resolve_local_benchmark_file_falls_back_to_repo_input_for_temp_output(tmp_path, monkeypatch):
@@ -315,60 +347,749 @@ def test_resolve_local_benchmark_file_falls_back_to_repo_input_for_temp_output(t
     assert exporter.resolve_local_benchmark_file(temp_dashboard_root, None) == default_input
 
 
-def test_positions_do_not_fallback_to_legacy_ledger_csv(tmp_path):
+def test_build_nav_rows_preserves_raw_portfolio_nav_and_uses_star50_as_main_benchmark():
     exporter = _load_exporter()
-    run_dir = tmp_path / "20260318_0930"
+    runs = [
+        exporter.RecordRun(
+            "20260701_0930",
+            "2026-07-01",
+            Path("r1"),
+            "",
+            100.0,
+            150.0,
+            {},
+        ),
+        exporter.RecordRun(
+            "20260702_0930",
+            "2026-07-02",
+            Path("r2"),
+            "",
+            100.0,
+            165.0,
+            {},
+        ),
+    ]
+    benchmark_export = exporter.BenchmarkExport(
+        values_by_date={
+            "2026-07-01": {"star50_nav": 1.0, "csi300_nav": 1.0, "chinext_nav": 1.0},
+            "2026-07-02": {"star50_nav": 1.10, "csi300_nav": 0.90, "chinext_nav": 1.20},
+        },
+        raw_rows=[],
+        source_system="local",
+        normalization="local_index_close_divided_by_first_valid_close",
+        status_hint="production_source",
+        notes=[],
+        coverage_by_date={},
+        value_date_by_date={},
+    )
+
+    nav_rows, warnings, fieldnames = exporter.build_nav_rows(runs, benchmark_export)
+
+    assert warnings == []
+    assert "portfolio_nav_raw" in fieldnames
+    assert "portfolio_nav_rebased" in fieldnames
+    assert nav_rows[0]["portfolio_nav"] == "1.50000000"
+    assert nav_rows[0]["portfolio_nav_raw"] == "1.50000000"
+    assert nav_rows[0]["portfolio_nav_rebased"] == "1.00000000"
+    assert nav_rows[1]["portfolio_nav"] == "1.65000000"
+    assert nav_rows[1]["portfolio_nav_raw"] == "1.65000000"
+    assert nav_rows[1]["portfolio_nav_rebased"] == "1.10000000"
+    assert nav_rows[1]["benchmark_main_nav"] == "1.10000000"
+    assert nav_rows[1]["benchmark_nav"] == "0.90000000"
+
+
+def test_build_nav_rows_chain_links_manifest_funding_without_diluting_return():
+    exporter = _load_exporter()
+    runs = [
+        exporter.RecordRun("20260102_1000", "2026-01-02", Path("r1"), "", 100.0, 100.0, {}),
+        exporter.RecordRun("20260105_1000", "2026-01-05", Path("r2"), "", 100.0, 110.0, {}),
+        exporter.RecordRun(
+            "20260106_1000",
+            "2026-01-06",
+            Path("r3"),
+            "",
+            1000.0,
+            1010.0,
+            {},
+            (
+                {
+                    "date": "2026-01-06",
+                    "amount": 900.0,
+                    "source": "unit_test",
+                    "total_value_before": 110.0,
+                    "total_value_after": 1010.0,
+                },
+            ),
+        ),
+    ]
+
+    nav_rows, warnings, fieldnames = exporter.build_nav_rows(runs)
+
+    assert warnings == ["记录中未找到可用 benchmark 指数快照，benchmark_main_nav 使用 1.0 平线占位。"]
+    assert "external_funding_cash_flow" in fieldnames
+    assert nav_rows[1]["portfolio_nav"] == "1.10000000"
+    assert nav_rows[2]["portfolio_nav"] == "1.10000000"
+    assert nav_rows[2]["portfolio_nav_raw"] == "1.01000000"
+    assert nav_rows[2]["portfolio_nav_rebased"] == "1.10000000"
+    assert nav_rows[2]["portfolio_return"] == "0.00000000"
+    assert nav_rows[2]["initial_capital"] == "1000.00"
+    assert nav_rows[2]["total_value_after"] == "1010.00"
+    assert nav_rows[2]["external_funding_cash_flow"] == "900.00"
+    assert nav_rows[2]["portfolio_units"] == "918.18181818"
+
+
+def test_build_nav_rows_uses_expanded_units_for_post_funding_return():
+    exporter = _load_exporter()
+    runs = [
+        exporter.RecordRun("20260102_1000", "2026-01-02", Path("r1"), "", 100.0, 100.0, {}),
+        exporter.RecordRun("20260105_1000", "2026-01-05", Path("r2"), "", 100.0, 110.0, {}),
+        exporter.RecordRun(
+            "20260106_1000",
+            "2026-01-06",
+            Path("r3"),
+            "",
+            1000.0,
+            1020.1,
+            {},
+            (
+                {
+                    "date": "2026-01-06",
+                    "amount": 900.0,
+                    "source": "unit_test",
+                    "total_value_before": 110.0,
+                    "total_value_after": 1010.0,
+                },
+            ),
+        ),
+    ]
+
+    nav_rows, _, _ = exporter.build_nav_rows(runs)
+
+    assert nav_rows[1]["portfolio_nav"] == "1.10000000"
+    assert nav_rows[2]["portfolio_nav"] == "1.11100000"
+    assert nav_rows[2]["portfolio_return"] == "0.01000000"
+
+
+def test_build_nav_rows_fails_closed_when_funding_lacks_timing_valuations():
+    exporter = _load_exporter()
+    runs = [
+        exporter.RecordRun("20260102_1000", "2026-01-02", Path("r1"), "", 100.0, 110.0, {}),
+        exporter.RecordRun(
+            "20260105_1000",
+            "2026-01-05",
+            Path("r2"),
+            "",
+            1000.0,
+            1010.0,
+            {},
+            ({"date": "2026-01-05", "amount": 900.0, "source": "unit_test"},),
+        ),
+    ]
+
+    with pytest.raises(ValueError, match="requires total_value_before and total_value_after"):
+        exporter.build_nav_rows(runs)
+
+
+def test_build_nav_rows_fails_closed_when_capital_changes_without_funding_evidence():
+    exporter = _load_exporter()
+    runs = [
+        exporter.RecordRun("20260102_1000", "2026-01-02", Path("r1"), "", 100.0, 110.0, {}),
+        exporter.RecordRun("20260105_1000", "2026-01-05", Path("r2"), "", 1000.0, 1010.0, {}),
+    ]
+
+    with pytest.raises(ValueError, match="without manifest-backed funding evidence"):
+        exporter.build_nav_rows(runs)
+
+
+def test_discover_record_runs_retains_earlier_same_day_funding_evidence(tmp_path):
+    exporter = _load_exporter()
+    record_root = tmp_path / "records"
+    funding_run = record_root / "20260105_0900"
+    latest_run = record_root / "20260105_1400"
+    funding_run.mkdir(parents=True)
+    latest_run.mkdir(parents=True)
+    (funding_run / "pnl_summary.csv").write_text(
+        "initial_capital,total_value_after,record_time\n1000,1000,2026-01-05 09:00:00\n",
+        encoding="utf-8",
+    )
+    (latest_run / "pnl_summary.csv").write_text(
+        "initial_capital,total_value_after,record_time\n1000,1001,2026-01-05 14:00:00\n",
+        encoding="utf-8",
+    )
+    supplement = {
+        "amount": 900.0,
+        "capital_base_effective_from": "2026-01-05",
+        "total_value_before": 100.0,
+        "total_value_after": 1000.0,
+        "source": "unit_test_confirmed_funding",
+    }
+    (funding_run / "manual_execution_manifest.json").write_text(
+        json.dumps({"manual_funding_supplement": supplement}),
+        encoding="utf-8",
+    )
+
+    runs, warnings = exporter.discover_record_runs(record_root, require_effective_manual=False)
+
+    assert warnings == []
+    assert [run.run_id for run in runs] == ["20260105_1400"]
+    assert runs[0].funding_cash_flows == (
+        {
+            "date": "2026-01-05",
+            "amount": 900.0,
+            "source": "unit_test_confirmed_funding",
+            "schema_version": "",
+            "evidence_path": "",
+            "capital_base_after": None,
+            "total_value_before": 100.0,
+            "total_value_after": 1000.0,
+        },
+    )
+
+
+def test_discover_record_runs_requires_effective_manual_ledger_and_manifest(tmp_path):
+    exporter = _load_exporter()
+    record_root = tmp_path / "records"
+    legacy_run = record_root / "20260707_0910"
+    valid_run = record_root / "20260708_0933"
+    legacy_run.mkdir(parents=True)
+    valid_run.mkdir(parents=True)
+    pnl_text = "initial_capital,total_value_after,record_time\n100,101,2026-07-08 09:33:00\n"
+    for run_dir in (legacy_run, valid_run):
+        (run_dir / "pnl_summary.csv").write_text(pnl_text, encoding="utf-8")
+    (legacy_run / "ledger.csv").write_text(
+        "symbol,name,current_value,market_weight\n000001.SZ,Legacy,101,1\n",
+        encoding="utf-8",
+    )
+    (valid_run / "ledger_after_manual_switch.csv").write_text(
+        "symbol,name,current_value,market_weight,shares,avg_cost,current_price\n"
+        "000002.SZ,Manual,101,1,10,10,10.1\n",
+        encoding="utf-8",
+    )
+    _write_valid_manual_manifest(
+        valid_run,
+        recorded_at="2026-07-08T09:33:00+08:00",
+        total_value_after=101.0,
+    )
+
+    runs, warnings = exporter.discover_record_runs(record_root)
+
+    assert [run.run_id for run in runs] == ["20260708_0933"]
+    assert any("20260707_0910" in warning and "manual_execution_manifest.json" in warning for warning in warnings)
+
+
+def test_manual_baseline_selection_uses_manifest_time_not_later_directory_name(tmp_path):
+    exporter = _load_exporter()
+    record_root = tmp_path / "records"
+    valid_run = record_root / "20260703_0932"
+    stale_run = record_root / "20260703_1100"
+    invalid_run = record_root / "20260703_1200"
+    for run_dir, symbol in (
+        (valid_run, "VALID.SZ"),
+        (stale_run, "STALE.SZ"),
+        (invalid_run, "INVALID.SZ"),
+    ):
+        run_dir.mkdir(parents=True)
+        (run_dir / "pnl_summary.csv").write_text(
+            "initial_capital,total_value_after,record_time\n"
+            "100,110,2026-07-03 09:32:00\n",
+            encoding="utf-8",
+        )
+        (run_dir / "ledger_after_manual_switch.csv").write_text(
+            "symbol,name,current_value,market_weight,shares,avg_cost,current_price\n"
+            f"{symbol},{symbol},110,1,10,10,11\n",
+            encoding="utf-8",
+        )
+    _write_valid_manual_manifest(
+        valid_run,
+        recorded_at="2026-07-03T11:06:56+08:00",
+        total_value_after=110.0,
+    )
+    _write_valid_manual_manifest(
+        stale_run,
+        recorded_at="2026-07-03T11:00:39+08:00",
+        total_value_after=110.0,
+        status="no_action_carry_forward",
+    )
+    invalid_ledger = invalid_run / "ledger_after_manual_switch.csv"
+    (invalid_run / "manual_execution_manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "invalidated_price_basis_no_execution",
+                "execution_status": "invalidated_price_basis_no_execution",
+                "recorded_at": "2026-07-03T12:00:00+08:00",
+                "next_ledger_path": invalid_ledger.name,
+                "ledger_after_manual_switch_csv_sha256": hashlib.sha256(
+                    invalid_ledger.read_bytes()
+                ).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runs, warnings = exporter.discover_record_runs(record_root)
+
+    assert [run.run_id for run in runs] == ["20260703_0932"]
+    assert runs[0].manual_order_key == ("20260703110656", "20260703_0932")
+    assert any("manual_manifest_status_invalid" in warning for warning in warnings)
+
+
+def test_manual_baseline_rejects_status_ok_traversal_and_hash_mismatch(tmp_path):
+    exporter = _load_exporter()
+    record_root = tmp_path / "records"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "ledger_after_manual_switch.csv").write_text(
+        "symbol,name,current_value,market_weight,shares,avg_cost,current_price\n"
+        "OUT.SZ,Outside,110,1,10,10,11\n",
+        encoding="utf-8",
+    )
+    cases = (
+        ("20260703_1000", "ok", "ledger_after_manual_switch.csv", None),
+        (
+            "20260703_1100",
+            "filled_local_manual_paper_rebalance",
+            "../../outside/ledger_after_manual_switch.csv",
+            None,
+        ),
+        (
+            "20260703_1200",
+            "filled_local_manual_paper_rebalance",
+            "ledger_after_manual_switch.csv",
+            "0" * 64,
+        ),
+    )
+    for run_id, status, next_path, forced_sha in cases:
+        run_dir = record_root / run_id
+        run_dir.mkdir(parents=True)
+        ledger = run_dir / "ledger_after_manual_switch.csv"
+        ledger.write_text(
+            "symbol,name,current_value,market_weight,shares,avg_cost,current_price\n"
+            "TEST.SZ,Test,110,1,10,10,11\n",
+            encoding="utf-8",
+        )
+        (run_dir / "pnl_summary.csv").write_text(
+            "initial_capital,total_value_after,record_time\n"
+            "100,110,2026-07-03 10:00:00\n",
+            encoding="utf-8",
+        )
+        (run_dir / "manual_execution_manifest.json").write_text(
+            json.dumps(
+                {
+                    "status": status,
+                    "execution_status": status,
+                    "recorded_at": "2026-07-03T10:00:00+08:00",
+                    "next_ledger_path": next_path,
+                    "ledger_after_manual_switch_csv_sha256": forced_sha
+                    or hashlib.sha256(ledger.read_bytes()).hexdigest(),
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    runs, warnings = exporter.discover_record_runs(record_root)
+
+    assert runs == []
+    assert any("manual_manifest_status_invalid" in warning for warning in warnings)
+    assert any("manual_manifest_next_ledger_path_unsafe" in warning for warning in warnings)
+    assert any("manual_ledger_sha256_mismatch" in warning for warning in warnings)
+
+
+def test_manual_ledger_undeclared_sha_warnings_are_aggregated_without_paths(tmp_path):
+    exporter = _load_exporter()
+    ledger = tmp_path / "ledger_after_manual_switch.csv"
+    ledger.write_text(
+        "symbol,shares,avg_cost\nTEST.SZ,10,10\n",
+        encoding="utf-8",
+    )
+    ledger_sha = hashlib.sha256(ledger.read_bytes()).hexdigest()
+    run = exporter.RecordRun(
+        "20260708_0933",
+        "2026-07-08",
+        tmp_path,
+        "2026-07-08T09:33:00+08:00",
+        100.0,
+        110.0,
+        {},
+        manual_ledger_path=ledger,
+        manual_ledger_sha256=ledger_sha,
+        manual_ledger_sha_declared=False,
+        manual_manifest={"status": "filled_local_manual_paper_rebalance"},
+    )
+    warnings = [
+        f"run-{index}: manual_ledger_sha_not_declared；private/path/{index}"
+        for index in range(3)
+    ]
+
+    summarized = exporter.aggregate_manual_record_warnings(warnings, run)
+
+    assert len(summarized) == 1
+    assert "count=3" in summarized[0]
+    assert "effective_ledger_sha_declared=false" in summarized[0]
+    assert "effective_computed_sha_readback_verified=true" in summarized[0]
+    assert "private/path" not in summarized[0]
+    assert "run-" not in summarized[0]
+
+
+def test_build_positions_rows_never_falls_back_to_legacy_ledger(tmp_path):
+    exporter = _load_exporter()
+    run_dir = tmp_path / "20260708_0910"
     run_dir.mkdir()
     (run_dir / "ledger.csv").write_text(
-        "symbol,name,current_value,market_weight\n000001.SZ,Legacy,100,1\n",
+        "symbol,name,current_value,market_weight\n000001.SZ,Legacy,101,1\n",
+        encoding="utf-8",
+    )
+    run = exporter.RecordRun("20260708_0910", "2026-07-08", run_dir, "", 100.0, 101.0, {})
+
+    rows, warnings = exporter.build_positions_rows(
+        [run],
+        {"000002.SZ": {"sector": "测试行业", "sub_sector": "测试子行业"}},
+    )
+
+    assert rows == []
+    assert any("ledger_after_manual_switch.csv" in warning for warning in warnings)
+
+
+def test_build_positions_rows_exports_fifo_opening_cost_fields(tmp_path):
+    exporter = _load_exporter()
+    run_dir = tmp_path / "20260708_0910"
+    run_dir.mkdir()
+    (run_dir / "ledger_after_manual_switch.csv").write_text(
+        (
+            "symbol,name,shares,avg_cost,cost_basis,current_price,current_value,market_weight\n"
+            "000002.SZ,Manual,300,12.50,3750,14.20,4260,0.25\n"
+        ),
+        encoding="utf-8",
+    )
+    run = exporter.RecordRun("20260708_0910", "2026-07-08", run_dir, "", 100.0, 101.0, {})
+
+    rows, warnings = exporter.build_positions_rows(
+        [run],
+        {"000002.SZ": {"sector": "测试行业", "sub_sector": "测试子行业"}},
+    )
+
+    assert all("UNSPECIFIED_RECORD_THEME" not in warning for warning in warnings)
+    assert rows[0]["quantity"] == "300"
+    assert rows[0]["avg_cost"] == "12.5000"
+    assert rows[0]["cost_basis"] == "3750.00"
+    assert rows[0]["current_price"] == "14.2000"
+
+
+def test_positions_carry_forward_prior_explicit_theme_without_lookahead(tmp_path):
+    exporter = _load_exporter()
+    early_dir = tmp_path / "20260102_1000"
+    source_dir = tmp_path / "20260105_1000"
+    later_dir = tmp_path / "20260106_1000"
+    for run_dir in (early_dir, source_dir, later_dir):
+        run_dir.mkdir()
+    (source_dir / "market_snapshot.json").write_text(
+        json.dumps({"theme_strength": [{"theme": "先进材料", "symbols": ["000002.SZ"]}]}),
+        encoding="utf-8",
+    )
+    (later_dir / "ledger_after_manual_switch.csv").write_text(
+        "symbol,name,current_value,market_weight\n000002.SZ,Manual,110,1\n",
         encoding="utf-8",
     )
     runs = [
-        exporter.RecordRun(
-            "20260318_0930",
-            "2026-03-18",
-            run_dir,
-            "",
-            100.0,
-            100.0,
-            {},
-        )
+        exporter.RecordRun("20260102_1000", "2026-01-02", early_dir, "", 100.0, 100.0, {}),
+        exporter.RecordRun("20260105_1000", "2026-01-05", source_dir, "", 100.0, 105.0, {}),
+        exporter.RecordRun("20260106_1000", "2026-01-06", later_dir, "", 100.0, 110.0, {}),
     ]
 
-    rows, warnings = exporter.build_positions_rows(runs, {})
+    historical = exporter.build_historical_theme_maps(runs)
+    rows, warnings = exporter.build_positions_rows(
+        [runs[-1]],
+        {"000002.SZ": {"sector": "测试行业", "sub_sector": ""}},
+        historical_theme_by_date=historical,
+    )
 
-    assert rows == []
-    assert any("ledger.csv 已停用" in warning for warning in warnings)
+    assert "000002.SZ" not in historical["2026-01-02"]
+    assert historical["2026-01-05"]["000002.SZ"] == ("先进材料", "20260105_1000")
+    assert rows[0]["theme"] == "先进材料"
+    assert rows[0]["theme_source"] == "prior_strategy_record:20260105_1000"
+    assert not any("stock_basic industry" in warning for warning in warnings)
 
 
-def test_record_discovery_skips_dirs_without_manual_baseline_and_keeps_latest_valid(tmp_path):
+def test_export_summary_reports_effective_manual_ledger_status(tmp_path, monkeypatch):
     exporter = _load_exporter()
-    older_valid = tmp_path / "20260318_0930"
-    older_valid.mkdir()
-    (older_valid / "pnl_summary.csv").write_text(
-        "initial_capital,total_value_after,record_time\n100,101,2026-03-18 09:30:00\n",
+    record_root = tmp_path / "records"
+    run_dir = record_root / "20260708_0933"
+    run_dir.mkdir(parents=True)
+    (run_dir / "pnl_summary.csv").write_text(
+        "initial_capital,total_value_after,record_time\n100,110,2026-07-08 09:33:00\n",
         encoding="utf-8",
     )
-    (older_valid / "ledger_after_manual_switch.csv").write_text(
-        "symbol,name,current_value,market_weight\n000001.SZ,Valid,101,1\n",
+    ledger_path = run_dir / "ledger_after_manual_switch.csv"
+    ledger_path.write_text(
+        "symbol,name,current_value,market_weight,shares,avg_cost,current_price\n"
+        "000001.SZ,Manual,110,1,10,10,11\n",
         encoding="utf-8",
     )
-    (older_valid / "manual_execution_manifest.json").write_text('{"status":"ok"}\n', encoding="utf-8")
-    later_invalid = tmp_path / "20260318_1530"
-    later_invalid.mkdir()
-    (later_invalid / "pnl_summary.csv").write_text(
-        "initial_capital,total_value_after,record_time\n100,102,2026-03-18 15:30:00\n",
+    manifest_path = _write_valid_manual_manifest(
+        run_dir,
+        recorded_at="2026-07-08T09:33:00+08:00",
+        total_value_after=110.0,
+    )
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_payload.pop("ledger_after_manual_switch_csv_sha256")
+    manifest_path.write_text(json.dumps(manifest_payload), encoding="utf-8")
+    benchmark_path = tmp_path / "cn_index_benchmark.csv"
+    benchmark_path.write_text(
+        "\n".join(
+            [
+                "date,ts_code,close,source_system",
+                "2026-07-08,000300.SH,1000,Wind",
+                "2026-07-08,000905.SH,2000,Wind",
+                "2026-07-08,000852.SH,3000,Wind",
+                "2026-07-08,000688.SH,4000,Wind",
+                "2026-07-08,399006.SZ,5000,Wind",
+            ]
+        )
+        + "\n",
         encoding="utf-8",
     )
-    (later_invalid / "ledger.csv").write_text(
-        "symbol,name,current_value,market_weight\n000002.SZ,Legacy,102,1\n",
-        encoding="utf-8",
+    dashboard_root = tmp_path / "dashboard"
+    monkeypatch.setattr(exporter, "DEFAULT_STOCK_BASIC_ROOT", tmp_path / "missing_stock_basic")
+
+    summary = exporter.export(
+        record_root,
+        dashboard_root,
+        benchmark_source="local",
+        benchmark_file=benchmark_path,
+    )
+    written_summary = json.loads(
+        (dashboard_root / "generated" / "export_summary.json").read_text(encoding="utf-8")
     )
 
-    runs, warnings = exporter.discover_record_runs(tmp_path)
+    status = summary["effective_manual_ledger_status"]
+    assert written_summary["effective_manual_ledger_status"] == status
+    assert status == {
+        "status": "valid",
+        "record_id": "20260708_0933",
+        "manifest_status": "filled_local_manual_paper_rebalance",
+        "manifest_recorded_at": "2026-07-08T09:33:00+08:00",
+        "manifest_order_key": ["20260708093300", "20260708_0933"],
+        "ledger_path": "<external>/20260708_0933/ledger_after_manual_switch.csv",
+        "ledger_sha256": hashlib.sha256(ledger_path.read_bytes()).hexdigest(),
+        "ledger_sha_declared": False,
+        "ledger_readback_verified": True,
+        "manifest_path": "<external>/20260708_0933/manual_execution_manifest.json",
+        "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+        "manifest_readback_verified": True,
+        "legacy_ledger_fallback_used": False,
+    }
+    assert "manual_ledger_sha_not_declared" in summary["blockers"]
+    undeclared_warnings = [
+        warning
+        for warning in summary["warnings"]
+        if "manual_ledger_sha_not_declared" in warning
+    ]
+    assert len(undeclared_warnings) == 1
+    assert "count=1" in undeclared_warnings[0]
 
-    assert [run.run_id for run in runs] == ["20260318_0930"]
-    assert any("20260318_1530" in warning and "ledger_after_manual_switch.csv" in warning for warning in warnings)
+
+def test_export_preserves_full_pnl_nav_history_separate_from_manual_position_baseline(tmp_path, monkeypatch):
+    exporter = _load_exporter()
+    record_root = tmp_path / "records"
+    early_run = record_root / "20260318_1451"
+    manual_run = record_root / "20260526_0934"
+    early_run.mkdir(parents=True)
+    manual_run.mkdir(parents=True)
+    (early_run / "pnl_summary.csv").write_text(
+        "initial_capital,total_value_after,record_time\n1000000,1023097,2026-03-18 14:51:18\n",
+        encoding="utf-8",
+    )
+    (manual_run / "pnl_summary.csv").write_text(
+        "initial_capital,total_value_after,record_time\n1000000,1425877,2026-05-26 09:34:29\n",
+        encoding="utf-8",
+    )
+    ledger_path = manual_run / "ledger_after_manual_switch.csv"
+    ledger_path.write_text(
+        "symbol,name,current_value,market_weight,shares,avg_cost,current_price\n"
+        "000001.SZ,Manual,1425877,1,1000,1000,1425.877\n",
+        encoding="utf-8",
+    )
+    _write_valid_manual_manifest(
+        manual_run,
+        recorded_at="2026-05-26T09:34:29+08:00",
+        total_value_after=1_425_877.0,
+    )
+    benchmark_path = tmp_path / "cn_index_benchmark.csv"
+    benchmark_lines = ["date,ts_code,close,source_system"]
+    for date, scale in [("2026-03-18", 1.0), ("2026-05-26", 1.1)]:
+        for ts_code, close in [
+            ("000300.SH", 1000),
+            ("000905.SH", 2000),
+            ("000852.SH", 3000),
+            ("000688.SH", 4000),
+            ("399006.SZ", 5000),
+        ]:
+            benchmark_lines.append(f"{date},{ts_code},{close * scale},Wind")
+    benchmark_path.write_text("\n".join(benchmark_lines) + "\n", encoding="utf-8")
+    dashboard_root = tmp_path / "dashboard"
+    monkeypatch.setattr(exporter, "DEFAULT_STOCK_BASIC_ROOT", tmp_path / "missing_stock_basic")
+
+    summary = exporter.export(
+        record_root,
+        dashboard_root,
+        benchmark_source="local",
+        benchmark_file=benchmark_path,
+    )
+    nav_rows = exporter.read_csv_rows(dashboard_root / "generated" / "nav_records.csv")
+    positions_rows = exporter.read_csv_rows(dashboard_root / "generated" / "positions_records.csv")
+    generated_js = (dashboard_root / "private" / "dashboard_snapshot.v2.js").read_text(encoding="utf-8")
+
+    assert [row["date"] for row in nav_rows] == ["2026-03-18", "2026-05-26"]
+    assert nav_rows[0]["portfolio_nav"] == "1.02309700"
+    assert nav_rows[0]["portfolio_nav_raw"] == "1.02309700"
+    assert nav_rows[0]["portfolio_nav_rebased"] == "1.00000000"
+    assert nav_rows[1]["portfolio_nav"] == "1.42587700"
+    assert nav_rows[1]["portfolio_nav_raw"] == "1.42587700"
+    assert nav_rows[1]["portfolio_nav_rebased"] == "1.39368701"
+    assert summary["record_count"] == 2
+    assert summary["manual_record_count"] == 1
+    assert summary["effective_manual_ledger_status"]["record_id"] == "20260526_0934"
+    assert positions_rows and positions_rows[0]["date"] == "2026-05-26"
+    assert "缺少可读 ledger_after_manual_switch.csv" not in generated_js
+
+
+def test_build_trade_rows_includes_local_manual_and_orders_csv_fills(tmp_path):
+    exporter = _load_exporter()
+    run_dir = tmp_path / "20260707_1046"
+    run_dir.mkdir()
+    (run_dir / "manual_switch_and_take_profit_orders.csv").write_text(
+        "\n".join(
+            [
+                "timestamp,status,action,symbol,name,shares,price,trade_value,realized_pnl,reason",
+                "2026-07-07 11:09:35 CST,filled_local_manual,clear_risk_sell,603078.SH,江化微,1300,53.66,69758.0,2028.0,user_confirmed_clear_risk",
+                "2026-07-07 11:09:35 CST,watch_only_no_execution,watch_only_sell,600000.SH,未成交,100,10,1000,0,not executed",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "orders.csv").write_text(
+        "\n".join(
+            [
+                "timestamp,action,symbol,name,shares,price,trade_value,realized_pnl,reason",
+                "2026-07-07 10:00:00 CST,buy,300285.SZ,国瓷材料,700,88.28,61796.0,0.0,legacy manual buy",
+                "2026-07-07 11:09:35 CST,sell,603078.SH,江化微,1300,53.66,69758.0,2028.0,duplicate legacy sell",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    run = exporter.RecordRun("20260707_1046", "2026-07-07", run_dir, "", 100.0, 101.0, {})
+
+    rows = exporter.build_trade_rows([run], {})
+
+    assert [(row["trade_date"], row["ticker"], row["side"], row["quantity"]) for row in rows] == [
+        ("2026-07-07", "603078.SH", "sell", "1300"),
+    ]
+    assert rows[0]["price"] == "53.6600"
+    assert rows[0]["trade_amount"] == "69758.00"
+
+
+def test_build_trade_rows_partial_fill_uses_only_actual_fill_metrics(tmp_path):
+    exporter = _load_exporter()
+    run_dir = tmp_path / "20260707_1046"
+    run_dir.mkdir()
+    (run_dir / "manual_switch_and_take_profit_orders.csv").write_text(
+        "\n".join(
+            [
+                (
+                    "timestamp,status,action,symbol,name,shares,price,trade_value,"
+                    "filled_quantity,fill_price,fill_value,reason"
+                ),
+                (
+                    "2026-07-07 11:09:35 CST,partial_fill,buy,300285.SZ,国瓷材料,"
+                    "700,88.28,61796,100,88.10,8810,partial execution"
+                ),
+                (
+                    "2026-07-07 11:10:00 CST,partially_filled,sell,603078.SH,江化微,"
+                    "1300,53.66,69758,,,,order-only values must not be exported"
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    run = exporter.RecordRun(
+        "20260707_1046", "2026-07-07", run_dir, "", 100.0, 101.0, {}
+    )
+    warnings: list[str] = []
+    completeness: dict[str, object] = {}
+
+    rows = exporter.build_trade_rows(
+        [run], {}, warnings=warnings, completeness=completeness
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["ticker"] == "300285.SZ"
+    assert rows[0]["quantity"] == "100"
+    assert rows[0]["price"] == "88.1000"
+    assert rows[0]["trade_amount"] == "8810.00"
+    assert completeness["status"] == "partial"
+    assert completeness["skipped_incomplete_rows"] == 1
+    assert any("trade_record_incomplete" in warning for warning in warnings)
+
+
+def test_build_trade_rows_skips_incomplete_executed_records(tmp_path):
+    exporter = _load_exporter()
+    run_dir = tmp_path / "20260707_1046"
+    run_dir.mkdir()
+    (run_dir / "manual_switch_and_take_profit_orders.csv").write_text(
+        "\n".join(
+            [
+                "timestamp,status,action,symbol,name,shares,price,trade_value,realized_pnl,reason",
+                "2026-07-07 11:09:35 CST,filled_local_manual,buy,300285.SZ,国瓷材料,700,88.28,61796.0,0.0,complete",
+                "2026-07-07 11:10:00 CST,filled_local_manual,sell,603078.SH,江化微,1300,,69758.0,2028.0,missing price",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    run = exporter.RecordRun("20260707_1046", "2026-07-07", run_dir, "", 100.0, 101.0, {})
+    warnings: list[str] = []
+    completeness: dict[str, object] = {}
+
+    rows = exporter.build_trade_rows([run], {}, warnings=warnings, completeness=completeness)
+
+    assert [(row["ticker"], row["side"], row["quantity"]) for row in rows] == [
+        ("300285.SZ", "buy", "700")
+    ]
+    assert completeness["status"] == "partial"
+    assert completeness["executed_source_rows"] == 2
+    assert completeness["exported_rows"] == 1
+    assert completeness["skipped_incomplete_rows"] == 1
+    assert any("trade_record_incomplete" in warning and "price" in warning for warning in warnings)
+
+
+def test_dashboard_display_warnings_aggregate_skipped_legacy_records():
+    exporter = _load_exporter()
+    warnings = [
+        "20260318_1146: 缺少可读 ledger_after_manual_switch.csv，已跳过。",
+        "20260318_1417: 缺少可读 ledger_after_manual_switch.csv，已跳过。",
+        "benchmark_source_status=production_source_partial_latest_unavailable；source_system=local；Dashboard benchmark 仅供临时展示，不是正式投委会口径。",
+    ]
+
+    display = exporter.dashboard_display_warnings(warnings)
+
+    assert display == [
+        "benchmark_source_status=production_source_partial_latest_unavailable；source_system=local；Dashboard benchmark 仅供临时展示，不是正式投委会口径。",
+        "2 个历史记录因缺少可读 ledger_after_manual_switch.csv 已跳过；详见 export_summary.json。",
+    ]
+
+
+def test_dashboard_display_infos_carry_nonblocking_theme_fallback():
+    exporter = _load_exporter()
+    theme_warning = "133 条持仓记录缺少显式 theme，已使用 stock_basic industry 生成 '行业: <sector>' 回退标签。"
+    benchmark_warning = (
+        "benchmark_source_status=production_source_partial_latest_unavailable；"
+        "source_system=local；Dashboard benchmark 仅供临时展示，不是正式投委会口径。"
+    )
+
+    assert exporter.dashboard_display_warnings([theme_warning, benchmark_warning]) == [benchmark_warning]
+    assert exporter.dashboard_display_infos([theme_warning, benchmark_warning]) == [theme_warning]
 
 
 def test_industry_equal_weight_nav_is_built_from_local_parquet(tmp_path):

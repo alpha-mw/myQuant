@@ -161,9 +161,9 @@
         });
       }
       var benchmarkMainNav = 0.5 * navs.star50_nav + 0.3 * navs.semiconductor_nav + 0.2 * navs.high_end_manufacturing_nav;
-      var cashWeight = 0.055 + (seededRandom(index + 55) - 0.5) * 0.035 + (returns.portfolio_nav < -0.02 ? 0.018 : 0);
-      var grossExposure = 0.96 + (seededRandom(index + 77) - 0.5) * 0.14;
-      var netExposure = grossExposure - cashWeight * 0.35;
+      var grossExposure = 0.0426;
+      var netExposure = grossExposure;
+      var cashWeight = 1 - netExposure;
       lines.push([
         formatDate(date),
         navs.portfolio_nav.toFixed(6),
@@ -176,19 +176,19 @@
         navs.semiconductor_nav.toFixed(6),
         navs.robotics_nav.toFixed(6),
         navs.high_end_manufacturing_nav.toFixed(6),
-        Math.max(0.02, Math.min(0.16, cashWeight)).toFixed(4),
-        Math.max(0.75, Math.min(1.18, grossExposure)).toFixed(4),
-        Math.max(0.68, Math.min(1.08, netExposure)).toFixed(4)
+        cashWeight.toFixed(4),
+        grossExposure.toFixed(4),
+        netExposure.toFixed(4)
       ].join(","));
       index += 1;
     }
     return lines.join("\n");
   }
 
-  function buildPositionsSampleCSV() {
-    var lines = [
-      "date,ticker,name,weight,theme,sector,sub_sector,daily_return,contribution,market_value"
-    ];
+	  function buildPositionsSampleCSV() {
+	    var lines = [
+	      "date,ticker,name,weight,nav_weight,equity_sleeve_weight,theme,sector,sub_sector,daily_return,contribution,market_value,quantity,avg_cost,cost_basis,current_price"
+	    ];
     var dates = monthEndWorkdays(new Date(2024, 0, 1), new Date(2025, 11, 31));
     dates.forEach(function (date, dateIndex) {
       var scores = STOCKS.map(function (stock, stockIndex) {
@@ -206,23 +206,33 @@
       }, 0);
       selected.forEach(function (item, rank) {
         var stock = item.stock;
-        var baseWeight = item.score / totalScore;
-        var weight = Math.max(0.018, Math.min(0.105, baseWeight * 1.15));
-        var dailyReturn = Math.sin((dateIndex + rank) / 4.2) * 0.012 + (seededRandom(dateIndex * 91 + rank * 17) - 0.5) * 0.055;
-        var contribution = weight * dailyReturn;
-        var marketValue = 1700000 * weight * (0.92 + seededRandom(dateIndex * 29 + rank) * 0.18);
-        lines.push([
-          formatDate(date),
-          stock[0],
-          stock[1],
-          weight.toFixed(5),
+	        var sleeveWeight = item.score / totalScore;
+	        var navWeight = sleeveWeight * 0.0426;
+	        var dailyReturn = Math.sin((dateIndex + rank) / 4.2) * 0.012 + (seededRandom(dateIndex * 91 + rank * 17) - 0.5) * 0.055;
+	        var contribution = navWeight * dailyReturn;
+	        var marketValue = 10000 * navWeight;
+	        var currentPrice = 18 + seededRandom(dateIndex * 41 + rank * 23) * 132;
+	        var quantity = Math.max(100, Math.round((marketValue / currentPrice) / 100) * 100);
+	        var avgCost = currentPrice * (0.72 + seededRandom(dateIndex * 53 + rank * 31) * 0.45);
+	        var costBasis = avgCost * quantity;
+	        lines.push([
+	          formatDate(date),
+	          stock[0],
+	          stock[1],
+	          navWeight.toFixed(8),
+	          navWeight.toFixed(8),
+	          sleeveWeight.toFixed(8),
           csvEscape(stock[2]),
           csvEscape(stock[3]),
-          csvEscape(stock[4]),
-          dailyReturn.toFixed(6),
-          contribution.toFixed(6),
-          marketValue.toFixed(2)
-        ].join(","));
+	          csvEscape(stock[4]),
+	          dailyReturn.toFixed(6),
+	          contribution.toFixed(6),
+	          marketValue.toFixed(2),
+	          quantity,
+	          avgCost.toFixed(4),
+	          costBasis.toFixed(2),
+	          currentPrice.toFixed(4)
+	        ].join(","));
       });
     });
     return lines.join("\n");
@@ -333,11 +343,40 @@
     return isPercent ? num / 100 : num;
   }
 
-  function parseWeight(value) {
+  function normalizeWeightUnit(unit) {
+    var text = String(unit || "").trim().toLowerCase();
+    if (!text) return "";
+    if (["percent", "percentage", "pct", "%"].indexOf(text) >= 0) return "percent";
+    if (["decimal", "ratio", "fraction"].indexOf(text) >= 0) return "decimal";
+    return "";
+  }
+
+  function addWeightWarning(options, message) {
+    if (!options || !options.warnings) return;
+    var key = options.warningKey || message;
+    if (options.warningLedger) {
+      if (options.warningLedger[key]) return;
+      options.warningLedger[key] = true;
+    }
+    options.warnings.push(message);
+  }
+
+  function parseWeight(value, options) {
+    options = options || {};
     var num = parseNumber(value);
     if (num === null) return null;
-    if (typeof value === "string" && value.trim().endsWith("%")) return num;
-    if (num > 1 && num <= 100) return num / 100;
+    var rawText = String(value || "").trim();
+    if (typeof value === "string" && rawText.endsWith("%")) return num;
+    var unit = normalizeWeightUnit(options.unit);
+    if (unit === "percent") return num / 100;
+    if (unit === "decimal") return num;
+    if (num > 1) {
+      addWeightWarning(
+        options,
+        (options.fieldName || "weight") + " 第 " + (options.rowNumber || "-") +
+          " 行为裸数字 " + rawText + "，已按小数权重解析；如需百分比请写 " + rawText + "% 或提供 weight_unit=percent。"
+      );
+    }
     return num;
   }
 
@@ -410,6 +449,7 @@
   function normalizeNavRows(rows) {
     var errors = validateRequired(rows, ["date", "portfolio_nav"], "nav.csv");
     var warnings = [];
+    var weightWarningLedger = {};
     var normalized = [];
     rows.forEach(function (row, index) {
       var date = parseDateOnly(row.date);
@@ -424,9 +464,36 @@
         portfolio_nav: portfolioNav,
         portfolio_return: hasField(row, "portfolio_return") ? parseNumber(row.portfolio_return) : null,
         benchmark_return: hasField(row, "benchmark_return") ? parseNumber(row.benchmark_return) : null,
-        cash_weight: hasField(row, "cash_weight") ? parseWeight(row.cash_weight) : null,
-        gross_exposure: hasField(row, "gross_exposure") ? parseWeight(row.gross_exposure) : null,
-        net_exposure: hasField(row, "net_exposure") ? parseWeight(row.net_exposure) : null,
+        cash_weight: hasField(row, "cash_weight") ? parseWeight(row.cash_weight, {
+          unit: row.cash_weight_unit || row.weight_unit || row.unit,
+          fieldName: "cash_weight",
+          rowNumber: index + 2,
+          warnings: warnings,
+          warningLedger: weightWarningLedger,
+          warningKey: "nav.cash_weight.bare_gt_one"
+        }) : null,
+        gross_exposure: hasField(row, "gross_exposure") ? parseWeight(row.gross_exposure, {
+          unit: row.gross_exposure_unit || row.weight_unit || row.unit,
+          fieldName: "gross_exposure",
+          rowNumber: index + 2,
+          warnings: warnings,
+          warningLedger: weightWarningLedger,
+          warningKey: "nav.gross_exposure.bare_gt_one"
+        }) : null,
+        net_exposure: hasField(row, "net_exposure") ? parseWeight(row.net_exposure, {
+          unit: row.net_exposure_unit || row.weight_unit || row.unit,
+          fieldName: "net_exposure",
+          rowNumber: index + 2,
+          warnings: warnings,
+          warningLedger: weightWarningLedger,
+          warningKey: "nav.net_exposure.bare_gt_one"
+        }) : null,
+        portfolio_nav_raw: hasField(row, "portfolio_nav_raw") ? parseNumber(row.portfolio_nav_raw) : null,
+        portfolio_nav_rebased: hasField(row, "portfolio_nav_rebased") ? parseNumber(row.portfolio_nav_rebased) : null,
+        portfolio_units: hasField(row, "portfolio_units") ? parseNumber(row.portfolio_units) : null,
+        initial_capital: hasField(row, "initial_capital") ? parseNumber(row.initial_capital) : null,
+        total_value_after: hasField(row, "total_value_after") ? parseNumber(row.total_value_after) : null,
+        external_funding_cash_flow: hasField(row, "external_funding_cash_flow") ? parseNumber(row.external_funding_cash_flow) : null,
         raw: row
       };
       Object.keys(row).forEach(function (field) {
@@ -443,33 +510,70 @@
   }
 
   function normalizePositionsRows(rows) {
-    var errors = validateRequired(rows, ["date", "ticker", "name", "weight", "theme"], "positions.csv");
+    var errors = validateRequired(rows, ["date", "ticker", "name", "theme"], "positions.csv");
     var warnings = [];
+    var weightWarningLedger = {};
     var normalized = [];
     rows.forEach(function (row, index) {
       var date = parseDateOnly(row.date);
-      var weight = parseWeight(row.weight);
-      if (!date || !row.ticker || weight === null) {
-        warnings.push("positions.csv 第 " + (index + 2) + " 行 date/ticker/weight 无效，已跳过。");
+      var navWeight = parseWeight(hasField(row, "nav_weight") ? row.nav_weight : row.weight, {
+        unit: row.weight_unit || row.unit,
+        fieldName: "positions.csv nav_weight",
+        rowNumber: index + 2,
+        warnings: warnings,
+        warningLedger: weightWarningLedger,
+        warningKey: "positions.weight.bare_gt_one"
+      });
+      var sleeveWeight = parseWeight(
+        hasField(row, "equity_sleeve_weight") ? row.equity_sleeve_weight : row.weight,
+        {
+          unit: row.weight_unit || row.unit,
+          fieldName: "positions.csv equity_sleeve_weight",
+          rowNumber: index + 2,
+          warnings: warnings,
+          warningLedger: weightWarningLedger,
+          warningKey: "positions.sleeve_weight.bare_gt_one"
+        }
+      );
+      if (!date || !row.ticker || navWeight === null) {
+        warnings.push("positions.csv 第 " + (index + 2) + " 行 date/ticker/nav_weight 无效，已跳过。");
         return;
       }
       var dailyReturn = hasField(row, "daily_return") ? parseNumber(row.daily_return) : null;
       var contribution = hasField(row, "contribution") ? parseNumber(row.contribution) : null;
-      if (contribution === null && dailyReturn !== null) contribution = weight * dailyReturn;
-      normalized.push({
-        date: formatDate(date),
-        dateObj: date,
-        ticker: String(row.ticker || "").trim(),
-        name: String(row.name || "").trim() || "UNKNOWN_NAME",
-        weight: weight,
-        theme: String(row.theme || "").trim() || "UNCLASSIFIED",
-        sector: String(row.sector || "").trim(),
-        sub_sector: String(row.sub_sector || "").trim(),
-        daily_return: dailyReturn,
-        contribution: contribution,
-        market_value: hasField(row, "market_value") ? parseNumber(row.market_value) : null,
-        raw: row
-      });
+      if (contribution === null && dailyReturn !== null) contribution = navWeight * dailyReturn;
+	      normalized.push({
+	        date: formatDate(date),
+	        dateObj: date,
+	        ticker: String(row.ticker || "").trim(),
+	        name: String(row.name || "").trim() || "UNKNOWN_NAME",
+	        weight: navWeight,
+	        nav_weight: navWeight,
+	        equity_sleeve_weight: sleeveWeight,
+	        theme: String(row.theme || "").trim() || "UNCLASSIFIED",
+	        theme_source: String(row.theme_source || "").trim(),
+	        theme_memberships: String(row.theme_memberships || row.theme || "").trim(),
+	        sector: String(row.sector || "").trim(),
+	        sub_sector: String(row.sub_sector || "").trim(),
+	        daily_return: dailyReturn,
+	        contribution: contribution,
+	        contribution_effective_date: String(row.contribution_effective_date || "").trim(),
+	        contribution_date_source: String(row.contribution_date_source || "").trim(),
+	        market_value: hasField(row, "market_value") ? parseNumber(row.market_value) : null,
+	        quantity: hasField(row, "quantity") ? parseNumber(row.quantity) : hasField(row, "shares") ? parseNumber(row.shares) : null,
+	        avg_cost: hasField(row, "avg_cost") ? parseNumber(row.avg_cost) : hasField(row, "cost_price") ? parseNumber(row.cost_price) : null,
+	        cost_basis: hasField(row, "cost_basis") ? parseNumber(row.cost_basis) : null,
+	        current_price: hasField(row, "current_price") ? parseNumber(row.current_price) : null,
+	        unrealized_pnl: hasField(row, "unrealized_pnl") ? parseNumber(row.unrealized_pnl) : null,
+	        recommended_action: String(row.recommended_action || "").trim(),
+	        stop_loss: hasField(row, "stop_loss") ? parseNumber(row.stop_loss) : null,
+	        take_profit: hasField(row, "take_profit") ? parseNumber(row.take_profit) : null,
+	        quote_at: String(row.quote_at || "").trim(),
+	        quote_age_seconds: hasField(row, "quote_age_seconds") ? parseNumber(row.quote_age_seconds) : null,
+	        thesis: String(row.thesis || "").trim(),
+	        risk_status: String(row.risk_status || "").trim(),
+	        raw: row
+	      });
     });
     normalized.sort(function (a, b) {
       return a.dateObj - b.dateObj || b.weight - a.weight;
@@ -505,7 +609,14 @@
         price: price,
         quantity: quantity,
         trade_amount: amount,
-        fee: hasField(row, "fee") ? parseNumber(row.fee) || 0 : 0,
+        fee: hasField(row, "fee") ? parseNumber(row.fee) : null,
+        fee_source: String(row.fee_source || (hasField(row, "fee") ? "provided" : "unknown")).trim(),
+        slippage: hasField(row, "slippage") ? parseNumber(row.slippage) : null,
+        ledger_delta: hasField(row, "ledger_delta") ? parseNumber(row.ledger_delta) : null,
+        recommendation_id: String(row.recommendation_id || "").trim(),
+        decision_id: String(row.decision_id || "").trim(),
+        order_id: String(row.order_id || "").trim(),
+        fill_id: String(row.fill_id || "").trim(),
         reason: String(row.reason || "").trim(),
         theme: String(row.theme || "").trim() || "UNCLASSIFIED",
         raw: row
@@ -536,7 +647,7 @@
     });
   }
 
-  function parseDataset(csvBundle) {
+  function parseDataset(csvBundle, contract) {
     var nav = normalizeNavRows(parseCSV(csvBundle.nav || ""));
     var positions = normalizePositionsRows(parseCSV(csvBundle.positions || ""));
     var trades = normalizeTradesRows(csvBundle.trades ? parseCSV(csvBundle.trades) : []);
@@ -547,7 +658,10 @@
       errors: nav.errors.concat(positions.errors, trades.errors),
       warnings: nav.warnings.concat(positions.warnings, trades.warnings),
       benchmarks: detectBenchmarks(nav.rows),
-      benchmarkFields: extractBenchmarkFields(nav.rows)
+      benchmarkFields: extractBenchmarkFields(nav.rows),
+      tradingCalendar: contract && contract.trading_calendar ? contract.trading_calendar : null,
+      navReturnProvenance: contract && contract.nav_return_provenance ? contract.nav_return_provenance : null,
+      contract: contract || null
     };
   }
 

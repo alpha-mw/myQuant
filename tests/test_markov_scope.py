@@ -10,7 +10,7 @@ from quant_investor.agent_protocol import BranchVerdict
 from quant_investor.funnel.deterministic_funnel import FunnelOutput
 from quant_investor.market.dag.context import _prepare_market_context
 from quant_investor.market.read_result import MarketDataReadResult
-from quant_investor.regime.scope import deterministic_symbol_sample
+from quant_investor.regime.scope import build_regime_scope, deterministic_symbol_sample
 
 
 def _frame(symbol: str, *, direction: float = 1.0) -> pd.DataFrame:
@@ -208,7 +208,7 @@ def test_explicit_small_stock_pool_does_not_define_global_market_regime(
     assert markov["source_symbol_count"] == 6
     assert markov["production_eligible"] is True
     assert markov["status"] == "applied"
-    assert reader.batch_calls[-1]["symbols"] == ["AAPL", "AMZN", "GOOG", "META", "MSFT", "NVDA"]
+    assert reader.batch_calls[-1]["symbols"] == ["AAPL", "AMZN", "GOOG", "META", "NVDA", "TSLA"]
 
 
 def test_changing_requested_pool_uses_same_reference_regime(
@@ -289,8 +289,48 @@ def test_deterministic_broad_market_sample_is_reproducible() -> None:
     first, sampled_first, unsampled_first = deterministic_symbol_sample(["MSFT", "AAPL", "NVDA"], 2)
     second, sampled_second, unsampled_second = deterministic_symbol_sample(["NVDA", "MSFT", "AAPL"], 2)
 
-    assert first == ["AAPL", "MSFT"]
     assert first == second
     assert sampled_first is True
     assert sampled_second is True
     assert unsampled_first == unsampled_second == 3
+
+
+def test_deterministic_cn_sample_is_stratified_by_available_board_buckets() -> None:
+    symbols = [
+        "000001.SZ",
+        "000002.SZ",
+        "300001.SZ",
+        "300002.SZ",
+        "600000.SH",
+        "600001.SH",
+        "688001.SH",
+        "688002.SH",
+        "430001.BJ",
+        "830001.BJ",
+    ]
+
+    sample, sampled, unsampled_count = deterministic_symbol_sample(reversed(symbols), 5)
+
+    assert sampled is True
+    assert unsampled_count == 10
+    assert {symbol.rsplit(".", 1)[1] for symbol in sample} == {"BJ", "SH", "SZ"}
+    assert any(symbol.startswith("30") for symbol in sample)
+    assert any(symbol.startswith("68") for symbol in sample)
+
+
+def test_full_market_scope_key_is_stable_across_symbol_count_drift() -> None:
+    def _scope(source_symbol_count: int) -> str:
+        return build_regime_scope(
+            market="CN",
+            base_universe_key="full_a",
+            source_universe_key="full_a",
+            requested_symbol_count=source_symbol_count,
+            source_symbol_count=source_symbol_count,
+            explicit_symbol_count=0,
+            unsampled_symbol_count=source_symbol_count,
+            sampled=False,
+            min_market_sample=30,
+            source_description="fixture",
+        ).scope_key
+
+    assert _scope(5200) == _scope(5201) == "CN:full_market:full_a"

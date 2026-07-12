@@ -16,6 +16,15 @@ class ThemePhase(str, Enum):
     DISTRIBUTION = "distribution"
 
 
+class ThemeLifecycle(str, Enum):
+    DISCOVERY = "discovery"
+    WARMING = "warming"
+    VALIDATED_TREND = "validated_trend"
+    CROWDED = "crowded"
+    COOLING = "cooling"
+    BROKEN = "broken"
+
+
 def clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
     try:
         numeric = float(value)
@@ -61,6 +70,7 @@ class ThemeScore:
     fake_breakout_risk: float = 0.0
     raw_score: float | None = None
     smoothed_score: float | None = None
+    effective_score: float | None = None
     heat_10d: float | None = None
     heat_delta_5d: float | None = None
     persistence_count: int = 0
@@ -83,6 +93,26 @@ class ThemeScore:
     crowding_risk: float = 0.0
     crowding_status: str = "disabled"
     crowding_diagnostic_notes: list[str] = field(default_factory=list)
+    attention: float = 0.0
+    attention_5d: float | None = None
+    attention_20d: float | None = None
+    attention_60d: float | None = None
+    attention_120d: float | None = None
+    attention_turnover_share: float | None = None
+    new_high_rate: float | None = None
+    leader_persistence: float | None = None
+    attention_history_coverage: float = 0.0
+    industrial_validation: float = 0.0
+    market_confirmation: float = 0.0
+    valuation_risk: float = 0.0
+    evidence_confidence: float = 0.0
+    lifecycle: str = ThemeLifecycle.DISCOVERY.value
+    mandate: str = "observation"
+    lane: str = "market_observation"
+    base_percentile_rank: float = 0.0
+    pevc_prior: float = 0.0
+    pevc_rank_adjustment: float = 0.0
+    adjusted_percentile_rank: float = 0.0
     theme_type: str = "industry"
     membership_source: str = "industry_map"
     pit_membership: bool = False
@@ -107,6 +137,11 @@ class ThemeScore:
             "fake_breakout_risk": _jsonable(self.fake_breakout_risk),
             "raw_score": _jsonable(self.raw_score if self.raw_score is not None else self.score),
             "smoothed_score": _jsonable(self.smoothed_score),
+            "effective_score": _jsonable(
+                self.effective_score
+                if self.effective_score is not None
+                else (self.smoothed_score if self.smoothed_score is not None else self.score)
+            ),
             "heat_10d": _jsonable(self.heat_10d),
             "heat_delta_5d": _jsonable(self.heat_delta_5d),
             "persistence_count": int(self.persistence_count),
@@ -129,6 +164,26 @@ class ThemeScore:
             "crowding_risk": _jsonable(self.crowding_risk),
             "crowding_status": str(self.crowding_status or "disabled"),
             "crowding_diagnostic_notes": _jsonable(self.crowding_diagnostic_notes),
+            "attention": _jsonable(self.attention),
+            "attention_5d": _jsonable(self.attention_5d),
+            "attention_20d": _jsonable(self.attention_20d),
+            "attention_60d": _jsonable(self.attention_60d),
+            "attention_120d": _jsonable(self.attention_120d),
+            "attention_turnover_share": _jsonable(self.attention_turnover_share),
+            "new_high_rate": _jsonable(self.new_high_rate),
+            "leader_persistence": _jsonable(self.leader_persistence),
+            "attention_history_coverage": _jsonable(self.attention_history_coverage),
+            "industrial_validation": _jsonable(self.industrial_validation),
+            "market_confirmation": _jsonable(self.market_confirmation),
+            "valuation_risk": _jsonable(self.valuation_risk),
+            "evidence_confidence": _jsonable(self.evidence_confidence),
+            "lifecycle": str(self.lifecycle or ThemeLifecycle.DISCOVERY.value),
+            "mandate": str(self.mandate or "observation"),
+            "lane": str(self.lane or "market_observation"),
+            "base_percentile_rank": _jsonable(self.base_percentile_rank),
+            "pevc_prior": _jsonable(self.pevc_prior),
+            "pevc_rank_adjustment": _jsonable(self.pevc_rank_adjustment),
+            "adjusted_percentile_rank": _jsonable(self.adjusted_percentile_rank),
             "theme_type": str(self.theme_type or "industry"),
             "membership_source": str(self.membership_source or "industry_map"),
             "pit_membership": bool(self.pit_membership),
@@ -144,12 +199,15 @@ class ThemeScanResult:
     market: str = "CN"
     universe_key: str = ""
     as_of: str = ""
-    schema_version: str = "theme_rotation.v1"
+    schema_version: str = "theme_rotation.v2"
     theme_scores: dict[str, ThemeScore] = field(default_factory=dict)
     symbol_scores: dict[str, float] = field(default_factory=dict)
     symbol_smoothed_scores: dict[str, float] = field(default_factory=dict)
     symbol_primary_theme: dict[str, str] = field(default_factory=dict)
     symbol_theme_memberships: dict[str, list[str]] = field(default_factory=dict)
+    symbol_theme_membership_details: dict[str, list[dict[str, Any]]] = field(
+        default_factory=dict
+    )
     symbol_phase: dict[str, str] = field(default_factory=dict)
     symbol_risk_flags: dict[str, list[str]] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -168,6 +226,9 @@ class ThemeScanResult:
             "symbol_smoothed_scores": _jsonable(self.symbol_smoothed_scores),
             "symbol_primary_theme": _jsonable(self.symbol_primary_theme),
             "symbol_theme_memberships": _jsonable(self.symbol_theme_memberships),
+            "symbol_theme_membership_details": _jsonable(
+                self.symbol_theme_membership_details
+            ),
             "symbol_phase": _jsonable(self.symbol_phase),
             "symbol_risk_flags": _jsonable(self.symbol_risk_flags),
             "metadata": _jsonable(self.metadata),

@@ -36,7 +36,6 @@ BUCKET_PRIORITIES: dict[str, int] = {
     "extended": 1,
     "extended_low_score": 1,
     "extended_low_breadth": 1,
-    "forced_theme": 1,
     "residual_theme_alpha": 2,
     "risk_watch_distribution": 3,
     "risk_watch_overextended": 3,
@@ -114,6 +113,20 @@ def _dedupe_symbols(symbols: list[str]) -> list[str]:
     return result
 
 
+def _membership_ids_for_symbol(
+    *,
+    symbol: str,
+    symbol_primary_theme: Mapping[str, Any],
+    symbol_theme_memberships: Mapping[str, Any],
+) -> list[str]:
+    raw_memberships = symbol_theme_memberships.get(symbol, [])
+    memberships = list(_dedupe_texts(raw_memberships))
+    primary = str(symbol_primary_theme.get(symbol, "") or "").strip()
+    if primary and primary not in memberships:
+        memberships.append(primary)
+    return memberships
+
+
 @dataclass(frozen=True)
 class ThemePoolConfig:
     enabled: bool = True
@@ -127,7 +140,7 @@ class ThemePoolConfig:
     max_symbols_per_theme: int = 30
     residual_ratio: float = 0.25
     min_residual_symbols: int = 20
-    min_admitted_themes: int = 2
+    min_admitted_themes: int = 0
     allow_unthemed_residual: bool = False
     include_risk_watch: bool = True
     risk_watch_max_ratio: float = 0.20
@@ -136,6 +149,7 @@ class ThemePoolConfig:
     blocked_phases: tuple[str, ...] = DEFAULT_BLOCKED_PHASES
     blocked_flags: tuple[str, ...] = DEFAULT_BLOCKED_FLAGS
     min_member_count: int = 0
+    protocol_v2_formal_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -467,9 +481,51 @@ class ThemeCandidatePoolBuilder:
         policy = self._policy(global_context)
         effective_max_candidates = self._effective_max_candidates(max_candidates, policy)
         theme_scores = _mapping_or_empty(rotation.get("theme_scores"))
+        protocol_v2 = _mapping_or_empty(rotation.get("protocol_v2"))
+        protocol_v2_states = _mapping_or_empty(protocol_v2.get("states"))
+        protocol_formal_blocker = ""
+        if self.config.protocol_v2_formal_enabled:
+            if protocol_v2.get("formal_kill_switch") is True:
+                protocol_formal_blocker = "theme_v2_formal_kill_switch_active"
+            elif protocol_v2.get("formal_enabled") is not True:
+                protocol_formal_blocker = "theme_v2_formal_not_enabled"
+            elif str(protocol_v2.get("status") or "") not in {
+                "prequalified",
+                "formal",
+            }:
+                protocol_formal_blocker = "theme_v2_protocol_not_prequalified"
+            elif not str(protocol_v2.get("protocol_hash") or ""):
+                protocol_formal_blocker = "theme_v2_protocol_hash_missing"
+            formal_theme_ids = {
+                str(theme_id)
+                for theme_id in list(protocol_v2.get("prequalified_pool") or [])
+                if str(theme_id)
+            }
+            if protocol_formal_blocker:
+                formal_theme_ids = set()
+            theme_scores = {
+                theme_id: {
+                    **dict(_mapping_or_empty(payload)),
+                    "protocol_v2_base_rank_score": _safe_float(
+                        _mapping_or_empty(protocol_v2_states.get(theme_id)).get(
+                            "base_rank_score"
+                        ),
+                        0.0,
+                    ),
+                    "protocol_v2_adjusted_percentile_rank": _safe_float(
+                        _mapping_or_empty(protocol_v2_states.get(theme_id)).get(
+                            "adjusted_percentile_rank"
+                        ),
+                        0.0,
+                    ),
+                }
+                for theme_id, payload in theme_scores.items()
+                if str(theme_id) in formal_theme_ids
+            }
         symbol_scores = _mapping_or_empty(rotation.get("symbol_scores"))
         symbol_smoothed_scores = _mapping_or_empty(rotation.get("symbol_smoothed_scores"))
         symbol_primary_theme = _mapping_or_empty(rotation.get("symbol_primary_theme"))
+        symbol_theme_memberships = _mapping_or_empty(rotation.get("symbol_theme_memberships"))
         symbol_phase = _mapping_or_empty(rotation.get("symbol_phase"))
         symbol_risk_flags = _mapping_or_empty(rotation.get("symbol_risk_flags"))
         symbol_market_state = _mapping_or_empty(
@@ -484,13 +540,9 @@ class ThemeCandidatePoolBuilder:
             policy=policy,
         )
         natural_admitted_theme_count = len(admitted_themes)
-        admitted_themes, rejected_themes, forced_themes = self._force_minimum_themes(
-            admitted_themes=admitted_themes,
-            rejected_themes=rejected_themes,
-            rejected_theme_candidates=rejected_theme_candidates,
-            input_symbols=input_symbols,
-            symbol_primary_theme=symbol_primary_theme,
-        )
+        # Theme Protocol v2 forbids forced formal admission.  A zero natural
+        # pass therefore stays an intentionally empty formal pool.
+        forced_themes: list[_ThemeCandidate] = []
         admitted_theme_ids = {theme.theme_id for theme in admitted_themes}
         theme_by_id = {theme.theme_id: theme for theme in all_theme_candidates}
         for theme in admitted_themes:
@@ -504,6 +556,7 @@ class ThemeCandidatePoolBuilder:
             symbol_scores=symbol_scores,
             symbol_smoothed_scores=symbol_smoothed_scores,
             symbol_primary_theme=symbol_primary_theme,
+            symbol_theme_memberships=symbol_theme_memberships,
             symbol_phase=symbol_phase,
             symbol_risk_flags=symbol_risk_flags,
             symbol_market_state=symbol_market_state,
@@ -566,7 +619,7 @@ class ThemeCandidatePoolBuilder:
             "admitted_theme_count": len(admitted_themes),
             "natural_admitted_theme_count": natural_admitted_theme_count,
             "forced_theme_count": len(forced_themes),
-            "min_admitted_themes": max(int(self.config.min_admitted_themes or 0), 0),
+            "min_admitted_themes": 0,
             "rejected_theme_count": len(rejected_themes),
             "core_symbol_count": source_counts.get("core", 0),
             "extended_symbol_count": source_counts.get("extended", 0),
@@ -599,6 +652,21 @@ class ThemeCandidatePoolBuilder:
             "rejected_themes": rejected_themes,
             "score_source": self._score_source(),
             "fallback_to_raw_score": bool(self.config.fallback_to_raw_score),
+            "protocol_v2_formal_enabled": bool(self.config.protocol_v2_formal_enabled),
+            "protocol_v2_hash": str(protocol_v2.get("protocol_hash") or ""),
+            "protocol_v2_status": str(protocol_v2.get("status") or "missing"),
+            "protocol_v2_formal_kill_switch": bool(
+                protocol_v2.get("formal_kill_switch", False)
+            ),
+            "protocol_v2_formal_blocker": protocol_formal_blocker,
+            "protocol_v2_gate_stage": (
+                "prequalified_before_downstream"
+                if self.config.protocol_v2_formal_enabled
+                else "legacy_theme_gate"
+            ),
+            "protocol_v2_final_formal_pool": list(
+                protocol_v2.get("formal_pool") or []
+            ),
             "symbols": symbol_metadata,
             "residual_theme_alpha_candidates": [
                 candidate.symbol for candidate in residual_candidates
@@ -662,6 +730,8 @@ class ThemeCandidatePoolBuilder:
                 flags=candidate.risk_flags,
                 policy=policy,
             )
+            if self.config.protocol_v2_formal_enabled:
+                quality_flags = ()
             candidates.append(replace(candidate, quality_flags=quality_flags))
         ranked = sorted(candidates, key=lambda item: (-item.rank_score, item.theme_id))
         eligible = [item for item in ranked if not item.quality_flags]
@@ -680,20 +750,32 @@ class ThemeCandidatePoolBuilder:
     def _theme_candidate(self, *, theme_id: str, raw_payload: Any) -> _ThemeCandidate:
         payload = _mapping_or_empty(raw_payload)
         theme_key = str(payload.get("theme_id") or theme_id)
-        score = _normalize_score(payload.get("score", payload.get("raw_score", 0.0)))
+        raw_score = _normalize_score(payload.get("raw_score", payload.get("score", 0.0)))
+        if self._score_source() == "smoothed":
+            if payload.get("smoothed_score") is not None:
+                score = _normalize_score(payload.get("smoothed_score"))
+            elif payload.get("effective_score") is not None:
+                score = _normalize_score(payload.get("effective_score"))
+            elif self.config.fallback_to_raw_score:
+                score = raw_score
+            else:
+                score = 0.0
+        else:
+            score = raw_score
         phase = _normalized_phase(payload.get("phase"))
         flags = _dedupe_texts(payload.get("risk_flags", [])) + _dedupe_texts(payload.get("policy_risk_flags", []))
-        smoothed_or_raw_score = _normalize_score(
-            payload.get(
-                "smoothed_score",
-                payload.get("raw_score", payload.get("score", 0.0)),
+        smoothed_or_raw_score = score
+        rank_score = (
+            _normalize_score(payload.get("protocol_v2_adjusted_percentile_rank"))
+            if self.config.protocol_v2_formal_enabled
+            else _theme_rank_score(
+                payload=payload,
+                score=score,
+                smoothed_or_raw_score=smoothed_or_raw_score,
             )
         )
-        rank_score = _theme_rank_score(
-            payload=payload,
-            score=score,
-            smoothed_or_raw_score=smoothed_or_raw_score,
-        )
+        if self.config.protocol_v2_formal_enabled:
+            score = _normalize_score(payload.get("protocol_v2_base_rank_score"))
         return _ThemeCandidate(
             theme_id=theme_key,
             score=score,
@@ -712,46 +794,10 @@ class ThemeCandidatePoolBuilder:
         input_symbols: list[str],
         symbol_primary_theme: Mapping[str, Any],
     ) -> tuple[list[_ThemeCandidate], list[dict[str, Any]], list[_ThemeCandidate]]:
-        target_count = max(int(self.config.min_admitted_themes or 0), 0)
-        if target_count <= 0 or len(admitted_themes) >= target_count:
-            return admitted_themes, rejected_themes, []
-
-        present_theme_ids = {
-            str(symbol_primary_theme.get(symbol, "") or "")
-            for symbol in input_symbols
-            if str(symbol_primary_theme.get(symbol, "") or "")
-        }
-        admitted_ids = {theme.theme_id for theme in admitted_themes}
-        available = [
-            candidate
-            for candidate in rejected_theme_candidates
-            if candidate.theme_id in present_theme_ids and candidate.theme_id not in admitted_ids
-        ]
-        slots = max(target_count - len(admitted_themes), 0)
-        ranked = sorted(available, key=lambda item: (-item.rank_score, -item.score, item.theme_id))
-        forced = [
-            replace(
-                candidate,
-                forced=True,
-                force_reason="forced_top_theme_min_admitted_themes",
-                original_rejection_reason=(
-                    candidate.original_rejection_reason or "natural_theme_gate_not_passed"
-                ),
-            )
-            for candidate in ranked[:slots]
-        ]
-        if not forced:
-            return admitted_themes, rejected_themes, []
-
-        forced_ids = {theme.theme_id for theme in forced}
-        remaining_rejected = [
-            item for item in rejected_themes if str(item.get("theme_id") or "") not in forced_ids
-        ]
-        combined = sorted(
-            list(admitted_themes) + forced,
-            key=lambda item: (-item.rank_score, item.theme_id),
-        )
-        return combined, remaining_rejected, forced
+        # Retained as a compatibility seam for older callers, but deliberately
+        # incapable of mutation: Theme Protocol v2 has no forced admission.
+        del rejected_theme_candidates, input_symbols, symbol_primary_theme
+        return admitted_themes, rejected_themes, []
 
     def _theme_quality_flags(
         self,
@@ -791,6 +837,7 @@ class ThemeCandidatePoolBuilder:
         symbol_scores: Mapping[str, Any],
         symbol_smoothed_scores: Mapping[str, Any],
         symbol_primary_theme: Mapping[str, Any],
+        symbol_theme_memberships: Mapping[str, Any],
         symbol_phase: Mapping[str, Any],
         symbol_risk_flags: Mapping[str, Any],
         symbol_market_state: Mapping[str, Any],
@@ -804,14 +851,34 @@ class ThemeCandidatePoolBuilder:
         initial_exclusions: dict[str, str] = {}
         residual_pool: list[_SymbolCandidate] = []
         for symbol in input_symbols:
-            theme_id = str(symbol_primary_theme.get(symbol, "") or "")
-            if not theme_id:
+            membership_ids = _membership_ids_for_symbol(
+                symbol=symbol,
+                symbol_primary_theme=symbol_primary_theme,
+                symbol_theme_memberships=symbol_theme_memberships,
+            )
+            if not membership_ids:
                 initial_exclusions[symbol] = "theme_pool_missing_theme_membership"
                 continue
-            theme = theme_by_id.get(theme_id)
+            admitted_memberships = [
+                theme_by_id[theme_id]
+                for theme_id in membership_ids
+                if theme_id in admitted_theme_ids and theme_id in theme_by_id
+            ]
+            theme = (
+                sorted(
+                    admitted_memberships,
+                    key=lambda item: (-item.rank_score, item.theme_id),
+                )[0]
+                if admitted_memberships
+                else None
+            )
             if theme is None:
-                initial_exclusions[symbol] = "theme_pool_missing_theme_metadata"
+                if any(theme_id in theme_by_id for theme_id in membership_ids):
+                    initial_exclusions[symbol] = "theme_pool_theme_not_admitted"
+                else:
+                    initial_exclusions[symbol] = "theme_pool_missing_theme_metadata"
                 continue
+            theme_id = theme.theme_id
             bucket = self._bucket_for_symbol(
                 symbol=symbol,
                 theme=theme,
@@ -862,7 +929,7 @@ class ThemeCandidatePoolBuilder:
         symbol_risk_flags: Mapping[str, Any],
         policy: ThemeGatePolicy,
     ) -> str:
-        phase = _normalized_phase(symbol_phase.get(symbol)) or theme.phase
+        phase = theme.phase or _normalized_phase(symbol_phase.get(symbol))
         flags = _symbol_risk_flags(symbol=symbol, theme=theme, symbol_risk_flags=symbol_risk_flags)
         if self.config.include_risk_watch:
             if "theme_fake_breakout_risk" in flags:
@@ -914,7 +981,9 @@ class ThemeCandidatePoolBuilder:
             symbol_scores=symbol_scores,
             symbol_smoothed_scores=symbol_smoothed_scores,
         )
-        phase = _normalized_phase(symbol_phase.get(symbol)) or (theme.phase if theme else "")
+        if self.config.protocol_v2_formal_enabled and theme is not None:
+            symbol_theme_score = _clamp(theme.rank_score)
+        phase = (theme.phase if theme else "") or _normalized_phase(symbol_phase.get(symbol))
         risk_flags = _symbol_risk_flags(symbol=symbol, theme=theme, symbol_risk_flags=symbol_risk_flags)
         raw_score = _symbol_pool_score(
             symbol=symbol,
@@ -944,8 +1013,11 @@ class ThemeCandidatePoolBuilder:
             risk_flags=risk_flags,
             theme_forced_admission=bool(theme.forced) if theme else False,
             candidate_intent=(
-                "research_candidate_not_buy_signal"
+                "theme_v2_prequalified_research_candidate"
+                if self.config.protocol_v2_formal_enabled
+                else "research_candidate_not_buy_signal"
                 if bucket in RISK_WATCH_BUCKETS
+                or bool(theme.forced if theme else False)
                 else ""
             ),
         )

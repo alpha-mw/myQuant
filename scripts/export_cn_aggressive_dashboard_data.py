@@ -5,11 +5,17 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
+import io
 import json
+import math
 import os
+import re
 import sys
+import tempfile
+from collections import defaultdict
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -20,7 +26,9 @@ DEFAULT_RECORD_ROOT = (
     PROJECT_ROOT / "results" / "strategy_records" / "CN" / "aggressive_tech_manufacturing"
 )
 DEFAULT_DASHBOARD_ROOT = PROJECT_ROOT / "portfolio_dashboard"
-DEFAULT_BENCHMARK_SOURCE = "auto"
+DEFAULT_PRIVATE_DASHBOARD_DIRNAME = "private"
+DASHBOARD_SCHEMA_VERSION = "dashboard_contract.v2"
+DEFAULT_BENCHMARK_SOURCE = "local"
 DEFAULT_INITIAL_BENCHMARK = 1.0
 DEFAULT_STOCK_BASIC_ROOT = PROJECT_ROOT / "data" / "parquet" / "cn" / "dag_core_raw" / "table=stock_basic"
 DEFAULT_CN_BARS_ROOT = PROJECT_ROOT / "data" / "parquet" / "cn" / "bars"
@@ -87,6 +95,18 @@ BENCHMARK_FIELD_ORDER = [
     INDUSTRY_EW_NAV_FIELD,
 ]
 TUSHARE_BENCHMARK_SOURCE_SYSTEM = "tushare.index_daily"
+EXECUTED_TRADE_STATUSES = {
+    "filled",
+    "executed",
+    "filled_local_manual",
+    "filled_local_manual_human_override",
+    "filled_local_manual_paper_rebalance",
+    "成交",
+    "已成交",
+}
+PARTIAL_EXECUTED_TRADE_STATUSES = {"partial_fill", "partially_filled"}
+EXECUTED_TRADE_STATUSES.update(PARTIAL_EXECUTED_TRADE_STATUSES)
+TRADE_RECORD_REQUIRED_FIELDS = ["timestamp", "symbol", "side/action", "shares", "price", "trade_value"]
 os.environ.setdefault("ARROW_USER_SIMD_LEVEL", "NONE")
 
 
@@ -99,6 +119,14 @@ class RecordRun:
     initial_capital: float
     total_value_after: float
     benchmark_values: dict[str, float]
+    funding_cash_flows: tuple[dict[str, Any], ...] = ()
+    manual_manifest_path: Path | None = None
+    manual_manifest_sha256: str | None = None
+    manual_ledger_path: Path | None = None
+    manual_ledger_sha256: str | None = None
+    manual_ledger_sha_declared: bool = False
+    manual_manifest: dict[str, Any] | None = None
+    manual_order_key: tuple[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -129,13 +157,27 @@ def read_csv_rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
+def read_ledger_rows(path: Path) -> list[dict[str, Any]]:
+    if path.suffix.lower() == ".csv":
+        return read_csv_rows(path)
+    if path.suffix.lower() != ".parquet":
+        return []
+    try:
+        import pandas as pd
+
+        frame = pd.read_parquet(path)
+    except (ImportError, OSError, ValueError):
+        return []
+    return [dict(row) for row in frame.to_dict(orient="records")]
+
+
 def write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({field: row.get(field, "") for field in fieldnames})
+    buffer = io.StringIO(newline="")
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({field: row.get(field, "") for field in fieldnames})
+    _write_private_text_atomic(path, buffer.getvalue())
 
 
 def parse_float(value: Any) -> float | None:
@@ -153,6 +195,176 @@ def parse_float(value: Any) -> float | None:
         return float(text) * scale
     except ValueError:
         return None
+
+
+def parse_percentage_points(value: Any) -> float | None:
+    """Convert a field explicitly named ``*_pct`` to a decimal return once.
+
+    Strategy review artifacts store ``today_change_pct=-0.46`` for -0.46%.
+    A literal percent sign is already handled by :func:`parse_float`; bare
+    values in this field are percentage points and therefore need /100.
+    """
+
+    if value is None:
+        return None
+    text = str(value).strip()
+    parsed = parse_float(text)
+    if parsed is None:
+        return None
+    return parsed if text.endswith("%") else parsed / 100.0
+
+
+def sha256_file(path: Path | None) -> str | None:
+    if path is None or not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def canonical_json_sha256(payload: Any) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def path_summary(path: Path | None) -> str | None:
+    """Return an audit-useful path without serializing a private absolute root."""
+
+    if path is None:
+        return None
+    try:
+        return path.resolve().relative_to(PROJECT_ROOT.resolve()).as_posix()
+    except ValueError:
+        parent = path.parent.name
+        return f"<external>/{parent + '/' if parent else ''}{path.name}"
+
+
+def nullable_float(value: Any) -> float | None:
+    parsed = parse_float(value)
+    if parsed is None or not math.isfinite(parsed):
+        return None
+    return parsed
+
+
+def explicit_iso_date(value: Any) -> str | None:
+    """Normalize only documented date encodings; never search arbitrary text."""
+
+    text = str(value or "").strip()
+    if re.fullmatch(r"\d{8}", text):
+        normalized = f"{text[:4]}-{text[4:6]}-{text[6:8]}"
+    else:
+        match = re.fullmatch(
+            r"(\d{4}-\d{2}-\d{2})(?:[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?"
+            r"(?:\s*CST|[+-]\d{2}:?\d{2}|Z)?)?",
+            text,
+        )
+        if not match:
+            return None
+        normalized = match.group(1)
+    try:
+        datetime.strptime(normalized, "%Y-%m-%d")
+    except ValueError:
+        return None
+    return normalized
+
+
+def explicit_iso_timestamp(value: Any) -> str | None:
+    """Normalize explicit artifact timestamp fields without run-id inference."""
+
+    text = str(value or "").strip()
+    if re.fullmatch(r"\d{14}", text):
+        normalized = (
+            f"{text[:4]}-{text[4:6]}-{text[6:8]}T"
+            f"{text[8:10]}:{text[10:12]}:{text[12:14]}+08:00"
+        )
+    elif re.fullmatch(r"\d{8}_\d{4}", text):
+        normalized = (
+            f"{text[:4]}-{text[4:6]}-{text[6:8]}T"
+            f"{text[9:11]}:{text[11:13]}:00+08:00"
+        )
+    else:
+        match = re.fullmatch(
+            r"(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)(?:\s*CST|([+-]\d{2}:?\d{2}|Z))?",
+            text,
+        )
+        if not match:
+            return None
+        zone = match.group(3) or "+08:00"
+        if re.fullmatch(r"[+-]\d{4}", zone):
+            zone = f"{zone[:3]}:{zone[3:]}"
+        normalized = f"{match.group(1)}T{match.group(2)}{zone}"
+    try:
+        datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return normalized
+
+
+def load_strict_parquet_trading_calendar(
+    bars_root: Path,
+    start_date: str,
+    end_date: str,
+) -> tuple[dict[str, Any], list[str]]:
+    """Build the expected open-day mask only from canonical strict Parquet bars."""
+
+    missing = {
+        "status": "missing",
+        "source_system": "strict_parquet.cn_bars.trade_date",
+        "path_summary": path_summary(bars_root),
+        "start_date": start_date,
+        "end_date": end_date,
+        "expected_open_dates": [],
+        "expected_open_date_count": 0,
+        "first_open_date": None,
+        "last_open_date": None,
+        "mask_sha256": None,
+    }
+    if not bars_root.exists():
+        return missing, [f"trading_calendar_missing: strict Parquet bars not found: {bars_root}"]
+    try:
+        with suppress_native_stderr():
+            import pyarrow.dataset as ds  # type: ignore[import-not-found]
+
+            dataset = ds.dataset(str(bars_root), format="parquet", partitioning="hive")
+            table = dataset.to_table(columns=["trade_date"])
+    except Exception as exc:
+        return missing, [f"trading_calendar_missing: cannot read strict Parquet trade_date: {exc}"]
+    expected = sorted(
+        {
+            normalized
+            for value in table.column("trade_date").to_pylist()
+            if (normalized := explicit_iso_date(value)) is not None
+            and start_date <= normalized <= end_date
+        }
+    )
+    if not expected:
+        return missing, ["trading_calendar_missing: no canonical trade_date in dashboard range"]
+    mask_payload = {
+        "source_system": "strict_parquet.cn_bars.trade_date",
+        "start_date": start_date,
+        "end_date": end_date,
+        "expected_open_dates": expected,
+    }
+    return {
+        "status": "available",
+        "source_system": "strict_parquet.cn_bars.trade_date",
+        "path_summary": path_summary(bars_root),
+        "start_date": start_date,
+        "end_date": end_date,
+        "expected_open_dates": expected,
+        "expected_open_date_count": len(expected),
+        "first_open_date": expected[0],
+        "last_open_date": expected[-1],
+        "mask_sha256": canonical_json_sha256(mask_payload),
+    }, []
 
 
 def record_date_from_run(run_id: str) -> str:
@@ -177,6 +389,16 @@ def load_json(path: Path) -> dict[str, Any]:
         return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return {}
+
+
+def load_json_object(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def benchmarks_from_snapshot(run_dir: Path) -> dict[str, float]:
@@ -430,33 +652,14 @@ def _with_composite_benchmark_fields(
     *,
     run_date: str,
 ) -> None:
-    main_components = [
-        ("star50_nav", 0.50),
-        ("csi300_nav", 0.30),
-        ("chinext_nav", 0.20),
-    ]
-    used_weight = sum(weight for field, weight in main_components if field in normalized)
-    if used_weight:
-        normalized["benchmark_main_nav"] = (
-            sum(normalized[field] * weight for field, weight in main_components if field in normalized)
-            / used_weight
-        )
-        component_coverages = [
-            coverage[field] for field, _weight in main_components if field in normalized and field in coverage
-        ]
-        component_value_dates = [
-            value_dates[field] for field, _weight in main_components if field in normalized and field in value_dates
-        ]
-        coverage["benchmark_main_nav"] = (
-            SNAPSHOT_GAP_FILL_COVERAGE
-            if SNAPSHOT_GAP_FILL_COVERAGE in component_coverages
-            else (
-                "previous_trading_day_ffill"
-                if "previous_trading_day_ffill" in component_coverages
-                else "exact_close"
-            )
-        )
-        value_dates["benchmark_main_nav"] = min(component_value_dates) if component_value_dates else run_date
+    main_field = next(
+        (field for field in ("star50_nav", "csi300_nav", "chinext_nav") if field in normalized),
+        "",
+    )
+    if main_field:
+        normalized["benchmark_main_nav"] = normalized[main_field]
+        coverage["benchmark_main_nav"] = coverage.get(main_field, "exact_close")
+        value_dates["benchmark_main_nav"] = value_dates.get(main_field, run_date)
     if "csi300_nav" in normalized:
         normalized["benchmark_nav"] = normalized["csi300_nav"]
         coverage["benchmark_nav"] = coverage.get("csi300_nav", "exact_close")
@@ -511,6 +714,19 @@ def load_local_benchmark_export(
             warnings.append(f"本地 benchmark 第 {row_number} 行 coverage={coverage} 无效，已跳过。")
             invalid_row_count += 1
             continue
+        if (
+            not value_date
+            or (coverage == "exact_close" and value_date != iso_date)
+            or (
+                coverage == "previous_trading_day_ffill"
+                and value_date >= iso_date
+            )
+        ):
+            warnings.append(
+                f"本地 benchmark 第 {row_number} 行 value_date/coverage PIT 语义无效，已跳过。"
+            )
+            invalid_row_count += 1
+            continue
         parsed_rows[(iso_date, field)] = {
             "date": iso_date,
             "ts_code": ts_code,
@@ -521,6 +737,25 @@ def load_local_benchmark_export(
             "coverage": coverage,
         }
         source_systems.add(source_system)
+
+    exact_keys = {
+        (row["date"], row["field"])
+        for row in parsed_rows.values()
+        if row["coverage"] == "exact_close"
+    }
+    invalid_ffill_keys = [
+        key
+        for key, row in parsed_rows.items()
+        if row["coverage"] == "previous_trading_day_ffill"
+        and (row["value_date"], row["field"]) not in exact_keys
+    ]
+    for key in invalid_ffill_keys:
+        parsed_rows.pop(key, None)
+        invalid_row_count += 1
+        warnings.append(
+            "本地 benchmark previous_trading_day_ffill 缺少同指数 exact_close "
+            f"value_date 证据：{key[0]} {key[1]}，已跳过。"
+        )
 
     if forbidden_sources:
         sources = ", ".join(sorted(forbidden_sources))
@@ -678,39 +913,240 @@ def infer_initial_capital(run_dir: Path, pnl_row: dict[str, str]) -> float | Non
     return None
 
 
-def validate_manual_execution_baseline(run_dir: Path) -> tuple[bool, str]:
-    ledger_path = run_dir / "ledger_after_manual_switch.csv"
-    if not ledger_path.exists():
-        return False, "缺少 ledger_after_manual_switch.csv"
-    if not read_csv_rows(ledger_path):
-        return False, "ledger_after_manual_switch.csv 无可用行"
+def iso_date_from_any(value: Any) -> str:
+    text = str(value or "").strip()
+    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+        return text[:10]
+    digits = "".join(char for char in text if char.isdigit())
+    return tushare_to_iso_date(digits[:8]) if len(digits) >= 8 else ""
+
+
+def load_funding_cash_flows(run_dir: Path, record_date: str) -> tuple[dict[str, Any], ...]:
     manifest_path = run_dir / "manual_execution_manifest.json"
-    if not manifest_path.exists():
-        return False, "缺少 manual_execution_manifest.json"
+    manual_manifest = load_json_object(manifest_path)
+    if manual_manifest is None:
+        return ()
+
+    embedded = manual_manifest.get("manual_funding_supplement")
+    declared_path = str(manual_manifest.get("manual_funding_supplement_path") or "").strip()
+    external: dict[str, Any] = {}
+    if declared_path:
+        evidence_path = Path(declared_path)
+        if not evidence_path.is_absolute():
+            evidence_path = run_dir / evidence_path
+        external = load_json_object(evidence_path) or {}
+        if not evidence_path.exists() or not external:
+            raise ValueError(
+                f"Invalid funding lineage for {run_dir.name}: unreadable funding evidence: {evidence_path}"
+            )
+    if embedded is not None and not isinstance(embedded, dict):
+        raise ValueError(
+            f"Invalid funding lineage for {run_dir.name}: manual_funding_supplement must be an object"
+        )
+    if embedded and external and embedded != external:
+        raise ValueError(
+            f"Invalid funding lineage for {run_dir.name}: embedded and external funding evidence differ"
+        )
+
+    payloads: list[dict[str, Any]] = []
+    supplement = external or (embedded if isinstance(embedded, dict) else {})
+    if supplement:
+        payloads.append(supplement)
+    for key in ("external_funding_cash_flows", "funding_cash_flows"):
+        rows = manual_manifest.get(key) or []
+        if not isinstance(rows, list):
+            raise ValueError(f"Invalid funding lineage for {run_dir.name}: {key} must be a list")
+        payloads.extend(row for row in rows if isinstance(row, dict))
+
+    flows: list[dict[str, Any]] = []
+    for payload in payloads:
+        amount = parse_float(payload.get("amount"))
+        flow_date = iso_date_from_any(
+            payload.get("effective_date")
+            or payload.get("capital_base_effective_from")
+            or payload.get("date")
+            or record_date
+        )
+        if amount is None or not math.isfinite(amount) or amount == 0:
+            raise ValueError(
+                f"Invalid funding lineage for {run_dir.name}: funding amount must be finite and non-zero"
+            )
+        if not flow_date or flow_date != record_date:
+            raise ValueError(
+                f"Invalid funding lineage for {run_dir.name}: funding date {flow_date or 'missing'} "
+                f"does not match record date {record_date}"
+            )
+        total_before = parse_float(payload.get("total_value_before"))
+        total_after = parse_float(payload.get("total_value_after"))
+        if (
+            total_before is not None
+            and total_after is not None
+            and not math.isclose(total_before + amount, total_after, abs_tol=0.01)
+        ):
+            raise ValueError(
+                f"Invalid funding lineage for {run_dir.name}: total_value_before + amount != total_value_after"
+            )
+        flows.append(
+            {
+                "date": flow_date,
+                "amount": amount,
+                "source": str(payload.get("source") or "manual_execution_manifest"),
+                "schema_version": str(payload.get("schema_version") or ""),
+                "evidence_path": declared_path,
+                "capital_base_after": parse_float(payload.get("capital_base_after")),
+                "total_value_before": total_before,
+                "total_value_after": total_after,
+            }
+        )
+    return tuple(flows)
+
+
+def deduplicate_funding_cash_flows(flows: list[dict[str, Any]]) -> tuple[dict[str, Any], ...]:
+    unique: list[dict[str, Any]] = []
+    seen: set[tuple[str, float, str, str]] = set()
+    for flow in flows:
+        identity = (
+            str(flow.get("date") or ""),
+            float(flow.get("amount") or 0),
+            str(flow.get("source") or ""),
+            str(flow.get("evidence_path") or ""),
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        unique.append(flow)
+    return tuple(unique)
+
+
+_MANUAL_LEDGER_SHA_FIELDS = (
+    "next_ledger_sha256",
+    "ledger_after_manual_switch_sha256",
+    "ledger_sha256",
+)
+
+
+def _manual_manifest_timestamp(manifest: dict[str, Any]) -> str | None:
+    for key in (
+        "recorded_at",
+        "executed_at",
+        "updated_at",
+        "quote_snapshot",
+        "timestamp_long",
+        "record_timestamp",
+    ):
+        timestamp = explicit_iso_timestamp(manifest.get(key))
+        if timestamp is not None:
+            return timestamp
+    return None
+
+
+def _declared_manual_ledger_sha256(
+    manifest: dict[str, Any],
+    ledger_path: Path,
+) -> str | None:
+    suffix_key = (
+        "ledger_after_manual_switch_parquet_sha256"
+        if ledger_path.suffix.lower() == ".parquet"
+        else "ledger_after_manual_switch_csv_sha256"
+    )
+    for key in (suffix_key, *_MANUAL_LEDGER_SHA_FIELDS):
+        value = str(manifest.get(key) or "").strip().lower()
+        if re.fullmatch(r"[0-9a-f]{64}", value):
+            return value
+    return None
+
+
+def _path_within_root(path: Path, record_root: Path) -> bool:
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return False, "manual_execution_manifest.json 不是有效 JSON"
-    if not isinstance(manifest, dict) or not manifest:
-        return False, "manual_execution_manifest.json 为空或格式无效"
-    return True, ""
+        path.resolve(strict=True).relative_to(record_root.resolve(strict=True))
+    except (FileNotFoundError, OSError, ValueError):
+        return False
+    return True
 
 
-def discover_record_runs(record_root: Path) -> tuple[list[RecordRun], list[str]]:
+def _validate_manual_baseline(
+    *,
+    record_root: Path,
+    run_dir: Path,
+    manifest_path: Path,
+    manifest: dict[str, Any],
+) -> tuple[Path | None, str | None, tuple[str, str] | None, str | None]:
+    try:
+        from quant_investor.monitoring.cn_aggressive_portfolio_tracker import (
+            _manual_manifest_is_valid_baseline,
+            _manual_manifest_order_key,
+            _resolve_manual_ledger_path,
+        )
+    except ImportError:
+        return None, None, None, "canonical_manual_baseline_helpers_unavailable"
+    status = str(manifest.get("status") or "").strip()
+    execution_status = str(manifest.get("execution_status") or "").strip()
+    if (
+        not status
+        or status.lower() == "ok"
+        or not _manual_manifest_is_valid_baseline(manifest)
+        or (execution_status and execution_status != status)
+    ):
+        return None, None, None, "manual_manifest_status_invalid"
+    if _manual_manifest_timestamp(manifest) is None:
+        return None, None, None, "manual_manifest_time_missing_or_invalid"
+    next_ledger = str(manifest.get("next_ledger_path") or "").strip()
+    if not next_ledger:
+        return None, None, None, "manual_manifest_next_ledger_path_missing"
+    declared_path = Path(next_ledger)
+    if not declared_path.is_absolute():
+        declared_path = manifest_path.parent / declared_path
+    if (
+        declared_path.is_symlink()
+        or declared_path.stem != "ledger_after_manual_switch"
+        or declared_path.suffix.lower() not in {".csv", ".parquet"}
+        or not _path_within_root(declared_path, record_root)
+    ):
+        return None, None, None, "manual_manifest_next_ledger_path_unsafe"
+    ledger_path = _resolve_manual_ledger_path(manifest_path, manifest)
+    if (
+        ledger_path is None
+        or ledger_path.is_symlink()
+        or ledger_path.stem != "ledger_after_manual_switch"
+        or ledger_path.suffix.lower() not in {".csv", ".parquet"}
+        or not _path_within_root(ledger_path, record_root)
+    ):
+        return None, None, None, "manual_ledger_resolution_invalid"
+    ledger_path = ledger_path.resolve(strict=True)
+    expected_sha = _declared_manual_ledger_sha256(manifest, ledger_path)
+    before_sha = sha256_file(ledger_path)
+    if expected_sha is not None and before_sha != expected_sha:
+        return None, None, None, "manual_ledger_sha256_mismatch"
+    ledger_rows = read_ledger_rows(ledger_path)
+    after_sha = sha256_file(ledger_path)
+    if before_sha is None or after_sha != before_sha:
+        return None, None, None, "manual_ledger_readback_changed"
+    if not ledger_rows:
+        return None, None, None, "manual_ledger_empty_or_unreadable"
+    required_fields = {"symbol", "shares", "avg_cost"}
+    missing_fields = required_fields - set(ledger_rows[0])
+    if missing_fields:
+        return None, None, None, "manual_ledger_schema_invalid"
+    declared_count = nullable_float(manifest.get("effective_manual_holding_count"))
+    if declared_count is not None and int(declared_count) != len(ledger_rows):
+        return None, None, None, "manual_ledger_holding_count_mismatch"
+    order_key = _manual_manifest_order_key(run_dir, manifest)
+    return ledger_path, before_sha, order_key, None
+
+
+def discover_record_runs(
+    record_root: Path,
+    *,
+    require_effective_manual: bool = True,
+) -> tuple[list[RecordRun], list[str]]:
     warnings: list[str] = []
     runs: list[RecordRun] = []
+    funding_by_date: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for run_dir in sorted(record_root.iterdir() if record_root.exists() else []):
         if not run_dir.is_dir() or not run_dir.name[:8].isdigit():
             continue
-        baseline_ok, baseline_reason = validate_manual_execution_baseline(run_dir)
-        if not baseline_ok:
-            warnings.append(
-                f"{run_dir.name}: {baseline_reason}，已跳过；ledger.csv 已停用且不得作为 Dashboard 回退。"
-            )
-            continue
         pnl_rows = read_csv_rows(run_dir / "pnl_summary.csv")
         if not pnl_rows:
-            warnings.append(f"{run_dir.name}: 缺少 pnl_summary.csv，已跳过。")
             continue
         row = normalize_pnl_row(pnl_rows)
         initial_capital = infer_initial_capital(run_dir, row)
@@ -718,21 +1154,118 @@ def discover_record_runs(record_root: Path) -> tuple[list[RecordRun], list[str]]
         if not initial_capital or not total_value_after:
             warnings.append(f"{run_dir.name}: pnl_summary.csv 缺少 initial_capital 或 total_value_after，已跳过。")
             continue
+        manual_manifest_path: Path | None = None
+        manual_manifest_sha256: str | None = None
+        manual_ledger_path: Path | None = None
+        manual_ledger_sha256: str | None = None
+        manual_ledger_sha_declared = False
+        manual_manifest: dict[str, Any] | None = None
+        manual_order_key: tuple[str, str] | None = None
+        manual_record_time: str | None = None
+        if require_effective_manual:
+            manual_manifest_path = run_dir / "manual_execution_manifest.json"
+            if not manual_manifest_path.is_file():
+                warnings.append(f"{run_dir.name}: 缺少可读 manual_execution_manifest.json，已跳过。")
+                continue
+            if (
+                manual_manifest_path.is_symlink()
+                or not _path_within_root(manual_manifest_path, record_root)
+            ):
+                warnings.append(
+                    f"{run_dir.name}: manual baseline 无效 (manual_manifest_path_unsafe)，已跳过。"
+                )
+                continue
+            manifest_sha_before = sha256_file(manual_manifest_path)
+            manual_manifest = load_json_object(manual_manifest_path)
+            if manual_manifest is None:
+                warnings.append(f"{run_dir.name}: 缺少可读 manual_execution_manifest.json，已跳过。")
+                continue
+            manifest_sha_after = sha256_file(manual_manifest_path)
+            manifest_readback = load_json_object(manual_manifest_path)
+            if (
+                manifest_sha_before is None
+                or manifest_sha_after != manifest_sha_before
+                or manifest_readback != manual_manifest
+            ):
+                warnings.append(
+                    f"{run_dir.name}: manual baseline 无效 (manual_manifest_readback_changed)，已跳过。"
+                )
+                continue
+            manual_manifest_sha256 = manifest_sha_before
+            (
+                manual_ledger_path,
+                manual_ledger_sha256,
+                manual_order_key,
+                baseline_error,
+            ) = _validate_manual_baseline(
+                record_root=record_root,
+                run_dir=run_dir,
+                manifest_path=manual_manifest_path,
+                manifest=manual_manifest,
+            )
+            if baseline_error:
+                warnings.append(
+                    f"{run_dir.name}: manual baseline 无效 ({baseline_error})，已跳过。"
+                )
+                continue
+            manual_ledger_sha_declared = bool(
+                manual_ledger_path
+                and _declared_manual_ledger_sha256(
+                    manual_manifest,
+                    manual_ledger_path,
+                )
+            )
+            if not manual_ledger_sha_declared:
+                warnings.append(
+                    f"{run_dir.name}: manual_ledger_sha_not_declared；"
+                    "已使用 contained next_ledger_path、manifest SHA 与 ledger 双读稳定 SHA 建立 provenance。"
+                )
+            manual_record_time = _manual_manifest_timestamp(manual_manifest)
+            manifest_total = parse_float(manual_manifest.get("total_value_after"))
+            if manifest_total is not None and manifest_total > 0:
+                total_value_after = manifest_total
+        record_date = record_date_from_run(run_dir.name)
+        funding_cash_flows = load_funding_cash_flows(run_dir, record_date)
+        funding_by_date[record_date].extend(funding_cash_flows)
+        effective_record_date = (
+            explicit_iso_date(manual_record_time)
+            if require_effective_manual
+            else record_date
+        ) or record_date
         runs.append(
             RecordRun(
                 run_id=run_dir.name,
-                date=record_date_from_run(run_dir.name),
+                date=effective_record_date,
                 path=run_dir,
-                record_time=row.get("record_time", ""),
+                record_time=manual_record_time or row.get("record_time", ""),
                 initial_capital=initial_capital,
                 total_value_after=total_value_after,
                 benchmark_values=benchmarks_from_snapshot(run_dir),
+                funding_cash_flows=funding_cash_flows,
+                manual_manifest_path=manual_manifest_path,
+                manual_manifest_sha256=manual_manifest_sha256,
+                manual_ledger_path=manual_ledger_path,
+                manual_ledger_sha256=manual_ledger_sha256,
+                manual_ledger_sha_declared=manual_ledger_sha_declared,
+                manual_manifest=manual_manifest,
+                manual_order_key=manual_order_key,
             )
         )
+    if require_effective_manual:
+        runs.sort(key=lambda run: run.manual_order_key or ("", run.run_id))
     latest_by_date: dict[str, RecordRun] = {}
     for run in runs:
         latest_by_date[run.date] = run
-    return [latest_by_date[date] for date in sorted(latest_by_date)], warnings
+    daily_runs = [
+        replace(
+            latest_by_date[date],
+            funding_cash_flows=deduplicate_funding_cash_flows(funding_by_date.get(date, [])),
+        )
+        for date in sorted(latest_by_date)
+    ]
+    if require_effective_manual:
+        daily_runs.sort(key=lambda run: run.manual_order_key or ("", run.run_id))
+    return daily_runs, warnings
 
 
 def build_theme_map(run: RecordRun) -> dict[str, str]:
@@ -758,6 +1291,23 @@ def build_theme_map(run: RecordRun) -> dict[str, str]:
         if buy_symbol and buy_theme:
             theme_map.setdefault(buy_symbol, buy_theme)
     return theme_map
+
+
+def build_historical_theme_maps(
+    runs: list[RecordRun],
+) -> dict[str, dict[str, tuple[str, str]]]:
+    current: dict[str, tuple[str, str]] = {}
+    by_date: dict[str, dict[str, tuple[str, str]]] = {}
+    for run in sorted(runs, key=lambda item: (item.date, item.run_id)):
+        for symbol, theme in build_theme_map(run).items():
+            normalized = str(theme or "").strip()
+            if not normalized or normalized in {"UNSPECIFIED_RECORD_THEME", "UNCLASSIFIED"}:
+                continue
+            if normalized.startswith("行业:"):
+                continue
+            current[symbol] = (normalized, run.run_id)
+        by_date[run.date] = dict(current)
+    return by_date
 
 
 def load_sector_map(stock_basic_root: Path) -> tuple[dict[str, dict[str, str]], list[str]]:
@@ -1006,33 +1556,188 @@ def attach_industry_equal_weight_nav(
     ), warnings
 
 
+def build_cash_flow_adjusted_nav_points(runs: list[RecordRun]) -> list[dict[str, float | None]]:
+    points: list[dict[str, float | None]] = []
+    unit_count: float | None = None
+    unit_nav: float | None = None
+    first_unit_nav: float | None = None
+    previous_unit_nav: float | None = None
+    previous_capital: float | None = None
+    for run in runs:
+        external_flow = sum(float(flow.get("amount") or 0) for flow in run.funding_cash_flows)
+        raw_capital_ratio = run.total_value_after / run.initial_capital
+        daily_return: float | None = None
+        if unit_count is None:
+            if run.funding_cash_flows:
+                raise ValueError(
+                    f"Invalid NAV lineage for {run.run_id}: first NAV record contains funding evidence "
+                    "without a prior unit base"
+                )
+            unit_count = run.initial_capital
+            if unit_count <= 0 or run.total_value_after <= 0:
+                raise ValueError(f"Invalid NAV lineage for {run.run_id}: non-positive unit base")
+            unit_nav = run.total_value_after / unit_count
+            first_unit_nav = unit_nav
+        else:
+            capital_changed = previous_capital is not None and not math.isclose(
+                run.initial_capital,
+                previous_capital,
+                rel_tol=0,
+                abs_tol=0.01,
+            )
+            if capital_changed and math.isclose(external_flow, 0.0, abs_tol=0.01):
+                raise ValueError(
+                    f"Invalid NAV lineage for {run.run_id}: initial_capital changed from "
+                    f"{previous_capital:.2f} to {run.initial_capital:.2f} without manifest-backed funding evidence"
+                )
+            for flow in run.funding_cash_flows:
+                amount = float(flow.get("amount") or 0)
+                total_before = parse_float(flow.get("total_value_before"))
+                total_after = parse_float(flow.get("total_value_after"))
+                if total_before is None or total_after is None:
+                    raise ValueError(
+                        f"Invalid NAV lineage for {run.run_id}: funding evidence requires "
+                        "total_value_before and total_value_after for time-weighted unitization"
+                    )
+                if total_before <= 0 or total_after <= 0:
+                    raise ValueError(
+                        f"Invalid NAV lineage for {run.run_id}: funding pre/post values must be positive"
+                    )
+                flow_unit_nav = total_before / unit_count
+                if flow_unit_nav <= 0:
+                    raise ValueError(
+                        f"Invalid NAV lineage for {run.run_id}: non-positive NAV at funding time"
+                    )
+                unit_count += amount / flow_unit_nav
+                if unit_count <= 0:
+                    raise ValueError(
+                        f"Invalid NAV lineage for {run.run_id}: funding would leave non-positive units"
+                    )
+                if not math.isclose(flow_unit_nav * unit_count, total_after, abs_tol=0.01):
+                    raise ValueError(
+                        f"Invalid NAV lineage for {run.run_id}: funding unitization does not reconcile "
+                        "to total_value_after"
+                    )
+            if run.total_value_after <= 0:
+                raise ValueError(
+                    f"Invalid NAV lineage for {run.run_id}: non-positive portfolio value"
+                )
+            unit_nav = run.total_value_after / unit_count
+            if previous_unit_nav is None or previous_unit_nav <= 0:
+                raise ValueError(f"Invalid NAV lineage for {run.run_id}: missing prior unit NAV")
+            daily_return = unit_nav / previous_unit_nav - 1.0
+        points.append(
+            {
+                "unit_nav": unit_nav,
+                "unit_count": unit_count,
+                "raw_capital_ratio": raw_capital_ratio,
+                "rebased_nav": unit_nav / (first_unit_nav or 1.0),
+                "daily_return": daily_return,
+                "external_funding_cash_flow": external_flow,
+            }
+        )
+        previous_unit_nav = unit_nav
+        previous_capital = run.initial_capital
+    return points
+
+
+def portfolio_nav_source_summary(
+    runs: list[RecordRun],
+    nav_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    funding_events = [flow for run in runs for flow in run.funding_cash_flows]
+    return {
+        "status": "cash_flow_adjusted_unit_nav",
+        "method": "time_weighted_unitization",
+        "formula": (
+            "flow_unit_nav = total_value_before_flow / units_before_flow; "
+            "units_after_flow = units_before_flow + external_funding_cash_flow / flow_unit_nav; "
+            "unit_nav_t = total_value_after_t / units_after_flow"
+        ),
+        "cash_flow_timing_source": "manifest_pre_post_valuation",
+        "historical_return_preserved": True,
+        "raw_capital_ratio_field": "portfolio_nav_raw",
+        "first_valid_date": runs[0].date if runs else "",
+        "last_valid_date": runs[-1].date if runs else "",
+        "first_unit_nav": parse_float(nav_rows[0].get("portfolio_nav")) if nav_rows else None,
+        "last_unit_nav": parse_float(nav_rows[-1].get("portfolio_nav")) if nav_rows else None,
+        "display_total_return": (
+            parse_float(nav_rows[-1].get("portfolio_nav_rebased")) - 1.0
+            if nav_rows and parse_float(nav_rows[-1].get("portfolio_nav_rebased")) is not None
+            else None
+        ),
+        "capital_base_start": runs[0].initial_capital if runs else None,
+        "capital_base_end": runs[-1].initial_capital if runs else None,
+        "latest_total_value_after": runs[-1].total_value_after if runs else None,
+        "unit_count_start": parse_float(nav_rows[0].get("portfolio_units")) if nav_rows else None,
+        "unit_count_end": parse_float(nav_rows[-1].get("portfolio_units")) if nav_rows else None,
+        "funding_event_count": len(funding_events),
+        "funding_events": funding_events,
+    }
+
+
 def build_nav_rows(
     runs: list[RecordRun],
     benchmark_export: BenchmarkExport | None = None,
 ) -> tuple[list[dict[str, Any]], list[str], list[str]]:
     warnings: list[str] = []
     rows: list[dict[str, Any]] = []
+    nav_points = build_cash_flow_adjusted_nav_points(runs)
+    points_by_date = {run.date: point for run, point in zip(runs, nav_points)}
+
+    def portfolio_fields(run: RecordRun) -> dict[str, str]:
+        point = points_by_date[run.date]
+        daily_return = point["daily_return"]
+        return {
+            "portfolio_nav": f"{point['unit_nav']:.8f}",
+            "portfolio_nav_raw": f"{point['raw_capital_ratio']:.8f}",
+            "portfolio_nav_rebased": f"{point['rebased_nav']:.8f}",
+            "portfolio_return": f"{daily_return:.8f}" if daily_return is not None else "",
+            "portfolio_units": f"{point['unit_count']:.8f}",
+            "initial_capital": f"{run.initial_capital:.2f}",
+            "total_value_after": f"{run.total_value_after:.2f}",
+            "external_funding_cash_flow": f"{point['external_funding_cash_flow']:.2f}",
+        }
+
+    portfolio_fieldnames = [
+        "portfolio_nav",
+        "portfolio_nav_raw",
+        "portfolio_nav_rebased",
+        "portfolio_return",
+        "portfolio_units",
+        "initial_capital",
+        "total_value_after",
+        "external_funding_cash_flow",
+    ]
     if benchmark_export is not None and benchmark_export.values_by_date:
+        benchmark_values_by_date = {
+            date: dict(values) for date, values in benchmark_export.values_by_date.items()
+        }
+        for run in runs:
+            values = benchmark_values_by_date.setdefault(run.date, {})
+            coverage = dict(benchmark_export.coverage_by_date.get(run.date, {}))
+            value_dates = dict(benchmark_export.value_date_by_date.get(run.date, {}))
+            _with_composite_benchmark_fields(values, coverage, value_dates, run_date=run.date)
         available_fields = [
             field
             for field in BENCHMARK_FIELD_ORDER
-            if any(field in values for values in benchmark_export.values_by_date.values())
+            if any(field in values for values in benchmark_values_by_date.values())
         ]
         for run in runs:
             row: dict[str, Any] = {
                 "date": run.date,
-                "portfolio_nav": f"{run.total_value_after / run.initial_capital:.8f}",
+                **portfolio_fields(run),
                 "cash_weight": "",
                 "gross_exposure": "",
                 "net_exposure": "",
             }
-            values = benchmark_export.values_by_date.get(run.date, {})
+            values = benchmark_values_by_date.get(run.date, {})
             for field in available_fields:
                 row[field] = f"{values[field]:.8f}" if field in values else ""
             rows.append(row)
         fieldnames = [
             "date",
-            "portfolio_nav",
+            *portfolio_fieldnames,
             *available_fields,
             "cash_weight",
             "gross_exposure",
@@ -1060,22 +1765,14 @@ def build_nav_rows(
             value = run.benchmark_values.get(field)
             if first and value:
                 normalized[field] = value / first
-        main_components = [
-            ("star50_nav", 0.50),
-            ("csi300_nav", 0.30),
-            ("chinext_nav", 0.20),
-        ]
-        used_weight = sum(weight for field, weight in main_components if field in normalized)
-        if used_weight:
-            benchmark_main_nav = sum(normalized[field] * weight for field, weight in main_components if field in normalized) / used_weight
-        elif "csi300_nav" in normalized:
-            benchmark_main_nav = normalized["csi300_nav"]
-        else:
-            benchmark_main_nav = DEFAULT_INITIAL_BENCHMARK
+        benchmark_main_nav = next(
+            (normalized[field] for field in ("star50_nav", "csi300_nav", "chinext_nav") if field in normalized),
+            DEFAULT_INITIAL_BENCHMARK,
+        )
         legacy_benchmark_nav = normalized.get("csi300_nav", benchmark_main_nav)
         row: dict[str, Any] = {
             "date": run.date,
-            "portfolio_nav": f"{run.total_value_after / run.initial_capital:.8f}",
+            **portfolio_fields(run),
             "benchmark_main_nav": f"{benchmark_main_nav:.8f}",
             "benchmark_nav": f"{legacy_benchmark_nav:.8f}",
             "cash_weight": "",
@@ -1089,7 +1786,7 @@ def build_nav_rows(
         )
     fieldnames = [
         "date",
-        "portfolio_nav",
+        *portfolio_fieldnames,
         "benchmark_main_nav",
         "benchmark_nav",
         *available_fields,
@@ -1100,6 +1797,145 @@ def build_nav_rows(
     # Preserve stable order and avoid duplicating csi300_nav if also used as legacy benchmark_nav.
     fieldnames = list(dict.fromkeys(fieldnames))
     return rows, warnings, fieldnames
+
+
+def _trade_timestamp_date(timestamp: str, default_date: str) -> str:
+    text = str(timestamp or "").strip()
+    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+        return text[:10]
+    digits = "".join(char for char in text if char.isdigit())
+    if len(digits) >= 8:
+        return tushare_to_iso_date(digits[:8])
+    return default_date
+
+
+def _trade_side(action: str) -> str:
+    text = str(action or "").strip().lower()
+    if "buy" in text:
+        return "buy"
+    if "sell" in text:
+        return "sell"
+    return ""
+
+
+def _is_executed_trade(row: dict[str, str], *, legacy_orders: bool = False) -> bool:
+    del legacy_orders
+    status = str(row.get("status") or "").strip().lower()
+    return bool(status and status in EXECUTED_TRADE_STATUSES)
+
+
+def _is_partial_fill(row: dict[str, str]) -> bool:
+    return str(row.get("status") or "").strip().lower() in (
+        PARTIAL_EXECUTED_TRADE_STATUSES
+    )
+
+
+def _first_trade_float(row: dict[str, str], fields: tuple[str, ...]) -> float | None:
+    for field in fields:
+        value = parse_float(row.get(field))
+        if value is not None:
+            return value
+    return None
+
+
+def _trade_price(row: dict[str, str]) -> float | None:
+    fill_price = _first_trade_float(
+        row,
+        ("fill_price", "filled_price", "execution_price", "avg_fill_price"),
+    )
+    if _is_partial_fill(row):
+        return fill_price
+    return fill_price if fill_price is not None else parse_float(row.get("price"))
+
+
+def _trade_quantity(row: dict[str, str]) -> float | None:
+    fill_quantity = _first_trade_float(
+        row,
+        (
+            "fill_quantity",
+            "filled_quantity",
+            "filled_shares",
+            "execution_quantity",
+            "executed_quantity",
+        ),
+    )
+    if _is_partial_fill(row):
+        return fill_quantity
+    return fill_quantity if fill_quantity is not None else parse_float(
+        row.get("shares") or row.get("quantity")
+    )
+
+
+def _trade_amount(
+    row: dict[str, str],
+    *,
+    price: float | None,
+    quantity: float | None,
+) -> float | None:
+    fill_amount = _first_trade_float(
+        row,
+        (
+            "fill_value",
+            "filled_value",
+            "execution_value",
+            "executed_value",
+            "fill_amount",
+        ),
+    )
+    if _is_partial_fill(row):
+        if fill_amount is not None:
+            return fill_amount
+        if price is not None and quantity is not None:
+            return price * quantity
+        return None
+    return fill_amount if fill_amount is not None else parse_float(
+        row.get("trade_value") or row.get("trade_amount")
+    )
+
+
+def _trade_row_candidates(run: RecordRun, *, legacy_orders: bool) -> list[dict[str, str]]:
+    filename = "orders.csv" if legacy_orders else "manual_switch_and_take_profit_orders.csv"
+    return read_csv_rows(run.path / filename)
+
+
+def _trade_source_name(legacy_orders: bool) -> str:
+    return "orders.csv" if legacy_orders else "manual_switch_and_take_profit_orders.csv"
+
+
+def _validate_executed_trade_record(
+    row: dict[str, str],
+    *,
+    run: RecordRun,
+    action: str,
+    symbol: str,
+    timestamp: str,
+    price: float | None,
+    quantity: float | None,
+    amount: float | None,
+    source_name: str,
+) -> list[str]:
+    missing: list[str] = []
+    if not timestamp:
+        missing.append("timestamp")
+    elif not _trade_timestamp_date(timestamp, ""):
+        missing.append("timestamp(parseable)")
+    if not symbol:
+        missing.append("symbol")
+    if action not in {"buy", "sell"}:
+        missing.append("side/action")
+    if quantity is None or quantity <= 0:
+        missing.append("shares")
+    if price is None or price <= 0:
+        missing.append("price")
+    if amount is None or amount <= 0:
+        missing.append("trade_value")
+    if missing:
+        return missing
+    expected_amount = (price or 0) * (quantity or 0)
+    tolerance = max(1.0, abs(expected_amount) * 0.01)
+    if amount is not None and abs(amount - expected_amount) > tolerance:
+        return ["trade_value(price*shares mismatch)"]
+    return []
 
 
 def benchmark_source_summary(
@@ -1250,62 +2086,159 @@ def benchmark_source_summary(
     }
 
 
+def _position_contribution_date(
+    ledger_row: dict[str, Any],
+    review_row: dict[str, Any],
+    market_snapshot: dict[str, Any],
+) -> tuple[str | None, str | None]:
+    quote_snapshot = market_snapshot.get("quote_snapshot")
+    if not isinstance(quote_snapshot, dict):
+        quote_snapshot = {}
+    candidates = (
+        ("holdings_review.effective_date", review_row.get("effective_date")),
+        ("holdings_review.analysis_trade_date", review_row.get("analysis_trade_date")),
+        ("holdings_review.quote_date", review_row.get("quote_date")),
+        ("holdings_review.quote_at", review_row.get("quote_at")),
+        ("holdings_review.quote_time", review_row.get("quote_time")),
+        ("holdings_review.trade_time", review_row.get("trade_time")),
+        ("ledger.effective_date", ledger_row.get("effective_date")),
+        ("ledger.quote_at", ledger_row.get("quote_at")),
+        ("market_snapshot.quote_snapshot.as_of", quote_snapshot.get("as_of")),
+        ("market_snapshot.quote_snapshot.quote_at", quote_snapshot.get("quote_at")),
+        (
+            "market_snapshot.analysis_trade_date",
+            market_snapshot.get("analysis_trade_date"),
+        ),
+    )
+    for source, value in candidates:
+        effective_date = explicit_iso_date(value)
+        if effective_date is not None:
+            return effective_date, source
+    return None, None
+
+
 def build_positions_rows(
     runs: list[RecordRun],
     sector_map: dict[str, dict[str, str]],
+    historical_theme_by_date: dict[str, dict[str, tuple[str, str]]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     rows: list[dict[str, Any]] = []
     warnings: list[str] = []
     for run in runs:
-        ledger_path = run.path / "ledger_after_manual_switch.csv"
-        if not ledger_path.exists():
-            warnings.append(
-                f"{run.run_id}: 缺少 ledger_after_manual_switch.csv，positions 已跳过；"
-                "ledger.csv 已停用且不得作为 Dashboard 持仓回退。"
+        ledger_path = run.manual_ledger_path or (
+            run.path / "ledger_after_manual_switch.csv"
+        )
+        before_sha = sha256_file(ledger_path)
+        if run.manual_ledger_sha256 and before_sha != run.manual_ledger_sha256:
+            raise RuntimeError(
+                f"manual ledger changed after manifest selection: {run.run_id}"
             )
-            continue
-        ledger_rows = read_csv_rows(ledger_path)
+        ledger_rows = read_ledger_rows(ledger_path)
+        if run.manual_ledger_sha256 and sha256_file(ledger_path) != before_sha:
+            raise RuntimeError(
+                f"manual ledger changed during readback: {run.run_id}"
+            )
         if not ledger_rows:
-            warnings.append(f"{run.run_id}: ledger_after_manual_switch.csv 无可用行，positions 已跳过。")
+            warnings.append(f"{run.run_id}: 未找到可用 ledger_after_manual_switch.csv，positions 已跳过。")
             continue
         holdings_review = {
             row.get("symbol", ""): row
             for row in read_csv_rows(run.path / "holdings_review.csv")
             if row.get("symbol")
         }
+        market_snapshot = load_json(run.path / "market_snapshot.json")
         theme_map = build_theme_map(run)
+        equity_sleeve_value = sum(
+            value
+            for value in (parse_float(item.get("current_value")) for item in ledger_rows)
+            if value is not None and value > 0
+        )
         for row in ledger_rows:
             symbol = str(row.get("symbol") or "").strip()
             if not symbol:
                 continue
             value = parse_float(row.get("current_value"))
-            weight = parse_float(row.get("market_weight"))
-            if weight is None and value is not None and run.total_value_after:
-                weight = value / run.total_value_after
+            reported_sleeve_weight = parse_float(row.get("market_weight"))
+            nav_weight = (
+                value / run.total_value_after
+                if value is not None and run.total_value_after > 0
+                else None
+            )
+            equity_sleeve_weight = reported_sleeve_weight
+            if equity_sleeve_weight is None and value is not None and equity_sleeve_value > 0:
+                equity_sleeve_weight = value / equity_sleeve_value
+            shares = parse_float(row.get("shares"))
+            avg_cost = parse_float(row.get("avg_cost"))
+            cost_basis = parse_float(row.get("cost_basis"))
+            current_price = parse_float(row.get("current_price"))
             review = holdings_review.get(symbol, {})
-            daily_return = parse_float(review.get("today_change_pct"))
-            if daily_return is not None and abs(daily_return) > 1:
-                daily_return = daily_return / 100.0
-            contribution = weight * daily_return if weight is not None and daily_return is not None else None
+            contribution_effective_date, contribution_date_source = (
+                _position_contribution_date(row, review, market_snapshot)
+            )
+            daily_return = parse_percentage_points(review.get("today_change_pct"))
+            contribution = (
+                nav_weight * daily_return
+                if nav_weight is not None and daily_return is not None
+                else None
+            )
             sector_info = sector_map.get(symbol, {})
             explicit_theme = theme_map.get(symbol, "")
             theme = explicit_theme
+            theme_source = f"strategy_record:{run.run_id}" if explicit_theme else ""
+            if not theme:
+                historical_theme, source_run = (historical_theme_by_date or {}).get(run.date, {}).get(
+                    symbol,
+                    ("", ""),
+                )
+                if historical_theme:
+                    theme = historical_theme
+                    theme_source = f"prior_strategy_record:{source_run}"
             if not theme and sector_info.get("sector"):
                 theme = f"行业: {sector_info['sector']}"
+                theme_source = "stock_basic.industry"
             if not theme:
                 theme = "UNSPECIFIED_RECORD_THEME"
+                theme_source = "unavailable"
             rows.append(
                 {
                     "date": run.date,
                     "ticker": symbol,
                     "name": row.get("name") or review.get("name") or "UNKNOWN_NAME",
-                    "weight": f"{weight:.8f}" if weight is not None else "",
+                    # ``weight`` remains a compatibility alias, but its v2
+                    # semantics are explicitly NAV weight, never sleeve weight.
+                    "weight": f"{nav_weight:.8f}" if nav_weight is not None else "",
+                    "nav_weight": f"{nav_weight:.8f}" if nav_weight is not None else "",
+                    "equity_sleeve_weight": (
+                        f"{equity_sleeve_weight:.8f}"
+                        if equity_sleeve_weight is not None
+                        else ""
+                    ),
                     "theme": theme,
+                    "theme_source": theme_source,
+                    "theme_memberships": theme,
                     "sector": sector_info.get("sector", ""),
                     "sub_sector": sector_info.get("sub_sector", ""),
                     "daily_return": f"{daily_return:.8f}" if daily_return is not None else "",
                     "contribution": f"{contribution:.8f}" if contribution is not None else "",
+                    "contribution_effective_date": contribution_effective_date or "",
+                    "contribution_date_source": contribution_date_source or "unavailable",
                     "market_value": f"{value:.2f}" if value is not None else "",
+                    "quantity": f"{shares:.0f}" if shares is not None else "",
+                    "avg_cost": f"{avg_cost:.4f}" if avg_cost is not None else "",
+                    "cost_basis": f"{cost_basis:.2f}" if cost_basis is not None else "",
+                    "current_price": f"{current_price:.4f}" if current_price is not None else "",
+                    "unrealized_pnl": (
+                        f"{nullable_float(row.get('unrealized_pnl')):.2f}"
+                        if nullable_float(row.get("unrealized_pnl")) is not None
+                        else ""
+                    ),
+                    "recommended_action": review.get("recommended_action") or review.get("action") or "",
+                    "stop_loss": review.get("stop_loss") or review.get("stop_loss_price") or "",
+                    "take_profit": review.get("take_profit") or review.get("take_profit_price") or "",
+                    "quote_at": review.get("quote_at") or review.get("quote_time") or review.get("trade_time") or "",
+                    "quote_age_seconds": review.get("quote_age_seconds") or "",
+                    "thesis": review.get("thesis") or review.get("reason") or "",
+                    "risk_status": review.get("risk_status") or review.get("status") or "",
                 }
             )
     unspecified_count = sum(1 for row in rows if row["theme"] == "UNSPECIFIED_RECORD_THEME")
@@ -1317,44 +2250,1302 @@ def build_positions_rows(
     return rows, warnings
 
 
-def build_trade_rows(runs: list[RecordRun], sector_map: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str, str]] = set()
+def build_trade_rows(
+    runs: list[RecordRun],
+    sector_map: dict[str, dict[str, str]],
+    *,
+    warnings: list[str] | None = None,
+    completeness: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str, str]] = set()
+    strict_warnings = warnings if warnings is not None else []
+    skipped_incomplete = 0
+    executed_seen = 0
     for run in runs:
         theme_map = build_theme_map(run)
-        for row in read_csv_rows(run.path / "manual_switch_and_take_profit_orders.csv"):
-            status = str(row.get("status") or "").strip().lower()
-            if status and status != "filled":
-                continue
-            symbol = str(row.get("symbol") or "").strip()
-            action = str(row.get("action") or "").strip().lower()
-            timestamp = str(row.get("timestamp") or run.record_time or run.date).strip()
-            if not symbol or action not in {"buy", "sell"}:
-                continue
-            key = (timestamp, action, symbol, str(row.get("shares") or ""))
-            if key in seen:
-                continue
-            seen.add(key)
-            price = parse_float(row.get("execution_price"))
-            quantity = parse_float(row.get("shares"))
-            amount = parse_float(row.get("trade_value"))
-            sector = sector_map.get(symbol, {}).get("sector", "")
-            theme = theme_map.get(symbol) or (f"行业: {sector}" if sector else "UNSPECIFIED_RECORD_THEME")
-            rows.append(
-                {
-                    "trade_date": run.date,
-                    "ticker": symbol,
-                    "name": row.get("name") or "UNKNOWN_NAME",
-                    "side": action,
-                    "price": f"{price:.4f}" if price is not None else "",
-                    "quantity": f"{quantity:.0f}" if quantity is not None else "",
-                    "trade_amount": f"{amount:.2f}" if amount is not None else "",
-                    "fee": "0",
-                    "reason": row.get("reason") or "",
-                    "theme": theme,
-                }
+        source_rows = [
+            (False, _trade_row_candidates(run, legacy_orders=False)),
+            (True, _trade_row_candidates(run, legacy_orders=True)),
+        ]
+        for legacy_orders, trade_rows in source_rows:
+            source_name = _trade_source_name(legacy_orders)
+            for row in trade_rows:
+                if not _is_executed_trade(row, legacy_orders=legacy_orders):
+                    continue
+                executed_seen += 1
+                symbol = str(row.get("symbol") or "").strip()
+                action = _trade_side(row.get("action") or row.get("side") or "")
+                price = _trade_price(row)
+                quantity = _trade_quantity(row)
+                amount = _trade_amount(row, price=price, quantity=quantity)
+                timestamp = str(row.get("timestamp") or "").strip()
+                missing = _validate_executed_trade_record(
+                    row,
+                    run=run,
+                    action=action,
+                    symbol=symbol,
+                    timestamp=timestamp,
+                    price=price,
+                    quantity=quantity,
+                    amount=amount,
+                    source_name=source_name,
+                )
+                if missing:
+                    skipped_incomplete += 1
+                    strict_warnings.append(
+                        "trade_record_incomplete: "
+                        f"{run.run_id} {source_name} 已执行交易缺少/无效 {','.join(missing)}，已跳过；"
+                        f"symbol={symbol or '-'} action={action or '-'}。"
+                    )
+                    continue
+                key = (
+                    timestamp,
+                    action,
+                    symbol,
+                    f"{quantity:.8f}" if quantity is not None else "",
+                    f"{amount:.2f}" if amount is not None else "",
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                sector = sector_map.get(symbol, {}).get("sector", "")
+                theme = theme_map.get(symbol) or (f"行业: {sector}" if sector else "UNSPECIFIED_RECORD_THEME")
+                fee = parse_float(
+                    row.get("fee")
+                    or row.get("commission")
+                    or row.get("transaction_fee")
+                    or row.get("total_fee")
+                )
+                fee_source = str(row.get("fee_source") or "").strip()
+                if fee is None:
+                    fee_source = "unknown"
+                elif not fee_source:
+                    fee_source = f"{source_name}.fee"
+                candidates.append(
+                    {
+                        "trade_date": _trade_timestamp_date(timestamp, run.date),
+                        "recommendation_id": row.get("recommendation_id") or "",
+                        "decision_id": row.get("decision_id") or "",
+                        "order_id": row.get("order_id") or "",
+                        "fill_id": row.get("fill_id") or row.get("execution_id") or "",
+                        "ticker": symbol,
+                        "name": row.get("name") or "UNKNOWN_NAME",
+                        "side": action,
+                        "price": f"{price:.4f}" if price is not None else "",
+                        "quantity": f"{quantity:.0f}" if quantity is not None else "",
+                        "trade_amount": f"{amount:.2f}" if amount is not None else "",
+                        "fee": f"{fee:.2f}" if fee is not None else "",
+                        "fee_source": fee_source,
+                        "slippage": row.get("slippage") or "",
+                        "ledger_delta": row.get("ledger_delta") or "",
+                        "reason": row.get("reason") or "",
+                        "theme": theme,
+                    }
+                )
+    candidates.sort(key=lambda item: (item["trade_date"], item["ticker"], item["side"], item["quantity"]))
+    if completeness is not None:
+        completeness.update(
+            {
+                "status": "complete" if skipped_incomplete == 0 else "partial",
+                "required_fields": TRADE_RECORD_REQUIRED_FIELDS,
+                "executed_source_rows": executed_seen,
+                "exported_rows": len(candidates),
+                "skipped_incomplete_rows": skipped_incomplete,
+            }
+        )
+    return candidates
+
+
+def apply_position_exposures(
+    nav_rows: list[dict[str, Any]],
+    position_rows: list[dict[str, Any]],
+) -> None:
+    """Attach account exposure using NAV weights, never equity-sleeve weights."""
+
+    weights_by_date: dict[str, list[float]] = defaultdict(list)
+    for row in position_rows:
+        weight = nullable_float(row.get("nav_weight") or row.get("weight"))
+        if weight is not None:
+            weights_by_date[str(row.get("date") or "")].append(weight)
+    for row in nav_rows:
+        weights = weights_by_date.get(str(row.get("date") or ""), [])
+        if not weights:
+            continue
+        gross = sum(abs(weight) for weight in weights)
+        net = sum(weights)
+        row["gross_exposure"] = f"{gross:.8f}"
+        row["net_exposure"] = f"{net:.8f}"
+        row["cash_weight"] = f"{1.0 - net:.8f}"
+
+
+def _numeric_record(row: dict[str, Any], numeric_fields: set[str]) -> dict[str, Any]:
+    record: dict[str, Any] = {}
+    for key, value in row.items():
+        if key in numeric_fields:
+            record[key] = nullable_float(value)
+        else:
+            text = "" if value is None else str(value).strip()
+            record[key] = text or None
+    return record
+
+
+def _theme_rows_from_positions(position_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    latest_date = max((str(row.get("date") or "") for row in position_rows), default="")
+    latest_rows = [row for row in position_rows if str(row.get("date") or "") == latest_date]
+    weights: dict[str, float] = defaultdict(float)
+    symbols: dict[str, set[str]] = defaultdict(set)
+    for row in latest_rows:
+        theme = str(row.get("theme") or "UNCLASSIFIED")
+        weights[theme] += nullable_float(row.get("nav_weight") or row.get("weight")) or 0.0
+        if row.get("ticker"):
+            symbols[theme].add(str(row["ticker"]))
+    return [
+        {
+            "theme_id": theme,
+            "theme_name": theme,
+            "lane": "market_observation",
+            "lifecycle": None,
+            "attention": None,
+            "attention_5d": None,
+            "attention_20d": None,
+            "attention_60d": None,
+            "attention_120d": None,
+            "attention_trajectory_120d": None,
+            "industrial_validation": None,
+            "market_confirmation": None,
+            "crowding": None,
+            "valuation_risk": None,
+            "evidence_confidence": None,
+            "nav_weight": weights[theme],
+            "member_count": len(symbols[theme]),
+            "pevc_thesis_id": None,
+            "pevc_thesis_version": None,
+            "supply_chain_roles": None,
+            "thesis_review": None,
+        }
+        for theme in sorted(weights, key=weights.get, reverse=True)
+    ]
+
+
+def _load_theme_state_rows(
+    latest_run: RecordRun,
+    *,
+    protocol_file: Path | None = None,
+    expected_sha256: str = "",
+) -> tuple[
+    list[dict[str, Any]],
+    Path | None,
+    str | None,
+    list[str],
+    dict[str, Any],
+]:
+    blockers: list[str] = []
+    if protocol_file is not None:
+        candidates = [protocol_file]
+        actual_sha = sha256_file(protocol_file)
+        if not expected_sha256:
+            blocker = "theme_protocol_expected_sha256_missing"
+            return [], None, None, [blocker], _missing_theme_protocol(blocker)
+        if actual_sha != expected_sha256:
+            blocker = "theme_protocol_artifact_sha256_mismatch"
+            return [], None, None, [blocker], _missing_theme_protocol(blocker)
+    else:
+        candidates = [
+        latest_run.path / "theme_state.v2.json",
+        latest_run.path / "theme_state_v2.json",
+        latest_run.path / "theme_protocol_v2.json",
+        ]
+    for path in candidates:
+        payload = load_json(path)
+        if not payload:
+            continue
+        if protocol_file is not None:
+            if str(payload.get("schema_version") or "") != "theme_protocol.v2":
+                blocker = "theme_protocol_schema_mismatch"
+                return [], None, None, [blocker], _missing_theme_protocol(blocker)
+            try:
+                from quant_investor.themes.protocol_v2 import (
+                    ThemeProtocolConfig,
+                    build_theme_protocol_hash,
+                    theme_protocol_code_hash,
+                )
+                from quant_investor.themes.taxonomy import ThemeTaxonomy
+
+                config_payload = payload.get("config")
+                if not isinstance(config_payload, dict):
+                    raise ValueError("config missing")
+                expected_protocol_hash = build_theme_protocol_hash(
+                    taxonomy=ThemeTaxonomy.load(),
+                    config=ThemeProtocolConfig(**config_payload),
+                )
+                if payload.get("protocol_hash") != expected_protocol_hash:
+                    raise ValueError("self hash mismatch")
+                unsigned = dict(payload)
+                supplied_artifact_hash = str(unsigned.pop("artifact_hash", ""))
+                if (
+                    not supplied_artifact_hash
+                    or supplied_artifact_hash != canonical_json_sha256(unsigned)
+                ):
+                    raise ValueError("artifact hash mismatch")
+                if payload.get("implementation_code_sha256") != (
+                    theme_protocol_code_hash()
+                ):
+                    raise ValueError("implementation hash mismatch")
+            except (TypeError, ValueError):
+                blocker = "theme_protocol_self_hash_mismatch"
+                return [], None, None, [blocker], _missing_theme_protocol(blocker)
+        raw_rows = payload.get("themes") or payload.get("states") or payload.get("theme_states")
+        keyed_rows: list[tuple[str, dict[str, Any]]] = []
+        if isinstance(raw_rows, dict):
+            keyed_rows = [
+                (str(theme_id), dict(row))
+                for theme_id, row in raw_rows.items()
+                if isinstance(row, dict)
+            ]
+        elif isinstance(raw_rows, list):
+            keyed_rows = [
+                (str(row.get("theme_id") or ""), dict(row))
+                for row in raw_rows
+                if isinstance(row, dict)
+            ]
+        else:
+            continue
+        rows = [
+            _normalize_theme_state_row(theme_id, row)
+            for theme_id, row in keyed_rows
+        ]
+        rows = [row for row in rows if row.get("theme_id")]
+        payload_as_of = explicit_iso_date(payload.get("as_of"))
+        if protocol_file is not None and any(
+            row.get("schema_version") != "theme_state.v2"
+            or explicit_iso_date(row.get("as_of")) != payload_as_of
+            or not isinstance(row.get("prequalification_blockers"), list)
+            for row in rows
+        ):
+            blocker = "theme_protocol_state_contract_invalid"
+            return [], None, None, [blocker], _missing_theme_protocol(blocker)
+        rows.sort(
+            key=lambda row: (
+                -(nullable_float(row.get("adjusted_percentile_rank")) or 0.0),
+                str(row.get("theme_id") or ""),
             )
+        )
+        if rows:
+            explicit_as_of = explicit_iso_date(
+                payload.get("as_of")
+                or payload.get("as_of_date")
+                or payload.get("available_at")
+            )
+            if protocol_file is not None:
+                protocol_summary = _theme_protocol_summary(payload, path)
+            else:
+                blockers.append("theme_protocol_v2_unverified_observer_state")
+                protocol_summary = _missing_theme_protocol(
+                    "theme_protocol_v2_unverified_observer_state"
+                )
+            return rows, path, explicit_as_of, blockers, protocol_summary
+    if protocol_file is not None:
+        blockers.append("theme_protocol_artifact_unreadable")
+    elif not blockers:
+        blockers.append("theme_protocol_v2_missing")
+    missing_blocker = (
+        blockers[0] if blockers else "theme_protocol_v2_missing"
+    )
+    return [], None, None, blockers, _missing_theme_protocol(missing_blocker)
+
+
+def _missing_theme_protocol(blocker: str) -> dict[str, Any]:
+    return {
+        "schema_version": "theme_protocol.v2",
+        "protocol_hash": None,
+        "status": "blocked",
+        "blockers": [blocker],
+        "observer_enabled": None,
+        "formal_enabled": None,
+        "formal_kill_switch": None,
+        "formal_pool": [],
+        "formal_pool_count": 0,
+        "formal_producer": None,
+        "rollback_status": None,
+        "rollback_reason": None,
+        "lane_counts": None,
+        "readback_verified": False,
+        "artifact_sha256": None,
+    }
+
+
+def _theme_protocol_summary(
+    payload: dict[str, Any],
+    path: Path,
+) -> dict[str, Any]:
+    lanes = payload.get("lanes") if isinstance(payload.get("lanes"), dict) else {}
+    formal_pool = [
+        str(value) for value in list(payload.get("formal_pool") or []) if str(value)
+    ]
+    reported_status = str(payload.get("status") or "blocked")
+    blockers: list[str] = []
+    if reported_status == "blocked":
+        for state in dict(payload.get("states") or {}).values():
+            if not isinstance(state, dict):
+                continue
+            blockers.extend(
+                str(value)
+                for value in list(state.get("prequalification_blockers") or [])
+                if str(value)
+            )
+        if not blockers:
+            blockers.append("theme_protocol_reported_blocked")
+    return {
+        "schema_version": "theme_protocol.v2",
+        "protocol_hash": str(payload.get("protocol_hash") or "") or None,
+        "status": reported_status,
+        "blockers": list(dict.fromkeys(blockers)),
+        "observer_enabled": payload.get("observer_enabled")
+        if isinstance(payload.get("observer_enabled"), bool)
+        else None,
+        "formal_enabled": payload.get("formal_enabled")
+        if isinstance(payload.get("formal_enabled"), bool)
+        else None,
+        "formal_kill_switch": payload.get("formal_kill_switch")
+        if isinstance(payload.get("formal_kill_switch"), bool)
+        else None,
+        "formal_pool": formal_pool,
+        "formal_pool_count": len(formal_pool),
+        "formal_producer": str(payload.get("formal_producer") or "") or None,
+        "rollback_status": str(payload.get("rollback_status") or "") or None,
+        "rollback_reason": str(payload.get("rollback_reason") or "") or None,
+        "lane_counts": {
+            str(lane): len(values) if isinstance(values, list) else 0
+            for lane, values in lanes.items()
+        },
+        "readback_verified": True,
+        "artifact_sha256": sha256_file(path),
+    }
+
+
+def _normalize_theme_state_row(
+    theme_id: str,
+    raw: dict[str, Any],
+) -> dict[str, Any]:
+    row = dict(raw)
+    row["theme_id"] = str(row.get("theme_id") or theme_id)
+    row["theme_name"] = str(row.get("theme_name") or row["theme_id"])
+    row["pevc_thesis_id"] = (
+        str(row.get("pevc_thesis_id") or row.get("thesis_id") or "") or None
+    )
+    row["pevc_thesis_version"] = (
+        str(
+            row.get("pevc_thesis_version")
+            or row.get("thesis_version")
+            or ""
+        )
+        or None
+    )
+    numeric_fields = {
+        "attention",
+        "attention_5d",
+        "attention_20d",
+        "attention_60d",
+        "attention_120d",
+        "attention_history_coverage",
+        "industrial_validation",
+        "market_confirmation",
+        "crowding",
+        "valuation_risk",
+        "evidence_confidence",
+        "base_rank_score",
+        "base_percentile_rank",
+        "pevc_prior",
+        "pevc_rank_adjustment",
+        "adjusted_percentile_rank",
+        "nav_weight",
+    }
+    for field in numeric_fields:
+        row[field] = nullable_float(row.get(field))
+    row["attention_trajectory_120d"] = {
+        "5d": row.get("attention_5d"),
+        "20d": row.get("attention_20d"),
+        "60d": row.get("attention_60d"),
+        "120d": row.get("attention_120d"),
+        "history_coverage": row.get("attention_history_coverage"),
+    }
+    raw_supply_roles = row.get("supply_chain_roles")
+    if isinstance(raw_supply_roles, list):
+        row["supply_chain_roles"] = [
+            str(value) for value in raw_supply_roles if str(value)
+        ]
+    elif row.get("supply_chain_role"):
+        row["supply_chain_roles"] = [str(row["supply_chain_role"])]
+    else:
+        row["supply_chain_roles"] = None
+    raw_thesis_review = row.get("thesis_review")
+    if isinstance(raw_thesis_review, dict):
+        row["thesis_review"] = dict(raw_thesis_review)
+    elif row.get("thesis_review_status") or row.get("thesis_review_by"):
+        row["thesis_review"] = {
+            "status": str(row.get("thesis_review_status") or "") or None,
+            "review_by": str(row.get("thesis_review_by") or "") or None,
+        }
+    else:
+        row["thesis_review"] = None
+    member_count = nullable_float(row.get("member_count"))
+    row["member_count"] = int(member_count) if member_count is not None else None
+    for field in (
+        "risk_flags",
+        "eligibility_blockers",
+        "prequalification_blockers",
+        "downstream_blockers",
+        "pending_confirmation_dates",
+    ):
+        values = row.get(field)
+        row[field] = (
+            [str(value) for value in values if str(value)]
+            if isinstance(values, list)
+            else []
+        )
+    return row
+
+
+def _factor_rows_from_registry(registry_path: Path | None) -> list[dict[str, Any]]:
+    if registry_path is None or not registry_path.is_file():
+        return []
+    payload = load_json(registry_path)
+    records = payload.get("factors") or payload.get("records") or []
+    if not isinstance(records, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for item in records:
+        if not isinstance(item, dict):
+            continue
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        health = (
+            metadata.get("health_monitor")
+            if isinstance(metadata.get("health_monitor"), dict)
+            else {}
+        )
+        rows.append(
+            {
+                "factor_id": item.get("factor_id") or item.get("name") or item.get("id"),
+                "slot": item.get("slot"),
+                "family": item.get("family") or item.get("category"),
+                "status": item.get("status") or item.get("state"),
+                "weight": nullable_float(item.get("weight")),
+                "health_window": (
+                    health.get("last_evaluation_id")
+                    or health.get("latest_reviewed_at")
+                    or item.get("health_window")
+                    or item.get("last_health_window")
+                ),
+                "health_status": health.get("status"),
+                "health_action": health.get("action"),
+                "health_failure_streak": nullable_float(
+                    health.get("consecutive_failures")
+                ),
+                "challenger": item.get("challenger"),
+                "last_transition": item.get("last_transition"),
+            }
+        )
     return rows
+
+
+def _factor_canonical_producer_control() -> dict[str, Any]:
+    try:
+        from quant_investor.factors.governance_protocol_v2 import (
+            canonical_replay_producer_control,
+        )
+
+        control = canonical_replay_producer_control()
+    except (ImportError, TypeError, ValueError):
+        control = {}
+    return {
+        "producer_available": control.get("producer_available") is True,
+        "production_apply_eligible": control.get("production_apply_eligible")
+        is True,
+        "blocker": str(
+            control.get("blocker")
+            or "canonical_full_chain_replay_producer_unavailable"
+        ),
+    }
+
+
+def _load_factor_protocol_v2_readback(
+    latest_run: RecordRun,
+    *,
+    registry_sha: str | None,
+    protocol_file: Path | None = None,
+    expected_sha256: str = "",
+) -> tuple[dict[str, Any], Path | None]:
+    try:
+        from quant_investor.factors.governance_protocol_v2 import (
+            PROTOCOL_HASH,
+            PROTOCOL_SCHEMA_VERSION,
+        )
+    except ImportError:
+        PROTOCOL_HASH = ""
+        PROTOCOL_SCHEMA_VERSION = "factor-governance-protocol.v2"
+    producer_control = _factor_canonical_producer_control()
+    if protocol_file is not None:
+        candidates = [protocol_file]
+        actual_sha = sha256_file(protocol_file)
+        if not expected_sha256:
+            return _missing_factor_protocol(
+                PROTOCOL_HASH,
+                "factor_protocol_expected_sha256_missing",
+            ), None
+        if actual_sha != expected_sha256:
+            return _missing_factor_protocol(
+                PROTOCOL_HASH,
+                "factor_protocol_artifact_sha256_mismatch",
+            ), None
+    else:
+        candidates = [
+            latest_run.path / "factor_governance_protocol_v2.json",
+            latest_run.path / "factor_protocol_v2.json",
+            latest_run.path / "factor_governance_readback.v2.json",
+        ]
+    for path in candidates:
+        payload = load_json(path)
+        if not payload:
+            continue
+        raw = payload.get("factor_protocol")
+        if not isinstance(raw, dict):
+            raw = payload
+        raw = dict(raw)
+        reported_blockers = [
+            str(value) for value in list(raw.get("blockers") or [])
+        ]
+        validation_blockers: list[str] = []
+        schema_version = str(raw.get("schema_version") or "")
+        actual_hash = str(raw.get("protocol_hash") or "")
+        if schema_version != PROTOCOL_SCHEMA_VERSION:
+            validation_blockers.append("factor_protocol_schema_mismatch")
+        if not PROTOCOL_HASH or actual_hash != PROTOCOL_HASH:
+            validation_blockers.append("factor_protocol_hash_mismatch")
+        if str(raw.get("protocol_version") or "") != "v2":
+            validation_blockers.append("factor_protocol_version_mismatch")
+        after_registry_sha = str(raw.get("after_registry_sha256") or "")
+        if after_registry_sha and registry_sha and after_registry_sha != registry_sha:
+            validation_blockers.append("factor_protocol_registry_readback_mismatch")
+        transition = raw.get("transition") if isinstance(raw.get("transition"), dict) else {}
+        rollback = raw.get("rollback") if isinstance(raw.get("rollback"), dict) else {}
+        evidence_hash = str(
+            raw.get("evidence_hash")
+            or transition.get("evidence_hash")
+            or ""
+        )
+        status = str(raw.get("status") or "blocked")
+        before_registry_sha = str(raw.get("before_registry_sha256") or "")
+        is_sha = lambda value: bool(
+            len(str(value or "")) == 64
+            and all(
+                character in "0123456789abcdef"
+                for character in str(value or "")
+            )
+        )
+        if status in {"report_only", "report_only_ready"}:
+            if raw.get("apply_requested") is not False:
+                validation_blockers.append("factor_report_only_apply_flag_invalid")
+            if (
+                not is_sha(before_registry_sha)
+                or not is_sha(after_registry_sha)
+                or before_registry_sha != after_registry_sha
+                or (registry_sha and after_registry_sha != registry_sha)
+            ):
+                validation_blockers.append("factor_report_only_registry_sha_invalid")
+        elif status == "applied":
+            if (
+                not producer_control["producer_available"]
+                or not producer_control["production_apply_eligible"]
+            ):
+                validation_blockers.append(producer_control["blocker"])
+            for field in (
+                "evidence_hash",
+                "transition_hash",
+                "mutation_plan_hash",
+            ):
+                if not is_sha(raw.get(field)):
+                    validation_blockers.append(f"factor_applied_{field}_missing")
+            if not str(raw.get("transition_id") or ""):
+                validation_blockers.append("factor_applied_transition_id_missing")
+            if not is_sha(before_registry_sha) or not is_sha(after_registry_sha):
+                validation_blockers.append("factor_applied_registry_sha_missing")
+            elif registry_sha and after_registry_sha != registry_sha:
+                validation_blockers.append(
+                    "factor_applied_registry_readback_mismatch"
+                )
+            mutation_manifest = raw.get("registry_mutation_manifest")
+            if (
+                not isinstance(mutation_manifest, dict)
+                or mutation_manifest.get("applied") is not True
+                or mutation_manifest.get("after_registry_sha256")
+                != after_registry_sha
+            ):
+                validation_blockers.append(
+                    "factor_applied_mutation_manifest_invalid"
+                )
+            wal_path_text = str(raw.get("inverse_wal_path") or "")
+            wal_path = Path(wal_path_text) if wal_path_text else None
+            if (
+                wal_path is None
+                or not wal_path.is_file()
+                or wal_path.stat().st_mode & 0o777 != 0o600
+            ):
+                validation_blockers.append("factor_applied_inverse_wal_unverified")
+        elif status not in {"blocked", "blocked_readback"}:
+            validation_blockers.append("factor_protocol_status_invalid")
+        blockers = list(dict.fromkeys(reported_blockers + validation_blockers))
+        readback_verified = not validation_blockers and bool(sha256_file(path))
+        normalized = {
+            "schema_version": PROTOCOL_SCHEMA_VERSION,
+            "protocol_version": str(raw.get("protocol_version") or "v2"),
+            "expected_protocol_hash": PROTOCOL_HASH or None,
+            "protocol_hash": actual_hash or None,
+            "protocol_hash_match": bool(PROTOCOL_HASH and actual_hash == PROTOCOL_HASH),
+            "status": status if readback_verified else "blocked",
+            "blockers": list(dict.fromkeys(blockers)),
+            "evidence_hash": evidence_hash or None,
+            "evidence_status": (
+                "verified"
+                if len(evidence_hash) == 64
+                else "not_applicable"
+                if status == "report_only"
+                else "missing"
+            ),
+            "transition_id": str(
+                raw.get("transition_id") or transition.get("transition_id") or ""
+            )
+            or None,
+            "transition_hash": str(
+                raw.get("transition_hash") or transition.get("transition_hash") or ""
+            )
+            or None,
+            "transition_applied": bool(status == "applied" and readback_verified),
+            "rollback_status": str(
+                raw.get("rollback_status")
+                or rollback.get("status")
+                or ("available" if raw.get("inverse_wal_path") else "not_available")
+            ),
+            "before_registry_sha256": str(
+                before_registry_sha
+            )
+            or None,
+            "after_registry_sha256": after_registry_sha or None,
+            "readback_verified": readback_verified,
+            "artifact_sha256": sha256_file(path),
+            "canonical_producer_available": producer_control[
+                "producer_available"
+            ],
+            "canonical_production_apply_eligible": producer_control[
+                "production_apply_eligible"
+            ],
+            "canonical_producer_blocker": producer_control["blocker"],
+        }
+        return normalized, path
+    return _missing_factor_protocol(
+        PROTOCOL_HASH,
+        "factor_protocol_v2_missing",
+    ), None
+
+
+def _missing_factor_protocol(
+    expected_protocol_hash: str,
+    blocker: str,
+) -> dict[str, Any]:
+    producer_control = _factor_canonical_producer_control()
+    return {
+        "schema_version": "factor-governance-protocol.v2",
+        "protocol_version": "v2",
+        "expected_protocol_hash": expected_protocol_hash or None,
+        "protocol_hash": None,
+        "protocol_hash_match": False,
+        "status": "blocked",
+        "blockers": [blocker],
+        "evidence_hash": None,
+        "evidence_status": "missing",
+        "transition_id": None,
+        "transition_hash": None,
+        "transition_applied": False,
+        "rollback_status": "not_available",
+        "before_registry_sha256": None,
+        "after_registry_sha256": None,
+        "readback_verified": False,
+        "artifact_sha256": None,
+        "canonical_producer_available": producer_control["producer_available"],
+        "canonical_production_apply_eligible": producer_control[
+            "production_apply_eligible"
+        ],
+        "canonical_producer_blocker": producer_control["blocker"],
+    }
+
+
+def build_attribution_reconciliation(
+    nav_rows: list[dict[str, Any]],
+    position_rows: list[dict[str, Any]],
+    *,
+    trading_calendar: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    strict_calendar_supplied = trading_calendar is not None
+    calendar_status = str((trading_calendar or {}).get("status") or "missing")
+    allowed_open_dates = {
+        str(value)
+        for value in list((trading_calendar or {}).get("expected_open_dates") or [])
+        if explicit_iso_date(value) is not None
+    }
+    all_nav_return_dates = {
+        str(row.get("date") or "")
+        for row in nav_rows
+        if nullable_float(row.get("portfolio_return")) is not None
+    }
+    excluded_nav_return_dates = sorted(
+        date
+        for date in all_nav_return_dates
+        if strict_calendar_supplied
+        and (calendar_status != "available" or date not in allowed_open_dates)
+    )
+    contributions_by_date: dict[str, float] = defaultdict(float)
+    observations_by_date: dict[str, int] = defaultdict(int)
+    sleeve_weights_by_date: dict[str, list[float]] = defaultdict(list)
+    sleeve_missing_by_date: dict[str, int] = defaultdict(int)
+    total_positions_by_date: dict[str, int] = defaultdict(int)
+    invalid_position_lineage_by_date: dict[str, int] = defaultdict(int)
+    missing_effective_date_count = 0
+    excluded_position_effective_dates: set[str] = set()
+    for row in position_rows:
+        date = explicit_iso_date(row.get("contribution_effective_date")) or ""
+        if not date:
+            missing_effective_date_count += 1
+        elif strict_calendar_supplied and (
+            calendar_status != "available" or date not in allowed_open_dates
+        ):
+            excluded_position_effective_dates.add(date)
+        total_positions_by_date[date] += 1
+        nav_weight = nullable_float(row.get("nav_weight"))
+        daily_return = nullable_float(row.get("daily_return"))
+        contribution = nullable_float(row.get("contribution"))
+        if (
+            not date
+            or not str(row.get("ticker") or "").strip()
+            or str(row.get("contribution_date_source") or "").strip()
+            in {"", "unavailable"}
+            or nav_weight is None
+            or daily_return is None
+            or contribution is None
+            or not math.isclose(
+                contribution,
+                nav_weight * daily_return,
+                abs_tol=1e-8,
+            )
+        ):
+            invalid_position_lineage_by_date[date] += 1
+        sleeve_weight = nullable_float(row.get("equity_sleeve_weight"))
+        if sleeve_weight is None:
+            sleeve_missing_by_date[date] += 1
+        else:
+            sleeve_weights_by_date[date].append(sleeve_weight)
+        if contribution is None:
+            continue
+        contributions_by_date[date] += contribution
+        observations_by_date[date] += 1
+    daily: list[dict[str, Any]] = []
+    valid_nav_rows = [
+        row
+        for row in nav_rows
+        if nullable_float(row.get("portfolio_return")) is not None
+        and (
+            not strict_calendar_supplied
+            or (
+                calendar_status == "available"
+                and str(row.get("date") or "") in allowed_open_dates
+            )
+        )
+    ]
+    for row in valid_nav_rows:
+        date = str(row.get("date") or "")
+        portfolio_return = nullable_float(row.get("portfolio_return"))
+        contribution = contributions_by_date.get(date) if observations_by_date.get(date) else None
+        explicit_residual = nullable_float(row.get("explicit_cash_fee_residual"))
+        if explicit_residual is None:
+            explicit_components = [
+                value
+                for value in (
+                    nullable_float(row.get("cash_return_contribution")),
+                    nullable_float(row.get("fee_return_contribution")),
+                )
+                if value is not None
+            ]
+            explicit_residual = sum(explicit_components) if explicit_components else None
+        sleeve_weights = sleeve_weights_by_date.get(date, [])
+        sleeve_sum = sum(sleeve_weights) if sleeve_weights else None
+        position_snapshot_complete = bool(
+            contribution is not None
+            and observations_by_date.get(date, 0) > 0
+            and observations_by_date.get(date, 0)
+            == total_positions_by_date.get(date, 0)
+            and invalid_position_lineage_by_date.get(date, 0) == 0
+            and sleeve_missing_by_date.get(date, 0) == 0
+            and sleeve_sum is not None
+            and math.isclose(sleeve_sum, 1.0, abs_tol=0.001)
+        )
+        # Cash/fee residuals explain only a complete position-contribution
+        # snapshot. They must never masquerade as position coverage.
+        covered = position_snapshot_complete
+        residual = (
+            portfolio_return - (contribution or 0.0) - (explicit_residual or 0.0)
+            if portfolio_return is not None and covered
+            else None
+        )
+        daily.append(
+            {
+                "date": date,
+                "portfolio_return": portfolio_return,
+                "position_contribution": contribution,
+                "explicit_cash_fee_residual": explicit_residual,
+                "covered": covered,
+                "unexplained_residual": residual,
+                "within_1bp": abs(residual) <= 0.0001 if residual is not None else None,
+                "position_observation_count": observations_by_date.get(date, 0),
+                "total_position_count": total_positions_by_date.get(date, 0),
+                "position_snapshot_complete": position_snapshot_complete,
+                "equity_sleeve_weight_sum": sleeve_sum,
+            }
+        )
+    covered_rows = [row for row in daily if row["covered"]]
+    valid_count = len(valid_nav_rows)
+    coverage_ratio = len(covered_rows) / valid_count if valid_count else 0.0
+    all_within_tolerance = bool(covered_rows) and all(
+        row["within_1bp"] for row in covered_rows
+    )
+    reconciled = valid_count > 0 and len(covered_rows) == valid_count and all_within_tolerance
+    valid_nav_dates = {str(row.get("date") or "") for row in valid_nav_rows}
+    position_dates_without_nav_return = sorted(
+        date
+        for date in total_positions_by_date
+        if date and date in allowed_open_dates and date not in valid_nav_dates
+    )
+    blockers: list[str] = []
+    if strict_calendar_supplied and calendar_status != "available":
+        blockers.append("attribution_formal_trading_calendar_missing")
+    if excluded_nav_return_dates or excluded_position_effective_dates:
+        blockers.append("attribution_non_open_dates_excluded")
+    if missing_effective_date_count:
+        blockers.append("attribution_position_effective_date_missing")
+    if position_dates_without_nav_return:
+        blockers.append("attribution_position_date_without_nav_return")
+    return {
+        "tolerance": 0.0001,
+        "daily": daily,
+        "valid_nav_return_days": valid_count,
+        "covered_days": len(covered_rows),
+        "coverage_ratio": coverage_ratio,
+        "reconciled_days": sum(1 for row in covered_rows if row["within_1bp"]),
+        "status": "reconciled" if reconciled else "partial",
+        "coverage_basis": "strict_parquet_trade_date_mask",
+        "calendar_status": calendar_status,
+        "blockers": blockers,
+        "diagnostics": {
+            "excluded_nav_return_dates": excluded_nav_return_dates,
+            "excluded_position_effective_dates": sorted(
+                excluded_position_effective_dates
+            ),
+            "positions_missing_effective_date_count": missing_effective_date_count,
+            "position_dates_without_nav_return": position_dates_without_nav_return,
+        },
+    }
+
+
+def _latest_explicit_benchmark_value_dates(
+    benchmark_summary: dict[str, Any],
+) -> dict[str, str]:
+    by_field: dict[str, list[str]] = defaultdict(list)
+    by_record = benchmark_summary.get("value_date_by_date") or {}
+    if not isinstance(by_record, dict):
+        return {}
+    for values in by_record.values():
+        if not isinstance(values, dict):
+            continue
+        for field, value in values.items():
+            normalized = explicit_iso_date(value)
+            if normalized:
+                by_field[str(field)].append(normalized)
+    return {
+        field: max(dates)
+        for field, dates in sorted(by_field.items())
+        if dates
+    }
+
+
+def build_canonical_as_of_matrix(
+    latest_run: RecordRun,
+    benchmark_summary: dict[str, Any],
+    *,
+    theme_as_of: str | None,
+    factor_registry_sha: str | None,
+) -> dict[str, Any]:
+    snapshot = load_json(latest_run.path / "market_snapshot.json")
+    strategy_record_at = explicit_iso_timestamp(latest_run.record_time)
+    strategy_record_date = explicit_iso_date(strategy_record_at)
+    analysis_trading_date = explicit_iso_date(snapshot.get("analysis_trade_date"))
+    quote_field = snapshot.get("quote_snapshot")
+    if isinstance(quote_field, dict):
+        quote_value = (
+            quote_field.get("as_of")
+            or quote_field.get("quote_at")
+            or quote_field.get("timestamp")
+        )
+    else:
+        quote_value = quote_field
+    quote_at = explicit_iso_timestamp(quote_value)
+    return {
+        "strategy_record_date": strategy_record_date,
+        "strategy_record_at": strategy_record_at,
+        "analysis_trading_date": analysis_trading_date,
+        "quote_at": quote_at,
+        "benchmark_value_dates": _latest_explicit_benchmark_value_dates(benchmark_summary),
+        "theme_date": explicit_iso_date(theme_as_of),
+        "factor_registry_sha": factor_registry_sha,
+    }
+
+
+def build_dashboard_contract_v2(
+    *,
+    run_id: str,
+    generated_at: str,
+    record_root: Path,
+    latest_run: RecordRun,
+    nav_rows: list[dict[str, Any]],
+    position_rows: list[dict[str, Any]],
+    trade_rows: list[dict[str, Any]],
+    benchmark_summary: dict[str, Any],
+    ledger_path: Path,
+    manifest_path: Path,
+    warnings: list[str],
+    registry_path: Path | None = None,
+    trading_calendar: dict[str, Any] | None = None,
+    theme_protocol_file: Path | None = None,
+    expected_theme_sha256: str = "",
+    factor_protocol_file: Path | None = None,
+    expected_factor_sha256: str = "",
+    manual_ledger_sha_declared: bool | None = None,
+) -> dict[str, Any]:
+    """Build the single, versioned snapshot consumed by the static Dashboard."""
+
+    nav_numeric = {
+        "portfolio_nav",
+        "portfolio_nav_raw",
+        "portfolio_nav_rebased",
+        "portfolio_return",
+        "portfolio_units",
+        "initial_capital",
+        "total_value_after",
+        "external_funding_cash_flow",
+        "cash_weight",
+        "gross_exposure",
+        "net_exposure",
+        "cash_return_contribution",
+        "fee_return_contribution",
+        "explicit_cash_fee_residual",
+    }
+    nav_numeric.update(
+        key
+        for row in nav_rows
+        for key in row
+        if str(key).endswith("_nav")
+    )
+    position_numeric = {
+        "weight",
+        "nav_weight",
+        "equity_sleeve_weight",
+        "daily_return",
+        "contribution",
+        "market_value",
+        "quantity",
+        "avg_cost",
+        "cost_basis",
+        "current_price",
+        "unrealized_pnl",
+        "stop_loss",
+        "take_profit",
+        "quote_age_seconds",
+    }
+    trade_numeric = {
+        "price",
+        "quantity",
+        "trade_amount",
+        "fee",
+        "slippage",
+        "ledger_delta",
+    }
+    factor_registry_path = registry_path or PROJECT_ROOT / "quant_investor" / "factor_registry" / "mined_factors.json"
+    factor_sha = sha256_file(factor_registry_path)
+    factor_protocol, factor_protocol_path = _load_factor_protocol_v2_readback(
+        latest_run,
+        registry_sha=factor_sha,
+        protocol_file=factor_protocol_file,
+        expected_sha256=expected_factor_sha256,
+    )
+    (
+        theme_rows,
+        theme_state_path,
+        theme_as_of,
+        theme_protocol_blockers,
+        theme_protocol,
+    ) = (
+        _load_theme_state_rows(
+            latest_run,
+            protocol_file=theme_protocol_file,
+            expected_sha256=expected_theme_sha256,
+        )
+    )
+    if not theme_rows and theme_protocol_file is None:
+        theme_rows = _theme_rows_from_positions(position_rows)
+    calendar = dict(trading_calendar or {})
+    if not calendar:
+        calendar = {
+            "status": "missing",
+            "source_system": "strict_parquet.cn_bars.trade_date",
+            "path_summary": path_summary(DEFAULT_CN_BARS_ROOT),
+            "expected_open_dates": [],
+            "expected_open_date_count": 0,
+            "first_open_date": None,
+            "last_open_date": None,
+            "mask_sha256": None,
+        }
+    reconciliation = build_attribution_reconciliation(
+        nav_rows,
+        position_rows,
+        trading_calendar=calendar,
+    )
+    as_of_matrix = build_canonical_as_of_matrix(
+        latest_run,
+        benchmark_summary,
+        theme_as_of=theme_as_of,
+        factor_registry_sha=factor_sha,
+    )
+    blockers: list[str] = []
+    if not nav_rows:
+        blockers.append("nav_missing")
+    if not position_rows:
+        blockers.append("positions_missing")
+    if reconciliation["status"] != "reconciled":
+        blockers.append("attribution_reconciliation_partial")
+    blockers.extend(
+        str(value) for value in list(reconciliation.get("blockers") or [])
+    )
+    if manual_ledger_sha_declared is False:
+        blockers.append("manual_ledger_sha_not_declared")
+    if calendar.get("status") != "available":
+        blockers.append("formal_trading_calendar_missing")
+    if theme_state_path is None:
+        blockers.append("theme_state_v2_missing_observer_only")
+    blockers.extend(theme_protocol_blockers)
+    if (
+        theme_protocol_file is not None
+        and as_of_matrix.get("analysis_trading_date")
+        and as_of_matrix.get("theme_date")
+        != as_of_matrix.get("analysis_trading_date")
+    ):
+        blockers.append("theme_protocol_as_of_mismatch")
+    if factor_sha is None:
+        blockers.append("factor_registry_missing")
+    if factor_protocol.get("status") == "blocked":
+        blockers.extend(
+            str(value)
+            for value in list(factor_protocol.get("blockers") or [])
+        )
+    if any(str(row.get("fee_source") or "") == "unknown" for row in trade_rows):
+        blockers.append("trade_fee_unknown")
+    if not benchmark_summary.get("production_grade"):
+        blockers.append("benchmark_not_production_grade")
+    for field, blocker in (
+        ("strategy_record_date", "as_of_strategy_record_missing"),
+        ("analysis_trading_date", "as_of_analysis_trade_date_missing"),
+        ("quote_at", "as_of_quote_missing"),
+        ("theme_date", "as_of_theme_missing"),
+    ):
+        if as_of_matrix.get(field) is None:
+            blockers.append(blocker)
+    analysis_date = explicit_iso_date(as_of_matrix.get("analysis_trading_date"))
+    if analysis_date:
+        theme_date = explicit_iso_date(as_of_matrix.get("theme_date"))
+        quote_date = explicit_iso_date(as_of_matrix.get("quote_at"))
+        if theme_date and theme_date > analysis_date:
+            blockers.append("as_of_theme_after_analysis_date")
+        if quote_date and quote_date > analysis_date:
+            blockers.append("as_of_quote_after_analysis_date")
+        if any(
+            explicit_iso_date(value) is not None
+            and explicit_iso_date(value) > analysis_date
+            for value in dict(
+                as_of_matrix.get("benchmark_value_dates") or {}
+            ).values()
+        ):
+            blockers.append("as_of_benchmark_after_analysis_date")
+    if not as_of_matrix.get("benchmark_value_dates"):
+        blockers.append("as_of_benchmark_value_dates_missing")
+    nav_return_provenance = {
+        "source_field": "pnl_summary.total_value_after",
+        "return_method": "time_weighted_unitization",
+        "gross_or_net": "unknown",
+        "trade_fee_inclusion": "unknown",
+        "secondary_fee_adjustment_allowed": False,
+    }
+    blockers.append("nav_fee_provenance_unknown")
+    status = "blocked" if not nav_rows or not position_rows else ("partial" if blockers or warnings else "fresh")
+    metric_policy = {
+        "returns_unit": "decimal",
+        "contribution_formula": "nav_weight * daily_return",
+        "annualization_min_open_day_coverage": 0.95,
+        "annualization_min_valid_daily_returns": 60,
+        "annualization_insufficient_status": "insufficient_daily_history",
+        "rolling_window_min_open_day_coverage": 0.95,
+        "trading_calendar_required": True,
+        "excess_curve": "relative_wealth_ratio",
+        "monthly_return": "previous_month_end_anchor",
+        "unknown_numeric": None,
+    }
+    schema_path = DEFAULT_DASHBOARD_ROOT / "schema" / "dashboard_contract.v2.schema.json"
+    protocol_payload = {
+        "schema_version": DASHBOARD_SCHEMA_VERSION,
+        "metric_policy": metric_policy,
+        "required_tables": ["nav", "positions", "trades", "themes", "factors"],
+    }
+    return {
+        "schema_version": DASHBOARD_SCHEMA_VERSION,
+        "schema_sha256": sha256_file(schema_path),
+        "protocol_hash": canonical_json_sha256(protocol_payload),
+        "run_id": run_id,
+        "generated_at": generated_at,
+        "status": status,
+        "blockers": list(dict.fromkeys(blockers)),
+        "as_of_matrix": as_of_matrix,
+        "trading_calendar": calendar,
+        "nav_return_provenance": nav_return_provenance,
+        "sources": {
+            "strategy_records": {
+                "path_summary": path_summary(record_root),
+                "latest_record": latest_run.run_id,
+                "sha256": sha256_file(latest_run.path / "pnl_summary.csv"),
+            },
+            "ledger": {
+                "path_summary": path_summary(ledger_path),
+                "sha256": sha256_file(ledger_path),
+            },
+            "manual_manifest": {
+                "path_summary": path_summary(manifest_path),
+                "sha256": sha256_file(manifest_path),
+            },
+            "theme": {
+                "path_summary": path_summary(theme_state_path),
+                "sha256": sha256_file(theme_state_path),
+                "status": "theme_state_v2" if theme_state_path else "observer_from_positions",
+            },
+            "factor_registry": {
+                "path_summary": path_summary(factor_registry_path),
+                "sha256": factor_sha,
+                "status": "registry_source" if factor_sha else "missing",
+            },
+            "factor_protocol": {
+                "path_summary": path_summary(factor_protocol_path),
+                "sha256": sha256_file(factor_protocol_path),
+                "status": str(factor_protocol.get("status") or "blocked"),
+            },
+        },
+        "nav": [_numeric_record(row, nav_numeric) for row in nav_rows],
+        "positions": [_numeric_record(row, position_numeric) for row in position_rows],
+        "trades": [_numeric_record(row, trade_numeric) for row in trade_rows],
+        "themes": theme_rows,
+        "theme_protocol": theme_protocol,
+        "factors": _factor_rows_from_registry(factor_registry_path),
+        "factor_protocol": factor_protocol,
+        "reconciliation": reconciliation,
+        "metric_policy": metric_policy,
+    }
+
+
+def write_dashboard_snapshot_v2(
+    json_path: Path,
+    js_path: Path,
+    contract: dict[str, Any],
+    *,
+    generated_records_js: str,
+) -> None:
+    _write_private_text_atomic(
+        json_path,
+        json.dumps(contract, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
+    )
+    _write_private_text_atomic(
+        js_path,
+        "window.DashboardSnapshotV2 = "
+        + json.dumps(contract, ensure_ascii=False, allow_nan=False)
+        + ";\n"
+        + generated_records_js,
+    )
+
+
+def _write_private_text_atomic(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            descriptor = -1
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+
+
+def dashboard_display_warnings(warnings: list[str]) -> list[str]:
+    manual_ledger_skips = 0
+    manifest_skips = 0
+    incomplete_trade_rows = 0
+    visible: list[str] = []
+    for warning in warnings:
+        text = str(warning)
+        if text.endswith(": 缺少可读 ledger_after_manual_switch.csv，已跳过。"):
+            manual_ledger_skips += 1
+        elif text.endswith(": 缺少可读 manual_execution_manifest.json，已跳过。"):
+            manifest_skips += 1
+        elif text.startswith("trade_record_incomplete:"):
+            incomplete_trade_rows += 1
+        elif "条持仓记录缺少显式 theme" in text and "回退标签" in text:
+            continue
+        else:
+            visible.append(text)
+    if manual_ledger_skips:
+        visible.append(
+            f"{manual_ledger_skips} 个历史记录因缺少可读 ledger_after_manual_switch.csv 已跳过；详见 export_summary.json。"
+        )
+    if manifest_skips:
+        visible.append(
+            f"{manifest_skips} 个历史记录因缺少可读 manual_execution_manifest.json 已跳过；详见 export_summary.json。"
+        )
+    if incomplete_trade_rows:
+        visible.append(
+            f"{incomplete_trade_rows} 条已执行交易记录因缺少 timestamp/symbol/action/shares/price/trade_value 被跳过；"
+            "详见 export_summary.json 的 trade_record_completeness。"
+        )
+    return visible
+
+
+def dashboard_display_infos(warnings: list[str], infos: list[str] | None = None) -> list[str]:
+    visible = list(infos or [])
+    for warning in warnings:
+        text = str(warning)
+        if "条持仓记录缺少显式 theme" in text and "回退标签" in text:
+            visible.append(text)
+    return visible
 
 
 def js_string(value: str) -> str:
@@ -1369,17 +3560,50 @@ def write_generated_js(
     latest_record: str,
     record_count: int,
     warnings: list[str],
+    infos: list[str],
     nav_csv: str,
     positions_csv: str,
     trades_csv: str,
+    contract: dict[str, Any] | None = None,
 ) -> None:
-    payload = (
+    payload = generated_records_js_text(
+        generated_at=generated_at,
+        source_root=source_root,
+        latest_record=latest_record,
+        record_count=record_count,
+        warnings=warnings,
+        infos=infos,
+        nav_csv=nav_csv,
+        positions_csv=positions_csv,
+        trades_csv=trades_csv,
+        contract=contract,
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload, encoding="utf-8")
+
+
+def generated_records_js_text(
+    *,
+    generated_at: str,
+    source_root: Path,
+    latest_record: str,
+    record_count: int,
+    warnings: list[str],
+    infos: list[str],
+    nav_csv: str,
+    positions_csv: str,
+    trades_csv: str,
+    contract: dict[str, Any] | None = None,
+) -> str:
+    return (
         "window.DashboardGeneratedRecords = {\n"
         f"  generatedAt: {js_string(generated_at)},\n"
-        f"  sourceRoot: {js_string(str(source_root))},\n"
+        f"  sourceRoot: {js_string(path_summary(source_root) or '')},\n"
         f"  latestRecord: {js_string(latest_record)},\n"
         f"  recordCount: {record_count},\n"
-        f"  warnings: {json.dumps(warnings, ensure_ascii=False, indent=2)},\n"
+        f"  warnings: {json.dumps(dashboard_display_warnings(warnings), ensure_ascii=False, indent=2)},\n"
+        f"  infos: {json.dumps(dashboard_display_infos(warnings, infos), ensure_ascii=False, indent=2)},\n"
+        f"  contract: {'window.DashboardSnapshotV2' if contract is not None else 'null'},\n"
         "  csv: {\n"
         f"    nav: {js_string(nav_csv)},\n"
         f"    positions: {js_string(positions_csv)},\n"
@@ -1387,8 +3611,6 @@ def write_generated_js(
         "  }\n"
         "};\n"
     )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(payload, encoding="utf-8")
 
 
 def csv_text(path: Path) -> str:
@@ -1407,27 +3629,85 @@ def resolve_local_benchmark_file(dashboard_root: Path, benchmark_file: Path | No
     return dashboard_candidate
 
 
+def aggregate_manual_record_warnings(
+    record_warnings: list[str],
+    effective_run: RecordRun,
+) -> list[str]:
+    summarized = [
+        warning
+        for warning in record_warnings
+        if "manual baseline 无效" in warning
+    ]
+    undeclared_count = sum(
+        1
+        for warning in record_warnings
+        if "manual_ledger_sha_not_declared" in warning
+    )
+    if undeclared_count:
+        effective_status = str(
+            (effective_run.manual_manifest or {}).get("status") or "unknown"
+        )
+        readback_verified = bool(
+            effective_run.manual_ledger_sha256
+            and effective_run.manual_ledger_path
+            and sha256_file(effective_run.manual_ledger_path)
+            == effective_run.manual_ledger_sha256
+        )
+        summarized.append(
+            "manual_ledger_sha_not_declared: "
+            f"count={undeclared_count}；"
+            f"effective_manifest_status={effective_status}；"
+            "effective_ledger_sha_declared="
+            f"{str(effective_run.manual_ledger_sha_declared).lower()}；"
+            "effective_computed_sha_readback_verified="
+            f"{str(readback_verified).lower()}。"
+        )
+    return summarized
+
+
 def export(
     record_root: Path,
     dashboard_root: Path,
     benchmark_source: str = DEFAULT_BENCHMARK_SOURCE,
     benchmark_gap_fill: str = "snapshot",
     benchmark_file: Path | None = None,
+    trading_calendar_root: Path | None = None,
+    theme_protocol_file: Path | None = None,
+    expected_theme_sha256: str = "",
+    factor_protocol_file: Path | None = None,
+    expected_factor_sha256: str = "",
 ) -> dict[str, Any]:
-    runs, warnings = discover_record_runs(record_root)
-    if not runs:
+    nav_runs, warnings = discover_record_runs(record_root, require_effective_manual=False)
+    manual_runs, manual_record_warnings = discover_record_runs(
+        record_root,
+        require_effective_manual=True,
+    )
+    if not nav_runs:
         raise SystemExit(f"No usable records found under {record_root}")
+    if not manual_runs:
+        detail = " | ".join(manual_record_warnings[-5:])
+        raise SystemExit(
+            f"No usable manual ledger records found under {record_root}"
+            + (f": {detail}" if detail else "")
+        )
+    manual_warning_summary = aggregate_manual_record_warnings(
+        manual_record_warnings,
+        manual_runs[-1],
+    )
+    warnings.extend(manual_warning_summary)
     benchmark_export: BenchmarkExport | None = None
     local_benchmark_file = resolve_local_benchmark_file(dashboard_root, benchmark_file)
     if benchmark_source in {"auto", "local"} and (benchmark_source == "local" or local_benchmark_file.exists()):
-        benchmark_export, local_warnings = load_local_benchmark_export(runs, local_benchmark_file)
+        benchmark_export, local_warnings = load_local_benchmark_export(nav_runs, local_benchmark_file)
         warnings.extend(local_warnings)
         if benchmark_export is None and benchmark_source == "local":
             warnings.append("已按 fail-closed 降级为 strategy_record.market_snapshot.indices benchmark；不得标记为生产级。")
-    if benchmark_source in {"auto", "tushare"}:
+    # Network benchmark access is opt-in only. ``auto`` remains a legacy
+    # local/snapshot compatibility mode and must not contact Tushare.
+    if benchmark_source == "tushare":
         if benchmark_export is None:
             benchmark_export, tushare_warnings = load_tushare_benchmark_export(
-                runs,
+                nav_runs,
                 snapshot_gap_fill=benchmark_gap_fill == "snapshot",
             )
             warnings.extend(tushare_warnings)
@@ -1436,16 +3716,41 @@ def export(
     if benchmark_source == "snapshot":
         warnings.append("benchmark_source=snapshot：按显式参数使用 strategy_record.market_snapshot.indices，非生产级。")
     if benchmark_export is not None:
-        benchmark_export, industry_warnings = attach_industry_equal_weight_nav(runs, benchmark_export)
+        benchmark_export, industry_warnings = attach_industry_equal_weight_nav(nav_runs, benchmark_export)
         warnings.extend(industry_warnings)
-    nav_rows, nav_warnings, nav_fieldnames = build_nav_rows(runs, benchmark_export)
+    nav_rows, nav_warnings, nav_fieldnames = build_nav_rows(nav_runs, benchmark_export)
+    calendar_root = trading_calendar_root or DEFAULT_CN_BARS_ROOT
+    trading_calendar, calendar_warnings = load_strict_parquet_trading_calendar(
+        calendar_root,
+        nav_runs[0].date,
+        nav_runs[-1].date,
+    )
+    warnings.extend(calendar_warnings)
+    nav_source_summary = portfolio_nav_source_summary(nav_runs, nav_rows)
     benchmark_summary = benchmark_source_summary(nav_rows, nav_fieldnames, benchmark_export)
     sector_map, sector_warnings = load_sector_map(DEFAULT_STOCK_BASIC_ROOT)
-    positions_rows, position_warnings = build_positions_rows(runs, sector_map)
-    trade_rows = build_trade_rows(runs, sector_map)
+    positions_rows, position_warnings = build_positions_rows(
+        manual_runs,
+        sector_map,
+        historical_theme_by_date=build_historical_theme_maps(nav_runs),
+    )
+    apply_position_exposures(nav_rows, positions_rows)
+    position_theme_provenance: dict[str, int] = {}
+    for row in positions_rows:
+        source = str(row.get("theme_source") or "unavailable")
+        position_theme_provenance[source] = position_theme_provenance.get(source, 0) + 1
+    trade_warnings: list[str] = []
+    trade_record_completeness: dict[str, Any] = {}
+    trade_rows = build_trade_rows(
+        manual_runs,
+        sector_map,
+        warnings=trade_warnings,
+        completeness=trade_record_completeness,
+    )
     warnings.extend(nav_warnings)
     warnings.extend(sector_warnings)
     warnings.extend(position_warnings)
+    warnings.extend(trade_warnings)
     if not benchmark_summary["production_grade"]:
         warnings.append(
             "benchmark_source_status="
@@ -1471,12 +3776,30 @@ def export(
             "ticker",
             "name",
             "weight",
+            "nav_weight",
+            "equity_sleeve_weight",
             "theme",
+            "theme_source",
+            "theme_memberships",
             "sector",
             "sub_sector",
             "daily_return",
             "contribution",
+            "contribution_effective_date",
+            "contribution_date_source",
             "market_value",
+            "quantity",
+            "avg_cost",
+            "cost_basis",
+            "current_price",
+            "unrealized_pnl",
+            "recommended_action",
+            "stop_loss",
+            "take_profit",
+            "quote_at",
+            "quote_age_seconds",
+            "thesis",
+            "risk_status",
         ],
         positions_rows,
     )
@@ -1484,6 +3807,10 @@ def export(
         trades_path,
         [
             "trade_date",
+            "recommendation_id",
+            "decision_id",
+            "order_id",
+            "fill_id",
             "ticker",
             "name",
             "side",
@@ -1491,6 +3818,9 @@ def export(
             "quantity",
             "trade_amount",
             "fee",
+            "fee_source",
+            "slippage",
+            "ledger_delta",
             "reason",
             "theme",
         ],
@@ -1501,40 +3831,172 @@ def export(
         ["date", "ts_code", "field", "close", "nav", "source_system", "value_date", "coverage"],
         benchmark_export.raw_rows if benchmark_export is not None else [],
     )
-    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    write_generated_js(
-        dashboard_root / "js" / "generated_records.js",
+    generated_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    dashboard_infos = [
+        f"NAV 使用 {len(nav_runs)} 个正式 pnl_summary 记录；positions/trades 使用 "
+        f"{len(manual_runs)} 个有效手工持仓基线记录。"
+    ]
+    if nav_source_summary["funding_events"]:
+        funding_text = "，".join(
+            f"{event['date']} 外部资金流 {float(event['amount']):,.2f}"
+            for event in nav_source_summary["funding_events"]
+        )
+        dashboard_infos.append(
+            "portfolio_nav 使用现金流调整后的单位净值；"
+            f"{funding_text} 已从收益计算中剔除，账户总资产与资金基准保留在 NAV 审计字段。"
+        )
+    carried_theme_count = sum(
+        count
+        for source, count in position_theme_provenance.items()
+        if source.startswith("prior_strategy_record:")
+    )
+    if carried_theme_count:
+        dashboard_infos.append(
+            f"{carried_theme_count} 条历史持仓使用截至当日最近正式 strategy record 的显式 theme，"
+            "仅前向继承，不使用未来记录。"
+        )
+    effective_manual_run = manual_runs[-1]
+    effective_ledger_path = effective_manual_run.manual_ledger_path or (
+        effective_manual_run.path / "ledger_after_manual_switch.csv"
+    )
+    effective_manifest_path = effective_manual_run.manual_manifest_path or (
+        effective_manual_run.path / "manual_execution_manifest.json"
+    )
+    if (
+        effective_manual_run.manual_manifest_sha256
+        and (
+            sha256_file(effective_manifest_path)
+            != effective_manual_run.manual_manifest_sha256
+            or load_json_object(effective_manifest_path)
+            != effective_manual_run.manual_manifest
+        )
+    ):
+        raise RuntimeError("manual manifest changed after baseline selection")
+    contract = build_dashboard_contract_v2(
+        run_id=f"dashboard_{manual_runs[-1].run_id}",
+        generated_at=generated_at,
+        record_root=record_root,
+        latest_run=manual_runs[-1],
+        nav_rows=nav_rows,
+        position_rows=positions_rows,
+        trade_rows=trade_rows,
+        benchmark_summary=benchmark_summary,
+        ledger_path=effective_ledger_path,
+        manifest_path=effective_manifest_path,
+        warnings=warnings,
+        trading_calendar=trading_calendar,
+        theme_protocol_file=theme_protocol_file,
+        expected_theme_sha256=expected_theme_sha256,
+        factor_protocol_file=factor_protocol_file,
+        expected_factor_sha256=expected_factor_sha256,
+        manual_ledger_sha_declared=(
+            effective_manual_run.manual_ledger_sha_declared
+        ),
+    )
+    generated_text = generated_records_js_text(
         generated_at=generated_at,
         source_root=record_root,
-        latest_record=runs[-1].run_id,
-        record_count=len(runs),
+        latest_record=manual_runs[-1].run_id,
+        record_count=len(nav_runs),
         warnings=warnings,
+        infos=dashboard_infos,
         nav_csv=csv_text(nav_path),
         positions_csv=csv_text(positions_path),
         trades_csv=csv_text(trades_path),
+        contract=contract,
+    )
+    private_dir = dashboard_root / DEFAULT_PRIVATE_DASHBOARD_DIRNAME
+    private_json_path = private_dir / "dashboard_snapshot.v2.json"
+    private_js_path = private_dir / "dashboard_snapshot.v2.js"
+    write_dashboard_snapshot_v2(
+        private_json_path,
+        private_js_path,
+        contract,
+        generated_records_js=generated_text,
     )
     summary = {
+        "schema_version": DASHBOARD_SCHEMA_VERSION,
+        "schema_sha256": contract["schema_sha256"],
+        "protocol_hash": contract["protocol_hash"],
+        "run_id": contract["run_id"],
+        "status": contract["status"],
+        "blockers": contract["blockers"],
+        "as_of_matrix": contract["as_of_matrix"],
+        "trading_calendar": contract["trading_calendar"],
+        "nav_return_provenance": contract["nav_return_provenance"],
+        "reconciliation": contract["reconciliation"],
+        "theme_protocol": contract["theme_protocol"],
+        "factor_protocol": contract["factor_protocol"],
         "generated_at": generated_at,
-        "source_root": str(record_root),
-        "dashboard_root": str(dashboard_root),
-        "latest_record": runs[-1].run_id,
-        "record_count": len(runs),
+        "source_root": path_summary(record_root),
+        "dashboard_root": path_summary(dashboard_root),
+        "latest_record": manual_runs[-1].run_id,
+        "latest_nav_record": nav_runs[-1].run_id,
+        "record_count": len(nav_runs),
+        "nav_record_count": len(nav_runs),
+        "manual_record_count": len(manual_runs),
         "nav_rows": len(nav_rows),
         "positions_rows": len(positions_rows),
         "trade_rows": len(trade_rows),
+        "portfolio_nav_source": nav_source_summary,
+        "position_theme_provenance": position_theme_provenance,
+        "protocol_artifacts": {
+            "theme": {
+                "path_summary": path_summary(theme_protocol_file),
+                "sha256": sha256_file(theme_protocol_file),
+            },
+            "factor": {
+                "path_summary": path_summary(factor_protocol_file),
+                "sha256": sha256_file(factor_protocol_file),
+            },
+        },
+        "trade_record_completeness": trade_record_completeness,
+        "effective_manual_ledger_status": {
+            "status": "valid",
+            "record_id": effective_manual_run.run_id,
+            "manifest_status": str(
+                (effective_manual_run.manual_manifest or {}).get("status") or ""
+            ),
+            "manifest_recorded_at": effective_manual_run.record_time,
+            "manifest_order_key": list(
+                effective_manual_run.manual_order_key or ()
+            ),
+            "ledger_path": path_summary(effective_ledger_path),
+            "ledger_sha256": effective_manual_run.manual_ledger_sha256,
+            "ledger_sha_declared": (
+                effective_manual_run.manual_ledger_sha_declared
+            ),
+            "ledger_readback_verified": bool(
+                effective_manual_run.manual_ledger_sha256
+                and sha256_file(effective_ledger_path)
+                == effective_manual_run.manual_ledger_sha256
+            ),
+            "manifest_path": path_summary(effective_manifest_path),
+            "manifest_sha256": effective_manual_run.manual_manifest_sha256,
+            "manifest_readback_verified": bool(
+                effective_manual_run.manual_manifest_sha256
+                and sha256_file(effective_manifest_path)
+                == effective_manual_run.manual_manifest_sha256
+                and load_json_object(effective_manifest_path)
+                == effective_manual_run.manual_manifest
+            ),
+            "legacy_ledger_fallback_used": False,
+        },
+        "manual_record_warnings": manual_warning_summary,
         "warnings": warnings,
         "benchmark_source": benchmark_summary,
         "files": {
-            "nav": str(nav_path),
-            "positions": str(positions_path),
-            "trades": str(trades_path),
-            "benchmark": str(benchmark_path),
-            "generated_js": str(dashboard_root / "js" / "generated_records.js"),
+            "nav": path_summary(nav_path),
+            "positions": path_summary(positions_path),
+            "trades": path_summary(trades_path),
+            "benchmark": path_summary(benchmark_path),
+            "snapshot_json": path_summary(private_json_path),
+            "generated_js": path_summary(private_js_path),
         },
     }
-    (generated_dir / "export_summary.json").write_text(
+    _write_private_text_atomic(
+        generated_dir / "export_summary.json",
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
     )
     return summary
 
@@ -1568,13 +4030,46 @@ def main() -> None:
             "Any snapshot fill forces non-production benchmark provenance."
         ),
     )
+    parser.add_argument(
+        "--trading-calendar-root",
+        type=Path,
+        default=None,
+        help="Strict Parquet CN bars root used only to build the formal trade_date mask.",
+    )
+    parser.add_argument(
+        "--theme-protocol-file",
+        type=Path,
+        default=None,
+        help="Explicit Theme Protocol v2 JSON artifact (never copied into strategy records).",
+    )
+    parser.add_argument(
+        "--expected-theme-sha256",
+        default="",
+        help="Required byte SHA-256 when --theme-protocol-file is provided.",
+    )
+    parser.add_argument(
+        "--factor-protocol-file",
+        type=Path,
+        default=None,
+        help="Explicit Factor Governance Protocol v2 readback JSON artifact.",
+    )
+    parser.add_argument(
+        "--expected-factor-sha256",
+        default="",
+        help="Required byte SHA-256 when --factor-protocol-file is provided.",
+    )
     args = parser.parse_args()
     summary = export(
         args.record_root,
         args.dashboard_root,
-        args.benchmark_source,
-        args.benchmark_gap_fill,
-        args.benchmark_file,
+        benchmark_source=args.benchmark_source,
+        benchmark_gap_fill=args.benchmark_gap_fill,
+        benchmark_file=args.benchmark_file,
+        trading_calendar_root=args.trading_calendar_root,
+        theme_protocol_file=args.theme_protocol_file,
+        expected_theme_sha256=args.expected_theme_sha256,
+        factor_protocol_file=args.factor_protocol_file,
+        expected_factor_sha256=args.expected_factor_sha256,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 

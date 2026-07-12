@@ -101,12 +101,13 @@ class FunnelConfig:
     theme_pool_max_symbols_per_theme: int = 30
     theme_pool_residual_ratio: float = 0.25
     theme_pool_min_residual_symbols: int = 20
-    theme_pool_min_admitted_themes: int = 2
+    theme_pool_min_admitted_themes: int = 0
     theme_pool_allow_unthemed_residual: bool = False
     theme_pool_include_risk_watch: bool = True
     theme_pool_risk_watch_max_ratio: float = 0.20
     theme_pool_symbol_gate_mode: str = "classify"
     theme_pool_min_member_count: int = 0
+    theme_pool_protocol_v2_formal_enabled: bool = False
     theme_boost_enabled: bool = False
     theme_boost_cap: float = 0.10
     theme_boost_score_source: str = "raw"
@@ -424,6 +425,9 @@ class DeterministicFunnel:
                         "theme_fake_breakout_risk",
                     ),
                     min_member_count=int(self.config.theme_pool_min_member_count),
+                    protocol_v2_formal_enabled=bool(
+                        self.config.theme_pool_protocol_v2_formal_enabled
+                    ),
                 )
             ).build(
                 symbols=symbols,

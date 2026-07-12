@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Mapping
 
@@ -53,13 +54,49 @@ def _positive_int(value: Any, default: int = 0) -> int:
     return max(numeric, 0)
 
 
+def _symbol_bucket(symbol: str) -> str:
+    code, separator, suffix = symbol.rpartition(".")
+    if not separator:
+        return "UNSUFFIXED"
+    if suffix == "SH" and code.startswith("68"):
+        return "SH_STAR"
+    if suffix == "SZ" and code.startswith("30"):
+        return "SZ_CHINEXT"
+    return suffix or "UNSUFFIXED"
+
+
+def _stable_symbol_order(symbol: str) -> tuple[str, str]:
+    digest = hashlib.sha256(symbol.encode("utf-8")).hexdigest()
+    return digest, symbol
+
+
 def deterministic_symbol_sample(symbols: Iterable[Any], limit: int) -> tuple[list[str], bool, int]:
     ordered = sorted({_text(symbol).upper() for symbol in symbols if _text(symbol)})
     unsampled_count = len(ordered)
     max_count = _positive_int(limit, unsampled_count)
     if max_count <= 0 or unsampled_count <= max_count:
         return ordered, False, unsampled_count
-    return ordered[:max_count], True, unsampled_count
+
+    buckets: dict[str, list[str]] = {}
+    for symbol in ordered:
+        buckets.setdefault(_symbol_bucket(symbol), []).append(symbol)
+    for bucket_symbols in buckets.values():
+        bucket_symbols.sort(key=_stable_symbol_order)
+
+    selected: list[str] = []
+    bucket_names = sorted(buckets)
+    while len(selected) < max_count:
+        added = False
+        for bucket_name in bucket_names:
+            bucket_symbols = buckets[bucket_name]
+            if bucket_symbols:
+                selected.append(bucket_symbols.pop(0))
+                added = True
+                if len(selected) == max_count:
+                    break
+        if not added:
+            break
+    return sorted(selected), True, unsampled_count
 
 
 def reference_universe_key_for_market(
@@ -81,19 +118,19 @@ def build_scope_key(
     unsampled_symbol_count: int,
     sampled: bool,
 ) -> str:
+    identity_parts = [
+        _text(market).upper() or "UNKNOWN",
+        _text(regime_scope, REGIME_SCOPE_INSUFFICIENT),
+        _text(source_universe_key, "unknown_universe"),
+    ]
+    if _text(regime_scope) == REGIME_SCOPE_FULL_MARKET:
+        return ":".join(identity_parts)
     sample_part = (
         f"sample_{_positive_int(source_symbol_count)}_of_{_positive_int(unsampled_symbol_count)}"
         if sampled
         else f"symbols_{_positive_int(source_symbol_count)}"
     )
-    return ":".join(
-        [
-            _text(market).upper() or "UNKNOWN",
-            _text(regime_scope, REGIME_SCOPE_INSUFFICIENT),
-            _text(source_universe_key, "unknown_universe"),
-            sample_part,
-        ]
-    )
+    return ":".join([*identity_parts, sample_part])
 
 
 def build_regime_scope(

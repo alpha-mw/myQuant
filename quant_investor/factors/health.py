@@ -68,6 +68,8 @@ class FactorHealthDecision:
     gate_failures: list[str] = field(default_factory=list)
     health_metrics: dict[str, Any] = field(default_factory=dict)
     evaluation_id: str = ""
+    maturity_window_id: str = ""
+    evaluation_hash: str = ""
     current_weight: float = 0.0
     new_weight: float = 0.0
 
@@ -81,6 +83,8 @@ class FactorHealthDecision:
             "gate_failures": list(self.gate_failures),
             "health_metrics": dict(self.health_metrics),
             "evaluation_id": self.evaluation_id,
+            "maturity_window_id": self.maturity_window_id,
+            "evaluation_hash": self.evaluation_hash,
             "current_weight": float(self.current_weight),
             "new_weight": float(self.new_weight),
         }
@@ -105,8 +109,8 @@ def classify_factor_health(
     current_weight = float(record.weight)
     reasons: list[str] = []
     gate_failures: list[str] = []
-    hard_block = False
-    evaluation_id = _evaluation_id(evaluation)
+    evaluation_hash = _evaluation_id(evaluation)
+    maturity_window_id = _maturity_window_id(evaluation)
     metrics: Mapping[str, Any] = {}
 
     if evaluation is None:
@@ -118,18 +122,15 @@ def classify_factor_health(
         raw_status = FactorHealthStatus.HEALTHY
 
         if _gate_failed(evaluation, 1):
-            hard_block = True
             raw_status = FactorHealthStatus.DATA_BLOCKED
             reasons.append("gate 1 data safety failed")
 
         coverage = _float(metrics, "coverage_rate")
         nan_rate = _float(metrics, "nan_rate")
         if coverage is not None and coverage < policy.hard_min_coverage_rate:
-            hard_block = True
             raw_status = FactorHealthStatus.DATA_BLOCKED
             reasons.append(f"coverage_rate={coverage:.2%} below hard floor")
         if nan_rate is not None and nan_rate > policy.hard_max_nan_rate:
-            hard_block = True
             raw_status = FactorHealthStatus.DATA_BLOCKED
             reasons.append(f"nan_rate={nan_rate:.2%} above hard ceiling")
 
@@ -190,15 +191,41 @@ def classify_factor_health(
     failing = raw_status != FactorHealthStatus.HEALTHY
     failure_count = int(previous_failure_count or 0)
     if not failing:
+        duplicate_window = not count_failure and failure_count > 0
         return FactorHealthDecision(
             factor_name=record.name,
             status=FactorHealthStatus.HEALTHY,
-            action=FactorHealthAction.KEEP,
-            consecutive_failures=0,
+            action=(
+                FactorHealthAction.OBSERVE
+                if duplicate_window
+                else FactorHealthAction.KEEP
+            ),
+            consecutive_failures=failure_count if duplicate_window else 0,
             reasons=[],
             gate_failures=gate_failures,
             health_metrics=_health_metric_subset(metrics),
-            evaluation_id=evaluation_id,
+            evaluation_id=evaluation_hash,
+            maturity_window_id=maturity_window_id,
+            evaluation_hash=evaluation_hash,
+            current_weight=current_weight,
+            new_weight=current_weight,
+        )
+
+    # Missing or unsafe data is not evidence that the alpha has failed.  Keep
+    # the prior alpha-failure streak unchanged and never mutate the factor
+    # weight from a data-blocked observation.
+    if raw_status == FactorHealthStatus.DATA_BLOCKED:
+        return FactorHealthDecision(
+            factor_name=record.name,
+            status=FactorHealthStatus.DATA_BLOCKED,
+            action=FactorHealthAction.OBSERVE,
+            consecutive_failures=failure_count,
+            reasons=reasons,
+            gate_failures=gate_failures,
+            health_metrics=_health_metric_subset(metrics),
+            evaluation_id=evaluation_hash,
+            maturity_window_id=maturity_window_id,
+            evaluation_hash=evaluation_hash,
             current_weight=current_weight,
             new_weight=current_weight,
         )
@@ -208,7 +235,7 @@ def classify_factor_health(
 
     if not count_failure:
         action = FactorHealthAction.OBSERVE
-    elif hard_block or failure_count >= policy.deprecate_after_failures:
+    elif failure_count >= policy.deprecate_after_failures:
         action = FactorHealthAction.DEPRECATE
     elif failure_count >= policy.reduce_after_failures:
         action = FactorHealthAction.REDUCE_WEIGHT
@@ -237,7 +264,9 @@ def classify_factor_health(
         reasons=reasons,
         gate_failures=gate_failures,
         health_metrics=_health_metric_subset(metrics),
-        evaluation_id=evaluation_id,
+        evaluation_id=evaluation_hash,
+        maturity_window_id=maturity_window_id,
+        evaluation_hash=evaluation_hash,
         current_weight=current_weight,
         new_weight=new_weight,
     )
@@ -256,6 +285,7 @@ def apply_health_decision(
     policy = policy or FactorHealthPolicy()
     metadata = dict(record.metadata or {})
     monitor = dict(metadata.get("health_monitor", {}) or {})
+    active_failure_windows = active_failure_maturity_window_ids(monitor)
     history = list(monitor.get("history", []) or [])
     history.append({"reviewed_at": reviewed_at, **decision.to_dict()})
     history = history[-max(int(policy.max_history), 1) :]
@@ -266,13 +296,33 @@ def apply_health_decision(
             "status": decision.status.value,
             "action": decision.action.value,
             "consecutive_failures": int(decision.consecutive_failures),
-            "last_evaluation_id": decision.evaluation_id,
             "last_report_path": report_path,
             "latest_reasons": list(decision.reasons),
             "latest_health_metrics": dict(decision.health_metrics),
             "history": history,
         }
     )
+    if decision.status == FactorHealthStatus.DATA_BLOCKED:
+        monitor["last_data_blocked_evaluation_hash"] = decision.evaluation_hash
+    else:
+        monitor.update(
+            {
+                "last_evaluation_id": decision.evaluation_id,
+                "last_maturity_window_id": decision.maturity_window_id,
+                "last_evaluation_hash": decision.evaluation_hash,
+            }
+        )
+        maturity_window_id = str(decision.maturity_window_id or "").strip()
+        if decision.status == FactorHealthStatus.HEALTHY:
+            if maturity_window_id not in active_failure_windows:
+                active_failure_windows = []
+        elif (
+            maturity_window_id
+            and maturity_window_id not in {"missing", "unknown"}
+            and maturity_window_id not in active_failure_windows
+        ):
+            active_failure_windows.append(maturity_window_id)
+    monitor["active_failure_maturity_window_ids"] = active_failure_windows
     metadata["health_monitor"] = monitor
     record.metadata = metadata
 
@@ -292,6 +342,58 @@ def _float(metrics: Mapping[str, Any], key: str) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def active_failure_maturity_window_ids(
+    monitor: Mapping[str, Any],
+) -> list[str]:
+    """Return distinct alpha-failure windows in the current active streak."""
+
+    if "active_failure_maturity_window_ids" in monitor:
+        raw_values = monitor.get("active_failure_maturity_window_ids", [])
+        if not isinstance(raw_values, (list, tuple, set)):
+            raw_values = []
+        return list(
+            dict.fromkeys(
+                value
+                for item in raw_values
+                if (value := str(item or "").strip())
+                and value not in {"missing", "unknown"}
+            )
+        )
+
+    active: list[str] = []
+    history = monitor.get("history", []) or []
+    if isinstance(history, list):
+        for raw_item in history:
+            if not isinstance(raw_item, Mapping):
+                continue
+            status = str(raw_item.get("status", "") or "")
+            window = str(
+                raw_item.get("maturity_window_id", "") or ""
+            ).strip()
+            if status == FactorHealthStatus.DATA_BLOCKED.value:
+                continue
+            if status == FactorHealthStatus.HEALTHY.value:
+                if window not in active:
+                    active = []
+                continue
+            if (
+                window
+                and window not in {"missing", "unknown"}
+                and window not in active
+            ):
+                active.append(window)
+
+    if not active and int(monitor.get("consecutive_failures", 0) or 0) > 0:
+        legacy_window = str(
+            monitor.get("last_maturity_window_id", "")
+            or monitor.get("last_evaluation_id", "")
+            or ""
+        ).strip()
+        if legacy_window and legacy_window not in {"missing", "unknown"}:
+            active.append(legacy_window)
+    return active
 
 
 def _append_threshold_reason(
@@ -340,9 +442,51 @@ def _evaluation_id(evaluation: Mapping[str, Any] | None) -> str:
     if not evaluation:
         return "missing"
     diagnostics = evaluation.get("diagnostics", {}) or {}
+    explicit = str(
+        diagnostics.get("evaluation_hash")
+        or diagnostics.get("evaluation_id")
+        or ""
+    )
+    if explicit:
+        return explicit
+    end_date = str(diagnostics.get("evaluation_end_date", "") or "")
+    start_date = str(diagnostics.get("analysis_start_date", "") or "")
+    snapshot_id = str(diagnostics.get("snapshot_id", "") or "")
+    universes = diagnostics.get("universes", []) or []
+    if isinstance(universes, str):
+        universes = [universes]
+    universe_key = ",".join(
+        sorted({str(item) for item in universes if str(item)})
+    )
+    decision_cost_bps = str(diagnostics.get("decision_cost_bps", "") or "")
+    warmup_days = str(diagnostics.get("warmup_days", "") or "")
+    implementation_hash = str(diagnostics.get("implementation_hash", "") or "")
+    rankic_count = str(diagnostics.get("rankic_count", "") or "")
+    horizon = str(
+        (evaluation.get("metrics", {}) or {}).get("horizon_days", "") or ""
+    )
+    if end_date:
+        return (
+            f"snapshot={snapshot_id}|universes={universe_key}|"
+            f"window={start_date}:{end_date}|h={horizon}|warmup={warmup_days}|"
+            f"cost_bps={decision_cost_bps}|impl={implementation_hash}|"
+            f"n={rankic_count}"
+        )
+    return str(evaluation.get("name", "") or "unknown")
+
+
+def _maturity_window_id(evaluation: Mapping[str, Any] | None) -> str:
+    if not evaluation:
+        return "missing"
+    diagnostics = evaluation.get("diagnostics", {}) or {}
+    explicit = str(diagnostics.get("maturity_window_id", "") or "")
+    if explicit:
+        return explicit
     end_date = str(diagnostics.get("evaluation_end_date", "") or "")
     rankic_count = str(diagnostics.get("rankic_count", "") or "")
-    horizon = str((evaluation.get("metrics", {}) or {}).get("horizon_days", "") or "")
+    horizon = str(
+        (evaluation.get("metrics", {}) or {}).get("horizon_days", "") or ""
+    )
     if end_date:
         return f"end={end_date}|h={horizon}|n={rankic_count}"
     return str(evaluation.get("name", "") or "unknown")
@@ -374,7 +518,11 @@ def _decayed_weight(current_weight: float, policy: FactorHealthPolicy) -> float:
     if abs(current_weight) <= 1e-12:
         return 0.0
     sign = 1.0 if current_weight >= 0 else -1.0
-    return sign * max(abs(current_weight) * policy.weight_decay, policy.min_active_weight)
+    current_magnitude = abs(current_weight)
+    decayed_magnitude = current_magnitude * policy.weight_decay
+    if current_magnitude > policy.min_active_weight:
+        decayed_magnitude = max(decayed_magnitude, policy.min_active_weight)
+    return sign * min(current_magnitude, decayed_magnitude)
 
 
 __all__ = [
@@ -382,6 +530,7 @@ __all__ = [
     "FactorHealthDecision",
     "FactorHealthPolicy",
     "FactorHealthStatus",
+    "active_failure_maturity_window_ids",
     "apply_health_decision",
     "classify_factor_health",
 ]

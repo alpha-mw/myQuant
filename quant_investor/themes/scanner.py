@@ -59,6 +59,8 @@ class ThemeScanner:
         concept_membership_enabled: bool | None = None,
         concept_primary_margin: float | None = None,
         theme_memberships: Sequence[Mapping[str, Any]] | None = None,
+        membership_v2_enabled: bool = False,
+        theme_memberships_v2: Sequence[Mapping[str, Any]] | None = None,
     ) -> ThemeScanResult:
         state_map = symbol_market_state or {}
         min_count = max(0, int(min_member_count))
@@ -87,12 +89,18 @@ class ThemeScanner:
             lambda: defaultdict(list)
         )
         theme_ids_by_symbol: dict[str, list[str]] = {}
+        membership_details_by_symbol: dict[str, list[dict[str, Any]]] = {}
         scanned_symbol_count = 0
         universe_members: list[dict[str, Any]] = []
         concept_diagnostic_notes: list[str] = []
         active_concept_memberships = (
             active_memberships_by_symbol(theme_memberships or (), as_of=as_of)
             if concept_config["enabled"]
+            else {}
+        )
+        active_membership_v2 = (
+            active_memberships_by_symbol(theme_memberships_v2 or (), as_of=as_of)
+            if membership_v2_enabled
             else {}
         )
         concept_membership_count = sum(
@@ -103,8 +111,15 @@ class ThemeScanner:
             concept_status = "success" if concept_membership_count else "empty"
             if not concept_membership_count:
                 concept_diagnostic_notes.append("theme_membership_no_active_members")
+        membership_v2_count = sum(
+            len(memberships) for memberships in active_membership_v2.values()
+        )
+        membership_v2_status = "disabled"
+        if membership_v2_enabled:
+            membership_v2_status = "success" if membership_v2_count else "empty"
         all_symbols = set(str(symbol) for symbol in dict(industry_map or {}))
         all_symbols.update(active_concept_memberships)
+        all_symbols.update(active_membership_v2)
 
         for symbol in sorted(all_symbols):
             state = state_map.get(symbol, {})
@@ -115,6 +130,7 @@ class ThemeScanner:
                 metrics = _neutral_symbol_metrics()
             metrics["symbol"] = symbol
             assigned_theme_ids: list[str] = []
+            assigned_membership_details: list[dict[str, Any]] = []
 
             theme_name = _valid_theme_name(industry_map.get(symbol))
             if theme_name is not None:
@@ -137,10 +153,61 @@ class ThemeScanner:
                 }
                 members_by_theme[theme_id].append(industry_metrics)
                 assigned_theme_ids.append(theme_id)
+                assigned_membership_details.append(
+                    {
+                        "schema_version": "industry_map.v1",
+                        "theme_id": theme_id,
+                        "theme_name": theme_name,
+                        "theme_type": "industry",
+                        "symbol": symbol,
+                        "supply_chain_role": "unknown",
+                        "revenue_exposure": None,
+                        "pit_membership": False,
+                    }
+                )
+
+            canonical_theme_ids: set[str] = set()
+            for membership in active_membership_v2.get(symbol, []):
+                canonical_theme_id = str(membership.theme_id or "").strip()
+                if not canonical_theme_id:
+                    continue
+                canonical_theme_ids.add(canonical_theme_id)
+                canonical_theme_name = str(
+                    membership.theme_name or canonical_theme_id
+                )
+                themes.setdefault(
+                    canonical_theme_id,
+                    {
+                        "theme_id": canonical_theme_id,
+                        "theme_name": canonical_theme_name,
+                        "theme_type": str(
+                            membership.theme_type or "technology"
+                        ),
+                        "membership_source": "canonical_theme_membership.v2",
+                        "pit_membership": True,
+                    },
+                )
+                canonical_metrics = {
+                    **dict(metrics),
+                    "theme_type": str(membership.theme_type or "technology"),
+                    "membership_source": "canonical_theme_membership.v2",
+                    "pit_membership": True,
+                    "membership_id": str(membership.membership_id or ""),
+                    "membership_confidence": clamp(membership.confidence),
+                }
+                members_by_theme[canonical_theme_id].append(canonical_metrics)
+                assigned_theme_ids.append(canonical_theme_id)
+                assigned_membership_details.append(
+                    {
+                        **membership.to_dict(),
+                        "pit_membership": True,
+                        "canonical_membership_v2": True,
+                    }
+                )
 
             for membership in active_concept_memberships.get(symbol, []):
                 concept_theme_id = str(membership.theme_id or "").strip()
-                if not concept_theme_id:
+                if not concept_theme_id or concept_theme_id in canonical_theme_ids:
                     continue
                 concept_theme_name = str(membership.theme_name or concept_theme_id)
                 themes.setdefault(
@@ -149,24 +216,33 @@ class ThemeScanner:
                         "theme_id": concept_theme_id,
                         "theme_name": concept_theme_name,
                         "theme_type": str(membership.theme_type or "concept"),
-                        "membership_source": "theme_membership.v1",
+                        "membership_source": "theme_membership.v2",
                         "pit_membership": True,
                     },
                 )
                 concept_metrics = {
                     **dict(metrics),
                     "theme_type": str(membership.theme_type or "concept"),
-                    "membership_source": "theme_membership.v1",
+                    "membership_source": "theme_membership.v2",
                     "pit_membership": True,
                     "membership_id": str(membership.membership_id or ""),
                     "membership_confidence": clamp(membership.confidence),
                 }
                 members_by_theme[concept_theme_id].append(concept_metrics)
                 assigned_theme_ids.append(concept_theme_id)
+                assigned_membership_details.append(
+                    {
+                        **membership.to_dict(),
+                        "pit_membership": True,
+                        "canonical_membership_v2": False,
+                    }
+                )
 
             if not assigned_theme_ids:
                 continue
+            assigned_theme_ids = list(dict.fromkeys(assigned_theme_ids))
             theme_ids_by_symbol[symbol] = list(assigned_theme_ids)
+            membership_details_by_symbol[symbol] = assigned_membership_details
             universe_members.append(dict(metrics))
             for offset in range(smoothing_config.window):
                 if offset == 0:
@@ -224,20 +300,27 @@ class ThemeScanner:
             lookback_days=policy_config["lookback_days"],
             event_path=policy_config["event_path"],
         )
-        selected = sorted(scored, key=lambda item: (-item.score, item.theme_id))[:limit]
-        for theme_score in selected:
+        for theme_score in scored:
             _apply_smoothing_to_theme_score(
                 theme_score=theme_score,
                 history_members_by_offset=history_members_by_theme.get(theme_score.theme_id, {}),
                 min_member_count=min_count,
                 config=smoothing_config,
             )
+        selected = sorted(
+            scored,
+            key=lambda item: (
+                -float(item.effective_score if item.effective_score is not None else item.score),
+                item.theme_id,
+            ),
+        )[:limit]
         theme_scores = {score.theme_id: score for score in selected}
 
         symbol_scores: dict[str, float] = {}
         symbol_smoothed_scores: dict[str, float] = {}
         symbol_primary_theme: dict[str, str] = {}
         symbol_theme_memberships: dict[str, list[str]] = {}
+        symbol_theme_membership_details: dict[str, list[dict[str, Any]]] = {}
         symbol_phase: dict[str, str] = {}
         symbol_risk_flags: dict[str, list[str]] = {}
         for symbol in sorted(theme_ids_by_symbol):
@@ -256,12 +339,25 @@ class ThemeScanner:
             if primary is None:
                 continue
             symbol_theme_memberships[symbol] = list(memberships)
+            symbol_theme_membership_details[symbol] = [
+                dict(detail)
+                for detail in membership_details_by_symbol.get(symbol, [])
+                if str(detail.get("theme_id") or "") in memberships
+            ]
+            # Preserve raw and smoothed symbol maps as separate contracts.
+            # Formal theme gating consumes ThemeScore.effective_score instead.
             symbol_scores[symbol] = clamp(primary.score / 100.0)
             if primary.smoothed_score is not None:
                 symbol_smoothed_scores[symbol] = clamp(primary.smoothed_score / 100.0)
             symbol_primary_theme[symbol] = primary.theme_id
             symbol_phase[symbol] = primary.phase.value
-            symbol_risk_flags[symbol] = list(primary.risk_flags)
+            symbol_risk_flags[symbol] = sorted(
+                {
+                    flag
+                    for theme_id in memberships
+                    for flag in theme_scores[theme_id].risk_flags
+                }
+            )
 
         return ThemeScanResult(
             market=market,
@@ -272,6 +368,7 @@ class ThemeScanner:
             symbol_smoothed_scores=symbol_smoothed_scores,
             symbol_primary_theme=symbol_primary_theme,
             symbol_theme_memberships=symbol_theme_memberships,
+            symbol_theme_membership_details=symbol_theme_membership_details,
             symbol_phase=symbol_phase,
             symbol_risk_flags=symbol_risk_flags,
             metadata={
@@ -298,6 +395,9 @@ class ThemeScanner:
                 "concept_membership_count": concept_membership_count,
                 "concept_primary_margin": concept_config["primary_margin"],
                 "concept_membership_diagnostic_notes": concept_diagnostic_notes,
+                "membership_v2_enabled": bool(membership_v2_enabled),
+                "membership_v2_status": membership_v2_status,
+                "membership_v2_count": membership_v2_count,
                 "deterministic": True,
                 "no_llm": True,
                 "no_network": True,
@@ -339,14 +439,27 @@ def _symbol_metrics(
         metrics["return_3d"] = _window_return(close, 3)
         metrics["return_5d"] = _window_return(close, 5)
         metrics["return_20d"] = _window_return(close, 20)
+        metrics["return_60d"] = _window_return(close, 60)
+        metrics["return_120d"] = _window_return(close, 120)
+        metrics["attention_return_5d"] = _window_return_optional(close, 5)
+        metrics["attention_return_20d"] = _window_return_optional(close, 20)
+        metrics["attention_return_60d"] = _window_return_optional(close, 60)
+        metrics["attention_return_120d"] = _window_return_optional(close, 120)
         metrics["has_ma20"] = len(close) >= 20
         metrics["above_ma20"] = bool(len(close) >= 20 and close[-1] > _mean(close[-20:]))
         metrics["data_coverage"] = clamp(len(close) / 21.0)
+        metrics["attention_history_coverage"] = clamp(len(close) / 121.0)
         metrics["fake_breakout_proxy"] = _fake_breakout_proxy(close)
     else:
         metrics["return_3d"] = _state_float(state, "return_3d", 0.0)
         metrics["return_5d"] = _state_float(state, "return_5d", 0.0)
         metrics["return_20d"] = _state_float(state, "return_20d", 0.0)
+        metrics["return_60d"] = _state_float(state, "return_60d", 0.0)
+        metrics["return_120d"] = _state_float(state, "return_120d", 0.0)
+        metrics["attention_return_5d"] = _state_optional_float(state, "return_5d")
+        metrics["attention_return_20d"] = _state_optional_float(state, "return_20d")
+        metrics["attention_return_60d"] = _state_optional_float(state, "return_60d")
+        metrics["attention_return_120d"] = _state_optional_float(state, "return_120d")
 
     if volume:
         tail = volume[-20:]
@@ -360,6 +473,10 @@ def _symbol_metrics(
         metrics["latest_close"] = close[-1]
     if high:
         metrics["latest_high"] = high[-1]
+    if close and len(high) >= 120:
+        metrics["new_high_120d"] = bool(
+            close[-1] >= max(high[-120:]) * (1.0 - 0.001)
+        )
     if volume:
         metrics["latest_volume"] = volume[-1]
     amount, approximated = _latest_amount(close=close, volume=volume, amount=market_data["amount"])
@@ -430,6 +547,12 @@ def _neutral_symbol_metrics() -> dict[str, Any]:
         "return_3d": 0.0,
         "return_5d": 0.0,
         "return_20d": 0.0,
+        "return_60d": 0.0,
+        "return_120d": 0.0,
+        "attention_return_5d": None,
+        "attention_return_20d": None,
+        "attention_return_60d": None,
+        "attention_return_120d": None,
         "above_ma20": False,
         "has_ma20": False,
         "volume_ratio": None,
@@ -437,6 +560,8 @@ def _neutral_symbol_metrics() -> dict[str, Any]:
         "fake_breakout_proxy": 0.0,
         "fake_breakout_risk": 0.0,
         "data_coverage": 0.0,
+        "attention_history_coverage": 0.0,
+        "new_high_120d": None,
         "latest_close": 0.0,
         "latest_high": 0.0,
         "latest_volume": 0.0,
@@ -700,6 +825,16 @@ def _window_return(values: list[float], lookback: int) -> float:
     return end / start - 1.0
 
 
+def _window_return_optional(values: list[float], lookback: int) -> float | None:
+    if len(values) <= lookback:
+        return None
+    start = values[-1 - lookback]
+    end = values[-1]
+    if not math.isfinite(start) or not math.isfinite(end) or start <= 0:
+        return None
+    return end / start - 1.0
+
+
 def _score_theme(
     *,
     theme_id: str,
@@ -719,6 +854,8 @@ def _score_theme(
     member_count = len(members)
     return_20d = _median_metric(members, "return_20d")
     return_5d = _median_metric(members, "return_5d")
+    return_60d = _median_metric(members, "return_60d")
+    return_120d = _median_metric(members, "return_120d")
     momentum = clamp((return_20d + 0.10) / 0.30)
     volume_confirmation = _theme_volume_confirmation(members)
     acceleration_base = clamp(((return_5d - return_20d / 4.0) + 0.03) / 0.12)
@@ -752,11 +889,16 @@ def _score_theme(
     )
     score = clamp(raw, 0.0, 1.0) * 100.0
     data_coverage = _median_metric(members, "data_coverage")
+    attention_history_coverage = _median_metric(
+        members,
+        "attention_history_coverage",
+    )
     confidence = clamp(
-        0.25
-        + min(member_count, 20) / 20.0 * 0.30
-        + breadth * 0.20
-        + min(data_coverage, 1.0) * 0.20
+        0.20
+        + min(member_count, 20) / 20.0 * 0.25
+        + breadth * 0.15
+        + min(data_coverage, 1.0) * 0.15
+        + min(attention_history_coverage, 1.0) * 0.15
         - fake_breakout_risk * 0.10,
         0.0,
         0.90,
@@ -781,12 +923,66 @@ def _score_theme(
         limitup_ratio=crowding["theme_limitup_ratio"],
     )
     top_symbols = _top_symbols(members)
+    attention_5d = _normalized_attention_return(
+        _median_optional_metric(members, "attention_return_5d"),
+        floor=-0.03,
+        span=0.12,
+    )
+    attention_20d = _normalized_attention_return(
+        _median_optional_metric(members, "attention_return_20d"),
+        floor=-0.05,
+        span=0.25,
+    )
+    attention_60d = _normalized_attention_return(
+        _median_optional_metric(members, "attention_return_60d"),
+        floor=-0.08,
+        span=0.40,
+    )
+    attention_120d = _normalized_attention_return(
+        _median_optional_metric(members, "attention_return_120d"),
+        floor=-0.10,
+        span=0.60,
+    )
+    attention_turnover_share = _theme_turnover_share(
+        members,
+        universe_amount=universe_amount,
+    )
+    new_high_rate = _optional_boolean_rate(members, "new_high_120d")
+    leader_persistence = _leader_persistence(members)
+    attention = _weighted_optional_score(
+        (
+            (attention_5d, 0.12),
+            (attention_20d, 0.18),
+            (attention_60d, 0.18),
+            (attention_120d, 0.17),
+            (
+                clamp(attention_turnover_share / 0.10)
+                if attention_turnover_share is not None
+                else None,
+                0.10,
+            ),
+            (breadth, 0.10),
+            (new_high_rate, 0.075),
+            (leader_persistence, 0.075),
+        )
+    )
+    market_confirmation = _weighted_optional_score(
+        (
+            (breadth, 0.30),
+            (momentum, 0.20),
+            (volume_confirmation, 0.15),
+            (acceleration, 0.15),
+            (new_high_rate, 0.10),
+            (leader_persistence, 0.10),
+        )
+    )
 
     evidence = [
         f"member_count={member_count}",
         f"momentum={momentum:.3f}",
         f"breadth={breadth:.3f}",
         f"volume_confirmation={volume_confirmation:.3f}",
+        f"attention_history_coverage={attention_history_coverage:.3f}",
         f"crowding_risk={crowding['crowding_risk']:.3f}",
     ]
     return ThemeScore(
@@ -808,6 +1004,17 @@ def _score_theme(
         top_symbols=top_symbols,
         risk_flags=risk_flags,
         evidence=evidence,
+        attention=attention,
+        attention_5d=attention_5d,
+        attention_20d=attention_20d,
+        attention_60d=attention_60d,
+        attention_120d=attention_120d,
+        attention_turnover_share=attention_turnover_share,
+        new_high_rate=new_high_rate,
+        leader_persistence=leader_persistence,
+        attention_history_coverage=attention_history_coverage,
+        market_confirmation=market_confirmation,
+        evidence_confidence=confidence,
         theme_turnover_share=crowding["theme_turnover_share"],
         turnover_share_sma10=crowding["turnover_share_sma10"],
         turnover_share_stretch=crowding["turnover_share_stretch"],
@@ -822,6 +1029,9 @@ def _score_theme(
         metadata={
             "theme_return_5d": return_5d,
             "theme_return_20d": return_20d,
+            "theme_return_60d": return_60d,
+            "theme_return_120d": return_120d,
+            "attention_horizons": [5, 20, 60, 120],
             "crowding_weight_model": dict(_THEME_CROWDING_WEIGHTS),
         },
     )
@@ -855,6 +1065,11 @@ def _apply_smoothing_to_theme_score(
     smoothing = smooth_theme_series(score_history, config)
     theme_score.raw_score = float(theme_score.score)
     theme_score.smoothed_score = smoothing.smoothed_score
+    theme_score.effective_score = (
+        float(smoothing.smoothed_score)
+        if smoothing.smoothed_score is not None
+        else float(theme_score.score)
+    )
     theme_score.heat_10d = smoothing.heat_10d
     theme_score.heat_delta_5d = smoothing.heat_delta_5d
     theme_score.persistence_count = int(smoothing.persistence_count)
@@ -1302,6 +1517,102 @@ def _median_metric(members: list[dict[str, Any]], key: str) -> float:
     return float(median(values)) if values else 0.0
 
 
+def _median_optional_metric(
+    members: list[dict[str, Any]],
+    key: str,
+) -> float | None:
+    values = [
+        _safe_float(member.get(key), math.nan)
+        for member in members
+        if member.get(key) is not None
+    ]
+    finite = [value for value in values if math.isfinite(value)]
+    return float(median(finite)) if finite else None
+
+
+def _normalized_attention_return(
+    value: float | None,
+    *,
+    floor: float,
+    span: float,
+) -> float | None:
+    if value is None or span <= 0:
+        return None
+    return clamp((value - floor) / span)
+
+
+def _theme_turnover_share(
+    members: list[dict[str, Any]],
+    *,
+    universe_amount: float,
+) -> float | None:
+    denominator = _safe_float(universe_amount, 0.0)
+    if denominator <= 0.0:
+        return None
+    member_amount = sum(
+        max(0.0, _safe_float(member.get("latest_amount"), 0.0))
+        for member in members
+    )
+    return clamp(member_amount / denominator)
+
+
+def _optional_boolean_rate(
+    members: list[dict[str, Any]],
+    key: str,
+) -> float | None:
+    values = [member.get(key) for member in members if member.get(key) is not None]
+    if not values:
+        return None
+    return clamp(sum(1 for value in values if bool(value)) / len(values))
+
+
+def _leader_persistence(members: list[dict[str, Any]]) -> float | None:
+    eligible = [
+        member
+        for member in members
+        if member.get("attention_return_5d") is not None
+        and member.get("attention_return_20d") is not None
+    ]
+    if len(eligible) < 3:
+        return None
+    leader_count = max(1, int(math.ceil(len(eligible) * 0.20)))
+    leaders_5d = {
+        str(member.get("symbol") or "")
+        for member in sorted(
+            eligible,
+            key=lambda item: (
+                -_safe_float(item.get("attention_return_5d"), 0.0),
+                str(item.get("symbol") or ""),
+            ),
+        )[:leader_count]
+    }
+    leaders_20d = {
+        str(member.get("symbol") or "")
+        for member in sorted(
+            eligible,
+            key=lambda item: (
+                -_safe_float(item.get("attention_return_20d"), 0.0),
+                str(item.get("symbol") or ""),
+            ),
+        )[:leader_count]
+    }
+    return clamp(len(leaders_5d.intersection(leaders_20d)) / leader_count)
+
+
+def _weighted_optional_score(
+    components: Sequence[tuple[float | None, float]],
+) -> float:
+    available = [
+        (clamp(value), max(0.0, float(weight)))
+        for value, weight in components
+        if value is not None and math.isfinite(_safe_float(value, math.nan))
+    ]
+    denominator = sum(weight for _, weight in available)
+    if denominator <= 0.0:
+        return 0.0
+    return clamp(sum(value * weight for value, weight in available) / denominator)
+
+
 def _theme_volume_confirmation(members: list[dict[str, Any]]) -> float:
     ratios = [
         _safe_float(member.get("volume_ratio"), math.nan)
@@ -1447,3 +1758,10 @@ def _state_float(state: Mapping[str, Any], key: str, default: float) -> float:
     if not isinstance(state, Mapping):
         return default
     return _safe_float(state.get(key), default)
+
+
+def _state_optional_float(state: Mapping[str, Any], key: str) -> float | None:
+    if not isinstance(state, Mapping) or state.get(key) is None:
+        return None
+    numeric = _safe_float(state.get(key), math.nan)
+    return numeric if math.isfinite(numeric) else None

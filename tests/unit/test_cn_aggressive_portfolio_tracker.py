@@ -605,6 +605,85 @@ def test_switch_plan_rejects_price_strength_candidate_without_candidate_dag():
     assert switch_plan.empty
 
 
+def test_switch_plan_blocks_hold_negative_alpha_and_requires_manual_override():
+    holdings_review = pd.DataFrame(
+        [{
+            "symbol": "002008.SZ",
+            "name": "大族激光",
+            "position_role": "降级观察",
+            "recommended_action": "减仓待确认",
+            "market_weight": 0.20,
+            "nav_weight": 0.02,
+        }]
+    )
+    base = {
+        "symbol": "600988.SH",
+        "name": "赤峰黄金",
+        "theme_label": "黄金",
+        "candidate_source": "v13_full_market_dag",
+        "candidate_dag_four_branch_complete": True,
+        "portfolio_target_weight": 0.05,
+        "posterior_action_score": 0.4,
+        "posterior_confidence": 0.6,
+        "posterior_expected_alpha": -0.01,
+        "shortlist_action": "hold",
+        "candidate_quote_status": "fresh",
+        "bayesian_rank": 1,
+        "evidence_quality": "高",
+    }
+
+    blocked = tracker._build_switch_plan(
+        holdings_review=holdings_review,
+        candidate_pool=pd.DataFrame([base]),
+        completeness_passed=True,
+        decision_data_sufficient=True,
+    )
+    assert blocked.iloc[0]["action"] == "watch_only"
+    assert bool(blocked.iloc[0]["actionable"]) is False
+
+    approved_candidate = {**base, "shortlist_action": "buy", "posterior_expected_alpha": 0.02}
+    pending = tracker._build_switch_plan(
+        holdings_review=holdings_review,
+        candidate_pool=pd.DataFrame([approved_candidate]),
+        completeness_passed=True,
+        decision_data_sufficient=True,
+    )
+    assert pending.iloc[0]["action"] == "pending_manual_override"
+    assert bool(pending.iloc[0]["new_position_eligible"]) is True
+    assert bool(pending.iloc[0]["actionable"]) is False
+
+
+def test_candidate_quote_gate_is_per_symbol_and_fail_closed():
+    candidates = pd.DataFrame(
+        [{
+            "symbol": "600988.SH",
+            "shortlist_action": "buy",
+            "posterior_expected_alpha": 0.02,
+        }]
+    )
+    gated = tracker._attach_candidate_quote_gate(
+        candidates,
+        quote_payload={},
+        analysis_trade_date="20260710",
+    )
+    assert gated.iloc[0]["candidate_quote_status"] == "missing"
+    assert bool(gated.iloc[0]["new_position_eligible"]) is False
+    assert "candidate_quote_not_fresh" in gated.iloc[0]["eligibility_blockers"]
+
+    fresh = tracker._attach_candidate_quote_gate(
+        candidates,
+        quote_payload={
+            "sh600988": {
+                "current": 31.2,
+                "time": "20260710161500",
+            }
+        },
+        analysis_trade_date="20260708",
+    )
+    assert fresh.iloc[0]["candidate_quote_status"] == "fresh"
+    assert bool(fresh.iloc[0]["new_position_eligible"]) is True
+
+
 def test_candidate_pool_from_v13_dag_requires_candidate_level_four_branches():
     complete_branches = {
         branch: {"branch_name": branch, "final_score": 0.8, "final_confidence": 0.7}
@@ -1110,6 +1189,10 @@ def test_trailing_take_profit_review_sets_explicit_watch_from_entry_date():
     assert row["trailing_profit_peak_price"] == pytest.approx(170.0)
     assert row["profit_giveback_ratio"] == pytest.approx((70.0 - 50.0) / 70.0)
     assert row["trailing_stop_price"] == pytest.approx(156.0)
+    assert row["trailing_profit_reduce_price_20"] == pytest.approx(156.0)
+    assert row["trailing_profit_reduce_price_35"] == pytest.approx(145.5)
+    assert row["stop_loss_status"] == "not_triggered_above_stage_stop"
+    assert row["history_record_count"] == 3
     assert tracker._position_action(row) == "移动止盈观察"
 
 
@@ -1193,11 +1276,42 @@ def test_trailing_take_profit_review_missing_entry_date_is_unanchored_watch_not_
     )
     row = reviewed.iloc[0]
 
-    assert row["trailing_take_profit_status"] == "hold_with_trailing_stop"
+    assert row["trailing_take_profit_status"] == "unconfirmed"
     assert bool(row["trailing_take_profit_confirmed"]) is False
-    assert "unanchored" in row["trailing_take_profit_basis"]
-    assert "缺少 ledger 买入日期" in row["trailing_take_profit_reason"]
-    assert tracker._position_action(row) == "移动止盈观察"
+    assert "missing_entry_anchor" in row["trailing_take_profit_basis"]
+    assert "建仓锚点" in row["trailing_take_profit_reason"]
+    assert tracker._position_action(row) == "继续持有"
+
+
+def test_trailing_take_profit_nan_entry_date_does_not_confirm_carried_peak():
+    holdings_review = pd.DataFrame(
+        [{
+            "symbol": "000001.SZ",
+            "shares_before": 100,
+            "buy_price": 100.0,
+            "current_price": 120.0,
+            "stage_stop_price": 105.0,
+            "score_full_market": 0.8,
+            "market_weight": 0.1,
+            "realtime_quote_valid": True,
+            "manual_entry_trade_date": float("nan"),
+            "trailing_profit_peak_price": 180.0,
+            "trailing_profit_peak_trade_date": "20250101",
+            "trailing_take_profit_basis": "manual_ledger_entry_date",
+        }]
+    )
+
+    reviewed = tracker._apply_trailing_take_profit_review(
+        holdings_review,
+        reader=SimpleNamespace(),
+        analysis_trade_date="20260120",
+    )
+
+    row = reviewed.iloc[0]
+    assert row["manual_entry_trade_date"] == ""
+    assert bool(row["trailing_take_profit_confirmed"]) is False
+    assert row["trailing_take_profit_status"] == "unconfirmed"
+    assert "missing_entry_anchor" in row["trailing_take_profit_basis"]
 
 
 def test_trailing_take_profit_review_unconfirmed_when_peak_history_unavailable():
@@ -2501,7 +2615,8 @@ def test_legacy_overweight_holding_warning_only_does_not_force_sell():
                 "stage_stop_price": 30.0,
                 "score_full_market": 0.90,
                 "today_change_pct": 2.0,
-                "market_weight": 0.22,
+                    "market_weight": 0.22,
+                    "nav_weight": 0.22,
             }
         ]
     )

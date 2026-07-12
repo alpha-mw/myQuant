@@ -259,6 +259,49 @@ def _validate_market_metrics_frame(metrics: pd.DataFrame) -> list[str]:
     )
 
 
+def _market_metrics_validation_meta(
+    metrics: pd.DataFrame,
+    *,
+    expected_symbol_count: int,
+) -> dict[str, Any]:
+    missing_columns = _validate_market_metrics_frame(metrics)
+    row_count = int(len(metrics)) if isinstance(metrics, pd.DataFrame) else 0
+    return {
+        "schema_valid": not missing_columns,
+        "missing_columns": missing_columns,
+        "data_coverage_valid": row_count > 0,
+        "row_count": row_count,
+        "expected_symbol_count": int(expected_symbol_count),
+        "coverage_ratio": (
+            min(1.0, row_count / expected_symbol_count)
+            if expected_symbol_count > 0
+            else 0.0
+        ),
+    }
+
+
+def _require_valid_market_metrics_frame(
+    metrics: pd.DataFrame,
+    *,
+    expected_symbol_count: int,
+) -> dict[str, Any]:
+    validation = _market_metrics_validation_meta(
+        metrics,
+        expected_symbol_count=expected_symbol_count,
+    )
+    blockers: list[str] = []
+    if not validation["schema_valid"]:
+        blockers.append(
+            "missing required columns: "
+            + ", ".join(validation["missing_columns"])
+        )
+    if not validation["data_coverage_valid"]:
+        blockers.append("full-market metrics contain no covered symbols")
+    if blockers:
+        raise RuntimeError("; ".join(blockers))
+    return validation
+
+
 def _normalize_market_metrics_frame(metrics: pd.DataFrame) -> pd.DataFrame:
     if isinstance(metrics, pd.DataFrame) and metrics.empty:
         return metrics.reindex(columns=MARKET_METRICS_OUTPUT_COLUMNS)
@@ -295,7 +338,11 @@ def _load_cached_market_metrics_bundle(
         metrics = pd.read_parquet(metrics_path)
     except Exception:
         return None
-    if _validate_market_metrics_frame(metrics):
+    validation = _market_metrics_validation_meta(
+        metrics,
+        expected_symbol_count=int(meta.get("expected_symbol_count", 0) or 0),
+    )
+    if not validation["schema_valid"] or not validation["data_coverage_valid"]:
         return None
     breadth_payload = dict(meta.get("breadth", {}) or {})
     if int(meta.get("row_count", len(metrics)) or 0) != len(metrics):
@@ -309,6 +356,8 @@ def _load_cached_market_metrics_bundle(
         "breadth_path": str(breadth_path),
         "row_count": int(len(metrics)),
         "compute_elapsed_sec": 0.0,
+        "schema_validation": validation,
+        "data_coverage": validation,
     }
     return MarketMetricsBundle(
         full_metrics=metrics,
@@ -326,8 +375,13 @@ def _write_market_metrics_cache(
     latest_trade_date: str,
     components_fingerprint: str,
     compute_elapsed_sec: float,
+    expected_symbol_count: int,
 ) -> dict[str, Any]:
     full_metrics = _normalize_market_metrics_frame(full_metrics)
+    validation = _require_valid_market_metrics_frame(
+        full_metrics,
+        expected_symbol_count=expected_symbol_count,
+    )
     cache_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = cache_dir / "full_metrics.parquet"
     breadth_path = cache_dir / "breadth.json"
@@ -342,6 +396,9 @@ def _write_market_metrics_cache(
         "full_metrics_path": str(metrics_path),
         "breadth_path": str(breadth_path),
         "row_count": int(len(full_metrics)),
+        "expected_symbol_count": int(expected_symbol_count),
+        "schema_validation": validation,
+        "data_coverage": validation,
         "compute_elapsed_sec": round(float(compute_elapsed_sec), 3),
         "breadth": _jsonable(breadth),
     }
@@ -544,7 +601,6 @@ def _compute_market_metrics_and_breadth(
                 end_date=latest_trade_date,
                 columns=[
                     "ts_code",
-                    "symbol",
                     "trade_date",
                     "open",
                     "high",
@@ -609,6 +665,14 @@ def load_or_compute_market_metrics_bundle(
         components_fingerprint=fingerprint,
     )
     compute = compute_fn or _compute_market_metrics_and_breadth
+    expected_symbol_count = len(
+        {
+            str(symbol).strip().upper()
+            for category in MARKET_METRICS_CATEGORIES
+            for symbol in list(components.get(category, []) or [])
+            if str(symbol).strip()
+        }
+    )
     if skip_prewarm:
         started = time.time()
         computed = compute(
@@ -623,6 +687,10 @@ def load_or_compute_market_metrics_bundle(
         else:
             full_metrics, breadth = computed
         full_metrics = _normalize_market_metrics_frame(full_metrics)
+        validation = _require_valid_market_metrics_frame(
+            full_metrics,
+            expected_symbol_count=expected_symbol_count,
+        )
         return MarketMetricsBundle(
             full_metrics=full_metrics,
             breadth=breadth,
@@ -632,6 +700,9 @@ def load_or_compute_market_metrics_bundle(
                 "cache_hit": False,
                 "cache_dir": str(cache_dir),
                 "row_count": int(len(full_metrics)),
+                "expected_symbol_count": expected_symbol_count,
+                "schema_validation": validation,
+                "data_coverage": validation,
                 "compute_elapsed_sec": round(time.time() - started, 3),
                 "snapshot_id": snapshot_id,
                 "analysis_trade_date": str(latest_trade_date),
@@ -661,6 +732,10 @@ def load_or_compute_market_metrics_bundle(
     else:
         full_metrics, breadth = computed
     full_metrics = _normalize_market_metrics_frame(full_metrics)
+    _require_valid_market_metrics_frame(
+        full_metrics,
+        expected_symbol_count=expected_symbol_count,
+    )
     cache_meta = _write_market_metrics_cache(
         cache_dir=cache_dir,
         full_metrics=full_metrics,
@@ -669,6 +744,7 @@ def load_or_compute_market_metrics_bundle(
         latest_trade_date=latest_trade_date,
         components_fingerprint=fingerprint,
         compute_elapsed_sec=time.time() - started,
+        expected_symbol_count=expected_symbol_count,
     )
     return MarketMetricsBundle(
         full_metrics=full_metrics,
@@ -699,6 +775,7 @@ __all__ = [
     "_market_metrics_cache_dir",
     "_metric_return",
     "_normalize_market_metrics_frame",
+    "_market_metrics_validation_meta",
     "_price_series",
     "_read_frame_from_result",
     "_reader_snapshot_payload",

@@ -11,7 +11,11 @@ from quant_investor.market.branch_readiness import (
     STATUS_WARN,
     assess_branch_data_readiness,
     assess_quant_readiness,
+    load_fundamental_records,
     write_branch_readiness_report,
+)
+from quant_investor.market.fundamental_generation import (
+    publish_fundamental_generation,
 )
 from quant_investor.market.intelligence_mart import build_intelligence_daily, write_intelligence_mart
 from quant_investor.market.macro_mart import write_macro_mart
@@ -239,6 +243,65 @@ def test_branch_readiness_loads_default_canonical_parquet(tmp_path, monkeypatch)
     assert report.readiness["intelligence"].status == STATUS_PASS
     assert report.readiness["macro"].status == STATUS_PASS
     assert report.readiness["fundamental"].metadata["manifest"]["storage_backend"] == "parquet_canonical"
+
+
+def test_branch_readiness_prefers_generation_pointer_over_stale_legacy_table(
+    tmp_path,
+):
+    fundamental_root = tmp_path / "cn"
+    legacy_root = fundamental_root / "fundamental_daily"
+    _write_fundamental_daily(legacy_root)
+    generation_daily = pd.read_parquet(legacy_root / "part.parquet").assign(
+        fin_roe=0.27,
+    )
+    publish_fundamental_generation(
+        root=fundamental_root,
+        run_id="new-generation",
+        tables={
+            "fundamental_period": pd.DataFrame(columns=["ts_code"]),
+            "fundamental_daily": generation_daily,
+            "fundamental_quarantine": pd.DataFrame(columns=["ts_code"]),
+        },
+        metadata={
+            "run_id": "new-generation",
+            "storage_backend": "parquet_canonical_generation",
+        },
+    )
+
+    records, manifest = load_fundamental_records(
+        ["000001.SZ"],
+        as_of="20240510",
+        root=fundamental_root,
+    )
+
+    assert records["000001.SZ"]["fin_roe"] == 0.27
+    assert manifest["generation_id"] == "new-generation"
+    assert manifest["storage_backend"] == "parquet_canonical_generation"
+
+
+def test_fundamental_branch_keeps_complete_symbol_when_global_scope_is_partial():
+    records = {
+        "000001.SZ": {
+            field: 0.1
+            for field in branch_readiness.FUNDAMENTAL_REQUIRED_FIELDS
+        }
+    }
+
+    readiness = branch_readiness._assess_symbol_records(
+        branch="fundamental",
+        symbols=["000001.SZ"],
+        records=records,
+        required_fields=branch_readiness.FUNDAMENTAL_REQUIRED_FIELDS,
+        manifest={
+            "provider_status": "canonical_raw_offline_rebuild",
+            "source_priority": "tushare_primary",
+            "gate2_passed": False,
+        },
+        as_of="20240510",
+    )
+
+    assert readiness.status == STATUS_PASS
+    assert readiness.affected_symbols == []
 
 
 def test_branch_readiness_ignores_legacy_csv_marts(tmp_path, monkeypatch):

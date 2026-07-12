@@ -263,6 +263,17 @@ def test_single_mainline_one_symbol_mock_run_includes_version_fields(monkeypatch
         "funnel_output": SimpleNamespace(candidates=["000001.SZ"], excluded_symbols={}, funnel_metadata={}),
     }
     monkeypatch.setattr(mainline_module, "_execute_market_dag", lambda **kwargs: dag_artifacts)
+    monkeypatch.setattr(
+        mainline_module,
+        "build_market_data_snapshot",
+        lambda **_kwargs: {
+            "market": "CN",
+            "universe_key": "full_a",
+            "summary_text": "isolated public-package fixture",
+            "missing_requested_symbols": [],
+            "unreadable_requested_symbols": [],
+        },
+    )
 
     result = quant_investor.QuantInvestor(
         stock_pool=["000001.SZ"],
