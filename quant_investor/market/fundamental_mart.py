@@ -11,7 +11,7 @@ import json
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -19,6 +19,11 @@ import numpy as np
 import pandas as pd
 
 from quant_investor.factors.pit_fundamentals import normalize_ts_code
+from quant_investor.market.fundamental_generation import (
+    FUNDAMENTAL_TABLES,
+    publish_fundamental_generation,
+    resolve_fundamental_table_path,
+)
 from quant_investor.market.market_data_reader import MarketDataReader
 
 DEFAULT_FUNDAMENTAL_ROOT = Path("data/parquet/cn")
@@ -26,6 +31,7 @@ DEFAULT_RAW_SNAPSHOT_ROOT = Path("data/cn_market_full/_snapshots/fundamental")
 DEFAULT_READINESS_ROOT = Path("reports/fundamental_readiness")
 DEFAULT_MARKET_DATA_ROOT = Path("data")
 DEFAULT_METADATA_ROOT = Path("data/metadata")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_UNIVERSES = ("hs300", "zz500", "zz1000")
 FULL_A_UNIVERSE_KEYS = {"full_a", "full_market", "all_a", "all", "full"}
 FULL_A_PHYSICAL_DIRECTORIES = ("hs300", "zz500", "zz1000", "other")
@@ -71,6 +77,75 @@ class FundamentalMartArtifacts:
     readiness_csv_path: Path
 
 
+class FundamentalReadinessError(RuntimeError):
+    """Raised when an operational mart refresh fails its publication gate."""
+
+    def __init__(self, readiness: Mapping[str, Any]):
+        self.readiness = dict(readiness)
+        blockers = ",".join(str(item) for item in readiness.get("blockers", []))
+        super().__init__(f"fundamental readiness gate failed: {blockers or 'unknown'}")
+
+
+def _provider_source_priority(
+    source: str,
+    provider_manifest: Mapping[str, Any] | None,
+) -> str:
+    manifest = dict(provider_manifest or {})
+    explicit = str(manifest.get("source_priority") or "").strip()
+    source_is_tushare = "tushare" in str(source or "").lower()
+    if explicit == "tushare_primary":
+        if source_is_tushare or _has_verified_tushare_provenance(manifest):
+            return explicit
+        raise ValueError(
+            "tushare_primary requires live Tushare source or verified local evidence"
+        )
+    if explicit:
+        return explicit
+    if source_is_tushare:
+        return "tushare_primary"
+    return "manual_offline_snapshot"
+
+
+def _has_verified_tushare_provenance(
+    provider_manifest: Mapping[str, Any],
+) -> bool:
+    if (
+        str(provider_manifest.get("source_provenance") or "").strip()
+        != "verified_local_tushare_refresh_manifests"
+    ):
+        return False
+    evidence = provider_manifest.get("provenance_evidence", [])
+    evidence_paths = [evidence] if isinstance(evidence, str) else list(evidence or [])
+    for value in evidence_paths:
+        path = Path(str(value or "")).expanduser()
+        if not path.is_absolute():
+            path = PROJECT_ROOT / path
+        if not path.is_file() or path.suffix.lower() != ".json":
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        metadata = dict(payload.get("metadata", {}) or {})
+        evidence_manifest = dict(
+            payload.get("provider_manifest", {})
+            or metadata.get("provider_manifest", {})
+            or {}
+        )
+        provider = str(evidence_manifest.get("provider") or "").lower()
+        provider_status = str(
+            payload.get("provider_status")
+            or metadata.get("provider_status")
+            or evidence_manifest.get("provider_status")
+            or ""
+        ).lower()
+        if provider == "tushare" or "tushare" in provider_status:
+            return True
+    return False
+
+
 def _resolve_data_base(data_root: str | Path) -> Path:
     root = Path(data_root).expanduser()
     if root.name in {"fundamental_daily", "fundamental_period", "fundamental_quarantine"}:
@@ -79,7 +154,240 @@ def _resolve_data_base(data_root: str | Path) -> Path:
 
 
 def _fundamental_table_path(data_root: str | Path, table_name: str) -> Path:
-    return _resolve_data_base(data_root) / table_name / "part.parquet"
+    return resolve_fundamental_table_path(
+        _resolve_data_base(data_root),
+        table_name,
+    )
+
+
+def _read_existing_fundamental_table(
+    data_root: str | Path,
+    table_name: str,
+) -> pd.DataFrame:
+    path = resolve_fundamental_table_path(
+        _resolve_data_base(data_root),
+        table_name,
+    )
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        return pd.read_parquet(path)
+    except Exception as exc:
+        raise ValueError(
+            f"existing canonical fundamental table is unreadable: {path}: {exc}"
+        ) from exc
+
+
+def _merge_key_values(series: pd.Series, field_name: str) -> pd.Series:
+    if field_name == "ts_code":
+        return series.map(normalize_ts_code)
+    if field_name == "end_date":
+        return series.map(_period_text)
+    if field_name.endswith("date"):
+        return series.map(_date_text)
+    return series.astype(str).str.strip()
+
+
+def _align_incoming_to_existing_schema(
+    existing: pd.DataFrame,
+    incoming: pd.DataFrame,
+) -> pd.DataFrame:
+    aligned = incoming.copy()
+    for column in existing.columns.intersection(aligned.columns):
+        existing_series = existing[column]
+        if isinstance(existing_series.dtype, pd.StringDtype):
+            aligned[column] = aligned[column].astype("string")
+        elif pd.api.types.is_integer_dtype(existing_series.dtype):
+            aligned[column] = pd.to_numeric(
+                aligned[column],
+                errors="raise",
+            ).astype(existing_series.dtype)
+        elif pd.api.types.is_float_dtype(existing_series.dtype):
+            aligned[column] = pd.to_numeric(
+                aligned[column],
+                errors="coerce",
+            ).astype(existing_series.dtype)
+        elif pd.api.types.is_datetime64_any_dtype(existing_series.dtype):
+            aligned[column] = pd.to_datetime(
+                aligned[column],
+                errors="coerce",
+                utc=getattr(existing_series.dt, "tz", None) is not None,
+            )
+        elif existing_series.dtype == object:
+            sample = existing_series.dropna()
+            if not sample.empty and isinstance(sample.iloc[0], date):
+                aligned[column] = pd.to_datetime(
+                    aligned[column],
+                    errors="coerce",
+                ).dt.date
+    return aligned
+
+
+def _merge_fundamental_table(
+    existing: pd.DataFrame,
+    incoming: pd.DataFrame,
+    *,
+    key_fields: Sequence[str],
+    quality_fields: Sequence[str],
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    if existing.empty and incoming.empty:
+        return incoming.copy(), {
+            "existing_rows": 0,
+            "incoming_rows": 0,
+            "merged_rows": 0,
+            "retained_existing_rows": 0,
+            "accepted_incoming_rows": 0,
+        }
+    if incoming.empty:
+        return existing.copy(), {
+            "existing_rows": int(len(existing)),
+            "incoming_rows": 0,
+            "merged_rows": int(len(existing)),
+            "retained_existing_rows": int(len(existing)),
+            "accepted_incoming_rows": 0,
+            "merge_path": "retain_existing_no_incoming",
+        }
+    if existing.empty:
+        return incoming.copy(), {
+            "existing_rows": 0,
+            "incoming_rows": int(len(incoming)),
+            "merged_rows": int(len(incoming)),
+            "retained_existing_rows": 0,
+            "accepted_incoming_rows": int(len(incoming)),
+            "merge_path": "accept_incoming_no_existing",
+        }
+    missing_keys = [
+        field
+        for field in key_fields
+        if field not in existing.columns or field not in incoming.columns
+    ]
+    if missing_keys and not existing.empty and not incoming.empty:
+        raise ValueError(
+            "fundamental merge missing key columns: "
+            + ",".join(missing_keys)
+        )
+    if (
+        not existing.empty
+        and not incoming.empty
+        and "ts_code" in key_fields
+        and not existing.duplicated(subset=list(key_fields)).any()
+        and not incoming.duplicated(subset=list(key_fields)).any()
+    ):
+        existing_symbols = {
+            normalize_ts_code(value)
+            for value in existing["ts_code"].dropna().drop_duplicates()
+        }
+        incoming_symbols = {
+            normalize_ts_code(value)
+            for value in incoming["ts_code"].dropna().drop_duplicates()
+        }
+        if existing_symbols.isdisjoint(incoming_symbols):
+            incoming_aligned = _align_incoming_to_existing_schema(
+                existing,
+                incoming,
+            )
+            columns = list(
+                dict.fromkeys([*existing.columns, *incoming_aligned.columns])
+            )
+            output = pd.concat(
+                [
+                    existing.reindex(columns=columns),
+                    incoming_aligned.reindex(columns=columns),
+                ],
+                ignore_index=True,
+                sort=False,
+            )
+            return output, {
+                "existing_rows": int(len(existing)),
+                "incoming_rows": int(len(incoming_aligned)),
+                "merged_rows": int(len(output)),
+                "retained_existing_rows": int(len(existing)),
+                "accepted_incoming_rows": int(len(incoming_aligned)),
+                "merge_path": "disjoint_symbol_append",
+            }
+    frames: list[pd.DataFrame] = []
+    columns = list(dict.fromkeys([*existing.columns, *incoming.columns]))
+    for origin, frame in ((0, existing), (1, incoming)):
+        if frame.empty:
+            continue
+        missing_keys = [field for field in key_fields if field not in frame.columns]
+        if missing_keys:
+            raise ValueError(
+                "fundamental merge missing key columns: "
+                + ",".join(missing_keys)
+            )
+        working = frame.reindex(columns=columns).copy()
+        for index, field in enumerate(key_fields):
+            key_column = f"_merge_key_{index}"
+            working[key_column] = _merge_key_values(working[field], field)
+            if working[key_column].astype(str).str.strip().eq("").any():
+                raise ValueError(
+                    f"fundamental merge has empty key value: {field}"
+                )
+        numeric = pd.DataFrame(index=working.index)
+        for field in quality_fields:
+            numeric[field] = pd.to_numeric(
+                working[field] if field in working.columns else np.nan,
+                errors="coerce",
+            )
+        working["_merge_quality"] = (
+            numeric.replace([np.inf, -np.inf], np.nan).notna().sum(axis=1)
+        )
+        working["_merge_origin"] = origin
+        frames.append(working)
+    combined = pd.concat(frames, ignore_index=True, sort=False)
+    merge_keys = [f"_merge_key_{index}" for index in range(len(key_fields))]
+    combined = combined.sort_values(
+        [*merge_keys, "_merge_quality", "_merge_origin"],
+        kind="mergesort",
+    )
+    winners = combined.drop_duplicates(subset=merge_keys, keep="last")
+    stats = {
+        "existing_rows": int(len(existing)),
+        "incoming_rows": int(len(incoming)),
+        "merged_rows": int(len(winners)),
+        "retained_existing_rows": int((winners["_merge_origin"] == 0).sum()),
+        "accepted_incoming_rows": int((winners["_merge_origin"] == 1).sum()),
+    }
+    output = winners.sort_values(merge_keys, kind="mergesort").drop(
+        columns=[*merge_keys, "_merge_quality", "_merge_origin"]
+    )
+    return output.reset_index(drop=True), stats
+
+
+def _merge_quarantine_table(
+    existing: pd.DataFrame,
+    incoming: pd.DataFrame,
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    incoming_aligned = (
+        _align_incoming_to_existing_schema(existing, incoming)
+        if not existing.empty and not incoming.empty
+        else incoming
+    )
+    columns = list(
+        dict.fromkeys([*existing.columns, *incoming_aligned.columns])
+    )
+    frames = [
+        frame.reindex(columns=columns)
+        for frame in (existing, incoming_aligned)
+        if not frame.empty
+    ]
+    merged = (
+        pd.concat(frames, ignore_index=True, sort=False).drop_duplicates()
+        if frames
+        else incoming.copy()
+    )
+    return merged.reset_index(drop=True), {
+        "existing_rows": int(len(existing)),
+        "incoming_rows": int(len(incoming_aligned)),
+        "merged_rows": int(len(merged)),
+        "retained_existing_rows": int(
+            max(len(merged) - len(incoming_aligned), 0)
+        ),
+        "accepted_incoming_rows": int(
+            min(len(incoming_aligned), len(merged))
+        ),
+    }
 
 
 def _now_utc() -> datetime:
@@ -455,6 +763,7 @@ def _normalize_forecast(frame: pd.DataFrame | None, *, run_id: str, source: str)
     if frame is None or frame.empty:
         return pd.DataFrame(columns=FORECAST_DAILY_COLUMNS)
     working = frame.copy()
+
     def numeric_column(column: str) -> pd.Series:
         if column not in working.columns:
             return pd.Series(np.nan, index=working.index, dtype=float)
@@ -623,6 +932,8 @@ def build_readiness_payload(
     *,
     run_id: str,
     fields: Sequence[str] = DERIVED_DAILY_FIELDS,
+    expected_symbol_count: int = 0,
+    require_expected_symbol_scope: bool = False,
 ) -> dict[str, Any]:
     coverage_rate = _coverage(daily, fields)
     monthly = (
@@ -652,14 +963,33 @@ def build_readiness_payload(
     )
     monthly_min = min(monthly_rates.values()) if monthly_rates else 0.0
     nan_rate = 1.0 - coverage_rate
+    symbols_with_period = int(
+        period["ts_code"].nunique()
+        if not period.empty and "ts_code" in period.columns
+        else 0
+    )
+    expected_scope_available = int(expected_symbol_count) > 0
+    symbol_coverage_rate = (
+        min(symbols_with_period / int(expected_symbol_count), 1.0)
+        if expected_scope_available
+        else (0.0 if require_expected_symbol_scope else 1.0)
+    )
+    symbol_scope_surplus_count = max(
+        symbols_with_period - int(expected_symbol_count),
+        0,
+    )
     gate2_passed = (
         coverage_rate >= 0.60
         and nan_rate <= 0.40
         and monthly_min >= 0.39
         and _bucket_share(daily, "sector", fields) <= 0.80
         and _bucket_share(daily, "size_bucket", fields) <= 0.80
+        and symbol_coverage_rate >= 0.95
+        and (expected_scope_available or not require_expected_symbol_scope)
     )
     blockers: list[str] = []
+    if require_expected_symbol_scope and not expected_scope_available:
+        blockers.append("expected_symbol_scope_missing")
     if coverage_rate < 0.60:
         blockers.append("coverage_rate_below_60pct")
     if nan_rate > 0.40:
@@ -670,6 +1000,8 @@ def build_readiness_payload(
         blockers.append("sector_coverage_concentration_above_80pct")
     if _bucket_share(daily, "size_bucket", fields) > 0.80:
         blockers.append("size_bucket_coverage_concentration_above_80pct")
+    if symbol_coverage_rate < 0.95:
+        blockers.append("symbol_coverage_below_95pct")
     if not period.empty and "availability_date" in period.columns:
         if pd.to_datetime(period["availability_date"], errors="coerce").isna().any():
             blockers.append("invalid_availability_date_in_period")
@@ -680,6 +1012,12 @@ def build_readiness_payload(
         "period_rows": int(len(period)),
         "daily_rows": int(len(daily)),
         "quarantine_rows": int(len(quarantine)),
+        "expected_symbol_count": int(expected_symbol_count),
+        "expected_symbol_scope_required": bool(require_expected_symbol_scope),
+        "expected_symbol_scope_available": bool(expected_scope_available),
+        "symbols_with_period": symbols_with_period,
+        "symbol_coverage_rate": float(symbol_coverage_rate),
+        "symbol_scope_surplus_count": symbol_scope_surplus_count,
         "coverage_rate": coverage_rate,
         "nan_rate": nan_rate,
         "monthly_coverage_min": float(monthly_min),
@@ -717,6 +1055,7 @@ def _render_readiness_md(payload: Mapping[str, Any]) -> str:
             f"- Coverage: {float(payload.get('coverage_rate', 0.0)):.2%}",
             f"- NaN rate: {float(payload.get('nan_rate', 1.0)):.2%}",
             f"- Monthly coverage min: {float(payload.get('monthly_coverage_min', 0.0)):.2%}",
+            f"- Symbol coverage: {float(payload.get('symbol_coverage_rate', 0.0)):.2%}",
             f"- Gate 2 passed: {payload.get('gate2_passed')}",
             f"- Blockers: {', '.join(payload.get('blockers', [])) or '-'}",
             "",
@@ -733,66 +1072,132 @@ def write_fundamental_mart(
     run_id: str | None = None,
     source: str = "tushare",
     provider_manifest: Mapping[str, Any] | None = None,
+    write_raw_snapshots: bool = True,
+    require_expected_symbol_scope: bool = False,
+    publish_on_gate_failure: bool = True,
 ) -> tuple[FundamentalMartArtifacts, dict[str, Any]]:
     run_id = run_id or _run_id()
+    source_priority = _provider_source_priority(source, provider_manifest)
     data_dir = _resolve_data_base(data_root)
     snapshot_dir = Path(raw_snapshot_root).expanduser()
     reports_dir = Path(reports_root).expanduser()
     for path in (data_dir, snapshot_dir, reports_dir):
         path.mkdir(parents=True, exist_ok=True)
 
-    for table in SOURCE_TABLES:
-        frame = raw_tables.get(table)
-        if frame is None:
-            continue
-        raw_dir = snapshot_dir / table
-        raw_dir.mkdir(parents=True, exist_ok=True)
-        frame.to_csv(raw_dir / f"{run_id}.csv", index=False)
+    if write_raw_snapshots:
+        for table in SOURCE_TABLES:
+            frame = raw_tables.get(table)
+            if frame is None:
+                continue
+            raw_dir = snapshot_dir / table
+            raw_dir.mkdir(parents=True, exist_ok=True)
+            frame.to_csv(raw_dir / f"{run_id}.csv", index=False)
 
-    period, quarantine = derive_fundamental_period(raw_tables, run_id=run_id, source=source)
-    daily = build_fundamental_daily(
-        period,
+    incoming_period, incoming_quarantine = derive_fundamental_period(
+        raw_tables,
+        run_id=run_id,
+        source=source,
+    )
+    incoming_daily = build_fundamental_daily(
+        incoming_period,
         raw_tables.get("daily_basic"),
         raw_tables.get("forecast"),
         run_id=run_id,
         source=source,
     )
-    readiness = build_readiness_payload(daily, period, quarantine, run_id=run_id)
+    existing = {
+        table_name: _read_existing_fundamental_table(data_dir, table_name)
+        for table_name in FUNDAMENTAL_TABLES
+    }
+    period, period_merge = _merge_fundamental_table(
+        existing["fundamental_period"],
+        incoming_period,
+        key_fields=("ts_code", "end_date", "availability_date"),
+        quality_fields=DERIVED_PERIOD_FIELDS,
+    )
+    daily, daily_merge = _merge_fundamental_table(
+        existing["fundamental_daily"],
+        incoming_daily,
+        key_fields=("ts_code", "trade_date"),
+        quality_fields=DERIVED_DAILY_FIELDS,
+    )
+    quarantine, quarantine_merge = _merge_quarantine_table(
+        existing["fundamental_quarantine"],
+        incoming_quarantine,
+    )
+    expected_symbol_count = int(
+        dict(provider_manifest or {}).get("symbols_requested", 0) or 0
+    )
+    readiness = build_readiness_payload(
+        daily,
+        period,
+        quarantine,
+        run_id=run_id,
+        expected_symbol_count=expected_symbol_count,
+        require_expected_symbol_scope=require_expected_symbol_scope,
+    )
     raw_row_counts = {table: int(len(raw_tables.get(table, pd.DataFrame()))) for table in SOURCE_TABLES}
     readiness["provider_status"] = source
+    readiness["source_priority"] = source_priority
     readiness["raw_row_counts"] = raw_row_counts
+    readiness["raw_snapshot_written"] = bool(write_raw_snapshots)
+    readiness["merge"] = {
+        "fundamental_period": period_merge,
+        "fundamental_daily": daily_merge,
+        "fundamental_quarantine": quarantine_merge,
+        "absence_is_deletion": False,
+        "deletion_policy": "explicit_tombstone_required",
+    }
     if provider_manifest:
         readiness["provider_manifest"] = dict(provider_manifest)
 
-    period_path = _fundamental_table_path(data_dir, "fundamental_period")
-    daily_path = _fundamental_table_path(data_dir, "fundamental_daily")
-    quarantine_path = _fundamental_table_path(data_dir, "fundamental_quarantine")
     readiness_json = reports_dir / f"{run_id}.json"
     readiness_md = reports_dir / f"{run_id}.md"
     readiness_csv = reports_dir / f"{run_id}.csv"
-    for path in (period_path, daily_path, quarantine_path):
-        path.parent.mkdir(parents=True, exist_ok=True)
-    period.to_parquet(period_path, index=False)
-    daily.to_parquet(daily_path, index=False)
-    quarantine.to_parquet(quarantine_path, index=False)
     readiness_json.write_text(json.dumps(readiness, ensure_ascii=False, indent=2), encoding="utf-8")
     readiness_md.write_text(_render_readiness_md(readiness), encoding="utf-8")
     _readiness_rows(readiness).to_csv(readiness_csv, index=False)
-    manifest = {
+    if not readiness["gate2_passed"] and not publish_on_gate_failure:
+        raise FundamentalReadinessError(readiness)
+    generation_metadata = {
         "run_id": run_id,
         "provider_status": source,
+        "source_priority": source_priority,
+        "source_provenance": dict(provider_manifest or {}).get(
+            "source_provenance",
+            "",
+        ),
         "raw_row_counts": raw_row_counts,
+        "raw_snapshot_written": bool(write_raw_snapshots),
         "provider_manifest": dict(provider_manifest or {}),
         "storage_backend": "parquet_canonical",
+        "readiness": str(readiness_json),
+        "gate2_passed": readiness["gate2_passed"],
+        "merge": readiness["merge"],
+    }
+    generation_paths, pointer = publish_fundamental_generation(
+        root=data_dir,
+        run_id=run_id,
+        tables={
+            "fundamental_period": period,
+            "fundamental_daily": daily,
+            "fundamental_quarantine": quarantine,
+        },
+        metadata=generation_metadata,
+    )
+    period_path = generation_paths["fundamental_period"]
+    daily_path = generation_paths["fundamental_daily"]
+    quarantine_path = generation_paths["fundamental_quarantine"]
+    manifest = {
+        **generation_metadata,
+        "generation_id": pointer["generation_id"],
+        "pointer_path": str(data_dir / "_fundamental_latest.json"),
         "fundamental_period": str(period_path),
         "fundamental_daily": str(daily_path),
         "fundamental_quarantine": str(quarantine_path),
-        "readiness": str(readiness_json),
-        "gate2_passed": readiness["gate2_passed"],
     }
     manifest_text = json.dumps(manifest, ensure_ascii=False, indent=2)
     (data_dir / "latest_manifest.json").write_text(manifest_text, encoding="utf-8")
-    (daily_path.parent / "latest_manifest.json").write_text(manifest_text, encoding="utf-8")
     artifacts = FundamentalMartArtifacts(
         run_id=run_id,
         data_root=data_dir,
@@ -826,9 +1231,38 @@ def _resolve_symbols_from_parquet_universe(
 ) -> list[str]:
     symbols: list[str] = []
     reader = MarketDataReader(market="CN", data_root=data_root, mode_policy="strict")
+    components_path = (
+        Path(data_root).expanduser()
+        / "cn_universe"
+        / "cn_index_components.json"
+    )
+    components: Mapping[str, Any] = {}
+    if components_path.exists():
+        try:
+            components_payload = json.loads(
+                components_path.read_text(encoding="utf-8")
+            )
+        except Exception as exc:
+            raise ValueError(
+                f"invalid canonical universe components: {components_path}: {exc}"
+            ) from exc
+        if not isinstance(components_payload, Mapping):
+            raise ValueError(
+                f"canonical universe components must be an object: {components_path}"
+            )
+        components = components_payload
+    serving_symbols = set(reader.list_symbols(universe_key="full_a"))
     for universe in universes:
         normalized_universe = str(universe or "").strip().lower() or "full_a"
-        symbols.extend(reader.list_symbols(universe_key=normalized_universe))
+        if normalized_universe in FULL_A_UNIVERSE_KEYS:
+            scoped = [
+                normalize_ts_code(symbol)
+                for symbol in list(components.get("full_a", []) or [])
+                if normalize_ts_code(symbol) in serving_symbols
+            ]
+            symbols.extend(scoped or sorted(serving_symbols))
+        else:
+            symbols.extend(reader.list_symbols(universe_key=normalized_universe))
     return [symbol for symbol in dict.fromkeys(symbols) if symbol]
 
 
@@ -867,18 +1301,33 @@ def _fetch_tushare_tables(
     succeeded = 0
     empty = 0
     failed = 0
+    outcomes: list[dict[str, Any]] = []
 
-    def fetch_symbol(symbol: str) -> tuple[dict[str, list[pd.DataFrame]], int, int, int, list[dict[str, str]]]:
+    def fetch_symbol(
+        symbol: str,
+    ) -> tuple[
+        dict[str, list[pd.DataFrame]],
+        int,
+        int,
+        int,
+        list[dict[str, str]],
+        list[dict[str, Any]],
+    ]:
         symbol_frames = {table: [] for table in SOURCE_TABLES}
         symbol_succeeded = 0
         symbol_empty = 0
         symbol_failed = 0
         symbol_errors: list[dict[str, str]] = []
+        symbol_outcomes: list[dict[str, Any]] = []
         for table in SOURCE_TABLES:
             method = getattr(pro, table, None)
             if method is None:
                 symbol_failed += 1
-                symbol_errors.append({"symbol": symbol, "table": table, "error": "provider_endpoint_missing"})
+                error = "provider_endpoint_missing"
+                symbol_errors.append({"symbol": symbol, "table": table, "error": error})
+                symbol_outcomes.append(
+                    {"symbol": symbol, "table": table, "status": "error", "rows": 0, "error": error}
+                )
                 continue
             table_start_text = financial_start_text if table in FINANCIAL_SOURCE_TABLES or table == "forecast" else start_text
             try:
@@ -894,23 +1343,49 @@ def _fetch_tushare_tables(
                 except Exception as exc:
                     symbol_failed += 1
                     symbol_errors.append({"symbol": symbol, "table": table, "error": str(exc)})
+                    symbol_outcomes.append(
+                        {"symbol": symbol, "table": table, "status": "error", "rows": 0, "error": str(exc)}
+                    )
                     continue
             except Exception as exc:
                 symbol_failed += 1
                 symbol_errors.append({"symbol": symbol, "table": table, "error": str(exc)})
+                symbol_outcomes.append(
+                    {"symbol": symbol, "table": table, "status": "error", "rows": 0, "error": str(exc)}
+                )
                 continue
             if isinstance(frame, pd.DataFrame) and not frame.empty:
                 symbol_frames[table].append(frame)
                 symbol_succeeded += 1
+                symbol_outcomes.append(
+                    {"symbol": symbol, "table": table, "status": "success", "rows": int(len(frame)), "error": ""}
+                )
             else:
                 symbol_empty += 1
+                symbol_outcomes.append(
+                    {"symbol": symbol, "table": table, "status": "empty", "rows": 0, "error": ""}
+                )
         time.sleep(0.05)
-        return symbol_frames, symbol_succeeded, symbol_empty, symbol_failed, symbol_errors
+        return (
+            symbol_frames,
+            symbol_succeeded,
+            symbol_empty,
+            symbol_failed,
+            symbol_errors,
+            symbol_outcomes,
+        )
 
     worker_count = max(1, int(workers or 1))
     if worker_count == 1 or len(symbols) <= 1:
         for symbol in symbols:
-            symbol_frames, symbol_succeeded, symbol_empty, symbol_failed, symbol_errors = fetch_symbol(symbol)
+            (
+                symbol_frames,
+                symbol_succeeded,
+                symbol_empty,
+                symbol_failed,
+                symbol_errors,
+                symbol_outcomes,
+            ) = fetch_symbol(symbol)
             attempted += len(SOURCE_TABLES)
             succeeded += symbol_succeeded
             empty += symbol_empty
@@ -919,12 +1394,20 @@ def _fetch_tushare_tables(
                 collected[table].extend(frames)
             if len(errors) < 200:
                 errors.extend(symbol_errors[: max(0, 200 - len(errors))])
+            outcomes.extend(symbol_outcomes)
     else:
         completed = 0
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
             futures = [executor.submit(fetch_symbol, symbol) for symbol in symbols]
             for future in as_completed(futures):
-                symbol_frames, symbol_succeeded, symbol_empty, symbol_failed, symbol_errors = future.result()
+                (
+                    symbol_frames,
+                    symbol_succeeded,
+                    symbol_empty,
+                    symbol_failed,
+                    symbol_errors,
+                    symbol_outcomes,
+                ) = future.result()
                 completed += 1
                 attempted += len(SOURCE_TABLES)
                 succeeded += symbol_succeeded
@@ -934,6 +1417,7 @@ def _fetch_tushare_tables(
                     collected[table].extend(frames)
                 if len(errors) < 200:
                     errors.extend(symbol_errors[: max(0, 200 - len(errors))])
+                outcomes.extend(symbol_outcomes)
                 if len(symbols) >= 50 and completed % 100 == 0:
                     print(
                         f"[fundamental-maintain] fetched {completed}/{len(symbols)} symbols; "
@@ -959,6 +1443,12 @@ def _fetch_tushare_tables(
         "requests_failed": int(failed),
         "errors_truncated": failed > len(errors),
         "errors": errors,
+        "symbol_table_outcomes": sorted(
+            outcomes,
+            key=lambda item: (str(item["symbol"]), str(item["table"])),
+        ),
+        "absence_is_deletion": False,
+        "deletion_policy": "explicit_tombstone_required",
         "raw_row_counts": {table: int(len(frame)) for table, frame in tables.items()},
     }
     return tables, manifest
@@ -987,11 +1477,29 @@ def run_cn_fundamental_maintenance(
         else list(universes or DEFAULT_UNIVERSES)
     )
     run_id = _run_id(as_of)
+    try:
+        scope_symbols = _resolve_symbols_from_parquet_universe(
+            DEFAULT_MARKET_DATA_ROOT,
+            universe_list,
+        )
+        scope_error = ""
+    except Exception as exc:
+        scope_symbols = []
+        scope_error = f"{type(exc).__name__}:{exc}"
+    provider_manifest: dict[str, Any] = {
+        "symbols_requested": int(len(scope_symbols)),
+        "symbol_scope_status": "resolved" if scope_symbols else "missing",
+        "symbol_scope_source": "strict_parquet_serving_intersect_canonical_components",
+        "symbol_scope_universes": list(universe_list),
+        "source_priority": "manual_offline_snapshot",
+        "source_provenance": "offline_input_unverified",
+    }
+    if scope_error:
+        provider_manifest["symbol_scope_error"] = scope_error
     tables = dict(raw_tables or {})
     if not tables:
         tables = _read_raw_input_dir(raw_input_dir)
     provider_status = "offline_input" if tables else "not_requested"
-    provider_manifest: dict[str, Any] = {}
     if not tables and allow_live:
         if pro is None:
             try:
@@ -1005,16 +1513,31 @@ def run_cn_fundamental_maintenance(
                 pro = create_tushare_pro(ts, config.TUSHARE_TOKEN, config.TUSHARE_URL)
             except Exception as exc:
                 provider_status = f"provider_unavailable:{exc}"
-                provider_manifest = {"provider": "tushare", "provider_status": provider_status}
+                provider_manifest.update(
+                    {
+                        "provider": "tushare",
+                        "provider_status": provider_status,
+                    }
+                )
                 pro = None
         if pro is not None:
-            symbols = _resolve_symbols_from_parquet_universe(DEFAULT_MARKET_DATA_ROOT, universe_list)
-            tables, provider_manifest = _fetch_tushare_tables(
-                symbols,
+            tables, fetch_manifest = _fetch_tushare_tables(
+                scope_symbols,
                 years=int(years),
                 as_of=as_of,
                 workers=int(workers),
                 pro=pro,
+            )
+            provider_manifest.update(fetch_manifest)
+            provider_manifest.update(
+                {
+                    "symbols_requested": int(len(scope_symbols)),
+                    "symbol_scope_status": "resolved" if scope_symbols else "missing",
+                    "symbol_scope_source": "strict_parquet_serving_intersect_canonical_components",
+                    "symbol_scope_universes": list(universe_list),
+                    "source_priority": "tushare_primary",
+                    "source_provenance": "live_tushare_explicit",
+                }
             )
             provider_status = (
                 "live_tushare_partial"
@@ -1031,6 +1554,8 @@ def run_cn_fundamental_maintenance(
         run_id=run_id,
         source=provider_status,
         provider_manifest=provider_manifest,
+        require_expected_symbol_scope=True,
+        publish_on_gate_failure=False,
     )
     return {
         "run_id": run_id,
@@ -1050,6 +1575,7 @@ __all__ = [
     "DEFAULT_UNIVERSES",
     "DERIVED_DAILY_FIELDS",
     "DERIVED_PERIOD_FIELDS",
+    "FundamentalReadinessError",
     "FundamentalMartArtifacts",
     "build_fundamental_daily",
     "build_readiness_payload",

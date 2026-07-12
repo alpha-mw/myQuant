@@ -36,22 +36,26 @@ from quant_investor.factors.governance import (  # noqa: E402
 )
 from quant_investor.factors.registry_store import (  # noqa: E402
     METADATA_ABSENT,
+    FactorRegistryStoreError,
     apply_factor_record_patch,
     load_registry_snapshot_strict,
 )
 from scripts.retest_aquant_alpha_mix_8gate import (  # noqa: E402
     _failed_gate_ids,
     _json_default,
+    _matrix_from_frames,
     _passed_gate_ids,
     _safe_float,
     RetestContext,
     build_context,
     candidate_metrics,
     evaluate_with_myquant_gate,
+    load_fundamental_exposure_maps,
 )
 
-DEFAULT_UNIVERSES = ("hs300", "zz500", "zz1000")
+DEFAULT_UNIVERSES = ("full_a",)
 DEFAULT_REGISTRY_PATH = "quant_investor/factor_registry/mined_factors.json"
+DEFAULT_PRODUCTION_FACTOR_WEIGHT = 0.05
 
 
 @dataclass(frozen=True)
@@ -306,12 +310,48 @@ def _auto_analysis_start_date(
 ) -> pd.Timestamp | None:
     if context.adj_close.empty:
         return None
-    valid = (
-        context.adj_close.notna()
-        .sum(axis=1)
-        .div(max(context.adj_close.shape[1], 1))
+    valid_mask = context.adj_close.notna()
+    date_values = context.adj_close.index.values.astype("datetime64[ns]")
+    first_values = np.array(
+        [
+            context.adj_close[column].first_valid_index().to_datetime64()
+            if context.adj_close[column].first_valid_index() is not None
+            else np.datetime64("NaT")
+            for column in context.adj_close.columns
+        ],
+        dtype="datetime64[ns]",
     )
-    ready = valid[valid >= float(min_price_coverage)]
+    last_values = np.array(
+        [
+            context.adj_close[column].last_valid_index().to_datetime64()
+            if context.adj_close[column].last_valid_index() is not None
+            else np.datetime64("NaT")
+            for column in context.adj_close.columns
+        ],
+        dtype="datetime64[ns]",
+    )
+    observable = (
+        (date_values[:, None] >= first_values[None, :])
+        & (date_values[:, None] <= last_values[None, :])
+        & ~np.isnat(first_values[None, :])
+        & ~np.isnat(last_values[None, :])
+    )
+    observable_count = pd.Series(
+        observable.sum(axis=1),
+        index=context.adj_close.index,
+        dtype=float,
+    )
+    maximum_observable = int(observable_count.max())
+    minimum_cross_section = (
+        max(20, int(maximum_observable * 0.60))
+        if maximum_observable >= 20
+        else max(1, int(np.ceil(maximum_observable * 0.60)))
+    )
+    coverage = valid_mask.sum(axis=1).div(observable_count.replace(0.0, np.nan))
+    ready = coverage[
+        (coverage >= float(min_price_coverage))
+        & (observable_count >= minimum_cross_section)
+    ]
     if ready.empty:
         return None
     return pd.Timestamp(ready.index[0])
@@ -354,6 +394,10 @@ def restrict_context_to_analysis_window(
             ],
             existing_composite=existing,
             existing_blocker=context.existing_blocker,
+            sector_by_symbol=dict(context.sector_by_symbol),
+            size_bucket_by_symbol=dict(context.size_bucket_by_symbol),
+            size_bucket_by_date=context.size_bucket_by_date.reindex(dates),
+            exposure_metadata=dict(context.exposure_metadata),
         ),
         start.strftime("%Y-%m-%d"),
     )
@@ -385,6 +429,10 @@ def _restrict_context_from_start(
         ],
         existing_composite=existing,
         existing_blocker=context.existing_blocker,
+        sector_by_symbol=dict(context.sector_by_symbol),
+        size_bucket_by_symbol=dict(context.size_bucket_by_symbol),
+        size_bucket_by_date=context.size_bucket_by_date.reindex(dates),
+        exposure_metadata=dict(context.exposure_metadata),
     )
 
 
@@ -1720,6 +1768,97 @@ def _production_candidate_diversity_blocker(
     return ""
 
 
+def _production_positive_evidence_blocker(
+    result: Mapping[str, Any],
+) -> str:
+    metrics = dict(result.get("metrics", {}) or {})
+    positive_fields = (
+        "mean_rankic",
+        "top_bottom_spread",
+        "top_quantile_return",
+        "cost_adjusted_return",
+        "master_return_delta",
+        "sharpe_delta",
+    )
+    values = [_safe_float(metrics.get(key), float("nan")) for key in positive_fields]
+    if not any(np.isfinite(value) and value > 0.0 for value in values):
+        return "positive_evidence_missing"
+    return ""
+
+
+def _production_market_evidence_blocker(
+    *,
+    universes: Sequence[str],
+    market_evidence: Mapping[str, Any],
+) -> str:
+    normalized = [
+        str(item or "").strip().lower() for item in universes if str(item or "").strip()
+    ]
+    if normalized != ["full_a"]:
+        return "production_universe_not_exact_full_a"
+    if str(market_evidence.get("backend", "")).lower() != "parquet":
+        return "production_backend_not_parquet"
+    if str(market_evidence.get("mode_policy", "")).lower() != "strict":
+        return "production_mode_policy_not_strict"
+    if str(market_evidence.get("pointer_status", "")).upper() != "OK":
+        return "parquet_latest_pointer_not_ok"
+    if not str(market_evidence.get("snapshot_id", "")).strip():
+        return "parquet_snapshot_id_missing"
+    if market_evidence.get("coverage_complete") is not True:
+        return "full_a_snapshot_coverage_incomplete"
+    for key in ("table_root_exists", "serving_root_exists", "manifest_exists"):
+        if market_evidence.get(key) is not True:
+            return f"parquet_{key}_false"
+    exposure = dict(
+        market_evidence.get("factor_exposure_evidence", {}) or {}
+    )
+    if exposure.get("status") != "ready":
+        return "factor_exposure_evidence_not_ready"
+    if exposure.get("source") != "strict_parquet_hybrid_market_cap_exposure":
+        return "factor_exposure_source_not_strict_parquet"
+    if float(exposure.get("coverage_ratio", 0.0) or 0.0) < 0.95:
+        return "factor_exposure_coverage_below_95pct"
+    if exposure.get("catalog_validated") is not True:
+        return "factor_exposure_catalog_not_validated"
+    if exposure.get("size_policy") != (
+        "same_trade_date_total_mv_then_asof_total_share_times_close"
+    ):
+        return "factor_exposure_size_policy_mismatch"
+    if (
+        float(exposure.get("evaluation_date_coverage_ratio", 0.0) or 0.0)
+        < 0.95
+    ):
+        return "factor_exposure_date_coverage_below_95pct"
+    if (
+        float(exposure.get("min_cross_section_coverage_ratio", 0.0) or 0.0)
+        < 0.95
+    ):
+        return "factor_exposure_cross_section_coverage_below_95pct"
+    if (
+        float(exposure.get("combined_size_pair_coverage_ratio", 0.0) or 0.0)
+        < 0.95
+    ):
+        return "factor_exposure_combined_size_coverage_below_95pct"
+    if float(exposure.get("pit_size_pair_coverage_ratio", 0.0) or 0.0) < 0.60:
+        return "factor_exposure_exact_pit_size_coverage_below_60pct"
+    if (
+        float(exposure.get("reconstructed_size_pair_ratio", 1.0) or 1.0)
+        > 0.35
+    ):
+        return "factor_exposure_reconstruction_above_35pct"
+    if exposure.get("share_reference_covers_evaluation_end") is not True:
+        return "factor_exposure_share_reference_stale_for_evaluation"
+    if int(exposure.get("sector_count", 0) or 0) < 2:
+        return "factor_exposure_sector_count_below_2"
+    if int(exposure.get("size_bucket_count", 0) or 0) < 3:
+        return "factor_exposure_size_bucket_count_below_3"
+    expected = int(market_evidence.get("expected_symbol_count", 0) or 0)
+    loaded = int(market_evidence.get("loaded_symbol_count", 0) or 0)
+    if expected <= 0 or loaded < expected:
+        return f"full_a_symbol_readback_incomplete:{loaded}/{expected}"
+    return ""
+
+
 def apply_production_candidate_registry_updates(
     *,
     registry_path: str | Path,
@@ -2097,29 +2236,81 @@ def apply_production_family_governance(
     run_id: str,
     report_path: str,
     journal_path: str | Path,
+    universes: Sequence[str],
+    market_evidence: Mapping[str, Any],
+    owner: str,
+    source_notes: Sequence[Mapping[str, Any]] = (),
+    horizon_days: int = 30,
+    max_champions: int = 5,
+    production_weight: float = DEFAULT_PRODUCTION_FACTOR_WEIGHT,
     write: bool = True,
 ) -> dict[str, Any]:
-    """Keep only current 8-gate family champions in the production pool."""
+    """Atomically reconcile current full-A champions into production."""
 
     path = Path(registry_path).expanduser()
     snapshot = load_registry_snapshot_strict(path)
-    active = snapshot.registry.selectable_factors()
+    active = [
+        record
+        for record in snapshot.registry.factors
+        if record.state == FactorLifecycleState.PRODUCTION_FACTOR
+    ]
+    by_name = {record.name: record for record in snapshot.registry.factors}
+    result_names = [str(item.get("name", "")).strip() for item in results]
+    duplicate_names = sorted(
+        {name for name in result_names if name and result_names.count(name) > 1}
+    )
     by_result = {
-        str(item.get("name", "")): item
+        str(item.get("name", "")).strip(): item
         for item in results
-        if str(item.get("name", ""))
+        if str(item.get("name", "")).strip()
     }
+    market_blocker = _production_market_evidence_blocker(
+        universes=universes,
+        market_evidence=market_evidence,
+    )
+    report_file = Path(report_path).expanduser()
+    report_payload: Mapping[str, Any] = {}
+    report_blocker = ""
+    source_report_sha256 = ""
+    if not report_file.exists() or not report_file.is_file():
+        report_blocker = "source_report_missing"
+    else:
+        try:
+            report_payload = json.loads(report_file.read_text(encoding="utf-8"))
+            source_report_sha256 = hashlib.sha256(report_file.read_bytes()).hexdigest()
+        except Exception as exc:
+            report_blocker = f"source_report_invalid:{exc}"
+    if not report_blocker:
+        if str(report_payload.get("run_id", "")) != str(run_id):
+            report_blocker = "source_report_run_id_mismatch"
+        elif list(report_payload.get("universes", []) or []) != list(universes):
+            report_blocker = "source_report_universe_mismatch"
+        elif [
+            str(item.get("name", ""))
+            for item in list(report_payload.get("results", []) or [])
+            if isinstance(item, Mapping)
+        ] != result_names:
+            report_blocker = "source_report_result_names_mismatch"
+
     eligible: list[Mapping[str, Any]] = []
-    for record in active:
-        item = by_result.get(record.name)
-        if item is None:
+    skipped: list[dict[str, str]] = []
+    for item in results:
+        name = str(item.get("name", "")).strip()
+        if not name:
             continue
-        if (
-            item.get("decision")
-            == FactorAdmissionDecision.PRODUCTION_CANDIDATE.value
-            and not _production_candidate_gate_blocker(item)
-        ):
-            eligible.append(item)
+        blocker = ""
+        if item.get("decision") != FactorAdmissionDecision.PRODUCTION_CANDIDATE.value:
+            blocker = f"decision={item.get('decision')}"
+        if not blocker:
+            blocker = _production_candidate_gate_blocker(item)
+        if not blocker:
+            blocker = _production_candidate_diversity_blocker(item)
+        if not blocker:
+            blocker = _production_positive_evidence_blocker(item)
+        if blocker:
+            skipped.append({"name": name, "reason": blocker})
+            continue
+        eligible.append(item)
 
     families: dict[str, list[Mapping[str, Any]]] = {}
     for item in eligible:
@@ -2136,30 +2327,74 @@ def apply_production_family_governance(
         "registry_path": str(path),
         "run_id": run_id,
         "source_report": report_path,
+        "source_report_sha256": source_report_sha256,
+        "snapshot_id": market_evidence.get("snapshot_id"),
+        "universes": list(universes),
+        "market_evidence": dict(market_evidence),
+        "diversity_policy_version": DEFAULT_DIVERSITY_POLICY.version,
+        "diversity_policy_hash": DEFAULT_DIVERSITY_POLICY.policy_hash,
+        "production_weight": float(production_weight),
         "active_before_count": len(active),
         "eligible_8gate_count": len(eligible),
         "champion_count": len(champion_names),
         "champions_by_family": dict(sorted(champions.items())),
-        "kept_factors": sorted(champion_names),
+        "promoted_factors": [],
+        "kept_factors": [],
         "deprecated_factors": [],
+        "skipped_factors": skipped,
         "status": "not_requested" if not write else "pending",
         "registry_mutation_manifest": None,
+        "registry_mutation_manifest_path": str(journal_path),
     }
     if not write:
         return manifest
+    precondition_blocker = (
+        market_blocker
+        or report_blocker
+        or ("duplicate_result_names:" + ",".join(duplicate_names) if duplicate_names else "")
+    )
+    if precondition_blocker:
+        manifest["status"] = "blocked"
+        manifest["fail_closed_reason"] = precondition_blocker
+        return manifest
     if not champion_names:
-        manifest["status"] = "no_registry_changes"
+        manifest["status"] = "blocked"
         manifest["fail_closed_reason"] = "no_current_8gate_family_champion"
+        return manifest
+    if len(champion_names) > max(int(max_champions), 0):
+        manifest["status"] = "blocked"
+        manifest["fail_closed_reason"] = "champion_count_exceeds_limit"
+        return manifest
+    if not np.isfinite(float(production_weight)) or float(production_weight) <= 0.0:
+        manifest["status"] = "blocked"
+        manifest["fail_closed_reason"] = "production_weight_invalid"
         return manifest
 
     patches: dict[str, FactorRecord] = {}
     expected_hashes: dict[str, str | None] = {}
-    for record in active:
-        item = by_result.get(record.name)
-        updated = FactorRecord.from_dict(record.to_dict())
+    target_names = sorted({record.name for record in active}.union(champion_names))
+    for name in target_names:
+        existing = by_name.get(name)
+        item = by_result.get(name)
+        if existing is None:
+            if item is None:
+                manifest["status"] = "blocked"
+                manifest["fail_closed_reason"] = f"champion_record_missing:{name}"
+                return manifest
+            updated = _record_from_result(
+                item,
+                run_timestamp=run_timestamp,
+                run_id=run_id,
+                report_path=report_path,
+                owner=owner,
+                source_notes=source_notes,
+                horizon_days=horizon_days,
+            )
+        else:
+            updated = FactorRecord.from_dict(existing.to_dict())
         if item is None:
             reason = "current_governed_evidence_missing"
-        elif record.name not in champion_names:
+        elif name not in champion_names:
             gate_blocker = _production_candidate_gate_blocker(item)
             if gate_blocker:
                 reason = "current_8gate_not_passed"
@@ -2194,6 +2429,9 @@ def apply_production_family_governance(
                     "family_champion": champions.get(
                         str(item.get("family", "unknown")), ""
                     ),
+                    "source_report_sha256": source_report_sha256,
+                    "snapshot_id": market_evidence.get("snapshot_id"),
+                    "diversity_policy_hash": DEFAULT_DIVERSITY_POLICY.policy_hash,
                 },
             }
         if reason:
@@ -2201,42 +2439,92 @@ def apply_production_family_governance(
             updated.weight = 0.0
             updated.deprecated_reason = reason
             manifest["deprecated_factors"].append(
-                {"name": record.name, "reason": reason}
+                {"name": name, "reason": reason}
             )
         else:
             updated.state = FactorLifecycleState.PRODUCTION_FACTOR
+            updated.weight = float(production_weight)
             updated.deprecated_reason = ""
-        patches[record.name] = updated
-        expected_hashes[record.name] = snapshot.record_sha256s.get(record.name)
+            updated.category = str(item.get("category", updated.category) or updated.category)
+            updated.implementation = str(
+                item.get("implementation", updated.implementation)
+                or updated.implementation
+            )
+            updated.description = str(
+                item.get("description", updated.description)
+                or updated.description
+            )
+            updated.approved_by = "scheduled_full_a_8gate_family_governance"
+            updated.approved_at = run_timestamp
+            updated.metadata = {
+                **dict(updated.metadata or {}),
+                "manual_promotion_required": False,
+                "runtime_effect": "production_quant_branch",
+                "automatic_promotion_policy": "full_a_8gate_diversity_champion",
+            }
+            if existing and existing.state == FactorLifecycleState.PRODUCTION_FACTOR:
+                manifest["kept_factors"].append(name)
+            else:
+                manifest["promoted_factors"].append(name)
+        patches[name] = updated
+        expected_hashes[name] = snapshot.record_sha256s.get(name)
 
     metadata_updates = {
         "last_production_family_governance_at": run_timestamp,
         "last_production_family_governance_run_id": run_id,
         "last_production_family_governance_report": report_path,
         "last_production_family_champions": sorted(champion_names),
+        "production_factor_count": len(champion_names),
+        "default_policy": (
+            "Scheduled full-A mining promotes only current strict 8/8 "
+            "diversity champions; all other mined factors are non-live."
+        ),
         "production_family_policy": (
-            "current exact 8-gate evidence; one alpha-first champion "
-            "per family"
+            "single CAS/WAL transaction; exact full-A 8-gate evidence; "
+            "one alpha-first diversity champion per family"
         ),
     }
-    mutation = apply_factor_record_patch(
-        path,
-        patches,
-        expected_registry_sha256=snapshot.registry_sha256,
-        expected_record_sha256s=expected_hashes,
-        metadata_updates=metadata_updates,
-        expected_metadata_values={
-            key: snapshot.metadata_payload.get(key, METADATA_ABSENT)
-            for key in metadata_updates
-        },
-        mutation_id=f"production-family-governance:{run_id}",
-        reason=(
-            "direct user-authorized production family and current 8-gate "
-            "champion reconciliation"
-        ),
-        journal_path=journal_path,
-        write=True,
-    )
+    record_changes = {
+        name: record
+        for name, record in patches.items()
+        if snapshot.record_payloads.get(name) != record.to_dict()
+    }
+    metadata_changes = {
+        key: value
+        for key, value in metadata_updates.items()
+        if snapshot.metadata_payload.get(key, METADATA_ABSENT) != value
+    }
+    if not record_changes and not metadata_changes:
+        manifest["status"] = "no_registry_changes"
+        manifest["active_after_count"] = len(champion_names)
+        manifest["before_registry_sha256"] = snapshot.registry_sha256
+        manifest["after_registry_sha256"] = snapshot.registry_sha256
+        return manifest
+    try:
+        mutation = apply_factor_record_patch(
+            path,
+            record_changes,
+            expected_registry_sha256=snapshot.registry_sha256,
+            expected_record_sha256s={
+                name: expected_hashes[name] for name in record_changes
+            },
+            metadata_updates=metadata_changes,
+            expected_metadata_values={
+                key: snapshot.metadata_payload.get(key, METADATA_ABSENT)
+                for key in metadata_changes
+            },
+            mutation_id=f"production-family-governance:{run_id}",
+            reason=(
+                "direct user-authorized full-A 8-gate production champion "
+                "reconciliation"
+            ),
+            journal_path=journal_path,
+            write=True,
+        )
+    except FactorRegistryStoreError as exc:
+        manifest["status"] = "blocked"
+        manifest["fail_closed_reason"] = f"registry_mutation_failed:{exc}"
+        return manifest
     manifest["registry_mutation_manifest"] = mutation
     manifest["status"] = "updated"
     manifest["active_after_count"] = len(champion_names)
@@ -2259,11 +2547,32 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
         universes=universes,
         horizon_days=int(args.horizon_days),
         warmup_days=int(args.warmup_days),
+        fundamental_mart_root=Path(args.fundamental_mart_root).expanduser(),
     )
     context, resolved_analysis_start = restrict_context_to_analysis_window(
         full_context,
         analysis_start_date=str(args.analysis_start_date),
         min_price_coverage=float(args.min_analysis_price_coverage),
+    )
+    exposure_dates = sorted(
+        set(context.rebalance_dates) | set(context.biweekly_dates)
+    )
+    close_by_date = _matrix_from_frames(
+        context.frames,
+        pd.DatetimeIndex(exposure_dates),
+        ("close",),
+    )
+    (
+        context.sector_by_symbol,
+        context.size_bucket_by_symbol,
+        context.size_bucket_by_date,
+        context.exposure_metadata,
+    ) = load_fundamental_exposure_maps(
+        mart_root=Path(args.fundamental_mart_root).expanduser(),
+        symbols=list(context.frames),
+        as_of=(context.adj_close.index.max() if not context.adj_close.empty else None),
+        evaluation_dates=exposure_dates,
+        close_by_date=close_by_date,
     )
     expression_inputs = None
     candidates: list[MiningCandidate] = []
@@ -2449,6 +2758,7 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
         "fundamental_mart_root": str(args.fundamental_mart_root),
         "legacy_fundamental_fallback_allowed": False,
         "universes": list(universes),
+        "loaded_symbol_count": len(full_context.frames),
         "horizon_days": int(args.horizon_days),
         "warmup_days": int(args.warmup_days),
         "analysis_start_date": str(args.analysis_start_date),
@@ -2490,6 +2800,7 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
             if expression_inputs is not None
             else {"status": "not_requested"}
         ),
+        "factor_exposure_evidence": dict(context.exposure_metadata),
         "results": results,
     }
     write_outputs(output_dir, payload)

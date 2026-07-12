@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from quant_investor.factors.pit_fundamentals import (
     PIT_COLUMNS,
@@ -8,6 +9,43 @@ from quant_investor.factors.pit_fundamentals import (
     build_fin_ocf_to_profit_matrix,
     load_fundamental_pit_series,
 )
+from quant_investor.market.fundamental_generation import (
+    FundamentalGenerationError,
+    publish_fundamental_generation,
+)
+
+
+def test_generation_hash_failure_surfaces_instead_of_becoming_empty_data(
+    tmp_path,
+):
+    root = tmp_path / "cn"
+    paths, _pointer = publish_fundamental_generation(
+        root=root,
+        run_id="corrupt-generation",
+        tables={
+            "fundamental_period": pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000001.SZ",
+                        "end_date": "20231231",
+                        "availability_date": "2024-04-30",
+                        "fin_roe": 0.1,
+                    }
+                ]
+            ),
+            "fundamental_daily": pd.DataFrame(columns=["ts_code"]),
+            "fundamental_quarantine": pd.DataFrame(columns=["ts_code"]),
+        },
+        metadata={"run_id": "corrupt-generation"},
+    )
+    paths["fundamental_period"].write_bytes(b"corrupt parquet")
+
+    with pytest.raises(FundamentalGenerationError, match="hash mismatch"):
+        load_fundamental_pit_series(
+            mart_root=root,
+            metadata_dir=tmp_path / "metadata",
+            allow_legacy_fallback=False,
+        )
 
 
 def test_fin_ocf_to_profit_visible_only_after_availability_and_zero_profit_nan(tmp_path):

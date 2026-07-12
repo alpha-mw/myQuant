@@ -19,6 +19,10 @@ from typing import Any, Iterable, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
+from quant_investor.market.fundamental_generation import (
+    resolve_fundamental_table_path,
+)
+
 PIT_COLUMNS = [
     "ts_code",
     "report_period",
@@ -105,12 +109,10 @@ def _pit_path(metadata_dir: str | Path | None = None, pit_series_path: str | Pat
 
 
 def _resolve_parquet_table_path(root: str | Path | None, table_name: str) -> Path:
-    base = Path(root or DEFAULT_FUNDAMENTAL_MART_ROOT).expanduser()
-    if base.suffix.lower() == ".parquet":
-        return base
-    if base.name == table_name:
-        return base / "part.parquet"
-    return base / table_name / "part.parquet"
+    return resolve_fundamental_table_path(
+        root or DEFAULT_FUNDAMENTAL_MART_ROOT,
+        table_name,
+    )
 
 
 def _read_fundamental_table(
@@ -122,10 +124,7 @@ def _read_fundamental_table(
     path = _resolve_parquet_table_path(root, table_name)
     if not path.exists():
         return pd.DataFrame()
-    try:
-        return pd.read_parquet(path, columns=list(columns) if columns else None)
-    except Exception:
-        return pd.DataFrame()
+    return pd.read_parquet(path, columns=list(columns) if columns else None)
 
 
 def _date_text(value: object) -> str:

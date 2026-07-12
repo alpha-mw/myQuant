@@ -871,19 +871,18 @@ def test_quant_runtime_consumes_blended_price_volume_factor():
     assert set(result.symbol_scores) == {"AAA", "BBB", "CCC"}
 
 
-def test_default_registry_includes_promoted_blend_factors():
+def test_default_registry_keeps_only_current_full_a_champion():
     registry = MinedFactorRegistry.load()
-    selectable = {
-        factor.name: factor
-        for factor in registry.selectable_factors()
-    }
+    selectable = {factor.name: factor for factor in registry.selectable_factors()}
 
-    for name in [
-        "pv_blend_volstab19x2_mom90_amihud5_w75",
-        "pv_blend_volstab19x2_mom90_amihud5_w70",
-    ]:
-        factor = selectable[name]
-        assert factor.state == FactorLifecycleState.PRODUCTION_FACTOR
-        assert factor.weight != 0.0
-        assert factor.all_gates_passed()
-        assert factor.implementation == f"price_volume:{name}"
+    name = "pv_low_dollar_volume_5d"
+    factor = selectable[name]
+    assert factor.state == FactorLifecycleState.PRODUCTION_FACTOR
+    assert factor.weight == 0.05
+    assert factor.all_gates_passed()
+    assert factor.implementation == f"price_volume:{name}"
+
+    by_name = {factor.name: factor for factor in registry.factors}
+    deprecated = by_name["pv_blend_volstab19x2_mom90_amihud5_w70"]
+    assert deprecated.state == FactorLifecycleState.DEPRECATED
+    assert deprecated.weight == 0.0

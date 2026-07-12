@@ -879,9 +879,42 @@ with all eight gates passed. `paper_factor`, `research_candidate`, and
 
 `fin_ocf_to_profit` is loaded from the source-backed PIT helper at
 `quant_investor.factors.pit_fundamentals`. Production reads use the strict
-Parquet fundamental mart under `data/parquet/cn/fundamental_daily` and
-`data/parquet/cn/fundamental_period`; legacy metadata CSV inputs are no longer
-production read ports after the Parquet cutover.
+Parquet fundamental generation selected by
+`data/parquet/cn/_fundamental_latest.json`. A generation contains period,
+daily, and quarantine tables plus hashes under
+`data/parquet/cn/_fundamental_generations/`; the pointer is published only
+after all three tables pass readback. Before the first generation is published,
+the reader accepts the legacy `fundamental_daily/part.parquet` and
+`fundamental_period/part.parquet` layout. Legacy metadata CSV inputs are not
+production read ports.
+
+Fundamental refreshes are merge-preserving. Missing or empty provider responses
+do not delete prior PIT rows, and a less-complete exact-key row cannot replace a
+more-complete prior row. A complete incoming row wins a quality tie. Provider
+deletion requires a future explicit tombstone path; absence is never inferred
+as deletion. Readiness reports include expected-symbol coverage so a partial
+full-A fetch cannot be described as complete merely because its returned rows
+have high field coverage. The operational `fundamental-maintain` path resolves
+the requested universe from canonical components intersected with strict
+Parquet serving before deriving the mart. A missing scope or symbol coverage
+below 95% fails Gate 2 and does not publish a new
+canonical pointer. Low-level fixture/recovery writers may still materialize a
+blocked generation for audit, but must preserve `gate2_passed=false`.
+
+Global mart readiness and candidate-level readiness are separate controls. A
+full-A coverage failure is disclosed globally; it does not erase complete PIT
+records for covered symbols. Candidate and holding review still blocks a symbol
+with no record, warns on a partial record, and admits a complete record only
+when its generation has an auditable provider priority. Offline reconstruction
+from canonical raw data may claim `tushare_primary` only when its generation
+manifest names local Tushare refresh evidence; otherwise it remains
+`manual_offline_snapshot`.
+
+An operator-directed rebuild from already-canonical local raw Parquet may call
+`write_fundamental_mart(..., write_raw_snapshots=False)` to avoid duplicating
+the same raw data as CSV. The provider manifest must identify the offline raw
+scope and state that no network was used; normal provider maintenance keeps the
+default raw-snapshot behavior.
 
 ```text
 ts_code, report_period, availability_date, metric_name, value, source,
@@ -934,24 +967,48 @@ The writer independently validates the diversity policy hash and champion
 status before its CAS/WAL mutation. `max_registry_candidates` is applied only
 after diversity selection, and every skipped qualified candidate is enumerated
 in the registry manifest. If no diverse champion remains, strict weekly mining
-returns failure and leaves the registry unchanged.
+may carry forward a valid incumbent; without an incumbent it returns failure
+and leaves the registry unchanged.
 
 Existing zero-weight candidates are not deleted or rewritten. Each mining run
-emits `legacy_candidate_redundancy_audit.json`; a later manual promotion must
-have fresh, complete champion evidence from the current policy.
+emits `legacy_candidate_redundancy_audit.json`; they remain non-live unless a
+new current full-A run selects them as a champion.
 
-The scheduled mining wrapper also reconciles the live production pool whenever
-registry writing is enabled. Current strict full-A evidence is authoritative:
-only exact 8/8 candidates may remain live, and each family keeps the same
-alpha-first champion used by mining. Production records without current
-evidence, with any failed gate, or losing the family championship are changed
-atomically to `deprecated` with zero weight and an explicit reason. If no
-current 8/8 champion exists, reconciliation fails closed and leaves the
-registry unchanged. `--no-registry-write` disables both candidate writes and
-production-family reconciliation.
+The scheduled wrapper defaults to the exact `full_a` universe and performs one
+registry transaction, not a candidate-write transaction followed by a second
+production transaction. It independently verifies the strict Parquet pointer,
+complete symbol readback, source-report hash, exact gates 1-8, supported runtime
+implementation, positive evidence, and the current diversity policy/hash. In
+one CAS/atomic/WAL mutation it promotes new champions to `production_factor`
+at weight `0.05`, keeps current champions at the same weight, and deprecates
+displaced production factors with weight zero and an explicit reason. The
+manifest lists `promoted_factors`, `kept_factors`, `deprecated_factors`, and
+`skipped_factors` plus before/after hashes.
 
-To activate a factor after external research validation and manual approval,
-the registry entry must be explicitly promoted, for example:
+Production exposure evidence is also fail-closed. Industry uses the strict
+Parquet `dag_core_raw/stock_basic` reference. Size uses same-trade-date
+`daily_basic.total_mv` where available, then a bounded reconstruction from
+strict `dag_core_raw/daily_basic_ext.total_share` times same-day unadjusted
+close. The catalog hash, row count, and status for all source tables must pass.
+Symbol, evaluation-date, minimum cross-section, and combined size-pair coverage
+must each be at least 95%; exact PIT size-pair coverage must be at least 60%;
+reconstructed pairs may not exceed 35% of valid combined pairs. The share
+reference date must cover the last evaluation date. Reports disclose exact and
+reconstructed counts separately and do not label the hybrid result as fully
+PIT. Exposure is recomputed from the restricted analysis context used for
+candidate metrics; publishing the full-history context's exposure metadata is
+invalid. Its first evaluation date must not precede the resolved analysis start.
+
+If no new 8-gate challenger survives and a valid production incumbent exists,
+the mining job writes `status=no_registry_changes`, lists the incumbent in
+`kept_factors`, preserves the registry hash, and exits successfully. Incumbent
+health and retirement remain the separate factor-health workflow's concern.
+Subset evidence, incomplete full-A readback, malformed evidence, no incumbent
+and no champion, or a CAS conflict leaves the registry unchanged and makes
+strict scheduled execution exit nonzero. `--no-registry-write` remains the
+report-only rollback. Manual promotion remains available only for
+operator-directed workflows outside the scheduled reconciliation path, for
+example:
 
 ```json
 {

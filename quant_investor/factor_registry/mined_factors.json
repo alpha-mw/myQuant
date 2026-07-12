@@ -2,7 +2,7 @@
   "schema_version": "mined-factor-registry.v1",
   "metadata": {
     "description": "Governed mined-factor registry. Quant branch only consumes production_factor entries with all 8 gates passed.",
-    "default_policy": "No mined factor is live until manually promoted to production_factor.",
+    "default_policy": "Scheduled full-A mining promotes only current strict 8/8 diversity champions; all other mined factors are non-live.",
     "restored_at": "2026-06-02T03:38:47Z",
     "restored_from": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/mined_price_volume_factors_2026-05-29T053016Z.json",
     "restored_factor_count": 12,
@@ -15,7 +15,7 @@
       "pv_blend_volstab19x2_mom90_amihud5_w75",
       "pv_blend_volstab19x2_mom90_amihud5_w70"
     ],
-    "production_factor_count": 14,
+    "production_factor_count": 1,
     "path": "quant_investor/factor_registry/mined_factors.json",
     "last_factor_health_review_at": "2026-07-11T13:09:41Z",
     "last_factor_health_report_json": "reports/factor_governance/health/factor_health_2026-07-11T130941Z.json",
@@ -35,13 +35,13 @@
     ],
     "last_daily_factor_mining_updated": [],
     "daily_factor_mining_policy": "writes zero-weight production_candidate records only; manual production_factor promotion required",
-    "last_production_family_governance_at": "2026-07-12T11:22:10+08:00",
-    "last_production_family_governance_run_id": "daily_factor_mining_20260712_direct_family_governance",
-    "last_production_family_governance_report": "reports/factor_governance/daily_mining/daily_factor_mining_20260712_direct_family_governance/mining/quant_branch_factor_mining_results.json",
+    "last_production_family_governance_at": "2026-07-12T13:59:25+08:00",
+    "last_production_family_governance_run_id": "weekly_factor_auto_promotion_20260712_v4",
+    "last_production_family_governance_report": "reports/factor_governance/daily_mining/weekly_factor_auto_promotion_20260712_v4/mining/quant_branch_factor_mining_results.json",
     "last_production_family_champions": [
-      "pv_blend_volstab19x2_mom90_amihud5_w70"
+      "pv_low_dollar_volume_5d"
     ],
-    "production_family_policy": "current exact 8-gate evidence; one alpha-first champion per family"
+    "production_family_policy": "single CAS/WAL transaction; exact full-A 8-gate evidence; one alpha-first diversity champion per family"
   },
   "factors": [
     {
@@ -6382,10 +6382,10 @@
     {
       "name": "pv_blend_volstab19x2_mom90_amihud5_w70",
       "version": "v20260605",
-      "state": "production_factor",
+      "state": "deprecated",
       "category": "trading_activity_momentum_liquidity",
       "implementation": "price_volume:pv_blend_volstab19x2_mom90_amihud5_w70",
-      "weight": 0.05,
+      "weight": 0.0,
       "direction": 1.0,
       "horizon_days": 30,
       "owner": "myQuant local factor governance",
@@ -6426,11 +6426,11 @@
             "覆盖率、缺失率、行业与市值分布通过。"
           ],
           "metrics": {
-            "coverage_rate": 0.9864750957854406,
-            "nan_rate": 0.01352490421455943,
-            "monthly_coverage_min": 0.9733333333333334,
-            "max_sector_coverage_share": 0.5565459610027855,
-            "max_size_bucket_coverage_share": 0.5565459610027855,
+            "coverage_rate": 0.9201008285913946,
+            "nan_rate": 0.07989917140860536,
+            "monthly_coverage_min": 0.8712438853948288,
+            "max_sector_coverage_share": 0.06347711433414956,
+            "max_size_bucket_coverage_share": 0.3378585086042065,
             "extreme_value_ratio": 0.0,
             "thematic": false
           },
@@ -6445,11 +6445,11 @@
             "IC/RankIC 达到观察门槛，且方向未显示单一年份依赖。"
           ],
           "metrics": {
-            "icir": 0.5601261973932672,
-            "mean_rankic": 0.04096240927914933,
-            "positive_ic_ratio": 0.6896551724137931,
+            "icir": 0.6209974528129593,
+            "mean_rankic": 0.042502086070997196,
+            "positive_ic_ratio": 0.7714285714285715,
             "rankic_direction_stable": true,
-            "max_single_year_ic_contribution": 0.5533266059177328
+            "max_single_year_ic_contribution": 0.39847089939847724
           },
           "severity": "info"
         },
@@ -6462,9 +6462,9 @@
             "分组收益、top quantile 与 long-short spread 通过。"
           ],
           "metrics": {
-            "top_bottom_spread": 0.021957231733032927,
-            "top_quantile_return": 0.03219040104448707,
-            "monotonicity": 0.646551724137931,
+            "top_bottom_spread": 0.01442896256086253,
+            "top_quantile_return": 0.018209442483046772,
+            "monotonicity": 0.65,
             "long_short_from_long_side": true
           },
           "severity": "info"
@@ -6478,11 +6478,11 @@
             "交易成本、滑点、换手与容量通过。"
           ],
           "metrics": {
-            "turnover": 9.890584302176304,
-            "cost_adjusted_return": 0.021874810197181457,
+            "turnover": 9.807935682970921,
+            "cost_adjusted_return": 0.01434722976350444,
             "slippage_sensitivity_ok": true,
             "execution_realism": true,
-            "capacity_pressure": 0.05016770260296931
+            "capacity_pressure": 0.15471748224156606
           },
           "severity": "info"
         },
@@ -6490,16 +6490,16 @@
           "gate_id": 6,
           "gate_key": "neutralization_exposure",
           "title": "Gate 6: 中性化和暴露分析",
-          "passed": true,
+          "passed": false,
           "reasons": [
-            "中性化后仍有 alpha，且与现有因子不过度重合。"
+            "与现有因子相关性过高，缺少独立增量。"
           ],
           "metrics": {
-            "neutralized_icir": 0.5570894072083287,
-            "existing_factor_corr": 0.5025575450932334,
+            "neutralized_icir": 0.5834631068203171,
+            "existing_factor_corr": 1.0,
             "style_exposure_only": false
           },
-          "severity": "info"
+          "severity": "error"
         },
         {
           "gate_id": 7,
@@ -6523,19 +6523,21 @@
           "gate_id": 8,
           "gate_key": "portfolio_incremental",
           "title": "Gate 8: 组合增量验证",
-          "passed": true,
+          "passed": false,
           "reasons": [
-            "baseline + new factor 相对 baseline 有组合级增量。"
+            "Sharpe delta 未证明为正。",
+            "execution cost delta 吃掉增量收益。",
+            "与现有系统信号相关性过高，组合增量不足。"
           ],
           "metrics": {
-            "master_return_delta": 0.0002240879690328136,
-            "sharpe_delta": 0.011529685534275802,
-            "max_drawdown_delta": 0.00662862325517255,
-            "turnover_delta": 0.2967175290652891,
-            "execution_cost_delta": 2.4726460755440757e-06,
-            "correlation_with_existing_signals": 0.5025575450932334
+            "master_return_delta": 1.4371654210101892e-07,
+            "sharpe_delta": -2.0038767977403893e-05,
+            "max_drawdown_delta": -3.248666337662964e-05,
+            "turnover_delta": 0.29423807048912765,
+            "execution_cost_delta": 2.4519839207427303e-06,
+            "correlation_with_existing_signals": 1.0
           },
-          "severity": "info"
+          "severity": "error"
         }
       ],
       "metrics": {
@@ -6545,28 +6547,28 @@
         "adjusted_price_consistent": true,
         "tradability_rules_defined": true,
         "missingness_explained": true,
-        "coverage_rate": 0.9864750957854406,
-        "nan_rate": 0.01352490421455943,
-        "monthly_coverage_min": 0.9733333333333334,
-        "max_sector_coverage_share": 0.5565459610027855,
-        "max_size_bucket_coverage_share": 0.5565459610027855,
+        "coverage_rate": 0.9201008285913946,
+        "nan_rate": 0.07989917140860536,
+        "monthly_coverage_min": 0.8712438853948288,
+        "max_sector_coverage_share": 0.06347711433414956,
+        "max_size_bucket_coverage_share": 0.3378585086042065,
         "extreme_value_ratio": 0.0,
-        "icir": 0.5601261973932672,
-        "mean_rankic": 0.04096240927914933,
-        "positive_ic_ratio": 0.6896551724137931,
+        "icir": 0.6209974528129593,
+        "mean_rankic": 0.042502086070997196,
+        "positive_ic_ratio": 0.7714285714285715,
         "rankic_direction_stable": true,
-        "max_single_year_ic_contribution": 0.5533266059177328,
-        "top_bottom_spread": 0.021957231733032927,
-        "top_quantile_return": 0.03219040104448707,
-        "monotonicity": 0.646551724137931,
+        "max_single_year_ic_contribution": 0.39847089939847724,
+        "top_bottom_spread": 0.01442896256086253,
+        "top_quantile_return": 0.018209442483046772,
+        "monotonicity": 0.65,
         "long_short_from_long_side": true,
-        "turnover": 9.890584302176304,
-        "cost_adjusted_return": 0.021874810197181457,
+        "turnover": 9.807935682970921,
+        "cost_adjusted_return": 0.01434722976350444,
         "slippage_sensitivity_ok": true,
         "execution_realism": true,
-        "capacity_pressure": 0.05016770260296931,
-        "neutralized_icir": 0.5570894072083287,
-        "existing_factor_corr": 0.5025575450932334,
+        "capacity_pressure": 0.15471748224156606,
+        "neutralized_icir": 0.5834631068203171,
+        "existing_factor_corr": 1.0,
         "style_exposure_only": false,
         "oos_positive_ratio": 1.0,
         "parameter_stability": true,
@@ -6574,23 +6576,22 @@
         "rebalance_frequency_robustness": true,
         "universe_robustness": true,
         "regime_robustness": true,
-        "master_return_delta": 0.0002240879690328136,
-        "sharpe_delta": 0.011529685534275802,
-        "max_drawdown_delta": 0.00662862325517255,
-        "turnover_delta": 0.2967175290652891,
-        "execution_cost_delta": 2.4726460755440757e-06,
-        "correlation_with_existing_signals": 0.5025575450932334,
-        "rank_ic_count": 29,
-        "mean_rankic_biweekly": 0.04465070124589051,
+        "master_return_delta": 1.4371654210101892e-07,
+        "sharpe_delta": -2.0038767977403893e-05,
+        "max_drawdown_delta": -3.248666337662964e-05,
+        "turnover_delta": 0.29423807048912765,
+        "execution_cost_delta": 2.4519839207427303e-06,
+        "correlation_with_existing_signals": 1.0,
+        "rank_ic_count": 35,
+        "mean_rankic_biweekly": 0.038572189669616945,
         "universe_mean_rankic": {
-          "hs300": 0.014251711910467462,
-          "zz500": 0.03536472265347563,
-          "zz1000": 0.046856640975891435
+          "full_a": 0.042502086070997196
         },
         "year_mean_rankic": {
-          "2024": 0.0547751780002248,
-          "2025": 0.013700599568307098,
-          "2026": 0.07324010765458955
+          "2023": 0.013036394507015742,
+          "2024": 0.03760286507277467,
+          "2025": 0.04939621301714675,
+          "2026": 0.07307314167275006
         },
         "blockers": []
       },
@@ -6599,7 +6600,7 @@
       "narrow_coverage": false,
       "approved_by": "user_requested_codex_delegated_promotion_20260605",
       "approved_at": "2026-06-05T01:06:42Z",
-      "deprecated_reason": "",
+      "deprecated_reason": "current_8gate_not_passed",
       "metadata": {
         "source_report": "/Users/maxwell/mySpace/myQuant/reports/factor_governance/quant_branch_factor_mining_20260604_220329/quant_branch_factor_mining_results.json",
         "source_run_timestamp": "2026-06-04T22:03:29",
@@ -6895,21 +6896,18 @@
           ]
         },
         "governance_family": "volstab_momentum_illiquidity_blend",
-        "primitive_lineage": [
-          "amihud_illiquidity",
-          "price_momentum",
-          "volume"
-        ],
-        "dominant_primitives": [
-          "volume"
-        ],
+        "primitive_lineage": [],
+        "dominant_primitives": [],
         "latest_production_family_governance": {
-          "run_id": "daily_factor_mining_20260712_direct_family_governance",
-          "run_timestamp": "2026-07-12T11:22:10+08:00",
-          "source_report": "reports/factor_governance/daily_mining/daily_factor_mining_20260712_direct_family_governance/mining/quant_branch_factor_mining_results.json",
-          "decision": "production_candidate",
-          "gates_passed": 8,
-          "family_champion": "pv_blend_volstab19x2_mom90_amihud5_w70"
+          "run_id": "weekly_factor_auto_promotion_20260712_v4",
+          "run_timestamp": "2026-07-12T13:59:25+08:00",
+          "source_report": "reports/factor_governance/daily_mining/weekly_factor_auto_promotion_20260712_v4/mining/quant_branch_factor_mining_results.json",
+          "decision": "paper_factor",
+          "gates_passed": 6,
+          "family_champion": "",
+          "source_report_sha256": "b43f1b9ba0157bda05a8ac3c61a94abbe090ef8c6d2beb019d47080cee6d9016",
+          "snapshot_id": "20260710T034319Z",
+          "diversity_policy_hash": "8e59b38b23c992f27b92cefd9565fbe1c71cd6f0bc3137b87837718aa775d920"
         }
       }
     },
@@ -9483,6 +9481,355 @@
         ],
         "manual_promotion_required": true,
         "runtime_effect": "none_until_manual_production_factor_promotion"
+      }
+    },
+    {
+      "name": "pv_low_dollar_volume_5d",
+      "version": "v20260712",
+      "state": "production_factor",
+      "category": "liquidity",
+      "implementation": "price_volume:pv_low_dollar_volume_5d",
+      "weight": 0.05,
+      "direction": 1.0,
+      "horizon_days": 30,
+      "owner": "myQuant daily factor mining automation",
+      "description": "Negative log average 5-day amount; lower dollar volume scores higher after capacity gate.",
+      "tags": [
+        "daily_factor_mining",
+        "low_dollar_volume",
+        "liquidity"
+      ],
+      "gate_results": [
+        {
+          "gate_id": 1,
+          "gate_key": "data_safety",
+          "title": "Gate 1: 数据安全",
+          "passed": true,
+          "reasons": [
+            "已确认 point-in-time、availability_date、复权与可交易性口径。"
+          ],
+          "metrics": {
+            "no_future_leakage": true,
+            "uses_availability_date": true,
+            "point_in_time_rebalance": true,
+            "adjusted_price_consistent": true,
+            "tradability_rules_defined": true,
+            "missingness_explained": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 2,
+          "gate_key": "coverage_stability",
+          "title": "Gate 2: 覆盖率和稳定性",
+          "passed": true,
+          "reasons": [
+            "覆盖率、缺失率、行业与市值分布通过。"
+          ],
+          "metrics": {
+            "coverage_rate": 0.9265844218674407,
+            "nan_rate": 0.07341557813255928,
+            "monthly_coverage_min": 0.8839972047519218,
+            "max_sector_coverage_share": 0.06325581395348837,
+            "max_size_bucket_coverage_share": 0.33736991485335854,
+            "extreme_value_ratio": 0.0,
+            "thematic": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 3,
+          "gate_key": "ic_rankic",
+          "title": "Gate 3: IC / RankIC",
+          "passed": true,
+          "reasons": [
+            "IC/RankIC 达到观察门槛，且方向未显示单一年份依赖。"
+          ],
+          "metrics": {
+            "icir": 0.6927433205045089,
+            "mean_rankic": 0.11420494556883704,
+            "positive_ic_ratio": 0.6923076923076923,
+            "rankic_direction_stable": true,
+            "max_single_year_ic_contribution": 0.4077729790600467
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 4,
+          "gate_key": "group_returns",
+          "title": "Gate 4: 分组收益",
+          "passed": true,
+          "reasons": [
+            "分组收益、top quantile 与 long-short spread 通过。"
+          ],
+          "metrics": {
+            "top_bottom_spread": 0.024870065733739517,
+            "top_quantile_return": 0.025317415908911713,
+            "monotonicity": 0.6666666666666666,
+            "long_short_from_long_side": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 5,
+          "gate_key": "cost_turnover",
+          "title": "Gate 5: 交易成本和换手",
+          "passed": true,
+          "reasons": [
+            "交易成本、滑点、换手与容量通过。"
+          ],
+          "metrics": {
+            "turnover": 5.8775633922697565,
+            "cost_adjusted_return": 0.024821086038803935,
+            "slippage_sensitivity_ok": true,
+            "execution_realism": true,
+            "capacity_pressure": 0.39366142125944886
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 6,
+          "gate_key": "neutralization_exposure",
+          "title": "Gate 6: 中性化和暴露分析",
+          "passed": true,
+          "reasons": [
+            "中性化后仍有 alpha，且与现有因子不过度重合。"
+          ],
+          "metrics": {
+            "neutralized_icir": 0.8969174163741083,
+            "existing_factor_corr": 0.1587164920177244,
+            "style_exposure_only": false
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 7,
+          "gate_key": "oos_robustness",
+          "title": "Gate 7: 样本外和稳健性",
+          "passed": true,
+          "reasons": [
+            "walk-forward、参数、日期、频率、universe 与市场阶段稳健性通过。"
+          ],
+          "metrics": {
+            "oos_positive_ratio": 1.0,
+            "parameter_stability": true,
+            "date_range_robustness": true,
+            "rebalance_frequency_robustness": true,
+            "universe_robustness": true,
+            "regime_robustness": true
+          },
+          "severity": "info"
+        },
+        {
+          "gate_id": 8,
+          "gate_key": "portfolio_incremental",
+          "title": "Gate 8: 组合增量验证",
+          "passed": true,
+          "reasons": [
+            "baseline + new factor 相对 baseline 有组合级增量。"
+          ],
+          "metrics": {
+            "master_return_delta": 0.0001600686595114864,
+            "sharpe_delta": 0.0049311372067656345,
+            "max_drawdown_delta": -0.0007080608615087636,
+            "turnover_delta": 0.17632690176809268,
+            "execution_cost_delta": 1.4693908480674392e-06,
+            "correlation_with_existing_signals": 0.1587164920177244
+          },
+          "severity": "info"
+        }
+      ],
+      "metrics": {
+        "no_future_leakage": true,
+        "uses_availability_date": true,
+        "point_in_time_rebalance": true,
+        "adjusted_price_consistent": true,
+        "tradability_rules_defined": true,
+        "missingness_explained": true,
+        "coverage_rate": 0.9265844218674407,
+        "nan_rate": 0.07341557813255928,
+        "monthly_coverage_min": 0.8839972047519218,
+        "max_sector_coverage_share": 0.06325581395348837,
+        "max_size_bucket_coverage_share": 0.33736991485335854,
+        "extreme_value_ratio": 0.0,
+        "icir": 0.6927433205045089,
+        "mean_rankic": 0.11420494556883704,
+        "positive_ic_ratio": 0.6923076923076923,
+        "rankic_direction_stable": true,
+        "max_single_year_ic_contribution": 0.4077729790600467,
+        "top_bottom_spread": 0.024870065733739517,
+        "top_quantile_return": 0.025317415908911713,
+        "monotonicity": 0.6666666666666666,
+        "long_short_from_long_side": true,
+        "turnover": 5.8775633922697565,
+        "cost_adjusted_return": 0.024821086038803935,
+        "slippage_sensitivity_ok": true,
+        "execution_realism": true,
+        "capacity_pressure": 0.39366142125944886,
+        "neutralized_icir": 0.8969174163741083,
+        "existing_factor_corr": 0.1587164920177244,
+        "style_exposure_only": false,
+        "oos_positive_ratio": 1.0,
+        "parameter_stability": true,
+        "date_range_robustness": true,
+        "rebalance_frequency_robustness": true,
+        "universe_robustness": true,
+        "regime_robustness": true,
+        "master_return_delta": 0.0001600686595114864,
+        "sharpe_delta": 0.0049311372067656345,
+        "max_drawdown_delta": -0.0007080608615087636,
+        "turnover_delta": 0.17632690176809268,
+        "execution_cost_delta": 1.4693908480674392e-06,
+        "correlation_with_existing_signals": 0.1587164920177244,
+        "rank_ic_count": 39,
+        "mean_rankic_biweekly": 0.12563480304707852,
+        "universe_mean_rankic": {
+          "full_a": 0.11420494556883704
+        },
+        "year_mean_rankic": {
+          "2023": 0.16407187568325202,
+          "2024": 0.08475829147074941,
+          "2025": 0.15873646493794671,
+          "2026": -0.0217325913104456
+        },
+        "blockers": []
+      },
+      "admission_decision": "production_candidate",
+      "thematic": false,
+      "narrow_coverage": false,
+      "approved_by": "scheduled_full_a_8gate_family_governance",
+      "approved_at": "2026-07-12T13:59:25+08:00",
+      "deprecated_reason": "",
+      "metadata": {
+        "source_report": "reports/factor_governance/daily_mining/weekly_factor_auto_promotion_20260712_v4/mining/quant_branch_factor_mining_results.json",
+        "registry_write_source": "daily_factor_mining_automation",
+        "registry_write_run_id": "weekly_factor_auto_promotion_20260712_v4",
+        "registry_write_at": "2026-07-12T13:59:25+08:00",
+        "effective_analysis_start_date": "2023-03-31",
+        "expression": "",
+        "params": {},
+        "primitive_lineage": [
+          "traded_amount"
+        ],
+        "primitive_contributions": {
+          "traded_amount": 1.0
+        },
+        "dominant_primitives": [
+          "traded_amount"
+        ],
+        "diversity_selection": {
+          "policy_version": "candidate-diversity-policy.v1",
+          "policy_hash": "8e59b38b23c992f27b92cefd9565fbe1c71cd6f0bc3137b87837718aa775d920",
+          "status": "champion_not_applicable_single_candidate",
+          "skip_reason": "",
+          "redundancy_stage": "",
+          "family_champion": "pv_low_dollar_volume_5d",
+          "lineage_component_id": "lineage-001",
+          "lineage_champion": "pv_low_dollar_volume_5d",
+          "correlation_cluster_id": "correlation-001",
+          "cluster_champion": "pv_low_dollar_volume_5d",
+          "max_abs_candidate_corr": null,
+          "valid_corr_date_count": 0,
+          "final_registry_write_eligible": true
+        },
+        "source_notes": [
+          {
+            "title": "股票成交概况 | 上海证券交易所",
+            "url": "https://www.sse.com.cn/market/stockdata/overview/day/",
+            "source_type": "exchange_market_status",
+            "observed_at": "2026-07-11T21:16:54+08:00",
+            "idea_dimension": "recent_a_share_market_state_liquidity_turnover_participation",
+            "local_computable_mapping": "Use strict Parquet amount, vol, close, return breadth, suspension and limit masks to compute rolling amount participation, liquidity stability, capacity filters, and breadth-aware price-volume candidates.",
+            "notes": "Chrome read-only verification loaded the official SSE daily stock transaction overview and read back its title and final URL. It is market-context inspiration only; no external values are ingested into mining."
+          },
+          {
+            "title": "深圳证券交易所-市场总貌",
+            "url": "https://www.szse.cn/market/overview/index.html",
+            "source_type": "exchange_market_status",
+            "observed_at": "2026-07-11T21:16:54+08:00",
+            "idea_dimension": "recent_a_share_market_state_board_liquidity_capacity",
+            "local_computable_mapping": "Use strict Parquet amount, vol, close, returns, and local board labels to compute board breadth, turnover participation, liquidity persistence, and capacity-aware filters.",
+            "notes": "Chrome read-only verification loaded the official SZSE market overview and read back its title and final URL. It does not replace local canonical bars or PIT evidence."
+          },
+          {
+            "title": "csindex.com.cn/en/indices/index-detail/000300#/",
+            "url": "https://www.csindex.com.cn/en/indices/index-detail/000300#/",
+            "source_type": "index_provider_market_context",
+            "observed_at": "2026-07-11T21:16:54+08:00",
+            "idea_dimension": "broad_a_share_benchmark_trend_relative_strength",
+            "local_computable_mapping": "Use locally available full-A bars to derive benchmark-relative momentum, reversal, downside beta, trend quality, and neutralization checks without importing live index observations.",
+            "notes": "Chrome read-only verification loaded the CSI 300 index-detail URL; the returned page title was URL-like. The page is benchmark context only and cannot bypass local evidence gates."
+          },
+          {
+            "title": "Kenneth R. French - Data Library",
+            "url": "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html",
+            "source_type": "academic_factor_library",
+            "observed_at": "2026-07-11T21:16:54+08:00",
+            "idea_dimension": "size_value_momentum_reversal_profitability_investment",
+            "local_computable_mapping": "Map the taxonomy to local size or capacity, PIT book-to-market, profitability, asset growth, and cash-flow measures plus Parquet momentum and short- or long-horizon reversal portfolio sorts.",
+            "notes": "Chrome read-only verification loaded the Ken French Data Library and read back its title and final URL. Published factor returns are not imported; every mapped template must pass myQuant local validation."
+          },
+          {
+            "title": "Momentum Crashes | NBER",
+            "url": "https://www.nber.org/papers/w20439",
+            "source_type": "academic_research",
+            "observed_at": "2026-07-11T21:16:54+08:00",
+            "idea_dimension": "momentum_reversal_crash_downside_regime",
+            "local_computable_mapping": "Combine locally computed medium-horizon momentum with short reversal, drawdown, downside semivariance, skew or crash-risk controls, turnover, cost, and regime robustness gates.",
+            "notes": "Chrome read-only verification loaded the NBER paper page and read back its title and final URL. It motivates risk-controlled templates only; it is not positive evidence for admission."
+          },
+          {
+            "title": "Betting Against Beta | NBER",
+            "url": "https://www.nber.org/papers/w16601",
+            "source_type": "academic_research",
+            "observed_at": "2026-07-11T21:16:54+08:00",
+            "idea_dimension": "low_beta_low_volatility_downside_risk_leverage_constraint",
+            "local_computable_mapping": "Compute rolling beta, idiosyncratic volatility, downside volatility, and drawdown from local bars; combine with disclosure-aligned PIT leverage only where source timing is valid.",
+            "notes": "Chrome read-only verification loaded the NBER paper page and read back its title and final URL. Any leverage mapping remains PIT-gated and fail-closed when local disclosure data are unavailable."
+          },
+          {
+            "title": "Factor Investing | MSCI",
+            "url": "https://www.msci.com/data-and-analytics/factor-investing",
+            "source_type": "institutional_factor_research",
+            "observed_at": "2026-07-11T21:16:54+08:00",
+            "idea_dimension": "quality_value_growth_momentum_low_vol_size_multi_factor_taxonomy",
+            "local_computable_mapping": "Map factor families to local PIT ROE, margins, accruals, cash-flow yield, leverage, value and growth fields plus Parquet momentum, volatility, liquidity, and capacity templates.",
+            "notes": "Chrome read-only verification loaded the public MSCI factor-investing page and read back its title and final URL. It is taxonomy guidance only; local PIT and 8-gate evidence remain authoritative."
+          },
+          {
+            "title": "FTSE Global Factor Index Series | LSEG",
+            "url": "https://www.lseg.com/en/ftse-russell/indices/factor",
+            "source_type": "index_provider_factor_methodology",
+            "observed_at": "2026-07-11T21:16:54+08:00",
+            "idea_dimension": "quality_value_momentum_low_vol_size_multi_factor_construction",
+            "local_computable_mapping": "Use local factor z-scores or ranks, robust clipping, liquidity-capacity screens, weighted composites, redundancy correlation checks, and portfolio-increment tests.",
+            "notes": "Chrome read-only verification loaded the FTSE Russell factor page and read back its title and final URL. No index values or proprietary signals are imported."
+          },
+          {
+            "title": "Replicating Anomalies | NBER",
+            "url": "https://www.nber.org/papers/w23394",
+            "source_type": "academic_research_methodology",
+            "observed_at": "2026-07-11T21:16:54+08:00",
+            "idea_dimension": "factor_replication_multiple_testing_redundancy_persistence",
+            "local_computable_mapping": "Pressure-test candidates with local IC and ICIR, sign and yearly stability, OOS subperiod robustness, existing-factor correlation, family coverage, turnover, cost, and portfolio incremental gates.",
+            "notes": "Chrome read-only verification loaded the NBER paper page and read back its title and final URL. It reinforces fail-closed replication discipline and cannot itself qualify a candidate."
+          }
+        ],
+        "manual_promotion_required": false,
+        "runtime_effect": "production_quant_branch",
+        "governance_family": "low_dollar_volume",
+        "latest_production_family_governance": {
+          "run_id": "weekly_factor_auto_promotion_20260712_v4",
+          "run_timestamp": "2026-07-12T13:59:25+08:00",
+          "source_report": "reports/factor_governance/daily_mining/weekly_factor_auto_promotion_20260712_v4/mining/quant_branch_factor_mining_results.json",
+          "decision": "production_candidate",
+          "gates_passed": 8,
+          "family_champion": "pv_low_dollar_volume_5d",
+          "source_report_sha256": "b43f1b9ba0157bda05a8ac3c61a94abbe090ef8c6d2beb019d47080cee6d9016",
+          "snapshot_id": "20260710T034319Z",
+          "diversity_policy_hash": "8e59b38b23c992f27b92cefd9565fbe1c71cd6f0bc3137b87837718aa775d920"
+        },
+        "automatic_promotion_policy": "full_a_8gate_diversity_champion"
       }
     }
   ]

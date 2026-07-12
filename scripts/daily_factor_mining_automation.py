@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -17,8 +18,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.mine_quant_branch_factors import (  # noqa: E402
     DEFAULT_REGISTRY_PATH,
+    _production_market_evidence_blocker,
     apply_production_family_governance,
-    apply_production_candidate_registry_updates,
     parse_args as parse_mining_args,
     run_mining,
     write_outputs,
@@ -26,6 +27,9 @@ from scripts.mine_quant_branch_factors import (  # noqa: E402
 from scripts.retest_aquant_alpha_mix_8gate import _json_default  # noqa: E402
 from quant_investor.factors.pit_fundamentals import (  # noqa: E402
     DEFAULT_FUNDAMENTAL_MART_ROOT,
+)
+from quant_investor.factors.registry_store import (  # noqa: E402
+    load_registry_snapshot_strict,
 )
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
@@ -117,6 +121,62 @@ def compact_download_status(
             "expected_count": same_day_probe.get("expected_count"),
             "coverage_ratio": same_day_probe.get("coverage_ratio"),
         },
+    }
+
+
+def strict_full_a_market_evidence(
+    *,
+    data_root: str | Path,
+    universes: str,
+    loaded_symbol_count: int,
+) -> dict[str, Any]:
+    root = Path(data_root).expanduser()
+    parquet_root = (
+        root
+        if root.name == "cn" and root.parent.name == "parquet"
+        else root / "parquet" / "cn"
+    )
+    pointer_path = parquet_root / "_latest.json"
+    pointer = _load_json(pointer_path) if pointer_path.exists() else {}
+    coverage = dict(pointer.get("coverage", {}) or {})
+    expected = int(
+        coverage.get("expected_scope_count")
+        or coverage.get("coverage_complete_count")
+        or 0
+    )
+    table_root_text = str(pointer.get("table_root", "") or "").strip()
+    serving_root_text = str(
+        pointer.get("derived_serving_root", "") or ""
+    ).strip()
+    manifest_path_text = str(pointer.get("manifest_path", "") or "").strip()
+    return {
+        "backend": str(
+            os.getenv("MYQUANT_MARKET_DATA_BACKEND", "parquet")
+        ).lower(),
+        "mode_policy": str(
+            os.getenv("MYQUANT_MARKET_DATA_MODE_POLICY", "strict")
+        ).lower(),
+        "requested_universes": [
+            item.strip().lower()
+            for item in str(universes).split(",")
+            if item.strip()
+        ],
+        "pointer_path": str(pointer_path),
+        "pointer_status": pointer.get("status"),
+        "snapshot_id": pointer.get("snapshot_id"),
+        "latest_complete_trade_date": pointer.get(
+            "latest_complete_trade_date"
+        ),
+        "coverage_complete": coverage.get("complete") is True,
+        "coverage_ratio": coverage.get("coverage_ratio"),
+        "expected_symbol_count": expected,
+        "loaded_symbol_count": int(loaded_symbol_count),
+        "table_root_exists": bool(table_root_text)
+        and Path(table_root_text).exists(),
+        "serving_root_exists": bool(serving_root_text)
+        and Path(serving_root_text).exists(),
+        "manifest_exists": bool(manifest_path_text)
+        and Path(manifest_path_text).exists(),
     }
 
 
@@ -291,6 +351,10 @@ def render_summary_markdown(payload: Mapping[str, Any]) -> str:
     production_governance = dict(
         payload.get("production_family_governance_manifest", {}) or {}
     )
+    production_champions = [
+        *production_governance.get("promoted_factors", []),
+        *production_governance.get("kept_factors", []),
+    ]
     lines = [
         "# myQuant Daily Factor Mining Automation",
         "",
@@ -314,15 +378,15 @@ def render_summary_markdown(payload: Mapping[str, Any]) -> str:
         "- Production family governance status: "
         f"{production_governance.get('status')}",
         "- Production family champions: "
-        f"{', '.join(production_governance.get('kept_factors', [])) or '-'}",
+        f"{', '.join(production_champions) or '-'}",
         "",
         (
-            "Registry writes are limited to zero-weight "
-            "production_candidate records."
+            "The scheduled path uses one CAS/WAL transaction to promote only "
+            "current strict full-A 8-gate diversity champions."
         ),
         (
-            "No production_factor promotion, portfolio run, broker action, "
-            "or strategy record is performed."
+            "No portfolio run, broker action, order, or strategy record is "
+            "performed."
         ),
         "",
         "## Positive Candidate Factors",
@@ -359,6 +423,17 @@ def render_summary_markdown(payload: Mapping[str, Any]) -> str:
             ),
             "```",
             "",
+            "## Production Market Evidence",
+            "",
+            "```json",
+            json.dumps(
+                payload.get("production_market_evidence", {}),
+                ensure_ascii=False,
+                indent=2,
+                default=_json_default,
+            ),
+            "```",
+            "",
         ]
     )
     return "\n".join(lines)
@@ -383,7 +458,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--source-notes-json", default="")
     parser.add_argument("--run-id", default="")
-    parser.add_argument("--universes", default="hs300,zz500,zz1000")
+    parser.add_argument("--universes", default="full_a")
     parser.add_argument("--windows", default="5,10,15,20,25,30,40,60,90,120")
     parser.add_argument("--horizon-days", type=int, default=30)
     parser.add_argument("--warmup-days", type=int, default=260)
@@ -473,12 +548,52 @@ def run_daily_automation(args: argparse.Namespace) -> dict[str, Any]:
     diverse_positive_champion_count = int(
         counts["diverse_positive_champion_count"]
     )
-    success_gate_passed = diverse_positive_champion_count >= int(
-        args.min_positive_candidates
+    candidate_promotion_gate_passed = (
+        diverse_positive_champion_count >= int(
+            args.min_positive_candidates
+        )
+    )
+    registry_snapshot = load_registry_snapshot_strict(args.registry_path)
+    incumbent_factors = sorted(
+        factor.name
+        for factor in registry_snapshot.registry.selectable_factors()
+    )
+
+    registry_write_requested = not bool(args.no_registry_write)
+    report_json_path = (
+        Path(mining_payload["output_dir"])
+        / "quant_branch_factor_mining_results.json"
+    )
+    market_evidence = strict_full_a_market_evidence(
+        data_root=args.data_root,
+        universes=str(args.universes),
+        loaded_symbol_count=int(mining_payload.get("loaded_symbol_count", 0)),
+    )
+    market_evidence["factor_exposure_evidence"] = dict(
+        mining_payload.get("factor_exposure_evidence", {}) or {}
+    )
+    requested_universes = [
+        item.strip()
+        for item in str(args.universes).split(",")
+        if item.strip()
+    ]
+    market_evidence_blocker = _production_market_evidence_blocker(
+        universes=requested_universes,
+        market_evidence=market_evidence,
+    )
+    market_evidence_ready = not market_evidence_blocker
+    incumbent_carry_forward = bool(
+        market_evidence_ready
+        and not candidate_promotion_gate_passed
+        and incumbent_factors
+    )
+    success_gate_passed = bool(
+        market_evidence_ready
+        and (candidate_promotion_gate_passed or incumbent_carry_forward)
     )
     fail_closed_reason = ""
     if not success_gate_passed:
-        fail_closed_reason = (
+        fail_closed_reason = market_evidence_blocker or (
             "no_diverse_registry_champion"
             if int(counts["positive_candidate_count"]) > 0
             else (
@@ -488,49 +603,11 @@ def run_daily_automation(args: argparse.Namespace) -> dict[str, Any]:
             )
         )
 
-    registry_write_requested = not bool(args.no_registry_write)
-    report_json_path = (
-        Path(mining_payload["output_dir"])
-        / "quant_branch_factor_mining_results.json"
-    )
-    if success_gate_passed and registry_write_requested:
-        qualified_positive = [
-            item
-            for item in results
-            if item.get("decision") == "production_candidate"
-            and _has_positive_evidence(item)
-        ]
-        registry_mutation_path = mining_output_dir / (
-            f"registry_mutation_{timestamp_slug}.json"
-        )
-        registry_manifest = apply_production_candidate_registry_updates(
-            registry_path=str(args.registry_path),
-            qualified_results=qualified_positive,
-            run_timestamp=run_timestamp,
-            run_id=run_id,
-            report_path=str(report_json_path),
-            owner=str(args.registry_owner),
-            source_notes=source_notes,
-            horizon_days=int(args.horizon_days),
-            max_candidates=int(args.max_registry_candidates),
-            journal_path=registry_mutation_path,
-            write=True,
-        )
-    else:
-        registry_manifest = _registry_manifest_for_failed_gate(
-            registry_path=str(args.registry_path),
-            run_id=run_id,
-            report_path=str(report_json_path),
-            max_candidates=int(args.max_registry_candidates),
-            qualified_count=int(counts["qualified_count"]),
-            requested=registry_write_requested,
-            fail_closed_reason=fail_closed_reason,
-        )
-
-    production_governance_requested = bool(
-        success_gate_passed and registry_write_requested
-    )
-    if production_governance_requested:
+    if (
+        candidate_promotion_gate_passed
+        and success_gate_passed
+        and registry_write_requested
+    ):
         production_governance_manifest = apply_production_family_governance(
             registry_path=str(args.registry_path),
             results=results,
@@ -539,21 +616,47 @@ def run_daily_automation(args: argparse.Namespace) -> dict[str, Any]:
             report_path=str(report_json_path),
             journal_path=mining_output_dir
             / f"production_family_governance_{timestamp_slug}.json",
+            universes=requested_universes,
+            market_evidence=market_evidence,
+            owner=str(args.registry_owner),
+            source_notes=source_notes,
+            horizon_days=int(args.horizon_days),
+            max_champions=int(args.max_registry_candidates),
             write=True,
         )
-    else:
+    elif incumbent_carry_forward:
         production_governance_manifest = {
-            "requested": False,
+            "requested": registry_write_requested,
             "registry_path": str(args.registry_path),
             "run_id": run_id,
             "source_report": str(report_json_path),
-            "status": "not_requested",
+            "status": "no_registry_changes",
+            "carry_forward_reason": "no_new_8gate_challenger",
+            "kept_factors": incumbent_factors,
+            "promoted_factors": [],
+            "deprecated_factors": [],
+            "before_registry_sha256": registry_snapshot.registry_sha256,
+            "after_registry_sha256": registry_snapshot.registry_sha256,
+            "fail_closed_reason": "",
+        }
+    else:
+        production_governance_manifest = {
+            "requested": registry_write_requested,
+            "registry_path": str(args.registry_path),
+            "run_id": run_id,
+            "source_report": str(report_json_path),
+            "status": (
+                "success_gate_failed"
+                if registry_write_requested
+                else "not_requested"
+            ),
             "fail_closed_reason": fail_closed_reason,
         }
+    registry_manifest = production_governance_manifest
 
     mining_payload["registry_write_requested"] = registry_write_requested
     mining_payload["registry_write"] = (
-        registry_manifest.get("status") == "updated"
+        registry_manifest.get("status") in {"updated", "no_registry_changes"}
     )
     mining_payload["registry_update_manifest"] = registry_manifest
     mining_payload["production_family_governance_manifest"] = (
@@ -576,8 +679,13 @@ def run_daily_automation(args: argparse.Namespace) -> dict[str, Any]:
         "source_notes_status": source_status,
         "source_note_count": len(source_notes),
         "market_data_status": market_status,
+        "production_market_evidence": market_evidence,
+        "market_evidence_blocker": market_evidence_blocker,
         "candidate_count": int(mining_payload.get("candidate_count", 0)),
         "evidence_counts": counts,
+        "candidate_promotion_gate_passed": candidate_promotion_gate_passed,
+        "incumbent_carry_forward": incumbent_carry_forward,
+        "incumbent_factors": incumbent_factors,
         "success_gate_passed": success_gate_passed,
         "fail_closed_reason": fail_closed_reason,
         "registry_write_requested": registry_write_requested,
@@ -613,6 +721,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         json.dumps(
             {
                 "success_gate_passed": payload["success_gate_passed"],
+                "candidate_promotion_gate_passed": payload[
+                    "candidate_promotion_gate_passed"
+                ],
+                "incumbent_carry_forward": payload[
+                    "incumbent_carry_forward"
+                ],
                 "fail_closed_reason": payload["fail_closed_reason"],
                 "candidate_count": payload["candidate_count"],
                 "positive_evidence_count": payload["evidence_counts"][
@@ -639,7 +753,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             default=_json_default,
         )
     )
-    if args.strict_positive_evidence and not payload["success_gate_passed"]:
+    registry_status = str(payload["registry_update_manifest"].get("status", ""))
+    if args.strict_positive_evidence and (
+        not payload["success_gate_passed"]
+        or (
+            payload["registry_write_requested"]
+            and registry_status not in {"updated", "no_registry_changes"}
+        )
+    ):
         return 2
     return 0
 

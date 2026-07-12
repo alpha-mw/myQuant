@@ -4,11 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -66,6 +67,10 @@ class RetestContext:
     biweekly_dates: list[pd.Timestamp]
     existing_composite: pd.DataFrame | None
     existing_blocker: str = ""
+    sector_by_symbol: dict[str, str] = field(default_factory=dict)
+    size_bucket_by_symbol: dict[str, str] = field(default_factory=dict)
+    size_bucket_by_date: pd.DataFrame = field(default_factory=pd.DataFrame)
+    exposure_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def _json_default(value: Any) -> Any:
@@ -477,29 +482,57 @@ def _sharpe(returns: pd.Series) -> float:
 def _coverage_metrics(
     signal: pd.DataFrame,
     dates: Sequence[pd.Timestamp],
-    universe_by_symbol: Mapping[str, str],
+    sector_by_symbol: Mapping[str, str],
+    size_bucket_by_symbol: Mapping[str, str],
+    size_bucket_by_date: pd.DataFrame | None = None,
 ) -> dict[str, float]:
     scoped = signal.reindex(dates).replace([np.inf, -np.inf], np.nan)
     denominator = max(scoped.size, 1)
     valid_mask = scoped.notna()
     per_date = valid_mask.sum(axis=1).div(max(scoped.shape[1], 1))
-    bucket_shares: list[float] = []
+    sector_shares: list[float] = []
+    size_bucket_shares: list[float] = []
+    dynamic_sizes = (
+        size_bucket_by_date
+        if size_bucket_by_date is not None
+        else pd.DataFrame()
+    )
     for date, row in valid_mask.iterrows():
         symbols = [symbol for symbol, valid in row.items() if bool(valid)]
         if not symbols:
             continue
-        buckets: dict[str, int] = {}
+        date_sizes = (
+            dynamic_sizes.loc[date]
+            if not dynamic_sizes.empty and date in dynamic_sizes.index
+            else pd.Series(dtype=object)
+        )
+        sectors: dict[str, int] = {}
+        size_buckets: dict[str, int] = {}
         for symbol in symbols:
-            bucket = universe_by_symbol.get(str(symbol), "unknown")
-            buckets[bucket] = buckets.get(bucket, 0) + 1
-        bucket_shares.append(max(buckets.values()) / len(symbols))
+            sector = sector_by_symbol.get(str(symbol), "unknown")
+            size_bucket = (
+                date_sizes.get(str(symbol), "unknown")
+                if not date_sizes.empty
+                else size_bucket_by_symbol.get(str(symbol), "unknown")
+            )
+            if pd.isna(size_bucket):
+                size_bucket = "unknown"
+            sectors[sector] = sectors.get(sector, 0) + 1
+            size_text = str(size_bucket)
+            size_buckets[size_text] = size_buckets.get(size_text, 0) + 1
+        sector_shares.append(max(sectors.values()) / len(symbols))
+        size_bucket_shares.append(max(size_buckets.values()) / len(symbols))
     z = scoped.sub(scoped.mean(axis=1), axis=0).div(scoped.std(axis=1).replace(0.0, np.nan), axis=0)
     return {
         "coverage_rate": float(valid_mask.sum().sum() / denominator),
         "nan_rate": float(1.0 - valid_mask.sum().sum() / denominator),
         "monthly_coverage_min": float(per_date.min()) if not per_date.empty else 0.0,
-        "max_sector_coverage_share": float(max(bucket_shares)) if bucket_shares else 1.0,
-        "max_size_bucket_coverage_share": float(max(bucket_shares)) if bucket_shares else 1.0,
+        "max_sector_coverage_share": (
+            float(max(sector_shares)) if sector_shares else 1.0
+        ),
+        "max_size_bucket_coverage_share": (
+            float(max(size_bucket_shares)) if size_bucket_shares else 1.0
+        ),
         "extreme_value_ratio": float((z.abs() > 10.0).sum().sum() / denominator),
     }
 
@@ -524,13 +557,45 @@ def _capacity_pressure(signal: pd.DataFrame, amount: pd.DataFrame, dates: Sequen
     return float(min(1.0, 10_000_000.0 / median_amount_yuan))
 
 
-def _neutralize_by_universe(signal: pd.DataFrame, universe_by_symbol: Mapping[str, str]) -> pd.DataFrame:
-    neutral = signal.copy()
-    buckets = sorted(set(universe_by_symbol.values()))
-    for bucket in buckets:
-        columns = [symbol for symbol, item in universe_by_symbol.items() if item == bucket and symbol in neutral.columns]
-        if columns:
-            neutral[columns] = neutral[columns].sub(neutral[columns].mean(axis=1), axis=0)
+def _neutralize_by_exposure(
+    signal: pd.DataFrame,
+    context: RetestContext,
+    dates: Sequence[pd.Timestamp],
+) -> pd.DataFrame:
+    scoped_dates = [date for date in dates if date in signal.index]
+    scoped_signal = signal.reindex(index=scoped_dates)
+    neutral = pd.DataFrame(
+        np.nan,
+        index=scoped_signal.index,
+        columns=scoped_signal.columns,
+    )
+    sectors = context.sector_by_symbol or context.universe_by_symbol
+    static_sizes = context.size_bucket_by_symbol or context.universe_by_symbol
+    dynamic_sizes = context.size_bucket_by_date
+    for date, values in scoped_signal.iterrows():
+        date_sizes = (
+            dynamic_sizes.loc[date]
+            if not dynamic_sizes.empty and date in dynamic_sizes.index
+            else pd.Series(dtype=object)
+        )
+        buckets: dict[str, str] = {}
+        for symbol in scoped_signal.columns:
+            sector = str(sectors.get(str(symbol), "unknown"))
+            size = (
+                date_sizes.get(str(symbol), "unknown")
+                if not date_sizes.empty
+                else static_sizes.get(str(symbol), "unknown")
+            )
+            size_text = "unknown" if pd.isna(size) else str(size)
+            if sector == "unknown" or size_text == "unknown":
+                continue
+            buckets[str(symbol)] = f"sector={sector}|size={size_text}"
+        if not buckets:
+            continue
+        groups = pd.Series(buckets)
+        scoped = values.reindex(groups.index).astype(float)
+        group_means = scoped.groupby(groups).transform("mean")
+        neutral.loc[date, groups.index] = scoped.sub(group_means)
     return neutral
 
 
@@ -579,11 +644,17 @@ def candidate_metrics(
     incremental_sleeve: float,
 ) -> dict[str, Any]:
     dates = context.rebalance_dates
-    coverage = _coverage_metrics(signal, dates, context.universe_by_symbol)
+    coverage = _coverage_metrics(
+        signal,
+        dates,
+        context.sector_by_symbol or context.universe_by_symbol,
+        context.size_bucket_by_symbol or context.universe_by_symbol,
+        context.size_bucket_by_date,
+    )
     ics = _rank_ic_series(signal, context.forward_return, dates)
     biweekly_ics = _rank_ic_series(signal, context.forward_return, context.biweekly_dates)
     neutral_ics = _rank_ic_series(
-        _neutralize_by_universe(signal, context.universe_by_symbol),
+        _neutralize_by_exposure(signal, context, dates),
         context.forward_return,
         dates,
     )
@@ -752,18 +823,382 @@ def _runtime_smoke(
     return result
 
 
+def load_fundamental_exposure_maps(
+    *,
+    mart_root: str | Path,
+    symbols: Sequence[str],
+    as_of: pd.Timestamp | None,
+    evaluation_dates: Sequence[pd.Timestamp] = (),
+    close_by_date: pd.DataFrame | None = None,
+) -> tuple[
+    dict[str, str],
+    dict[str, str],
+    pd.DataFrame,
+    dict[str, Any],
+]:
+    wanted = {normalize_ts_code(symbol) for symbol in symbols}
+    base = Path(mart_root).expanduser()
+    if base.name in {
+        "fundamental_daily",
+        "fundamental_period",
+        "fundamental_quarantine",
+    }:
+        base = base.parent
+    stock_basic_path = (
+        base / "dag_core_raw" / "table=stock_basic" / "part.parquet"
+    )
+    daily_basic_path = base / "daily_basic" / "part.parquet"
+    daily_basic_ext_path = (
+        base / "dag_core_raw" / "table=daily_basic_ext" / "part.parquet"
+    )
+    catalog_path = base / "_catalog.json"
+    dates = sorted(
+        {
+            pd.Timestamp(date).normalize()
+            for date in evaluation_dates
+            if not pd.isna(date)
+        }
+    )
+    if not dates and as_of is not None and not pd.isna(as_of):
+        dates = [pd.Timestamp(as_of).normalize()]
+    date_values = [int(date.strftime("%Y%m%d")) for date in dates]
+    try:
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+        catalog_tables = dict(catalog.get("tables", {}) or {})
+        stock_catalog = dict(
+            catalog_tables.get("dag_core_raw/stock_basic", {}) or {}
+        )
+        daily_catalog = dict(catalog_tables.get("daily_basic", {}) or {})
+        daily_ext_catalog = dict(
+            catalog_tables.get("dag_core_raw/daily_basic_ext", {}) or {}
+        )
+        stock = pd.read_parquet(
+            stock_basic_path,
+            columns=["ts_code", "industry"],
+        )
+        daily = pd.read_parquet(
+            daily_basic_path,
+            columns=["ts_code", "trade_date", "total_mv"],
+            filters=[("trade_date", "in", date_values)],
+        )
+        daily_ext = pd.read_parquet(
+            daily_basic_ext_path,
+            columns=[
+                "ts_code",
+                "trade_date",
+                "total_share",
+                "total_mv",
+                "close",
+            ],
+        )
+    except Exception as exc:
+        return {}, {}, pd.DataFrame(), {
+            "status": "blocked",
+            "blocker": f"fundamental_exposure_load_failed:{exc}",
+            "source": "strict_parquet_hybrid_market_cap_exposure",
+        }
+
+    def file_sha256(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    catalog_validated = all(
+        (
+            entry.get("status") == "ok"
+            and str(entry.get("sha256", "")) == file_sha256(path)
+            and int(entry.get("row_count", -1)) > 0
+        )
+        for entry, path in (
+            (stock_catalog, stock_basic_path),
+            (daily_catalog, daily_basic_path),
+            (daily_ext_catalog, daily_basic_ext_path),
+        )
+    )
+    stock = stock.copy()
+    daily = daily.copy()
+    daily_ext = daily_ext.copy()
+    stock["ts_code"] = stock["ts_code"].map(normalize_ts_code)
+    daily["ts_code"] = daily["ts_code"].map(normalize_ts_code)
+    daily_ext["ts_code"] = daily_ext["ts_code"].map(normalize_ts_code)
+    daily["trade_date"] = pd.to_datetime(
+        daily["trade_date"].astype(str),
+        errors="coerce",
+    )
+    daily_ext["trade_date"] = pd.to_datetime(
+        daily_ext["trade_date"].astype(str),
+        errors="coerce",
+    )
+    stock = stock[stock["ts_code"].isin(wanted)]
+    daily = daily[daily["ts_code"].isin(wanted)].dropna(
+        subset=["trade_date"]
+    )
+    daily_ext = daily_ext[daily_ext["ts_code"].isin(wanted)].dropna(
+        subset=["trade_date"]
+    )
+    if as_of is not None and not pd.isna(as_of):
+        daily_ext = daily_ext[
+            daily_ext["trade_date"] <= pd.Timestamp(as_of)
+        ]
+
+    def bucket_text(value: Any) -> str:
+        if value is None or pd.isna(value):
+            return "unknown"
+        text = str(value).strip()
+        return text if text and text.lower() not in {"nan", "none"} else "unknown"
+
+    sectors = {
+        str(row.ts_code): bucket_text(row.industry)
+        for row in stock.drop_duplicates("ts_code", keep="last").itertuples()
+    }
+    daily["total_mv"] = pd.to_numeric(daily["total_mv"], errors="coerce")
+    exact_market_caps = daily.pivot_table(
+        index="trade_date",
+        columns="ts_code",
+        values="total_mv",
+        aggfunc="last",
+    ).sort_index()
+    latest_ext = (
+        daily_ext.sort_values(["ts_code", "trade_date"])
+        .drop_duplicates(subset=["ts_code"], keep="last")
+        .set_index("ts_code")
+    )
+    latest_total_share = pd.to_numeric(
+        latest_ext.get("total_share"),
+        errors="coerce",
+    )
+    fallback_share = pd.to_numeric(
+        latest_ext.get("total_mv"),
+        errors="coerce",
+    ).div(
+        pd.to_numeric(latest_ext.get("close"), errors="coerce").replace(
+            0.0,
+            np.nan,
+        )
+    )
+    latest_total_share = latest_total_share.where(
+        latest_total_share > 0.0,
+        fallback_share,
+    )
+    close_matrix = (
+        close_by_date.copy()
+        if close_by_date is not None
+        else pd.DataFrame(index=pd.DatetimeIndex(dates))
+    )
+    close_matrix.index = pd.to_datetime(close_matrix.index).normalize()
+    close_matrix.columns = [normalize_ts_code(item) for item in close_matrix.columns]
+    close_matrix = close_matrix.reindex(index=pd.DatetimeIndex(dates))
+    reconstructed_market_caps = close_matrix.mul(
+        latest_total_share.reindex(close_matrix.columns),
+        axis=1,
+    )
+    market_caps = exact_market_caps.reindex(
+        index=close_matrix.index,
+        columns=close_matrix.columns,
+    ).combine_first(reconstructed_market_caps)
+    market_cap_rank = market_caps.rank(axis=1, pct=True)
+    size_values = np.where(
+        market_cap_rank <= (1.0 / 3.0),
+        "small",
+        np.where(market_cap_rank <= (2.0 / 3.0), "mid", "large"),
+    )
+    size_bucket_by_date = pd.DataFrame(
+        size_values,
+        index=market_cap_rank.index,
+        columns=market_cap_rank.columns,
+    ).where(market_cap_rank.notna())
+    latest_sizes = (
+        size_bucket_by_date.iloc[-1]
+        if not size_bucket_by_date.empty
+        else pd.Series(dtype=object)
+    )
+    sizes = {
+        str(symbol): bucket_text(bucket)
+        for symbol, bucket in latest_sizes.items()
+    }
+    dynamic_size_symbols = {
+        str(symbol)
+        for symbol in size_bucket_by_date.columns[
+            size_bucket_by_date.notna().any(axis=0)
+        ]
+    }
+    covered = {
+        symbol
+        for symbol in set(sectors).intersection(dynamic_size_symbols)
+        if sectors[symbol] != "unknown"
+    }
+    loaded_dates = set(
+        pd.DatetimeIndex(
+            size_bucket_by_date.index[
+                size_bucket_by_date.notna().any(axis=1)
+            ]
+        ).normalize()
+    )
+    requested_dates = set(dates)
+    evaluation_date_coverage_ratio = float(
+        len(requested_dates.intersection(loaded_dates))
+        / max(len(requested_dates), 1)
+    )
+    cross_section_coverage: list[float] = []
+    for date, row in size_bucket_by_date.iterrows():
+        valid_sizes = row.dropna()
+        if valid_sizes.empty:
+            continue
+        known_sector_count = sum(
+            sectors.get(str(symbol), "unknown") != "unknown"
+            for symbol in valid_sizes.index
+        )
+        cross_section_coverage.append(
+            float(known_sector_count / len(valid_sizes))
+        )
+    min_cross_section_coverage_ratio = (
+        min(cross_section_coverage) if cross_section_coverage else 0.0
+    )
+    observable_pairs = close_matrix.notna()
+    exact_pairs = exact_market_caps.reindex(
+        index=close_matrix.index,
+        columns=close_matrix.columns,
+    ).notna() & observable_pairs
+    reconstructed_pairs = (
+        exact_market_caps.reindex(
+            index=close_matrix.index,
+            columns=close_matrix.columns,
+        ).isna()
+        & reconstructed_market_caps.notna()
+        & observable_pairs
+    )
+    combined_pairs = market_caps.notna() & observable_pairs
+    observable_pair_count = int(observable_pairs.sum().sum())
+    combined_pair_count = int(combined_pairs.sum().sum())
+    exact_pair_count = int(exact_pairs.sum().sum())
+    reconstructed_pair_count = int(reconstructed_pairs.sum().sum())
+    combined_size_pair_coverage_ratio = float(
+        combined_pair_count / max(observable_pair_count, 1)
+    )
+    pit_size_pair_coverage_ratio = float(
+        exact_pair_count / max(observable_pair_count, 1)
+    )
+    reconstructed_size_pair_ratio = float(
+        reconstructed_pair_count / max(combined_pair_count, 1)
+    )
+    coverage_ratio = float(len(covered) / max(len(wanted), 1))
+    daily_latest = pd.to_datetime(
+        str(daily_catalog.get("latest_date", "")),
+        errors="coerce",
+    )
+    evaluation_end = max(dates) if dates else pd.NaT
+    share_reference_latest = daily_ext["trade_date"].max()
+    share_reference_covers_evaluation_end = bool(
+        not pd.isna(share_reference_latest)
+        and not pd.isna(evaluation_end)
+        and share_reference_latest >= evaluation_end
+    )
+    ready = (
+        coverage_ratio >= 0.95
+        and evaluation_date_coverage_ratio == 1.0
+        and min_cross_section_coverage_ratio >= 0.95
+        and combined_size_pair_coverage_ratio >= 0.95
+        and reconstructed_size_pair_ratio <= 0.35
+        and catalog_validated
+        and share_reference_covers_evaluation_end
+        and len(set(sectors.values())) >= 2
+        and len(set(sizes.values())) >= 3
+    )
+    return sectors, sizes, size_bucket_by_date, {
+        "status": "ready" if ready else "blocked",
+        "blocker": "" if ready else "fundamental_exposure_incomplete",
+        "source": "strict_parquet_hybrid_market_cap_exposure",
+        "stock_basic_path": str(stock_basic_path),
+        "daily_basic_path": str(daily_basic_path),
+        "daily_basic_ext_path": str(daily_basic_ext_path),
+        "catalog_path": str(catalog_path),
+        "catalog_validated": catalog_validated,
+        "source_snapshot_ids": sorted(
+            {
+                str(stock_catalog.get("snapshot_id", "")),
+                str(daily_catalog.get("snapshot_id", "")),
+                str(daily_ext_catalog.get("snapshot_id", "")),
+            }
+            - {""}
+        ),
+        "as_of": pd.Timestamp(as_of).strftime("%Y-%m-%d")
+        if as_of is not None and not pd.isna(as_of)
+        else "",
+        "evaluation_start": min(dates).strftime("%Y-%m-%d") if dates else "",
+        "evaluation_end": max(dates).strftime("%Y-%m-%d") if dates else "",
+        "daily_basic_latest_date": daily_latest.strftime("%Y-%m-%d")
+        if not pd.isna(daily_latest)
+        else "",
+        "share_reference_latest_date": share_reference_latest.strftime(
+            "%Y-%m-%d"
+        )
+        if not pd.isna(share_reference_latest)
+        else "",
+        "share_reference_covers_evaluation_end": (
+            share_reference_covers_evaluation_end
+        ),
+        "requested_symbol_count": len(wanted),
+        "covered_symbol_count": len(covered),
+        "coverage_ratio": coverage_ratio,
+        "requested_evaluation_date_count": len(requested_dates),
+        "covered_evaluation_date_count": len(
+            requested_dates.intersection(loaded_dates)
+        ),
+        "evaluation_date_coverage_ratio": evaluation_date_coverage_ratio,
+        "min_cross_section_coverage_ratio": min_cross_section_coverage_ratio,
+        "observable_size_pair_count": observable_pair_count,
+        "exact_pit_size_pair_count": exact_pair_count,
+        "reconstructed_size_pair_count": reconstructed_pair_count,
+        "combined_size_pair_coverage_ratio": (
+            combined_size_pair_coverage_ratio
+        ),
+        "pit_size_pair_coverage_ratio": pit_size_pair_coverage_ratio,
+        "reconstructed_size_pair_ratio": reconstructed_size_pair_ratio,
+        "sector_count": len(set(sectors.values())),
+        "size_bucket_count": len(set(sizes.values())),
+        "unknown_sector_count": len(wanted)
+        - sum(value != "unknown" for value in sectors.values()),
+        "unknown_size_bucket_count": len(wanted)
+        - sum(value != "unknown" for value in sizes.values()),
+        "point_in_time_size": reconstructed_pair_count == 0,
+        "size_policy": (
+            "same_trade_date_total_mv_then_asof_total_share_times_close"
+        ),
+        "industry_policy": "current_strict_parquet_stock_basic_reference",
+    }
+
+
 def build_context(
     *,
     data_root: Path,
     universes: Sequence[str],
     horizon_days: int,
     warmup_days: int,
+    fundamental_mart_root: str | Path = DEFAULT_FUNDAMENTAL_MART_ROOT,
 ) -> RetestContext:
     frames, universe_by_symbol = load_daily_frames(data_root, universes)
     adj_close, volume, amount = build_price_matrices(frames)
     forward = forward_returns(adj_close, horizon_days)
     monthly, biweekly = rebalance_dates(adj_close.index, warmup_days, horizon_days)
     existing, blocker = compute_existing_composite(MinedFactorRegistry.load(), adj_close, volume, amount)
+    as_of = pd.Timestamp(adj_close.index.max()) if not adj_close.empty else None
+    exposure_dates = sorted(set(monthly) | set(biweekly))
+    close_by_date = _matrix_from_frames(
+        frames,
+        pd.DatetimeIndex(exposure_dates),
+        ("close",),
+    )
+    sectors, sizes, size_bucket_by_date, exposure_metadata = (
+        load_fundamental_exposure_maps(
+            mart_root=fundamental_mart_root,
+            symbols=list(frames),
+            as_of=as_of,
+            evaluation_dates=exposure_dates,
+            close_by_date=close_by_date,
+        )
+    )
     return RetestContext(
         frames=frames,
         universe_by_symbol=universe_by_symbol,
@@ -775,6 +1210,10 @@ def build_context(
         biweekly_dates=biweekly,
         existing_composite=existing,
         existing_blocker=blocker,
+        sector_by_symbol=sectors,
+        size_bucket_by_symbol=sizes,
+        size_bucket_by_date=size_bucket_by_date,
+        exposure_metadata=exposure_metadata,
     )
 
 
@@ -790,6 +1229,7 @@ def run_retest(args: argparse.Namespace) -> dict[str, Any]:
         universes=universes,
         horizon_days=int(args.horizon_days),
         warmup_days=int(args.warmup_days),
+        fundamental_mart_root=fundamental_mart_root,
     )
 
     tushare_manifest: dict[str, Any] = {"status": "not_requested"}

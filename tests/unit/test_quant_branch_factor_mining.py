@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
@@ -79,6 +80,166 @@ def test_candidate_maturity_context_uses_signal_coverage_only():
 
     assert start == "2024-01-05"
     assert list(matured.adj_close.index) == [pd.Timestamp("2024-01-05")]
+
+
+def test_full_a_coverage_uses_sector_and_size_not_single_universe_label():
+    dates = pd.date_range("2024-01-02", periods=2, freq="B")
+    symbols = ["A", "B", "C", "D"]
+    signal = pd.DataFrame(1.0, index=dates, columns=symbols)
+
+    metrics = retest._coverage_metrics(
+        signal,
+        dates,
+        {"A": "bank", "B": "bank", "C": "health", "D": "health"},
+        {"A": "large", "B": "large", "C": "small", "D": "small"},
+    )
+
+    assert metrics["max_sector_coverage_share"] == 0.5
+    assert metrics["max_size_bucket_coverage_share"] == 0.5
+
+
+def test_exposure_neutralization_only_computes_requested_dates():
+    context = _context()
+    context.sector_by_symbol = {
+        "000001.SZ": "bank",
+        "000002.SZ": "health",
+    }
+    context.size_bucket_by_symbol = {
+        "000001.SZ": "large",
+        "000002.SZ": "small",
+    }
+    requested = [context.adj_close.index[-1]]
+
+    neutral = retest._neutralize_by_exposure(
+        context.adj_close,
+        context,
+        requested,
+    )
+
+    assert list(neutral.index) == requested
+
+
+def test_strict_exposure_loader_uses_bounded_share_reconstruction(tmp_path):
+    root = tmp_path / "cn"
+    stock_path = root / "dag_core_raw" / "table=stock_basic" / "part.parquet"
+    daily_path = root / "daily_basic" / "part.parquet"
+    ext_path = (
+        root / "dag_core_raw" / "table=daily_basic_ext" / "part.parquet"
+    )
+    stock_path.parent.mkdir(parents=True)
+    daily_path.parent.mkdir(parents=True)
+    ext_path.parent.mkdir(parents=True)
+    symbols = ["000001.SZ", "000002.SZ", "000003.SZ", "000004.SZ"]
+    pd.DataFrame(
+        {
+            "ts_code": symbols,
+            "industry": ["bank", "bank", "health", "health"],
+        }
+    ).to_parquet(stock_path, index=False)
+    pd.DataFrame(
+        [
+            {
+                "ts_code": symbol,
+                "trade_date": int(date.strftime("%Y%m%d")),
+                "total_mv": float((index + 1) * 100),
+            }
+            for date in pd.to_datetime(["2024-01-02", "2024-01-03"])
+            for index, symbol in enumerate(symbols[:3])
+        ]
+    ).to_parquet(daily_path, index=False)
+    pd.DataFrame(
+        {
+            "ts_code": symbols,
+            "trade_date": [20240105] * 4,
+            "total_share": [10.0] * 4,
+            "total_mv": [100.0, 200.0, 300.0, 400.0],
+            "close": [10.0, 20.0, 30.0, 40.0],
+        }
+    ).to_parquet(ext_path, index=False)
+
+    def catalog_row(path, logical_table, latest_date):
+        return {
+            "status": "ok",
+            "logical_table": logical_table,
+            "row_count": len(pd.read_parquet(path)),
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "snapshot_id": f"{logical_table}-snapshot",
+            "latest_date": latest_date,
+        }
+
+    (root / "_catalog.json").write_text(
+        json.dumps(
+            {
+                "tables": {
+                    "dag_core_raw/stock_basic": catalog_row(
+                        stock_path,
+                        "dag_core_raw/stock_basic",
+                        "20240105",
+                    ),
+                    "daily_basic": catalog_row(
+                        daily_path,
+                        "daily_basic",
+                        "20240103",
+                    ),
+                    "dag_core_raw/daily_basic_ext": catalog_row(
+                        ext_path,
+                        "dag_core_raw/daily_basic_ext",
+                        "20240105",
+                    ),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    dates = pd.to_datetime(["2024-01-02", "2024-01-03"])
+    close = pd.DataFrame(
+        [[10.0, 20.0, 30.0, 40.0], [10.0, 20.0, 30.0, 40.0]],
+        index=dates,
+        columns=symbols,
+    )
+
+    _sectors, _sizes, by_date, metadata = (
+        retest.load_fundamental_exposure_maps(
+            mart_root=root,
+            symbols=symbols,
+            as_of=pd.Timestamp("2024-01-05"),
+            evaluation_dates=list(dates),
+            close_by_date=close,
+        )
+    )
+
+    assert metadata["status"] == "ready"
+    assert metadata["catalog_validated"] is True
+    assert metadata["pit_size_pair_coverage_ratio"] == pytest.approx(0.75)
+    assert metadata["reconstructed_size_pair_ratio"] == pytest.approx(0.25)
+    assert by_date["000004.SZ"].notna().all()
+
+
+def test_auto_analysis_start_uses_point_in_time_observable_universe():
+    dates = pd.date_range("2021-01-04", periods=4, freq="B")
+    prices = pd.DataFrame(
+        {
+            "old_a": [1.0, 1.1, 1.2, 1.3],
+            "old_b": [2.0, 2.1, 2.2, 2.3],
+            "new_ipo": [None, None, 3.0, 3.1],
+        },
+        index=dates,
+    )
+    context = RetestContext(
+        frames={},
+        universe_by_symbol={column: "full_a" for column in prices},
+        adj_close=prices,
+        volume=prices,
+        amount=prices,
+        forward_return=prices,
+        rebalance_dates=list(dates),
+        biweekly_dates=list(dates),
+        existing_composite=None,
+    )
+
+    start = mining._auto_analysis_start_date(context, 0.95)
+
+    assert start == dates[0]
 
 
 def test_compute_formulaic_signal_rank_blends_primitives():
@@ -496,6 +657,113 @@ def _write_registry(path, registry: MinedFactorRegistry) -> None:
     )
 
 
+def test_mining_publishes_restricted_window_exposure_evidence(
+    monkeypatch,
+    tmp_path,
+):
+    full_context = _context()
+    full_context.exposure_metadata = {
+        "status": "ready",
+        "window": "full_history",
+    }
+    restricted_evidence = {
+        "status": "blocked",
+        "window": "resolved_analysis_window",
+        "coverage_ratio": 0.50,
+    }
+    monkeypatch.setattr(
+        mining,
+        "build_context",
+        lambda **_kwargs: full_context,
+    )
+    monkeypatch.setattr(
+        mining,
+        "load_fundamental_exposure_maps",
+        lambda **_kwargs: ({}, {}, pd.DataFrame(), restricted_evidence),
+    )
+    registry_path = tmp_path / "mined_factors.json"
+    _write_registry(registry_path, MinedFactorRegistry())
+    output_dir = tmp_path / "mining"
+    args = mining.parse_args(
+        [
+            "--no-price-volume",
+            "--no-fundamental",
+            "--no-formulaic",
+            "--analysis-start-date",
+            "2024-01-03",
+            "--registry-path",
+            str(registry_path),
+            "--output-dir",
+            str(output_dir),
+            "--run-id",
+            "restricted-exposure-fixture",
+        ]
+    )
+
+    payload = mining.run_mining(args)
+    readback = json.loads(
+        (output_dir / "quant_branch_factor_mining_results.json").read_text()
+    )
+
+    assert payload["resolved_analysis_start_date"] == "2024-01-03"
+    assert payload["factor_exposure_evidence"] == restricted_evidence
+    assert readback["factor_exposure_evidence"] == restricted_evidence
+
+
+def _market_evidence(symbol_count: int = 3) -> dict[str, object]:
+    return {
+        "backend": "parquet",
+        "mode_policy": "strict",
+        "pointer_status": "OK",
+        "snapshot_id": "fixture-snapshot",
+        "coverage_complete": True,
+        "expected_symbol_count": symbol_count,
+        "loaded_symbol_count": symbol_count,
+        "table_root_exists": True,
+        "serving_root_exists": True,
+        "manifest_exists": True,
+        "factor_exposure_evidence": {
+            "status": "ready",
+            "source": "strict_parquet_hybrid_market_cap_exposure",
+            "coverage_ratio": 0.96,
+            "catalog_validated": True,
+            "size_policy": (
+                "same_trade_date_total_mv_then_asof_total_share_times_close"
+            ),
+            "evaluation_date_coverage_ratio": 1.0,
+            "min_cross_section_coverage_ratio": 0.99,
+            "combined_size_pair_coverage_ratio": 0.99,
+            "pit_size_pair_coverage_ratio": 0.72,
+            "reconstructed_size_pair_ratio": 0.27,
+            "share_reference_covers_evaluation_end": True,
+            "sector_count": 100,
+            "size_bucket_count": 3,
+        },
+    }
+
+
+def _write_mining_report(
+    path: Path,
+    *,
+    run_id: str,
+    results: list[dict[str, object]],
+    universes: list[str] | None = None,
+) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "universes": universes or ["full_a"],
+                "results": results,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 def test_candidate_catalog_covers_daily_mining_dimensions():
     candidates = build_candidate_catalog((5, 20, 60, 120))
     families = {candidate.family for candidate in candidates}
@@ -831,14 +1099,23 @@ def test_production_family_governance_keeps_only_current_8gate_champion(
     unrelated["family"] = "short_reversal"
     unrelated["decision"] = FactorAdmissionDecision.WATCHLIST.value
     unrelated["gate_results"][2]["passed"] = False
+    results = [champion, redundant, unrelated]
+    report_path = _write_mining_report(
+        tmp_path / "reports" / "mining.json",
+        run_id="direct-family-governance",
+        results=results,
+    )
 
     manifest = apply_production_family_governance(
         registry_path=registry_path,
-        results=[champion, redundant, unrelated],
+        results=results,
         run_timestamp="2026-07-12T12:00:00+08:00",
         run_id="direct-family-governance",
-        report_path="reports/factor_governance/mining.json",
+        report_path=str(report_path),
         journal_path=tmp_path / "reports" / "family_governance.json",
+        universes=["full_a"],
+        market_evidence=_market_evidence(),
+        owner="test owner",
         write=True,
     )
 
@@ -871,20 +1148,101 @@ def test_production_family_governance_fails_closed_without_champion(tmp_path):
     result = _qualified_result("failing")
     result["decision"] = FactorAdmissionDecision.WATCHLIST.value
     result["gate_results"][2]["passed"] = False
+    report_path = _write_mining_report(
+        tmp_path / "reports" / "no_champion.json",
+        run_id="no-champion",
+        results=[result],
+    )
 
     manifest = apply_production_family_governance(
         registry_path=registry_path,
         results=[result],
         run_timestamp="2026-07-12T12:00:00+08:00",
         run_id="no-champion",
-        report_path="reports/factor_governance/mining.json",
+        report_path=str(report_path),
         journal_path=tmp_path / "reports" / "family_governance.json",
+        universes=["full_a"],
+        market_evidence=_market_evidence(1),
+        owner="test owner",
         write=True,
     )
 
-    assert manifest["status"] == "no_registry_changes"
+    assert manifest["status"] == "blocked"
     assert manifest["fail_closed_reason"] == (
         "no_current_8gate_family_champion"
+    )
+    assert registry_path.read_bytes() == before
+
+
+def test_production_family_governance_promotes_new_champion_in_one_transaction(
+    tmp_path,
+):
+    registry_path = tmp_path / "mined_factors.json"
+    _write_registry(registry_path, MinedFactorRegistry())
+    result = _qualified_result("new_weekly_champion")
+    report_path = _write_mining_report(
+        tmp_path / "reports" / "promotion.json",
+        run_id="weekly-promotion",
+        results=[result],
+    )
+    journal_path = tmp_path / "reports" / "promotion_wal.json"
+
+    manifest = apply_production_family_governance(
+        registry_path=registry_path,
+        results=[result],
+        run_timestamp="2026-07-12T12:00:00+08:00",
+        run_id="weekly-promotion",
+        report_path=str(report_path),
+        journal_path=journal_path,
+        universes=["full_a"],
+        market_evidence=_market_evidence(5502),
+        owner="test owner",
+        write=True,
+    )
+
+    registry = MinedFactorRegistry.load(registry_path)
+    assert manifest["status"] == "updated"
+    assert manifest["promoted_factors"] == ["new_weekly_champion"]
+    assert manifest["kept_factors"] == []
+    assert manifest["active_after_count"] == 1
+    assert registry.metadata["production_factor_count"] == 1
+    record = registry.selectable_factors()[0]
+    assert record.name == "new_weekly_champion"
+    assert record.weight == 0.05
+    assert record.metadata["manual_promotion_required"] is False
+    assert journal_path.exists()
+
+
+def test_production_family_governance_rejects_subset_evidence_byte_identical(
+    tmp_path,
+):
+    registry_path = tmp_path / "mined_factors.json"
+    _write_registry(registry_path, MinedFactorRegistry())
+    before = registry_path.read_bytes()
+    result = _qualified_result("subset_champion")
+    report_path = _write_mining_report(
+        tmp_path / "reports" / "subset.json",
+        run_id="subset-run",
+        results=[result],
+        universes=["hs300", "zz500", "zz1000"],
+    )
+
+    manifest = apply_production_family_governance(
+        registry_path=registry_path,
+        results=[result],
+        run_timestamp="2026-07-12T12:00:00+08:00",
+        run_id="subset-run",
+        report_path=str(report_path),
+        journal_path=tmp_path / "reports" / "subset_wal.json",
+        universes=["hs300", "zz500", "zz1000"],
+        market_evidence=_market_evidence(1800),
+        owner="test owner",
+        write=True,
+    )
+
+    assert manifest["status"] == "blocked"
+    assert manifest["fail_closed_reason"] == (
+        "production_universe_not_exact_full_a"
     )
     assert registry_path.read_bytes() == before
 
@@ -913,15 +1271,30 @@ def test_daily_wrapper_success_path_writes_durable_registry_journal(
     def fake_run_mining(args):
         output_dir = Path(args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+        results = [_qualified_result()]
+        _write_mining_report(
+            output_dir / "quant_branch_factor_mining_results.json",
+            run_id="wrapper-success-fixture",
+            results=results,
+        )
         return {
             "output_dir": str(output_dir),
-            "results": [_qualified_result()],
+            "results": results,
             "candidate_count": 1,
             "qualified_count": 1,
+            "loaded_symbol_count": 5502,
+            "factor_exposure_evidence": _market_evidence(5502)[
+                "factor_exposure_evidence"
+            ],
             "conclusion": "manual_production_factor_review_candidate",
         }
 
     monkeypatch.setattr(daily, "run_mining", fake_run_mining)
+    monkeypatch.setattr(
+        daily,
+        "strict_full_a_market_evidence",
+        lambda **_kwargs: _market_evidence(5502),
+    )
     args = daily.parse_args(
         [
             "--output-root",
@@ -945,7 +1318,122 @@ def test_daily_wrapper_success_path_writes_durable_registry_journal(
     journal = json.loads(journal_path.read_text(encoding="utf-8"))
     assert journal["status"] == "applied"
     registry = MinedFactorRegistry.load(registry_path)
-    assert registry.factors[0].weight == 0.0
+    assert registry.factors[0].weight == 0.05
     assert registry.factors[0].state == (
-        FactorLifecycleState.PRODUCTION_CANDIDATE
+        FactorLifecycleState.PRODUCTION_FACTOR
     )
+
+
+def test_daily_wrapper_keeps_incumbent_when_no_new_challenger_passes(
+    monkeypatch,
+    tmp_path,
+):
+    registry_path = tmp_path / "mined_factors.json"
+    incumbent = FactorRecord(
+        name="incumbent",
+        state=FactorLifecycleState.PRODUCTION_FACTOR,
+        implementation="price_volume:incumbent",
+        weight=0.05,
+        gate_results=[GateResult.from_dict(row) for row in _gate_rows()],
+    )
+    _write_registry(
+        registry_path,
+        MinedFactorRegistry.from_records([incumbent]),
+    )
+    before = registry_path.read_bytes()
+    fixed_now = datetime(
+        2026,
+        7,
+        18,
+        4,
+        30,
+        tzinfo=daily.SHANGHAI_TZ,
+    )
+    monkeypatch.setattr(daily, "_now_shanghai", lambda: fixed_now)
+    monkeypatch.setattr(
+        daily,
+        "latest_download_report",
+        lambda _path: (None, {}),
+    )
+
+    def fake_run_mining(args):
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        result = _qualified_result("challenger")
+        result["decision"] = FactorAdmissionDecision.WATCHLIST.value
+        result["gate_results"][2]["passed"] = False
+        result["failed_gate_ids"] = [3]
+        result["passed_gate_ids"] = [1, 2, 4, 5, 6, 7, 8]
+        result["gates_passed"] = 7
+        _write_mining_report(
+            output_dir / "quant_branch_factor_mining_results.json",
+            run_id="incumbent-carry-forward",
+            results=[result],
+        )
+        return {
+            "output_dir": str(output_dir),
+            "results": [result],
+            "candidate_count": 1,
+            "qualified_count": 0,
+            "loaded_symbol_count": 5502,
+            "factor_exposure_evidence": _market_evidence(5502)[
+                "factor_exposure_evidence"
+            ],
+            "conclusion": "no_candidate_passed_myquant_8gate",
+        }
+
+    monkeypatch.setattr(daily, "run_mining", fake_run_mining)
+    monkeypatch.setattr(
+        daily,
+        "strict_full_a_market_evidence",
+        lambda **_kwargs: _market_evidence(5502),
+    )
+    args = daily.parse_args(
+        [
+            "--output-root",
+            str(tmp_path / "reports"),
+            "--registry-path",
+            str(registry_path),
+            "--run-id",
+            "incumbent-carry-forward",
+            "--strict-positive-evidence",
+        ]
+    )
+
+    payload = daily.run_daily_automation(args)
+
+    manifest = payload["registry_update_manifest"]
+    assert payload["success_gate_passed"] is True
+    assert payload["candidate_promotion_gate_passed"] is False
+    assert payload["incumbent_carry_forward"] is True
+    assert manifest["status"] == "no_registry_changes"
+    assert manifest["kept_factors"] == ["incumbent"]
+    assert registry_path.read_bytes() == before
+
+    blocked_evidence = _market_evidence(5502)
+    blocked_evidence["pointer_status"] = "BROKEN"
+    monkeypatch.setattr(
+        daily,
+        "strict_full_a_market_evidence",
+        lambda **_kwargs: blocked_evidence,
+    )
+    blocked_args = daily.parse_args(
+        [
+            "--output-root",
+            str(tmp_path / "blocked-reports"),
+            "--registry-path",
+            str(registry_path),
+            "--run-id",
+            "incumbent-carry-forward-blocked",
+            "--strict-positive-evidence",
+        ]
+    )
+
+    blocked_payload = daily.run_daily_automation(blocked_args)
+
+    assert blocked_payload["success_gate_passed"] is False
+    assert blocked_payload["incumbent_carry_forward"] is False
+    assert blocked_payload["fail_closed_reason"] == (
+        "parquet_latest_pointer_not_ok"
+    )
+    assert registry_path.read_bytes() == before
