@@ -325,6 +325,7 @@
               </label>
             </div>
             <div id="holdingsTable" class="table-wrap"></div>
+            <button id="toggleHoldingsRows" class="button ghost table-toggle hidden" type="button" aria-expanded="false">显示全部</button>
           </article>
           <div class="chart-grid two">
             <article class="panel chart-panel">
@@ -354,6 +355,7 @@
             </div>
           </div>
           <div id="tradeSummary" class="trade-summary"></div>
+          <p class="metric-note">交易胜率基于 FIFO 平仓交易；业绩总览中的日净值胜率基于每日 portfolio_nav 正收益天数。</p>
           <article class="panel table-panel">
             <div class="panel-head">
               <h3>最近 20 笔交易</h3>
@@ -363,6 +365,18 @@
               </label>
             </div>
             <div id="tradesTable" class="table-wrap"></div>
+            <button id="toggleTradesRows" class="button ghost table-toggle hidden" type="button" aria-expanded="false">显示全部</button>
+          </article>
+          <article class="panel table-panel">
+            <div class="panel-head">
+              <h3>FIFO 已平仓交易</h3>
+              <label class="table-search">
+                <span>搜索</span>
+                <input id="closedTradesSearch" type="search" placeholder="ticker / warning" data-filter-table="closedTradesTable" />
+              </label>
+            </div>
+            <div id="closedTradesTable" class="table-wrap"></div>
+            <button id="toggleClosedTradesRows" class="button ghost table-toggle hidden" type="button" aria-expanded="false">显示全部</button>
           </article>
           <div class="chart-grid three">
             <article class="panel chart-panel">

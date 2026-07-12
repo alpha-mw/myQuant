@@ -21,6 +21,7 @@
 - 多 benchmark 对比 multi-select 控制净值、回撤、风险收益散点、相关性和 comparison table。
 - 业绩总览中的 Lens 按钮可在多 benchmark 净值、相对主基准超额收益、回撤和 20D 波动率之间切换主图。
 - 持仓表和交易表支持本地即时搜索，不会上传查询内容。
+- 上传的 CSV 会保存在浏览器 `localStorage` 中；刷新页面后优先恢复用户上传数据，点击“重置示例数据”会清除这份本地保存。
 - 日期区间和 Benchmark 变化后，KPI、图表、归因、风险与表格会同步刷新。
 
 ## 从 strategy_records 自动更新
@@ -74,7 +75,8 @@ portfolio_dashboard/js/generated_records.js
 
 当前导出逻辑采用保守映射：
 
-- NAV 来自每个记录目录的 `pnl_summary.csv`，`portfolio_nav = total_value_after / initial_capital`
+- NAV 来自每个记录目录的 `pnl_summary.csv`；`portfolio_nav` 使用份额化的时间加权净值。外部入金/出金按资金证据中的流前单位净值申购/赎回份额，入金瞬间不改变单位净值；资金证据必须包含 `total_value_before` 和 `total_value_after`，否则导出 fail closed
+- `portfolio_nav_raw = total_value_after / initial_capital` 仅保留为账户资金基准比值，不用于跨资金基准的累计收益；资金基准发生变化但缺少 `manual_execution_manifest.json` 的有效资金证据时，导出 fail closed
 - Benchmark 默认使用 local-first `auto`：优先读取 `portfolio_dashboard/inputs/cn_index_benchmark.csv` 中的本地真实指数 close；本地文件不存在时才尝试 `tushare` source；当前支持 `000300.SH -> csi300_nav`、`000905.SH -> csi500_nav`、`000852.SH -> csi1000_nav`、`000688.SH -> star50_nav`、`399006.SZ -> chinext_nav`
 - 本地 benchmark 文件中的非交易日记录需要显式写 `coverage=previous_trading_day_ffill` 和真实 `value_date`；只要真实交易日 close 覆盖完整，这类非交易日前向填充仍可通过 production-grade 校验；交易日缺 close 仍保持缺失并降级，不做静默填充
 - `benchmark_main_nav` 由可用的 `star50_nav`、`csi300_nav`、`chinext_nav` 组合生成；若本地 benchmark 或 Tushare 不可用，或交易日记录日期没有指数 close，`export_summary.json` 会降级标记为非 production-grade，不会伪造数据
@@ -101,10 +103,10 @@ coverage,value_date
 ```
 
 本地文件至少要覆盖 `000300.SH`、`000905.SH`、`000852.SH`、`000688.SH`、`399006.SZ`。`close` 必须为正数，`source_system` 必须是真实来源；`sample`、`mock`、`demo` 或 `strategy_record.market_snapshot.indices` 会被拒绝，不能标记为 production-grade。非交易日如使用上一交易日 close，需要显式写 `coverage=previous_trading_day_ffill` 和真实 `value_date`；交易日缺口或 snapshot 补齐仍会降级。
-- 持仓来自 `ledger_after_manual_switch.csv`，缺失时回退到 `ledger.csv`
+- 持仓只来自可读 `ledger_after_manual_switch.csv` 与对应 `manual_execution_manifest.json`；缺失时跳过该记录，绝不回退到停用的 `ledger.csv`
 - 个股日收益优先来自同目录 `holdings_review.csv` 的 `today_change_pct`
 - 旧版 `metric,value` 纵表格式 `pnl_summary.csv` 会自动转成宽表指标；`initial_capital` 缺失时仅从同目录 `market_snapshot.json` 的组合总值和 PnL 推导
-- 持仓主题优先来自 `market_snapshot.json` 的 `theme_strength.symbols`，再回退到 candidate/switch plan 的 theme 字段；仍缺失时使用 `行业: <sector>` 作为透明回退标签
+- 持仓主题优先来自当日 `market_snapshot.json` 的 `theme_strength.symbols` 及 candidate/switch plan theme；当日缺失时可沿用截至该日最近正式 strategy record 的显式 theme（只前向继承，不使用未来记录），最后才使用 `行业: <sector>` 透明回退标签
 - `sector` 来自本地 `data/parquet/cn/dag_core_raw/table=stock_basic` 的 `industry` 字段；如果运行环境没有 `pyarrow`，该字段会留空并给出 warning
 - 交易仅导出 `manual_switch_and_take_profit_orders.csv` 中已填成交价格和数量的记录，不把建议订单强行当成成交
 - 记录缺少个股主题且无法从行业映射回退时，`theme` 才写为 `UNSPECIFIED_RECORD_THEME`
@@ -128,11 +130,16 @@ date,portfolio_nav,benchmark_main_nav,csi300_nav,csi500_nav,csi1000_nav,star50_n
 可选字段：
 
 ```csv
-portfolio_return,benchmark_return,cash_weight,gross_exposure,net_exposure
+portfolio_nav_raw,portfolio_nav_rebased,portfolio_return,portfolio_units,initial_capital,total_value_after,external_funding_cash_flow,benchmark_return,cash_weight,gross_exposure,net_exposure
 ```
 
 - `date`: `YYYY-MM-DD`
-- `portfolio_nav`: 组合净值
+- `portfolio_nav`: 现金流调整后的组合单位净值，用于收益、回撤和图表
+- `portfolio_nav_raw`: `total_value_after / initial_capital` 的账户资金基准比值；资金扩容后会重置，不用于长期收益
+- `portfolio_nav_rebased`: `portfolio_nav` 相对首条展示记录归一化后的净值
+- `portfolio_units`: 份额化时间加权口径下的期末份额；新增资金按流前单位净值申购份额
+- `initial_capital` / `total_value_after`: 当期资金基准与账户总资产
+- `external_funding_cash_flow`: 来自正式手工执行 manifest 的当日外部资金流，已从收益计算中剔除
 - `benchmark_main_nav`: 默认主基准净值
 - `benchmark_nav`: 旧格式基准净值，仍兼容
 - 任意字段名只要以 `_nav` 结尾且不是 `portfolio_nav`，都会自动识别为 benchmark
@@ -161,12 +168,17 @@ date,ticker,name,weight,theme
 可选字段：
 
 ```csv
-sector,sub_sector,daily_return,contribution,market_value
+theme_source,sector,sub_sector,daily_return,contribution,market_value,quantity,avg_cost,cost_basis,current_price
 ```
 
-- `weight`: 持仓权重，支持 `0.08` 或 `8%`
+- `weight`: 持仓权重；裸数字按小数权重解析，`0.08` 表示 8%，`1.5` 表示 150%；百分比请写 `8%`
+- `weight_unit`: 可选，支持 `decimal` 或 `percent`；当 `weight_unit=percent` 时，`8` 会解析为 8%
 - `daily_return`: 个股当日收益率
+- `theme_source`: 主题来源，区分当日正式记录、历史正式记录前向继承、`stock_basic.industry` 回退或不可用
 - `contribution`: 当日收益贡献；缺失但有 `weight` 和 `daily_return` 时，用 `weight × daily_return` 估算
+- `quantity` / `shares`: 持仓股数；用于生成 FIFO 期初持仓 lot
+- `avg_cost` 或 `cost_basis`: 期初持仓成本基础；`cost_basis` 优先，缺失时使用 `avg_cost × quantity`
+- `current_price`: 当前价，仅展示/导出辅助；不会被用来冒充 FIFO 成本
 
 ### trades.csv
 
@@ -177,7 +189,11 @@ trade_date,ticker,name,side,price,quantity,trade_amount,fee,reason,theme
 ```
 
 - `side`: `buy` 或 `sell`
+- 已执行交易必须完整记录 `trade_date/timestamp`、`ticker/symbol`、`side/action`、`price`、`quantity/shares`、`trade_amount/trade_value`
+- 导出脚本会跳过任何缺少上述关键字段的已执行交易，并在 `export_summary.json` 的 `trade_record_completeness` 中标记；`scripts/check_cn_dashboard_export.py` 会将该状态视为失败
 - `reason`: 交易原因，例如 `Earnings upgrade`、`Policy catalyst`、`Valuation reset`、`Stop loss`、`Position sizing`、`Theme rotation`、`Risk control`
+
+交易胜率、盈亏比、平均盈利/亏损、单笔最大盈利/亏损和平均持仓周期按 ticker 内 FIFO 买卖配对计算。若 `positions.csv` 提供 `quantity/shares` 和 `avg_cost/cost_basis`，交易引擎会用筛选区间首笔交易前最近的持仓快照生成期初 lot；若快照日期等于首笔交易日期，则按当日买卖回推期初数量。卖出数量超过已配对买入和期初 lot 数量时，页面会保留可配对部分并显示警告，不会中断 Dashboard 加载。
 
 ## 指标计算方法
 

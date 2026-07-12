@@ -17,6 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.mine_quant_branch_factors import (  # noqa: E402
     DEFAULT_REGISTRY_PATH,
+    apply_production_family_governance,
     apply_production_candidate_registry_updates,
     parse_args as parse_mining_args,
     run_mining,
@@ -227,10 +228,19 @@ def evidence_counts(results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     qualified_positive = [
         result for result in qualified if _has_positive_evidence(result)
     ]
+    diverse_champions = [
+        result
+        for result in qualified_positive
+        if dict(result.get("diversity_selection", {}) or {}).get(
+            "final_registry_write_eligible"
+        )
+        is True
+    ]
     return {
         "positive_evidence_count": len(positive),
         "qualified_count": len(qualified),
         "positive_candidate_count": len(qualified_positive),
+        "diverse_positive_champion_count": len(diverse_champions),
         "positive_factors": [
             str(result.get("name", "")) for result in positive
         ],
@@ -239,6 +249,9 @@ def evidence_counts(results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         ],
         "positive_candidate_factors": [
             str(result.get("name", "")) for result in qualified_positive
+        ],
+        "diverse_positive_champions": [
+            str(result.get("name", "")) for result in diverse_champions
         ],
         "family_coverage": _factor_sets(results),
     }
@@ -275,6 +288,9 @@ def _registry_manifest_for_failed_gate(
 def render_summary_markdown(payload: Mapping[str, Any]) -> str:
     counts = dict(payload.get("evidence_counts", {}) or {})
     registry = dict(payload.get("registry_update_manifest", {}) or {})
+    production_governance = dict(
+        payload.get("production_family_governance_manifest", {}) or {}
+    )
     lines = [
         "# myQuant Daily Factor Mining Automation",
         "",
@@ -289,10 +305,16 @@ def render_summary_markdown(payload: Mapping[str, Any]) -> str:
         f"- Positive evidence count: {counts.get('positive_evidence_count')}",
         "- Positive production-candidate count: "
         f"{counts.get('positive_candidate_count')}",
+        "- Diverse positive champion count: "
+        f"{counts.get('diverse_positive_champion_count')}",
         f"- Qualified count: {counts.get('qualified_count')}",
         f"- Success gate passed: {payload.get('success_gate_passed')}",
         f"- Fail-closed reason: {payload.get('fail_closed_reason') or '-'}",
         f"- Registry update status: {registry.get('status')}",
+        "- Production family governance status: "
+        f"{production_governance.get('status')}",
+        "- Production family champions: "
+        f"{', '.join(production_governance.get('kept_factors', [])) or '-'}",
         "",
         (
             "Registry writes are limited to zero-weight "
@@ -448,16 +470,22 @@ def run_daily_automation(args: argparse.Namespace) -> dict[str, Any]:
         if isinstance(item, Mapping)
     ]
     counts = evidence_counts(results)
-    positive_candidate_count = int(counts["positive_candidate_count"])
-    success_gate_passed = positive_candidate_count >= int(
+    diverse_positive_champion_count = int(
+        counts["diverse_positive_champion_count"]
+    )
+    success_gate_passed = diverse_positive_champion_count >= int(
         args.min_positive_candidates
     )
     fail_closed_reason = ""
     if not success_gate_passed:
         fail_closed_reason = (
-            "no_qualified_positive_candidate"
-            if int(counts["positive_evidence_count"]) > 0
-            else "no_positive_ic_or_return_evidence"
+            "no_diverse_registry_champion"
+            if int(counts["positive_candidate_count"]) > 0
+            else (
+                "no_qualified_positive_candidate"
+                if int(counts["positive_evidence_count"]) > 0
+                else "no_positive_ic_or_return_evidence"
+            )
         )
 
     registry_write_requested = not bool(args.no_registry_write)
@@ -472,6 +500,9 @@ def run_daily_automation(args: argparse.Namespace) -> dict[str, Any]:
             if item.get("decision") == "production_candidate"
             and _has_positive_evidence(item)
         ]
+        registry_mutation_path = mining_output_dir / (
+            f"registry_mutation_{timestamp_slug}.json"
+        )
         registry_manifest = apply_production_candidate_registry_updates(
             registry_path=str(args.registry_path),
             qualified_results=qualified_positive,
@@ -482,6 +513,7 @@ def run_daily_automation(args: argparse.Namespace) -> dict[str, Any]:
             source_notes=source_notes,
             horizon_days=int(args.horizon_days),
             max_candidates=int(args.max_registry_candidates),
+            journal_path=registry_mutation_path,
             write=True,
         )
     else:
@@ -495,11 +527,38 @@ def run_daily_automation(args: argparse.Namespace) -> dict[str, Any]:
             fail_closed_reason=fail_closed_reason,
         )
 
+    production_governance_requested = bool(
+        success_gate_passed and registry_write_requested
+    )
+    if production_governance_requested:
+        production_governance_manifest = apply_production_family_governance(
+            registry_path=str(args.registry_path),
+            results=results,
+            run_timestamp=run_timestamp,
+            run_id=run_id,
+            report_path=str(report_json_path),
+            journal_path=mining_output_dir
+            / f"production_family_governance_{timestamp_slug}.json",
+            write=True,
+        )
+    else:
+        production_governance_manifest = {
+            "requested": False,
+            "registry_path": str(args.registry_path),
+            "run_id": run_id,
+            "source_report": str(report_json_path),
+            "status": "not_requested",
+            "fail_closed_reason": fail_closed_reason,
+        }
+
     mining_payload["registry_write_requested"] = registry_write_requested
     mining_payload["registry_write"] = (
         registry_manifest.get("status") == "updated"
     )
     mining_payload["registry_update_manifest"] = registry_manifest
+    mining_payload["production_family_governance_manifest"] = (
+        production_governance_manifest
+    )
     write_outputs(Path(mining_payload["output_dir"]), mining_payload)
 
     payload: dict[str, Any] = {
@@ -523,6 +582,9 @@ def run_daily_automation(args: argparse.Namespace) -> dict[str, Any]:
         "fail_closed_reason": fail_closed_reason,
         "registry_write_requested": registry_write_requested,
         "registry_update_manifest": registry_manifest,
+        "production_family_governance_manifest": (
+            production_governance_manifest
+        ),
         "mining_conclusion": mining_payload.get("conclusion", ""),
     }
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -559,12 +621,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "positive_candidate_count": payload["evidence_counts"][
                     "positive_candidate_count"
                 ],
+                "diverse_positive_champion_count": payload[
+                    "evidence_counts"
+                ]["diverse_positive_champion_count"],
                 "qualified_count": payload["evidence_counts"][
                     "qualified_count"
                 ],
                 "registry_update_status": payload["registry_update_manifest"][
                     "status"
                 ],
+                "production_family_governance_status": payload[
+                    "production_family_governance_manifest"
+                ]["status"],
             },
             ensure_ascii=False,
             indent=2,

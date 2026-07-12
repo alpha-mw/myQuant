@@ -2,18 +2,21 @@
 """Periodic health checks for governed mined factors.
 
 The default run is offline and report-only.  It reads the local mined-factor
-registry, uses the registry's approved 8-gate evidence for production-factor
-health classification, and runs a strict Parquet runtime smoke check.  Registry
-writes only occur when ``--apply-registry-actions`` is passed.
+registry and uses approved registry evidence for legacy report-only
+classification.  It also runs a strict Parquet runtime smoke check.  Registry
+writes require an atomic strict-fresh batch plus ``--apply-registry-actions``.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+import inspect
 import json
 import os
 import sys
 from collections import Counter
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,8 +35,15 @@ from quant_investor.factors.governance import (  # noqa: E402
     FactorRecord,
 )
 from quant_investor.factors.health import (  # noqa: E402
+    active_failure_maturity_window_ids,
     apply_health_decision,
     classify_factor_health,
+)
+from quant_investor.factors.registry_store import (  # noqa: E402
+    METADATA_ABSENT,
+    FactorRegistryStoreError,
+    apply_factor_record_patch,
+    load_registry_snapshot_strict,
 )
 from quant_investor.factors.runtime import MinedFactorRegistry  # noqa: E402
 
@@ -80,7 +90,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help=(
             "Best-effort local re-evaluation of monitored price/volume factors. "
-            "If unavailable, the run falls back to registry evidence."
+            "Report-only runs may fall back to registry evidence unless "
+            "strict "
+            "fresh evaluation is requested."
         ),
     )
     parser.add_argument(
@@ -98,7 +110,40 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Accepted for CLI compatibility. Scheduled runs should leave it disabled.",
     )
     parser.add_argument("--max-new-production", type=int, default=0)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.strict_fresh_evaluation and not args.fresh_evaluation:
+        parser.error("--strict-fresh-evaluation requires --fresh-evaluation")
+    if args.apply_registry_actions and not (
+        args.fresh_evaluation and args.strict_fresh_evaluation
+    ):
+        parser.error(
+            "--apply-registry-actions requires --fresh-evaluation and "
+            "--strict-fresh-evaluation"
+        )
+    args.mode_policy = str(args.mode_policy or "").strip().lower()
+    if args.strict_fresh_evaluation and args.mode_policy != "strict":
+        parser.error(
+            "--strict-fresh-evaluation requires --mode-policy strict"
+        )
+    if (
+        not np.isfinite(args.min_analysis_price_coverage)
+        or not 0.0 < args.min_analysis_price_coverage <= 1.0
+    ):
+        parser.error("--min-analysis-price-coverage must be in (0, 1]")
+    if args.horizon_days <= 0:
+        parser.error("--horizon-days must be positive")
+    if args.warmup_days <= 0:
+        parser.error("--warmup-days must be positive")
+    if args.runtime_smoke_symbols <= 0:
+        parser.error("--runtime-smoke-symbols must be positive")
+    if not np.isfinite(args.decision_cost_bps) or args.decision_cost_bps < 0:
+        parser.error("--decision-cost-bps must be finite and non-negative")
+    if (
+        not np.isfinite(args.incremental_sleeve_weight)
+        or not 0.0 < args.incremental_sleeve_weight <= 1.0
+    ):
+        parser.error("--incremental-sleeve-weight must be in (0, 1]")
+    return args
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -110,7 +155,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     md_path = json_path.with_suffix(".md")
 
     registry_path = Path(args.registry_path)
-    registry = MinedFactorRegistry.load(registry_path)
+    registry_snapshot = load_registry_snapshot_strict(registry_path)
+    registry = registry_snapshot.registry
     monitored = _monitored_factors(registry)
     registry_evaluations = {
         factor.name: _evaluation_from_record(factor)
@@ -122,23 +168,66 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     fresh_evaluations = dict(fresh_result.get("evaluations", {}) or {})
     fresh_blockers = list(fresh_result.get("blockers", []) or [])
+    monitored_names = {factor.name for factor in monitored}
+    fresh_names = set(fresh_evaluations)
+    fresh_missing_factors = sorted(monitored_names - fresh_names)
+    fresh_unexpected_factors = sorted(fresh_names - monitored_names)
+    fresh_blockers.extend(
+        f"fresh_evaluation_missing:{name}" for name in fresh_missing_factors
+    )
+    fresh_blockers.extend(
+        f"fresh_evaluation_unexpected:{name}"
+        for name in fresh_unexpected_factors
+    )
+    for name in sorted(monitored_names & fresh_names):
+        fresh_blockers.extend(
+            _fresh_evaluation_contract_blockers(
+                name,
+                fresh_evaluations[name],
+            )
+        )
+    fresh_blockers = list(dict.fromkeys(str(item) for item in fresh_blockers))
+    fresh_atomic_success = bool(
+        args.fresh_evaluation
+        and not fresh_blockers
+        and fresh_names == monitored_names
+    )
     decision_rows: list[dict[str, Any]] = []
     decisions = []
 
     for factor in monitored:
         monitor = dict((factor.metadata or {}).get("health_monitor", {}) or {})
         previous_failures = int(monitor.get("consecutive_failures", 0) or 0)
-        evaluation = fresh_evaluations.get(factor.name) or registry_evaluations.get(
-            factor.name
+        if factor.name in fresh_evaluations:
+            evaluation = fresh_evaluations[factor.name]
+            source = "fresh_evaluation"
+        elif args.strict_fresh_evaluation:
+            evaluation = None
+            source = "fresh_evaluation_missing"
+        else:
+            evaluation = registry_evaluations.get(factor.name)
+            source = (
+                "registry_evidence_fallback"
+                if args.fresh_evaluation
+                else "registry_evidence"
+            )
+            if evaluation is None:
+                source = "missing"
+        maturity_window_id = _maturity_window_id(evaluation)
+        active_failure_windows = active_failure_maturity_window_ids(monitor)
+        count_failure = maturity_window_id not in active_failure_windows
+        current_evidence_end_date = _alpha_evidence_end_date(evaluation)
+        last_evidence_end_date = str(
+            monitor.get("last_alpha_evidence_end_date", "") or ""
+        ).strip()
+        chronology_blocker = _alpha_evidence_chronology_blocker(
+            factor.name,
+            current_evidence_end_date,
+            last_evidence_end_date,
         )
-        source = (
-            "fresh_evaluation"
-            if factor.name in fresh_evaluations
-            else "registry_evidence"
-        )
-        count_failure = _evaluation_id(evaluation) != str(
-            monitor.get("last_evaluation_id", "") or ""
-        )
+        if chronology_blocker:
+            fresh_blockers.append(chronology_blocker)
+            count_failure = False
         decision = classify_factor_health(
             factor,
             evaluation,
@@ -148,14 +237,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         decisions.append(decision)
         row = decision.to_dict()
         row["evaluation_source"] = source
+        row.update(_evidence_age_fields(evaluation, timestamp))
+        row["last_alpha_evidence_end_date"] = last_evidence_end_date
+        row["evidence_chronology_status"] = (
+            "blocked" if chronology_blocker else "ok"
+        )
         decision_rows.append(row)
-        if args.apply_registry_actions:
-            apply_health_decision(
-                factor,
-                decision,
-                reviewed_at=timestamp,
-                report_path=str(md_path),
-            )
+
+    fresh_blockers = list(dict.fromkeys(str(item) for item in fresh_blockers))
+    if fresh_blockers:
+        fresh_atomic_success = False
+
+    data_blocked_factors = sorted(
+        decision.factor_name
+        for decision in decisions
+        if decision.status.value == "data_blocked"
+    )
+    if args.strict_fresh_evaluation and data_blocked_factors:
+        fresh_blockers.extend(
+            f"fresh_evaluation_data_blocked:{name}"
+            for name in data_blocked_factors
+        )
+        fresh_blockers = list(dict.fromkeys(fresh_blockers))
+        fresh_atomic_success = False
 
     runtime_smoke = build_runtime_smoke(
         Path(args.data_root),
@@ -164,8 +268,60 @@ def main(argv: Sequence[str] | None = None) -> int:
         market=str(args.market),
         mode_policy=str(args.mode_policy),
     )
+    runtime_smoke_blockers = _runtime_smoke_blockers(
+        runtime_smoke,
+        monitored_factor_count=len(monitored),
+    )
+    runtime_smoke_success = not runtime_smoke_blockers
+    registry_actions_eligible = bool(
+        args.apply_registry_actions
+        and fresh_atomic_success
+        and runtime_smoke_success
+    )
+    if registry_actions_eligible:
+        for factor, decision, row in zip(
+            monitored,
+            decisions,
+            decision_rows,
+        ):
+            apply_health_decision(
+                factor,
+                decision,
+                reviewed_at=timestamp,
+                report_path=str(md_path),
+            )
+            evidence_end_date = str(
+                row.get("evidence_end_date", "") or ""
+            ).strip()
+            if decision.status.value != "data_blocked" and evidence_end_date:
+                monitor = dict(
+                    (factor.metadata or {}).get("health_monitor", {}) or {}
+                )
+                monitor["last_alpha_evidence_end_date"] = evidence_end_date
+                factor.metadata = {
+                    **dict(factor.metadata or {}),
+                    "health_monitor": monitor,
+                }
     status_counts = Counter(decision.status.value for decision in decisions)
     action_counts = Counter(decision.action.value for decision in decisions)
+    evaluation_source_counts = Counter(
+        str(row.get("evaluation_source", "missing")) for row in decision_rows
+    )
+    evidence_age_summary = _evidence_age_summary(decision_rows)
+    run_blocked = bool(
+        args.strict_fresh_evaluation
+        and (not fresh_atomic_success or not runtime_smoke_success)
+    )
+    registry_actions_applied = False
+    registry_update_status = (
+        "pending"
+        if registry_actions_eligible
+        else "blocked_fresh_evaluation"
+        if args.apply_registry_actions and not fresh_atomic_success
+        else "blocked_runtime_smoke"
+        if args.apply_registry_actions and not runtime_smoke_success
+        else "not_requested"
+    )
     promotion_blockers = []
     if args.allow_production_promotion and int(args.max_new_production) > 0:
         promotion_blockers.append(
@@ -184,6 +340,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "warmup_days": args.warmup_days,
         "registry_path": str(registry_path),
         "apply_registry_actions": bool(args.apply_registry_actions),
+        "registry_actions_applied": registry_actions_applied,
+        "registry_actions_eligible": registry_actions_eligible,
+        "registry_update_status": registry_update_status,
+        "run_status": "blocked" if run_blocked else "ok",
         "allow_production_promotion": bool(args.allow_production_promotion),
         "registry_factor_count": len(registry.factors),
         "monitored_factor_count": len(monitored),
@@ -195,18 +355,37 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         "status_counts": dict(status_counts),
         "action_counts": dict(action_counts),
+        "evaluation_source_counts": dict(evaluation_source_counts),
+        "evidence_age_days": evidence_age_summary,
         "decisions": decision_rows,
         "qualified_new_candidates": [],
         "promoted_factors": [],
         "promotion_blockers": promotion_blockers,
         "fresh_evaluation": {
             "requested": bool(args.fresh_evaluation),
+            "strict": bool(args.strict_fresh_evaluation),
+            "atomic_success": fresh_atomic_success,
             "evaluated_factor_count": len(fresh_evaluations),
+            "missing_factors": fresh_missing_factors,
+            "unexpected_factors": fresh_unexpected_factors,
+            "data_blocked_factors": data_blocked_factors,
             "blockers": fresh_blockers,
             "context": dict(fresh_result.get("context", {}) or {}),
         },
         "runtime_smoke": runtime_smoke,
+        "runtime_smoke_blockers": runtime_smoke_blockers,
+        "runtime_smoke_success": runtime_smoke_success,
+        "registry_mutation_manifest": None,
+        "registry_mutation_manifest_path": "",
+        "registry_blockers": [],
     }
+    mutation_path = (
+        output_dir / f"registry_mutation_{timestamp.replace(':', '')}.json"
+        if registry_actions_eligible
+        else None
+    )
+    if mutation_path is not None:
+        payload["registry_mutation_manifest_path"] = str(mutation_path)
 
     json_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default) + "\n",
@@ -214,16 +393,71 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     md_path.write_text(render_markdown(payload), encoding="utf-8")
 
-    if args.apply_registry_actions:
-        registry.metadata.update(
-            {
-                "last_factor_health_review_at": timestamp,
-                "last_factor_health_report_json": str(json_path),
-                "last_factor_health_report_markdown": str(md_path),
-                "last_factor_health_action_counts": dict(action_counts),
-            }
+    if registry_actions_eligible:
+        metadata_updates = {
+            "last_factor_health_review_at": timestamp,
+            "last_factor_health_report_json": str(json_path),
+            "last_factor_health_report_markdown": str(md_path),
+            "last_factor_health_action_counts": dict(action_counts),
+        }
+        metadata_updates = {
+            key: value
+            for key, value in metadata_updates.items()
+            if registry_snapshot.metadata_payload.get(key, METADATA_ABSENT)
+            != value
+        }
+        try:
+            mutation_manifest = apply_factor_record_patch(
+                registry_path,
+                {
+                    factor.name: {
+                        **registry_snapshot.record_payloads[factor.name],
+                        **factor.to_dict(),
+                    }
+                    for factor in monitored
+                },
+                expected_registry_sha256=(
+                    registry_snapshot.registry_sha256
+                ),
+                expected_record_sha256s={
+                    factor.name: registry_snapshot.record_sha256s[factor.name]
+                    for factor in monitored
+                },
+                metadata_updates=metadata_updates,
+                expected_metadata_values={
+                    key: registry_snapshot.metadata_payload.get(
+                        key,
+                        METADATA_ABSENT,
+                    )
+                    for key in metadata_updates
+                },
+                mutation_id=f"factor-health:{timestamp}",
+                reason="strict-fresh governed factor health actions",
+                journal_path=mutation_path,
+                write=True,
+            )
+        except (FactorRegistryStoreError, OSError) as exc:
+            blocker = f"registry_store_blocked:{exc}"
+            payload["registry_update_status"] = "blocked_registry_store"
+            payload["registry_blockers"] = [blocker]
+            payload["run_status"] = "blocked"
+            run_blocked = True
+        else:
+            payload["registry_actions_applied"] = True
+            payload["registry_update_status"] = "applied"
+            payload["registry_mutation_manifest"] = mutation_manifest
+
+        json_path.write_text(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                indent=2,
+                default=_json_default,
+            )
+            + "\n",
+            encoding="utf-8",
         )
-        write_registry(registry_path, registry)
+        md_path.write_text(render_markdown(payload), encoding="utf-8")
 
     print(f"report_json={json_path}")
     print(f"report_markdown={md_path}")
@@ -238,8 +472,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "runtime_smoke="
         f"{smoke_mode} factor_count={smoke_count} coverage_rate={smoke_coverage}"
     )
-    if args.strict_fresh_evaluation and args.fresh_evaluation and fresh_blockers:
+    if run_blocked:
         print(f"fresh_evaluation_blockers={fresh_blockers}", file=sys.stderr)
+        print(f"runtime_smoke_blockers={runtime_smoke_blockers}", file=sys.stderr)
         return 2
     return 0
 
@@ -264,6 +499,18 @@ def _evaluation_from_record(factor: FactorRecord) -> dict[str, Any] | None:
         else ""
     )
     metrics = dict(factor.metrics or {})
+    metrics.setdefault("horizon_days", int(factor.horizon_days))
+    diagnostics = _diagnostics_from_record(factor, metrics)
+    diagnostics["maturity_window_id"] = _build_maturity_window_id(
+        metrics,
+        diagnostics,
+    )
+    diagnostics["evaluation_hash"] = _build_evaluation_hash(
+        factor.name,
+        metrics,
+        diagnostics,
+    )
+    diagnostics["evaluation_id"] = diagnostics["evaluation_hash"]
     return {
         "name": factor.name,
         "metrics": metrics,
@@ -271,7 +518,7 @@ def _evaluation_from_record(factor: FactorRecord) -> dict[str, Any] | None:
             "decision": decision,
             "gate_results": [item.to_dict() for item in factor.gate_results],
         },
-        "diagnostics": _diagnostics_from_record(factor, metrics),
+        "diagnostics": diagnostics,
     }
 
 
@@ -292,10 +539,34 @@ def _diagnostics_from_record(
         or metadata.get("rankic_count")
         or ""
     )
+    universes = (
+        metadata.get("universes", [])
+        or metadata.get("universe", [])
+        or []
+    )
+    if isinstance(universes, str):
+        universes = [universes]
     return {
         "evaluation_end_date": evaluation_end_date,
+        "analysis_start_date": str(
+            metrics.get("analysis_start_date")
+            or metadata.get("analysis_start_date")
+            or ""
+        ),
         "rankic_count": rankic_count,
         "source_report": metadata.get("source_report", ""),
+        "snapshot_id": str(
+            metrics.get("snapshot_id") or metadata.get("snapshot_id") or ""
+        ),
+        "universes": list(universes),
+        "decision_cost_bps": metrics.get(
+            "decision_cost_bps", metadata.get("decision_cost_bps", "")
+        ),
+        "warmup_days": metrics.get(
+            "warmup_days",
+            metadata.get("warmup_days", ""),
+        ),
+        "implementation_hash": _implementation_hash(factor),
     }
 
 
@@ -344,27 +615,94 @@ def _fresh_evaluations(
             "context": context_metadata,
         }
 
+    context_metadata.update(
+        {
+            "analysis_start_date": _resolved_start,
+            "evaluation_end_date": _latest_date(context.rebalance_dates),
+            "horizon_days": int(args.horizon_days),
+            "warmup_days": int(args.warmup_days),
+            "decision_cost_bps": float(args.decision_cost_bps),
+            "incremental_sleeve_weight": float(args.incremental_sleeve_weight),
+            "existing_composite_mode": "leave_one_out_per_factor",
+        }
+    )
+    active_registry = MinedFactorRegistry.from_records(list(factors))
     for factor in factors:
         try:
             candidate = _mining_candidate_from_record(factor, MiningCandidate)
             signal = compute_price_volume_signal(candidate, context)
+            matured_cohort_dates = _mature_rankic_dates(
+                signal,
+                context.forward_return,
+                context.rebalance_dates,
+            )
+            loo_existing, loo_blocker = _leave_one_out_existing_composite(
+                context.existing_composite,
+                signal,
+                factor,
+                active_registry,
+            )
+            metrics_context = replace(
+                context,
+                existing_composite=loo_existing,
+                existing_blocker=loo_blocker or context.existing_blocker,
+            )
             metrics = candidate_metrics(
                 signal=signal,
-                context=context,
+                context=metrics_context,
                 decision_cost_bps=float(args.decision_cost_bps),
                 incremental_sleeve=float(args.incremental_sleeve_weight),
             )
+            metrics["horizon_days"] = int(args.horizon_days)
+            metrics["decision_cost_bps"] = float(args.decision_cost_bps)
+            metrics["incremental_sleeve_weight"] = float(
+                args.incremental_sleeve_weight
+            )
             review = evaluate_with_myquant_gate(factor.name, metrics)
+            evaluation_end_date = (
+                matured_cohort_dates[-1] if matured_cohort_dates else ""
+            )
+            diagnostics = {
+                **context_metadata,
+                "evaluation_end_date": evaluation_end_date,
+                "matured_cohort_dates": matured_cohort_dates,
+                "rankic_count": metrics.get("rank_ic_count", ""),
+                "excluded_factor": factor.name,
+                "existing_composite_mode": "leave_one_out",
+                "implementation_hash": _implementation_hash(
+                    factor,
+                    compute_price_volume_signal,
+                    candidate_metrics,
+                    evaluate_with_myquant_gate,
+                    _mining_candidate_from_record,
+                ),
+            }
+            diagnostics["maturity_window_id"] = _build_maturity_window_id(
+                metrics,
+                diagnostics,
+            )
+            diagnostics["evaluation_hash"] = _build_evaluation_hash(
+                factor.name,
+                metrics,
+                diagnostics,
+            )
+            diagnostics["evaluation_id"] = diagnostics["evaluation_hash"]
             evaluations[factor.name] = {
                 "name": factor.name,
                 "metrics": metrics,
                 "review": review.to_dict(),
-                "diagnostics": {
-                    "evaluation_end_date": _latest_date(context.rebalance_dates),
-                    "rankic_count": metrics.get("rank_ic_count", ""),
-                    **context_metadata,
-                },
+                "diagnostics": diagnostics,
             }
+            metric_blockers = [
+                str(item)
+                for item in metrics.get("blockers", []) or []
+                if str(item)
+            ]
+            if bool(getattr(args, "strict_fresh_evaluation", False)):
+                blockers.extend(
+                    f"{factor.name}:fresh_evaluation_incomplete:{item}"
+                    for item in metric_blockers
+                )
         except Exception as exc:
             blockers.append(f"{factor.name}:{exc}")
     return {
@@ -386,6 +724,9 @@ def _build_parquet_fresh_context(args: argparse.Namespace) -> dict[str, Any]:
         "universes": list(getattr(args, "universes", []) or ["full_a"]),
         "symbols_requested": 0,
         "symbols_loaded": 0,
+        "symbol_load_ratio": 0.0,
+        "symbol_read_error_count": 0,
+        "symbol_read_errors": [],
         "sample_symbols": [],
     }
     try:
@@ -444,6 +785,8 @@ def _build_parquet_fresh_context(args: argparse.Namespace) -> dict[str, Any]:
 
     frames: dict[str, pd.DataFrame] = {}
     universe_by_symbol: dict[str, str] = {}
+    requested_symbols: set[str] = set()
+    symbol_read_errors: list[str] = []
     for universe in metadata["universes"]:
         try:
             symbols = reader.list_symbols(universe_key=str(universe or "full_a"))
@@ -453,10 +796,12 @@ def _build_parquet_fresh_context(args: argparse.Namespace) -> dict[str, Any]:
                 "metadata": metadata,
                 "blockers": [f"parquet_symbol_list_error:{universe}:{exc}"],
             }
-        metadata["symbols_requested"] += len(symbols)
         for symbol in symbols:
             normalized = str(symbol or "").strip().upper()
-            if not normalized or normalized in frames:
+            if not normalized:
+                continue
+            requested_symbols.add(normalized)
+            if normalized in frames:
                 continue
             try:
                 result = reader.read_symbol_frame(
@@ -464,9 +809,11 @@ def _build_parquet_fresh_context(args: argparse.Namespace) -> dict[str, Any]:
                     universe_key=str(universe or "full_a"),
                 )
                 frame = getattr(result, "frame", pd.DataFrame())
-            except Exception:
+            except Exception as exc:
+                symbol_read_errors.append(f"{normalized}:{exc}")
                 continue
             if frame is None or frame.empty:
+                symbol_read_errors.append(f"{normalized}:empty_frame")
                 continue
             working = frame.copy()
             if "symbol" not in working.columns:
@@ -476,13 +823,35 @@ def _build_parquet_fresh_context(args: argparse.Namespace) -> dict[str, Any]:
             frames[normalized] = working
             universe_by_symbol[normalized] = str(universe or "full_a")
 
+    metadata["symbols_requested"] = len(requested_symbols)
     metadata["symbols_loaded"] = len(frames)
+    metadata["symbol_load_ratio"] = (
+        len(frames) / len(requested_symbols)
+        if requested_symbols
+        else 0.0
+    )
+    metadata["symbol_read_error_count"] = len(symbol_read_errors)
+    metadata["symbol_read_errors"] = symbol_read_errors[:20]
     metadata["sample_symbols"] = list(frames)[:5]
     if not frames:
         return {
             "context": None,
             "metadata": metadata,
             "blockers": ["parquet_fresh_context_no_frames"],
+        }
+    min_load_ratio = float(
+        getattr(args, "min_analysis_price_coverage", 0.95) or 0.95
+    )
+    if float(metadata["symbol_load_ratio"]) < min_load_ratio:
+        return {
+            "context": None,
+            "metadata": metadata,
+            "blockers": [
+                "parquet_fresh_context_symbol_load_ratio:"
+                f"actual={metadata['symbol_load_ratio']:.6f}:"
+                f"minimum={min_load_ratio:.6f}:"
+                f"read_errors={len(symbol_read_errors)}"
+            ],
         }
 
     try:
@@ -581,6 +950,64 @@ def _compute_existing_price_volume_composite(
     return composite.div(total_weight).clip(-1.0, 1.0), ""
 
 
+def _leave_one_out_existing_composite(
+    existing_composite: pd.DataFrame | None,
+    candidate_signal: pd.DataFrame,
+    factor: FactorRecord,
+    registry: MinedFactorRegistry,
+) -> tuple[pd.DataFrame | None, str]:
+    """Remove ``factor`` from its Gate 8/correlation baseline."""
+
+    active = {item.name: item for item in registry.selectable_factors()}
+    selected = active.get(factor.name)
+    if selected is None:
+        return existing_composite, ""
+    if existing_composite is None or existing_composite.empty:
+        return None, "leave_one_out_existing_composite_unavailable"
+
+    total_weight = sum(abs(float(item.weight)) for item in active.values())
+    selected_weight = abs(float(selected.weight))
+    remaining_weight = total_weight - selected_weight
+    if remaining_weight <= 1e-12:
+        return None, "leave_one_out_no_remaining_production_factors"
+
+    signed_weight = float(selected.weight) * (
+        1.0 if float(getattr(selected, "direction", 1.0)) >= 0 else -1.0
+    )
+    ranked = candidate_signal.rank(axis=1, pct=True).mul(2.0).sub(1.0)
+    numerator = existing_composite.mul(total_weight).sub(
+        ranked.fillna(0.0).mul(signed_weight),
+        fill_value=0.0,
+    )
+    return numerator.div(remaining_weight).clip(-1.0, 1.0), ""
+
+
+def _mature_rankic_dates(
+    signal: pd.DataFrame,
+    forward_return: pd.DataFrame,
+    dates: Sequence[pd.Timestamp],
+) -> list[str]:
+    matured: list[str] = []
+    for date in dates:
+        if date not in signal.index or date not in forward_return.index:
+            continue
+        pair = pd.concat(
+            [
+                signal.loc[date].rename("signal"),
+                forward_return.loc[date].rename("return"),
+            ],
+            axis=1,
+        ).replace([np.inf, -np.inf], np.nan).dropna()
+        if (
+            len(pair) < 20
+            or pair["signal"].nunique(dropna=True) <= 1
+            or pair["return"].nunique(dropna=True) <= 1
+        ):
+            continue
+        matured.append(pd.Timestamp(date).strftime("%Y-%m-%d"))
+    return matured
+
+
 def _mining_candidate_from_record(factor: FactorRecord, candidate_type: Any) -> Any:
     impl = str(factor.implementation or "").strip()
     if not impl.startswith("price_volume:"):
@@ -646,6 +1073,7 @@ def build_runtime_smoke(
     base = {
         "data_source": "parquet_canonical",
         "backend": "parquet",
+        "fallback_used": False,
         "market": str(market or "").strip().upper() or "CN",
         "mode_policy": str(mode_policy or "strict").strip().lower() or "strict",
         "data_root": str(data_root),
@@ -796,21 +1224,145 @@ def _snapshot_smoke_fields(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def write_registry(path: Path, registry: MinedFactorRegistry) -> None:
-    path.write_text(
-        json.dumps(
-            {
-                "schema_version": registry.schema_version,
-                "metadata": registry.metadata,
-                "factors": [record.to_dict() for record in registry.factors],
-            },
-            ensure_ascii=False,
-            indent=2,
-            default=_json_default,
+def _runtime_smoke_blockers(
+    runtime_smoke: Mapping[str, Any],
+    *,
+    monitored_factor_count: int,
+) -> list[str]:
+    blockers: list[str] = []
+    backend = str(runtime_smoke.get("backend", "") or "").strip().lower()
+    if backend != "parquet":
+        blockers.append(f"runtime_smoke_backend:{backend or 'missing'}")
+    mode_policy = str(
+        runtime_smoke.get("mode_policy", "") or ""
+    ).strip().lower()
+    if mode_policy != "strict":
+        blockers.append(
+            f"runtime_smoke_mode_policy:{mode_policy or 'missing'}"
         )
-        + "\n",
-        encoding="utf-8",
-    )
+    if runtime_smoke.get("fallback_used") is not False:
+        blockers.append("runtime_smoke_fallback_used")
+    error = str(runtime_smoke.get("error", "") or "").strip()
+    if error:
+        blockers.append(f"runtime_smoke_error:{error}")
+    if not bool(runtime_smoke.get("snapshot_healthy", False)):
+        blockers.append("runtime_smoke_snapshot_unhealthy")
+    factor_mode = str(runtime_smoke.get("factor_mode", "") or "")
+    if factor_mode != "governed_mined_factors":
+        blockers.append(f"runtime_smoke_factor_mode:{factor_mode or 'missing'}")
+    try:
+        factor_count = int(runtime_smoke.get("factor_count", 0) or 0)
+    except (TypeError, ValueError):
+        factor_count = -1
+    if factor_count != int(monitored_factor_count):
+        blockers.append(
+            "runtime_smoke_factor_count:"
+            f"expected={int(monitored_factor_count)}:actual={factor_count}"
+        )
+    try:
+        symbols_loaded = int(runtime_smoke.get("symbols_loaded", 0) or 0)
+    except (TypeError, ValueError):
+        symbols_loaded = 0
+    if symbols_loaded <= 0:
+        blockers.append("runtime_smoke_no_symbols_loaded")
+    return blockers
+
+
+def _fresh_evaluation_contract_blockers(
+    factor_name: str,
+    evaluation: Any,
+) -> list[str]:
+    prefix = f"{factor_name}:fresh_evaluation_contract"
+    if not isinstance(evaluation, Mapping):
+        return [f"{prefix}:evaluation_not_object"]
+
+    blockers: list[str] = []
+    evaluation_name = str(evaluation.get("name", "") or "").strip()
+    if evaluation_name != factor_name:
+        blockers.append(
+            f"{prefix}:name_mismatch:{evaluation_name or 'missing'}"
+        )
+
+    metrics = evaluation.get("metrics")
+    required_metrics = {
+        "coverage_rate",
+        "nan_rate",
+        "icir",
+        "positive_ic_ratio",
+        "oos_positive_ratio",
+        "neutralized_icir",
+        "top_bottom_spread",
+        "cost_adjusted_return",
+        "turnover",
+        "capacity_pressure",
+    }
+    if not isinstance(metrics, Mapping):
+        blockers.append(f"{prefix}:metrics_not_object")
+    else:
+        missing_metrics = sorted(required_metrics - set(metrics))
+        if missing_metrics:
+            blockers.append(
+                f"{prefix}:metrics_missing:{','.join(missing_metrics)}"
+            )
+        for key in sorted(required_metrics & set(metrics)):
+            try:
+                value = float(metrics[key])
+            except (TypeError, ValueError):
+                blockers.append(f"{prefix}:metric_not_numeric:{key}")
+                continue
+            if not np.isfinite(value):
+                blockers.append(f"{prefix}:metric_not_finite:{key}")
+
+    review = evaluation.get("review")
+    if not isinstance(review, Mapping):
+        blockers.append(f"{prefix}:review_not_object")
+    else:
+        if not str(review.get("decision", "") or "").strip():
+            blockers.append(f"{prefix}:review_decision_missing")
+        gate_results = review.get("gate_results")
+        gate_ids: list[int] = []
+        if not isinstance(gate_results, list):
+            blockers.append(f"{prefix}:gate_results_not_list")
+        else:
+            for index, gate in enumerate(gate_results):
+                if not isinstance(gate, Mapping):
+                    blockers.append(
+                        f"{prefix}:gate_result_not_object:{index}"
+                    )
+                    continue
+                try:
+                    gate_ids.append(int(gate.get("gate_id", 0) or 0))
+                except (TypeError, ValueError):
+                    blockers.append(f"{prefix}:gate_id_invalid:{index}")
+                if not isinstance(gate.get("passed"), bool):
+                    blockers.append(f"{prefix}:gate_passed_not_bool:{index}")
+            if sorted(gate_ids) != list(range(1, 9)):
+                blockers.append(
+                    f"{prefix}:gate_ids_expected_1_to_8:actual="
+                    f"{','.join(str(item) for item in sorted(gate_ids))}"
+                )
+
+    diagnostics = evaluation.get("diagnostics")
+    if not isinstance(diagnostics, Mapping):
+        blockers.append(f"{prefix}:diagnostics_not_object")
+    else:
+        if not str(diagnostics.get("maturity_window_id", "") or "").strip():
+            blockers.append(f"{prefix}:maturity_window_id_missing")
+        if not str(
+            diagnostics.get("evaluation_hash")
+            or diagnostics.get("evaluation_id")
+            or ""
+        ).strip():
+            blockers.append(f"{prefix}:evaluation_hash_missing")
+        evidence_end_date = _alpha_evidence_end_date(evaluation)
+        if not evidence_end_date:
+            blockers.append(f"{prefix}:evidence_end_date_missing")
+        else:
+            try:
+                pd.Timestamp(evidence_end_date)
+            except (TypeError, ValueError):
+                blockers.append(f"{prefix}:evidence_end_date_invalid")
+    return blockers
 
 
 def render_markdown(payload: Mapping[str, Any]) -> str:
@@ -822,7 +1374,14 @@ def render_markdown(payload: Mapping[str, Any]) -> str:
         f"- Registry factors: {payload['registry_factor_count']}",
         f"- Monitored production factors: {payload['monitored_factor_count']}",
         f"- Evaluated factors: {payload['evaluated_factor_count']}",
-        f"- Registry actions applied: {payload['apply_registry_actions']}",
+        f"- Run status: {payload.get('run_status', 'ok')}",
+        f"- Registry actions requested: {payload['apply_registry_actions']}",
+        (
+            "- Registry actions applied: "
+            f"{payload.get('registry_actions_applied', False)}"
+        ),
+        f"- Evaluation sources: {payload.get('evaluation_source_counts', {})}",
+        f"- Evidence age days: {payload.get('evidence_age_days', {})}",
         f"- Runtime smoke: {payload['runtime_smoke']}",
         "",
         "## Production Factor Decisions",
@@ -869,7 +1428,15 @@ def render_markdown(payload: Mapping[str, Any]) -> str:
     if fresh.get("requested") or fresh.get("blockers"):
         lines.extend(["", "## Fresh Evaluation", ""])
         lines.append(f"- Requested: {fresh.get('requested')}")
+        lines.append(f"- Strict: {fresh.get('strict')}")
+        lines.append(f"- Atomic success: {fresh.get('atomic_success')}")
         lines.append(f"- Evaluated factors: {fresh.get('evaluated_factor_count')}")
+        if fresh.get("missing_factors"):
+            lines.append(f"- Missing factors: {fresh.get('missing_factors')}")
+        if fresh.get("data_blocked_factors"):
+            lines.append(
+                f"- Data-blocked factors: {fresh.get('data_blocked_factors')}"
+            )
         context = fresh.get("context", {}) or {}
         if context:
             lines.append(f"- Context: {context}")
@@ -897,8 +1464,13 @@ def render_markdown(payload: Mapping[str, Any]) -> str:
                 "observed but not double-counted as new failures."
             ),
             (
-                "- The automation may reduce weight or deprecate weak "
-                "production factors only when `--apply-registry-actions` is set."
+                "- Registry actions require an atomic `--fresh-evaluation` "
+                "plus `--strict-fresh-evaluation`; registry evidence is "
+                "report-only."
+            ),
+            (
+                "- Data-blocked observations do not increment alpha-failure "
+                "streaks or change production weights."
             ),
         ]
     )
@@ -909,14 +1481,243 @@ def _evaluation_id(evaluation: Mapping[str, Any] | None) -> str:
     if not evaluation:
         return "missing"
     diagnostics = evaluation.get("diagnostics", {}) or {}
-    end_date = str(diagnostics.get("evaluation_end_date", "") or "")
-    horizon = str(
-        (evaluation.get("metrics", {}) or {}).get("horizon_days", "") or ""
+    explicit = str(
+        diagnostics.get("evaluation_hash")
+        or diagnostics.get("evaluation_id")
+        or ""
     )
-    rankic_count = str(diagnostics.get("rankic_count", "") or "")
+    if explicit:
+        return explicit
+    return _build_evaluation_hash(
+        str(evaluation.get("name", "") or "unknown"),
+        evaluation.get("metrics", {}) or {},
+        diagnostics,
+    )
+
+
+def _maturity_window_id(evaluation: Mapping[str, Any] | None) -> str:
+    if not evaluation:
+        return "missing"
+    diagnostics = evaluation.get("diagnostics", {}) or {}
+    explicit = str(diagnostics.get("maturity_window_id", "") or "")
+    if explicit:
+        return explicit
+    return _build_maturity_window_id(
+        evaluation.get("metrics", {}) or {},
+        diagnostics,
+    )
+
+
+def _build_maturity_window_id(
+    metrics: Mapping[str, Any],
+    diagnostics: Mapping[str, Any],
+) -> str:
+    dates = [
+        str(item)
+        for item in diagnostics.get("matured_cohort_dates", []) or []
+        if str(item)
+    ]
+    end_date = str(
+        diagnostics.get("evaluation_end_date")
+        or (dates[-1] if dates else "")
+        or ""
+    )
+    horizon = _id_value(metrics.get("horizon_days", ""))
+    rankic_count = _id_value(diagnostics.get("rankic_count", len(dates)))
+    cohort_hash = hashlib.sha256(
+        ",".join(dates).encode("utf-8")
+    ).hexdigest()[:16]
+    return (
+        f"end={end_date}|h={horizon}|n={rankic_count}|cohorts={cohort_hash}"
+    )
+
+
+def _build_evaluation_hash(
+    factor_name: str,
+    metrics: Mapping[str, Any],
+    diagnostics: Mapping[str, Any],
+) -> str:
+    universes = diagnostics.get("universes", []) or []
+    if isinstance(universes, str):
+        universes = [universes]
+    payload = {
+        "factor_name": str(factor_name or "unknown"),
+        "snapshot_id": str(diagnostics.get("snapshot_id", "") or ""),
+        "universes": sorted({str(item) for item in universes if str(item)}),
+        "analysis_start_date": str(
+            diagnostics.get("analysis_start_date", "") or "full"
+        ),
+        "evaluation_end_date": str(
+            diagnostics.get("evaluation_end_date", "") or ""
+        ),
+        "horizon_days": _id_value(metrics.get("horizon_days", "")),
+        "warmup_days": _id_value(diagnostics.get("warmup_days", "")),
+        "decision_cost_bps": _id_value(
+            diagnostics.get("decision_cost_bps", "")
+        ),
+        "incremental_sleeve_weight": _id_value(
+            diagnostics.get("incremental_sleeve_weight", "")
+        ),
+        "implementation_hash": str(
+            diagnostics.get("implementation_hash", "") or ""
+        ),
+        "maturity_window_id": str(
+            diagnostics.get("maturity_window_id")
+            or _build_maturity_window_id(metrics, diagnostics)
+        ),
+    }
+    digest = hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return f"sha256:{digest}"
+
+
+def _implementation_hash(factor: FactorRecord, *callables: Any) -> str:
+    metadata = dict(factor.metadata or {})
+    identity = {
+        "name": factor.name,
+        "version": factor.version,
+        "implementation": factor.implementation,
+        "direction": float(factor.direction),
+        "horizon_days": int(factor.horizon_days),
+        "spec": metadata.get("spec", {}),
+        "implementation_params": metadata.get("implementation_params", {}),
+    }
+    digest = hashlib.sha256(
+        json.dumps(
+            identity,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    )
+    for callable_obj in callables:
+        try:
+            source = inspect.getsource(callable_obj)
+        except (OSError, TypeError):
+            source = (
+                f"{getattr(callable_obj, '__module__', '')}:"
+                f"{getattr(callable_obj, '__qualname__', repr(callable_obj))}"
+            )
+        digest.update(b"\0")
+        digest.update(source.encode("utf-8"))
+    return digest.hexdigest()[:16]
+
+
+def _id_value(value: Any) -> str:
+    if isinstance(value, (float, np.floating)):
+        return f"{float(value):.12g}"
+    return str(value or "")
+
+
+def _alpha_evidence_end_date(
+    evaluation: Mapping[str, Any] | None,
+) -> str:
+    diagnostics = (evaluation or {}).get("diagnostics", {}) or {}
+    explicit = str(diagnostics.get("evaluation_end_date", "") or "").strip()
+    if explicit:
+        return explicit
+    cohort_dates = [
+        str(item).strip()
+        for item in diagnostics.get("matured_cohort_dates", []) or []
+        if str(item).strip()
+    ]
+    return cohort_dates[-1] if cohort_dates else ""
+
+
+def _alpha_evidence_chronology_blocker(
+    factor_name: str,
+    current_end_date: str,
+    last_end_date: str,
+) -> str:
+    if not last_end_date:
+        return ""
+    if not current_end_date:
+        return (
+            f"fresh_evaluation_alpha_chronology:{factor_name}:"
+            f"current_end=missing:last_end={last_end_date}"
+        )
+    try:
+        current = pd.Timestamp(current_end_date).tz_localize(None).normalize()
+        previous = pd.Timestamp(last_end_date).tz_localize(None).normalize()
+    except (TypeError, ValueError):
+        return (
+            f"fresh_evaluation_alpha_chronology:{factor_name}:"
+            f"current_end={current_end_date}:last_end={last_end_date}:"
+            "unparseable"
+        )
+    if current < previous:
+        return (
+            f"fresh_evaluation_alpha_chronology:{factor_name}:"
+            f"current_end={current_end_date}:last_end={last_end_date}:"
+            "regressed"
+        )
+    return ""
+
+
+def _evidence_age_fields(
+    evaluation: Mapping[str, Any] | None,
+    observed_at: str,
+) -> dict[str, Any]:
+    diagnostics = (evaluation or {}).get("diagnostics", {}) or {}
+    end_date = _alpha_evidence_end_date(evaluation)
+    age_days: int | None = None
     if end_date:
-        return f"end={end_date}|h={horizon}|n={rankic_count}"
-    return str(evaluation.get("name", "") or "unknown")
+        try:
+            observed = pd.Timestamp(observed_at).tz_localize(None).normalize()
+            evidence_date = (
+                pd.Timestamp(end_date).tz_localize(None).normalize()
+            )
+            age_days = int((observed - evidence_date).days)
+        except (TypeError, ValueError):
+            age_days = None
+    return {
+        "evidence_end_date": end_date,
+        "evidence_age_days": age_days,
+        "evidence_snapshot_id": str(diagnostics.get("snapshot_id", "") or ""),
+    }
+
+
+def _evidence_age_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    known = [
+        int(row["evidence_age_days"])
+        for row in rows
+        if row.get("evidence_age_days") is not None
+    ]
+    by_source: dict[str, dict[str, Any]] = {}
+    for source in sorted(
+        {str(row.get("evaluation_source", "missing")) for row in rows}
+    ):
+        source_rows = [
+            row
+            for row in rows
+            if str(row.get("evaluation_source", "missing")) == source
+        ]
+        source_ages = [
+            int(row["evidence_age_days"])
+            for row in source_rows
+            if row.get("evidence_age_days") is not None
+        ]
+        by_source[source] = {
+            "count": len(source_rows),
+            "known_count": len(source_ages),
+            "unknown_count": len(source_rows) - len(source_ages),
+            "min_age_days": min(source_ages) if source_ages else None,
+            "max_age_days": max(source_ages) if source_ages else None,
+        }
+    return {
+        "known_count": len(known),
+        "unknown_count": len(rows) - len(known),
+        "min_age_days": min(known) if known else None,
+        "max_age_days": max(known) if known else None,
+        "by_source": by_source,
+    }
 
 
 def _latest_date(dates: Sequence[pd.Timestamp]) -> str:

@@ -218,6 +218,27 @@ class BatchFakePro(FakePro):
         )
 
 
+class PartialBatchFakePro(BatchFakePro):
+    def daily(
+        self,
+        ts_code: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        trade_date: str | None = None,
+        fields: str | None = None,
+    ):
+        frame = super().daily(
+            ts_code=ts_code,
+            start_date=start_date,
+            end_date=end_date,
+            trade_date=trade_date,
+            fields=fields,
+        )
+        if trade_date:
+            return frame[frame["ts_code"].eq("000001.SZ")].reset_index(drop=True)
+        return frame
+
+
 def _write_cn_parquet_rows(data_root: Path, symbol: str, rows: list[dict]) -> None:
     normalized_rows = []
     for row in rows:
@@ -331,6 +352,96 @@ def test_download_daily_batch_uses_trade_date_endpoint_once_for_stale_symbols(mo
     assert len(fake_pro.daily_calls) == 0
     assert _read_cn_parquet_frame(tmp_path, "000001.SZ")["trade_date"].iloc[-1] == "20260316"
     assert _read_cn_parquet_frame(tmp_path, "000002.SZ")["adj_close"].iloc[-1] == 20.9
+
+
+def test_download_daily_batch_fills_missing_tushare_symbol_from_eastmoney(monkeypatch, tmp_path):
+    module = _load_module(monkeypatch)
+    fake_pro = PartialBatchFakePro()
+    monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
+    monkeypatch.setattr(module.config, "TUSHARE_AUTO_CLEAN", False, raising=False)
+
+    eastmoney_calls: list[tuple[tuple[str, ...], str]] = []
+
+    def fake_eastmoney(symbols, trade_date, **_kwargs):
+        eastmoney_calls.append((tuple(symbols), trade_date))
+        return pd.DataFrame(
+            [
+                {
+                    "ts_code": "000002.SZ",
+                    "trade_date": "2026-03-16",
+                    "open": 20.8,
+                    "high": 21.2,
+                    "low": 20.5,
+                    "close": 21.0,
+                    "pre_close": 20.7,
+                    "change": 0.3,
+                    "pct_chg": 1.4493,
+                    "vol": 2700,
+                    "amount": 27000,
+                    "data_source": "eastmoney.push2his.kline",
+                }
+            ]
+        )
+
+    monkeypatch.setattr(module, "fetch_eastmoney_daily_batch_frame", fake_eastmoney)
+
+    downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
+    _write_stale_daily_file(tmp_path / "hs300" / "000001.SZ.csv", "000001.SZ")
+    _write_stale_daily_file(tmp_path / "hs300" / "000002.SZ.csv", "000002.SZ")
+
+    results = downloader.download_daily_batch(
+        ["000001.SZ", "000002.SZ"],
+        "hs300",
+        target_trade_date="20260316",
+    )
+
+    by_symbol = {row["symbol"]: row for row in results}
+    assert eastmoney_calls == [(("000002.SZ",), "20260316")]
+    assert by_symbol["000001.SZ"]["status"] == "updated"
+    assert by_symbol["000001.SZ"]["data_source"] == "tushare.daily"
+    assert by_symbol["000002.SZ"]["status"] == "updated"
+    assert by_symbol["000002.SZ"]["data_source"] == "eastmoney.push2his.kline"
+    assert _read_cn_parquet_frame(tmp_path, "000001.SZ")["close"].iloc[-1] == 10.9
+    assert _read_cn_parquet_frame(tmp_path, "000002.SZ")["close"].iloc[-1] == 21.0
+
+
+def test_fetch_eastmoney_daily_batch_frame_normalizes_kline_payload(monkeypatch):
+    module = _load_module(monkeypatch)
+    requested_urls: list[str] = []
+
+    def fake_fetch_json(url: str):
+        requested_urls.append(url)
+        return {
+            "data": {
+                "klines": [
+                    "2026-03-16,20.80,21.00,21.20,20.50,2700,27000000.00,3.38,1.45,0.30,1.20"
+                ]
+            }
+        }
+
+    frame = module.fetch_eastmoney_daily_batch_frame(
+        ["000002.SZ"],
+        "20260316",
+        fetch_json=fake_fetch_json,
+    )
+
+    assert "secid=0.000002" in requested_urls[0]
+    assert frame.to_dict("records") == [
+        {
+            "ts_code": "000002.SZ",
+            "trade_date": "2026-03-16",
+            "open": 20.8,
+            "high": 21.2,
+            "low": 20.5,
+            "close": 21.0,
+            "pre_close": 20.7,
+            "change": 0.3,
+            "pct_chg": 1.45,
+            "vol": 2700.0,
+            "amount": 27000.0,
+            "data_source": "eastmoney.push2his.kline",
+        }
+    ]
 
 
 def test_download_stock_incremental_update(monkeypatch, tmp_path):

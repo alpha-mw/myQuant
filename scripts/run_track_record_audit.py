@@ -9,9 +9,8 @@ Learned record schema, based on
   records are one-row wide tables with ``initial_capital`` and
   ``total_value_after``; some June records use ``metric,value`` and must be
   pivoted.
-* ``ledger_after_manual_switch.csv`` is the effective execution ledger when a
-  valid ``manual_execution_manifest.json`` exists. ``ledger.csv`` is only a
-  fallback for older formal records.
+* ``ledger_after_manual_switch.csv`` is the only effective execution ledger.
+  ``ledger.csv`` and ``holdings_review.csv`` are not execution baselines.
 * ``manual_execution_manifest.json`` stores funding/execution provenance:
   ``manual_execution_mode``, ``price_basis``, ``quote_source``,
   ``execution_price_gate``, ``applied_local_trades``,
@@ -55,7 +54,7 @@ import statistics
 import subprocess
 from collections import defaultdict
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable
@@ -131,6 +130,7 @@ class Record:
     holdings: list[dict[str, Any]]
     orders: list[dict[str, Any]]
     manual_orders: list[dict[str, Any]]
+    funding_cash_flows: list[dict[str, Any]]
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -217,6 +217,66 @@ def _record_date(run_id: str, manifest: dict[str, Any], pnl: dict[str, Any]) -> 
     return ""
 
 
+def _funding_cash_flows(path: Path, record_date: str, manual_manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    embedded = manual_manifest.get("manual_funding_supplement")
+    declared_path = str(manual_manifest.get("manual_funding_supplement_path") or "").strip()
+    external: dict[str, Any] = {}
+    if declared_path:
+        evidence_path = Path(declared_path)
+        if not evidence_path.is_absolute():
+            evidence_path = path / evidence_path
+        if not evidence_path.exists():
+            raise ValueError(f"Invalid funding lineage for {path.name}: evidence file not found: {evidence_path}")
+        external = _read_json(evidence_path)
+        if not external:
+            raise ValueError(f"Invalid funding lineage for {path.name}: unreadable funding evidence: {evidence_path}")
+    if embedded is not None and not isinstance(embedded, dict):
+        raise ValueError(f"Invalid funding lineage for {path.name}: manual_funding_supplement must be an object")
+    if embedded and external and embedded != external:
+        raise ValueError(f"Invalid funding lineage for {path.name}: embedded and external funding evidence differ")
+
+    payloads: list[dict[str, Any]] = []
+    supplement = external or (embedded if isinstance(embedded, dict) else {})
+    if supplement:
+        payloads.append(supplement)
+    for key in ("external_funding_cash_flows", "funding_cash_flows"):
+        rows = manual_manifest.get(key) or []
+        if not isinstance(rows, list):
+            raise ValueError(f"Invalid funding lineage for {path.name}: {key} must be a list")
+        payloads.extend(row for row in rows if isinstance(row, dict))
+
+    flows: list[dict[str, Any]] = []
+    for payload in payloads:
+        amount = _safe_float(payload.get("amount"), None)
+        flow_date = _iso_from_any(
+            payload.get("effective_date")
+            or payload.get("capital_base_effective_from")
+            or payload.get("date")
+            or record_date
+        )
+        if amount is None or not math.isfinite(amount) or amount == 0:
+            raise ValueError(f"Invalid funding lineage for {path.name}: funding amount must be finite and non-zero")
+        if not flow_date or flow_date != record_date:
+            raise ValueError(
+                f"Invalid funding lineage for {path.name}: funding date {flow_date or 'missing'} "
+                f"does not match record date {record_date}"
+            )
+        before = _safe_float(payload.get("total_value_before"), None)
+        after = _safe_float(payload.get("total_value_after"), None)
+        if before is not None and after is not None and not math.isclose(before + amount, after, abs_tol=0.01):
+            raise ValueError(f"Invalid funding lineage for {path.name}: total_value_before + amount != total_value_after")
+        flows.append(
+            {
+                "date": flow_date,
+                "amount": amount,
+                "source": str(payload.get("source") or "manual_execution_manifest"),
+                "schema_version": str(payload.get("schema_version") or ""),
+                "evidence_path": declared_path,
+            }
+        )
+    return flows
+
+
 def _load_records(record_root: Path) -> tuple[list[Record], list[str]]:
     warnings: list[str] = []
     if not record_root.exists():
@@ -228,20 +288,24 @@ def _load_records(record_root: Path) -> tuple[list[Record], list[str]]:
         record_date = _record_date(path.name, manifest, pnl)
         if not record_date or not pnl:
             continue
+        ledger_path = path / "ledger_after_manual_switch.csv"
+        if not ledger_path.exists():
+            warnings.append(f"Skipped {path.name}: missing required execution baseline ledger_after_manual_switch.csv")
+            continue
+        manual_manifest = _read_json(path / "manual_execution_manifest.json")
         records.append(
             Record(
                 run_id=path.name,
                 date=record_date,
                 path=path,
                 manifest=manifest,
-                manual_manifest=_read_json(path / "manual_execution_manifest.json"),
+                manual_manifest=manual_manifest,
                 market_snapshot=_read_json(path / "market_snapshot.json"),
                 pnl=pnl,
-                holdings=_read_csv_rows(path / "ledger_after_manual_switch.csv")
-                or _read_csv_rows(path / "ledger.csv")
-                or _read_csv_rows(path / "holdings_review.csv"),
+                holdings=_read_csv_rows(ledger_path),
                 orders=_read_csv_rows(path / "orders.csv"),
                 manual_orders=_read_csv_rows(path / "manual_switch_and_take_profit_orders.csv"),
+                funding_cash_flows=_funding_cash_flows(path, record_date, manual_manifest),
             )
         )
     if not records:
@@ -251,27 +315,62 @@ def _load_records(record_root: Path) -> tuple[list[Record], list[str]]:
 
 def _latest_daily_records(records: Iterable[Record]) -> list[Record]:
     by_date: dict[str, Record] = {}
+    funding_by_date: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for record in sorted(records, key=lambda item: (item.date, item.run_id)):
         by_date[record.date] = record
-    return [by_date[key] for key in sorted(by_date)]
+        funding_by_date[record.date].extend(record.funding_cash_flows)
+    daily_records: list[Record] = []
+    for record_date in sorted(by_date):
+        seen: set[tuple[str, float, str, str]] = set()
+        funding_cash_flows: list[dict[str, Any]] = []
+        for flow in funding_by_date[record_date]:
+            identity = (
+                str(flow.get("date") or ""),
+                _safe_float(flow.get("amount")),
+                str(flow.get("source") or ""),
+                str(flow.get("evidence_path") or ""),
+            )
+            if identity not in seen:
+                seen.add(identity)
+                funding_cash_flows.append(flow)
+        daily_records.append(replace(by_date[record_date], funding_cash_flows=funding_cash_flows))
+    return daily_records
 
 
 def _nav_series(records: list[Record]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    unit_nav: float | None = None
+    previous_total: float | None = None
     for record in records:
         initial = _safe_float(record.pnl.get("initial_capital") or record.manifest.get("capital_cny"))
         total = _safe_float(record.pnl.get("total_value_after"))
         if initial <= 0 or total <= 0:
             continue
+        external_flow = sum(_safe_float(flow.get("amount")) for flow in record.funding_cash_flows)
+        if unit_nav is None:
+            unit_nav = total / initial
+            daily_return = None
+        else:
+            adjusted_opening_value = previous_total
+            if adjusted_opening_value is None or adjusted_opening_value <= 0 or total - external_flow <= 0:
+                raise ValueError(f"Invalid NAV lineage for {record.run_id}: non-positive cash-flow-adjusted value")
+            daily_return = (total - external_flow) / adjusted_opening_value - 1.0
+            unit_nav *= 1.0 + daily_return
         rows.append(
             {
                 "date": record.date,
                 "run_id": record.run_id,
                 "initial_capital": initial,
                 "total_value_after": total,
-                "nav": total / initial,
+                "nav": unit_nav,
+                "unit_nav": unit_nav,
+                "daily_return": daily_return,
+                "external_funding_cash_flow": external_flow,
+                "raw_capital_ratio": total / initial,
+                "funding_evidence": record.funding_cash_flows,
             }
         )
+        previous_total = total
     return rows
 
 

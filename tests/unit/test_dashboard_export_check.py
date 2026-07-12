@@ -73,6 +73,7 @@ def _write_summary(
     source_status: str = "production_source_partial_missing_dates",
     source_system: str = "tushare.index_daily",
     production_grade: bool = False,
+    trade_completeness: dict[str, object] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -86,6 +87,8 @@ def _write_summary(
                 "positions_rows": positions_rows,
                 "trade_rows": trade_rows,
                 "warnings": [],
+                "trade_record_completeness": trade_completeness
+                or {"status": "complete", "skipped_incomplete_rows": 0},
                 "benchmark_source": {
                     "benchmark_fields": [
                         "benchmark_main_nav",
@@ -202,6 +205,51 @@ def test_dashboard_export_check_can_require_production_benchmark(tmp_path):
     assert any("not production_grade" in error for error in result["errors"])
 
 
+def test_dashboard_export_check_rejects_non_unitized_funding_and_legacy_ledger(tmp_path):
+    checker = _load_checker()
+    summary_file = tmp_path / "export_summary.json"
+    generated_js = tmp_path / "generated_records.js"
+    nav_csv, positions_csv, trades_csv = _valid_csvs()
+    _write_summary(summary_file)
+    summary = json.loads(summary_file.read_text(encoding="utf-8"))
+    summary["portfolio_nav_source"] = {
+        "method": "cash_flow_subtraction",
+        "historical_return_preserved": True,
+        "capital_base_start": 100.0,
+        "capital_base_end": 1000.0,
+        "funding_events": [
+            {
+                "date": "2026-07-01",
+                "amount": 900.0,
+                "total_value_before": 110.0,
+                "total_value_after": 1010.0,
+            }
+        ],
+    }
+    summary["effective_manual_ledger_status"] = {
+        "status": "valid",
+        "ledger_path": "/tmp/records/ledger.csv",
+        "manifest_path": "",
+        "legacy_ledger_fallback_used": True,
+    }
+    summary_file.write_text(json.dumps(summary), encoding="utf-8")
+    _write_generated_js(
+        generated_js,
+        nav_csv=nav_csv,
+        positions_csv=positions_csv,
+        trades_csv=trades_csv,
+    )
+
+    result = checker.check_dashboard_export(summary_file, generated_js)
+
+    assert result["ok"] is False
+    assert any("time_weighted_unitization" in error for error in result["errors"])
+    assert any("portfolio_units" in error for error in result["errors"])
+    assert any("legacy ledger.csv fallback" in error for error in result["errors"])
+    assert any("ledger_after_manual_switch.csv" in error for error in result["errors"])
+    assert any("manual_execution_manifest.json" in error for error in result["errors"])
+
+
 def test_dashboard_export_check_allows_previous_trading_day_ffill_as_production(tmp_path):
     checker = _load_checker()
     summary_file = tmp_path / "export_summary.json"
@@ -266,3 +314,52 @@ def test_dashboard_export_check_rejects_sample_source_system(tmp_path):
 
     assert result["ok"] is False
     assert any("sample/mock/demo" in error for error in result["errors"])
+
+
+def test_dashboard_export_check_rejects_incomplete_trade_records(tmp_path):
+    checker = _load_checker()
+    summary_file = tmp_path / "export_summary.json"
+    generated_js = tmp_path / "generated_records.js"
+    nav_csv, positions_csv, trades_csv = _valid_csvs()
+    _write_summary(
+        summary_file,
+        trade_completeness={"status": "partial", "skipped_incomplete_rows": 1},
+    )
+    _write_generated_js(
+        generated_js,
+        nav_csv=nav_csv,
+        positions_csv=positions_csv,
+        trades_csv=trades_csv,
+    )
+
+    result = checker.check_dashboard_export(summary_file, generated_js)
+
+    assert result["ok"] is False
+    assert any("trade_record_completeness" in error for error in result["errors"])
+
+
+def test_dashboard_export_check_cli_accepts_dashboard_root(tmp_path, monkeypatch, capsys):
+    checker = _load_checker()
+    dashboard_root = tmp_path / "portfolio_dashboard"
+    summary_file = dashboard_root / "generated" / "export_summary.json"
+    generated_js = dashboard_root / "js" / "generated_records.js"
+    nav_csv, positions_csv, trades_csv = _valid_csvs()
+    _write_summary(summary_file)
+    _write_generated_js(
+        generated_js,
+        nav_csv=nav_csv,
+        positions_csv=positions_csv,
+        trades_csv=trades_csv,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["check_cn_dashboard_export.py", "--dashboard-root", str(dashboard_root)],
+    )
+
+    checker.main()
+
+    result = json.loads(capsys.readouterr().out)
+    assert result["ok"] is True
+    assert result["summary_file"] == str(summary_file)
+    assert result["generated_js"] == str(generated_js)

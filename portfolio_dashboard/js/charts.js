@@ -125,6 +125,12 @@
     }
   }
 
+  function hasForwardFilledPoints(series) {
+    return (series || []).some(function (item) {
+      return (item.points || []).some(function (point) { return point.filled; });
+    });
+  }
+
   function makeLegend(container, series) {
     var legend = document.createElement("div");
     legend.className = "legend";
@@ -138,7 +144,53 @@
       entry.appendChild(document.createTextNode(item.name));
       legend.appendChild(entry);
     });
+    if (hasForwardFilledPoints(series)) {
+      var fillEntry = document.createElement("span");
+      fillEntry.className = "legend-item legend-ffill";
+      var line = document.createElement("span");
+      line.className = "legend-dash";
+      fillEntry.appendChild(line);
+      fillEntry.appendChild(document.createTextNode("虚线 = benchmark 前向填充"));
+      legend.appendChild(fillEntry);
+    }
     container.appendChild(legend);
+  }
+
+  function appendLineSegment(svg, segment, dashed, color, width, xScale, yScale) {
+    if (!segment || segment.length < 2) return;
+    var d = segment.map(function (point, pointIndex) {
+      return (pointIndex ? "L" : "M") + xScale(point.dateObj).toFixed(2) + "," + yScale(point.value).toFixed(2);
+    }).join(" ");
+    var attrs = {
+      d: d,
+      fill: "none",
+      stroke: color,
+      "stroke-width": width || 2.2,
+      "stroke-linejoin": "round",
+      "stroke-linecap": "round"
+    };
+    if (dashed) attrs["stroke-dasharray"] = "5 5";
+    svg.appendChild(el("path", attrs));
+  }
+
+  function appendLineSegments(svg, points, color, width, xScale, yScale) {
+    if (!points || points.length < 2) return;
+    var segment = [points[0]];
+    var segmentDashed = null;
+    for (var index = 1; index < points.length; index += 1) {
+      var prev = points[index - 1];
+      var current = points[index];
+      var dashed = Boolean(prev.filled || current.filled);
+      if (segmentDashed === null) segmentDashed = dashed;
+      if (dashed !== segmentDashed) {
+        appendLineSegment(svg, segment, segmentDashed, color, width, xScale, yScale);
+        segment = [prev, current];
+        segmentDashed = dashed;
+      } else {
+        segment.push(current);
+      }
+    }
+    appendLineSegment(svg, segment, segmentDashed, color, width, xScale, yScale);
   }
 
   function lineChart(containerId, series, options) {
@@ -180,9 +232,6 @@
     series.forEach(function (item, index) {
       var color = item.color || COLORS[index % COLORS.length];
       var points = item.points.filter(function (point) { return Number.isFinite(point.value) && point.dateObj; });
-      var d = points.map(function (point, pointIndex) {
-        return (pointIndex ? "L" : "M") + xScale(point.dateObj).toFixed(2) + "," + yScale(point.value).toFixed(2);
-      }).join(" ");
       if ((options.areaToZero || item.areaToZero) && points.length) {
         var zeroYForArea = yScale(0);
         var areaD = "M" + xScale(points[0].dateObj).toFixed(2) + "," + zeroYForArea.toFixed(2) + " " +
@@ -192,7 +241,7 @@
           " L" + xScale(points[points.length - 1].dateObj).toFixed(2) + "," + zeroYForArea.toFixed(2) + " Z";
         svg.appendChild(el("path", { d: areaD, fill: color, opacity: item.areaOpacity || options.areaOpacity || 0.13 }));
       }
-      svg.appendChild(el("path", { d: d, fill: "none", stroke: color, "stroke-width": item.width || 2.2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+      appendLineSegments(svg, points, color, item.width || 2.2, xScale, yScale);
       if (options.endLabels && points.length) {
         var last = points[points.length - 1];
         var endLabel = el("text", {
@@ -222,7 +271,8 @@
         if (nearest && !html) html += '<div class="tooltip-title">' + formatDate(nearest.dateObj) + "</div>";
         if (nearest) {
           var formatted = (options.yFormatter || formatNumber)(nearest.value);
-          html += '<div class="tooltip-row"><span>' + item.name + "</span><strong>" + formatted + "</strong></div>";
+          var label = item.name + (nearest.filled ? " · 前向填充" : "");
+          html += '<div class="tooltip-row"><span>' + label + "</span><strong>" + formatted + "</strong></div>";
         }
       });
       showTooltip(html, event);

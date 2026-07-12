@@ -896,9 +896,19 @@ svg {
   border-radius: 999px;
 }
 
+.legend-dash {
+  width: 20px;
+  height: 0;
+  border-top: 2px dashed #667085;
+}
+
 .table-wrap {
   width: 100%;
   overflow-x: auto;
+}
+
+.table-toggle {
+  margin-top: 9px;
 }
 
 .table-search {
@@ -1049,8 +1059,14 @@ svg {
 }
 
 .trade-summary {
-  grid-template-columns: repeat(5, minmax(140px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   margin-bottom: 10px;
+}
+
+.metric-note {
+  margin: -2px 0 12px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .correlation-heatmap {

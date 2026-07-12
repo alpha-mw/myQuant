@@ -4,6 +4,7 @@ import csv
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -161,5 +162,225 @@ def test_eastmoney_backfill_only_fills_missing_rows(tmp_path):
             "source_system": "eastmoney.push2his.kline",
             "value_date": "2026-06-29",
             "coverage": "exact_close",
+        },
+    ]
+
+
+def test_eastmoney_kline_falls_back_to_same_domain_http_after_https_failure():
+    backfill = _load_backfill()
+    urls: list[str] = []
+
+    def fake_fetch_json(url: str):
+        urls.append(url)
+        if url.startswith("https://"):
+            raise RuntimeError("https unavailable")
+        return {
+            "data": {
+                "klines": [
+                    "2026-07-10,4041.86,3842.73,4060.53,3842.35,1,2,3,4,5,6",
+                ]
+            }
+        }
+
+    rows = backfill.pull_eastmoney_kline_rows(
+        start_date="2026-07-10",
+        end_date="2026-07-10",
+        ts_codes=("399006.SZ",),
+        fetch_json=fake_fetch_json,
+    )
+
+    assert [url.split(":", 1)[0] for url in urls] == ["https", "http"]
+    assert rows[0]["close"] == "3842.730000"
+    assert rows[0]["source_system"] == "eastmoney.push2his.kline"
+
+
+def test_eastmoney_quote_rows_use_timestamp_and_verified_exact_date_axis():
+    backfill = _load_backfill()
+
+    def fake_fetch_json(url: str):
+        assert "secid=0.399006" in url
+        return {
+            "data": {
+                "f43": 384273,
+                "f57": "399006",
+                "f58": "创业板指",
+                "f59": 2,
+                "f60": 401817,
+                "f86": 1783671087,
+            }
+        }
+
+    rows = backfill.pull_eastmoney_quote_rows(
+        start_date="2026-07-09",
+        end_date="2026-07-10",
+        exact_dates=("2026-07-09", "2026-07-10"),
+        ts_codes=("399006.SZ",),
+        fetch_json=fake_fetch_json,
+    )
+
+    assert rows == [
+        {
+            "date": "2026-07-09",
+            "ts_code": "399006.SZ",
+            "close": "4018.170000",
+            "source_system": "eastmoney.push2.quote",
+            "value_date": "2026-07-09",
+            "coverage": "exact_close",
+        },
+        {
+            "date": "2026-07-10",
+            "ts_code": "399006.SZ",
+            "close": "3842.730000",
+            "source_system": "eastmoney.push2.quote",
+            "value_date": "2026-07-10",
+            "coverage": "exact_close",
+        },
+    ]
+
+
+def test_eastmoney_backfill_uses_quote_when_kline_is_unavailable(tmp_path, monkeypatch):
+    backfill = _load_backfill()
+    output = tmp_path / "cn_index_benchmark.csv"
+    output.write_text(
+        "\n".join(
+            [
+                "date,ts_code,close,source_system,value_date,coverage",
+                "2026-07-09,000300.SH,4876.31,tushare.index_daily,2026-07-09,exact_close",
+                "2026-07-10,000300.SH,4780.79,tushare.index_daily,2026-07-10,exact_close",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        backfill,
+        "pull_eastmoney_kline_rows",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("kline unavailable")),
+    )
+    monkeypatch.setattr(
+        backfill,
+        "pull_eastmoney_quote_rows",
+        lambda **_kwargs: [
+            {
+                "date": "2026-07-09",
+                "ts_code": "399006.SZ",
+                "close": "4018.170000",
+                "source_system": "eastmoney.push2.quote",
+                "value_date": "2026-07-09",
+                "coverage": "exact_close",
+            },
+            {
+                "date": "2026-07-10",
+                "ts_code": "399006.SZ",
+                "close": "3842.730000",
+                "source_system": "eastmoney.push2.quote",
+                "value_date": "2026-07-10",
+                "coverage": "exact_close",
+            },
+        ],
+    )
+
+    summary = backfill.backfill_benchmark_file(
+        None,
+        output_file=output,
+        start_date="2026-07-09",
+        end_date="2026-07-10",
+        ts_codes=("399006.SZ",),
+        source="eastmoney",
+        replace_existing=False,
+    )
+
+    rows = _read_csv(output)
+    assert summary["source_system"] == "eastmoney.push2.quote"
+    assert summary["replace_existing"] is False
+    assert summary["pulled_row_count"] == 2
+    assert summary["provider_warnings"] == ["push2his.kline unavailable: kline unavailable"]
+    assert [row["date"] for row in rows if row["ts_code"] == "399006.SZ"] == [
+        "2026-07-09",
+        "2026-07-10",
+    ]
+
+
+def test_fetch_json_uses_curl_fallback_without_shell(monkeypatch):
+    backfill = _load_backfill()
+    calls = []
+
+    def fail_urlopen(*_args, **_kwargs):
+        raise OSError("urllib unavailable")
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=0, stdout='{"data":{"klines":[]}}', stderr="")
+
+    monkeypatch.setattr(backfill, "urlopen", fail_urlopen)
+    monkeypatch.setattr(backfill.subprocess, "run", fake_run)
+
+    payload = backfill._fetch_json("http://push2his.eastmoney.com/test", retries=1)
+
+    assert payload == {"data": {"klines": []}}
+    assert calls[0][0][-1] == "http://push2his.eastmoney.com/test"
+    assert calls[0][1]["check"] is False
+    assert "shell" not in calls[0][1]
+
+
+def test_tushare_backfill_adds_auditable_previous_trading_day_ffill(tmp_path):
+    backfill = _load_backfill()
+    output = tmp_path / "cn_index_benchmark.csv"
+    output.write_text(
+        "\n".join(
+            [
+                "date,ts_code,close,source_system,value_date,coverage",
+                "2026-07-10,000300.SH,5100,tushare.index_daily,2026-07-10,exact_close",
+                "2026-07-10,000688.SH,2200,eastmoney.push2his.kline,2026-07-10,exact_close",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    class FakeWeekendPro:
+        def index_daily(self, ts_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+            assert ts_code in {"000300.SH", "000688.SH"}
+            assert start_date == end_date == "20260712"
+            return pd.DataFrame()
+
+        def trade_cal(self, exchange: str, start_date: str, end_date: str) -> pd.DataFrame:
+            assert exchange == ""
+            assert start_date == end_date == "20260712"
+            return pd.DataFrame(
+                [{"cal_date": "20260712", "is_open": 0, "pretrade_date": "20260710"}]
+            )
+
+    summary = backfill.backfill_benchmark_file(
+        FakeWeekendPro(),
+        output_file=output,
+        start_date="2026-07-12",
+        end_date="2026-07-12",
+        ts_codes=("000300.SH", "000688.SH"),
+        replace_existing=False,
+    )
+
+    rows = _read_csv(output)
+    weekend_rows = [row for row in rows if row["date"] == "2026-07-12"]
+    assert summary["replace_existing"] is False
+    assert summary["calendar_source_system"] == "tushare.trade_cal"
+    assert summary["previous_trading_day_ffill_row_count"] == 2
+    assert weekend_rows == [
+        {
+            "date": "2026-07-12",
+            "ts_code": "000300.SH",
+            "close": "5100",
+            "source_system": "tushare.index_daily",
+            "value_date": "2026-07-10",
+            "coverage": "previous_trading_day_ffill",
+        },
+        {
+            "date": "2026-07-12",
+            "ts_code": "000688.SH",
+            "close": "2200",
+            "source_system": "eastmoney.push2his.kline",
+            "value_date": "2026-07-10",
+            "coverage": "previous_trading_day_ffill",
         },
     ]

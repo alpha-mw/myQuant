@@ -202,6 +202,41 @@ def test_legacy_ambiguous_records_are_not_used_for_scoped_production(tmp_path) -
     assert "legacy_ambiguous_regime_history_ignored" in result.diagnostics
 
 
+def test_legacy_count_scoped_full_market_record_matches_stable_scope(tmp_path) -> None:
+    path = tmp_path / "history.jsonl"
+    legacy = _signal(
+        as_of="20260624",
+        scope_key="CN:full_market:full_a:symbols_5199",
+        source_symbol_count=5199,
+        unsampled_symbol_count=5199,
+    ).to_dict()
+    path.write_text(json.dumps(legacy, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    result = load_regime_history_result(
+        path,
+        market="CN",
+        universe_key="full_a",
+        before_or_equal_as_of="20260625",
+        scope_key="CN:full_market:full_a",
+        source_universe_key="full_a",
+    )
+
+    assert result.records == [legacy]
+
+
+def test_append_replaces_same_day_legacy_count_scoped_full_market_record(tmp_path) -> None:
+    path = tmp_path / "history.jsonl"
+    legacy = _signal(scope_key="CN:full_market:full_a:symbols_5199").to_dict()
+    path.write_text(json.dumps(legacy, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    notes = append_regime_signal(path, _signal())
+
+    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert len(records) == 1
+    assert records[0]["scope_key"] == "CN:full_market:full_a"
+    assert "regime_persistence_replaced_existing_record" in notes
+
+
 def test_write_failure_is_reported_without_crashing_engine(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     def _fail_append(path: object, signal: object) -> list[str]:
         return ["regime_persistence_write_failed:fixture"]

@@ -19,6 +19,8 @@ from datetime import datetime, timedelta
 from typing import Any, List, Dict, Optional, Set, Mapping
 import json
 import time
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from quant_investor.config import config
 from quant_investor.credential_utils import create_tushare_pro
@@ -49,7 +51,129 @@ except ImportError:
 # Tushare配置
 TUSHARE_TOKEN = config.TUSHARE_TOKEN
 TUSHARE_URL = config.TUSHARE_URL
+EASTMONEY_SOURCE_SYSTEM = "eastmoney.push2his.kline"
 _logger = get_logger("download_cn", verbose=False)
+
+
+def _normalize_trade_date_key(value: Any) -> str:
+    text = str(value or "").strip()
+    digits = "".join(ch for ch in text if ch.isdigit())
+    return digits[:8] if len(digits) >= 8 else ""
+
+
+def _trade_date_key_to_iso(value: Any) -> str:
+    key = _normalize_trade_date_key(value)
+    if len(key) != 8:
+        return ""
+    return f"{key[:4]}-{key[4:6]}-{key[6:8]}"
+
+
+def _parse_float(value: Any) -> float | None:
+    try:
+        parsed = float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return parsed
+
+
+def _eastmoney_secid(symbol: str) -> str:
+    normalized = str(symbol or "").strip().upper()
+    if not normalized:
+        return ""
+    code = normalized.split(".", 1)[0]
+    suffix = normalized.rsplit(".", 1)[-1] if "." in normalized else ""
+    if not code:
+        return ""
+    if suffix == "SH" or (not suffix and code.startswith(("5", "6", "9"))):
+        return f"1.{code}"
+    if suffix in {"SZ", "BJ"} or (not suffix and code.startswith(("0", "1", "2", "3", "4", "8"))):
+        return f"0.{code}"
+    return ""
+
+
+def _fetch_eastmoney_json(url: str, retries: int = 3, timeout: int = 12) -> dict[str, Any]:
+    request = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    last_error: Exception | None = None
+    for attempt in range(retries):
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            last_error = exc
+            if attempt + 1 < retries:
+                time.sleep(0.5 * (attempt + 1))
+    raise RuntimeError(f"Eastmoney kline request failed after {retries} attempts: {last_error}")
+
+
+def fetch_eastmoney_daily_batch_frame(
+    symbols: List[str] | tuple[str, ...],
+    trade_date: str,
+    *,
+    fetch_json: Any = _fetch_eastmoney_json,
+) -> pd.DataFrame:
+    """Fetch target-date daily OHLCV rows from Eastmoney push2his.kline.
+
+    Eastmoney amount is normalized from yuan to Tushare's thousand-yuan
+    ``daily.amount`` convention before rows enter the maintenance pipeline.
+    """
+    target_key = _normalize_trade_date_key(trade_date)
+    if not target_key:
+        return pd.DataFrame()
+
+    rows: list[dict[str, Any]] = []
+    for symbol in symbols or []:
+        normalized_symbol = str(symbol or "").strip().upper()
+        secid = _eastmoney_secid(normalized_symbol)
+        if not secid:
+            continue
+        params = {
+            "secid": secid,
+            "fields1": "f1,f2,f3,f4,f5,f6",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+            "klt": "101",
+            "fqt": "0",
+            "beg": target_key,
+            "end": target_key,
+        }
+        url = "https://push2his.eastmoney.com/api/qt/stock/kline/get?" + urlencode(params)
+        payload = fetch_json(url)
+        klines = ((payload.get("data") or {}).get("klines") or [])
+        for item in klines:
+            parts = str(item).split(",")
+            if len(parts) < 7:
+                continue
+            row_key = _normalize_trade_date_key(parts[0])
+            if row_key != target_key:
+                continue
+            open_price = _parse_float(parts[1])
+            close = _parse_float(parts[2])
+            high = _parse_float(parts[3])
+            low = _parse_float(parts[4])
+            volume = _parse_float(parts[5])
+            amount_yuan = _parse_float(parts[6])
+            pct_chg = _parse_float(parts[8]) if len(parts) > 8 else None
+            change = _parse_float(parts[9]) if len(parts) > 9 else None
+            if None in {open_price, close, high, low}:
+                continue
+            rows.append(
+                {
+                    "ts_code": normalized_symbol,
+                    "trade_date": _trade_date_key_to_iso(row_key),
+                    "open": open_price,
+                    "high": high,
+                    "low": low,
+                    "close": close,
+                    "pre_close": close - change if close is not None and change is not None else None,
+                    "change": change,
+                    "pct_chg": pct_chg,
+                    "vol": volume,
+                    "amount": amount_yuan / 1000.0 if amount_yuan is not None else None,
+                    "data_source": EASTMONEY_SOURCE_SYSTEM,
+                }
+            )
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).sort_values(["ts_code", "trade_date"]).reset_index(drop=True)
 
 
 class CNFullMarketDownloader:
@@ -1354,11 +1478,97 @@ class CNFullMarketDownloader:
         normalized = normalized[normalized["trade_date"].astype(str).str.len() == 8]
         return normalized.reset_index(drop=True)
 
+    def _fetch_daily_batch_adj_factor_frame(self, target_trade_date: str) -> tuple[pd.DataFrame, int, str]:
+        if self.pro is None:
+            return pd.DataFrame(), 0, "provider_unavailable"
+
+        api_calls = 0
+        try:
+            adj_df = self.pro.adj_factor(
+                trade_date=target_trade_date,
+                fields="ts_code,trade_date,adj_factor",
+            )
+            api_calls += 1
+        except TypeError:
+            try:
+                adj_df = self.pro.adj_factor(trade_date=target_trade_date)
+                api_calls += 1
+            except Exception as exc:
+                self._record_data_quality_exception(
+                    func_name="_fetch_daily_batch_adj_factor_frame",
+                    exc=exc,
+                    issue_type="daily_adj_factor_exception",
+                    as_of=target_trade_date,
+                    metadata={"mode": "retry_without_fields"},
+                )
+                return pd.DataFrame(), api_calls, str(exc)[:100]
+        except Exception as exc:
+            self._record_data_quality_exception(
+                func_name="_fetch_daily_batch_adj_factor_frame",
+                exc=exc,
+                issue_type="daily_adj_factor_exception",
+                as_of=target_trade_date,
+                metadata={"mode": "fields"},
+            )
+            return pd.DataFrame(), api_calls, str(exc)[:100]
+
+        if adj_df is None or adj_df.empty:
+            return pd.DataFrame(), api_calls, "adj_factor_empty"
+        adj_df = self._normalize_trade_date_column(adj_df)
+        if "ts_code" in adj_df.columns:
+            adj_df["ts_code"] = adj_df["ts_code"].astype(str).str.strip().str.upper()
+        return adj_df, api_calls, ""
+
+    @staticmethod
+    def _merge_adj_factor_and_adjusted_prices(frame: pd.DataFrame, adj_df: pd.DataFrame) -> pd.DataFrame:
+        if frame is None or frame.empty:
+            return pd.DataFrame() if frame is None else frame.copy()
+        merged = frame.copy()
+        if adj_df is not None and not adj_df.empty:
+            merge_keys = [
+                key
+                for key in ("ts_code", "trade_date")
+                if key in merged.columns and key in adj_df.columns
+            ]
+            if "adj_factor" in adj_df.columns and merge_keys:
+                if "adj_factor" in merged.columns:
+                    merged = merged.drop(columns=["adj_factor"])
+                merged = merged.merge(
+                    adj_df[[*merge_keys, "adj_factor"]].drop_duplicates(subset=merge_keys),
+                    on=merge_keys,
+                    how="left",
+                )
+        if "adj_factor" in merged.columns:
+            adj_factor = pd.to_numeric(merged["adj_factor"], errors="coerce")
+            for source, target in (
+                ("close", "adj_close"),
+                ("open", "adj_open"),
+                ("high", "adj_high"),
+                ("low", "adj_low"),
+            ):
+                if source in merged.columns:
+                    merged[target] = pd.to_numeric(merged[source], errors="coerce") * adj_factor
+        return merged
+
+    @staticmethod
+    def _frame_data_source(frame: pd.DataFrame, default: str = "tushare.daily") -> str:
+        if frame is None or frame.empty or "data_source" not in frame.columns:
+            return default
+        sources = sorted(
+            {
+                str(value or "").strip()
+                for value in frame["data_source"].tolist()
+                if str(value or "").strip()
+            }
+        )
+        return "+".join(sources) if sources else default
+
     def _fetch_daily_batch_frame(self, target_trade_date: str) -> tuple[pd.DataFrame, int, str]:
         if self.pro is None:
             return pd.DataFrame(), 0, "provider_unavailable"
 
         api_calls = 0
+        self._last_daily_batch_adj_factor_frame = pd.DataFrame()
         daily_fields = "ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount"
         try:
             df = self.pro.daily(trade_date=target_trade_date, fields=daily_fields)
@@ -1379,48 +1589,10 @@ class CNFullMarketDownloader:
         if df.empty:
             return pd.DataFrame(), api_calls, "daily_empty"
 
-        try:
-            adj_df = self.pro.adj_factor(
-                trade_date=target_trade_date,
-                fields="ts_code,trade_date,adj_factor",
-            )
-            api_calls += 1
-        except TypeError:
-            try:
-                adj_df = self.pro.adj_factor(trade_date=target_trade_date)
-                api_calls += 1
-            except Exception as exc:
-                self._record_data_quality_exception(
-                    func_name="_fetch_daily_batch_frame",
-                    exc=exc,
-                    issue_type="daily_adj_factor_exception",
-                    as_of=target_trade_date,
-                    metadata={"mode": "retry_without_fields"},
-                )
-                adj_df = pd.DataFrame()
-        except Exception as exc:
-            self._record_data_quality_exception(
-                func_name="_fetch_daily_batch_frame",
-                exc=exc,
-                issue_type="daily_adj_factor_exception",
-                as_of=target_trade_date,
-                metadata={"mode": "fields"},
-            )
-            adj_df = pd.DataFrame()
-
-        if adj_df is not None and not adj_df.empty:
-            adj_df = self._normalize_trade_date_column(adj_df)
-            merge_keys = [
-                key
-                for key in ("ts_code", "trade_date")
-                if key in df.columns and key in adj_df.columns
-            ]
-            if "adj_factor" in adj_df.columns and merge_keys:
-                df = df.merge(
-                    adj_df[[*merge_keys, "adj_factor"]].drop_duplicates(subset=merge_keys),
-                    on=merge_keys,
-                    how="left",
-                )
+        adj_df, adj_api_calls, _adj_error = self._fetch_daily_batch_adj_factor_frame(target_trade_date)
+        api_calls += adj_api_calls
+        self._last_daily_batch_adj_factor_frame = adj_df
+        df = self._merge_adj_factor_and_adjusted_prices(df, adj_df)
 
         try:
             basic_df = self.pro.daily_basic(
@@ -1473,17 +1645,7 @@ class CNFullMarketDownloader:
                         how="left",
                     )
 
-        if "adj_factor" in df.columns:
-            adj_factor = pd.to_numeric(df["adj_factor"], errors="coerce")
-            for source, target in (
-                ("close", "adj_close"),
-                ("open", "adj_open"),
-                ("high", "adj_high"),
-                ("low", "adj_low"),
-            ):
-                if source in df.columns:
-                    df[target] = pd.to_numeric(df[source], errors="coerce") * adj_factor
-
+        df["data_source"] = "tushare.daily"
         df["trade_date"] = pd.to_datetime(
             df["trade_date"],
             format="%Y%m%d",
@@ -1602,6 +1764,60 @@ class CNFullMarketDownloader:
             batch_df, batch_api_calls, batch_error = self._fetch_daily_batch_frame(effective_target_trade_date)
             if not batch_df.empty and "ts_code" in batch_df.columns:
                 batch_df["ts_code"] = batch_df["ts_code"].astype(str).str.strip().str.upper()
+            fetched_symbols = (
+                set(batch_df["ts_code"].astype(str).str.strip().str.upper().tolist())
+                if not batch_df.empty and "ts_code" in batch_df.columns
+                else set()
+            )
+            missing_symbols = [symbol for symbol in symbols_to_fetch if symbol not in fetched_symbols]
+            if missing_symbols:
+                try:
+                    fallback_df = fetch_eastmoney_daily_batch_frame(
+                        missing_symbols,
+                        effective_target_trade_date,
+                    )
+                    if fallback_df is not None and not fallback_df.empty:
+                        fallback_df = self._normalize_trade_date_column(fallback_df)
+                        if "ts_code" in fallback_df.columns:
+                            fallback_df["ts_code"] = fallback_df["ts_code"].astype(str).str.strip().str.upper()
+                        adj_df = getattr(self, "_last_daily_batch_adj_factor_frame", pd.DataFrame())
+                        if adj_df is None or adj_df.empty:
+                            adj_df, adj_api_calls, adj_error = self._fetch_daily_batch_adj_factor_frame(
+                                effective_target_trade_date
+                            )
+                            batch_api_calls += adj_api_calls
+                            self._last_daily_batch_adj_factor_frame = adj_df
+                            if adj_error and not batch_error:
+                                batch_error = adj_error
+                        fallback_df = self._merge_adj_factor_and_adjusted_prices(fallback_df, adj_df)
+                        if "trade_date" in fallback_df.columns:
+                            fallback_df["trade_date"] = pd.to_datetime(
+                                fallback_df["trade_date"],
+                                format="%Y%m%d",
+                                errors="coerce",
+                            ).dt.strftime("%Y-%m-%d")
+                            fallback_df = fallback_df.dropna(subset=["trade_date"])
+                        if not fallback_df.empty:
+                            batch_df = pd.concat([batch_df, fallback_df], ignore_index=True, sort=False)
+                            if {"ts_code", "trade_date"}.issubset(batch_df.columns):
+                                batch_df = (
+                                    batch_df.drop_duplicates(
+                                        subset=["ts_code", "trade_date"],
+                                        keep="first",
+                                    )
+                                    .sort_values(["ts_code", "trade_date"])
+                                    .reset_index(drop=True)
+                                )
+                except Exception as exc:
+                    self._record_data_quality_exception(
+                        func_name="fetch_eastmoney_daily_batch_frame",
+                        exc=exc,
+                        issue_type="eastmoney_daily_exception",
+                        as_of=effective_target_trade_date,
+                        metadata={"symbols": missing_symbols},
+                    )
+                    if not batch_error:
+                        batch_error = f"eastmoney_fallback_error:{type(exc).__name__}"
 
         for symbol in symbols_to_fetch:
             local_state = local_states[symbol]
@@ -1614,6 +1830,7 @@ class CNFullMarketDownloader:
             symbol_df = pd.DataFrame()
             if not batch_df.empty and "ts_code" in batch_df.columns:
                 symbol_df = batch_df[batch_df["ts_code"].astype(str).str.upper() == local_state.symbol].copy()
+            data_source = self._frame_data_source(symbol_df, default="")
 
             if symbol_df.empty:
                 if local_state.local_status == "stale" and existing_records > 0:
@@ -1631,6 +1848,7 @@ class CNFullMarketDownloader:
                             "resolved_path": stale_cached_state.resolved_path,
                             "api_calls": 0,
                             "batch_api_calls": batch_api_calls,
+                            "data_source": "",
                             "error": None if batch_error in {"", "daily_empty"} else batch_error,
                             **cleaning_skipped_fields,
                         }
@@ -1649,6 +1867,7 @@ class CNFullMarketDownloader:
                         "resolved_path": local_state.resolved_path,
                         "api_calls": 0,
                         "batch_api_calls": batch_api_calls,
+                        "data_source": "",
                         "error": batch_error or "Empty data",
                         **cleaning_skipped_fields,
                     }
@@ -1673,6 +1892,7 @@ class CNFullMarketDownloader:
                         .drop_duplicates(subset=["trade_date"], keep="last")
                         .reset_index(drop=True)
                     )
+                final_df = final_df.drop(columns=["data_source"], errors="ignore")
 
                 Path(filepath).parent.mkdir(parents=True, exist_ok=True)
                 cleaning_result: Mapping[str, Any] | None = None
@@ -1695,6 +1915,7 @@ class CNFullMarketDownloader:
                             "target_trade_date": effective_target_trade_date,
                             "local_status": local_state.local_status,
                             "mode": "daily_batch",
+                            "data_source": data_source,
                         },
                     )
                     cleaning_report = cleaning_result.get("cleaning_report")
@@ -1715,6 +1936,7 @@ class CNFullMarketDownloader:
                                 "resolved_path": str(filepath),
                                 "api_calls": 0,
                                 "batch_api_calls": batch_api_calls,
+                                "data_source": data_source,
                                 "error": "Tushare cleaning failed",
                                 **self._cleaning_result_fields(cleaning_result),
                             }
@@ -1735,6 +1957,7 @@ class CNFullMarketDownloader:
                         "target_trade_date": effective_target_trade_date,
                         "local_status": local_state.local_status,
                         "mode": "daily_batch",
+                        "data_source": data_source,
                     },
                 )
 
@@ -1764,6 +1987,7 @@ class CNFullMarketDownloader:
                             "resolved_path": str(filepath),
                             "api_calls": 0,
                             "batch_api_calls": batch_api_calls,
+                            "data_source": data_source,
                             "error": None,
                             **cleaning_fields,
                         }
@@ -1783,6 +2007,7 @@ class CNFullMarketDownloader:
                         "resolved_path": str(filepath),
                         "api_calls": 0,
                         "batch_api_calls": batch_api_calls,
+                        "data_source": data_source,
                         "error": None,
                         **cleaning_fields,
                     }
@@ -1801,6 +2026,7 @@ class CNFullMarketDownloader:
                         "resolved_path": local_state.resolved_path,
                         "api_calls": 0,
                         "batch_api_calls": batch_api_calls,
+                        "data_source": data_source,
                         "error": str(exc)[:100],
                         **cleaning_skipped_fields,
                     }

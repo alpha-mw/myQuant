@@ -473,6 +473,11 @@ def test_forced_minimum_themes_enter_core_pool_without_residuals() -> None:
     assert {theme["theme_id"] for theme in admitted_themes} == {"semi", "bio"}
     assert all(theme["forced"] is True for theme in admitted_themes)
     assert all(theme["original_rejection_reason"] for theme in admitted_themes)
+    assert all(
+        output.metadata["symbols"][symbol]["candidate_intent"]
+        == "research_candidate_not_buy_signal"
+        for symbol in output.symbols
+    )
     assert output.excluded_symbols["TAIL1"] == "theme_pool_theme_not_admitted"
 
 

@@ -36,16 +36,141 @@ LLMs, or connect factors to stock selection or portfolio construction.
 
 ## Governed Factor Health Automation
 
-Daily governed-factor health monitoring is report-only unless
-`--apply-registry-actions` is explicitly passed. The default runtime smoke uses
-strict CN Parquet canonical data through `MarketDataReader`: it reads
-`data/parquet/cn/_latest.json`, samples symbol serving files under the snapshot
-manifest, and then invokes the quant-branch mined-factor runtime. It does not
-scan legacy `data/clean/cn_daily` CSV directories.
+The scheduled governed-factor health review is weekly, strict-fresh, and
+report-only. Its production-safe invocation is:
 
-If the Parquet pointer, manifest, table dataset, or serving cache is missing or
-unhealthy, the runtime smoke reports `parquet_canonical_unavailable` instead of
-falling back to CSV.
+```bash
+UV_CACHE_DIR=/tmp/uv-cache \
+MYQUANT_MARKET_DATA_BACKEND=parquet \
+MYQUANT_MARKET_DATA_MODE_POLICY=strict \
+uv run python scripts/factor_health_automation.py \
+  --cadence weekly \
+  --market CN \
+  --universes full_a \
+  --fresh-evaluation \
+  --strict-fresh-evaluation
+```
+
+The fresh batch is atomic. Every selectable production factor must have local
+fresh evidence, every decision must report `evaluation_source=fresh_evaluation`,
+the factor-name set must match exactly, and the batch must have no blockers or
+data-blocked factors. The full fresh-analysis context must also load at least
+the configured symbol ratio. The strict runtime smoke is part of the same stop
+condition: it must use Parquet/strict with no fallback, a healthy snapshot,
+non-empty symbol readback, `factor_mode=governed_mined_factors`, and the exact
+monitored factor count. A partial batch or failed runtime smoke returns blocked
+and cannot fall back to registry evidence. Data-blocked observations do not
+consume or increment an alpha-failure window and cannot reduce weight or
+deprecate a factor.
+
+Fresh evidence records two independent identities:
+
+- `maturity_window_id` identifies the matured forward-return cohort and is the
+  only identity used to count distinct alpha-failure observations. Recomputing
+  the same cohort does not add another failure, even if older cohorts are
+  revisited out of order. The monitor persists the active distinct failure IDs;
+  a genuinely newer healthy window resets the active streak, while a
+  data-blocked window neither increments nor resets it.
+- `evaluation_hash` records the snapshot, universe, cost assumptions,
+  implementation hash, and evaluation configuration for audit comparison.
+
+Existing-factor incremental evidence is leave-one-out: the factor being tested
+is removed from the comparison composite. This avoids self-inclusion in Gate 8
+and correlation evidence.
+
+The runtime smoke uses strict CN Parquet canonical data through
+`MarketDataReader`: it reads `data/parquet/cn/_latest.json`, samples symbol
+serving files under the snapshot manifest, and invokes the quant-branch
+mined-factor runtime. It never scans legacy `data/clean/cn_daily` CSV
+directories. If the pointer, manifest, table dataset, serving cache, PIT input,
+or readback is unavailable, the run fails closed as
+`parquet_canonical_unavailable` or a specific fresh-evaluation blocker.
+
+`--apply-registry-actions` is not permitted in the scheduled automation. A
+future operator-directed action requires both fresh flags, an atomic batch, and
+explicit review; registry evidence alone is always report-only.
+
+## Quant Factor Selection Shadow
+
+`scripts/run_quant_factor_selection_shadow.py` is a measurement-only runtime
+selection experiment. It reads the strict Parquet snapshot, promotes the
+selected candidate in memory only, and recomputes exact `MinedFactorScorer`
+components and Quant-score Top-20/Top-50 rankings. It writes no registry,
+strategy, portfolio, order, or execution record.
+
+The pre-registered arms are:
+
+- A: all current selectable production factors at their registry weights.
+- B_i: A with one production factor removed.
+- C_i: B_i plus the candidate at the removed factor's actual absolute weight.
+- D: A plus a dynamically calculated candidate nominal weight that produces an
+  exact 3% effective absolute-weight share.
+
+The report includes runtime-parity deltas, rank Spearman, Top-N overlap and
+membership changes, candidate coverage, and covered-versus-uncovered selection
+rates. It does not substitute the mining Gate 8 linear return overlay for a
+runtime rerank.
+
+The v2 create-once preregistration file locks the arms, maturity rule, effective
+3% weight, production-factor count, lookback, and all coverage thresholds.
+Unregistered sensitivity overrides block the governed series. A separate v2
+create-once baseline contract locks those experiment parameters plus production
+factor identities, weights and record hashes; candidate version,
+implementation, expression and record hash; strict PIT policy; runtime code
+hashes; and Top-N profile. Future market snapshots may advance, but contract
+drift blocks the observation. The append-once v2 ledger key includes
+`snapshot/as_of/candidate/baseline_contract_hash`; ledger rows are lineage and
+deduplication evidence only and can never raise candidate maturity.
+
+Candidate maturity requires at least 12 month-end RankIC observations or eight
+non-overlapping 30-day cohorts. A 90-trading-day checkpoint is diagnostic only
+and is not sufficient evidence by itself. The shadow covers the Quant-score
+ranking only; it cannot claim complete production-screening impact until the
+Theme Candidate Pool, liquidity/tradability gates, Fundamental conditional
+increment, Bayesian/risk controls, and downstream portfolio funnel are also
+evaluated.
+
+## Replacement Readiness And Registry Mutation Safety
+
+`scripts/review_quant_factor_replacement_readiness.py` consumes one or more
+strict-fresh health reports and selection-shadow observations. It is
+measurement-only and can emit only `keep`, `watchlist`,
+`reduce_weight_proposal`, `deprecation_proposal`, or `blocked`. It has no
+registry or promotion option.
+
+Two distinct matured alpha-failure windows are required before a reduction can
+even be proposed; three are required before a deprecation can be proposed.
+Duplicate maturity windows and data-blocked observations do not count. Any
+proposal also requires candidate maturity and coverage, leave-one-out removal
+that is not worse, a real C-arm replacement better than A and B, redundancy
+evidence, diversifier/tail-protection safety, positive cross-branch conditional
+increment, an explicit covered-versus-uncovered selection-bias review with
+`acceptable=true`, and complete downstream scope. The system does not invent a
+bias threshold after observing a run; missing or rejected review evidence blocks
+the proposal. Only a passed, measurement-only shadow with unchanged registry,
+matched preregistration and baseline contracts, exact runtime parity, and an
+empty fail-closed blocker list can supply proposal evidence. Old or forged
+ledger rows cannot supply maturity, and regressing cohort chronology blocks the
+review.
+
+Registry mutations used by explicitly authorized workflows go through
+`quant_investor.factors.registry_store`. The store performs strict JSON/schema
+readback, file and record compare-and-swap checks, same-directory atomic replace
+with fsync, and a durable before/after/inverse write-ahead journal. The journal
+is atomically persisted as `prepared` before registry replacement and changed to
+`applied` only after strict readback; a crash-surviving `prepared` journal can be
+rolled back only when its after-record and metadata CAS preconditions match.
+Mutation APIs default to dry-run. A record-scoped inverse rollback preserves
+unrelated later changes and fails on CAS conflict instead of overwriting them.
+The current writer accepts only `mined-factor-registry.v1` and rejects unknown
+record fields, so a future schema or extension cannot be silently truncated by
+a health or mining rewrite.
+
+All work in these sections is a `v13-frozen-20260707` measurement or mutation-
+safety exception. It does not alter production factor weights, lifecycle,
+selection behavior, portfolio construction, strategy records, orders, or live
+trading. Any future promotion, reduction, deprecation, merge, or production
+behavior change still requires explicit governance and Maxwell confirmation.
 
 ## Admission Gates
 
@@ -780,6 +905,50 @@ The default registry is empty:
   "factors": []
 }
 ```
+
+## Mining Candidate Diversity Admission
+
+The weekly mining writer applies `candidate-diversity-policy.v1` after a
+candidate has positive evidence and passes all eight gates. Registry admission
+then requires three additional deterministic checks:
+
+1. one alpha-first champion per exact factor family;
+2. one champion per connected component that shares a dominant underlying
+   primitive (normalized absolute contribution at least 50%); and
+3. one champion per candidate-signal correlation component using median
+   absolute monthly Spearman correlation at or above 0.70.
+
+Pairwise correlation requires at least 20 common symbols on each date and at
+least three valid common rebalance dates. A single survivor makes correlation
+not applicable. Multiple survivors with incomplete required pair evidence fail
+closed and cannot write the registry.
+
+Champion order is ICIR, mean RankIC, cost-adjusted return, incremental master
+return, lower turnover, lower existing-factor correlation, then factor name.
+Research-only implementations remain visible in the report but are not
+registry-write eligible. All non-champion variants stay in the mining report
+with `skip_reason=same_family_redundant` and a stage of `family`,
+`primitive_lineage`, or `signal_cluster`.
+
+The writer independently validates the diversity policy hash and champion
+status before its CAS/WAL mutation. `max_registry_candidates` is applied only
+after diversity selection, and every skipped qualified candidate is enumerated
+in the registry manifest. If no diverse champion remains, strict weekly mining
+returns failure and leaves the registry unchanged.
+
+Existing zero-weight candidates are not deleted or rewritten. Each mining run
+emits `legacy_candidate_redundancy_audit.json`; a later manual promotion must
+have fresh, complete champion evidence from the current policy.
+
+The scheduled mining wrapper also reconciles the live production pool whenever
+registry writing is enabled. Current strict full-A evidence is authoritative:
+only exact 8/8 candidates may remain live, and each family keeps the same
+alpha-first champion used by mining. Production records without current
+evidence, with any failed gate, or losing the family championship are changed
+atomically to `deprecated` with zero weight and an explicit reason. If no
+current 8/8 champion exists, reconciliation fails closed and leaves the
+registry unchanged. `--no-registry-write` disables both candidate writes and
+production-family reconciliation.
 
 To activate a factor after external research validation and manual approval,
 the registry entry must be explicitly promoted, for example:

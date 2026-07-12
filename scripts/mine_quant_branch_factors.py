@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import ast
+import hashlib
 import json
+import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -31,7 +34,11 @@ from quant_investor.factors.governance import (  # noqa: E402
     FactorRecord,
     GateResult,
 )
-from quant_investor.factors.runtime import MinedFactorRegistry  # noqa: E402
+from quant_investor.factors.registry_store import (  # noqa: E402
+    METADATA_ABSENT,
+    apply_factor_record_patch,
+    load_registry_snapshot_strict,
+)
 from scripts.retest_aquant_alpha_mix_8gate import (  # noqa: E402
     _failed_gate_ids,
     _json_default,
@@ -48,6 +55,53 @@ DEFAULT_REGISTRY_PATH = "quant_investor/factor_registry/mined_factors.json"
 
 
 @dataclass(frozen=True)
+class CandidateDiversityPolicy:
+    version: str = "candidate-diversity-policy.v1"
+    max_per_family: int = 1
+    dominant_primitive_threshold: float = 0.50
+    pairwise_abs_spearman_threshold: float = 0.70
+    min_common_symbols_per_date: int = 20
+    min_common_rebalance_dates: int = 3
+    use_absolute_correlation: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "lineage_schema": "primitive-lineage.v1",
+            "correlation_metric": (
+                "median_monthly_cross_sectional_abs_spearman"
+            ),
+            "max_per_family": self.max_per_family,
+            "dominant_primitive_threshold": self.dominant_primitive_threshold,
+            "pairwise_abs_spearman_threshold": (
+                self.pairwise_abs_spearman_threshold
+            ),
+            "min_common_symbols_per_date": self.min_common_symbols_per_date,
+            "min_common_rebalance_dates": self.min_common_rebalance_dates,
+            "use_absolute_correlation": self.use_absolute_correlation,
+            "champion_order": [
+                "icir_desc",
+                "mean_rankic_desc",
+                "cost_adjusted_return_desc",
+                "master_return_delta_desc",
+                "turnover_asc",
+                "existing_factor_corr_abs_asc",
+                "name_asc",
+            ],
+        }
+
+    @property
+    def policy_hash(self) -> str:
+        payload = json.dumps(
+            self.to_dict(), sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+
+DEFAULT_DIVERSITY_POLICY = CandidateDiversityPolicy()
+
+
+@dataclass(frozen=True)
 class MiningCandidate:
     name: str
     family: str
@@ -57,6 +111,170 @@ class MiningCandidate:
     expression: str = ""
     window: int | None = None
     params: Mapping[str, Any] | None = None
+
+
+_FUNDAMENTAL_PRIMITIVES = {
+    "fin_roe",
+    "fin_roa",
+    "fin_debt_to_assets",
+    "fin_net_profit_yoy",
+    "fin_ocf_to_profit",
+    "fin_fcf_to_profit",
+    "fcf_to_price",
+}
+
+
+def _canonical_formula_primitive(name: str) -> tuple[str, list[str]]:
+    value = str(name or "").strip()
+    transforms: list[str] = []
+    if value.endswith("_resid_existing"):
+        value = value[: -len("_resid_existing")]
+        transforms.append("residualized_against_existing")
+    patterns = (
+        (r"^momentum_(\d+)$", "price_momentum", "lookback"),
+        (r"^amihud_(\d+)$", "amihud_illiquidity", "lookback"),
+        (r"^(?:low|high)_amount_(\d+)$", "traded_amount", "lookback"),
+        (r"^volume_stability_(\d+)$", "volume", "stability_window"),
+        (r"^volatility_(\d+)$", "close_return", "volatility_window"),
+        (r"^price_efficiency_(\d+)$", "close_return", "efficiency_window"),
+    )
+    for pattern, primitive, transform in patterns:
+        match = re.match(pattern, value)
+        if match:
+            transforms.append(f"{transform}:{match.group(1)}")
+            return primitive, transforms
+    if value.startswith("volume_growth_"):
+        transforms.append(
+            f"growth_windows:{value.removeprefix('volume_growth_')}"
+        )
+        return "traded_amount", transforms
+    if value == "low_debt_to_assets":
+        transforms.append("direction:lower_is_better")
+        return "fin_debt_to_assets", transforms
+    return value, transforms
+
+
+def candidate_primitive_lineage(
+    candidate: MiningCandidate,
+    *,
+    policy: CandidateDiversityPolicy = DEFAULT_DIVERSITY_POLICY,
+) -> dict[str, Any]:
+    contributions: dict[str, float] = {}
+    transforms: dict[str, list[str]] = {}
+
+    def add(name: str, weight: float, extra: Sequence[str] = ()) -> None:
+        primitive, detected = _canonical_formula_primitive(name)
+        if not primitive:
+            return
+        contributions[primitive] = contributions.get(primitive, 0.0) + abs(
+            float(weight)
+        )
+        transforms.setdefault(primitive, []).extend([*detected, *extra])
+
+    if candidate.implementation == "research_formula:rank_blend":
+        params = dict(candidate.params or {})
+        left_weight = _safe_float(params.get("left_weight"), 0.5)
+        add(str(params.get("left", "")), left_weight)
+        add(str(params.get("right", "")), 1.0 - left_weight)
+    elif candidate.implementation.startswith("aquant_expression:"):
+        try:
+            tree = ast.parse(candidate.expression or "", mode="eval")
+        except SyntaxError as exc:
+            return {
+                "primitive_lineage": [],
+                "primitive_contributions": {},
+                "dominant_primitives": [],
+                "lineage_transforms": {},
+                "lineage_extraction_status": f"error:{exc.msg}",
+            }
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Name)
+                and node.id in _FUNDAMENTAL_PRIMITIVES
+            ):
+                add(node.id, 1.0)
+        if "ts_mean" in candidate.expression:
+            for primitive in contributions:
+                transforms.setdefault(primitive, []).append(
+                    f"rolling_mean:{candidate.window or 'expression'}"
+                )
+    elif candidate.implementation.startswith("price_volume:"):
+        family_map = {
+            "momentum": "price_momentum",
+            "short_reversal": "close_return",
+            "short_term_return": "close_return",
+            "volume_stability": "volume",
+            "volume_stability_smooth": "volume",
+            "low_dollar_volume": "traded_amount",
+            "high_dollar_volume": "traded_amount",
+            "amihud_illiquidity": "amihud_illiquidity",
+            "volatility_penalty": "close_return",
+            "downside_volatility": "downside_return",
+            "price_efficiency": "close_return",
+            "dollar_volume_growth": "traded_amount",
+        }
+        primitive = family_map.get(candidate.family)
+        if primitive:
+            add(primitive, 1.0, [f"family:{candidate.family}"])
+        elif candidate.family == "volstab_momentum_illiquidity_blend":
+            params = dict(candidate.params or {})
+            outer_weight = _safe_float(
+                params.get("outer_volume_stability_weight"), 0.5
+            )
+            inner_weight = _safe_float(
+                params.get("inner_momentum_weight"), 0.5
+            )
+            remainder = 1.0 - outer_weight
+            add("volume", outer_weight, ["transform:volume_stability"])
+            add("price_momentum", remainder * inner_weight)
+            add("amihud_illiquidity", remainder * (1.0 - inner_weight))
+        else:
+            # Composite price-volume implementations declare their primitive
+            # inputs in params so differently named wrappers cannot evade
+            # lineage governance.
+            params = dict(candidate.params or {})
+            declared = [
+                key
+                for key in params
+                if key.endswith("_window") or key.endswith("_weight")
+            ]
+            for key in declared:
+                if "momentum" in key:
+                    add("price_momentum", params.get(key, 1.0))
+                elif "amihud" in key or "illiquidity" in key:
+                    add("amihud_illiquidity", params.get(key, 1.0))
+                elif "volume" in key:
+                    add("volume", params.get(key, 1.0))
+    total = sum(contributions.values())
+    if total <= 0.0:
+        return {
+            "primitive_lineage": [],
+            "primitive_contributions": {},
+            "dominant_primitives": [],
+            "lineage_transforms": transforms,
+            "lineage_extraction_status": "evidence_missing",
+        }
+    normalized = {key: value / total for key, value in contributions.items()}
+    dominant = sorted(
+        key
+        for key, value in normalized.items()
+        if value >= policy.dominant_primitive_threshold
+    )
+    if not dominant:
+        maximum = max(normalized.values())
+        dominant = sorted(
+            key for key, value in normalized.items() if value == maximum
+        )
+    return {
+        "primitive_lineage": sorted(normalized),
+        "primitive_contributions": dict(sorted(normalized.items())),
+        "dominant_primitives": dominant,
+        "lineage_transforms": {
+            key: sorted(set(value))
+            for key, value in sorted(transforms.items())
+        },
+        "lineage_extraction_status": "complete",
+    }
 
 
 def _min_periods(window: int) -> int:
@@ -976,6 +1194,26 @@ def compute_formulaic_signal(
     )
 
 
+def compute_candidate_signal(
+    candidate: MiningCandidate,
+    *,
+    context: RetestContext,
+    expression_inputs: Any | None,
+    formulaic_primitives: Mapping[str, pd.DataFrame],
+) -> pd.DataFrame:
+    if candidate.implementation.startswith("aquant_expression:"):
+        if expression_inputs is None:
+            raise ValueError("fundamental expression inputs were not built")
+        signal = evaluate_aquant_expression(
+            candidate.expression, expression_inputs
+        )
+    elif candidate.implementation.startswith("research_formula:"):
+        signal = compute_formulaic_signal(candidate, formulaic_primitives)
+    else:
+        signal = compute_price_volume_signal(candidate, context)
+    return _coerce_signal(signal, context)
+
+
 def build_candidate_catalog(
     windows: Sequence[int],
     *,
@@ -1066,6 +1304,296 @@ def _set_parameter_stability(results: list[dict[str, Any]]) -> None:
         item["summary"] = review.summary
 
 
+def _alpha_champion_key(item: Mapping[str, Any]) -> tuple[Any, ...]:
+    metrics = dict(item.get("metrics", {}) or {})
+    return (
+        -_safe_float(metrics.get("icir")),
+        -_safe_float(metrics.get("mean_rankic")),
+        -_safe_float(metrics.get("cost_adjusted_return")),
+        -_safe_float(metrics.get("master_return_delta")),
+        _safe_float(metrics.get("turnover"), float("inf")),
+        abs(_safe_float(metrics.get("existing_factor_corr"), 1.0)),
+        str(item.get("name", "")),
+    )
+
+
+def _connected_components(
+    names: Sequence[str], edges: Sequence[tuple[str, str]]
+) -> list[list[str]]:
+    parent = {name: name for name in names}
+
+    def find(name: str) -> str:
+        while parent[name] != name:
+            parent[name] = parent[parent[name]]
+            name = parent[name]
+        return name
+
+    def union(left: str, right: str) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[max(left_root, right_root)] = min(left_root, right_root)
+
+    for left, right in edges:
+        union(left, right)
+    groups: dict[str, list[str]] = {}
+    for name in names:
+        groups.setdefault(find(name), []).append(name)
+    return [sorted(group) for group in groups.values()]
+
+
+def _pairwise_candidate_correlation(
+    left: pd.DataFrame,
+    right: pd.DataFrame,
+    rebalance_dates: Sequence[pd.Timestamp],
+    policy: CandidateDiversityPolicy,
+) -> dict[str, Any]:
+    correlations: list[float] = []
+    common_dates = left.index.intersection(right.index)
+    allowed_dates = set(pd.Timestamp(item) for item in rebalance_dates)
+    common_columns = left.columns.intersection(right.columns)
+    for date in common_dates:
+        if pd.Timestamp(date) not in allowed_dates:
+            continue
+        lhs = left.loc[date, common_columns].replace(
+            [np.inf, -np.inf], np.nan
+        )
+        rhs = right.loc[date, common_columns].replace(
+            [np.inf, -np.inf], np.nan
+        )
+        valid = lhs.notna() & rhs.notna()
+        if int(valid.sum()) < policy.min_common_symbols_per_date:
+            continue
+        correlation = lhs[valid].corr(rhs[valid], method="spearman")
+        if pd.notna(correlation):
+            correlations.append(float(correlation))
+    value = (
+        float(np.median(np.abs(correlations)))
+        if correlations and policy.use_absolute_correlation
+        else float(np.median(correlations)) if correlations else None
+    )
+    return {
+        "median_abs_spearman": value,
+        "valid_common_date_count": len(correlations),
+        "evidence_complete": (
+            len(correlations) >= policy.min_common_rebalance_dates
+        ),
+    }
+
+
+def apply_candidate_diversity_governance(
+    results: list[dict[str, Any]],
+    *,
+    candidates_by_name: Mapping[str, MiningCandidate],
+    signals_by_name: Mapping[str, pd.DataFrame],
+    rebalance_dates: Sequence[pd.Timestamp],
+    policy: CandidateDiversityPolicy = DEFAULT_DIVERSITY_POLICY,
+) -> dict[str, Any]:
+    """Annotate candidates and choose deterministic write champions."""
+
+    policy_hash = policy.policy_hash
+    qualified = [
+        item
+        for item in results
+        if item.get("decision")
+        == FactorAdmissionDecision.PRODUCTION_CANDIDATE.value
+    ]
+    by_name = {str(item.get("name", "")): item for item in qualified}
+    for item in qualified:
+        name = str(item.get("name", ""))
+        candidate = candidates_by_name.get(name)
+        lineage = (
+            candidate_primitive_lineage(candidate, policy=policy)
+            if candidate is not None
+            else {
+                "primitive_lineage": [],
+                "primitive_contributions": {},
+                "dominant_primitives": [],
+                "lineage_transforms": {},
+                "lineage_extraction_status": "evidence_missing",
+            }
+        )
+        item.update(lineage)
+        implementation = str(item.get("implementation", ""))
+        runtime_eligible = implementation.startswith(
+            ("price_volume:", "aquant_expression:")
+        )
+        blockers: list[str] = []
+        if not runtime_eligible:
+            blockers.append("implementation_not_supported_by_runtime")
+        if lineage["lineage_extraction_status"] != "complete":
+            blockers.append("lineage_evidence_missing")
+        if name not in signals_by_name:
+            blockers.append("candidate_signal_evidence_missing")
+        item["runtime_write_eligible"] = runtime_eligible and not blockers
+        item["runtime_write_blockers"] = blockers
+        item["diversity_selection"] = {
+            "policy_version": policy.version,
+            "policy_hash": policy_hash,
+            "status": "pending" if not blockers else "runtime_ineligible",
+            "skip_reason": blockers[0] if blockers else "",
+            "redundancy_stage": "",
+            "family_champion": "",
+            "lineage_component_id": "",
+            "lineage_champion": "",
+            "correlation_cluster_id": "",
+            "cluster_champion": "",
+            "max_abs_candidate_corr": None,
+            "valid_corr_date_count": 0,
+            "final_registry_write_eligible": False,
+        }
+
+    eligible = [item for item in qualified if item["runtime_write_eligible"]]
+
+    family_survivors: list[dict[str, Any]] = []
+    families: dict[str, list[dict[str, Any]]] = {}
+    for item in eligible:
+        families.setdefault(str(item.get("family", "")), []).append(item)
+    for family, members in sorted(families.items()):
+        champion = sorted(members, key=_alpha_champion_key)[0]
+        champion_name = str(champion["name"])
+        family_survivors.append(champion)
+        for item in members:
+            selection = item["diversity_selection"]
+            selection["family_champion"] = champion_name
+            if item is not champion:
+                selection.update(
+                    status="research_only_redundant",
+                    skip_reason="same_family_redundant",
+                    redundancy_stage="family",
+                )
+
+    lineage_edges: list[tuple[str, str]] = []
+    for index, left in enumerate(family_survivors):
+        left_set = set(left.get("dominant_primitives", []))
+        for right in family_survivors[index + 1:]:
+            if left_set.intersection(right.get("dominant_primitives", [])):
+                lineage_edges.append((str(left["name"]), str(right["name"])))
+    lineage_survivors: list[dict[str, Any]] = []
+    lineage_components = _connected_components(
+        [str(item["name"]) for item in family_survivors], lineage_edges
+    )
+    for component_index, names in enumerate(lineage_components, start=1):
+        members = [by_name[name] for name in names]
+        champion = sorted(members, key=_alpha_champion_key)[0]
+        champion_name = str(champion["name"])
+        lineage_survivors.append(champion)
+        component_id = f"lineage-{component_index:03d}"
+        for item in members:
+            selection = item["diversity_selection"]
+            selection["lineage_component_id"] = component_id
+            selection["lineage_champion"] = champion_name
+            if item is not champion:
+                selection.update(
+                    status="research_only_redundant",
+                    skip_reason="same_family_redundant",
+                    redundancy_stage="primitive_lineage",
+                )
+
+    correlation_pairs: list[dict[str, Any]] = []
+    correlation_edges: list[tuple[str, str]] = []
+    incomplete_required_pairs: list[tuple[str, str]] = []
+    for index, left in enumerate(lineage_survivors):
+        left_name = str(left["name"])
+        for right in lineage_survivors[index + 1:]:
+            right_name = str(right["name"])
+            evidence = _pairwise_candidate_correlation(
+                signals_by_name[left_name],
+                signals_by_name[right_name],
+                rebalance_dates,
+                policy,
+            )
+            row = {"left": left_name, "right": right_name, **evidence}
+            correlation_pairs.append(row)
+            if not evidence["evidence_complete"]:
+                incomplete_required_pairs.append((left_name, right_name))
+            elif _safe_float(evidence["median_abs_spearman"]) >= (
+                policy.pairwise_abs_spearman_threshold
+            ):
+                correlation_edges.append((left_name, right_name))
+
+    champions: list[dict[str, Any]] = []
+    if incomplete_required_pairs:
+        affected = {
+            name for pair in incomplete_required_pairs for name in pair
+        }
+        for item in lineage_survivors:
+            if str(item["name"]) in affected:
+                item["diversity_selection"].update(
+                    status="evidence_missing",
+                    skip_reason=(
+                        "candidate_pairwise_correlation_evidence_missing"
+                    ),
+                )
+    else:
+        components = _connected_components(
+            [str(item["name"]) for item in lineage_survivors],
+            correlation_edges,
+        )
+        for component_index, names in enumerate(components, start=1):
+            members = [by_name[name] for name in names]
+            champion = sorted(members, key=_alpha_champion_key)[0]
+            champion_name = str(champion["name"])
+            champions.append(champion)
+            component_id = f"correlation-{component_index:03d}"
+            for item in members:
+                name = str(item["name"])
+                related = [
+                    row
+                    for row in correlation_pairs
+                    if name in {row["left"], row["right"]}
+                ]
+                selection = item["diversity_selection"]
+                selection.update(
+                    correlation_cluster_id=component_id,
+                    cluster_champion=champion_name,
+                    max_abs_candidate_corr=max(
+                        (
+                            _safe_float(row["median_abs_spearman"])
+                            for row in related
+                            if row["median_abs_spearman"] is not None
+                        ),
+                        default=None,
+                    ),
+                    valid_corr_date_count=min(
+                        (
+                            int(row["valid_common_date_count"])
+                            for row in related
+                        ),
+                        default=0,
+                    ),
+                )
+                if item is champion:
+                    selection.update(
+                        status=(
+                            "champion"
+                            if len(lineage_survivors) > 1
+                            else "champion_not_applicable_single_candidate"
+                        ),
+                        final_registry_write_eligible=True,
+                    )
+                else:
+                    selection.update(
+                        status="research_only_redundant",
+                        skip_reason="same_family_redundant",
+                        redundancy_stage="signal_cluster",
+                    )
+
+    return {
+        "policy": policy.to_dict(),
+        "policy_hash": policy_hash,
+        "raw_qualified_count": len(qualified),
+        "runtime_eligible_count": len(eligible),
+        "family_champion_count": len(family_survivors),
+        "lineage_champion_count": len(lineage_survivors),
+        "correlation_champion_count": len(champions),
+        "selected_champions": [str(item["name"]) for item in champions],
+        "correlation_pairs": correlation_pairs,
+        "incomplete_required_pairs": [
+            list(pair) for pair in incomplete_required_pairs
+        ],
+    }
+
+
 def _load_source_notes(path_text: str) -> list[dict[str, Any]]:
     path = Path(str(path_text or "")).expanduser()
     if not str(path_text or "").strip() or not path.exists():
@@ -1079,23 +1607,6 @@ def _load_source_notes(path_text: str) -> list[dict[str, Any]]:
             return [dict(item) for item in notes if isinstance(item, Mapping)]
         return [dict(payload)]
     return []
-
-
-def _write_registry(path: Path, registry: MinedFactorRegistry) -> None:
-    path.write_text(
-        json.dumps(
-            {
-                "schema_version": registry.schema_version,
-                "metadata": registry.metadata,
-                "factors": [record.to_dict() for record in registry.factors],
-            },
-            ensure_ascii=False,
-            indent=2,
-            default=_json_default,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
 
 
 def _record_from_result(
@@ -1119,6 +1630,16 @@ def _record_from_result(
         ),
         "expression": result.get("expression", ""),
         "params": dict(result.get("params", {}) or {}),
+        "primitive_lineage": list(result.get("primitive_lineage", []) or []),
+        "primitive_contributions": dict(
+            result.get("primitive_contributions", {}) or {}
+        ),
+        "dominant_primitives": list(
+            result.get("dominant_primitives", []) or []
+        ),
+        "diversity_selection": dict(
+            result.get("diversity_selection", {}) or {}
+        ),
         "source_notes": [dict(item) for item in source_notes],
         "manual_promotion_required": True,
         "runtime_effect": "none_until_manual_production_factor_promotion",
@@ -1150,6 +1671,55 @@ def _record_from_result(
     )
 
 
+def _production_candidate_gate_blocker(
+    result: Mapping[str, Any],
+) -> str:
+    gate_results = result.get("gate_results")
+    if not isinstance(gate_results, list):
+        return "gate_results_not_list"
+    gate_ids: list[int] = []
+    for gate in gate_results:
+        if not isinstance(gate, Mapping):
+            return "gate_result_not_object"
+        try:
+            gate_ids.append(int(gate.get("gate_id", 0) or 0))
+        except (TypeError, ValueError):
+            return "gate_id_invalid"
+        if gate.get("passed") is not True:
+            return f"gate_{gate_ids[-1]}_not_passed"
+    if sorted(gate_ids) != list(range(1, 9)):
+        return "gate_ids_not_exactly_1_to_8"
+    return ""
+
+
+def _production_candidate_diversity_blocker(
+    result: Mapping[str, Any],
+    *,
+    policy: CandidateDiversityPolicy = DEFAULT_DIVERSITY_POLICY,
+) -> str:
+    if result.get("runtime_write_eligible") is not True:
+        return "runtime_write_ineligible"
+    if result.get("lineage_extraction_status") != "complete":
+        return "lineage_evidence_missing"
+    if not result.get("dominant_primitives"):
+        return "dominant_primitive_missing"
+    selection = result.get("diversity_selection")
+    if not isinstance(selection, Mapping):
+        return "diversity_selection_missing"
+    if selection.get("policy_version") != policy.version:
+        return "diversity_policy_version_mismatch"
+    if selection.get("policy_hash") != policy.policy_hash:
+        return "diversity_policy_hash_mismatch"
+    if selection.get("final_registry_write_eligible") is not True:
+        return str(selection.get("skip_reason") or "not_diversity_champion")
+    if selection.get("status") not in {
+        "champion",
+        "champion_not_applicable_single_candidate",
+    }:
+        return "diversity_status_not_champion"
+    return ""
+
+
 def apply_production_candidate_registry_updates(
     *,
     registry_path: str | Path,
@@ -1161,6 +1731,7 @@ def apply_production_candidate_registry_updates(
     source_notes: Sequence[Mapping[str, Any]] = (),
     horizon_days: int = 30,
     max_candidates: int = 5,
+    journal_path: str | Path | None = None,
     write: bool = True,
 ) -> dict[str, Any]:
     """Write qualified factors as zero-weight production candidates only."""
@@ -1173,38 +1744,174 @@ def apply_production_candidate_registry_updates(
         "source_report": report_path,
         "max_candidates": int(max_candidates),
         "qualified_count": len(qualified_results),
+        "diversity_policy_version": DEFAULT_DIVERSITY_POLICY.version,
+        "diversity_policy_hash": DEFAULT_DIVERSITY_POLICY.policy_hash,
+        "selected_champions": [],
+        "diversity_skipped_factors": [],
         "written_count": 0,
         "updated_count": 0,
         "skipped_count": 0,
         "written_factors": [],
         "updated_factors": [],
         "skipped_factors": [],
+        "registry_mutation_manifest": None,
+        "registry_mutation_manifest_path": (
+            str(Path(journal_path).expanduser()) if journal_path else ""
+        ),
+        "before_registry_sha256": "",
+        "after_registry_sha256": "",
         "status": "not_requested" if not write else "pending",
     }
     if not write:
         return manifest
+    if journal_path is None or not str(journal_path).strip():
+        raise ValueError("journal_path is required for registry writes")
     if not qualified_results:
         manifest["status"] = "no_qualified_candidates"
         return manifest
 
-    registry = MinedFactorRegistry.load(path)
+    hard_diversity_blockers: list[dict[str, str]] = []
+    champion_claims: list[Mapping[str, Any]] = []
+    for item in qualified_results:
+        selection = item.get("diversity_selection")
+        blocker = _production_candidate_diversity_blocker(item)
+        if not blocker:
+            champion_claims.append(item)
+            continue
+        if blocker == "same_family_redundant" and isinstance(
+            selection, Mapping
+        ):
+            continue
+        if (
+            blocker == "runtime_write_ineligible"
+            and isinstance(selection, Mapping)
+            and selection.get("status") == "runtime_ineligible"
+            and selection.get("skip_reason")
+            == "implementation_not_supported_by_runtime"
+        ):
+            continue
+        hard_diversity_blockers.append(
+            {"name": str(item.get("name", "")), "reason": blocker}
+        )
+    duplicate_claims: list[dict[str, str]] = []
+    for field, reason in (
+        ("family", "duplicate_family_champion"),
+        ("lineage_component_id", "duplicate_lineage_champion"),
+        ("correlation_cluster_id", "duplicate_correlation_cluster_champion"),
+    ):
+        seen: dict[str, str] = {}
+        for item in champion_claims:
+            selection = dict(item.get("diversity_selection", {}) or {})
+            value = (
+                str(item.get("family", ""))
+                if field == "family"
+                else str(selection.get(field, ""))
+            )
+            if not value:
+                continue
+            if value in seen:
+                duplicate_claims.append(
+                    {"name": str(item.get("name", "")), "reason": reason}
+                )
+            else:
+                seen[value] = str(item.get("name", ""))
+    if hard_diversity_blockers or duplicate_claims:
+        manifest["skipped_factors"] = [
+            *hard_diversity_blockers,
+            *duplicate_claims,
+        ]
+        manifest["diversity_skipped_factors"] = list(
+            manifest["skipped_factors"]
+        )
+        manifest["skipped_count"] = len(manifest["skipped_factors"])
+        manifest["status"] = "no_registry_changes"
+        manifest["fail_closed_reason"] = (
+            "diversity_batch_validation_failed"
+        )
+        return manifest
+
+    snapshot = load_registry_snapshot_strict(path)
+    registry = snapshot.registry
     by_name = {factor.name: factor for factor in registry.factors}
     changed = False
-    selected = list(qualified_results)[: max(int(max_candidates), 0)]
-    for item in selected:
+    record_patches: dict[str, FactorRecord] = {}
+    expected_record_sha256s: dict[str, str | None] = {}
+    selected_count = 0
+    seen_families: set[str] = set()
+    seen_lineage_components: set[str] = set()
+    seen_correlation_clusters: set[str] = set()
+    for item in qualified_results:
         name = str(item.get("name", "") or "").strip()
         if not name:
             manifest["skipped_factors"].append(
                 {"name": "", "reason": "missing_name"}
             )
             continue
-        if item.get("decision") != FactorAdmissionDecision.PRODUCTION_CANDIDATE.value:
+        if (
+            item.get("decision")
+            != FactorAdmissionDecision.PRODUCTION_CANDIDATE.value
+        ):
             manifest["skipped_factors"].append(
                 {"name": name, "reason": f"decision={item.get('decision')}"}
             )
             continue
+        gate_blocker = _production_candidate_gate_blocker(item)
+        if gate_blocker:
+            manifest["skipped_factors"].append(
+                {"name": name, "reason": gate_blocker}
+            )
+            continue
+        diversity_blocker = _production_candidate_diversity_blocker(item)
+        if diversity_blocker:
+            skipped = {"name": name, "reason": diversity_blocker}
+            selection = item.get("diversity_selection")
+            if isinstance(selection, Mapping):
+                skipped["redundancy_stage"] = str(
+                    selection.get("redundancy_stage", "")
+                )
+                skipped["champion_name"] = str(
+                    selection.get("cluster_champion")
+                    or selection.get("lineage_champion")
+                    or selection.get("family_champion")
+                    or ""
+                )
+            manifest["skipped_factors"].append(skipped)
+            manifest["diversity_skipped_factors"].append(skipped)
+            continue
+        if selected_count >= max(int(max_candidates), 0):
+            skipped = {"name": name, "reason": "max_registry_candidates"}
+            manifest["skipped_factors"].append(skipped)
+            manifest["diversity_skipped_factors"].append(skipped)
+            continue
+        selection = dict(item.get("diversity_selection", {}) or {})
+        family = str(item.get("family", ""))
+        lineage_component = str(selection.get("lineage_component_id", ""))
+        correlation_cluster = str(
+            selection.get("correlation_cluster_id", "")
+        )
+        duplicate_reason = ""
+        if family in seen_families:
+            duplicate_reason = "duplicate_family_champion"
+        elif (
+            lineage_component
+            and lineage_component in seen_lineage_components
+        ):
+            duplicate_reason = "duplicate_lineage_champion"
+        elif (
+            correlation_cluster
+            and correlation_cluster in seen_correlation_clusters
+        ):
+            duplicate_reason = "duplicate_correlation_cluster_champion"
+        if duplicate_reason:
+            manifest["skipped_factors"].append(
+                {"name": name, "reason": duplicate_reason}
+            )
+            continue
         existing = by_name.get(name)
-        if existing and existing.state == FactorLifecycleState.PRODUCTION_FACTOR:
+        if (
+            existing
+            and existing.state == FactorLifecycleState.PRODUCTION_FACTOR
+        ):
             manifest["skipped_factors"].append(
                 {"name": name, "reason": "existing_production_factor"}
             )
@@ -1218,42 +1925,323 @@ def apply_production_candidate_registry_updates(
             source_notes=source_notes,
             horizon_days=horizon_days,
         )
+        record_patches[name] = record
+        selected_count += 1
+        seen_families.add(family)
+        if lineage_component:
+            seen_lineage_components.add(lineage_component)
+        if correlation_cluster:
+            seen_correlation_clusters.add(correlation_cluster)
+        manifest["selected_champions"].append(name)
+        expected_record_sha256s[name] = snapshot.record_sha256s.get(name)
         if existing:
-            registry.factors = [
-                record if factor.name == name else factor
-                for factor in registry.factors
-            ]
             manifest["updated_factors"].append(name)
             manifest["updated_count"] += 1
         else:
-            registry.factors.append(record)
             manifest["written_factors"].append(name)
             manifest["written_count"] += 1
         changed = True
 
     manifest["skipped_count"] = len(manifest["skipped_factors"])
     if changed:
-        registry.metadata.update(
-            {
-                "last_daily_factor_mining_at": run_timestamp,
-                "last_daily_factor_mining_run_id": run_id,
-                "last_daily_factor_mining_report": report_path,
-                "last_daily_factor_mining_written": list(
-                    manifest["written_factors"]
-                ),
-                "last_daily_factor_mining_updated": list(
-                    manifest["updated_factors"]
-                ),
-                "daily_factor_mining_policy": (
-                    "writes zero-weight production_candidate records only; "
-                    "manual production_factor promotion required"
-                ),
-            }
+        metadata_updates = {
+            "last_daily_factor_mining_at": run_timestamp,
+            "last_daily_factor_mining_run_id": run_id,
+            "last_daily_factor_mining_report": report_path,
+            "last_daily_factor_mining_written": list(
+                manifest["written_factors"]
+            ),
+            "last_daily_factor_mining_updated": list(
+                manifest["updated_factors"]
+            ),
+            "daily_factor_mining_policy": (
+                "writes zero-weight production_candidate records only; "
+                "manual production_factor promotion required"
+            ),
+            "last_daily_factor_mining_diversity_policy_version": (
+                DEFAULT_DIVERSITY_POLICY.version
+            ),
+            "last_daily_factor_mining_diversity_policy_hash": (
+                DEFAULT_DIVERSITY_POLICY.policy_hash
+            ),
+        }
+        mutation_manifest = apply_factor_record_patch(
+            path,
+            record_patches,
+            expected_registry_sha256=snapshot.registry_sha256,
+            expected_record_sha256s=expected_record_sha256s,
+            metadata_updates=metadata_updates,
+            expected_metadata_values={
+                key: snapshot.metadata_payload.get(key, METADATA_ABSENT)
+                for key in metadata_updates
+            },
+            mutation_id=f"daily-factor-mining:{run_id}",
+            reason=(
+                "governed daily mining writes zero-weight "
+                "production_candidate records"
+            ),
+            journal_path=journal_path,
+            write=True,
         )
-        _write_registry(path, registry)
+        manifest["registry_mutation_manifest"] = mutation_manifest
+        manifest["before_registry_sha256"] = mutation_manifest[
+            "before_registry_sha256"
+        ]
+        manifest["after_registry_sha256"] = mutation_manifest[
+            "after_registry_sha256"
+        ]
         manifest["status"] = "updated"
     else:
         manifest["status"] = "no_registry_changes"
+    return manifest
+
+
+def build_legacy_candidate_redundancy_audit(
+    registry_path: str | Path,
+    *,
+    policy: CandidateDiversityPolicy = DEFAULT_DIVERSITY_POLICY,
+) -> dict[str, Any]:
+    snapshot = load_registry_snapshot_strict(Path(registry_path).expanduser())
+    rows: list[dict[str, Any]] = []
+    for record in snapshot.registry.factors:
+        if record.state != FactorLifecycleState.PRODUCTION_CANDIDATE:
+            continue
+        metadata = dict(record.metadata or {})
+        tags = list(record.tags or [])
+        family = str(
+            tags[1] if len(tags) > 1 else record.category or "unknown"
+        )
+        candidate = MiningCandidate(
+            name=record.name,
+            family=family,
+            category=record.category,
+            implementation=record.implementation,
+            description=record.description,
+            expression=str(metadata.get("expression", "") or ""),
+            params=dict(metadata.get("params", {}) or {}),
+        )
+        lineage = candidate_primitive_lineage(candidate, policy=policy)
+        rows.append(
+            {
+                "name": record.name,
+                "family": family,
+                "implementation": record.implementation,
+                "metrics": dict(record.metrics or {}),
+                **lineage,
+                "status": "pending",
+                "skip_reason": "",
+                "champion_name": "",
+                "promotion_eligible": False,
+            }
+        )
+    complete = [
+        row for row in rows if row["lineage_extraction_status"] == "complete"
+    ]
+    edges: list[tuple[str, str]] = []
+    for index, left in enumerate(complete):
+        for right in complete[index + 1:]:
+            if set(left["dominant_primitives"]).intersection(
+                right["dominant_primitives"]
+            ):
+                edges.append((str(left["name"]), str(right["name"])))
+    by_name = {str(row["name"]): row for row in rows}
+    for names in _connected_components(
+        [str(row["name"]) for row in complete], edges
+    ):
+        members = [by_name[name] for name in names]
+        runtime_members = [
+            row
+            for row in members
+            if str(row["implementation"]).startswith(
+                ("price_volume:", "aquant_expression:")
+            )
+        ]
+        champion = (
+            sorted(runtime_members, key=_alpha_champion_key)[0]
+            if runtime_members
+            else None
+        )
+        for row in members:
+            row["champion_name"] = champion["name"] if champion else ""
+            if champion is None:
+                row["status"] = "legacy_runtime_evidence_missing"
+                row["skip_reason"] = "runtime_write_ineligible"
+            elif row is champion:
+                row["status"] = "legacy_lineage_champion_requires_fresh_audit"
+            else:
+                row["status"] = "research_only_redundant"
+                row["skip_reason"] = "same_family_redundant"
+    for row in rows:
+        if row["lineage_extraction_status"] != "complete":
+            row["status"] = "legacy_evidence_missing"
+            row["skip_reason"] = "legacy_evidence_missing"
+    return {
+        "policy_version": policy.version,
+        "policy_hash": policy.policy_hash,
+        "registry_path": str(registry_path),
+        "registry_sha256": snapshot.registry_sha256,
+        "record_count": len(rows),
+        "registry_mutated": False,
+        "promotion_policy": (
+            "latest complete diversity audit champion evidence required"
+        ),
+        "records": rows,
+    }
+
+
+def apply_production_family_governance(
+    *,
+    registry_path: str | Path,
+    results: Sequence[Mapping[str, Any]],
+    run_timestamp: str,
+    run_id: str,
+    report_path: str,
+    journal_path: str | Path,
+    write: bool = True,
+) -> dict[str, Any]:
+    """Keep only current 8-gate family champions in the production pool."""
+
+    path = Path(registry_path).expanduser()
+    snapshot = load_registry_snapshot_strict(path)
+    active = snapshot.registry.selectable_factors()
+    by_result = {
+        str(item.get("name", "")): item
+        for item in results
+        if str(item.get("name", ""))
+    }
+    eligible: list[Mapping[str, Any]] = []
+    for record in active:
+        item = by_result.get(record.name)
+        if item is None:
+            continue
+        if (
+            item.get("decision")
+            == FactorAdmissionDecision.PRODUCTION_CANDIDATE.value
+            and not _production_candidate_gate_blocker(item)
+        ):
+            eligible.append(item)
+
+    families: dict[str, list[Mapping[str, Any]]] = {}
+    for item in eligible:
+        families.setdefault(str(item.get("family", "unknown")), []).append(
+            item
+        )
+    champions: dict[str, str] = {
+        family: str(sorted(members, key=_alpha_champion_key)[0]["name"])
+        for family, members in families.items()
+    }
+    champion_names = set(champions.values())
+    manifest: dict[str, Any] = {
+        "requested": bool(write),
+        "registry_path": str(path),
+        "run_id": run_id,
+        "source_report": report_path,
+        "active_before_count": len(active),
+        "eligible_8gate_count": len(eligible),
+        "champion_count": len(champion_names),
+        "champions_by_family": dict(sorted(champions.items())),
+        "kept_factors": sorted(champion_names),
+        "deprecated_factors": [],
+        "status": "not_requested" if not write else "pending",
+        "registry_mutation_manifest": None,
+    }
+    if not write:
+        return manifest
+    if not champion_names:
+        manifest["status"] = "no_registry_changes"
+        manifest["fail_closed_reason"] = "no_current_8gate_family_champion"
+        return manifest
+
+    patches: dict[str, FactorRecord] = {}
+    expected_hashes: dict[str, str | None] = {}
+    for record in active:
+        item = by_result.get(record.name)
+        updated = FactorRecord.from_dict(record.to_dict())
+        if item is None:
+            reason = "current_governed_evidence_missing"
+        elif record.name not in champion_names:
+            gate_blocker = _production_candidate_gate_blocker(item)
+            if gate_blocker:
+                reason = "current_8gate_not_passed"
+            else:
+                family = str(item.get("family", "unknown"))
+                reason = f"same_family_redundant:{champions.get(family, '')}"
+        else:
+            reason = ""
+
+        if item is not None:
+            updated.gate_results = [
+                GateResult.from_dict(row)
+                for row in item.get("gate_results", [])
+                if isinstance(row, Mapping)
+            ]
+            updated.metrics = dict(item.get("metrics", {}) or {})
+            updated.metadata = {
+                **dict(updated.metadata or {}),
+                "governance_family": str(item.get("family", "unknown")),
+                "primitive_lineage": list(
+                    item.get("primitive_lineage", []) or []
+                ),
+                "dominant_primitives": list(
+                    item.get("dominant_primitives", []) or []
+                ),
+                "latest_production_family_governance": {
+                    "run_id": run_id,
+                    "run_timestamp": run_timestamp,
+                    "source_report": report_path,
+                    "decision": item.get("decision"),
+                    "gates_passed": item.get("gates_passed"),
+                    "family_champion": champions.get(
+                        str(item.get("family", "unknown")), ""
+                    ),
+                },
+            }
+        if reason:
+            updated.state = FactorLifecycleState.DEPRECATED
+            updated.weight = 0.0
+            updated.deprecated_reason = reason
+            manifest["deprecated_factors"].append(
+                {"name": record.name, "reason": reason}
+            )
+        else:
+            updated.state = FactorLifecycleState.PRODUCTION_FACTOR
+            updated.deprecated_reason = ""
+        patches[record.name] = updated
+        expected_hashes[record.name] = snapshot.record_sha256s.get(record.name)
+
+    metadata_updates = {
+        "last_production_family_governance_at": run_timestamp,
+        "last_production_family_governance_run_id": run_id,
+        "last_production_family_governance_report": report_path,
+        "last_production_family_champions": sorted(champion_names),
+        "production_family_policy": (
+            "current exact 8-gate evidence; one alpha-first champion "
+            "per family"
+        ),
+    }
+    mutation = apply_factor_record_patch(
+        path,
+        patches,
+        expected_registry_sha256=snapshot.registry_sha256,
+        expected_record_sha256s=expected_hashes,
+        metadata_updates=metadata_updates,
+        expected_metadata_values={
+            key: snapshot.metadata_payload.get(key, METADATA_ABSENT)
+            for key in metadata_updates
+        },
+        mutation_id=f"production-family-governance:{run_id}",
+        reason=(
+            "direct user-authorized production family and current 8-gate "
+            "champion reconciliation"
+        ),
+        journal_path=journal_path,
+        write=True,
+    )
+    manifest["registry_mutation_manifest"] = mutation
+    manifest["status"] = "updated"
+    manifest["active_after_count"] = len(champion_names)
+    manifest["before_registry_sha256"] = mutation["before_registry_sha256"]
+    manifest["after_registry_sha256"] = mutation["after_registry_sha256"]
     return manifest
 
 
@@ -1305,22 +2293,12 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
         blockers: list[str] = []
         effective_start = resolved_analysis_start
         try:
-            if candidate.implementation.startswith("aquant_expression:"):
-                if expression_inputs is None:
-                    raise ValueError(
-                        "fundamental expression inputs were not built"
-                    )
-                signal = evaluate_aquant_expression(
-                    candidate.expression, expression_inputs
-                )
-            elif candidate.implementation.startswith("research_formula:"):
-                signal = compute_formulaic_signal(
-                    candidate,
-                    formulaic_primitives,
-                )
-            else:
-                signal = compute_price_volume_signal(candidate, full_context)
-            signal = _coerce_signal(signal, full_context)
+            signal = compute_candidate_signal(
+                candidate,
+                context=full_context,
+                expression_inputs=expression_inputs,
+                formulaic_primitives=formulaic_primitives,
+            )
             metrics_context = context
             if args.candidate_maturity_start:
                 metrics_context, effective_start = candidate_maturity_context(
@@ -1402,6 +2380,29 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
     qualified = [
         item for item in results if item["decision"] == "production_candidate"
     ]
+    candidates_by_name = {
+        candidate.name: candidate for candidate in candidates
+    }
+    signals_by_name: dict[str, pd.DataFrame] = {}
+    for item in qualified:
+        candidate = candidates_by_name[str(item["name"])]
+        try:
+            signals_by_name[candidate.name] = compute_candidate_signal(
+                candidate,
+                context=full_context,
+                expression_inputs=expression_inputs,
+                formulaic_primitives=formulaic_primitives,
+            )
+        except Exception as exc:
+            item.setdefault("blockers", []).append(
+                f"diversity_signal_compute_error:{exc}"
+            )
+    diversity_governance = apply_candidate_diversity_governance(
+        results,
+        candidates_by_name=candidates_by_name,
+        signals_by_name=signals_by_name,
+        rebalance_dates=context.rebalance_dates,
+    )
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = (
         Path(args.output_dir).expanduser()
@@ -1413,10 +2414,16 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     run_timestamp = datetime.now().isoformat(timespec="seconds")
-    run_id = str(args.run_id or "").strip() or f"quant_branch_factor_mining_{timestamp}"
+    run_id = (
+        str(args.run_id or "").strip()
+        or f"quant_branch_factor_mining_{timestamp}"
+    )
     source_notes = _load_source_notes(str(args.source_notes_json))
     results_json_path = output_dir / "quant_branch_factor_mining_results.json"
     registry_write_requested = bool(args.write_production_candidates)
+    registry_mutation_path = output_dir / (
+        f"registry_mutation_{timestamp}.json"
+    )
     registry_manifest = apply_production_candidate_registry_updates(
         registry_path=str(args.registry_path),
         qualified_results=qualified,
@@ -1427,7 +2434,13 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
         source_notes=source_notes,
         horizon_days=int(args.horizon_days),
         max_candidates=int(args.max_registry_candidates),
+        journal_path=(
+            registry_mutation_path if registry_write_requested else None
+        ),
         write=registry_write_requested,
+    )
+    legacy_candidate_redundancy_audit = (
+        build_legacy_candidate_redundancy_audit(str(args.registry_path))
     )
     payload = {
         "run_timestamp": run_timestamp,
@@ -1451,11 +2464,21 @@ def run_mining(args: argparse.Namespace) -> dict[str, Any]:
         "registry_write": registry_manifest["status"] == "updated",
         "registry_write_requested": registry_write_requested,
         "registry_update_manifest": registry_manifest,
+        "legacy_candidate_redundancy_audit": (
+            legacy_candidate_redundancy_audit
+        ),
         "source_notes": source_notes,
         "existing_composite_blocker": context.existing_blocker,
         "candidate_count": len(results),
         "qualified_count": len(qualified),
         "qualified_factors": [item["name"] for item in qualified],
+        "diversity_governance": diversity_governance,
+        "diverse_positive_champion_count": int(
+            diversity_governance["correlation_champion_count"]
+        ),
+        "diverse_positive_champions": list(
+            diversity_governance["selected_champions"]
+        ),
         "manual_review_required": bool(qualified),
         "conclusion": (
             "manual_production_factor_review_candidate"
@@ -1483,6 +2506,26 @@ def write_outputs(output_dir: Path, payload: Mapping[str, Any]) -> None:
     (output_dir / "registry_update_manifest.json").write_text(
         json.dumps(
             payload.get("registry_update_manifest", {}),
+            ensure_ascii=False,
+            indent=2,
+            default=_json_default,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (output_dir / "legacy_candidate_redundancy_audit.json").write_text(
+        json.dumps(
+            payload.get("legacy_candidate_redundancy_audit", {}),
+            ensure_ascii=False,
+            indent=2,
+            default=_json_default,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (output_dir / "production_family_governance_manifest.json").write_text(
+        json.dumps(
+            payload.get("production_family_governance_manifest", {}),
             ensure_ascii=False,
             indent=2,
             default=_json_default,
@@ -1518,6 +2561,15 @@ def write_outputs(output_dir: Path, payload: Mapping[str, Any]) -> None:
                 "master_return_delta": metrics.get("master_return_delta"),
                 "sharpe_delta": metrics.get("sharpe_delta"),
                 "turnover": metrics.get("turnover"),
+                "dominant_primitives": ",".join(
+                    item.get("dominant_primitives", [])
+                ),
+                "diversity_status": dict(
+                    item.get("diversity_selection", {}) or {}
+                ).get("status"),
+                "diversity_skip_reason": dict(
+                    item.get("diversity_selection", {}) or {}
+                ).get("skip_reason"),
                 "blockers": ";".join(item.get("blockers", [])),
             }
         )
@@ -1561,7 +2613,8 @@ def render_markdown_report(payload: Mapping[str, Any]) -> str:
         "Passing here only opens manual production-factor review.",
         (
             "This runner can write zero-weight production_candidate records "
-            "only when explicitly requested; it never promotes production_factor."
+            "only when explicitly requested; it never promotes "
+            "production_factor."
         ),
         "",
         "## Top Results",

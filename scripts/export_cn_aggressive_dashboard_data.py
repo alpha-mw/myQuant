@@ -6,10 +6,12 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import os
 import sys
+from collections import defaultdict
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -87,6 +89,12 @@ BENCHMARK_FIELD_ORDER = [
     INDUSTRY_EW_NAV_FIELD,
 ]
 TUSHARE_BENCHMARK_SOURCE_SYSTEM = "tushare.index_daily"
+EXECUTED_TRADE_STATUSES = {
+    "filled",
+    "filled_local_manual",
+    "apply_locally_no_broker",
+}
+TRADE_RECORD_REQUIRED_FIELDS = ["timestamp", "symbol", "side/action", "shares", "price", "trade_value"]
 os.environ.setdefault("ARROW_USER_SIMD_LEVEL", "NONE")
 
 
@@ -99,6 +107,7 @@ class RecordRun:
     initial_capital: float
     total_value_after: float
     benchmark_values: dict[str, float]
+    funding_cash_flows: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -177,6 +186,16 @@ def load_json(path: Path) -> dict[str, Any]:
         return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return {}
+
+
+def load_json_object(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def benchmarks_from_snapshot(run_dir: Path) -> dict[str, float]:
@@ -430,33 +449,14 @@ def _with_composite_benchmark_fields(
     *,
     run_date: str,
 ) -> None:
-    main_components = [
-        ("star50_nav", 0.50),
-        ("csi300_nav", 0.30),
-        ("chinext_nav", 0.20),
-    ]
-    used_weight = sum(weight for field, weight in main_components if field in normalized)
-    if used_weight:
-        normalized["benchmark_main_nav"] = (
-            sum(normalized[field] * weight for field, weight in main_components if field in normalized)
-            / used_weight
-        )
-        component_coverages = [
-            coverage[field] for field, _weight in main_components if field in normalized and field in coverage
-        ]
-        component_value_dates = [
-            value_dates[field] for field, _weight in main_components if field in normalized and field in value_dates
-        ]
-        coverage["benchmark_main_nav"] = (
-            SNAPSHOT_GAP_FILL_COVERAGE
-            if SNAPSHOT_GAP_FILL_COVERAGE in component_coverages
-            else (
-                "previous_trading_day_ffill"
-                if "previous_trading_day_ffill" in component_coverages
-                else "exact_close"
-            )
-        )
-        value_dates["benchmark_main_nav"] = min(component_value_dates) if component_value_dates else run_date
+    main_field = next(
+        (field for field in ("star50_nav", "csi300_nav", "chinext_nav") if field in normalized),
+        "",
+    )
+    if main_field:
+        normalized["benchmark_main_nav"] = normalized[main_field]
+        coverage["benchmark_main_nav"] = coverage.get(main_field, "exact_close")
+        value_dates["benchmark_main_nav"] = value_dates.get(main_field, run_date)
     if "csi300_nav" in normalized:
         normalized["benchmark_nav"] = normalized["csi300_nav"]
         coverage["benchmark_nav"] = coverage.get("csi300_nav", "exact_close")
@@ -678,9 +678,119 @@ def infer_initial_capital(run_dir: Path, pnl_row: dict[str, str]) -> float | Non
     return None
 
 
-def discover_record_runs(record_root: Path) -> tuple[list[RecordRun], list[str]]:
+def iso_date_from_any(value: Any) -> str:
+    text = str(value or "").strip()
+    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+        return text[:10]
+    digits = "".join(char for char in text if char.isdigit())
+    return tushare_to_iso_date(digits[:8]) if len(digits) >= 8 else ""
+
+
+def load_funding_cash_flows(run_dir: Path, record_date: str) -> tuple[dict[str, Any], ...]:
+    manifest_path = run_dir / "manual_execution_manifest.json"
+    manual_manifest = load_json_object(manifest_path)
+    if manual_manifest is None:
+        return ()
+
+    embedded = manual_manifest.get("manual_funding_supplement")
+    declared_path = str(manual_manifest.get("manual_funding_supplement_path") or "").strip()
+    external: dict[str, Any] = {}
+    if declared_path:
+        evidence_path = Path(declared_path)
+        if not evidence_path.is_absolute():
+            evidence_path = run_dir / evidence_path
+        external = load_json_object(evidence_path) or {}
+        if not evidence_path.exists() or not external:
+            raise ValueError(
+                f"Invalid funding lineage for {run_dir.name}: unreadable funding evidence: {evidence_path}"
+            )
+    if embedded is not None and not isinstance(embedded, dict):
+        raise ValueError(
+            f"Invalid funding lineage for {run_dir.name}: manual_funding_supplement must be an object"
+        )
+    if embedded and external and embedded != external:
+        raise ValueError(
+            f"Invalid funding lineage for {run_dir.name}: embedded and external funding evidence differ"
+        )
+
+    payloads: list[dict[str, Any]] = []
+    supplement = external or (embedded if isinstance(embedded, dict) else {})
+    if supplement:
+        payloads.append(supplement)
+    for key in ("external_funding_cash_flows", "funding_cash_flows"):
+        rows = manual_manifest.get(key) or []
+        if not isinstance(rows, list):
+            raise ValueError(f"Invalid funding lineage for {run_dir.name}: {key} must be a list")
+        payloads.extend(row for row in rows if isinstance(row, dict))
+
+    flows: list[dict[str, Any]] = []
+    for payload in payloads:
+        amount = parse_float(payload.get("amount"))
+        flow_date = iso_date_from_any(
+            payload.get("effective_date")
+            or payload.get("capital_base_effective_from")
+            or payload.get("date")
+            or record_date
+        )
+        if amount is None or not math.isfinite(amount) or amount == 0:
+            raise ValueError(
+                f"Invalid funding lineage for {run_dir.name}: funding amount must be finite and non-zero"
+            )
+        if not flow_date or flow_date != record_date:
+            raise ValueError(
+                f"Invalid funding lineage for {run_dir.name}: funding date {flow_date or 'missing'} "
+                f"does not match record date {record_date}"
+            )
+        total_before = parse_float(payload.get("total_value_before"))
+        total_after = parse_float(payload.get("total_value_after"))
+        if (
+            total_before is not None
+            and total_after is not None
+            and not math.isclose(total_before + amount, total_after, abs_tol=0.01)
+        ):
+            raise ValueError(
+                f"Invalid funding lineage for {run_dir.name}: total_value_before + amount != total_value_after"
+            )
+        flows.append(
+            {
+                "date": flow_date,
+                "amount": amount,
+                "source": str(payload.get("source") or "manual_execution_manifest"),
+                "schema_version": str(payload.get("schema_version") or ""),
+                "evidence_path": declared_path,
+                "capital_base_after": parse_float(payload.get("capital_base_after")),
+                "total_value_before": total_before,
+                "total_value_after": total_after,
+            }
+        )
+    return tuple(flows)
+
+
+def deduplicate_funding_cash_flows(flows: list[dict[str, Any]]) -> tuple[dict[str, Any], ...]:
+    unique: list[dict[str, Any]] = []
+    seen: set[tuple[str, float, str, str]] = set()
+    for flow in flows:
+        identity = (
+            str(flow.get("date") or ""),
+            float(flow.get("amount") or 0),
+            str(flow.get("source") or ""),
+            str(flow.get("evidence_path") or ""),
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        unique.append(flow)
+    return tuple(unique)
+
+
+def discover_record_runs(
+    record_root: Path,
+    *,
+    require_effective_manual: bool = True,
+) -> tuple[list[RecordRun], list[str]]:
     warnings: list[str] = []
     runs: list[RecordRun] = []
+    funding_by_date: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for run_dir in sorted(record_root.iterdir() if record_root.exists() else []):
         if not run_dir.is_dir() or not run_dir.name[:8].isdigit():
             continue
@@ -693,21 +803,40 @@ def discover_record_runs(record_root: Path) -> tuple[list[RecordRun], list[str]]
         if not initial_capital or not total_value_after:
             warnings.append(f"{run_dir.name}: pnl_summary.csv 缺少 initial_capital 或 total_value_after，已跳过。")
             continue
+        if require_effective_manual:
+            manual_ledger_rows = read_csv_rows(run_dir / "ledger_after_manual_switch.csv")
+            if not manual_ledger_rows:
+                warnings.append(f"{run_dir.name}: 缺少可读 ledger_after_manual_switch.csv，已跳过。")
+                continue
+            if load_json_object(run_dir / "manual_execution_manifest.json") is None:
+                warnings.append(f"{run_dir.name}: 缺少可读 manual_execution_manifest.json，已跳过。")
+                continue
+        record_date = record_date_from_run(run_dir.name)
+        funding_cash_flows = load_funding_cash_flows(run_dir, record_date)
+        funding_by_date[record_date].extend(funding_cash_flows)
         runs.append(
             RecordRun(
                 run_id=run_dir.name,
-                date=record_date_from_run(run_dir.name),
+                date=record_date,
                 path=run_dir,
                 record_time=row.get("record_time", ""),
                 initial_capital=initial_capital,
                 total_value_after=total_value_after,
                 benchmark_values=benchmarks_from_snapshot(run_dir),
+                funding_cash_flows=funding_cash_flows,
             )
         )
     latest_by_date: dict[str, RecordRun] = {}
     for run in runs:
         latest_by_date[run.date] = run
-    return [latest_by_date[date] for date in sorted(latest_by_date)], warnings
+    daily_runs = [
+        replace(
+            latest_by_date[date],
+            funding_cash_flows=deduplicate_funding_cash_flows(funding_by_date.get(date, [])),
+        )
+        for date in sorted(latest_by_date)
+    ]
+    return daily_runs, warnings
 
 
 def build_theme_map(run: RecordRun) -> dict[str, str]:
@@ -733,6 +862,23 @@ def build_theme_map(run: RecordRun) -> dict[str, str]:
         if buy_symbol and buy_theme:
             theme_map.setdefault(buy_symbol, buy_theme)
     return theme_map
+
+
+def build_historical_theme_maps(
+    runs: list[RecordRun],
+) -> dict[str, dict[str, tuple[str, str]]]:
+    current: dict[str, tuple[str, str]] = {}
+    by_date: dict[str, dict[str, tuple[str, str]]] = {}
+    for run in sorted(runs, key=lambda item: (item.date, item.run_id)):
+        for symbol, theme in build_theme_map(run).items():
+            normalized = str(theme or "").strip()
+            if not normalized or normalized in {"UNSPECIFIED_RECORD_THEME", "UNCLASSIFIED"}:
+                continue
+            if normalized.startswith("行业:"):
+                continue
+            current[symbol] = (normalized, run.run_id)
+        by_date[run.date] = dict(current)
+    return by_date
 
 
 def load_sector_map(stock_basic_root: Path) -> tuple[dict[str, dict[str, str]], list[str]]:
@@ -981,33 +1127,188 @@ def attach_industry_equal_weight_nav(
     ), warnings
 
 
+def build_cash_flow_adjusted_nav_points(runs: list[RecordRun]) -> list[dict[str, float | None]]:
+    points: list[dict[str, float | None]] = []
+    unit_count: float | None = None
+    unit_nav: float | None = None
+    first_unit_nav: float | None = None
+    previous_unit_nav: float | None = None
+    previous_capital: float | None = None
+    for run in runs:
+        external_flow = sum(float(flow.get("amount") or 0) for flow in run.funding_cash_flows)
+        raw_capital_ratio = run.total_value_after / run.initial_capital
+        daily_return: float | None = None
+        if unit_count is None:
+            if run.funding_cash_flows:
+                raise ValueError(
+                    f"Invalid NAV lineage for {run.run_id}: first NAV record contains funding evidence "
+                    "without a prior unit base"
+                )
+            unit_count = run.initial_capital
+            if unit_count <= 0 or run.total_value_after <= 0:
+                raise ValueError(f"Invalid NAV lineage for {run.run_id}: non-positive unit base")
+            unit_nav = run.total_value_after / unit_count
+            first_unit_nav = unit_nav
+        else:
+            capital_changed = previous_capital is not None and not math.isclose(
+                run.initial_capital,
+                previous_capital,
+                rel_tol=0,
+                abs_tol=0.01,
+            )
+            if capital_changed and math.isclose(external_flow, 0.0, abs_tol=0.01):
+                raise ValueError(
+                    f"Invalid NAV lineage for {run.run_id}: initial_capital changed from "
+                    f"{previous_capital:.2f} to {run.initial_capital:.2f} without manifest-backed funding evidence"
+                )
+            for flow in run.funding_cash_flows:
+                amount = float(flow.get("amount") or 0)
+                total_before = parse_float(flow.get("total_value_before"))
+                total_after = parse_float(flow.get("total_value_after"))
+                if total_before is None or total_after is None:
+                    raise ValueError(
+                        f"Invalid NAV lineage for {run.run_id}: funding evidence requires "
+                        "total_value_before and total_value_after for time-weighted unitization"
+                    )
+                if total_before <= 0 or total_after <= 0:
+                    raise ValueError(
+                        f"Invalid NAV lineage for {run.run_id}: funding pre/post values must be positive"
+                    )
+                flow_unit_nav = total_before / unit_count
+                if flow_unit_nav <= 0:
+                    raise ValueError(
+                        f"Invalid NAV lineage for {run.run_id}: non-positive NAV at funding time"
+                    )
+                unit_count += amount / flow_unit_nav
+                if unit_count <= 0:
+                    raise ValueError(
+                        f"Invalid NAV lineage for {run.run_id}: funding would leave non-positive units"
+                    )
+                if not math.isclose(flow_unit_nav * unit_count, total_after, abs_tol=0.01):
+                    raise ValueError(
+                        f"Invalid NAV lineage for {run.run_id}: funding unitization does not reconcile "
+                        "to total_value_after"
+                    )
+            if run.total_value_after <= 0:
+                raise ValueError(
+                    f"Invalid NAV lineage for {run.run_id}: non-positive portfolio value"
+                )
+            unit_nav = run.total_value_after / unit_count
+            if previous_unit_nav is None or previous_unit_nav <= 0:
+                raise ValueError(f"Invalid NAV lineage for {run.run_id}: missing prior unit NAV")
+            daily_return = unit_nav / previous_unit_nav - 1.0
+        points.append(
+            {
+                "unit_nav": unit_nav,
+                "unit_count": unit_count,
+                "raw_capital_ratio": raw_capital_ratio,
+                "rebased_nav": unit_nav / (first_unit_nav or 1.0),
+                "daily_return": daily_return,
+                "external_funding_cash_flow": external_flow,
+            }
+        )
+        previous_unit_nav = unit_nav
+        previous_capital = run.initial_capital
+    return points
+
+
+def portfolio_nav_source_summary(
+    runs: list[RecordRun],
+    nav_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    funding_events = [flow for run in runs for flow in run.funding_cash_flows]
+    return {
+        "status": "cash_flow_adjusted_unit_nav",
+        "method": "time_weighted_unitization",
+        "formula": (
+            "flow_unit_nav = total_value_before_flow / units_before_flow; "
+            "units_after_flow = units_before_flow + external_funding_cash_flow / flow_unit_nav; "
+            "unit_nav_t = total_value_after_t / units_after_flow"
+        ),
+        "cash_flow_timing_source": "manifest_pre_post_valuation",
+        "historical_return_preserved": True,
+        "raw_capital_ratio_field": "portfolio_nav_raw",
+        "first_valid_date": runs[0].date if runs else "",
+        "last_valid_date": runs[-1].date if runs else "",
+        "first_unit_nav": parse_float(nav_rows[0].get("portfolio_nav")) if nav_rows else None,
+        "last_unit_nav": parse_float(nav_rows[-1].get("portfolio_nav")) if nav_rows else None,
+        "display_total_return": (
+            parse_float(nav_rows[-1].get("portfolio_nav_rebased")) - 1.0
+            if nav_rows and parse_float(nav_rows[-1].get("portfolio_nav_rebased")) is not None
+            else None
+        ),
+        "capital_base_start": runs[0].initial_capital if runs else None,
+        "capital_base_end": runs[-1].initial_capital if runs else None,
+        "latest_total_value_after": runs[-1].total_value_after if runs else None,
+        "unit_count_start": parse_float(nav_rows[0].get("portfolio_units")) if nav_rows else None,
+        "unit_count_end": parse_float(nav_rows[-1].get("portfolio_units")) if nav_rows else None,
+        "funding_event_count": len(funding_events),
+        "funding_events": funding_events,
+    }
+
+
 def build_nav_rows(
     runs: list[RecordRun],
     benchmark_export: BenchmarkExport | None = None,
 ) -> tuple[list[dict[str, Any]], list[str], list[str]]:
     warnings: list[str] = []
     rows: list[dict[str, Any]] = []
+    nav_points = build_cash_flow_adjusted_nav_points(runs)
+    points_by_date = {run.date: point for run, point in zip(runs, nav_points)}
+
+    def portfolio_fields(run: RecordRun) -> dict[str, str]:
+        point = points_by_date[run.date]
+        daily_return = point["daily_return"]
+        return {
+            "portfolio_nav": f"{point['unit_nav']:.8f}",
+            "portfolio_nav_raw": f"{point['raw_capital_ratio']:.8f}",
+            "portfolio_nav_rebased": f"{point['rebased_nav']:.8f}",
+            "portfolio_return": f"{daily_return:.8f}" if daily_return is not None else "",
+            "portfolio_units": f"{point['unit_count']:.8f}",
+            "initial_capital": f"{run.initial_capital:.2f}",
+            "total_value_after": f"{run.total_value_after:.2f}",
+            "external_funding_cash_flow": f"{point['external_funding_cash_flow']:.2f}",
+        }
+
+    portfolio_fieldnames = [
+        "portfolio_nav",
+        "portfolio_nav_raw",
+        "portfolio_nav_rebased",
+        "portfolio_return",
+        "portfolio_units",
+        "initial_capital",
+        "total_value_after",
+        "external_funding_cash_flow",
+    ]
     if benchmark_export is not None and benchmark_export.values_by_date:
+        benchmark_values_by_date = {
+            date: dict(values) for date, values in benchmark_export.values_by_date.items()
+        }
+        for run in runs:
+            values = benchmark_values_by_date.setdefault(run.date, {})
+            coverage = dict(benchmark_export.coverage_by_date.get(run.date, {}))
+            value_dates = dict(benchmark_export.value_date_by_date.get(run.date, {}))
+            _with_composite_benchmark_fields(values, coverage, value_dates, run_date=run.date)
         available_fields = [
             field
             for field in BENCHMARK_FIELD_ORDER
-            if any(field in values for values in benchmark_export.values_by_date.values())
+            if any(field in values for values in benchmark_values_by_date.values())
         ]
         for run in runs:
             row: dict[str, Any] = {
                 "date": run.date,
-                "portfolio_nav": f"{run.total_value_after / run.initial_capital:.8f}",
+                **portfolio_fields(run),
                 "cash_weight": "",
                 "gross_exposure": "",
                 "net_exposure": "",
             }
-            values = benchmark_export.values_by_date.get(run.date, {})
+            values = benchmark_values_by_date.get(run.date, {})
             for field in available_fields:
                 row[field] = f"{values[field]:.8f}" if field in values else ""
             rows.append(row)
         fieldnames = [
             "date",
-            "portfolio_nav",
+            *portfolio_fieldnames,
             *available_fields,
             "cash_weight",
             "gross_exposure",
@@ -1035,22 +1336,14 @@ def build_nav_rows(
             value = run.benchmark_values.get(field)
             if first and value:
                 normalized[field] = value / first
-        main_components = [
-            ("star50_nav", 0.50),
-            ("csi300_nav", 0.30),
-            ("chinext_nav", 0.20),
-        ]
-        used_weight = sum(weight for field, weight in main_components if field in normalized)
-        if used_weight:
-            benchmark_main_nav = sum(normalized[field] * weight for field, weight in main_components if field in normalized) / used_weight
-        elif "csi300_nav" in normalized:
-            benchmark_main_nav = normalized["csi300_nav"]
-        else:
-            benchmark_main_nav = DEFAULT_INITIAL_BENCHMARK
+        benchmark_main_nav = next(
+            (normalized[field] for field in ("star50_nav", "csi300_nav", "chinext_nav") if field in normalized),
+            DEFAULT_INITIAL_BENCHMARK,
+        )
         legacy_benchmark_nav = normalized.get("csi300_nav", benchmark_main_nav)
         row: dict[str, Any] = {
             "date": run.date,
-            "portfolio_nav": f"{run.total_value_after / run.initial_capital:.8f}",
+            **portfolio_fields(run),
             "benchmark_main_nav": f"{benchmark_main_nav:.8f}",
             "benchmark_nav": f"{legacy_benchmark_nav:.8f}",
             "cash_weight": "",
@@ -1064,7 +1357,7 @@ def build_nav_rows(
         )
     fieldnames = [
         "date",
-        "portfolio_nav",
+        *portfolio_fieldnames,
         "benchmark_main_nav",
         "benchmark_nav",
         *available_fields,
@@ -1075,6 +1368,81 @@ def build_nav_rows(
     # Preserve stable order and avoid duplicating csi300_nav if also used as legacy benchmark_nav.
     fieldnames = list(dict.fromkeys(fieldnames))
     return rows, warnings, fieldnames
+
+
+def _trade_timestamp_date(timestamp: str, default_date: str) -> str:
+    text = str(timestamp or "").strip()
+    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+        return text[:10]
+    digits = "".join(char for char in text if char.isdigit())
+    if len(digits) >= 8:
+        return tushare_to_iso_date(digits[:8])
+    return default_date
+
+
+def _trade_side(action: str) -> str:
+    text = str(action or "").strip().lower()
+    if "buy" in text:
+        return "buy"
+    if "sell" in text:
+        return "sell"
+    return ""
+
+
+def _is_executed_trade(row: dict[str, str], *, legacy_orders: bool = False) -> bool:
+    status = str(row.get("status") or "").strip().lower()
+    if status:
+        return status in EXECUTED_TRADE_STATUSES
+    return legacy_orders
+
+
+def _trade_price(row: dict[str, str]) -> float | None:
+    return parse_float(row.get("execution_price") or row.get("price"))
+
+
+def _trade_row_candidates(run: RecordRun, *, legacy_orders: bool) -> list[dict[str, str]]:
+    filename = "orders.csv" if legacy_orders else "manual_switch_and_take_profit_orders.csv"
+    return read_csv_rows(run.path / filename)
+
+
+def _trade_source_name(legacy_orders: bool) -> str:
+    return "orders.csv" if legacy_orders else "manual_switch_and_take_profit_orders.csv"
+
+
+def _validate_executed_trade_record(
+    row: dict[str, str],
+    *,
+    run: RecordRun,
+    action: str,
+    symbol: str,
+    timestamp: str,
+    price: float | None,
+    quantity: float | None,
+    amount: float | None,
+    source_name: str,
+) -> list[str]:
+    missing: list[str] = []
+    if not timestamp:
+        missing.append("timestamp")
+    elif not _trade_timestamp_date(timestamp, ""):
+        missing.append("timestamp(parseable)")
+    if not symbol:
+        missing.append("symbol")
+    if action not in {"buy", "sell"}:
+        missing.append("side/action")
+    if quantity is None or quantity <= 0:
+        missing.append("shares")
+    if price is None or price <= 0:
+        missing.append("price")
+    if amount is None or amount <= 0:
+        missing.append("trade_value")
+    if missing:
+        return missing
+    expected_amount = (price or 0) * (quantity or 0)
+    tolerance = max(1.0, abs(expected_amount) * 0.01)
+    if amount is not None and abs(amount - expected_amount) > tolerance:
+        return ["trade_value(price*shares mismatch)"]
+    return []
 
 
 def benchmark_source_summary(
@@ -1228,16 +1596,15 @@ def benchmark_source_summary(
 def build_positions_rows(
     runs: list[RecordRun],
     sector_map: dict[str, dict[str, str]],
+    historical_theme_by_date: dict[str, dict[str, tuple[str, str]]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     rows: list[dict[str, Any]] = []
     warnings: list[str] = []
     for run in runs:
         ledger_path = run.path / "ledger_after_manual_switch.csv"
-        if not ledger_path.exists():
-            ledger_path = run.path / "ledger.csv"
         ledger_rows = read_csv_rows(ledger_path)
         if not ledger_rows:
-            warnings.append(f"{run.run_id}: 未找到可用 ledger，positions 已跳过。")
+            warnings.append(f"{run.run_id}: 未找到可用 ledger_after_manual_switch.csv，positions 已跳过。")
             continue
         holdings_review = {
             row.get("symbol", ""): row
@@ -1251,6 +1618,10 @@ def build_positions_rows(
                 continue
             value = parse_float(row.get("current_value"))
             weight = parse_float(row.get("market_weight"))
+            shares = parse_float(row.get("shares"))
+            avg_cost = parse_float(row.get("avg_cost"))
+            cost_basis = parse_float(row.get("cost_basis"))
+            current_price = parse_float(row.get("current_price"))
             if weight is None and value is not None and run.total_value_after:
                 weight = value / run.total_value_after
             review = holdings_review.get(symbol, {})
@@ -1261,10 +1632,21 @@ def build_positions_rows(
             sector_info = sector_map.get(symbol, {})
             explicit_theme = theme_map.get(symbol, "")
             theme = explicit_theme
+            theme_source = f"strategy_record:{run.run_id}" if explicit_theme else ""
+            if not theme:
+                historical_theme, source_run = (historical_theme_by_date or {}).get(run.date, {}).get(
+                    symbol,
+                    ("", ""),
+                )
+                if historical_theme:
+                    theme = historical_theme
+                    theme_source = f"prior_strategy_record:{source_run}"
             if not theme and sector_info.get("sector"):
                 theme = f"行业: {sector_info['sector']}"
+                theme_source = "stock_basic.industry"
             if not theme:
                 theme = "UNSPECIFIED_RECORD_THEME"
+                theme_source = "unavailable"
             rows.append(
                 {
                     "date": run.date,
@@ -1272,13 +1654,18 @@ def build_positions_rows(
                     "name": row.get("name") or review.get("name") or "UNKNOWN_NAME",
                     "weight": f"{weight:.8f}" if weight is not None else "",
                     "theme": theme,
+                    "theme_source": theme_source,
                     "sector": sector_info.get("sector", ""),
                     "sub_sector": sector_info.get("sub_sector", ""),
                     "daily_return": f"{daily_return:.8f}" if daily_return is not None else "",
                     "contribution": f"{contribution:.8f}" if contribution is not None else "",
                     "market_value": f"{value:.2f}" if value is not None else "",
-                }
-            )
+                    "quantity": f"{shares:.0f}" if shares is not None else "",
+                    "avg_cost": f"{avg_cost:.4f}" if avg_cost is not None else "",
+                    "cost_basis": f"{cost_basis:.2f}" if cost_basis is not None else "",
+                    "current_price": f"{current_price:.4f}" if current_price is not None else "",
+	                }
+	            )
     unspecified_count = sum(1 for row in rows if row["theme"] == "UNSPECIFIED_RECORD_THEME")
     if unspecified_count:
         warnings.append(f"{unspecified_count} 条持仓记录未找到逐股票 theme，positions.csv 使用 UNSPECIFIED_RECORD_THEME。")
@@ -1288,44 +1675,135 @@ def build_positions_rows(
     return rows, warnings
 
 
-def build_trade_rows(runs: list[RecordRun], sector_map: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str, str]] = set()
+def build_trade_rows(
+    runs: list[RecordRun],
+    sector_map: dict[str, dict[str, str]],
+    *,
+    warnings: list[str] | None = None,
+    completeness: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str, str]] = set()
+    strict_warnings = warnings if warnings is not None else []
+    skipped_incomplete = 0
+    executed_seen = 0
     for run in runs:
         theme_map = build_theme_map(run)
-        for row in read_csv_rows(run.path / "manual_switch_and_take_profit_orders.csv"):
-            status = str(row.get("status") or "").strip().lower()
-            if status and status != "filled":
-                continue
-            symbol = str(row.get("symbol") or "").strip()
-            action = str(row.get("action") or "").strip().lower()
-            timestamp = str(row.get("timestamp") or run.record_time or run.date).strip()
-            if not symbol or action not in {"buy", "sell"}:
-                continue
-            key = (timestamp, action, symbol, str(row.get("shares") or ""))
-            if key in seen:
-                continue
-            seen.add(key)
-            price = parse_float(row.get("execution_price"))
-            quantity = parse_float(row.get("shares"))
-            amount = parse_float(row.get("trade_value"))
-            sector = sector_map.get(symbol, {}).get("sector", "")
-            theme = theme_map.get(symbol) or (f"行业: {sector}" if sector else "UNSPECIFIED_RECORD_THEME")
-            rows.append(
-                {
-                    "trade_date": run.date,
-                    "ticker": symbol,
-                    "name": row.get("name") or "UNKNOWN_NAME",
-                    "side": action,
-                    "price": f"{price:.4f}" if price is not None else "",
-                    "quantity": f"{quantity:.0f}" if quantity is not None else "",
-                    "trade_amount": f"{amount:.2f}" if amount is not None else "",
-                    "fee": "0",
-                    "reason": row.get("reason") or "",
-                    "theme": theme,
-                }
-            )
-    return rows
+        source_rows = [
+            (False, _trade_row_candidates(run, legacy_orders=False)),
+            (True, _trade_row_candidates(run, legacy_orders=True)),
+        ]
+        for legacy_orders, trade_rows in source_rows:
+            source_name = _trade_source_name(legacy_orders)
+            for row in trade_rows:
+                if not _is_executed_trade(row, legacy_orders=legacy_orders):
+                    continue
+                executed_seen += 1
+                symbol = str(row.get("symbol") or "").strip()
+                action = _trade_side(row.get("action") or row.get("side") or "")
+                amount = parse_float(row.get("trade_value"))
+                price = _trade_price(row)
+                quantity = parse_float(row.get("shares"))
+                timestamp = str(row.get("timestamp") or "").strip()
+                missing = _validate_executed_trade_record(
+                    row,
+                    run=run,
+                    action=action,
+                    symbol=symbol,
+                    timestamp=timestamp,
+                    price=price,
+                    quantity=quantity,
+                    amount=amount,
+                    source_name=source_name,
+                )
+                if missing:
+                    skipped_incomplete += 1
+                    strict_warnings.append(
+                        "trade_record_incomplete: "
+                        f"{run.run_id} {source_name} 已执行交易缺少/无效 {','.join(missing)}，已跳过；"
+                        f"symbol={symbol or '-'} action={action or '-'}。"
+                    )
+                    continue
+                key = (
+                    timestamp,
+                    action,
+                    symbol,
+                    str(row.get("shares") or ""),
+                    f"{amount:.2f}" if amount is not None else "",
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                sector = sector_map.get(symbol, {}).get("sector", "")
+                theme = theme_map.get(symbol) or (f"行业: {sector}" if sector else "UNSPECIFIED_RECORD_THEME")
+                candidates.append(
+                    {
+                        "trade_date": _trade_timestamp_date(timestamp, run.date),
+                        "ticker": symbol,
+                        "name": row.get("name") or "UNKNOWN_NAME",
+                        "side": action,
+                        "price": f"{price:.4f}" if price is not None else "",
+                        "quantity": f"{quantity:.0f}" if quantity is not None else "",
+                        "trade_amount": f"{amount:.2f}" if amount is not None else "",
+                        "fee": "0",
+                        "reason": row.get("reason") or "",
+                        "theme": theme,
+                    }
+                )
+    candidates.sort(key=lambda item: (item["trade_date"], item["ticker"], item["side"], item["quantity"]))
+    if completeness is not None:
+        completeness.update(
+            {
+                "status": "complete" if skipped_incomplete == 0 else "partial",
+                "required_fields": TRADE_RECORD_REQUIRED_FIELDS,
+                "executed_source_rows": executed_seen,
+                "exported_rows": len(candidates),
+                "skipped_incomplete_rows": skipped_incomplete,
+            }
+        )
+    return candidates
+
+
+def dashboard_display_warnings(warnings: list[str]) -> list[str]:
+    manual_ledger_skips = 0
+    manifest_skips = 0
+    incomplete_trade_rows = 0
+    visible: list[str] = []
+    for warning in warnings:
+        text = str(warning)
+        if text.endswith(": 缺少可读 ledger_after_manual_switch.csv，已跳过。"):
+            manual_ledger_skips += 1
+        elif text.endswith(": 缺少可读 manual_execution_manifest.json，已跳过。"):
+            manifest_skips += 1
+        elif text.startswith("trade_record_incomplete:"):
+            incomplete_trade_rows += 1
+        elif "条持仓记录缺少显式 theme" in text and "回退标签" in text:
+            continue
+        else:
+            visible.append(text)
+    if manual_ledger_skips:
+        visible.append(
+            f"{manual_ledger_skips} 个历史记录因缺少可读 ledger_after_manual_switch.csv 已跳过；详见 export_summary.json。"
+        )
+    if manifest_skips:
+        visible.append(
+            f"{manifest_skips} 个历史记录因缺少可读 manual_execution_manifest.json 已跳过；详见 export_summary.json。"
+        )
+    if incomplete_trade_rows:
+        visible.append(
+            f"{incomplete_trade_rows} 条已执行交易记录因缺少 timestamp/symbol/action/shares/price/trade_value 被跳过；"
+            "详见 export_summary.json 的 trade_record_completeness。"
+        )
+    return visible
+
+
+def dashboard_display_infos(warnings: list[str], infos: list[str] | None = None) -> list[str]:
+    visible = list(infos or [])
+    for warning in warnings:
+        text = str(warning)
+        if "条持仓记录缺少显式 theme" in text and "回退标签" in text:
+            visible.append(text)
+    return visible
 
 
 def js_string(value: str) -> str:
@@ -1340,6 +1818,7 @@ def write_generated_js(
     latest_record: str,
     record_count: int,
     warnings: list[str],
+    infos: list[str],
     nav_csv: str,
     positions_csv: str,
     trades_csv: str,
@@ -1350,7 +1829,8 @@ def write_generated_js(
         f"  sourceRoot: {js_string(str(source_root))},\n"
         f"  latestRecord: {js_string(latest_record)},\n"
         f"  recordCount: {record_count},\n"
-        f"  warnings: {json.dumps(warnings, ensure_ascii=False, indent=2)},\n"
+        f"  warnings: {json.dumps(dashboard_display_warnings(warnings), ensure_ascii=False, indent=2)},\n"
+        f"  infos: {json.dumps(dashboard_display_infos(warnings, infos), ensure_ascii=False, indent=2)},\n"
         "  csv: {\n"
         f"    nav: {js_string(nav_csv)},\n"
         f"    positions: {js_string(positions_csv)},\n"
@@ -1385,20 +1865,26 @@ def export(
     benchmark_gap_fill: str = "snapshot",
     benchmark_file: Path | None = None,
 ) -> dict[str, Any]:
-    runs, warnings = discover_record_runs(record_root)
-    if not runs:
+    nav_runs, warnings = discover_record_runs(record_root, require_effective_manual=False)
+    manual_runs, manual_record_warnings = discover_record_runs(
+        record_root,
+        require_effective_manual=True,
+    )
+    if not nav_runs:
         raise SystemExit(f"No usable records found under {record_root}")
+    if not manual_runs:
+        raise SystemExit(f"No usable manual ledger records found under {record_root}")
     benchmark_export: BenchmarkExport | None = None
     local_benchmark_file = resolve_local_benchmark_file(dashboard_root, benchmark_file)
     if benchmark_source in {"auto", "local"} and (benchmark_source == "local" or local_benchmark_file.exists()):
-        benchmark_export, local_warnings = load_local_benchmark_export(runs, local_benchmark_file)
+        benchmark_export, local_warnings = load_local_benchmark_export(nav_runs, local_benchmark_file)
         warnings.extend(local_warnings)
         if benchmark_export is None and benchmark_source == "local":
             warnings.append("已按 fail-closed 降级为 strategy_record.market_snapshot.indices benchmark；不得标记为生产级。")
     if benchmark_source in {"auto", "tushare"}:
         if benchmark_export is None:
             benchmark_export, tushare_warnings = load_tushare_benchmark_export(
-                runs,
+                nav_runs,
                 snapshot_gap_fill=benchmark_gap_fill == "snapshot",
             )
             warnings.extend(tushare_warnings)
@@ -1407,16 +1893,33 @@ def export(
     if benchmark_source == "snapshot":
         warnings.append("benchmark_source=snapshot：按显式参数使用 strategy_record.market_snapshot.indices，非生产级。")
     if benchmark_export is not None:
-        benchmark_export, industry_warnings = attach_industry_equal_weight_nav(runs, benchmark_export)
+        benchmark_export, industry_warnings = attach_industry_equal_weight_nav(nav_runs, benchmark_export)
         warnings.extend(industry_warnings)
-    nav_rows, nav_warnings, nav_fieldnames = build_nav_rows(runs, benchmark_export)
+    nav_rows, nav_warnings, nav_fieldnames = build_nav_rows(nav_runs, benchmark_export)
+    nav_source_summary = portfolio_nav_source_summary(nav_runs, nav_rows)
     benchmark_summary = benchmark_source_summary(nav_rows, nav_fieldnames, benchmark_export)
     sector_map, sector_warnings = load_sector_map(DEFAULT_STOCK_BASIC_ROOT)
-    positions_rows, position_warnings = build_positions_rows(runs, sector_map)
-    trade_rows = build_trade_rows(runs, sector_map)
+    positions_rows, position_warnings = build_positions_rows(
+        manual_runs,
+        sector_map,
+        historical_theme_by_date=build_historical_theme_maps(nav_runs),
+    )
+    position_theme_provenance: dict[str, int] = {}
+    for row in positions_rows:
+        source = str(row.get("theme_source") or "unavailable")
+        position_theme_provenance[source] = position_theme_provenance.get(source, 0) + 1
+    trade_warnings: list[str] = []
+    trade_record_completeness: dict[str, Any] = {}
+    trade_rows = build_trade_rows(
+        manual_runs,
+        sector_map,
+        warnings=trade_warnings,
+        completeness=trade_record_completeness,
+    )
     warnings.extend(nav_warnings)
     warnings.extend(sector_warnings)
     warnings.extend(position_warnings)
+    warnings.extend(trade_warnings)
     if not benchmark_summary["production_grade"]:
         warnings.append(
             "benchmark_source_status="
@@ -1443,11 +1946,16 @@ def export(
             "name",
             "weight",
             "theme",
+            "theme_source",
             "sector",
             "sub_sector",
             "daily_return",
             "contribution",
             "market_value",
+            "quantity",
+            "avg_cost",
+            "cost_basis",
+            "current_price",
         ],
         positions_rows,
     )
@@ -1473,13 +1981,37 @@ def export(
         benchmark_export.raw_rows if benchmark_export is not None else [],
     )
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    dashboard_infos = [
+        f"NAV 使用 {len(nav_runs)} 个正式 pnl_summary 记录；positions/trades 使用 "
+        f"{len(manual_runs)} 个有效手工持仓基线记录。"
+    ]
+    if nav_source_summary["funding_events"]:
+        funding_text = "，".join(
+            f"{event['date']} 外部资金流 {float(event['amount']):,.2f}"
+            for event in nav_source_summary["funding_events"]
+        )
+        dashboard_infos.append(
+            "portfolio_nav 使用现金流调整后的单位净值；"
+            f"{funding_text} 已从收益计算中剔除，账户总资产与资金基准保留在 NAV 审计字段。"
+        )
+    carried_theme_count = sum(
+        count
+        for source, count in position_theme_provenance.items()
+        if source.startswith("prior_strategy_record:")
+    )
+    if carried_theme_count:
+        dashboard_infos.append(
+            f"{carried_theme_count} 条历史持仓使用截至当日最近正式 strategy record 的显式 theme，"
+            "仅前向继承，不使用未来记录。"
+        )
     write_generated_js(
         dashboard_root / "js" / "generated_records.js",
         generated_at=generated_at,
         source_root=record_root,
-        latest_record=runs[-1].run_id,
-        record_count=len(runs),
+        latest_record=manual_runs[-1].run_id,
+        record_count=len(nav_runs),
         warnings=warnings,
+        infos=dashboard_infos,
         nav_csv=csv_text(nav_path),
         positions_csv=csv_text(positions_path),
         trades_csv=csv_text(trades_path),
@@ -1488,11 +2020,25 @@ def export(
         "generated_at": generated_at,
         "source_root": str(record_root),
         "dashboard_root": str(dashboard_root),
-        "latest_record": runs[-1].run_id,
-        "record_count": len(runs),
+        "latest_record": manual_runs[-1].run_id,
+        "latest_nav_record": nav_runs[-1].run_id,
+        "record_count": len(nav_runs),
+        "nav_record_count": len(nav_runs),
+        "manual_record_count": len(manual_runs),
         "nav_rows": len(nav_rows),
         "positions_rows": len(positions_rows),
         "trade_rows": len(trade_rows),
+        "portfolio_nav_source": nav_source_summary,
+        "position_theme_provenance": position_theme_provenance,
+        "trade_record_completeness": trade_record_completeness,
+        "effective_manual_ledger_status": {
+            "status": "valid",
+            "record_id": manual_runs[-1].run_id,
+            "ledger_path": str(manual_runs[-1].path / "ledger_after_manual_switch.csv"),
+            "manifest_path": str(manual_runs[-1].path / "manual_execution_manifest.json"),
+            "legacy_ledger_fallback_used": False,
+        },
+        "manual_record_warnings": manual_record_warnings,
         "warnings": warnings,
         "benchmark_source": benchmark_summary,
         "files": {

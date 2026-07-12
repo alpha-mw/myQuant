@@ -16,6 +16,27 @@ def _text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _full_market_identity(
+    *,
+    scope_key: Any,
+    regime_scope: Any = None,
+    market: Any = None,
+    source_universe_key: Any = None,
+) -> tuple[str, str] | None:
+    key_parts = _text(scope_key).split(":")
+    scope = _text(regime_scope)
+    key_market = key_parts[0] if len(key_parts) >= 3 else ""
+    key_scope = key_parts[1] if len(key_parts) >= 3 else ""
+    key_source = key_parts[2] if len(key_parts) >= 3 else ""
+    if (scope or key_scope) != "full_market":
+        return None
+    resolved_market = _text(market) or key_market
+    resolved_source = _text(source_universe_key) or key_source
+    if not resolved_market or not resolved_source:
+        return None
+    return resolved_market, resolved_source
+
+
 def _record_scope_matches(
     payload: Mapping[str, Any],
     *,
@@ -34,7 +55,18 @@ def _record_scope_matches(
             diagnostics.append("legacy_ambiguous_regime_history_ignored")
         return False
     if scope_key and record_scope != _text(scope_key):
-        return False
+        expected_identity = _full_market_identity(
+            scope_key=scope_key,
+            source_universe_key=source_universe_key,
+        )
+        record_identity = _full_market_identity(
+            scope_key=record_scope,
+            regime_scope=payload.get("regime_scope"),
+            market=payload.get("market"),
+            source_universe_key=record_source,
+        )
+        if expected_identity is None or record_identity != expected_identity:
+            return False
     if source_universe_key and record_source != _text(source_universe_key):
         return False
     return True
@@ -119,11 +151,25 @@ def _same_persistence_key(existing: Mapping[str, Any], payload: Mapping[str, Any
         return False
     payload_scope = _text(payload.get("scope_key"))
     if payload_scope:
-        return (
-            _text(existing.get("scope_key")) == payload_scope
-            and _text(existing.get("source_universe_key"))
-            == _text(payload.get("source_universe_key"))
+        existing_scope = _text(existing.get("scope_key"))
+        same_source = _text(existing.get("source_universe_key")) == _text(
+            payload.get("source_universe_key")
         )
+        if existing_scope == payload_scope and same_source:
+            return True
+        existing_identity = _full_market_identity(
+            scope_key=existing_scope,
+            regime_scope=existing.get("regime_scope"),
+            market=existing.get("market"),
+            source_universe_key=existing.get("source_universe_key"),
+        )
+        payload_identity = _full_market_identity(
+            scope_key=payload_scope,
+            regime_scope=payload.get("regime_scope"),
+            market=payload.get("market"),
+            source_universe_key=payload.get("source_universe_key"),
+        )
+        return same_source and existing_identity is not None and existing_identity == payload_identity
     return _text(existing.get("universe_key")) == _text(payload.get("universe_key"))
 
 

@@ -38,6 +38,7 @@
       return Charts.formatPercent(value);
     }
     function fmtRatio(value) {
+      if (value === Infinity) return "∞";
       return Number.isFinite(value) ? value.toFixed(2) : "-";
     }
     function fmtDays(value) {
@@ -50,7 +51,10 @@
       { label: "年化波动率", field: "annualized_volatility", format: fmtPercent, subLabel: "基准波动率", subField: "benchmark_annualized_volatility", subFormat: fmtPercent, neutral: true },
       { label: "Sharpe Ratio", field: "sharpe_ratio", format: fmtRatio, subLabel: "Calmar Ratio", subField: "calmar_ratio", subFormat: fmtRatio, neutral: true },
       { label: "最大回撤", field: "max_drawdown", format: fmtPercent, subLabel: "最长回撤持续", subField: "drawdown_duration", subFormat: fmtDays },
-      { label: "日胜率", field: "win_rate", format: fmtPercent, subLabel: "盈利日 / 总交易日", subValue: function () { return (kpis.win_count || 0) + " / " + (kpis.trading_days || 0); }, neutral: true },
+      { label: "日净值胜率", field: "win_rate", format: fmtPercent, subLabel: "NAV盈利日 / 总交易日", subValue: function () { return (kpis.win_count || 0) + " / " + (kpis.trading_days || 0); }, neutral: true },
+      { label: "费用后累计收益", field: "fee_adjusted_total_return", format: fmtPercent, subLabel: "费用拖累 / NAV", subField: "fee_drag_on_nav", subFormat: fmtPercent },
+      { label: "换手率", field: "turnover_ratio", format: fmtPercent, subLabel: "平均组合市值", subField: "average_portfolio_market_value", subFormat: Charts.formatMoney, neutral: true },
+      { label: "费用 / 累计收益", field: "fee_drag_on_profit", format: fmtPercent, subLabel: "估算口径", subValue: function () { return "fee / |total return × avg MV|"; }, neutral: true },
       { label: "交易日数量", field: "trading_days", format: function (v) { return Number.isFinite(v) ? String(v) : "-"; }, subLabel: "筛选区间", subValue: function () { return (kpis.start_date || "-") + " 至 " + (kpis.end_date || "-"); }, neutral: true }
     ];
     var grid = document.getElementById("kpiGrid");
@@ -95,6 +99,15 @@
     });
     html += "</tbody></table>";
     container.innerHTML = html;
+  }
+
+  function renderToggleButton(buttonId, expanded, total, limit) {
+    var button = document.getElementById(buttonId);
+    if (!button) return;
+    var hasMore = total > limit;
+    button.classList.toggle("hidden", !hasMore);
+    button.textContent = expanded ? "收起" : "显示全部 (" + total + ")";
+    button.setAttribute("aria-expanded", expanded ? "true" : "false");
   }
 
   function renderBestWorst(monthly) {
@@ -142,13 +155,58 @@
       container.innerHTML = '<div class="summary-card"><strong>交易复盘状态</strong><span>未上传交易数据。</span></div>';
       return;
     }
-    var cards = [
-      ["买入数量", trades.totals.buy_count],
-      ["卖出数量", trades.totals.sell_count],
-      ["总成交金额", Charts.formatMoney(trades.totals.trade_amount)],
-      ["总费用", Charts.formatMoney(trades.totals.fee)],
-      ["Post-trade return", trades.message]
-    ];
+    function fmtPercent(value) {
+      return Charts.formatPercent(value);
+    }
+    function fmtMoney(value) {
+      return Charts.formatMoney(value);
+    }
+    function fmtDays(value) {
+      return Number.isFinite(value) ? value.toFixed(1) + " 天" : "-";
+    }
+    function fmtQuantity(value) {
+      if (!Number.isFinite(value)) return "-";
+      return Math.abs(value - Math.round(value)) < 0.000001 ? String(Math.round(value)) : value.toFixed(3);
+    }
+	    var cards = [
+	      ["买入数量", trades.totals.buy_count],
+	      ["卖出数量", trades.totals.sell_count],
+	      ["总成交金额", Charts.formatMoney(trades.totals.trade_amount)],
+	      ["总费用", Charts.formatMoney(trades.totals.fee)],
+	      ["已平仓交易", trades.totals.closed_trade_count || 0],
+	      ["已实现盈亏", fmtMoney(trades.totals.realized_pnl)],
+	      ["交易胜率", fmtPercent(trades.totals.trade_win_rate)],
+	      ["盈亏比", fmtRatio(trades.totals.profit_factor)],
+	      ["平均盈利", fmtMoney(trades.totals.avg_win)],
+	      ["平均亏损", fmtMoney(trades.totals.avg_loss)],
+	      ["单笔最大盈利", fmtMoney(trades.totals.max_trade_profit)],
+	      ["单笔最大亏损", fmtMoney(trades.totals.max_trade_loss)],
+	      ["平均持仓周期", fmtDays(trades.totals.avg_holding_days)],
+	      ["FIFO状态", trades.message]
+	    ];
+	    if (trades.openingLots && trades.openingLots.available) {
+	      cards.push([
+	        "期初FIFO lot",
+	        trades.openingLots.sourceDate + " 生成 " + trades.openingLots.lotCount + " 个 lot，" +
+	        fmtQuantity(trades.openingLots.totalQuantity) + " 股，成本基础 " + fmtMoney(trades.openingLots.costBasis)
+	      ]);
+	      cards.push([
+	        "期初lot匹配",
+	        (trades.totals.closed_with_opening_lot_count || 0) + " 笔平仓，匹配 " +
+	        fmtQuantity(trades.totals.opening_matched_quantity || 0) + " 股"
+	      ]);
+	    }
+	    if ((trades.unmatchedSells || []).length) {
+	      cards.push([
+	        "FIFO未匹配",
+	        (trades.totals.unmatched_sell_count || trades.unmatchedSells.length) + " 笔卖出，合计 " +
+	        fmtQuantity(trades.totals.unmatched_quantity || 0) + " 股；通常是 positions 缺少期初数量/成本或交易 CSV 缺少更早记录。"
+	      ]);
+	    }
+    var otherWarningCount = Math.max(0, (trades.warnings || []).length - (trades.unmatchedSells || []).length);
+    if (otherWarningCount) {
+      cards.push(["FIFO其他警告", otherWarningCount + " 条，详见原始交易数据。"]);
+    }
     container.innerHTML = cards.map(function (item) {
       return '<div class="summary-card"><strong>' + escapeHtml(item[0]) + "</strong><span>" + escapeHtml(item[1]) + "</span></div>";
     }).join("");
@@ -180,6 +238,7 @@
   }
 
   function fmtRatio(value) {
+    if (value === Infinity) return "∞";
     return Number.isFinite(value) ? value.toFixed(2) : "-";
   }
 
@@ -376,6 +435,7 @@
     var attribution = metrics.attribution;
     var trades = metrics.trades;
     var filters = metrics.filters || {};
+    var tableView = (view && view.tableExpanded) || {};
 
     renderPerformanceStory(metrics);
     renderOverviewFocus(metrics, view || { overviewLens: "nav" });
@@ -459,7 +519,8 @@
       { name: "HHI", color: "#c77819", points: holdings.concentrationTrend.map(function (row) { return { date: row.date, dateObj: row.dateObj, value: row.hhi }; }) }
     ], { yFormatter: Charts.formatPercent, includeZero: true, empty: "无集中度趋势" });
 
-    renderTable("holdingsTable", holdings.top20, [
+    var holdingsRows = tableView.holdings ? holdings.allCurrent : holdings.top20;
+    renderTable("holdingsTable", holdingsRows, [
       { label: "date", value: "date" },
       { label: "ticker", value: "ticker" },
       { label: "name", value: "name" },
@@ -470,6 +531,7 @@
       { label: "contribution", value: "contribution", format: Charts.formatPercent, numeric: true, signed: true },
       { label: "market_value", value: "market_value", format: Charts.formatMoney, numeric: true }
     ], "无当前持仓数据");
+    renderToggleButton("toggleHoldingsRows", Boolean(tableView.holdings), (holdings.allCurrent || []).length, 20);
 
     var themeFields = topFieldsFromTrend(holdings.themeWeightTrend, 7);
     var sectorFields = topFieldsFromTrend(holdings.sectorWeightTrend, 7);
@@ -482,7 +544,8 @@
     ], "无 theme weight");
 
     renderTradeSummary(trades);
-    renderTable("tradesTable", trades.recent, [
+    var tradeRows = tableView.trades ? trades.all : trades.recent;
+    renderTable("tradesTable", tradeRows, [
       { label: "trade_date", value: "trade_date" },
       { label: "ticker", value: "ticker" },
       { label: "name", value: "name" },
@@ -494,6 +557,24 @@
       { label: "reason", value: "reason" },
       { label: "theme", value: "theme" }
     ], "未上传交易数据");
+    renderToggleButton("toggleTradesRows", Boolean(tableView.trades), (trades.all || []).length, 20);
+    var closedTradeRows = tableView.closedTrades ? trades.closed : trades.closedRecent;
+    renderTable("closedTradesTable", closedTradeRows, [
+      { label: "sell_date", value: "trade_date" },
+      { label: "ticker", value: "ticker" },
+      { label: "name", value: "name" },
+	      { label: "matched_qty", value: "matched_quantity", numeric: true },
+	      { label: "unmatched_qty", value: "unmatched_quantity", numeric: true },
+	      { label: "opening_lot_qty", value: "opening_matched_quantity", numeric: true },
+	      { label: "avg_buy_price", value: "avg_buy_price", format: function (v) { return Number.isFinite(v) ? v.toFixed(2) : "-"; }, numeric: true },
+	      { label: "sell_price", value: "sell_price", format: function (v) { return Number.isFinite(v) ? v.toFixed(2) : "-"; }, numeric: true },
+      { label: "realized_pnl", value: "realized_pnl", format: Charts.formatMoney, numeric: true, signed: true },
+      { label: "realized_return", value: "realized_return", format: Charts.formatPercent, numeric: true, signed: true },
+      { label: "holding_days", value: "holding_days", format: function (v) { return Number.isFinite(v) ? v.toFixed(1) : "-"; }, numeric: true },
+      { label: "total_fee", value: "total_fee", format: Charts.formatMoney, numeric: true },
+      { label: "warning", value: "warning" }
+    ], "暂无 FIFO 已平仓交易；需要至少一笔买入和后续卖出。");
+    renderToggleButton("toggleClosedTradesRows", Boolean(tableView.closedTrades), (trades.closed || []).length, 20);
     Charts.barChart("sideChart", trades.bySide, { valueFormatter: function (v) { return String(v); }, empty: "未上传交易数据" });
     Charts.barChart("tradeThemeChart", trades.byTheme, { valueFormatter: Charts.formatMoney, empty: "未上传交易数据" });
     Charts.barChart("reasonChart", trades.byReason, { valueFormatter: Charts.formatMoney, empty: "未上传交易数据或 reason 字段" });
@@ -514,14 +595,35 @@
       ["drawdown_duration", kpis.drawdown_duration],
       ["annualized_volatility", kpis.annualized_volatility],
       ["sharpe_ratio_rf_0", kpis.sharpe_ratio],
-      ["win_rate", kpis.win_rate],
+      ["daily_nav_win_rate", kpis.win_rate],
+      ["fee_adjusted_total_return", kpis.fee_adjusted_total_return],
+      ["fee_drag_on_nav", kpis.fee_drag_on_nav],
+      ["fee_drag_on_profit", kpis.fee_drag_on_profit],
+      ["turnover_ratio", kpis.turnover_ratio],
+      ["average_portfolio_market_value", kpis.average_portfolio_market_value],
       ["top5_weight", metrics.holdings.top5Weight],
       ["top10_weight", metrics.holdings.top10Weight],
       ["herfindahl_index", metrics.holdings.hhi],
       ["trade_count", metrics.trades.totals.trade_count || 0],
       ["trade_amount", metrics.trades.totals.trade_amount || 0],
-      ["trade_fee", metrics.trades.totals.fee || 0]
-    ];
+      ["trade_fee", metrics.trades.totals.fee || 0],
+      ["closed_trade_count", metrics.trades.totals.closed_trade_count || 0],
+      ["realized_pnl_fifo", metrics.trades.totals.realized_pnl || 0],
+      ["trade_win_rate_fifo", metrics.trades.totals.trade_win_rate],
+      ["profit_factor_fifo", metrics.trades.totals.profit_factor],
+      ["avg_win_fifo", metrics.trades.totals.avg_win],
+	      ["avg_loss_fifo", metrics.trades.totals.avg_loss],
+	      ["max_trade_profit_fifo", metrics.trades.totals.max_trade_profit],
+	      ["max_trade_loss_fifo", metrics.trades.totals.max_trade_loss],
+	      ["avg_holding_days_fifo", metrics.trades.totals.avg_holding_days],
+	      ["unmatched_sell_count", metrics.trades.totals.unmatched_sell_count || 0],
+	      ["unmatched_quantity", metrics.trades.totals.unmatched_quantity || 0],
+	      ["opening_lot_count", metrics.trades.totals.opening_lot_count || 0],
+	      ["opening_lot_quantity", metrics.trades.totals.opening_lot_quantity || 0],
+	      ["opening_lot_cost_basis", metrics.trades.totals.opening_lot_cost_basis || 0],
+	      ["opening_matched_quantity", metrics.trades.totals.opening_matched_quantity || 0],
+	      ["closed_with_opening_lot_count", metrics.trades.totals.closed_with_opening_lot_count || 0]
+	    ];
     rows.push([]);
     rows.push(["benchmark", "total_return", "annualized_return", "ann_volatility", "max_drawdown", "correlation", "beta", "tracking_error", "information_ratio", "excess_return"]);
     ((metrics.benchmarkComparison && metrics.benchmarkComparison.comparisonRows) || []).forEach(function (row) {

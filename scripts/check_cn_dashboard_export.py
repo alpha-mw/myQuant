@@ -211,6 +211,45 @@ def check_dashboard_export(
                 if expected != actual:
                     errors.append(f"{label} mismatch between export_summary.json and generated_records.js CSV: {expected!r} != {actual!r}")
 
+        nav_source = summary.get("portfolio_nav_source") or {}
+        funding_events = nav_source.get("funding_events") or []
+        if funding_events:
+            if nav_source.get("method") != "time_weighted_unitization":
+                errors.append(
+                    "portfolio NAV with external funding must use method='time_weighted_unitization'."
+                )
+            if nav_source.get("historical_return_preserved") is not True:
+                errors.append("portfolio NAV funding lineage does not preserve historical return.")
+            if "portfolio_units" not in nav_header:
+                errors.append("generated_records.js nav CSV missing portfolio_units for funded unit NAV.")
+            for index, event in enumerate(funding_events):
+                if event.get("total_value_before") is None or event.get("total_value_after") is None:
+                    errors.append(
+                        f"portfolio funding event {index} missing total_value_before/total_value_after."
+                    )
+        capital_start = nav_source.get("capital_base_start")
+        capital_end = nav_source.get("capital_base_end")
+        if capital_start is not None and capital_end is not None:
+            try:
+                capital_changed = abs(float(capital_end) - float(capital_start)) > 0.01
+            except (TypeError, ValueError):
+                errors.append("portfolio NAV capital_base_start/capital_base_end is not numeric.")
+            else:
+                if capital_changed and not funding_events:
+                    errors.append("portfolio capital base changed without a funding event in NAV lineage.")
+
+        ledger_status = summary.get("effective_manual_ledger_status") or {}
+        if ledger_status:
+            if ledger_status.get("legacy_ledger_fallback_used") is not False:
+                errors.append("effective manual positions must not use legacy ledger.csv fallback.")
+            if ledger_status.get("status") == "valid":
+                ledger_path = str(ledger_status.get("ledger_path") or "")
+                manifest_path = str(ledger_status.get("manifest_path") or "")
+                if not ledger_path.endswith("/ledger_after_manual_switch.csv"):
+                    errors.append("effective manual ledger path is not ledger_after_manual_switch.csv.")
+                if not manifest_path.endswith("/manual_execution_manifest.json"):
+                    errors.append("effective manual ledger is missing its manual_execution_manifest.json lineage.")
+
         benchmark_source = summary.get("benchmark_source") or {}
         benchmark_fields = set(benchmark_source.get("benchmark_fields") or [])
         missing_fields = sorted(REQUIRED_BENCHMARK_FIELDS - benchmark_fields)
@@ -237,6 +276,15 @@ def check_dashboard_export(
         if require_production_benchmark and not production_grade:
             errors.append(
                 "benchmark is not production_grade; fill a verified continuous real index close source before using formal dashboard benchmark."
+            )
+
+        trade_completeness = summary.get("trade_record_completeness") or {}
+        trade_status = str(trade_completeness.get("status") or "")
+        skipped_trades = int(trade_completeness.get("skipped_incomplete_rows") or 0)
+        if trade_status and trade_status != "complete":
+            errors.append(
+                "trade_record_completeness is not complete: "
+                f"status={trade_status!r}, skipped_incomplete_rows={skipped_trades}."
             )
         if not production_grade:
             warnings.append(
@@ -270,18 +318,21 @@ def check_dashboard_export(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--summary-file", type=Path, default=DEFAULT_SUMMARY_FILE)
-    parser.add_argument("--generated-js", type=Path, default=DEFAULT_GENERATED_JS)
+    parser.add_argument("--dashboard-root", type=Path, default=DEFAULT_DASHBOARD_ROOT)
+    parser.add_argument("--summary-file", type=Path)
+    parser.add_argument("--generated-js", type=Path)
     parser.add_argument(
         "--require-production-benchmark",
         action="store_true",
         help="Exit nonzero unless benchmark_source.production_grade is true.",
     )
     args = parser.parse_args()
+    summary_file = args.summary_file or args.dashboard_root / "generated" / "export_summary.json"
+    generated_js = args.generated_js or args.dashboard_root / "js" / "generated_records.js"
 
     result = check_dashboard_export(
-        summary_file=args.summary_file,
-        generated_js=args.generated_js,
+        summary_file=summary_file,
+        generated_js=generated_js,
         require_production_benchmark=args.require_production_benchmark,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))

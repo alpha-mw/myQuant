@@ -7,7 +7,10 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from quant_investor.monitoring import cn_aggressive_portfolio_tracker as tracker
+from quant_investor.monitoring import (
+    cn_aggressive_portfolio_tracker as tracker,
+)
+from quant_investor.monitoring import cn_aggressive_market_metrics as metrics
 
 
 def test_market_metrics_cache_api_is_split_from_tracker() -> None:
@@ -286,3 +289,85 @@ def test_market_metrics_skip_prewarm_keeps_strict_snapshot_failure(tmp_path: Pat
             skip_prewarm=True,
             compute_fn=_must_not_compute,
         )
+
+
+def test_full_market_batch_projection_uses_only_canonical_columns() -> None:
+    dates = pd.date_range("2025-12-01", periods=30, freq="D")
+    canonical_frame = pd.DataFrame(
+        {
+            "ts_code": ["000001.SZ"] * len(dates),
+            "trade_date": dates.strftime("%Y%m%d"),
+            "open": range(10, 40),
+            "high": range(11, 41),
+            "low": range(9, 39),
+            "close": range(10, 40),
+            "vol": [1000] * len(dates),
+        }
+    )
+
+    class StrictParquetReader:
+        def read_symbol_frames(self, symbols, **kwargs):
+            assert list(symbols) == ["000001.SZ"]
+            assert "symbol" not in kwargs["columns"]
+            assert kwargs["columns"][0] == "ts_code"
+            return {
+                "000001.SZ": SimpleNamespace(frame=canonical_frame.copy())
+            }
+
+        def read_symbol_frame(self, *_args, **_kwargs):
+            raise AssertionError("non-empty batch results must be reused")
+
+    full_metrics, breadth = metrics._compute_market_metrics_and_breadth(
+        components={
+            "full_a": ["000001.SZ"],
+            "hs300": ["000001.SZ"],
+            "zz500": [],
+            "zz1000": [],
+        },
+        reader=StrictParquetReader(),
+        latest_trade_date="20251230",
+        completeness_report={"categories": {}},
+    )
+
+    assert full_metrics["symbol"].tolist() == ["000001.SZ"]
+    assert breadth["hs300"]["latest_count"] == 1
+
+
+@pytest.mark.parametrize(
+    "computed_frame",
+    [
+        pd.DataFrame(),
+        pd.DataFrame([{"symbol": "000001.SZ"}]),
+    ],
+)
+def test_market_metrics_compute_fails_closed_for_empty_or_invalid_frame(
+    tmp_path: Path,
+    computed_frame: pd.DataFrame,
+) -> None:
+    with pytest.raises(RuntimeError):
+        tracker._load_or_compute_market_metrics_bundle(
+            base_dir=tmp_path,
+            components=_components(),
+            reader=_fake_reader(),
+            latest_trade_date="20260103",
+            completeness_report={"categories": {}},
+            compute_fn=lambda **_kwargs: (computed_frame, {}),
+        )
+
+
+def test_market_metrics_cache_records_schema_and_data_coverage(
+    tmp_path: Path,
+) -> None:
+    bundle = tracker._load_or_compute_market_metrics_bundle(
+        base_dir=tmp_path,
+        components=_components(),
+        reader=_fake_reader(),
+        latest_trade_date="20260103",
+        completeness_report={"categories": {}},
+        compute_fn=lambda **_kwargs: (_metrics_frame(), {}),
+    )
+
+    assert bundle.cache_meta["schema_validation"]["schema_valid"] is True
+    assert bundle.cache_meta["data_coverage"]["data_coverage_valid"] is True
+    assert bundle.cache_meta["data_coverage"]["expected_symbol_count"] == 2
+    assert bundle.cache_meta["data_coverage"]["row_count"] == 1

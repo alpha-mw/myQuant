@@ -5,6 +5,9 @@
   var Metrics = window.DashboardMetrics;
   var UI = window.DashboardUI;
   var Generated = window.DashboardGeneratedRecords || {};
+  var USER_UPLOAD_STORAGE_KEY = "portfolioDashboardUserUploads.v1";
+  var STORAGE_VERSION = 1;
+  var storageWarning = "";
 
   function hasGeneratedRecords(records) {
     return Boolean(
@@ -15,34 +18,76 @@
     );
   }
 
+  function readPersistedUploads() {
+    try {
+      if (!window.localStorage) return null;
+      var raw = window.localStorage.getItem(USER_UPLOAD_STORAGE_KEY);
+      if (!raw) return null;
+      var parsed = JSON.parse(raw);
+      if (!parsed || parsed.version !== STORAGE_VERSION || !parsed.csvBundle) return null;
+      return parsed;
+    } catch (error) {
+      storageWarning = "无法读取浏览器本地保存的用户 CSV，已回退到当前数据源：" + error.message;
+      return null;
+    }
+  }
+
+  var persistedUploads = readPersistedUploads();
+
   function initialCsvBundle() {
+    var bundle;
     if (hasGeneratedRecords(Generated)) {
-      return {
+      bundle = {
         nav: Generated.csv.nav,
         positions: Generated.csv.positions,
         trades: Generated.csv.trades || ""
       };
+    } else {
+      bundle = {
+        nav: Data.SAMPLE_CSV.nav,
+        positions: Data.SAMPLE_CSV.positions,
+        trades: Data.SAMPLE_CSV.trades
+      };
     }
-    return {
-      nav: Data.SAMPLE_CSV.nav,
-      positions: Data.SAMPLE_CSV.positions,
-      trades: Data.SAMPLE_CSV.trades
-    };
+    if (persistedUploads && persistedUploads.csvBundle) {
+      ["nav", "positions", "trades"].forEach(function (kind) {
+        if (typeof persistedUploads.csvBundle[kind] === "string") bundle[kind] = persistedUploads.csvBundle[kind];
+      });
+    }
+    return bundle;
   }
 
   function initialSource() {
-    if (hasGeneratedRecords(Generated)) {
-      return { nav: "records", positions: "records", trades: Generated.csv.trades ? "records" : "sample" };
+    var source = hasGeneratedRecords(Generated)
+      ? { nav: "records", positions: "records", trades: Generated.csv.trades ? "records" : "sample" }
+      : { nav: "sample", positions: "sample", trades: "sample" };
+    if (persistedUploads && persistedUploads.csvBundle) {
+      ["nav", "positions", "trades"].forEach(function (kind) {
+        if (typeof persistedUploads.csvBundle[kind] === "string") source[kind] = "user";
+      });
     }
-    return { nav: "sample", positions: "sample", trades: "sample" };
+    return source;
+  }
+
+  function initialFileNames() {
+    var names = hasGeneratedRecords(Generated)
+      ? { nav: "generated_records.js", positions: "generated_records.js", trades: Generated.csv.trades ? "generated_records.js" : "trades_sample.csv" }
+      : { nav: "nav_sample.csv", positions: "positions_sample.csv", trades: "trades_sample.csv" };
+    if (persistedUploads && persistedUploads.fileNames) {
+      ["nav", "positions", "trades"].forEach(function (kind) {
+        if (typeof persistedUploads.csvBundle[kind] === "string") {
+          names[kind] = persistedUploads.fileNames[kind] || (kind + ".csv");
+        }
+      });
+    }
+    return names;
   }
 
   var state = {
     csvBundle: initialCsvBundle(),
     source: initialSource(),
-    fileNames: hasGeneratedRecords(Generated)
-      ? { nav: "generated_records.js", positions: "generated_records.js", trades: Generated.csv.trades ? "generated_records.js" : "trades_sample.csv" }
-      : { nav: "nav_sample.csv", positions: "positions_sample.csv", trades: "trades_sample.csv" },
+    fileNames: initialFileNames(),
+    userUploadSavedAt: persistedUploads ? persistedUploads.savedAt : "",
     filters: {
       startDate: "",
       endDate: "",
@@ -55,7 +100,12 @@
       overviewLens: "nav",
       benchmarkSortField: "totalReturn",
       benchmarkSortDirection: "desc",
-      benchmarkSelectionTouched: false
+      benchmarkSelectionTouched: false,
+      tableExpanded: {
+        holdings: false,
+        trades: false,
+        closedTrades: false
+      }
     },
     dataset: null,
     metrics: null
@@ -70,6 +120,55 @@
     var text = String(value);
     if (/[",\n\r]/.test(text)) return '"' + text.replace(/"/g, '""') + '"';
     return text;
+  }
+
+  function formatStoredTimestamp(value) {
+    if (!value) return "";
+    var date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0") + "-" +
+      String(date.getDate()).padStart(2, "0") + " " +
+      String(date.getHours()).padStart(2, "0") + ":" + String(date.getMinutes()).padStart(2, "0");
+  }
+
+  function persistUserUploads() {
+    try {
+      if (!window.localStorage) return;
+      var csvBundle = {};
+      var fileNames = {};
+      ["nav", "positions", "trades"].forEach(function (kind) {
+        if (state.source[kind] === "user") {
+          csvBundle[kind] = state.csvBundle[kind] || "";
+          fileNames[kind] = state.fileNames[kind] || (kind + ".csv");
+        }
+      });
+      if (!Object.keys(csvBundle).length) {
+        window.localStorage.removeItem(USER_UPLOAD_STORAGE_KEY);
+        state.userUploadSavedAt = "";
+        return;
+      }
+      var payload = {
+        version: STORAGE_VERSION,
+        savedAt: new Date().toISOString(),
+        csvBundle: csvBundle,
+        fileNames: fileNames
+      };
+      window.localStorage.setItem(USER_UPLOAD_STORAGE_KEY, JSON.stringify(payload));
+      state.userUploadSavedAt = payload.savedAt;
+      storageWarning = "";
+    } catch (error) {
+      storageWarning = "无法写入浏览器本地保存的用户 CSV；刷新后可能回退到默认数据：" + error.message;
+    }
+  }
+
+  function clearPersistedUploads() {
+    try {
+      if (window.localStorage) window.localStorage.removeItem(USER_UPLOAD_STORAGE_KEY);
+      storageWarning = "";
+    } catch (error) {
+      storageWarning = "无法清除浏览器本地保存的用户 CSV：" + error.message;
+    }
+    state.userUploadSavedAt = "";
   }
 
   function setStatus() {
@@ -238,7 +337,8 @@
     var infos = [];
     var usingUser = Object.keys(state.source).some(function (key) { return state.source[key] === "user"; });
     var usingRecords = !usingUser && Object.keys(state.source).some(function (key) { return state.source[key] === "records"; });
-    var warnings = state.dataset.warnings.slice();
+    var warnings = state.dataset.warnings.slice().concat((state.metrics && state.metrics.warnings) || []);
+    if (storageWarning) warnings.push(storageWarning);
     if (usingRecords) {
       infos.push("已自动加载本地记录数据：" + (Generated.latestRecord || "latest") + "；生成时间：" + (Generated.generatedAt || "-") + "。");
       infos.push("所有计算仍在浏览器本地完成；records 数据来自本机 strategy_records 导出。");
@@ -246,8 +346,10 @@
         infos.push("已识别 " + state.dataset.benchmarks.length + " 个 benchmark NAV 字段，可在顶部多选对比。");
       }
       warnings = warnings.concat(Generated.warnings || []);
+      infos = infos.concat(Generated.infos || []);
     } else if (usingUser) {
       infos.push("已加载用户上传 CSV；未上传的模块保留当前数据源，所有计算在浏览器本地完成。");
+      if (state.userUploadSavedAt) infos.push("用户上传数据已保存于本机浏览器：" + formatStoredTimestamp(state.userUploadSavedAt) + "。");
     } else {
       infos.push("示例数据和 sample benchmark 均为模拟数据，仅用于演示，不代表真实业绩或真实指数；所有计算在浏览器本地完成。");
     }
@@ -263,6 +365,7 @@
         state.csvBundle[kind] = text;
         state.source[kind] = "user";
         state.fileNames[kind] = file.name || (kind + ".csv");
+        persistUserUploads();
         if (kind === "nav") {
           state.view.benchmarkSelectionTouched = false;
           refresh({ resetDateRange: true });
@@ -282,6 +385,7 @@
     };
     state.source = { nav: "sample", positions: "sample", trades: "sample" };
     state.fileNames = { nav: "nav_sample.csv", positions: "positions_sample.csv", trades: "trades_sample.csv" };
+    clearPersistedUploads();
     ["navUpload", "positionsUpload", "tradesUpload"].forEach(function (id) {
       $(id).value = "";
     });
@@ -297,6 +401,7 @@
     state.view.benchmarkSortField = "totalReturn";
     state.view.benchmarkSortDirection = "desc";
     state.view.benchmarkSelectionTouched = false;
+    state.view.tableExpanded = { holdings: false, trades: false, closedTrades: false };
     syncOverviewLensTabs();
     refresh({ resetDateRange: true });
   }
@@ -382,6 +487,7 @@
     bindOverviewLens();
     bindSectionTabs();
     bindTableFilters();
+    bindTableToggles();
     window.addEventListener("resize", debounce(function () {
       if (state.metrics) renderCurrentDashboard();
     }, 160));
@@ -441,6 +547,21 @@
     document.querySelectorAll("input[data-filter-table]").forEach(function (input) {
       input.addEventListener("input", function () {
         filterTable(input.dataset.filterTable, input.value);
+      });
+    });
+  }
+
+  function bindTableToggles() {
+    [
+      ["toggleHoldingsRows", "holdings"],
+      ["toggleTradesRows", "trades"],
+      ["toggleClosedTradesRows", "closedTrades"]
+    ].forEach(function (item) {
+      var button = $(item[0]);
+      if (!button) return;
+      button.addEventListener("click", function () {
+        state.view.tableExpanded[item[1]] = !state.view.tableExpanded[item[1]];
+        renderCurrentDashboard();
       });
     });
   }

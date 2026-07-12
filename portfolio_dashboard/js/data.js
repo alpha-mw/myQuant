@@ -185,10 +185,10 @@
     return lines.join("\n");
   }
 
-  function buildPositionsSampleCSV() {
-    var lines = [
-      "date,ticker,name,weight,theme,sector,sub_sector,daily_return,contribution,market_value"
-    ];
+	  function buildPositionsSampleCSV() {
+	    var lines = [
+	      "date,ticker,name,weight,theme,sector,sub_sector,daily_return,contribution,market_value,quantity,avg_cost,cost_basis,current_price"
+	    ];
     var dates = monthEndWorkdays(new Date(2024, 0, 1), new Date(2025, 11, 31));
     dates.forEach(function (date, dateIndex) {
       var scores = STOCKS.map(function (stock, stockIndex) {
@@ -208,21 +208,29 @@
         var stock = item.stock;
         var baseWeight = item.score / totalScore;
         var weight = Math.max(0.018, Math.min(0.105, baseWeight * 1.15));
-        var dailyReturn = Math.sin((dateIndex + rank) / 4.2) * 0.012 + (seededRandom(dateIndex * 91 + rank * 17) - 0.5) * 0.055;
-        var contribution = weight * dailyReturn;
-        var marketValue = 1700000 * weight * (0.92 + seededRandom(dateIndex * 29 + rank) * 0.18);
-        lines.push([
-          formatDate(date),
-          stock[0],
-          stock[1],
+	        var dailyReturn = Math.sin((dateIndex + rank) / 4.2) * 0.012 + (seededRandom(dateIndex * 91 + rank * 17) - 0.5) * 0.055;
+	        var contribution = weight * dailyReturn;
+	        var marketValue = 1700000 * weight * (0.92 + seededRandom(dateIndex * 29 + rank) * 0.18);
+	        var currentPrice = 18 + seededRandom(dateIndex * 41 + rank * 23) * 132;
+	        var quantity = Math.max(100, Math.round((marketValue / currentPrice) / 100) * 100);
+	        var avgCost = currentPrice * (0.72 + seededRandom(dateIndex * 53 + rank * 31) * 0.45);
+	        var costBasis = avgCost * quantity;
+	        lines.push([
+	          formatDate(date),
+	          stock[0],
+	          stock[1],
           weight.toFixed(5),
           csvEscape(stock[2]),
           csvEscape(stock[3]),
-          csvEscape(stock[4]),
-          dailyReturn.toFixed(6),
-          contribution.toFixed(6),
-          marketValue.toFixed(2)
-        ].join(","));
+	          csvEscape(stock[4]),
+	          dailyReturn.toFixed(6),
+	          contribution.toFixed(6),
+	          marketValue.toFixed(2),
+	          quantity,
+	          avgCost.toFixed(4),
+	          costBasis.toFixed(2),
+	          currentPrice.toFixed(4)
+	        ].join(","));
       });
     });
     return lines.join("\n");
@@ -333,11 +341,40 @@
     return isPercent ? num / 100 : num;
   }
 
-  function parseWeight(value) {
+  function normalizeWeightUnit(unit) {
+    var text = String(unit || "").trim().toLowerCase();
+    if (!text) return "";
+    if (["percent", "percentage", "pct", "%"].indexOf(text) >= 0) return "percent";
+    if (["decimal", "ratio", "fraction"].indexOf(text) >= 0) return "decimal";
+    return "";
+  }
+
+  function addWeightWarning(options, message) {
+    if (!options || !options.warnings) return;
+    var key = options.warningKey || message;
+    if (options.warningLedger) {
+      if (options.warningLedger[key]) return;
+      options.warningLedger[key] = true;
+    }
+    options.warnings.push(message);
+  }
+
+  function parseWeight(value, options) {
+    options = options || {};
     var num = parseNumber(value);
     if (num === null) return null;
-    if (typeof value === "string" && value.trim().endsWith("%")) return num;
-    if (num > 1 && num <= 100) return num / 100;
+    var rawText = String(value || "").trim();
+    if (typeof value === "string" && rawText.endsWith("%")) return num;
+    var unit = normalizeWeightUnit(options.unit);
+    if (unit === "percent") return num / 100;
+    if (unit === "decimal") return num;
+    if (num > 1) {
+      addWeightWarning(
+        options,
+        (options.fieldName || "weight") + " 第 " + (options.rowNumber || "-") +
+          " 行为裸数字 " + rawText + "，已按小数权重解析；如需百分比请写 " + rawText + "% 或提供 weight_unit=percent。"
+      );
+    }
     return num;
   }
 
@@ -410,6 +447,7 @@
   function normalizeNavRows(rows) {
     var errors = validateRequired(rows, ["date", "portfolio_nav"], "nav.csv");
     var warnings = [];
+    var weightWarningLedger = {};
     var normalized = [];
     rows.forEach(function (row, index) {
       var date = parseDateOnly(row.date);
@@ -424,9 +462,30 @@
         portfolio_nav: portfolioNav,
         portfolio_return: hasField(row, "portfolio_return") ? parseNumber(row.portfolio_return) : null,
         benchmark_return: hasField(row, "benchmark_return") ? parseNumber(row.benchmark_return) : null,
-        cash_weight: hasField(row, "cash_weight") ? parseWeight(row.cash_weight) : null,
-        gross_exposure: hasField(row, "gross_exposure") ? parseWeight(row.gross_exposure) : null,
-        net_exposure: hasField(row, "net_exposure") ? parseWeight(row.net_exposure) : null,
+        cash_weight: hasField(row, "cash_weight") ? parseWeight(row.cash_weight, {
+          unit: row.cash_weight_unit || row.weight_unit || row.unit,
+          fieldName: "cash_weight",
+          rowNumber: index + 2,
+          warnings: warnings,
+          warningLedger: weightWarningLedger,
+          warningKey: "nav.cash_weight.bare_gt_one"
+        }) : null,
+        gross_exposure: hasField(row, "gross_exposure") ? parseWeight(row.gross_exposure, {
+          unit: row.gross_exposure_unit || row.weight_unit || row.unit,
+          fieldName: "gross_exposure",
+          rowNumber: index + 2,
+          warnings: warnings,
+          warningLedger: weightWarningLedger,
+          warningKey: "nav.gross_exposure.bare_gt_one"
+        }) : null,
+        net_exposure: hasField(row, "net_exposure") ? parseWeight(row.net_exposure, {
+          unit: row.net_exposure_unit || row.weight_unit || row.unit,
+          fieldName: "net_exposure",
+          rowNumber: index + 2,
+          warnings: warnings,
+          warningLedger: weightWarningLedger,
+          warningKey: "nav.net_exposure.bare_gt_one"
+        }) : null,
         raw: row
       };
       Object.keys(row).forEach(function (field) {
@@ -445,10 +504,18 @@
   function normalizePositionsRows(rows) {
     var errors = validateRequired(rows, ["date", "ticker", "name", "weight", "theme"], "positions.csv");
     var warnings = [];
+    var weightWarningLedger = {};
     var normalized = [];
     rows.forEach(function (row, index) {
       var date = parseDateOnly(row.date);
-      var weight = parseWeight(row.weight);
+      var weight = parseWeight(row.weight, {
+        unit: row.weight_unit || row.unit,
+        fieldName: "positions.csv weight",
+        rowNumber: index + 2,
+        warnings: warnings,
+        warningLedger: weightWarningLedger,
+        warningKey: "positions.weight.bare_gt_one"
+      });
       if (!date || !row.ticker || weight === null) {
         warnings.push("positions.csv 第 " + (index + 2) + " 行 date/ticker/weight 无效，已跳过。");
         return;
@@ -456,20 +523,24 @@
       var dailyReturn = hasField(row, "daily_return") ? parseNumber(row.daily_return) : null;
       var contribution = hasField(row, "contribution") ? parseNumber(row.contribution) : null;
       if (contribution === null && dailyReturn !== null) contribution = weight * dailyReturn;
-      normalized.push({
-        date: formatDate(date),
-        dateObj: date,
-        ticker: String(row.ticker || "").trim(),
-        name: String(row.name || "").trim() || "UNKNOWN_NAME",
-        weight: weight,
-        theme: String(row.theme || "").trim() || "UNCLASSIFIED",
-        sector: String(row.sector || "").trim(),
-        sub_sector: String(row.sub_sector || "").trim(),
-        daily_return: dailyReturn,
-        contribution: contribution,
-        market_value: hasField(row, "market_value") ? parseNumber(row.market_value) : null,
-        raw: row
-      });
+	      normalized.push({
+	        date: formatDate(date),
+	        dateObj: date,
+	        ticker: String(row.ticker || "").trim(),
+	        name: String(row.name || "").trim() || "UNKNOWN_NAME",
+	        weight: weight,
+	        theme: String(row.theme || "").trim() || "UNCLASSIFIED",
+	        sector: String(row.sector || "").trim(),
+	        sub_sector: String(row.sub_sector || "").trim(),
+	        daily_return: dailyReturn,
+	        contribution: contribution,
+	        market_value: hasField(row, "market_value") ? parseNumber(row.market_value) : null,
+	        quantity: hasField(row, "quantity") ? parseNumber(row.quantity) : hasField(row, "shares") ? parseNumber(row.shares) : null,
+	        avg_cost: hasField(row, "avg_cost") ? parseNumber(row.avg_cost) : hasField(row, "cost_price") ? parseNumber(row.cost_price) : null,
+	        cost_basis: hasField(row, "cost_basis") ? parseNumber(row.cost_basis) : null,
+	        current_price: hasField(row, "current_price") ? parseNumber(row.current_price) : null,
+	        raw: row
+	      });
     });
     normalized.sort(function (a, b) {
       return a.dateObj - b.dateObj || b.weight - a.weight;

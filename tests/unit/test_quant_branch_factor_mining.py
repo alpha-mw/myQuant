@@ -1,22 +1,35 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 import scripts.retest_aquant_alpha_mix_8gate as retest
+import scripts.daily_factor_mining_automation as daily
+import scripts.mine_quant_branch_factors as mining
 from quant_investor.factors.governance import (
     FactorAdmissionDecision,
     FactorLifecycleState,
     FactorRecord,
     GateResult,
 )
+from quant_investor.factors.registry_store import (
+    FactorRegistryConflictError,
+    FactorRegistryMalformedError,
+)
 from quant_investor.factors.runtime import MinedFactorRegistry
 from scripts.mine_quant_branch_factors import (
+    DEFAULT_DIVERSITY_POLICY,
     MiningCandidate,
+    apply_candidate_diversity_governance,
+    apply_production_family_governance,
     apply_production_candidate_registry_updates,
     build_candidate_catalog,
+    candidate_primitive_lineage,
     candidate_maturity_context,
     compute_formulaic_signal,
 )
@@ -96,6 +109,205 @@ def test_compute_formulaic_signal_rank_blends_primitives():
     ).mul(0.75)
 
     pd.testing.assert_frame_equal(actual, expected)
+
+
+def test_lineage_normalizes_residual_formula_and_fundamental_windows():
+    formula = MiningCandidate(
+        name="formula_mom120_np_yoy_resid_w30",
+        family="momentum_fundamental_residual",
+        category="formulaic_research",
+        implementation="research_formula:rank_blend",
+        description="fixture",
+        params={
+            "left": "momentum_120",
+            "right": "fin_net_profit_yoy_resid_existing",
+            "left_weight": 0.30,
+        },
+    )
+    direct = MiningCandidate(
+        name="fund_fin_net_profit_yoy_60d",
+        family="fin_net_profit_yoy",
+        category="growth",
+        implementation="aquant_expression:fund_fin_net_profit_yoy_60d",
+        description="fixture",
+        expression="cs_rank(ts_mean(fin_net_profit_yoy, 60))",
+        window=60,
+    )
+
+    formula_lineage = candidate_primitive_lineage(formula)
+    direct_lineage = candidate_primitive_lineage(direct)
+
+    assert formula_lineage["dominant_primitives"] == ["fin_net_profit_yoy"]
+    assert set(formula_lineage["primitive_lineage"]) == {
+        "fin_net_profit_yoy",
+        "price_momentum",
+    }
+    assert direct_lineage["dominant_primitives"] == ["fin_net_profit_yoy"]
+    assert direct_lineage["lineage_extraction_status"] == "complete"
+
+
+def test_lineage_uses_composite_weights_not_window_lengths():
+    candidate = next(
+        item
+        for item in build_candidate_catalog((5, 20, 60, 120))
+        if item.name == "pv_blend_volstab19x2_mom90_amihud5_w70"
+    )
+
+    lineage = candidate_primitive_lineage(candidate)
+
+    assert lineage["dominant_primitives"] == ["volume"]
+    assert lineage["primitive_contributions"] == pytest.approx(
+        {
+            "amihud_illiquidity": 0.12,
+            "price_momentum": 0.18,
+            "volume": 0.70,
+        }
+    )
+
+
+def test_diversity_governance_collapses_current_six_to_runtime_champion():
+    dates = pd.date_range("2024-01-31", periods=4, freq="ME")
+    columns = [f"{index:06d}.SZ" for index in range(30)]
+    base = pd.DataFrame(
+        [range(30), range(1, 31), range(2, 32), range(3, 33)],
+        index=dates,
+        columns=columns,
+        dtype=float,
+    )
+    candidates = [
+        MiningCandidate(
+            name=f"formula_mom120_np_yoy_resid_w{weight}",
+            family="momentum_fundamental_residual",
+            category="formulaic_research",
+            implementation="research_formula:rank_blend",
+            description="fixture",
+            params={
+                "left": "momentum_120",
+                "right": "fin_net_profit_yoy_resid_existing",
+                "left_weight": weight / 100.0,
+            },
+        )
+        for weight in (30, 25, 20)
+    ]
+    candidates.extend(
+        [
+            MiningCandidate(
+                name=name,
+                family="fin_net_profit_yoy",
+                category="growth",
+                implementation=f"aquant_expression:{name}",
+                description="fixture",
+                expression=expression,
+                window=window,
+            )
+            for name, expression, window in (
+                (
+                    "fund_fin_net_profit_yoy",
+                    "cs_rank(fin_net_profit_yoy)",
+                    None,
+                ),
+                (
+                    "fund_fin_net_profit_yoy_60d",
+                    "cs_rank(ts_mean(fin_net_profit_yoy, 60))",
+                    60,
+                ),
+                (
+                    "fund_fin_net_profit_yoy_20d",
+                    "cs_rank(ts_mean(fin_net_profit_yoy, 20))",
+                    20,
+                ),
+            )
+        ]
+    )
+    icirs = [1.10, 1.08, 1.06, 0.86, 0.85, 0.84]
+    results = []
+    for candidate, icir in zip(candidates, icirs):
+        item = _qualified_result(candidate.name)
+        item.update(
+            family=candidate.family,
+            category=candidate.category,
+            implementation=candidate.implementation,
+            expression=candidate.expression,
+            window=candidate.window,
+            params=dict(candidate.params or {}),
+        )
+        item["metrics"]["icir"] = icir
+        item["metrics"]["mean_rankic"] = icir / 20.0
+        results.append(item)
+
+    audit = apply_candidate_diversity_governance(
+        results,
+        candidates_by_name={item.name: item for item in candidates},
+        signals_by_name={item.name: base for item in candidates},
+        rebalance_dates=list(dates),
+    )
+
+    assert audit["raw_qualified_count"] == 6
+    assert audit["runtime_eligible_count"] == 3
+    assert audit["selected_champions"] == ["fund_fin_net_profit_yoy"]
+    direct = next(
+        item for item in results if item["name"] == "fund_fin_net_profit_yoy"
+    )
+    assert direct["diversity_selection"]["final_registry_write_eligible"]
+    skipped = [
+        item for item in results if item["name"] != "fund_fin_net_profit_yoy"
+    ]
+    assert all(
+        not item["diversity_selection"]["final_registry_write_eligible"]
+        for item in skipped
+    )
+
+
+def test_diversity_governance_fails_closed_for_missing_pairwise_evidence():
+    dates = pd.date_range("2024-01-31", periods=2, freq="ME")
+    columns = [f"{index:06d}.SZ" for index in range(30)]
+    matrix = pd.DataFrame(
+        [range(30), range(1, 31)], index=dates, columns=columns, dtype=float
+    )
+    candidates = [
+        MiningCandidate(
+            name="mom",
+            family="momentum",
+            category="momentum",
+            implementation="price_volume:pv_momentum_20d",
+            description="fixture",
+            window=20,
+        ),
+        MiningCandidate(
+            name="liquidity",
+            family="high_dollar_volume",
+            category="capacity",
+            implementation="price_volume:pv_high_dollar_volume_20d",
+            description="fixture",
+            window=20,
+        ),
+    ]
+    results = [_qualified_result(item.name) for item in candidates]
+    for result, candidate in zip(results, candidates):
+        result.update(
+            family=candidate.family,
+            category=candidate.category,
+            implementation=candidate.implementation,
+        )
+
+    audit = apply_candidate_diversity_governance(
+        results,
+        candidates_by_name={item.name: item for item in candidates},
+        signals_by_name={item.name: matrix for item in candidates},
+        rebalance_dates=list(dates),
+    )
+
+    assert audit["correlation_champion_count"] == 0
+    pairs = {
+        tuple(sorted(pair)) for pair in audit["incomplete_required_pairs"]
+    }
+    assert pairs == {
+        ("liquidity", "mom")
+    }
+    assert all(
+        item["diversity_selection"]["status"] == "evidence_missing"
+        for item in results
+    )
 
 
 def test_compute_existing_composite_supports_promoted_blend_factor():
@@ -245,6 +457,27 @@ def _qualified_result(name: str = "daily_fixture_factor") -> dict[str, object]:
         },
         "blockers": [],
         "summary": "passes fixture gates",
+        "primitive_lineage": ["price_momentum"],
+        "primitive_contributions": {"price_momentum": 1.0},
+        "dominant_primitives": ["price_momentum"],
+        "lineage_extraction_status": "complete",
+        "runtime_write_eligible": True,
+        "runtime_write_blockers": [],
+        "diversity_selection": {
+            "policy_version": DEFAULT_DIVERSITY_POLICY.version,
+            "policy_hash": DEFAULT_DIVERSITY_POLICY.policy_hash,
+            "status": "champion_not_applicable_single_candidate",
+            "skip_reason": "",
+            "redundancy_stage": "",
+            "family_champion": name,
+            "lineage_component_id": "lineage-001",
+            "lineage_champion": name,
+            "correlation_cluster_id": "correlation-001",
+            "cluster_champion": name,
+            "max_abs_candidate_corr": None,
+            "valid_corr_date_count": 0,
+            "final_registry_write_eligible": True,
+        },
     }
 
 
@@ -298,6 +531,7 @@ def test_candidate_catalog_covers_daily_mining_dimensions():
 
 def test_registry_write_adds_zero_weight_production_candidate(tmp_path):
     registry_path = tmp_path / "mined_factors.json"
+    _write_registry(registry_path, MinedFactorRegistry())
     source_notes = [{"title": "fixture source", "url": "https://example.com"}]
 
     manifest = apply_production_candidate_registry_updates(
@@ -310,11 +544,22 @@ def test_registry_write_adds_zero_weight_production_candidate(tmp_path):
         source_notes=source_notes,
         horizon_days=30,
         max_candidates=5,
+        journal_path=tmp_path / "reports" / "registry_mutation.json",
         write=True,
     )
 
     registry = MinedFactorRegistry.load(registry_path)
     assert manifest["status"] == "updated"
+    assert manifest["registry_mutation_manifest"]["status"] == "applied"
+    assert (
+        manifest["registry_mutation_manifest"]["changed_metadata_count"] == 8
+    )
+    assert Path(manifest["registry_mutation_manifest_path"]).exists()
+    assert manifest["before_registry_sha256"]
+    assert manifest["after_registry_sha256"]
+    assert manifest["before_registry_sha256"] != manifest[
+        "after_registry_sha256"
+    ]
     assert manifest["written_factors"] == ["daily_fixture_factor"]
     assert registry.selectable_factors() == []
     assert registry.non_selectable_reasons() == {
@@ -331,6 +576,52 @@ def test_registry_write_adds_zero_weight_production_candidate(tmp_path):
         "none_until_manual_production_factor_promotion"
     )
     assert record.metadata["source_notes"] == source_notes
+
+
+def test_registry_write_fails_closed_for_malformed_registry(tmp_path):
+    registry_path = tmp_path / "mined_factors.json"
+    registry_path.write_text("{bad\n", encoding="utf-8")
+
+    with pytest.raises(FactorRegistryMalformedError):
+        apply_production_candidate_registry_updates(
+            registry_path=registry_path,
+            qualified_results=[_qualified_result()],
+            run_timestamp="2026-06-07T04:30:00",
+            run_id="daily_factor_mining_malformed_fixture",
+            report_path="reports/factor_governance/daily_mining/fixture.json",
+            owner="test owner",
+            journal_path=tmp_path / "reports" / "registry_mutation.json",
+            write=True,
+        )
+
+    assert registry_path.read_text(encoding="utf-8") == "{bad\n"
+
+
+def test_registry_write_propagates_cas_conflict_without_mutation(
+    monkeypatch,
+    tmp_path,
+):
+    registry_path = tmp_path / "mined_factors.json"
+    _write_registry(registry_path, MinedFactorRegistry())
+    before = registry_path.read_bytes()
+
+    def raise_conflict(*_args, **_kwargs):
+        raise FactorRegistryConflictError("fixture mining CAS conflict")
+
+    monkeypatch.setattr(mining, "apply_factor_record_patch", raise_conflict)
+    with pytest.raises(FactorRegistryConflictError, match="mining CAS"):
+        apply_production_candidate_registry_updates(
+            registry_path=registry_path,
+            qualified_results=[_qualified_result()],
+            run_timestamp="2026-06-07T04:30:00",
+            run_id="daily_factor_mining_conflict_fixture",
+            report_path="reports/factor_governance/daily_mining/fixture.json",
+            owner="test owner",
+            journal_path=tmp_path / "reports" / "registry_mutation.json",
+            write=True,
+        )
+
+    assert registry_path.read_bytes() == before
 
 
 def test_registry_write_does_not_override_existing_production_factor(tmp_path):
@@ -359,6 +650,7 @@ def test_registry_write_does_not_override_existing_production_factor(tmp_path):
         owner="test owner",
         horizon_days=30,
         max_candidates=5,
+        journal_path=tmp_path / "reports" / "registry_mutation.json",
         write=True,
     )
 
@@ -373,3 +665,287 @@ def test_registry_write_does_not_override_existing_production_factor(tmp_path):
     ]
     assert record.state == FactorLifecycleState.PRODUCTION_FACTOR
     assert record.weight == 0.05
+
+
+@pytest.mark.parametrize("gate_case", ["missing", "failed"])
+def test_registry_writer_rejects_incomplete_or_failed_gate_evidence(
+    tmp_path,
+    gate_case,
+):
+    registry_path = tmp_path / "mined_factors.json"
+    _write_registry(registry_path, MinedFactorRegistry())
+    before = registry_path.read_bytes()
+    result = _qualified_result()
+    if gate_case == "missing":
+        result["gate_results"] = result["gate_results"][:7]
+        expected_reason = "gate_ids_not_exactly_1_to_8"
+    else:
+        result["gate_results"][3]["passed"] = False
+        expected_reason = "gate_4_not_passed"
+
+    manifest = apply_production_candidate_registry_updates(
+        registry_path=registry_path,
+        qualified_results=[result],
+        run_timestamp="2026-06-07T04:30:00",
+        run_id=f"daily_factor_mining_{gate_case}_gate_fixture",
+        report_path="reports/factor_governance/daily_mining/fixture.json",
+        owner="test owner",
+        journal_path=tmp_path / "reports" / "registry_mutation.json",
+        write=True,
+    )
+
+    assert manifest["status"] == "no_registry_changes"
+    assert manifest["skipped_factors"] == [
+        {"name": "daily_fixture_factor", "reason": expected_reason}
+    ]
+    assert registry_path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_reason"),
+    [
+        ("missing", "diversity_selection_missing"),
+        ("hash", "diversity_policy_hash_mismatch"),
+        ("runtime", "runtime_write_ineligible"),
+    ],
+)
+def test_registry_writer_rejects_missing_or_forged_diversity_evidence(
+    tmp_path, mutation, expected_reason
+):
+    registry_path = tmp_path / "mined_factors.json"
+    _write_registry(registry_path, MinedFactorRegistry())
+    before = registry_path.read_bytes()
+    result = _qualified_result()
+    if mutation == "missing":
+        result.pop("diversity_selection")
+    elif mutation == "hash":
+        result["diversity_selection"]["policy_hash"] = "forged"
+    else:
+        result["runtime_write_eligible"] = False
+
+    manifest = apply_production_candidate_registry_updates(
+        registry_path=registry_path,
+        qualified_results=[result],
+        run_timestamp="2026-07-12T10:00:00",
+        run_id=f"diversity-{mutation}",
+        report_path="reports/factor_governance/diversity.json",
+        owner="test owner",
+        journal_path=tmp_path / "registry_mutation.json",
+        write=True,
+    )
+
+    assert manifest["status"] == "no_registry_changes"
+    assert manifest["skipped_factors"][0]["reason"] == expected_reason
+    assert registry_path.read_bytes() == before
+
+
+def test_registry_writer_enumerates_post_diversity_max_candidate_skip(
+    tmp_path,
+):
+    registry_path = tmp_path / "mined_factors.json"
+    _write_registry(registry_path, MinedFactorRegistry())
+    first = _qualified_result("first")
+    second = _qualified_result("second")
+    second["family"] = "capacity"
+    second["dominant_primitives"] = ["traded_amount"]
+    second["primitive_lineage"] = ["traded_amount"]
+    second["primitive_contributions"] = {"traded_amount": 1.0}
+    second["diversity_selection"].update(
+        family_champion="second",
+        lineage_component_id="lineage-002",
+        lineage_champion="second",
+        correlation_cluster_id="correlation-002",
+        cluster_champion="second",
+    )
+
+    manifest = apply_production_candidate_registry_updates(
+        registry_path=registry_path,
+        qualified_results=[first, second],
+        run_timestamp="2026-07-12T10:00:00",
+        run_id="diversity-max-cap",
+        report_path="reports/factor_governance/diversity.json",
+        owner="test owner",
+        max_candidates=1,
+        journal_path=tmp_path / "reports" / "registry_mutation.json",
+        write=True,
+    )
+
+    assert manifest["selected_champions"] == ["first"]
+    assert manifest["skipped_factors"] == [
+        {"name": "second", "reason": "max_registry_candidates"}
+    ]
+
+
+def test_registry_writer_rejects_entire_batch_for_duplicate_champions(
+    tmp_path,
+):
+    registry_path = tmp_path / "mined_factors.json"
+    _write_registry(registry_path, MinedFactorRegistry())
+    before = registry_path.read_bytes()
+    first = _qualified_result("first")
+    second = _qualified_result("second")
+
+    manifest = apply_production_candidate_registry_updates(
+        registry_path=registry_path,
+        qualified_results=[first, second],
+        run_timestamp="2026-07-12T10:00:00",
+        run_id="duplicate-champions",
+        report_path="reports/factor_governance/diversity.json",
+        owner="test owner",
+        journal_path=tmp_path / "reports" / "registry_mutation.json",
+        write=True,
+    )
+
+    assert manifest["status"] == "no_registry_changes"
+    assert manifest["fail_closed_reason"] == (
+        "diversity_batch_validation_failed"
+    )
+    assert registry_path.read_bytes() == before
+
+
+def test_production_family_governance_keeps_only_current_8gate_champion(
+    tmp_path,
+):
+    registry_path = tmp_path / "mined_factors.json"
+    records = []
+    for name in ("w70", "w75", "short"):
+        records.append(
+            FactorRecord(
+                name=name,
+                state=FactorLifecycleState.PRODUCTION_FACTOR,
+                implementation=f"price_volume:{name}",
+                weight=0.05,
+                gate_results=[
+                    GateResult.from_dict(row) for row in _gate_rows()
+                ],
+            )
+        )
+    _write_registry(registry_path, MinedFactorRegistry.from_records(records))
+    champion = _qualified_result("w70")
+    champion["family"] = "blend"
+    redundant = _qualified_result("w75")
+    redundant["family"] = "blend"
+    redundant["decision"] = FactorAdmissionDecision.PAPER_FACTOR.value
+    redundant["gate_results"][7]["passed"] = False
+    unrelated = _qualified_result("short")
+    unrelated["family"] = "short_reversal"
+    unrelated["decision"] = FactorAdmissionDecision.WATCHLIST.value
+    unrelated["gate_results"][2]["passed"] = False
+
+    manifest = apply_production_family_governance(
+        registry_path=registry_path,
+        results=[champion, redundant, unrelated],
+        run_timestamp="2026-07-12T12:00:00+08:00",
+        run_id="direct-family-governance",
+        report_path="reports/factor_governance/mining.json",
+        journal_path=tmp_path / "reports" / "family_governance.json",
+        write=True,
+    )
+
+    registry = MinedFactorRegistry.load(registry_path)
+    assert manifest["status"] == "updated"
+    assert manifest["kept_factors"] == ["w70"]
+    assert [item.name for item in registry.selectable_factors()] == ["w70"]
+    by_name = {item.name: item for item in registry.factors}
+    assert by_name["w75"].state == FactorLifecycleState.DEPRECATED
+    assert by_name["w75"].weight == 0.0
+    assert by_name["w75"].deprecated_reason == "current_8gate_not_passed"
+    assert by_name["short"].state == FactorLifecycleState.DEPRECATED
+    assert by_name["w70"].metadata["governance_family"] == "blend"
+
+
+def test_production_family_governance_fails_closed_without_champion(tmp_path):
+    registry_path = tmp_path / "mined_factors.json"
+    record = FactorRecord(
+        name="failing",
+        state=FactorLifecycleState.PRODUCTION_FACTOR,
+        implementation="price_volume:failing",
+        weight=0.05,
+        gate_results=[GateResult.from_dict(row) for row in _gate_rows()],
+    )
+    _write_registry(
+        registry_path,
+        MinedFactorRegistry.from_records([record]),
+    )
+    before = registry_path.read_bytes()
+    result = _qualified_result("failing")
+    result["decision"] = FactorAdmissionDecision.WATCHLIST.value
+    result["gate_results"][2]["passed"] = False
+
+    manifest = apply_production_family_governance(
+        registry_path=registry_path,
+        results=[result],
+        run_timestamp="2026-07-12T12:00:00+08:00",
+        run_id="no-champion",
+        report_path="reports/factor_governance/mining.json",
+        journal_path=tmp_path / "reports" / "family_governance.json",
+        write=True,
+    )
+
+    assert manifest["status"] == "no_registry_changes"
+    assert manifest["fail_closed_reason"] == (
+        "no_current_8gate_family_champion"
+    )
+    assert registry_path.read_bytes() == before
+
+
+def test_daily_wrapper_success_path_writes_durable_registry_journal(
+    monkeypatch,
+    tmp_path,
+):
+    registry_path = tmp_path / "mined_factors.json"
+    _write_registry(registry_path, MinedFactorRegistry())
+    fixed_now = datetime(
+        2026,
+        7,
+        11,
+        9,
+        30,
+        tzinfo=daily.SHANGHAI_TZ,
+    )
+    monkeypatch.setattr(daily, "_now_shanghai", lambda: fixed_now)
+    monkeypatch.setattr(
+        daily,
+        "latest_download_report",
+        lambda _path: (None, {}),
+    )
+
+    def fake_run_mining(args):
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return {
+            "output_dir": str(output_dir),
+            "results": [_qualified_result()],
+            "candidate_count": 1,
+            "qualified_count": 1,
+            "conclusion": "manual_production_factor_review_candidate",
+        }
+
+    monkeypatch.setattr(daily, "run_mining", fake_run_mining)
+    args = daily.parse_args(
+        [
+            "--output-root",
+            str(tmp_path / "reports"),
+            "--registry-path",
+            str(registry_path),
+            "--run-id",
+            "wrapper-success-fixture",
+            "--strict-positive-evidence",
+        ]
+    )
+
+    payload = daily.run_daily_automation(args)
+
+    manifest = payload["registry_update_manifest"]
+    journal_path = Path(manifest["registry_mutation_manifest_path"])
+    assert payload["success_gate_passed"] is True
+    assert manifest["status"] == "updated"
+    assert journal_path.parent == Path(payload["mining_output_dir"])
+    assert journal_path.exists()
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    assert journal["status"] == "applied"
+    registry = MinedFactorRegistry.load(registry_path)
+    assert registry.factors[0].weight == 0.0
+    assert registry.factors[0].state == (
+        FactorLifecycleState.PRODUCTION_CANDIDATE
+    )

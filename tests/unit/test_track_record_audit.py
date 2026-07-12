@@ -492,18 +492,105 @@ def test_track_record_audit_missing_optional_fields_degrades(tmp_path):
         encoding="utf-8",
     )
 
-    metrics = audit.run_audit(
-        record_root=record_root,
-        output_root=tmp_path / "audit",
-        benchmark_file=benchmark,
-        bars_root=tmp_path / "missing_bars",
-        stock_basic_root=tmp_path / "missing_stock_basic",
-        fundamentals_root=tmp_path / "missing_fundamentals",
-        regime_history=tmp_path / "missing_regime.jsonl",
-        as_of_date="20260107",
-        generate_plots=False,
+    try:
+        audit.run_audit(
+            record_root=record_root,
+            output_root=tmp_path / "audit",
+            benchmark_file=benchmark,
+            bars_root=tmp_path / "missing_bars",
+            stock_basic_root=tmp_path / "missing_stock_basic",
+            fundamentals_root=tmp_path / "missing_fundamentals",
+            regime_history=tmp_path / "missing_regime.jsonl",
+            as_of_date="20260107",
+            generate_plots=False,
+        )
+    except ValueError as exc:
+        assert "Need at least two NAV records" in str(exc)
+    else:
+        raise AssertionError("expected missing execution baselines to fail closed")
+
+
+def test_funding_cash_flow_changes_capital_without_creating_return_or_drawdown(tmp_path):
+    audit = _load_audit()
+    record_root = tmp_path / "records"
+    _write_record(record_root, "20260102_1000", 100.0)
+    _write_record(record_root, "20260105_1000", 110.0)
+    _write_record(record_root, "20260106_1000", 1010.0)
+    run_dir = record_root / "20260106_1000"
+    supplement = {
+        "schema_version": "cn_aggressive_manual_funding_supplement.v1",
+        "amount": 900.0,
+        "capital_base_effective_from": "2026-01-06",
+        "total_value_before": 110.0,
+        "total_value_after": 1010.0,
+        "source": "unit_test_confirmed_funding",
+    }
+    evidence = run_dir / "post_review_manual_funding_supplement_10m.json"
+    evidence.write_text(json.dumps(supplement), encoding="utf-8")
+    (run_dir / "manual_execution_manifest.json").write_text(
+        json.dumps(
+            {
+                "manual_funding_supplement": supplement,
+                "manual_funding_supplement_path": str(evidence),
+            }
+        ),
+        encoding="utf-8",
     )
 
-    assert metrics["trade_count"] == 0
-    assert metrics["funding_nature"]["funding_nature"] == "undetermined_early_records"
-    assert metrics["markov_diagnostics"]["available"] is False
+    records, warnings = audit._load_records(record_root)
+    nav_rows = audit._nav_series(audit._latest_daily_records(records))
+    performance = audit._performance_metrics(nav_rows, [])
+
+    assert warnings == []
+    assert [row["external_funding_cash_flow"] for row in nav_rows] == [0, 0, 900]
+    assert nav_rows[-1]["unit_nav"] == 1.1
+    assert nav_rows[-1]["daily_return"] == 0.0
+    assert abs(performance["cumulative_return"] - 0.1) < 1e-12
+    assert performance["max_drawdown"] == 0.0
+
+
+def test_invalid_declared_funding_lineage_fails_closed(tmp_path):
+    audit = _load_audit()
+    record_root = tmp_path / "records"
+    _write_record(record_root, "20260102_1000", 100.0)
+    run_dir = record_root / "20260102_1000"
+    (run_dir / "manual_execution_manifest.json").write_text(
+        json.dumps({"manual_funding_supplement_path": "missing.json"}),
+        encoding="utf-8",
+    )
+
+    try:
+        audit._load_records(record_root)
+    except ValueError as exc:
+        assert "Invalid funding lineage" in str(exc)
+        assert "evidence file not found" in str(exc)
+    else:
+        raise AssertionError("expected invalid funding lineage to fail closed")
+
+
+def test_latest_same_day_record_retains_earlier_funding_evidence(tmp_path):
+    audit = _load_audit()
+    record_root = tmp_path / "records"
+    _write_record(record_root, "20260102_1000", 100.0)
+    _write_record(record_root, "20260105_0900", 1000.0)
+    _write_record(record_root, "20260105_1400", 1000.0)
+    funding_run = record_root / "20260105_0900"
+    supplement = {
+        "amount": 900.0,
+        "capital_base_effective_from": "2026-01-05",
+        "total_value_before": 100.0,
+        "total_value_after": 1000.0,
+        "source": "unit_test_confirmed_funding",
+    }
+    (funding_run / "manual_execution_manifest.json").write_text(
+        json.dumps({"manual_funding_supplement": supplement}),
+        encoding="utf-8",
+    )
+
+    records, _warnings = audit._load_records(record_root)
+    daily = audit._latest_daily_records(records)
+    nav_rows = audit._nav_series(daily)
+
+    assert daily[-1].run_id == "20260105_1400"
+    assert nav_rows[-1]["external_funding_cash_flow"] == 900.0
+    assert nav_rows[-1]["unit_nav"] == 1.0

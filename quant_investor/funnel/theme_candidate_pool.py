@@ -945,7 +945,7 @@ class ThemeCandidatePoolBuilder:
             theme_forced_admission=bool(theme.forced) if theme else False,
             candidate_intent=(
                 "research_candidate_not_buy_signal"
-                if bucket in RISK_WATCH_BUCKETS
+                if bucket in RISK_WATCH_BUCKETS or bool(theme.forced if theme else False)
                 else ""
             ),
         )
