@@ -13,6 +13,7 @@ from quant_investor.agent_protocol import (
     RiskDecision,
 )
 from quant_investor.bayesian.types import LikelihoodSet, PosteriorResult, PriorSet
+from quant_investor.factors.runtime import RuntimeFactorScore
 from quant_investor.market.branch_readiness import (
     BranchDataReadiness,
     BranchGovernanceReport,
@@ -124,6 +125,15 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
             "agent": {"model": str(kwargs.get("agent_model", "")), "available": False},
             "master": {"model": str(kwargs.get("master_model", "")), "available": False},
         }
+
+    def _governance_blocked_quant(_frames):
+        return RuntimeFactorScore(
+            symbol_scores={str(symbol): 0.0 for symbol in _frames},
+            governance_status="governance_blocked",
+            factor_mode="governance_blocked",
+            production_eligible=False,
+            runtime_blockers=["fixture_governance_blocked"],
+        )
 
     class _FakeFunnel:
         def __init__(self, *_args, **_kwargs):
@@ -247,6 +257,11 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
 
     monkeypatch.setattr(dag_module, "MarketDataReader", _FakeReader)
     monkeypatch.setattr(dag_packets, "_frame_summary", _counting_frame_summary)
+    monkeypatch.setattr(
+        dag_packets,
+        "score_with_mined_factors",
+        _governance_blocked_quant,
+    )
     monkeypatch.setattr(dag_module, "DeterministicFunnel", _FakeFunnel)
     monkeypatch.setattr(dag_module.FundamentalAgent, "run", _fake_fundamental_run)
     monkeypatch.setattr(dag_module.IntelligenceAgent, "run", _fake_intelligence_run)
@@ -322,6 +337,12 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
     assert list(result["portfolio_decision"].target_weights) == ["A", "B"]
     assert result["portfolio_decision"].what_if_plan is not None
     assert result["portfolio_decision"].execution_trace is not None
+    quant_summary = result["branch_summaries"]["quant"]
+    assert result["global_context"].cross_section_quant["breadth"] == 1.0
+    assert quant_summary.final_score == 0.0
+    assert quant_summary.final_confidence == 0.0
+    assert quant_summary.metadata["production_quant_evidence"] is False
+    assert quant_summary.metadata["cross_section_diagnostic_only"] is True
     assert _FakeReader.batch_read_count == 1
     assert _FakeReader.single_read_count == 0
     assert {"ts_code", "trade_date", "close", "vol", "amount"}.issubset(

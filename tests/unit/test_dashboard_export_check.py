@@ -246,7 +246,7 @@ def test_dashboard_export_check_rejects_non_unitized_funding_and_legacy_ledger(t
     assert any("time_weighted_unitization" in error for error in result["errors"])
     assert any("portfolio_units" in error for error in result["errors"])
     assert any("legacy ledger.csv fallback" in error for error in result["errors"])
-    assert any("ledger_after_manual_switch.csv" in error for error in result["errors"])
+    assert any("canonical ledger_after_manual_switch sidecar" in error for error in result["errors"])
     assert any("manual_execution_manifest.json" in error for error in result["errors"])
 
 

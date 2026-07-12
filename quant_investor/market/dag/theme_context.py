@@ -1,12 +1,25 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import math
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
 import pandas as pd
 
-from quant_investor.themes import ThemeMembershipStore, ThemeScanner, ThemeSnapshotStore
+from quant_investor.themes import (
+    PeVcKnowledgeStore,
+    ThemeEvidenceEvent,
+    ThemeMembership,
+    ThemeMembershipStore,
+    ThemeScanner,
+    ThemeSnapshotStore,
+    ThemeTaxonomy,
+    active_memberships_by_symbol,
+    evaluate_theme_protocol_v2,
+)
 from quant_investor.themes.governance import (
     GOVERNANCE_METADATA,
     GOVERNANCE_SCHEMA_VERSION,
@@ -75,6 +88,19 @@ def build_theme_rotation_metadata(
     concept_membership_required: bool | None = None,
     concept_primary_margin: float | None = None,
     theme_memberships: list[Mapping[str, Any]] | None = None,
+    membership_v2_enabled: bool | None = None,
+    membership_v2_path: str | Path | None = None,
+    membership_v2_required: bool | None = None,
+    membership_v2_expected_sha256: str | None = None,
+    protocol_v2_enabled: bool | None = None,
+    taxonomy_v2_path: str | Path | None = None,
+    evidence_event_v1_path: str | Path | None = None,
+    pevc_canonical_path: str | Path | None = None,
+    protocol_previous_states: Mapping[str, Mapping[str, Any]] | None = None,
+    protocol_downstream_gates: Mapping[str, Mapping[str, Any]] | None = None,
+    markov_regime: str = "",
+    formal_v2_enabled: bool | None = None,
+    formal_v2_kill_switch: bool | None = None,
 ) -> dict[str, Any]:
     try:
         crowding_context = _resolve_crowding_scan_context(
@@ -90,6 +116,13 @@ def build_theme_rotation_metadata(
             concept_membership_required=concept_membership_required,
             concept_primary_margin=concept_primary_margin,
             theme_memberships=theme_memberships,
+        )
+        membership_v2_context = _resolve_membership_v2_scan_context(
+            enabled=membership_v2_enabled,
+            path=membership_v2_path,
+            required=membership_v2_required,
+            expected_sha256=membership_v2_expected_sha256,
+            as_of=as_of,
         )
         if (
             concept_context["enabled"]
@@ -129,6 +162,8 @@ def build_theme_rotation_metadata(
             concept_membership_enabled=concept_context["enabled"],
             concept_primary_margin=concept_context["primary_margin"],
             theme_memberships=concept_context["memberships"],
+            membership_v2_enabled=membership_v2_context["enabled"],
+            theme_memberships_v2=membership_v2_context["memberships"],
         )
     except Exception as exc:
         return _empty_theme_rotation_metadata(
@@ -152,19 +187,20 @@ def build_theme_rotation_metadata(
         str(symbol): _safe_float(score)
         for symbol, score in dict(result.symbol_smoothed_scores or {}).items()
     }
-    selected_symbols = _bounded_symbols(raw_symbol_scores, symbol_limit)
-    symbol_scores = {
-        symbol: raw_symbol_scores[symbol]
-        for symbol in selected_symbols
-    }
+    # Machine-consumed membership and score maps must remain complete.  The
+    # display limit is applied only to the explicitly named display payload so
+    # changing a dashboard metadata knob cannot change the formal candidate set.
+    display_symbols = _bounded_symbols(raw_symbol_scores, symbol_limit)
+    machine_symbols = sorted(raw_symbol_scores)
+    symbol_scores = dict(raw_symbol_scores)
     symbol_smoothed_scores = {
         symbol: raw_symbol_smoothed_scores[symbol]
-        for symbol in selected_symbols
+        for symbol in machine_symbols
         if symbol in raw_symbol_smoothed_scores
     }
     symbol_primary_theme = {
         symbol: str(result.symbol_primary_theme.get(symbol, ""))
-        for symbol in selected_symbols
+        for symbol in machine_symbols
         if symbol in result.symbol_primary_theme
     }
     symbol_theme_memberships = {
@@ -172,23 +208,79 @@ def build_theme_rotation_metadata(
             str(theme_id)
             for theme_id in list(result.symbol_theme_memberships.get(symbol, []) or [])
         ]
-        for symbol in selected_symbols
+        for symbol in machine_symbols
         if symbol in result.symbol_theme_memberships
+    }
+    symbol_theme_membership_details = {
+        symbol: [
+            dict(detail)
+            for detail in list(
+                result.symbol_theme_membership_details.get(symbol, []) or []
+            )
+        ]
+        for symbol in machine_symbols
+        if symbol in result.symbol_theme_membership_details
     }
     symbol_phase = {
         symbol: str(result.symbol_phase.get(symbol, ""))
-        for symbol in selected_symbols
+        for symbol in machine_symbols
         if symbol in result.symbol_phase
     }
     symbol_risk_flags = {
         symbol: [str(flag) for flag in list(result.symbol_risk_flags.get(symbol, []) or [])]
-        for symbol in selected_symbols
+        for symbol in machine_symbols
+    }
+    display = {
+        "symbol_scores": {
+            symbol: raw_symbol_scores[symbol]
+            for symbol in display_symbols
+        },
+        "symbol_smoothed_scores": {
+            symbol: raw_symbol_smoothed_scores[symbol]
+            for symbol in display_symbols
+            if symbol in raw_symbol_smoothed_scores
+        },
+        "symbol_primary_theme": {
+            symbol: str(result.symbol_primary_theme.get(symbol, ""))
+            for symbol in display_symbols
+            if symbol in result.symbol_primary_theme
+        },
+        "symbol_theme_memberships": {
+            symbol: [
+                str(theme_id)
+                for theme_id in list(result.symbol_theme_memberships.get(symbol, []) or [])
+            ]
+            for symbol in display_symbols
+            if symbol in result.symbol_theme_memberships
+        },
+        "symbol_theme_membership_details": {
+            symbol: [
+                dict(detail)
+                for detail in list(
+                    result.symbol_theme_membership_details.get(symbol, []) or []
+                )
+            ]
+            for symbol in display_symbols
+            if symbol in result.symbol_theme_membership_details
+        },
+        "symbol_phase": {
+            symbol: str(result.symbol_phase.get(symbol, ""))
+            for symbol in display_symbols
+            if symbol in result.symbol_phase
+        },
+        "symbol_risk_flags": {
+            symbol: [str(flag) for flag in list(result.symbol_risk_flags.get(symbol, []) or [])]
+            for symbol in display_symbols
+        },
     }
     top_themes = [
         _compact_top_theme(theme)
         for theme in sorted(
             theme_scores.values(),
-            key=lambda item: (-_safe_float(item.get("score", 0.0)), str(item.get("theme_id", ""))),
+            key=lambda item: (
+                -_safe_float(item.get("effective_score", item.get("score", 0.0))),
+                str(item.get("theme_id", "")),
+            ),
         )[: max(int(top_n), 0)]
     ]
     metadata = {
@@ -201,11 +293,15 @@ def build_theme_rotation_metadata(
             )
         ),
         "symbol_limit": max(int(symbol_limit), 0),
-        "truncated_symbol_count": max(len(raw_symbol_scores) - len(selected_symbols), 0),
+        "machine_symbol_count": len(machine_symbols),
+        "display_symbol_count": len(display_symbols),
+        "truncated_symbol_count": max(len(raw_symbol_scores) - len(display_symbols), 0),
+        "symbol_limit_applies_to": "display_metadata_only",
     }
     metadata = {
         **metadata,
         **_concept_membership_metadata(concept_context),
+        **_membership_v2_metadata(membership_v2_context),
         "concept_membership_diagnostic_notes": _dedupe_flags(
             [
                 *list(metadata.get("concept_membership_diagnostic_notes", []) or []),
@@ -213,6 +309,57 @@ def build_theme_rotation_metadata(
             ]
         ),
     }
+    canonical_membership_details: dict[str, list[dict[str, Any]]] = {}
+    for raw_membership in list(membership_v2_context.get("memberships") or []):
+        if not isinstance(raw_membership, Mapping):
+            continue
+        symbol = str(raw_membership.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        canonical_membership_details.setdefault(symbol, []).append(
+            {
+                **dict(raw_membership),
+                "pit_membership": True,
+                "canonical_membership_v2": True,
+            }
+        )
+    protocol_v2 = _build_protocol_v2_metadata(
+        enabled=protocol_v2_enabled,
+        theme_scores=theme_scores,
+        symbol_theme_memberships={
+            symbol: [
+                str(detail.get("theme_id") or "")
+                for detail in details
+                if str(detail.get("theme_id") or "")
+            ]
+            for symbol, details in canonical_membership_details.items()
+        },
+        symbol_theme_membership_details=canonical_membership_details,
+        membership_v2_context=membership_v2_context,
+        as_of=str(result.as_of or as_of),
+        taxonomy_path=taxonomy_v2_path,
+        evidence_path=evidence_event_v1_path,
+        pevc_path=pevc_canonical_path,
+        previous_states=(
+            protocol_previous_states
+            or _resolve_protocol_previous_states(
+                snapshots=crowding_context.get("snapshot_history", []),
+                snapshot_dir=snapshot_dir,
+                history_limit=history_limit,
+                market=market,
+                universe_key=universe_key,
+                as_of=str(result.as_of or as_of),
+            )
+        ),
+        downstream_gates=protocol_downstream_gates,
+        markov_regime=markov_regime,
+        formal_enabled=formal_v2_enabled,
+        formal_kill_switch=formal_v2_kill_switch,
+        valid_trading_dates=_protocol_trading_dates(
+            frames,
+            as_of=str(result.as_of or as_of),
+        ),
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "enabled": True,
@@ -225,8 +372,12 @@ def build_theme_rotation_metadata(
         "symbol_smoothed_scores": symbol_smoothed_scores,
         "symbol_primary_theme": symbol_primary_theme,
         "symbol_theme_memberships": symbol_theme_memberships,
+        "symbol_theme_membership_details": symbol_theme_membership_details,
         "symbol_phase": symbol_phase,
         "symbol_risk_flags": symbol_risk_flags,
+        "display": display,
+        "protocol_v2": protocol_v2,
+        "membership_v2": _membership_v2_metadata(membership_v2_context),
         "top_themes": top_themes,
         "diagnostic_notes": [],
         "metadata": metadata,
@@ -248,6 +399,7 @@ def persist_theme_rotation_snapshot(
     if not enabled:
         return {
             "enabled": False,
+            "channel_open": False,
             "status": "disabled",
             "path": "",
             "error": "",
@@ -731,6 +883,10 @@ def build_theme_portfolio_constraints(
     constraints["theme_caps"] = theme_caps
     constraints["theme_names"] = theme_names
     constraints["theme_phases"] = theme_phases
+    constraints["theme_tactical_lane"] = _theme_tactical_lane_constraints(
+        global_context=global_context,
+        symbols=checked_symbols,
+    )
     constraints["metadata"] = {
         **dict(constraints["metadata"]),
         "symbols_with_theme": len(exposure_map),
@@ -762,8 +918,22 @@ def _empty_theme_rotation_metadata(
         "symbol_smoothed_scores": {},
         "symbol_primary_theme": {},
         "symbol_theme_memberships": {},
+        "symbol_theme_membership_details": {},
         "symbol_phase": {},
         "symbol_risk_flags": {},
+        "display": {},
+        "protocol_v2": {
+            "schema_version": "theme_protocol.v2",
+            "status": "disabled" if status == "disabled" else "blocked",
+            "observer_enabled": False,
+            "formal_enabled": False,
+            "formal_kill_switch": True,
+            "rollback_status": "observer_only",
+            "rollback_reason": f"theme_rotation_{status}",
+            "formal_pool": [],
+            "prequalified_pool": [],
+            "forced_theme_count": 0,
+        },
         "top_themes": [],
         "diagnostic_notes": list(diagnostic_notes),
         "metadata": dict(_BASE_INTEGRATION_METADATA),
@@ -846,6 +1016,16 @@ def _empty_theme_portfolio_constraints(
         "theme_caps": {},
         "theme_names": {},
         "theme_phases": {},
+        "theme_tactical_lane": {
+            "enabled": False,
+            "status": "disabled",
+            "regime": "",
+            "non_tech_symbols": [],
+            "nav_cap": 0.0,
+            "max_positions": 0,
+            "protocol_hash": "",
+            "formal_kill_switch": True,
+        },
         "diagnostic_notes": [],
         "metadata": {
             "deterministic": True,
@@ -856,6 +1036,125 @@ def _empty_theme_portfolio_constraints(
             "symbols_with_theme": 0,
             "theme_count": 0,
         },
+    }
+
+
+def _theme_tactical_lane_constraints(
+    *,
+    global_context: Any,
+    symbols: list[str],
+) -> dict[str, Any]:
+    context_metadata = _mapping_or_empty(getattr(global_context, "metadata", {}))
+    rotation = _mapping_or_empty(context_metadata.get("theme_rotation"))
+    protocol = _mapping_or_empty(rotation.get("protocol_v2"))
+    cap = _mapping_or_empty(protocol.get("tactical_lane_cap"))
+    states = _mapping_or_empty(protocol.get("states"))
+    details_by_symbol = _mapping_or_empty(
+        rotation.get("symbol_theme_membership_details")
+    )
+    prequalified = {
+        str(theme_id)
+        for theme_id in list(protocol.get("prequalified_pool") or [])
+        if str(theme_id)
+    }
+    reconciliation = _mapping_or_empty(rotation.get("formal_reconciliation"))
+    reconciled_by_symbol = _mapping_or_empty(reconciliation.get("per_symbol"))
+    protocol_hash = str(protocol.get("protocol_hash") or "")
+    prospective_active = (
+        str(protocol.get("status") or "") in {"prequalified", "formal"}
+        and protocol.get("formal_enabled") is True
+        and protocol.get("formal_kill_switch") is not True
+        and len(protocol_hash) == 64
+    )
+    non_tech_symbols: list[str] = []
+    unclassified_symbols: list[str] = []
+    classification_blockers: dict[str, list[str]] = {}
+    protocol_as_of = str(protocol.get("as_of") or rotation.get("as_of") or "")
+    for symbol in symbols:
+        reconciled = _mapping_or_empty(reconciled_by_symbol.get(symbol))
+        if reconciled.get("passed") is True:
+            membership_ids = [
+                str(theme_id)
+                for theme_id in list(reconciled.get("theme_ids") or [])
+                if str(theme_id) in prequalified
+            ]
+        else:
+            membership_ids = []
+            raw_details = details_by_symbol.get(symbol, [])
+            for raw_detail in raw_details if isinstance(raw_details, list) else []:
+                if not isinstance(raw_detail, Mapping):
+                    continue
+                try:
+                    membership = ThemeMembership.from_mapping(raw_detail)
+                except (TypeError, ValueError):
+                    continue
+                if (
+                    membership.theme_id in prequalified
+                    and membership.symbol == symbol
+                    and membership.is_active(protocol_as_of)
+                ):
+                    membership_ids.append(membership.theme_id)
+            membership_ids = _dedupe_flags(membership_ids)
+        mandates = {
+            str(_mapping_or_empty(states.get(theme_id)).get("mandate") or "")
+            for theme_id in membership_ids
+            if theme_id in states
+        }
+        mandates.discard("")
+        if not mandates:
+            unclassified_symbols.append(symbol)
+            non_tech_symbols.append(symbol)
+            classification_blockers[symbol] = [
+                "prospective_pit_prequalified_membership_missing"
+            ]
+            continue
+        tech_mandates = {"technology", "advanced_manufacturing"}
+        if mandates.intersection(tech_mandates) and not mandates.issubset(tech_mandates):
+            non_tech_symbols.append(symbol)
+            classification_blockers[symbol] = ["mixed_theme_mandate_fail_closed"]
+        elif mandates.isdisjoint(tech_mandates):
+            non_tech_symbols.append(symbol)
+    cap_enabled = cap.get("enabled") is True
+    cap_contract_present = {
+        "non_tech_nav_cap",
+        "non_tech_max_positions",
+    }.issubset(cap)
+    status = (
+        "active"
+        if prospective_active and cap_enabled
+        else "observer_only"
+    )
+    if not protocol:
+        status = "protocol_missing"
+    elif protocol.get("formal_kill_switch") is True:
+        status = "formal_kill_switch_active"
+    elif not prospective_active:
+        status = "formal_not_active"
+    elif not cap_enabled:
+        status = "closed_by_markov"
+    return {
+        # ``enabled`` means the cap contract must be enforced.  In a downtrend
+        # the channel is closed but enforcement remains enabled at 0/0.
+        "enabled": bool(prospective_active and cap_contract_present),
+        "channel_open": bool(prospective_active and cap_enabled),
+        "status": status,
+        "regime": str(cap.get("regime") or ""),
+        "non_tech_symbols": sorted(non_tech_symbols),
+        "nav_cap": _clamp(
+            _safe_float(cap.get("non_tech_nav_cap"), 0.0),
+            0.0,
+            1.0,
+        ),
+        "max_positions": max(int(_safe_float(cap.get("non_tech_max_positions"), 0.0)), 0),
+        "protocol_hash": protocol_hash,
+        "formal_kill_switch": bool(protocol.get("formal_kill_switch", True)),
+        "unclassified_symbols": sorted(unclassified_symbols),
+        "classification_blockers": classification_blockers,
+        "source": (
+            "post_control_reconciliation"
+            if reconciled_by_symbol
+            else "prospective_prequalified_pit_memberships"
+        ),
     }
 
 
@@ -1140,6 +1439,521 @@ def _concept_membership_metadata(context: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _resolve_membership_v2_scan_context(
+    *,
+    enabled: bool | None,
+    path: str | Path | None,
+    required: bool | None,
+    expected_sha256: str | None,
+    as_of: str,
+) -> dict[str, Any]:
+    resolved_enabled = True
+    resolved_required = False
+    resolved_path = "private/theme_knowledge/theme_membership.v2.jsonl"
+    resolved_expected_sha = ""
+    try:
+        from quant_investor.config import Config
+
+        resolved_enabled = bool(
+            getattr(Config, "THEME_MEMBERSHIP_V2_ENABLED", True)
+        )
+        resolved_required = bool(
+            getattr(Config, "THEME_MEMBERSHIP_V2_REQUIRED", False)
+        )
+        resolved_path = str(
+            getattr(Config, "THEME_MEMBERSHIP_V2_PATH", resolved_path)
+            or resolved_path
+        )
+        resolved_expected_sha = str(
+            getattr(Config, "THEME_MEMBERSHIP_V2_EXPECTED_SHA256", "")
+            or ""
+        ).strip().lower()
+    except Exception:
+        pass
+    if enabled is not None:
+        resolved_enabled = bool(enabled)
+    if required is not None:
+        resolved_required = bool(required)
+    if path is not None:
+        resolved_path = str(path)
+    if expected_sha256 is not None:
+        resolved_expected_sha = str(expected_sha256 or "").strip().lower()
+
+    base = {
+        "enabled": resolved_enabled,
+        "required": resolved_required,
+        "path": resolved_path,
+        "expected_sha256": resolved_expected_sha,
+        "artifact_sha256": "",
+        "hash_verified": False,
+        "permissions_0600": False,
+        "memberships": [],
+        "membership_count": 0,
+        "active_membership_count": 0,
+        "updated_at_status": "disabled" if not resolved_enabled else "unverified",
+        "updated_at_invalid_count": 0,
+        "pit_status": "disabled" if not resolved_enabled else "coverage_blocked",
+        "status": "disabled" if not resolved_enabled else "missing",
+        "diagnostic_notes": [],
+    }
+    if not resolved_enabled:
+        return base
+
+    source = Path(resolved_path)
+    if not source.is_file():
+        base["diagnostic_notes"] = ["theme_membership_v2_file_missing"]
+        return base
+    try:
+        raw = source.read_bytes()
+    except OSError as exc:
+        base["status"] = "error"
+        base["diagnostic_notes"] = [
+            f"theme_membership_v2_file_read_error: {exc}"
+        ]
+        return base
+    actual_sha = hashlib.sha256(raw).hexdigest()
+    base["artifact_sha256"] = actual_sha
+    base["permissions_0600"] = source.stat().st_mode & 0o777 == 0o600
+    if not base["permissions_0600"]:
+        base["status"] = "error"
+        base["diagnostic_notes"] = [
+            "theme_membership_v2_permissions_not_0600"
+        ]
+        return base
+    if resolved_expected_sha and (
+        len(resolved_expected_sha) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in resolved_expected_sha
+        )
+    ):
+        base["status"] = "error"
+        base["diagnostic_notes"] = [
+            "theme_membership_v2_expected_sha256_invalid"
+        ]
+        return base
+    if resolved_expected_sha and resolved_expected_sha != actual_sha:
+        base["status"] = "error"
+        base["diagnostic_notes"] = [
+            "theme_membership_v2_artifact_sha256_mismatch"
+        ]
+        return base
+    base["hash_verified"] = bool(
+        resolved_expected_sha and resolved_expected_sha == actual_sha
+    )
+
+    memberships: list[ThemeMembership] = []
+    try:
+        for line_number, raw_line in enumerate(
+            raw.decode("utf-8").splitlines(), start=1
+        ):
+            if not raw_line.strip():
+                continue
+            payload = json.loads(raw_line)
+            if not isinstance(payload, Mapping):
+                raise ValueError(f"line {line_number} is not an object")
+            if str(payload.get("schema_version") or "") != (
+                "theme_membership.v2"
+            ):
+                raise ValueError(
+                    f"line {line_number} is not theme_membership.v2"
+                )
+            memberships.append(ThemeMembership.from_mapping(payload))
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        base["status"] = "error"
+        base["diagnostic_notes"] = [
+            f"theme_membership_v2_file_format_error: {exc}"
+        ]
+        return base
+    active_count = sum(
+        len(items)
+        for items in active_memberships_by_symbol(
+            memberships,
+            as_of=as_of,
+        ).values()
+    )
+    invalid_updated_at_count = sum(
+        1
+        for membership in memberships
+        if not _valid_membership_updated_at(membership.updated_at)
+    )
+    base.update(
+        {
+            "memberships": [membership.to_dict() for membership in memberships],
+            "membership_count": len(memberships),
+            "active_membership_count": active_count,
+            "updated_at_status": (
+                "success" if invalid_updated_at_count == 0 else "unverified"
+            ),
+            "updated_at_invalid_count": invalid_updated_at_count,
+            "pit_status": "success" if active_count else "coverage_blocked",
+            "status": "success" if memberships else "empty",
+            "diagnostic_notes": [
+                f"theme_membership_v2_count={len(memberships)}",
+                f"theme_membership_v2_active_count={active_count}",
+                (
+                    "theme_membership_v2_updated_at_verified"
+                    if invalid_updated_at_count == 0
+                    else (
+                        "theme_membership_v2_updated_at_missing_or_invalid="
+                        f"{invalid_updated_at_count}"
+                    )
+                ),
+                (
+                    "theme_membership_v2_hash_verified"
+                    if base["hash_verified"]
+                    else "theme_membership_v2_hash_unpinned_observer_only"
+                ),
+            ],
+        }
+    )
+    return base
+
+
+def _membership_v2_metadata(context: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "membership_v2_enabled": bool(context.get("enabled", False)),
+        "membership_v2_required": bool(context.get("required", False)),
+        "membership_v2_path": str(context.get("path") or ""),
+        "membership_v2_status": str(context.get("status") or "disabled"),
+        "membership_v2_count": int(
+            _safe_float(context.get("membership_count", 0), 0.0)
+        ),
+        "membership_v2_active_count": int(
+            _safe_float(context.get("active_membership_count", 0), 0.0)
+        ),
+        "membership_v2_pit_status": str(
+            context.get("pit_status") or "coverage_blocked"
+        ),
+        "membership_v2_updated_at_status": str(
+            context.get("updated_at_status") or "unverified"
+        ),
+        "membership_v2_updated_at_invalid_count": int(
+            _safe_float(context.get("updated_at_invalid_count", 0), 0.0)
+        ),
+        "membership_v2_artifact_sha256": str(
+            context.get("artifact_sha256") or ""
+        ),
+        "membership_v2_expected_sha256": str(
+            context.get("expected_sha256") or ""
+        ),
+        "membership_v2_hash_verified": bool(
+            context.get("hash_verified", False)
+        ),
+        "membership_v2_permissions_0600": bool(
+            context.get("permissions_0600", False)
+        ),
+        "membership_v2_diagnostic_notes": list(
+            context.get("diagnostic_notes") or []
+        ),
+    }
+
+
+def _membership_v2_formal_activation_blockers(
+    context: Mapping[str, Any],
+) -> list[str]:
+    blockers: list[str] = []
+    if context.get("enabled") is not True:
+        blockers.append("theme_membership_v2_not_enabled")
+    if context.get("required") is not True:
+        blockers.append("theme_membership_v2_not_required")
+    if str(context.get("status") or "") != "success":
+        blockers.append("theme_membership_v2_not_success")
+    if context.get("hash_verified") is not True:
+        blockers.append("theme_membership_v2_hash_unverified")
+    if str(context.get("pit_status") or "") != "success":
+        blockers.append("theme_membership_v2_pit_unverified")
+    if str(context.get("updated_at_status") or "") != "success":
+        blockers.append("theme_membership_v2_updated_at_unverified")
+    return blockers
+
+
+def _valid_membership_updated_at(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    try:
+        datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
+
+
+def _build_protocol_v2_metadata(
+    *,
+    enabled: bool | None,
+    theme_scores: Mapping[str, Mapping[str, Any]],
+    symbol_theme_memberships: Mapping[str, list[str]],
+    symbol_theme_membership_details: Mapping[str, list[Mapping[str, Any]]],
+    membership_v2_context: Mapping[str, Any],
+    as_of: str,
+    taxonomy_path: str | Path | None,
+    evidence_path: str | Path | None,
+    pevc_path: str | Path | None,
+    previous_states: Mapping[str, Mapping[str, Any]] | None,
+    downstream_gates: Mapping[str, Mapping[str, Any]] | None,
+    markov_regime: str,
+    formal_enabled: bool | None,
+    formal_kill_switch: bool | None,
+    valid_trading_dates: list[str],
+) -> dict[str, Any]:
+    resolved_enabled = True
+    resolved_taxonomy_path = str(
+        taxonomy_path or "quant_investor/themes/data/theme_taxonomy.v2.json"
+    )
+    resolved_evidence_path = str(
+        evidence_path or "private/theme_knowledge/theme_evidence_events.jsonl"
+    )
+    resolved_pevc_path = str(
+        pevc_path or "private/theme_knowledge/pevc_theses.jsonl"
+    )
+    resolved_formal_enabled = False
+    resolved_kill_switch = True
+    try:
+        from quant_investor.config import Config
+
+        resolved_enabled = bool(getattr(Config, "THEME_PROTOCOL_V2_ENABLED", True))
+        if taxonomy_path is None:
+            resolved_taxonomy_path = str(
+                getattr(Config, "THEME_TAXONOMY_V2_PATH", resolved_taxonomy_path)
+                or resolved_taxonomy_path
+            )
+        if evidence_path is None:
+            resolved_evidence_path = str(
+                getattr(Config, "THEME_EVIDENCE_EVENT_V1_PATH", resolved_evidence_path)
+                or resolved_evidence_path
+            )
+        if pevc_path is None:
+            resolved_pevc_path = str(
+                getattr(Config, "THEME_PEVC_CANONICAL_PATH", resolved_pevc_path)
+                or resolved_pevc_path
+            )
+        resolved_formal_enabled = bool(
+            getattr(Config, "THEME_V2_FORMAL_ENABLED", False)
+        )
+        resolved_kill_switch = bool(
+            getattr(Config, "THEME_V2_FORMAL_KILL_SWITCH", True)
+        )
+    except Exception:
+        pass
+    if enabled is not None:
+        resolved_enabled = bool(enabled)
+    if formal_enabled is not None:
+        resolved_formal_enabled = bool(formal_enabled)
+    if formal_kill_switch is not None:
+        resolved_kill_switch = bool(formal_kill_switch)
+    if not resolved_enabled:
+        return {
+            "schema_version": "theme_protocol.v2",
+            "status": "disabled",
+            "observer_enabled": False,
+            "formal_enabled": False,
+            "formal_kill_switch": True,
+            "rollback_status": "observer_disabled",
+            "rollback_reason": "protocol_v2_disabled",
+            "formal_pool": [],
+            "prequalified_pool": [],
+            "forced_theme_count": 0,
+            "diagnostic_notes": ["theme_protocol_v2_disabled"],
+        }
+
+    diagnostic_notes: list[str] = []
+    try:
+        taxonomy = ThemeTaxonomy.load(resolved_taxonomy_path)
+        events = _load_protocol_events(resolved_evidence_path)
+        if not Path(resolved_evidence_path).exists():
+            diagnostic_notes.append("theme_evidence_event_file_missing_observer_continues")
+        pevc_store = PeVcKnowledgeStore(resolved_pevc_path)
+        theses = [thesis.to_dict() for thesis in pevc_store.load(as_of=as_of)]
+        if not Path(resolved_pevc_path).exists():
+            diagnostic_notes.append("pevc_canonical_file_missing_observer_continues")
+        membership_ids = sorted(
+            {
+                str(theme_id)
+                for memberships in symbol_theme_memberships.values()
+                for theme_id in list(memberships or [])
+                if str(theme_id)
+            }
+        )
+        membership_details = [
+            dict(detail)
+            for details in symbol_theme_membership_details.values()
+            for detail in list(details or [])
+            if isinstance(detail, Mapping)
+        ]
+        payload = evaluate_theme_protocol_v2(
+            theme_scores=theme_scores,
+            taxonomy=taxonomy,
+            as_of=as_of,
+            evidence_events=events,
+            pevc_theses=theses,
+            valid_membership_theme_ids=membership_ids,
+            theme_membership_details=membership_details,
+            previous_states=previous_states,
+            downstream_gates=downstream_gates,
+            markov_regime=markov_regime,
+            formal_enabled=resolved_formal_enabled,
+            formal_kill_switch=resolved_kill_switch,
+            valid_trading_dates=valid_trading_dates,
+            formal_activation_blockers=(
+                _membership_v2_formal_activation_blockers(
+                    membership_v2_context
+                )
+                if resolved_formal_enabled
+                else []
+            ),
+        )
+        payload["diagnostic_notes"] = diagnostic_notes
+        payload["taxonomy_path"] = resolved_taxonomy_path
+        payload["evidence_path"] = resolved_evidence_path
+        payload["pevc_path"] = resolved_pevc_path
+        payload["membership_v2"] = _membership_v2_metadata(
+            membership_v2_context
+        )
+        payload.pop("artifact_hash", None)
+        payload["artifact_hash"] = hashlib.sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        return payload
+    except Exception as exc:
+        return {
+            "schema_version": "theme_protocol.v2",
+            "status": "error",
+            "observer_enabled": False,
+            "formal_enabled": False,
+            "formal_kill_switch": True,
+            "rollback_status": "observer_only",
+            "rollback_reason": "protocol_v2_error_fail_closed",
+            "formal_pool": [],
+            "prequalified_pool": [],
+            "forced_theme_count": 0,
+            "diagnostic_notes": [f"theme_protocol_v2_error: {exc}"],
+        }
+
+
+def _protocol_trading_dates(
+    frames: Mapping[str, pd.DataFrame],
+    *,
+    as_of: str,
+) -> list[str]:
+    point = pd.to_datetime(as_of, errors="coerce")
+    if pd.isna(point):
+        return []
+    dates: set[str] = set()
+    for frame in frames.values():
+        if not isinstance(frame, pd.DataFrame) or frame.empty:
+            continue
+        date_column = next(
+            (
+                column
+                for column in ("trade_date", "date", "Date", "datetime", "time")
+                if column in frame.columns
+            ),
+            None,
+        )
+        if date_column is None:
+            continue
+        parsed = pd.to_datetime(frame[date_column], errors="coerce").dropna()
+        for value in parsed:
+            candidate = value.date()
+            if candidate <= point.date() and candidate.weekday() < 5:
+                dates.add(candidate.isoformat())
+    return sorted(dates)
+
+
+def _resolve_protocol_previous_states(
+    *,
+    snapshots: Any,
+    snapshot_dir: str | Path | None,
+    history_limit: int,
+    market: str,
+    universe_key: str,
+    as_of: str,
+) -> dict[str, Mapping[str, Any]]:
+    history = list(snapshots or [])
+    resolved_dir = snapshot_dir
+    if resolved_dir is None:
+        try:
+            from quant_investor.config import Config
+
+            resolved_dir = str(
+                getattr(Config, "THEME_SNAPSHOT_DIR", "results/theme_snapshots")
+                or "results/theme_snapshots"
+            )
+        except Exception:
+            resolved_dir = "results/theme_snapshots"
+    if not history and resolved_dir:
+        try:
+            history = ThemeSnapshotStore(resolved_dir).load_recent(
+                market=market or "CN",
+                universe_key=universe_key or None,
+                limit=max(int(history_limit or 10), 1),
+            )
+        except Exception:
+            history = []
+    return _latest_protocol_v2_states(history, as_of=as_of)
+
+
+def _latest_protocol_v2_states(
+    snapshots: Any,
+    *,
+    as_of: str,
+) -> dict[str, Mapping[str, Any]]:
+    as_of_key = "".join(character for character in str(as_of) if character.isdigit())[:8]
+    candidates: list[tuple[str, Mapping[str, Any]]] = []
+    for snapshot in list(snapshots or []):
+        if not isinstance(snapshot, Mapping):
+            continue
+        rotation = snapshot.get("theme_rotation")
+        payload = rotation if isinstance(rotation, Mapping) else snapshot
+        protocol = payload.get("protocol_v2") if isinstance(payload, Mapping) else None
+        if not isinstance(protocol, Mapping):
+            continue
+        protocol_as_of = "".join(
+            character
+            for character in str(protocol.get("as_of") or payload.get("as_of") or "")
+            if character.isdigit()
+        )[:8]
+        states = protocol.get("states")
+        if (
+            protocol_as_of
+            and (not as_of_key or protocol_as_of <= as_of_key)
+            and isinstance(states, Mapping)
+        ):
+            candidates.append((protocol_as_of, states))
+    if not candidates:
+        return {}
+    _, latest = max(candidates, key=lambda item: item[0])
+    return {
+        str(theme_id): dict(state)
+        for theme_id, state in latest.items()
+        if isinstance(state, Mapping)
+    }
+
+
+def _load_protocol_events(path: str | Path) -> list[ThemeEvidenceEvent]:
+    source = Path(path)
+    if not source.exists():
+        return []
+    events: list[ThemeEvidenceEvent] = []
+    for line_number, raw_line in enumerate(
+        source.read_text(encoding="utf-8").splitlines(),
+        start=1,
+    ):
+        if not raw_line.strip():
+            continue
+        payload = json.loads(raw_line)
+        if not isinstance(payload, Mapping):
+            raise ValueError(f"evidence line {line_number} must be an object")
+        events.append(ThemeEvidenceEvent.from_mapping(payload))
+    return events
+
+
 def _compact_top_theme(theme: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "theme_id": str(theme.get("theme_id", "")),
@@ -1150,6 +1964,25 @@ def _compact_top_theme(theme: Mapping[str, Any]) -> dict[str, Any]:
         ),
         "pit_membership": bool(theme.get("pit_membership", False)),
         "score": _safe_float(theme.get("score", 0.0)),
+        "effective_score": _safe_float(
+            theme.get("effective_score", theme.get("score", 0.0))
+        ),
+        "attention": _safe_float(theme.get("attention", 0.0)),
+        "attention_5d": _optional_float(theme.get("attention_5d")),
+        "attention_20d": _optional_float(theme.get("attention_20d")),
+        "attention_60d": _optional_float(theme.get("attention_60d")),
+        "attention_120d": _optional_float(theme.get("attention_120d")),
+        "attention_turnover_share": _optional_float(
+            theme.get("attention_turnover_share")
+        ),
+        "new_high_rate": _optional_float(theme.get("new_high_rate")),
+        "leader_persistence": _optional_float(theme.get("leader_persistence")),
+        "attention_history_coverage": _safe_float(
+            theme.get("attention_history_coverage", 0.0)
+        ),
+        "market_confirmation": _safe_float(
+            theme.get("market_confirmation", 0.0)
+        ),
         "raw_score": _safe_float(theme.get("raw_score", theme.get("score", 0.0))),
         "smoothed_score": _optional_float(theme.get("smoothed_score")),
         "heat_10d": _optional_float(theme.get("heat_10d")),

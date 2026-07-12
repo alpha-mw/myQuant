@@ -1,13 +1,25 @@
 from __future__ import annotations
 
+import hashlib
+import json
+
 import pandas as pd
+import pytest
 
 from quant_investor.factors.governance import (
     FactorLifecycleState,
     FactorRecord,
     GateResult,
 )
-from quant_investor.factors.runtime import MinedFactorRegistry, score_with_mined_factors
+from quant_investor.factors.historical_shadow import (
+    build_historical_baseline_manifest,
+    load_historical_shadow_baseline,
+)
+from quant_investor.factors.runtime import (
+    MinedFactorRegistry,
+    REPORT_ONLY_SHADOW_RUNTIME_MODE,
+    score_with_mined_factors,
+)
 from scripts.run_quant_factor_selection_shadow import (
     DEFAULT_SHADOW_EFFECTIVE_SHARE,
     _covered_uncovered_selection_bias,
@@ -47,6 +59,35 @@ def _record(name: str, implementation: str, *, weight: float = 0.05) -> FactorRe
     )
 
 
+def _write_historical_registry(path, *, count: int = 14) -> list[FactorRecord]:
+    records: list[FactorRecord] = []
+    for index in range(count):
+        record = _record(
+            f"old_{index:02d}",
+            "builtin:short_term_return",
+            weight=0.05 if index == 0 else 0.0,
+        )
+        if index:
+            record.state = FactorLifecycleState.DEPRECATED
+            record.deprecated_reason = "historical_shadow_only"
+            record.gate_results[-1].passed = False
+        records.append(record)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "mined-factor-registry.v1",
+                "metadata": {"fixture": True},
+                "factors": [record.to_dict() for record in records],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return records
+
+
 def _frames() -> dict[str, pd.DataFrame]:
     dates = pd.date_range("2025-01-02", periods=80, freq="B")
     frames: dict[str, pd.DataFrame] = {}
@@ -78,6 +119,7 @@ def test_runtime_components_recompose_exact_direct_runtime_score() -> None:
     direct = score_with_mined_factors(
         frames,
         registry=MinedFactorRegistry.from_records(records),
+        runtime_mode=REPORT_ONLY_SHADOW_RUNTIME_MODE,
     )
 
     assert skipped == {}
@@ -148,11 +190,105 @@ def test_registry_contract_requires_zero_weight_8_gate_candidate() -> None:
         registry,
         candidate_name="candidate",
         expected_production_factor_count=1,
+        historical_baseline_records=[production],
     )
 
     assert [record.name for record in active] == ["old"]
     assert selected is candidate
     assert blockers == []
+
+
+def test_registry_contract_fails_closed_without_historical_manifest() -> None:
+    candidate = FactorRecord(
+        name="candidate",
+        state=FactorLifecycleState.PRODUCTION_CANDIDATE,
+        implementation="aquant_expression:candidate",
+        weight=0.0,
+        gate_results=_gates(),
+        metadata={"expression": "cs_rank(fin_net_profit_yoy)"},
+    )
+    registry = MinedFactorRegistry.from_records([candidate])
+
+    active, selected, blockers = validate_registry_contract(
+        registry,
+        candidate_name="candidate",
+        expected_production_factor_count=14,
+    )
+
+    assert active == []
+    assert selected is candidate
+    assert "historical_baseline_manifest_required" in blockers
+
+
+def test_manifest_bound_one_incumbent_plus_thirteen_historical_scores_all_fourteen(
+    tmp_path,
+) -> None:
+    registry_path = tmp_path / "registry.json"
+    _write_historical_registry(registry_path)
+    registry_sha_before = hashlib.sha256(registry_path.read_bytes()).hexdigest()
+    weights = {f"old_{index:02d}": 0.05 for index in range(14)}
+    manifest = build_historical_baseline_manifest(
+        registry_path=registry_path,
+        baseline_id="old14-locked",
+        factor_weights=weights,
+    )
+    manifest_path = tmp_path / "historical-old14.json"
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    historical_registry, audit = load_historical_shadow_baseline(
+        manifest_path=manifest_path,
+        registry_path=registry_path,
+        expected_factor_count=14,
+    )
+    score = score_with_mined_factors(
+        _frames(),
+        registry=historical_registry,
+        runtime_mode=REPORT_ONLY_SHADOW_RUNTIME_MODE,
+    )
+    registry_sha_after = hashlib.sha256(registry_path.read_bytes()).hexdigest()
+
+    assert audit["current_selectable_factor_count"] == 1
+    assert audit["historical_non_selectable_factor_count"] == 13
+    assert score.factor_count == 14
+    assert len(score.factors_used) == 14
+    assert score.to_metadata()["production_eligible"] is False
+    assert registry_sha_after == registry_sha_before
+
+
+def test_historical_manifest_rejects_record_or_manifest_drift(tmp_path) -> None:
+    registry_path = tmp_path / "registry.json"
+    _write_historical_registry(registry_path)
+    manifest = build_historical_baseline_manifest(
+        registry_path=registry_path,
+        baseline_id="old14-locked",
+        factor_weights={f"old_{index:02d}": 0.05 for index in range(14)},
+    )
+    manifest_path = tmp_path / "historical-old14.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    raw_registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    raw_registry["factors"][1]["description"] = "drifted"
+    registry_path.write_text(json.dumps(raw_registry), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="registry record hash mismatch"):
+        load_historical_shadow_baseline(
+            manifest_path=manifest_path,
+            registry_path=registry_path,
+            expected_factor_count=14,
+        )
+
+    _write_historical_registry(registry_path)
+    tampered = dict(manifest)
+    tampered["baseline_id"] = "tampered"
+    manifest_path.write_text(json.dumps(tampered), encoding="utf-8")
+    with pytest.raises(ValueError, match="manifest hash mismatch"):
+        load_historical_shadow_baseline(
+            manifest_path=manifest_path,
+            registry_path=registry_path,
+            expected_factor_count=14,
+        )
 
 
 def test_preregistration_is_create_once_and_hash_locked(tmp_path) -> None:

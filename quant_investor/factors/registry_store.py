@@ -807,6 +807,7 @@ def rollback_factor_record_patch(
     *,
     mutation_id: str,
     reason: str = "factor record rollback",
+    manifest_metadata: Mapping[str, Any] | None = None,
     journal_path: str | os.PathLike[str] | None = None,
     write: bool = False,
 ) -> dict[str, Any]:
@@ -884,6 +885,14 @@ def rollback_factor_record_patch(
         )
 
     snapshot = load_registry_snapshot_strict(resolved)
+    rollback_metadata = copy.deepcopy(dict(manifest_metadata or {}))
+    if "rollback_of" in rollback_metadata:
+        raise FactorRegistryValidationError(
+            "rollback manifest metadata cannot override rollback_of"
+        )
+    rollback_metadata["rollback_of"] = str(
+        manifest.get("mutation_id", "")
+    )
     rollback_manifest = apply_factor_record_patch(
         resolved,
         {str(name): value for name, value in records.items()},
@@ -897,9 +906,7 @@ def rollback_factor_record_patch(
         metadata_updates=metadata_updates,
         metadata_delete_keys=metadata_delete_keys,
         expected_metadata_values=expected_metadata_values,
-        manifest_metadata={
-            "rollback_of": str(manifest.get("mutation_id", "")),
-        },
+        manifest_metadata=rollback_metadata,
         journal_path=journal_path,
         write=write,
     )

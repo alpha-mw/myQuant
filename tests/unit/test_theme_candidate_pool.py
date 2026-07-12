@@ -214,7 +214,148 @@ def test_theme_pool_required_excludes_unthemed_symbols() -> None:
     assert output.metadata["symbols"]["UNTHEMED_HIGH"]["admitted"] is False
 
 
-def test_forced_theme_admission_includes_risky_symbols_as_risk_watch_candidates() -> None:
+def test_secondary_membership_can_qualify_independent_of_primary_label() -> None:
+    symbols = ["MULTI"]
+    rotation = _rotation(
+        theme_scores={
+            "primary_cold": _theme("primary_cold", score=0.20),
+            "secondary_hot": _theme("secondary_hot", score=0.92),
+        },
+        symbol_theme={"MULTI": "primary_cold"},
+        symbol_scores={"MULTI": 0.20},
+    )
+    rotation["symbol_theme_memberships"] = {
+        "MULTI": ["primary_cold", "secondary_hot"],
+    }
+
+    output = ThemeCandidatePoolBuilder(
+        _config(use_markov_policy=False, min_admitted_themes=99)
+    ).build(
+        symbols=symbols,
+        global_context=_context(symbols, rotation),
+        quant_scores={"MULTI": 0.5},
+        max_candidates=5,
+    )
+
+    assert output.symbols == ["MULTI"]
+    assert output.metadata["forced_theme_count"] == 0
+    assert output.metadata["symbols"]["MULTI"]["primary_theme_id"] == "secondary_hot"
+
+
+def test_protocol_v2_formal_kill_switch_fails_closed_even_with_forged_formal_pool() -> None:
+    symbols = ["AI"]
+    rotation = _rotation(
+        theme_scores={"tech::ai": _theme("tech::ai", score=0.92)},
+        symbol_theme={"AI": "tech::ai"},
+    )
+    rotation["protocol_v2"] = {
+        "status": "formal",
+        "formal_enabled": True,
+        "formal_kill_switch": True,
+        "protocol_hash": "a" * 64,
+        "formal_pool": ["tech::ai"],
+    }
+
+    output = ThemeCandidatePoolBuilder(
+        _config(protocol_v2_formal_enabled=True)
+    ).build(
+        symbols=symbols,
+        global_context=_context(symbols, rotation),
+        quant_scores={"AI": 0.9},
+        max_candidates=5,
+    )
+
+    assert output.symbols == []
+    assert output.metadata["protocol_v2_formal_blocker"] == (
+        "theme_v2_formal_kill_switch_active"
+    )
+    assert output.metadata["forced_theme_count"] == 0
+
+
+def test_protocol_v2_candidate_stage_uses_prequalified_pool_without_claiming_final_formal() -> None:
+    symbols = ["AI"]
+    rotation = _rotation(
+        theme_scores={"tech::ai": _theme("tech::ai", score=0.92)},
+        symbol_theme={"AI": "tech::ai"},
+    )
+    rotation["protocol_v2"] = {
+        "status": "prequalified",
+        "formal_enabled": True,
+        "formal_kill_switch": False,
+        "protocol_hash": "a" * 64,
+        "prequalified_pool": ["tech::ai"],
+        "formal_pool": [],
+    }
+
+    output = ThemeCandidatePoolBuilder(
+        _config(protocol_v2_formal_enabled=True)
+    ).build(
+        symbols=symbols,
+        global_context=_context(symbols, rotation),
+        quant_scores={"AI": 0.9},
+        max_candidates=5,
+    )
+
+    assert output.symbols == ["AI"]
+    assert output.metadata["protocol_v2_gate_stage"] == (
+        "prequalified_before_downstream"
+    )
+    assert output.metadata["protocol_v2_final_formal_pool"] == []
+    assert output.metadata["protocol_v2_formal_blocker"] == ""
+
+
+def test_protocol_v2_candidate_order_uses_adjusted_prequalified_rank_not_legacy_score() -> None:
+    symbols = ["LEGACY_HIGH", "PEVC_HIGH"]
+    rotation = _rotation(
+        theme_scores={
+            "tech::legacy": _theme("tech::legacy", score=0.99),
+            "tech::pevc": _theme("tech::pevc", score=0.60),
+        },
+        symbol_theme={
+            "LEGACY_HIGH": "tech::legacy",
+            "PEVC_HIGH": "tech::pevc",
+        },
+    )
+    rotation["protocol_v2"] = {
+        "status": "prequalified",
+        "formal_enabled": True,
+        "formal_kill_switch": False,
+        "protocol_hash": "a" * 64,
+        "prequalified_pool": ["tech::legacy", "tech::pevc"],
+        "formal_pool": [],
+        "states": {
+            "tech::legacy": {
+                "base_rank_score": 0.90,
+                "adjusted_percentile_rank": 0.10,
+            },
+            "tech::pevc": {
+                "base_rank_score": 0.70,
+                "adjusted_percentile_rank": 0.95,
+            },
+        },
+    }
+
+    output = ThemeCandidatePoolBuilder(
+        _config(
+            protocol_v2_formal_enabled=True,
+            use_markov_policy=False,
+            base_top_themes=1,
+        )
+    ).build(
+        symbols=symbols,
+        global_context=_context(symbols, rotation),
+        quant_scores={"LEGACY_HIGH": 1.0, "PEVC_HIGH": 0.0},
+        max_candidates=5,
+    )
+
+    assert output.symbols == ["PEVC_HIGH"]
+    assert output.metadata["admitted_themes"][0]["theme_id"] == "tech::pevc"
+    assert output.metadata["symbols"]["PEVC_HIGH"]["candidate_intent"] == (
+        "theme_v2_prequalified_research_candidate"
+    )
+
+
+def test_positive_minimum_theme_setting_cannot_force_formal_admission() -> None:
     symbols = ["SEMI1", "SEMI2", "BIO1", "PORT1"]
     rotation = _rotation(
         theme_scores={
@@ -268,14 +409,11 @@ def test_forced_theme_admission_includes_risky_symbols_as_risk_watch_candidates(
         max_candidates=10,
     )
 
-    admitted_theme_ids = {item["theme_id"] for item in output.metadata["admitted_themes"]}
     assert output.metadata["natural_admitted_theme_count"] == 0
-    assert output.metadata["forced_theme_count"] == 2
-    assert admitted_theme_ids == {"semi", "bio"}
-    assert {"SEMI1", "SEMI2", "BIO1"}.issubset(set(output.symbols))
-    assert output.metadata["symbols"]["SEMI1"]["bucket"] == "risk_watch_overextended"
-    assert output.metadata["symbols"]["BIO1"]["bucket"] == "risk_watch_distribution"
-    assert output.metadata["symbols"]["BIO1"]["candidate_intent"] == "research_candidate_not_buy_signal"
+    assert output.metadata["forced_theme_count"] == 0
+    assert output.metadata["admitted_themes"] == []
+    assert output.symbols == []
+    assert set(output.excluded_symbols) == set(symbols)
 
 
 def test_distribution_and_fake_breakout_are_candidates_with_risk_watch_metadata() -> None:
@@ -421,7 +559,7 @@ def test_hard_filter_residual_zero_upper_bound_is_locked_in_metadata() -> None:
     assert all(source != "residual_theme" for source in output.symbol_sources.values())
 
 
-def test_forced_minimum_themes_enter_core_pool_without_residuals() -> None:
+def test_zero_natural_pass_keeps_formal_pool_empty_even_when_legacy_minimum_is_positive() -> None:
     symbols = ["SEMI1", "BIO1", "TAIL1"]
     rotation = _rotation(
         theme_scores={
@@ -465,19 +603,11 @@ def test_forced_minimum_themes_enter_core_pool_without_residuals() -> None:
     )
 
     assert output.metadata["natural_admitted_theme_count"] == 0
-    assert output.metadata["forced_theme_count"] == 2
-    assert output.metadata["core_symbol_count"] == 2
+    assert output.metadata["forced_theme_count"] == 0
+    assert output.metadata["core_symbol_count"] == 0
     assert output.metadata["residual_symbol_count"] == 0
-    assert set(output.symbols) == {"SEMI1", "BIO1"}
-    admitted_themes = output.metadata["admitted_themes"]
-    assert {theme["theme_id"] for theme in admitted_themes} == {"semi", "bio"}
-    assert all(theme["forced"] is True for theme in admitted_themes)
-    assert all(theme["original_rejection_reason"] for theme in admitted_themes)
-    assert all(
-        output.metadata["symbols"][symbol]["candidate_intent"]
-        == "research_candidate_not_buy_signal"
-        for symbol in output.symbols
-    )
+    assert output.symbols == []
+    assert output.metadata["admitted_themes"] == []
     assert output.excluded_symbols["TAIL1"] == "theme_pool_theme_not_admitted"
 
 
@@ -560,7 +690,7 @@ def test_theme_pool_min_admitted_themes_is_env_backed(monkeypatch: pytest.Monkey
 
     monkeypatch.setenv("THEME_POOL_MIN_ADMITTED_THEMES", "4")
     reloaded = importlib.reload(config_module)
-    assert reloaded.MAINLINE_ENV_DEFAULTS["THEME_POOL_MIN_ADMITTED_THEMES"] == "2"
+    assert reloaded.MAINLINE_ENV_DEFAULTS["THEME_POOL_MIN_ADMITTED_THEMES"] == "0"
     assert reloaded.Config.THEME_POOL_MIN_ADMITTED_THEMES == 4
     monkeypatch.delenv("THEME_POOL_MIN_ADMITTED_THEMES")
     importlib.reload(config_module)

@@ -5,9 +5,6 @@
   var Metrics = window.DashboardMetrics;
   var UI = window.DashboardUI;
   var Generated = window.DashboardGeneratedRecords || {};
-  var USER_UPLOAD_STORAGE_KEY = "portfolioDashboardUserUploads.v1";
-  var STORAGE_VERSION = 1;
-  var storageWarning = "";
 
   function hasGeneratedRecords(records) {
     return Boolean(
@@ -17,22 +14,6 @@
       records.csv.positions
     );
   }
-
-  function readPersistedUploads() {
-    try {
-      if (!window.localStorage) return null;
-      var raw = window.localStorage.getItem(USER_UPLOAD_STORAGE_KEY);
-      if (!raw) return null;
-      var parsed = JSON.parse(raw);
-      if (!parsed || parsed.version !== STORAGE_VERSION || !parsed.csvBundle) return null;
-      return parsed;
-    } catch (error) {
-      storageWarning = "无法读取浏览器本地保存的用户 CSV，已回退到当前数据源：" + error.message;
-      return null;
-    }
-  }
-
-  var persistedUploads = readPersistedUploads();
 
   function initialCsvBundle() {
     var bundle;
@@ -49,11 +30,6 @@
         trades: Data.SAMPLE_CSV.trades
       };
     }
-    if (persistedUploads && persistedUploads.csvBundle) {
-      ["nav", "positions", "trades"].forEach(function (kind) {
-        if (typeof persistedUploads.csvBundle[kind] === "string") bundle[kind] = persistedUploads.csvBundle[kind];
-      });
-    }
     return bundle;
   }
 
@@ -61,11 +37,6 @@
     var source = hasGeneratedRecords(Generated)
       ? { nav: "records", positions: "records", trades: Generated.csv.trades ? "records" : "sample" }
       : { nav: "sample", positions: "sample", trades: "sample" };
-    if (persistedUploads && persistedUploads.csvBundle) {
-      ["nav", "positions", "trades"].forEach(function (kind) {
-        if (typeof persistedUploads.csvBundle[kind] === "string") source[kind] = "user";
-      });
-    }
     return source;
   }
 
@@ -73,31 +44,44 @@
     var names = hasGeneratedRecords(Generated)
       ? { nav: "generated_records.js", positions: "generated_records.js", trades: Generated.csv.trades ? "generated_records.js" : "trades_sample.csv" }
       : { nav: "nav_sample.csv", positions: "positions_sample.csv", trades: "trades_sample.csv" };
-    if (persistedUploads && persistedUploads.fileNames) {
-      ["nav", "positions", "trades"].forEach(function (kind) {
-        if (typeof persistedUploads.csvBundle[kind] === "string") {
-          names[kind] = persistedUploads.fileNames[kind] || (kind + ".csv");
-        }
-      });
-    }
     return names;
   }
+
+  function readHashState() {
+    var raw = String(window.location.hash || "").replace(/^#/, "");
+    var parts = raw.split("?");
+    var workspace = parts[0] || "overview";
+    if (["overview", "holdings", "trades", "theme", "factor", "audit"].indexOf(workspace) < 0) {
+      workspace = "overview";
+    }
+    var params = new URLSearchParams(parts[1] || "");
+    return {
+      workspace: workspace,
+      startDate: params.get("start") || "",
+      endDate: params.get("end") || "",
+      benchmarkField: params.get("benchmark") || "",
+      selectedBenchmarkFields: (params.get("compare") || "").split(",").filter(Boolean),
+      overviewLens: params.get("lens") || "nav"
+    };
+  }
+
+  var initialHash = readHashState();
 
   var state = {
     csvBundle: initialCsvBundle(),
     source: initialSource(),
     fileNames: initialFileNames(),
-    userUploadSavedAt: persistedUploads ? persistedUploads.savedAt : "",
     filters: {
-      startDate: "",
-      endDate: "",
-      benchmarkField: "",
-      selectedBenchmarkFields: [],
+      startDate: initialHash.startDate,
+      endDate: initialHash.endDate,
+      benchmarkField: initialHash.benchmarkField,
+      selectedBenchmarkFields: initialHash.selectedBenchmarkFields,
       showPortfolioCurve: true,
       showExcessCurve: true
     },
     view: {
-      overviewLens: "nav",
+      activeWorkspace: initialHash.workspace,
+      overviewLens: initialHash.overviewLens,
       benchmarkSortField: "totalReturn",
       benchmarkSortDirection: "desc",
       benchmarkSelectionTouched: false,
@@ -115,60 +99,36 @@
     return document.getElementById(id);
   }
 
+  function syncHashState() {
+    var params = new URLSearchParams();
+    if (state.filters.startDate) params.set("start", state.filters.startDate);
+    if (state.filters.endDate) params.set("end", state.filters.endDate);
+    if (state.filters.benchmarkField) params.set("benchmark", state.filters.benchmarkField);
+    if ((state.filters.selectedBenchmarkFields || []).length) {
+      params.set("compare", state.filters.selectedBenchmarkFields.join(","));
+    }
+    if (state.view.overviewLens && state.view.overviewLens !== "nav") {
+      params.set("lens", state.view.overviewLens);
+    }
+    var hash = "#" + state.view.activeWorkspace + (params.toString() ? "?" + params.toString() : "");
+    if (window.history && window.history.replaceState) window.history.replaceState(null, "", hash);
+    else window.location.hash = hash;
+  }
+
+  function applyWorkspaceVisibility() {
+    document.querySelectorAll("[data-workspace]").forEach(function (section) {
+      section.hidden = section.dataset.workspace !== state.view.activeWorkspace;
+    });
+    document.querySelectorAll("[data-workspace-tab]").forEach(function (tab) {
+      tab.classList.toggle("active", tab.dataset.workspaceTab === state.view.activeWorkspace);
+    });
+  }
+
   function csvEscape(value) {
     if (value === null || value === undefined) return "";
     var text = String(value);
     if (/[",\n\r]/.test(text)) return '"' + text.replace(/"/g, '""') + '"';
     return text;
-  }
-
-  function formatStoredTimestamp(value) {
-    if (!value) return "";
-    var date = new Date(value);
-    if (Number.isNaN(date.getTime())) return value;
-    return date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0") + "-" +
-      String(date.getDate()).padStart(2, "0") + " " +
-      String(date.getHours()).padStart(2, "0") + ":" + String(date.getMinutes()).padStart(2, "0");
-  }
-
-  function persistUserUploads() {
-    try {
-      if (!window.localStorage) return;
-      var csvBundle = {};
-      var fileNames = {};
-      ["nav", "positions", "trades"].forEach(function (kind) {
-        if (state.source[kind] === "user") {
-          csvBundle[kind] = state.csvBundle[kind] || "";
-          fileNames[kind] = state.fileNames[kind] || (kind + ".csv");
-        }
-      });
-      if (!Object.keys(csvBundle).length) {
-        window.localStorage.removeItem(USER_UPLOAD_STORAGE_KEY);
-        state.userUploadSavedAt = "";
-        return;
-      }
-      var payload = {
-        version: STORAGE_VERSION,
-        savedAt: new Date().toISOString(),
-        csvBundle: csvBundle,
-        fileNames: fileNames
-      };
-      window.localStorage.setItem(USER_UPLOAD_STORAGE_KEY, JSON.stringify(payload));
-      state.userUploadSavedAt = payload.savedAt;
-      storageWarning = "";
-    } catch (error) {
-      storageWarning = "无法写入浏览器本地保存的用户 CSV；刷新后可能回退到默认数据：" + error.message;
-    }
-  }
-
-  function clearPersistedUploads() {
-    try {
-      if (window.localStorage) window.localStorage.removeItem(USER_UPLOAD_STORAGE_KEY);
-      storageWarning = "";
-    } catch (error) {
-      storageWarning = "无法清除浏览器本地保存的用户 CSV：" + error.message;
-    }
-    state.userUploadSavedAt = "";
   }
 
   function setStatus() {
@@ -323,7 +283,10 @@
 
   function refresh(options) {
     options = options || {};
-    state.dataset = Data.parseDataset(state.csvBundle);
+    state.dataset = Data.parseDataset(
+      state.csvBundle,
+      window.DashboardSnapshotV2 || Generated.contract || null
+    );
     if (options.resetDateRange) {
       state.filters.startDate = "";
       state.filters.endDate = "";
@@ -333,12 +296,12 @@
     updateBenchmarkControls(state.dataset.benchmarks);
     syncDateInputsToDataset();
     state.metrics = Metrics.computeDashboard(state.dataset, state.filters);
+    applyWorkspaceVisibility();
     renderCurrentDashboard();
     var infos = [];
     var usingUser = Object.keys(state.source).some(function (key) { return state.source[key] === "user"; });
     var usingRecords = !usingUser && Object.keys(state.source).some(function (key) { return state.source[key] === "records"; });
     var warnings = state.dataset.warnings.slice().concat((state.metrics && state.metrics.warnings) || []);
-    if (storageWarning) warnings.push(storageWarning);
     if (usingRecords) {
       infos.push("已自动加载本地记录数据：" + (Generated.latestRecord || "latest") + "；生成时间：" + (Generated.generatedAt || "-") + "。");
       infos.push("所有计算仍在浏览器本地完成；records 数据来自本机 strategy_records 导出。");
@@ -347,15 +310,32 @@
       }
       warnings = warnings.concat(Generated.warnings || []);
       infos = infos.concat(Generated.infos || []);
+      var contract = window.DashboardSnapshotV2 || Generated.contract || {};
+      if ((contract.blockers || []).length) {
+        warnings.unshift(
+          "Dashboard Contract v2：" + contract.blockers.length +
+          " 个 blocker，当前状态 " + (contract.status || "blocked") +
+          "；展开查看完整明细，交易前先看归因与数据审计。"
+        );
+        warnings.push("Dashboard Contract v2 blocker detail: " + contract.blockers.join(", "));
+      }
+      if (contract.as_of_matrix) {
+        infos.unshift(
+          "as-of：策略 " + (contract.as_of_matrix.strategy_record_date || "-") +
+          "；分析 " + (contract.as_of_matrix.analysis_trading_date || "-") +
+          "；quote " + (contract.as_of_matrix.quote_at || "-") +
+          "；Theme " + (contract.as_of_matrix.theme_date || "-") + "。"
+        );
+      }
     } else if (usingUser) {
-      infos.push("已加载用户上传 CSV；未上传的模块保留当前数据源，所有计算在浏览器本地完成。");
-      if (state.userUploadSavedAt) infos.push("用户上传数据已保存于本机浏览器：" + formatStoredTimestamp(state.userUploadSavedAt) + "。");
+      infos.push("已加载当前会话中的用户 CSV；刷新或关闭页面即清除，不写入浏览器持久存储。");
     } else {
       infos.push("示例数据和 sample benchmark 均为模拟数据，仅用于演示，不代表真实业绩或真实指数；所有计算在浏览器本地完成。");
     }
     UI.renderMessages(state.dataset.errors, warnings, infos);
     setUploadNames();
     setStatus();
+    syncHashState();
   }
 
   function handleFileUpload(kind, file) {
@@ -365,7 +345,6 @@
         state.csvBundle[kind] = text;
         state.source[kind] = "user";
         state.fileNames[kind] = file.name || (kind + ".csv");
-        persistUserUploads();
         if (kind === "nav") {
           state.view.benchmarkSelectionTouched = false;
           refresh({ resetDateRange: true });
@@ -385,7 +364,6 @@
     };
     state.source = { nav: "sample", positions: "sample", trades: "sample" };
     state.fileNames = { nav: "nav_sample.csv", positions: "positions_sample.csv", trades: "trades_sample.csv" };
-    clearPersistedUploads();
     ["navUpload", "positionsUpload", "tradesUpload"].forEach(function (id) {
       $(id).value = "";
     });
@@ -398,6 +376,7 @@
       showExcessCurve: true
     };
     state.view.overviewLens = "nav";
+    state.view.activeWorkspace = "overview";
     state.view.benchmarkSortField = "totalReturn";
     state.view.benchmarkSortDirection = "desc";
     state.view.benchmarkSelectionTouched = false;
@@ -518,29 +497,16 @@
   }
 
   function bindSectionTabs() {
-    var tabs = Array.from(document.querySelectorAll(".section-tab"));
-    var sections = tabs.map(function (tab) {
-      var href = tab.getAttribute("href") || "";
-      return { tab: tab, section: href.charAt(0) === "#" ? document.querySelector(href) : null };
-    }).filter(function (item) { return item.section; });
-    function setActive(hash) {
-      tabs.forEach(function (tab) {
-        tab.classList.toggle("active", tab.getAttribute("href") === hash);
-      });
-    }
-    tabs.forEach(function (tab) {
-      tab.addEventListener("click", function () {
-        setActive(tab.getAttribute("href"));
+    document.querySelectorAll("[data-workspace-tab]").forEach(function (tab) {
+      tab.addEventListener("click", function (event) {
+        event.preventDefault();
+        state.view.activeWorkspace = tab.dataset.workspaceTab || "overview";
+        applyWorkspaceVisibility();
+        syncHashState();
+        renderCurrentDashboard();
+        window.scrollTo({ top: 0, behavior: "smooth" });
       });
     });
-    if ("IntersectionObserver" in window && sections.length) {
-      var observer = new IntersectionObserver(function (entries) {
-        var visible = entries.filter(function (entry) { return entry.isIntersecting; })
-          .sort(function (a, b) { return b.intersectionRatio - a.intersectionRatio; })[0];
-        if (visible) setActive("#" + visible.target.id);
-      }, { rootMargin: "-20% 0px -68% 0px", threshold: [0.12, 0.3, 0.6] });
-      sections.forEach(function (item) { observer.observe(item.section); });
-    }
   }
 
   function bindTableFilters() {
@@ -595,6 +561,7 @@
 
   document.addEventListener("DOMContentLoaded", function () {
     bindEvents();
-    refresh({ resetDateRange: true });
+    applyWorkspaceVisibility();
+    refresh({ resetDateRange: !state.filters.startDate && !state.filters.endDate });
   });
 })();

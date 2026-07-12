@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>CN / aggressive_tech_manufacturing Performance Dashboard</title>
+    <title>myQuant Dashboard 2.0</title>
     <link rel="stylesheet" href="styles.css?v=20260623" />
   </head>
   <body>
@@ -18,16 +18,20 @@
                 <rect x="17" y="3" width="4" height="17" rx="1"></rect>
               </svg>
             </span>
-            <h1>CN / aggressive_tech_manufacturing Performance Dashboard</h1>
+            <h1>myQuant Dashboard 2.0</h1>
           </div>
-          <p>本地静态版组合业绩、归因、风险与交易复盘工具 <span id="dataModeLabel">（示例数据）</span></p>
+          <p>本地静态组合、纪律、Theme、Factor 与数据审计 <span id="dataModeLabel">（示例数据）</span></p>
         </div>
         <div class="header-status">
           <span id="dataStatus" class="status-pill sample">当前使用 sample data</span>
         </div>
       </header>
 
-      <section class="control-band" aria-label="Dashboard controls">
+      <div id="messagePanel" class="message-panel" aria-live="polite"></div>
+
+      <details class="control-band control-drawer">
+        <summary>数据、Benchmark 与高级筛选</summary>
+        <section aria-label="Dashboard controls">
         <div class="control-grid">
           <label class="file-control upload-tile">
             <input id="navUpload" type="file" accept=".csv,text/csv" />
@@ -110,22 +114,20 @@
           <span id="dateStatus" class="status-note">日期区间：-</span>
           <span id="sampleRiskTag" class="sample-mark">示例数据不代表真实业绩；sample benchmark 为模拟数据，仅用于演示，不代表真实指数</span>
         </div>
-      </section>
-
-      <div id="messagePanel" class="message-panel" aria-live="polite"></div>
+        </section>
+      </details>
 
       <nav class="section-tabs" aria-label="Dashboard sections">
-        <a class="section-tab active" href="#overviewSection">总览</a>
-        <a class="section-tab" href="#benchmarkSection">Benchmark</a>
-        <a class="section-tab" href="#monthlySection">月度</a>
-        <a class="section-tab" href="#attributionSection">归因</a>
-        <a class="section-tab" href="#riskSection">风险</a>
-        <a class="section-tab" href="#holdingsSection">持仓</a>
-        <a class="section-tab" href="#tradesSection">交易</a>
+        <a class="section-tab active" href="#overviewSection" data-workspace-tab="overview">今日总览</a>
+        <a class="section-tab" href="#holdingsSection" data-workspace-tab="holdings">持仓与纪律</a>
+        <a class="section-tab" href="#tradesSection" data-workspace-tab="trades">交易与决策</a>
+        <a class="section-tab" href="#themeSection" data-workspace-tab="theme">Theme</a>
+        <a class="section-tab" href="#factorSection" data-workspace-tab="factor">Factor</a>
+        <a class="section-tab" href="#benchmarkSection" data-workspace-tab="audit">归因与数据审计</a>
       </nav>
 
       <main>
-        <section class="dashboard-section" id="overviewSection">
+        <section class="dashboard-section" id="overviewSection" data-workspace="overview">
           <div class="section-heading">
             <div>
               <h2>1. 业绩总览</h2>
@@ -133,6 +135,7 @@
             </div>
             <span id="overviewPeriod" class="section-period">期间：-</span>
           </div>
+          <div id="kpiGrid" class="kpi-grid"></div>
           <div class="overview-cockpit">
             <article class="insight-card panel">
               <div class="panel-kicker">Portfolio Lens</div>
@@ -156,7 +159,15 @@
               <div id="overviewFocusChart" class="chart hero-chart"></div>
             </article>
           </div>
-          <div id="kpiGrid" class="kpi-grid"></div>
+          <article class="panel table-panel overview-discipline">
+            <div class="panel-head">
+              <div>
+                <h3>持仓纪律快照</h3>
+                <p>NAV 权重、股票袖套权重、动作、止损止盈和 quote age 分列。</p>
+              </div>
+            </div>
+            <div id="overviewHoldingsTable" class="table-wrap"></div>
+          </article>
           <div class="chart-grid three support-grid">
             <article class="panel chart-panel">
               <h3>组合净值 vs 多 benchmark 净值</h3>
@@ -182,13 +193,22 @@
           </article>
         </section>
 
-        <section class="dashboard-section" id="benchmarkSection">
+        <section class="dashboard-section" id="benchmarkSection" data-workspace="audit" hidden>
           <div class="section-heading">
             <div>
-              <h2>2. Benchmark 对比</h2>
-              <p>自动识别 NAV 中的多个 _nav 字段，并与组合收益、风险和相关性做横向比较。</p>
+              <h2>6. 归因与数据审计</h2>
+              <p>as-of 分层、来源 SHA、阻断项、归因勾稽和 benchmark provenance。</p>
             </div>
           </div>
+          <div id="asOfMatrix" class="audit-grid"></div>
+          <article class="panel table-panel">
+            <h3>来源与 SHA</h3>
+            <div id="sourceAuditTable" class="table-wrap"></div>
+          </article>
+          <article class="panel table-panel">
+            <h3>每日归因勾稽（1bp tolerance）</h3>
+            <div id="reconciliationTable" class="table-wrap"></div>
+          </article>
           <div class="chart-grid two">
             <article class="panel chart-panel">
               <h3>多 benchmark normalized NAV chart</h3>
@@ -223,7 +243,7 @@
           </article>
         </section>
 
-        <section class="dashboard-section" id="monthlySection">
+        <section class="dashboard-section" id="monthlySection" data-workspace="audit" hidden>
           <div class="section-heading">
             <div>
               <h2>3. 月度表现</h2>
@@ -247,14 +267,19 @@
           </div>
         </section>
 
-        <section class="dashboard-section" id="attributionSection">
+        <section class="dashboard-section" id="attributionSection" data-workspace="audit" hidden>
           <div class="section-heading">
             <div>
-              <h2>4. 收益归因</h2>
-              <p>基于 positions.csv 的 contribution 或 weight × daily_return。</p>
+              <h2>归因覆盖审计</h2>
+              <p>逐个有效 NAV return 日核对 position contribution、明确 cash/fee residual 和 1bp 残差。</p>
             </div>
           </div>
-          <div class="chart-grid two">
+          <div id="attributionCoverageSummary" class="audit-grid"></div>
+          <article class="panel table-panel">
+            <h3>未覆盖或未勾稽日期</h3>
+            <div id="attributionExceptionsTable" class="table-wrap"></div>
+          </article>
+          <div class="chart-grid two hidden" aria-hidden="true">
             <article class="panel chart-panel">
               <h3>个股贡献 Top 10</h3>
               <div id="topContributionChart" class="chart"></div>
@@ -272,13 +297,13 @@
               <div id="sectorContributionChart" class="chart"></div>
             </article>
           </div>
-          <article class="panel chart-panel">
+          <article class="panel chart-panel hidden" aria-hidden="true">
             <h3>contribution vs average weight scatter</h3>
             <div id="scatterChart" class="chart"></div>
           </article>
         </section>
 
-        <section class="dashboard-section" id="riskSection">
+        <section class="dashboard-section" id="riskSection" data-workspace="holdings" hidden>
           <div class="section-heading">
             <div>
               <h2>5. 风险与暴露</h2>
@@ -309,11 +334,11 @@
           </article>
         </section>
 
-        <section class="dashboard-section" id="holdingsSection">
+        <section class="dashboard-section" id="holdingsSection" data-workspace="holdings" hidden>
           <div class="section-heading">
             <div>
-              <h2>6. 持仓与主题</h2>
-              <p>当前持仓、主题权重、行业权重与市值结构。</p>
+              <h2>2. 持仓与纪律</h2>
+              <p>NAV 暴露与股票袖套权重分列，聚焦动作、止损止盈、quote age 和风险状态。</p>
             </div>
           </div>
           <article class="panel table-panel">
@@ -327,7 +352,7 @@
             <div id="holdingsTable" class="table-wrap"></div>
             <button id="toggleHoldingsRows" class="button ghost table-toggle hidden" type="button" aria-expanded="false">显示全部</button>
           </article>
-          <div class="chart-grid two">
+          <div class="chart-grid two hidden" aria-hidden="true">
             <article class="panel chart-panel">
               <h3>Theme weight trend</h3>
               <div id="themeWeightTrendChart" class="chart"></div>
@@ -347,11 +372,46 @@
           </div>
         </section>
 
-        <section class="dashboard-section" id="tradesSection">
+        <section class="dashboard-section" id="themeSection" data-workspace="theme" hidden>
           <div class="section-heading">
             <div>
-              <h2>7. 交易复盘</h2>
-              <p>交易方向、成交金额、费用、主题与原因分布。</p>
+              <h2>4. Theme</h2>
+              <p>市场观察、科技 thesis watch 与 formal investable 三条 lane 独立展示。</p>
+            </div>
+          </div>
+          <article class="panel table-panel">
+            <h3>Theme Protocol v2 / formal / rollback</h3>
+            <div id="themeProtocolSummary" class="table-wrap"></div>
+          </article>
+          <article class="panel chart-panel">
+            <h3>热门度 × 产业兑现</h3>
+            <div id="themeAttentionMatrix" class="chart"></div>
+          </article>
+          <article class="panel table-panel">
+            <h3>Theme 状态、风险与 PE/VC thesis</h3>
+            <div id="themeStateTable" class="table-wrap"></div>
+          </article>
+        </section>
+
+        <section class="dashboard-section" id="factorSection" data-workspace="factor" hidden>
+          <div class="section-heading">
+            <div>
+              <h2>5. Factor</h2>
+              <p>生产、shadow、blocked、challenger、transition 与 protocol readback。</p>
+            </div>
+          </div>
+          <article class="panel table-panel">
+            <h3>Factor Governance Protocol v2</h3>
+            <div id="factorProtocolSummary" class="table-wrap"></div>
+            <div id="factorStateTable" class="table-wrap"></div>
+          </article>
+        </section>
+
+        <section class="dashboard-section" id="tradesSection" data-workspace="trades" hidden>
+          <div class="section-heading">
+            <div>
+              <h2>3. 交易与决策账本</h2>
+              <p>recommendation → decision → order → fill → ledger delta；未知费用保持 unknown。</p>
             </div>
           </div>
           <div id="tradeSummary" class="trade-summary"></div>
@@ -398,7 +458,8 @@
 
     <div id="chartTooltip" class="chart-tooltip" role="status"></div>
 
-    <script src="js/generated_records.js?v=20260623"></script>
+    <script src="private/dashboard_snapshot.v2.js"></script>
+    <script src="js/generated_records.js?v=20260712"></script>
     <script src="js/data.js"></script>
     <script src="js/metrics.js"></script>
     <script src="js/charts.js"></script>

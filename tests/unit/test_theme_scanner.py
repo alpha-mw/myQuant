@@ -180,3 +180,56 @@ def test_theme_rotation_metadata_exposes_symbol_smoothed_scores_separately():
     assert "symbol_smoothed_scores" in payload
     assert payload["symbol_scores"]["S000.SZ"] != payload["symbol_smoothed_scores"]["S000.SZ"]
     assert payload["top_themes"][0]["heat_10d"] == payload["top_themes"][0]["smoothed_score"]
+
+
+def test_attention_axes_include_horizons_turnover_breadth_new_high_and_leader_persistence():
+    frames = {
+        f"S{idx:03d}.SZ": _frame(
+            _trend(10.0 + idx * 0.01, 16.0 + idx * 0.10, periods=130),
+            _trend(1000.0, 3000.0 + idx * 50.0, periods=130),
+        )
+        for idx in range(6)
+    }
+    industry_map = {symbol: "AI" for symbol in frames}
+
+    theme = ThemeScanner().scan(
+        frames=frames,
+        industry_map=industry_map,
+        min_member_count=5,
+    ).theme_scores["industry::ai"]
+
+    assert theme.attention_5d is not None
+    assert theme.attention_20d is not None
+    assert theme.attention_60d is not None
+    assert theme.attention_120d is not None
+    assert theme.attention_turnover_share == 1.0
+    assert theme.new_high_rate == 1.0
+    assert theme.leader_persistence is not None
+    assert theme.attention_history_coverage == 1.0
+    assert 0.0 <= theme.attention <= 1.0
+    assert 0.0 <= theme.market_confirmation <= 1.0
+
+
+def test_insufficient_long_history_exports_null_axes_and_reduces_coverage_instead_of_fake_zero():
+    frames = {
+        f"S{idx:03d}.SZ": _frame(
+            _trend(10.0, 11.0, periods=30),
+            _trend(1000.0, 2000.0, periods=30),
+        )
+        for idx in range(6)
+    }
+    industry_map = {symbol: "Robotics" for symbol in frames}
+
+    theme = ThemeScanner().scan(
+        frames=frames,
+        industry_map=industry_map,
+        min_member_count=5,
+    ).theme_scores["industry::robotics"]
+    payload = theme.to_dict()
+
+    assert payload["attention_5d"] is not None
+    assert payload["attention_20d"] is not None
+    assert payload["attention_60d"] is None
+    assert payload["attention_120d"] is None
+    assert payload["new_high_rate"] is None
+    assert payload["attention_history_coverage"] < 0.30

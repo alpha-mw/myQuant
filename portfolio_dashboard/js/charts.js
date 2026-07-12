@@ -14,6 +14,15 @@
     "#3877a8"
   ];
 
+  function escapeHtml(value) {
+    return String(value === null || value === undefined ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
   function el(tag, attrs) {
     var node = document.createElementNS("http://www.w3.org/2000/svg", tag);
     Object.keys(attrs || {}).forEach(function (key) {
@@ -268,11 +277,11 @@
           if (!best) return point;
           return Math.abs(point.dateObj.getTime() - targetTime) < Math.abs(best.dateObj.getTime() - targetTime) ? point : best;
         }, null);
-        if (nearest && !html) html += '<div class="tooltip-title">' + formatDate(nearest.dateObj) + "</div>";
+        if (nearest && !html) html += '<div class="tooltip-title">' + escapeHtml(formatDate(nearest.dateObj)) + "</div>";
         if (nearest) {
           var formatted = (options.yFormatter || formatNumber)(nearest.value);
           var label = item.name + (nearest.filled ? " · 前向填充" : "");
-          html += '<div class="tooltip-row"><span>' + label + "</span><strong>" + formatted + "</strong></div>";
+          html += '<div class="tooltip-row"><span>' + escapeHtml(label) + "</span><strong>" + escapeHtml(formatted) + "</strong></div>";
         }
       });
       showTooltip(html, event);
@@ -323,7 +332,7 @@
         rect.__data__ = row;
         rect.addEventListener("mousemove", function (event) {
           var data = this.__data__;
-          showTooltip('<div class="tooltip-title">' + data.label + '</div><div class="tooltip-row"><span>value</span><strong>' + formatter(data.value) + "</strong></div>", event);
+          showTooltip('<div class="tooltip-title">' + escapeHtml(data.label) + '</div><div class="tooltip-row"><span>value</span><strong>' + escapeHtml(formatter(data.value)) + "</strong></div>", event);
         });
         rect.addEventListener("mouseleave", hideTooltip);
         svg.appendChild(rect);
@@ -345,7 +354,7 @@
         vRect.__data__ = row;
         vRect.addEventListener("mousemove", function (event) {
           var data = this.__data__;
-          showTooltip('<div class="tooltip-title">' + data.label + '</div><div class="tooltip-row"><span>value</span><strong>' + formatter(data.value) + "</strong></div>", event);
+          showTooltip('<div class="tooltip-title">' + escapeHtml(data.label) + '</div><div class="tooltip-row"><span>value</span><strong>' + escapeHtml(formatter(data.value)) + "</strong></div>", event);
         });
         vRect.addEventListener("mouseleave", hideTooltip);
         svg.appendChild(vRect);
@@ -395,7 +404,7 @@
         var rect = el("rect", { x: plot.x + (m - 1) * cellW + 2, y: plot.y + yIndex * cellH + 2, width: Math.max(4, cellW - 4), height: Math.max(18, cellH - 4), rx: 4, fill: color });
         rect.addEventListener("mousemove", function (event) {
           var data = this.__data__;
-          showTooltip('<div class="tooltip-title">' + data.month + '</div><div class="tooltip-row"><span>monthly_return</span><strong>' + formatPercent(data.value) + "</strong></div>", event);
+          showTooltip('<div class="tooltip-title">' + escapeHtml(data.month) + '</div><div class="tooltip-row"><span>monthly_return</span><strong>' + escapeHtml(formatPercent(data.value)) + "</strong></div>", event);
         });
         rect.addEventListener("mouseleave", hideTooltip);
         rect.__data__ = row || { month: year + "-" + String(m).padStart(2, "0"), value: null };
@@ -445,9 +454,9 @@
       circle.addEventListener("mousemove", function (event) {
         var data = this.__data__;
         showTooltip(
-          '<div class="tooltip-title">' + data.label + '</div>' +
-          '<div class="tooltip-row"><span>' + (options.xLabel || "avg weight") + '</span><strong>' + (options.xFormatter || formatPercent)(data.x) + '</strong></div>' +
-          '<div class="tooltip-row"><span>' + (options.yLabel || "contribution") + '</span><strong>' + (options.yFormatter || formatPercent)(data.y) + '</strong></div>',
+          '<div class="tooltip-title">' + escapeHtml(data.label) + '</div>' +
+          '<div class="tooltip-row"><span>' + escapeHtml(options.xLabel || "avg weight") + '</span><strong>' + escapeHtml((options.xFormatter || formatPercent)(data.x)) + '</strong></div>' +
+          '<div class="tooltip-row"><span>' + escapeHtml(options.yLabel || "contribution") + '</span><strong>' + escapeHtml((options.yFormatter || formatPercent)(data.y)) + '</strong></div>',
           event
         );
       });

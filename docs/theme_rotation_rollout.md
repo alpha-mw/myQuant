@@ -1,5 +1,10 @@
 # Theme Rotation Rollout Plan
 
+> Legacy Phase 6 rollout history, not the current activation runbook. For v13.1
+> use `docs/runbooks/v13_1_freeze_exception.md`; the portfolio cap is now a
+> default-on safety constraint, while Theme v2 formal is independently
+> observer-only and kill-switched.
+
 This rollout keeps Theme Rotation default-off and advances from metadata
 observability to paper-only behavior changes before any limited production use.
 

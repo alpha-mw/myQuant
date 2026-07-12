@@ -7,6 +7,7 @@ without being eligible for stock selection.  The quant branch only consumes
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Mapping
@@ -17,17 +18,22 @@ class FactorLifecycleState(str, Enum):
 
     DRAFT = "draft"
     RESEARCH_CANDIDATE = "research_candidate"
+    SHADOW = "shadow"
+    MATURE_CANDIDATE = "mature_candidate"
     PAPER_FACTOR = "paper_factor"
     PRODUCTION_CANDIDATE = "production_candidate"
     PRODUCTION_FACTOR = "production_factor"
+    WATCH = "watch"
+    REDUCED = "reduced"
     DEPRECATED = "deprecated"
 
 
 class FactorAdmissionDecision(str, Enum):
     """Allowed factor-review decisions.
 
-    Production factors still require an explicit human/manual promotion from
-    ``production_candidate`` to ``production_factor``.
+    The evaluator only creates candidates.  A production transition is owned
+    exclusively by FactorGovernanceProtocol v2 and may run automatically only
+    through its explicit, hash-bound month-end apply path.
     """
 
     REJECT = "reject"
@@ -322,20 +328,29 @@ class FactorGateEvaluator:
     @staticmethod
     def _f(metrics: Mapping[str, Any], key: str, default: float | None = None) -> float | None:
         value = metrics.get(key, default)
-        if value is None:
+        if value is None or isinstance(value, bool):
             return None
         try:
-            return float(value)
+            number = float(value)
         except Exception:
-            return default
+            return None
+        return number if math.isfinite(number) else None
 
     @staticmethod
-    def _b(metrics: Mapping[str, Any], key: str) -> bool:
-        return bool(metrics.get(key, False))
+    def _strict_bool(metrics: Mapping[str, Any], key: str) -> bool | None:
+        value = metrics.get(key)
+        return value if isinstance(value, bool) else None
 
     @staticmethod
     def _missing(metrics: Mapping[str, Any], keys: list[str]) -> list[str]:
         return [key for key in keys if key not in metrics]
+
+    @staticmethod
+    def _is_sha256(value: Any) -> bool:
+        text = str(value or "").strip()
+        return len(text) == 64 and all(
+            char in "0123456789abcdef" for char in text
+        )
 
     def _gate1_data_safety(self, m: Mapping[str, Any]) -> GateResult:
         required = [
@@ -347,7 +362,7 @@ class FactorGateEvaluator:
             "missingness_explained",
         ]
         missing = self._missing(m, required)
-        failed = [key for key in required if key in m and not bool(m.get(key))]
+        failed = [key for key in required if self._strict_bool(m, key) is not True]
         reasons: list[str] = []
         if missing:
             reasons.append("缺少数据安全证据: " + ", ".join(missing))
@@ -363,21 +378,49 @@ class FactorGateEvaluator:
         p = self.policy
         coverage = self._f(m, "coverage_rate")
         nan_rate = self._f(m, "nan_rate")
-        monthly_min = self._f(m, "monthly_coverage_min", coverage)
-        sector_share = self._f(
-            m, "max_sector_coverage_share", self._f(m, "sector_concentration", 0.0)
-        )
-        size_share = self._f(
-            m, "max_size_bucket_coverage_share", self._f(m, "market_cap_concentration", 0.0)
-        )
-        extreme_ratio = self._f(m, "extreme_value_ratio", 0.0)
-        thematic = bool(m.get("thematic") or m.get("narrow_coverage"))
+        monthly_min = self._f(m, "monthly_coverage_min")
+        sector_share = self._f(m, "max_sector_coverage_share")
+        if sector_share is None:
+            sector_share = self._f(m, "sector_concentration")
+        size_share = self._f(m, "max_size_bucket_coverage_share")
+        if size_share is None:
+            size_share = self._f(m, "market_cap_concentration")
+        extreme_ratio = self._f(m, "extreme_value_ratio")
+        thematic_flag = self._strict_bool(m, "thematic")
+        narrow_flag = self._strict_bool(m, "narrow_coverage")
+        thematic = thematic_flag is True or narrow_flag is True
         reasons: list[str] = []
-        if coverage is None or nan_rate is None:
-            reasons.append("缺少 coverage_rate 或 nan_rate。")
+        if ("thematic" in m and thematic_flag is None) or (
+            "narrow_coverage" in m and narrow_flag is None
+        ):
+            reasons.append("thematic/narrow_coverage 必须是布尔值。")
+        if any(
+            value is None
+            for value in (
+                coverage,
+                nan_rate,
+                monthly_min,
+                sector_share,
+                size_share,
+                extreme_ratio,
+            )
+        ):
+            reasons.append(
+                "缺少 coverage/nan/monthly/sector/size/extreme 完整证据。"
+            )
             return self._result(2, False, reasons, dict(m), "error")
         min_cov = p.thematic_min_coverage_rate if thematic else p.min_coverage_rate
         max_nan = p.thematic_max_nan_rate if thematic else p.max_nan_rate
+        for label, value in (
+            ("coverage_rate", coverage),
+            ("nan_rate", nan_rate),
+            ("monthly_coverage_min", monthly_min),
+            ("max_sector_coverage_share", sector_share),
+            ("max_size_bucket_coverage_share", size_share),
+            ("extreme_value_ratio", extreme_ratio),
+        ):
+            if not 0.0 <= value <= 1.0:
+                reasons.append(f"{label} 必须位于 [0, 1]。")
         if coverage < min_cov:
             reasons.append(f"coverage_rate={coverage:.2%} 低于门槛 {min_cov:.0%}。")
         if nan_rate > max_nan:
@@ -418,8 +461,11 @@ class FactorGateEvaluator:
         icir = self._f(m, "icir", self._f(m, "ir"))
         rankic = self._f(m, "mean_rankic")
         positive = self._f(m, "positive_ic_ratio", self._f(m, "ic_positive_rate"))
-        single_year = self._f(m, "max_single_year_ic_contribution", 0.0)
-        stable_direction = bool(m.get("rankic_direction_stable", True))
+        single_year = self._f(m, "max_single_year_ic_contribution")
+        stable_direction = self._strict_bool(m, "rankic_direction_stable")
+        fdr_passed = self._strict_bool(m, "family_fdr_passed")
+        fdr_method = str(m.get("family_fdr_method", "") or "")
+        fdr_q_value = self._f(m, "family_fdr_q_value")
         reasons: list[str] = []
         if icir is None:
             reasons.append("缺少 ICIR。")
@@ -429,14 +475,28 @@ class FactorGateEvaluator:
             reasons.append("缺少 mean_rankic。")
         if positive is None:
             reasons.append("缺少 positive_ic_ratio。")
+        elif not 0.0 <= positive <= 1.0:
+            reasons.append("positive_ic_ratio 必须位于 [0, 1]。")
         elif positive < p.min_positive_ic_ratio:
             reasons.append(
                 f"positive_ic_ratio={positive:.1%} 低于观察门槛 {p.min_positive_ic_ratio:.0%}。"
             )
-        if not stable_direction:
+        if stable_direction is not True:
             reasons.append("RankIC 方向不稳定。")
-        if single_year is not None and single_year > p.max_single_year_ic_contribution:
+        if single_year is None:
+            reasons.append("缺少单年份 IC 贡献证据。")
+        elif not 0.0 <= single_year <= 1.0:
+            reasons.append("单年份 IC 贡献必须位于 [0, 1]。")
+        elif single_year > p.max_single_year_ic_contribution:
             reasons.append("IC 过度依赖单一年份。")
+        if fdr_method != "benjamini_hochberg_by_family":
+            reasons.append("缺少 family-level Benjamini-Hochberg 校正证据。")
+        if (
+            fdr_passed is not True
+            or fdr_q_value is None
+            or not 0.0 <= fdr_q_value <= 0.10
+        ):
+            reasons.append("family FDR q-value 未通过 0.10 门槛。")
         passed = not reasons
         if passed:
             reasons.append("IC/RankIC 达到观察门槛，且方向未显示单一年份依赖。")
@@ -450,6 +510,9 @@ class FactorGateEvaluator:
                 "positive_ic_ratio": positive,
                 "rankic_direction_stable": stable_direction,
                 "max_single_year_ic_contribution": single_year,
+                "family_fdr_method": fdr_method,
+                "family_fdr_q_value": fdr_q_value,
+                "family_fdr_passed": fdr_passed,
             },
         )
 
@@ -458,7 +521,7 @@ class FactorGateEvaluator:
         spread = self._f(m, "top_bottom_spread", self._f(m, "long_short_return"))
         top_ret = self._f(m, "top_quantile_return")
         mono = self._f(m, "monotonicity", self._f(m, "monotonicity_score"))
-        from_long_side = bool(m.get("long_short_from_long_side", True))
+        from_long_side = self._strict_bool(m, "long_short_from_long_side")
         reasons: list[str] = []
         if spread is None or spread <= 0.0:
             reasons.append("top-bottom spread 未证明为正。")
@@ -466,7 +529,9 @@ class FactorGateEvaluator:
             reasons.append("top quantile 没有实际 long-only 可买收益。")
         if mono is None or mono < p.min_monotonicity:
             reasons.append(f"分组收益单调性不足，monotonicity={mono}。")
-        if not from_long_side:
+        elif mono > 1.0:
+            reasons.append("monotonicity 必须位于 [0, 1]。")
+        if from_long_side is not True:
             reasons.append("long-short 收益主要来自低分组暴跌，而非高分组可买收益。")
         passed = not reasons
         if passed:
@@ -487,21 +552,27 @@ class FactorGateEvaluator:
         p = self.policy
         turnover = self._f(m, "turnover", self._f(m, "annual_turnover"))
         cost_adj = self._f(m, "cost_adjusted_return")
-        slippage_ok = bool(m.get("slippage_sensitivity_ok", True))
-        execution_ok = bool(m.get("execution_realism", False))
-        capacity = self._f(m, "capacity_pressure", 0.0)
+        slippage_ok = self._strict_bool(m, "slippage_sensitivity_ok")
+        execution_ok = self._strict_bool(m, "execution_realism")
+        capacity = self._f(m, "capacity_pressure")
         reasons: list[str] = []
         if turnover is None:
             reasons.append("缺少 turnover。")
+        elif turnover < 0.0:
+            reasons.append("turnover 不能为负。")
         elif turnover > p.max_turnover:
             reasons.append(f"turnover={turnover:.2f}x 过高。")
         if cost_adj is None or cost_adj <= 0.0:
             reasons.append("扣成本后没有正超额。")
-        if not slippage_ok:
+        if slippage_ok is not True:
             reasons.append("滑点敏感性过高。")
-        if not execution_ok:
+        if execution_ok is not True:
             reasons.append("缺少真实执行约束验证。")
-        if capacity is not None and capacity > p.max_capacity_pressure:
+        if capacity is None:
+            reasons.append("缺少容量压力证据。")
+        elif not 0.0 <= capacity <= 1.0:
+            reasons.append("capacity_pressure 必须位于 [0, 1]。")
+        elif capacity > p.max_capacity_pressure:
             reasons.append("容量压力过高，疑似依赖小市值/低流动性。")
         passed = not reasons
         if passed:
@@ -522,14 +593,20 @@ class FactorGateEvaluator:
     def _gate6_exposure(self, m: Mapping[str, Any]) -> GateResult:
         p = self.policy
         neutral_icir = self._f(m, "neutralized_icir", self._f(m, "industry_size_neutral_icir"))
-        corr = self._f(m, "correlation_with_existing", self._f(m, "existing_factor_corr", 0.0))
-        style_only = bool(m.get("style_exposure_only", False))
+        corr = self._f(m, "correlation_with_existing")
+        if corr is None:
+            corr = self._f(m, "existing_factor_corr")
+        style_only = self._strict_bool(m, "style_exposure_only")
         reasons: list[str] = []
         if neutral_icir is None or abs(neutral_icir) < p.min_neutralized_icir:
             reasons.append("行业+市值中性化后 alpha 不足，可能只是风格暴露。")
-        if corr is not None and abs(corr) > p.max_existing_factor_corr:
+        if corr is None:
+            reasons.append("缺少与现有因子的相关性证据。")
+        elif abs(corr) > p.max_existing_factor_corr:
             reasons.append("与现有因子相关性过高，缺少独立增量。")
-        if style_only:
+        if style_only is None:
+            reasons.append("缺少 style_exposure_only 诊断。")
+        elif style_only:
             reasons.append("该因子被标注为纯风格暴露，不能作为独立选股因子。")
         passed = not reasons
         if passed:
@@ -548,24 +625,47 @@ class FactorGateEvaluator:
     def _gate7_oos(self, m: Mapping[str, Any]) -> GateResult:
         p = self.policy
         oos = self._f(m, "oos_positive_ratio", self._f(m, "walk_forward_positive_ratio"))
-        param_ok = bool(m.get("parameter_stability", False))
-        dates_ok = bool(m.get("date_range_robustness", False))
-        freq_ok = bool(m.get("rebalance_frequency_robustness", False))
-        universe_ok = bool(m.get("universe_robustness", False))
-        regime_ok = bool(m.get("regime_robustness", False))
+        param_ok = self._strict_bool(m, "parameter_stability")
+        dates_ok = self._strict_bool(m, "date_range_robustness")
+        freq_ok = self._strict_bool(m, "rebalance_frequency_robustness")
+        universe_ok = self._strict_bool(m, "universe_robustness")
+        regime_ok = self._strict_bool(m, "regime_robustness")
+        purged = self._strict_bool(m, "walk_forward_purged")
+        purge_days = self._f(m, "walk_forward_purge_days")
+        embargo_days = self._f(m, "walk_forward_embargo_days")
+        fold_count = self._f(m, "walk_forward_fold_count")
+        evidence_hash = str(m.get("walk_forward_evidence_hash", "") or "").strip()
         reasons: list[str] = []
         if oos is None or oos < p.min_oos_positive_ratio:
             reasons.append(f"样本外 positive ratio 未达到 {p.min_oos_positive_ratio:.0%}。")
-        if not param_ok:
+        elif oos > 1.0:
+            reasons.append("样本外 positive ratio 必须位于 [0, 1]。")
+        if param_ok is not True:
             reasons.append("参数敏感性未通过，疑似单参数有效。")
-        if not dates_ok:
+        if dates_ok is not True:
             reasons.append("不同起止日期稳健性不足。")
-        if not freq_ok:
+        if freq_ok is not True:
             reasons.append("不同调仓频率稳健性不足。")
-        if not universe_ok:
+        if universe_ok is not True:
             reasons.append("不同 universe 稳健性不足。")
-        if not regime_ok:
+        if regime_ok is not True:
             reasons.append("不同市场阶段稳健性不足。")
+        if (
+            purged is not True
+            or purge_days is None
+            or not purge_days.is_integer()
+            or purge_days < 30
+        ):
+            reasons.append("walk-forward 未证明执行至少 30 日 purge。")
+        if embargo_days != 30 or not embargo_days.is_integer():
+            reasons.append("walk-forward 未证明执行 30 日 embargo。")
+        if (
+            fold_count is None
+            or not fold_count.is_integer()
+            or fold_count < 1
+            or not self._is_sha256(evidence_hash)
+        ):
+            reasons.append("缺少可哈希的 walk-forward fold 证据。")
         passed = not reasons
         if passed:
             reasons.append("walk-forward、参数、日期、频率、universe 与市场阶段稳健性通过。")
@@ -580,6 +680,11 @@ class FactorGateEvaluator:
                 "rebalance_frequency_robustness": freq_ok,
                 "universe_robustness": universe_ok,
                 "regime_robustness": regime_ok,
+                "walk_forward_purged": purged,
+                "walk_forward_purge_days": purge_days,
+                "walk_forward_embargo_days": embargo_days,
+                "walk_forward_fold_count": fold_count,
+                "walk_forward_evidence_hash": evidence_hash,
             },
         )
 
@@ -588,10 +693,19 @@ class FactorGateEvaluator:
         ret_delta = self._f(m, "master_return_delta")
         sharpe_delta = self._f(m, "sharpe_delta")
         dd_delta = self._f(m, "max_drawdown_delta")
-        turnover_delta = self._f(m, "turnover_delta", 0.0)
-        cost_delta = self._f(m, "execution_cost_delta", 0.0)
-        signal_corr = self._f(
-            m, "correlation_with_existing_signals", self._f(m, "signal_corr", 0.0)
+        turnover_delta = self._f(m, "turnover_delta")
+        cost_delta = self._f(m, "execution_cost_delta")
+        signal_corr = self._f(m, "correlation_with_existing_signals")
+        if signal_corr is None:
+            signal_corr = self._f(m, "signal_corr")
+        evidence_schema = str(m.get("gate8_evidence_schema", "") or "").strip()
+        evidence_hash = str(m.get("gate8_evidence_hash", "") or "").strip()
+        full_chain = self._strict_bool(m, "full_control_chain_evaluated")
+        raw_arm_hashes = m.get("gate8_arm_hashes")
+        arm_hashes = (
+            {str(key): str(value or "").strip() for key, value in raw_arm_hashes.items()}
+            if isinstance(raw_arm_hashes, Mapping)
+            else {}
         )
         reasons: list[str] = []
         if ret_delta is None or ret_delta <= 0.0:
@@ -600,12 +714,32 @@ class FactorGateEvaluator:
             reasons.append("Sharpe delta 未证明为正。")
         if dd_delta is None or dd_delta > p.max_drawdown_delta:
             reasons.append("max drawdown delta 不可接受。")
-        if turnover_delta is not None and turnover_delta > p.max_turnover_delta:
+        if turnover_delta is None:
+            reasons.append("缺少 turnover delta。")
+        elif turnover_delta < 0.0:
+            reasons.append("turnover delta 不能为负。")
+        elif turnover_delta > p.max_turnover_delta:
             reasons.append("turnover delta 过高。")
-        if cost_delta is not None and ret_delta is not None and cost_delta > max(ret_delta, 0.0):
+        if cost_delta is None:
+            reasons.append("缺少 execution cost delta。")
+        elif cost_delta < 0.0:
+            reasons.append("execution cost delta 不能为负。")
+        elif ret_delta is not None and cost_delta > max(ret_delta, 0.0):
             reasons.append("execution cost delta 吃掉增量收益。")
-        if signal_corr is not None and abs(signal_corr) > p.max_existing_factor_corr:
+        if signal_corr is None:
+            reasons.append("缺少与现有系统信号相关性证据。")
+        elif abs(signal_corr) > p.max_existing_factor_corr:
             reasons.append("与现有系统信号相关性过高，组合增量不足。")
+        if evidence_schema != "factor-governance-replay-evidence.v2":
+            reasons.append("Gate 8 缺少 canonical A/B/C/D replay schema。")
+        if full_chain is not True:
+            reasons.append("Gate 8 未走完整 deterministic control chain。")
+        if not self._is_sha256(evidence_hash):
+            reasons.append("Gate 8 evidence hash 缺失。")
+        if set(arm_hashes) != {"A", "B", "C", "D"} or any(
+            not self._is_sha256(value) for value in arm_hashes.values()
+        ):
+            reasons.append("Gate 8 A/B/C/D arm hashes 不完整。")
         passed = not reasons
         if passed:
             reasons.append("baseline + new factor 相对 baseline 有组合级增量。")
@@ -620,6 +754,10 @@ class FactorGateEvaluator:
                 "turnover_delta": turnover_delta,
                 "execution_cost_delta": cost_delta,
                 "correlation_with_existing_signals": signal_corr,
+                "gate8_evidence_schema": evidence_schema,
+                "gate8_evidence_hash": evidence_hash,
+                "full_control_chain_evaluated": full_chain,
+                "gate8_arm_hashes": arm_hashes,
             },
         )
 

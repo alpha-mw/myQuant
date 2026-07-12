@@ -17,8 +17,10 @@ from quant_investor.factors.governance import (
     FactorRecord,
     GateResult,
 )
+from quant_investor.factors.governance_protocol_v2 import (
+    CANONICAL_FULL_CHAIN_PRODUCER_BLOCKER,
+)
 from quant_investor.factors.registry_store import (
-    FactorRegistryConflictError,
     FactorRegistryMalformedError,
 )
 from quant_investor.factors.runtime import MinedFactorRegistry
@@ -79,6 +81,46 @@ def test_candidate_maturity_context_uses_signal_coverage_only():
 
     assert start == "2024-01-05"
     assert list(matured.adj_close.index) == [pd.Timestamp("2024-01-05")]
+
+
+def test_legacy_8gate_metrics_do_not_forge_data_oos_or_full_chain_evidence():
+    dates = pd.date_range("2023-01-31", periods=36, freq="ME")
+    symbols = [f"{index:06d}.SZ" for index in range(30)]
+    signal = pd.DataFrame(
+        [range(30) for _ in dates],
+        index=dates,
+        columns=symbols,
+        dtype=float,
+    )
+    forward = signal.div(1000.0).add(0.001)
+    context = RetestContext(
+        frames={},
+        universe_by_symbol={symbol: "full_a" for symbol in symbols},
+        adj_close=signal.add(100.0),
+        volume=signal.add(1000.0),
+        amount=signal.add(1_000_000.0),
+        forward_return=forward,
+        rebalance_dates=list(dates),
+        biweekly_dates=list(dates),
+        existing_composite=signal.mul(0.25),
+        existing_blocker="",
+    )
+
+    metrics = retest.candidate_metrics(
+        signal=signal,
+        context=context,
+        decision_cost_bps=1.0,
+        incremental_sleeve=0.03,
+    )
+    review = retest.evaluate_with_myquant_gate("fixture", metrics)
+
+    assert metrics["no_future_leakage"] is False
+    assert metrics["rankic_direction_stable"] is True
+    assert metrics["walk_forward_purged"] is False
+    assert metrics["full_control_chain_evaluated"] is False
+    assert metrics["master_return_delta"] is None
+    assert metrics["diagnostic_linear_overlay_return_delta"] is not None
+    assert {1, 7, 8}.issubset(set(retest._failed_gate_ids(review)))
 
 
 def test_compute_formulaic_signal_rank_blends_primitives():
@@ -454,6 +496,9 @@ def _qualified_result(name: str = "daily_fixture_factor") -> dict[str, object]:
             "positive_ic_ratio": 0.62,
             "top_bottom_spread": 0.04,
             "master_return_delta": 0.012,
+            "family_fdr_method": "benjamini_hochberg_by_family",
+            "family_fdr_q_value": 0.08,
+            "family_fdr_passed": True,
         },
         "blockers": [],
         "summary": "passes fixture gates",
@@ -529,53 +574,20 @@ def test_candidate_catalog_covers_daily_mining_dimensions():
     }.issubset(categories)
 
 
-def test_registry_write_adds_zero_weight_production_candidate(tmp_path):
-    registry_path = tmp_path / "mined_factors.json"
-    _write_registry(registry_path, MinedFactorRegistry())
-    source_notes = [{"title": "fixture source", "url": "https://example.com"}]
+def test_mining_attaches_family_scoped_bh_fdr_evidence_before_qualification():
+    first = _qualified_result("first")
+    second = _qualified_result("second")
+    first["metrics"]["rank_ic_p_value"] = 0.01
+    second["metrics"]["rank_ic_p_value"] = 0.20
 
-    manifest = apply_production_candidate_registry_updates(
-        registry_path=registry_path,
-        qualified_results=[_qualified_result()],
-        run_timestamp="2026-06-07T04:30:00",
-        run_id="daily_factor_mining_fixture",
-        report_path="reports/factor_governance/daily_mining/fixture.json",
-        owner="test owner",
-        source_notes=source_notes,
-        horizon_days=30,
-        max_candidates=5,
-        journal_path=tmp_path / "reports" / "registry_mutation.json",
-        write=True,
-    )
+    mining._set_family_fdr([first, second])
 
-    registry = MinedFactorRegistry.load(registry_path)
-    assert manifest["status"] == "updated"
-    assert manifest["registry_mutation_manifest"]["status"] == "applied"
-    assert (
-        manifest["registry_mutation_manifest"]["changed_metadata_count"] == 8
+    assert first["metrics"]["family_fdr_method"] == (
+        "benjamini_hochberg_by_family"
     )
-    assert Path(manifest["registry_mutation_manifest_path"]).exists()
-    assert manifest["before_registry_sha256"]
-    assert manifest["after_registry_sha256"]
-    assert manifest["before_registry_sha256"] != manifest[
-        "after_registry_sha256"
-    ]
-    assert manifest["written_factors"] == ["daily_fixture_factor"]
-    assert registry.selectable_factors() == []
-    assert registry.non_selectable_reasons() == {
-        "daily_fixture_factor": "state=production_candidate"
-    }
-    record = registry.factors[0]
-    assert record.state == FactorLifecycleState.PRODUCTION_CANDIDATE
-    assert record.weight == 0.0
-    assert record.admission_decision == (
-        FactorAdmissionDecision.PRODUCTION_CANDIDATE
-    )
-    assert record.metadata["manual_promotion_required"] is True
-    assert record.metadata["runtime_effect"] == (
-        "none_until_manual_production_factor_promotion"
-    )
-    assert record.metadata["source_notes"] == source_notes
+    assert first["metrics"]["family_fdr_passed"] is True
+    assert second["metrics"]["family_fdr_passed"] is False
+    assert first["metrics"]["family_test_count"] == 2
 
 
 def test_registry_write_fails_closed_for_malformed_registry(tmp_path):
@@ -597,213 +609,79 @@ def test_registry_write_fails_closed_for_malformed_registry(tmp_path):
     assert registry_path.read_text(encoding="utf-8") == "{bad\n"
 
 
-def test_registry_write_propagates_cas_conflict_without_mutation(
-    monkeypatch,
+@pytest.mark.parametrize("write", [False, True])
+def test_direct_candidate_registry_writer_is_retired_and_never_mutates(
     tmp_path,
+    write,
 ):
     registry_path = tmp_path / "mined_factors.json"
     _write_registry(registry_path, MinedFactorRegistry())
     before = registry_path.read_bytes()
-
-    def raise_conflict(*_args, **_kwargs):
-        raise FactorRegistryConflictError("fixture mining CAS conflict")
-
-    monkeypatch.setattr(mining, "apply_factor_record_patch", raise_conflict)
-    with pytest.raises(FactorRegistryConflictError, match="mining CAS"):
-        apply_production_candidate_registry_updates(
-            registry_path=registry_path,
-            qualified_results=[_qualified_result()],
-            run_timestamp="2026-06-07T04:30:00",
-            run_id="daily_factor_mining_conflict_fixture",
-            report_path="reports/factor_governance/daily_mining/fixture.json",
-            owner="test owner",
-            journal_path=tmp_path / "reports" / "registry_mutation.json",
-            write=True,
-        )
-
-    assert registry_path.read_bytes() == before
-
-
-def test_registry_write_does_not_override_existing_production_factor(tmp_path):
-    registry_path = tmp_path / "mined_factors.json"
-    existing = FactorRecord(
-        name="daily_fixture_factor",
-        state=FactorLifecycleState.PRODUCTION_FACTOR,
-        implementation="price_volume:pv_momentum_20d",
-        weight=0.05,
-        gate_results=[
-            GateResult.from_dict(row) for row in _gate_rows()
-        ],
-        admission_decision=FactorAdmissionDecision.PRODUCTION_CANDIDATE,
-    )
-    _write_registry(
-        registry_path,
-        MinedFactorRegistry.from_records([existing]),
-    )
+    wal_path = tmp_path / "reports" / "registry_mutation.json"
 
     manifest = apply_production_candidate_registry_updates(
         registry_path=registry_path,
         qualified_results=[_qualified_result()],
-        run_timestamp="2026-06-07T04:30:00",
-        run_id="daily_factor_mining_fixture",
-        report_path="reports/factor_governance/daily_mining/fixture.json",
+        run_timestamp="2026-07-12T10:00:00",
+        run_id="direct-writer-retired",
+        report_path="reports/factor_governance/mining.json",
         owner="test owner",
-        horizon_days=30,
-        max_candidates=5,
-        journal_path=tmp_path / "reports" / "registry_mutation.json",
-        write=True,
+        journal_path=wal_path,
+        write=write,
     )
 
-    registry = MinedFactorRegistry.load(registry_path)
-    record = registry.factors[0]
-    assert manifest["status"] == "no_registry_changes"
-    assert manifest["skipped_factors"] == [
-        {
-            "name": "daily_fixture_factor",
-            "reason": "existing_production_factor",
-        }
-    ]
-    assert record.state == FactorLifecycleState.PRODUCTION_FACTOR
-    assert record.weight == 0.05
-
-
-@pytest.mark.parametrize("gate_case", ["missing", "failed"])
-def test_registry_writer_rejects_incomplete_or_failed_gate_evidence(
-    tmp_path,
-    gate_case,
-):
-    registry_path = tmp_path / "mined_factors.json"
-    _write_registry(registry_path, MinedFactorRegistry())
-    before = registry_path.read_bytes()
-    result = _qualified_result()
-    if gate_case == "missing":
-        result["gate_results"] = result["gate_results"][:7]
-        expected_reason = "gate_ids_not_exactly_1_to_8"
-    else:
-        result["gate_results"][3]["passed"] = False
-        expected_reason = "gate_4_not_passed"
-
-    manifest = apply_production_candidate_registry_updates(
-        registry_path=registry_path,
-        qualified_results=[result],
-        run_timestamp="2026-06-07T04:30:00",
-        run_id=f"daily_factor_mining_{gate_case}_gate_fixture",
-        report_path="reports/factor_governance/daily_mining/fixture.json",
-        owner="test owner",
-        journal_path=tmp_path / "reports" / "registry_mutation.json",
-        write=True,
-    )
-
-    assert manifest["status"] == "no_registry_changes"
-    assert manifest["skipped_factors"] == [
-        {"name": "daily_fixture_factor", "reason": expected_reason}
+    assert manifest["status"] == ("blocked" if write else "report_only")
+    assert manifest["before_registry_sha256"] == manifest[
+        "after_registry_sha256"
     ]
     assert registry_path.read_bytes() == before
+    assert not wal_path.exists()
+    if write:
+        assert manifest["fail_closed_reason"] == (
+            "direct_candidate_registry_write_retired_use_"
+            "factor_governance_protocol_v2"
+        )
+        assert manifest["skipped_factors"] == [
+            {
+                "name": "daily_fixture_factor",
+                "reason": "direct_candidate_registry_write_retired",
+            }
+        ]
 
 
-@pytest.mark.parametrize(
-    ("mutation", "expected_reason"),
-    [
-        ("missing", "diversity_selection_missing"),
-        ("hash", "diversity_policy_hash_mismatch"),
-        ("runtime", "runtime_write_ineligible"),
-    ],
-)
-def test_registry_writer_rejects_missing_or_forged_diversity_evidence(
-    tmp_path, mutation, expected_reason
+def test_retired_direct_candidate_write_cli_flag_exits_nonzero(monkeypatch):
+    def fail_if_called(_args):
+        pytest.fail("retired direct writer must be rejected before mining")
+
+    monkeypatch.setattr(mining, "run_mining", fail_if_called)
+
+    assert mining.main(["--write-production-candidates"]) == 2
+
+
+def test_report_only_cli_exits_zero_without_claiming_registry_apply(
+    monkeypatch,
+    capsys,
 ):
-    registry_path = tmp_path / "mined_factors.json"
-    _write_registry(registry_path, MinedFactorRegistry())
-    before = registry_path.read_bytes()
-    result = _qualified_result()
-    if mutation == "missing":
-        result.pop("diversity_selection")
-    elif mutation == "hash":
-        result["diversity_selection"]["policy_hash"] = "forged"
-    else:
-        result["runtime_write_eligible"] = False
-
-    manifest = apply_production_candidate_registry_updates(
-        registry_path=registry_path,
-        qualified_results=[result],
-        run_timestamp="2026-07-12T10:00:00",
-        run_id=f"diversity-{mutation}",
-        report_path="reports/factor_governance/diversity.json",
-        owner="test owner",
-        journal_path=tmp_path / "registry_mutation.json",
-        write=True,
+    monkeypatch.setattr(
+        mining,
+        "run_mining",
+        lambda _args: {
+            "output_dir": "reports/factor_governance/fixture",
+            "conclusion": "manual_production_factor_review_candidate",
+            "candidate_count": 1,
+            "qualified_count": 1,
+            "qualified_factors": ["fixture"],
+            "registry_update_manifest": {"status": "report_only"},
+        },
     )
 
-    assert manifest["status"] == "no_registry_changes"
-    assert manifest["skipped_factors"][0]["reason"] == expected_reason
-    assert registry_path.read_bytes() == before
+    assert mining.main([]) == 0
+    output = capsys.readouterr().out
+    assert '"registry_update_status": "report_only"' in output
+    assert '"registry_update_status": "applied"' not in output
 
 
-def test_registry_writer_enumerates_post_diversity_max_candidate_skip(
-    tmp_path,
-):
-    registry_path = tmp_path / "mined_factors.json"
-    _write_registry(registry_path, MinedFactorRegistry())
-    first = _qualified_result("first")
-    second = _qualified_result("second")
-    second["family"] = "capacity"
-    second["dominant_primitives"] = ["traded_amount"]
-    second["primitive_lineage"] = ["traded_amount"]
-    second["primitive_contributions"] = {"traded_amount": 1.0}
-    second["diversity_selection"].update(
-        family_champion="second",
-        lineage_component_id="lineage-002",
-        lineage_champion="second",
-        correlation_cluster_id="correlation-002",
-        cluster_champion="second",
-    )
-
-    manifest = apply_production_candidate_registry_updates(
-        registry_path=registry_path,
-        qualified_results=[first, second],
-        run_timestamp="2026-07-12T10:00:00",
-        run_id="diversity-max-cap",
-        report_path="reports/factor_governance/diversity.json",
-        owner="test owner",
-        max_candidates=1,
-        journal_path=tmp_path / "reports" / "registry_mutation.json",
-        write=True,
-    )
-
-    assert manifest["selected_champions"] == ["first"]
-    assert manifest["skipped_factors"] == [
-        {"name": "second", "reason": "max_registry_candidates"}
-    ]
-
-
-def test_registry_writer_rejects_entire_batch_for_duplicate_champions(
-    tmp_path,
-):
-    registry_path = tmp_path / "mined_factors.json"
-    _write_registry(registry_path, MinedFactorRegistry())
-    before = registry_path.read_bytes()
-    first = _qualified_result("first")
-    second = _qualified_result("second")
-
-    manifest = apply_production_candidate_registry_updates(
-        registry_path=registry_path,
-        qualified_results=[first, second],
-        run_timestamp="2026-07-12T10:00:00",
-        run_id="duplicate-champions",
-        report_path="reports/factor_governance/diversity.json",
-        owner="test owner",
-        journal_path=tmp_path / "reports" / "registry_mutation.json",
-        write=True,
-    )
-
-    assert manifest["status"] == "no_registry_changes"
-    assert manifest["fail_closed_reason"] == (
-        "diversity_batch_validation_failed"
-    )
-    assert registry_path.read_bytes() == before
-
-
-def test_production_family_governance_keeps_only_current_8gate_champion(
+def test_retired_bulk_family_governance_cannot_deprecate_unrelated_factors(
     tmp_path,
 ):
     registry_path = tmp_path / "mined_factors.json"
@@ -843,15 +721,18 @@ def test_production_family_governance_keeps_only_current_8gate_champion(
     )
 
     registry = MinedFactorRegistry.load(registry_path)
-    assert manifest["status"] == "updated"
-    assert manifest["kept_factors"] == ["w70"]
-    assert [item.name for item in registry.selectable_factors()] == ["w70"]
+    assert manifest["status"] == "blocked"
+    assert manifest["changed_record_names"] == []
+    assert manifest["before_registry_sha256"] == manifest["after_registry_sha256"]
+    assert [item.name for item in registry.selectable_factors()] == [
+        "w70",
+        "w75",
+        "short",
+    ]
     by_name = {item.name: item for item in registry.factors}
-    assert by_name["w75"].state == FactorLifecycleState.DEPRECATED
-    assert by_name["w75"].weight == 0.0
-    assert by_name["w75"].deprecated_reason == "current_8gate_not_passed"
-    assert by_name["short"].state == FactorLifecycleState.DEPRECATED
-    assert by_name["w70"].metadata["governance_family"] == "blend"
+    assert by_name["w75"].state == FactorLifecycleState.PRODUCTION_FACTOR
+    assert by_name["w75"].weight == 0.05
+    assert by_name["short"].state == FactorLifecycleState.PRODUCTION_FACTOR
 
 
 def test_production_family_governance_fails_closed_without_champion(tmp_path):
@@ -882,14 +763,14 @@ def test_production_family_governance_fails_closed_without_champion(tmp_path):
         write=True,
     )
 
-    assert manifest["status"] == "no_registry_changes"
+    assert manifest["status"] == "blocked"
     assert manifest["fail_closed_reason"] == (
-        "no_current_8gate_family_champion"
+        "bulk_family_reconciliation_retired_use_factor_governance_protocol_v2"
     )
     assert registry_path.read_bytes() == before
 
 
-def test_daily_wrapper_success_path_writes_durable_registry_journal(
+def test_weekly_wrapper_defaults_to_report_only_and_keeps_registry_sha(
     monkeypatch,
     tmp_path,
 ):
@@ -937,15 +818,207 @@ def test_daily_wrapper_success_path_writes_durable_registry_journal(
     payload = daily.run_daily_automation(args)
 
     manifest = payload["registry_update_manifest"]
-    journal_path = Path(manifest["registry_mutation_manifest_path"])
     assert payload["success_gate_passed"] is True
-    assert manifest["status"] == "updated"
-    assert journal_path.parent == Path(payload["mining_output_dir"])
-    assert journal_path.exists()
-    journal = json.loads(journal_path.read_text(encoding="utf-8"))
-    assert journal["status"] == "applied"
-    registry = MinedFactorRegistry.load(registry_path)
-    assert registry.factors[0].weight == 0.0
-    assert registry.factors[0].state == (
-        FactorLifecycleState.PRODUCTION_CANDIDATE
+    assert manifest["status"] == "report_only"
+    assert manifest["before_registry_sha256"] == manifest["after_registry_sha256"]
+    assert manifest["changed_record_names"] == []
+    assert payload["registry_write_requested"] is False
+    assert payload["run_mode"] == "report_only"
+    assert payload["factor_protocol"]["apply_requested"] is False
+    assert payload["factor_protocol"]["transition_applied"] is False
+    report_only_mining = json.loads(
+        (Path(payload["mining_output_dir"]) / "quant_branch_factor_mining_results.json")
+        .read_text(encoding="utf-8")
     )
+    assert report_only_mining["factor_protocol"] == payload["factor_protocol"]
+    registry = MinedFactorRegistry.load(registry_path)
+    assert registry.factors == []
+
+
+def test_weekly_wrapper_apply_requires_protocol_hash_and_canonical_evidence(tmp_path):
+    expected_hash = daily.protocol_hash()
+    with pytest.raises(SystemExit):
+        daily.parse_args(["--apply-governed-transitions"])
+    with pytest.raises(SystemExit):
+        daily.parse_args(
+            [
+                "--apply-governed-transitions",
+                "--protocol-version",
+                "v2",
+                "--expected-protocol-hash",
+                "wrong",
+                "--governed-evidence-json",
+                str(tmp_path / "plan.json"),
+            ]
+        )
+    args = daily.parse_args(
+        [
+            "--apply-governed-transitions",
+            "--protocol-version",
+            "v2",
+            "--expected-protocol-hash",
+            expected_hash,
+            "--governed-evidence-json",
+            str(tmp_path / "plan.json"),
+        ]
+    )
+    assert args.apply_governed_transitions is True
+
+
+def test_weekly_wrapper_routes_normalized_evidence_to_blocked_apply_path(
+    monkeypatch,
+    tmp_path,
+):
+    registry_path = tmp_path / "mined_factors.json"
+    _write_registry(registry_path, MinedFactorRegistry())
+    evidence_path = tmp_path / "evidence.json"
+    evidence_path.write_text("{}\n", encoding="utf-8")
+    fixed_now = datetime(
+        2026,
+        7,
+        31,
+        17,
+        0,
+        tzinfo=daily.SHANGHAI_TZ,
+    )
+    monkeypatch.setattr(daily, "_now_shanghai", lambda: fixed_now)
+    monkeypatch.setattr(daily, "latest_download_report", lambda _path: (None, {}))
+
+    def fake_run_mining(args):
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return {
+            "output_dir": str(output_dir),
+            "results": [],
+            "candidate_count": 0,
+            "qualified_count": 0,
+            "conclusion": "no_candidate_passed_myquant_8gate",
+        }
+
+    sentinel_plan = object()
+    calls = {}
+
+    def fake_apply(path, plan, *, expected_protocol_hash, valid_trading_days, write):
+        calls.update(
+            path=path,
+            plan=plan,
+            expected_protocol_hash=expected_protocol_hash,
+            valid_trading_days=valid_trading_days,
+            write=write,
+        )
+        return {
+            "status": "blocked",
+            "blockers": [CANONICAL_FULL_CHAIN_PRODUCER_BLOCKER],
+            "before_registry_sha256": "before",
+            "after_registry_sha256": "before",
+            "inverse_wal_path": "",
+            "changed_record_names": [],
+            "canonical_replay_producer_control": {
+                "production_apply_eligible": False,
+                "blocker": CANONICAL_FULL_CHAIN_PRODUCER_BLOCKER,
+            },
+        }
+
+    monkeypatch.setattr(daily, "run_mining", fake_run_mining)
+    sentinel_evidence = object()
+    monkeypatch.setattr(
+        daily,
+        "load_governance_replay_evidence",
+        lambda _path: sentinel_evidence,
+    )
+    monkeypatch.setattr(
+        daily,
+        "build_registry_mutation_plan_from_evidence",
+        lambda **kwargs: (
+            sentinel_plan,
+            ["2026-07-31"],
+        )
+        if kwargs["evidence"] is sentinel_evidence
+        else pytest.fail("canonical evidence was not routed to plan builder"),
+    )
+    monkeypatch.setattr(daily, "apply_governed_transition", fake_apply)
+    args = daily.parse_args(
+        [
+            "--output-root",
+            str(tmp_path / "reports"),
+            "--registry-path",
+            str(registry_path),
+            "--run-id",
+            "wrapper-apply-fixture",
+            "--apply-governed-transitions",
+            "--protocol-version",
+            "v2",
+            "--expected-protocol-hash",
+            daily.protocol_hash(),
+            "--governed-evidence-json",
+            str(evidence_path),
+        ]
+    )
+
+    payload = daily.run_daily_automation(args)
+
+    assert calls == {
+        "path": str(registry_path),
+        "plan": sentinel_plan,
+        "expected_protocol_hash": daily.protocol_hash(),
+        "valid_trading_days": ["2026-07-31"],
+        "write": True,
+    }
+    assert payload["factor_protocol"]["status"] == "blocked"
+    assert payload["factor_protocol"]["transition_applied"] is False
+    assert payload["factor_protocol"]["inverse_wal_path"] == ""
+    assert CANONICAL_FULL_CHAIN_PRODUCER_BLOCKER in payload[
+        "factor_protocol"
+    ]["blockers"]
+    mining_summary = json.loads(
+        (Path(payload["mining_output_dir"]) / "quant_branch_factor_mining_results.json")
+        .read_text(encoding="utf-8")
+    )
+    assert mining_summary["registry_write"] is False
+    assert mining_summary["factor_protocol"] == payload["factor_protocol"]
+
+
+def test_weekly_wrapper_apply_requested_but_protocol_blocked_exits_nonzero(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(
+        daily,
+        "run_daily_automation",
+        lambda _args: {
+            "summary_report_path": str(tmp_path / "summary.md"),
+            "success_gate_passed": True,
+            "run_mode": "governed_apply",
+            "fail_closed_reason": "",
+            "candidate_count": 1,
+            "evidence_counts": {
+                "positive_evidence_count": 1,
+                "positive_candidate_count": 1,
+                "diverse_positive_champion_count": 1,
+                "qualified_count": 1,
+            },
+            "registry_update_manifest": {"status": "blocked"},
+            "production_family_governance_manifest": {
+                "status": "blocked"
+            },
+            "factor_protocol": {
+                "status": "blocked",
+                "transition_applied": False,
+                "blockers": ["monthly_transition_budget_exhausted"],
+            },
+        },
+    )
+
+    exit_code = daily.main(
+        [
+            "--apply-governed-transitions",
+            "--protocol-version",
+            "v2",
+            "--expected-protocol-hash",
+            daily.protocol_hash(),
+            "--governed-evidence-json",
+            str(tmp_path / "canonical-evidence.json"),
+        ]
+    )
+
+    assert exit_code == 2

@@ -1,6 +1,12 @@
 # Theme Rotation Configuration Matrix
 
-All behavior-affecting Theme Rotation toggles are default-off. The scanner can
+> Legacy Phase 6 reference. For v13.1 operations use
+> `docs/runbooks/v13_1_freeze_exception.md` and current `Config`; notably the
+> portfolio cap defaults on as a safety constraint while Theme v2 formal stays
+> observer-only/kill-switched. Historical default-off stages below are not the
+> current activation authority.
+
+Most behavior-affecting legacy Theme Rotation toggles are default-off. The scanner can
 produce metadata when explicitly enabled, but ranking, risk limits, final
 weights, and file writes each require their own opt-in switch.
 
@@ -27,7 +33,7 @@ weights, and file writes each require their own opt-in switch.
 | `THEME_RISK_DISTRIBUTION_GROSS_CAP` | `0.45` | float | `theme_context.build_theme_risk_constraints` | Gross exposure cap for distribution-risk themes when overlay is enabled. | Treat as stricter than overextended; validate in paper/offline first. |
 | `THEME_RISK_DISTRIBUTION_MAX_WEIGHT` | `0.08` | float | `theme_context.build_theme_risk_constraints` | Per-symbol max weight for distribution-risk themes when overlay is enabled. | Keep strict; monitor symbols moved from buy/add to hold. |
 | `THEME_RISK_FAKE_BREAKOUT_MAX_WEIGHT` | `0.10` | float | `theme_context.build_theme_risk_constraints` | Per-symbol cap for fake-breakout risk when overlay is enabled. | Enable only after fake-breakout calibration has acceptable precision. |
-| `THEME_PORTFOLIO_CAP_ENABLED` | `0` | bool | `theme_context`, `PortfolioConstructor` | Can reduce final target weights to respect theme exposure caps. | Paper test with existing holdings and target weights before any live use. |
+| `THEME_PORTFOLIO_CAP_ENABLED` | `1` | bool | `theme_context`, `PortfolioConstructor` | Safety constraint that can reduce final target weights to respect theme exposure caps. | Keep enabled; formal Theme remains independently gated and kill-switched. |
 | `THEME_PORTFOLIO_MAX_THEME_EXPOSURE` | `0.35` | float | `theme_context.build_theme_portfolio_constraints` | Base max exposure for one primary theme when caps are enabled. | Keep conservative and review exposure redistribution manually. |
 | `THEME_PORTFOLIO_OVEREXTENDED_MAX_THEME_EXPOSURE` | `0.25` | float | `theme_context.build_theme_portfolio_constraints` | Stricter cap for overextended themes when caps are enabled. | Validate that capped themes are reduced without increasing unrelated risks. |
 | `THEME_PORTFOLIO_DISTRIBUTION_MAX_THEME_EXPOSURE` | `0.15` | float | `theme_context.build_theme_portfolio_constraints` | Strictest cap for distribution-risk themes when caps are enabled. | Use only after distribution flags have enough replay evidence. |

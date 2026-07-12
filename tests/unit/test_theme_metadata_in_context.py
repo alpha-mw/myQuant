@@ -9,6 +9,7 @@ from quant_investor.market.dag.theme_context import (
     build_theme_rotation_metadata,
 )
 from quant_investor.market.dag.context import _theme_snapshot_scope_metadata
+from quant_investor.themes.storage import ThemeSnapshotStore
 
 
 def _frame(closes: list[float], volumes: list[float] | None = None) -> pd.DataFrame:
@@ -108,8 +109,134 @@ def test_build_theme_rotation_metadata_symbol_limit():
         symbol_limit=3,
     )
 
-    assert len(metadata["symbol_scores"]) <= 3
+    assert len(metadata["symbol_scores"]) == 12
+    assert len(metadata["display"]["symbol_scores"]) <= 3
     assert metadata["metadata"]["truncated_symbol_count"] > 0
+    assert metadata["metadata"]["symbol_limit_applies_to"] == "display_metadata_only"
+
+
+def test_display_symbol_limit_does_not_change_machine_candidate_inputs():
+    frames = {
+        f"S{idx:03d}.SZ": _frame(_trend(10.0, 11.0), _trend(1000.0, 2200.0))
+        for idx in range(12)
+    }
+    industry_map = {symbol: "Robotics" for symbol in frames}
+
+    small = build_theme_rotation_metadata(
+        frames=frames,
+        industry_map=industry_map,
+        symbol_market_state={},
+        market="CN",
+        universe_key="full_a",
+        as_of="20260618",
+        min_member_count=5,
+        top_n=20,
+        symbol_limit=1,
+    )
+    large = build_theme_rotation_metadata(
+        frames=frames,
+        industry_map=industry_map,
+        symbol_market_state={},
+        market="CN",
+        universe_key="full_a",
+        as_of="20260618",
+        min_member_count=5,
+        top_n=20,
+        symbol_limit=100,
+    )
+
+    assert small["theme_scores"] == large["theme_scores"]
+    assert small["symbol_scores"] == large["symbol_scores"]
+    assert small["symbol_primary_theme"] == large["symbol_primary_theme"]
+    assert small["symbol_theme_memberships"] == large["symbol_theme_memberships"]
+    assert small["display"] != large["display"]
+
+
+def test_protocol_lifecycle_reuses_latest_snapshot_state_idempotently_same_day():
+    frames = {
+        f"S{idx:03d}.SZ": _frame(_trend(10.0, 11.0), _trend(1000.0, 2200.0))
+        for idx in range(6)
+    }
+    for frame in frames.values():
+        frame["trade_date"] = pd.bdate_range(end="2026-06-18", periods=len(frame))
+    industry_map = {symbol: "AI" for symbol in frames}
+    history = [
+        {
+            "theme_rotation": {
+                "as_of": "20260618",
+                "protocol_v2": {
+                    "as_of": "2026-06-18",
+                    "states": {
+                        "industry::ai": {
+                            "lifecycle": "discovery",
+                            "pending_transition": "warming",
+                            "pending_confirmation_dates": ["2026-06-18"],
+                        }
+                    },
+                },
+            }
+        }
+    ]
+
+    payload = build_theme_rotation_metadata(
+        frames=frames,
+        industry_map=industry_map,
+        symbol_market_state={},
+        market="CN",
+        universe_key="full_a",
+        as_of="20260618",
+        min_member_count=5,
+        snapshot_history=history,
+    )
+
+    state = payload["protocol_v2"]["states"]["industry::ai"]
+    assert state["pending_confirmation_dates"] == ["2026-06-18"]
+
+
+def test_protocol_lifecycle_loads_previous_state_from_atomic_snapshot_store(
+    tmp_path,
+):
+    frames = {
+        f"S{idx:03d}.SZ": _frame(_trend(10.0, 11.0), _trend(1000.0, 2200.0))
+        for idx in range(6)
+    }
+    for frame in frames.values():
+        frame["trade_date"] = pd.bdate_range(end="2026-06-18", periods=len(frame))
+    industry_map = {symbol: "AI" for symbol in frames}
+    ThemeSnapshotStore(tmp_path).save(
+        {
+            "as_of": "20260617",
+            "protocol_v2": {
+                "as_of": "2026-06-17",
+                "states": {
+                    "industry::ai": {
+                        "lifecycle": "discovery",
+                        "pending_transition": "warming",
+                        "pending_confirmation_dates": ["2026-06-17"],
+                    }
+                },
+            },
+            "metadata": {"input_scope": "full_market", "scanned_symbol_count": 6},
+        },
+        market="CN",
+        universe_key="full_a",
+        as_of="20260617",
+        run_id="previous",
+    )
+
+    payload = build_theme_rotation_metadata(
+        frames=frames,
+        industry_map=industry_map,
+        symbol_market_state={},
+        market="CN",
+        universe_key="full_a",
+        as_of="20260618",
+        min_member_count=5,
+        snapshot_dir=tmp_path,
+    )
+
+    state = payload["protocol_v2"]["states"]["industry::ai"]
+    assert state["pending_confirmation_dates"] == ["2026-06-17", "2026-06-18"]
 
 
 def test_build_theme_rotation_metadata_empty_industry_map_safe():

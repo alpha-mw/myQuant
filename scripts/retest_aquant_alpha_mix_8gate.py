@@ -36,7 +36,11 @@ from quant_investor.factors.pit_fundamentals import (  # noqa: E402
     build_fin_ocf_to_profit_matrix,
     normalize_ts_code,
 )
-from quant_investor.factors.runtime import MinedFactorRegistry, score_with_mined_factors  # noqa: E402
+from quant_investor.factors.runtime import (  # noqa: E402
+    MinedFactorRegistry,
+    REPORT_ONLY_SHADOW_RUNTIME_MODE,
+    score_with_mined_factors,
+)
 from quant_investor.market.market_data_reader import MarketDataReader  # noqa: E402
 
 DEFAULT_AQUANT_AUDIT_DIR = Path(
@@ -594,6 +598,9 @@ def candidate_metrics(
         signal, context.existing_composite, dates
     )
 
+    # These chronological slices are diagnostic only.  This function neither
+    # preregisters a factor nor executes a purged/embargoed v13 control-chain
+    # replay, so they must not be represented as true OOS evidence.
     fold_positive: list[bool] = []
     if len(ics) >= 3:
         for fold in np.array_split(ics.sort_index(), 3):
@@ -635,18 +642,49 @@ def candidate_metrics(
 
     mean_rankic = float(ics.mean()) if not ics.empty else 0.0
     positive_ic_ratio = float((ics > 0.0).mean()) if not ics.empty else 0.0
+    rankic_t_stat = 0.0
+    rankic_p_value = 1.0
+    if len(ics) >= 2:
+        standard_error = float(ics.std(ddof=1)) / math.sqrt(len(ics))
+        if math.isfinite(standard_error) and standard_error > 0.0:
+            rankic_t_stat = mean_rankic / standard_error
+            rankic_p_value = math.erfc(abs(rankic_t_stat) / math.sqrt(2.0))
+    direction_observations = [
+        float(value)
+        for value in year_ic.tolist()
+        if math.isfinite(float(value)) and abs(float(value)) > 1e-12
+    ]
+    direction_sign = 1.0 if mean_rankic >= 0.0 else -1.0
+    direction_consistency = (
+        sum(1 for value in direction_observations if value * direction_sign > 0.0)
+        / len(direction_observations)
+        if direction_observations
+        else 0.0
+    )
     metrics: dict[str, Any] = {
-        "no_future_leakage": True,
-        "uses_availability_date": True,
-        "point_in_time_rebalance": True,
-        "adjusted_price_consistent": True,
-        "tradability_rules_defined": True,
-        "missingness_explained": True,
+        # The legacy retest does not emit the versioned PIT/tradability audit
+        # needed to prove these hard gates.  Unknown evidence is a failure, not
+        # a constant true value.
+        "no_future_leakage": False,
+        "uses_availability_date": False,
+        "point_in_time_rebalance": bool(
+            dates and list(pd.DatetimeIndex(dates)) == sorted(pd.DatetimeIndex(dates))
+        ),
+        "adjusted_price_consistent": bool(not context.adj_close.empty),
+        "tradability_rules_defined": False,
+        "missingness_explained": False,
+        "data_safety_evidence_source": "legacy_retest_unverified",
         **coverage,
         "icir": _icir(ics),
         "mean_rankic": mean_rankic,
+        "rank_ic_t_stat": rankic_t_stat,
+        "rank_ic_p_value": rankic_p_value,
         "positive_ic_ratio": positive_ic_ratio,
-        "rankic_direction_stable": bool(positive_ic_ratio >= 0.50 or positive_ic_ratio <= 0.50),
+        "rankic_direction_stable": bool(
+            len(direction_observations) >= 2 and direction_consistency >= 2 / 3
+        ),
+        "rankic_direction_observation_count": len(direction_observations),
+        "rankic_direction_consistency": direction_consistency,
         "max_single_year_ic_contribution": _single_year_contribution(ics),
         "top_bottom_spread": float(spread.mean()) if not spread.empty else 0.0,
         "top_quantile_return": float(top.mean()) if not top.empty else 0.0,
@@ -654,15 +692,26 @@ def candidate_metrics(
         "long_short_from_long_side": bool((float(top.mean()) if not top.empty else 0.0) > 0.0),
         "turnover": turnover,
         "cost_adjusted_return": float(spread.mean()) - cost_per_rebalance if not spread.empty else -cost_per_rebalance,
-        "slippage_sensitivity_ok": True,
-        "execution_realism": True,
+        "slippage_sensitivity_ok": False,
+        "execution_realism": False,
+        "slippage_evidence_source": "not_evaluated",
         "capacity_pressure": _capacity_pressure(signal, context.amount, dates),
-        "neutralized_icir": _icir(neutral_ics),
+        "neutralized_icir": 0.0,
+        "diagnostic_universe_neutralized_icir": _icir(neutral_ics),
         "existing_factor_corr": existing_corr,
-        "style_exposure_only": False,
-        "oos_positive_ratio": float(np.mean(fold_positive)) if fold_positive else 0.0,
+        "style_exposure_only": True,
+        "oos_positive_ratio": 0.0,
+        "diagnostic_contiguous_fold_positive_ratio": (
+            float(np.mean(fold_positive)) if fold_positive else 0.0
+        ),
+        "walk_forward_purged": False,
+        "walk_forward_purge_days": 0,
+        "walk_forward_embargo_days": 0,
+        "walk_forward_fold_count": 0,
+        "walk_forward_evidence_hash": "",
+        "walk_forward_evidence_source": "contiguous_fold_diagnostic_only",
         "parameter_stability": False,
-        "date_range_robustness": bool(fold_positive and np.mean(fold_positive) >= 2 / 3),
+        "date_range_robustness": False,
         "rebalance_frequency_robustness": bool(not biweekly_ics.empty and float(biweekly_ics.mean()) > 0.0),
         "universe_robustness": bool(
             universe_ic and sum(1 for value in universe_ic.values() if value > 0.0) / len(universe_ic) >= 2 / 3
@@ -670,12 +719,23 @@ def candidate_metrics(
         "regime_robustness": bool(
             not year_ic.empty and float((year_ic > 0.0).mean()) >= 0.55
         ),
-        "master_return_delta": master_delta,
-        "sharpe_delta": sharpe_delta,
-        "max_drawdown_delta": drawdown_delta,
+        # The linear sleeve overlay is retained as a diagnostic only. Gate 8
+        # requires a real A/B/C/D replay through Quant -> Theme -> Bayesian ->
+        # RiskGuard -> PortfolioConstructor and therefore fails closed here.
+        "master_return_delta": None,
+        "sharpe_delta": None,
+        "max_drawdown_delta": None,
         "turnover_delta": float(incremental_sleeve * turnover),
         "execution_cost_delta": float(incremental_sleeve * cost_per_rebalance),
         "correlation_with_existing_signals": existing_corr,
+        "gate8_evidence_source": "linear_overlay_diagnostic_only",
+        "gate8_evidence_schema": "",
+        "gate8_evidence_hash": "",
+        "gate8_arm_hashes": {},
+        "full_control_chain_evaluated": False,
+        "diagnostic_linear_overlay_return_delta": master_delta,
+        "diagnostic_linear_overlay_sharpe_delta": sharpe_delta,
+        "diagnostic_linear_overlay_max_drawdown_delta": drawdown_delta,
         "rank_ic_count": int(len(ics)),
         "mean_rankic_biweekly": float(biweekly_ics.mean()) if not biweekly_ics.empty else 0.0,
         "universe_mean_rankic": universe_ic,
@@ -741,6 +801,7 @@ def _runtime_smoke(
         score = score_with_mined_factors(
             frames,
             registry=MinedFactorRegistry.from_records([record, paper]),
+            runtime_mode=REPORT_ONLY_SHADOW_RUNTIME_MODE,
         )
         result[candidate.name] = {
             "factor_count": score.factor_count,

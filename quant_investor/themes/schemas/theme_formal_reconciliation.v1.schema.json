@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "theme_formal_reconciliation.v1",
+  "type": "object",
+  "required": ["schema_version", "protocol_hash", "as_of", "source_stage", "only_formal_producer", "status", "formal_pool", "formal_symbols", "per_symbol", "reconciliation_hash"],
+  "properties": {
+    "schema_version": {"const": "theme_formal_reconciliation.v1"},
+    "protocol_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "as_of": {"type": "string", "format": "date"},
+    "run_id": {"type": "string"},
+    "source_stage": {"const": "post_control_chain"},
+    "only_formal_producer": {"const": true},
+    "status": {"enum": ["formal", "valid_empty"]},
+    "formal_pool": {"type": "array", "items": {"type": "string"}},
+    "formal_symbols": {"type": "array", "items": {"type": "string"}},
+    "per_theme": {"type": "object"},
+    "per_symbol": {"type": "object"},
+    "tactical_lane_cap": {"type": "object"},
+    "tactical_non_tech_nav_used": {"type": "number", "minimum": 0, "maximum": 1},
+    "tactical_non_tech_nav_cap": {"type": "number", "minimum": 0, "maximum": 1},
+    "forced_theme_count": {"const": 0},
+    "deterministic": {"const": true},
+    "no_network": {"const": true},
+    "no_llm": {"const": true},
+    "reconciliation_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}

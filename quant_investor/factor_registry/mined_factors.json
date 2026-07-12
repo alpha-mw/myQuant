@@ -15,7 +15,11 @@
       "pv_blend_volstab19x2_mom90_amihud5_w75",
       "pv_blend_volstab19x2_mom90_amihud5_w70"
     ],
-    "production_factor_count": 14,
+    "production_factor_count": 1,
+    "production_factor_names": [
+      "pv_blend_volstab19x2_mom90_amihud5_w70"
+    ],
+    "production_factor_set_sha256": "1d9ff632f2adcf3549f5374c7937d80b70c9d1a3a0f0572c7209964641572418",
     "path": "quant_investor/factor_registry/mined_factors.json",
     "last_factor_health_review_at": "2026-07-11T13:09:41Z",
     "last_factor_health_report_json": "reports/factor_governance/health/factor_health_2026-07-11T130941Z.json",

@@ -70,6 +70,7 @@ htmlcov/
 
 # Directories with data/reports
 data/
+private/
 !quant_investor/data/
 quant_investor/data/*
 !quant_investor/data/**/

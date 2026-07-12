@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Run a read-only full-A Quant factor selection shadow on strict Parquet data.
 
-The runner promotes one governed zero-weight candidate only inside an in-memory
-registry.  It recomputes runtime factor components and four comparison arms,
-then writes measurement-only JSON/Markdown/Parquet evidence.  It never writes
-the formal factor registry or invokes market maintenance, analysis, portfolios,
-orders, brokers, providers, or execution.
+The runner loads an explicit self-hashed historical baseline, binds every
+factor to its raw registry-record content, and promotes one governed zero-weight
+candidate only inside an in-memory registry. It recomputes runtime factor
+components and four comparison arms, then writes measurement-only
+JSON/Markdown/Parquet evidence. It never writes the formal factor registry or
+invokes market maintenance, analysis, portfolios, orders, brokers, providers,
+or execution.
 """
 
 from __future__ import annotations
@@ -33,9 +35,13 @@ from quant_investor.factors.governance import (  # noqa: E402
     FactorLifecycleState,
     FactorRecord,
 )
+from quant_investor.factors.historical_shadow import (  # noqa: E402
+    load_historical_shadow_baseline,
+)
 from quant_investor.factors.runtime import (  # noqa: E402
     MinedFactorRegistry,
     MinedFactorScorer,
+    REPORT_ONLY_SHADOW_RUNTIME_MODE,
     _price_volume_required_lookback_rows,
     score_with_mined_factors,
 )
@@ -45,7 +51,7 @@ from quant_investor.factors.shadow_scoring import (  # noqa: E402
 from quant_investor.market.market_data_reader import MarketDataReader  # noqa: E402
 
 
-SCHEMA_VERSION = "2026-07-11.quant-factor-selection-shadow.v1"
+SCHEMA_VERSION = "2026-07-12.quant-factor-selection-shadow.v2"
 DEFAULT_REGISTRY_PATH = Path("quant_investor/factor_registry/mined_factors.json")
 DEFAULT_CANDIDATE = "fund_fin_net_profit_yoy"
 DEFAULT_SHADOW_EFFECTIVE_SHARE = 0.03
@@ -55,9 +61,9 @@ DEFAULT_MIN_SYMBOL_LOAD_COVERAGE = 0.95
 DEFAULT_MIN_AS_OF_BAR_COVERAGE = 0.90
 DEFAULT_MIN_CANDIDATE_COVERAGE = 0.60
 DEFAULT_STATE_DIR = Path("reports/factor_governance/selection_shadow/_state")
-PREREGISTRATION_FILENAME = "preregistration_v2.json"
-BASELINE_CONTRACT_FILENAME = "baseline_contract_v2.json"
-OBSERVATION_LEDGER_FILENAME = "observation_ledger_v2.jsonl"
+PREREGISTRATION_FILENAME = "preregistration_v3.json"
+BASELINE_CONTRACT_FILENAME = "baseline_contract_v3.json"
+OBSERVATION_LEDGER_FILENAME = "observation_ledger_v3.jsonl"
 SCORE_FILENAME = "quant_factor_selection_shadow_scores.parquet"
 JSON_FILENAME = "quant_factor_selection_shadow.json"
 MARKDOWN_FILENAME = "quant_factor_selection_shadow.md"
@@ -131,7 +137,9 @@ def governed_experiment_config(
     """Return every governed experiment parameter that can affect acceptance."""
 
     return {
-        "expected_production_factor_count": int(expected_production_factor_count),
+        "expected_historical_baseline_factor_count": int(
+            expected_production_factor_count
+        ),
         "lookback_calendar_days": int(lookback_calendar_days),
         "min_symbol_load_coverage": float(min_symbol_load_coverage),
         "min_as_of_bar_coverage": float(min_as_of_bar_coverage),
@@ -145,14 +153,17 @@ def governed_experiment_config(
 
 def preregistration_policy() -> dict[str, Any]:
     return {
-        "schema_version": "2026-07-11.quant-factor-selection-preregistration.v2",
+        "schema_version": "2026-07-12.quant-factor-selection-preregistration.v3",
         "scope": "Quant-score selection shadow",
         "primary_candidate": "fund_fin_net_profit_yoy",
         "fallback_candidate": "fund_fin_net_profit_yoy_60d",
         "research_only_candidate": "formula_mom120_np_yoy_resid_w30",
         "research_only_runtime_eligible": False,
         "arms": {
-            "A": "all selectable old production factors at registry weights",
+            "A": (
+                "all factors from an explicit hash-bound historical baseline "
+                "manifest at manifest shadow weights"
+            ),
             "B_i": "remove one old production factor",
             "C_i": "B_i plus candidate at removed factor absolute weight",
             "D": "A plus candidate at 3 percent effective absolute-weight share",
@@ -167,6 +178,8 @@ def preregistration_policy() -> dict[str, Any]:
         ),
         "formal_registry_write_allowed": False,
         "production_factor_promotion_allowed": False,
+        "historical_baseline_manifest_required": True,
+        "historical_records_become_production_selectable": False,
         "complete_production_screening_effect_claimed": False,
         "experiment_config": governed_experiment_config(),
     }
@@ -194,7 +207,7 @@ def ensure_preregistration(
     blockers: list[str] = []
     if not path.exists():
         payload = {
-            "schema_version": "2026-07-11.quant-factor-selection-preregistration-file.v2",
+            "schema_version": "2026-07-12.quant-factor-selection-preregistration-file.v3",
             "created_at": created_at,
             "policy_sha256": expected_hash,
             "policy": expected_policy,
@@ -260,7 +273,7 @@ def ensure_baseline_contract(
         }
         contract_hash = _sha256_bytes(_canonical_json_bytes(immutable_payload))
         payload = {
-            "schema_version": "2026-07-11.quant-factor-selection-baseline-contract.v2",
+            "schema_version": "2026-07-12.quant-factor-selection-baseline-contract.v3",
             "created_at": created_at,
             "contract_sha256": contract_hash,
             **immutable_payload,
@@ -347,9 +360,27 @@ def build_baseline_identity(
     candidate: FactorRecord,
     *,
     experiment_config: Mapping[str, Any] | None = None,
+    historical_baseline_audit: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
-        "production_factors": [
+        "historical_baseline_manifest": {
+            "baseline_id": str(
+                dict(historical_baseline_audit or {}).get("baseline_id") or ""
+            ),
+            "manifest_sha256": str(
+                dict(historical_baseline_audit or {}).get("manifest_sha256")
+                or ""
+            ),
+            "source_record_sha256_by_name": dict(
+                dict(historical_baseline_audit or {}).get(
+                    "source_record_sha256_by_name", {}
+                )
+                or {}
+            ),
+            "runtime_mode": "report_only_shadow",
+            "production_eligible": False,
+        },
+        "historical_baseline_factors": [
             {
                 "name": record.name,
                 "weight": float(record.weight),
@@ -463,18 +494,26 @@ def validate_registry_contract(
     *,
     candidate_name: str,
     expected_production_factor_count: int,
+    historical_baseline_records: Sequence[FactorRecord] | None = None,
 ) -> tuple[list[FactorRecord], FactorRecord | None, list[str]]:
     blockers: list[str] = []
     if registry.metadata.get("missing"):
         blockers.append("registry_missing")
     if registry.metadata.get("load_error"):
         blockers.append(f"registry_load_error:{registry.metadata['load_error']}")
-    production = registry.selectable_factors()
+    production = list(historical_baseline_records or [])
+    if historical_baseline_records is None:
+        blockers.append("historical_baseline_manifest_required")
     if len(production) != int(expected_production_factor_count):
         blockers.append(
-            "production_factor_count_mismatch:"
+            "historical_baseline_factor_count_mismatch:"
             f"expected={expected_production_factor_count}:actual={len(production)}"
         )
+    baseline_names = [record.name for record in production]
+    if len(baseline_names) != len(set(baseline_names)):
+        blockers.append("historical_baseline_factor_names_not_unique")
+    if candidate_name in baseline_names:
+        blockers.append("candidate_present_in_historical_baseline")
     matches = [record for record in registry.factors if record.name == candidate_name]
     candidate = matches[0] if len(matches) == 1 else None
     if len(matches) != 1:
@@ -564,7 +603,10 @@ def compute_runtime_components(
     """Compute signed normalized components with the exact runtime transforms."""
 
     symbols = [str(symbol) for symbol in frames if str(symbol).strip()]
-    scorer = MinedFactorScorer(MinedFactorRegistry.from_records(records))
+    scorer = MinedFactorScorer(
+        MinedFactorRegistry.from_records(records),
+        runtime_mode=REPORT_ONLY_SHADOW_RUNTIME_MODE,
+    )
     components: dict[str, pd.Series] = {}
     details: dict[str, dict[str, Any]] = {}
     skipped: dict[str, str] = {}
@@ -951,6 +993,7 @@ def _render_markdown(payload: Mapping[str, Any]) -> str:
         f"- Generated at: `{payload.get('generated_at')}`",
         f"- Snapshot: `{snapshot.get('snapshot_id', '')}` / `{snapshot.get('latest_complete_trade_date', '')}`",
         f"- Registry write: `{payload.get('registry_update_status')}`",
+        f"- Historical baseline manifest: `{payload.get('registry', {}).get('historical_baseline_manifest', {}).get('manifest_sha256')}`",
         f"- Baseline contract: `{payload.get('baseline_contract', {}).get('status')}` / `{payload.get('baseline_contract', {}).get('actual_contract_sha256')}`",
         f"- Candidate: `{candidate.get('name', '')}`",
         f"- Candidate monthly RankIC count: `{candidate.get('maturity', {}).get('monthly_rankic_count')}`",
@@ -1015,6 +1058,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", type=Path, default=Path("data"))
     parser.add_argument("--registry-path", type=Path, default=DEFAULT_REGISTRY_PATH)
+    parser.add_argument(
+        "--historical-baseline-manifest",
+        type=Path,
+        default=None,
+        help=(
+            "Required self-hashed old-factor manifest. Omitting it produces a "
+            "fail-closed report; selectable registry count is never used as A_old14."
+        ),
+    )
     parser.add_argument("--candidate", default=DEFAULT_CANDIDATE)
     parser.add_argument(
         "--candidate-shadow-weight",
@@ -1032,6 +1084,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--expected-production-factor-count",
         type=int,
         default=DEFAULT_EXPECTED_PRODUCTION_FACTOR_COUNT,
+        help=(
+            "Legacy flag name: expected factor count in the explicit historical "
+            "shadow baseline, not the current selectable production count."
+        ),
     )
     parser.add_argument(
         "--lookback-calendar-days",
@@ -1110,10 +1166,42 @@ def run_shadow(args: argparse.Namespace) -> tuple[dict[str, Any], Path]:
     pointer_hash_before = _sha256_file(latest_pointer)
 
     registry = MinedFactorRegistry.load(registry_path)
+    historical_baseline_audit: dict[str, Any] = {
+        "status": "blocked",
+        "production_eligible": False,
+        "formal_registry_mutated": False,
+    }
+    historical_baseline_records: list[FactorRecord] | None = None
+    if args.historical_baseline_manifest is None:
+        blockers.append("historical_baseline_manifest_required")
+    else:
+        try:
+            historical_registry, historical_baseline_audit = (
+                load_historical_shadow_baseline(
+                    manifest_path=args.historical_baseline_manifest,
+                    registry_path=registry_path,
+                    expected_factor_count=int(
+                        args.expected_production_factor_count
+                    ),
+                )
+            )
+            historical_baseline_records = list(historical_registry.factors)
+            historical_baseline_audit = {
+                **historical_baseline_audit,
+                "status": "verified",
+            }
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            blockers.append(f"historical_baseline_manifest_blocked:{exc}")
+            historical_baseline_audit = {
+                **historical_baseline_audit,
+                "manifest_path": str(args.historical_baseline_manifest),
+                "blocker": str(exc),
+            }
     production, candidate, registry_blockers = validate_registry_contract(
         registry,
         candidate_name=str(args.candidate),
         expected_production_factor_count=int(args.expected_production_factor_count),
+        historical_baseline_records=historical_baseline_records,
     )
     blockers.extend(registry_blockers)
     baseline_contract: dict[str, Any] = {
@@ -1127,6 +1215,7 @@ def run_shadow(args: argparse.Namespace) -> tuple[dict[str, Any], Path]:
                 production,
                 candidate,
                 experiment_config=experiment_config,
+                historical_baseline_audit=historical_baseline_audit,
             ),
             start_audit={
                 "snapshot_id": str(snapshot.get("snapshot_id") or ""),
@@ -1221,7 +1310,11 @@ def run_shadow(args: argparse.Namespace) -> tuple[dict[str, Any], Path]:
         if not old_skipped:
             direct_old = score_with_mined_factors(
                 frames,
-                registry=MinedFactorRegistry.from_records(production),
+                registry=MinedFactorRegistry(
+                    factors=list(production),
+                    metadata={"historical_shadow_only": True},
+                ),
+                runtime_mode=REPORT_ONLY_SHADOW_RUNTIME_MODE,
             )
             composed_old = combine_runtime_components(
                 components,
@@ -1243,6 +1336,7 @@ def run_shadow(args: argparse.Namespace) -> tuple[dict[str, Any], Path]:
             direct_candidate = score_with_mined_factors(
                 frames,
                 registry=MinedFactorRegistry.from_records([candidate_shadow]),
+                runtime_mode=REPORT_ONLY_SHADOW_RUNTIME_MODE,
             )
             candidate_series = components[candidate.name]
             direct_candidate_series = pd.Series(
@@ -1341,13 +1435,16 @@ def run_shadow(args: argparse.Namespace) -> tuple[dict[str, Any], Path]:
         observation_ledger, ledger_blockers = append_observation_once(
             Path(args.state_dir) / OBSERVATION_LEDGER_FILENAME,
             {
-                "schema_version": "2026-07-11.quant-factor-selection-observation.v2",
+                "schema_version": "2026-07-12.quant-factor-selection-observation.v3",
                 "observation_key": observation_key,
                 "generated_at": generated_at,
                 "snapshot_id": str(snapshot.get("snapshot_id") or ""),
                 "as_of": as_of,
                 "candidate": candidate.name,
                 "registry_sha256": registry_hash_after,
+                "historical_baseline_manifest_sha256": (
+                    historical_baseline_audit.get("manifest_sha256")
+                ),
                 "preregistration_policy_sha256": preregistration.get(
                     "actual_policy_sha256"
                 ),
@@ -1367,6 +1464,7 @@ def run_shadow(args: argparse.Namespace) -> tuple[dict[str, Any], Path]:
     candidate_metrics = dict(candidate.metrics) if candidate is not None else {}
     maturity_count = candidate_metrics.get("rank_ic_count")
     maturity_ready = bool(maturity_count is not None and int(maturity_count) >= 12)
+    blockers = list(dict.fromkeys(blockers))
     payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "status": "passed" if not blockers else "blocked",
@@ -1388,8 +1486,17 @@ def run_shadow(args: argparse.Namespace) -> tuple[dict[str, Any], Path]:
             "sha256_before": registry_hash_before,
             "sha256_after": registry_hash_after,
             "unchanged": registry_hash_before == registry_hash_after,
-            "production_factor_count": len(production),
-            "production_factor_names": [record.name for record in production],
+            "current_selectable_factor_count": len(
+                registry.selectable_factors()
+            ),
+            "current_selectable_factor_names": [
+                record.name for record in registry.selectable_factors()
+            ],
+            "historical_baseline_factor_count": len(production),
+            "historical_baseline_factor_names": [
+                record.name for record in production
+            ],
+            "historical_baseline_manifest": historical_baseline_audit,
         },
         "candidate": {
             "name": candidate.name if candidate is not None else str(args.candidate),
@@ -1456,7 +1563,7 @@ def run_shadow(args: argparse.Namespace) -> tuple[dict[str, Any], Path]:
         "baseline_contract": baseline_contract,
         "observation_ledger": observation_ledger,
         "arm_protocol": {
-            "A": "old14 baseline",
+            "A": "manifest-bound historical old14 baseline (report-only)",
             "B_i": "leave one old factor out (LOO13)",
             "C_i": (
                 "LOO13 plus candidate at the removed factor's actual absolute weight "
@@ -1489,6 +1596,10 @@ def run_shadow(args: argparse.Namespace) -> tuple[dict[str, Any], Path]:
                 "RiskGuard/ICCoordinator/PortfolioConstructor",
             ],
             "complete_production_screening_effect_claimed": False,
+            "full_v13_dag_evidence_claimed": False,
+            "full_v13_dag_blocker": (
+                "canonical_full_chain_replay_producer_unavailable"
+            ),
         },
         "scope_limitations": [
             {

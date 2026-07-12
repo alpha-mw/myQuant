@@ -359,45 +359,94 @@ def _build_global_quant_verdict(
     *,
     cross_section_quant: Mapping[str, Any],
     symbol_count: int,
+    quant_result: BranchResult | None = None,
 ) -> BranchVerdict:
     average_return = float(cross_section_quant.get("average_return", 0.0))
     average_volatility = float(cross_section_quant.get("average_volatility", 0.0))
     breadth = float(cross_section_quant.get("breadth", 0.0))
     candidate_count = int(cross_section_quant.get("candidate_count", symbol_count))
     sample_count = int(cross_section_quant.get("sample_count", candidate_count))
-    score = _clamp(
-        average_return * 8.0 + (breadth - 0.5) * 0.6 - average_volatility * 0.4, -1.0, 1.0
+    quant_metadata = dict((quant_result.metadata if quant_result else {}) or {})
+    runtime_metadata = dict(quant_metadata.get("mined_factor_runtime", {}) or {})
+    governance_status = str(
+        quant_metadata.get("governance_status")
+        or runtime_metadata.get("governance_status")
+        or "governance_blocked"
     )
-    confidence = _clamp(
-        0.35 + min(sample_count, max(symbol_count, 1)) / max(symbol_count, 1) * 0.12, 0.0, 1.0
+    factor_mode = str(
+        quant_metadata.get("factor_mode")
+        or runtime_metadata.get("factor_mode")
+        or "governance_blocked"
+    )
+    production_eligible = bool(
+        quant_metadata.get(
+            "production_eligible",
+            runtime_metadata.get("production_eligible", False),
+        )
+    )
+    production_quant_evidence = bool(
+        quant_result is not None
+        and governance_status == "ready"
+        and factor_mode == "governed_mined_factors"
+        and production_eligible
+        and np.isfinite(float(quant_result.final_score))
+        and np.isfinite(float(quant_result.final_confidence))
+    )
+    score = float(quant_result.final_score) if production_quant_evidence else 0.0
+    confidence = (
+        _clamp(float(quant_result.final_confidence), 0.0, 1.0)
+        if production_quant_evidence
+        else 0.0
     )
     thesis = (
-        "横截面量化结果已在全局上下文中一次性计算并收敛。"
-        if score >= 0
-        else "横截面量化结果显示全局环境偏谨慎，需降低预期。"
+        "全局 Quant 汇总仅使用 FactorGovernanceProtocol v2 合资格生产因子结果。"
+        if production_quant_evidence
+        else (
+            "FactorGovernanceProtocol v2 未授权生产 Quant 证据；"
+            "横截面收益、波动率和广度仅作诊断。"
+        )
     )
+    runtime_blockers = [
+        str(item)
+        for item in runtime_metadata.get("runtime_blockers", []) or []
+        if str(item).strip()
+    ]
     return BranchVerdict(
         agent_name="quant",
         thesis=thesis,
         symbol=None,
         final_score=score,
         final_confidence=confidence,
-        investment_risks=[
-            f"candidate_count={candidate_count}",
-            f"sample_count={sample_count}",
-            f"breadth={breadth:.3f}",
-        ],
+        investment_risks=(
+            [
+                f"candidate_count={candidate_count}",
+                f"sample_count={sample_count}",
+            ]
+            if production_quant_evidence
+            else [
+                f"production_quant_evidence_blocked:{governance_status}",
+                *[f"factor_runtime_blocker:{item}" for item in runtime_blockers],
+            ]
+        ),
         coverage_notes=[
-            "cross-sectional quant computed once in GlobalContext",
-            f"average_return={average_return:+.4f}",
-            f"average_volatility={average_volatility:.4f}",
+            "cross-section diagnostics computed once in GlobalContext",
+            f"diagnostic_average_return={average_return:+.4f}",
+            f"diagnostic_average_volatility={average_volatility:.4f}",
+            f"diagnostic_breadth={breadth:.3f}",
         ],
         diagnostic_notes=[
-            "global quant summary derived from shared context",
+            "global_quant_score_from_governance_aware_quant_result",
+            "cross_section_return_volatility_breadth_diagnostic_only",
         ],
         metadata={
             "branch_name": "quant",
             "global_context_only": True,
+            "source": "governance_aware_quant_result",
+            "governance_status": governance_status,
+            "factor_mode": factor_mode,
+            "production_eligible": production_eligible,
+            "production_quant_evidence": production_quant_evidence,
+            "cross_section_diagnostic_only": True,
             "candidate_count": candidate_count,
             "sample_count": sample_count,
             "average_return": average_return,
@@ -407,29 +456,18 @@ def _build_global_quant_verdict(
     )
 
 
-def _legacy_quant_symbol_scores(
-    frames: Mapping[str, pd.DataFrame],
-    *,
-    frame_summaries: Mapping[str, Mapping[str, Any]] | None = None,
-) -> dict[str, float]:
-    """Fallback quant proxy used only when no governed production factor is live."""
-    symbol_scores: dict[str, float] = {}
-    for symbol, frame in frames.items():
-        summary = dict((frame_summaries or {}).get(symbol, {}) or {})
-        if not summary:
-            summary = _frame_summary(frame)
-        score = summary["average_return"] * 8.0 - summary["volatility"] * 2.0
-        symbol_scores[symbol] = _clamp(score, -1.0, 1.0)
-    return symbol_scores
-
-
 def _build_quant_branch_result(
     *,
     frames: Mapping[str, pd.DataFrame],
     frame_summaries: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> BranchResult:
     mined = score_with_mined_factors(frames)
-    if mined.factor_count > 0:
+    runtime_ready = bool(
+        mined.factor_count > 0
+        and mined.production_eligible
+        and mined.governance_status == "ready"
+    )
+    if runtime_ready:
         symbol_scores = dict(mined.symbol_scores)
         factors_used = list(mined.factors_used)
         factor_mode = "governed_mined_factors"
@@ -450,35 +488,59 @@ def _build_quant_branch_result(
         metadata = {
             "reliability": _clamp(0.72 + min(mined.factor_count, 5) * 0.03, 0.0, 0.90),
             "factor_mode": factor_mode,
+            "governance_status": mined.governance_status,
+            "confidence_multiplier": float(mined.confidence_multiplier),
+            "production_eligible": bool(mined.production_eligible),
+            "runtime_mode": mined.runtime_mode,
+            "legacy_fallback_allowed": False,
             "mined_factor_runtime": mined.to_metadata(),
         }
     else:
-        symbol_scores = _legacy_quant_symbol_scores(
-            frames,
-            frame_summaries=frame_summaries,
+        symbol_scores = {str(symbol): 0.0 for symbol in frames}
+        factors_used = []
+        factor_mode = "governance_blocked"
+        conclusion = (
+            "横截面量化分支没有通过 FactorGovernanceProtocol v2 完整运行时契约的因子，"
+            "按治理协议阻断；"
+            "不会回退到收益/波动率代理。"
         )
-        factors_used = ["short_term_return", "volatility_penalty"]
-        factor_mode = "legacy_proxy_fallback"
-        conclusion = "横截面量化分支未发现可用 production mined factors，回退到收益/波动率代理。"
         investment_risks = [
-            "没有已通过 8 道门并被人工确认为 production_factor 的 mined factor。",
-            "当前仅使用 legacy short-term-return / volatility-penalty proxy。",
+            "当前 selectable 记录未通过 v2 protocol/set/slot/budget/evidence 完整门禁。",
+            "量化分支置信度为 0；legacy proxy fallback 被禁止。",
         ]
-        coverage_notes = [f"symbols={len(symbol_scores)}", "legacy_fallback_until_factor_approval"]
+        coverage_notes = [
+            f"symbols={len(symbol_scores)}",
+            "governance_blocked_no_protocol_eligible_production_factor",
+        ]
         diagnostic_notes = [
             "global_quant_branch_result",
-            "mined_factor_registry_empty_or_not_selectable",
+            "mined_factor_runtime_contract_not_ready",
+            "legacy_fallback_forbidden",
+            *[f"factor_runtime_blocker:{item}" for item in mined.runtime_blockers],
         ]
         metadata = {
-            "reliability": 0.55,
+            "reliability": 0.0,
             "factor_mode": factor_mode,
+            "governance_status": "governance_blocked",
+            "confidence_multiplier": 0.0,
+            "production_eligible": False,
+            "runtime_mode": mined.runtime_mode,
+            "legacy_fallback_allowed": False,
             "mined_factor_runtime": mined.to_metadata(),
         }
     return BranchResult(
         branch_name="quant",
         final_score=float(fmean(symbol_scores.values()) if symbol_scores else 0.0),
-        final_confidence=_clamp(
-            0.38 + min(len(symbol_scores), 50) / 120.0 + min(mined.factor_count, 5) * 0.02, 0.0, 1.0
+        final_confidence=(
+            _clamp(
+                0.38
+                + min(len(symbol_scores), 50) / 120.0
+                + min(mined.factor_count, 5) * 0.02,
+                0.0,
+                1.0,
+            )
+            if runtime_ready
+            else 0.0
         ),
         symbol_scores=symbol_scores,
         conclusion=conclusion,
@@ -500,12 +562,13 @@ def _build_symbol_quant_verdict(
     quant_result: BranchResult,
 ) -> BranchVerdict:
     score = float(quant_result.symbol_scores.get(symbol, quant_result.final_score))
-    factor_mode = str(quant_result.metadata.get("factor_mode", "legacy_proxy_fallback"))
-    thesis = (
-        "量化分支基于已治理 production mined factors 给出 deterministic 结论。"
-        if factor_mode == "governed_mined_factors"
-        else "量化分支当前基于收益/波动率横截面代理给出 deterministic 结论。"
+    factor_mode = str(
+        quant_result.metadata.get("factor_mode", "governance_blocked")
     )
+    if factor_mode == "governed_mined_factors":
+        thesis = "量化分支基于已治理 production mined factors 给出 deterministic 结论。"
+    else:
+        thesis = "量化分支缺少合资格 production factor，证据被治理协议阻断。"
     return BranchVerdict(
         agent_name="quant",
         thesis=thesis,

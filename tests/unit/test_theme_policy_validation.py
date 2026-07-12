@@ -125,7 +125,9 @@ def test_malformed_json_line_is_error(tmp_path: Path) -> None:
 
 
 def test_example_file_validates_without_errors_or_unexpected_warnings() -> None:
-    issues = validate_policy_event_jsonl(REPO_ROOT / "data" / "theme_policy_events.example.jsonl")
+    issues = validate_policy_event_jsonl(
+        REPO_ROOT / "quant_investor" / "themes" / "data" / "theme_policy_events.example.jsonl"
+    )
     allowed_warnings = {"missing_source_url"}
 
     assert not [issue for issue in issues if issue.severity == "error"]
