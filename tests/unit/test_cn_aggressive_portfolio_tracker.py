@@ -349,6 +349,82 @@ def test_parquet_canonical_completeness_rejects_contaminated_scope_hash():
     ]
 
 
+def test_parquet_canonical_completeness_does_not_trust_runtime_allowlist():
+    class _FakeReader:
+        def snapshot(self):
+            return {
+                "healthy": True,
+                "snapshot_id": "runtime-allowlist",
+                "latest_complete_trade_date": "20260618",
+            }
+
+        def read_cross_section(self, trade_date, **_kwargs):
+            return pd.DataFrame(
+                {"ts_code": ["000001.SZ"], "trade_date": [trade_date]}
+            )
+
+    report = tracker.build_parquet_canonical_completeness_report(
+        reader=_FakeReader(),
+        components={
+            "full_a": ["000001.SZ", "000002.SZ"],
+            "hs300": [],
+            "zz500": [],
+            "zz1000": [],
+        },
+        allowed_stale_symbols=["000002.SZ"],
+    )
+
+    assert report["complete"] is False
+    assert report["blocking_incomplete_count"] == 1
+    assert report["requested_allowed_stale_symbols"] == ["000002.SZ"]
+    assert report["unverified_allowed_stale_symbols"] == ["000002.SZ"]
+    assert report["categories"]["full_a"]["blocking_missing_symbols"] == [
+        "000002.SZ"
+    ]
+
+
+def test_parquet_canonical_completeness_rejects_persisted_generic_allowlist():
+    full_a = ["000001.SZ", "000002.SZ"]
+    scope_sha = hashlib.sha256("\n".join(full_a).encode("utf-8")).hexdigest()
+
+    class _FakeReader:
+        def snapshot(self):
+            return {
+                "healthy": True,
+                "snapshot_id": "persisted-allowlist",
+                "latest_complete_trade_date": "20260618",
+                "coverage": {
+                    "complete": True,
+                    "blocking_incomplete_count": 0,
+                    "expected_scope_count": 2,
+                    "coverage_trade_date": "20260618",
+                    "expected_scope_sha256": scope_sha,
+                    "allowed_stale_symbols": ["000002.SZ"],
+                },
+            }
+
+        def read_cross_section(self, trade_date, **_kwargs):
+            return pd.DataFrame(
+                {"ts_code": ["000001.SZ"], "trade_date": [trade_date]}
+            )
+
+    report = tracker.build_parquet_canonical_completeness_report(
+        reader=_FakeReader(),
+        components={
+            "full_a": full_a,
+            "hs300": [],
+            "zz500": [],
+            "zz1000": [],
+        },
+    )
+
+    assert report["complete"] is False
+    assert report["coverage_provenance_status"] == "unverified"
+    assert "coverage_unverified_allowed_stale_symbols_not_permitted" in (
+        report["coverage_provenance_blockers"]
+    )
+
+
 def test_data_snapshot_lines_render_string_suspended_symbols():
     lines = tracker._build_data_snapshot_lines(
         completeness_report={

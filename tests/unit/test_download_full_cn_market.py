@@ -905,6 +905,65 @@ def test_build_completeness_report_records_suspend_probe_exception(
     assert issue["message"] == "suspend probe failed"
 
 
+def test_suspend_cache_v2_is_requeried_and_rewritten_with_bound_evidence(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_module(monkeypatch, freshness_mode="strict")
+
+    class _SuspendPro(FakePro):
+        def __init__(self):
+            super().__init__()
+            self.suspend_calls: list[dict[str, str]] = []
+
+        def suspend_d(self, **kwargs):
+            self.suspend_calls.append(dict(kwargs))
+            return pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000002.SZ",
+                        "trade_date": "20260316",
+                        "suspend_type": "S",
+                    }
+                ]
+            )
+
+    fake_pro = _SuspendPro()
+    monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
+    downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
+    cache_path = downloader._suspend_cache_path("20260316")
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "trade_date": "20260316",
+                "symbols": ["999999.SZ"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    symbols = downloader._load_latest_suspended_symbols("20260316")
+
+    assert symbols == {"000002.SZ"}
+    assert fake_pro.suspend_calls
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    declared_sha256 = payload.pop("payload_sha256")
+    computed_sha256 = module.hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    assert payload["version"] == 3
+    assert payload["query_succeeded"] is True
+    assert payload["source"] == "tushare.suspend_d"
+    assert declared_sha256 == computed_sha256
+
+
 def test_load_active_listing_dates_uses_pit_universe_when_enabled(
     monkeypatch,
     tmp_path,

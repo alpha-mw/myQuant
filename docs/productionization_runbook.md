@@ -386,6 +386,33 @@ Parquet is the canonical runtime store. CSV deletion flags only apply to legacy
 human export cleanup; production market-data reads must use the Parquet store or
 JSON manifests.
 
+### CN Canonical Coverage Provenance Gate
+
+For every CN target date, full-A coverage is the pairwise-disjoint union of
+symbols with an observed bar, exact-date verified suspended symbols without a
+bar, date-proven inactive/pre-listing symbols without a bar, and true missing
+symbols. The union must equal that date's PIT expected scope. A missing bar is
+therefore not itself a failure; only an active, already-listed, non-suspended
+symbol without a bar is a blocking `true_missing_symbol`.
+
+Suspension evidence must come from a successful exact-date `suspend_d` query and
+the v3 cache contract, including the trade date, query variant, source, symbols,
+timestamp, and reproducible payload SHA. Inactive/pre-listing evidence requires
+`list_date > target_date` or a non-empty `delist_date <= target_date`. Current
+status alone is not sufficient historical evidence. A generic
+`--allowed-stale-symbols` list is diagnostic only and produces
+`unverified_allowed_stale_symbols_not_permitted`; it cannot clear a coverage
+blocker.
+
+Historical upserts require verified latest-date coverage and must preserve the
+latest coverage date, scope SHA, classification sets, and canonical fingerprint.
+Historical-target evidence is stored separately under
+`historical_upsert_target_coverage`. The narrow exception is an exact same-date
+republish that repairs a provenance-only quarantine. After any canonical write,
+validation must parse the JSON result and require `status=passed`, empty
+`blockers`, and empty `coverage_provenance_blockers`; process exit code alone is
+not sufficient.
+
 Focused gate:
 
 ```bash

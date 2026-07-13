@@ -110,6 +110,14 @@ def _complete_coverage_blockers(
     ):
         blockers.append("coverage_expected_scope_sha256_invalid")
 
+    allowed_stale_symbols = [
+        str(symbol).strip().upper()
+        for symbol in list(coverage.get("allowed_stale_symbols", []) or [])
+        if str(symbol).strip()
+    ]
+    if allowed_stale_symbols:
+        blockers.append("coverage_unverified_allowed_stale_symbols_not_permitted")
+
     blocking_incomplete_count = _coverage_integer(
         coverage.get("blocking_incomplete_count")
     )
@@ -146,6 +154,50 @@ def _complete_coverage_blockers(
         coverage_ratio = math.nan
     if not math.isfinite(coverage_ratio) or coverage_ratio != 1.0:
         blockers.append("coverage_ratio_not_one")
+
+    if str(coverage.get("coverage_schema_version") or "") == "cn-full-a-coverage.v2":
+        def _symbol_set(key: str) -> set[str]:
+            raw = coverage.get(key, []) or []
+            if not isinstance(raw, (list, tuple, set)):
+                blockers.append(f"coverage_{key}_invalid")
+                return set()
+            normalized = {
+                str(symbol).strip().upper()
+                for symbol in raw
+                if str(symbol).strip()
+            }
+            if len(normalized) != len(raw):
+                blockers.append(f"coverage_{key}_contains_duplicates_or_empty")
+            return normalized
+
+        suspended = _symbol_set("suspended_symbols")
+        inactive = _symbol_set("inactive_symbols")
+        allowed = _symbol_set("allowed_stale_symbols")
+        non_blocking_absent = _symbol_set("non_blocking_absent_symbols")
+        true_missing = _symbol_set("true_missing_symbols")
+        classification_sets = [suspended, inactive, allowed, true_missing]
+        if coverage.get("classification_sets_disjoint") is not True or any(
+            left & right
+            for index, left in enumerate(classification_sets)
+            for right in classification_sets[index + 1 :]
+        ):
+            blockers.append("coverage_classification_sets_not_disjoint")
+        declared_non_blocking = suspended | inactive | allowed
+        if declared_non_blocking != non_blocking_absent:
+            blockers.append("coverage_non_blocking_absent_union_mismatch")
+        if true_missing:
+            blockers.append(
+                f"coverage_true_missing_symbols_nonempty:{len(true_missing)}"
+            )
+        observed_bar_count = _coverage_integer(coverage.get("observed_bar_count"))
+        if observed_bar_count is None or observed_bar_count < 0:
+            blockers.append("coverage_observed_bar_count_missing_or_invalid")
+        elif (
+            coverage_complete_count is not None
+            and observed_bar_count + len(non_blocking_absent)
+            != coverage_complete_count
+        ):
+            blockers.append("coverage_classification_union_count_mismatch")
     return blockers
 
 

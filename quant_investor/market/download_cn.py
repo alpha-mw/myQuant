@@ -11,6 +11,7 @@ Download Full China A-Share Market Data - 下载完整A股市场数据
 
 from __future__ import annotations
 
+import hashlib
 import os
 from collections import Counter
 from pathlib import Path
@@ -1137,10 +1138,25 @@ class CNFullMarketDownloader:
         try:
             if disk_path.exists():
                 raw = json.loads(disk_path.read_text(encoding="utf-8"))
+                canonical_payload = dict(raw) if isinstance(raw, dict) else {}
+                declared_payload_sha256 = str(
+                    canonical_payload.pop("payload_sha256", "") or ""
+                ).strip().lower()
+                computed_payload_sha256 = hashlib.sha256(
+                    json.dumps(
+                        canonical_payload,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()
                 if (
                     isinstance(raw, dict)
-                    and raw.get("version") == 2
+                    and raw.get("version") == 3
                     and str(raw.get("trade_date") or "") == target_trade_date
+                    and raw.get("query_succeeded") is True
+                    and str(raw.get("source") or "") == "tushare.suspend_d"
+                    and declared_payload_sha256 == computed_payload_sha256
                 ):
                     symbols: Set[str] = {
                         str(symbol).upper()
@@ -1187,37 +1203,48 @@ class CNFullMarketDownloader:
 
         try:
             symbols: Set[str] = set()
+            query_succeeded = False
+            query_variant = ""
+            last_query_error: Exception | None = None
             for query in ({"suspend_date": target_trade_date}, {"trade_date": target_trade_date}):
                 try:
                     suspend_df = self.pro.suspend_d(**query)
-                except TypeError as exc:
-                    self._record_data_quality_exception(
-                        func_name="_load_latest_suspended_symbols",
-                        exc=exc,
-                        issue_type="suspend_query_exception",
-                        as_of=target_trade_date,
-                        field_name=next(iter(query)),
-                        metadata={"query": query},
-                    )
+                except Exception as exc:
+                    last_query_error = exc
                     continue
+                query_succeeded = True
+                query_variant = next(iter(query))
                 query_symbols = _extract_target_symbols(suspend_df)
                 if query_symbols:
                     symbols = query_symbols
                     break
+            if not query_succeeded:
+                if last_query_error is not None:
+                    raise last_query_error
+                raise RuntimeError(f"suspend_d query failed for {target_trade_date}")
 
             # ── persist to disk cache (historic data is immutable) ──
             try:
                 disk_path.parent.mkdir(parents=True, exist_ok=True)
-                disk_path.write_text(
+                cache_payload = {
+                    "version": 3,
+                    "trade_date": target_trade_date,
+                    "query_succeeded": True,
+                    "query_variant": query_variant,
+                    "source": "tushare.suspend_d",
+                    "symbols": sorted(symbols),
+                    "updated_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                }
+                cache_payload["payload_sha256"] = hashlib.sha256(
                     json.dumps(
-                        {
-                            "version": 2,
-                            "trade_date": target_trade_date,
-                            "symbols": sorted(symbols),
-                            "updated_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
-                        },
+                        cache_payload,
                         ensure_ascii=False,
-                    ),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()
+                disk_path.write_text(
+                    json.dumps(cache_payload, ensure_ascii=False),
                     encoding="utf-8",
                 )
             except Exception as exc:

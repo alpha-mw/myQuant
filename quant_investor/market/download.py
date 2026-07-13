@@ -273,8 +273,23 @@ class CNParquetBatchMaintainer:
         allowed = self.downloader._normalize_allowed_symbols(allowed_stale_symbols)
         suspended_symbols = self.downloader._load_latest_suspended_symbols(target_trade_date)
         inactive_symbols = self._load_inactive_symbols(target_trade_date, target_symbols)
-        non_blocking_absent = (allowed | suspended_symbols | inactive_symbols) & target_symbols
-        missing_daily = sorted(target_symbols - daily_symbols - non_blocking_absent)
+        scope_suspended_symbols = suspended_symbols & target_symbols
+        scope_inactive_symbols = inactive_symbols & target_symbols
+        scope_allowed_symbols = allowed & target_symbols
+        observed_target_symbols = daily_symbols & target_symbols
+        inactive_absent = scope_inactive_symbols - daily_symbols
+        suspended_absent = (
+            scope_suspended_symbols - daily_symbols - inactive_absent
+        )
+        allowed_absent = (
+            scope_allowed_symbols
+            - daily_symbols
+            - inactive_absent
+            - suspended_absent
+        )
+        non_blocking_absent = suspended_absent | inactive_absent
+        true_missing_symbols = target_symbols - observed_target_symbols - non_blocking_absent
+        missing_daily = sorted(true_missing_symbols)
         bars_frame = self._build_bars_frame(daily_df, adj_df, daily_basic_df)
         valid_adj_symbols: set[str] = set()
         if not bars_frame.empty and "adj_factor" in bars_frame.columns:
@@ -303,8 +318,10 @@ class CNParquetBatchMaintainer:
             blockers.append("adj_factor_missing")
         if adj_error:
             blockers.append(f"adj_factor_endpoint_error:{adj_error}")
+        if scope_allowed_symbols:
+            blockers.append("unverified_allowed_stale_symbols_not_permitted")
         expected_count = len(target_symbols)
-        coverage_complete_count = len((daily_symbols & target_symbols) | non_blocking_absent)
+        coverage_complete_count = len(observed_target_symbols | non_blocking_absent)
         coverage_ratio = coverage_complete_count / expected_count if expected_count else 1.0
         complete = not blockers
         existing_latest_available = ""
@@ -337,8 +354,11 @@ class CNParquetBatchMaintainer:
             coverage_ratio=coverage_ratio,
             missing_daily=missing_daily,
             missing_adj=missing_adj,
-            suspended_symbols=sorted(non_blocking_absent),
-            inactive_symbols=sorted(inactive_symbols & target_symbols),
+            suspended_symbols=sorted(suspended_absent),
+            inactive_symbols=sorted(inactive_absent),
+            requested_allowed_stale_symbols=sorted(scope_allowed_symbols),
+            requested_allowed_absent_symbols=sorted(allowed_absent),
+            non_blocking_absent_symbols=sorted(non_blocking_absent),
             blockers=blockers,
             early_stop_reason=early_stop_reason,
         )
@@ -365,10 +385,12 @@ class CNParquetBatchMaintainer:
                     "latest_available_trade_date": commit_latest_available,
                     "latest_complete_trade_date": commit_latest_complete,
                     "coverage": {
+                        "coverage_schema_version": "cn-full-a-coverage.v2",
                         "complete": True,
                         "coverage_ratio": coverage_ratio,
                         "coverage_complete_count": coverage_complete_count,
                         "expected_scope_count": expected_count,
+                        "observed_bar_count": len(observed_target_symbols),
                         "blocking_incomplete_count": 0,
                         "categories_checked": list(target_categories),
                         "latest_available_trade_date": commit_latest_available,
@@ -376,10 +398,16 @@ class CNParquetBatchMaintainer:
                         "upsert_target_trade_date": target_trade_date,
                         "coverage_trade_date": target_trade_date,
                         "expected_scope_sha256": expected_scope_sha256,
-                        "suspended_symbols": sorted(suspended_symbols & target_symbols),
-                        "allowed_stale_symbols": sorted(allowed & target_symbols),
+                        "suspended_symbols": sorted(suspended_absent),
+                        "inactive_symbols": sorted(inactive_absent),
+                        "allowed_stale_symbols": [],
+                        "requested_allowed_stale_symbols": sorted(scope_allowed_symbols),
+                        "requested_allowed_absent_symbols": sorted(allowed_absent),
                         "non_blocking_absent_symbols": sorted(non_blocking_absent),
-                        "inactive_symbols": sorted(inactive_symbols & target_symbols),
+                        "true_missing_symbols": [],
+                        "classification_sets_disjoint": True,
+                        "suspended_evidence_symbols": sorted(scope_suspended_symbols),
+                        "inactive_evidence_symbols": sorted(scope_inactive_symbols),
                         "daily_basic_coverage": daily_basic_coverage,
                         "adj_factor_coverage": adj_factor_coverage,
                     },
@@ -399,20 +427,28 @@ class CNParquetBatchMaintainer:
                 "latest_trade_date": latest_complete,
                 "quarantined_tail_dates": [target_trade_date] if target_trade_date and target_trade_date != latest_complete else [],
                 "coverage": {
+                    "coverage_schema_version": "cn-full-a-coverage.v2",
                     "complete": False,
                     "coverage_ratio": coverage_ratio,
                     "coverage_complete_count": coverage_complete_count,
                     "expected_scope_count": expected_count,
+                    "observed_bar_count": len(observed_target_symbols),
                     "blocking_incomplete_count": len(missing_daily) + len(missing_adj),
                     "categories_checked": list(target_categories),
                     "latest_available_trade_date": target_trade_date,
                     "latest_complete_trade_date": latest_complete,
                     "coverage_trade_date": target_trade_date,
                     "expected_scope_sha256": expected_scope_sha256,
-                    "suspended_symbols": sorted(suspended_symbols & target_symbols),
-                    "allowed_stale_symbols": sorted(allowed & target_symbols),
+                    "suspended_symbols": sorted(suspended_absent),
+                    "inactive_symbols": sorted(inactive_absent),
+                    "allowed_stale_symbols": [],
+                    "requested_allowed_stale_symbols": sorted(scope_allowed_symbols),
+                    "requested_allowed_absent_symbols": sorted(allowed_absent),
                     "non_blocking_absent_symbols": sorted(non_blocking_absent),
-                    "inactive_symbols": sorted(inactive_symbols & target_symbols),
+                    "true_missing_symbols": sorted(true_missing_symbols),
+                    "classification_sets_disjoint": True,
+                    "suspended_evidence_symbols": sorted(scope_suspended_symbols),
+                    "inactive_evidence_symbols": sorted(scope_inactive_symbols),
                     "daily_basic_coverage": daily_basic_coverage,
                     "adj_factor_coverage": adj_factor_coverage,
                 },
@@ -511,12 +547,6 @@ class CNParquetBatchMaintainer:
                 delist_dates = work["delist_date"].map(_compact_trade_date)
                 delisted_by_target = delist_dates.ne("") & delist_dates.le(target_date)
                 inactive.update(work.loc[delisted_by_target, "ts_code"].astype(str))
-                if list_status == "D":
-                    inactive.update(work.loc[delist_dates.eq(""), "ts_code"].astype(str))
-            elif list_status == "D":
-                inactive.update(work["ts_code"].astype(str))
-            if list_status == "P":
-                inactive.update(work["ts_code"].astype(str))
         return inactive & target_symbols
 
     @staticmethod
@@ -555,17 +585,25 @@ class CNParquetBatchMaintainer:
         missing_adj: list[str],
         suspended_symbols: list[str],
         inactive_symbols: list[str],
+        requested_allowed_stale_symbols: list[str],
+        requested_allowed_absent_symbols: list[str],
+        non_blocking_absent_symbols: list[str],
         blockers: list[str],
         early_stop_reason: str,
     ) -> dict[str, Any]:
         blocking_symbols = sorted(set(missing_daily) | set(missing_adj))
+        observed_count = max(
+            coverage_complete_count - len(non_blocking_absent_symbols),
+            0,
+        )
         categories = {
             category: {
                 "expected": expected_count,
                 "latest_trade_date": target_trade_date,
                 "date_counts": {target_trade_date: coverage_complete_count},
                 "status_counts": {
-                    "up_to_date": coverage_complete_count,
+                    "up_to_date": observed_count,
+                    "non_trading_or_allowed": len(non_blocking_absent_symbols),
                     "missing": len(missing_daily),
                     "adj_factor_missing": len(missing_adj),
                 },
@@ -573,6 +611,14 @@ class CNParquetBatchMaintainer:
                 "stale_symbols": [],
                 "suspended_stale_symbols": [{"symbol": symbol, "latest_local_date": ""} for symbol in suspended_symbols],
                 "inactive_symbols": list(inactive_symbols),
+                "allowed_stale_symbols": [],
+                "requested_allowed_stale_symbols": list(
+                    requested_allowed_stale_symbols
+                ),
+                "requested_allowed_absent_symbols": list(
+                    requested_allowed_absent_symbols
+                ),
+                "non_blocking_absent_symbols": list(non_blocking_absent_symbols),
                 "unreadable_symbols": [],
                 "blocking_missing_symbols": blocking_symbols,
                 "blocking_stale_symbols": [],
@@ -598,6 +644,18 @@ class CNParquetBatchMaintainer:
             "coverage_ratio": coverage_ratio,
             "coverage_complete_count": coverage_complete_count,
             "expected_scope_count": expected_count,
+            "observed_bar_count": observed_count,
+            "suspended_absent_symbols": list(suspended_symbols),
+            "inactive_absent_symbols": list(inactive_symbols),
+            "allowed_stale_symbols": [],
+            "requested_allowed_stale_symbols": list(
+                requested_allowed_stale_symbols
+            ),
+            "requested_allowed_absent_symbols": list(
+                requested_allowed_absent_symbols
+            ),
+            "non_blocking_absent_symbols": list(non_blocking_absent_symbols),
+            "true_missing_symbols": list(missing_daily),
             "coverage_threshold": self.downloader.coverage_threshold,
             "early_stop_reason": early_stop_reason,
             "blockers": blockers,

@@ -4394,7 +4394,7 @@ def build_parquet_canonical_completeness_report(
         for symbol in (cross_section[symbol_column].tolist() if symbol_column else [])
         if _normalize_review_symbol(symbol)
     }
-    allowed = {
+    requested_allowed = {
         _normalize_review_symbol(symbol)
         for symbol in (allowed_stale_symbols or [])
         if _normalize_review_symbol(symbol)
@@ -4420,6 +4420,13 @@ def build_parquet_canonical_completeness_report(
         for symbol in coverage_payload.get("allowed_stale_symbols", []) or []
         if _normalize_review_symbol(symbol)
     }
+    if persisted_allowed_symbols:
+        coverage_provenance_blockers.append(
+            "coverage_unverified_allowed_stale_symbols_not_permitted"
+        )
+        coverage_provenance_blockers = list(
+            dict.fromkeys(coverage_provenance_blockers)
+        )
     persisted_non_blocking_absent = {
         _normalize_review_symbol(symbol)
         for symbol in coverage_payload.get("non_blocking_absent_symbols", []) or []
@@ -4463,7 +4470,9 @@ def build_parquet_canonical_completeness_report(
     target_categories = list(categories or ["full_a", "hs300", "zz500", "zz1000"])
 
     report: dict[str, Any] = {
-        "allowed_stale_symbols": sorted(allowed),
+        "allowed_stale_symbols": [],
+        "requested_allowed_stale_symbols": sorted(requested_allowed),
+        "unverified_allowed_stale_symbols": sorted(requested_allowed),
         "complete": True,
         "blocking_incomplete_count": 0,
         "categories_checked": target_categories,
@@ -4502,8 +4511,7 @@ def build_parquet_canonical_completeness_report(
         unique_expected_symbols.update(target_set)
         present = target_set & available_symbols
         declared_non_blocking_absent = (
-            allowed
-            | verified_persisted_allowed_symbols
+            verified_persisted_allowed_symbols
             | verified_inactive_symbols
             | verified_suspended_symbols
             | verified_persisted_non_blocking_absent
