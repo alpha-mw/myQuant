@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from quant_investor.config import Config, MAINLINE_ENV_DEFAULTS
 from quant_investor.market.pit_universe import (
@@ -267,6 +268,65 @@ def test_refresh_pit_universe_from_fake_tushare_dry_run_and_execute(tmp_path: Pa
     )
     assert execute["manifest"]["row_count"] == 2
     assert store.canonical_path.exists()
+
+
+def test_refresh_pit_universe_fails_closed_on_empty_listed_frame(
+    tmp_path: Path,
+) -> None:
+    class _EmptyListedPro(_FakeTusharePro):
+        def stock_basic(self, **kwargs):
+            frame = super().stock_basic(**kwargs)
+            if kwargs["list_status"] == LIST_STATUS_LISTED:
+                return frame.iloc[0:0]
+            return frame
+
+    store = PITUniverseStore(root_dir=tmp_path / "reference")
+    with pytest.raises(RuntimeError, match="listed status returned no rows"):
+        refresh_pit_universe_from_tushare(
+            _EmptyListedPro(),
+            store=store,
+            execute=True,
+        )
+    assert not store.canonical_path.exists()
+
+
+def test_refresh_pit_universe_requires_current_component_coverage(
+    tmp_path: Path,
+) -> None:
+    store = PITUniverseStore(root_dir=tmp_path / "reference")
+    with pytest.raises(RuntimeError, match="omits required current components"):
+        refresh_pit_universe_from_tushare(
+            _FakeTusharePro(),
+            store=store,
+            execute=True,
+            required_symbols=["000001.SZ", "000003.SZ"],
+        )
+    assert not store.canonical_path.exists()
+
+
+def test_refresh_pit_universe_cannot_shrink_existing_membership(
+    tmp_path: Path,
+) -> None:
+    store = PITUniverseStore(root_dir=tmp_path / "reference")
+    refresh_pit_universe_from_tushare(
+        _FakeTusharePro(),
+        store=store,
+        execute=True,
+    )
+
+    class _ShrinkingPro(_FakeTusharePro):
+        def stock_basic(self, **kwargs):
+            frame = super().stock_basic(**kwargs)
+            if kwargs["list_status"] == LIST_STATUS_DELISTED:
+                return frame.iloc[0:0]
+            return frame
+
+    with pytest.raises(RuntimeError, match="would shrink canonical PIT"):
+        refresh_pit_universe_from_tushare(
+            _ShrinkingPro(),
+            store=store,
+            execute=True,
+        )
 
 
 def test_backfill_cost_estimator_is_deterministic() -> None:

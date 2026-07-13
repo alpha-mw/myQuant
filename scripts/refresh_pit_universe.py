@@ -44,6 +44,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default="data/cn_universe/stock_basic_membership_latest.json",
         help="Human-readable compatibility export path.",
     )
+    parser.add_argument(
+        "--components-path",
+        default="data/cn_universe/cn_index_components.json",
+        help="Current full-A component scope that the refreshed PIT must cover.",
+    )
     parser.add_argument("--execute", action="store_true", help="Write local PIT membership artifacts.")
     parser.add_argument(
         "--allow-online",
@@ -83,12 +88,34 @@ def main(argv: Sequence[str] | None = None) -> dict:
         raw_root=Path(args.raw_root),
         compatibility_path=Path(args.compat_path),
     )
+    components_path = Path(args.components_path)
+    if not components_path.exists():
+        raise SystemExit(
+            f"Current full-A components are missing: {components_path}"
+        )
+    components_payload = json.loads(
+        components_path.read_text(encoding="utf-8")
+    )
+    required_symbols = sorted(
+        {
+            str(symbol or "").strip().upper()
+            for symbol in components_payload.get("full_a", []) or []
+            if str(symbol or "").strip()
+        }
+    )
+    if not required_symbols:
+        raise SystemExit("Current full-A component scope is empty.")
     report = refresh_pit_universe_from_tushare(
         pro,
         store=store,
         execute=bool(args.execute),
+        required_symbols=required_symbols,
     )
     report["market"] = args.market
+    report["components_evidence"] = {
+        "path": str(components_path),
+        "symbol_count": len(required_symbols),
+    }
     report["backfill_cost_estimate"] = estimate_historical_bar_backfill_cost(
         missing_trade_dates=int(args.missing_trade_dates),
         unresolved_symbol_dates=int(args.unresolved_symbol_dates),

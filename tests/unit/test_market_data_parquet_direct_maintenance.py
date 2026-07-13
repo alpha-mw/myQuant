@@ -8,7 +8,16 @@ import pytest
 
 import quant_investor.market.download as download_module
 import quant_investor.market.download_cn as download_cn_module
+from quant_investor.market.cn_nontrading_evidence import (
+    build_bak_daily_nontrading_evidence,
+    canonical_json_sha256,
+    file_sha256,
+    symbol_set_sha256,
+    write_evidence_cache,
+)
 from quant_investor.market.market_data_store import MarketDataStore
+from quant_investor.market.market_data_reader import coverage_fingerprint
+from quant_investor.market.pit_universe import PITUniverseRecord
 
 
 def test_cn_legacy_maintenance_is_disabled_outside_staged():
@@ -170,6 +179,84 @@ def test_upsert_bars_merges_target_day_without_replacing_history(tmp_path):
     assert store.reader.snapshot()["coverage"]["coverage_trade_date"] == "20260316"
 
 
+def test_historical_multi_date_upsert_preserves_latest_coverage(tmp_path):
+    _write_seed_snapshot(tmp_path)
+    latest_path = tmp_path / "parquet" / "cn" / "_latest.json"
+    latest = json.loads(latest_path.read_text(encoding="utf-8"))
+    coverage = {
+        "coverage_schema_version": "cn-full-a-coverage.v2",
+        "complete": True,
+        "coverage_ratio": 1.0,
+        "coverage_complete_count": 2,
+        "expected_scope_count": 2,
+        "observed_bar_count": 2,
+        "blocking_incomplete_count": 0,
+        "latest_available_trade_date": "20260315",
+        "latest_complete_trade_date": "20260315",
+        "coverage_trade_date": "20260315",
+        "expected_scope_sha256": symbol_set_sha256(
+            ["000001.SZ", "000002.SZ"]
+        ),
+        "suspended_symbols": [],
+        "inactive_symbols": [],
+        "allowed_stale_symbols": [],
+        "non_blocking_absent_symbols": [],
+        "true_missing_symbols": [],
+        "classification_sets_disjoint": True,
+    }
+    latest["coverage"] = coverage
+    manifest_path = Path(latest["manifest_path"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["coverage"] = coverage
+    latest_path.write_text(json.dumps(latest), encoding="utf-8")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    before_fingerprint = coverage_fingerprint(coverage)
+    store = MarketDataStore(market="CN", data_root=tmp_path)
+
+    incoming = pd.DataFrame(
+        [
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": trade_date,
+                "open": 10.0,
+                "high": 10.5,
+                "low": 9.5,
+                "close": 10.2,
+                "vol": 1000.0,
+                "amount": 10000.0,
+                "adj_factor": 1.0,
+            }
+            for trade_date in ["20260313", "20260314"]
+        ]
+    )
+    repaired = store.upsert_bars(
+        incoming,
+        target_trade_date="20260314",
+        target_trade_dates=["20260313", "20260314"],
+        source="unit-history-repair",
+        metadata={
+            "latest_available_trade_date": "20260315",
+            "latest_complete_trade_date": "20260315",
+            "coverage": {"coverage_trade_date": "20260314"},
+        },
+    )
+
+    after = json.loads(latest_path.read_text(encoding="utf-8"))
+    assert repaired["historical_upsert_coverage_preserved"] is True
+    assert after["latest_complete_trade_date"] == "20260315"
+    assert coverage_fingerprint(after["coverage"]) == before_fingerprint
+    table = pd.read_parquet(
+        tmp_path
+        / "parquet"
+        / "cn"
+        / "bars"
+        / "year=2026"
+        / "month=03"
+        / "part.parquet"
+    )
+    assert {"20260313", "20260314"}.issubset(set(table["trade_date"]))
+
+
 def test_storage_validate_fails_closed_for_unbound_complete_coverage(tmp_path):
     _write_seed_snapshot(tmp_path)
     latest_path = tmp_path / "parquet" / "cn" / "_latest.json"
@@ -218,6 +305,177 @@ def test_storage_validate_rejects_historical_scope_hash_backfill_provenance(tmp_
     assert store.reader.snapshot()["coverage_provenance_blockers"] == [
         "coverage_scope_hash_backfilled_from_historical_target"
     ]
+
+
+def test_storage_validate_semantically_reads_v3_nontrading_evidence(tmp_path):
+    _write_seed_snapshot(tmp_path)
+    pit_path = (
+        tmp_path
+        / "parquet"
+        / "cn"
+        / "reference"
+        / "stock_basic_membership.parquet"
+    )
+    pit_path.parent.mkdir(parents=True, exist_ok=True)
+    pit_path.write_bytes(b"unit-pit-binding")
+    evidence_path = tmp_path / "cn_market_full" / ".cache" / "evidence.json"
+    payload = build_bak_daily_nontrading_evidence(
+        pd.DataFrame(
+            [
+                {
+                    "ts_code": "000003.SZ",
+                    "trade_date": "20260315",
+                    "open": 0.0,
+                    "high": 0.0,
+                    "low": 0.0,
+                    "close": 10.0,
+                    "pre_close": 10.0,
+                    "change": 0.0,
+                    "pct_chg": 0.0,
+                    "vol": 0.0,
+                    "amount": 0.0,
+                }
+            ]
+        ),
+        trade_date="20260315",
+        primary_missing_symbols=["000003.SZ"],
+        query_params={"trade_date": "20260315"},
+        pit_membership_path=pit_path,
+        pit_membership_sha256=file_sha256(pit_path),
+    )
+    write_evidence_cache(evidence_path, payload)
+    coverage = {
+        "coverage_schema_version": "cn-full-a-coverage.v3",
+        "complete": True,
+        "coverage_ratio": 1.0,
+        "coverage_complete_count": 3,
+        "expected_scope_count": 3,
+        "observed_bar_count": 2,
+        "blocking_incomplete_count": 0,
+        "latest_available_trade_date": "20260315",
+        "latest_complete_trade_date": "20260315",
+        "coverage_trade_date": "20260315",
+        "expected_scope_sha256": symbol_set_sha256(
+            ["000001.SZ", "000002.SZ", "000003.SZ"]
+        ),
+        "suspended_symbols": [],
+        "inactive_symbols": [],
+        "verified_nontrading_bak_daily_zero_symbols": ["000003.SZ"],
+        "allowed_stale_symbols": [],
+        "non_blocking_absent_symbols": ["000003.SZ"],
+        "true_missing_symbols": [],
+        "classification_sets_disjoint": True,
+        "verified_nontrading_evidence_path": str(evidence_path),
+        "verified_nontrading_evidence_sha256": file_sha256(evidence_path),
+        "pit_membership_path": str(pit_path),
+        "pit_membership_sha256": file_sha256(pit_path),
+    }
+    latest_path = tmp_path / "parquet" / "cn" / "_latest.json"
+    latest = json.loads(latest_path.read_text(encoding="utf-8"))
+    manifest_path = Path(latest["manifest_path"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    latest["coverage"] = coverage
+    manifest["coverage"] = coverage
+    latest_path.write_text(json.dumps(latest), encoding="utf-8")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    store = MarketDataStore(market="CN", data_root=tmp_path)
+    assert store.validate_latest()["status"] == "passed"
+
+    forged = json.loads(evidence_path.read_text(encoding="utf-8"))
+    forged["query_params"] = {"trade_date": "20260314"}
+    unsigned = dict(forged)
+    unsigned.pop("payload_sha256")
+    forged["payload_sha256"] = canonical_json_sha256(unsigned)
+    evidence_path.write_text(json.dumps(forged), encoding="utf-8")
+    coverage["verified_nontrading_evidence_sha256"] = file_sha256(evidence_path)
+    latest["coverage"] = coverage
+    manifest["coverage"] = coverage
+    latest_path.write_text(json.dumps(latest), encoding="utf-8")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    validation = MarketDataStore(market="CN", data_root=tmp_path).validate_latest()
+    assert validation["status"] == "failed"
+    assert (
+        "coverage_nontrading_evidence_semantic:query_params_mismatch"
+        in validation["blockers"]
+    )
+
+
+def test_parquet_maintainer_excludes_symbol_on_exact_delist_date():
+    class _Provider:
+        def stock_basic(self, **_kwargs):
+            return pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000001.SZ",
+                        "list_date": "20200101",
+                        "delist_date": "20260707",
+                        "list_status": "D",
+                    }
+                ]
+            )
+
+    maintainer = download_module.CNParquetBatchMaintainer.__new__(
+        download_module.CNParquetBatchMaintainer
+    )
+    maintainer.downloader = type("_Downloader", (), {"pro": _Provider()})()
+
+    assert maintainer._load_inactive_symbols(
+        "20260707", {"000001.SZ"}
+    ) == {"000001.SZ"}
+
+
+def test_parquet_maintainer_uses_bak_daily_zero_as_evidence_only(tmp_path):
+    class _Provider:
+        def bak_daily(self, **kwargs):
+            assert kwargs == {"trade_date": "20260707"}
+            return pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000001.SZ",
+                        "trade_date": "20260707",
+                        "open": 0.0,
+                        "high": 0.0,
+                        "low": 0.0,
+                        "close": 10.0,
+                        "pre_close": 10.0,
+                        "change": 0.0,
+                        "pct_chg": 0.0,
+                        "vol": 0.0,
+                        "amount": 0.0,
+                    }
+                ]
+            )
+
+    pit_path = tmp_path / "stock_basic_membership.parquet"
+    pit_path.write_bytes(b"pit")
+    maintainer = download_module.CNParquetBatchMaintainer.__new__(
+        download_module.CNParquetBatchMaintainer
+    )
+    maintainer.downloader = type("_Downloader", (), {"pro": _Provider()})()
+    maintainer.data_dir = tmp_path / "audit"
+    payload = maintainer._load_verified_nontrading_bak_daily_zero(
+        "20260707",
+        {"000001.SZ"},
+        pit_binding={
+            "path": str(pit_path),
+            "sha256": file_sha256(pit_path),
+            "records": {
+                "000001.SZ": PITUniverseRecord(
+                    symbol="000001.SZ",
+                    list_date="20200101",
+                    source_list_status="L",
+                )
+            },
+            "blockers": [],
+        },
+    )
+
+    assert payload["verified_symbols"] == ["000001.SZ"]
+    assert payload["writes_synthetic_bars"] is False
+    assert payload["regulatory_suspension_claimed"] is False
+    assert not list(tmp_path.rglob("bars.parquet"))
 
 
 def test_historical_upsert_requires_verified_latest_coverage(tmp_path):

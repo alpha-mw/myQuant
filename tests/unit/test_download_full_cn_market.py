@@ -947,21 +947,94 @@ def test_suspend_cache_v2_is_requeried_and_rewritten_with_bound_evidence(
     symbols = downloader._load_latest_suspended_symbols("20260316")
 
     assert symbols == {"000002.SZ"}
-    assert fake_pro.suspend_calls
+    assert fake_pro.suspend_calls == [{"trade_date": "20260316"}]
     payload = json.loads(cache_path.read_text(encoding="utf-8"))
     declared_sha256 = payload.pop("payload_sha256")
-    computed_sha256 = module.hashlib.sha256(
-        json.dumps(
-            payload,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
-    assert payload["version"] == 3
+    computed_sha256 = module.canonical_json_sha256(payload)
+    assert payload["version"] == 5
     assert payload["query_succeeded"] is True
     assert payload["source"] == "tushare.suspend_d"
+    assert payload["query_variant"] == "trade_date"
+    assert payload["query_params"] == {"trade_date": "20260316"}
+    assert payload["continuation_state_complete"] is False
+    assert payload["exact_date_rows_validated"] is True
+    assert payload["raw_row_count"] == 1
+    assert payload["matched_row_count"] == 1
+    assert payload["exact_event_records"] == [
+        {
+            "ts_code": "000002.SZ",
+            "trade_date": "20260316",
+            "suspend_type": "S",
+        }
+    ]
+    assert payload["resume_symbols"] == []
+    assert payload["other_event_symbols"] == []
+    assert payload["query_run_id"]
     assert declared_sha256 == computed_sha256
+
+    downloader._load_latest_suspended_symbols(
+        "20260316",
+        force_refresh=True,
+        query_run_id="shared-history-audit-run",
+    )
+    refreshed = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert fake_pro.suspend_calls == [
+        {"trade_date": "20260316"},
+        {"trade_date": "20260316"},
+    ]
+    assert refreshed["query_run_id"] == "shared-history-audit-run"
+
+
+def test_suspend_cache_v5_preserves_resume_and_other_exact_events(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_module(monkeypatch, freshness_mode="strict")
+
+    class _SuspendPro(FakePro):
+        def suspend_d(self, **_kwargs):
+            return pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000001.SZ",
+                        "trade_date": "20260316",
+                        "suspend_type": "S",
+                    },
+                    {
+                        "ts_code": "000002.SZ",
+                        "trade_date": "20260316",
+                        "suspend_type": "R",
+                    },
+                    {
+                        "ts_code": "000003.SZ",
+                        "trade_date": "20260316",
+                        "suspend_type": "X",
+                    },
+                ]
+            )
+
+    fake_pro = _SuspendPro()
+    monkeypatch.setattr(
+        module,
+        "create_tushare_pro",
+        lambda *_args, **_kwargs: fake_pro,
+    )
+    downloader = module.CNFullMarketDownloader(
+        data_dir=str(tmp_path),
+        years=3,
+    )
+
+    assert downloader._load_latest_suspended_symbols("20260316") == {
+        "000001.SZ"
+    }
+    payload = json.loads(
+        downloader._suspend_cache_path("20260316").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert payload["resume_symbols"] == ["000002.SZ"]
+    assert payload["other_event_symbols"] == ["000003.SZ"]
+    assert payload["exact_event_row_count"] == 3
 
 
 def test_load_active_listing_dates_uses_pit_universe_when_enabled(

@@ -266,6 +266,46 @@ def test_parquet_canonical_completeness_uses_date_and_scope_bound_nontrading_evi
     assert report["categories"]["full_a"]["inactive_symbols"] == ["000003.SZ"]
 
 
+def test_parquet_canonical_completeness_requires_symbol_identity_for_absence():
+    full_a = ["000001.SZ", "000002.SZ", "000003.SZ"]
+    scope_sha = hashlib.sha256("\n".join(sorted(full_a)).encode("utf-8")).hexdigest()
+
+    class _FakeReader:
+        def snapshot(self):
+            return {
+                "healthy": True,
+                "snapshot_id": "identity-mismatch",
+                "latest_complete_trade_date": "20260618",
+                "coverage": {
+                    "complete": True,
+                    "blocking_incomplete_count": 0,
+                    "expected_scope_count": 3,
+                    "coverage_complete_count": 3,
+                    "coverage_trade_date": "20260618",
+                    "expected_scope_sha256": scope_sha,
+                    "inactive_symbols": ["000003.SZ"],
+                    "non_blocking_absent_symbols": ["000003.SZ"],
+                },
+            }
+
+        def read_cross_section(self, trade_date, **_kwargs):
+            return pd.DataFrame(
+                {
+                    "ts_code": ["000001.SZ", "000003.SZ"],
+                    "trade_date": [trade_date, trade_date],
+                }
+            )
+
+    report = tracker.build_parquet_canonical_completeness_report(
+        reader=_FakeReader(),
+        components={"full_a": full_a, "hs300": [], "zz500": [], "zz1000": []},
+    )
+
+    assert report["complete"] is False
+    assert report["categories"]["full_a"]["missing_symbols"] == ["000002.SZ"]
+    assert report["categories"]["full_a"]["canonical_non_trading_absent_symbols"] == []
+
+
 def test_parquet_canonical_completeness_does_not_trust_unbound_inactive_list():
     class _FakeReader:
         def snapshot(self):

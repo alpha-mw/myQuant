@@ -4415,6 +4415,14 @@ def build_parquet_canonical_completeness_report(
         for symbol in coverage_payload.get("suspended_symbols", []) or []
         if _normalize_review_symbol(symbol)
     }
+    verified_nontrading_symbols = {
+        _normalize_review_symbol(symbol)
+        for symbol in coverage_payload.get(
+            "verified_nontrading_bak_daily_zero_symbols", []
+        )
+        or []
+        if _normalize_review_symbol(symbol)
+    }
     persisted_allowed_symbols = {
         _normalize_review_symbol(symbol)
         for symbol in coverage_payload.get("allowed_stale_symbols", []) or []
@@ -4493,6 +4501,9 @@ def build_parquet_canonical_completeness_report(
     unique_blocking_symbols: set[str] = set()
     verified_inactive_symbols = inactive_symbols if canonical_full_a_complete else set()
     verified_suspended_symbols = suspended_symbols if canonical_full_a_complete else set()
+    verified_bak_daily_nontrading_symbols = (
+        verified_nontrading_symbols if canonical_full_a_complete else set()
+    )
     verified_persisted_allowed_symbols = (
         persisted_allowed_symbols if canonical_full_a_complete else set()
     )
@@ -4514,15 +4525,13 @@ def build_parquet_canonical_completeness_report(
             verified_persisted_allowed_symbols
             | verified_inactive_symbols
             | verified_suspended_symbols
+            | verified_bak_daily_nontrading_symbols
             | verified_persisted_non_blocking_absent
         )
-        canonical_non_trading_absent = set()
-        if canonical_full_a_complete and target_set.issubset(full_a_symbols):
-            canonical_non_trading_absent = target_set - present
-        non_blocking_absent = (
-            (declared_non_blocking_absent | canonical_non_trading_absent)
-            & target_set
+        canonical_non_trading_absent = (
+            declared_non_blocking_absent & target_set
         ) - present
+        non_blocking_absent = set(canonical_non_trading_absent)
         missing = sorted(target_set - present - non_blocking_absent)
         category_complete_count = len(present) + len(non_blocking_absent)
         unique_complete_symbols.update(present | non_blocking_absent)
@@ -4551,6 +4560,9 @@ def build_parquet_canonical_completeness_report(
                 verified_suspended_symbols & target_set
             ),
             "inactive_symbols": sorted(verified_inactive_symbols & target_set),
+            "verified_nontrading_bak_daily_zero_symbols": sorted(
+                verified_bak_daily_nontrading_symbols & target_set
+            ),
             "canonical_non_trading_absent_symbols": sorted(
                 canonical_non_trading_absent
             ),

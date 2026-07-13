@@ -11,12 +11,11 @@ Download Full China A-Share Market Data - 下载完整A股市场数据
 
 from __future__ import annotations
 
-import hashlib
 import os
 from collections import Counter
 from pathlib import Path
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, List, Dict, Optional, Set, Mapping
 import json
 import time
@@ -33,6 +32,11 @@ from quant_investor.data_quality_contract import (
 from quant_investor.fetch_cn_index_components import get_all_components, save_components
 from quant_investor.logger import get_logger
 from quant_investor.market.cn_resolver import CNUniverseResolver
+from quant_investor.market.cn_nontrading_evidence import (
+    canonical_json_sha256,
+    dataframe_sha256,
+    symbol_set_sha256,
+)
 from quant_investor.market.config import get_market_settings
 from quant_investor.market.cn_symbol_status import evaluate_symbol_local_status, CNSymbolLocalStatusResult
 from quant_investor.market.market_data_reader import MarketDataReader
@@ -252,6 +256,11 @@ class CNFullMarketDownloader:
             self.stable_trade_date = local_trade_date
         self.latest_trade_date = self._default_target_trade_date()
         self._latest_suspended_symbols_cache: dict[str, Set[str]] = {}
+        self._suspend_query_run_id = (
+            "suspend-d-"
+            + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            + f"-{os.getpid()}"
+        )
         self._active_listing_dates_cache: dict[str, str] | None = None
         
         # 统计信息
@@ -1120,7 +1129,13 @@ class CNFullMarketDownloader:
                 report = strict_report
         return report
 
-    def _load_latest_suspended_symbols(self, target_trade_date: str) -> Set[str]:
+    def _load_latest_suspended_symbols(
+        self,
+        target_trade_date: str,
+        *,
+        force_refresh: bool = False,
+        query_run_id: str | None = None,
+    ) -> Set[str]:
         """
         获取最新交易日停牌标的集合。
 
@@ -1130,38 +1145,114 @@ class CNFullMarketDownloader:
         结果按 trade_date 写入磁盘(永久有效，历史停牌数据不会变化)，
         下次同日调用直接从磁盘加载，完全跳过 Tushare API 调用。
         """
-        if target_trade_date in self._latest_suspended_symbols_cache:
+        if (
+            not force_refresh
+            and target_trade_date in self._latest_suspended_symbols_cache
+        ):
             return self._latest_suspended_symbols_cache[target_trade_date]
 
         # ── disk cache hit ──
         disk_path = self._suspend_cache_path(target_trade_date)
         try:
-            if disk_path.exists():
+            if disk_path.exists() and not force_refresh:
                 raw = json.loads(disk_path.read_text(encoding="utf-8"))
                 canonical_payload = dict(raw) if isinstance(raw, dict) else {}
                 declared_payload_sha256 = str(
                     canonical_payload.pop("payload_sha256", "") or ""
                 ).strip().lower()
-                computed_payload_sha256 = hashlib.sha256(
-                    json.dumps(
-                        canonical_payload,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ).encode("utf-8")
-                ).hexdigest()
+                computed_payload_sha256 = canonical_json_sha256(
+                    canonical_payload
+                )
+                cached_symbols = [
+                    str(symbol).upper()
+                    for symbol in raw.get("symbols", [])
+                    if str(symbol or "").strip()
+                ] if isinstance(raw, dict) else []
+                exact_event_records = (
+                    raw.get("exact_event_records", [])
+                    if isinstance(raw, dict)
+                    else []
+                )
+                exact_event_records_valid = isinstance(
+                    exact_event_records, list
+                ) and all(
+                    isinstance(record, Mapping)
+                    and str(record.get("ts_code") or "").strip()
+                    and str(record.get("trade_date") or "")
+                    == target_trade_date
+                    and str(record.get("suspend_type") or "").strip()
+                    for record in exact_event_records
+                )
+                derived_suspend_symbols = sorted(
+                    {
+                        str(record.get("ts_code") or "").strip().upper()
+                        for record in exact_event_records
+                        if isinstance(record, Mapping)
+                        and str(record.get("suspend_type") or "")
+                        .strip()
+                        .upper()
+                        == "S"
+                    }
+                )
+                derived_resume_symbols = sorted(
+                    {
+                        str(record.get("ts_code") or "").strip().upper()
+                        for record in exact_event_records
+                        if isinstance(record, Mapping)
+                        and str(record.get("suspend_type") or "")
+                        .strip()
+                        .upper()
+                        == "R"
+                    }
+                )
+                derived_other_symbols = sorted(
+                    {
+                        str(record.get("ts_code") or "").strip().upper()
+                        for record in exact_event_records
+                        if isinstance(record, Mapping)
+                        and str(record.get("suspend_type") or "")
+                        .strip()
+                        .upper()
+                        not in {"S", "R"}
+                    }
+                )
                 if (
                     isinstance(raw, dict)
-                    and raw.get("version") == 3
+                    and raw.get("version") == 5
                     and str(raw.get("trade_date") or "") == target_trade_date
                     and raw.get("query_succeeded") is True
                     and str(raw.get("source") or "") == "tushare.suspend_d"
+                    and str(raw.get("query_variant") or "") == "trade_date"
+                    and raw.get("query_params") == {
+                        "trade_date": target_trade_date
+                    }
+                    and raw.get("exact_date_rows_validated") is True
+                    and raw.get("continuation_state_complete") is False
+                    and str(raw.get("query_run_id") or "").strip()
+                    and exact_event_records_valid
+                    and int(raw.get("exact_event_row_count") or 0)
+                    == len(exact_event_records)
+                    and str(raw.get("matched_symbols_sha256") or "").lower()
+                    == symbol_set_sha256(cached_symbols)
+                    and sorted(cached_symbols) == derived_suspend_symbols
+                    and sorted(raw.get("resume_symbols", []) or [])
+                    == derived_resume_symbols
+                    and str(raw.get("resume_symbols_sha256") or "").lower()
+                    == symbol_set_sha256(derived_resume_symbols)
+                    and sorted(raw.get("other_event_symbols", []) or [])
+                    == derived_other_symbols
+                    and str(
+                        raw.get("other_event_symbols_sha256") or ""
+                    ).lower()
+                    == symbol_set_sha256(derived_other_symbols)
+                    and str(raw.get("exact_event_records_sha256") or "").lower()
+                    == canonical_json_sha256(
+                        raw.get("exact_event_records", []) or []
+                    )
                     and declared_payload_sha256 == computed_payload_sha256
                 ):
                     symbols: Set[str] = {
-                        str(symbol).upper()
-                        for symbol in raw.get("symbols", [])
-                        if str(symbol or "").strip()
+                        str(symbol).upper() for symbol in cached_symbols
                     }
                     self._latest_suspended_symbols_cache[target_trade_date] = symbols
                     return symbols
@@ -1183,70 +1274,131 @@ class CNFullMarketDownloader:
             digits = "".join(ch for ch in str(value or "") if ch.isdigit())
             return digits[:8] if len(digits) >= 8 else ""
 
-        def _extract_target_symbols(suspend_df: pd.DataFrame) -> Set[str]:
+        def _extract_target_events(
+            suspend_df: pd.DataFrame,
+        ) -> tuple[Set[str], list[dict[str, str]], bool]:
             if suspend_df is None or suspend_df.empty:
-                return set()
+                return set(), [], True
             filtered = suspend_df.copy()
             date_columns = [column for column in ("trade_date", "suspend_date") if column in filtered.columns]
-            if date_columns:
-                date_mask = pd.Series(False, index=filtered.index)
-                for column in date_columns:
-                    date_mask = date_mask | filtered[column].map(_normalized_date).eq(target_trade_date)
-                filtered = filtered[date_mask]
-            if 'suspend_type' in filtered.columns:
-                filtered = filtered[filtered['suspend_type'].astype(str).str.upper() == 'S']
-            return {
-                str(symbol).upper()
-                for symbol in filtered.get('ts_code', pd.Series(dtype=str)).dropna().astype(str)
-                if str(symbol or "").strip()
+            if not date_columns:
+                return set(), [], False
+            date_mask = pd.Series(False, index=filtered.index)
+            for column in date_columns:
+                date_mask = date_mask | filtered[column].map(_normalized_date).eq(target_trade_date)
+            filtered = filtered[date_mask]
+            if not filtered.empty and (
+                "ts_code" not in filtered.columns
+                or "suspend_type" not in filtered.columns
+            ):
+                return set(), [], False
+            exact_event_records: list[dict[str, str]] = []
+            for row in filtered.to_dict(orient="records"):
+                symbol = str(row.get("ts_code") or "").strip().upper()
+                event_type = str(row.get("suspend_type") or "").strip().upper()
+                if not symbol or not event_type:
+                    return set(), [], False
+                exact_event_records.append(
+                    {
+                        "ts_code": symbol,
+                        "trade_date": target_trade_date,
+                        "suspend_type": event_type,
+                    }
+                )
+            exact_event_records.sort(
+                key=lambda item: (
+                    item["ts_code"],
+                    item["suspend_type"],
+                )
+            )
+            suspended_symbols = {
+                item["ts_code"]
+                for item in exact_event_records
+                if item["suspend_type"] == "S"
             }
+            return suspended_symbols, exact_event_records, True
 
         try:
             symbols: Set[str] = set()
-            query_succeeded = False
-            query_variant = ""
-            last_query_error: Exception | None = None
-            for query in ({"suspend_date": target_trade_date}, {"trade_date": target_trade_date}):
-                try:
-                    suspend_df = self.pro.suspend_d(**query)
-                except Exception as exc:
-                    last_query_error = exc
-                    continue
-                query_succeeded = True
-                query_variant = next(iter(query))
-                query_symbols = _extract_target_symbols(suspend_df)
-                if query_symbols:
-                    symbols = query_symbols
-                    break
-            if not query_succeeded:
-                if last_query_error is not None:
-                    raise last_query_error
-                raise RuntimeError(f"suspend_d query failed for {target_trade_date}")
+            query_variant = "trade_date"
+            query = {"trade_date": target_trade_date}
+            suspend_df = self.pro.suspend_d(**query)
+            if suspend_df is None or not isinstance(suspend_df, pd.DataFrame):
+                suspend_df = pd.DataFrame()
+            symbols, exact_event_records, exact_date_rows_validated = (
+                _extract_target_events(
+                suspend_df
+                )
+            )
+            if not exact_date_rows_validated:
+                raise RuntimeError(
+                    "suspend_d response lacks an exact-date column"
+                )
 
             # ── persist to disk cache (historic data is immutable) ──
             try:
                 disk_path.parent.mkdir(parents=True, exist_ok=True)
+                resume_symbols = sorted(
+                    {
+                        item["ts_code"]
+                        for item in exact_event_records
+                        if item["suspend_type"] == "R"
+                    }
+                )
+                other_event_symbols = sorted(
+                    {
+                        item["ts_code"]
+                        for item in exact_event_records
+                        if item["suspend_type"] not in {"S", "R"}
+                    }
+                )
                 cache_payload = {
-                    "version": 3,
+                    "version": 5,
                     "trade_date": target_trade_date,
+                    "query_run_id": str(
+                        query_run_id or self._suspend_query_run_id
+                    ),
                     "query_succeeded": True,
                     "query_variant": query_variant,
+                    "query_params": query,
                     "source": "tushare.suspend_d",
+                    "semantic_scope": "exact_date_suspend_events_only",
+                    "continuation_state_complete": False,
+                    "exact_date_rows_validated": True,
+                    "raw_row_count": int(len(suspend_df)),
+                    "raw_rows_sha256": dataframe_sha256(suspend_df),
+                    "matched_row_count": len(symbols),
                     "symbols": sorted(symbols),
-                    "updated_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                    "matched_symbols_sha256": symbol_set_sha256(symbols),
+                    "resume_symbols": resume_symbols,
+                    "resume_symbols_sha256": symbol_set_sha256(
+                        resume_symbols
+                    ),
+                    "other_event_symbols": other_event_symbols,
+                    "other_event_symbols_sha256": symbol_set_sha256(
+                        other_event_symbols
+                    ),
+                    "exact_event_row_count": len(exact_event_records),
+                    "exact_event_records": exact_event_records,
+                    "exact_event_records_sha256": canonical_json_sha256(
+                        exact_event_records
+                    ),
+                    "updated_at": datetime.now(timezone.utc)
+                    .replace(microsecond=0)
+                    .isoformat()
+                    .replace("+00:00", "Z"),
                 }
-                cache_payload["payload_sha256"] = hashlib.sha256(
-                    json.dumps(
-                        cache_payload,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ).encode("utf-8")
-                ).hexdigest()
-                disk_path.write_text(
+                cache_payload["payload_sha256"] = canonical_json_sha256(
+                    cache_payload
+                )
+                temporary = disk_path.with_name(
+                    f".{disk_path.name}.tmp-{os.getpid()}"
+                )
+                temporary.write_text(
                     json.dumps(cache_payload, ensure_ascii=False),
                     encoding="utf-8",
                 )
+                os.replace(temporary, disk_path)
             except Exception as exc:
                 self._record_data_quality_exception(
                     func_name="_load_latest_suspended_symbols",
@@ -2368,7 +2520,7 @@ class CNFullMarketDownloader:
             )
         else:
             print(f"保存目录: {self.dirs[category]}")
-        print(f"Tushare API限速: 每分钟500次调用")
+        print("Tushare API限速: 每分钟500次调用")
         estimated_minutes = (
             len(symbols) * self.REQUESTS_PER_STOCK / self.REQUESTS_PER_MINUTE_BUDGET
         )

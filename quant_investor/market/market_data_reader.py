@@ -12,6 +12,9 @@ from typing import Any, Iterable, Mapping, Sequence
 import pandas as pd
 
 from quant_investor.agent_protocol import DataQualityIssue
+from quant_investor.market.cn_nontrading_evidence import (
+    validate_bak_daily_nontrading_evidence,
+)
 from quant_investor.market.read_result import MarketDataReadResult
 
 
@@ -51,7 +54,7 @@ def _normalize_symbol_list(values: Iterable[Any]) -> list[str]:
     return result
 
 
-def _coverage_fingerprint(value: Any) -> str:
+def coverage_fingerprint(value: Any) -> str:
     """Return a deterministic digest for a JSON coverage object."""
 
     coverage = value if isinstance(value, dict) else {}
@@ -63,6 +66,10 @@ def _coverage_fingerprint(value: Any) -> str:
         default=str,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+# Compatibility alias for existing internal callers.
+_coverage_fingerprint = coverage_fingerprint
 
 
 def _coverage_integer(value: Any) -> int | None:
@@ -155,7 +162,13 @@ def _complete_coverage_blockers(
     if not math.isfinite(coverage_ratio) or coverage_ratio != 1.0:
         blockers.append("coverage_ratio_not_one")
 
-    if str(coverage.get("coverage_schema_version") or "") == "cn-full-a-coverage.v2":
+    coverage_schema_version = str(
+        coverage.get("coverage_schema_version") or ""
+    )
+    if coverage_schema_version in {
+        "cn-full-a-coverage.v2",
+        "cn-full-a-coverage.v3",
+    }:
         def _symbol_set(key: str) -> set[str]:
             raw = coverage.get(key, []) or []
             if not isinstance(raw, (list, tuple, set)):
@@ -172,17 +185,30 @@ def _complete_coverage_blockers(
 
         suspended = _symbol_set("suspended_symbols")
         inactive = _symbol_set("inactive_symbols")
+        verified_nontrading = (
+            _symbol_set("verified_nontrading_bak_daily_zero_symbols")
+            if coverage_schema_version == "cn-full-a-coverage.v3"
+            else set()
+        )
         allowed = _symbol_set("allowed_stale_symbols")
         non_blocking_absent = _symbol_set("non_blocking_absent_symbols")
         true_missing = _symbol_set("true_missing_symbols")
-        classification_sets = [suspended, inactive, allowed, true_missing]
+        classification_sets = [
+            suspended,
+            inactive,
+            verified_nontrading,
+            allowed,
+            true_missing,
+        ]
         if coverage.get("classification_sets_disjoint") is not True or any(
             left & right
             for index, left in enumerate(classification_sets)
             for right in classification_sets[index + 1 :]
         ):
             blockers.append("coverage_classification_sets_not_disjoint")
-        declared_non_blocking = suspended | inactive | allowed
+        declared_non_blocking = (
+            suspended | inactive | verified_nontrading | allowed
+        )
         if declared_non_blocking != non_blocking_absent:
             blockers.append("coverage_non_blocking_absent_union_mismatch")
         if true_missing:
@@ -198,6 +224,29 @@ def _complete_coverage_blockers(
             != coverage_complete_count
         ):
             blockers.append("coverage_classification_union_count_mismatch")
+        if coverage_schema_version == "cn-full-a-coverage.v3" and verified_nontrading:
+            evidence_path = str(
+                coverage.get("verified_nontrading_evidence_path") or ""
+            ).strip()
+            evidence_sha256 = str(
+                coverage.get("verified_nontrading_evidence_sha256") or ""
+            ).strip().lower()
+            pit_path = str(coverage.get("pit_membership_path") or "").strip()
+            pit_sha256 = str(
+                coverage.get("pit_membership_sha256") or ""
+            ).strip().lower()
+            if not evidence_path:
+                blockers.append("coverage_nontrading_evidence_path_missing")
+            if len(evidence_sha256) != 64 or any(
+                ch not in "0123456789abcdef" for ch in evidence_sha256
+            ):
+                blockers.append("coverage_nontrading_evidence_sha256_invalid")
+            if not pit_path:
+                blockers.append("coverage_pit_membership_path_missing")
+            if len(pit_sha256) != 64 or any(
+                ch not in "0123456789abcdef" for ch in pit_sha256
+            ):
+                blockers.append("coverage_pit_membership_sha256_invalid")
     return blockers
 
 
@@ -392,6 +441,99 @@ class MarketDataReader:
                 coverage_provenance_blockers.append(
                     "coverage_scope_hash_backfilled_from_historical_target"
                 )
+
+        if str(coverage.get("coverage_schema_version") or "") == "cn-full-a-coverage.v3":
+            verified_nontrading = list(
+                coverage.get(
+                    "verified_nontrading_bak_daily_zero_symbols", []
+                )
+                or []
+            )
+            if verified_nontrading:
+                resolved_evidence_path: Path | None = None
+                for path_key, sha_key, blocker_prefix in (
+                    (
+                        "verified_nontrading_evidence_path",
+                        "verified_nontrading_evidence_sha256",
+                        "coverage_nontrading_evidence",
+                    ),
+                    (
+                        "pit_membership_path",
+                        "pit_membership_sha256",
+                        "coverage_pit_membership",
+                    ),
+                ):
+                    raw_path = str(coverage.get(path_key) or "").strip()
+                    expected_sha256 = str(
+                        coverage.get(sha_key) or ""
+                    ).strip().lower()
+                    if not raw_path or not expected_sha256:
+                        continue
+                    resolved_path = self._resolve_data_path(
+                        raw_path,
+                        Path(raw_path),
+                    )
+                    if not resolved_path.exists():
+                        blockers.append(f"{blocker_prefix}_missing:{resolved_path}")
+                        continue
+                    digest = hashlib.sha256(resolved_path.read_bytes()).hexdigest()
+                    if digest != expected_sha256:
+                        blockers.append(
+                            f"{blocker_prefix}_sha256_mismatch:"
+                            f"{digest}!={expected_sha256}"
+                        )
+                    elif path_key == "verified_nontrading_evidence_path":
+                        resolved_evidence_path = resolved_path
+                if resolved_evidence_path is not None:
+                    try:
+                        evidence_payload = json.loads(
+                            resolved_evidence_path.read_text(encoding="utf-8")
+                        )
+                    except Exception as exc:
+                        blockers.append(
+                            "coverage_nontrading_evidence_unreadable:"
+                            f"{resolved_evidence_path}:{exc}"
+                        )
+                    else:
+                        if not isinstance(evidence_payload, dict):
+                            blockers.append(
+                                "coverage_nontrading_evidence_invalid_payload"
+                            )
+                        else:
+                            semantic_blockers = (
+                                validate_bak_daily_nontrading_evidence(
+                                    evidence_payload,
+                                    trade_date=str(
+                                        coverage.get("coverage_trade_date") or ""
+                                    ),
+                                    primary_missing_symbols=evidence_payload.get(
+                                        "primary_missing_symbols", []
+                                    )
+                                    or [],
+                                    pit_membership_sha256=str(
+                                        coverage.get("pit_membership_sha256") or ""
+                                    ),
+                                )
+                            )
+                            blockers.extend(
+                                "coverage_nontrading_evidence_semantic:"
+                                f"{item}"
+                                for item in semantic_blockers
+                            )
+                            evidence_symbols = set(
+                                _normalize_symbol_list(
+                                    evidence_payload.get(
+                                        "verified_symbols", []
+                                    )
+                                    or []
+                                )
+                            )
+                            if evidence_symbols != set(
+                                _normalize_symbol_list(verified_nontrading)
+                            ):
+                                blockers.append(
+                                    "coverage_nontrading_evidence_symbols_mismatch"
+                                )
 
         gate_payload = {
             "status": "ok" if not blockers else "blocked",
@@ -1051,4 +1193,5 @@ __all__ = [
     "MarketDataReadResult",
     "MarketDataReader",
     "MarketDataUnavailableError",
+    "coverage_fingerprint",
 ]

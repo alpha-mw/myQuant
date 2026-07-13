@@ -7,7 +7,7 @@ import os
 import shutil
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import pandas as pd
 
@@ -57,6 +57,15 @@ class MarketDataStore:
             )
         )
         blockers = list(dict.fromkeys(str(item) for item in blockers if str(item).strip()))
+        coverage_provenance_blockers = list(
+            dict.fromkeys(
+                str(item)
+                for item in list(
+                    gate.get("coverage_provenance_blockers", []) or []
+                )
+                if str(item).strip()
+            )
+        )
         status = "passed" if not blockers else "failed"
         return {
             "market": self.market,
@@ -72,6 +81,7 @@ class MarketDataStore:
             "mode_policy": gate.get("mode_policy", "strict"),
             "coverage": coverage,
             "coverage_ratio": coverage.get("coverage_ratio"),
+            "coverage_provenance_blockers": coverage_provenance_blockers,
         }
 
     def _atomic_write_parquet(self, frame: pd.DataFrame, path: Path) -> None:
@@ -273,6 +283,7 @@ class MarketDataStore:
         frame: pd.DataFrame,
         *,
         target_trade_date: str,
+        target_trade_dates: Iterable[str] | None = None,
         source: str,
         snapshot_id: str | None = None,
         metadata: Mapping[str, Any] | None = None,
@@ -282,10 +293,19 @@ class MarketDataStore:
             raise ValueError("target_trade_date is required for bars upsert")
         incoming = self._normalize_bars_frame(frame)
         incoming_dates = set(incoming["trade_date"].astype(str))
-        if incoming_dates != {target_date}:
+        declared_target_dates = {
+            self._normalize_trade_date(value)
+            for value in (target_trade_dates or [target_date])
+            if self._normalize_trade_date(value)
+        }
+        if not declared_target_dates or target_date != max(declared_target_dates):
             raise ValueError(
-                "upsert_bars only accepts rows for target_trade_date: "
-                f"{sorted(incoming_dates)} != {target_date}"
+                "target_trade_date must equal the latest declared target date"
+            )
+        if incoming_dates != declared_target_dates:
+            raise ValueError(
+                "upsert_bars incoming dates must equal declared target dates: "
+                f"{sorted(incoming_dates)} != {sorted(declared_target_dates)}"
             )
         self._validate_adj_factor(incoming)
 
@@ -452,6 +472,7 @@ class MarketDataStore:
                     **dict(metadata or {}),
                     "previous_snapshot_id": snapshot.snapshot_id,
                     "upsert_target_trade_date": target_date,
+                    "upsert_target_trade_dates": sorted(declared_target_dates),
                     "upsert_affected_symbols": sorted(set(incoming["ts_code"].astype(str))),
                 },
             }
