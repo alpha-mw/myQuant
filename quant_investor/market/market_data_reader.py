@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -47,6 +49,104 @@ def _normalize_symbol_list(values: Iterable[Any]) -> list[str]:
         if symbol and symbol not in result:
             result.append(symbol)
     return result
+
+
+def _coverage_fingerprint(value: Any) -> str:
+    """Return a deterministic digest for a JSON coverage object."""
+
+    coverage = value if isinstance(value, dict) else {}
+    encoded = json.dumps(
+        coverage,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _coverage_integer(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    try:
+        if float(value) != float(number):
+            return None
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number
+
+
+def _complete_coverage_blockers(
+    coverage: Mapping[str, Any],
+    *,
+    latest_complete_trade_date: str,
+) -> list[str]:
+    """Validate the closed-world claims required by complete coverage."""
+
+    if coverage.get("complete") is not True:
+        return []
+
+    blockers: list[str] = []
+    coverage_trade_date = _normalize_trade_date(coverage.get("coverage_trade_date"))
+    if not coverage_trade_date:
+        blockers.append("coverage_trade_date_missing")
+    elif coverage_trade_date != latest_complete_trade_date:
+        blockers.append(
+            "coverage_trade_date_mismatch:"
+            f"{coverage_trade_date}!={latest_complete_trade_date}"
+        )
+
+    expected_scope_sha256 = str(
+        coverage.get("expected_scope_sha256") or ""
+    ).strip().lower()
+    if not expected_scope_sha256:
+        blockers.append("coverage_expected_scope_sha256_missing")
+    elif len(expected_scope_sha256) != 64 or any(
+        ch not in "0123456789abcdef" for ch in expected_scope_sha256
+    ):
+        blockers.append("coverage_expected_scope_sha256_invalid")
+
+    blocking_incomplete_count = _coverage_integer(
+        coverage.get("blocking_incomplete_count")
+    )
+    if blocking_incomplete_count is None:
+        blockers.append("coverage_blocking_incomplete_count_missing_or_invalid")
+    elif blocking_incomplete_count != 0:
+        blockers.append(
+            "coverage_blocking_incomplete_count_nonzero:"
+            f"{blocking_incomplete_count}"
+        )
+
+    expected_scope_count = _coverage_integer(coverage.get("expected_scope_count"))
+    if expected_scope_count is None or expected_scope_count <= 0:
+        blockers.append("coverage_expected_scope_count_missing_or_nonpositive")
+
+    coverage_complete_count = _coverage_integer(
+        coverage.get("coverage_complete_count")
+    )
+    if coverage_complete_count is None:
+        blockers.append("coverage_complete_count_missing_or_invalid")
+    elif (
+        expected_scope_count is not None
+        and expected_scope_count > 0
+        and coverage_complete_count != expected_scope_count
+    ):
+        blockers.append(
+            "coverage_complete_count_mismatch:"
+            f"{coverage_complete_count}!={expected_scope_count}"
+        )
+
+    try:
+        coverage_ratio = float(coverage.get("coverage_ratio"))
+    except (TypeError, ValueError, OverflowError):
+        coverage_ratio = math.nan
+    if not math.isfinite(coverage_ratio) or coverage_ratio != 1.0:
+        blockers.append("coverage_ratio_not_one")
+    return blockers
 
 
 @dataclass(frozen=True)
@@ -188,6 +288,59 @@ class MarketDataReader:
         if not snapshot.manifest_path.exists():
             blockers.append(f"manifest missing: {snapshot.manifest_path}")
 
+        coverage = (
+            dict(payload.get("coverage") or {})
+            if isinstance(payload.get("coverage"), dict)
+            else {}
+        )
+        coverage_provenance_blockers: list[str] = []
+        snapshot_manifest: dict[str, Any] | None = None
+        if snapshot.manifest_path.exists():
+            try:
+                raw_snapshot_manifest = json.loads(
+                    snapshot.manifest_path.read_text(encoding="utf-8")
+                )
+            except Exception as exc:
+                blockers.append(
+                    f"manifest unreadable: {snapshot.manifest_path}: {exc}"
+                )
+            else:
+                if isinstance(raw_snapshot_manifest, dict):
+                    snapshot_manifest = raw_snapshot_manifest
+                else:
+                    blockers.append(f"manifest invalid: {snapshot.manifest_path}")
+
+        if snapshot_manifest is not None:
+            manifest_has_coverage = isinstance(snapshot_manifest.get("coverage"), dict)
+            manifest_coverage = (
+                dict(snapshot_manifest.get("coverage") or {})
+                if manifest_has_coverage
+                else {}
+            )
+            # Legacy snapshots may expose informational row/symbol statistics only
+            # in the pointer.  Once either side publishes a bound coverage object,
+            # or the pointer claims completeness, the two records must match.
+            if manifest_has_coverage or coverage.get("complete") is True:
+                pointer_coverage_sha256 = _coverage_fingerprint(coverage)
+                manifest_coverage_sha256 = _coverage_fingerprint(manifest_coverage)
+                if pointer_coverage_sha256 != manifest_coverage_sha256:
+                    blockers.append(
+                        "coverage_pointer_manifest_mismatch:"
+                        f"{pointer_coverage_sha256}!={manifest_coverage_sha256}"
+                    )
+            blockers.extend(
+                _complete_coverage_blockers(
+                    coverage,
+                    latest_complete_trade_date=snapshot.latest_complete_trade_date,
+                )
+            )
+            if snapshot_manifest.get(
+                "historical_scope_hash_backfilled"
+            ) is True:
+                coverage_provenance_blockers.append(
+                    "coverage_scope_hash_backfilled_from_historical_target"
+                )
+
         gate_payload = {
             "status": "ok" if not blockers else "blocked",
             "healthy": not blockers,
@@ -200,6 +353,8 @@ class MarketDataReader:
             "manifest_path": str(snapshot.manifest_path),
             "latest_pointer_path": str(snapshot.latest_pointer_path),
             "mode_policy": self.mode_policy,
+            "coverage": coverage,
+            "coverage_provenance_blockers": coverage_provenance_blockers,
         }
         self._snapshot_gate_cache = dict(gate_payload)
         return dict(gate_payload)

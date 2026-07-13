@@ -7,6 +7,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+import quant_investor.config as config_module
+from quant_investor.market.dag import theme_context
 from quant_investor.market.dag.theme_context import build_theme_rotation_metadata
 from quant_investor.themes.membership_migration import (
     approve_membership_v2_draft,
@@ -230,5 +232,163 @@ def test_approved_canonical_store_wires_to_scanner_and_protocol_observer(
         formal_v2_enabled=True,
         formal_v2_kill_switch=False,
     )["protocol_v2"]
-    assert formal_prerequisites_ready["formal_activation_blockers"] == []
-    assert formal_prerequisites_ready["formal_activation_ready"] is True
+    assert formal_prerequisites_ready["formal_activation_blockers"] == [
+        "canonical_joint_replay_producer_not_implemented",
+        "theme_live_shadow_20_distinct_days_unverified",
+        "formal_reconciliation_persistence_disabled",
+    ]
+    assert formal_prerequisites_ready["formal_activation_ready"] is False
+
+
+def test_live_shadow_blocker_is_independent_from_canonical_producer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _source(tmp_path, [_row()])
+    master = tmp_path / "symbols.json"
+    master.write_text(json.dumps({"symbols": ["000001.SZ"]}), encoding="utf-8")
+    draft = build_membership_v2_draft(
+        source,
+        symbol_master_path=master,
+        draft_dir=tmp_path / "drafts",
+    )
+    canonical = tmp_path / "private" / "theme_membership.v2.jsonl"
+    approved = approve_membership_v2_draft(
+        draft["draft_path"],
+        expected_draft_hash=draft["draft_hash"],
+        canonical_path=canonical,
+    )
+    frame = pd.DataFrame(
+        {
+            "trade_date": pd.bdate_range(end="2026-07-10", periods=130),
+            "close": [10.0 + index * 0.02 for index in range(130)],
+            "vol": [1000.0 + index * 5.0 for index in range(130)],
+            "amount": [100000.0 + index * 1000.0 for index in range(130)],
+        }
+    )
+    monkeypatch.setattr(
+        theme_context.replay_v13_1,
+        "CANONICAL_JOINT_REPLAY_PRODUCER_AVAILABLE",
+        True,
+    )
+
+    protocol = build_theme_rotation_metadata(
+        frames={"000001.SZ": frame},
+        industry_map={},
+        symbol_market_state={},
+        market="CN",
+        universe_key="full_a",
+        as_of="2026-07-10",
+        min_member_count=1,
+        membership_v2_enabled=True,
+        membership_v2_path=canonical,
+        membership_v2_required=True,
+        membership_v2_expected_sha256=approved["canonical_hash"],
+        concept_membership_enabled=False,
+        formal_v2_enabled=True,
+        formal_v2_kill_switch=False,
+    )["protocol_v2"]
+
+    assert "canonical_joint_replay_producer_not_implemented" not in protocol[
+        "formal_activation_blockers"
+    ]
+    assert "theme_live_shadow_20_distinct_days_unverified" in protocol[
+        "formal_activation_blockers"
+    ]
+
+
+def test_live_shadow_blocker_clears_only_after_verified_20_distinct_days(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _source(tmp_path, [_row()])
+    master = tmp_path / "symbols.json"
+    master.write_text(json.dumps({"symbols": ["000001.SZ"]}), encoding="utf-8")
+    draft = build_membership_v2_draft(
+        source,
+        symbol_master_path=master,
+        draft_dir=tmp_path / "drafts",
+    )
+    canonical = tmp_path / "private" / "theme_membership.v2.jsonl"
+    approved = approve_membership_v2_draft(
+        draft["draft_path"],
+        expected_draft_hash=draft["draft_hash"],
+        canonical_path=canonical,
+    )
+    frame = pd.DataFrame(
+        {
+            "trade_date": pd.bdate_range(end="2026-07-10", periods=130),
+            "close": [10.0 + index * 0.02 for index in range(130)],
+            "vol": [1000.0 + index * 5.0 for index in range(130)],
+            "amount": [100000.0 + index * 1000.0 for index in range(130)],
+        }
+    )
+    manifest_sha = "a" * 64
+    shadow_dates = [
+        value.date().isoformat()
+        for value in pd.bdate_range(end="2026-07-10", periods=20)
+    ]
+    monkeypatch.setattr(
+        theme_context.replay_v13_1,
+        "CANONICAL_JOINT_REPLAY_PRODUCER_AVAILABLE",
+        True,
+    )
+    monkeypatch.setattr(
+        config_module.Config,
+        "THEME_V2_JOINT_MANIFEST_PATH",
+        "verified.json",
+    )
+    monkeypatch.setattr(
+        config_module.Config,
+        "THEME_V2_EXPECTED_JOINT_MANIFEST_SHA256",
+        manifest_sha,
+    )
+
+    def _verified_manifest(
+        path: str,
+        *,
+        expected_artifact_sha256: str,
+        expected_theme_protocol_hash: str,
+    ) -> dict[str, object]:
+        assert path == "verified.json"
+        assert expected_artifact_sha256 == manifest_sha
+        assert len(expected_theme_protocol_hash) == 64
+        return {
+            "ready": True,
+            "readback_verified": True,
+            "artifact_sha256": manifest_sha,
+            "manifest": {
+                "theme_live_shadow": {
+                    "passed": True,
+                    "distinct_trade_day_count": 20,
+                    "dates": shadow_dates,
+                }
+            },
+        }
+
+    monkeypatch.setattr(
+        theme_context.replay_v13_1,
+        "verify_joint_replay_manifest",
+        _verified_manifest,
+    )
+
+    protocol = build_theme_rotation_metadata(
+        frames={"000001.SZ": frame},
+        industry_map={},
+        symbol_market_state={},
+        market="CN",
+        universe_key="full_a",
+        as_of="2026-07-10",
+        min_member_count=1,
+        membership_v2_enabled=True,
+        membership_v2_path=canonical,
+        membership_v2_required=True,
+        membership_v2_expected_sha256=approved["canonical_hash"],
+        concept_membership_enabled=False,
+        formal_v2_enabled=True,
+        formal_v2_kill_switch=False,
+    )["protocol_v2"]
+
+    assert "theme_live_shadow_20_distinct_days_unverified" not in protocol[
+        "formal_activation_blockers"
+    ]

@@ -84,6 +84,7 @@ def _write_seed_snapshot(root: Path) -> None:
     frame[frame["ts_code"].eq("000001.SZ")].to_parquet(symbol_1 / "bars.parquet", index=False)
     frame[frame["ts_code"].eq("000002.SZ")].to_parquet(symbol_2 / "bars.parquet", index=False)
     manifest_path.parent.mkdir(parents=True)
+    coverage = {"row_count": 2, "symbol_count": 2}
     manifest_path.write_text(
         json.dumps(
             {
@@ -92,6 +93,7 @@ def _write_seed_snapshot(root: Path) -> None:
                 "table_root": str(table_root),
                 "derived_serving_root": str(serving_root),
                 "latest_complete_trade_date": "20260315",
+                "coverage": coverage,
             },
             ensure_ascii=False,
         ),
@@ -108,7 +110,7 @@ def _write_seed_snapshot(root: Path) -> None:
                 "latest_available_trade_date": "20260315",
                 "latest_complete_trade_date": "20260315",
                 "latest_trade_date": "20260315",
-                "coverage": {"row_count": 2, "symbol_count": 2},
+                "coverage": coverage,
                 "blockers": [],
             },
             ensure_ascii=False,
@@ -165,6 +167,128 @@ def test_upsert_bars_merges_target_day_without_replacing_history(tmp_path):
     assert set(table["trade_date"]) == {"20260315", "20260316"}
     assert json.loads((tmp_path / "parquet" / "cn" / "_latest.json").read_text())["snapshot_id"] == "upserted"
     assert store.validate_latest()["status"] == "passed"
+    assert store.reader.snapshot()["coverage"]["coverage_trade_date"] == "20260316"
+
+
+def test_storage_validate_fails_closed_for_unbound_complete_coverage(tmp_path):
+    _write_seed_snapshot(tmp_path)
+    latest_path = tmp_path / "parquet" / "cn" / "_latest.json"
+    latest = json.loads(latest_path.read_text(encoding="utf-8"))
+    latest["coverage"] = {
+        "complete": True,
+        "blocking_incomplete_count": 0,
+        "expected_scope_count": 2,
+    }
+    latest_path.write_text(json.dumps(latest), encoding="utf-8")
+
+    validation = MarketDataStore(market="CN", data_root=tmp_path).validate_latest()
+
+    assert validation["status"] == "failed"
+    assert "coverage_trade_date_missing" in validation["blockers"]
+    assert "coverage_expected_scope_sha256_missing" in validation["blockers"]
+    assert "coverage_complete_count_missing_or_invalid" in validation["blockers"]
+    assert "coverage_ratio_not_one" in validation["blockers"]
+
+
+def test_storage_validate_rejects_historical_scope_hash_backfill_provenance(tmp_path):
+    _write_seed_snapshot(tmp_path)
+    latest_path = tmp_path / "parquet" / "cn" / "_latest.json"
+    latest = json.loads(latest_path.read_text(encoding="utf-8"))
+    latest["coverage"] = {
+        "complete": True,
+        "blocking_incomplete_count": 0,
+        "expected_scope_count": 2,
+        "coverage_trade_date": "20260315",
+        "expected_scope_sha256": "a" * 64,
+    }
+    latest_path.write_text(json.dumps(latest), encoding="utf-8")
+    manifest_path = Path(latest["manifest_path"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["coverage"] = latest["coverage"]
+    manifest["historical_scope_hash_backfilled"] = True
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    store = MarketDataStore(market="CN", data_root=tmp_path)
+    validation = store.validate_latest()
+
+    assert validation["status"] == "failed"
+    assert "coverage_scope_hash_backfilled_from_historical_target" in (
+        validation["blockers"]
+    )
+    assert store.reader.snapshot()["coverage_provenance_blockers"] == [
+        "coverage_scope_hash_backfilled_from_historical_target"
+    ]
+
+
+def test_snapshot_gate_fails_closed_when_manifest_json_is_unreadable(tmp_path):
+    _write_seed_snapshot(tmp_path)
+    manifest_path = tmp_path / "parquet" / "cn" / "_snapshots" / "seed.json"
+    manifest_path.write_text("{not-json", encoding="utf-8")
+
+    store = MarketDataStore(market="CN", data_root=tmp_path)
+    gate = store.reader.clean_snapshot_gate(refresh=True)
+    validation = store.validate_latest()
+
+    assert gate["healthy"] is False
+    assert any(blocker.startswith("manifest unreadable:") for blocker in gate["blockers"])
+    assert validation["status"] == "failed"
+
+
+def test_storage_validate_rejects_pointer_manifest_coverage_mismatch(tmp_path):
+    _write_seed_snapshot(tmp_path)
+    latest_path = tmp_path / "parquet" / "cn" / "_latest.json"
+    latest = json.loads(latest_path.read_text(encoding="utf-8"))
+    latest["coverage"]["symbol_count"] = 3
+    latest_path.write_text(json.dumps(latest), encoding="utf-8")
+
+    store = MarketDataStore(market="CN", data_root=tmp_path)
+    validation = store.validate_latest()
+
+    assert validation["status"] == "failed"
+    assert any(
+        blocker.startswith("coverage_pointer_manifest_mismatch:")
+        for blocker in validation["blockers"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("patch", "expected_blocker"),
+    [
+        ({"blocking_incomplete_count": 1}, "coverage_blocking_incomplete_count_nonzero:1"),
+        ({"expected_scope_count": 0}, "coverage_expected_scope_count_missing_or_nonpositive"),
+        ({"coverage_complete_count": 1}, "coverage_complete_count_mismatch:1!=2"),
+        ({"coverage_ratio": 0.5}, "coverage_ratio_not_one"),
+    ],
+)
+def test_storage_validate_rejects_incoherent_complete_coverage(
+    tmp_path,
+    patch,
+    expected_blocker,
+):
+    _write_seed_snapshot(tmp_path)
+    latest_path = tmp_path / "parquet" / "cn" / "_latest.json"
+    latest = json.loads(latest_path.read_text(encoding="utf-8"))
+    coverage = {
+        "complete": True,
+        "coverage_trade_date": "20260315",
+        "expected_scope_sha256": "a" * 64,
+        "blocking_incomplete_count": 0,
+        "expected_scope_count": 2,
+        "coverage_complete_count": 2,
+        "coverage_ratio": 1.0,
+    }
+    coverage.update(patch)
+    latest["coverage"] = coverage
+    latest_path.write_text(json.dumps(latest), encoding="utf-8")
+    manifest_path = Path(latest["manifest_path"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["coverage"] = coverage
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    validation = MarketDataStore(market="CN", data_root=tmp_path).validate_latest()
+
+    assert validation["status"] == "failed"
+    assert expected_blocker in validation["blockers"]
 
 
 def test_upsert_bars_rolls_back_live_roots_when_latest_pointer_write_fails(monkeypatch, tmp_path):
@@ -440,6 +564,23 @@ def test_parquet_direct_explicit_historical_target_preserves_latest_pointer(monk
 
 def test_parquet_direct_historical_target_excludes_prelisting_symbols(monkeypatch, tmp_path):
     _write_seed_snapshot(tmp_path)
+    latest_path = tmp_path / "parquet" / "cn" / "_latest.json"
+    latest = json.loads(latest_path.read_text(encoding="utf-8"))
+    latest["coverage"] = {
+        "complete": True,
+        "coverage_ratio": 1.0,
+        "coverage_complete_count": 3,
+        "expected_scope_count": 3,
+        "blocking_incomplete_count": 0,
+        "latest_complete_trade_date": "20260315",
+        "coverage_trade_date": "20260315",
+        "expected_scope_sha256": "b" * 64,
+    }
+    latest_path.write_text(json.dumps(latest), encoding="utf-8")
+    manifest_path = Path(latest["manifest_path"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["coverage"] = latest["coverage"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     audit_root = tmp_path / "cn_market_full"
 
     class FakePro:
@@ -567,9 +708,14 @@ def test_parquet_direct_historical_target_excludes_prelisting_symbols(monkeypatc
     )
 
     assert result["parquet_commit"]["status"] == "OK"
-    coverage = result["parquet_commit"]["coverage"]
-    assert coverage["expected_scope_count"] == 3
-    assert coverage["coverage_complete_count"] == 3
-    assert coverage["inactive_symbols"] == ["000003.SZ"]
+    assert result["parquet_commit"]["historical_upsert_coverage_preserved"] is True
+    target_coverage = result["parquet_commit"]["historical_upsert_target_coverage"]
+    assert target_coverage["expected_scope_count"] == 3
+    assert target_coverage["coverage_complete_count"] == 3
+    assert target_coverage["inactive_symbols"] == ["000003.SZ"]
+    latest = json.loads(latest_path.read_text(encoding="utf-8"))
+    assert latest["coverage"]["expected_scope_sha256"] == "b" * 64
+    validation = MarketDataStore(market="CN", data_root=tmp_path).validate_latest()
+    assert validation["status"] == "passed"
     table = pd.read_parquet(tmp_path / "parquet" / "cn" / "bars" / "year=2026" / "month=03" / "part.parquet")
     assert set(table.loc[table["trade_date"].eq("20260314"), "ts_code"]) == {"000001.SZ", "000002.SZ"}

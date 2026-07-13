@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -265,6 +266,9 @@ class CNParquetBatchMaintainer:
             for symbol in components.get(category, []) or []
             if str(symbol or "").strip()
         }
+        expected_scope_sha256 = hashlib.sha256(
+            "\n".join(sorted(target_symbols)).encode("utf-8")
+        ).hexdigest()
         daily_symbols = set(daily_df["ts_code"].astype(str)) if not daily_df.empty else set()
         allowed = self.downloader._normalize_allowed_symbols(allowed_stale_symbols)
         suspended_symbols = self.downloader._load_latest_suspended_symbols(target_trade_date)
@@ -370,6 +374,11 @@ class CNParquetBatchMaintainer:
                         "latest_available_trade_date": commit_latest_available,
                         "latest_complete_trade_date": commit_latest_complete,
                         "upsert_target_trade_date": target_trade_date,
+                        "coverage_trade_date": target_trade_date,
+                        "expected_scope_sha256": expected_scope_sha256,
+                        "suspended_symbols": sorted(suspended_symbols & target_symbols),
+                        "allowed_stale_symbols": sorted(allowed & target_symbols),
+                        "non_blocking_absent_symbols": sorted(non_blocking_absent),
                         "inactive_symbols": sorted(inactive_symbols & target_symbols),
                         "daily_basic_coverage": daily_basic_coverage,
                         "adj_factor_coverage": adj_factor_coverage,
@@ -398,6 +407,11 @@ class CNParquetBatchMaintainer:
                     "categories_checked": list(target_categories),
                     "latest_available_trade_date": target_trade_date,
                     "latest_complete_trade_date": latest_complete,
+                    "coverage_trade_date": target_trade_date,
+                    "expected_scope_sha256": expected_scope_sha256,
+                    "suspended_symbols": sorted(suspended_symbols & target_symbols),
+                    "allowed_stale_symbols": sorted(allowed & target_symbols),
+                    "non_blocking_absent_symbols": sorted(non_blocking_absent),
                     "inactive_symbols": sorted(inactive_symbols & target_symbols),
                     "daily_basic_coverage": daily_basic_coverage,
                     "adj_factor_coverage": adj_factor_coverage,

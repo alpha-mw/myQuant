@@ -34,8 +34,13 @@ They must not trap an existing position when the sell leg only reduces risk.
 
 Before any new-risk action can be filled, all of the following must pass:
 
-- latest valid local/manual `ledger_after_manual_switch.parquet` is the effective
-  baseline;
+- latest valid `manual_execution_manifest.json` declares the exact contained
+  `next_ledger_path`; that CSV or Parquet sidecar is the effective baseline only
+  after stable readback, schema validation, declared SHA256 validation, and—for
+  v3 manifests—ledger market-value, cash-plus-market total-value, and
+  capital/PNL/return identity reconciliation; v3 `capital_cny` must equal the
+  selected formal record's capital base, and these financial fields plus the
+  ledger SHA must match `financial_state_sha256`;
 - candidate state progression and persistence gates pass;
 - score-gap and hysteresis gates pass;
 - portfolio count, turnover, and cooldown gates pass;
@@ -50,8 +55,8 @@ If any gate fails, the action remains `watch_only`, `tracking`,
 
 Risk-reduction sell actions may be filled when all of the following pass:
 
-- the symbol is present in the latest valid local/manual
-  `ledger_after_manual_switch.parquet`;
+- the symbol is present in the latest valid manifest-declared local/manual
+  `ledger_after_manual_switch.csv` or `.parquet`;
 - the action only decreases shares and cannot create a buy, add, or switch-in
   leg;
 - formal holdings review or deterministic tracker evidence marks the position
@@ -62,6 +67,14 @@ Risk-reduction sell actions may be filled when all of the following pass:
 - turnover and cooldown gates pass, or the review records an explicit
   risk-reduction override reason;
 - a fresh realtime quote passes validation.
+- local/manual paper fill was explicitly enabled for that invocation; the
+  default is advisory-only and must carry the ledger forward unchanged.
+- the existing decision log contains a same-trade-date, same-symbol advisory
+  and explicit Maxwell `human_action` pair linked by
+  `paired_advisory_event_id`; advisory action and `metadata.shares` must match
+  the order, while human_action must carry an exact compatible action,
+  `metadata.authorized=true`, `approved_by=maxwell`, and the same integer
+  share count. Free text and the CLI flag alone never authorize a fill.
 
 For `reduce_risk` and `clear_risk`, incomplete same-day bars, missing buy-side
 candidate DAG branches, weak candidate persistence, or `prepare_switch` state
@@ -193,11 +206,25 @@ Reject or keep pending if:
 
 - quote retrieval fails;
 - quote timestamp is missing or stale;
+- quote timestamp is not on the current local trade date or is older than the
+  configured TTL (default `300` seconds);
 - no realtime execution price field is present or the price is non-positive;
 - the realtime execution price is outside the reported open-high-low range;
 - buy price equals only a static daily close, previous close, or report price;
 - a sell order would sell more shares than the effective ledger holds;
 - a buy order would violate A-share board-lot rounding after cash checks.
+
+Provider quotes are disabled by default. The formal-review entrypoint accepts
+either an explicit live-provider opt-in or a local quote JSON under ignored
+`results/`; the local artifact must be a regular non-symlink file with `0600`
+permissions, a supported schema, stable double-read bytes, and a recorded
+SHA256. Local quote input never falls back to an external provider.
+
+The default `--advisory-only` mode may write a validated risk-reducing sell as
+`pending_authorization`, but it cannot call the ledger mutation path. Only an
+explicit `--allow-local-manual-fills` invocation may write a local/manual paper
+fill only after every data, action, quote, lot-size, and same-day paired
+decision-log authorization gate passes. Neither mode may call a broker.
 
 ## Artifact Rule
 
@@ -206,6 +233,8 @@ timestamped strategy record and `raw_exports/`:
 
 - `manual_switch_and_take_profit_orders.csv`
 - `manual_execution_manifest.json`
+- manifest-declared `next_ledger_path`, CSV/Parquet hashes, quote provenance,
+  and advisory/manual-fill mode
 - `ledger_after_manual_switch.parquet`
 - `daily_execution_review.md`
 - updated `latest_notes_payload.md`

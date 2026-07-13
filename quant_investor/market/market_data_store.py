@@ -14,6 +14,7 @@ import pandas as pd
 from quant_investor.market.market_data_reader import (
     MarketDataReader,
     MarketDataUnavailableError,
+    _complete_coverage_blockers,
 )
 
 
@@ -41,6 +42,22 @@ class MarketDataStore:
             coverage = dict(raw_coverage or {}) if isinstance(raw_coverage, dict) else {}
         except Exception:
             coverage = {}
+        latest_complete_trade_date = self._normalize_trade_date(
+            gate.get("latest_complete_trade_date")
+        )
+        blockers.extend(
+            str(item)
+            for item in list(gate.get("coverage_provenance_blockers", []) or [])
+            if str(item).strip()
+        )
+        blockers.extend(
+            _complete_coverage_blockers(
+                coverage,
+                latest_complete_trade_date=latest_complete_trade_date,
+            )
+        )
+        blockers = list(dict.fromkeys(str(item) for item in blockers if str(item).strip()))
+        status = "passed" if not blockers else "failed"
         return {
             "market": self.market,
             "status": status,
@@ -276,7 +293,23 @@ class MarketDataStore:
         if not gate.get("healthy"):
             blockers = "; ".join(str(item) for item in gate.get("blockers", []) if str(item).strip())
             raise ValueError(blockers or "cannot upsert without a healthy latest Parquet snapshot")
-        snapshot = self.reader._snapshot_from_payload(self.reader._load_latest_payload(refresh=True))
+        previous_latest_payload = self.reader._load_latest_payload(refresh=True)
+        snapshot = self.reader._snapshot_from_payload(previous_latest_payload)
+        previous_coverage_provenance_blockers: list[str] = []
+        try:
+            previous_snapshot_manifest = json.loads(
+                snapshot.manifest_path.read_text(encoding="utf-8")
+            )
+        except Exception:
+            previous_snapshot_manifest = {}
+        if (
+            isinstance(previous_snapshot_manifest, dict)
+            and previous_snapshot_manifest.get("historical_scope_hash_backfilled")
+            is True
+        ):
+            previous_coverage_provenance_blockers.append(
+                "coverage_scope_hash_backfilled_from_historical_target"
+            )
 
         resolved_snapshot_id = snapshot_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         staging_base = self.data_root / "parquet_staging" / self.market.lower() / resolved_snapshot_id
@@ -330,6 +363,32 @@ class MarketDataStore:
                     "row_count": int(len(full_frame)),
                     "symbol_count": int(full_frame["ts_code"].nunique()) if "ts_code" in full_frame.columns else 0,
                 }
+            else:
+                coverage = dict(coverage)
+            coverage.setdefault("coverage_trade_date", target_date)
+            incoming_target_coverage = dict(coverage)
+            historical_coverage_preserved = False
+            previous_coverage = previous_latest_payload.get("coverage", {})
+            if not isinstance(previous_coverage, dict):
+                previous_coverage = {}
+            previous_coverage = dict(previous_coverage)
+            previous_coverage_date = self._normalize_trade_date(
+                previous_coverage.get("coverage_trade_date")
+                or previous_coverage.get("latest_complete_trade_date")
+                or snapshot.latest_complete_trade_date
+            )
+            incoming_coverage_date = self._normalize_trade_date(
+                coverage.get("coverage_trade_date") or target_date
+            )
+            if (
+                previous_coverage
+                and not previous_coverage_provenance_blockers
+                and previous_coverage_date
+                and incoming_coverage_date
+                and incoming_coverage_date < previous_coverage_date
+            ):
+                coverage = previous_coverage
+                historical_coverage_preserved = True
             manifest = {
                 "snapshot_id": resolved_snapshot_id,
                 "market": self.market,
@@ -347,6 +406,13 @@ class MarketDataStore:
                 "parquet_size_bytes": int(parquet_size),
                 "quarantined_tail_dates": list((metadata or {}).get("quarantined_tail_dates") or []),
                 "coverage": coverage,
+                "historical_upsert_coverage_preserved": historical_coverage_preserved,
+                "historical_upsert_target_coverage": (
+                    incoming_target_coverage if historical_coverage_preserved else {}
+                ),
+                "previous_coverage_provenance_blockers": (
+                    previous_coverage_provenance_blockers
+                ),
                 "blockers": list((metadata or {}).get("blockers") or []),
                 "metadata": {
                     **dict(metadata or {}),

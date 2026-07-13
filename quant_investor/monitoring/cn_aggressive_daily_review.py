@@ -1007,6 +1007,20 @@ def run_daily_review(args: argparse.Namespace) -> dict[str, Any]:
         source_record=getattr(args, "source_record", None),
         allowed_stale_symbols=list(getattr(args, "allowed_stale_symbols", []) or []),
         skip_market_metrics_prewarm=bool(getattr(args, "skip_market_metrics_prewarm", False)),
+        advisory_only=bool(getattr(args, "advisory_only", True)),
+        quote_input_json=str(getattr(args, "quote_input_json", "") or ""),
+        allow_live_quotes=bool(getattr(args, "allow_live_quotes", False)),
+        quote_max_age_seconds=int(
+            getattr(
+                args,
+                "quote_max_age_seconds",
+                tracker.DEFAULT_QUOTE_MAX_AGE_SECONDS,
+            )
+        ),
+        decision_log_path=str(
+            getattr(args, "decision_log_path", tracker.DEFAULT_DECISION_LOG_PATH)
+            or tracker.DEFAULT_DECISION_LOG_PATH
+        ),
     )
     theme_overrides, rollback_env = _formal_review_theme_overrides()
     with _temporary_config_overrides(theme_overrides):
@@ -1037,6 +1051,32 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tracker-max-rounds", type=int, default=3)
     parser.add_argument("--source-record", default=None)
     parser.add_argument("--allowed-stale-symbols", nargs="*", default=[])
+    execution_mode = parser.add_mutually_exclusive_group()
+    execution_mode.add_argument(
+        "--advisory-only",
+        dest="advisory_only",
+        action="store_true",
+        help="仅写建议和 pending/rejected 记录，不写本地模拟成交（默认）",
+    )
+    execution_mode.add_argument(
+        "--allow-local-manual-fills",
+        dest="advisory_only",
+        action="store_false",
+        help="显式授权在所有门禁通过后写本地/manual paper fill；仍不调用券商",
+    )
+    parser.set_defaults(advisory_only=True)
+    quote_source = parser.add_mutually_exclusive_group()
+    quote_source.add_argument("--quote-input-json", default="")
+    quote_source.add_argument("--allow-live-quotes", action="store_true", default=False)
+    parser.add_argument(
+        "--quote-max-age-seconds",
+        type=int,
+        default=tracker.DEFAULT_QUOTE_MAX_AGE_SECONDS,
+    )
+    parser.add_argument(
+        "--decision-log-path",
+        default=str(tracker.DEFAULT_DECISION_LOG_PATH),
+    )
     parser.add_argument("--category", action="append", dest="categories")
     parser.add_argument("--maintenance-years", type=int, default=3)
     parser.add_argument("--maintenance-workers", type=int, default=4)

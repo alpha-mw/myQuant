@@ -5,13 +5,17 @@ A股激进科技制造策略正式复盘跟踪器。
 from __future__ import annotations
 
 import argparse
+import hashlib
+import io
 import importlib.util
 import json
+import math
 import shutil
+import stat
 import time
 from collections import Counter
 from dataclasses import asdict, dataclass, is_dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
@@ -48,9 +52,20 @@ DEFAULT_BASE_DIR = (
     PROJECT_ROOT / "results" / "strategy_records" / "CN" / "aggressive_tech_manufacturing"
 )
 DEFAULT_NOTES_PATH = DEFAULT_BASE_DIR / "latest_notes_payload.md"
+DEFAULT_DECISION_LOG_PATH = PROJECT_ROOT / "results" / "decision_log" / "decision_log.jsonl"
 DEFAULT_INITIAL_CAPITAL = 1_000_000.0
 MAX_EFFECTIVE_HOLDING_COUNT = 8
 INVALID_MANUAL_LEDGER_STATUS_MARKERS = ("invalidated_price_basis_no_execution",)
+VALID_MANUAL_LEDGER_STATUS_PREFIXES = (
+    "filled_",
+    "no_action_",
+    "carry_forward_",
+    "prepare_switch_",
+    "rejected_",
+    "no_fill_",
+    "no_fills_",
+    "advisory_only_",
+)
 TRAILING_TAKE_PROFIT_REVIEW_GIVEBACK_RATIO = 0.20
 TRAILING_TAKE_PROFIT_REDUCE_GIVEBACK_RATIO = 0.35
 TRAILING_TAKE_PROFIT_ENTRY_DATE_COLUMNS = (
@@ -88,7 +103,78 @@ TRAILING_TAKE_PROFIT_LEDGER_COLUMNS = (
     "trailing_stop_price",
     "trailing_take_profit_reason",
 )
+
+CANDIDATE_POOL_COLUMNS = (
+    "symbol",
+    "name",
+    "category",
+    "theme_label",
+    "candidate_source",
+    "candidate_rank",
+    "candidate_dag_four_branch_complete",
+    "present_branches",
+    "missing_branches",
+    "evidence_quality",
+    "bayesian_rank",
+    "posterior_action_score",
+    "posterior_win_rate",
+    "posterior_expected_alpha",
+    "posterior_confidence",
+    "rank_score",
+    "shortlist_action",
+    "shortlist_confidence",
+    "expected_upside",
+    "suggested_weight",
+    "portfolio_target_weight",
+    "portfolio_target_position",
+    "risk_flags",
+    "rationale",
+    "branch_quant_score",
+    "branch_fundamental_score",
+    "branch_intelligence_score",
+    "branch_macro_score",
+    "candidate_quote_status",
+    "candidate_quote_timestamp",
+    "candidate_quote_price",
+    "new_position_eligible",
+    "eligibility_blockers",
+    "manual_override_required",
+    "actionable",
+    "codex_recommendation_score",
+    "codex_recommendation_rating",
+)
+
+SWITCH_PLAN_COLUMNS = (
+    "sell_symbol",
+    "sell_name",
+    "sell_role",
+    "sell_recommended_action",
+    "buy_symbol",
+    "buy_name",
+    "buy_theme",
+    "buy_bayesian_rank",
+    "buy_posterior_action_score",
+    "buy_posterior_confidence",
+    "buy_posterior_expected_alpha",
+    "buy_portfolio_target_weight",
+    "candidate_quote_status",
+    "new_position_eligible",
+    "manual_override_required",
+    "actionable",
+    "candidate_source",
+    "evidence_quality",
+    "priority",
+    "action",
+    "switch_ratio_hint",
+    "trigger_threshold",
+    "no_switch_condition",
+    "buy_codex_recommendation_score",
+    "buy_codex_recommendation_rating",
+)
 QUOTE_TIMEOUT = 20
+DEFAULT_QUOTE_MAX_AGE_SECONDS = 300
+QUOTE_INPUT_SCHEMA_VERSION = "cn_aggressive_quote_input.v1"
+MANUAL_EXECUTION_SCHEMA_VERSION = "cn_aggressive_manual_execution.v3"
 REALTIME_EXECUTION_PRICE_FIELDS = (
     "current",
     "realtime_price",
@@ -309,6 +395,7 @@ def _codex_handoff_review_layer(source_ledger: pd.DataFrame, *, reason: str) -> 
             "reviewed_branch_verdicts": {},
             "branch_overlays": {},
             "master_hint": {},
+            "recall_context": {"holding_symbol": symbol},
             "codex_handoff": True,
         }
     return {
@@ -393,10 +480,57 @@ def _average_mapping_ratio(values: Any) -> float | None:
     return float(sum(ratios) / len(ratios))
 
 
-def _quant_evidence_limited(payload: dict[str, Any]) -> bool:
+def _quant_governance_state(payload: Mapping[str, Any]) -> dict[str, Any]:
     metadata = _as_mapping(payload.get("metadata"))
-    factor_mode = str(metadata.get("factor_mode", "")).strip()
     runtime = _as_mapping(metadata.get("mined_factor_runtime"))
+    registry = _as_mapping(runtime.get("registry"))
+    governance = _as_mapping(registry.get("governance_runtime"))
+    blockers = list(
+        runtime.get("runtime_blockers")
+        or governance.get("blockers")
+        or metadata.get("runtime_blockers")
+        or []
+    )
+    return {
+        "governance_status": str(
+            runtime.get("governance_status")
+            or metadata.get("governance_status")
+            or governance.get("status")
+            or payload.get("governance_status")
+            or "governance_blocked"
+        ),
+        "factor_mode": str(
+            runtime.get("factor_mode")
+            or metadata.get("factor_mode")
+            or governance.get("factor_mode")
+            or payload.get("factor_mode")
+            or "governance_blocked"
+        ),
+        "production_eligible": (
+            runtime.get(
+                "production_eligible",
+                governance.get("production_eligible", False),
+            )
+            is True
+        ),
+        "runtime_blockers": [
+            str(item) for item in blockers if str(item).strip()
+        ],
+        "legacy_fallback_allowed": bool(
+            runtime.get(
+                "legacy_fallback_allowed",
+                governance.get("legacy_fallback_allowed", False),
+            )
+        ),
+        "runtime": runtime,
+        "governance": governance,
+    }
+
+
+def _quant_evidence_limited(payload: dict[str, Any]) -> bool:
+    governance_state = _quant_governance_state(payload)
+    factor_mode = str(governance_state["factor_mode"]).strip()
+    runtime = _as_mapping(governance_state.get("runtime"))
     factor_count = int(_coerce_float(runtime.get("factor_count")) or 0)
     factors_used = runtime.get("factors_used")
     applied = runtime.get("applied_to_score")
@@ -407,7 +541,11 @@ def _quant_evidence_limited(payload: dict[str, Any]) -> bool:
         runtime.get("factor_coverages")
     )
     if (
-        factor_mode == "legacy_proxy_fallback"
+        governance_state["governance_status"] != "ready"
+        or factor_mode != "governed_mined_factors"
+        or governance_state["production_eligible"] is not True
+        or governance_state["runtime_blockers"]
+        or governance_state["legacy_fallback_allowed"] is True
         or factor_count <= 0
         or not factors_used
     ):
@@ -601,6 +739,359 @@ def _render_dag_compliance_markdown(compliance: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _summarize_factor_governance_runtime(
+    branch_signals_by_symbol: Mapping[str, Any],
+) -> dict[str, Any]:
+    symbol_rows: dict[str, dict[str, Any]] = {}
+    for raw_symbol, raw_payload in branch_signals_by_symbol.items():
+        payload = _mapping_payload(raw_payload)
+        reviewed = _mapping_payload(payload.get("reviewed_branch_verdicts"))
+        quant = _mapping_payload(reviewed.get("quant"))
+        metadata = _mapping_payload(quant.get("metadata"))
+        runtime = _mapping_payload(metadata.get("mined_factor_runtime"))
+        registry = _mapping_payload(runtime.get("registry"))
+        governance = _mapping_payload(registry.get("governance_runtime"))
+        if not (quant or metadata or runtime or governance):
+            continue
+        status = str(
+            runtime.get("governance_status")
+            or metadata.get("governance_status")
+            or governance.get("status")
+            or quant.get("governance_status")
+            or "governance_blocked"
+        )
+        factor_mode = str(
+            runtime.get("factor_mode")
+            or metadata.get("factor_mode")
+            or governance.get("factor_mode")
+            or quant.get("factor_mode")
+            or "governance_blocked"
+        )
+        blockers = list(
+            runtime.get("runtime_blockers")
+            or governance.get("blockers")
+            or metadata.get("runtime_blockers")
+            or []
+        )
+        blocker_texts = [str(item) for item in blockers if str(item).strip()]
+        symbol_rows[str(raw_symbol)] = {
+            "governance_status": status,
+            "factor_mode": factor_mode,
+            "confidence": _safe_float(
+                runtime.get("confidence_multiplier"),
+                _safe_float(governance.get("confidence_multiplier"), 0.0),
+            ),
+            "production_eligible": bool(
+                runtime.get("production_eligible", governance.get("production_eligible", False))
+            ),
+            "registry_selectable_factor_count": int(
+                _safe_float(
+                    governance.get("production_factor_count"),
+                    _safe_float(registry.get("production_factor_count"), 0.0),
+                )
+            ),
+            "registry_selectable_factor_names": list(
+                governance.get("production_factor_names")
+                or registry.get("production_factor_names")
+                or []
+            ),
+            "registry_sha256": str(
+                governance.get("production_factor_set_sha256")
+                or registry.get("production_factor_set_sha256")
+                or ""
+            ),
+            "protocol_version": str(governance.get("protocol_version") or "v2"),
+            "protocol_hash": str(governance.get("protocol_hash") or ""),
+            "factors_used": list(runtime.get("factors_used") or []),
+            "blockers": blocker_texts,
+            "slot_incumbents": _jsonable(governance.get("slot_incumbents") or {}),
+            "normalized_abs_weights": _jsonable(
+                governance.get("normalized_abs_weights") or {}
+            ),
+            "family_normalized_abs_weights": _jsonable(
+                governance.get("family_normalized_abs_weights") or {}
+            ),
+            "canonical_replay_producer_control": _jsonable(
+                governance.get("canonical_replay_producer_control") or {}
+            ),
+            "slot_blockers": [
+                item for item in blocker_texts if "slot" in item
+            ],
+            "family_blockers": [
+                item for item in blocker_texts if "family" in item
+            ],
+            "risk_budget_blockers": [
+                item
+                for item in blocker_texts
+                if "abs_weight" in item or "risk_budget" in item
+            ],
+            "evidence_blockers": [
+                item
+                for item in blocker_texts
+                if "evidence" in item or "canonical" in item or "replay" in item
+            ],
+            "legacy_fallback_allowed": bool(
+                runtime.get("legacy_fallback_allowed", governance.get("legacy_fallback_allowed", False))
+            ),
+        }
+    if not symbol_rows:
+        return {
+            "schema_version": "factor_governance_runtime_summary.v1",
+            "governance_status": "governance_blocked",
+            "factor_mode": "governance_blocked",
+            "confidence": 0.0,
+            "production_eligible": False,
+            "registry_selectable_factor_count": 0,
+            "registry_selectable_factor_names": [],
+            "registry_sha256": "",
+            "protocol_version": "v2",
+            "protocol_hash": "",
+            "factors_used": [],
+            "blockers": ["holding_quant_runtime_evidence_missing"],
+            "legacy_fallback_allowed": False,
+            "slot_incumbents": {},
+            "normalized_abs_weights": {},
+            "family_normalized_abs_weights": {},
+            "canonical_replay_producer_control": {},
+            "slot_blockers": [],
+            "family_blockers": [],
+            "risk_budget_blockers": [],
+            "evidence_blockers": ["holding_quant_runtime_evidence_missing"],
+            "symbol_runtime": {},
+        }
+    first = next(iter(symbol_rows.values()))
+    status_values = {row["governance_status"] for row in symbol_rows.values()}
+    mode_values = {row["factor_mode"] for row in symbol_rows.values()}
+    blockers = list(
+        dict.fromkeys(
+            blocker
+            for row in symbol_rows.values()
+            for blocker in list(row.get("blockers") or [])
+        )
+    )
+    if len(status_values) > 1 or len(mode_values) > 1:
+        blockers.append("holding_factor_governance_runtime_inconsistent")
+    runtime_fingerprints = {
+        (
+            row.get("registry_sha256"),
+            row.get("protocol_hash"),
+            row.get("registry_selectable_factor_count"),
+            tuple(row.get("registry_selectable_factor_names") or []),
+        )
+        for row in symbol_rows.values()
+    }
+    if len(runtime_fingerprints) > 1:
+        blockers.append("holding_factor_registry_runtime_inconsistent")
+    for row in symbol_rows.values():
+        if not list(row.get("factors_used") or []):
+            blockers.append("holding_factor_runtime_factors_used_missing")
+        if _safe_float(row.get("confidence"), 0.0) <= 0:
+            blockers.append("holding_factor_runtime_confidence_non_positive")
+        selectable_names = list(row.get("registry_selectable_factor_names") or [])
+        if (
+            int(row.get("registry_selectable_factor_count") or 0) <= 0
+            or len(selectable_names)
+            != int(row.get("registry_selectable_factor_count") or 0)
+        ):
+            blockers.append("holding_factor_registry_selectable_set_invalid")
+        for field, blocker in (
+            ("registry_sha256", "holding_factor_registry_sha256_invalid"),
+            ("protocol_hash", "holding_factor_protocol_hash_invalid"),
+        ):
+            value = str(row.get(field) or "").lower()
+            if len(value) != 64 or any(
+                character not in "0123456789abcdef" for character in value
+            ):
+                blockers.append(blocker)
+        canonical_control = _mapping_payload(
+            row.get("canonical_replay_producer_control")
+        )
+        if not (
+            canonical_control.get("producer_available") is True
+            and canonical_control.get("artifact_bytes_readback_bound") is True
+            and canonical_control.get("production_apply_eligible") is True
+        ):
+            blockers.append("holding_factor_canonical_control_not_ready")
+    blockers = list(dict.fromkeys(blockers))
+    ready = bool(
+        status_values == {"ready"}
+        and mode_values == {"governed_mined_factors"}
+        and all(row.get("production_eligible") is True for row in symbol_rows.values())
+        and all(
+            row.get("legacy_fallback_allowed") is False
+            for row in symbol_rows.values()
+        )
+        and not blockers
+    )
+    factors_used = sorted(
+        {
+            str(factor)
+            for row in symbol_rows.values()
+            for factor in list(row.get("factors_used") or [])
+            if str(factor)
+        }
+    )
+    return {
+        "schema_version": "factor_governance_runtime_summary.v1",
+        "governance_status": "ready" if ready else "governance_blocked",
+        "factor_mode": "governed_mined_factors" if ready else "governance_blocked",
+        "confidence": min(
+            [_safe_float(row.get("confidence"), 0.0) for row in symbol_rows.values()]
+            or [0.0]
+        ) if ready else 0.0,
+        "production_eligible": ready,
+        "registry_selectable_factor_count": int(first["registry_selectable_factor_count"]),
+        "registry_selectable_factor_names": list(first["registry_selectable_factor_names"]),
+        "registry_sha256": str(first["registry_sha256"]),
+        "protocol_version": str(first["protocol_version"]),
+        "protocol_hash": str(first["protocol_hash"]),
+        "factors_used": factors_used if ready else [],
+        "blockers": blockers,
+        "slot_incumbents": _jsonable(first.get("slot_incumbents") or {}),
+        "normalized_abs_weights": _jsonable(
+            first.get("normalized_abs_weights") or {}
+        ),
+        "family_normalized_abs_weights": _jsonable(
+            first.get("family_normalized_abs_weights") or {}
+        ),
+        "canonical_replay_producer_control": _jsonable(
+            first.get("canonical_replay_producer_control") or {}
+        ),
+        "slot_blockers": list(
+            dict.fromkeys(
+                item
+                for row in symbol_rows.values()
+                for item in list(row.get("slot_blockers") or [])
+            )
+        ),
+        "family_blockers": list(
+            dict.fromkeys(
+                item
+                for row in symbol_rows.values()
+                for item in list(row.get("family_blockers") or [])
+            )
+        ),
+        "risk_budget_blockers": list(
+            dict.fromkeys(
+                item
+                for row in symbol_rows.values()
+                for item in list(row.get("risk_budget_blockers") or [])
+            )
+        ),
+        "evidence_blockers": list(
+            dict.fromkeys(
+                item
+                for row in symbol_rows.values()
+                for item in list(row.get("evidence_blockers") or [])
+            )
+        ),
+        "legacy_fallback_allowed": any(
+            bool(row.get("legacy_fallback_allowed"))
+            for row in symbol_rows.values()
+        ),
+        "symbol_runtime": symbol_rows,
+    }
+
+
+def _format_factor_governance_runtime_lines(summary: Mapping[str, Any]) -> list[str]:
+    names = ", ".join(str(item) for item in list(summary.get("registry_selectable_factor_names") or [])) or "none"
+    used = ", ".join(str(item) for item in list(summary.get("factors_used") or [])) or "none"
+    blockers = "；".join(str(item) for item in list(summary.get("blockers") or [])) or "none"
+    slot_blockers = "；".join(
+        str(item) for item in list(summary.get("slot_blockers") or [])
+    ) or "none"
+    family_blockers = "；".join(
+        str(item) for item in list(summary.get("family_blockers") or [])
+    ) or "none"
+    risk_budget_blockers = "；".join(
+        str(item) for item in list(summary.get("risk_budget_blockers") or [])
+    ) or "none"
+    evidence_blockers = "；".join(
+        str(item) for item in list(summary.get("evidence_blockers") or [])
+    ) or "none"
+    return [
+        f"- governance_status：`{summary.get('governance_status', 'governance_blocked')}`",
+        f"- factor_mode：`{summary.get('factor_mode', 'governance_blocked')}`；confidence=`{_safe_float(summary.get('confidence')):.3f}`；production_eligible=`{str(bool(summary.get('production_eligible'))).lower()}`",
+        f"- registry selectable：count=`{int(_safe_float(summary.get('registry_selectable_factor_count')))}`；names=`{names}`；SHA=`{summary.get('registry_sha256') or 'missing'}`",
+        f"- protocol：version=`{summary.get('protocol_version') or 'v2'}`；hash=`{summary.get('protocol_hash') or 'missing'}`",
+        f"- factors_used：`{used}`；legacy_proxy_fallback=`{str(bool(summary.get('legacy_fallback_allowed'))).lower()}`",
+        f"- slot incumbents：`{json.dumps(summary.get('slot_incumbents') or {}, ensure_ascii=False, sort_keys=True)}`",
+        f"- risk budgets：factor=`{json.dumps(summary.get('normalized_abs_weights') or {}, ensure_ascii=False, sort_keys=True)}`；family=`{json.dumps(summary.get('family_normalized_abs_weights') or {}, ensure_ascii=False, sort_keys=True)}`",
+        f"- canonical producer control：`{json.dumps(summary.get('canonical_replay_producer_control') or {}, ensure_ascii=False, sort_keys=True)}`",
+        f"- slot/family/risk/evidence blockers：slot=`{slot_blockers}`；family=`{family_blockers}`；risk=`{risk_budget_blockers}`；evidence=`{evidence_blockers}`",
+        f"- blockers：`{blockers}`",
+    ]
+
+
+def _build_holding_dag_assessments(
+    branch_signals_by_symbol: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    assessments: dict[str, dict[str, Any]] = {}
+    for raw_symbol, raw_payload in branch_signals_by_symbol.items():
+        symbol = str(raw_symbol).strip().upper()
+        payload = _mapping_payload(raw_payload)
+        reviewed = _mapping_payload(payload.get("reviewed_branch_verdicts"))
+        present = [
+            branch
+            for branch in REQUIRED_DAG_BRANCHES
+            if _branch_payload_present(reviewed.get(branch))
+        ]
+        missing = [branch for branch in REQUIRED_DAG_BRANCHES if branch not in present]
+        limited = [
+            branch
+            for branch in present
+            if _branch_evidence_limited(
+                branch,
+                _mapping_payload(reviewed.get(branch)),
+            )
+        ]
+        quant = _mapping_payload(reviewed.get("quant"))
+        quant_state = _quant_governance_state(quant)
+        governance_status = str(quant_state["governance_status"])
+        factor_mode = str(quant_state["factor_mode"])
+        blockers = [f"missing_branch:{branch}" for branch in missing]
+        blockers.extend(f"limited_evidence:{branch}" for branch in limited)
+        if governance_status != "ready":
+            blockers.append(f"quant_governance_status:{governance_status}")
+        if factor_mode != "governed_mined_factors":
+            blockers.append(f"quant_factor_mode:{factor_mode}")
+        if quant_state["production_eligible"] is not True:
+            blockers.append("quant_production_eligible:false")
+        if quant_state["legacy_fallback_allowed"] is True:
+            blockers.append("quant_legacy_fallback_allowed:true")
+        blockers.extend(
+            f"quant_runtime_blocker:{item}"
+            for item in quant_state["runtime_blockers"]
+        )
+        recall_context = _mapping_payload(payload.get("recall_context"))
+        recall_holding_symbol = str(recall_context.get("holding_symbol") or "").strip().upper()
+        if recall_holding_symbol != symbol:
+            blockers.append("recall_context_holding_symbol_mismatch")
+        assessments[symbol] = {
+            "holding_dag_status": "ready" if not blockers else "blocked",
+            "holding_dag_blockers": list(dict.fromkeys(blockers)),
+            "present_branches": present,
+            "missing_branches": missing,
+            "limited_evidence_branches": limited,
+            "quant_governance_status": governance_status,
+            "factor_mode": factor_mode,
+            "quant_production_eligible": bool(
+                quant_state["production_eligible"]
+            ),
+            "quant_legacy_fallback_allowed": bool(
+                quant_state["legacy_fallback_allowed"]
+            ),
+            "recall_context": recall_context,
+            "recall_holding_symbol": recall_holding_symbol,
+            "allowed_action_scope": (
+                "normal_advisory_subject_to_all_gates"
+                if not blockers
+                else "read_only_risk_reducing_sell_or_clear_only"
+            ),
+        }
+    return assessments
+
+
 def _run_unified_review_mainline_for_holdings(
     *,
     source_ledger: pd.DataFrame,
@@ -715,6 +1206,12 @@ def _run_unified_review_mainline_for_holdings(
             "reviewed_branch_verdicts": reviewed_branch_verdicts,
             "branch_overlays": dict(symbol_review_bundle.get("branch_overlays", {}) or {}),
             "master_hint": dict(symbol_review_bundle.get("master_hint", {}) or {}),
+            "recall_context": {
+                "strategy": "aggressive_tech_manufacturing",
+                "source_record": source_record,
+                "latest_trade_date": latest_trade_date,
+                "holding_symbol": symbol,
+            },
             "codex_handoff": codex_handoff_active,
             "local_llm_disabled": bool(handoff_reason),
         }
@@ -774,6 +1271,20 @@ def _trailing_take_profit_row_float(row: Any, columns: tuple[str, ...]) -> float
         if number > 0:
             return number
     return 0.0
+
+
+def _unconfirmed_trailing_basis(previous_basis: str) -> str:
+    prefix = "unconfirmed_missing_entry_anchor"
+    normalized: list[str] = []
+    for token in str(previous_basis or "").split(":"):
+        value = token.strip()
+        if not value or value == prefix or value in normalized:
+            continue
+        if value == "manual_ledger_entry_date":
+            value = "prior_manual_ledger_entry_date_without_current_anchor"
+        if value not in normalized:
+            normalized.append(value)
+    return ":".join([prefix, *normalized])
 
 
 def _trailing_take_profit_peak_from_history(
@@ -1000,9 +1511,7 @@ def _apply_trailing_take_profit_review(
         elif carried_peak_price > 0:
             peak_price = max(carried_peak_price, current_price)
             peak_trade_date = carried_peak_trade_date or end_date
-            basis = "unconfirmed_missing_entry_anchor"
-            if previous_basis:
-                basis += f":{previous_basis}"
+            basis = _unconfirmed_trailing_basis(previous_basis)
             confirmed_basis = False
         elif history_peak_price > 0:
             peak_price = max(history_peak_price, current_price)
@@ -1195,12 +1704,64 @@ def _quote_timestamp(quote: dict[str, Any]) -> str:
     return ""
 
 
-def _resolve_realtime_execution_price(quote: dict[str, Any]) -> tuple[float, str]:
+def _parse_quote_datetime(value: Any, *, now: datetime) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    digits = "".join(character for character in text if character.isdigit())
+    try:
+        if len(digits) == 14 and len(text) <= 19:
+            parsed = datetime.strptime(digits, "%Y%m%d%H%M%S")
+        else:
+            timestamp = pd.Timestamp(text)
+            if pd.isna(timestamp):
+                return None
+            parsed = timestamp.to_pydatetime()
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=now.tzinfo)
+    return parsed.astimezone(now.tzinfo)
+
+
+def _quote_freshness(
+    quote: dict[str, Any],
+    *,
+    now: datetime,
+    max_age_seconds: int,
+) -> tuple[bool, str, float | None]:
+    quote_time = _parse_quote_datetime(_quote_timestamp(quote), now=now)
+    if quote_time is None:
+        return False, "quote_timestamp_missing_or_invalid", None
+    if quote_time.date() != now.date():
+        return False, "quote_not_same_local_trade_date", None
+    age_seconds = (now - quote_time).total_seconds()
+    if age_seconds < -5:
+        return False, "quote_timestamp_in_future", age_seconds
+    if age_seconds > max(0, int(max_age_seconds)):
+        return False, "quote_ttl_expired", age_seconds
+    return True, "fresh", age_seconds
+
+
+def _resolve_realtime_execution_price(
+    quote: dict[str, Any],
+    *,
+    now: datetime | None = None,
+    max_age_seconds: int = DEFAULT_QUOTE_MAX_AGE_SECONDS,
+) -> tuple[float, str]:
     """Return a validated realtime execution price and the field it came from."""
     if not isinstance(quote, dict) or not quote:
         return 0.0, ""
     if not _quote_timestamp(quote):
         return 0.0, ""
+    if now is not None:
+        fresh, _, _ = _quote_freshness(
+            quote,
+            now=now,
+            max_age_seconds=max_age_seconds,
+        )
+        if not fresh:
+            return 0.0, ""
 
     low = _safe_float(quote.get("low"), 0.0)
     high = _safe_float(quote.get("high"), 0.0)
@@ -1219,6 +1780,75 @@ def _resolve_realtime_execution_price(quote: dict[str, Any]) -> tuple[float, str
             continue
         return price, field
     return 0.0, ""
+
+
+def _stable_read_bytes(path: Path) -> bytes:
+    before = path.stat()
+    first = path.read_bytes()
+    middle = path.stat()
+    second = path.read_bytes()
+    after = path.stat()
+    if (
+        first != second
+        or before.st_ino != middle.st_ino
+        or middle.st_ino != after.st_ino
+        or before.st_size != middle.st_size
+        or middle.st_size != after.st_size
+        or before.st_mtime_ns != middle.st_mtime_ns
+        or middle.st_mtime_ns != after.st_mtime_ns
+    ):
+        raise RuntimeError(f"file changed during stable read: {path}")
+    return first
+
+
+def _load_local_quote_input(path_value: str | Path) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    path = Path(path_value).expanduser()
+    project_root = PROJECT_ROOT.resolve(strict=True)
+    resolved = path.resolve(strict=True)
+    results_root = (project_root / "results").resolve(strict=True)
+    try:
+        resolved.relative_to(results_root)
+    except ValueError as exc:
+        raise RuntimeError("quote_input_path_must_be_contained_in_ignored_results") from exc
+    file_stat = path.lstat()
+    if stat.S_ISLNK(file_stat.st_mode) or not stat.S_ISREG(file_stat.st_mode):
+        raise RuntimeError("quote_input_must_be_regular_non_symlink_file")
+    if file_stat.st_mode & 0o077:
+        raise RuntimeError("quote_input_permissions_must_be_0600")
+    raw = _stable_read_bytes(resolved)
+    payload = json.loads(raw.decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise RuntimeError("quote_input_payload_must_be_mapping")
+    if str(payload.get("schema_version") or "") != QUOTE_INPUT_SCHEMA_VERSION:
+        raise RuntimeError("quote_input_schema_version_invalid")
+    source = str(payload.get("source") or "").strip()
+    captured_at = str(payload.get("captured_at") or "").strip()
+    quotes = payload.get("quotes")
+    if not source or not captured_at or not isinstance(quotes, dict):
+        raise RuntimeError("quote_input_required_fields_missing")
+    normalized: dict[str, dict[str, Any]] = {}
+    for raw_code, raw_quote in quotes.items():
+        if not isinstance(raw_quote, dict):
+            raise RuntimeError(f"quote_input_quote_invalid:{raw_code}")
+        code = str(raw_code or raw_quote.get("quote_code") or "").strip().lower()
+        if not code:
+            raise RuntimeError("quote_input_quote_code_missing")
+        quote = dict(raw_quote)
+        quote.setdefault("quote_code", code)
+        quote.setdefault("source", source)
+        quote.setdefault("quote_timestamp", captured_at)
+        normalized[code] = quote
+    return normalized, {
+        "mode": "local_quote_input",
+        "path": str(resolved),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "schema_version": QUOTE_INPUT_SCHEMA_VERSION,
+        "source": source,
+        "captured_at": captured_at,
+        "permissions": oct(stat.S_IMODE(file_stat.st_mode)),
+        "stable_double_read": True,
+        "provider_fallback_used": False,
+    }
 
 
 def _fallback_current_price(metric: Mapping[str, Any], row: Any) -> float:
@@ -1820,6 +2450,10 @@ def _candidate_dag_branch_state(packet: dict[str, Any]) -> tuple[list[str], list
         branch
         for branch in REQUIRED_DAG_BRANCHES
         if _branch_payload_present(branch_payloads.get(branch))
+        and not _branch_evidence_limited(
+            branch,
+            _mapping_payload(branch_payloads.get(branch)),
+        )
     ]
     missing = [branch for branch in REQUIRED_DAG_BRANCHES if branch not in present]
     scores = {
@@ -2268,7 +2902,7 @@ def _build_candidate_pool_from_v13_dag(
             error="missing_dag_artifacts",
             dag_executed=False,
         )
-        return pd.DataFrame(dtype=object), status
+        return pd.DataFrame(columns=CANDIDATE_POOL_COLUMNS, dtype=object), status
 
     theme_pool_audit = _theme_pool_audit_from_dag_artifacts(dag_artifacts)
     theme_pool_summary = _mapping_payload(theme_pool_audit.get("summary"))
@@ -2327,7 +2961,7 @@ def _build_candidate_pool_from_v13_dag(
         shortlist = shortlist_by_symbol[symbol]
         target_weight = _safe_float(
             target_weights.get(symbol),
-            _safe_float(target_positions.get(symbol), _safe_float(shortlist.get("suggested_weight"))),
+            _safe_float(target_positions.get(symbol), 0.0),
         )
         if target_weight <= 0:
             zero_target_symbols.append(symbol)
@@ -2382,7 +3016,15 @@ def _build_candidate_pool_from_v13_dag(
         row["candidate_rank"] = index
 
     positive_target_count = len(
-        [weight for weight in target_weights.values() if weight > 0]
+        {
+            symbol
+            for symbol in {*target_weights, *target_positions}
+            if _safe_float(
+                target_weights.get(symbol),
+                _safe_float(target_positions.get(symbol), 0.0),
+            )
+            > 0
+        }
     )
     shortlist_artifact_missing = (
         not shortlist_rows
@@ -2397,6 +3039,15 @@ def _build_candidate_pool_from_v13_dag(
     elif shortlist_artifact_missing:
         status_name = "blocked"
         blocker = "candidate_artifact_shortlist_missing"
+    elif (
+        bool(theme_pool_summary)
+        and _int_payload(theme_pool_summary.get("admitted_theme_count")) == 0
+        and not bayesian_rows
+        and not shortlist_rows
+        and positive_target_count == 0
+    ):
+        status_name = "empty"
+        blocker = "no_candidate_admitted_by_theme_pool"
     else:
         status_name = "empty"
         blocker = "no_candidate_selected_by_portfolio_constructor"
@@ -2428,7 +3079,7 @@ def _build_candidate_pool_from_v13_dag(
         missing_by_symbol=missing_by_symbol,
         zero_target_symbols=zero_target_symbols,
     )
-    return pd.DataFrame(rows, dtype=object), status
+    return pd.DataFrame(rows, columns=CANDIDATE_POOL_COLUMNS, dtype=object), status
 
 
 def _attach_candidate_quote_gate(
@@ -2436,6 +3087,8 @@ def _attach_candidate_quote_gate(
     *,
     quote_payload: dict[str, dict[str, Any]],
     analysis_trade_date: str,
+    now: datetime | None = None,
+    max_age_seconds: int = DEFAULT_QUOTE_MAX_AGE_SECONDS,
 ) -> pd.DataFrame:
     if candidate_pool.empty:
         return candidate_pool
@@ -2455,7 +3108,11 @@ def _attach_candidate_quote_gate(
         symbol = str(getattr(row, "symbol", "") or "").strip().upper()
         quote = quote_payload.get(_map_symbol_to_quote_code(symbol), {})
         quote_time = _quote_timestamp(quote)
-        price, _ = _resolve_realtime_execution_price(quote)
+        price, _ = _resolve_realtime_execution_price(
+            quote,
+            now=now,
+            max_age_seconds=max_age_seconds,
+        )
         quote_date = "".join(ch for ch in quote_time if ch.isdigit())[:8]
         quote_fresh = bool(
             price > 0
@@ -2542,7 +3199,7 @@ def _run_candidate_level_v13_dag(
             error=str(exc),
             dag_executed=False,
         )
-        return pd.DataFrame(dtype=object), status, {}
+        return pd.DataFrame(columns=CANDIDATE_POOL_COLUMNS, dtype=object), status, {}
     candidate_pool, status = _build_candidate_pool_from_v13_dag(
         dag_artifacts=dag_artifacts,
         held_symbols=held_symbols,
@@ -2559,7 +3216,7 @@ def _build_switch_plan(
     decision_data_sufficient: bool,
 ) -> pd.DataFrame:
     if holdings_review.empty or candidate_pool.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=SWITCH_PLAN_COLUMNS)
     required_candidate_columns = {
         "candidate_source",
         "candidate_dag_four_branch_complete",
@@ -2569,14 +3226,14 @@ def _build_switch_plan(
         "bayesian_rank",
     }
     if not required_candidate_columns.issubset(set(candidate_pool.columns)):
-        return pd.DataFrame()
+        return pd.DataFrame(columns=SWITCH_PLAN_COLUMNS)
     dag_candidates = candidate_pool[
         (candidate_pool["candidate_source"].astype(str) == "v13_full_market_dag")
         & (candidate_pool["candidate_dag_four_branch_complete"].astype(bool))
         & (candidate_pool["portfolio_target_weight"].map(lambda value: _safe_float(value) > 0))
     ].copy()
     if dag_candidates.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=SWITCH_PLAN_COLUMNS)
 
     review = holdings_review.copy()
     review["_switch_pressure"] = review.apply(
@@ -2597,7 +3254,7 @@ def _build_switch_plan(
         ascending=[False, False, True],
     ).head(3)
     if weak_holdings.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=SWITCH_PLAN_COLUMNS)
     best_candidates = dag_candidates.sort_values(
         by=["portfolio_target_weight", "posterior_action_score", "posterior_confidence", "symbol"],
         ascending=[False, False, False, True],
@@ -2661,7 +3318,7 @@ def _build_switch_plan(
                 ),
             }
         )
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=SWITCH_PLAN_COLUMNS)
 
 
 def _apply_orders(
@@ -2728,6 +3385,14 @@ def _apply_orders(
 
 
 def _manual_manifest_is_valid_baseline(manifest: dict[str, Any]) -> bool:
+    status = str(manifest.get("status") or "").strip()
+    execution_status = str(manifest.get("execution_status") or "").strip()
+    if not status or status.lower() == "ok":
+        return False
+    if execution_status and execution_status != status:
+        return False
+    if not status.startswith(VALID_MANUAL_LEDGER_STATUS_PREFIXES):
+        return False
     status_text = " ".join(
         str(manifest.get(key) or "")
         for key in ("status", "execution_status", "price_basis", "note")
@@ -2735,15 +3400,231 @@ def _manual_manifest_is_valid_baseline(manifest: dict[str, Any]) -> bool:
     return not any(marker in status_text for marker in INVALID_MANUAL_LEDGER_STATUS_MARKERS)
 
 
-def _compact_datetime_key(value: Any) -> str:
-    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
-    if len(digits) >= 14:
-        return digits[:14]
-    if len(digits) == 12:
-        return f"{digits}00"
-    if len(digits) == 8:
-        return f"{digits}000000"
-    return digits
+def _decision_log_symbol_matches(value: Any, symbol: str) -> bool:
+    normalized = str(value or "").upper()
+    tokens = {
+        token.strip()
+        for token in normalized.replace("；", ",").replace(";", ",").split(",")
+        if token.strip()
+    }
+    return "PORTFOLIO" in tokens or symbol.upper() in tokens
+
+
+def _same_day_manual_fill_authorization(
+    *,
+    decision_log_path: Path,
+    trade_date: str,
+    symbol: str,
+    order_action: str,
+    order_shares: int,
+    allowed_root: Path = DEFAULT_DECISION_LOG_PATH.parent,
+) -> dict[str, Any]:
+    result = {
+        "authorized": False,
+        "decision_log_path": str(decision_log_path),
+        "trade_date": trade_date,
+        "symbol": symbol,
+        "order_action": order_action,
+        "order_shares": int(order_shares),
+        "advisory_event_id": "",
+        "human_action_event_id": "",
+        "blockers": [],
+    }
+    if not decision_log_path.is_file() or decision_log_path.is_symlink():
+        result["blockers"] = ["decision_log_missing_or_unsafe"]
+        return result
+    try:
+        resolved_path = decision_log_path.resolve(strict=True)
+        resolved_path.relative_to(allowed_root.resolve(strict=True))
+    except (FileNotFoundError, OSError, ValueError):
+        result["blockers"] = ["decision_log_outside_allowed_root"]
+        return result
+    if stat.S_IMODE(resolved_path.stat().st_mode) & (stat.S_IWGRP | stat.S_IWOTH):
+        result["blockers"] = ["decision_log_permissions_unsafe"]
+        return result
+    result["decision_log_path"] = str(resolved_path)
+    try:
+        raw = _stable_read_bytes(resolved_path).decode("utf-8")
+    except Exception as exc:
+        result["blockers"] = [f"decision_log_unreadable:{exc}"]
+        return result
+
+    entries: list[dict[str, Any]] = []
+    seen_event_ids: set[str] = set()
+    for line_number, line in enumerate(raw.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            result["blockers"] = [
+                f"decision_log_invalid_json_line:{line_number}"
+            ]
+            return result
+        if not isinstance(payload, dict):
+            result["blockers"] = [
+                f"decision_log_non_object_line:{line_number}"
+            ]
+            return result
+        event_id = str(payload.get("event_id") or "").strip()
+        if (
+            payload.get("schema_version") != "decision_log.v1"
+            or not event_id
+            or event_id in seen_event_ids
+        ):
+            result["blockers"] = [
+                f"decision_log_schema_or_event_id_invalid:{line_number}"
+            ]
+            return result
+        seen_event_ids.add(event_id)
+        if _compact_trade_date(payload.get("trade_date")) == trade_date:
+            entries.append(payload)
+
+    advisories: dict[str, dict[str, Any]] = {}
+    allowed_advisory_actions = (
+        {"sell", "reduce_risk", "clear_risk"}
+        if order_action == "sell"
+        else {"buy", "add_risk"}
+    )
+    for entry in entries:
+        if str(entry.get("event_type") or "") != "advisory":
+            continue
+        if not _decision_log_symbol_matches(entry.get("symbol"), symbol):
+            continue
+        metadata = _mapping_payload(entry.get("metadata"))
+        try:
+            advisory_shares = int(metadata.get("shares"))
+        except (TypeError, ValueError):
+            advisory_shares = -1
+        if (
+            str(entry.get("action") or "").strip().lower()
+            not in allowed_advisory_actions
+            or advisory_shares != int(order_shares)
+        ):
+            continue
+        event_id = str(entry.get("event_id") or "").strip()
+        if event_id:
+            advisories[event_id] = entry
+
+    for entry in entries:
+        if str(entry.get("event_type") or "") != "human_action":
+            continue
+        if not _decision_log_symbol_matches(entry.get("symbol"), symbol):
+            continue
+        metadata = _mapping_payload(entry.get("metadata"))
+        paired_event_id = str(metadata.get("paired_advisory_event_id") or "").strip()
+        if paired_event_id not in advisories:
+            continue
+        if (
+            metadata.get("effective_ledger_unchanged") is True
+            or metadata.get("no_real_order_placed") is True
+            or metadata.get("requires_maxwell_reconfirmation_after_fresh_quote") is True
+        ):
+            continue
+        allowed_actions = (
+            {"sell", "reduce_risk", "clear_risk", "local_manual_sell"}
+            if order_action == "sell"
+            else {"buy", "add_risk", "local_manual_buy"}
+        )
+        try:
+            authorized_shares = int(metadata.get("shares"))
+        except (TypeError, ValueError):
+            authorized_shares = -1
+        explicitly_confirmed = bool(
+            str(entry.get("action") or "").strip().lower() in allowed_actions
+            and metadata.get("authorized") is True
+            and str(metadata.get("approved_by") or "").strip().lower()
+            == "maxwell"
+            and authorized_shares == int(order_shares)
+        )
+        if not explicitly_confirmed:
+            continue
+        result.update(
+            {
+                "authorized": True,
+                "advisory_event_id": paired_event_id,
+                "human_action_event_id": str(entry.get("event_id") or ""),
+                "blockers": [],
+            }
+        )
+        return result
+
+    result["blockers"] = ["same_day_paired_advisory_human_action_missing"]
+    return result
+
+
+def _manual_manifest_explicit_time_key(manifest: Mapping[str, Any]) -> str:
+    for key in (
+        "recorded_at",
+        "executed_at",
+        "updated_at",
+        "timestamp_long",
+        "record_timestamp",
+    ):
+        normalized = _validated_datetime_key(manifest.get(key))
+        if normalized:
+            return normalized
+    return ""
+
+
+def _manual_manifest_explicit_datetime(
+    manifest: Mapping[str, Any],
+) -> datetime | None:
+    for key in (
+        "recorded_at",
+        "executed_at",
+        "updated_at",
+        "timestamp_long",
+        "record_timestamp",
+    ):
+        parsed = _validated_datetime(manifest.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _validated_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    local_tz = _now_local().tzinfo
+    timezone_hint = local_tz
+    parsed: datetime | None = None
+    iso_text = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        parsed = datetime.fromisoformat(iso_text)
+    except ValueError:
+        normalized = text
+        if normalized.endswith(" CST"):
+            normalized = normalized[:-4]
+        elif normalized.endswith(" UTC"):
+            normalized = normalized[:-4]
+            timezone_hint = timezone.utc
+        for format_string in (
+            "%Y-%m-%d %H:%M:%S",
+            "%Y%m%d_%H%M%S",
+            "%Y%m%d_%H%M",
+            "%Y%m%d%H%M%S",
+            "%Y%m%d%H%M",
+            "%Y%m%d",
+        ):
+            try:
+                parsed = datetime.strptime(normalized, format_string)
+                break
+            except ValueError:
+                continue
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone_hint)
+    return parsed.astimezone(timezone.utc)
+
+
+def _validated_datetime_key(value: Any) -> str:
+    parsed = _validated_datetime(value)
+    if parsed is None:
+        return ""
+    return parsed.astimezone(_now_local().tzinfo).strftime("%Y%m%d%H%M%S")
 
 
 def _manual_manifest_order_key(run_dir: Path, manifest: dict[str, Any]) -> tuple[str, str]:
@@ -2751,46 +3632,64 @@ def _manual_manifest_order_key(run_dir: Path, manifest: dict[str, Any]) -> tuple
         "recorded_at",
         "executed_at",
         "updated_at",
-        "quote_snapshot",
         "timestamp_long",
         "record_timestamp",
     ):
-        normalized = _compact_datetime_key(manifest.get(key))
+        normalized = _validated_datetime_key(manifest.get(key))
         if normalized:
             return normalized, run_dir.name
-    return _compact_datetime_key(run_dir.name), run_dir.name
+    return _validated_datetime_key(run_dir.name), run_dir.name
 
 
 def _resolve_manual_ledger_path(manifest_path: Path, manifest: dict[str, Any]) -> Path | None:
-    candidates: list[Path] = []
     next_ledger = str(manifest.get("next_ledger_path") or "").strip()
-    if next_ledger:
-        next_path = Path(next_ledger)
-        resolved_next = next_path if next_path.is_absolute() else manifest_path.parent / next_path
-        if resolved_next.suffix.lower() == ".parquet":
-            candidates.append(resolved_next)
-        elif resolved_next.name == "ledger_after_manual_switch.csv":
-            candidates.append(resolved_next.with_suffix(".parquet"))
-            candidates.append(resolved_next)
-    candidates.append(manifest_path.parent / "ledger_after_manual_switch.parquet")
-    candidates.append(manifest_path.parent / "ledger_after_manual_switch.csv")
+    if not next_ledger:
+        return None
+    declared = Path(next_ledger).expanduser()
+    candidate = declared if declared.is_absolute() else manifest_path.parent / declared
+    if candidate.is_symlink():
+        return None
+    try:
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(manifest_path.parent.resolve(strict=True))
+    except (FileNotFoundError, OSError, ValueError):
+        return None
+    if (
+        resolved.stem != "ledger_after_manual_switch"
+        or resolved.suffix.lower() not in {".parquet", ".csv"}
+        or not resolved.is_file()
+    ):
+        return None
+    return resolved
 
-    for candidate in candidates:
-        if (
-            candidate.stem == "ledger_after_manual_switch"
-            and candidate.suffix.lower() in {".parquet", ".csv"}
-            and candidate.exists()
-            and candidate.is_file()
-        ):
-            return candidate
-    return None
+
+def _declared_manual_ledger_sha256(
+    manifest: Mapping[str, Any],
+    ledger_path: Path,
+) -> str:
+    suffix_key = (
+        "ledger_after_manual_switch_parquet_sha256"
+        if ledger_path.suffix.lower() == ".parquet"
+        else "ledger_after_manual_switch_csv_sha256"
+    )
+    for key in (
+        "next_ledger_sha256",
+        suffix_key,
+        "ledger_after_manual_switch_sha256",
+        "ledger_sha256",
+    ):
+        value = str(manifest.get(key) or "").strip().lower()
+        if len(value) == 64 and all(character in "0123456789abcdef" for character in value):
+            return value
+    return ""
 
 
 def _read_manual_ledger(path: Path) -> pd.DataFrame:
+    raw = _stable_read_bytes(path)
     if path.suffix.lower() == ".parquet":
-        return pd.read_parquet(path)
+        return pd.read_parquet(io.BytesIO(raw))
     if path.name == "ledger_after_manual_switch.csv":
-        return pd.read_table(path, sep=",", encoding="utf-8-sig")
+        return pd.read_table(io.BytesIO(raw), sep=",", encoding="utf-8-sig")
     raise RuntimeError(f"manual ledger 只允许读取 ledger_after_manual_switch sidecar: {path}")
 
 
@@ -2821,9 +3720,138 @@ def _build_effective_manual_pnl_summary(
     return pd.DataFrame([row])
 
 
+def _required_manifest_number(
+    manifest: Mapping[str, Any],
+    key: str,
+) -> float:
+    if key not in manifest or manifest.get(key) in (None, ""):
+        raise RuntimeError(f"v3_manual_manifest_financial_field_missing:{key}")
+    try:
+        value = float(manifest[key])
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"v3_manual_manifest_financial_field_invalid:{key}"
+        ) from exc
+    if not math.isfinite(value):
+        raise RuntimeError(f"v3_manual_manifest_financial_field_invalid:{key}")
+    return value
+
+
+def _manual_financial_state_sha256(
+    manifest: Mapping[str, Any],
+    *,
+    ledger_sha256: str,
+) -> str:
+    payload = {
+        key: manifest.get(key)
+        for key in (
+            "capital_cny",
+            "cash_after",
+            "market_value_after",
+            "total_value_after",
+            "portfolio_pnl_after",
+            "portfolio_return_after",
+        )
+    }
+    payload["ledger_sha256"] = ledger_sha256
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _validate_v3_manual_financial_reconciliation(
+    *,
+    ledger: pd.DataFrame,
+    manifest: Mapping[str, Any],
+    expected_capital: float,
+    ledger_sha256: str,
+) -> dict[str, Any]:
+    if "current_value" not in ledger.columns:
+        raise RuntimeError("v3_manual_ledger_schema_missing:current_value")
+    current_values = pd.to_numeric(ledger["current_value"], errors="coerce")
+    if current_values.isna().any():
+        raise RuntimeError("v3_manual_ledger_current_value_invalid")
+    ledger_market_value = float(current_values.sum())
+    cash_after = _required_manifest_number(manifest, "cash_after")
+    market_value_after = _required_manifest_number(manifest, "market_value_after")
+    total_value_after = _required_manifest_number(manifest, "total_value_after")
+    portfolio_pnl_after = _required_manifest_number(manifest, "portfolio_pnl_after")
+    portfolio_return_after = _required_manifest_number(
+        manifest,
+        "portfolio_return_after",
+    )
+    manifest_capital = _required_manifest_number(manifest, "capital_cny")
+    declared_financial_sha256 = str(
+        manifest.get("financial_state_sha256") or ""
+    ).strip().lower()
+    expected_financial_sha256 = _manual_financial_state_sha256(
+        manifest,
+        ledger_sha256=ledger_sha256,
+    )
+    if declared_financial_sha256 != expected_financial_sha256:
+        raise RuntimeError("v3_manual_financial_state_sha256_mismatch")
+    money_tolerance = 0.01
+    if not math.isclose(
+        ledger_market_value,
+        market_value_after,
+        rel_tol=0.0,
+        abs_tol=money_tolerance,
+    ):
+        raise RuntimeError("v3_manual_ledger_market_value_mismatch")
+    if not math.isclose(
+        cash_after + market_value_after,
+        total_value_after,
+        rel_tol=0.0,
+        abs_tol=money_tolerance,
+    ):
+        raise RuntimeError("v3_manual_total_value_identity_mismatch")
+    implied_capital = total_value_after - portfolio_pnl_after
+    if implied_capital <= 0:
+        raise RuntimeError("v3_manual_implied_capital_invalid")
+    if not math.isclose(
+        manifest_capital,
+        expected_capital,
+        rel_tol=0.0,
+        abs_tol=money_tolerance,
+    ):
+        raise RuntimeError("v3_manual_capital_vs_formal_manifest_mismatch")
+    if not math.isclose(
+        implied_capital,
+        manifest_capital,
+        rel_tol=0.0,
+        abs_tol=money_tolerance,
+    ):
+        raise RuntimeError("v3_manual_capital_pnl_identity_mismatch")
+    implied_return = portfolio_pnl_after / implied_capital
+    if not math.isclose(
+        portfolio_return_after,
+        implied_return,
+        rel_tol=0.0,
+        abs_tol=1e-6,
+    ):
+        raise RuntimeError("v3_manual_portfolio_return_identity_mismatch")
+    return {
+        "status": "verified",
+        "ledger_market_value": round(ledger_market_value, 2),
+        "cash_after": round(cash_after, 2),
+        "market_value_after": round(market_value_after, 2),
+        "total_value_after": round(total_value_after, 2),
+        "portfolio_pnl_after": round(portfolio_pnl_after, 2),
+        "portfolio_return_after": portfolio_return_after,
+        "implied_capital": round(implied_capital, 2),
+        "capital_cny": round(manifest_capital, 2),
+        "financial_state_sha256": expected_financial_sha256,
+    }
+
+
 def _load_latest_effective_manual_record(
     base_dir: Path,
     max_record_name: str | None = None,
+    expected_capital: float | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any], Path, Path]:
     run_dirs = [
         path
@@ -2833,15 +3861,34 @@ def _load_latest_effective_manual_record(
         and (max_record_name is None or path.name <= max_record_name)
     ]
     candidates: list[tuple[tuple[str, str], Path, dict[str, Any], Path]] = []
+    validation_errors: list[str] = []
     for run_dir in run_dirs:
         manifest_path = run_dir / "manual_execution_manifest.json"
         if not manifest_path.exists():
             continue
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        try:
+            manifest_raw = _stable_read_bytes(manifest_path)
+            manifest = json.loads(manifest_raw.decode("utf-8"))
+        except Exception as exc:
+            validation_errors.append(f"{run_dir.name}:manifest_unreadable:{exc}")
+            continue
+        if not isinstance(manifest, dict):
+            validation_errors.append(f"{run_dir.name}:manifest_not_mapping")
+            continue
         if not _manual_manifest_is_valid_baseline(manifest):
             continue
+        if str(manifest.get("schema_version") or "") == MANUAL_EXECUTION_SCHEMA_VERSION:
+            explicit_time = _manual_manifest_explicit_datetime(manifest)
+            if explicit_time is None:
+                validation_errors.append(f"{run_dir.name}:v3_manifest_time_missing")
+                continue
+            now_utc = _now_local().astimezone(timezone.utc)
+            if explicit_time > now_utc + timedelta(minutes=5):
+                validation_errors.append(f"{run_dir.name}:v3_manifest_time_in_future")
+                continue
         ledger_path = _resolve_manual_ledger_path(manifest_path, manifest)
         if ledger_path is None:
+            validation_errors.append(f"{run_dir.name}:declared_next_ledger_invalid")
             continue
         candidates.append((_manual_manifest_order_key(run_dir, manifest), manifest_path, manifest, ledger_path))
 
@@ -2850,19 +3897,71 @@ def _load_latest_effective_manual_record(
         key=lambda item: item[0],
         reverse=True,
     ):
-        ledger = _read_manual_ledger(ledger_path)
-        required_columns = {"symbol", "shares", "avg_cost"}
-        if not required_columns.issubset(set(ledger.columns)):
-            raise RuntimeError(
-                "有效 manual ledger schema 缺失字段: "
-                + ", ".join(sorted(required_columns - set(ledger.columns)))
-                + f" ({ledger_path})"
+        try:
+            raw = _stable_read_bytes(ledger_path)
+            actual_sha256 = hashlib.sha256(raw).hexdigest()
+            declared_sha256 = _declared_manual_ledger_sha256(manifest, ledger_path)
+            if str(manifest.get("schema_version") or "") == MANUAL_EXECUTION_SCHEMA_VERSION and not declared_sha256:
+                raise RuntimeError("v3_manual_manifest_ledger_sha256_missing")
+            if declared_sha256 and actual_sha256 != declared_sha256:
+                raise RuntimeError("manual_ledger_sha256_mismatch")
+            ledger = (
+                pd.read_parquet(io.BytesIO(raw))
+                if ledger_path.suffix.lower() == ".parquet"
+                else pd.read_table(io.BytesIO(raw), sep=",", encoding="utf-8-sig")
             )
-        return ledger, manifest, manifest_path, ledger_path
+            required_columns = {"symbol", "shares", "avg_cost"}
+            if not required_columns.issubset(set(ledger.columns)):
+                raise RuntimeError(
+                    "manual_ledger_schema_missing:"
+                    + ",".join(sorted(required_columns - set(ledger.columns)))
+                )
+            declared_count = manifest.get("effective_manual_holding_count")
+            if declared_count not in (None, "") and int(declared_count) != len(ledger):
+                raise RuntimeError("manual_ledger_holding_count_mismatch")
+            is_v3 = (
+                str(manifest.get("schema_version") or "")
+                == MANUAL_EXECUTION_SCHEMA_VERSION
+            )
+            if is_v3 and expected_capital is None:
+                raise RuntimeError("v3_manual_expected_capital_missing")
+            financial_reconciliation = (
+                _validate_v3_manual_financial_reconciliation(
+                    ledger=ledger,
+                    manifest=manifest,
+                    expected_capital=float(expected_capital),
+                    ledger_sha256=actual_sha256,
+                )
+                if is_v3
+                else {"status": "legacy_unsealed"}
+            )
+            manifest = {
+                **manifest,
+                "validated_ledger_sha256": actual_sha256,
+                "validated_financial_reconciliation": financial_reconciliation,
+                "validated_ledger_provenance": {
+                    "declared_next_ledger_path": str(manifest.get("next_ledger_path") or ""),
+                    "resolved_path": str(ledger_path),
+                    "contained_in_manifest_directory": True,
+                    "regular_non_symlink_file": True,
+                    "stable_double_read": True,
+                    "declared_sha256": declared_sha256,
+                    "actual_sha256": actual_sha256,
+                    "hash_status": "verified" if declared_sha256 else "legacy_unsealed",
+                    "financial_reconciliation_status": financial_reconciliation[
+                        "status"
+                    ],
+                },
+            }
+            return ledger, manifest, manifest_path, ledger_path
+        except Exception as exc:
+            validation_errors.append(f"{manifest_path.parent.name}:ledger_invalid:{exc}")
+            continue
 
     raise RuntimeError(
         "策略目录下不存在有效本地/manual ledger_after_manual_switch sidecar；"
         "formal ledger.csv 已停用，无法作为连续复盘或执行基线。"
+        + (" blockers=" + " | ".join(validation_errors[-5:]) if validation_errors else "")
     )
 
 
@@ -2915,6 +4014,10 @@ def _load_previous_record(
     ledger, manual_manifest, manual_manifest_path, manual_ledger_path = _load_latest_effective_manual_record(
         base_dir,
         max_record_name=latest_dir.name,
+        expected_capital=_safe_float(
+            manifest.get("capital_cny"),
+            DEFAULT_INITIAL_CAPITAL,
+        ),
     )
     manifest = {
         **manifest,
@@ -2925,6 +4028,12 @@ def _load_previous_record(
             manual_manifest.get("status")
             or manual_manifest.get("execution_status")
             or ""
+        ),
+        "effective_manual_ledger_sha256": str(
+            manual_manifest.get("validated_ledger_sha256") or ""
+        ),
+        "effective_manual_ledger_provenance": _jsonable(
+            manual_manifest.get("validated_ledger_provenance") or {}
         ),
     }
     pnl_summary = _build_effective_manual_pnl_summary(
@@ -3291,11 +4400,66 @@ def build_parquet_canonical_completeness_report(
         if _normalize_review_symbol(symbol)
     }
     coverage_payload = dict(snapshot.get("coverage", {}) or {})
+    coverage_provenance_blockers = [
+        str(item)
+        for item in list(snapshot.get("coverage_provenance_blockers", []) or [])
+        if str(item).strip()
+    ]
     inactive_symbols = {
         _normalize_review_symbol(symbol)
         for symbol in coverage_payload.get("inactive_symbols", []) or []
         if _normalize_review_symbol(symbol)
     }
+    suspended_symbols = {
+        _normalize_review_symbol(symbol)
+        for symbol in coverage_payload.get("suspended_symbols", []) or []
+        if _normalize_review_symbol(symbol)
+    }
+    persisted_allowed_symbols = {
+        _normalize_review_symbol(symbol)
+        for symbol in coverage_payload.get("allowed_stale_symbols", []) or []
+        if _normalize_review_symbol(symbol)
+    }
+    persisted_non_blocking_absent = {
+        _normalize_review_symbol(symbol)
+        for symbol in coverage_payload.get("non_blocking_absent_symbols", []) or []
+        if _normalize_review_symbol(symbol)
+    }
+    full_a_symbols = {
+        _normalize_review_symbol(symbol)
+        for symbol in components.get("full_a", []) or []
+        if _normalize_review_symbol(symbol)
+    }
+    expected_scope_sha256 = hashlib.sha256(
+        "\n".join(sorted(full_a_symbols)).encode("utf-8")
+    ).hexdigest()
+    declared_scope_sha256 = str(
+        coverage_payload.get("expected_scope_sha256") or ""
+    ).strip().lower()
+    coverage_trade_date = _compact_trade_date(
+        coverage_payload.get("coverage_trade_date")
+        or coverage_payload.get("latest_complete_trade_date")
+    )
+    coverage_claim_complete = bool(
+        coverage_payload.get("complete") is True
+        and int(coverage_payload.get("blocking_incomplete_count", 0) or 0) == 0
+        and int(coverage_payload.get("expected_scope_count", 0) or 0)
+        == len(full_a_symbols)
+        and coverage_trade_date == effective_trade_date
+    )
+    canonical_full_a_complete = bool(
+        coverage_claim_complete
+        and not coverage_provenance_blockers
+        and declared_scope_sha256
+        and declared_scope_sha256 == expected_scope_sha256
+    )
+    coverage_provenance_status = (
+        "verified"
+        if canonical_full_a_complete
+        else "legacy_unbound"
+        if coverage_claim_complete and not declared_scope_sha256
+        else "unverified"
+    )
     target_categories = list(categories or ["full_a", "hs300", "zz500", "zz1000"])
 
     report: dict[str, Any] = {
@@ -3306,12 +4470,26 @@ def build_parquet_canonical_completeness_report(
         "categories": {},
         "data_quality_issues": [],
         "pre_listing_symbols": [],
+        "coverage_provenance_status": coverage_provenance_status,
+        "coverage_trade_date": coverage_trade_date,
+        "expected_scope_sha256": expected_scope_sha256,
+        "declared_expected_scope_sha256": declared_scope_sha256,
+        "coverage_provenance_blockers": coverage_provenance_blockers,
         "source": "strict_parquet_canonical",
         "snapshot_id": str(snapshot.get("snapshot_id") or ""),
         "latest_complete_trade_date": effective_trade_date,
     }
-    coverage_complete_count = 0
-    expected_scope_count = 0
+    unique_expected_symbols: set[str] = set()
+    unique_complete_symbols: set[str] = set()
+    unique_blocking_symbols: set[str] = set()
+    verified_inactive_symbols = inactive_symbols if canonical_full_a_complete else set()
+    verified_suspended_symbols = suspended_symbols if canonical_full_a_complete else set()
+    verified_persisted_allowed_symbols = (
+        persisted_allowed_symbols if canonical_full_a_complete else set()
+    )
+    verified_persisted_non_blocking_absent = (
+        persisted_non_blocking_absent if canonical_full_a_complete else set()
+    )
 
     for category in target_categories:
         category_symbols = [
@@ -3321,23 +4499,36 @@ def build_parquet_canonical_completeness_report(
         ]
         category_symbols = list(dict.fromkeys(category_symbols))
         target_set = set(category_symbols)
+        unique_expected_symbols.update(target_set)
         present = target_set & available_symbols
-        non_blocking_absent = ((allowed | inactive_symbols) & target_set) - present
+        declared_non_blocking_absent = (
+            allowed
+            | verified_persisted_allowed_symbols
+            | verified_inactive_symbols
+            | verified_suspended_symbols
+            | verified_persisted_non_blocking_absent
+        )
+        canonical_non_trading_absent = set()
+        if canonical_full_a_complete and target_set.issubset(full_a_symbols):
+            canonical_non_trading_absent = target_set - present
+        non_blocking_absent = (
+            (declared_non_blocking_absent | canonical_non_trading_absent)
+            & target_set
+        ) - present
         missing = sorted(target_set - present - non_blocking_absent)
         category_complete_count = len(present) + len(non_blocking_absent)
-        coverage_complete_count += category_complete_count
+        unique_complete_symbols.update(present | non_blocking_absent)
         expected_count = len(category_symbols)
-        expected_scope_count += expected_count
         blocking_count = len(missing)
         if blocking_count:
             report["complete"] = False
-            report["blocking_incomplete_count"] += blocking_count
+            unique_blocking_symbols.update(missing)
 
         status_counts: dict[str, int] = {}
         if present:
             status_counts["up_to_date"] = len(present)
         if non_blocking_absent:
-            status_counts["inactive_or_allowed"] = len(non_blocking_absent)
+            status_counts["non_trading_or_allowed"] = len(non_blocking_absent)
         if missing:
             status_counts["missing"] = len(missing)
         report["categories"][category] = {
@@ -3348,7 +4539,13 @@ def build_parquet_canonical_completeness_report(
             "status_counts": status_counts,
             "missing_symbols": missing,
             "stale_symbols": [],
-            "suspended_stale_symbols": [],
+            "suspended_stale_symbols": sorted(
+                verified_suspended_symbols & target_set
+            ),
+            "inactive_symbols": sorted(verified_inactive_symbols & target_set),
+            "canonical_non_trading_absent_symbols": sorted(
+                canonical_non_trading_absent
+            ),
             "unreadable_symbols": [],
             "blocking_missing_symbols": missing,
             "blocking_stale_symbols": [],
@@ -3362,6 +4559,9 @@ def build_parquet_canonical_completeness_report(
             ),
         }
 
+    coverage_complete_count = len(unique_complete_symbols)
+    expected_scope_count = len(unique_expected_symbols)
+    report["blocking_incomplete_count"] = len(unique_blocking_symbols)
     coverage_ratio = (
         coverage_complete_count / expected_scope_count
         if expected_scope_count
@@ -3500,6 +4700,17 @@ def _build_data_snapshot_lines(
     analysis_trade_date: str,
     decision_data_sufficient: bool = False,
 ) -> list[str]:
+    def _symbol_date_label(item: Any) -> str:
+        if isinstance(item, Mapping):
+            symbol = str(item.get("symbol") or "")
+            date_value = item.get("latest_local_date")
+            return (
+                f"{symbol}@{_format_trade_date(date_value)}"
+                if date_value
+                else symbol
+            )
+        return str(item)
+
     categories = dict(completeness_report.get("categories", {}) or {})
     full_a = dict(categories.get("full_a", {}) or {})
     analysis_count = int((full_a.get("date_counts", {}) or {}).get(analysis_trade_date, 0) or 0)
@@ -3521,6 +4732,12 @@ def _build_data_snapshot_lines(
         (
             f"- 完整性状态：`{'通过' if completeness_report.get('complete') else '未通过'}`，"
             f"阻塞缺口 `{int(completeness_report.get('blocking_incomplete_count', 0) or 0)}` 个"
+        ),
+        (
+            f"- 覆盖证据绑定：`{completeness_report.get('coverage_provenance_status') or 'unverified'}`；"
+            f"coverage_trade_date=`{completeness_report.get('coverage_trade_date') or 'missing'}`；"
+            f"scope_sha=`{completeness_report.get('declared_expected_scope_sha256') or 'missing'}`；"
+            f"blockers=`{','.join(completeness_report.get('coverage_provenance_blockers', []) or []) or 'none'}`"
         ),
         (
             f"- 指数/持仓盘中快照：`{quote_snapshot}`；指数与持仓现价使用盘中行情，"
@@ -3577,8 +4794,7 @@ def _build_data_snapshot_lines(
                 + category
                 + " 阻塞旧档：`"
                 + "，".join(
-                    f"{item.get('symbol')}@{_format_trade_date(item.get('latest_local_date'))}"
-                    for item in blocking_stale[:10]
+                    _symbol_date_label(item) for item in blocking_stale[:10]
                 )
                 + (" ...`" if len(blocking_stale) > 10 else "`")
             )
@@ -3589,8 +4805,7 @@ def _build_data_snapshot_lines(
                 + category
                 + " 停牌/长期停牌例外：`"
                 + "，".join(
-                    f"{item.get('symbol')}@{_format_trade_date(item.get('latest_local_date'))}"
-                    for item in suspended[:10]
+                    _symbol_date_label(item) for item in suspended[:10]
                 )
                 + (" ...`" if len(suspended) > 10 else "`")
             )
@@ -3771,6 +4986,11 @@ def _manual_order_rows(
     for rejected in execution_price_rejections:
         symbol = str(rejected.get("symbol") or "").strip().upper()
         source_row = source_by_symbol.get(symbol)
+        quote = quote_by_symbol.get(symbol, {})
+        rejection_reason = str(rejected.get("reason") or "")
+        pending_authorization = rejection_reason == (
+            "advisory_only_no_local_manual_fill_authorization"
+        )
         rows.append(
             {
                 "timestamp": timestamp,
@@ -3778,13 +4998,13 @@ def _manual_order_rows(
                 "symbol": symbol,
                 "name": getattr(source_row, "name", ""),
                 "shares": int(_safe_float(rejected.get("shares"), 0.0)),
-                "execution_price": None,
+                "execution_price": rejected.get("validated_realtime_price"),
                 "trade_value": None,
                 "realized_pnl": None,
-                "status": "rejected",
-                "reason": str(rejected.get("reason") or ""),
-                "quote_source": "",
-                "quote_timestamp": "",
+                "status": "pending_authorization" if pending_authorization else "rejected",
+                "reason": rejection_reason,
+                "quote_source": str(quote.get("source") or "") if pending_authorization else "",
+                "quote_timestamp": _quote_timestamp(quote) if pending_authorization else "",
                 "execution_price_field": "",
             }
         )
@@ -3825,6 +5045,8 @@ def _write_manual_execution_outputs(
     decision_data_sufficient: bool,
     dag_four_branch_compliance: dict[str, Any],
     execution_price_gate: dict[str, Any],
+    advisory_only: bool,
+    quote_provenance: dict[str, Any],
 ) -> dict[str, Any]:
     raw_dir = run_dir / "raw_exports"
     raw_dir.mkdir(parents=True, exist_ok=True)
@@ -3844,14 +5066,26 @@ def _write_manual_execution_outputs(
     updated_ledger.to_csv(ledger_csv_path, index=False, encoding="utf-8-sig")
     updated_ledger.to_parquet(ledger_parquet_path, index=False)
     manual_orders.to_csv(manual_orders_path, index=False, encoding="utf-8-sig")
+    ledger_csv_bytes = _stable_read_bytes(ledger_csv_path)
+    ledger_parquet_bytes = _stable_read_bytes(ledger_parquet_path)
+    orders_bytes = _stable_read_bytes(manual_orders_path)
+    ledger_csv_sha256 = hashlib.sha256(ledger_csv_bytes).hexdigest()
+    ledger_parquet_sha256 = hashlib.sha256(ledger_parquet_bytes).hexdigest()
+    orders_sha256 = hashlib.sha256(orders_bytes).hexdigest()
 
     applied_trades = manual_orders[manual_orders["status"] == "filled"].to_dict(orient="records")
     rejected_trades = manual_orders[manual_orders["status"] != "filled"].to_dict(orient="records")
+    pending_authorization = bool(
+        not manual_orders.empty
+        and manual_orders["status"].astype(str).eq("pending_authorization").any()
+    )
     status = (
         "filled_local_manual_paper_rebalance"
         if applied_trades
         else (
-            "rejected_no_fill_carry_forward"
+            "advisory_only_pending_authorization_carry_forward"
+            if pending_authorization
+            else "rejected_no_fill_carry_forward"
             if rejected_trades
             else "no_action_carry_forward"
         )
@@ -3860,7 +5094,9 @@ def _write_manual_execution_outputs(
         "execution_time_realtime_quote"
         if applied_trades
         else (
-            "no_fill_realtime_quote_missing_or_gate_rejected"
+            "no_fill_advisory_only_pending_authorization"
+            if pending_authorization
+            else "no_fill_realtime_quote_missing_or_gate_rejected"
             if rejected_trades
             else "no_fill_no_orders"
         )
@@ -3876,14 +5112,18 @@ def _write_manual_execution_outputs(
         if str(symbol).strip()
     }
     manifest = {
-        "schema_version": "cn_aggressive_manual_execution.v2",
+        "schema_version": MANUAL_EXECUTION_SCHEMA_VERSION,
+        "capital_cny": pnl_summary.get("initial_capital"),
         "status": status,
         "execution_status": status,
         "manual_execution_mode": "paper_only_local_manual_no_broker",
+        "advisory_only": bool(advisory_only),
+        "local_manual_fills_allowed": not bool(advisory_only),
         "record_timestamp": timestamp,
         "recorded_at": timestamp_long,
         "price_basis": price_basis,
-        "quote_source": "tencent_realtime_quote" if applied_trades else "",
+        "quote_source": str(quote_provenance.get("source") or ""),
+        "quote_provenance": _jsonable(quote_provenance),
         "quote_snapshot": quote_snapshot,
         "quote_fetch_error": quote_error or "",
         "decision_data_sufficient": bool(decision_data_sufficient),
@@ -3892,12 +5132,25 @@ def _write_manual_execution_outputs(
         "execution_price_gate": execution_price_gate,
         "applied_local_trades": applied_trades,
         "rejected_or_pending_trades": rejected_trades,
-        "effective_manual_ledger_path": str(ledger_csv_path),
-        "next_ledger_path": str(ledger_csv_path),
-        "ledger_after_manual_switch_csv": str(ledger_csv_path),
-        "ledger_after_manual_switch_parquet": str(ledger_parquet_path),
-        "manual_orders_path": str(manual_orders_path),
-        "daily_execution_review_path": str(review_path),
+        "effective_manual_ledger_path": ledger_csv_path.name,
+        "next_ledger_path": ledger_csv_path.name,
+        "next_ledger_sha256": ledger_csv_sha256,
+        "ledger_after_manual_switch_csv": ledger_csv_path.name,
+        "ledger_after_manual_switch_csv_sha256": ledger_csv_sha256,
+        "ledger_after_manual_switch_parquet": ledger_parquet_path.name,
+        "ledger_after_manual_switch_parquet_sha256": ledger_parquet_sha256,
+        "manual_orders_path": manual_orders_path.name,
+        "manual_orders_sha256": orders_sha256,
+        "daily_execution_review_path": review_path.name,
+        "ledger_provenance": {
+            "declared_next_ledger_path": ledger_csv_path.name,
+            "contained_in_run_directory": True,
+            "regular_non_symlink_file": True,
+            "stable_double_read": True,
+            "declared_sha256": ledger_csv_sha256,
+            "csv_sha256": ledger_csv_sha256,
+            "parquet_sha256": ledger_parquet_sha256,
+        },
         "effective_manual_holding_count": int(len(next_symbols)),
         "source_manual_holding_count": int(len(source_symbols)),
         "cash_after": pnl_summary.get("cash_after"),
@@ -3908,6 +5161,10 @@ def _write_manual_execution_outputs(
         "realized_pnl_from_rebalance": pnl_summary.get("realized_pnl_from_rebalance"),
         "no_broker_api_called": True,
     }
+    manifest["financial_state_sha256"] = _manual_financial_state_sha256(
+        manifest,
+        ledger_sha256=ledger_csv_sha256,
+    )
     review_lines = [
         f"# 本地/manual执行复盘 {timestamp}",
         "",
@@ -3917,7 +5174,8 @@ def _write_manual_execution_outputs(
             if applied_trades
             else "未成交；无真实券商/API下单。"
         ),
-        f"- 有效 manual ledger：`{ledger_csv_path}`。",
+        f"- 有效 manual ledger：`{ledger_csv_path}`；SHA256 `{ledger_csv_sha256}`。",
+        f"- 模式：advisory_only=`{bool(advisory_only)}`，local_manual_fills_allowed=`{not bool(advisory_only)}`。",
         f"- 有效持仓数：`{len(next_symbols)}`；组合纪律上限 `{MAX_EFFECTIVE_HOLDING_COUNT}`。",
         f"- quote_snapshot：`{quote_snapshot or 'N/A'}`；价格口径 `{price_basis}`。",
         f"- 数据闸门：decision_data_sufficient=`{bool(decision_data_sufficient)}`，completeness_passed=`{bool(completeness_passed)}`。",
@@ -4006,23 +5264,23 @@ def _build_notes_payload(
         )
 
     notes_lines = [
-            f"# A股日度复盘 {trade_date}",
-            "",
-            f"- 数据完整性：{data_status}",
-            f"- 市场核心判断：{market_core_view}",
-            (
-                f"- 组合盈亏：截至 `{pnl_summary['quote_snapshot']}`，总资产 "
-                f"`{pnl_summary['total_value_after']:,.2f} 元`，较初始资金 "
-                f"`{pnl_summary['portfolio_pnl_after']:,.2f} 元` "
-                f"（{pnl_summary['portfolio_pnl_pct_after']:.2%}），较上一条正式记录变动 "
-                f"`{pnl_summary['delta_vs_source_record']:,.2f} 元`。"
-            ),
-            f"- 备选投资建议：{candidate_text}",
-            f"- 是否调仓：{'是' if orders else '否'}",
-            f"- 调仓内容：{order_text}",
-            f"- 是否换仓：{switch_text}",
-            f"- 换仓内容：{switch_detail_text}",
-            f"- 明日观察重点：{'；'.join(tomorrow_focus)}",
+        f"# A股日度复盘 {trade_date}",
+        "",
+        f"- 数据完整性：{data_status}",
+        f"- 市场核心判断：{market_core_view}",
+        (
+            f"- 组合盈亏：截至 `{pnl_summary['quote_snapshot']}`，总资产 "
+            f"`{pnl_summary['total_value_after']:,.2f} 元`，较初始资金 "
+            f"`{pnl_summary['portfolio_pnl_after']:,.2f} 元` "
+            f"（{pnl_summary['portfolio_pnl_pct_after']:.2%}），较上一条正式记录变动 "
+            f"`{pnl_summary['delta_vs_source_record']:,.2f} 元`。"
+        ),
+        f"- 备选投资建议：{candidate_text}",
+        f"- 是否调仓：{'是' if orders else '否'}",
+        f"- 调仓内容：{order_text}",
+        f"- 是否换仓：{switch_text}",
+        f"- 换仓内容：{switch_detail_text}",
+        f"- 明日观察重点：{'；'.join(tomorrow_focus)}",
     ]
     if theme_exposure_text:
         notes_lines.insert(6, f"- Theme 候选暴露：{theme_exposure_text}")
@@ -4032,6 +5290,31 @@ def _build_notes_payload(
 def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     started = time.time()
     now = _now_local()
+    advisory_only = bool(getattr(args, "advisory_only", True))
+    decision_log_path = Path(
+        str(
+            getattr(args, "decision_log_path", DEFAULT_DECISION_LOG_PATH)
+            or DEFAULT_DECISION_LOG_PATH
+        )
+    ).expanduser()
+    decision_log_allowed_root = Path(
+        str(
+            getattr(
+                args,
+                "decision_log_allowed_root",
+                DEFAULT_DECISION_LOG_PATH.parent,
+            )
+            or DEFAULT_DECISION_LOG_PATH.parent
+        )
+    ).expanduser()
+    allow_live_quotes = bool(getattr(args, "allow_live_quotes", False))
+    quote_input_json = str(getattr(args, "quote_input_json", "") or "").strip()
+    quote_max_age_seconds = max(
+        0,
+        int(getattr(args, "quote_max_age_seconds", DEFAULT_QUOTE_MAX_AGE_SECONDS)),
+    )
+    if quote_input_json and allow_live_quotes:
+        raise RuntimeError("quote_input_json_and_allow_live_quotes_are_mutually_exclusive")
     timestamp = _allocate_run_timestamp(Path(args.base_dir), now)
     timestamp_long = now.strftime("%Y-%m-%d %H:%M:%S %Z")
     base_dir = Path(args.base_dir)
@@ -4096,6 +5379,21 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     review_effective_summary = dict(review_layer.get("llm_effective_summary", {}) or {})
     review_model_role_metadata = dict(review_layer.get("model_role_metadata", {}) or {})
     codex_handoff_active = bool(review_layer.get("codex_handoff", False))
+    branch_signals_by_symbol = {
+        symbol: {
+            "reviewed_branch_verdicts": dict(payload.get("reviewed_branch_verdicts", {}) or {}),
+            "branch_overlays": dict(payload.get("branch_overlays", {}) or {}),
+            "master_hint": dict(payload.get("master_hint", {}) or {}),
+            "ic_hint": dict(payload.get("ic_hint", {}) or {}),
+            "recommendation": dict(payload.get("recommendation", {}) or {}),
+            "report_excerpt": str(payload.get("report_excerpt", "") or ""),
+            "recall_context": dict(payload.get("recall_context", {}) or {}),
+        }
+        for symbol, payload in review_by_symbol.items()
+    }
+    holding_dag_assessments = _build_holding_dag_assessments(
+        branch_signals_by_symbol
+    )
 
     metrics_map = {
         row.symbol: row._asdict()
@@ -4105,14 +5403,64 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     holding_quote_codes = [_map_symbol_to_quote_code(symbol) for symbol in source_ledger["symbol"]]
     index_quote_codes = list(INDEX_QUOTES.keys())
     quote_error = ""
-    try:
-        quote_payload = _fetch_tencent_quotes(index_quote_codes + holding_quote_codes)
-    except Exception as exc:
+    quote_provenance: dict[str, Any]
+    if quote_input_json:
+        try:
+            quote_payload, quote_provenance = _load_local_quote_input(quote_input_json)
+        except Exception as exc:
+            quote_payload = {}
+            quote_error = str(exc)
+            quote_provenance = {
+                "mode": "local_quote_input_rejected",
+                "path": quote_input_json,
+                "provider_fallback_used": False,
+                "error": quote_error,
+            }
+    elif allow_live_quotes:
+        try:
+            quote_payload = _fetch_tencent_quotes(index_quote_codes + holding_quote_codes)
+            quote_provenance = {
+                "mode": "explicit_live_provider",
+                "source": "tencent_realtime_quote",
+                "provider_fallback_used": False,
+            }
+        except Exception as exc:
+            quote_payload = {}
+            quote_error = str(exc)
+            quote_provenance = {
+                "mode": "explicit_live_provider_failed",
+                "source": "tencent_realtime_quote",
+                "provider_fallback_used": False,
+                "error": quote_error,
+            }
+    else:
         quote_payload = {}
-        quote_error = str(exc)
-    quote_snapshot = max(
+        quote_error = "provider_quotes_disabled_by_default"
+        quote_provenance = {
+            "mode": "provider_quotes_disabled",
+            "provider_fallback_used": False,
+        }
+    quote_validation_now = _now_local()
+    raw_quote_snapshot = max(
         [_quote_timestamp(quote_payload.get(code, {})) for code in index_quote_codes + holding_quote_codes],
         default="",
+    )
+    fresh_quote_timestamps = [
+        _quote_timestamp(quote_payload.get(code, {}))
+        for code in index_quote_codes + holding_quote_codes
+        if _quote_freshness(
+            quote_payload.get(code, {}),
+            now=quote_validation_now,
+            max_age_seconds=quote_max_age_seconds,
+        )[0]
+    ]
+    quote_snapshot = max(fresh_quote_timestamps, default="")
+    quote_provenance["raw_latest_quote_timestamp"] = raw_quote_snapshot
+    quote_provenance["fresh_latest_quote_timestamp"] = quote_snapshot
+    quote_provenance["fresh_quote_count"] = len(fresh_quote_timestamps)
+    quote_provenance["quote_max_age_seconds"] = quote_max_age_seconds
+    quote_provenance["diagnostic_quote_evaluated_at"] = (
+        quote_validation_now.isoformat()
     )
     diagnostic_completeness_after = {
         **completeness_after,
@@ -4173,7 +5521,16 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         ).strip()
         llm_risk_flags = list(recommendation.get("risk_flags") or ic_hint.get("risk_flags") or [])
         llm_session_id = str(review_payload.get("llm_session_id", "") or "")
-        realtime_execution_price, realtime_execution_price_field = _resolve_realtime_execution_price(quote)
+        quote_fresh, quote_freshness_reason, quote_age_seconds = _quote_freshness(
+            quote,
+            now=quote_validation_now,
+            max_age_seconds=quote_max_age_seconds,
+        )
+        realtime_execution_price, realtime_execution_price_field = _resolve_realtime_execution_price(
+            quote,
+            now=quote_validation_now,
+            max_age_seconds=quote_max_age_seconds,
+        )
         fallback_price = _fallback_current_price(metric, row)
         current_price = realtime_execution_price if realtime_execution_price > 0 else fallback_price
         current_value = round(int(row.shares) * current_price, 2)
@@ -4253,6 +5610,13 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
                 "quote_time": _quote_timestamp(quote),
                 "realtime_quote_source": str(quote.get("source") or ""),
                 "realtime_quote_valid": realtime_execution_price > 0,
+                "realtime_quote_fresh": bool(quote_fresh),
+                "realtime_quote_freshness_reason": quote_freshness_reason,
+                "realtime_quote_age_seconds": (
+                    round(float(quote_age_seconds), 3)
+                    if quote_age_seconds is not None
+                    else None
+                ),
                 "realtime_execution_price": round(realtime_execution_price, 2) if realtime_execution_price > 0 else None,
                 "realtime_execution_price_field": realtime_execution_price_field,
             }
@@ -4305,7 +5669,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             for symbol in candidate_pool["symbol"].tolist()
         ]
         missing_quote_codes = [code for code in candidate_quote_codes if code not in quote_payload]
-        if missing_quote_codes:
+        if missing_quote_codes and allow_live_quotes:
             try:
                 quote_payload.update(_fetch_tencent_quotes(missing_quote_codes))
             except Exception as exc:
@@ -4314,6 +5678,8 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             candidate_pool,
             quote_payload=quote_payload,
             analysis_trade_date=analysis_trade_date,
+            now=quote_validation_now,
+            max_age_seconds=quote_max_age_seconds,
         )
         candidate_pool = candidate_pool.copy()
         candidate_pool["codex_recommendation_score"] = candidate_pool.apply(_candidate_codex_score, axis=1)
@@ -4340,12 +5706,6 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     # 当前策略仍以主线内部修复为主，只在出现明确弱化共振时执行减仓。
     if len(proposed_orders) == 1 and theme_strength and theme_strength[0]["avg_score"] >= 0.8:
         proposed_orders = []
-    realtime_execution_prices = {
-        str(row["symbol"]): float(row["realtime_execution_price"])
-        for row in current_rows
-        if row.get("realtime_execution_price") is not None
-        and _safe_float(row.get("realtime_execution_price"), 0.0) > 0
-    }
     quote_by_symbol = {
         str(row.symbol).strip().upper(): quote_payload.get(_map_symbol_to_quote_code(str(row.symbol)), {})
         for row in source_ledger.itertuples()
@@ -4353,7 +5713,9 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     execution_price_rejections: list[dict[str, Any]] = []
     validated_orders: list[ProposedOrder] = []
     order_gate_decisions: list[dict[str, Any]] = []
+    decision_log_authorizations: list[dict[str, Any]] = []
     data_gate_allows_new_risk = completeness_passed or decision_data_sufficient
+    execution_gate_now = _now_local()
     for order in proposed_orders:
         risk_sell_allowed, risk_sell_reason = _risk_reduction_sell_gate(
             order=order,
@@ -4377,6 +5739,26 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             gate_reason = risk_sell_reason
         elif risk_sell_allowed:
             gate_reason = risk_sell_reason
+        holding_assessment = holding_dag_assessments.get(
+            str(order.symbol).strip().upper(), {}
+        )
+        if holding_assessment.get("holding_dag_status") != "ready":
+            rejection = {
+                "symbol": order.symbol,
+                "action": order.action,
+                "shares": order.shares,
+                "reason": "holding_dag_blocked_read_only_risk_reduction_advisory",
+                "data_gate_allows_new_risk": bool(data_gate_allows_new_risk),
+                "risk_reduction_sell_gate": risk_sell_reason,
+                "execution_gate_reason": gate_reason,
+                "holding_dag_blockers": list(
+                    holding_assessment.get("holding_dag_blockers")
+                    or ["holding_dag_assessment_missing"]
+                ),
+            }
+            execution_price_rejections.append(rejection)
+            order_gate_decisions.append(rejection)
+            continue
         order_gate_decisions.append(
             {
                 "symbol": order.symbol,
@@ -4387,8 +5769,12 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
                 "execution_gate_reason": gate_reason,
             }
         )
-        execution_price = realtime_execution_prices.get(str(order.symbol))
-        if execution_price is None:
+        execution_price, execution_price_field = _resolve_realtime_execution_price(
+            quote_by_symbol.get(str(order.symbol).strip().upper(), {}),
+            now=execution_gate_now,
+            max_age_seconds=quote_max_age_seconds,
+        )
+        if execution_price <= 0:
             execution_price_rejections.append(
                 {
                     "symbol": order.symbol,
@@ -4401,6 +5787,9 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
                 }
             )
             continue
+        quote_by_symbol[str(order.symbol).strip().upper()][
+            "realtime_execution_price_field"
+        ] = execution_price_field
         source_row = source_ledger[source_ledger["symbol"] == order.symbol]
         avg_cost = _safe_float(source_row["avg_cost"].iloc[0]) if not source_row.empty else order.price
         trade_value = round(order.shares * execution_price, 2)
@@ -4409,25 +5798,75 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             if order.action == "sell"
             else order.realized_pnl
         )
-        validated_orders.append(
-            ProposedOrder(
-                symbol=order.symbol,
-                action=order.action,
-                shares=order.shares,
-                price=round(execution_price, 2),
-                trade_value=trade_value,
-                realized_pnl=realized_pnl,
-                reason=order.reason,
+        validated_order = ProposedOrder(
+            symbol=order.symbol,
+            action=order.action,
+            shares=order.shares,
+            price=round(execution_price, 2),
+            trade_value=trade_value,
+            realized_pnl=realized_pnl,
+            reason=order.reason,
+        )
+        if advisory_only:
+            execution_price_rejections.append(
+                {
+                    "symbol": order.symbol,
+                    "action": order.action,
+                    "shares": order.shares,
+                    "reason": "advisory_only_no_local_manual_fill_authorization",
+                    "data_gate_allows_new_risk": bool(data_gate_allows_new_risk),
+                    "risk_reduction_sell_gate": risk_sell_reason,
+                    "execution_gate_reason": gate_reason,
+                    "validated_realtime_price": round(execution_price, 2),
+                }
             )
+            continue
+        decision_log_authorization = _same_day_manual_fill_authorization(
+            decision_log_path=decision_log_path,
+            trade_date=execution_gate_now.strftime("%Y%m%d"),
+            symbol=str(order.symbol).strip().upper(),
+            order_action=str(order.action).strip().lower(),
+            order_shares=int(order.shares),
+            allowed_root=decision_log_allowed_root,
+        )
+        decision_log_authorizations.append(decision_log_authorization)
+        if not decision_log_authorization["authorized"]:
+            execution_price_rejections.append(
+                {
+                    "symbol": order.symbol,
+                    "action": order.action,
+                    "shares": order.shares,
+                    "reason": "same_day_decision_log_authorization_missing",
+                    "data_gate_allows_new_risk": bool(data_gate_allows_new_risk),
+                    "risk_reduction_sell_gate": risk_sell_reason,
+                    "execution_gate_reason": gate_reason,
+                    "validated_realtime_price": round(execution_price, 2),
+                    "decision_log_blockers": list(
+                        decision_log_authorization.get("blockers") or []
+                    ),
+                }
+            )
+            continue
+        validated_orders.append(
+            validated_order
         )
     orders = validated_orders
     execution_price_gate = {
         "accepted_price_fields": list(REALTIME_EXECUTION_PRICE_FIELDS),
         "requires_realtime_quote_timestamp": True,
+        "requires_same_local_trade_date": True,
+        "quote_max_age_seconds": quote_max_age_seconds,
         "rejects_static_daily_prices": True,
+        "advisory_only": advisory_only,
+        "local_manual_fills_allowed": not advisory_only,
+        "requires_same_day_decision_log_pair": True,
+        "decision_log_path": str(decision_log_path),
+        "quote_policy": quote_provenance,
+        "execution_quote_evaluated_at": execution_gate_now.isoformat(),
         "data_gate_allows_new_risk": bool(data_gate_allows_new_risk),
         "risk_reduction_sell_bypass_enabled": True,
         "order_gate_decisions": order_gate_decisions,
+        "decision_log_authorizations": decision_log_authorizations,
         "rejections": execution_price_rejections,
     }
 
@@ -4453,6 +5892,8 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     )
 
     quote_prices = {row["symbol"]: float(row["current_price"]) for row in current_rows}
+    if advisory_only and orders:
+        raise RuntimeError("advisory_only_invariant_violation_orders_not_empty")
     updated_ledger, cash_after, realized_pnl = _apply_orders(
         source_ledger=source_ledger,
         orders=orders,
@@ -4540,17 +5981,6 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         analysis_trade_date=analysis_trade_date,
         decision_data_sufficient=decision_data_sufficient,
     )
-    branch_signals_by_symbol = {
-        symbol: {
-            "reviewed_branch_verdicts": dict(payload.get("reviewed_branch_verdicts", {}) or {}),
-            "branch_overlays": dict(payload.get("branch_overlays", {}) or {}),
-            "master_hint": dict(payload.get("master_hint", {}) or {}),
-            "ic_hint": dict(payload.get("ic_hint", {}) or {}),
-            "recommendation": dict(payload.get("recommendation", {}) or {}),
-            "report_excerpt": str(payload.get("report_excerpt", "") or ""),
-        }
-        for symbol, payload in review_by_symbol.items()
-    }
     dag_four_branch_compliance = _build_dag_four_branch_compliance(
         review_symbols=list(branch_signals_by_symbol.keys()),
         effective_local_holding_symbols=[
@@ -4559,6 +5989,34 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             if str(symbol).strip()
         ],
         branch_signals_by_symbol=branch_signals_by_symbol,
+    )
+    holdings_review["holding_dag_status"] = holdings_review["symbol"].map(
+        lambda symbol: str(
+            holding_dag_assessments.get(str(symbol).strip().upper(), {}).get(
+                "holding_dag_status", "blocked"
+            )
+        )
+    )
+    holdings_review["holding_dag_blockers"] = holdings_review["symbol"].map(
+        lambda symbol: ";".join(
+            holding_dag_assessments.get(str(symbol).strip().upper(), {}).get(
+                "holding_dag_blockers", ["holding_dag_assessment_missing"]
+            )
+        )
+    )
+    holdings_review["holding_dag_allowed_action_scope"] = holdings_review["symbol"].map(
+        lambda symbol: str(
+            holding_dag_assessments.get(str(symbol).strip().upper(), {}).get(
+                "allowed_action_scope", "read_only_risk_reducing_sell_or_clear_only"
+            )
+        )
+    )
+    holdings_review["recall_context_holding_symbol"] = holdings_review["symbol"].map(
+        lambda symbol: str(
+            holding_dag_assessments.get(str(symbol).strip().upper(), {}).get(
+                "recall_holding_symbol", ""
+            )
+        )
     )
     fundamental_coverage_by_symbol: dict[str, dict[str, Any]] = {}
     enhanced_data_flags_by_symbol: dict[str, dict[str, Any]] = {}
@@ -4677,6 +6135,12 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         _format_candidate_advice_line(row, switch_rows_by_buy_symbol.get(str(row.symbol)))
         for row in candidate_pool.head(5).itertuples()
     ]
+    factor_governance_runtime = _summarize_factor_governance_runtime(
+        branch_signals_by_symbol
+    )
+    factor_governance_lines = _format_factor_governance_runtime_lines(
+        factor_governance_runtime
+    )
     factor_shadow_status = load_factor_library_shadow_status(
         root_dir=PROJECT_ROOT / "data" / "factor_library",
         as_of=now.strftime("%Y-%m-%d"),
@@ -4715,6 +6179,8 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "- 市场：A股（CN）",
         "- 策略：`aggressive_tech_manufacturing`",
         f"- 上一条正式记录：`{source_record}`",
+        f"- 执行基线 manifest：`{source_manifest.get('effective_manual_manifest_path') or 'UNCONFIRMED'}`",
+        f"- 执行基线 ledger：`{source_manifest.get('effective_manual_ledger_path') or 'UNCONFIRMED'}`；SHA256=`{source_manifest.get('effective_manual_ledger_sha256') or 'legacy_unsealed'}`",
         f"- 本次正式记录时间：{timestamp_long}",
         f"- 盘中快照：{quote_snapshot or 'N/A'}",
         f"- 完整性校验：**{'已通过' if completeness_passed else '未通过'}**",
@@ -4731,6 +6197,18 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
                 f"，blocker=`{candidate_level_dag_status.get('blocker')}`"
                 if candidate_level_dag_status.get("blocker")
                 else ""
+            )
+        ),
+        (
+            "- Holding DAG："
+            + "；".join(
+                f"`{symbol}`={payload.get('holding_dag_status', 'blocked')}"
+                + (
+                    f"({','.join(payload.get('holding_dag_blockers', [])[:3])})"
+                    if payload.get("holding_dag_blockers")
+                    else ""
+                )
+                for symbol, payload in holding_dag_assessments.items()
             )
         ),
         "",
@@ -4884,6 +6362,13 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             )
     report_lines.extend(legacy_overweight_lines)
     if "trailing_take_profit_status" in holdings_review.columns:
+        giveback_values = pd.to_numeric(
+            holdings_review.get("profit_giveback_ratio", pd.Series(dtype=float)),
+            errors="coerce",
+        ).fillna(0.0)
+        trailing_threshold_rows = holdings_review[
+            giveback_values >= TRAILING_TAKE_PROFIT_REVIEW_GIVEBACK_RATIO
+        ]
         trailing_watch_rows = holdings_review[
             holdings_review["trailing_take_profit_status"].astype(str).isin(
                 ["hold_with_trailing_stop", "reduce_risk", "clear_risk", "cash_hold"]
@@ -4892,14 +6377,23 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         trailing_unconfirmed_rows = holdings_review[
             holdings_review["trailing_take_profit_status"].astype(str).eq("unconfirmed")
         ]
-        if trailing_watch_rows.empty:
+        if trailing_threshold_rows.empty:
             report_lines.append("- 移动止盈：本轮未触发 20% 利润峰值回吐；逐票阈值已写入 holdings_review。")
         else:
             report_lines.append(
-                "- 移动止盈触发/观察："
+                "- 移动止盈 20% 阈值复核："
                 + "；".join(
                     f"`{row.symbol}` 状态 `{row.trailing_take_profit_status}`，"
+                    f"confirmed=`{str(bool(row.trailing_take_profit_confirmed)).lower()}`，"
                     f"回吐 {float(row.profit_giveback_ratio):.2%}，复核价 {float(row.trailing_stop_price):.2f}"
+                    for row in trailing_threshold_rows.itertuples()
+                )
+            )
+        if not trailing_watch_rows.empty:
+            report_lines.append(
+                "- 移动止盈可行动作状态："
+                + "；".join(
+                    f"`{row.symbol}` `{row.trailing_take_profit_status}`"
                     for row in trailing_watch_rows.itertuples()
                 )
             )
@@ -5062,7 +6556,11 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     report_lines.extend(
         [
             "",
-            "### 5.7 因子库状态（只读影子观察）",
+            "### 5.7 FactorGovernanceProtocol v2 生产运行时",
+            "",
+            *factor_governance_lines,
+            "",
+            "### 5.8 Legacy Factor Library（只读影子观察）",
             "",
             *factor_shadow_lines,
             "",
@@ -5110,6 +6608,8 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         decision_data_sufficient=decision_data_sufficient,
         dag_four_branch_compliance=dag_four_branch_compliance,
         execution_price_gate=execution_price_gate,
+        advisory_only=advisory_only,
+        quote_provenance=quote_provenance,
     )
     holdings_review_output, holdings_review_invariant = _prune_holdings_review_to_effective_ledger(
         holdings_review,
@@ -5141,8 +6641,10 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "dag_four_branch_compliance": _jsonable(dag_four_branch_compliance),
         "candidate_level_dag_status": _jsonable(candidate_level_dag_status),
         "theme_candidate_pool": _jsonable(theme_pool_summary),
+        "factor_governance_runtime": _jsonable(factor_governance_runtime),
         "trailing_take_profit": _jsonable(trailing_take_profit_summary),
         "holdings_review_ledger_invariant": _jsonable(holdings_review_invariant),
+        "holding_dag_assessments": _jsonable(holding_dag_assessments),
     }
     runtime_profile = {
         "schema_version": "cn_aggressive_runtime_profile.v1",
@@ -5251,6 +6753,8 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "candidate_generation_status": candidate_level_dag_status.get("candidate_generation_status"),
         "blocker": candidate_level_dag_status.get("blocker"),
         "theme_candidate_pool": _jsonable(theme_pool_summary),
+        "factor_governance_runtime": _jsonable(factor_governance_runtime),
+        "holding_dag_assessments": _jsonable(holding_dag_assessments),
         "trailing_take_profit": _jsonable(trailing_take_profit_summary),
         "candidate_pool": candidate_pool.to_dict(orient="records"),
         "switch_plan": switch_plan_df.to_dict(orient="records"),
@@ -5304,6 +6808,8 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "candidate_generation_status": candidate_level_dag_status.get("candidate_generation_status"),
         "blocker": candidate_level_dag_status.get("blocker"),
         "theme_candidate_pool": _jsonable(theme_pool_summary),
+        "factor_governance_runtime": _jsonable(factor_governance_runtime),
+        "holding_dag_assessments": _jsonable(holding_dag_assessments),
         "trailing_take_profit": _jsonable(trailing_take_profit_summary),
         "formal_diagnostics": formal_diagnostics_payload,
         "holdings_review_ledger_invariant": _jsonable(holdings_review_invariant),
@@ -5372,6 +6878,43 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-rounds", type=int, default=3)
     parser.add_argument("--source-record", default=None)
     parser.add_argument("--allowed-stale-symbols", nargs="*", default=[])
+    execution_mode = parser.add_mutually_exclusive_group()
+    execution_mode.add_argument(
+        "--advisory-only",
+        dest="advisory_only",
+        action="store_true",
+        help="仅写建议和 pending/rejected 记录，不写本地模拟成交（默认）",
+    )
+    execution_mode.add_argument(
+        "--allow-local-manual-fills",
+        dest="advisory_only",
+        action="store_false",
+        help="显式授权在所有门禁通过后写本地/manual paper fill；仍不调用券商",
+    )
+    parser.set_defaults(advisory_only=True)
+    quote_source = parser.add_mutually_exclusive_group()
+    quote_source.add_argument(
+        "--quote-input-json",
+        default="",
+        help="读取 results/ 下权限 0600 的本地 quote artifact；不回退外部 provider",
+    )
+    quote_source.add_argument(
+        "--allow-live-quotes",
+        action="store_true",
+        default=False,
+        help="显式允许 Tencent realtime quote 读取；默认禁用",
+    )
+    parser.add_argument(
+        "--quote-max-age-seconds",
+        type=int,
+        default=DEFAULT_QUOTE_MAX_AGE_SECONDS,
+        help="本地同日实时 quote 最大允许年龄，默认 300 秒",
+    )
+    parser.add_argument(
+        "--decision-log-path",
+        default=str(DEFAULT_DECISION_LOG_PATH),
+        help="local/manual fill 必须由该 decision log 中同日 advisory+human_action 配对授权",
+    )
     parser.add_argument(
         "--skip-market-metrics-prewarm",
         action="store_true",
