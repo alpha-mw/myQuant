@@ -3,7 +3,8 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass, field, fields as dataclass_fields
 from datetime import timedelta
 from inspect import Parameter, signature
 from pathlib import Path
@@ -457,20 +458,24 @@ def _build_production_evaluation_context(
                     open_dates: set[str] = set()
                     invalid_open_date = False
                     for value in raw_open_dates:
-                        compact = _compact_runtime_date(value)
+                        if (
+                            not isinstance(value, str)
+                            or re.fullmatch(r"\d{8}", value) is None
+                        ):
+                            invalid_open_date = True
+                            break
                         parsed = pd.to_datetime(
-                            compact,
+                            value,
                             format="%Y%m%d",
                             errors="coerce",
                         )
                         if (
-                            not compact
-                            or pd.isna(parsed)
+                            pd.isna(parsed)
                             or int(parsed.dayofweek) >= 5
                         ):
                             invalid_open_date = True
                             break
-                        open_dates.add(compact)
+                        open_dates.add(value)
                     if invalid_open_date or len(open_dates) != len(raw_open_dates):
                         blockers.append("production_open_day_calendar_dates_invalid")
                     elif evaluation_as_of not in open_dates:
@@ -615,6 +620,8 @@ def _build_production_evaluation_context(
             artifact_hashes["pit_manifest"] = pit_manifest_readback[1]
             artifact_paths["pit_canonical"] = pit_canonical_readback[0]
             artifact_hashes["pit_canonical"] = pit_canonical_readback[1]
+            manifest_source = ""
+            manifest_observed_at = ""
             try:
                 pit_manifest = json.loads(
                     pit_manifest_readback[2].decode("utf-8")
@@ -624,6 +631,10 @@ def _build_production_evaluation_context(
             if not isinstance(pit_manifest, Mapping):
                 blockers.append("production_cn_pit_manifest_mismatch")
             else:
+                manifest_source = str(pit_manifest.get("source") or "")
+                manifest_observed_at = str(
+                    pit_manifest.get("observed_at") or ""
+                )
                 manifest_source_run_id = str(
                     pit_manifest.get("source_run_id") or ""
                 )
@@ -638,6 +649,14 @@ def _build_production_evaluation_context(
                     or not isinstance(pit_manifest.get("row_count"), int)
                 ):
                     blockers.append("production_cn_pit_manifest_mismatch")
+                if manifest_source != "tushare.stock_basic":
+                    blockers.append(
+                        "production_cn_pit_manifest_source_invalid"
+                    )
+                if not manifest_observed_at:
+                    blockers.append(
+                        "production_cn_pit_manifest_observed_at_invalid"
+                    )
                 try:
                     declared_canonical_path = Path(
                         str(pit_manifest.get("canonical_path") or "")
@@ -650,17 +669,29 @@ def _build_production_evaluation_context(
                 ):
                     blockers.append("production_cn_pit_manifest_path_mismatch")
             try:
-                canonical_frame = pd.read_parquet(
-                    io.BytesIO(pit_canonical_readback[2])
-                )
-                canonical_records = [
-                    PITUniverseRecord.from_dict(row)
-                    for row in canonical_frame.to_dict(orient="records")
-                ]
+                canonical_frame = pd.read_parquet(io.BytesIO(pit_canonical_readback[2]))
             except Exception:
                 canonical_frame = None
-                canonical_records = []
                 blockers.append("production_cn_pit_canonical_parquet_invalid")
+            canonical_records: list[PITUniverseRecord] = []
+            if canonical_frame is not None:
+                expected_canonical_columns = [
+                    item.name for item in dataclass_fields(PITUniverseRecord)
+                ]
+                if list(canonical_frame.columns) != expected_canonical_columns:
+                    blockers.append(
+                        "production_cn_pit_canonical_columns_mismatch"
+                    )
+                try:
+                    canonical_records = [
+                        PITUniverseRecord.from_dict(row)
+                        for row in canonical_frame.to_dict(orient="records")
+                    ]
+                except Exception:
+                    canonical_records = []
+                    blockers.append(
+                        "production_cn_pit_canonical_records_invalid"
+                    )
             if canonical_frame is not None:
                 if (
                     "schema_version" not in canonical_frame.columns
@@ -698,6 +729,21 @@ def _build_production_evaluation_context(
                     blockers.append(
                         "production_cn_pit_canonical_list_status_invalid"
                     )
+                if any(
+                    record.source != manifest_source
+                    or record.source != "tushare.stock_basic"
+                    for record in canonical_records
+                ):
+                    blockers.append(
+                        "production_cn_pit_canonical_source_mismatch"
+                    )
+                if any(
+                    record.observed_at != manifest_observed_at
+                    for record in canonical_records
+                ):
+                    blockers.append(
+                        "production_cn_pit_canonical_observed_at_mismatch"
+                    )
                 for symbol in normalized_symbols:
                     record = canonical_by_symbol.get(symbol)
                     if record is None:
@@ -732,6 +778,19 @@ def _build_production_evaluation_context(
                     "canonical_sha256": artifact_hashes.get("pit_canonical", ""),
                 }
             )
+
+    resolved_artifact_owners: dict[str, str] = {}
+    for name, artifact_path in artifact_paths.items():
+        resolved_artifact_path = _resolved_path_string(artifact_path)
+        prior_name = resolved_artifact_owners.get(resolved_artifact_path)
+        if prior_name is not None:
+            blockers.append("production_verified_artifact_path_reused")
+            if "open_day_calendar" in {name, prior_name}:
+                blockers.append(
+                    "production_open_day_calendar_not_independent"
+                )
+        else:
+            resolved_artifact_owners[resolved_artifact_path] = name
 
     if blockers:
         return None, list(dict.fromkeys(blockers))

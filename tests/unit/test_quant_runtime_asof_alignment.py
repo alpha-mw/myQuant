@@ -28,15 +28,32 @@ from quant_investor.factors.runtime import (
     _mint_production_evaluation_context,
     production_evaluation_context_sha256,
     production_symbol_set_sha256,
+    validate_production_evaluation_context,
 )
 from quant_investor.market.dag.context import (
     _build_production_evaluation_context,
     _researchable_frame_subset,
 )
+from quant_investor.market.pit_universe import PITUniverseRecord
 from quant_investor.market.read_result import MarketDataReadResult
 
 
 AS_OF = "20260106"
+PIT_OBSERVED_AT = "2026-01-06T00:00:00Z"
+
+
+def _pit_row(symbol: str, *, source_run_id: str) -> dict[str, object]:
+    return PITUniverseRecord(
+        symbol=symbol,
+        source_list_status="L",
+        list_date="20200101",
+        effective_from="20200101",
+        observed_at=PIT_OBSERVED_AT,
+        source="tushare.stock_basic",
+        source_run_id=source_run_id,
+        raw_payload_hash=f"fixture-{symbol}",
+        membership_quality="ok",
+    ).to_dict()
 
 
 def _frames() -> dict[str, pd.DataFrame]:
@@ -93,26 +110,28 @@ def _context(
         calendar_path.read_bytes()
     ).hexdigest()
     if market == "CN":
-        pit_manifest = tmp_path / "pit_manifest.json"
-        pit_manifest.write_text(
-            json.dumps({"source_run_id": "pit-snapshot-20260106"}),
-            encoding="utf-8",
-        )
         pit_canonical = tmp_path / "pit_canonical.parquet"
         pd.DataFrame(
             [
-                {
-                    "schema_version": "cn_pit_universe.v1",
-                    "symbol": symbol,
-                    "source_list_status": "L",
-                    "list_date": "20200101",
-                    "effective_from": "20200101",
-                    "source_run_id": "pit-snapshot-20260106",
-                    "membership_quality": "ok",
-                }
+                _pit_row(symbol, source_run_id="pit-snapshot-20260106")
                 for symbol in frames
             ]
         ).to_parquet(pit_canonical, index=False)
+        pit_manifest = tmp_path / "pit_manifest.json"
+        pit_manifest.write_text(
+            json.dumps(
+                {
+                    "schema_version": "cn_pit_universe_manifest.v1",
+                    "membership_schema_version": "cn_pit_universe.v1",
+                    "source": "tushare.stock_basic",
+                    "source_run_id": "pit-snapshot-20260106",
+                    "observed_at": PIT_OBSERVED_AT,
+                    "canonical_path": str(pit_canonical.resolve()),
+                    "row_count": len(frames),
+                }
+            ),
+            encoding="utf-8",
+        )
         artifact_paths.update(
             {
                 "pit_manifest": str(pit_manifest.resolve()),
@@ -531,6 +550,42 @@ def test_verified_artifact_bytes_drift_blocks_scoring(
     assert any("artifact_bytes_drift" in item for item in result.runtime_blockers)
 
 
+def test_validator_rejects_reused_resolved_artifact_path(tmp_path: Path) -> None:
+    frames = _frames()
+    original = _context(frames, tmp_path)
+    artifact_paths = dict(original.verified_artifact_paths)
+    artifact_hashes = dict(original.verified_artifact_sha256s)
+    artifact_paths["open_day_calendar"] = artifact_paths["snapshot_pointer"]
+    artifact_hashes["open_day_calendar"] = artifact_hashes["snapshot_pointer"]
+    reused = _mint_production_evaluation_context(
+        evaluation_as_of=original.evaluation_as_of,
+        market=original.market,
+        universe_key=original.universe_key,
+        universe_sha256=original.universe_sha256,
+        snapshot_id=original.snapshot_id,
+        latest_complete_trade_date=original.latest_complete_trade_date,
+        pit_membership_status=original.pit_membership_status,
+        pit_membership_as_of=original.pit_membership_as_of,
+        pit_membership_proof_sha256=original.pit_membership_proof_sha256,
+        pit_membership_not_applicable_reason=(
+            original.pit_membership_not_applicable_reason
+        ),
+        open_day_proof_sha256=artifact_hashes["open_day_calendar"],
+        read_result_provenance_sha256=(
+            original.read_result_provenance_sha256
+        ),
+        verified_artifact_paths=artifact_paths,
+        verified_artifact_sha256s=artifact_hashes,
+    )
+
+    blockers = validate_production_evaluation_context(
+        reused,
+        expected_symbols=list(frames),
+    )
+
+    assert "production_verified_artifact_path_reused" in blockers
+
+
 def _dag_snapshots(
     frames: dict[str, pd.DataFrame],
     tmp_path: Path,
@@ -604,15 +659,7 @@ def _dag_snapshots(
         pit_manifest_path = tmp_path / "pit_manifest.json"
         pit_canonical_path = tmp_path / "pit_canonical.parquet"
         pit_rows = [
-            {
-                "schema_version": "cn_pit_universe.v1",
-                "symbol": symbol,
-                "source_list_status": "L",
-                "list_date": "20200101",
-                "effective_from": "20200101",
-                "source_run_id": "pit-snapshot-20260106",
-                "membership_quality": "ok",
-            }
+            _pit_row(symbol, source_run_id="pit-snapshot-20260106")
             for symbol in symbols
         ]
         pd.DataFrame(pit_rows).to_parquet(pit_canonical_path, index=False)
@@ -621,7 +668,9 @@ def _dag_snapshots(
                 {
                     "schema_version": "cn_pit_universe_manifest.v1",
                     "membership_schema_version": "cn_pit_universe.v1",
+                    "source": "tushare.stock_basic",
                     "source_run_id": "pit-snapshot-20260106",
+                    "observed_at": PIT_OBSERVED_AT,
                     "canonical_path": str(pit_canonical_path.resolve()),
                     "row_count": len(pit_rows),
                 }
@@ -649,7 +698,7 @@ def _dag_snapshots(
                     "list_date": "20200101",
                     "delist_date": "",
                     "source_list_status": "L",
-                    "observed_at": "",
+                    "observed_at": PIT_OBSERVED_AT,
                     "membership_quality": "ok",
                 }
                 for symbol in symbols
@@ -984,6 +1033,77 @@ def test_dag_context_rejects_as_of_absent_from_independent_open_day_calendar(
     assert "production_evaluation_as_of_not_open_day" in blockers
 
 
+def test_dag_context_rejects_snapshot_pointer_reused_as_open_day_calendar(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    frames = _frames()
+    reader_snapshot, scoped, read_results = _dag_snapshots(frames, tmp_path)
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_ENABLED",
+        True,
+    )
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_REQUIRED",
+        True,
+    )
+    pointer_path = Path(str(reader_snapshot["latest_pointer_path"]))
+    pointer_payload = json.loads(pointer_path.read_text(encoding="utf-8"))
+    pointer_payload.update(
+        {
+            "schema_version": "market-open-days.v1",
+            "market": "CN",
+            "open_dates": [AS_OF],
+        }
+    )
+    pointer_path.write_text(json.dumps(pointer_payload), encoding="utf-8")
+    scoped["open_day_calendar"] = {"path": str(pointer_path)}
+
+    context, blockers = _build_production_evaluation_context(
+        market="CN",
+        universe_key="full_a",
+        symbols=list(frames),
+        reader_snapshot=reader_snapshot,
+        scoped_data_snapshot=scoped,
+        read_results=read_results,
+    )
+
+    assert context is None
+    assert "production_open_day_calendar_not_independent" in blockers
+
+
+def test_dag_context_rejects_non_string_open_day_entries(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    frames = _frames()
+    reader_snapshot, scoped, read_results = _dag_snapshots(frames, tmp_path)
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_ENABLED",
+        True,
+    )
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_REQUIRED",
+        True,
+    )
+    calendar_path = Path(str(scoped["open_day_calendar"]["path"]))
+    calendar_payload = json.loads(calendar_path.read_text(encoding="utf-8"))
+    calendar_payload["open_dates"] = [{"date": AS_OF}]
+    calendar_path.write_text(json.dumps(calendar_payload), encoding="utf-8")
+
+    context, blockers = _build_production_evaluation_context(
+        market="CN",
+        universe_key="full_a",
+        symbols=list(frames),
+        reader_snapshot=reader_snapshot,
+        scoped_data_snapshot=scoped,
+        read_results=read_results,
+    )
+
+    assert context is None
+    assert "production_open_day_calendar_dates_invalid" in blockers
+
+
 def test_dag_context_recomputes_pit_status_from_canonical_parquet(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1026,6 +1146,10 @@ def test_dag_context_recomputes_pit_status_from_canonical_parquet(
         ("wrong_schema", "production_cn_pit_canonical_schema_mismatch"),
         ("mixed_source_run", "production_cn_pit_canonical_source_run_mismatch"),
         ("unknown_list_status", "production_cn_pit_canonical_list_status_invalid"),
+        ("forged_manifest_source", "production_cn_pit_manifest_source_invalid"),
+        ("forged_source", "production_cn_pit_canonical_source_mismatch"),
+        ("observed_at_mismatch", "production_cn_pit_canonical_observed_at_mismatch"),
+        ("missing_field", "production_cn_pit_canonical_columns_mismatch"),
     ],
 )
 def test_dag_context_rejects_invalid_pit_canonical_record_contract(
@@ -1054,8 +1178,20 @@ def test_dag_context_rejects_invalid_pit_canonical_record_contract(
         canonical.loc[first_row, "schema_version"] = "cn_pit_universe.v0"
     elif corruption == "mixed_source_run":
         canonical.loc[first_row, "source_run_id"] = "other-run"
-    else:
+    elif corruption == "unknown_list_status":
         canonical.loc[first_row, "source_list_status"] = "X"
+    elif corruption == "forged_manifest_source":
+        manifest_path = Path(scoped["pit_universe"]["manifest_path"])
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["source"] = "forged.provider"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    elif corruption == "forged_source":
+        canonical["source"] = "tushare.stock_basic"
+        canonical.loc[first_row, "source"] = "forged.provider"
+    elif corruption == "observed_at_mismatch":
+        canonical.loc[first_row, "observed_at"] = "2026-01-05T00:00:00Z"
+    else:
+        canonical = canonical.drop(columns=["raw_payload_hash"], errors="ignore")
     canonical.to_parquet(canonical_path, index=False)
 
     context, blockers = _build_production_evaluation_context(

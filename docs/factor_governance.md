@@ -1251,9 +1251,13 @@ Production scoring additionally requires a readback-verified immutable
 evaluation context. It binds the exact market and universe symbol-set hash,
 one common `evaluation_as_of`, the canonical pointer and snapshot-manifest
 bytes, per-symbol read provenance, the latest complete trade date, an
-independent readback-verified market-calendar artifact proving that the date is
-open, and (for CN) complete required PIT-membership artifacts whose canonical
-Parquet rows are re-evaluated and matched exactly to the scoped statuses.
+independent, physically distinct readback-verified market-calendar artifact
+proving that the date is open, and (for CN) complete required PIT-membership
+artifacts whose canonical Parquet rows are re-evaluated and matched exactly to
+the scoped statuses. The CN canonical Parquet must expose the complete
+`PITUniverseRecord` v1 columns in dataclass order; its manifest and every row
+must bind `source=tushare.stock_basic` and one identical non-empty
+`observed_at` value.
 Non-CN markets record PIT as explicitly not applicable. Missing context,
 artifact drift, a future/stale/duplicate/disordered/intraday date, symbol
 identity drift, or unequal terminal dates blocks Quant with confidence zero.

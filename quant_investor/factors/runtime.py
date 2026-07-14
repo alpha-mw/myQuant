@@ -366,15 +366,22 @@ def validate_production_evaluation_context(
     ):
         blockers.append("production_verified_artifact_set_invalid")
     else:
+        resolved_path_owners: dict[str, str] = {}
         for name, expected_sha in artifact_hashes.items():
             try:
                 raw_path = Path(artifact_paths[name]).expanduser()
-                if raw_path.is_symlink():
-                    blockers.append(f"production_verified_artifact_symlink:{name}")
-                    continue
+                is_symlink = raw_path.is_symlink()
                 path = raw_path.resolve()
             except (OSError, RuntimeError, ValueError):
                 blockers.append(f"production_verified_artifact_path_invalid:{name}")
+                continue
+            resolved_path = str(path)
+            if resolved_path in resolved_path_owners:
+                blockers.append("production_verified_artifact_path_reused")
+            else:
+                resolved_path_owners[resolved_path] = name
+            if is_symlink:
+                blockers.append(f"production_verified_artifact_symlink:{name}")
                 continue
             if not path.is_file():
                 blockers.append(f"production_verified_artifact_missing:{name}")

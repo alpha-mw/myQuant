@@ -44,6 +44,10 @@ from quant_investor.factors.runtime_contract import (
     validate_quant_production_activation,
 )
 from quant_investor.market.dag.packets import _build_global_quant_verdict
+from quant_investor.market.pit_universe import PITUniverseRecord
+
+
+PIT_OBSERVED_AT = "2026-01-06T00:00:00Z"
 
 
 def _gates(*, coverage: float = 1.0) -> list[GateResult]:
@@ -689,15 +693,17 @@ def _evaluation_context(frames: dict[str, pd.DataFrame], tmp_path: Path):
     pit_canonical = tmp_path / "pit_canonical.parquet"
     pd.DataFrame(
         [
-            {
-                "schema_version": "cn_pit_universe.v1",
-                "symbol": symbol,
-                "source_list_status": "L",
-                "list_date": "20200101",
-                "effective_from": "20200101",
-                "source_run_id": "pit-runtime-fixture",
-                "membership_quality": "ok",
-            }
+            PITUniverseRecord(
+                symbol=symbol,
+                source_list_status="L",
+                list_date="20200101",
+                effective_from="20200101",
+                observed_at=PIT_OBSERVED_AT,
+                source="tushare.stock_basic",
+                source_run_id="pit-runtime-fixture",
+                raw_payload_hash=f"fixture-{symbol}",
+                membership_quality="ok",
+            ).to_dict()
             for symbol in frames
         ]
     ).to_parquet(pit_canonical, index=False)
@@ -707,7 +713,9 @@ def _evaluation_context(frames: dict[str, pd.DataFrame], tmp_path: Path):
             {
                 "schema_version": "cn_pit_universe_manifest.v1",
                 "membership_schema_version": "cn_pit_universe.v1",
+                "source": "tushare.stock_basic",
                 "source_run_id": "pit-runtime-fixture",
+                "observed_at": PIT_OBSERVED_AT,
                 "row_count": len(frames),
                 "canonical_path": str(pit_canonical.resolve()),
             }
