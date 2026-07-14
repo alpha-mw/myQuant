@@ -12,7 +12,9 @@ import hashlib
 import json
 import math
 import os
+from datetime import date, datetime
 from dataclasses import dataclass, field
+from numbers import Real
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -27,6 +29,8 @@ DEFAULT_REGISTRY_PATH = (
 )
 PRODUCTION_RUNTIME_MODE = "production"
 REPORT_ONLY_SHADOW_RUNTIME_MODE = "report_only_shadow"
+PRODUCTION_RUNTIME_INPUT_SCHEMA_VERSION = "quant-production-runtime-input.v1"
+PRODUCTION_RUNTIME_OUTPUT_SCHEMA_VERSION = "quant-production-runtime-output.v1"
 
 
 def production_factor_set_sha256(names: Sequence[str]) -> str:
@@ -38,6 +42,168 @@ def production_factor_set_sha256(names: Sequence[str]) -> str:
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def production_symbol_set_sha256(symbols: Sequence[str]) -> str:
+    """Hash the exact normalized production symbol set."""
+
+    return production_factor_set_sha256(symbols)
+
+
+def _is_sha256(value: Any) -> bool:
+    return bool(
+        isinstance(value, str)
+        and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value)
+    )
+
+
+def _canonical_runtime_scalar(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {"type": "null", "value": None}
+    missing = pd.isna(value)
+    if isinstance(missing, (bool, np.bool_)) and bool(missing):
+        return {"type": "null", "value": None}
+    if isinstance(value, (pd.Timestamp, np.datetime64, datetime, date)):
+        return {
+            "type": "datetime",
+            "value": pd.Timestamp(value).isoformat(),
+        }
+    if isinstance(value, (bool, np.bool_)):
+        return {"type": "bool", "value": bool(value)}
+    if isinstance(value, Real):
+        numeric = float(value)
+        if math.isnan(numeric):
+            encoded = "nan"
+        elif math.isinf(numeric):
+            encoded = "+inf" if numeric > 0.0 else "-inf"
+        else:
+            encoded = numeric.hex()
+        return {"type": "number", "value": encoded}
+    if isinstance(value, str):
+        return {"type": "string", "value": value}
+    raise TypeError(f"unsupported production runtime scalar: {type(value).__name__}")
+
+
+def production_runtime_input_sha256(
+    frames: Mapping[str, pd.DataFrame],
+    contracts: Mapping[str, Any],
+) -> str:
+    """Hash the actual factor-required frame values consumed in production."""
+
+    requirements: dict[str, list[str]] = {}
+    required_columns: set[str] = set()
+    for factor_name in sorted(str(name) for name in contracts):
+        contract = contracts.get(factor_name)
+        if not isinstance(contract, Mapping):
+            raise ValueError(f"runtime contract is not an object: {factor_name}")
+        columns = contract.get("required_columns")
+        if (
+            not isinstance(columns, list)
+            or not columns
+            or any(not isinstance(column, str) or not column for column in columns)
+            or len(columns) != len(set(columns))
+        ):
+            raise ValueError(f"runtime contract columns invalid: {factor_name}")
+        requirements[factor_name] = list(columns)
+        required_columns.update(columns)
+
+    normalized_frames: dict[str, pd.DataFrame] = {}
+    for raw_symbol, frame in frames.items():
+        symbol = str(raw_symbol)
+        if not symbol or symbol in normalized_frames:
+            raise ValueError("production runtime symbols must be unique and non-empty")
+        if not isinstance(frame, pd.DataFrame):
+            raise TypeError(f"production runtime frame invalid: {symbol}")
+        normalized_frames[symbol] = frame
+    columns = sorted(required_columns)
+    frame_payloads: list[dict[str, Any]] = []
+    for symbol in sorted(normalized_frames):
+        frame = normalized_frames[symbol]
+        if any(column not in frame.columns for column in columns):
+            raise ValueError(f"production runtime required column missing: {symbol}")
+        rows = [
+            [_canonical_runtime_scalar(value) for value in row]
+            for row in frame.loc[:, columns].itertuples(index=False, name=None)
+        ]
+        frame_payloads.append(
+            {
+                "symbol": symbol,
+                "columns": columns,
+                "row_count": len(rows),
+                "rows": rows,
+            }
+        )
+    payload = {
+        "schema_version": PRODUCTION_RUNTIME_INPUT_SCHEMA_VERSION,
+        "symbols": sorted(normalized_frames),
+        "symbol_set_sha256": production_symbol_set_sha256(normalized_frames),
+        "factor_required_columns": requirements,
+        "frames": frame_payloads,
+    }
+    raw = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _symbol_scores_sha256(symbol_scores: Mapping[str, Any]) -> str:
+    normalized: dict[str, str] = {}
+    for raw_symbol, raw_score in symbol_scores.items():
+        symbol = str(raw_symbol)
+        if not symbol or symbol in normalized:
+            raise ValueError("production score symbols must be unique and non-empty")
+        if isinstance(raw_score, bool) or not isinstance(raw_score, Real):
+            raise TypeError(f"production score is not numeric: {symbol}")
+        score = float(raw_score)
+        if not math.isfinite(score):
+            raise ValueError(f"production score is not finite: {symbol}")
+        normalized[symbol] = score.hex()
+    raw = json.dumps(
+        normalized,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _production_output_attestation_sha256(metadata: Mapping[str, Any]) -> str:
+    registry = dict(metadata.get("registry", {}) or {})
+    governance = dict(registry.get("governance_runtime", {}) or {})
+    activation = dict(governance.get("quant_production_activation", {}) or {})
+    payload = {
+        "schema_version": PRODUCTION_RUNTIME_OUTPUT_SCHEMA_VERSION,
+        "production_input_sha256": metadata.get("production_input_sha256"),
+        "symbol_count": metadata.get("symbol_count"),
+        "symbol_set_sha256": metadata.get("symbol_set_sha256"),
+        "symbol_scores_sha256": metadata.get("symbol_scores_sha256"),
+        "factor_count": metadata.get("factor_count"),
+        "factors_used": list(metadata.get("factors_used", []) or []),
+        "factor_weights": dict(metadata.get("factor_weights", {}) or {}),
+        "factor_coverages": dict(metadata.get("factor_coverages", {}) or {}),
+        "registry_sha256": registry.get("registry_sha256"),
+        "production_factor_set_sha256": governance.get(
+            "production_factor_set_sha256"
+        ),
+        "production_runtime_contracts_sha256": governance.get(
+            "factor_runtime_contracts_sha256"
+        ),
+        "activation_receipt_file_sha256": activation.get("receipt_file_sha256"),
+    }
+    raw = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
     ).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
 
@@ -158,6 +324,8 @@ class RuntimeFactorScore:
     production_eligible: bool = False
     runtime_mode: str = PRODUCTION_RUNTIME_MODE
     runtime_blockers: list[str] = field(default_factory=list)
+    production_input_sha256: str = ""
+    production_output_attestation_sha256: str = ""
 
     @property
     def coverage_rate(self) -> float:
@@ -178,6 +346,11 @@ class RuntimeFactorScore:
 
     def to_metadata(self) -> dict[str, Any]:
         applied_to_score = bool(self.factor_count > 0 and self.factors_used)
+        symbols = [str(symbol) for symbol in self.symbol_scores]
+        try:
+            symbol_scores_sha256 = _symbol_scores_sha256(self.symbol_scores)
+        except (TypeError, ValueError):
+            symbol_scores_sha256 = ""
         return {
             "factor_count": self.factor_count,
             "factors_used": list(self.factors_used),
@@ -198,6 +371,13 @@ class RuntimeFactorScore:
             "production_eligible": bool(self.production_eligible),
             "runtime_mode": self.runtime_mode,
             "runtime_blockers": list(self.runtime_blockers),
+            "symbol_count": len(symbols),
+            "symbol_set_sha256": production_symbol_set_sha256(symbols),
+            "symbol_scores_sha256": symbol_scores_sha256,
+            "production_input_sha256": self.production_input_sha256,
+            "production_output_attestation_sha256": (
+                self.production_output_attestation_sha256
+            ),
             "legacy_fallback_allowed": False,
         }
 
@@ -766,7 +946,18 @@ class MinedFactorScorer:
             for name in expected_names
         )
         symbol_scores = (weighted / total_abs_weight).clip(-1.0, 1.0)
-        return RuntimeFactorScore(
+        try:
+            production_input_sha256 = production_runtime_input_sha256(
+                frames,
+                contracts,
+            )
+        except (TypeError, ValueError) as exc:
+            blocked = self._blocked_runtime_status(
+                runtime_status,
+                f"production_runtime_input_attestation_failed:{exc}",
+            )
+            return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
+        result = RuntimeFactorScore(
             symbol_scores={symbol: float(symbol_scores.loc[symbol]) for symbol in symbols},
             factor_count=len(expected_names),
             factors_used=expected_names,
@@ -783,7 +974,19 @@ class MinedFactorScorer:
             production_eligible=True,
             runtime_mode=self.runtime_mode,
             runtime_blockers=[],
+            production_input_sha256=production_input_sha256,
         )
+        try:
+            result.production_output_attestation_sha256 = (
+                _production_output_attestation_sha256(result.to_metadata())
+            )
+        except (TypeError, ValueError):
+            blocked = self._blocked_runtime_status(
+                runtime_status,
+                "production_runtime_output_attestation_failed",
+            )
+            return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
+        return result
 
     def _compute_factor(
         self,
@@ -950,9 +1153,16 @@ def score_with_mined_factors(
 
 def production_runtime_metadata_is_ready(
     metadata: Mapping[str, Any],
+    *,
+    expected_symbols: Sequence[str] | None = None,
+    expected_symbol_scores: Mapping[str, Any] | None = None,
+    expected_frames: Mapping[str, pd.DataFrame] | None = None,
+    expected_input_digest: str | None = None,
 ) -> bool:
     """Independently revalidate serialized production claims at DAG boundaries."""
 
+    if expected_frames is None and expected_input_digest is None:
+        return False
     try:
         factor_count = metadata.get("factor_count")
         factors_used = list(metadata.get("factors_used", []) or [])
@@ -971,6 +1181,13 @@ def production_runtime_metadata_is_ready(
         activation = dict(
             governance.get("quant_production_activation", {}) or {}
         )
+        symbol_count = metadata.get("symbol_count")
+        symbol_set_sha256 = metadata.get("symbol_set_sha256")
+        symbol_scores_sha256 = metadata.get("symbol_scores_sha256")
+        production_input_digest = metadata.get("production_input_sha256")
+        output_attestation = metadata.get(
+            "production_output_attestation_sha256"
+        )
     except (TypeError, ValueError):
         return False
     if isinstance(factor_count, bool) or not isinstance(factor_count, int):
@@ -980,6 +1197,16 @@ def production_runtime_metadata_is_ready(
     if len(factors_used) != len(set(factors_used)):
         return False
     if (
+        isinstance(symbol_count, bool)
+        or not isinstance(symbol_count, int)
+        or symbol_count <= 0
+        or not _is_sha256(symbol_set_sha256)
+        or not _is_sha256(symbol_scores_sha256)
+        or not _is_sha256(production_input_digest)
+        or not _is_sha256(output_attestation)
+    ):
+        return False
+    if (
         set(factor_weights) != set(factors_used)
         or set(factor_coverages) != set(factors_used)
         or expected_names != factors_used
@@ -987,19 +1214,71 @@ def production_runtime_metadata_is_ready(
         or set(code_hashes) != set(factors_used)
     ):
         return False
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, Real)
+        or not math.isfinite(float(value))
+        for value in factor_weights.values()
+    ):
+        return False
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, Real)
+        or not math.isfinite(float(value))
+        or float(value) != 1.0
+        for value in factor_coverages.values()
+    ):
+        return False
     try:
-        if any(
-            not math.isfinite(float(value))
-            for value in [*factor_weights.values(), *factor_coverages.values()]
-        ):
-            return False
-        if any(
-            not 0.0 <= float(value) <= 1.0
-            for value in factor_coverages.values()
-        ):
+        if output_attestation != _production_output_attestation_sha256(metadata):
             return False
     except (TypeError, ValueError):
         return False
+
+    if expected_symbols is not None:
+        normalized_expected = [str(symbol) for symbol in expected_symbols]
+        if (
+            any(not symbol for symbol in normalized_expected)
+            or len(normalized_expected) != len(set(normalized_expected))
+            or symbol_count != len(normalized_expected)
+            or symbol_set_sha256
+            != production_symbol_set_sha256(normalized_expected)
+        ):
+            return False
+    else:
+        normalized_expected = None
+
+    if expected_symbol_scores is not None:
+        normalized_score_symbols = [
+            str(symbol) for symbol in expected_symbol_scores
+        ]
+        if (
+            any(not symbol for symbol in normalized_score_symbols)
+            or len(normalized_score_symbols) != len(set(normalized_score_symbols))
+            or symbol_count != len(normalized_score_symbols)
+            or symbol_set_sha256
+            != production_symbol_set_sha256(normalized_score_symbols)
+            or (
+                normalized_expected is not None
+                and set(normalized_score_symbols) != set(normalized_expected)
+            )
+        ):
+            return False
+        try:
+            if any(
+                isinstance(value, bool)
+                or not isinstance(value, Real)
+                or not math.isfinite(float(value))
+                or not -1.0 <= float(value) <= 1.0
+                for value in expected_symbol_scores.values()
+            ):
+                return False
+            if symbol_scores_sha256 != _symbol_scores_sha256(
+                expected_symbol_scores
+            ):
+                return False
+        except (TypeError, ValueError):
+            return False
     contracts_sha = governance.get("factor_runtime_contracts_sha256")
     registry_path_value = registry_metadata.get("path")
     if not isinstance(registry_path_value, str) or not registry_path_value.strip():
@@ -1026,6 +1305,14 @@ def production_runtime_metadata_is_ready(
             contract = runtime_contracts.get(name)
             if not isinstance(contract, Mapping):
                 return False
+            min_cross_section = contract.get("min_cross_section")
+            if (
+                isinstance(min_cross_section, bool)
+                or not isinstance(min_cross_section, int)
+                or min_cross_section <= 0
+                or symbol_count < min_cross_section
+            ):
+                return False
             implementation_id = contract.get("implementation_id")
             if not isinstance(implementation_id, str) or not implementation_id:
                 return False
@@ -1036,6 +1323,40 @@ def production_runtime_metadata_is_ready(
         if contracts_sha != recomputed_contracts_sha:
             return False
         if code_hashes != recomputed_code_hashes:
+            return False
+
+        recomputed_input_digest: str | None = None
+        if expected_frames is not None:
+            frame_symbols = [str(symbol) for symbol in expected_frames]
+            if (
+                any(not symbol for symbol in frame_symbols)
+                or len(frame_symbols) != len(set(frame_symbols))
+                or symbol_count != len(frame_symbols)
+                or symbol_set_sha256
+                != production_symbol_set_sha256(frame_symbols)
+                or (
+                    normalized_expected is not None
+                    and set(frame_symbols) != set(normalized_expected)
+                )
+            ):
+                return False
+            recomputed_input_digest = production_runtime_input_sha256(
+                expected_frames,
+                runtime_contracts,
+            )
+        if expected_input_digest is not None:
+            if not _is_sha256(expected_input_digest):
+                return False
+            if (
+                recomputed_input_digest is not None
+                and expected_input_digest != recomputed_input_digest
+            ):
+                return False
+            recomputed_input_digest = expected_input_digest
+        if (
+            recomputed_input_digest is not None
+            and production_input_digest != recomputed_input_digest
+        ):
             return False
 
         strict_registry = MinedFactorRegistry.load_production(registry_path_value)
@@ -1151,23 +1472,36 @@ def production_runtime_score_is_ready(
     score: RuntimeFactorScore,
     *,
     expected_symbols: Sequence[str],
+    expected_frames: Mapping[str, pd.DataFrame] | None = None,
+    expected_input_digest: str | None = None,
 ) -> bool:
     """Reject partial or internally inconsistent ready claims."""
 
     expected = [str(symbol) for symbol in expected_symbols]
-    if len(expected) != len(set(expected)):
+    if (
+        not expected
+        or any(not symbol for symbol in expected)
+        or len(expected) != len(set(expected))
+        or (expected_frames is None and expected_input_digest is None)
+    ):
         return False
     if set(score.symbol_scores) != set(expected):
         return False
-    try:
-        if any(
-            not math.isfinite(float(value))
-            for value in score.symbol_scores.values()
-        ):
-            return False
-    except (TypeError, ValueError):
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, Real)
+        or not math.isfinite(float(value))
+        or not -1.0 <= float(value) <= 1.0
+        for value in score.symbol_scores.values()
+    ):
         return False
-    return production_runtime_metadata_is_ready(score.to_metadata())
+    return production_runtime_metadata_is_ready(
+        score.to_metadata(),
+        expected_symbols=expected,
+        expected_symbol_scores=score.symbol_scores,
+        expected_frames=expected_frames,
+        expected_input_digest=expected_input_digest,
+    )
 
 
 def _close_series(frame: pd.DataFrame) -> pd.Series:
@@ -1197,7 +1531,9 @@ __all__ = [
     "REPORT_ONLY_SHADOW_RUNTIME_MODE",
     "RuntimeFactorScore",
     "production_runtime_metadata_is_ready",
+    "production_runtime_input_sha256",
     "production_runtime_score_is_ready",
     "production_factor_set_sha256",
+    "production_symbol_set_sha256",
     "score_with_mined_factors",
 ]

@@ -364,6 +364,7 @@ def _build_global_quant_verdict(
     cross_section_quant: Mapping[str, Any],
     symbol_count: int,
     quant_result: BranchResult | None = None,
+    expected_frames: Mapping[str, pd.DataFrame] | None = None,
 ) -> BranchVerdict:
     average_return = float(cross_section_quant.get("average_return", 0.0))
     average_volatility = float(cross_section_quant.get("average_volatility", 0.0))
@@ -390,11 +391,23 @@ def _build_global_quant_verdict(
     )
     production_quant_evidence = bool(
         quant_result is not None
+        and expected_frames is not None
         and governance_status == "ready"
         and factor_mode == "governed_mined_factors"
         and production_eligible
-        and production_runtime_metadata_is_ready(runtime_metadata)
+        and production_runtime_metadata_is_ready(
+            runtime_metadata,
+            expected_symbols=list(quant_result.symbol_scores),
+            expected_symbol_scores=quant_result.symbol_scores,
+            expected_frames=expected_frames,
+        )
         and len(quant_result.symbol_scores) == symbol_count
+        and np.isclose(
+            float(quant_result.final_score),
+            float(fmean(quant_result.symbol_scores.values())),
+            rtol=0.0,
+            atol=1e-12,
+        )
         and np.isfinite(float(quant_result.final_score))
         and np.isfinite(float(quant_result.final_confidence))
     )
@@ -471,6 +484,7 @@ def _build_quant_branch_result(
     runtime_ready = production_runtime_score_is_ready(
         mined,
         expected_symbols=list(frames),
+        expected_frames=frames,
     )
     if runtime_ready:
         symbol_scores = dict(mined.symbol_scores)

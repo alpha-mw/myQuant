@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from quant_investor.factors.governance import FactorRecord
+from quant_investor.factors.registry_store import load_registry_snapshot_strict
 
 
 RUNTIME_CONTRACT_SCHEMA_VERSION = "factor-production-runtime-contract.v1"
@@ -369,6 +370,14 @@ def validate_production_runtime_contracts(
     """Validate the exact production set and every readback-bound contract."""
 
     names = [record.name for record in records]
+    if len(names) != len(set(names)):
+        return {
+            "status": "governance_blocked",
+            "contracts": {},
+            "contracts_sha256": "",
+            "implementation_code_sha256s": {},
+            "blockers": ["production_runtime_factor_names_not_unique"],
+        }
     raw_contracts = registry_metadata.get(RUNTIME_CONTRACT_METADATA_KEY)
     if not isinstance(raw_contracts, Mapping):
         return {
@@ -377,6 +386,85 @@ def validate_production_runtime_contracts(
             "contracts_sha256": "",
             "implementation_code_sha256s": {},
             "blockers": ["production_runtime_contracts_missing"],
+        }
+    registry_path_value = registry_metadata.get("path")
+    if not isinstance(registry_path_value, str) or not registry_path_value.strip():
+        return {
+            "status": "governance_blocked",
+            "contracts": {},
+            "contracts_sha256": "",
+            "implementation_code_sha256s": {},
+            "blockers": ["production_runtime_registry_path_missing"],
+        }
+    if registry_metadata.get("strict_loader") is not True:
+        return {
+            "status": "governance_blocked",
+            "contracts": {},
+            "contracts_sha256": "",
+            "implementation_code_sha256s": {},
+            "blockers": ["production_runtime_registry_not_strictly_loaded"],
+        }
+    try:
+        snapshot = load_registry_snapshot_strict(registry_path_value)
+        claimed_path = Path(registry_path_value).expanduser().resolve()
+        snapshot_path = snapshot.path.expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return {
+            "status": "governance_blocked",
+            "contracts": {},
+            "contracts_sha256": "",
+            "implementation_code_sha256s": {},
+            "blockers": ["production_runtime_registry_snapshot_unreadable"],
+        }
+    if claimed_path != snapshot_path:
+        return {
+            "status": "governance_blocked",
+            "contracts": {},
+            "contracts_sha256": "",
+            "implementation_code_sha256s": {},
+            "blockers": ["production_runtime_registry_snapshot_path_mismatch"],
+        }
+    claimed_registry_sha = registry_metadata.get("registry_sha256")
+    if (
+        not _is_hash(claimed_registry_sha)
+        or claimed_registry_sha != snapshot.registry_sha256
+    ):
+        return {
+            "status": "governance_blocked",
+            "contracts": {},
+            "contracts_sha256": "",
+            "implementation_code_sha256s": {},
+            "blockers": ["production_runtime_registry_readback_sha256_mismatch"],
+        }
+
+    snapshot_record_sha256s = dict(snapshot.record_sha256s)
+    record_sha256s = registry_metadata.get("record_sha256s")
+    if (
+        not isinstance(record_sha256s, Mapping)
+        or dict(record_sha256s) != snapshot_record_sha256s
+    ):
+        return {
+            "status": "governance_blocked",
+            "contracts": {},
+            "contracts_sha256": "",
+            "implementation_code_sha256s": {},
+            "blockers": [
+                "production_runtime_registry_snapshot_record_sha256s_mismatch"
+            ],
+        }
+
+    snapshot_contracts = snapshot.metadata_payload.get(RUNTIME_CONTRACT_METADATA_KEY)
+    if (
+        not isinstance(raw_contracts, Mapping)
+        or not isinstance(snapshot_contracts, Mapping)
+        or dict(raw_contracts) != dict(snapshot_contracts)
+    ):
+        return {
+            "status": "governance_blocked",
+            "contracts": {},
+            "contracts_sha256": "",
+            "implementation_code_sha256s": {},
+            "blockers": ["production_runtime_registry_snapshot_contracts_mismatch"],
         }
     contract_names = {str(name) for name in raw_contracts}
     if contract_names != set(names):
@@ -387,25 +475,39 @@ def validate_production_runtime_contracts(
             "implementation_code_sha256s": {},
             "blockers": ["production_runtime_contract_factor_set_mismatch"],
         }
-    record_sha256s = registry_metadata.get("record_sha256s")
-    if not isinstance(record_sha256s, Mapping) or {
-        str(name) for name in record_sha256s
-    } != set(names):
+    snapshot_selectable = {
+        record.name: record for record in snapshot.registry.selectable_factors()
+    }
+    if set(snapshot_selectable) != set(names):
         return {
             "status": "governance_blocked",
             "contracts": {},
             "contracts_sha256": "",
             "implementation_code_sha256s": {},
-            "blockers": ["production_runtime_record_sha256s_missing_or_mismatch"],
+            "blockers": [
+                "production_runtime_registry_snapshot_factor_set_mismatch"
+            ],
         }
     blockers: list[str] = []
     contracts: dict[str, dict[str, Any]] = {}
     code_hashes: dict[str, str] = {}
     for record in records:
+        snapshot_record = snapshot_selectable.get(record.name)
+        snapshot_record_sha = snapshot_record_sha256s.get(record.name)
+        if (
+            snapshot_record is None
+            or snapshot_record.to_dict() != record.to_dict()
+            or snapshot_record_sha != factor_record_payload_sha256(record)
+        ):
+            blockers.append(
+                f"factor_runtime_contract:{record.name}:"
+                "registry_snapshot_factor_record_sha256_mismatch"
+            )
+            continue
         row_blockers, contract = _contract_blockers(
             record,
             raw_contracts.get(record.name),
-            expected_record_sha256=str(record_sha256s.get(record.name) or ""),
+            expected_record_sha256=str(snapshot_record_sha or ""),
         )
         blockers.extend(row_blockers)
         if contract is not None:

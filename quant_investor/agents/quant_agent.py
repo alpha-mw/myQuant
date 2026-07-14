@@ -51,6 +51,7 @@ class QuantAgent(BaseAgent):
         runtime_ready = production_runtime_score_is_ready(
             mined,
             expected_symbols=stock_pool,
+            expected_frames=frames,
         )
         if runtime_ready:
             symbol_scores = dict(mined.symbol_scores)

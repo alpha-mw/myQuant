@@ -702,6 +702,7 @@ def _prepare_market_context(
                 cross_section_quant=cross_section_quant,
                 symbol_count=len(symbols),
                 quant_result=quant_result,
+                expected_frames=frames,
             )
             global_quant_metadata["global_quant_score"] = float(global_quant_verdict.final_score)
             global_quant_metadata["global_quant_confidence"] = float(

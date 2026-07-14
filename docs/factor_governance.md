@@ -88,6 +88,17 @@ one compute, output, coverage, lookback, or symbol-set failure blocks the whole
 Quant branch. Report-only shadow scoring retains its historical compatibility
 helpers and remains confidence zero.
 
+Runtime admission does not trust injected registry objects or serialized
+`strict_loader` claims. It reloads `registry_metadata.path` through the strict
+snapshot parser and binds the exact registry bytes SHA, complete raw-record
+name/SHA set, parsed selectable records, and runtime contracts to that readback.
+Each ready score additionally attests the exact symbol count/set, full 100%
+per-factor coverage, contract minimum cross-section, required-column frame
+values, bounded symbol scores, registry/contracts/receipt identities, and the
+result hash. Downstream QuantAgent and DAG boundaries independently recompute
+the frame digest from their actual frames. Metadata without an independent
+frame digest is never production-ready.
+
 The independent production switch is fail-closed by default:
 
 ```bash

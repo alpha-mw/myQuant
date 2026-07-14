@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from quant_investor.branch_contracts import BranchResult
 from quant_investor.factors.governance import (
     GATE_SPECS,
     FactorLifecycleState,
@@ -20,6 +21,7 @@ from quant_investor.factors.runtime import (
     MinedFactorScorer,
     RuntimeFactorScore,
     production_runtime_metadata_is_ready,
+    production_runtime_score_is_ready,
 )
 from quant_investor.factors.governance_protocol_v2 import (
     governance_runtime_status,
@@ -37,6 +39,7 @@ from quant_investor.factors.runtime_contract import (
     validate_production_runtime_contracts,
     validate_quant_production_activation,
 )
+from quant_investor.market.dag.packets import _build_global_quant_verdict
 
 
 def _gates(*, coverage: float = 1.0) -> list[GateResult]:
@@ -103,13 +106,26 @@ def _contract(record: FactorRecord, evidence_path: Path) -> dict[str, object]:
 def _contract_metadata(
     record: FactorRecord,
     contract: dict[str, object],
+    registry_path: Path,
 ) -> dict[str, object]:
-    return {
-        "production_factor_runtime_contracts": {record.name: contract},
-        "record_sha256s": {
-            record.name: factor_record_payload_sha256(record),
-        },
-    }
+    registry_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "mined-factor-registry.v1",
+                "metadata": {
+                    "production_factor_runtime_contracts": {
+                        record.name: contract,
+                    },
+                },
+                "factors": [record.to_dict()],
+            },
+            allow_nan=False,
+        ),
+        encoding="utf-8",
+    )
+    strict_registry = MinedFactorRegistry.load_production(registry_path)
+    assert "strict_load_error" not in strict_registry.metadata
+    return dict(strict_registry.metadata)
 
 
 def test_runtime_contract_requires_exact_allowlisted_readback_bound_contract(
@@ -124,13 +140,16 @@ def test_runtime_contract_requires_exact_allowlisted_readback_bound_contract(
     assert "production_runtime_contracts_missing" in missing["blockers"]
 
     contract = _contract(record, evidence)
-    metadata = _contract_metadata(record, contract)
+    metadata = _contract_metadata(record, contract, tmp_path / "registry.json")
     ready = validate_production_runtime_contracts([record], metadata)
     assert ready["status"] == "ready"
     assert ready["blockers"] == []
 
     contract["implementation_id"] = "alpha_mining.FactorLibrary:momentum_1m"
-    blocked = validate_production_runtime_contracts([record], metadata)
+    blocked = validate_production_runtime_contracts(
+        [record],
+        _contract_metadata(record, contract, tmp_path / "registry.json"),
+    )
     assert blocked["status"] == "governance_blocked"
     assert any("implementation_id_mismatch" in item for item in blocked["blockers"])
 
@@ -159,7 +178,7 @@ def test_runtime_contract_rejects_coercion_and_semantic_drift(
 
     result = validate_production_runtime_contracts(
         [record],
-        _contract_metadata(record, contract),
+        _contract_metadata(record, contract, tmp_path / "registry.json"),
     )
 
     assert result["status"] == "governance_blocked"
@@ -179,7 +198,7 @@ def test_runtime_contract_rejects_hash_drift_and_unknown_fields(
 
     result = validate_production_runtime_contracts(
         [record],
-        _contract_metadata(record, contract),
+        _contract_metadata(record, contract, tmp_path / "registry.json"),
     )
 
     assert result["status"] == "governance_blocked"
@@ -206,7 +225,7 @@ def test_runtime_contract_rejects_every_bound_hash_drift(
 
     result = validate_production_runtime_contracts(
         [record],
-        _contract_metadata(record, contract),
+        _contract_metadata(record, contract, tmp_path / "registry.json"),
     )
 
     assert result["status"] == "governance_blocked"
@@ -220,7 +239,11 @@ def test_runtime_contract_binds_snapshot_hash_to_current_factor_record(
     evidence.write_text("{}\n", encoding="utf-8")
     snapshot_record = _record(weight=0.05)
     contract = _contract(snapshot_record, evidence)
-    metadata = _contract_metadata(snapshot_record, contract)
+    metadata = _contract_metadata(
+        snapshot_record,
+        contract,
+        tmp_path / "registry.json",
+    )
 
     current_record = _record(weight=0.10)
     result = validate_production_runtime_contracts([current_record], metadata)
@@ -236,8 +259,107 @@ def test_runtime_contract_binds_snapshot_hash_to_current_factor_record(
     )
     assert recomputed_contract["status"] == "governance_blocked"
     assert any(
-        "factor_record_sha256" in item
+        "factor_record_sha256" in item or "registry_snapshot" in item
         for item in recomputed_contract["blockers"]
+    )
+
+
+def test_runtime_contract_reloads_disk_snapshot_and_rejects_forged_memory(
+    tmp_path: Path,
+) -> None:
+    evidence = tmp_path / "evidence.json"
+    evidence.write_text('{"status":"verified"}\n', encoding="utf-8")
+    disk_record = _record(weight=0.05)
+    disk_contract = _contract(disk_record, evidence)
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "mined-factor-registry.v1",
+                "metadata": {
+                    "production_factor_runtime_contracts": {
+                        disk_record.name: disk_contract,
+                    },
+                },
+                "factors": [disk_record.to_dict()],
+            },
+            allow_nan=False,
+        ),
+        encoding="utf-8",
+    )
+    strict_registry = MinedFactorRegistry.load_production(registry_path)
+    assert "strict_load_error" not in strict_registry.metadata
+
+    forged_record = _record(weight=0.10)
+    forged_contract = _contract(forged_record, evidence)
+    forged_metadata = {
+        **strict_registry.metadata,
+        "production_factor_runtime_contracts": {
+            forged_record.name: forged_contract,
+        },
+        "record_sha256s": {
+            forged_record.name: factor_record_payload_sha256(forged_record),
+        },
+    }
+
+    result = validate_production_runtime_contracts(
+        [forged_record],
+        forged_metadata,
+    )
+
+    assert result["status"] == "governance_blocked"
+    assert any(
+        "registry_snapshot" in blocker or "registry_readback" in blocker
+        for blocker in result["blockers"]
+    )
+
+
+def test_runtime_contract_binds_complete_snapshot_record_sha_set(
+    tmp_path: Path,
+) -> None:
+    evidence = tmp_path / "evidence.json"
+    evidence.write_text('{"status":"verified"}\n', encoding="utf-8")
+    production_record = _record(weight=0.05)
+    historical_record = _record("pv_high_dollar_volume_5d", weight=0.0)
+    historical_record.state = FactorLifecycleState.DEPRECATED
+    historical_record.deprecated_reason = "historical_only"
+    contract = _contract(production_record, evidence)
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "mined-factor-registry.v1",
+                "metadata": {
+                    "production_factor_runtime_contracts": {
+                        production_record.name: contract,
+                    },
+                },
+                "factors": [
+                    production_record.to_dict(),
+                    historical_record.to_dict(),
+                ],
+            },
+            allow_nan=False,
+        ),
+        encoding="utf-8",
+    )
+    strict_registry = MinedFactorRegistry.load_production(registry_path)
+    assert validate_production_runtime_contracts(
+        strict_registry.selectable_factors(),
+        strict_registry.metadata,
+    )["status"] == "ready"
+
+    incomplete_sha_set = copy.deepcopy(strict_registry.metadata)
+    incomplete_sha_set["record_sha256s"].pop(historical_record.name)
+    result = validate_production_runtime_contracts(
+        strict_registry.selectable_factors(),
+        incomplete_sha_set,
+    )
+
+    assert result["status"] == "governance_blocked"
+    assert (
+        "production_runtime_registry_snapshot_record_sha256s_mismatch"
+        in result["blockers"]
     )
 
 
@@ -825,7 +947,7 @@ def test_downstream_readiness_revalidates_real_strict_fixture(
     status = governance_runtime_status(strict_registry)
     assert status["status"] == "ready"
     factors_used = list(status["production_factor_names"])
-    score = RuntimeFactorScore(
+    one_symbol_score = RuntimeFactorScore(
         symbol_scores={"TEST.SZ": 0.25},
         factor_count=len(factors_used),
         factors_used=factors_used,
@@ -840,24 +962,149 @@ def test_downstream_readiness_revalidates_real_strict_fixture(
         confidence_multiplier=1.0,
         production_eligible=True,
     )
+    assert production_runtime_metadata_is_ready(
+        one_symbol_score.to_metadata()
+    ) is False
+
+    frames = _frames()
+    score = MinedFactorScorer(strict_registry).score(frames)
+    assert score.governance_status == "ready"
 
     ready_metadata = score.to_metadata()
-    assert production_runtime_metadata_is_ready(ready_metadata) is True
+    assert ready_metadata["symbol_count"] == 20
+    assert len(ready_metadata["symbol_set_sha256"]) == 64
+    assert len(ready_metadata["production_input_sha256"]) == 64
+    assert len(ready_metadata["production_output_attestation_sha256"]) == 64
+
+    def metadata_is_ready(metadata: dict[str, object]) -> bool:
+        return production_runtime_metadata_is_ready(
+            metadata,
+            expected_symbols=list(frames),
+            expected_symbol_scores=score.symbol_scores,
+            expected_frames=frames,
+        )
+
+    assert production_runtime_metadata_is_ready(ready_metadata) is False
+    assert metadata_is_ready(ready_metadata) is True
+    assert production_runtime_score_is_ready(
+        score,
+        expected_symbols=list(frames),
+        expected_frames=frames,
+    ) is True
+    reordered_frames = dict(reversed(list(frames.items())))
+    assert production_runtime_score_is_ready(
+        score,
+        expected_symbols=list(reordered_frames),
+        expected_frames=reordered_frames,
+    ) is True
+
+    quant_result = BranchResult(
+        branch_name="quant",
+        final_score=float(np.mean(list(score.symbol_scores.values()))),
+        final_confidence=0.72,
+        symbol_scores=dict(score.symbol_scores),
+        metadata={
+            "governance_status": "ready",
+            "factor_mode": "governed_mined_factors",
+            "production_eligible": True,
+            "mined_factor_runtime": ready_metadata,
+        },
+    )
+    global_verdict = _build_global_quant_verdict(
+        cross_section_quant={},
+        symbol_count=len(frames),
+        quant_result=quant_result,
+        expected_frames=frames,
+    )
+    assert global_verdict.metadata["production_quant_evidence"] is True
+    assert _build_global_quant_verdict(
+        cross_section_quant={},
+        symbol_count=len(frames),
+        quant_result=quant_result,
+    ).metadata["production_quant_evidence"] is False
+
+    coverage_below_exact = copy.deepcopy(ready_metadata)
+    coverage_below_exact["factor_coverages"][factors_used[0]] = 0.99
+    assert metadata_is_ready(coverage_below_exact) is False
+
+    one_symbol_metadata = copy.deepcopy(ready_metadata)
+    one_symbol_metadata["symbol_count"] = 1
+    one_symbol_metadata["symbol_set_sha256"] = hashlib.sha256(
+        json.dumps(
+            ["TEST.SZ"],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    assert metadata_is_ready(one_symbol_metadata) is False
+
+    forged_symbol_count = copy.deepcopy(ready_metadata)
+    forged_symbol_count["symbol_count"] = 21
+    assert metadata_is_ready(forged_symbol_count) is False
+
+    forged_symbol_set = copy.deepcopy(ready_metadata)
+    forged_symbol_set["symbol_set_sha256"] = "9" * 64
+    assert metadata_is_ready(forged_symbol_set) is False
+
+    out_of_range = copy.deepcopy(score)
+    out_of_range.symbol_scores[next(iter(out_of_range.symbol_scores))] = 1.1
+    assert production_runtime_score_is_ready(
+        out_of_range,
+        expected_symbols=list(frames),
+        expected_frames=frames,
+    ) is False
+
+    forged_output = copy.deepcopy(score)
+    first_symbol = next(iter(forged_output.symbol_scores))
+    forged_output.symbol_scores[first_symbol] = (
+        -0.5 if forged_output.symbol_scores[first_symbol] >= 0.0 else 0.5
+    )
+    assert production_runtime_score_is_ready(
+        forged_output,
+        expected_symbols=list(frames),
+        expected_frames=frames,
+    ) is False
+    forged_branch_result = copy.deepcopy(quant_result)
+    forged_branch_result.symbol_scores[first_symbol] = (
+        -0.5
+        if forged_branch_result.symbol_scores[first_symbol] >= 0.0
+        else 0.5
+    )
+    forged_branch_result.final_score = float(
+        np.mean(list(forged_branch_result.symbol_scores.values()))
+    )
+    assert _build_global_quant_verdict(
+        cross_section_quant={},
+        symbol_count=len(frames),
+        quant_result=forged_branch_result,
+        expected_frames=frames,
+    ).metadata["production_quant_evidence"] is False
+
+    drifted_frames = {symbol: frame.copy() for symbol, frame in frames.items()}
+    drifted_frames[first_symbol].loc[
+        drifted_frames[first_symbol].index[-1], "amount"
+    ] += 1.0
+    assert production_runtime_score_is_ready(
+        score,
+        expected_symbols=list(frames),
+        expected_frames=drifted_frames,
+    ) is False
 
     forged_contracts_sha = copy.deepcopy(ready_metadata)
     forged_contracts_sha["registry"]["governance_runtime"][
         "factor_runtime_contracts_sha256"
     ] = "a" * 64
-    assert production_runtime_metadata_is_ready(forged_contracts_sha) is False
+    assert metadata_is_ready(forged_contracts_sha) is False
 
     forged_code_sha = copy.deepcopy(ready_metadata)
     forged_code_sha["registry"]["governance_runtime"][
         "factor_runtime_implementation_code_sha256s"
     ][factors_used[0]] = "b" * 64
-    assert production_runtime_metadata_is_ready(forged_code_sha) is False
+    assert metadata_is_ready(forged_code_sha) is False
 
     forged_receipt_sha = copy.deepcopy(ready_metadata)
     forged_receipt_sha["registry"]["governance_runtime"][
         "quant_production_activation"
     ]["receipt_file_sha256"] = "c" * 64
-    assert production_runtime_metadata_is_ready(forged_receipt_sha) is False
+    assert metadata_is_ready(forged_receipt_sha) is False
