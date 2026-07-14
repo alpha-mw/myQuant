@@ -7,12 +7,14 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 import shutil
 import time
 from collections import Counter
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime
 from enum import Enum
+from numbers import Real
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -1815,19 +1817,66 @@ def _symbol_key(value: Any) -> str:
     return str(value or "").strip().upper()
 
 
-def _candidate_dag_branch_state(packet: dict[str, Any]) -> tuple[list[str], list[str], dict[str, float]]:
+def _candidate_branch_metric(
+    payload: Any,
+    primary_key: str,
+    fallback_key: str,
+) -> float | None:
+    if not isinstance(payload, Mapping):
+        return None
+    if primary_key in payload:
+        value = payload[primary_key]
+    elif fallback_key in payload:
+        value = payload[fallback_key]
+    else:
+        return None
+    if isinstance(value, bool) or not isinstance(value, Real):
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return numeric if math.isfinite(numeric) else None
+
+
+def _candidate_branch_payload_materialized(payload: Any) -> bool:
+    if not isinstance(payload, Mapping) or not payload:
+        return False
+    score = _candidate_branch_metric(payload, "final_score", "score")
+    confidence = _candidate_branch_metric(
+        payload,
+        "final_confidence",
+        "confidence",
+    )
+    return score is not None and confidence is not None
+
+
+def _candidate_dag_branch_state(
+    packet: dict[str, Any],
+) -> tuple[list[str], list[str], list[str], list[str], dict[str, float]]:
     branch_payloads = _mapping_payload(packet.get("branch_verdicts"))
     present = [
         branch
         for branch in REQUIRED_DAG_BRANCHES
-        if _branch_payload_present(branch_payloads.get(branch))
+        if _candidate_branch_payload_materialized(branch_payloads.get(branch))
     ]
     missing = [branch for branch in REQUIRED_DAG_BRANCHES if branch not in present]
-    scores = {
-        branch: round(_safe_float(_mapping_payload(branch_payloads.get(branch)).get("final_score")), 6)
+    limited = [
+        branch
         for branch in present
-    }
-    return present, missing, scores
+        if _branch_evidence_limited(branch, branch_payloads.get(branch))
+    ]
+    qualified = [branch for branch in present if branch not in limited]
+    scores: dict[str, float] = {}
+    for branch in present:
+        score = _candidate_branch_metric(
+            branch_payloads.get(branch),
+            "final_score",
+            "score",
+        )
+        if score is not None:
+            scores[branch] = round(score, 6)
+    return present, missing, qualified, limited, scores
 
 
 def _positive_reason_counts(value: Any) -> dict[str, int]:
@@ -2316,7 +2365,9 @@ def _build_candidate_pool_from_v14_dag(
     zero_target_symbols: list[str] = []
     for symbol in evaluated_symbols:
         packet = packets.get(symbol, {})
-        present, missing, branch_scores = _candidate_dag_branch_state(packet)
+        present, missing, qualified, limited, branch_scores = (
+            _candidate_dag_branch_state(packet)
+        )
         present_by_symbol[symbol] = present
         if missing:
             missing_by_symbol[symbol] = missing
@@ -2343,6 +2394,7 @@ def _build_candidate_pool_from_v14_dag(
             zero_target_symbols.append(symbol)
             continue
         category = str(packet.get("category") or shortlist.get("category") or "full_a")
+        branch_evidence_complete = not limited
         rows.append(
             {
                 "symbol": symbol,
@@ -2355,11 +2407,14 @@ def _build_candidate_pool_from_v14_dag(
                 "candidate_source": "v14_full_market_dag",
                 "candidate_rank": 0,
                 "candidate_dag_branch_contract_complete": True,
+                "candidate_dag_branch_evidence_complete": branch_evidence_complete,
                 "candidate_dag_branch_support_count": len(REQUIRED_DAG_BRANCHES),
                 "candidate_dag_branch_support_total": len(REQUIRED_DAG_BRANCHES),
-                "present_branches": ",".join(REQUIRED_DAG_BRANCHES),
+                "present_branches": ",".join(present),
                 "missing_branches": "",
-                "evidence_quality": "高",
+                "evidence_qualified_branches": ",".join(qualified),
+                "evidence_limited_branches": ",".join(limited),
+                "evidence_quality": "高" if branch_evidence_complete else "中",
                 "bayesian_rank": int(_safe_float(bayesian.get("rank"), len(rows) + 1)),
                 "posterior_action_score": round(_safe_float(bayesian.get("posterior_action_score")), 6),
                 "posterior_win_rate": round(_safe_float(bayesian.get("posterior_win_rate")), 6),
@@ -3132,7 +3187,9 @@ def _candidate_codex_score(row: pd.Series) -> int:
     posterior_confidence = _safe_float(row.get("posterior_confidence"), 0.0)
     expected_upside = _safe_float(row.get("expected_upside"), 0.0)
     portfolio_target_weight = _safe_float(row.get("portfolio_target_weight"), 0.0)
-    branch_complete = bool(row.get("candidate_dag_branch_contract_complete"))
+    branch_evidence_complete = bool(
+        row.get("candidate_dag_branch_evidence_complete")
+    )
     evidence_quality = str(row.get("evidence_quality") or "").strip()
     risk_flags = str(row.get("risk_flags") or "").strip()
 
@@ -3141,7 +3198,7 @@ def _candidate_codex_score(row: pd.Series) -> int:
     score += 20.0 * _clamp(posterior_confidence / 0.70, 0.0, 1.0)
     score += 15.0 * _clamp(expected_upside / 0.03, 0.0, 1.0)
     score += 10.0 * _clamp(portfolio_target_weight / 0.10, 0.0, 1.0)
-    score += 10.0 if branch_complete else 0.0
+    score += 10.0 if branch_evidence_complete else 0.0
     score += {"高": 10.0, "中": 6.0}.get(evidence_quality, 3.0)
     if risk_flags:
         score -= min(8.0, 2.0 * risk_flags.count("；"))

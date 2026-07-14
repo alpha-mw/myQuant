@@ -426,10 +426,15 @@ async def _execute_market_dag_async(
         symbols = pit_filter.symbols
         pit_universe_metadata = dict(pit_filter.metadata)
         pit_universe_metadata["status"] = "applied" if pit_records else "missing_store"
-        pit_universe_metadata["snapshot_id"] = str(pit_store.load_manifest().get("source_run_id", ""))
+        pit_manifest = pit_store.load_manifest()
+        pit_universe_metadata["snapshot_id"] = str(pit_manifest.get("source_run_id", ""))
+        pit_universe_metadata["manifest_path"] = str(pit_store.manifest_path.resolve())
+        pit_universe_metadata["canonical_path"] = str(pit_store.canonical_path.resolve())
         pit_universe_metadata["quarantine_symbols"] = list(pit_filter.quarantine_symbols)
         pit_universe_metadata["untradable_symbols"] = list(pit_filter.untradable_symbols)
-        scoped_data_snapshot["pit_universe"] = pit_universe_metadata
+    # The current run's local PIT filter is authoritative.  Never accept a
+    # caller-injected snapshot claim when PIT is disabled or unavailable.
+    scoped_data_snapshot["pit_universe"] = pit_universe_metadata
 
     if not symbols:
         empty_context = GlobalContext(

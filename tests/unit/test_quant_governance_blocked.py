@@ -31,11 +31,49 @@ def _frames() -> dict[str, pd.DataFrame]:
     }
 
 
-def _blocked_score(_frames):
+def _blocked_score(_frames, **_kwargs):
     return RuntimeFactorScore(
         symbol_scores={"TEST.SZ": 0.0},
         factor_count=0,
         registry_metadata={"fixture": "empty"},
+    )
+
+
+def _ready_score(
+    symbol_scores: dict[str, float],
+    *,
+    runtime_blockers: list[str] | None = None,
+) -> RuntimeFactorScore:
+    factor_name = "pv_low_dollar_volume_5d"
+    return RuntimeFactorScore(
+        symbol_scores=symbol_scores,
+        factor_count=1,
+        factors_used=[factor_name],
+        factor_weights={factor_name: 0.05},
+        factor_coverages={factor_name: 1.0},
+        registry_metadata={
+            "governance_runtime": {
+                "status": "ready",
+                "factor_mode": "governed_mined_factors",
+                "production_eligible": True,
+                "production_factor_names": [factor_name],
+                "factor_runtime_contracts": {factor_name: {"fixture": True}},
+                "factor_runtime_contracts_sha256": "a" * 64,
+                "factor_runtime_implementation_code_sha256s": {
+                    factor_name: "b" * 64
+                },
+                "quant_production_activation": {
+                    "status": "ready",
+                    "blockers": [],
+                },
+                "blockers": [],
+            }
+        },
+        governance_status="ready",
+        factor_mode="governed_mined_factors",
+        confidence_multiplier=1.0,
+        production_eligible=True,
+        runtime_blockers=list(runtime_blockers or []),
     )
 
 
@@ -127,15 +165,20 @@ def test_global_quant_summary_keeps_cross_section_metrics_diagnostic_when_blocke
         assert "diagnostic_breadth=0.950" in verdict.coverage_notes
 
 
-def test_global_quant_summary_uses_only_governed_quant_result_for_production_score() -> None:
+def test_global_quant_summary_rejects_forged_nested_ready_claims() -> None:
+    score = _ready_score(
+        {f"S{index:03d}": -0.25 for index in range(100)}
+    )
     quant_result = BranchResult(
         branch_name="quant",
         final_score=-0.25,
         final_confidence=0.72,
+        symbol_scores=dict(score.symbol_scores),
         metadata={
             "governance_status": "ready",
             "factor_mode": "governed_mined_factors",
             "production_eligible": True,
+            "mined_factor_runtime": score.to_metadata(),
         },
     )
 
@@ -151,10 +194,46 @@ def test_global_quant_summary_uses_only_governed_quant_result_for_production_sco
         quant_result=quant_result,
     )
 
-    assert verdict.final_score == -0.25
-    assert verdict.final_confidence == 0.72
-    assert verdict.metadata["production_quant_evidence"] is True
-    assert verdict.metadata["source"] == "governance_aware_quant_result"
+    assert verdict.final_score == 0.0
+    assert verdict.final_confidence == 0.0
+    assert verdict.metadata["production_quant_evidence"] is False
+
+
+def test_quant_agent_and_dag_reject_forged_ready_score_with_runtime_blocker(
+    monkeypatch,
+) -> None:
+    forged = _ready_score(
+        {"TEST.SZ": 0.8},
+        runtime_blockers=["activation_receipt_mismatch"],
+    )
+    monkeypatch.setattr(
+        quant_agent_module,
+        "score_with_mined_factors",
+        lambda _frames, **_kwargs: forged,
+    )
+    monkeypatch.setattr(
+        packets_module,
+        "score_with_mined_factors",
+        lambda _frames, **_kwargs: forged,
+    )
+
+    agent_verdict = QuantAgent().run(
+        {
+            "data_bundle": UnifiedDataBundle(
+                market="CN",
+                symbols=["TEST.SZ"],
+                symbol_data=_frames(),
+            )
+        }
+    )
+    dag_result = packets_module._build_quant_branch_result(frames=_frames())
+
+    assert agent_verdict.final_score == 0.0
+    assert agent_verdict.final_confidence == 0.0
+    assert agent_verdict.metadata["factor_mode"] == "governance_blocked"
+    assert dag_result.final_score == 0.0
+    assert dag_result.final_confidence == 0.0
+    assert dag_result.metadata["factor_mode"] == "governance_blocked"
 
 
 def test_runtime_metadata_is_fail_closed_for_zero_production_factors() -> None:
@@ -217,7 +296,7 @@ def test_current_one_factor_registry_is_blocked_by_v2_runtime_contract() -> None
 def test_quant_agent_rejects_a_report_only_score_even_when_it_has_factors(
     monkeypatch,
 ) -> None:
-    def _report_only_score(_frames):
+    def _report_only_score(_frames, **_kwargs):
         return RuntimeFactorScore(
             symbol_scores={"TEST.SZ": 0.8},
             factor_count=1,

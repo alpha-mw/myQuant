@@ -373,11 +373,12 @@ class ControlChainOrchestrator:
             )
             risk_by_symbol[symbol] = risk_decision
 
+            advisory_ic_hint = dict(ic_hints_by_symbol.get(symbol, {}))
             ic_decision = self.ic_coordinator.run(
                 {
                     "branch_verdicts": branch_verdicts,
                     "risk_decision": risk_decision,
-                    "ic_hints": dict(ic_hints_by_symbol.get(symbol, {})),
+                    "ic_hints": {},
                 }
             )
             ic_by_symbol[symbol] = self._attach_symbol_to_ic_decision(
@@ -386,7 +387,7 @@ class ControlChainOrchestrator:
                 risk_decision=risk_decision,
                 current_weight=current_weight,
                 tradability_info=tradability_snapshot.get(symbol, {}),
-                ic_hint=ic_hints_by_symbol.get(symbol, {}),
+                ic_hint=advisory_ic_hint,
             )
 
         aggregated_risk_limits = self._aggregate_risk_limits(
@@ -575,6 +576,7 @@ class ControlChainOrchestrator:
         )
         if ic_hint:
             payload.metadata["llm_master_hint"] = dict(ic_hint)
+            payload.metadata["llm_master_hint_advisory_only"] = True
         return payload
 
     @staticmethod

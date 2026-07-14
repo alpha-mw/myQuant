@@ -692,6 +692,9 @@ def _run_bayesian_selection_phase(
                 evidence_pack.get("trace_fragments", {}).get("budget", {}).get("token_count", 0) or 0
             ),
         }
+    portfolio_master_meta = dict(portfolio_master_meta)
+    portfolio_master_meta["advisory_only"] = True
+    portfolio_master_meta["deterministic_control_chain_effect"] = "none"
     return BayesianSelectionState(
         bayesian_records=bayesian_records,
         shortlist=shortlist,
@@ -762,11 +765,12 @@ def _run_portfolio_construction_phase(
     shortlist_by_symbol = {item.symbol: item for item in shortlist}
     ic_decisions: list[ICDecision] = []
     for symbol in shortlisted_symbols:
+        advisory_ic_hint = ic_hints_by_symbol.get(symbol, {})
         decision = ic_coordinator.run(
             {
                 "branch_verdicts": research_by_symbol[symbol],
                 "risk_decision": risk_decision,
-                "ic_hints": ic_hints_by_symbol.get(symbol, {}),
+                "ic_hints": {},
             }
         )
         decision = attach_symbol_to_ic_decision_fn(
@@ -775,7 +779,7 @@ def _run_portfolio_construction_phase(
             risk_decision=risk_decision,
             current_weight=0.0,
             tradability_info=tradability_snapshot[symbol],
-            ic_hint=ic_hints_by_symbol.get(symbol, {}),
+            ic_hint=advisory_ic_hint,
             shortlist_item=shortlist_by_symbol.get(symbol),
         )
         ic_decisions.append(decision)

@@ -9,7 +9,11 @@ from typing import Any, Mapping
 
 from quant_investor.agents.base import BaseAgent
 from quant_investor.branch_contracts import BranchResult, UnifiedDataBundle
-from quant_investor.factors.runtime import score_with_mined_factors
+from quant_investor.factors.runtime import (
+    ProductionEvaluationContext,
+    production_runtime_score_is_ready,
+    score_with_mined_factors,
+)
 
 
 class QuantAgent(BaseAgent):
@@ -44,11 +48,18 @@ class QuantAgent(BaseAgent):
 
         stock_pool = list(envelope.get("stock_pool") or data_bundle.symbols)
         frames = {symbol: data_bundle.symbol_data.get(symbol) for symbol in stock_pool}
-        mined = score_with_mined_factors(frames)
-        runtime_ready = bool(
-            mined.factor_count > 0
-            and mined.production_eligible
-            and mined.governance_status == "ready"
+        evaluation_context = envelope.get("production_evaluation_context")
+        if not isinstance(evaluation_context, ProductionEvaluationContext):
+            evaluation_context = None
+        mined = score_with_mined_factors(
+            frames,
+            evaluation_context=evaluation_context,
+        )
+        runtime_ready = production_runtime_score_is_ready(
+            mined,
+            expected_symbols=stock_pool,
+            expected_frames=frames,
+            expected_evaluation_context=evaluation_context,
         )
         if runtime_ready:
             symbol_scores = dict(mined.symbol_scores)

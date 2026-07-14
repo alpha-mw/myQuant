@@ -100,6 +100,28 @@ def test_quant_missing_required_amount_hard_blocks():
     assert readiness.affected_symbols == ["000001.SZ"]
 
 
+def test_quant_readiness_requires_exact_as_of_terminal_date():
+    future = _price_frame().assign(trade_date=["20240510", "20240511"])
+    future_readiness = assess_quant_readiness(
+        frames={"000001.SZ": future},
+        symbols=["000001.SZ"],
+        as_of="20240510",
+    )
+    assert future_readiness.status == STATUS_BLOCK
+    assert future_readiness.freshness_status == "stale"
+    assert "freshness" in future_readiness.missing_fields
+
+    missing_date = _price_frame().drop(columns=["trade_date"])
+    missing_readiness = assess_quant_readiness(
+        frames={"000001.SZ": missing_date},
+        symbols=["000001.SZ"],
+        as_of="20240510",
+    )
+    assert missing_readiness.status == STATUS_BLOCK
+    assert missing_readiness.freshness_status == "stale"
+    assert "freshness" in missing_readiness.missing_fields
+
+
 def test_three_branch_readiness_blocks_only_missing_surviving_branch_data(tmp_path):
     fundamental_root = tmp_path / "cn_fundamental"
     macro_root = tmp_path / "cn_macro"

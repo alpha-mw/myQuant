@@ -7,10 +7,12 @@ import pandas as pd
 from quant_investor.agent_protocol import (
     ActionLabel,
     BranchVerdict,
+    GlobalContext,
     ICDecision,
     PortfolioPlan,
     ReportBundle,
     RiskDecision,
+    ShortlistItem,
 )
 from quant_investor.bayesian.types import LikelihoodSet, PosteriorResult, PriorSet
 from quant_investor.factors.runtime import RuntimeFactorScore
@@ -27,10 +29,11 @@ from quant_investor.market.runtime_profile import MarketRuntimeProfiler
 from quant_investor.model_roles import ModelRoleResolution
 
 
-def _frame(seed: float) -> pd.DataFrame:
+def _frame(symbol: str, seed: float) -> pd.DataFrame:
     return pd.DataFrame(
         {
-            "date": pd.date_range("2026-03-01", periods=40),
+            "ts_code": [symbol] * 40,
+            "trade_date": pd.date_range(end="2026-03-01", periods=40),
             "close": [10.0 + seed + idx * 0.1 for idx in range(40)],
             "volume": [1_000_000 + idx * 1_000 for idx in range(40)],
         }
@@ -57,10 +60,10 @@ class _FakeReader:
         type(self).batch_read_columns = ()
         type(self).batch_read_start_date = ""
         self._frames = {
-            "A": _frame(0.0),
-            "B": _frame(1.0),
-            "C": _frame(2.0),
-            "D": _frame(3.0),
+            "A": _frame("A", 0.0),
+            "B": _frame("B", 1.0),
+            "C": _frame("C", 2.0),
+            "D": _frame("D", 3.0),
         }
 
     def list_symbols(self, universe_key: str = "full_a"):
@@ -126,7 +129,7 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
             "master": {"model": str(kwargs.get("master_model", "")), "available": False},
         }
 
-    def _governance_blocked_quant(_frames):
+    def _governance_blocked_quant(_frames, **_kwargs):
         return RuntimeFactorScore(
             symbol_scores={str(symbol): 0.0 for symbol in _frames},
             governance_status="governance_blocked",
@@ -362,6 +365,123 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
     assert batch_stage["metadata"]["runtime_lookback_start_date"] == _FakeReader.batch_read_start_date
     assert frame_summary_calls["count"] <= 8
     assert provider_health_calls["count"] == 1
+
+
+def test_symbol_master_hint_is_reported_but_not_applied_to_control_chain():
+    from quant_investor.market.dag.assembly import _attach_symbol_to_ic_decision
+    from quant_investor.market.dag.decision import _run_portfolio_construction_phase
+
+    symbol = "A"
+    branch_verdicts = {
+        "quant": BranchVerdict(
+            agent_name="quant",
+            symbol=symbol,
+            action=ActionLabel.BUY,
+            final_score=0.6,
+            final_confidence=0.8,
+        ),
+        "fundamental": BranchVerdict(
+            agent_name="fundamental",
+            symbol=symbol,
+            action=ActionLabel.BUY,
+            final_score=0.5,
+            final_confidence=0.7,
+        ),
+        "macro": BranchVerdict(
+            agent_name="macro",
+            symbol=symbol,
+            action=ActionLabel.HOLD,
+            final_score=0.2,
+            final_confidence=0.8,
+            metadata={"target_gross_exposure": 0.5},
+        ),
+    }
+    advisory_hint = {
+        "score": -0.95,
+        "confidence": 0.99,
+        "action": "avoid",
+        "rationale_points": ["LLM says avoid"],
+    }
+    captured: dict[str, object] = {}
+
+    class _RiskGuard:
+        def run(self, payload):
+            captured["risk_branch_verdicts"] = payload["branch_verdicts"]
+            return RiskDecision(
+                gross_exposure_cap=0.5,
+                target_exposure_cap=0.5,
+                max_weight=0.2,
+            )
+
+    class _ICCoordinator:
+        def run(self, payload):
+            captured["ic_branch_verdicts"] = payload["branch_verdicts"]
+            captured["ic_hints"] = payload.get("ic_hints")
+            if payload.get("ic_hints"):
+                return ICDecision(
+                    action=ActionLabel.AVOID,
+                    final_score=-0.95,
+                    final_confidence=0.99,
+                )
+            return ICDecision(
+                action=ActionLabel.BUY,
+                final_score=0.5,
+                final_confidence=0.7,
+            )
+
+    class _PortfolioConstructor:
+        def run(self, payload):
+            decision = payload["ic_decisions"][0]
+            captured["portfolio_ic_decision"] = decision
+            weights = {symbol: 0.1} if decision.selected_symbols else {}
+            return PortfolioPlan(
+                target_exposure=sum(weights.values()),
+                target_gross_exposure=sum(weights.values()),
+                target_net_exposure=sum(weights.values()),
+                cash_ratio=1.0 - sum(weights.values()),
+                target_weights=weights,
+                target_positions=weights,
+            )
+
+    state = _run_portfolio_construction_phase(
+        shortlist=[
+            ShortlistItem(
+                symbol=symbol,
+                company_name="Alpha",
+                action=ActionLabel.BUY,
+                confidence=0.7,
+            )
+        ],
+        branch_summaries=branch_verdicts,
+        macro_verdict=branch_verdicts["macro"],
+        global_context=GlobalContext(
+            risk_budget={
+                "target_exposure": 0.5,
+                "max_single_weight": 0.2,
+            }
+        ),
+        data_quality_issues=[],
+        ic_hints_by_symbol={symbol: advisory_hint},
+        research_by_symbol={symbol: branch_verdicts},
+        tradability_snapshot={symbol: {"company_name": "Alpha"}},
+        funnel_summary={},
+        bayesian_records=[],
+        candidate_symbols=[symbol],
+        portfolio_master_output=None,
+        portfolio_master_meta={"status": "fixture"},
+        risk_guard_cls=_RiskGuard,
+        ic_coordinator_cls=_ICCoordinator,
+        portfolio_constructor_cls=_PortfolioConstructor,
+        attach_symbol_to_ic_decision_fn=_attach_symbol_to_ic_decision,
+    )
+
+    assert captured["risk_branch_verdicts"] is branch_verdicts
+    assert captured["ic_branch_verdicts"] is branch_verdicts
+    assert captured["ic_hints"] == {}
+    assert state.portfolio_plan.target_weights == {symbol: 0.1}
+    decision = captured["portfolio_ic_decision"]
+    assert decision.metadata["llm_master_hint"] == advisory_hint
+    assert decision.metadata["llm_master_hint_advisory_only"] is True
 
 
 def test_holding_single_review_runs_branches_when_readiness_blocks_symbol(monkeypatch):
