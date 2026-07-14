@@ -204,6 +204,56 @@ use the same first-operation gate. Inverse-WAL rollback remains available for
 an already-existing valid mutation and never deletes or refunds its monthly
 reservation.
 
+PR5 adds one explicit, non-default runtime performance audit. It uses only
+deterministic synthetic frames and existing local runtime code, emits exactly
+one versioned JSON document to stdout, and writes no persistent governance or
+runtime artifact. Its deterministic inputs exist only inside an automatically
+removed temporary directory; normal Python bytecode caching is outside this
+audit contract:
+
+```bash
+PYTHONPATH="$PWD" ./.venv/bin/python scripts/run_quant_runtime_performance_audit.py
+```
+
+The default reference profile uses 5,520 symbols, 280 validation rows, 91
+runtime rows, factor sets of 5 and 14, one timed warmup per operation, and three
+measured samples. Before those timings, the native-memory preflight performs one
+untimed 14-factor digest and one untimed frame validation; the JSON discloses
+this separately from the timed warmup count.
+On the reference Apple Silicon host it is intentionally a long audit (roughly
+20 minutes) and prints nothing until the final JSON. The fixed ceilings are
+15 seconds and 100,000 symbol-rows/second for frame validation; 5-factor
+digest/score/plan/combined ceilings of 30/35/45/75 seconds; and 14-factor
+ceilings of 90/90/125/210 seconds. Individual digest, score, and plan operations
+must process at least 80,000 factor-symbol-row observations/second. Combined
+is the sum of score and plan medians, so it is governed by its seconds ceiling
+and the 14-to-5 scaling ceiling, not by the single-operation throughput floor.
+Every per-operation and combined 14-to-5 ratio must be at most 3.5.
+
+Native incremental memory is sampled from one common current-RSS baseline with
+both input sets already resident, around a sequential 14-factor digest and
+frame-validation operation; the peak increment must stay at or below 128 MiB.
+This common baseline prevents allocator reuse between two probes from
+understating the peak. Lifetime `ru_maxrss`, current RSS,
+and a separate five-factor `tracemalloc` probe are disclosed but are not
+substitutes for that native gate. The real orchestration probe must observe
+exactly two input-digest calls and one frame validation. The deliberately
+non-authoritative synthetic context must issue no production validation token;
+the separate forward-apply fault matrix, not this runtime probe, verifies the
+exact PR4 blocker.
+
+Only the no-argument reference dimensions and budgets are comparable across
+runs. Smaller or relaxed command-line dimensions exist for deterministic unit
+tests and local diagnostics, not for reference acceptance. Consumers must
+require both `reference_profile=true` and
+`reference_acceptance_eligible=true`; a diagnostic `status=pass` is not
+reference evidence. A reference-eligible `pass` remains audit-only:
+`production_apply_authorized=false`, every enumerated guarded-surface counter
+must be zero, and the canonical registry must retain its fixed SHA, mode
+`0644`, and `nlink=1` before and after the process. The JSON poison counters are
+negative evidence only for their explicitly enumerated apply, socket, urllib,
+and subprocess surfaces; they are not an exhaustive network/write proof.
+
 Rollback is dry-run by default. It requires the exact current registry SHA,
 input WAL SHA, protocol/transition/mutation/evidence hashes, and the same
 append-only budget ledger. Add `--apply-rollback --rollback-wal <new-wal>` only

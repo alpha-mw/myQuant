@@ -268,6 +268,38 @@ registry by hand. Do not enable producer control by configuration, environment
 variable, or runtime monkeypatch: dynamic control is not an authorization
 surface and is excluded from the protocol hash.
 
+PR5 performance and fault evidence is also local-only. Run the full reference
+performance audit explicitly; it is not part of ordinary daily automation and
+may take roughly 20 minutes on the reference Apple Silicon host:
+
+```bash
+PYTHONPATH="$PWD" ./.venv/bin/python scripts/run_quant_runtime_performance_audit.py
+```
+
+Accept only one final JSON line with `status=pass`, `reference_profile=true`,
+`reference_acceptance_eligible=true`, no blockers, exact
+`production_runtime_input_sha256=2` / `validate_production_frames=1` observed
+calls, zero calls on every enumerated guarded apply/socket/urllib/subprocess
+surface, native current-RSS common-baseline peak
+increment at or below 128 MiB, and unchanged canonical registry SHA/mode/link
+count. The default profile is 5,520 symbols with 5/14-factor workloads, one
+timed warmup per operation and three samples; an untimed native-memory preflight
+runs one 14-factor digest and one validation first and is disclosed separately.
+Custom smaller dimensions or relaxed budgets are smoke and diagnostic runs
+only; they remain `reference_acceptance_eligible=false` even when
+`status=pass`. Even a reference pass
+is not an activation receipt, does not authenticate a producer, and cannot
+lift `forward_factor_apply_not_authorized_pr4`.
+
+The guarded-surface counters are deliberately non-exhaustive negative evidence;
+they do not claim to intercept every possible Python networking or write path.
+
+The deterministic PR5 fault matrix lives in
+`tests/unit/test_pr4_replay_publisher_fault_matrix.py`. It exercises exact
+idempotence, byte drift, unsafe filesystem objects, publisher crash/retry
+boundaries, and all forward-apply entry points while guarding the production
+registry SHA, `0644` mode and `nlink=1` in every scenario.
+
 Rollback is dry-run by default and binds the current registry, inverse WAL,
 transition, mutation, evidence, protocol, and append-only budget ledger hashes.
 After reviewing the dry-run result, repeat with `--apply-rollback` and a new
