@@ -3,11 +3,25 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 
 import quant_investor.agents.stock_reviewers as stock_reviewers
 import quant_investor.pipeline.mainline as mainline_module
-from quant_investor.agent_protocol import ActionLabel, AgentStatus, BranchVerdict, Direction, ExecutionTrace, GlobalContext, PortfolioDecision, ShortlistItem, WhatIfPlan
+from quant_investor.agent_protocol import (
+    ActionLabel,
+    AgentStatus,
+    BranchOverlayVerdict,
+    BranchVerdict,
+    Direction,
+    ExecutionTrace,
+    GlobalContext,
+    MasterICHint,
+    PortfolioDecision,
+    ReviewTelemetry,
+    ShortlistItem,
+    WhatIfPlan,
+)
 from quant_investor.agents.agent_contracts import MasterAgentInput, MasterAgentOutput
 from quant_investor.agents.master_agent import MasterAgent
 import quant_investor.agents.llm_client as legacy_llm_client
@@ -17,7 +31,9 @@ from quant_investor.agents.stock_reviewers import (
     MasterICAgent,
     MasterSymbolPacket,
 )
-from quant_investor.branch_contracts import BranchResult, UnifiedDataBundle
+from quant_investor.branch_contracts import BranchResult
+from quant_investor.market.read_result import MarketDataReadResult
+from quant_investor.model_roles import ModelRoleResolution
 from quant_investor.pipeline.mainline import QuantInvestor
 
 
@@ -346,6 +362,204 @@ def test_legacy_master_agent_forwards_reasoning_effort(monkeypatch):
 
     assert output.final_conviction == "buy"
     assert captured["reasoning_effort"] == "high"
+
+
+def test_dag_symbol_review_keeps_all_branch_overlays_advisory(monkeypatch):
+    import quant_investor.market.dag.research as research_module
+
+    base_verdicts = {
+        "quant": BranchVerdict(
+            agent_name="quant",
+            thesis="base quant",
+            symbol="A",
+            direction=Direction.BULLISH,
+            action=ActionLabel.BUY,
+            final_score=0.4,
+            final_confidence=0.8,
+            investment_risks=["quant base risk"],
+            metadata={"branch_name": "quant", "base_marker": "quant"},
+        ),
+        "fundamental": BranchVerdict(
+            agent_name="fundamental",
+            thesis="base fundamental",
+            symbol="A",
+            direction=Direction.BULLISH,
+            action=ActionLabel.BUY,
+            final_score=0.3,
+            final_confidence=0.7,
+            investment_risks=["fundamental base risk"],
+            metadata={"branch_name": "fundamental", "base_marker": "fundamental"},
+        ),
+        "intelligence": BranchVerdict(
+            agent_name="intelligence",
+            thesis="base intelligence",
+            symbol="A",
+            direction=Direction.NEUTRAL,
+            action=ActionLabel.HOLD,
+            final_score=0.1,
+            final_confidence=0.6,
+            investment_risks=["intelligence base risk"],
+            metadata={"branch_name": "intelligence", "base_marker": "intelligence"},
+        ),
+        "macro": BranchVerdict(
+            agent_name="macro",
+            thesis="base macro",
+            symbol="A",
+            direction=Direction.BEARISH,
+            action=ActionLabel.SELL,
+            final_score=-0.4,
+            final_confidence=0.9,
+            investment_risks=["macro base risk"],
+            metadata={"branch_name": "macro", "base_marker": "macro"},
+        ),
+    }
+
+    class _Fundamental:
+        def run(self, _payload):
+            return base_verdicts["fundamental"]
+
+    class _Intelligence:
+        def run(self, _payload):
+            return base_verdicts["intelligence"]
+
+    class _GatewayClient:
+        def __init__(self, **_kwargs):
+            pass
+
+    class _OverlayReviewer:
+        def __init__(self, *, branch_name, **_kwargs):
+            self.branch_name = branch_name
+
+        async def review(self, packet):
+            return BranchOverlayVerdict(
+                symbol=packet.symbol,
+                branch_name=self.branch_name,
+                thesis=f"overlay {self.branch_name}",
+                direction=Direction.BEARISH,
+                action=ActionLabel.AVOID,
+                base_score=packet.base_score,
+                adjusted_score=-0.95,
+                base_confidence=packet.base_confidence,
+                adjusted_confidence=0.01,
+                score_delta=-1.0,
+                confidence_delta=-1.0,
+                missing_risks=[f"overlay risk {self.branch_name}"],
+                telemetry=ReviewTelemetry(stage="review_branch_overlay"),
+            )
+
+    class _MasterReviewer:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def deliberate(self, packet):
+            return MasterICHint(
+                symbol=packet.symbol,
+                thesis="master avoid",
+                action=ActionLabel.AVOID,
+                direction=Direction.BEARISH,
+                score_hint=-0.9,
+                confidence_hint=0.99,
+                telemetry=ReviewTelemetry(stage="review_master_symbol"),
+            )
+
+    monkeypatch.setattr(
+        research_module,
+        "_build_symbol_quant_verdict",
+        lambda **_kwargs: base_verdicts["quant"],
+    )
+    monkeypatch.setattr(
+        research_module,
+        "_build_symbol_macro_verdict",
+        lambda **_kwargs: base_verdicts["macro"],
+    )
+    monkeypatch.setattr(research_module, "GatewayLLMClient", _GatewayClient)
+    monkeypatch.setattr(research_module, "BranchOverlayReviewer", _OverlayReviewer)
+    monkeypatch.setattr(research_module, "MasterICAgent", _MasterReviewer)
+
+    resolution = ModelRoleResolution(
+        role="branch",
+        primary_model="fixture-model",
+        fallback_model="",
+        resolved_model="fixture-model",
+        provider_available=True,
+    )
+    quant_result = BranchResult(
+        branch_name="quant",
+        final_score=0.4,
+        final_confidence=0.8,
+        symbol_scores={"A": 0.4},
+    )
+    frame = pd.DataFrame(
+        {
+            "date": pd.date_range("2026-01-01", periods=3),
+            "close": [10.0, 10.2, 10.4],
+            "volume": [1000, 1100, 1200],
+        }
+    )
+    read_result = MarketDataReadResult(
+        frame=frame,
+        path="/tmp/A.csv",
+        symbol="A",
+        category="full_a",
+        universe_key="full_a",
+        resolver_trace={"resolution_strategy": "fixture"},
+        issues=[],
+    )
+
+    state = asyncio.run(
+        research_module._run_candidate_research_phase(
+            candidate_symbols=["A"],
+            company_name_map={"A": "Alpha"},
+            market="CN",
+            market_snapshot={"regime": "neutral"},
+            universe_key="full_a",
+            read_results={"A": read_result},
+            frames={"A": frame},
+            global_quant_verdict=base_verdicts["quant"],
+            macro_verdict=base_verdicts["macro"],
+            branch_model_resolution=resolution,
+            master_model_resolution=ModelRoleResolution(
+                role="master",
+                primary_model="fixture-model",
+                fallback_model="",
+                resolved_model="fixture-model",
+                provider_available=True,
+            ),
+            branch_candidate_models=["fixture-model"],
+            master_candidate_models=["fixture-model"],
+            master_reasoning_effort="medium",
+            enable_agent_layer=True,
+            agent_timeout=1.0,
+            master_timeout=1.0,
+            resolver_snapshot={"resolution_strategy": "fixture"},
+            fundamental_agent=_Fundamental(),
+            intelligence_agent=_Intelligence(),
+            quant_result=quant_result,
+            ensure_branch_verdict=lambda verdict, **_kwargs: verdict,
+            master_hint_to_ic_hint=lambda hint: {
+                "score": hint.score_hint,
+                "confidence": hint.confidence_hint,
+                "action": hint.action.value,
+            },
+        )
+    )
+
+    for branch_name, base_verdict in base_verdicts.items():
+        assert state.research_by_symbol["A"][branch_name].to_dict() == base_verdict.to_dict()
+        assert (
+            state.symbol_research_packets["A"].branch_verdicts[branch_name].to_dict()
+            == base_verdict.to_dict()
+        )
+        assert (
+            state.review_bundle.branch_overlay_verdicts_by_symbol["A"][
+                branch_name
+            ].adjusted_score
+            == -0.95
+        )
+
+    assert state.review_bundle.ic_hints_by_symbol["A"]["action"] == "avoid"
+    assert state.review_bundle.metadata["advisory_only"] is True
+    assert state.review_bundle.metadata["deterministic_control_chain_isolated"] is True
 
 
 def test_unified_dag_preserves_symbol_ic_hints_and_review_bundle(monkeypatch):

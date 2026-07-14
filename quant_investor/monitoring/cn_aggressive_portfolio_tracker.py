@@ -1814,7 +1814,9 @@ def _symbol_key(value: Any) -> str:
     return str(value or "").strip().upper()
 
 
-def _candidate_dag_branch_state(packet: dict[str, Any]) -> tuple[list[str], list[str], dict[str, float]]:
+def _candidate_dag_branch_state(
+    packet: dict[str, Any],
+) -> tuple[list[str], list[str], list[str], list[str], dict[str, float]]:
     branch_payloads = _mapping_payload(packet.get("branch_verdicts"))
     present = [
         branch
@@ -1822,11 +1824,17 @@ def _candidate_dag_branch_state(packet: dict[str, Any]) -> tuple[list[str], list
         if _branch_payload_present(branch_payloads.get(branch))
     ]
     missing = [branch for branch in REQUIRED_DAG_BRANCHES if branch not in present]
+    limited = [
+        branch
+        for branch in present
+        if _branch_evidence_limited(branch, branch_payloads.get(branch))
+    ]
+    qualified = [branch for branch in present if branch not in limited]
     scores = {
         branch: round(_safe_float(_mapping_payload(branch_payloads.get(branch)).get("final_score")), 6)
         for branch in present
     }
-    return present, missing, scores
+    return present, missing, qualified, limited, scores
 
 
 def _positive_reason_counts(value: Any) -> dict[str, int]:
@@ -2315,7 +2323,9 @@ def _build_candidate_pool_from_v13_dag(
     zero_target_symbols: list[str] = []
     for symbol in evaluated_symbols:
         packet = packets.get(symbol, {})
-        present, missing, branch_scores = _candidate_dag_branch_state(packet)
+        present, missing, qualified, limited, branch_scores = (
+            _candidate_dag_branch_state(packet)
+        )
         present_by_symbol[symbol] = present
         if missing:
             missing_by_symbol[symbol] = missing
@@ -2333,6 +2343,7 @@ def _build_candidate_pool_from_v13_dag(
             zero_target_symbols.append(symbol)
             continue
         category = str(packet.get("category") or shortlist.get("category") or "full_a")
+        four_branch_complete = not limited
         rows.append(
             {
                 "symbol": symbol,
@@ -2344,10 +2355,12 @@ def _build_candidate_pool_from_v13_dag(
                 "theme_label": _theme_label_for_symbol(symbol, category),
                 "candidate_source": "v13_full_market_dag",
                 "candidate_rank": 0,
-                "candidate_dag_four_branch_complete": True,
-                "present_branches": ",".join(REQUIRED_DAG_BRANCHES),
+                "candidate_dag_four_branch_complete": four_branch_complete,
+                "present_branches": ",".join(present),
+                "evidence_qualified_branches": ",".join(qualified),
+                "evidence_limited_branches": ",".join(limited),
                 "missing_branches": "",
-                "evidence_quality": "高",
+                "evidence_quality": "高" if four_branch_complete else "中",
                 "bayesian_rank": int(_safe_float(bayesian.get("rank"), len(rows) + 1)),
                 "posterior_action_score": round(_safe_float(bayesian.get("posterior_action_score")), 6),
                 "posterior_win_rate": round(_safe_float(bayesian.get("posterior_win_rate")), 6),

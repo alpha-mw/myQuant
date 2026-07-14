@@ -8,7 +8,6 @@ from typing import Any, Callable, Mapping
 import pandas as pd
 
 from quant_investor.agent_protocol import (
-    ActionLabel,
     AgentStatus,
     BranchOverlayVerdict,
     BranchVerdict,
@@ -467,31 +466,9 @@ async def _run_candidate_research_phase(
         if codex_handoff_review:
             fallback_reasons.append(f"{symbol}: codex_handoff_pending")
 
-        reviewed_branch_verdicts: dict[str, BranchVerdict] = {}
-        for branch_name, base_verdict in base_branch_verdicts.items():
-            overlay = branch_overlay_verdicts.get(branch_name)
-            if overlay is None:
-                reviewed_branch_verdicts[branch_name] = base_verdict
-                continue
-            reviewed_branch_verdicts[branch_name] = BranchVerdict(
-                agent_name=base_verdict.agent_name,
-                thesis=overlay.thesis or base_verdict.thesis,
-                symbol=symbol,
-                status=base_verdict.status,
-                direction=overlay.direction if isinstance(overlay.direction, Direction) else base_verdict.direction,
-                action=overlay.action if isinstance(overlay.action, ActionLabel) else base_verdict.action,
-                confidence_label=base_verdict.confidence_label,
-                final_score=float(overlay.adjusted_score),
-                final_confidence=float(overlay.adjusted_confidence),
-                investment_risks=_dedupe_texts(list(base_verdict.investment_risks) + list(overlay.risk_flags) + list(overlay.missing_risks)),
-                coverage_notes=_dedupe_texts(list(base_verdict.coverage_notes) + list(overlay.agreement_points)),
-                diagnostic_notes=_dedupe_texts(list(base_verdict.diagnostic_notes) + list(overlay.conflict_points) + list(overlay.contradictions)),
-                metadata={
-                    **dict(base_verdict.metadata or {}),
-                    "branch_name": branch_name,
-                    "overlay": overlay.to_dict(),
-                },
-            )
+        # LLM overlays remain report-only evidence. The deterministic DAG and
+        # control chain consume the exact base verdict objects for every branch.
+        reviewed_branch_verdicts = dict(base_branch_verdicts)
         packet = _build_symbol_research_packet(
             symbol=symbol,
             company_name=company_name_map.get(symbol, ""),
@@ -522,6 +499,8 @@ async def _run_candidate_research_phase(
                     "master_fallback_reason": master_model_resolution.fallback_reason,
                     "master_reasoning_effort": master_reasoning_effort,
                     "agent_layer_enabled": bool(enable_agent_layer),
+                    "advisory_only": True,
+                    "deterministic_control_chain_isolated": True,
                     "review_layer_mode": (
                         "codex_handoff"
                         if codex_handoff_review
@@ -571,6 +550,8 @@ async def _run_candidate_research_phase(
             "master_fallback_reason": master_model_resolution.fallback_reason,
             "master_reasoning_effort": master_reasoning_effort,
             "agent_layer_enabled": bool(enable_agent_layer),
+            "advisory_only": True,
+            "deterministic_control_chain_isolated": True,
             "review_layer_mode": (
                 "codex_handoff"
                 if codex_handoff_review

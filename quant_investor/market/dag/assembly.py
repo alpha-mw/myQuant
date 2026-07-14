@@ -177,4 +177,5 @@ def _attach_symbol_to_ic_decision(
     )
     if ic_hint:
         payload.metadata["llm_master_hint"] = dict(ic_hint)
+        payload.metadata["llm_master_hint_advisory_only"] = True
     return payload
