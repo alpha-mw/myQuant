@@ -300,8 +300,11 @@ V2 schema, exact curve identity, blend/cap/alpha/action formulas, and edge cost
 identities. As defense in depth, optimizer execution rejects non-current candidate
 schemas and recursively marked overlay provenance before scoring; constructor patch
 generation applies the same provenance check and requires the current plan schema.
-Historical candidate and plan payloads remain readable for observation, but are not
-executable or patch-eligible.
+Current-v2 candidate and plan payloads require exact top-level field sets and exact
+string schemas. Provenance detection normalizes key case and separators and covers
+schema values, marker strings, pair encodings, and standalone report-only flags.
+Historical candidate and plan payloads with an explicit schema remain readable for
+observation, but are not executable or patch-eligible.
 
 No production market DAG, DAG executor, control chain, pipeline, orchestrator,
 RiskGuard, or PortfolioConstructor surface imports or invokes the overlay runner or

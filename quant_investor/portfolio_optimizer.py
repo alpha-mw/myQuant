@@ -6,7 +6,7 @@ import hashlib
 import json
 import math
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields as dataclass_fields
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -75,31 +75,78 @@ def _coerce_metadata(value: Mapping[str, Any] | None) -> dict[str, Any]:
     return dict(_ensure_json_serializable(value, "metadata"))
 
 
+def _normalize_provenance_token(value: Any) -> str:
+    return re.sub(
+        r"[^a-z0-9]+",
+        "_",
+        str(value).strip().casefold(),
+    ).strip("_")
+
+
+def _is_overlay_marker_string(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    token = _normalize_provenance_token(value)
+    if token in {
+        "calibrated_posterior_overlay",
+        "posterior_overlay",
+        "posterior_overlay_schema_version",
+    }:
+        return True
+    return re.search(
+        r"(?:^|_)posterior_overlay_v[0-9]+(?:_|$)",
+        token,
+    ) is not None
+
+
+def _is_overlay_pair(value: Sequence[Any]) -> bool:
+    if len(value) != 2:
+        return False
+    key, item = value
+    key_token = _normalize_provenance_token(key)
+    item_token = _normalize_provenance_token(item)
+    if key_token in {
+        "calibrated_posterior_overlay",
+        "posterior_overlay_schema_version",
+    }:
+        return True
+    if key_token == "overlay_mode" and item_token == "shadow":
+        return True
+    if key_token == "source_type" and item_token == "posterior_overlay":
+        return True
+    return key_token == "report_only" and item is True
+
+
 def _contains_overlay_provenance(value: Any) -> bool:
     if isinstance(value, Mapping):
-        if (
-            "calibrated_posterior_overlay" in value
-            or "posterior_overlay_schema_version" in value
-            or value.get("overlay_mode") == "shadow"
-            or value.get("source_type") == "posterior_overlay"
-        ):
-            return True
-        eligible = value.get(
-            "production_eligible",
-            value.get("eligible"),
-        )
-        if (
-            value.get("report_only") is True
-            and eligible is False
-        ):
-            return True
+        for key, item in value.items():
+            key_token = _normalize_provenance_token(key)
+            item_token = _normalize_provenance_token(item)
+            if key_token in {
+                "calibrated_posterior_overlay",
+                "posterior_overlay_schema_version",
+            }:
+                return True
+            if key_token == "overlay_mode" and item_token == "shadow":
+                return True
+            if (
+                key_token == "source_type"
+                and item_token == "posterior_overlay"
+            ):
+                return True
+            if key_token == "report_only" and item is True:
+                return True
+            if _is_overlay_marker_string(key):
+                return True
         return any(
             _contains_overlay_provenance(item)
             for item in value.values()
         )
     if isinstance(value, (list, tuple)):
+        if _is_overlay_pair(value):
+            return True
         return any(_contains_overlay_provenance(item) for item in value)
-    return False
+    return _is_overlay_marker_string(value)
 
 
 def _reject_overlay_provenance(value: Any, *, context: str) -> None:
@@ -448,8 +495,23 @@ class OptimizationCandidate:
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "OptimizationCandidate":
         data = dict(payload)
+        schema_version = data.get("schema_version")
+        if type(schema_version) is not str:
+            raise TypeError("candidate schema_version must be an exact string")
+        if schema_version == PORTFOLIO_OPTIMIZER_SCHEMA_VERSION:
+            expected_fields = {
+                dataclass_field.name
+                for dataclass_field in dataclass_fields(cls)
+            }
+            if set(data) != expected_fields:
+                missing = sorted(expected_fields - set(data))
+                unknown = sorted(set(data) - expected_fields, key=str)
+                raise ValueError(
+                    "current candidate fields invalid; "
+                    f"missing={missing!r}, unknown={unknown!r}"
+                )
         return cls(
-            schema_version=str(data.get("schema_version", PORTFOLIO_OPTIMIZER_SCHEMA_VERSION)),
+            schema_version=schema_version,
             symbol=str(data.get("symbol", "")),
             market=str(data.get("market", "")),
             as_of=str(data.get("as_of", "")),
@@ -574,8 +636,23 @@ class OptimizedPortfolioPlan:
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "OptimizedPortfolioPlan":
         data = dict(payload)
+        schema_version = data.get("schema_version")
+        if type(schema_version) is not str:
+            raise TypeError("plan schema_version must be an exact string")
+        if schema_version == PORTFOLIO_OPTIMIZER_SCHEMA_VERSION:
+            expected_fields = {
+                dataclass_field.name
+                for dataclass_field in dataclass_fields(cls)
+            }
+            if set(data) != expected_fields:
+                missing = sorted(expected_fields - set(data))
+                unknown = sorted(set(data) - expected_fields, key=str)
+                raise ValueError(
+                    "current plan fields invalid; "
+                    f"missing={missing!r}, unknown={unknown!r}"
+                )
         return cls(
-            schema_version=str(data.get("schema_version", PORTFOLIO_OPTIMIZER_SCHEMA_VERSION)),
+            schema_version=schema_version,
             plan_id=str(data.get("plan_id", "")),
             as_of=str(data.get("as_of", "")),
             market=str(data.get("market", "")),
@@ -920,7 +997,10 @@ def optimize_portfolio(
         context="optimizer input metadata",
     )
     for index, candidate in enumerate(candidates):
-        if candidate.schema_version != PORTFOLIO_OPTIMIZER_SCHEMA_VERSION:
+        if (
+            type(candidate.schema_version) is not str
+            or candidate.schema_version != PORTFOLIO_OPTIMIZER_SCHEMA_VERSION
+        ):
             raise ValueError(
                 "candidate schema_version is not executable: "
                 f"index={index}, schema={candidate.schema_version!r}"
@@ -1373,7 +1453,10 @@ def run_walk_forward_loop(
 
 
 def build_portfolio_constructor_patch(plan: OptimizedPortfolioPlan) -> dict[str, Any]:
-    if plan.schema_version != PORTFOLIO_OPTIMIZER_SCHEMA_VERSION:
+    if (
+        type(plan.schema_version) is not str
+        or plan.schema_version != PORTFOLIO_OPTIMIZER_SCHEMA_VERSION
+    ):
         raise ValueError(
             "plan schema_version is not executable for constructor patch: "
             f"{plan.schema_version!r}"

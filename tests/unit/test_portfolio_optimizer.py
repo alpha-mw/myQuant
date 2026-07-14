@@ -633,3 +633,221 @@ def test_constructor_patch_rejects_non_current_plan_schema(
 
     with pytest.raises(ValueError, match="schema"):
         build_portfolio_constructor_patch(observed)
+
+
+_FINAL_NORMALIZED_PROVENANCE_CASES: list[
+    tuple[str, dict[object, object]]
+] = [
+    (
+        "schema-v2-value",
+        {"note": "2026-07-14.posterior-overlay.v2"},
+    ),
+    (
+        "schema-v1-value",
+        {"note": "2026-04-26.posterior-overlay.v1"},
+    ),
+    (
+        "standalone-report-only",
+        {"Report-Only": True},
+    ),
+    (
+        "marker-string",
+        {"note": "Calibrated Posterior Overlay"},
+    ),
+    (
+        "schema-marker-string",
+        {"note": "Posterior-Overlay-Schema.Version"},
+    ),
+    (
+        "mode-list-pair",
+        {"pairs": [["Overlay Mode", "SHADOW"]]},
+    ),
+    (
+        "source-list-pair",
+        {"pairs": [["Source-Type", "Posterior Overlay"]]},
+    ),
+    (
+        "non-string-key",
+        {("Overlay", "Mode"): "Shadow"},
+    ),
+    (
+        "case-separated-key",
+        {"SOURCE.TYPE": "POSTERIOR-OVERLAY"},
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "location",
+    ["candidate", "plan", "input_metadata", "config_metadata"],
+)
+@pytest.mark.parametrize(
+    ("marker_name", "metadata"),
+    _FINAL_NORMALIZED_PROVENANCE_CASES,
+    ids=[case[0] for case in _FINAL_NORMALIZED_PROVENANCE_CASES],
+)
+def test_final_recursive_detector_rejects_normalized_overlay_markers(
+    location: str,
+    marker_name: str,
+    metadata: dict[object, object],
+) -> None:
+    if location == "candidate":
+        candidate = _candidate("MARKED", metadata=metadata)
+        with pytest.raises(ValueError, match="overlay"):
+            optimize_portfolio([candidate])
+    elif location == "plan":
+        payload = _plan().to_dict()
+        payload["metadata"] = metadata
+        with pytest.raises(ValueError, match="overlay"):
+            build_portfolio_constructor_patch(
+                OptimizedPortfolioPlan.from_dict(payload)
+            )
+    elif location == "input_metadata":
+        with pytest.raises(ValueError, match="overlay"):
+            optimize_portfolio(
+                [_candidate("MARKED")],
+                metadata=metadata,  # type: ignore[arg-type]
+            )
+    else:
+        config = PortfolioOptimizerConfig(
+            metadata=metadata,  # type: ignore[arg-type]
+        )
+        with pytest.raises(ValueError, match="overlay"):
+            optimize_portfolio([_candidate("MARKED")], config=config)
+
+
+@pytest.mark.parametrize(
+    "location",
+    ["candidate", "plan", "input_metadata", "config_metadata"],
+)
+def test_final_recursive_detector_preserves_normalized_ordinary_metadata(
+    location: str,
+) -> None:
+    metadata = {
+        "Report-Only": False,
+        "Source.Type": "Posterior",
+        "Overlay Mode": "OFF",
+        "note": "posterior calibration observation",
+    }
+    if location == "candidate":
+        plan = optimize_portfolio([_candidate("NORMAL", metadata=metadata)])
+        assert plan.target_weights
+    elif location == "plan":
+        payload = _plan().to_dict()
+        payload["metadata"] = metadata
+        patch = build_portfolio_constructor_patch(
+            OptimizedPortfolioPlan.from_dict(payload)
+        )
+        assert patch["target_weights"]
+    elif location == "input_metadata":
+        plan = optimize_portfolio(
+            [_candidate("NORMAL")],
+            metadata=metadata,
+        )
+        assert plan.target_weights
+    else:
+        plan = optimize_portfolio(
+            [_candidate("NORMAL")],
+            config=PortfolioOptimizerConfig(metadata=metadata),
+        )
+        assert plan.target_weights
+
+
+@pytest.mark.parametrize("artifact", ["candidate", "plan"])
+@pytest.mark.parametrize("attack", ["unknown", "missing"])
+def test_current_v2_from_dict_requires_exact_top_level_fields(
+    artifact: str,
+    attack: str,
+) -> None:
+    if artifact == "candidate":
+        payload = _candidate("CURRENT").to_dict()
+        parser = OptimizationCandidate.from_dict
+        missing_field = "symbol"
+    else:
+        payload = _plan().to_dict()
+        parser = OptimizedPortfolioPlan.from_dict
+        missing_field = "plan_id"
+    if attack == "unknown":
+        payload.update(
+            {
+                "overlay_mode": "shadow",
+                "report_only": True,
+                "production_eligible": False,
+                "production_weight": 0.0,
+            }
+        )
+    else:
+        payload.pop(missing_field)
+
+    with pytest.raises(ValueError, match="fields"):
+        parser(payload)
+
+
+class EqualCurrent:
+    def __str__(self) -> str:
+        return PORTFOLIO_OPTIMIZER_SCHEMA_VERSION
+
+    def __eq__(self, other: object) -> bool:
+        return other == PORTFOLIO_OPTIMIZER_SCHEMA_VERSION
+
+    def __ne__(self, other: object) -> bool:
+        return not self == other
+
+
+@pytest.mark.parametrize("artifact", ["candidate", "plan"])
+def test_from_dict_rejects_non_exact_string_schema(artifact: str) -> None:
+    payload = (
+        _candidate("CURRENT").to_dict()
+        if artifact == "candidate"
+        else _plan().to_dict()
+    )
+    payload["schema_version"] = EqualCurrent()
+    parser = (
+        OptimizationCandidate.from_dict
+        if artifact == "candidate"
+        else OptimizedPortfolioPlan.from_dict
+    )
+
+    with pytest.raises(TypeError, match="schema"):
+        parser(payload)
+
+
+@pytest.mark.parametrize("artifact", ["candidate", "plan"])
+def test_execution_guards_reject_equal_current_objects(artifact: str) -> None:
+    if artifact == "candidate":
+        candidate = _candidate("CURRENT", schema_version=EqualCurrent())
+        with pytest.raises(ValueError, match="schema"):
+            optimize_portfolio([candidate])
+    else:
+        plan = _plan()
+        plan.schema_version = EqualCurrent()  # type: ignore[assignment]
+        with pytest.raises(ValueError, match="schema"):
+            build_portfolio_constructor_patch(plan)
+
+
+@pytest.mark.parametrize("artifact", ["candidate", "plan"])
+def test_legacy_payload_remains_observable_but_not_executable(
+    artifact: str,
+) -> None:
+    if artifact == "candidate":
+        observed = OptimizationCandidate.from_dict(
+            {
+                "schema_version": "2026-04-26.portfolio-optimizer.v1",
+                "symbol": "OBSERVED",
+                "unknown_control": {"report_only": False},
+            }
+        )
+        assert observed.symbol == "OBSERVED"
+        with pytest.raises(ValueError, match="schema"):
+            optimize_portfolio([observed])
+    else:
+        observed = OptimizedPortfolioPlan.from_dict(
+            {
+                "schema_version": "legacy-plan.observation.v1",
+                "plan_id": "observed-plan",
+                "unknown_control": {"report_only": False},
+            }
+        )
+        assert observed.plan_id == "observed-plan"
+        with pytest.raises(ValueError, match="schema"):
+            build_portfolio_constructor_patch(observed)
