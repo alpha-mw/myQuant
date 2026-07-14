@@ -303,11 +303,11 @@ def test_versioned_contracts_are_content_addressed_and_slot_scoped(tmp_path) -> 
     assert plan.protocol_hash == protocol_hash()
     assert len(protocol_hash()) == 64
     assert protocol_policy()["mutation"]["rollback_refunds_monthly_budget"] is False
-    producer_control = protocol_policy()["canonical_replay_producer_control"]
-    assert producer_control["production_apply_eligible"] is False
-    assert producer_control["blocker"] == (
-        CANONICAL_FULL_CHAIN_PRODUCER_BLOCKER
-    )
+    policy = protocol_policy()
+    producer_contract = policy["canonical_replay_producer_contract"]
+    assert producer_contract["authority"]["producer_implemented"] is True
+    assert producer_contract["authority"]["production_apply_eligible"] is False
+    assert "canonical_replay_producer_control" not in policy
     assert plan.evidence_hash == evidence["evidence_hash"]
     assert plan.to_dict()["mutation_plan_hash"] == plan.mutation_plan_hash
     assert plan.expected_registry_sha256 == (
@@ -772,8 +772,10 @@ def _runtime_ready_registry(monkeypatch) -> MinedFactorRegistry:
         protocol_module,
         "canonical_replay_producer_control",
         lambda: {
-            "producer_available": True,
-            "artifact_bytes_readback_bound": True,
+            "producer_implemented": True,
+            "local_bytes_readback_verified": True,
+            "canonical_producer_authenticated": True,
+            "production_apply_authorized": True,
             "production_apply_eligible": True,
             "blocker": "",
         },
@@ -900,5 +902,5 @@ def test_current_baseline_registry_is_not_v2_runtime_ready() -> None:
 
     assert status["status"] == "governance_blocked"
     assert status["confidence_multiplier"] == 0.0
-    assert "canonical_full_chain_replay_producer_unavailable" in status["blockers"]
+    assert CANONICAL_FULL_CHAIN_PRODUCER_BLOCKER in status["blockers"]
     assert "registry_protocol_hash_mismatch" in status["blockers"]

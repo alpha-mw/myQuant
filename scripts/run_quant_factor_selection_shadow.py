@@ -35,6 +35,9 @@ from quant_investor.factors.governance import (  # noqa: E402
     FactorLifecycleState,
     FactorRecord,
 )
+from quant_investor.factors.governance_protocol_v2 import (  # noqa: E402
+    FORWARD_PRODUCTION_APPLY_BLOCKER,
+)
 from quant_investor.factors.historical_shadow import (  # noqa: E402
     load_historical_shadow_baseline,
 )
@@ -1597,9 +1600,7 @@ def run_shadow(args: argparse.Namespace) -> tuple[dict[str, Any], Path]:
             ],
             "complete_production_screening_effect_claimed": False,
             "full_v13_dag_evidence_claimed": False,
-            "full_v13_dag_blocker": (
-                "canonical_full_chain_replay_producer_unavailable"
-            ),
+            "full_v13_dag_blocker": FORWARD_PRODUCTION_APPLY_BLOCKER,
         },
         "scope_limitations": [
             {

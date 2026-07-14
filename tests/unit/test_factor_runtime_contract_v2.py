@@ -1549,6 +1549,10 @@ def test_downstream_readiness_revalidates_real_strict_fixture(
         protocol_module,
         "canonical_replay_producer_control",
         lambda: {
+            "producer_implemented": True,
+            "local_bytes_readback_verified": True,
+            "canonical_producer_authenticated": True,
+            "production_apply_authorized": True,
             "producer_available": True,
             "artifact_bytes_readback_bound": True,
             "production_apply_eligible": True,

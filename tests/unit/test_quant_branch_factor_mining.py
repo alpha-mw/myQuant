@@ -21,9 +21,6 @@ from quant_investor.factors.governance import (
 from quant_investor.factors.governance_protocol_v2 import (
     CANONICAL_FULL_CHAIN_PRODUCER_BLOCKER,
 )
-from quant_investor.factors.registry_store import (
-    FactorRegistryMalformedError,
-)
 from quant_investor.factors.runtime import MinedFactorRegistry
 from scripts.mine_quant_branch_factors import (
     DEFAULT_DIVERSITY_POLICY,
@@ -837,22 +834,23 @@ def test_mining_attaches_family_scoped_bh_fdr_evidence_before_qualification():
     assert first["metrics"]["family_test_count"] == 2
 
 
-def test_registry_write_fails_closed_for_malformed_registry(tmp_path):
+def test_registry_write_blocks_before_reading_malformed_registry(tmp_path):
     registry_path = tmp_path / "mined_factors.json"
     registry_path.write_text("{bad\n", encoding="utf-8")
 
-    with pytest.raises(FactorRegistryMalformedError):
-        apply_production_candidate_registry_updates(
-            registry_path=registry_path,
-            qualified_results=[_qualified_result()],
-            run_timestamp="2026-06-07T04:30:00",
-            run_id="daily_factor_mining_malformed_fixture",
-            report_path="reports/factor_governance/daily_mining/fixture.json",
-            owner="test owner",
-            journal_path=tmp_path / "reports" / "registry_mutation.json",
-            write=True,
-        )
+    manifest = apply_production_candidate_registry_updates(
+        registry_path=registry_path,
+        qualified_results=[_qualified_result()],
+        run_timestamp="2026-06-07T04:30:00",
+        run_id="daily_factor_mining_malformed_fixture",
+        report_path="reports/factor_governance/daily_mining/fixture.json",
+        owner="test owner",
+        journal_path=tmp_path / "reports" / "registry_mutation.json",
+        write=True,
+    )
 
+    assert manifest["status"] == "blocked"
+    assert manifest["fail_closed_reason"] == CANONICAL_FULL_CHAIN_PRODUCER_BLOCKER
     assert registry_path.read_text(encoding="utf-8") == "{bad\n"
 
 
@@ -885,15 +883,9 @@ def test_direct_candidate_registry_writer_is_retired_and_never_mutates(
     assert not wal_path.exists()
     if write:
         assert manifest["fail_closed_reason"] == (
-            "direct_candidate_registry_write_retired_use_"
-            "factor_governance_protocol_v2"
+            CANONICAL_FULL_CHAIN_PRODUCER_BLOCKER
         )
-        assert manifest["skipped_factors"] == [
-            {
-                "name": "daily_fixture_factor",
-                "reason": "direct_candidate_registry_write_retired",
-            }
-        ]
+        assert manifest["skipped_factors"] == []
 
 
 def test_retired_direct_candidate_write_cli_flag_exits_nonzero(monkeypatch):
@@ -1012,7 +1004,7 @@ def test_production_family_governance_fails_closed_without_champion(tmp_path):
 
     assert manifest["status"] == "blocked"
     assert manifest["fail_closed_reason"] == (
-        "bulk_family_reconciliation_retired_use_factor_governance_protocol_v2"
+        CANONICAL_FULL_CHAIN_PRODUCER_BLOCKER
     )
     assert registry_path.read_bytes() == before
 
@@ -1146,22 +1138,22 @@ def test_weekly_strict_mode_fails_when_market_evidence_is_blocked(
     assert registry_path.read_bytes() == before
 
 
-def test_weekly_wrapper_apply_requires_protocol_hash_and_canonical_evidence(tmp_path):
+def test_weekly_wrapper_apply_request_bypasses_obsolete_semantic_validation(tmp_path):
     expected_hash = daily.protocol_hash()
-    with pytest.raises(SystemExit):
-        daily.parse_args(["--apply-governed-transitions"])
-    with pytest.raises(SystemExit):
-        daily.parse_args(
-            [
-                "--apply-governed-transitions",
-                "--protocol-version",
-                "v2",
-                "--expected-protocol-hash",
-                "wrong",
-                "--governed-evidence-json",
-                str(tmp_path / "plan.json"),
-            ]
-        )
+    assert daily.parse_args(
+        ["--apply-governed-transitions"]
+    ).apply_governed_transitions is True
+    assert daily.parse_args(
+        [
+            "--apply-governed-transitions",
+            "--protocol-version",
+            "v2",
+            "--expected-protocol-hash",
+            "wrong",
+            "--governed-evidence-json",
+            str(tmp_path / "plan.json"),
+        ]
+    ).apply_governed_transitions is True
     args = daily.parse_args(
         [
             "--apply-governed-transitions",
@@ -1176,7 +1168,7 @@ def test_weekly_wrapper_apply_requires_protocol_hash_and_canonical_evidence(tmp_
     assert args.apply_governed_transitions is True
 
 
-def test_weekly_wrapper_routes_normalized_evidence_to_blocked_apply_path(
+def test_weekly_wrapper_blocks_before_normalizing_or_routing_apply_evidence(
     monkeypatch,
     tmp_path,
 ):
@@ -1275,25 +1267,14 @@ def test_weekly_wrapper_routes_normalized_evidence_to_blocked_apply_path(
 
     payload = daily.run_daily_automation(args)
 
-    assert calls == {
-        "path": str(registry_path),
-        "plan": sentinel_plan,
-        "expected_protocol_hash": daily.protocol_hash(),
-        "valid_trading_days": ["2026-07-31"],
-        "write": True,
-    }
+    assert calls == {}
     assert payload["factor_protocol"]["status"] == "blocked"
     assert payload["factor_protocol"]["transition_applied"] is False
-    assert payload["factor_protocol"]["inverse_wal_path"] == ""
+    assert payload["summary_report_path"] == ""
+    assert payload["registry_write"] is False
     assert CANONICAL_FULL_CHAIN_PRODUCER_BLOCKER in payload[
         "factor_protocol"
     ]["blockers"]
-    mining_summary = json.loads(
-        (Path(payload["mining_output_dir"]) / "quant_branch_factor_mining_results.json")
-        .read_text(encoding="utf-8")
-    )
-    assert mining_summary["registry_write"] is False
-    assert mining_summary["factor_protocol"] == payload["factor_protocol"]
 
 
 def test_weekly_wrapper_apply_requested_but_protocol_blocked_exits_nonzero(

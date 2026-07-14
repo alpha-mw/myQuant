@@ -63,10 +63,14 @@ BOOTSTRAP_MIN_SAMPLES = 60
 BOOTSTRAP_BLOCK_LENGTH = 5
 BOOTSTRAP_RESAMPLES = 2000
 BOOTSTRAP_SEED = 1729
+FORWARD_PRODUCTION_APPLY_ENABLED = False
+FORWARD_PRODUCTION_APPLY_BLOCKER = "forward_factor_apply_not_authorized_pr4"
+
+# Backward-compatible names remain importable for older report readers.  The
+# legacy availability flag continues to mean an authenticated, apply-capable
+# canonical producer, not merely the PR4 local-byte implementation.
 CANONICAL_FULL_CHAIN_PRODUCER_AVAILABLE = False
-CANONICAL_FULL_CHAIN_PRODUCER_BLOCKER = (
-    "canonical_full_chain_replay_producer_unavailable"
-)
+CANONICAL_FULL_CHAIN_PRODUCER_BLOCKER = FORWARD_PRODUCTION_APPLY_BLOCKER
 
 
 def _canonical_json(value: Any) -> bytes:
@@ -115,20 +119,36 @@ def _date(value: Any, label: str) -> date:
         raise ValueError(f"{label} must be ISO YYYY-MM-DD") from exc
 
 
-def canonical_replay_producer_control() -> dict[str, Any]:
-    """Describe the hard production boundary for canonical replay evidence.
+def canonical_replay_producer_contract() -> dict[str, Any]:
+    """Return the immutable producer contract bound into the protocol hash."""
 
-    The current JSON normalizer can make evidence deterministic and
-    content-addressed, but it cannot prove that caller-supplied artifact hashes
-    were read back from actual v13 DAG outputs.  Forward production mutation
-    therefore remains unavailable until that readback-bound producer exists.
+    from quant_investor.factors.governance_canonical_replay import (
+        canonical_replay_producer_contract as producer_contract,
+    )
+
+    return producer_contract()
+
+
+def canonical_replay_producer_control() -> dict[str, Any]:
+    """Describe runtime evidence state without changing the protocol hash.
+
+    The local producer exists, but no invocation has been supplied to this
+    protocol-level status function and PR4 grants neither producer identity nor
+    forward-apply authorization.  Local byte readback alone would still be
+    insufficient to authorize a production registry mutation.
     """
 
     return {
+        "producer_implemented": True,
+        "local_bytes_readback_verified": False,
+        "canonical_producer_authenticated": False,
+        "production_apply_authorized": False,
+        "production_apply_eligible": False,
+        "blocker": FORWARD_PRODUCTION_APPLY_BLOCKER,
+        # Compatibility aliases for older report consumers.  This dynamic
+        # payload is deliberately excluded from ``protocol_policy``.
         "producer_available": CANONICAL_FULL_CHAIN_PRODUCER_AVAILABLE,
         "artifact_bytes_readback_bound": False,
-        "production_apply_eligible": False,
-        "blocker": CANONICAL_FULL_CHAIN_PRODUCER_BLOCKER,
     }
 
 
@@ -190,9 +210,13 @@ def protocol_policy() -> dict[str, Any]:
                 "seed": BOOTSTRAP_SEED,
             },
         },
-        "canonical_replay_producer_control": (
-            canonical_replay_producer_control()
+        "canonical_replay_producer_contract": (
+            canonical_replay_producer_contract()
         ),
+        "forward_production_apply": {
+            "enabled": FORWARD_PRODUCTION_APPLY_ENABLED,
+            "blocker": FORWARD_PRODUCTION_APPLY_BLOCKER,
+        },
         "mutation": {
             "last_valid_trading_day_only": True,
             "max_targeted_swaps_per_month": 1,
@@ -605,12 +629,14 @@ def assess_candidate_maturity(
             month_ends.append(value)
 
     valid: list[tuple[date, date, str]] = []
-    for raw in forward_cohorts:
+    for raw_cohort in forward_cohorts:
         try:
-            start = _date(raw.get("start"), "forward_cohort.start")
-            end = _date(raw.get("end"), "forward_cohort.end")
-            horizon = int(raw.get("horizon_days", 0) or 0)
-            cohort_id = _nonempty(raw.get("cohort_id"), "forward_cohort.cohort_id")
+            start = _date(raw_cohort.get("start"), "forward_cohort.start")
+            end = _date(raw_cohort.get("end"), "forward_cohort.end")
+            horizon = int(raw_cohort.get("horizon_days", 0) or 0)
+            cohort_id = _nonempty(
+                raw_cohort.get("cohort_id"), "forward_cohort.cohort_id"
+            )
         except (TypeError, ValueError):
             continue
         if horizon != 30 or end <= start:
@@ -1333,11 +1359,16 @@ def governance_runtime_status(registry: MinedFactorRegistry) -> dict[str, Any]:
             blockers.append(f"family_abs_weight_above_0.35:{family}")
 
     producer_control = canonical_replay_producer_control()
-    if not producer_control.get("producer_available"):
+    if not producer_control.get("producer_implemented"):
         blockers.append(str(producer_control["blocker"]))
-    if not producer_control.get("artifact_bytes_readback_bound"):
+    if not producer_control.get("local_bytes_readback_verified"):
         blockers.append("canonical_evidence_not_readback_bound")
+    if not producer_control.get("canonical_producer_authenticated"):
+        blockers.append("canonical_producer_not_authenticated")
+    if not producer_control.get("production_apply_authorized"):
+        blockers.append("canonical_production_apply_not_authorized")
     if not producer_control.get("production_apply_eligible"):
+        blockers.append(str(producer_control["blocker"]))
         blockers.append("canonical_evidence_not_production_eligible")
     last_evidence_hash = str(
         metadata.get("factor_governance_last_evidence_hash") or ""
@@ -1631,12 +1662,34 @@ def apply_governed_transition(
 ) -> dict[str, Any]:
     """Validate and optionally apply one month-end one-for-one slot swap."""
 
+    if write:
+        return {
+            "schema_version": PROTOCOL_SCHEMA_VERSION,
+            "protocol_version": PROTOCOL_VERSION,
+            "protocol_hash": PROTOCOL_HASH,
+            "status": "blocked",
+            "apply_requested": True,
+            "blockers": [FORWARD_PRODUCTION_APPLY_BLOCKER],
+            "before_registry_sha256": "",
+            "after_registry_sha256": "",
+            "inverse_wal_path": "",
+            "mutation_budget_ledger_path": "",
+            "changed_record_names": [],
+            "registry_mutation_manifest": None,
+            "canonical_replay_producer_control": {
+                "producer_implemented": True,
+                "local_bytes_readback_verified": False,
+                "canonical_producer_authenticated": False,
+                "production_apply_authorized": False,
+                "production_apply_eligible": False,
+                "blocker": FORWARD_PRODUCTION_APPLY_BLOCKER,
+            },
+        }
+
     path = Path(registry_path).expanduser()
     snapshot = load_registry_snapshot_strict(path)
     blockers: list[str] = []
     producer_control = canonical_replay_producer_control()
-    if write and not producer_control["production_apply_eligible"]:
-        blockers.append(str(producer_control["blocker"]))
     if expected_protocol_hash != protocol_hash():
         blockers.append("expected_protocol_hash_mismatch")
     if plan.protocol_hash != protocol_hash():
@@ -2016,6 +2069,8 @@ def apply_governed_transition(
 __all__ = [
     "CANONICAL_FULL_CHAIN_PRODUCER_AVAILABLE",
     "CANONICAL_FULL_CHAIN_PRODUCER_BLOCKER",
+    "FORWARD_PRODUCTION_APPLY_BLOCKER",
+    "FORWARD_PRODUCTION_APPLY_ENABLED",
     "PROTOCOL_VERSION",
     "PROTOCOL_HASH",
     "PROTOCOL_SCHEMA_VERSION",
@@ -2029,6 +2084,7 @@ __all__ = [
     "benjamini_hochberg_by_family",
     "block_bootstrap_paired_delta_ci",
     "build_slot_risk_budget",
+    "canonical_replay_producer_contract",
     "canonical_replay_producer_control",
     "control_chain_evidence_hash",
     "evaluate_c_arm",

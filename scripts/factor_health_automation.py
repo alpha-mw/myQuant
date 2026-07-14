@@ -42,6 +42,9 @@ from quant_investor.factors.health import (  # noqa: E402
 from quant_investor.factors.registry_store import (  # noqa: E402
     load_registry_snapshot_strict,
 )
+from quant_investor.factors.governance_protocol_v2 import (  # noqa: E402
+    FORWARD_PRODUCTION_APPLY_BLOCKER,
+)
 from quant_investor.factors.runtime import MinedFactorRegistry  # noqa: E402
 
 
@@ -109,6 +112,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--max-new-production", type=int, default=0)
     args = parser.parse_args(argv)
+    if args.apply_registry_actions:
+        return args
     if args.strict_fresh_evaluation and not args.fresh_evaluation:
         parser.error("--strict-fresh-evaluation requires --fresh-evaluation")
     if args.apply_registry_actions and not (
@@ -146,6 +151,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.apply_registry_actions:
+        print(FORWARD_PRODUCTION_APPLY_BLOCKER, file=sys.stderr)
+        return 2
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

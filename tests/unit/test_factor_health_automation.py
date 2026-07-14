@@ -311,12 +311,14 @@ def test_parquet_fresh_context_blocks_partial_symbol_readback(
     )
 
 
-def test_strict_fresh_requires_fresh_and_apply_requires_both_flags():
+def test_strict_fresh_requires_fresh_and_apply_bypasses_old_semantic_checks():
     with pytest.raises(SystemExit, match="2"):
         factor_health_automation.parse_args(["--strict-fresh-evaluation"])
 
-    with pytest.raises(SystemExit, match="2"):
-        factor_health_automation.parse_args(["--apply-registry-actions"])
+    apply_args = factor_health_automation.parse_args(
+        ["--apply-registry-actions"]
+    )
+    assert apply_args.apply_registry_actions is True
 
     args = factor_health_automation.parse_args(
         [
@@ -396,7 +398,6 @@ def test_strict_fresh_incomplete_batch_blocks_without_registry_fallback(
             str(output_dir),
             "--fresh-evaluation",
             "--strict-fresh-evaluation",
-            "--apply-registry-actions",
         ]
     )
 
@@ -406,10 +407,8 @@ def test_strict_fresh_incomplete_batch_blocks_without_registry_fallback(
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["run_status"] == "blocked"
     assert payload["registry_actions_applied"] is False
-    assert payload["registry_update_status"] == "retired_protocol_v2_required"
-    assert payload["registry_blockers"] == [
-        "legacy_apply_registry_actions_retired_use_factor_governance_protocol_v2"
-    ]
+    assert payload["registry_update_status"] == "not_requested"
+    assert payload["registry_blockers"] == []
     assert payload["fresh_evaluation"]["atomic_success"] is False
     assert payload["fresh_evaluation"]["missing_factors"] == [record.name]
     assert payload["fresh_evaluation"]["data_blocked_factors"] == [record.name]
@@ -666,10 +665,9 @@ def test_alternating_failure_windows_are_counted_only_once(
                 str(output_dir),
                 "--fresh-evaluation",
                 "--strict-fresh-evaluation",
-                "--apply-registry-actions",
             ]
         )
-        assert exit_code == 2
+        assert exit_code == 0
         payload = json.loads(
             next(output_dir.glob("factor_health_*.json")).read_text(
                 encoding="utf-8"
@@ -751,7 +749,6 @@ def test_old_healthy_evidence_cannot_reset_newer_failure_streak(
             str(output_dir),
             "--fresh-evaluation",
             "--strict-fresh-evaluation",
-            "--apply-registry-actions",
         ]
     )
 
@@ -824,7 +821,6 @@ def test_strict_fresh_incomplete_gate_set_blocks_registry_write(
             str(output_dir),
             "--fresh-evaluation",
             "--strict-fresh-evaluation",
-            "--apply-registry-actions",
         ]
     )
 
@@ -835,7 +831,7 @@ def test_strict_fresh_incomplete_gate_set_blocks_registry_write(
             encoding="utf-8"
         )
     )
-    assert payload["registry_update_status"] == "retired_protocol_v2_required"
+    assert payload["registry_update_status"] == "not_requested"
     assert any(
         "gate_ids_expected_1_to_8" in blocker
         for blocker in payload["fresh_evaluation"]["blockers"]
@@ -890,7 +886,7 @@ def test_leave_one_out_composite_removes_candidate_self_inclusion():
     pd.testing.assert_frame_equal(leave_one_out, expected)
 
 
-def test_retired_health_apply_flag_is_report_only_and_never_writes_manifest(
+def test_retired_health_apply_flag_blocks_before_report_or_manifest_write(
     monkeypatch,
     tmp_path,
 ):
@@ -943,13 +939,7 @@ def test_retired_health_apply_flag_is_report_only_and_never_writes_manifest(
     )
 
     assert exit_code == 2
-    report = next(output_dir.glob("factor_health_*.json"))
-    payload = json.loads(report.read_text(encoding="utf-8"))
-    assert payload["registry_actions_applied"] is False
-    assert payload["registry_actions_eligible"] is False
-    assert payload["registry_update_status"] == "retired_protocol_v2_required"
-    assert payload["registry_mutation_manifest"] is None
-    assert payload["registry_mutation_manifest_path"] == ""
+    assert not output_dir.exists()
     written = json.loads(registry_path.read_text(encoding="utf-8"))
     assert written == before
 
@@ -1012,13 +1002,7 @@ def test_retired_health_apply_never_reaches_legacy_cas_writer(
 
     assert exit_code == 2
     assert registry_path.read_text(encoding="utf-8") == before_text
-    report = next(output_dir.glob("factor_health_*.json"))
-    payload = json.loads(report.read_text(encoding="utf-8"))
-    assert payload["registry_actions_applied"] is False
-    assert payload["registry_update_status"] == "retired_protocol_v2_required"
-    assert payload["registry_blockers"] == [
-        "legacy_apply_registry_actions_retired_use_factor_governance_protocol_v2"
-    ]
+    assert not output_dir.exists()
 
 
 def test_strict_runtime_smoke_failure_blocks_apply_and_report_only(
@@ -1078,11 +1062,24 @@ def test_strict_runtime_smoke_failure_blocks_apply_and_report_only(
 
     assert apply_exit == 2
     assert registry_path.read_text(encoding="utf-8") == before_text
-    apply_report = next(apply_output.glob("factor_health_*.json"))
-    payload = json.loads(apply_report.read_text(encoding="utf-8"))
-    assert payload["registry_actions_applied"] is False
-    assert payload["registry_actions_eligible"] is False
-    assert payload["registry_update_status"] == "retired_protocol_v2_required"
+    assert not apply_output.exists()
+
+    report_output = tmp_path / "report_only"
+    report_exit = factor_health_automation.main(
+        [
+            "--registry-path",
+            str(registry_path),
+            "--output-dir",
+            str(report_output),
+            "--fresh-evaluation",
+            "--strict-fresh-evaluation",
+        ]
+    )
+    assert report_exit == 2
+    assert registry_path.read_text(encoding="utf-8") == before_text
+    report = next(report_output.glob("factor_health_*.json"))
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["registry_update_status"] == "not_requested"
     assert payload["run_status"] == "blocked"
     assert "runtime_smoke_snapshot_unhealthy" in payload[
         "runtime_smoke_blockers"
@@ -1098,20 +1095,6 @@ def test_strict_runtime_smoke_failure_blocks_apply_and_report_only(
         item.startswith("runtime_smoke_error:")
         for item in payload["runtime_smoke_blockers"]
     )
-
-    report_output = tmp_path / "report_only"
-    report_exit = factor_health_automation.main(
-        [
-            "--registry-path",
-            str(registry_path),
-            "--output-dir",
-            str(report_output),
-            "--fresh-evaluation",
-            "--strict-fresh-evaluation",
-        ]
-    )
-    assert report_exit == 2
-    assert registry_path.read_text(encoding="utf-8") == before_text
 
 
 def _write_parquet_fixture(root: Path) -> None:

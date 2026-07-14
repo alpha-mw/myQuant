@@ -11,8 +11,9 @@ merge.
 - Keep `THEME_V2_FORMAL_ENABLED=0` and
   `THEME_V2_FORMAL_KILL_SWITCH=1`, and keep
   `THEME_FORMAL_RECONCILIATION_PERSIST_ENABLED=0` until the joint gate is ready.
-- Factor mining and health are report-only unless all governed apply arguments
-  and canonical replay evidence are present.
+- Factor mining and health are report-only. PR4 forward apply is statically
+  disabled even when governed arguments and local canonical replay evidence are
+  present.
 - Keep private snapshots, Theme membership/evidence/theses, replay evidence,
   threshold seals, WALs, and mutation ledgers under ignored `private/` or
   `results/` paths.
@@ -190,10 +191,12 @@ registry. Omitting the manifest or changing any record/hash/count blocks the
 run. This shadow is Quant-rank measurement only, has confidence zero, and is
 not the missing canonical full-DAG producer.
 
-The current Factor replay command is a report-only JSON normalizer. It
-recomputes arm-return diagnostics from caller-supplied arrays, but it does not
-read back actual DAG artifact bytes. Its output therefore carries
-`production_apply_eligible=false` and cannot authorize a registry mutation.
+The legacy Factor replay command is a report-only JSON normalizer. The PR4
+canonical local producer separately binds exact artifact bytes and verifies
+private immutable receipt/bundle readback. A successful local byte readback is
+an integrity result only: it does not authenticate a canonical producer and it
+does not authorize production apply. Both paths therefore remain
+`production_apply_eligible=false`.
 
 ```bash
 PYTHONPATH="$PWD" python scripts/build_factor_governance_replay_evidence.py \
@@ -201,12 +204,53 @@ PYTHONPATH="$PWD" python scripts/build_factor_governance_replay_evidence.py \
   --output-json private/factor/governance_evidence.json
 ```
 
+For PR4 local byte readback, first create an owner-only `0700` private root.
+Supply one exact draft graph to publish its immutable bundle and registry-SHA
+receipt; omit `--draft-path` to verify only the exact current receipt. Neither
+form grants production authority:
+
+```bash
+PYTHONPATH="$PWD" python scripts/build_factor_governance_canonical_replay.py \
+  --private-root "$PWD/private/factor/canonical_replay" \
+  --registry-path "$PWD/quant_investor/factor_registry/mined_factors.json" \
+  --draft-path "$PWD/private/factor/canonical_replay_draft.json"
+
+PYTHONPATH="$PWD" python scripts/build_factor_governance_canonical_replay.py \
+  --private-root "$PWD/private/factor/canonical_replay" \
+  --registry-path "$PWD/quant_investor/factor_registry/mined_factors.json"
+```
+
+Every `path` field inside the draft and every referenced manifest must likewise
+be a normalized absolute path. Relative paths fail closed and are never
+resolved from the current working directory.
+
+This replay schema has one PIT membership snapshot, therefore `as_of` must
+equal `window_end`; do not use a later review-date PIT set for an earlier
+window. The existing private root must be `0700`. Before any named publish path
+is created, unique file/directory probes must prove that the active umask
+preserves exact `0600`/`0700` modes. A failed probe creates no `bundles/`,
+`receipts/`, lock, temp, or final path; any random probe orphan from a crash is
+unselected and must not be scanned.
+
+The publisher serializes each exact destination with a persistent owner-only
+lock file and uses a deterministic destination/content-hash temp name. This is
+what makes a prepared temp and a post-link `nlink=2` crash state recoverable
+without directory discovery. After an ambiguous failure, rerun only the exact
+same draft or run the no-`--draft-path` exact receipt verification shown above.
+Do not scan, glob, choose `latest`, or manually remove/replace a final bundle or
+receipt. The failed call may already be a correct exact commit, or it may have
+left a correct orphan in a renamed directory; exact verification is the only
+supported reconciliation and still does not authorize production apply.
+Receipt and bundle finals must remain exact compact, sorted canonical JSON with
+one trailing newline; never reformat and rebind their hashes.
+
 Forward apply is hard-blocked with
-`canonical_full_chain_replay_producer_unavailable` until a real readback-bound
-DAG producer is implemented. The command below is an adversarial/fail-closed
-check only: it must exit non-zero without creating a WAL, reserving the monthly
-budget, or changing the registry. A rollback of an already-existing valid
-inverse WAL remains available and never refunds that month's budget.
+`forward_factor_apply_not_authorized_pr4`. The command below is an
+adversarial/fail-closed check only: it must exit non-zero immediately after
+argument parsing, before semantic validation, evidence/mining/report I/O, path
+conversion, registry reads, WAL creation, or monthly-budget reservation. A
+rollback of an already-existing valid inverse WAL remains available and never
+refunds that month's budget.
 
 ```bash
 PYTHONPATH="$PWD" python scripts/daily_factor_mining_automation.py \
@@ -218,10 +262,11 @@ PYTHONPATH="$PWD" python scripts/daily_factor_mining_automation.py \
   --mutation-budget-ledger private/factor/monthly_mutation_ledger.jsonl
 ```
 
-Any protocol blocker must return non-zero. Do not edit the transition envelope,
-valid trading days, arm deltas, mutation plan, WAL, or registry by hand. Do not
-enable the producer control by configuration or environment variable; it is a
-code-level stop condition pending the readback-bound implementation.
+Any apply request must return non-zero with the fixed PR4 blocker. Do not edit
+the transition envelope, valid trading days, arm deltas, mutation plan, WAL, or
+registry by hand. Do not enable producer control by configuration, environment
+variable, or runtime monkeypatch: dynamic control is not an authorization
+surface and is excluded from the protocol hash.
 
 Rollback is dry-run by default and binds the current registry, inverse WAL,
 transition, mutation, evidence, protocol, and append-only budget ledger hashes.
@@ -325,6 +370,6 @@ Stop without enabling the affected switch if any of these remain: Dashboard P0
 or reconciliation blocker, Theme PIT/coverage/valuation/crowding/20-day shadow
 blocker, Factor transition/rollback/idempotence blocker, strict-Parquet/DAG
 replay failure, threshold/evidence/hash mismatch, or
-`canonical_full_chain_replay_producer_unavailable`,
+`forward_factor_apply_not_authorized_pr4`,
 `canonical_joint_replay_producer_not_implemented`, or a production Quant
 runtime status other than `ready` (including the current `governance_blocked`).

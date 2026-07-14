@@ -597,7 +597,7 @@ def test_applied_factor_artifact_is_blocked_without_canonical_producer(
     assert protocol["canonical_producer_available"] is False
     assert protocol["status"] == "blocked"
     assert protocol["transition_applied"] is False
-    assert "canonical_full_chain_replay_producer_unavailable" in protocol[
+    assert "forward_factor_apply_not_authorized_pr4" in protocol[
         "blockers"
     ]
 

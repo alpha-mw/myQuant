@@ -28,6 +28,8 @@ from quant_investor.factors.pit_fundamentals import (  # noqa: E402
     DEFAULT_FUNDAMENTAL_MART_ROOT,
 )
 from quant_investor.factors.governance_protocol_v2 import (  # noqa: E402
+    FORWARD_PRODUCTION_APPLY_BLOCKER,
+    PROTOCOL_HASH,
     PROTOCOL_VERSION,
     apply_governed_transition,
     canonical_replay_producer_control,
@@ -521,24 +523,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     args = parser.parse_args(argv)
     if args.apply_governed_transitions:
-        if args.no_registry_write:
-            parser.error(
-                "--apply-governed-transitions conflicts with --no-registry-write"
-            )
-        if args.protocol_version != PROTOCOL_VERSION:
-            parser.error(
-                f"--apply-governed-transitions requires --protocol-version {PROTOCOL_VERSION}"
-            )
-        if not str(args.expected_protocol_hash or "").strip():
-            parser.error(
-                "--apply-governed-transitions requires --expected-protocol-hash"
-            )
-        if args.expected_protocol_hash != protocol_hash():
-            parser.error("--expected-protocol-hash does not match the local v2 policy")
-        if not str(args.governed_evidence_json or "").strip():
-            parser.error(
-                "--apply-governed-transitions requires --governed-evidence-json"
-            )
+        return args
     elif any(
         str(value or "").strip()
         for value in (
@@ -553,7 +538,62 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return args
 
 
+def _forward_apply_blocked_payload() -> dict[str, Any]:
+    producer_control = {
+        "producer_implemented": True,
+        "local_bytes_readback_verified": False,
+        "canonical_producer_authenticated": False,
+        "production_apply_authorized": False,
+        "production_apply_eligible": False,
+        "blocker": FORWARD_PRODUCTION_APPLY_BLOCKER,
+    }
+    manifest = {
+        "schema_version": "factor-governance-protocol.v2",
+        "protocol_version": PROTOCOL_VERSION,
+        "protocol_hash": PROTOCOL_HASH,
+        "apply_requested": True,
+        "status": "blocked",
+        "blockers": [FORWARD_PRODUCTION_APPLY_BLOCKER],
+        "before_registry_sha256": "",
+        "after_registry_sha256": "",
+        "inverse_wal_path": "",
+        "mutation_budget_ledger_path": "",
+        "changed_record_names": [],
+        "registry_mutation_manifest": None,
+        "canonical_replay_producer_control": producer_control,
+    }
+    return {
+        "summary_report_path": "",
+        "success_gate_passed": False,
+        "run_mode": "governed_apply_blocked",
+        "fail_closed_reason": FORWARD_PRODUCTION_APPLY_BLOCKER,
+        "candidate_count": 0,
+        "evidence_counts": {
+            "positive_evidence_count": 0,
+            "positive_candidate_count": 0,
+            "diverse_positive_champion_count": 0,
+            "qualified_count": 0,
+        },
+        "registry_write_requested": True,
+        "registry_write": False,
+        "registry_update_manifest": manifest,
+        "production_family_governance_manifest": manifest,
+        "factor_protocol": {
+            "protocol_version": PROTOCOL_VERSION,
+            "protocol_hash": PROTOCOL_HASH,
+            "apply_requested": True,
+            "status": "blocked",
+            "transition_applied": False,
+            "blockers": [FORWARD_PRODUCTION_APPLY_BLOCKER],
+            "canonical_replay_producer_control": producer_control,
+        },
+    }
+
+
 def run_daily_automation(args: argparse.Namespace) -> dict[str, Any]:
+    if args.apply_governed_transitions:
+        return _forward_apply_blocked_payload()
+
     now = _now_shanghai()
     run_timestamp = now.isoformat(timespec="seconds")
     timestamp_slug = now.strftime("%Y%m%d_%H%M%S")
@@ -848,6 +888,9 @@ def run_daily_automation(args: argparse.Namespace) -> dict[str, Any]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.apply_governed_transitions:
+        print(FORWARD_PRODUCTION_APPLY_BLOCKER, file=sys.stderr)
+        return 2
     try:
         payload = run_daily_automation(args)
     except (OSError, ValueError) as exc:
