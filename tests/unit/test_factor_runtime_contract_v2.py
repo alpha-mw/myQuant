@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import replace
+from dataclasses import fields, replace
 import hashlib
 import json
 import pickle
@@ -23,6 +23,7 @@ from quant_investor.factors.governance import (
 from quant_investor.factors.runtime import (
     MinedFactorRegistry,
     MinedFactorScorer,
+    ProductionEvaluationContext,
     RuntimeFactorScore,
     _mint_production_evaluation_context,
     production_symbol_set_sha256,
@@ -1090,6 +1091,43 @@ def test_production_runtime_plan_allows_frame_reorder_and_rejects_value_drift(
     assert "production_runtime_plan_input_drift" in blocked.runtime_blockers
 
 
+def test_production_runtime_plan_rejects_required_frame_mutation_during_compute(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    record = _record()
+    frames = _frames()
+    scorer = MinedFactorScorer(MinedFactorRegistry.from_records([record]))
+    monkeypatch.setattr(
+        scorer,
+        "_runtime_contract",
+        lambda: ([record], _runtime_status_for([record])),
+    )
+    plan = scorer.build_production_runtime_plan(frames)
+    original = scorer._price_volume_factor
+
+    def mutate_after_compute(name, runtime_frames, **kwargs):
+        values = original(name, runtime_frames, **kwargs)
+        target = runtime_frames["S00"]
+        target.loc[target.index[-1], "amount"] += 1.0
+        return values
+
+    monkeypatch.setattr(
+        scorer,
+        "_price_volume_factor",
+        mutate_after_compute,
+    )
+
+    result = scorer.score(
+        frames,
+        evaluation_context=_evaluation_context(frames, tmp_path),
+        production_runtime_plan=plan,
+    )
+
+    assert result.governance_status == "governance_blocked"
+    assert "production_runtime_plan_input_drift" in result.runtime_blockers
+
+
 def test_production_runtime_plan_rejects_owner_replace_payload_and_registry_drift(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1251,6 +1289,66 @@ def test_production_runtime_plan_rejects_seal_frame_set_and_context_drift(
         production_runtime_plan=plan,
     )
     assert "production_runtime_plan_context_universe_drift" in context_blocked.runtime_blockers
+
+
+def test_production_runtime_plan_blocks_malformed_context_without_raising(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    record = _record()
+    frames = _frames()
+    scorer = MinedFactorScorer(MinedFactorRegistry.from_records([record]))
+    monkeypatch.setattr(
+        scorer,
+        "_runtime_contract",
+        lambda: ([record], _runtime_status_for([record])),
+    )
+    plan = scorer.build_production_runtime_plan(frames)
+
+    mapping_result = scorer.score(
+        frames,
+        evaluation_context={},  # type: ignore[arg-type]
+        production_runtime_plan=plan,
+    )
+
+    class ExplodingContext(ProductionEvaluationContext):
+        def __getattribute__(self, name: str):
+            if name == "universe_sha256":
+                raise RuntimeError("malicious context property")
+            return super().__getattribute__(name)
+
+    exploding_context = object.__new__(ExplodingContext)
+    exploding_result = scorer.score(
+        frames,
+        evaluation_context=exploding_context,
+        production_runtime_plan=plan,
+    )
+
+    class LateExplodingContext(ProductionEvaluationContext):
+        def __getattribute__(self, name: str):
+            if name == "market":
+                raise RuntimeError("malicious late context property")
+            return super().__getattribute__(name)
+
+    valid_context = _evaluation_context(frames, tmp_path)
+    late_exploding_context = LateExplodingContext(
+        **{
+            field.name: getattr(valid_context, field.name)
+            for field in fields(ProductionEvaluationContext)
+        }
+    )
+    late_exploding_result = scorer.score(
+        frames,
+        evaluation_context=late_exploding_context,
+        production_runtime_plan=plan,
+    )
+
+    assert "production_evaluation_context_type_invalid" in mapping_result.runtime_blockers
+    assert "production_evaluation_context_type_invalid" in exploding_result.runtime_blockers
+    assert (
+        "production_evaluation_context_type_invalid"
+        in late_exploding_result.runtime_blockers
+    )
 
 
 @pytest.mark.parametrize(

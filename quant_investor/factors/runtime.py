@@ -350,7 +350,7 @@ def validate_production_evaluation_context(
 
     if context is None:
         return ["production_evaluation_context_missing"]
-    if not isinstance(context, ProductionEvaluationContext):
+    if type(context) is not ProductionEvaluationContext:
         return ["production_evaluation_context_type_invalid"]
     blockers: list[str] = []
     scalar_field_names = (
@@ -368,10 +368,13 @@ def validate_production_evaluation_context(
         "open_day_proof_sha256",
         "read_result_provenance_sha256",
     )
-    scalar_fields_valid = all(
-        isinstance(getattr(context, name), str)
-        for name in scalar_field_names
-    )
+    try:
+        scalar_fields_valid = all(
+            isinstance(getattr(context, name), str)
+            for name in scalar_field_names
+        )
+    except Exception:
+        scalar_fields_valid = False
     if not scalar_fields_valid:
         blockers.append("production_evaluation_context_field_type_invalid")
         if _require_readback_seal:
@@ -470,6 +473,7 @@ def validate_production_evaluation_context(
         blockers.append("production_verified_artifact_set_invalid")
     else:
         resolved_path_owners: dict[str, str] = {}
+        resolved_file_owners: dict[tuple[int, int], str] = {}
         for name, expected_sha in artifact_hashes.items():
             try:
                 raw_path = Path(artifact_paths[name]).expanduser()
@@ -479,8 +483,13 @@ def validate_production_evaluation_context(
                 blockers.append(f"production_verified_artifact_path_invalid:{name}")
                 continue
             resolved_path = str(path)
-            if resolved_path in resolved_path_owners:
+            prior_path_owner = resolved_path_owners.get(resolved_path)
+            if prior_path_owner is not None:
                 blockers.append("production_verified_artifact_path_reused")
+                if "open_day_calendar" in {name, prior_path_owner}:
+                    blockers.append(
+                        "production_open_day_calendar_not_independent"
+                    )
             else:
                 resolved_path_owners[resolved_path] = name
             if is_symlink:
@@ -489,6 +498,23 @@ def validate_production_evaluation_context(
             if not path.is_file():
                 blockers.append(f"production_verified_artifact_missing:{name}")
                 continue
+            try:
+                file_stat = path.stat()
+            except OSError:
+                blockers.append(
+                    f"production_verified_artifact_identity_invalid:{name}"
+                )
+                continue
+            file_identity = (int(file_stat.st_dev), int(file_stat.st_ino))
+            prior_file_owner = resolved_file_owners.get(file_identity)
+            if prior_file_owner is not None:
+                blockers.append("production_verified_artifact_file_reused")
+                if "open_day_calendar" in {name, prior_file_owner}:
+                    blockers.append(
+                        "production_open_day_calendar_not_independent"
+                    )
+            else:
+                resolved_file_owners[file_identity] = name
             try:
                 current_sha = hashlib.sha256(path.read_bytes()).hexdigest()
             except OSError:
@@ -1576,24 +1602,29 @@ class MinedFactorScorer:
             canonical_frames = {}
         if tuple(canonical_frames) != plan.eligible_symbols:
             blockers.append("production_runtime_plan_frame_set_drift")
-        if (
-            evaluation_context is not None
-            and evaluation_context.universe_sha256
-            != plan.eligible_symbol_set_sha256
-        ):
-            blockers.append("production_runtime_plan_context_universe_drift")
-        recomputed_digest = ""
-        if plan.filter_applied and plan.active_factors and canonical_frames:
+        if evaluation_context is not None:
             try:
-                recomputed_digest = production_runtime_input_sha256(
-                    canonical_frames,
-                    plan.contracts,
-                )
-            except (TypeError, ValueError):
-                blockers.append("production_runtime_plan_input_drift")
-            if recomputed_digest != plan.eligible_input_sha256:
-                blockers.append("production_runtime_plan_input_drift")
-        return list(dict.fromkeys(blockers)), recomputed_digest
+                if type(evaluation_context) is not ProductionEvaluationContext:
+                    raise TypeError("production evaluation context type invalid")
+                context_universe_sha256 = evaluation_context.universe_sha256
+                if not isinstance(context_universe_sha256, str):
+                    raise TypeError("production evaluation context field invalid")
+            except Exception:
+                blockers.append("production_evaluation_context_type_invalid")
+            else:
+                if (
+                    context_universe_sha256
+                    != plan.eligible_symbol_set_sha256
+                ):
+                    blockers.append(
+                        "production_runtime_plan_context_universe_drift"
+                    )
+        expected_input_sha256 = (
+            plan.eligible_input_sha256
+            if isinstance(plan.eligible_input_sha256, str)
+            else ""
+        )
+        return list(dict.fromkeys(blockers)), expected_input_sha256
 
     def _empty_score(
         self,
@@ -1636,7 +1667,7 @@ class MinedFactorScorer:
         evaluation_context: ProductionEvaluationContext | None = None,
         production_runtime_plan: ProductionRuntimePlan | None = None,
     ) -> RuntimeFactorScore:
-        prevalidated_input_sha256: str | None = None
+        expected_plan_input_sha256: str | None = None
         eligibility_prevalidated = False
         if production_runtime_plan is not None:
             try:
@@ -1645,7 +1676,7 @@ class MinedFactorScorer:
                 canonical_frames = {}
             frames = canonical_frames
             symbols = list(canonical_frames)
-            plan_blockers, prevalidated_input_sha256 = (
+            plan_blockers, expected_plan_input_sha256 = (
                 self._validate_production_runtime_plan(
                     production_runtime_plan,
                     frames,
@@ -1732,7 +1763,7 @@ class MinedFactorScorer:
                 skipped=skipped,
                 runtime_status=runtime_status,
                 evaluation_context=evaluation_context,
-                prevalidated_input_sha256=prevalidated_input_sha256,
+                expected_plan_input_sha256=expected_plan_input_sha256,
                 eligibility_prevalidated=eligibility_prevalidated,
             )
 
@@ -1880,7 +1911,7 @@ class MinedFactorScorer:
         skipped: Mapping[str, str],
         runtime_status: Mapping[str, Any],
         evaluation_context: ProductionEvaluationContext,
-        prevalidated_input_sha256: str | None = None,
+        expected_plan_input_sha256: str | None = None,
         eligibility_prevalidated: bool = False,
     ) -> RuntimeFactorScore:
         """Execute the exact active set atomically without data substitution."""
@@ -2122,8 +2153,24 @@ class MinedFactorScorer:
             for name in expected_names
         )
         symbol_scores = (weighted / total_abs_weight).clip(-1.0, 1.0)
-        if prevalidated_input_sha256 is not None:
-            production_input_sha256 = prevalidated_input_sha256
+        if expected_plan_input_sha256 is not None:
+            try:
+                production_input_sha256 = production_runtime_input_sha256(
+                    frames,
+                    contracts,
+                )
+            except (TypeError, ValueError):
+                production_input_sha256 = ""
+            if production_input_sha256 != expected_plan_input_sha256:
+                blocked = self._blocked_runtime_status(
+                    runtime_status,
+                    "production_runtime_plan_input_drift",
+                )
+                return self._empty_score(
+                    symbols,
+                    skipped=skipped,
+                    runtime_status=blocked,
+                )
         else:
             try:
                 production_input_sha256 = production_runtime_input_sha256(

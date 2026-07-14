@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import FrozenInstanceError, replace
 import hashlib
 import json
+import os
 from pathlib import Path
 from statistics import median
 from time import perf_counter
@@ -584,6 +585,47 @@ def test_validator_rejects_reused_resolved_artifact_path(tmp_path: Path) -> None
     )
 
     assert "production_verified_artifact_path_reused" in blockers
+    assert "production_open_day_calendar_not_independent" in blockers
+
+
+def test_validator_rejects_hardlinked_verified_artifact_file(tmp_path: Path) -> None:
+    frames = _frames()
+    original = _context(frames, tmp_path)
+    artifact_paths = dict(original.verified_artifact_paths)
+    artifact_hashes = dict(original.verified_artifact_sha256s)
+    pointer_path = Path(artifact_paths["snapshot_pointer"])
+    hardlink_path = tmp_path / "hardlinked_calendar.json"
+    os.link(pointer_path, hardlink_path)
+    artifact_paths["open_day_calendar"] = str(hardlink_path.resolve())
+    artifact_hashes["open_day_calendar"] = hashlib.sha256(
+        hardlink_path.read_bytes()
+    ).hexdigest()
+    reused = _mint_production_evaluation_context(
+        evaluation_as_of=original.evaluation_as_of,
+        market=original.market,
+        universe_key=original.universe_key,
+        universe_sha256=original.universe_sha256,
+        snapshot_id=original.snapshot_id,
+        latest_complete_trade_date=original.latest_complete_trade_date,
+        pit_membership_status=original.pit_membership_status,
+        pit_membership_as_of=original.pit_membership_as_of,
+        pit_membership_proof_sha256=original.pit_membership_proof_sha256,
+        pit_membership_not_applicable_reason=(
+            original.pit_membership_not_applicable_reason
+        ),
+        open_day_proof_sha256=artifact_hashes["open_day_calendar"],
+        read_result_provenance_sha256=original.read_result_provenance_sha256,
+        verified_artifact_paths=artifact_paths,
+        verified_artifact_sha256s=artifact_hashes,
+    )
+
+    blockers = validate_production_evaluation_context(
+        reused,
+        expected_symbols=list(frames),
+    )
+
+    assert "production_verified_artifact_file_reused" in blockers
+    assert "production_open_day_calendar_not_independent" in blockers
 
 
 def _dag_snapshots(
@@ -1070,6 +1112,124 @@ def test_dag_context_rejects_snapshot_pointer_reused_as_open_day_calendar(
 
     assert context is None
     assert "production_open_day_calendar_not_independent" in blockers
+
+
+def test_dag_context_rejects_hardlinked_open_day_calendar(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    frames = _frames()
+    reader_snapshot, scoped, read_results = _dag_snapshots(frames, tmp_path)
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_ENABLED",
+        True,
+    )
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_REQUIRED",
+        True,
+    )
+    pointer_path = Path(str(reader_snapshot["latest_pointer_path"]))
+    pointer_payload = json.loads(pointer_path.read_text(encoding="utf-8"))
+    pointer_payload.update(
+        {
+            "schema_version": "market-open-days.v1",
+            "market": "CN",
+            "open_dates": [AS_OF],
+        }
+    )
+    pointer_path.write_text(json.dumps(pointer_payload), encoding="utf-8")
+    hardlink_path = tmp_path / "hardlinked_open_day_calendar.json"
+    os.link(pointer_path, hardlink_path)
+    scoped["open_day_calendar"] = {"path": str(hardlink_path.resolve())}
+
+    context, blockers = _build_production_evaluation_context(
+        market="CN",
+        universe_key="full_a",
+        symbols=list(frames),
+        reader_snapshot=reader_snapshot,
+        scoped_data_snapshot=scoped,
+        read_results=read_results,
+    )
+
+    assert context is None
+    assert "production_verified_artifact_file_reused" in blockers
+    assert "production_open_day_calendar_not_independent" in blockers
+
+
+def test_dag_context_rejects_open_day_calendar_unknown_fields(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    frames = _frames()
+    reader_snapshot, scoped, read_results = _dag_snapshots(frames, tmp_path)
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_ENABLED",
+        True,
+    )
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_REQUIRED",
+        True,
+    )
+    calendar_path = Path(str(scoped["open_day_calendar"]["path"]))
+    calendar_payload = json.loads(calendar_path.read_text(encoding="utf-8"))
+    calendar_payload["snapshot_id"] = "dual-schema-snapshot"
+    calendar_path.write_text(json.dumps(calendar_payload), encoding="utf-8")
+
+    context, blockers = _build_production_evaluation_context(
+        market="CN",
+        universe_key="full_a",
+        symbols=list(frames),
+        reader_snapshot=reader_snapshot,
+        scoped_data_snapshot=scoped,
+        read_results=read_results,
+    )
+
+    assert context is None
+    assert "production_open_day_calendar_fields_invalid" in blockers
+
+
+def test_dag_context_rejects_copied_dual_schema_snapshot_as_calendar(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    frames = _frames()
+    reader_snapshot, scoped, read_results = _dag_snapshots(frames, tmp_path)
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_ENABLED",
+        True,
+    )
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_REQUIRED",
+        True,
+    )
+    pointer_path = Path(str(reader_snapshot["latest_pointer_path"]))
+    pointer_payload = json.loads(pointer_path.read_text(encoding="utf-8"))
+    pointer_payload.update(
+        {
+            "schema_version": "market-open-days.v1",
+            "market": "CN",
+            "open_dates": [AS_OF],
+        }
+    )
+    pointer_path.write_text(json.dumps(pointer_payload), encoding="utf-8")
+    copied_calendar_path = tmp_path / "copied_dual_schema_calendar.json"
+    copied_calendar_path.write_bytes(pointer_path.read_bytes())
+    assert pointer_path.stat().st_ino != copied_calendar_path.stat().st_ino
+    scoped["open_day_calendar"] = {
+        "path": str(copied_calendar_path.resolve())
+    }
+
+    context, blockers = _build_production_evaluation_context(
+        market="CN",
+        universe_key="full_a",
+        symbols=list(frames),
+        reader_snapshot=reader_snapshot,
+        scoped_data_snapshot=scoped,
+        read_results=read_results,
+    )
+
+    assert context is None
+    assert "production_open_day_calendar_fields_invalid" in blockers
 
 
 def test_dag_context_rejects_non_string_open_day_entries(

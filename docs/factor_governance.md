@@ -1258,6 +1258,12 @@ the scoped statuses. The CN canonical Parquet must expose the complete
 `PITUniverseRecord` v1 columns in dataclass order; its manifest and every row
 must bind `source=tushare.stock_basic` and one identical non-empty
 `observed_at` value.
+Verified artifacts must have distinct resolved paths and distinct filesystem
+device/inode identities. The market calendar is a dedicated
+`market-open-days.v1` JSON object whose top-level keys are exactly
+`schema_version`, `market`, and `open_dates`; `open_dates` must be a non-empty,
+unique list of eight-ASCII-digit open dates. Legacy `valid_trading_days`,
+snapshot fields, and every other extra field are rejected.
 Non-CN markets record PIT as explicitly not applicable. Missing context,
 artifact drift, a future/stale/duplicate/disordered/intraday date, symbol
 identity drift, or unequal terminal dates blocks Quant with confidence zero.
@@ -1270,10 +1276,12 @@ active factor, then uses their common eligible intersection. Contract-ineligible
 symbols are recorded as `production_factor_runtime_ineligible` data-quality
 issues and quarantined before the evaluation context, cross-section diagnostics,
 and Quant scoring, so all three consumers receive the exact same symbol set.
-The plan is owner-bound and non-serializable; scoring recomputes its eligible
-input digest before factor execution and blocks frame, registry, context, seal,
-or payload drift. When governance has no active production factor, the plan does
-not filter and preserves the historical governance-blocked input behavior.
+The plan is owner-bound and non-serializable. Plan construction seals the
+eligible input digest; after every factor computation, scoring re-attests the
+required frame inputs against that digest before it can return a ready result.
+Frame, registry, context, seal, payload, or post-compute input drift blocks the
+run. When governance has no active production factor, the plan does not filter
+and preserves the historical governance-blocked input behavior.
 The DAG quarantines an invalid frame with a stable per-symbol diagnostic before
 building the context, so one stale or malformed symbol cannot poison otherwise
 eligible symbols. Quarantined frames never enter Quant or cross-section inputs;

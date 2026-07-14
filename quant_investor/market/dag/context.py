@@ -442,14 +442,19 @@ def _build_production_evaluation_context(
             if not isinstance(calendar_payload, Mapping):
                 blockers.append("production_open_day_calendar_json_invalid")
             else:
+                if set(calendar_payload) != {
+                    "schema_version",
+                    "market",
+                    "open_dates",
+                }:
+                    blockers.append(
+                        "production_open_day_calendar_fields_invalid"
+                    )
                 if calendar_payload.get("schema_version") != "market-open-days.v1":
                     blockers.append("production_open_day_calendar_schema_invalid")
                 if str(calendar_payload.get("market") or "").upper() != normalized_market:
                     blockers.append("production_open_day_calendar_market_mismatch")
-                raw_open_dates = calendar_payload.get(
-                    "open_dates",
-                    calendar_payload.get("valid_trading_days"),
-                )
+                raw_open_dates = calendar_payload.get("open_dates")
                 if (
                     not isinstance(raw_open_dates, list)
                     or not raw_open_dates
@@ -461,7 +466,7 @@ def _build_production_evaluation_context(
                     for value in raw_open_dates:
                         if (
                             not isinstance(value, str)
-                            or re.fullmatch(r"\d{8}", value) is None
+                            or re.fullmatch(r"[0-9]{8}", value) is None
                         ):
                             invalid_open_date = True
                             break
@@ -781,6 +786,7 @@ def _build_production_evaluation_context(
             )
 
     resolved_artifact_owners: dict[str, str] = {}
+    resolved_artifact_file_owners: dict[tuple[int, int], str] = {}
     for name, artifact_path in artifact_paths.items():
         resolved_artifact_path = _resolved_path_string(artifact_path)
         prior_name = resolved_artifact_owners.get(resolved_artifact_path)
@@ -792,6 +798,23 @@ def _build_production_evaluation_context(
                 )
         else:
             resolved_artifact_owners[resolved_artifact_path] = name
+        try:
+            file_stat = Path(resolved_artifact_path).stat()
+        except (OSError, ValueError):
+            blockers.append(
+                f"production_verified_artifact_identity_invalid:{name}"
+            )
+            continue
+        file_identity = (int(file_stat.st_dev), int(file_stat.st_ino))
+        prior_file_name = resolved_artifact_file_owners.get(file_identity)
+        if prior_file_name is not None:
+            blockers.append("production_verified_artifact_file_reused")
+            if "open_day_calendar" in {name, prior_file_name}:
+                blockers.append(
+                    "production_open_day_calendar_not_independent"
+                )
+        else:
+            resolved_artifact_file_owners[file_identity] = name
 
     if blockers:
         return None, list(dict.fromkeys(blockers))
