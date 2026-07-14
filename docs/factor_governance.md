@@ -1261,6 +1261,19 @@ must bind `source=tushare.stock_basic` and one identical non-empty
 Non-CN markets record PIT as explicitly not applicable. Missing context,
 artifact drift, a future/stale/duplicate/disordered/intraday date, symbol
 identity drift, or unequal terminal dates blocks Quant with confidence zero.
+
+Before the evaluation context is minted, production Quant now builds one
+process-local sealed `ProductionRuntimePlan` from the strict registry snapshot.
+It evaluates every input symbol against the dynamic required columns, lookback,
+tail-value, dtype, finite/positive-value, and trade-date requirements of every
+active factor, then uses their common eligible intersection. Contract-ineligible
+symbols are recorded as `production_factor_runtime_ineligible` data-quality
+issues and quarantined before the evaluation context, cross-section diagnostics,
+and Quant scoring, so all three consumers receive the exact same symbol set.
+The plan is owner-bound and non-serializable; scoring recomputes its eligible
+input digest before factor execution and blocks frame, registry, context, seal,
+or payload drift. When governance has no active production factor, the plan does
+not filter and preserves the historical governance-blocked input behavior.
 The DAG quarantines an invalid frame with a stable per-symbol diagnostic before
 building the context, so one stale or malformed symbol cannot poison otherwise
 eligible symbols. Quarantined frames never enter Quant or cross-section inputs;

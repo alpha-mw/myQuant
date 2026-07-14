@@ -10,7 +10,10 @@ import pandas as pd
 from quant_investor.agent_protocol import BranchVerdict, SymbolResearchPacket
 from quant_investor.branch_contracts import BranchResult, UnifiedDataBundle
 from quant_investor.factors.runtime import (
+    MinedFactorScorer,
     ProductionEvaluationContext,
+    ProductionRuntimePlan,
+    RuntimeFactorScore,
     production_runtime_input_sha256,
     production_runtime_metadata_is_ready,
     production_runtime_score_is_ready,
@@ -591,14 +594,35 @@ def _build_quant_branch_result_with_validation(
     frame_summaries: Mapping[str, Mapping[str, Any]] | None = None,
     evaluation_context: ProductionEvaluationContext | None = None,
     evaluation_context_blockers: list[str] | None = None,
+    scorer: MinedFactorScorer | None = None,
+    production_runtime_plan: ProductionRuntimePlan | None = None,
 ) -> tuple[BranchResult, _QuantBranchValidationToken | None]:
-    mined = score_with_mined_factors(
-        frames,
-        evaluation_context=evaluation_context,
-    )
+    if (scorer is None) != (production_runtime_plan is None):
+        mined = RuntimeFactorScore(
+            symbol_scores={str(symbol): 0.0 for symbol in frames},
+            runtime_blockers=["production_runtime_scorer_plan_pair_invalid"],
+        )
+    elif scorer is not None:
+        mined = scorer.score(
+            frames,
+            evaluation_context=evaluation_context,
+            production_runtime_plan=production_runtime_plan,
+        )
+    else:
+        mined = score_with_mined_factors(
+            frames,
+            evaluation_context=evaluation_context,
+        )
     mined_metadata = mined.to_metadata()
     branch_input_digest: str | None = None
-    if mined.production_input_sha256:
+    if (
+        scorer is not None
+        and type(production_runtime_plan) is ProductionRuntimePlan
+        and mined.production_input_sha256
+        == production_runtime_plan.eligible_input_sha256
+    ):
+        branch_input_digest = production_runtime_plan.eligible_input_sha256
+    elif mined.production_input_sha256:
         try:
             registry = dict(mined_metadata.get("registry", {}) or {})
             governance = dict(registry.get("governance_runtime", {}) or {})

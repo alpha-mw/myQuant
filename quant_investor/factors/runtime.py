@@ -17,7 +17,7 @@ from datetime import date, datetime
 from dataclasses import dataclass, field
 from numbers import Integral, Real
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, NoReturn, Sequence
 
 import numpy as np
 import pandas as pd
@@ -35,7 +35,23 @@ PRODUCTION_RUNTIME_OUTPUT_SCHEMA_VERSION = "quant-production-runtime-output.v1"
 PRODUCTION_EVALUATION_CONTEXT_SCHEMA_VERSION = (
     "quant-production-evaluation-context.v1"
 )
+PRODUCTION_RUNTIME_PLAN_SCHEMA_VERSION = "quant-production-runtime-plan.v1"
 _PRODUCTION_EVALUATION_CONTEXT_SEAL = object()
+_PRODUCTION_RUNTIME_PLAN_SEAL = object()
+
+
+def _canonical_payload_json(value: Any) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+def _canonical_payload_sha256(value: Any) -> str:
+    return hashlib.sha256(_canonical_payload_json(value).encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +109,93 @@ class ProductionEvaluationContext:
 
     def to_metadata(self) -> dict[str, Any]:
         return {**self.to_payload(), "context_sha256": self.context_sha256}
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionRuntimePlan:
+    """Process-local sealed production eligibility and execution snapshot."""
+
+    input_symbols: tuple[str, ...]
+    eligible_symbols: tuple[str, ...]
+    filter_applied: bool
+    eligible_input_sha256: str
+    input_symbol_set_sha256: str
+    eligible_symbol_set_sha256: str
+    factor_set_sha256: str
+    contracts_sha256: str
+    registry_state_sha256: str
+    eligibility_blockers_sha256: str
+    payload_sha256: str
+    schema_version: str = PRODUCTION_RUNTIME_PLAN_SCHEMA_VERSION
+    _symbol_blockers_json: str = field(default="{}", repr=False, compare=False)
+    _active_factors_json: str = field(default="[]", repr=False, compare=False)
+    _contracts_json: str = field(default="{}", repr=False, compare=False)
+    _runtime_status_json: str = field(default="{}", repr=False, compare=False)
+    _skipped_factors_json: str = field(default="{}", repr=False, compare=False)
+    _owner_token: object | None = field(default=None, repr=False, compare=False)
+    _seal: object | None = field(default=None, repr=False, compare=False)
+
+    @property
+    def symbol_blockers(self) -> dict[str, tuple[str, ...]]:
+        payload = json.loads(self._symbol_blockers_json)
+        return {
+            str(symbol): tuple(str(item) for item in blockers)
+            for symbol, blockers in dict(payload).items()
+        }
+
+    @property
+    def active_factors(self) -> tuple[FactorRecord, ...]:
+        payload = json.loads(self._active_factors_json)
+        return tuple(FactorRecord.from_dict(item) for item in list(payload))
+
+    @property
+    def contracts(self) -> dict[str, Any]:
+        return dict(json.loads(self._contracts_json))
+
+    @property
+    def runtime_status(self) -> dict[str, Any]:
+        return dict(json.loads(self._runtime_status_json))
+
+    @property
+    def skipped_factors(self) -> dict[str, str]:
+        return {
+            str(name): str(reason)
+            for name, reason in dict(
+                json.loads(self._skipped_factors_json)
+            ).items()
+        }
+
+    def _payload(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "input_symbols": list(self.input_symbols),
+            "eligible_symbols": list(self.eligible_symbols),
+            "filter_applied": self.filter_applied,
+            "eligible_input_sha256": self.eligible_input_sha256,
+            "input_symbol_set_sha256": self.input_symbol_set_sha256,
+            "eligible_symbol_set_sha256": self.eligible_symbol_set_sha256,
+            "factor_set_sha256": self.factor_set_sha256,
+            "contracts_sha256": self.contracts_sha256,
+            "registry_state_sha256": self.registry_state_sha256,
+            "eligibility_blockers_sha256": self.eligibility_blockers_sha256,
+            "symbol_blockers": json.loads(self._symbol_blockers_json),
+            "active_factors": json.loads(self._active_factors_json),
+            "contracts": json.loads(self._contracts_json),
+            "runtime_status": json.loads(self._runtime_status_json),
+            "skipped_factors": json.loads(self._skipped_factors_json),
+        }
+
+    def __copy__(self) -> NoReturn:
+        raise TypeError("production runtime plans are not copyable")
+
+    def __deepcopy__(self, memo: Any) -> NoReturn:
+        raise TypeError("production runtime plans are not copyable")
+
+    def __reduce__(self) -> NoReturn:
+        raise TypeError("production runtime plans are not serializable")
+
+    def __reduce_ex__(self, protocol: Any) -> NoReturn:
+        raise TypeError("production runtime plans are not serializable")
 
 
 def production_evaluation_context_sha256(
@@ -989,6 +1092,194 @@ def _price_volume_required_lookback_rows(names: Sequence[str]) -> int:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _ProductionRuntimeEligibility:
+    eligible_symbols: tuple[str, ...]
+    symbol_blockers: tuple[tuple[str, tuple[str, ...]], ...]
+    global_blockers: tuple[str, ...]
+
+
+def _canonical_runtime_frames(
+    frames: Mapping[str, pd.DataFrame],
+) -> dict[str, pd.DataFrame]:
+    normalized: dict[str, pd.DataFrame] = {}
+    for raw_symbol, frame in frames.items():
+        symbol = str(raw_symbol).strip()
+        if not symbol or symbol in normalized:
+            raise ValueError("production runtime frame symbols invalid")
+        normalized[symbol] = frame
+    return {symbol: normalized[symbol] for symbol in sorted(normalized)}
+
+
+def _production_registry_state_sha256(registry: MinedFactorRegistry) -> str:
+    return _canonical_payload_sha256(
+        {
+            "schema_version": registry.schema_version,
+            "metadata": dict(registry.metadata),
+            "factors": [record.to_dict() for record in registry.factors],
+        }
+    )
+
+
+def _production_runtime_contract_blockers(
+    active: Sequence[FactorRecord],
+    contracts: Mapping[str, Any],
+) -> tuple[str, ...]:
+    names = [record.name for record in active]
+    if (
+        any(not name for name in names)
+        or len(names) != len(set(names))
+        or set(contracts) != set(names)
+    ):
+        return ("production_runtime_contract_factor_set_mismatch",)
+    blockers: list[str] = []
+    for factor_name in sorted(names):
+        raw_contract = contracts.get(factor_name)
+        if not isinstance(raw_contract, Mapping):
+            blockers.append(f"factor_runtime_contract_invalid:{factor_name}")
+            continue
+        required_columns = raw_contract.get("required_columns")
+        lookback = raw_contract.get("lookback_rows")
+        minimum_coverage = raw_contract.get("gate2_min_coverage_rate")
+        min_cross_section = raw_contract.get("min_cross_section")
+        if (
+            not isinstance(required_columns, list)
+            or not required_columns
+            or any(
+                not isinstance(column, str) or not column
+                for column in required_columns
+            )
+            or len(required_columns) != len(set(required_columns))
+            or isinstance(lookback, bool)
+            or not isinstance(lookback, int)
+            or lookback <= 0
+            or isinstance(minimum_coverage, bool)
+            or not isinstance(minimum_coverage, (int, float))
+            or not math.isfinite(float(minimum_coverage))
+            or not 0.0 <= float(minimum_coverage) <= 1.0
+            or isinstance(min_cross_section, bool)
+            or not isinstance(min_cross_section, int)
+            or min_cross_section <= 0
+        ):
+            blockers.append(f"factor_runtime_contract_invalid:{factor_name}")
+    return tuple(blockers)
+
+
+def _production_runtime_eligibility(
+    frames: Mapping[str, pd.DataFrame],
+    *,
+    active: Sequence[FactorRecord],
+    contracts: Mapping[str, Any],
+) -> _ProductionRuntimeEligibility:
+    """Return the all-active-contract symbol intersection without side effects."""
+
+    canonical_frames = _canonical_runtime_frames(frames)
+    contract_blockers = _production_runtime_contract_blockers(active, contracts)
+    if contract_blockers:
+        return _ProductionRuntimeEligibility(
+            eligible_symbols=tuple(canonical_frames),
+            symbol_blockers=(),
+            global_blockers=contract_blockers,
+        )
+    blockers_by_symbol: dict[str, list[str]] = {
+        symbol: [] for symbol in canonical_frames
+    }
+    for factor in sorted(active, key=lambda record: record.name):
+        contract = dict(contracts[factor.name])
+        required_columns = list(contract["required_columns"])
+        lookback = int(contract["lookback_rows"])
+        for symbol, frame in canonical_frames.items():
+            blocker = ""
+            if not isinstance(frame, pd.DataFrame) or frame.empty:
+                blocker = (
+                    f"factor_required_lookback_missing:{factor.name}:{symbol}"
+                )
+            elif any(column not in frame.columns for column in required_columns):
+                blocker = (
+                    f"factor_required_columns_missing:{factor.name}:{symbol}"
+                )
+            else:
+                tail = frame.tail(lookback)
+                if len(tail) != lookback:
+                    blocker = (
+                        f"factor_required_lookback_missing:{factor.name}:{symbol}"
+                    )
+                elif bool(tail[required_columns].isna().any(axis=None)):
+                    blocker = (
+                        f"factor_required_values_missing:{factor.name}:{symbol}"
+                    )
+                else:
+                    for column in required_columns:
+                        values = tail[column]
+                        if column == "trade_date":
+                            dates, date_error = _strict_daily_trade_dates(values)
+                            if (
+                                date_error
+                                or dates is None
+                                or dates.duplicated().any()
+                                or not dates.is_monotonic_increasing
+                            ):
+                                blocker = (
+                                    "factor_required_trade_date_invalid:"
+                                    f"{factor.name}:{symbol}"
+                                )
+                                break
+                            continue
+                        if (
+                            pd.api.types.is_bool_dtype(values.dtype)
+                            or not pd.api.types.is_numeric_dtype(values.dtype)
+                        ):
+                            blocker = (
+                                "factor_required_values_dtype:"
+                                f"{factor.name}:{symbol}"
+                            )
+                            break
+                        try:
+                            numeric_values = values.to_numpy(dtype=float)
+                        except (TypeError, ValueError):
+                            blocker = (
+                                "factor_required_values_dtype:"
+                                f"{factor.name}:{symbol}"
+                            )
+                            break
+                        if not np.isfinite(numeric_values).all():
+                            blocker = (
+                                "factor_required_values_non_finite:"
+                                f"{factor.name}:{symbol}"
+                            )
+                            break
+                        if (numeric_values <= 0.0).any():
+                            blocker = (
+                                "factor_required_values_non_positive:"
+                                f"{factor.name}:{symbol}"
+                            )
+                            break
+            if blocker:
+                blockers_by_symbol[symbol].append(blocker)
+
+    eligible_symbols = tuple(
+        symbol
+        for symbol in canonical_frames
+        if not blockers_by_symbol[symbol]
+    )
+    global_blockers: list[str] = []
+    for factor in sorted(active, key=lambda record: record.name):
+        minimum = int(dict(contracts[factor.name])["min_cross_section"])
+        if len(eligible_symbols) < minimum:
+            global_blockers.append(
+                f"factor_min_cross_section_not_met:{factor.name}"
+            )
+    return _ProductionRuntimeEligibility(
+        eligible_symbols=eligible_symbols,
+        symbol_blockers=tuple(
+            (symbol, tuple(blockers_by_symbol[symbol]))
+            for symbol in canonical_frames
+            if blockers_by_symbol[symbol]
+        ),
+        global_blockers=tuple(global_blockers),
+    )
+
+
 class MinedFactorScorer:
     """Compute latest cross-sectional scores from governed production factors."""
 
@@ -1011,6 +1302,9 @@ class MinedFactorScorer:
             self.registry = MinedFactorRegistry.load_production()
         else:
             self.registry = MinedFactorRegistry.load()
+        self._production_runtime_plan_owner_token = object()
+        self._issued_production_runtime_plan: ProductionRuntimePlan | None = None
+        self._issued_production_runtime_plan_sha256 = ""
 
     def _runtime_contract(self) -> tuple[list[FactorRecord], dict[str, Any]]:
         if self.runtime_mode == REPORT_ONLY_SHADOW_RUNTIME_MODE:
@@ -1060,6 +1354,247 @@ class MinedFactorScorer:
             "production_eligible": status["status"] == "ready",
         }
 
+    def build_production_runtime_plan(
+        self,
+        frames: Mapping[str, pd.DataFrame],
+    ) -> ProductionRuntimePlan:
+        """Freeze one production registry/contract/eligibility decision."""
+
+        if self.runtime_mode != PRODUCTION_RUNTIME_MODE:
+            raise TypeError("production runtime plans require production mode")
+        if self._issued_production_runtime_plan is not None:
+            raise RuntimeError("production runtime plan already issued")
+        canonical_frames = _canonical_runtime_frames(frames)
+        input_symbols = tuple(canonical_frames)
+        active, raw_runtime_status = self._runtime_contract()
+        active = sorted(active, key=lambda record: record.name)
+        runtime_status = dict(raw_runtime_status)
+        non_selectable = self.registry.non_selectable_reasons()
+        active_names = {record.name for record in active}
+        skipped = {
+            name: reason
+            for name, reason in non_selectable.items()
+            if name not in active_names
+        }
+        raw_contracts = runtime_status.get("factor_runtime_contracts")
+        contracts = dict(raw_contracts) if isinstance(raw_contracts, Mapping) else {}
+        filtering_candidate = bool(
+            active
+            and runtime_status.get("status") == "ready"
+            and runtime_status.get("production_eligible") is True
+        )
+        contract_blockers = (
+            _production_runtime_contract_blockers(active, contracts)
+            if filtering_candidate
+            else ()
+        )
+        filter_applied = filtering_candidate and not contract_blockers
+        symbol_blockers: dict[str, tuple[str, ...]] = {}
+        eligible_symbols = input_symbols
+        if filter_applied:
+            eligibility = _production_runtime_eligibility(
+                canonical_frames,
+                active=active,
+                contracts=contracts,
+            )
+            eligible_symbols = eligibility.eligible_symbols
+            symbol_blockers = dict(eligibility.symbol_blockers)
+            for blocker in eligibility.global_blockers:
+                runtime_status = self._blocked_runtime_status(
+                    runtime_status,
+                    blocker,
+                )
+        elif contract_blockers:
+            for blocker in contract_blockers:
+                runtime_status = self._blocked_runtime_status(
+                    runtime_status,
+                    blocker,
+                )
+
+        eligible_input_sha256 = ""
+        if filter_applied:
+            eligible_frames = {
+                symbol: canonical_frames[symbol]
+                for symbol in eligible_symbols
+            }
+            try:
+                eligible_input_sha256 = production_runtime_input_sha256(
+                    eligible_frames,
+                    contracts,
+                )
+            except (TypeError, ValueError) as exc:
+                runtime_status = self._blocked_runtime_status(
+                    runtime_status,
+                    f"production_runtime_plan_input_attestation_failed:{exc}",
+                )
+
+        symbol_blockers_payload = {
+            symbol: list(blockers)
+            for symbol, blockers in sorted(symbol_blockers.items())
+        }
+        active_payload = [record.to_dict() for record in active]
+        plan = ProductionRuntimePlan(
+            input_symbols=input_symbols,
+            eligible_symbols=eligible_symbols,
+            filter_applied=filter_applied,
+            eligible_input_sha256=eligible_input_sha256,
+            input_symbol_set_sha256=production_symbol_set_sha256(input_symbols),
+            eligible_symbol_set_sha256=production_symbol_set_sha256(
+                eligible_symbols
+            ),
+            factor_set_sha256=production_factor_set_sha256(
+                [record.name for record in active]
+            ),
+            contracts_sha256=_canonical_payload_sha256(contracts),
+            registry_state_sha256=_production_registry_state_sha256(
+                self.registry
+            ),
+            eligibility_blockers_sha256=_canonical_payload_sha256(
+                symbol_blockers_payload
+            ),
+            payload_sha256="",
+            _symbol_blockers_json=_canonical_payload_json(
+                symbol_blockers_payload
+            ),
+            _active_factors_json=_canonical_payload_json(active_payload),
+            _contracts_json=_canonical_payload_json(contracts),
+            _runtime_status_json=_canonical_payload_json(runtime_status),
+            _skipped_factors_json=_canonical_payload_json(skipped),
+            _owner_token=self._production_runtime_plan_owner_token,
+            _seal=_PRODUCTION_RUNTIME_PLAN_SEAL,
+        )
+        object.__setattr__(
+            plan,
+            "payload_sha256",
+            _canonical_payload_sha256(plan._payload()),
+        )
+        self._issued_production_runtime_plan = plan
+        self._issued_production_runtime_plan_sha256 = plan.payload_sha256
+        return plan
+
+    def _validate_production_runtime_plan(
+        self,
+        plan: ProductionRuntimePlan,
+        frames: Mapping[str, pd.DataFrame],
+        *,
+        evaluation_context: ProductionEvaluationContext | None,
+    ) -> tuple[list[str], str]:
+        blockers: list[str] = []
+        if type(plan) is not ProductionRuntimePlan:
+            return ["production_runtime_plan_type_invalid"], ""
+        if plan is not self._issued_production_runtime_plan:
+            blockers.append("production_runtime_plan_not_issued_by_scorer")
+        if plan._seal is not _PRODUCTION_RUNTIME_PLAN_SEAL:
+            blockers.append("production_runtime_plan_seal_invalid")
+        if plan._owner_token is not self._production_runtime_plan_owner_token:
+            blockers.append("production_runtime_plan_owner_mismatch")
+        try:
+            payload_sha256 = _canonical_payload_sha256(plan._payload())
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload_sha256 = ""
+        if (
+            plan.schema_version != PRODUCTION_RUNTIME_PLAN_SCHEMA_VERSION
+            or not payload_sha256
+            or plan.payload_sha256 != payload_sha256
+        ):
+            blockers.append("production_runtime_plan_payload_drift")
+        if (
+            not self._issued_production_runtime_plan_sha256
+            or plan.payload_sha256
+            != self._issued_production_runtime_plan_sha256
+        ):
+            blockers.append("production_runtime_plan_issued_payload_drift")
+        try:
+            active_factors = plan.active_factors
+            contracts = plan.contracts
+            runtime_status = plan.runtime_status
+            symbol_blockers_payload = {
+                symbol: list(items)
+                for symbol, items in plan.symbol_blockers.items()
+            }
+            if (
+                plan.input_symbol_set_sha256
+                != production_symbol_set_sha256(plan.input_symbols)
+                or plan.eligible_symbol_set_sha256
+                != production_symbol_set_sha256(plan.eligible_symbols)
+                or plan.factor_set_sha256
+                != production_factor_set_sha256(
+                    [record.name for record in active_factors]
+                )
+                or plan.contracts_sha256
+                != _canonical_payload_sha256(contracts)
+                or plan.eligibility_blockers_sha256
+                != _canonical_payload_sha256(symbol_blockers_payload)
+                or dict(
+                    runtime_status.get("factor_runtime_contracts", {}) or {}
+                )
+                != contracts
+            ):
+                blockers.append("production_runtime_plan_identity_drift")
+            current_records = {
+                record.name: record.to_dict()
+                for record in self.registry.factors
+            }
+            if any(
+                current_records.get(record.name) != record.to_dict()
+                for record in active_factors
+            ):
+                blockers.append("production_runtime_plan_active_factor_drift")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            blockers.append("production_runtime_plan_identity_drift")
+        try:
+            registry_state_sha256 = _production_registry_state_sha256(
+                self.registry
+            )
+        except (TypeError, ValueError):
+            registry_state_sha256 = ""
+        if registry_state_sha256 != plan.registry_state_sha256:
+            blockers.append("production_runtime_plan_registry_drift")
+        registry_metadata = dict(self.registry.metadata)
+        if registry_metadata.get("strict_loader") is True:
+            try:
+                registry_path = Path(
+                    str(registry_metadata["path"])
+                ).expanduser().resolve()
+                expected_registry_sha256 = str(
+                    registry_metadata["registry_sha256"]
+                )
+                current_registry_sha256 = hashlib.sha256(
+                    registry_path.read_bytes()
+                ).hexdigest()
+            except (KeyError, OSError, RuntimeError, ValueError):
+                current_registry_sha256 = ""
+                expected_registry_sha256 = ""
+            if (
+                not expected_registry_sha256
+                or current_registry_sha256 != expected_registry_sha256
+            ):
+                blockers.append("production_runtime_plan_registry_drift")
+        try:
+            canonical_frames = _canonical_runtime_frames(frames)
+        except (TypeError, ValueError):
+            canonical_frames = {}
+        if tuple(canonical_frames) != plan.eligible_symbols:
+            blockers.append("production_runtime_plan_frame_set_drift")
+        if (
+            evaluation_context is not None
+            and evaluation_context.universe_sha256
+            != plan.eligible_symbol_set_sha256
+        ):
+            blockers.append("production_runtime_plan_context_universe_drift")
+        recomputed_digest = ""
+        if plan.filter_applied and plan.active_factors and canonical_frames:
+            try:
+                recomputed_digest = production_runtime_input_sha256(
+                    canonical_frames,
+                    plan.contracts,
+                )
+            except (TypeError, ValueError):
+                blockers.append("production_runtime_plan_input_drift")
+            if recomputed_digest != plan.eligible_input_sha256:
+                blockers.append("production_runtime_plan_input_drift")
+        return list(dict.fromkeys(blockers)), recomputed_digest
+
     def _empty_score(
         self,
         symbols: Sequence[str],
@@ -1099,16 +1634,63 @@ class MinedFactorScorer:
         frames: Mapping[str, pd.DataFrame],
         *,
         evaluation_context: ProductionEvaluationContext | None = None,
+        production_runtime_plan: ProductionRuntimePlan | None = None,
     ) -> RuntimeFactorScore:
-        symbols = [str(symbol) for symbol in frames if str(symbol).strip()]
-        active, runtime_status = self._runtime_contract()
-        non_selectable = self.registry.non_selectable_reasons()
-        active_names = {record.name for record in active}
-        skipped = {
-            name: reason
-            for name, reason in non_selectable.items()
-            if name not in active_names
-        }
+        prevalidated_input_sha256: str | None = None
+        eligibility_prevalidated = False
+        if production_runtime_plan is not None:
+            try:
+                canonical_frames = _canonical_runtime_frames(frames)
+            except (TypeError, ValueError):
+                canonical_frames = {}
+            frames = canonical_frames
+            symbols = list(canonical_frames)
+            plan_blockers, prevalidated_input_sha256 = (
+                self._validate_production_runtime_plan(
+                    production_runtime_plan,
+                    frames,
+                    evaluation_context=evaluation_context,
+                )
+            )
+            try:
+                active = list(production_runtime_plan.active_factors)
+                runtime_status = production_runtime_plan.runtime_status
+                skipped = production_runtime_plan.skipped_factors
+            except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+                active = []
+                runtime_status = {
+                    "status": "governance_blocked",
+                    "factor_mode": "governance_blocked",
+                    "confidence_multiplier": 0.0,
+                    "production_eligible": False,
+                    "blockers": [],
+                }
+                skipped = {}
+                plan_blockers.append("production_runtime_plan_payload_drift")
+            if self.runtime_mode != PRODUCTION_RUNTIME_MODE:
+                plan_blockers.append("production_runtime_plan_mode_invalid")
+            if plan_blockers:
+                for blocker in plan_blockers:
+                    runtime_status = self._blocked_runtime_status(
+                        runtime_status,
+                        blocker,
+                    )
+                return self._empty_score(
+                    symbols,
+                    skipped=skipped,
+                    runtime_status=runtime_status,
+                )
+            eligibility_prevalidated = True
+        else:
+            symbols = [str(symbol) for symbol in frames if str(symbol).strip()]
+            active, runtime_status = self._runtime_contract()
+            non_selectable = self.registry.non_selectable_reasons()
+            active_names = {record.name for record in active}
+            skipped = {
+                name: reason
+                for name, reason in non_selectable.items()
+                if name not in active_names
+            }
         if not symbols:
             return self._empty_score(
                 [],
@@ -1131,7 +1713,10 @@ class MinedFactorScorer:
                     runtime_status=blocked,
                 )
 
-        if not active:
+        if not active or (
+            self.runtime_mode == PRODUCTION_RUNTIME_MODE
+            and runtime_status.get("status") != "ready"
+        ):
             return self._empty_score(
                 symbols,
                 skipped=skipped,
@@ -1147,6 +1732,8 @@ class MinedFactorScorer:
                 skipped=skipped,
                 runtime_status=runtime_status,
                 evaluation_context=evaluation_context,
+                prevalidated_input_sha256=prevalidated_input_sha256,
+                eligibility_prevalidated=eligibility_prevalidated,
             )
 
         weighted_scores = pd.Series(0.0, index=symbols, dtype=float)
@@ -1293,6 +1880,8 @@ class MinedFactorScorer:
         skipped: Mapping[str, str],
         runtime_status: Mapping[str, Any],
         evaluation_context: ProductionEvaluationContext,
+        prevalidated_input_sha256: str | None = None,
+        eligibility_prevalidated: bool = False,
     ) -> RuntimeFactorScore:
         """Execute the exact active set atomically without data substitution."""
 
@@ -1318,6 +1907,60 @@ class MinedFactorScorer:
                 "production_runtime_contract_factor_set_mismatch",
             )
             return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
+
+        contract_blockers = _production_runtime_contract_blockers(
+            active,
+            contracts,
+        )
+        if contract_blockers:
+            blocked = dict(runtime_status)
+            for blocker in contract_blockers:
+                blocked = self._blocked_runtime_status(blocked, blocker)
+            return self._empty_score(
+                symbols,
+                skipped=skipped,
+                runtime_status=blocked,
+            )
+        if not eligibility_prevalidated:
+            eligibility = _production_runtime_eligibility(
+                frames,
+                active=active,
+                contracts=contracts,
+            )
+            eligibility_blockers = [
+                blocker
+                for _symbol, symbol_blockers in eligibility.symbol_blockers
+                for blocker in symbol_blockers
+            ]
+            if eligibility.global_blockers or eligibility_blockers:
+                legacy_blockers: list[str] = []
+                if eligibility.symbol_blockers:
+                    coverage = len(eligibility.eligible_symbols) / max(
+                        len(symbols),
+                        1,
+                    )
+                    affected_factors = {
+                        blocker.split(":", 2)[1]
+                        for blocker in eligibility_blockers
+                        if blocker.count(":") >= 2
+                    }
+                    legacy_blockers = [
+                        "factor_required_columns_or_lookback_missing:"
+                        f"{factor_name}:coverage={coverage:.6f}"
+                        for factor_name in sorted(affected_factors)
+                    ]
+                blocked = dict(runtime_status)
+                for blocker in (
+                    *eligibility.global_blockers,
+                    *eligibility_blockers,
+                    *legacy_blockers,
+                ):
+                    blocked = self._blocked_runtime_status(blocked, blocker)
+                return self._empty_score(
+                    symbols,
+                    skipped=skipped,
+                    runtime_status=blocked,
+                )
 
         factor_series: dict[str, pd.Series] = {}
         factor_weights: dict[str, float] = {}
@@ -1374,55 +2017,11 @@ class MinedFactorScorer:
                 blocked = self._blocked_runtime_status(runtime_status, blocker)
                 return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
 
-            valid_frames: dict[str, pd.DataFrame] = {}
-            for symbol in symbols:
-                frame = frames.get(symbol)
-                if frame is None or frame.empty:
-                    continue
-                if any(column not in frame.columns for column in required_columns):
-                    continue
-                tail = frame.tail(lookback)
-                if len(tail) < lookback:
-                    continue
-                if tail[required_columns].isna().any(axis=None):
-                    continue
-                columns_valid = True
-                for column in required_columns:
-                    values = tail[column]
-                    if column == "trade_date":
-                        normalized_dates = values.astype(str).str.strip()
-                        if (
-                            normalized_dates.eq("").any()
-                            or normalized_dates.duplicated().any()
-                            or not normalized_dates.is_monotonic_increasing
-                        ):
-                            columns_valid = False
-                            break
-                        continue
-                    if (
-                        pd.api.types.is_bool_dtype(values.dtype)
-                        or not pd.api.types.is_numeric_dtype(values.dtype)
-                    ):
-                        columns_valid = False
-                        break
-                    numeric_values = values.to_numpy(dtype=float)
-                    if (
-                        not np.isfinite(numeric_values).all()
-                        or (numeric_values <= 0.0).any()
-                    ):
-                        columns_valid = False
-                        break
-                if not columns_valid:
-                    continue
-                valid_frames[symbol] = frame
+            valid_frames = {
+                symbol: frames[symbol]
+                for symbol in symbols
+            }
             coverage = len(valid_frames) / max(len(symbols), 1)
-            if set(valid_frames) != set(symbols):
-                blocker = (
-                    f"factor_required_columns_or_lookback_missing:{factor.name}:"
-                    f"coverage={coverage:.6f}"
-                )
-                blocked = self._blocked_runtime_status(runtime_status, blocker)
-                return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
             if coverage < float(minimum_coverage) - 1e-12:
                 blocker = f"factor_gate2_runtime_coverage_below_contract:{factor.name}"
                 blocked = self._blocked_runtime_status(runtime_status, blocker)
@@ -1523,17 +2122,24 @@ class MinedFactorScorer:
             for name in expected_names
         )
         symbol_scores = (weighted / total_abs_weight).clip(-1.0, 1.0)
-        try:
-            production_input_sha256 = production_runtime_input_sha256(
-                frames,
-                contracts,
-            )
-        except (TypeError, ValueError) as exc:
-            blocked = self._blocked_runtime_status(
-                runtime_status,
-                f"production_runtime_input_attestation_failed:{exc}",
-            )
-            return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
+        if prevalidated_input_sha256 is not None:
+            production_input_sha256 = prevalidated_input_sha256
+        else:
+            try:
+                production_input_sha256 = production_runtime_input_sha256(
+                    frames,
+                    contracts,
+                )
+            except (TypeError, ValueError) as exc:
+                blocked = self._blocked_runtime_status(
+                    runtime_status,
+                    f"production_runtime_input_attestation_failed:{exc}",
+                )
+                return self._empty_score(
+                    symbols,
+                    skipped=skipped,
+                    runtime_status=blocked,
+                )
         result = RuntimeFactorScore(
             symbol_scores={symbol: float(symbol_scores.loc[symbol]) for symbol in symbols},
             factor_count=len(expected_names),
@@ -2171,8 +2777,10 @@ __all__ = [
     "MinedFactorRegistry",
     "MinedFactorScorer",
     "PRODUCTION_RUNTIME_MODE",
+    "PRODUCTION_RUNTIME_PLAN_SCHEMA_VERSION",
     "PRODUCTION_EVALUATION_CONTEXT_SCHEMA_VERSION",
     "ProductionEvaluationContext",
+    "ProductionRuntimePlan",
     "REPORT_ONLY_SHADOW_RUNTIME_MODE",
     "RuntimeFactorScore",
     "production_runtime_metadata_is_ready",

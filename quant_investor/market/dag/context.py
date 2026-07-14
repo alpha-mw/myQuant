@@ -17,6 +17,7 @@ from quant_investor.branch_contracts import BranchResult
 from quant_investor.config import config
 from quant_investor.funnel.deterministic_funnel import FunnelConfig, FunnelOutput
 from quant_investor.factors.runtime import (
+    MinedFactorScorer,
     ProductionEvaluationContext,
     _mint_production_evaluation_context,
     production_frame_validation_blocker,
@@ -1195,6 +1196,7 @@ def _prepare_market_context(
     raw_read_results: dict[str, MarketDataReadResult] = {}
     frame_summaries: dict[str, dict[str, Any]] = {}
     quant_frame_validation_blockers: dict[str, str] = {}
+    quant_contract_eligibility_blockers: dict[str, list[str]] = {}
     runtime_end_date = _compact_runtime_date(
         scoped_data_snapshot.get("local_latest_trade_date")
         or scoped_data_snapshot.get("latest_trade_date")
@@ -1315,6 +1317,55 @@ def _prepare_market_context(
 
     symbols = list(researchable_symbols)
     researchable_frames = _researchable_frame_subset(frames, symbols)
+    production_factor_scorer = MinedFactorScorer()
+    production_runtime_plan = (
+        production_factor_scorer.build_production_runtime_plan(
+            researchable_frames
+        )
+    )
+    if production_runtime_plan.filter_applied:
+        quant_contract_eligibility_blockers = {
+            symbol: list(blockers)
+            for symbol, blockers in (
+                production_runtime_plan.symbol_blockers.items()
+            )
+        }
+        for symbol, blockers in quant_contract_eligibility_blockers.items():
+            read_result = read_results[symbol]
+            data_quality_issues.append(
+                DataQualityIssue(
+                    path=str(read_result.path or ""),
+                    symbol=symbol,
+                    category=str(read_result.category or ""),
+                    universe_key=universe_key,
+                    issue_type="production_factor_runtime_ineligible",
+                    severity="error",
+                    message=(
+                        "Production factor runtime input excluded: "
+                        + ";".join(blockers)
+                    ),
+                    resolver_strategy=str(
+                        read_result.resolver_trace.get(
+                            "resolution_strategy",
+                            "",
+                        )
+                    ),
+                    metadata={
+                        "blockers": list(blockers),
+                        "evaluation_as_of": runtime_end_date,
+                    },
+                )
+            )
+            if symbol not in quarantined_symbols:
+                quarantined_symbols.append(symbol)
+        researchable_symbols = list(
+            production_runtime_plan.eligible_symbols
+        )
+        symbols = list(researchable_symbols)
+        researchable_frames = _researchable_frame_subset(frames, symbols)
+    stage_metadata["researchable_count"] = len(researchable_symbols)
+    stage_metadata["quarantined_count"] = len(quarantined_symbols)
+    stage_metadata["issue_count"] = len(data_quality_issues)
     researchable_frame_summaries = {
         symbol: frame_summaries[symbol]
         for symbol in symbols
@@ -1416,6 +1467,8 @@ def _prepare_market_context(
                 evaluation_context_blockers=(
                     production_evaluation_context_blockers
                 ),
+                scorer=production_factor_scorer,
+                production_runtime_plan=production_runtime_plan,
             )
             quant_branch_metadata["scored_symbol_count"] = len(quant_result.symbol_scores)
         with profile_stage(
@@ -1801,6 +1854,9 @@ def _prepare_market_context(
             ),
             "quant_frame_validation_blockers": dict(
                 quant_frame_validation_blockers
+            ),
+            "quant_contract_eligibility_blockers": dict(
+                quant_contract_eligibility_blockers
             ),
             "provider_health": {},
             "data_snapshot": dict(scoped_data_snapshot),

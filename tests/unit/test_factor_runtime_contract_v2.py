@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 import hashlib
 import json
+import pickle
 import tracemalloc
 from pathlib import Path
 
@@ -10,6 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import quant_investor.factors.runtime as runtime_module
 from quant_investor.branch_contracts import BranchResult
 from quant_investor.factors.governance import (
     GATE_SPECS,
@@ -43,7 +46,10 @@ from quant_investor.factors.runtime_contract import (
     validate_production_runtime_contracts,
     validate_quant_production_activation,
 )
-from quant_investor.market.dag.packets import _build_global_quant_verdict
+from quant_investor.market.dag.packets import (
+    _build_global_quant_verdict,
+    _build_quant_branch_result_with_validation,
+)
 from quant_investor.market.pit_universe import PITUniverseRecord
 
 
@@ -937,6 +943,467 @@ def test_production_factor_requires_full_lookback_and_minimum_cross_section(
     assert any("min_cross_section" in item for item in small_result.runtime_blockers)
 
 
+def test_production_runtime_plan_uses_all_contracts_for_symbol_intersection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    records = [
+        _record("pv_low_dollar_volume_5d"),
+        _record("pv_volume_stability_5d"),
+    ]
+    dates = pd.date_range("2026-01-01", periods=8)
+    frames = {
+        f"S{index:02d}": pd.DataFrame(
+            {
+                "ts_code": [f"S{index:02d}"] * 8,
+                "trade_date": dates,
+                "adj_close": np.linspace(10.0 + index, 11.0 + index, 8),
+                "vol": np.linspace(100.0, 120.0 + index, 8),
+                "amount": np.linspace(1_000.0 + index, 1_200.0 + index, 8),
+            }
+        )
+        for index in range(24)
+    }
+    short_symbols = list(frames)[-4:]
+    for symbol in short_symbols:
+        frames[symbol] = frames[symbol].tail(5).copy()
+    runtime_status = _runtime_status_for(records)
+    contracts = runtime_status["factor_runtime_contracts"]
+    assert isinstance(contracts, dict)
+    contracts[records[0].name]["lookback_rows"] = 5
+    contracts[records[1].name]["lookback_rows"] = 8
+    scorer = MinedFactorScorer(MinedFactorRegistry.from_records(records))
+    monkeypatch.setattr(
+        scorer,
+        "_runtime_contract",
+        lambda: (records, runtime_status),
+    )
+
+    plan = scorer.build_production_runtime_plan(frames)
+
+    assert plan.filter_applied is True
+    assert list(plan.input_symbols) == sorted(frames)
+    assert list(plan.eligible_symbols) == sorted(set(frames) - set(short_symbols))
+    assert plan.symbol_blockers == {
+        symbol: (
+            f"factor_required_lookback_missing:{records[1].name}:{symbol}",
+        )
+        for symbol in sorted(short_symbols)
+    }
+
+
+def test_production_runtime_plan_is_discoverable_from_runtime_exports() -> None:
+    assert "ProductionRuntimePlan" in runtime_module.__all__
+    assert "PRODUCTION_RUNTIME_PLAN_SCHEMA_VERSION" in runtime_module.__all__
+    assert runtime_module.ProductionRuntimePlan is not None
+
+
+@pytest.mark.parametrize(
+    ("corruption", "expected_blocker"),
+    [
+        ("missing_column", "factor_required_columns_missing"),
+        ("short_lookback", "factor_required_lookback_missing"),
+        ("missing_value", "factor_required_values_missing"),
+        ("bool_dtype", "factor_required_values_dtype"),
+        ("non_finite", "factor_required_values_non_finite"),
+        ("non_positive", "factor_required_values_non_positive"),
+        ("trade_date", "factor_required_trade_date_invalid"),
+    ],
+)
+def test_production_runtime_plan_reports_exact_symbol_input_blocker(
+    monkeypatch: pytest.MonkeyPatch,
+    corruption: str,
+    expected_blocker: str,
+) -> None:
+    record = _record()
+    frames = _frames()
+    runtime_status = _runtime_status_for([record])
+    contracts = runtime_status["factor_runtime_contracts"]
+    assert isinstance(contracts, dict)
+    contracts[record.name]["min_cross_section"] = 1
+    target = frames["S00"]
+    if corruption == "missing_column":
+        frames["S00"] = target.drop(columns=["amount"])
+    elif corruption == "short_lookback":
+        frames["S00"] = target.tail(4).copy()
+    elif corruption == "missing_value":
+        target.loc[target.index[-1], "amount"] = np.nan
+    elif corruption == "bool_dtype":
+        target["amount"] = True
+    elif corruption == "non_finite":
+        target.loc[target.index[-1], "amount"] = np.inf
+    elif corruption == "non_positive":
+        target.loc[target.index[-1], "amount"] = 0.0
+    else:
+        target.loc[target.index[-1], "trade_date"] = target.loc[
+            target.index[-2], "trade_date"
+        ]
+    scorer = MinedFactorScorer(MinedFactorRegistry.from_records([record]))
+    monkeypatch.setattr(
+        scorer,
+        "_runtime_contract",
+        lambda: ([record], runtime_status),
+    )
+
+    plan = scorer.build_production_runtime_plan(frames)
+
+    assert plan.symbol_blockers == {
+        "S00": (f"{expected_blocker}:{record.name}:S00",)
+    }
+    assert "S00" not in plan.eligible_symbols
+
+
+def test_production_runtime_plan_allows_frame_reorder_and_rejects_value_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    record = _record()
+    frames = _frames()
+    scorer = MinedFactorScorer(MinedFactorRegistry.from_records([record]))
+    runtime_status = _runtime_status_for([record])
+    monkeypatch.setattr(
+        scorer,
+        "_runtime_contract",
+        lambda: ([record], runtime_status),
+    )
+    plan = scorer.build_production_runtime_plan(frames)
+    context = _evaluation_context(frames, tmp_path)
+
+    reordered = dict(reversed(list(frames.items())))
+    ready = scorer.score(
+        reordered,
+        evaluation_context=context,
+        production_runtime_plan=plan,
+    )
+
+    assert ready.governance_status == "ready"
+    assert ready.production_input_sha256 == plan.eligible_input_sha256
+
+    drifted = {symbol: frame.copy() for symbol, frame in frames.items()}
+    drifted["S00"].loc[drifted["S00"].index[-1], "amount"] += 1.0
+    blocked = scorer.score(
+        drifted,
+        evaluation_context=context,
+        production_runtime_plan=plan,
+    )
+
+    assert blocked.governance_status == "governance_blocked"
+    assert "production_runtime_plan_input_drift" in blocked.runtime_blockers
+
+
+def test_production_runtime_plan_rejects_owner_replace_payload_and_registry_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    record = _record()
+    frames = _frames()
+    registry = MinedFactorRegistry.from_records([record])
+    scorer = MinedFactorScorer(registry)
+    runtime_status = _runtime_status_for([record])
+    monkeypatch.setattr(
+        scorer,
+        "_runtime_contract",
+        lambda: ([record], runtime_status),
+    )
+    plan = scorer.build_production_runtime_plan(frames)
+    context = _evaluation_context(frames, tmp_path)
+
+    other = MinedFactorScorer(MinedFactorRegistry.from_records([_record()]))
+    owner_blocked = other.score(
+        frames,
+        evaluation_context=context,
+        production_runtime_plan=plan,
+    )
+    assert "production_runtime_plan_not_issued_by_scorer" in owner_blocked.runtime_blockers
+    assert "production_runtime_plan_owner_mismatch" in owner_blocked.runtime_blockers
+
+    forged = replace(plan, filter_applied=False, payload_sha256="")
+    object.__setattr__(
+        forged,
+        "payload_sha256",
+        runtime_module._canonical_payload_sha256(forged._payload()),
+    )
+    forged_blocked = scorer.score(
+        frames,
+        evaluation_context=context,
+        production_runtime_plan=forged,
+    )
+    assert "production_runtime_plan_not_issued_by_scorer" in forged_blocked.runtime_blockers
+
+    object.__setattr__(plan, "eligible_input_sha256", "f" * 64)
+    payload_blocked = scorer.score(
+        frames,
+        evaluation_context=context,
+        production_runtime_plan=plan,
+    )
+    assert "production_runtime_plan_payload_drift" in payload_blocked.runtime_blockers
+
+    clean_scorer = MinedFactorScorer(MinedFactorRegistry.from_records([_record()]))
+    monkeypatch.setattr(
+        clean_scorer,
+        "_runtime_contract",
+        lambda: ([clean_scorer.registry.factors[0]], _runtime_status_for(clean_scorer.registry.factors)),
+    )
+    clean_plan = clean_scorer.build_production_runtime_plan(frames)
+    clean_scorer.registry.factors[0].weight = 0.75
+    registry_blocked = clean_scorer.score(
+        frames,
+        evaluation_context=context,
+        production_runtime_plan=clean_plan,
+    )
+    assert "production_runtime_plan_registry_drift" in registry_blocked.runtime_blockers
+
+
+def test_production_runtime_plan_rejects_strict_registry_file_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    record = _record()
+    frames = _frames()
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text('{"version":1}', encoding="utf-8")
+    registry = MinedFactorRegistry.from_records([record])
+    registry.metadata = {
+        "path": str(registry_path),
+        "strict_loader": True,
+        "registry_sha256": hashlib.sha256(registry_path.read_bytes()).hexdigest(),
+    }
+    scorer = MinedFactorScorer(registry)
+    monkeypatch.setattr(
+        scorer,
+        "_runtime_contract",
+        lambda: ([record], _runtime_status_for([record])),
+    )
+    plan = scorer.build_production_runtime_plan(frames)
+    registry_path.write_text('{"version":2}', encoding="utf-8")
+
+    result = scorer.score(
+        frames,
+        evaluation_context=_evaluation_context(frames, tmp_path),
+        production_runtime_plan=plan,
+    )
+
+    assert "production_runtime_plan_registry_drift" in result.runtime_blockers
+
+
+def test_production_runtime_plan_is_single_issue_and_not_serializable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record = _record()
+    frames = _frames()
+    scorer = MinedFactorScorer(MinedFactorRegistry.from_records([record]))
+    monkeypatch.setattr(
+        scorer,
+        "_runtime_contract",
+        lambda: ([record], _runtime_status_for([record])),
+    )
+    plan = scorer.build_production_runtime_plan(frames)
+
+    with pytest.raises(RuntimeError, match="already issued"):
+        scorer.build_production_runtime_plan(frames)
+    with pytest.raises(TypeError, match="not copyable"):
+        copy.copy(plan)
+    with pytest.raises(TypeError, match="not copyable"):
+        copy.deepcopy(plan)
+    with pytest.raises(TypeError, match="not serializable"):
+        pickle.dumps(plan)
+    with pytest.raises(TypeError):
+        json.dumps(plan)
+
+
+def test_production_runtime_plan_rejects_seal_frame_set_and_context_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    record = _record()
+    frames = _frames()
+    scorer = MinedFactorScorer(MinedFactorRegistry.from_records([record]))
+    monkeypatch.setattr(
+        scorer,
+        "_runtime_contract",
+        lambda: ([record], _runtime_status_for([record])),
+    )
+    plan = scorer.build_production_runtime_plan(frames)
+    context = _evaluation_context(frames, tmp_path)
+
+    forged_seal = replace(plan, _seal=object())
+    seal_blocked = scorer.score(
+        frames,
+        evaluation_context=context,
+        production_runtime_plan=forged_seal,
+    )
+    assert "production_runtime_plan_seal_invalid" in seal_blocked.runtime_blockers
+
+    missing_frame = dict(frames)
+    missing_frame.pop("S00")
+    frame_blocked = scorer.score(
+        missing_frame,
+        evaluation_context=context,
+        production_runtime_plan=plan,
+    )
+    assert "production_runtime_plan_frame_set_drift" in frame_blocked.runtime_blockers
+
+    other_dir = tmp_path / "other-context"
+    other_dir.mkdir()
+    context_drift = _evaluation_context(missing_frame, other_dir)
+    context_blocked = scorer.score(
+        frames,
+        evaluation_context=context_drift,
+        production_runtime_plan=plan,
+    )
+    assert "production_runtime_plan_context_universe_drift" in context_blocked.runtime_blockers
+
+
+@pytest.mark.parametrize(
+    ("tamper", "expected_blocker"),
+    [
+        ("input_hash", "production_runtime_plan_identity_drift"),
+        ("active_factor", "production_runtime_plan_active_factor_drift"),
+        ("contracts", "production_runtime_plan_identity_drift"),
+    ],
+)
+def test_production_runtime_plan_rejects_rehashed_identity_tampering(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    tamper: str,
+    expected_blocker: str,
+) -> None:
+    record = _record()
+    frames = _frames()
+    scorer = MinedFactorScorer(MinedFactorRegistry.from_records([record]))
+    monkeypatch.setattr(
+        scorer,
+        "_runtime_contract",
+        lambda: ([record], _runtime_status_for([record])),
+    )
+    plan = scorer.build_production_runtime_plan(frames)
+    if tamper == "input_hash":
+        object.__setattr__(plan, "input_symbol_set_sha256", "f" * 64)
+    elif tamper == "active_factor":
+        active = list(plan.active_factors)
+        active[0].weight = 0.75
+        object.__setattr__(
+            plan,
+            "_active_factors_json",
+            runtime_module._canonical_payload_json(
+                [factor.to_dict() for factor in active]
+            ),
+        )
+    else:
+        contracts = plan.contracts
+        contracts[record.name]["lookback_rows"] = 4
+        object.__setattr__(
+            plan,
+            "_contracts_json",
+            runtime_module._canonical_payload_json(contracts),
+        )
+    object.__setattr__(
+        plan,
+        "payload_sha256",
+        runtime_module._canonical_payload_sha256(plan._payload()),
+    )
+
+    result = scorer.score(
+        frames,
+        evaluation_context=_evaluation_context(frames, tmp_path),
+        production_runtime_plan=plan,
+    )
+
+    assert expected_blocker in result.runtime_blockers
+
+
+def test_invalid_contract_plan_does_not_filter_and_report_only_cannot_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record = _record()
+    frames = _frames()
+    scorer = MinedFactorScorer(MinedFactorRegistry.from_records([record]))
+    runtime_status = _runtime_status_for([record])
+    contracts = runtime_status["factor_runtime_contracts"]
+    assert isinstance(contracts, dict)
+    contracts[record.name].pop("lookback_rows")
+    monkeypatch.setattr(
+        scorer,
+        "_runtime_contract",
+        lambda: ([record], runtime_status),
+    )
+
+    plan = scorer.build_production_runtime_plan(frames)
+
+    assert plan.filter_applied is False
+    assert plan.eligible_symbols == tuple(sorted(frames))
+    assert plan.eligible_input_sha256 == ""
+    assert f"factor_runtime_contract_invalid:{record.name}" in plan.runtime_status["blockers"]
+
+    report_only = MinedFactorScorer(
+        MinedFactorRegistry.from_records([record]),
+        runtime_mode="report_only_shadow",
+    )
+    with pytest.raises(TypeError, match="production mode"):
+        report_only.build_production_runtime_plan(frames)
+
+
+def test_packet_requires_scorer_plan_pair_and_blocks_malformed_plan(
+    tmp_path: Path,
+) -> None:
+    frames = _frames()
+    context = _evaluation_context(frames, tmp_path)
+    pair_result, pair_token = _build_quant_branch_result_with_validation(
+        frames=frames,
+        evaluation_context=context,
+        production_runtime_plan=object(),  # type: ignore[arg-type]
+    )
+    assert pair_token is None
+    pair_runtime = pair_result.metadata["mined_factor_runtime"]
+    assert "production_runtime_scorer_plan_pair_invalid" in pair_runtime[
+        "runtime_blockers"
+    ]
+
+    result, token = _build_quant_branch_result_with_validation(
+        frames=frames,
+        evaluation_context=context,
+        scorer=MinedFactorScorer(MinedFactorRegistry.from_records([])),
+        production_runtime_plan=object(),  # type: ignore[arg-type]
+    )
+
+    assert token is None
+    assert result.metadata["production_eligible"] is False
+    runtime = result.metadata["mined_factor_runtime"]
+    assert "production_runtime_plan_type_invalid" in runtime["runtime_blockers"]
+
+
+def test_governance_blocked_runtime_plan_keeps_full_input_compatibility(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    frames = _frames()
+    runtime_status = {
+        "status": "governance_blocked",
+        "factor_mode": "governance_blocked",
+        "confidence_multiplier": 0.0,
+        "production_eligible": False,
+        "blockers": ["fixture_governance_blocked"],
+    }
+    scorer = MinedFactorScorer(MinedFactorRegistry.from_records([]))
+    monkeypatch.setattr(
+        scorer,
+        "_runtime_contract",
+        lambda: ([], runtime_status),
+    )
+
+    plan = scorer.build_production_runtime_plan(frames)
+    result = scorer.score(
+        dict(reversed(list(frames.items()))),
+        evaluation_context=_evaluation_context(frames, tmp_path),
+        production_runtime_plan=plan,
+    )
+
+    assert plan.filter_applied is False
+    assert plan.eligible_symbols == tuple(sorted(frames))
+    assert plan.symbol_blockers == {}
+    assert result.symbol_scores == {symbol: 0.0 for symbol in sorted(frames)}
+    assert result.runtime_blockers == ["fixture_governance_blocked"]
+
+
 def test_production_success_uses_exact_contract_factor_and_symbol_sets(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1308,20 +1775,16 @@ def test_downstream_readiness_revalidates_real_strict_fixture(
         "production_runtime_input_sha256",
         counting_digest,
     )
-    monkeypatch.setattr(
-        packets_module,
-        "score_with_mined_factors",
-        lambda runtime_frames, *, evaluation_context=None: MinedFactorScorer(
-            strict_registry
-        ).score(
-            runtime_frames,
-            evaluation_context=evaluation_context,
-        ),
+    plan_scorer = MinedFactorScorer(strict_registry)
+    production_runtime_plan = plan_scorer.build_production_runtime_plan(
+        frames
     )
     validated_result, validation_token = (
         packets_module._build_quant_branch_result_with_validation(
             frames=frames,
             evaluation_context=evaluation_context,
+            scorer=plan_scorer,
+            production_runtime_plan=production_runtime_plan,
         )
     )
     assert validation_token is not None

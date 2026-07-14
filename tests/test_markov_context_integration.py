@@ -9,9 +9,12 @@ import pytest
 import quant_investor.market.dag.context as context_module
 from quant_investor.agent_protocol import BranchVerdict
 from quant_investor.branch_contracts import BranchResult
+from quant_investor.factors.governance import FactorLifecycleState, FactorRecord
+from quant_investor.factors.runtime import MinedFactorRegistry, MinedFactorScorer
 from quant_investor.funnel.deterministic_funnel import FunnelOutput
 from quant_investor.market.dag.context import _prepare_market_context
 from quant_investor.market.read_result import MarketDataReadResult
+from quant_investor.market.runtime_profile import MarketRuntimeProfiler
 from quant_investor.regime.types import REGIME_RANGE_HIGH_VOL, REGIME_TREND_DOWN
 
 
@@ -295,6 +298,168 @@ def test_quant_and_cross_section_receive_only_researchable_frames(
     assert state.global_context.metadata["quant_frame_validation_blockers"] == {
         "000002.SZ": "production_frame_terminal_date_mismatch:000002.SZ",
     }
+
+
+def test_runtime_plan_filters_four_short_histories_before_all_quant_consumers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_branch_readiness(monkeypatch)
+    monkeypatch.setattr(context_module.config, "MARKOV_REGIME_ENABLED", False)
+    symbols = [f"S{index:02d}" for index in range(24)]
+    dates = pd.date_range(end="2026-06-25", periods=8, freq="D")
+    frames = {
+        symbol: pd.DataFrame(
+            {
+                "ts_code": [symbol] * 8,
+                "trade_date": dates,
+                "close": [10.0 + index + step / 10.0 for step in range(8)],
+                "adj_close": [10.0 + index + step / 10.0 for step in range(8)],
+                "vol": [1_000.0 + step for step in range(8)],
+                "volume": [1_000.0 + step for step in range(8)],
+                "amount": [10_000.0 + step for step in range(8)],
+            }
+        )
+        for index, symbol in enumerate(symbols)
+    }
+    short_symbols = symbols[-4:]
+    for symbol in short_symbols:
+        frames[symbol] = frames[symbol].tail(5).copy()
+
+    class PlanReader(FakeReader):
+        def __init__(self) -> None:
+            self.frames = frames
+
+    records = [
+        FactorRecord(
+            name="pv_low_dollar_volume_5d",
+            version="v1",
+            state=FactorLifecycleState.PRODUCTION_FACTOR,
+            category="liquidity",
+            implementation="price_volume:pv_low_dollar_volume_5d",
+            weight=0.5,
+            direction=1.0,
+        ),
+        FactorRecord(
+            name="pv_volume_stability_5d",
+            version="v1",
+            state=FactorLifecycleState.PRODUCTION_FACTOR,
+            category="liquidity",
+            implementation="price_volume:pv_volume_stability_5d",
+            weight=0.5,
+            direction=1.0,
+        ),
+    ]
+    contracts = {
+        records[0].name: {
+            "required_columns": ["trade_date", "amount"],
+            "lookback_rows": 5,
+            "gate2_min_coverage_rate": 1.0,
+            "min_cross_section": 20,
+        },
+        records[1].name: {
+            "required_columns": ["trade_date", "vol"],
+            "lookback_rows": 8,
+            "gate2_min_coverage_rate": 1.0,
+            "min_cross_section": 20,
+        },
+    }
+    runtime_status = {
+        "status": "ready",
+        "factor_mode": "governed_mined_factors",
+        "confidence_multiplier": 1.0,
+        "production_eligible": True,
+        "blockers": [],
+        "factor_runtime_contracts": contracts,
+    }
+    scorer = MinedFactorScorer(MinedFactorRegistry.from_records(records))
+    runtime_contract_calls = 0
+
+    def runtime_contract():
+        nonlocal runtime_contract_calls
+        runtime_contract_calls += 1
+        return records, runtime_status
+
+    monkeypatch.setattr(scorer, "_runtime_contract", runtime_contract)
+    monkeypatch.setattr(context_module, "MinedFactorScorer", lambda: scorer)
+    captured: dict[str, list[str]] = {}
+
+    def capture_context(**kwargs):
+        captured["context"] = list(kwargs["symbols"])
+        return None, ["fixture_context_blocked"]
+
+    original_cross_section = context_module._build_cross_section_quant
+
+    def capture_cross_section(runtime_frames, **kwargs):
+        captured["cross_section"] = list(runtime_frames)
+        return original_cross_section(runtime_frames, **kwargs)
+
+    def capture_quant(*, frames, **kwargs):
+        captured["quant"] = list(frames)
+        assert kwargs["production_runtime_plan"].eligible_symbols == tuple(
+            sorted(frames)
+        )
+        assert kwargs["scorer"] is scorer
+        return (
+            BranchResult(
+                branch_name="quant",
+                symbol_scores={symbol: 0.0 for symbol in frames},
+            ),
+            None,
+        )
+
+    monkeypatch.setattr(
+        context_module,
+        "_build_production_evaluation_context",
+        capture_context,
+    )
+    monkeypatch.setattr(context_module, "_build_cross_section_quant", capture_cross_section)
+    monkeypatch.setattr(
+        context_module,
+        "_build_quant_branch_result_with_validation",
+        capture_quant,
+    )
+    kwargs = _context_kwargs()
+    profiler = MarketRuntimeProfiler(market="CN", universe="full_a")
+    kwargs.update(
+        {
+            "symbols": symbols,
+            "shared_reader": PlanReader(),
+            "company_profile_map": {},
+            "company_name_map": {},
+            "runtime_profiler": profiler,
+        }
+    )
+
+    state = _prepare_market_context(**kwargs)
+
+    eligible = symbols[:-4]
+    assert runtime_contract_calls == 1
+    assert state.researchable_symbols == eligible
+    assert state.quarantined_symbols == short_symbols
+    assert captured == {
+        "context": eligible,
+        "cross_section": eligible,
+        "quant": eligible,
+    }
+    assert set(state.global_context.metadata["quant_contract_eligibility_blockers"]) == set(short_symbols)
+    tradability_stage = next(
+        item
+        for item in profiler.stages
+        if item["name"] == "dag_tradability_snapshot"
+    )
+    assert tradability_stage["metadata"]["researchable_count"] == 20
+    assert tradability_stage["metadata"]["quarantined_count"] == 4
+    assert tradability_stage["metadata"]["issue_count"] == 4
+    for symbol in short_symbols:
+        issue = next(
+            item
+            for item in state.data_quality_issues
+            if item.symbol == symbol
+            and item.issue_type == "production_factor_runtime_ineligible"
+        )
+        assert issue.metadata["blockers"] == [
+            f"factor_required_lookback_missing:{records[1].name}:{symbol}"
+        ]
 
 
 def test_markov_context_forwards_turnover_cap_when_signal_sets_it(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
