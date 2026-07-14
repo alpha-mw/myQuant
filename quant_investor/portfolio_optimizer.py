@@ -143,31 +143,6 @@ def _clean_weight_dict(value: Mapping[str, float], *, keep_zero: bool = False) -
     return result
 
 
-def _get_attr(source: Any, name: str, default: Any = None) -> Any:
-    if source is None:
-        return default
-    if isinstance(source, Mapping):
-        return source.get(name, default)
-    return getattr(source, name, default)
-
-
-def _get_nested_attr(source: Any, path: Sequence[str], default: Any = None) -> Any:
-    value = source
-    for part in path:
-        value = _get_attr(value, part, default)
-        if value is default:
-            return default
-    return value
-
-
-def _metadata_float(metadata: Mapping[str, Any], keys: Sequence[str]) -> float | None:
-    for key in keys:
-        if key not in metadata or metadata[key] is None:
-            continue
-        return _finite_float(metadata[key], key)
-    return None
-
-
 def _candidate_adjusted_score(candidate: "OptimizationCandidate", config: "PortfolioOptimizerConfig") -> float:
     risk_multiplier = max(0.0, 1.0 - config.risk_score_penalty_weight * candidate.risk_score)
     return candidate.edge_after_costs * max(candidate.confidence, 0.0) * risk_multiplier
@@ -820,75 +795,8 @@ def build_candidate_from_overlay(
     default_max_weight: float | None = None,
     metadata: Mapping[str, Any] | None = None,
 ) -> OptimizationCandidate:
-    input_metadata = _coerce_metadata(metadata)
-    overlay_metadata = _get_attr(overlay, "metadata", {}) or {}
-    diagnostics_metadata = _get_nested_attr(overlay, ["diagnostics", "metadata"], {}) or {}
-    confidence = diagnostics_metadata.get("posterior_confidence")
-    if confidence is None:
-        confidence = overlay_metadata.get("posterior_confidence")
-    if confidence is None:
-        confidence = 0.0
-
-    tensor_metadata = _get_attr(risk_tensor, "metadata", {}) or {}
-    max_weight = _metadata_float(
-        tensor_metadata if isinstance(tensor_metadata, Mapping) else {},
-        ["max_weight", "max_symbol_weight", "target_max_weight", "position_cap"],
-    )
-    if max_weight is None:
-        max_weight = default_max_weight
-
-    execution = _get_attr(risk_tensor, "execution")
-    liquidity = _get_attr(risk_tensor, "liquidity")
-    exposure = _get_attr(risk_tensor, "exposure")
-
-    execution_status = str(_get_attr(execution, "status", ""))
-    is_blocked = (
-        execution_status == "blocked"
-        or bool(_get_attr(risk_tensor, "quarantine", False))
-        or not bool(_get_attr(risk_tensor, "is_tradable", True))
-    )
-    execution_reasons = list(_get_attr(execution, "blocked_reasons", []) or [])
-    issue_reasons: list[str] = []
-    for issue in list(_get_attr(risk_tensor, "issues", []) or []):
-        if str(_get_attr(issue, "severity", "")) == "blocker":
-            issue_reasons.append(str(_get_attr(issue, "issue_type", "") or _get_attr(issue, "message", "")))
-    block_reasons = _ordered_unique([reason for reason in [*execution_reasons, *issue_reasons] if reason])
-
-    market = str(_get_attr(overlay, "market", "") or _get_attr(risk_tensor, "market", ""))
-    as_of = str(_get_attr(overlay, "as_of", "") or _get_attr(risk_tensor, "as_of", "") or input_metadata.get("as_of", ""))
-    estimated_slippage_bps = _get_attr(execution, "estimated_slippage_bps")
-    if estimated_slippage_bps is None:
-        spread_bps = _get_attr(liquidity, "estimated_spread_bps")
-        estimated_slippage_bps = None if spread_bps is None else float(spread_bps) / 2.0
-
-    return OptimizationCandidate(
-        schema_version=PORTFOLIO_OPTIMIZER_SCHEMA_VERSION,
-        symbol=str(_get_attr(overlay, "symbol", "")),
-        market=market,
-        as_of=as_of,
-        company_name=str(_get_attr(overlay, "company_name", "")),
-        sector=_get_attr(exposure, "sector"),
-        current_weight=current_weight,
-        max_weight=max_weight,
-        expected_alpha=float(_get_attr(overlay, "calibrated_posterior_expected_alpha", 0.0)),
-        edge_after_costs=float(_get_attr(overlay, "calibrated_edge_after_costs", 0.0)),
-        confidence=float(confidence),
-        action_score=float(_get_attr(overlay, "calibrated_posterior_action_score", 0.0)),
-        risk_score=float(_get_attr(risk_tensor, "risk_score", 0.0) or 0.0),
-        liquidity_score=_get_attr(liquidity, "liquidity_score"),
-        estimated_transaction_cost_bps=_get_attr(execution, "estimated_transaction_cost_bps"),
-        estimated_slippage_bps=estimated_slippage_bps,
-        estimated_market_impact_bps=(
-            _get_attr(execution, "estimated_market_impact_bps")
-            if _get_attr(execution, "estimated_market_impact_bps") is not None
-            else _get_attr(liquidity, "estimated_market_impact_bps")
-        ),
-        is_blocked=is_blocked,
-        block_reasons=block_reasons,
-        metadata={
-            "portfolio_optimizer_schema_version": PORTFOLIO_OPTIMIZER_SCHEMA_VERSION,
-            "input_metadata": input_metadata,
-        },
+    raise ValueError(
+        "posterior overlay bridge is disabled: overlays are report-only"
     )
 
 
@@ -900,25 +808,11 @@ def build_candidates_from_overlays(
     default_max_weight: float | None = None,
     metadata: Mapping[str, Any] | None = None,
 ) -> list[OptimizationCandidate]:
-    tensors = risk_tensors_by_symbol or {}
-    weights = current_weights or {}
-    candidates: list[OptimizationCandidate] = []
-    seen: set[str] = set()
-    for overlay in overlays:
-        symbol = str(_get_attr(overlay, "symbol", ""))
-        if symbol in seen:
-            raise ValueError(f"Duplicate optimization overlay for symbol: {symbol!r}.")
-        seen.add(symbol)
-        candidates.append(
-            build_candidate_from_overlay(
-                overlay,
-                risk_tensor=tensors.get(symbol),
-                current_weight=float(weights.get(symbol, 0.0)),
-                default_max_weight=default_max_weight,
-                metadata=metadata,
-            )
-        )
-    return candidates
+    if len(overlays) == 0:
+        return []
+    raise ValueError(
+        "posterior overlay bridge is disabled: overlays are report-only"
+    )
 
 
 def _allocate_greedy(

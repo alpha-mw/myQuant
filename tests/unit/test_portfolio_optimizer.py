@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quant_investor.bayesian.posterior_overlay import CalibratedPosteriorOverlay
+import quant_investor.portfolio_optimizer as optimizer_module
 from quant_investor.portfolio_optimizer import (
     CONSTRAINT_BLOCKED_SYMBOL,
     CONSTRAINT_MIN_EDGE,
@@ -36,16 +36,6 @@ from quant_investor.portfolio_optimizer import (
     optimize_portfolio,
     run_walk_forward_loop,
     validate_finite_number,
-)
-from quant_investor.risk_tensor import (
-    EXECUTION_BLOCKED,
-    RISK_ISSUE_DATA_QUARANTINE,
-    RISK_SEVERITY_BLOCKER,
-    ExecutionFeasibility,
-    LiquidityProfile,
-    RiskIssue,
-    SymbolExposure,
-    SymbolRiskTensor,
 )
 from quant_investor.versioning import PORTFOLIO_OPTIMIZER_SCHEMA_VERSION
 
@@ -201,7 +191,35 @@ def test_numeric_helpers() -> None:
         validate_finite_number(float("inf"), field_name="bad")
 
 
-def test_candidate_bridge_from_stubs_and_duplicate_overlay_rejection() -> None:
+def test_candidate_bridges_fail_closed_before_reading_overlay_or_risk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reads: list[str] = []
+
+    class Poison:
+        def __getattribute__(self, name: str):
+            reads.append(name)
+            raise AssertionError(f"bridge read forbidden input: {name}")
+
+    with pytest.raises(ValueError, match="report-only"):
+        build_candidate_from_overlay(
+            Poison(),
+            risk_tensor=Poison(),
+            current_weight=0.35,
+            metadata=Poison(),
+        )
+    assert reads == []
+
+    legacy_v1 = {
+        "schema_version": "2026-04-26.posterior-overlay.v1",
+        "symbol": "000001.SZ",
+        "calibrated_posterior_expected_alpha": 0.05,
+        "calibrated_edge_after_costs": 0.03,
+        "calibrated_posterior_action_score": 0.70,
+    }
+    with pytest.raises(ValueError, match="report-only"):
+        build_candidate_from_overlay(legacy_v1, current_weight=0.35)
+
     overlay = SimpleNamespace(
         symbol="000001.SZ",
         company_name="测试公司",
@@ -212,42 +230,21 @@ def test_candidate_bridge_from_stubs_and_duplicate_overlay_rejection() -> None:
         diagnostics=SimpleNamespace(metadata={"posterior_confidence": 0.65}),
         metadata={"posterior_confidence": 0.10},
     )
-    risk_tensor = SimpleNamespace(
-        symbol="000001.SZ",
-        market="CN",
-        as_of="2026-04-26",
-        exposure=SimpleNamespace(sector="Technology"),
-        risk_score=0.30,
-        liquidity=SimpleNamespace(liquidity_score=0.75, estimated_market_impact_bps=3.0),
-        execution=SimpleNamespace(
-            status="blocked",
-            blocked_reasons=["suspended"],
-            estimated_transaction_cost_bps=9.0,
-            estimated_slippage_bps=2.0,
-            estimated_market_impact_bps=None,
-        ),
-        quarantine=False,
-        is_tradable=True,
-        issues=[SimpleNamespace(issue_type="data_quarantine", severity="blocker")],
-        metadata={"max_weight": 0.08},
+    constructed = 0
+
+    def counting_candidate(**kwargs):
+        nonlocal constructed
+        constructed += 1
+        return SimpleNamespace(**kwargs)
+
+    monkeypatch.setattr(
+        optimizer_module,
+        "OptimizationCandidate",
+        counting_candidate,
     )
-
-    candidate = build_candidate_from_overlay(overlay, risk_tensor=risk_tensor, current_weight=0.04)
-
-    assert candidate.symbol == "000001.SZ"
-    assert candidate.expected_alpha == pytest.approx(0.05)
-    assert candidate.edge_after_costs == pytest.approx(0.03)
-    assert candidate.sector == "Technology"
-    assert candidate.risk_score == pytest.approx(0.30)
-    assert candidate.liquidity_score == pytest.approx(0.75)
-    assert candidate.estimated_transaction_cost_bps == pytest.approx(9.0)
-    assert candidate.estimated_market_impact_bps == pytest.approx(3.0)
-    assert candidate.is_blocked is True
-    assert candidate.block_reasons == ["data_quarantine", "suspended"]
-    assert candidate.max_weight == pytest.approx(0.08)
-
-    with pytest.raises(ValueError, match="Duplicate"):
+    with pytest.raises(ValueError, match="report-only"):
         build_candidates_from_overlays([overlay, overlay])
+    assert constructed == 0
 
 
 def test_optimizer_clean_case_respects_caps_and_ordering() -> None:
@@ -415,58 +412,24 @@ def test_store_round_trips_and_rejects_duplicates_and_bad_json(tmp_path) -> None
         bad_store.read_plans()
 
 
-def test_actual_phase4_and_phase6_bridge_instances() -> None:
-    overlay = CalibratedPosteriorOverlay(
-        symbol="000001.SZ",
-        company_name="真实测试",
-        market="CN",
-        calibrated_posterior_expected_alpha=0.04,
-        calibrated_edge_after_costs=0.025,
-        calibrated_posterior_action_score=0.66,
-        metadata={"posterior_confidence": 0.70},
-    )
-    risk_tensor = SymbolRiskTensor(
-        tensor_id="tensor",
-        symbol="000001.SZ",
-        market="CN",
-        as_of="2026-04-26",
-        latest_trade_date="2026-04-25",
-        exposure=SymbolExposure(symbol="000001.SZ", market="CN", as_of="2026-04-26", sector="Technology"),
-        liquidity=LiquidityProfile(
-            symbol="000001.SZ",
-            market="CN",
-            as_of="2026-04-26",
-            liquidity_score=0.60,
-            estimated_market_impact_bps=4.0,
-        ),
-        execution=ExecutionFeasibility(
-            symbol="000001.SZ",
-            market="CN",
-            as_of="2026-04-26",
-            status=EXECUTION_BLOCKED,
-            blocked_reasons=["untradable"],
-            estimated_transaction_cost_bps=8.0,
-            estimated_slippage_bps=2.0,
-        ),
-        issues=[
-            RiskIssue(
-                issue_id="issue",
-                symbol="000001.SZ",
-                market="CN",
-                as_of="2026-04-26",
-                issue_type=RISK_ISSUE_DATA_QUARANTINE,
-                severity=RISK_SEVERITY_BLOCKER,
-                message="quarantine",
+def test_bridge_cannot_convert_report_only_overlay_into_forced_exit() -> None:
+    class RiskTensorPoison:
+        def __getattribute__(self, name: str):
+            raise AssertionError(
+                f"bridge read risk field before fail-closed rejection: {name}"
             )
-        ],
-        risk_score=0.40,
+
+    report_only_overlay = SimpleNamespace(
+        schema_version="2026-07-14.posterior-overlay.v2",
+        overlay_mode="shadow",
+        report_only=True,
+        production_eligible=False,
+        production_weight=0.0,
     )
 
-    candidate = build_candidate_from_overlay(overlay, risk_tensor=risk_tensor)
-
-    assert candidate.symbol == "000001.SZ"
-    assert candidate.sector == "Technology"
-    assert candidate.confidence == pytest.approx(0.70)
-    assert candidate.risk_score == pytest.approx(0.40)
-    assert candidate.is_blocked is True
-    assert candidate.block_reasons == [RISK_ISSUE_DATA_QUARANTINE, "untradable"]
+    with pytest.raises(ValueError, match="report-only"):
+        build_candidate_from_overlay(
+            report_only_overlay,
+            risk_tensor=RiskTensorPoison(),
+            current_weight=0.40,
+        )
