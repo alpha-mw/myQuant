@@ -297,6 +297,31 @@ def test_attach_overlay_metadata_never_mutates_core_result() -> None:
     assert result.posterior_win_rate == pytest.approx(0.75)
 
 
+def test_attach_overlay_metadata_rejects_cross_source_overlay() -> None:
+    source = _posterior("000001.SZ")
+    different_result = _posterior("000002.SZ")
+    overlay = _run_shadow(source, _model(_curve(CalibrationCurveKey())))
+
+    with pytest.raises(ValueError, match="source"):
+        attach_overlay_metadata(different_result, overlay)
+
+
+def test_attach_source_mismatch_fails_before_overlay_serialization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _posterior("000001.SZ")
+    different_result = _posterior("000002.SZ")
+    overlay = _run_shadow(source, _model(_curve(CalibrationCurveKey())))
+
+    def explode_to_dict(_self):
+        raise AssertionError("cross-source attach serialized overlay payload")
+
+    monkeypatch.setattr(type(overlay), "to_dict", explode_to_dict)
+
+    with pytest.raises(ValueError, match="source"):
+        attach_overlay_metadata(different_result, overlay)
+
+
 def test_calibration_v2_select_curve_fallback_order_and_calibrate_behavior() -> None:
     exact_key = CalibrationCurveKey(TARGET_POSTERIOR_WIN_RATE, "CN", "20D", "趋势上涨")
     exact = _curve(exact_key, high_probability=0.66, total_examples=40)
@@ -646,6 +671,225 @@ def test_v2_shadow_round_trip_and_provenance_invariants() -> None:
 
     round_trip = type(overlay).from_dict(overlay.to_dict())
     assert round_trip.to_dict() == overlay.to_dict()
+
+
+def test_v2_diagnostics_expose_formula_inputs() -> None:
+    config = EdgeCostConfig(
+        calibration_blend_weight=0.25,
+        max_probability_adjustment=0.10,
+        expected_alpha_scale=0.20,
+    )
+    overlay = _run_shadow(
+        _posterior(),
+        _model(_curve(CalibrationCurveKey())),
+        edge_cost_config=config,
+    )
+
+    assert overlay.diagnostics.calibration_blend_weight == pytest.approx(0.25)
+    assert overlay.diagnostics.max_probability_adjustment == pytest.approx(0.10)
+    assert overlay.diagnostics.expected_alpha_scale == pytest.approx(0.20)
+    assert overlay.diagnostics.source_posterior_confidence == pytest.approx(0.70)
+
+
+@pytest.mark.parametrize(
+    "attack",
+    [
+        "calibration_schema",
+        "normalized_raw",
+        "model_calibrated",
+        "blended_and_delta_before",
+        "delta_after",
+        "cap_applied",
+        "calibrated_win_rate",
+        "calibrated_alpha",
+        "action_score",
+        "edge_total_cost",
+        "edge_transaction_cost",
+        "edge_calibrated",
+    ],
+)
+def test_direct_overlay_rejects_semantic_formula_tampering(attack: str) -> None:
+    overlay = _run_shadow(
+        _posterior(),
+        _model(_curve(CalibrationCurveKey())),
+    )
+
+    with pytest.raises((TypeError, ValueError)):
+        if attack == "calibration_schema":
+            replace(
+                overlay,
+                diagnostics=replace(
+                    overlay.diagnostics,
+                    calibration_schema_version="legacy-calibration.v1",
+                ),
+            )
+        elif attack == "normalized_raw":
+            replace(
+                overlay,
+                diagnostics=replace(
+                    overlay.diagnostics,
+                    normalized_raw_value=0.01,
+                ),
+            )
+        elif attack == "model_calibrated":
+            replace(
+                overlay,
+                diagnostics=replace(
+                    overlay.diagnostics,
+                    model_calibrated_win_rate=0.01,
+                ),
+            )
+        elif attack == "blended_and_delta_before":
+            replace(
+                overlay,
+                diagnostics=replace(
+                    overlay.diagnostics,
+                    blended_calibrated_win_rate=0.65,
+                    probability_delta_before_cap=-0.10,
+                ),
+            )
+        elif attack == "delta_after":
+            replace(
+                overlay,
+                diagnostics=replace(
+                    overlay.diagnostics,
+                    probability_delta_after_cap=-0.20,
+                ),
+            )
+        elif attack == "cap_applied":
+            replace(
+                overlay,
+                diagnostics=replace(
+                    overlay.diagnostics,
+                    cap_applied=True,
+                ),
+            )
+        elif attack == "calibrated_win_rate":
+            replace(overlay, calibrated_posterior_win_rate=0.01)
+        elif attack == "calibrated_alpha":
+            replace(
+                overlay,
+                calibrated_posterior_expected_alpha=0.90,
+                edge_breakdown=replace(
+                    overlay.edge_breakdown,
+                    calibrated_expected_alpha=0.90,
+                ),
+            )
+        elif attack == "action_score":
+            replace(overlay, calibrated_posterior_action_score=0.01)
+        elif attack == "edge_total_cost":
+            replace(
+                overlay,
+                edge_breakdown=replace(
+                    overlay.edge_breakdown,
+                    total_cost_penalty=999.0,
+                ),
+            )
+        elif attack == "edge_transaction_cost":
+            replace(
+                overlay,
+                edge_breakdown=replace(
+                    overlay.edge_breakdown,
+                    transaction_cost=123.0,
+                ),
+            )
+        else:
+            calibrated_edge = 0.50
+            replace(
+                overlay,
+                calibrated_edge_after_costs=calibrated_edge,
+                positive_edge=True,
+                edge_breakdown=replace(
+                    overlay.edge_breakdown,
+                    calibrated_edge_after_costs=calibrated_edge,
+                    edge_delta=(
+                        calibrated_edge
+                        - overlay.edge_breakdown.raw_edge_after_costs
+                    ),
+                ),
+            )
+
+
+def test_shadow_rejects_legacy_calibration_schema_with_recomputed_proof() -> None:
+    legacy_model = replace(
+        _model(_curve(CalibrationCurveKey())),
+        schema_version="2026-04-26.calibration-v2.legacy",
+    )
+
+    with pytest.raises(ValueError, match="schema"):
+        overlay_module.run_calibrated_posterior_overlay(
+            mode="shadow",
+            result=_posterior(),
+            decision_as_of=DECISION_AS_OF,
+            cutoff_proof=_proof(legacy_model),
+            model_loader=lambda: legacy_model,
+        )
+
+
+@pytest.mark.parametrize(
+    "attack",
+    [
+        "missing",
+        "unknown_production_weight",
+        "unknown_target_weights",
+        "wrong_target",
+        "non_string",
+    ],
+)
+def test_selected_curve_key_is_exact_non_executable_identity(attack: str) -> None:
+    overlay = _run_shadow(
+        _posterior(),
+        _model(_curve(CalibrationCurveKey())),
+    )
+    key = dict(overlay.diagnostics.selected_curve_key or {})
+    if attack == "missing":
+        key.pop("macro_regime")
+    elif attack == "unknown_production_weight":
+        key["production_weight"] = 1.0
+    elif attack == "unknown_target_weights":
+        key["target_weights"] = {"000001.SZ": 1.0}
+    elif attack == "wrong_target":
+        key["target_name"] = "portfolio_weight"
+    else:
+        key["market"] = 1
+
+    with pytest.raises((TypeError, ValueError)):
+        replace(
+            overlay,
+            diagnostics=replace(
+                overlay.diagnostics,
+                selected_curve_key=key,
+            ),
+        )
+
+
+@pytest.mark.parametrize("missing_side", ["key", "examples"])
+def test_selected_curve_identity_rejects_half_declaration(
+    missing_side: str,
+) -> None:
+    overlay = _run_shadow(
+        _posterior(),
+        _model(_curve(CalibrationCurveKey())),
+    )
+    diagnostics = overlay.diagnostics
+
+    with pytest.raises(ValueError, match="selected_curve"):
+        replace(
+            overlay,
+            diagnostics=replace(
+                diagnostics,
+                selected_curve_key=(
+                    None
+                    if missing_side == "key"
+                    else diagnostics.selected_curve_key
+                ),
+                selected_curve_examples=(
+                    None
+                    if missing_side == "examples"
+                    else diagnostics.selected_curve_examples
+                ),
+            ),
+        )
 
 
 @pytest.mark.parametrize(

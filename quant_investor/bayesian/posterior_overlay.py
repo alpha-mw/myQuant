@@ -39,6 +39,8 @@ _POSTERIOR_SOURCE_DOMAIN = "myquant.posterior-result-source.v2"
 _CALIBRATION_MODEL_DOMAIN = "myquant.calibration-model.v2"
 _OVERLAY_CUTOFF_PROOF_DOMAIN = "myquant.overlay-cutoff-proof.v1"
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+_SEMANTIC_REL_TOLERANCE = 1e-12
+_SEMANTIC_ABS_TOLERANCE = 1e-12
 _RESERVED_OVERLAY_METADATA_KEYS = {
     "schema_version",
     "overlay_mode",
@@ -190,6 +192,23 @@ def _require_float(value: Any, field_name: str) -> float:
     if type(value) is not float:
         raise TypeError(f"{field_name} must be a float")
     return _finite_float(value, field_name)
+
+
+def _require_semantic_close(
+    actual: float,
+    expected: float,
+    field_name: str,
+) -> None:
+    if not math.isclose(
+        actual,
+        expected,
+        rel_tol=_SEMANTIC_REL_TOLERANCE,
+        abs_tol=_SEMANTIC_ABS_TOLERANCE,
+    ):
+        raise ValueError(
+            f"{field_name} semantic invariant invalid: "
+            f"actual={actual!r}, expected={expected!r}"
+        )
 
 
 def _is_sha256(value: Any) -> bool:
@@ -470,6 +489,10 @@ class CalibrationOverlayDiagnostics:
     model_id: str = ""
     calibration_schema_version: str = CALIBRATION_V2_SCHEMA_VERSION
     target_name: str = TARGET_POSTERIOR_WIN_RATE
+    calibration_blend_weight: float = DEFAULT_CALIBRATION_BLEND_WEIGHT
+    max_probability_adjustment: float = DEFAULT_MAX_PROBABILITY_ADJUSTMENT
+    expected_alpha_scale: float = DEFAULT_EXPECTED_ALPHA_SCALE
+    source_posterior_confidence: float = 0.50
     selected_curve_key: dict[str, Any] | None = None
     selected_curve_examples: int | None = None
     raw_win_rate: float = 0.50
@@ -514,6 +537,22 @@ class CalibrationOverlayDiagnostics:
                 "calibration_schema_version",
             ),
             target_name=_require_string(data["target_name"], "target_name"),
+            calibration_blend_weight=_require_number(
+                data["calibration_blend_weight"],
+                "calibration_blend_weight",
+            ),
+            max_probability_adjustment=_require_number(
+                data["max_probability_adjustment"],
+                "max_probability_adjustment",
+            ),
+            expected_alpha_scale=_require_number(
+                data["expected_alpha_scale"],
+                "expected_alpha_scale",
+            ),
+            source_posterior_confidence=_require_number(
+                data["source_posterior_confidence"],
+                "source_posterior_confidence",
+            ),
             selected_curve_key=(
                 dict(_json_safe(selected_curve_key))
                 if selected_curve_key is not None
@@ -564,17 +603,62 @@ def _validate_overlay_diagnostics(
         diagnostics.calibration_schema_version,
         "diagnostics.calibration_schema_version",
     )
+    if diagnostics.calibration_schema_version != CALIBRATION_V2_SCHEMA_VERSION:
+        raise ValueError("diagnostics calibration_schema_version invalid")
     if diagnostics.target_name != TARGET_POSTERIOR_WIN_RATE:
         raise ValueError("diagnostics target_name invalid")
+    for field_name in (
+        "calibration_blend_weight",
+        "max_probability_adjustment",
+        "source_posterior_confidence",
+    ):
+        value = _require_number(
+            getattr(diagnostics, field_name),
+            f"diagnostics.{field_name}",
+        )
+        if not 0.0 <= value <= 1.0:
+            raise ValueError(f"diagnostics.{field_name} must be in [0, 1]")
+    expected_alpha_scale = _require_number(
+        diagnostics.expected_alpha_scale,
+        "diagnostics.expected_alpha_scale",
+    )
+    if expected_alpha_scale <= 0.0:
+        raise ValueError("diagnostics.expected_alpha_scale must be positive")
     if (
         diagnostics.selected_curve_key is not None
         and type(diagnostics.selected_curve_key) is not dict
     ):
         raise TypeError("diagnostics selected_curve_key invalid")
+    if (diagnostics.selected_curve_key is None) is not (
+        diagnostics.selected_curve_examples is None
+    ):
+        raise ValueError(
+            "diagnostics selected_curve_key and selected_curve_examples "
+            "must both be null or both be present"
+        )
     if diagnostics.selected_curve_key is not None:
+        selected_curve_key = _require_exact_fields(
+            diagnostics.selected_curve_key,
+            {"target_name", "market", "horizon_label", "macro_regime"},
+            "diagnostics.selected_curve_key",
+        )
+        for field_name in (
+            "target_name",
+            "market",
+            "horizon_label",
+            "macro_regime",
+        ):
+            _require_string(
+                selected_curve_key[field_name],
+                f"diagnostics.selected_curve_key.{field_name}",
+            )
+        if selected_curve_key["target_name"] != TARGET_POSTERIOR_WIN_RATE:
+            raise ValueError(
+                "diagnostics selected_curve_key target_name invalid"
+            )
         _canonical_json_bytes(
             "myquant.overlay-selected-curve.v2",
-            diagnostics.selected_curve_key,
+            selected_curve_key,
         )
     if diagnostics.selected_curve_examples is not None:
         if (
@@ -604,6 +688,52 @@ def _validate_overlay_diagnostics(
     )
     _require_bool(diagnostics.cap_applied, "diagnostics.cap_applied")
     _strict_metadata(diagnostics.metadata, "diagnostics.metadata")
+
+    expected_normalized_raw = normalize_score_to_unit_interval(
+        diagnostics.raw_win_rate
+    )
+    _require_semantic_close(
+        diagnostics.normalized_raw_value,
+        expected_normalized_raw,
+        "diagnostics.normalized_raw_value",
+    )
+    expected_blended = (
+        diagnostics.raw_win_rate
+        * (1.0 - diagnostics.calibration_blend_weight)
+        + diagnostics.model_calibrated_win_rate
+        * diagnostics.calibration_blend_weight
+    )
+    _require_semantic_close(
+        diagnostics.blended_calibrated_win_rate,
+        expected_blended,
+        "diagnostics.blended_calibrated_win_rate",
+    )
+    expected_delta_before = expected_blended - diagnostics.raw_win_rate
+    _require_semantic_close(
+        diagnostics.probability_delta_before_cap,
+        expected_delta_before,
+        "diagnostics.probability_delta_before_cap",
+    )
+    expected_delta_after = max(
+        -diagnostics.max_probability_adjustment,
+        min(
+            diagnostics.max_probability_adjustment,
+            expected_delta_before,
+        ),
+    )
+    _require_semantic_close(
+        diagnostics.probability_delta_after_cap,
+        expected_delta_after,
+        "diagnostics.probability_delta_after_cap",
+    )
+    expected_cap_applied = not math.isclose(
+        expected_delta_after,
+        expected_delta_before,
+        rel_tol=0.0,
+        abs_tol=1e-15,
+    )
+    if diagnostics.cap_applied is not expected_cap_applied:
+        raise ValueError("diagnostics.cap_applied semantic invariant invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -697,11 +827,32 @@ def _validate_edge_breakdown(breakdown: EdgeAfterCostBreakdown) -> None:
     ):
         if getattr(breakdown, field_name) < 0.0:
             raise ValueError(f"edge_breakdown.{field_name} must be non-negative")
-    if breakdown.edge_delta != (
+    expected_total_cost = (
+        breakdown.existing_capacity_penalty
+        + breakdown.transaction_cost
+        + breakdown.slippage_cost
+        + breakdown.market_impact_cost
+        + breakdown.risk_capital_charge
+    )
+    _require_semantic_close(
+        breakdown.total_cost_penalty,
+        expected_total_cost,
+        "edge_breakdown.total_cost_penalty",
+    )
+    expected_calibrated_edge = (
+        breakdown.calibrated_expected_alpha - expected_total_cost
+    )
+    _require_semantic_close(
+        breakdown.calibrated_edge_after_costs,
+        expected_calibrated_edge,
+        "edge_breakdown.calibrated_edge_after_costs",
+    )
+    _require_semantic_close(
+        breakdown.edge_delta,
         breakdown.calibrated_edge_after_costs
-        - breakdown.raw_edge_after_costs
-    ):
-        raise ValueError("edge_breakdown edge_delta invariant invalid")
+        - breakdown.raw_edge_after_costs,
+        "edge_breakdown.edge_delta",
+    )
     _strict_metadata(breakdown.metadata, "edge_breakdown.metadata")
 
 
@@ -918,29 +1069,64 @@ def _validate_calibrated_overlay(overlay: CalibratedPosteriorOverlay) -> None:
         overlay.diagnostics.model_id != overlay.model_id
         or overlay.diagnostics.schema_version != overlay.schema_version
         or overlay.diagnostics.overlay_mode != overlay.overlay_mode
-        or overlay.diagnostics.raw_win_rate
-        != overlay.original_posterior_win_rate
-        or not math.isclose(
-            overlay.diagnostics.blended_calibrated_win_rate
-            - overlay.diagnostics.probability_delta_before_cap,
-            overlay.original_posterior_win_rate,
-            rel_tol=0.0,
-            abs_tol=1e-15,
-        )
     ):
         raise ValueError("overlay diagnostics binding mismatch")
+    _require_semantic_close(
+        overlay.diagnostics.raw_win_rate,
+        overlay.original_posterior_win_rate,
+        "overlay diagnostics raw_win_rate binding",
+    )
+    expected_calibrated_win_rate = clamp_probability(
+        overlay.original_posterior_win_rate
+        + overlay.diagnostics.probability_delta_after_cap
+    )
+    _require_semantic_close(
+        overlay.calibrated_posterior_win_rate,
+        expected_calibrated_win_rate,
+        "calibrated_posterior_win_rate",
+    )
+    expected_calibrated_alpha = (
+        expected_calibrated_win_rate - 0.50
+    ) * overlay.diagnostics.expected_alpha_scale
+    _require_semantic_close(
+        overlay.calibrated_posterior_expected_alpha,
+        expected_calibrated_alpha,
+        "calibrated_posterior_expected_alpha",
+    )
+    expected_action_score = (
+        expected_calibrated_win_rate * 0.60
+        + overlay.diagnostics.source_posterior_confidence * 0.25
+        + max(0.0, expected_calibrated_alpha) * 5.0 * 0.15
+    )
+    _require_semantic_close(
+        overlay.calibrated_posterior_action_score,
+        expected_action_score,
+        "calibrated_posterior_action_score",
+    )
     _validate_edge_breakdown(overlay.edge_breakdown)
-    if (
-        overlay.edge_breakdown.raw_expected_alpha
-        != overlay.original_posterior_expected_alpha
-        or overlay.edge_breakdown.calibrated_expected_alpha
-        != overlay.calibrated_posterior_expected_alpha
-        or overlay.edge_breakdown.raw_edge_after_costs
-        != overlay.original_edge_after_costs
-        or overlay.edge_breakdown.calibrated_edge_after_costs
-        != overlay.calibrated_edge_after_costs
+    for actual, expected, field_name in (
+        (
+            overlay.edge_breakdown.raw_expected_alpha,
+            overlay.original_posterior_expected_alpha,
+            "edge_breakdown.raw_expected_alpha binding",
+        ),
+        (
+            overlay.edge_breakdown.calibrated_expected_alpha,
+            overlay.calibrated_posterior_expected_alpha,
+            "edge_breakdown.calibrated_expected_alpha binding",
+        ),
+        (
+            overlay.edge_breakdown.raw_edge_after_costs,
+            overlay.original_edge_after_costs,
+            "edge_breakdown.raw_edge_after_costs binding",
+        ),
+        (
+            overlay.edge_breakdown.calibrated_edge_after_costs,
+            overlay.calibrated_edge_after_costs,
+            "edge_breakdown.calibrated_edge_after_costs binding",
+        ),
     ):
-        raise ValueError("overlay edge breakdown binding mismatch")
+        _require_semantic_close(actual, expected, field_name)
     _strict_metadata(overlay.metadata, "metadata")
 
 
@@ -1016,9 +1202,15 @@ def _build_calibrated_posterior_shadow(
     raw_edge_after_costs = _finite_float(result.posterior_edge_after_costs, "posterior_edge_after_costs")
     calibrated_edge_after_costs = calibrated_expected_alpha - total_cost_penalty
     edge_delta = calibrated_edge_after_costs - raw_edge_after_costs
+    source_posterior_confidence = _finite_float(
+        result.posterior_confidence,
+        "posterior_confidence",
+    )
+    if not 0.0 <= source_posterior_confidence <= 1.0:
+        raise ValueError("posterior_confidence must be in [0, 1]")
     calibrated_action_score = (
         calibrated_win_rate * 0.60
-        + _finite_float(result.posterior_confidence, "posterior_confidence") * 0.25
+        + source_posterior_confidence * 0.25
         + max(0.0, calibrated_expected_alpha) * 5.0 * 0.15
     )
 
@@ -1026,8 +1218,12 @@ def _build_calibrated_posterior_shadow(
         schema_version=POSTERIOR_OVERLAY_SCHEMA_VERSION,
         overlay_mode=OVERLAY_MODE_SHADOW,
         model_id=model.model_id,
-        calibration_schema_version=model.schema_version or CALIBRATION_V2_SCHEMA_VERSION,
+        calibration_schema_version=model.schema_version,
         target_name=TARGET_POSTERIOR_WIN_RATE,
+        calibration_blend_weight=config.calibration_blend_weight,
+        max_probability_adjustment=config.max_probability_adjustment,
+        expected_alpha_scale=config.expected_alpha_scale,
+        source_posterior_confidence=source_posterior_confidence,
         selected_curve_key=selected_curve.key.to_dict() if selected_curve is not None else None,
         selected_curve_examples=selected_curve.total_examples if selected_curve is not None else None,
         raw_win_rate=raw_win_rate,
@@ -1150,6 +1346,8 @@ def run_calibrated_posterior_overlay(
     model = model_loader()
     if type(model) is not CalibrationModelV2:
         raise TypeError("model_loader must return an exact CalibrationModelV2")
+    if model.schema_version != CALIBRATION_V2_SCHEMA_VERSION:
+        raise ValueError("loaded model schema_version invalid")
     model_sha256 = calibration_model_sha256(model)
     if (
         model.model_id != cutoff_proof.model_id
@@ -1271,6 +1469,8 @@ def attach_overlay_metadata(
         raise TypeError("result must be an exact PosteriorResult")
     if type(overlay) is not CalibratedPosteriorOverlay:
         raise TypeError("overlay must be an exact CalibratedPosteriorOverlay")
+    if posterior_result_source_sha256(result) != overlay.source_sha256:
+        raise ValueError("posterior result source does not match overlay source")
     overlay_payload = overlay.to_dict()
     copied_metadata = dict(_json_safe(result.metadata))
     copied_metadata[OVERLAY_METADATA_KEY] = overlay_payload

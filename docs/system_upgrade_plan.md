@@ -294,6 +294,15 @@ holding exit. The optimizer schema is v2 to reflect that bridge-contract change;
 ordinary optimizer candidates and deterministic optimization behavior are
 unchanged.
 
+Overlay attachment also requires the target posterior's complete source digest to
+match the overlay. Direct construction and serialization revalidate the Calibration
+V2 schema, exact curve identity, blend/cap/alpha/action formulas, and edge cost
+identities. As defense in depth, optimizer execution rejects non-current candidate
+schemas and recursively marked overlay provenance before scoring; constructor patch
+generation applies the same provenance check and requires the current plan schema.
+Historical candidate and plan payloads remain readable for observation, but are not
+executable or patch-eligible.
+
 No production market DAG, DAG executor, control chain, pipeline, orchestrator,
 RiskGuard, or PortfolioConstructor surface imports or invokes the overlay runner or
 optimizer bridge. PR3b adds an AST regression check for that boundary and does not

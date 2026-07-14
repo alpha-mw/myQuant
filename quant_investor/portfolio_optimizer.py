@@ -75,6 +75,40 @@ def _coerce_metadata(value: Mapping[str, Any] | None) -> dict[str, Any]:
     return dict(_ensure_json_serializable(value, "metadata"))
 
 
+def _contains_overlay_provenance(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        if (
+            "calibrated_posterior_overlay" in value
+            or "posterior_overlay_schema_version" in value
+            or value.get("overlay_mode") == "shadow"
+            or value.get("source_type") == "posterior_overlay"
+        ):
+            return True
+        eligible = value.get(
+            "production_eligible",
+            value.get("eligible"),
+        )
+        if (
+            value.get("report_only") is True
+            and eligible is False
+        ):
+            return True
+        return any(
+            _contains_overlay_provenance(item)
+            for item in value.values()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_contains_overlay_provenance(item) for item in value)
+    return False
+
+
+def _reject_overlay_provenance(value: Any, *, context: str) -> None:
+    if _contains_overlay_provenance(value):
+        raise ValueError(
+            f"posterior overlay provenance is forbidden in {context}"
+        )
+
+
 def _ordered_unique(values: Sequence[str]) -> list[str]:
     return sorted({str(value) for value in values})
 
@@ -874,8 +908,27 @@ def optimize_portfolio(
     current_weights: Mapping[str, float] | None = None,
     metadata: Mapping[str, Any] | None = None,
 ) -> OptimizedPortfolioPlan:
+    candidates = list(candidates)
     resolved_config = config or PortfolioOptimizerConfig()
     input_metadata = _coerce_metadata(metadata)
+    _reject_overlay_provenance(
+        resolved_config.metadata,
+        context="optimizer config metadata",
+    )
+    _reject_overlay_provenance(
+        input_metadata,
+        context="optimizer input metadata",
+    )
+    for index, candidate in enumerate(candidates):
+        if candidate.schema_version != PORTFOLIO_OPTIMIZER_SCHEMA_VERSION:
+            raise ValueError(
+                "candidate schema_version is not executable: "
+                f"index={index}, schema={candidate.schema_version!r}"
+            )
+        _reject_overlay_provenance(
+            candidate.metadata,
+            context=f"candidate metadata at index {index}",
+        )
     resolved_current_weights = _finite_float_dict(current_weights, "current_weights") if current_weights is not None else {}
     if not resolved_current_weights:
         resolved_current_weights = {
@@ -1320,6 +1373,15 @@ def run_walk_forward_loop(
 
 
 def build_portfolio_constructor_patch(plan: OptimizedPortfolioPlan) -> dict[str, Any]:
+    if plan.schema_version != PORTFOLIO_OPTIMIZER_SCHEMA_VERSION:
+        raise ValueError(
+            "plan schema_version is not executable for constructor patch: "
+            f"{plan.schema_version!r}"
+        )
+    _reject_overlay_provenance(
+        plan.metadata,
+        context="portfolio plan metadata",
+    )
     optimization_method = None
     if isinstance(plan.metadata, Mapping):
         optimization_method = plan.metadata.get("optimization_method")

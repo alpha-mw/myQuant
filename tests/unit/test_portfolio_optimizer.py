@@ -109,6 +109,28 @@ def _plan() -> OptimizedPortfolioPlan:
     )
 
 
+_OVERLAY_PROVENANCE_CASES = [
+    (
+        "payload-key",
+        {"calibrated_posterior_overlay": {"schema_version": "v2"}},
+    ),
+    (
+        "schema-key",
+        {"posterior_overlay_schema_version": "2026-07-14.posterior-overlay.v2"},
+    ),
+    ("shadow-mode", {"overlay_mode": "shadow"}),
+    (
+        "report-contract",
+        {
+            "report_only": True,
+            "production_eligible": False,
+            "production_weight": 0.0,
+        },
+    ),
+    ("source-type", {"source_type": "posterior_overlay"}),
+]
+
+
 def test_dataclass_round_trips() -> None:
     config = PortfolioOptimizerConfig(metadata={"source": "unit"})
     candidate = _candidate("000001.SZ", block_reasons=["b", "a"], confidence=1.2)
@@ -433,3 +455,181 @@ def test_bridge_cannot_convert_report_only_overlay_into_forced_exit() -> None:
             risk_tensor=RiskTensorPoison(),
             current_weight=0.40,
         )
+
+
+@pytest.mark.parametrize(
+    ("marker_name", "marker"),
+    _OVERLAY_PROVENANCE_CASES,
+    ids=[case[0] for case in _OVERLAY_PROVENANCE_CASES],
+)
+def test_optimizer_rejects_recursive_overlay_candidate_metadata_before_scoring(
+    marker_name: str,
+    marker: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = OptimizationCandidate.from_dict(
+        _candidate(
+            "000001.SZ",
+            current_weight=0.40,
+            metadata={"nested": [{"marker": marker}]},
+        ).to_dict()
+    )
+    score_reads = 0
+
+    def explode_score(*args, **kwargs):
+        nonlocal score_reads
+        score_reads += 1
+        raise AssertionError(f"scored overlay-derived candidate: {marker_name}")
+
+    monkeypatch.setattr(optimizer_module, "_candidate_adjusted_score", explode_score)
+
+    with pytest.raises(ValueError, match="overlay"):
+        optimize_portfolio(
+            [candidate],
+            current_weights={candidate.symbol: 0.40},
+        )
+    assert score_reads == 0
+
+
+@pytest.mark.parametrize(
+    ("marker_name", "marker"),
+    _OVERLAY_PROVENANCE_CASES,
+    ids=[case[0] for case in _OVERLAY_PROVENANCE_CASES],
+)
+def test_constructor_patch_rejects_recursive_overlay_plan_metadata(
+    marker_name: str,
+    marker: dict[str, object],
+) -> None:
+    payload = _plan().to_dict()
+    payload["metadata"] = {"nested": [{"marker": marker}]}
+    round_tripped = OptimizedPortfolioPlan.from_dict(payload)
+
+    with pytest.raises(ValueError, match="overlay"):
+        build_portfolio_constructor_patch(round_tripped)
+
+
+def test_optimizer_rejects_report_only_ineligible_marker_without_weight() -> None:
+    candidate = _candidate(
+        "CURRENT",
+        current_weight=0.40,
+        metadata={
+            "nested": {
+                "report_only": True,
+                "production_eligible": False,
+            }
+        },
+    )
+
+    with pytest.raises(ValueError, match="overlay"):
+        optimize_portfolio(
+            [candidate],
+            current_weights={candidate.symbol: 0.40},
+        )
+
+
+def test_constructor_patch_rejects_report_only_ineligible_without_weight() -> None:
+    payload = _plan().to_dict()
+    payload["metadata"] = {
+        "nested": {
+            "report_only": True,
+            "eligible": False,
+        }
+    }
+    plan = OptimizedPortfolioPlan.from_dict(payload)
+
+    with pytest.raises(ValueError, match="overlay"):
+        build_portfolio_constructor_patch(plan)
+
+
+@pytest.mark.parametrize("location", ["input_metadata", "config_metadata"])
+def test_optimizer_rejects_overlay_provenance_destined_for_plan_metadata(
+    location: str,
+) -> None:
+    marker = {"nested": {"source_type": "posterior_overlay"}}
+    kwargs: dict[str, object] = {}
+    if location == "input_metadata":
+        kwargs["metadata"] = marker
+    else:
+        kwargs["config"] = PortfolioOptimizerConfig(metadata=marker)
+
+    with pytest.raises(ValueError, match="overlay"):
+        optimize_portfolio([_candidate("000001.SZ")], **kwargs)
+
+
+def test_optimizer_preserves_non_overlay_metadata_behavior() -> None:
+    metadata = {
+        "nested": {
+            "overlay_mode": "off",
+            "report_only": False,
+            "production_eligible": False,
+            "production_weight": 0.0,
+            "source_type": "posterior",
+        }
+    }
+    candidate = _candidate("NORMAL", metadata=metadata)
+
+    plan = optimize_portfolio(
+        [candidate],
+        config=PortfolioOptimizerConfig(
+            max_weight=0.20,
+            sector_cap=None,
+            turnover_cap=None,
+        ),
+    )
+    patch = build_portfolio_constructor_patch(plan)
+
+    assert plan.target_weights == {"NORMAL": pytest.approx(0.20)}
+    assert patch["target_weights"] == {"NORMAL": pytest.approx(0.20)}
+
+
+@pytest.mark.parametrize(
+    "schema_version",
+    [
+        "2026-07-14.posterior-overlay.v2",
+        "2026-04-26.portfolio-optimizer.v1",
+        "evil-schema.v999",
+    ],
+)
+def test_optimizer_execution_rejects_non_current_candidate_schema_before_scoring(
+    schema_version: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _candidate("CURRENT", current_weight=0.40).to_dict()
+    payload["schema_version"] = schema_version
+    observed = OptimizationCandidate.from_dict(payload)
+    score_reads = 0
+
+    def explode_score(*args, **kwargs):
+        nonlocal score_reads
+        score_reads += 1
+        raise AssertionError("non-current candidate reached scoring")
+
+    monkeypatch.setattr(optimizer_module, "_candidate_adjusted_score", explode_score)
+    assert observed.schema_version == schema_version
+
+    with pytest.raises(ValueError, match="schema"):
+        optimize_portfolio(
+            [observed],
+            current_weights={observed.symbol: 0.40},
+        )
+    assert score_reads == 0
+
+
+@pytest.mark.parametrize(
+    "schema_version",
+    [
+        "2026-07-14.posterior-overlay.v2",
+        "2026-04-26.portfolio-optimizer.v1",
+        "evil-schema.v999",
+    ],
+)
+def test_constructor_patch_rejects_non_current_plan_schema(
+    schema_version: str,
+) -> None:
+    payload = _plan().to_dict()
+    payload["schema_version"] = schema_version
+    observed = OptimizedPortfolioPlan.from_dict(payload)
+    assert observed.schema_version == schema_version
+
+    with pytest.raises(ValueError, match="schema"):
+        build_portfolio_constructor_patch(observed)
