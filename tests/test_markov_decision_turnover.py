@@ -16,6 +16,7 @@ from quant_investor.agent_protocol import (
     SymbolResearchPacket,
 )
 from quant_investor.bayesian.types import LikelihoodSet, PosteriorResult, PriorSet
+from quant_investor.branch_contracts import BranchResult
 from quant_investor.market.dag.decision import (
     _run_bayesian_selection_phase,
     _run_portfolio_construction_phase,
@@ -160,6 +161,7 @@ def test_bayesian_decision_record_metadata_includes_markov_regime() -> None:
         },
     )
 
+    macro_verdict = BranchVerdict(agent_name="macro")
     state = _run_bayesian_selection_phase(
         candidate_symbols=["000001.SZ"],
         company_name_map={"000001.SZ": "平安银行"},
@@ -167,9 +169,17 @@ def test_bayesian_decision_record_metadata_includes_markov_regime() -> None:
             "000001.SZ": SymbolResearchPacket(symbol="000001.SZ", category="bank")
         },
         research_by_symbol={},
-        branch_summaries={},
-        branch_results={},
-        macro_verdict=BranchVerdict(),
+        branch_summaries={
+            "quant": BranchVerdict(agent_name="quant"),
+            "fundamental": BranchVerdict(agent_name="fundamental"),
+            "macro": macro_verdict,
+        },
+        branch_results={
+            "quant": BranchResult(branch_name="quant"),
+            "fundamental": BranchResult(branch_name="fundamental"),
+            "macro": BranchResult(branch_name="macro"),
+        },
+        macro_verdict=macro_verdict,
         global_context=global_context,
         model_roles=SimpleNamespace(
             agent_layer_enabled=False,

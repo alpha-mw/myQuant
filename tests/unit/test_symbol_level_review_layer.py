@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 import quant_investor.agents.stock_reviewers as stock_reviewers
+import quant_investor.market.dag.research as research_module
 import quant_investor.pipeline.mainline as mainline_module
 from quant_investor.agent_protocol import (
     ActionLabel,
@@ -31,6 +32,7 @@ from quant_investor.agents.stock_reviewers import (
     MasterICAgent,
     MasterSymbolPacket,
 )
+from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
 from quant_investor.branch_contracts import BranchResult
 from quant_investor.market.read_result import MarketDataReadResult
 from quant_investor.model_roles import ModelRoleResolution
@@ -365,8 +367,6 @@ def test_legacy_master_agent_forwards_reasoning_effort(monkeypatch):
 
 
 def test_dag_symbol_review_keeps_all_branch_overlays_advisory(monkeypatch):
-    import quant_investor.market.dag.research as research_module
-
     base_verdicts = {
         "quant": BranchVerdict(
             agent_name="quant",
@@ -544,6 +544,77 @@ def test_dag_symbol_review_keeps_all_branch_overlays_advisory(monkeypatch):
     assert state.review_bundle.ic_hints_by_symbol["A"]["action"] == "avoid"
     assert state.review_bundle.metadata["advisory_only"] is True
     assert state.review_bundle.metadata["deterministic_control_chain_isolated"] is True
+
+
+def test_zero_candidate_research_materializes_degraded_fundamental_contract() -> None:
+    class _FundamentalMustNotRun:
+        def run(self, _payload):
+            raise AssertionError("FundamentalAgent must not run without candidates")
+
+    resolution = ModelRoleResolution(
+        role="branch",
+        primary_model="fixture-model",
+        fallback_model="",
+        resolved_model="fixture-model",
+        provider_available=True,
+    )
+    quant_verdict = BranchVerdict(
+        agent_name="quant",
+        thesis="empty universe quant",
+        final_score=0.0,
+        final_confidence=0.0,
+    )
+    macro_verdict = BranchVerdict(
+        agent_name="macro",
+        thesis="macro context",
+        final_score=0.0,
+        final_confidence=0.5,
+    )
+
+    state = asyncio.run(
+        research_module._run_candidate_research_phase(
+            candidate_symbols=[],
+            company_name_map={},
+            market="CN",
+            market_snapshot={"regime": "neutral"},
+            universe_key="full_a",
+            read_results={},
+            frames={},
+            global_quant_verdict=quant_verdict,
+            macro_verdict=macro_verdict,
+            branch_model_resolution=resolution,
+            master_model_resolution=resolution,
+            branch_candidate_models=[],
+            master_candidate_models=[],
+            master_reasoning_effort="medium",
+            enable_agent_layer=False,
+            agent_timeout=1.0,
+            master_timeout=1.0,
+            resolver_snapshot={},
+            fundamental_agent=_FundamentalMustNotRun(),
+            quant_result=BranchResult(
+                branch_name="quant",
+                final_score=0.0,
+                final_confidence=0.0,
+            ),
+            ensure_branch_verdict=lambda verdict, **_kwargs: verdict,
+            master_hint_to_ic_hint=lambda _hint: {},
+        )
+    )
+
+    assert tuple(state.branch_summaries) == CANONICAL_BRANCH_ORDER
+    assert tuple(state.branch_results) == CANONICAL_BRANCH_ORDER
+    summary = state.branch_summaries["fundamental"]
+    result = state.branch_results["fundamental"]
+    assert summary.status == AgentStatus.DEGRADED
+    assert summary.final_confidence == 0.0
+    assert summary.diagnostic_notes == ["not_run_no_candidates"]
+    assert summary.metadata["fundamental_data_generation_status"] == "UNCONFIRMED"
+    assert result.success is False
+    assert result.final_confidence == 0.0
+    assert result.symbol_scores == {}
+    assert result.diagnostic_notes == ["not_run_no_candidates"]
+    assert result.metadata["fundamental_data_generation_status"] == "UNCONFIRMED"
 
 
 def test_unified_dag_preserves_symbol_ic_hints_and_review_bundle(monkeypatch):

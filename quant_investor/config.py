@@ -24,6 +24,12 @@ MAINLINE_ENV_DEFAULTS: dict[str, str] = {
     "MYQUANT_TUSHARE_PARQUET_DIR": "data/cn_market_parquet",
     "MYQUANT_TUSHARE_PARQUET_COMPRESSION": "snappy",
     "MYQUANT_TUSHARE_DELETE_REDUNDANT_CSV": "0",
+    "MACRO_V2_OBSERVER_ENABLED": "0",
+    "MACRO_V2_OBSERVER_KILL_SWITCH": "1",
+    "MACRO_V2_PRODUCTION_ENABLED": "0",
+    "MACRO_V2_PRODUCTION_KILL_SWITCH": "1",
+    "MACRO_V2_OBSERVATIONS_PATH": "data/parquet/cn/macro_observations",
+    "MACRO_V2_OBSERVER_OUTPUT_DIR": "results/v14/macro_observer",
     "MYQUANT_LLM_HANDOFF": "codex",
     "MYQUANT_DISABLE_LOCAL_LLM": "true",
     "QUANT_PRODUCTION_KILL_SWITCH": "true",
@@ -146,6 +152,7 @@ MAINLINE_ENV_KEYS: tuple[str, ...] = tuple(MAINLINE_ENV_DEFAULTS)
 
 load_env_file()
 
+
 def _env_float(name: str, default: float) -> float:
     try:
         return float(os.environ.get(name, str(default)))
@@ -223,7 +230,7 @@ class Config:
         'QUANT_PRODUCTION_ACTIVATION_RECEIPT_SHA256',
         MAINLINE_ENV_DEFAULTS['QUANT_PRODUCTION_ACTIVATION_RECEIPT_SHA256'],
     )
-    
+
     # Tushare配置
     TUSHARE_TOKEN: str = get_secret('TUSHARE_TOKEN')
     TUSHARE_URL: str = _env_str(
@@ -282,6 +289,30 @@ class Config:
         'MYQUANT_TUSHARE_DELETE_REDUNDANT_CSV',
         MAINLINE_ENV_DEFAULTS['MYQUANT_TUSHARE_DELETE_REDUNDANT_CSV'] == '1',
     )
+    MACRO_V2_OBSERVER_ENABLED: bool = _env_bool(
+        'MACRO_V2_OBSERVER_ENABLED',
+        MAINLINE_ENV_DEFAULTS['MACRO_V2_OBSERVER_ENABLED'] == '1',
+    )
+    MACRO_V2_OBSERVER_KILL_SWITCH: bool = _env_bool(
+        'MACRO_V2_OBSERVER_KILL_SWITCH',
+        MAINLINE_ENV_DEFAULTS['MACRO_V2_OBSERVER_KILL_SWITCH'] == '1',
+    )
+    MACRO_V2_PRODUCTION_ENABLED: bool = _env_bool(
+        'MACRO_V2_PRODUCTION_ENABLED',
+        MAINLINE_ENV_DEFAULTS['MACRO_V2_PRODUCTION_ENABLED'] == '1',
+    )
+    MACRO_V2_PRODUCTION_KILL_SWITCH: bool = _env_bool(
+        'MACRO_V2_PRODUCTION_KILL_SWITCH',
+        MAINLINE_ENV_DEFAULTS['MACRO_V2_PRODUCTION_KILL_SWITCH'] == '1',
+    )
+    MACRO_V2_OBSERVATIONS_PATH: str = _env_str(
+        'MACRO_V2_OBSERVATIONS_PATH',
+        MAINLINE_ENV_DEFAULTS['MACRO_V2_OBSERVATIONS_PATH'],
+    )
+    MACRO_V2_OBSERVER_OUTPUT_DIR: str = _env_str(
+        'MACRO_V2_OBSERVER_OUTPUT_DIR',
+        MAINLINE_ENV_DEFAULTS['MACRO_V2_OBSERVER_OUTPUT_DIR'],
+    )
 
     # LLM / 外部 API 凭据
     KIMI_API_KEY: str = get_secret('KIMI_API_KEY')
@@ -289,7 +320,7 @@ class Config:
     DASHSCOPE_API_KEY: str = get_secret('DASHSCOPE_API_KEY')
     FRED_API_KEY: str = get_secret('FRED_API_KEY')
     FINNHUB_API_KEY: str = get_secret('FINNHUB_API_KEY')
-    
+
     # 数据库配置
     DB_PATH: str = os.environ.get('DB_PATH', 'data/stock_database.db')
     DATA_DIR: str = os.environ.get('DATA_DIR', 'data')
@@ -497,12 +528,12 @@ class Config:
 
     # 日志配置
     LOG_LEVEL: str = os.environ.get('LOG_LEVEL', 'INFO')
-    
+
     # Redis配置
     REDIS_HOST: str = os.environ.get('REDIS_HOST', 'localhost')
     REDIS_PORT: int = int(os.environ.get('REDIS_PORT', '6379'))
     REDIS_DB: int = int(os.environ.get('REDIS_DB', '0'))
-    
+
     # 回测配置
     INITIAL_CASH: float = float(os.environ.get('INITIAL_CASH', '1000000'))
     COMMISSION_RATE: float = float(os.environ.get('COMMISSION_RATE', '0.0003'))
@@ -513,10 +544,10 @@ class Config:
     def validate(cls) -> list:
         """验证配置是否完整"""
         errors = []
-        
+
         if not cls.TUSHARE_TOKEN:
             errors.append("TUSHARE_TOKEN 未设置")
-        
+
         return errors
 
 

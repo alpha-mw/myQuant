@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import date
 
@@ -8,6 +9,9 @@ import pytest
 
 import quant_investor.market.fundamental_generation as fundamental_generation
 import quant_investor.market.fundamental_mart as fundamental_mart
+from quant_investor.agents.fundamental_agent import FundamentalAgent
+from quant_investor.bayesian.likelihood import SignalLikelihoodMapper
+from quant_investor.branch_contracts import UnifiedDataBundle
 from quant_investor.factors.pit_fundamentals import (
     build_fundamental_metric_matrices,
     load_fundamental_pit_series,
@@ -21,8 +25,14 @@ from quant_investor.market.fundamental_mart import (
     write_fundamental_mart,
 )
 from quant_investor.market.fundamental_generation import (
+    FundamentalGenerationError,
     load_fundamental_pointer,
     publish_fundamental_generation,
+)
+from quant_investor.market.branch_readiness import load_fundamental_records
+from quant_investor.market.dag.assembly import (
+    _aggregate_branch_summaries,
+    _build_branch_results,
 )
 
 
@@ -202,7 +212,88 @@ def test_fundamental_mart_pit_join_readiness_and_quarantine(tmp_path):
     assert json.loads(artifacts.readiness_json_path.read_text())["gate2_passed"] is True
 
 
-def test_generation_pointer_carries_verified_source_priority(tmp_path):
+def test_default_local_mart_is_offline_and_likelihood_neutral(tmp_path):
+    data_root = tmp_path / "clean" / "cn_fundamental"
+    _artifacts, readiness = write_fundamental_mart(
+        _raw_tables(),
+        data_root=data_root,
+        raw_snapshot_root=tmp_path / "snapshots" / "fundamental",
+        reports_root=tmp_path / "reports" / "fundamental_readiness",
+        run_id="offline-default",
+        write_raw_snapshots=False,
+    )
+    records, manifest = load_fundamental_records(
+        ["000001.SZ"],
+        as_of="20240510",
+        root=data_root,
+    )
+    bundle = UnifiedDataBundle(
+        market="CN",
+        symbols=["000001.SZ"],
+        symbol_data={
+            "000001.SZ": pd.DataFrame(
+                {
+                    "date": pd.to_datetime(["2024-05-10"]),
+                    "close": [10.0],
+                }
+            )
+        },
+        fundamentals=records,
+        metadata={
+            "branch_data_readiness": {
+                "readiness": {
+                    "fundamental": {
+                        "status": "block",
+                        "pit_status": "point_in_time",
+                        "source_priority": readiness["source_priority"],
+                        "metadata": {"manifest": manifest},
+                    }
+                }
+            }
+        },
+    )
+    verdict = FundamentalAgent().run(
+        {"data_bundle": bundle, "stock_pool": ["000001.SZ"]}
+    )
+    summaries = _aggregate_branch_summaries(
+        {"000001.SZ": {"fundamental": verdict}}
+    )
+    branch_results = _build_branch_results(
+        {"000001.SZ": {"fundamental": verdict}},
+        summaries,
+    )
+    likelihoods = SignalLikelihoodMapper().compute_likelihoods(
+        branch_results=branch_results,
+        symbol="000001.SZ",
+        candidate_symbols={"000001.SZ"},
+    )
+
+    assert readiness["provider_status"] == "manual_offline_snapshot"
+    assert readiness["source_priority"] == "manual_offline_snapshot"
+    assert verdict.metadata["fundamental_data_generation_status_by_symbol"] == {
+        "000001.SZ": "UNCONFIRMED"
+    }
+    assert likelihoods.fundamental_likelihood == 0.50
+    assert "fundamental" not in likelihoods.metadata["evidence_sources"]
+
+
+def test_source_name_alone_cannot_claim_tushare_primary(tmp_path):
+    with pytest.raises(
+        ValueError,
+        match="Tushare source requires verified provider provenance",
+    ):
+        write_fundamental_mart(
+            _raw_tables(),
+            data_root=tmp_path / "clean" / "cn_fundamental",
+            raw_snapshot_root=tmp_path / "snapshots" / "fundamental",
+            reports_root=tmp_path / "reports" / "fundamental_readiness",
+            run_id="forged-default-source",
+            source="tushare",
+            write_raw_snapshots=False,
+        )
+
+
+def test_verified_local_evidence_cannot_mint_primary_generation(tmp_path):
     data_root = tmp_path / "clean" / "cn_fundamental"
     evidence_path = tmp_path / "tushare_readiness.json"
     evidence_path.write_text(
@@ -214,27 +305,295 @@ def test_generation_pointer_carries_verified_source_priority(tmp_path):
         ),
         encoding="utf-8",
     )
+    evidence_sha256 = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match="internal live Tushare attestation"):
+        write_fundamental_mart(
+            _raw_tables(),
+            data_root=data_root,
+            raw_snapshot_root=tmp_path / "snapshots" / "fundamental",
+            reports_root=tmp_path / "reports" / "fundamental_readiness",
+            run_id="verified-source",
+            source="canonical_raw_offline_rebuild",
+            provider_manifest={
+                "source_priority": "tushare_primary",
+                "source_provenance": "verified_local_tushare_refresh_manifests",
+                "provenance_evidence": [
+                    {
+                        "path": str(evidence_path),
+                        "sha256": evidence_sha256,
+                    }
+                ],
+            },
+        )
+
+    assert load_fundamental_pointer(data_root) is None
+
+
+def _live_provider_manifest(
+    tables: dict[str, pd.DataFrame],
+) -> dict[str, object]:
+    outcomes = [
+        {"symbol": "000001.SZ", "table": table, "status": "rows"}
+        for table in fundamental_mart.SOURCE_TABLES
+    ]
+    return {
+        "provider": "tushare",
+        "provider_status": "live_tushare",
+        "source_priority": "tushare_primary",
+        "source_provenance": "live_tushare_explicit",
+        "tables": list(fundamental_mart.SOURCE_TABLES),
+        "raw_row_counts": {
+            table: len(tables.get(table, pd.DataFrame()))
+            for table in fundamental_mart.SOURCE_TABLES
+        },
+        "requests_attempted": len(outcomes),
+        "requests_succeeded_with_rows": len(outcomes),
+        "requests_empty": 0,
+        "requests_failed": 0,
+        "symbol_table_outcomes": outcomes,
+    }
+
+
+def test_live_attestation_binds_primary_generation_to_current_raw_tables(
+    tmp_path,
+):
+    tables = _raw_tables()
+    provider_manifest = _live_provider_manifest(tables)
+    attestation = fundamental_mart._issue_live_tushare_attestation(
+        "live_tushare",
+        provider_manifest,
+        tables,
+    )
+    data_root = tmp_path / "clean" / "cn_fundamental"
+
     write_fundamental_mart(
-        _raw_tables(),
+        tables,
         data_root=data_root,
         raw_snapshot_root=tmp_path / "snapshots" / "fundamental",
         reports_root=tmp_path / "reports" / "fundamental_readiness",
-        run_id="verified-source",
-        source="canonical_raw_offline_rebuild",
-        provider_manifest={
-            "source_priority": "tushare_primary",
-            "source_provenance": "verified_local_tushare_refresh_manifests",
-            "provenance_evidence": [str(evidence_path)],
-        },
+        run_id="live-source",
+        source="live_tushare",
+        provider_manifest=provider_manifest,
+        write_raw_snapshots=False,
+        _live_tushare_attestation=attestation,
     )
 
     pointer = load_fundamental_pointer(data_root)
     assert pointer is not None
     assert pointer["metadata"]["source_priority"] == "tushare_primary"
-    assert (
-        pointer["metadata"]["source_provenance"]
-        == "verified_local_tushare_refresh_manifests"
+    assert pointer["metadata"]["source_provenance"] == "live_tushare_explicit"
+    assert pointer["primary_provenance_verified"] is True
+    assert pointer["primary_provenance"]["schema_version"] == (
+        fundamental_generation.PRIMARY_PROVENANCE_SCHEMA_VERSION
     )
+    assert set(pointer["primary_provenance"]["raw_table_fingerprints"]) == set(
+        fundamental_mart.SOURCE_TABLES
+    )
+
+
+def test_live_attestation_rejects_raw_table_tampering(tmp_path):
+    tables = _raw_tables()
+    provider_manifest = _live_provider_manifest(tables)
+    attestation = fundamental_mart._issue_live_tushare_attestation(
+        "live_tushare",
+        provider_manifest,
+        tables,
+    )
+    tampered = {name: frame.copy(deep=True) for name, frame in tables.items()}
+    tampered["daily_basic"].loc[0, "total_mv"] = 999999999.0
+
+    with pytest.raises(ValueError, match="internal live Tushare attestation"):
+        write_fundamental_mart(
+            tampered,
+            data_root=tmp_path / "clean" / "cn_fundamental",
+            raw_snapshot_root=tmp_path / "snapshots" / "fundamental",
+            reports_root=tmp_path / "reports" / "fundamental_readiness",
+            run_id="tampered-live-source",
+            source="live_tushare",
+            provider_manifest=provider_manifest,
+            write_raw_snapshots=False,
+            _live_tushare_attestation=attestation,
+        )
+
+
+def test_primary_generation_cannot_publish_when_readiness_gate_fails(
+    tmp_path,
+):
+    tables = _raw_tables()
+    tables["daily_basic"] = tables["daily_basic"].assign(sector="one-sector")
+    provider_manifest = _live_provider_manifest(tables)
+    attestation = fundamental_mart._issue_live_tushare_attestation(
+        "live_tushare",
+        provider_manifest,
+        tables,
+    )
+    data_root = tmp_path / "clean" / "cn_fundamental"
+
+    with pytest.raises(
+        FundamentalGenerationError,
+        match="passed readiness gate",
+    ):
+        write_fundamental_mart(
+            tables,
+            data_root=data_root,
+            raw_snapshot_root=tmp_path / "snapshots" / "fundamental",
+            reports_root=tmp_path / "reports" / "fundamental_readiness",
+            run_id="failed-live-readiness",
+            source="live_tushare",
+            provider_manifest=provider_manifest,
+            write_raw_snapshots=False,
+            publish_on_gate_failure=True,
+            _live_tushare_attestation=attestation,
+        )
+
+    assert load_fundamental_pointer(data_root) is None
+
+
+def test_public_generation_publisher_rejects_forged_primary(tmp_path):
+    tables = {
+        "fundamental_period": pd.DataFrame(columns=["ts_code"]),
+        "fundamental_daily": pd.DataFrame(
+            [
+                {
+                    "ts_code": "000001.SZ",
+                    "trade_date": "20240510",
+                    "source_priority": "tushare_primary",
+                    "fin_roe": 0.99,
+                }
+            ]
+        ),
+        "fundamental_quarantine": pd.DataFrame(columns=["ts_code"]),
+    }
+
+    with pytest.raises(
+        FundamentalGenerationError,
+        match="internal primary capability",
+    ):
+        publish_fundamental_generation(
+            root=tmp_path / "cn",
+            run_id="forged-primary",
+            tables=tables,
+            metadata={
+                "run_id": "forged-primary",
+                "provider_status": "live_tushare",
+                "source_priority": "tushare_primary",
+                "source_provenance": "live_tushare_explicit",
+            },
+        )
+
+    assert load_fundamental_pointer(tmp_path / "cn") is None
+
+
+def test_public_generation_publisher_allows_explicit_offline_generation(
+    tmp_path,
+):
+    tables = {
+        "fundamental_period": pd.DataFrame(columns=["ts_code"]),
+        "fundamental_daily": pd.DataFrame(
+            [
+                {
+                    "ts_code": "000001.SZ",
+                    "trade_date": "20240510",
+                    "source_priority": "manual_offline_snapshot",
+                    "fin_roe": 0.13,
+                }
+            ]
+        ),
+        "fundamental_quarantine": pd.DataFrame(columns=["ts_code"]),
+    }
+
+    _paths, pointer = publish_fundamental_generation(
+        root=tmp_path / "cn",
+        run_id="offline-generation",
+        tables=tables,
+        metadata={
+            "run_id": "offline-generation",
+            "source_priority": "manual_offline_snapshot",
+        },
+    )
+
+    assert pointer["metadata"]["source_priority"] == "manual_offline_snapshot"
+
+
+def test_primary_generation_capability_is_bound_to_exact_tables(tmp_path):
+    tables = {
+        "fundamental_period": pd.DataFrame(columns=["ts_code"]),
+        "fundamental_daily": pd.DataFrame(
+            [{"ts_code": "000001.SZ", "trade_date": "20240510"}]
+        ),
+        "fundamental_quarantine": pd.DataFrame(columns=["ts_code"]),
+    }
+    provider_manifest = {"provider": "tushare", "run_id": "bound-primary"}
+    raw_tables = _raw_tables()
+    metadata = {
+        "run_id": "bound-primary",
+        "provider_status": "live_tushare",
+        "source_priority": "tushare_primary",
+        "source_provenance": "live_tushare_explicit",
+        "provider_manifest": provider_manifest,
+        "gate2_passed": True,
+    }
+    capability = (
+        fundamental_generation._issue_primary_generation_attestation(
+            tables=tables,
+            metadata=metadata,
+            source="live_tushare",
+            provider_manifest_sha256=(
+                fundamental_mart._canonical_mapping_sha256(provider_manifest)
+            ),
+            raw_table_fingerprints=(
+                fundamental_mart._raw_table_fingerprints(raw_tables)
+            ),
+        )
+    )
+    tampered = {name: frame.copy(deep=True) for name, frame in tables.items()}
+    tampered["fundamental_daily"].loc[0, "ts_code"] = "000002.SZ"
+
+    with pytest.raises(
+        FundamentalGenerationError,
+        match="internal primary capability",
+    ):
+        publish_fundamental_generation(
+            root=tmp_path / "cn",
+            run_id="bound-primary",
+            tables=tampered,
+            metadata=metadata,
+            _primary_attestation=capability,
+        )
+
+
+def test_legacy_primary_pointer_without_durable_provenance_is_rejected(
+    tmp_path,
+):
+    root = tmp_path / "cn"
+    tables = {
+        "fundamental_period": pd.DataFrame(columns=["ts_code"]),
+        "fundamental_daily": pd.DataFrame(columns=["ts_code"]),
+        "fundamental_quarantine": pd.DataFrame(columns=["ts_code"]),
+    }
+    _paths, pointer = publish_fundamental_generation(
+        root=root,
+        run_id="legacy-primary",
+        tables=tables,
+        metadata={
+            "run_id": "legacy-primary",
+            "source_priority": "manual_offline_snapshot",
+        },
+    )
+    pointer_path = root / fundamental_generation.FUNDAMENTAL_POINTER_FILENAME
+    pointer_payload = json.loads(pointer_path.read_text(encoding="utf-8"))
+    manifest_path = root / pointer["manifest_path"]
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    pointer_payload["metadata"]["source_priority"] = "tushare_primary"
+    manifest_payload["metadata"]["source_priority"] = "tushare_primary"
+    pointer_path.write_text(json.dumps(pointer_payload), encoding="utf-8")
+    manifest_path.write_text(json.dumps(manifest_payload), encoding="utf-8")
+
+    with pytest.raises(
+        FundamentalGenerationError,
+        match="primary provenance envelope missing",
+    ):
+        load_fundamental_pointer(root)
 
 
 def test_offline_generation_rejects_unverified_tushare_priority(tmp_path):
@@ -303,6 +662,100 @@ def test_partial_refresh_preserves_prior_symbols_in_new_generation(tmp_path):
     assert readiness["merge"]["fundamental_daily"][
         "retained_existing_rows"
     ] > 0
+
+
+def test_primary_refresh_cannot_upgrade_retained_offline_parent_rows(
+    tmp_path,
+):
+    data_root = tmp_path / "clean" / "cn_fundamental"
+    write_fundamental_mart(
+        _raw_tables(),
+        data_root=data_root,
+        raw_snapshot_root=tmp_path / "snapshots" / "fundamental",
+        reports_root=tmp_path / "reports" / "fundamental_readiness",
+        run_id="offline-parent",
+        write_raw_snapshots=False,
+    )
+    live_tables = _only_symbol(_raw_tables(), "000001.SZ")
+    provider_manifest = _live_provider_manifest(live_tables)
+    attestation = fundamental_mart._issue_live_tushare_attestation(
+        "live_tushare",
+        provider_manifest,
+        live_tables,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="retain rows from an unverified parent",
+    ):
+        write_fundamental_mart(
+            live_tables,
+            data_root=data_root,
+            raw_snapshot_root=tmp_path / "snapshots" / "fundamental",
+            reports_root=tmp_path / "reports" / "fundamental_readiness",
+            run_id="live-child",
+            source="live_tushare",
+            provider_manifest=provider_manifest,
+            write_raw_snapshots=False,
+            _live_tushare_attestation=attestation,
+        )
+
+    pointer = load_fundamental_pointer(data_root)
+    assert pointer is not None
+    assert pointer["generation_id"] == "offline-parent"
+    assert pointer["primary_provenance_verified"] is False
+
+
+def test_primary_refresh_can_retain_rows_from_verified_primary_parent(
+    tmp_path,
+):
+    data_root = tmp_path / "clean" / "cn_fundamental"
+    parent_tables = _raw_tables()
+    parent_manifest = _live_provider_manifest(parent_tables)
+    parent_attestation = fundamental_mart._issue_live_tushare_attestation(
+        "live_tushare",
+        parent_manifest,
+        parent_tables,
+    )
+    write_fundamental_mart(
+        parent_tables,
+        data_root=data_root,
+        raw_snapshot_root=tmp_path / "snapshots" / "fundamental",
+        reports_root=tmp_path / "reports" / "fundamental_readiness",
+        run_id="live-parent",
+        source="live_tushare",
+        provider_manifest=parent_manifest,
+        write_raw_snapshots=False,
+        _live_tushare_attestation=parent_attestation,
+    )
+    child_tables = _only_symbol(_raw_tables(), "000001.SZ")
+    child_manifest = _live_provider_manifest(child_tables)
+    child_attestation = fundamental_mart._issue_live_tushare_attestation(
+        "live_tushare",
+        child_manifest,
+        child_tables,
+    )
+
+    _artifacts, readiness = write_fundamental_mart(
+        child_tables,
+        data_root=data_root,
+        raw_snapshot_root=tmp_path / "snapshots" / "fundamental",
+        reports_root=tmp_path / "reports" / "fundamental_readiness",
+        run_id="live-child",
+        source="live_tushare",
+        provider_manifest=child_manifest,
+        write_raw_snapshots=False,
+        _live_tushare_attestation=child_attestation,
+    )
+
+    pointer = load_fundamental_pointer(data_root)
+    assert readiness["merge"]["fundamental_daily"]["retained_existing_rows"] > 0
+    assert pointer is not None
+    assert pointer["generation_id"] == "live-child"
+    assert pointer["primary_provenance_verified"] is True
+    assert pointer["manifest"]["metadata"]["parent_generation_id"] == (
+        "live-parent"
+    )
 
 
 def test_partial_exact_key_does_not_replace_more_complete_pit_row(tmp_path):
@@ -552,6 +1005,27 @@ def test_quarantine_merge_aligns_existing_canonical_schema():
     assert pd.api.types.is_integer_dtype(merged["end_date"])
 
 
+def test_quarantine_merge_counts_retained_rows_with_duplicate_incoming():
+    existing = pd.DataFrame(
+        [{"ts_code": "000001.SZ", "reason": "offline-parent"}]
+    )
+    incoming = pd.DataFrame(
+        [
+            {"ts_code": "000002.SZ", "reason": "live-child"},
+            {"ts_code": "000002.SZ", "reason": "live-child"},
+        ]
+    )
+
+    merged, stats = fundamental_mart._merge_quarantine_table(
+        existing,
+        incoming,
+    )
+
+    assert len(merged) == 2
+    assert stats["retained_existing_rows"] == 1
+    assert stats["accepted_incoming_rows"] == 1
+
+
 def test_readiness_symbol_coverage_is_capped_and_reports_scope_surplus():
     period = pd.DataFrame(
         [
@@ -722,6 +1196,43 @@ def test_fundamental_maintenance_offline_input_writes_expected_artifacts(
     assert (tmp_path / "clean" / "cn_fundamental" / "latest_manifest.json").exists()
     manifest = json.loads((tmp_path / "clean" / "cn_fundamental" / "latest_manifest.json").read_text())
     assert manifest["raw_row_counts"]["daily_basic"] > 0
+
+
+def test_live_maintenance_wires_internal_primary_attestation(
+    tmp_path,
+    monkeypatch,
+):
+    tables = _raw_tables()
+    provider_manifest = _live_provider_manifest(tables)
+    monkeypatch.setattr(
+        fundamental_mart,
+        "_resolve_symbols_from_parquet_universe",
+        lambda *_args, **_kwargs: ["000001.SZ", "000002.SZ", "000003.SZ"],
+    )
+    monkeypatch.setattr(
+        fundamental_mart,
+        "_fetch_tushare_tables",
+        lambda *_args, **_kwargs: (tables, provider_manifest),
+    )
+    data_root = tmp_path / "clean" / "cn_fundamental"
+
+    result = run_cn_fundamental_maintenance(
+        market="CN",
+        universes="full_a",
+        years=5,
+        as_of="20240510",
+        allow_live=True,
+        pro=object(),
+        data_root=data_root,
+        raw_snapshot_root=tmp_path / "snapshots" / "fundamental",
+        reports_root=tmp_path / "reports" / "fundamental_readiness",
+    )
+
+    pointer = load_fundamental_pointer(data_root)
+    assert result["provider_status"] == "live_tushare"
+    assert result["readiness"]["source_priority"] == "tushare_primary"
+    assert pointer is not None
+    assert pointer["metadata"]["source_priority"] == "tushare_primary"
 
 
 def test_offline_partial_scope_fails_closed_without_publishing_pointer(

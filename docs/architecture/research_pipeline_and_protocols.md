@@ -53,6 +53,20 @@
 
 Bayesian likelihood 证据仅包含 `quant` 与 `fundamental`（`x/2`）；`macro` 只作为 prior/context。
 
+Fundamental 只有在 canonical generation pointer 验证通过、branch readiness 为
+`pass`/`warn`、generation 与逐行 lineage 均绑定 `tushare_primary` 时才可进入
+likelihood。任一 generation、来源、PIT 或 readiness 证据缺失/冲突时，分支仍可
+输出诊断，但该标的的 Fundamental likelihood 必须严格中性化为 `0.50`。
+公开 `publish_fundamental_generation()` 只能发布非 primary generation；
+`tushare_primary` 必须由 live maintenance 内部能力签发，并同时绑定 provider
+manifest、六张 raw table 与三张 generation output table，不能由调用方 metadata
+或行字段自报获得。该证明以 `cn-fundamental-primary-provenance.v1` envelope
+持久化到 generation manifest 与 pointer；缺少该 envelope 的旧 primary generation
+可作为历史文件保留，但读取会 fail closed，不能确认 generation 或贡献 likelihood。
+增量 primary generation 若保留旧行，父 generation 也必须通过同一 durable
+provenance 校验，并把父 generation ID 与 envelope hash 绑定到新 generation；
+离线或旧格式父数据不能借一次 live partial refresh 被整体升级为 primary。
+
 ## Structured Control Contracts
 
 - `BranchVerdict`

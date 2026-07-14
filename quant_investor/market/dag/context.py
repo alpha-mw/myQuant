@@ -859,6 +859,73 @@ def _frame_summaries_from_tradability(
     return summaries
 
 
+def _macro_v2_observer_metadata(*, market: str, as_of: str) -> dict[str, Any]:
+    """Build one run-level observer diagnostic without touching decisions."""
+
+    enabled = bool(getattr(config, "MACRO_V2_OBSERVER_ENABLED", False))
+    kill_switch = bool(
+        getattr(config, "MACRO_V2_OBSERVER_KILL_SWITCH", True)
+    )
+    production_enabled = bool(
+        getattr(config, "MACRO_V2_PRODUCTION_ENABLED", False)
+    )
+    production_kill_switch = bool(
+        getattr(config, "MACRO_V2_PRODUCTION_KILL_SWITCH", True)
+    )
+    base = {
+        "schema_version": "macro-observer-runtime.v2",
+        "enabled": enabled,
+        "kill_switch": kill_switch,
+        "active": False,
+        "production_enabled": production_enabled,
+        "production_kill_switch": production_kill_switch,
+        "observer_only": True,
+        "production_eligible": False,
+        "applied": False,
+    }
+    if not enabled or kill_switch:
+        base["reason"] = (
+            "kill_switch_active" if kill_switch else "observer_disabled"
+        )
+        return base
+    observations_root = Path(
+        str(
+            getattr(
+                config,
+                "MACRO_V2_OBSERVATIONS_PATH",
+                "data/parquet/cn/macro_observations",
+            )
+        )
+    )
+    try:
+        from quant_investor.macro.observer import build_macro_observer
+        from quant_investor.macro.store import load_observations
+
+        observations, generation = load_observations(observations_root)
+        return build_macro_observer(
+            observations,
+            market=market,
+            as_of=as_of,
+            enabled=True,
+            kill_switch=False,
+            persist=True,
+            output_root=str(
+                getattr(
+                    config,
+                    "MACRO_V2_OBSERVER_OUTPUT_DIR",
+                    "results/v14/macro_observer",
+                )
+            ),
+            production_enabled=production_enabled,
+            production_kill_switch=production_kill_switch,
+            generation_provenance=generation,
+        )
+    except Exception as exc:
+        base["reason"] = "observer_build_failed"
+        base["blockers"] = [f"{type(exc).__name__}:{exc}"]
+        return base
+
+
 def _insufficient_markov_reference_input(
     *,
     market: str,
@@ -1907,6 +1974,12 @@ def _prepare_market_context(
     )
     global_context.model_capability_map = provider_health
     global_context.metadata["provider_health"] = provider_health
+    global_context.metadata["macro_v2_observer"] = (
+        _macro_v2_observer_metadata(
+            market=settings.market,
+            as_of=effective_latest_trade_date,
+        )
+    )
     if symbols:
         import hashlib
 

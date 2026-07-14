@@ -4,7 +4,7 @@ import asyncio
 from types import SimpleNamespace
 
 import quant_investor.pipeline.mainline as mainline_module
-from quant_investor.agent_protocol import ActionLabel, AgentStatus, ExecutionTrace, GlobalContext, PortfolioDecision, ShortlistItem, WhatIfPlan
+from quant_investor.agent_protocol import ActionLabel, AgentStatus, BranchVerdict, ExecutionTrace, GlobalContext, PortfolioDecision, ShortlistItem, WhatIfPlan
 from quant_investor.agents.agent_contracts import MasterAgentOutput
 from quant_investor.agents.orchestrator import AgentOrchestrator
 from quant_investor.branch_contracts import BranchResult
@@ -106,8 +106,14 @@ def test_mainline_forwards_recall_context_to_unified_dag(monkeypatch):
                 execution_trace=ExecutionTrace(),
                 what_if_plan=WhatIfPlan(),
             ),
-            "branch_results": {},
-            "branch_summaries": {},
+            "branch_results": {
+                name: BranchResult(branch_name=name)
+                for name in ("quant", "fundamental", "macro")
+            },
+            "branch_summaries": {
+                name: BranchVerdict(agent_name=name)
+                for name in ("quant", "fundamental", "macro")
+            },
             "branch_verdicts_by_symbol": {},
             "shortlist": shortlist,
             "review_bundle": SimpleNamespace(ic_hints_by_symbol={}, fallback_reasons=[]),

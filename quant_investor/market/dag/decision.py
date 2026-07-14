@@ -11,6 +11,8 @@ from quant_investor.agent_protocol import (
     RiskDecision,
 )
 from quant_investor.bayesian.calibration import CalibrationStore
+from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
+from quant_investor.branch_contracts import BranchResult
 from quant_investor.config import config
 from quant_investor.governance import replay_v13_1
 from quant_investor.market.dag.common import _dedupe_texts
@@ -488,6 +490,78 @@ def _optional_float(value: Any) -> float | None:
         return None
 
 
+def _likelihood_branch_degraded_map(
+    *,
+    branch_summaries: Mapping[str, Any],
+    branch_results: Mapping[str, Any],
+) -> dict[str, bool]:
+    """Map only the two v14 likelihood branches to explicit degraded state."""
+
+    degraded: dict[str, bool] = {}
+    for branch_name in ("quant", "fundamental"):
+        summary = branch_summaries.get(branch_name)
+        result = branch_results.get(branch_name)
+        summary_degraded = bool(
+            summary is not None
+            and _enum_text(getattr(summary, "status", AgentStatus.SUCCESS))
+            in {"DEGRADED", "VETOED"}
+        )
+        result_metadata = dict(getattr(result, "metadata", {}) or {})
+        result_degraded = bool(
+            result is not None
+            and (
+                not bool(getattr(result, "success", True))
+                or str(result_metadata.get("degraded_reason") or "").strip()
+            )
+        )
+        degraded[branch_name] = summary_degraded or result_degraded
+    return degraded
+
+
+def _require_exact_canonical_branches(
+    payload: Mapping[str, Any],
+    *,
+    label: str,
+) -> None:
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"{label} must be a mapping")
+    expected = set(CANONICAL_BRANCH_ORDER)
+    actual = set(payload)
+    missing = sorted(expected - actual)
+    unexpected = sorted(actual - expected)
+    if missing or unexpected:
+        details: list[str] = []
+        if missing:
+            details.append("missing branches: " + ", ".join(missing))
+        if unexpected:
+            details.append("unsupported branches: " + ", ".join(unexpected))
+        raise ValueError(
+            f"{label} must contain exactly the canonical branches "
+            f"{list(CANONICAL_BRANCH_ORDER)!r}; {'; '.join(details)}"
+        )
+
+
+def _require_valid_canonical_branch_results(
+    branch_results: Mapping[str, Any],
+) -> None:
+    _require_exact_canonical_branches(
+        branch_results,
+        label="Bayesian selection branch_results",
+    )
+    for branch_name in CANONICAL_BRANCH_ORDER:
+        result = branch_results[branch_name]
+        if not isinstance(result, BranchResult):
+            raise ValueError(
+                "Bayesian selection branch_results must contain BranchResult objects"
+            )
+        result.validate()
+        if result.branch_name != branch_name:
+            raise ValueError(
+                "Bayesian selection branch result key/name mismatch: "
+                f"{branch_name!r} != {result.branch_name!r}"
+            )
+
+
 def _run_bayesian_selection_phase(
     *,
     candidate_symbols: list[str],
@@ -517,6 +591,16 @@ def _run_bayesian_selection_phase(
     llm_client_cls: Any,
     portfolio_master_advisory_fn: Callable[..., tuple[Any | None, dict[str, Any]]],
 ) -> BayesianSelectionState:
+    _require_valid_canonical_branch_results(branch_results)
+    _require_exact_canonical_branches(
+        branch_summaries,
+        label="Bayesian selection branch_summaries",
+    )
+    if branch_summaries["macro"] != macro_verdict:
+        raise ValueError(
+            "Bayesian selection macro_verdict must match branch_summaries['macro']"
+        )
+
     prior_builder = hierarchical_prior_builder_cls()
     try:
         likelihood_mapper = likelihood_mapper_cls(
@@ -529,10 +613,10 @@ def _run_bayesian_selection_phase(
     posterior_engine = posterior_engine_cls()
     markov_regime_metadata = _compact_markov_regime_metadata(global_context)
     bayesian_records: list[BayesianDecisionRecord] = []
-    degraded_map = {
-        "quant": False,
-        "fundamental": False,
-    }
+    degraded_map = _likelihood_branch_degraded_map(
+        branch_summaries=branch_summaries,
+        branch_results=branch_results,
+    )
     for symbol in candidate_symbols:
         prior = prior_builder.build_prior(symbol, global_context)
         likelihoods = likelihood_mapper.compute_likelihoods(

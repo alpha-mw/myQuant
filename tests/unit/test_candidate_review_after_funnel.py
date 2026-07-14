@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 import pandas as pd
 
@@ -116,6 +116,14 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
     reviewed: dict[str, list[str]] = {"fundamental": []}
     frame_summary_calls = {"count": 0}
     provider_health_calls = {"count": 0}
+    macro_observer_payload = {
+        "enabled": False,
+        "status": "disabled",
+        "observer_only": True,
+        "production_eligible": False,
+        "applied": False,
+        "observation_count": 0,
+    }
     original_frame_summary = dag_packets._frame_summary
 
     def _counting_frame_summary(frame):
@@ -295,6 +303,11 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
         lambda report: {"json": "fixture.json", "md": "fixture.md", "csv": "fixture.csv"},
     )
     monkeypatch.setattr(
+        dag_context,
+        "_macro_v2_observer_metadata",
+        lambda **_kwargs: dict(macro_observer_payload),
+    )
+    monkeypatch.setattr(
         dag_module,
         "resolve_model_role",
         lambda **kwargs: ModelRoleResolution(
@@ -365,6 +378,84 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
     assert batch_stage["metadata"]["runtime_lookback_start_date"] == _FakeReader.batch_read_start_date
     assert frame_summary_calls["count"] <= 8
     assert provider_health_calls["count"] == 1
+
+    def _decision_surface(dag_result):
+        portfolio_decision = dag_result["portfolio_decision"]
+        return {
+            "candidate_symbols": list(dag_result["funnel_output"].candidates),
+            "branch_summaries": {
+                name: verdict.to_dict()
+                for name, verdict in dag_result["branch_summaries"].items()
+            },
+            "branch_results": {
+                name: asdict(branch_result)
+                for name, branch_result in dag_result["branch_results"].items()
+            },
+            "shortlist": [item.to_dict() for item in dag_result["shortlist"]],
+            "bayesian_records": [
+                record.to_dict() for record in dag_result["bayesian_records"]
+            ],
+            "risk_decision": dag_result["risk_decision"].to_dict(),
+            "ic_decisions": [decision.to_dict() for decision in dag_result["ic_decisions"]],
+            "portfolio_plan": dag_result["portfolio_plan"].to_dict(),
+            "portfolio_decision": {
+                "status": portfolio_decision.status,
+                "shortlist": [item.to_dict() for item in portfolio_decision.shortlist],
+                "target_exposure": portfolio_decision.target_exposure,
+                "target_gross_exposure": portfolio_decision.target_gross_exposure,
+                "target_net_exposure": portfolio_decision.target_net_exposure,
+                "cash_ratio": portfolio_decision.cash_ratio,
+                "target_weights": dict(portfolio_decision.target_weights),
+                "target_positions": dict(portfolio_decision.target_positions),
+                "risk_constraints": dict(portfolio_decision.risk_constraints),
+                "master_hints": dict(portfolio_decision.master_hints),
+            },
+            "markov_regime": dict(
+                dag_result["global_context"].metadata["markov_regime"]
+            ),
+            "risk_budget": dict(dag_result["global_context"].risk_budget),
+        }
+
+    baseline_surface = _decision_surface(result)
+    baseline_observer_metadata = dict(
+        result["global_context"].metadata["macro_v2_observer"]
+    )
+    macro_observer_payload.clear()
+    macro_observer_payload.update(
+        {
+            "enabled": True,
+            "status": "ready",
+            "observer_only": True,
+            "production_eligible": False,
+            "applied": False,
+            "observation_count": 17,
+            "snapshot_id": "observer-fixture-v14",
+        }
+    )
+    observer_result = execute_market_dag(
+        market="CN",
+        universe="full_a",
+        mode="sample",
+        batch_size=4,
+        total_capital=1_000_000,
+        top_k=2,
+        data_snapshot={"local_latest_trade_date": "20260301", "freshness_mode": "stable"},
+        enable_agent_layer=False,
+        verbose=False,
+        runtime_profiler=MarketRuntimeProfiler(
+            market="CN",
+            universe="full_a",
+            categories=["full_a"],
+        ),
+    )
+
+    assert observer_result["global_context"].metadata["macro_v2_observer"] != (
+        baseline_observer_metadata
+    )
+    assert observer_result["global_context"].metadata["macro_v2_observer"] == (
+        macro_observer_payload
+    )
+    assert _decision_surface(observer_result) == baseline_surface
 
 
 def test_symbol_master_hint_is_reported_but_not_applied_to_control_chain():

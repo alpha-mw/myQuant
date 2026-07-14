@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from quant_investor.config import config
@@ -57,6 +58,74 @@ def run_fundamental_maintenance(**kwargs):
     )
 
     return _run_cn_fundamental_maintenance(**kwargs)
+
+
+def run_macro_maintenance(**kwargs):
+    from quant_investor.market.macro_mart import (
+        run_cn_macro_maintenance as _run_cn_macro_maintenance,
+    )
+
+    return _run_cn_macro_maintenance(**kwargs)
+
+
+def run_macro_analysis(**kwargs):
+    from quant_investor.macro.observer import (
+        build_macro_observer,
+        load_macro_observation_generation,
+    )
+
+    observations, generation = load_macro_observation_generation(
+        kwargs.pop("observations_path"),
+        allow_standalone_offline=True,
+    )
+    return build_macro_observer(
+        observations,
+        enabled=True,
+        kill_switch=False,
+        persist=True,
+        generation_provenance=generation,
+        **kwargs,
+    )
+
+
+def run_macro_observation_maintenance(**kwargs):
+    from quant_investor.macro.providers import maintain_macro_observations
+
+    return maintain_macro_observations(**kwargs)
+
+
+def run_macro_replay(**kwargs):
+    from quant_investor.macro.replay import run_macro_replay as _run_macro_replay
+
+    return _run_macro_replay(**kwargs)
+
+
+def run_macro_tushare_normalization(**kwargs):
+    from quant_investor.macro.tushare_normalizer import (
+        normalize_tushare_bundle_file,
+    )
+
+    return normalize_tushare_bundle_file(**kwargs)
+
+
+def run_macro_backfill_publish(**kwargs):
+    from quant_investor.macro.tushare_normalizer import (
+        publish_tushare_normalization,
+    )
+
+    return publish_tushare_normalization(**kwargs)
+
+
+def run_macro_forward_observation(**kwargs):
+    from quant_investor.macro.forward import record_macro_forward_observation
+
+    return record_macro_forward_observation(**kwargs)
+
+
+def run_macro_coverage(**kwargs):
+    from quant_investor.macro.coverage import run_macro_coverage_audit
+
+    return run_macro_coverage_audit(**kwargs)
 
 
 def run_data_governance(**kwargs):
@@ -344,6 +413,148 @@ def _build_parser() -> argparse.ArgumentParser:
         help="显式允许调用 live provider；本地测试默认不使用",
     )
 
+    market_macro_maintain = market_subparsers.add_parser(
+        "macro-maintain",
+        help="暂存 CN Macro 兼容数据或维护 hash-bound observations",
+    )
+    market_macro_maintain.add_argument("--market", required=True, choices=["CN"])
+    market_macro_maintain.add_argument("--as-of", required=True)
+    macro_input_group = market_macro_maintain.add_mutually_exclusive_group()
+    macro_input_group.add_argument(
+        "--input-json",
+        default="",
+        help="四字段本地兼容行；只能暂存，不能晋升 canonical",
+    )
+    macro_input_group.add_argument(
+        "--input-observations",
+        default="",
+        help=(
+            "本地 observations 仅写 sanitized observer staging；"
+            "永不推进 canonical pointer"
+        ),
+    )
+    market_macro_maintain.add_argument(
+        "--data-root",
+        default="data/parquet/cn/macro_daily",
+    )
+    market_macro_maintain.add_argument(
+        "--snapshot-root",
+        default="data/cn_market_full/_snapshots/macro",
+    )
+    market_macro_maintain.add_argument(
+        "--observations-root",
+        default="data/parquet/cn/macro_observations",
+    )
+    market_macro_maintain.add_argument(
+        "--staging-root",
+        default="results/v14/macro_observation_staging",
+    )
+    market_macro_maintain.add_argument("--run-id", default="")
+    market_macro_maintain.add_argument(
+        "--indicator-id",
+        action="append",
+        default=[],
+    )
+    market_macro_maintain.add_argument(
+        "--allow-tushare-fallback",
+        action="store_true",
+    )
+    market_macro_maintain.add_argument("--allow-live", action="store_true")
+
+    market_macro_analyze = market_subparsers.add_parser(
+        "macro-analyze",
+        help="显式读取本地 observations，生成 observer-only v14 报告",
+    )
+    market_macro_analyze.add_argument("--market", required=True, choices=["CN"])
+    market_macro_analyze.add_argument("--as-of", required=True)
+    market_macro_analyze.add_argument("--observations", required=True)
+    market_macro_analyze.add_argument(
+        "--output-dir",
+        default="results/v14/macro_observer",
+    )
+
+    market_macro_replay = market_subparsers.add_parser(
+        "macro-replay",
+        help="固定 canonical observations generation 做 observer-only PIT 回放",
+    )
+    market_macro_replay.add_argument("--market", required=True, choices=["CN"])
+    market_macro_replay.add_argument("--start-date", required=True)
+    market_macro_replay.add_argument("--end-date", required=True)
+    market_macro_replay.add_argument(
+        "--observations-root",
+        default="data/parquet/cn/macro_observations",
+    )
+    market_macro_replay.add_argument("--calendar", required=True)
+    market_macro_replay.add_argument(
+        "--output-dir",
+        default="results/v14/macro_replay",
+    )
+    market_macro_replay.add_argument("--run-id", default="")
+
+    market_macro_normalize = market_subparsers.add_parser(
+        "macro-normalize-tushare",
+        help="离线编译 hash-bound Tushare 证据；不自动晋升",
+    )
+    market_macro_normalize.add_argument("--market", required=True, choices=["CN"])
+    market_macro_normalize.add_argument("--input-json", required=True)
+    market_macro_normalize.add_argument("--plan-json", required=True)
+    market_macro_normalize.add_argument("--evidence-json", required=True)
+    market_macro_normalize.add_argument(
+        "--output-dir",
+        default="results/v14/macro_normalization",
+    )
+    market_macro_normalize.add_argument("--run-id", required=True)
+
+    market_macro_publish = market_subparsers.add_parser(
+        "macro-backfill-publish",
+        help="显式 CAS 晋升零 quarantine 的 observations bundle",
+    )
+    market_macro_publish.add_argument("--market", required=True, choices=["CN"])
+    market_macro_publish.add_argument("--manifest", required=True)
+    market_macro_publish.add_argument(
+        "--observations-root",
+        default="data/parquet/cn/macro_observations",
+    )
+    market_macro_publish.add_argument("--run-id", required=True)
+    market_macro_publish.add_argument("--expected-pointer-sha256", required=True)
+    market_macro_publish.add_argument("--expected-manifest-sha256", required=True)
+    market_macro_publish.add_argument("--expected-plan-sha256", required=True)
+
+    market_macro_forward = market_subparsers.add_parser(
+        "macro-observe-forward",
+        help="追加一个已完成交易日的 observer-only forward 证据",
+    )
+    market_macro_forward.add_argument("--market", required=True, choices=["CN"])
+    market_macro_forward.add_argument(
+        "--observations-root",
+        default="data/parquet/cn/macro_observations",
+    )
+    market_macro_forward.add_argument("--calendar", required=True)
+    market_macro_forward.add_argument(
+        "--state-root",
+        default="results/v14/macro_forward_observation",
+    )
+    market_macro_forward.add_argument("--expected-pointer-sha256", required=True)
+
+    market_macro_coverage = market_subparsers.add_parser(
+        "macro-coverage-audit",
+        help="离线审计国家指标与产业链 PIT 覆盖",
+    )
+    market_macro_coverage.add_argument("--market", required=True, choices=["CN"])
+    market_macro_coverage.add_argument("--as-of", required=True)
+    market_macro_coverage.add_argument(
+        "--observations",
+        default="data/parquet/cn/macro_observations",
+    )
+    market_macro_coverage.add_argument(
+        "--raw-root",
+        default="data/parquet/cn/dag_core_raw",
+    )
+    market_macro_coverage.add_argument(
+        "--output-dir",
+        default="results/v14/macro_coverage_audit",
+    )
+
     market_data_governance = market_subparsers.add_parser(
         "data-governance",
         help="审计三分支数据 readiness，默认只读本地数据",
@@ -601,6 +812,173 @@ def main(argv: list[str] | None = None) -> None:
             reports_root=args.reports_root,
             raw_input_dir=args.raw_input_dir or None,
             allow_live=args.allow_live,
+        )
+        return
+
+    if args.command == "market" and args.market_command == "macro-maintain":
+        if args.allow_tushare_fallback and not args.allow_live:
+            parser.error(
+                "--allow-tushare-fallback requires explicit --allow-live"
+            )
+        if args.input_observations and (
+            args.allow_live or args.allow_tushare_fallback
+        ):
+            parser.error(
+                "standalone --input-observations cannot be combined with "
+                "live provider flags"
+            )
+        if args.input_json and (
+            args.allow_live or args.allow_tushare_fallback
+        ):
+            parser.error(
+                "compatibility --input-json cannot be combined with live provider flags"
+            )
+        if args.input_observations or args.allow_live:
+            from quant_investor.macro.observer import load_macro_observations
+
+            observations = (
+                load_macro_observations(
+                    args.input_observations,
+                    allow_standalone_offline=True,
+                )
+                if args.input_observations
+                else []
+            )
+            generated_suffix = datetime.now(timezone.utc).strftime(
+                "%Y%m%dT%H%M%S%fZ"
+            )
+            run_id = (
+                args.run_id
+                or f"cn_macro_observations_{generated_suffix}"
+            )
+            _print_json(
+                run_macro_observation_maintenance(
+                    local_observations=observations,
+                    market=args.market,
+                    as_of=args.as_of,
+                    indicator_ids=args.indicator_id,
+                    root=args.observations_root,
+                    staging_root=args.staging_root,
+                    run_id=run_id,
+                    allow_live=args.allow_live,
+                    allow_tushare_fallback=args.allow_tushare_fallback,
+                )
+            )
+            return
+        indicators = None
+        if args.input_json:
+            payload = json.loads(
+                Path(args.input_json).read_text(encoding="utf-8")
+            )
+            if not isinstance(payload, dict):
+                parser.error("--input-json must contain one JSON object")
+            indicators = payload
+        _print_json(
+            run_macro_maintenance(
+                indicators=indicators,
+                as_of=args.as_of,
+                data_root=args.data_root,
+                raw_snapshot_root=args.snapshot_root,
+                allow_live=False,
+                allow_public_fallback=False,
+                run_id=args.run_id,
+            )
+        )
+        return
+
+    if args.command == "market" and args.market_command == "macro-analyze":
+        _print_json(
+            run_macro_analysis(
+                observations_path=args.observations,
+                market=args.market,
+                as_of=args.as_of,
+                output_root=args.output_dir,
+                production_enabled=False,
+                production_kill_switch=True,
+            )
+        )
+        return
+
+    if args.command == "market" and args.market_command == "macro-replay":
+        _print_json(
+            run_macro_replay(
+                market=args.market,
+                start_date=args.start_date,
+                end_date=args.end_date,
+                observations_root=args.observations_root,
+                calendar_path=args.calendar,
+                output_root=args.output_dir,
+                run_id=args.run_id,
+            )
+        )
+        return
+
+    if (
+        args.command == "market"
+        and args.market_command == "macro-normalize-tushare"
+    ):
+        _print_json(
+            run_macro_tushare_normalization(
+                path=args.input_json,
+                plan_path=args.plan_json,
+                evidence_path=args.evidence_json,
+                output_root=args.output_dir,
+                run_id=args.run_id,
+            )
+        )
+        return
+
+    if (
+        args.command == "market"
+        and args.market_command == "macro-backfill-publish"
+    ):
+        _print_json(
+            run_macro_backfill_publish(
+                manifest_path=args.manifest,
+                observations_root=args.observations_root,
+                run_id=args.run_id,
+                expected_pointer_sha256=(
+                    ""
+                    if args.expected_pointer_sha256 == "EMPTY"
+                    else args.expected_pointer_sha256
+                ),
+                expected_manifest_sha256=args.expected_manifest_sha256,
+                expected_plan_sha256=args.expected_plan_sha256,
+            )
+        )
+        return
+
+    if (
+        args.command == "market"
+        and args.market_command == "macro-observe-forward"
+    ):
+        _print_json(
+            run_macro_forward_observation(
+                market=args.market,
+                observations_root=args.observations_root,
+                calendar_path=args.calendar,
+                root=args.state_root,
+                expected_pointer_sha256=(
+                    ""
+                    if args.expected_pointer_sha256 == "EMPTY"
+                    else args.expected_pointer_sha256
+                ),
+            )
+        )
+        return
+
+    if (
+        args.command == "market"
+        and args.market_command == "macro-coverage-audit"
+    ):
+        _print_json(
+            run_macro_coverage(
+                market=args.market,
+                as_of=args.as_of,
+                observations_path=args.observations,
+                raw_root=args.raw_root,
+                output_root=args.output_dir,
+            )
         )
         return
 

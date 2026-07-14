@@ -119,7 +119,10 @@ def test_data_governance_default_is_local_read_only(tmp_path):
 
     assert result["local_read_only"] is True
     assert result["allow_live"] is False
-    assert result["reports"][0]["readiness"]["macro"]["status"] == "pass"
+    assert result["reports"][0]["readiness"]["macro"]["status"] == "block"
+    assert "macro_catalog_missing" in result["reports"][0]["readiness"][
+        "macro"
+    ]["blockers"]
     assert (tmp_path / "reports").joinpath(result["artifacts"]["full_a"]["json"].split("/")[-1]).exists()
 
 

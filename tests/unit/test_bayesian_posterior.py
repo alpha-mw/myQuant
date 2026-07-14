@@ -39,11 +39,16 @@ class TestSignalLikelihoodMapper:
             "quant": BranchResult(branch_name="quant", final_score=0.5, final_confidence=0.8,
                                   symbol_scores={"A": 0.5}, metadata={"reliability": 0.75}),
             "fundamental": BranchResult(branch_name="fundamental", final_score=0.2, final_confidence=0.6,
-                                        symbol_scores={"A": 0.2}, metadata={"reliability": 0.6}),
+                                        symbol_scores={"A": 0.2}, metadata={
+                                            "reliability": 0.6,
+                                            "fundamental_data_generation_by_symbol": {"A": "g1"},
+                                            "fundamental_data_generation_status_by_symbol": {"A": "confirmed"},
+                                        }),
         }
         mapper = SignalLikelihoodMapper()
         ls = mapper.compute_likelihoods(branch_results=branches, symbol="A")
         assert ls.quant_likelihood > 0.50  # positive score
+        assert ls.fundamental_likelihood > 0.50
         assert len(ls.as_list()) == 2
         assert [name for name, _value in ls.as_list()] == ["quant", "fundamental"]
 
@@ -63,6 +68,32 @@ class TestSignalLikelihoodMapper:
         mapper = SignalLikelihoodMapper()
         ls = mapper.compute_likelihoods(branch_results=branches, symbol="A")
         assert ls.quant_likelihood == 0.50
+
+    def test_unconfirmed_fundamental_generation_is_strictly_neutral(self):
+        branches = {
+            "fundamental": BranchResult(
+                branch_name="fundamental",
+                final_score=0.9,
+                final_confidence=0.9,
+                symbol_scores={"A": 0.9},
+                metadata={
+                    "reliability": 0.9,
+                    "fundamental_data_generation_by_symbol": {"A": ""},
+                    "fundamental_data_generation_status_by_symbol": {
+                        "A": "UNCONFIRMED"
+                    },
+                },
+            )
+        }
+
+        likelihoods = SignalLikelihoodMapper().compute_likelihoods(
+            branch_results=branches,
+            symbol="A",
+            candidate_symbols={"A"},
+        )
+
+        assert likelihoods.fundamental_likelihood == 0.50
+        assert likelihoods.metadata["evidence_sources"] == []
 
     def test_momentum_profile_preserves_surviving_v13_effective_weights(self):
         branches = {
@@ -138,6 +169,32 @@ class TestSignalLikelihoodMapper:
 
         with pytest.raises(ValueError, match="Unexpected branch results"):
             mapper.compute_likelihoods(branch_results=branches, symbol="A")
+
+    def test_likelihood_mapper_rejects_branch_key_name_swap(self):
+        branches = {
+            "quant": BranchResult(branch_name="fundamental"),
+            "fundamental": BranchResult(branch_name="quant"),
+        }
+
+        with pytest.raises(ValueError, match="key/name mismatch"):
+            SignalLikelihoodMapper().compute_likelihoods(
+                branch_results=branches,
+                symbol="A",
+            )
+
+    def test_likelihood_mapper_validates_nested_retired_metadata(self):
+        branches = {
+            "quant": BranchResult(
+                branch_name="quant",
+                metadata={"intelligence_score": 0.9},
+            )
+        }
+
+        with pytest.raises(ValueError, match="retired Intelligence key"):
+            SignalLikelihoodMapper().compute_likelihoods(
+                branch_results=branches,
+                symbol="A",
+            )
 
     def test_mutated_correlation_matrix_cannot_be_serialized(self):
         likelihoods = LikelihoodSet()
@@ -219,17 +276,28 @@ class TestBayesianPosteriorEngine:
     def test_degraded_backend_penalty(self):
         engine = BayesianPosteriorEngine()
         prior = PriorSet(composite_prior=0.50)
-        likelihoods = LikelihoodSet(quant_likelihood=0.80)
+        likelihoods = LikelihoodSet(
+            quant_likelihood=0.80,
+            fundamental_likelihood=0.80,
+        )
 
         normal = engine.compute_posterior(prior, likelihoods, symbol="A")
-        degraded = engine.compute_posterior(
+        quant_degraded = engine.compute_posterior(
             prior, likelihoods, symbol="A",
             is_degraded={"quant": True},
         )
+        fundamental_degraded = engine.compute_posterior(
+            prior,
+            likelihoods,
+            symbol="A",
+            is_degraded={"fundamental": True},
+        )
 
-        assert degraded.fallback_penalty > 0.0
+        assert quant_degraded.fallback_penalty > 0.0
+        assert fundamental_degraded.fallback_penalty > 0.0
         # Degraded result should have lower posterior
-        assert degraded.posterior_win_rate < normal.posterior_win_rate
+        assert quant_degraded.posterior_win_rate < normal.posterior_win_rate
+        assert fundamental_degraded.posterior_win_rate < normal.posterior_win_rate
 
     def test_coverage_discount_with_missing_branches(self):
         engine = BayesianPosteriorEngine()

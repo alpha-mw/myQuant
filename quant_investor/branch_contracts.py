@@ -741,6 +741,7 @@ class ResearchPipelineResult:
     execution_log: list[str] = field(default_factory=list)
     timings: dict[str, float] = field(default_factory=dict)
     calibrated_signals: dict[str, CalibratedBranchSignal] = field(default_factory=dict)
+    pipeline_mode: str = "draft"
 
     def __post_init__(self) -> None:
         for field_name, actual, expected in (
@@ -758,6 +759,22 @@ class ResearchPipelineResult:
             raise ValueError(
                 "ResearchPipelineResult has noncanonical branch keys: "
                 + ", ".join(unexpected)
+            )
+        if self.pipeline_mode not in {"draft", "bayesian"}:
+            raise ValueError(
+                "ResearchPipelineResult pipeline_mode must be 'draft' or 'bayesian'."
+            )
+        if self.pipeline_mode == "bayesian" and set(self.branch_results) != set(
+            CANONICAL_BRANCH_ORDER
+        ):
+            missing = sorted(
+                set(CANONICAL_BRANCH_ORDER) - set(self.branch_results)
+            )
+            raise ValueError(
+                "ResearchPipelineResult bayesian branch_results must contain "
+                "exactly the canonical branches "
+                f"{list(CANONICAL_BRANCH_ORDER)!r}; missing branches: "
+                + ", ".join(missing)
             )
         unexpected_calibrated = sorted(
             set(self.calibrated_signals) - set(CANONICAL_BRANCH_ORDER)

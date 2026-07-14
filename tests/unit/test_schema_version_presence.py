@@ -20,6 +20,7 @@ from quant_investor.branch_contracts import (
     ResearchPipelineResult,
     UnifiedDataBundle,
 )
+from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
 from quant_investor.pipeline.result_types import QuantInvestorPipelineResult
 from quant_investor.learning.memory_promoter import (
     PromotionCandidate as MemoryPromotionCandidate,
@@ -140,6 +141,57 @@ def test_current_artifact_envelopes_reject_old_versions_and_nested_intelligence(
 
     with pytest.raises(ValueError, match="likelihood fields must match v14"):
         BayesianDecisionRecord(likelihoods={})
+
+
+@pytest.mark.parametrize("missing_branch", CANONICAL_BRANCH_ORDER)
+def test_bayesian_pipeline_result_requires_each_canonical_branch(
+    missing_branch: str,
+) -> None:
+    branch_results = {
+        name: BranchResult(branch_name=name)
+        for name in CANONICAL_BRANCH_ORDER
+        if name != missing_branch
+    }
+
+    with pytest.raises(
+        ValueError,
+        match=rf"bayesian branch_results.*missing branches: {missing_branch}",
+    ):
+        QuantInvestorPipelineResult(
+            branch_results=branch_results,
+            pipeline_mode="bayesian",
+        )
+
+
+def test_legacy_pipeline_result_keeps_partial_accumulator_construction() -> None:
+    result = QuantInvestorPipelineResult(
+        branch_results={"quant": BranchResult(branch_name="quant")},
+        pipeline_mode="legacy",
+    )
+
+    assert set(result.branch_results) == {"quant"}
+
+
+@pytest.mark.parametrize("missing_branch", CANONICAL_BRANCH_ORDER)
+def test_research_pipeline_result_distinguishes_draft_from_bayesian_result(
+    missing_branch: str,
+) -> None:
+    draft = ResearchPipelineResult(data_bundle=UnifiedDataBundle())
+    assert draft.pipeline_mode == "draft"
+
+    with pytest.raises(
+        ValueError,
+        match=rf"bayesian branch_results.*missing branches: {missing_branch}",
+    ):
+        ResearchPipelineResult(
+            data_bundle=UnifiedDataBundle(),
+            branch_results={
+                name: BranchResult(branch_name=name)
+                for name in CANONICAL_BRANCH_ORDER
+                if name != missing_branch
+            },
+            pipeline_mode="bayesian",
+        )
 
 
 @pytest.mark.parametrize(

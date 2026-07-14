@@ -13,7 +13,9 @@ from typing import Any, Mapping, Sequence
 import pandas as pd
 
 from quant_investor.market.fundamental_generation import (
+    FundamentalGenerationError,
     load_fundamental_pointer,
+    load_fundamental_table,
     resolve_fundamental_table_path,
 )
 from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
@@ -27,6 +29,11 @@ SOURCE_TUSHARE = "tushare_primary"
 SOURCE_PUBLIC_FALLBACK = "public_structured_fallback"
 SOURCE_OFFLINE = "manual_offline_snapshot"
 SOURCE_PRIORITY_ORDER = (SOURCE_TUSHARE, SOURCE_PUBLIC_FALLBACK, SOURCE_OFFLINE)
+_MACRO_SOURCE_PRIORITY_BY_SOURCE = {
+    SOURCE_TUSHARE: SOURCE_TUSHARE,
+    SOURCE_PUBLIC_FALLBACK: SOURCE_PUBLIC_FALLBACK,
+    SOURCE_OFFLINE: SOURCE_OFFLINE,
+}
 
 DEFAULT_PARQUET_CN_ROOT = Path("data/parquet/cn")
 DEFAULT_FUNDAMENTAL_ROOT = DEFAULT_PARQUET_CN_ROOT / "fundamental_daily"
@@ -392,9 +399,22 @@ def load_fundamental_records(
     as_of: str = "",
     root: str | Path = DEFAULT_FUNDAMENTAL_ROOT,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
-    table_path = _resolve_parquet_table_root(root, "fundamental_daily")
-    frame = _read_parquet_table(table_path)
     pointer = load_fundamental_pointer(root)
+    if pointer is not None:
+        frame, pointer = load_fundamental_table(
+            root,
+            "fundamental_daily",
+        )
+        table_path = Path(
+            str(
+                dict(pointer.get("tables", {}) or {}).get(
+                    "fundamental_daily", ""
+                )
+            )
+        )
+    else:
+        table_path = _resolve_parquet_table_root(root, "fundamental_daily")
+        frame = _read_parquet_table(table_path)
     manifest = (
         dict(pointer.get("metadata", {}) or {})
         if pointer is not None
@@ -408,7 +428,44 @@ def load_fundamental_records(
                 "storage_backend": "parquet_canonical_generation",
             }
         )
-    return _latest_records_by_symbol(frame, symbols=symbols, as_of=as_of), manifest
+    records = _latest_records_by_symbol(
+        frame,
+        symbols=symbols,
+        as_of=as_of,
+    )
+    if pointer is not None:
+        generation_id = str(pointer.get("generation_id") or "").strip()
+        if not generation_id:
+            raise FundamentalGenerationError(
+                "fundamental canonical generation_id missing"
+            )
+        generation_source_priority = str(
+            dict(pointer.get("metadata", {}) or {}).get(
+                "source_priority"
+            )
+            or ""
+        ).strip()
+        for symbol, record in records.items():
+            declared = str(
+                record.get("fundamental_generation_id") or ""
+            ).strip()
+            if declared and declared != generation_id:
+                raise FundamentalGenerationError(
+                    "fundamental row generation mismatch: " + symbol
+                )
+            declared_source_priority = str(
+                record.get("source_priority") or ""
+            ).strip()
+            if (
+                declared_source_priority
+                and declared_source_priority != generation_source_priority
+            ):
+                raise FundamentalGenerationError(
+                    "fundamental row source priority mismatch: " + symbol
+                )
+            record["fundamental_generation_id"] = generation_id
+            record["source_priority"] = generation_source_priority
+    return records, manifest
 
 
 def load_macro_record(
@@ -416,9 +473,19 @@ def load_macro_record(
     as_of: str = "",
     root: str | Path = DEFAULT_MACRO_ROOT,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    table_path = _resolve_parquet_table_root(root, "macro_daily")
-    frame = _read_parquet_table(table_path)
-    manifest = _read_latest_manifest(table_path) or _manifest_from_parquet("macro_daily", frame, table_path)
+    # Macro has a stricter generation contract than generic logical tables.
+    # Import lazily because the mart writer uses this module's source constants.
+    from quant_investor.market.macro_mart import (
+        MacroMartPromotionError,
+        read_macro_mart,
+    )
+
+    try:
+        frame, manifest = read_macro_mart(data_root=root)
+    except (MacroMartPromotionError, OSError, ValueError) as exc:
+        return {}, {
+            "read_error": str(exc) or "macro_catalog_generation_invalid"
+        }
     if frame.empty:
         return {}, manifest
     working = frame.copy()
@@ -516,16 +583,57 @@ def assess_macro_readiness(
     as_of: str = "",
 ) -> BranchDataReadiness:
     missing = [field_name for field_name in MACRO_REQUIRED_FIELDS if not _is_present(macro_record.get(field_name))]
-    source = str(macro_record.get("source") or manifest.get("provider_status") or manifest.get("source") or "parquet_canonical")
-    priority = _source_priority(source, str(macro_record.get("source_priority") or manifest.get("source_priority") or ""))
-    fallback_used = priority != SOURCE_TUSHARE
+    source = str(manifest.get("source") or "").strip()
+    priority = _source_priority(
+        source,
+        str(manifest.get("source_priority") or ""),
+    )
+    declared_priority = str(
+        manifest.get("source_priority") or ""
+    ).strip()
+    source_priority_valid = (
+        _MACRO_SOURCE_PRIORITY_BY_SOURCE.get(source) == declared_priority
+    )
+    fallback_used = priority != SOURCE_TUSHARE or not source_priority_valid
     blockers = []
+    read_error = str(manifest.get("read_error") or "").strip()
+    if read_error:
+        blockers.append(read_error)
     if not macro_record:
         blockers.append("macro_parquet_table_missing_or_empty")
     if missing:
         blockers.append("macro_required_fields_missing")
     if fallback_used:
         blockers.append("macro_not_tushare_primary")
+    if not source_priority_valid:
+        blockers.append("macro_source_priority_mismatch")
+    if manifest.get("production_eligible") is not True:
+        blockers.append("macro_generation_not_production_eligible")
+    if not str(manifest.get("generation_id") or "").strip():
+        blockers.append("macro_generation_id_missing")
+    if str(manifest.get("provider_status") or "") != "verified_provider_snapshot":
+        blockers.append("macro_provider_manifest_unverified")
+    record_source = str(macro_record.get("source") or "").strip()
+    record_priority = str(macro_record.get("source_priority") or "").strip()
+    if macro_record and (
+        record_source != source
+        or record_priority != str(manifest.get("source_priority") or "").strip()
+    ):
+        blockers.append("macro_source_lineage_mismatch")
+    if str(macro_record.get("pit_status") or "") != "market_point_in_time":
+        blockers.append("macro_pit_status_invalid")
+    fetched_at = pd.to_datetime(
+        str(macro_record.get("fetched_at") or "").strip(),
+        errors="coerce",
+        utc=True,
+    )
+    if pd.isna(fetched_at):
+        blockers.append("macro_fetched_at_missing_or_invalid")
+    target_date = _date_text(as_of)
+    record_date = _date_text(macro_record.get("trade_date"))
+    if target_date and record_date != target_date:
+        blockers.append("macro_trade_date_as_of_mismatch")
+    blockers = list(dict.fromkeys(blockers))
     return BranchDataReadiness(
         branch="macro",
         status=STATUS_PASS if not blockers else STATUS_BLOCK,

@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -76,11 +78,15 @@ class ForecastSnapshotStore:
         normalized = str(symbol).replace("/", "_").replace(":", "_")
         return self.base_dir / f"{normalized}.json"
 
-    def load_snapshot(self, symbol: str) -> ForecastSnapshot | None:
-        path = self._symbol_path(symbol)
-        if not path.exists():
-            return None
+    def _version_dir(self, symbol: str) -> Path:
+        normalized = str(symbol).replace("/", "_").replace(":", "_")
+        return self.base_dir / "versions" / normalized
 
+    def _version_path(self, symbol: str, as_of: str) -> Path:
+        return self._version_dir(symbol) / f"{_normalize_as_of(as_of)}.json"
+
+    @staticmethod
+    def _read_snapshot(path: Path, symbol: str) -> ForecastSnapshot:
         payload = json.loads(path.read_text(encoding="utf-8"))
         return ForecastSnapshot(
             symbol=str(payload.get("symbol", symbol)),
@@ -106,20 +112,80 @@ class ForecastSnapshotStore:
             metadata=dict(payload.get("metadata", {})),
         )
 
+    @classmethod
+    def _safe_read_snapshot(
+        cls,
+        path: Path,
+        symbol: str,
+    ) -> ForecastSnapshot | None:
+        try:
+            snapshot = cls._read_snapshot(path, symbol)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if not _normalize_as_of(snapshot.as_of):
+            return None
+        return snapshot
+
+    def load_snapshot(self, symbol: str, as_of: str | None = None) -> ForecastSnapshot | None:
+        requested_as_of = _normalize_as_of(as_of) if as_of is not None else ""
+        if as_of is not None and str(as_of).strip() and not requested_as_of:
+            return None
+        if requested_as_of:
+            version_dir = self._version_dir(symbol)
+            if version_dir.exists():
+                eligible = sorted(
+                    path
+                    for path in version_dir.glob("*.json")
+                    if _normalize_as_of(path.stem) and _normalize_as_of(path.stem) <= requested_as_of
+                )
+                if eligible:
+                    version_path = eligible[-1]
+                    snapshot = self._safe_read_snapshot(version_path, symbol)
+                    if snapshot is None:
+                        return None
+                    if _normalize_as_of(snapshot.as_of) != _normalize_as_of(
+                        version_path.stem
+                    ):
+                        return None
+                    return snapshot
+
+        path = self._symbol_path(symbol)
+        if not path.exists():
+            return None
+        snapshot = self._safe_read_snapshot(path, symbol)
+        if snapshot is None:
+            return None
+        snapshot_as_of = _normalize_as_of(snapshot.as_of)
+        if requested_as_of and (
+            not snapshot_as_of or snapshot_as_of > requested_as_of
+        ):
+            return None
+        return snapshot
+
     def inspect_snapshot(self, symbol: str, as_of: str) -> dict[str, Any]:
         requested_as_of = _normalize_as_of(as_of)
-        snapshot = self.load_snapshot(symbol)
-        if snapshot is None:
+        if not requested_as_of:
             return {
-                "status": "missing",
-                "requested_as_of": requested_as_of,
+                "status": "invalid",
+                "requested_as_of": "",
                 "cached_as_of": "",
+                "available": False,
+                "path": str(self._symbol_path(symbol)),
+            }
+        latest = self.load_snapshot(symbol)
+        snapshot = self.load_snapshot(symbol, requested_as_of)
+        if snapshot is None:
+            latest_as_of = _normalize_as_of(latest.as_of) if latest is not None else ""
+            return {
+                "status": "future" if latest_as_of and latest_as_of > requested_as_of else "missing",
+                "requested_as_of": requested_as_of,
+                "cached_as_of": latest_as_of,
                 "available": False,
                 "path": str(self._symbol_path(symbol)),
             }
 
         cached_as_of = _normalize_as_of(snapshot.as_of)
-        is_fresh = not requested_as_of or (cached_as_of and cached_as_of >= requested_as_of)
+        is_fresh = not requested_as_of or cached_as_of == requested_as_of
         return {
             "status": "fresh" if is_fresh else "stale",
             "requested_as_of": requested_as_of,
@@ -130,22 +196,42 @@ class ForecastSnapshotStore:
 
     def get_snapshot(self, symbol: str, as_of: str) -> ForecastSnapshot:
         requested_as_of = _normalize_as_of(as_of)
-        snapshot = self.load_snapshot(symbol)
+        if not requested_as_of:
+            return _build_missing_snapshot(
+                symbol=symbol,
+                as_of="",
+                reason="forecast_cache_invalid_as_of",
+                note="forecast_cache_invalid_as_of",
+            )
+        latest = self.load_snapshot(symbol)
+        snapshot = self.load_snapshot(symbol, requested_as_of)
         if snapshot is None:
+            latest_as_of = _normalize_as_of(latest.as_of) if latest is not None else ""
+            future_only = bool(requested_as_of and latest_as_of and latest_as_of > requested_as_of)
             return _build_missing_snapshot(
                 symbol=symbol,
                 as_of=requested_as_of,
-                reason="forecast_cache_missing_or_stale",
-                note="forecast_cache_missing_or_stale",
+                reason="forecast_cache_future_snapshot" if future_only else "forecast_cache_missing_or_stale",
+                note="forecast_cache_future_snapshot" if future_only else "forecast_cache_missing_or_stale",
+                cached_as_of=latest_as_of,
             )
 
         cached_as_of = _normalize_as_of(snapshot.as_of)
-        if requested_as_of and (not cached_as_of or cached_as_of < requested_as_of):
+        if requested_as_of and cached_as_of != requested_as_of:
+            future_only = bool(cached_as_of and cached_as_of > requested_as_of)
             return _build_missing_snapshot(
                 symbol=symbol,
                 as_of=requested_as_of,
-                reason="forecast_cache_missing_or_stale",
-                note="forecast_cache_missing_or_stale",
+                reason=(
+                    "forecast_cache_future_snapshot"
+                    if future_only
+                    else "forecast_cache_missing_or_stale"
+                ),
+                note=(
+                    "forecast_cache_future_snapshot"
+                    if future_only
+                    else "forecast_cache_missing_or_stale"
+                ),
                 cached_as_of=cached_as_of,
             )
         return snapshot
@@ -159,6 +245,29 @@ class ForecastSnapshotStore:
             payload = dict(snapshot)
             symbol = str(payload.get("symbol", "unknown"))
 
+        normalized_as_of = _normalize_as_of(payload.get("as_of"))
+        if not normalized_as_of:
+            raise ValueError("forecast snapshot requires a valid as_of date")
+        version_path = self._version_path(symbol, normalized_as_of)
         path = self._symbol_path(symbol)
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        serialized = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+        self._atomic_write(version_path, serialized)
+        latest = self.load_snapshot(symbol)
+        if latest is None or _normalize_as_of(latest.as_of) <= normalized_as_of:
+            self._atomic_write(path, serialized)
         return path
+
+    @staticmethod
+    def _atomic_write(path: Path, payload: bytes) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temp_name, 0o600)
+            os.replace(temp_name, path)
+        finally:
+            if os.path.exists(temp_name):
+                os.unlink(temp_name)

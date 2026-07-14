@@ -259,6 +259,28 @@ class SignalLikelihoodMapper:
             "recent_failure_rate": float(calibration.get("recent_failure_rate", 0.0) or 0.0),
         }
 
+    @staticmethod
+    def _fundamental_generation_confirmed(
+        result: BranchResult | None,
+        symbol: str,
+    ) -> bool:
+        if result is None:
+            return False
+        metadata = dict(result.metadata or {})
+        generations = dict(
+            metadata.get("fundamental_data_generation_by_symbol", {}) or {}
+        )
+        statuses = dict(
+            metadata.get(
+                "fundamental_data_generation_status_by_symbol", {}
+            )
+            or {}
+        )
+        return bool(
+            str(generations.get(symbol) or "").strip()
+            and str(statuses.get(symbol) or "").strip() == "confirmed"
+        )
+
     def compute_likelihoods(
         self,
         *,
@@ -279,6 +301,17 @@ class SignalLikelihoodMapper:
                 "Unexpected branch results for v14 likelihood mapping: "
                 + ", ".join(unexpected_branches)
             )
+        for branch_name, result in branch_results.items():
+            if not isinstance(result, BranchResult):
+                raise ValueError(
+                    "Likelihood branch results must contain BranchResult objects"
+                )
+            result.validate()
+            if result.branch_name != branch_name:
+                raise ValueError(
+                    "Likelihood branch result key/name mismatch: "
+                    f"{branch_name!r} != {result.branch_name!r}"
+                )
         candidate_only_branches = {"fundamental"}
         is_candidate = candidate_symbols is None or symbol in (candidate_symbols or set())
         profile = self._selection_profile()
@@ -286,7 +319,12 @@ class SignalLikelihoodMapper:
 
         quant_l, branch_meta["quant"] = self._branch_likelihood("quant", branch_results, symbol)
 
-        if is_candidate:
+        fundamental_result = branch_results.get("fundamental")
+        fundamental_confirmed = self._fundamental_generation_confirmed(
+            fundamental_result,
+            symbol,
+        )
+        if is_candidate and fundamental_confirmed:
             fundamental_l, branch_meta["fundamental"] = self._branch_likelihood("fundamental", branch_results, symbol)
         else:
             fundamental_l = 0.50  # neutral for non-candidates
@@ -295,13 +333,16 @@ class SignalLikelihoodMapper:
                 "sample_size": 0.0,
                 "calibration_probability": 0.50,
                 "recent_failure_rate": 0.0,
+                "generation_confirmed": 0.0,
             }
 
         evidence_sources = []
         for name in ("quant", "fundamental"):
             if name in candidate_only_branches and not is_candidate:
                 continue
-            if name in branch_results:
+            if name in branch_results and (
+                name != "fundamental" or fundamental_confirmed
+            ):
                 evidence_sources.append(name)
 
         history_confidence = 0.0

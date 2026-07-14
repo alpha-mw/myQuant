@@ -12,6 +12,7 @@ is `./run_web.sh`; the Python CLI entrypoint is `quant-investor`.
 ## Modules
 
 - [Module Map](modules/module_map.md)
+- [Macro v2 Observer Contract](modules/macro_v2_observer.md)
 - [Macro Risk Reference](modules/macro_risk_reference.md)
 
 ## Runtime Notes

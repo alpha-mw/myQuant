@@ -4,8 +4,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from quant_investor.agent_protocol import BranchVerdict, GlobalContext, SymbolResearchPacket
+from quant_investor.agent_protocol import (
+    AgentStatus,
+    BranchVerdict,
+    GlobalContext,
+    SymbolResearchPacket,
+)
 from quant_investor.bayesian.types import LikelihoodSet, PosteriorResult, PriorSet
+from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
+from quant_investor.branch_contracts import BranchResult
 from quant_investor.market.dag.decision import _run_bayesian_selection_phase
 from quant_investor.market.dag.theme_context import extract_symbol_theme_metadata
 
@@ -181,6 +188,7 @@ def test_bayesian_record_metadata_integration_if_feasible():
             regime: str,
             is_degraded: dict[str, bool],
         ) -> PosteriorResult:
+            assert is_degraded == {"quant": False, "fundamental": True}
             return PosteriorResult(
                 symbol=symbol,
                 company_name=company_name,
@@ -219,6 +227,7 @@ def test_bayesian_record_metadata_integration_if_feasible():
         },
     )
 
+    macro_verdict = BranchVerdict(agent_name="macro")
     state = _run_bayesian_selection_phase(
         candidate_symbols=["000001.SZ"],
         company_name_map={"000001.SZ": "Ping An Bank"},
@@ -226,9 +235,20 @@ def test_bayesian_record_metadata_integration_if_feasible():
             "000001.SZ": SymbolResearchPacket(symbol="000001.SZ", category="bank")
         },
         research_by_symbol={},
-        branch_summaries={},
-        branch_results={},
-        macro_verdict=BranchVerdict(),
+        branch_summaries={
+            "quant": BranchVerdict(status=AgentStatus.SUCCESS),
+            "fundamental": BranchVerdict(status=AgentStatus.DEGRADED),
+            "macro": macro_verdict,
+        },
+        branch_results={
+            "quant": BranchResult(branch_name="quant"),
+            "fundamental": BranchResult(
+                branch_name="fundamental",
+                metadata={"degraded_reason": "fundamental_evidence_incomplete"},
+            ),
+            "macro": BranchResult(branch_name="macro"),
+        },
+        macro_verdict=macro_verdict,
         global_context=global_context,
         model_roles=SimpleNamespace(
             agent_layer_enabled=False,
@@ -289,3 +309,138 @@ def test_bayesian_record_metadata_integration_if_feasible():
     assert record.metadata["theme_pool"]["risk_flags"] == ["theme_fake_breakout_risk"]
     assert record.metadata["theme_pool"]["score_penalty"] == pytest.approx(0.22)
     assert record.metadata["theme_pool"]["theme_forced_admission"] is True
+
+
+def _selection_gate_kwargs(
+    *,
+    branch_results: dict[str, object],
+    branch_summaries: dict[str, object],
+    macro_verdict: object,
+) -> dict[str, object]:
+    return {
+        "candidate_symbols": [],
+        "company_name_map": {},
+        "symbol_research_packets": {},
+        "research_by_symbol": {},
+        "branch_summaries": branch_summaries,
+        "branch_results": branch_results,
+        "macro_verdict": macro_verdict,
+        "global_context": object(),
+        "model_roles": object(),
+        "resolver_snapshot": {},
+        "data_quality_issues": [],
+        "top_k": 1,
+        "all_symbols": [],
+        "funnel_output": object(),
+        "provider_health": {},
+        "master_timeout": 0.0,
+        "master_reasoning_effort": "",
+        "master_model_resolution": object(),
+        "master_candidate_models": [],
+        "recall_context": None,
+        "hierarchical_prior_builder_cls": object,
+        "likelihood_mapper_cls": object,
+        "posterior_engine_cls": object,
+        "master_agent_cls": object,
+        "llm_client_cls": object,
+        "portfolio_master_advisory_fn": lambda **kwargs: (None, {}),
+    }
+
+
+@pytest.mark.parametrize("payload_name", ["branch_results", "branch_summaries"])
+@pytest.mark.parametrize("missing_branch", CANONICAL_BRANCH_ORDER)
+def test_bayesian_selection_rejects_each_missing_canonical_branch(
+    payload_name: str,
+    missing_branch: str,
+) -> None:
+    macro_verdict = BranchVerdict(agent_name="macro")
+    payloads: dict[str, dict[str, object]] = {
+        "branch_results": {
+            name: BranchResult(branch_name=name) for name in CANONICAL_BRANCH_ORDER
+        },
+        "branch_summaries": {
+            "quant": BranchVerdict(agent_name="quant"),
+            "fundamental": BranchVerdict(agent_name="fundamental"),
+            "macro": macro_verdict,
+        },
+    }
+    payloads[payload_name].pop(missing_branch)
+
+    with pytest.raises(
+        ValueError,
+        match=rf"Bayesian selection {payload_name}.*missing branches: {missing_branch}",
+    ):
+        _run_bayesian_selection_phase(
+            **_selection_gate_kwargs(
+                branch_results=payloads["branch_results"],
+                branch_summaries=payloads["branch_summaries"],
+                macro_verdict=macro_verdict,
+            )
+        )
+
+
+def test_bayesian_selection_rejects_macro_verdict_summary_drift() -> None:
+    macro_summary = BranchVerdict(agent_name="macro", final_score=0.1)
+
+    with pytest.raises(ValueError, match="macro_verdict must match"):
+        _run_bayesian_selection_phase(
+            **_selection_gate_kwargs(
+                branch_results={
+                    name: BranchResult(branch_name=name)
+                    for name in CANONICAL_BRANCH_ORDER
+                },
+                branch_summaries={
+                    "quant": BranchVerdict(agent_name="quant"),
+                    "fundamental": BranchVerdict(agent_name="fundamental"),
+                    "macro": macro_summary,
+                },
+                macro_verdict=BranchVerdict(agent_name="macro", final_score=0.2),
+            )
+        )
+
+
+def test_bayesian_selection_rejects_branch_result_key_name_swap() -> None:
+    macro_verdict = BranchVerdict(agent_name="macro")
+    branch_results = {
+        "quant": BranchResult(branch_name="fundamental"),
+        "fundamental": BranchResult(branch_name="quant"),
+        "macro": BranchResult(branch_name="macro"),
+    }
+
+    with pytest.raises(ValueError, match="key/name mismatch"):
+        _run_bayesian_selection_phase(
+            **_selection_gate_kwargs(
+                branch_results=branch_results,
+                branch_summaries={
+                    "quant": BranchVerdict(agent_name="quant"),
+                    "fundamental": BranchVerdict(agent_name="fundamental"),
+                    "macro": macro_verdict,
+                },
+                macro_verdict=macro_verdict,
+            )
+        )
+
+
+def test_bayesian_selection_validates_nested_retired_branch_metadata() -> None:
+    macro_verdict = BranchVerdict(agent_name="macro")
+    branch_results = {
+        "quant": BranchResult(
+            branch_name="quant",
+            metadata={"intelligence_score": 0.9},
+        ),
+        "fundamental": BranchResult(branch_name="fundamental"),
+        "macro": BranchResult(branch_name="macro"),
+    }
+
+    with pytest.raises(ValueError, match="retired Intelligence key"):
+        _run_bayesian_selection_phase(
+            **_selection_gate_kwargs(
+                branch_results=branch_results,
+                branch_summaries={
+                    "quant": BranchVerdict(agent_name="quant"),
+                    "fundamental": BranchVerdict(agent_name="fundamental"),
+                    "macro": macro_verdict,
+                },
+                macro_verdict=macro_verdict,
+            )
+        )

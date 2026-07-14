@@ -258,7 +258,16 @@ def test_single_mainline_one_symbol_mock_run_includes_version_fields(monkeypatch
         "report_bundle": report_bundle,
         "portfolio_master_output": SimpleNamespace(final_score=0.7, confidence=0.8),
         "portfolio_master_meta": {"confidence": 0.8},
-        "branch_results": {"macro": BranchResult(branch_name="macro", final_score=0.2, final_confidence=0.7, symbol_scores={"000001.SZ": 0.2})},
+        "branch_results": {
+            "quant": BranchResult(branch_name="quant"),
+            "fundamental": BranchResult(branch_name="fundamental"),
+            "macro": BranchResult(
+                branch_name="macro",
+                final_score=0.2,
+                final_confidence=0.7,
+                symbol_scores={"000001.SZ": 0.2},
+            ),
+        },
         "bayesian_records": [],
         "funnel_output": SimpleNamespace(candidates=["000001.SZ"], excluded_symbols={}, funnel_metadata={}),
     }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from dataclasses import dataclass, field
 from statistics import fmean
 from typing import Any, Callable, Mapping
@@ -24,6 +25,7 @@ from quant_investor.agents.stock_reviewers import (
     MasterICAgent,
     MasterSymbolPacket,
 )
+from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
 from quant_investor.branch_contracts import BranchResult
 from quant_investor.market.dag.assembly import _aggregate_branch_summaries, _build_branch_results
 from quant_investor.market.dag.common import _dedupe_texts, _score_to_action
@@ -247,6 +249,48 @@ def _build_symbol_macro_verdict(
             "source": "market_macro_verdict",
         },
     )
+
+
+def _build_no_candidate_fundamental_outputs() -> tuple[BranchVerdict, BranchResult]:
+    diagnostic = "not_run_no_candidates"
+    generation_evidence = {
+        "status": "UNCONFIRMED",
+        "all_symbols_confirmed": False,
+        "reason": diagnostic,
+    }
+    metadata = {
+        "branch_name": "fundamental",
+        "degraded_reason": diagnostic,
+        "reliability": 0.0,
+        "horizon_days": 5,
+        "fundamental_data_generation_status": "UNCONFIRMED",
+        "fundamental_data_generation_by_symbol": {},
+        "fundamental_data_generation_status_by_symbol": {},
+        "fundamental_data_generation_evidence": generation_evidence,
+    }
+    thesis = "No candidates entered Fundamental research; evidence is UNCONFIRMED."
+    verdict = BranchVerdict(
+        agent_name="fundamental",
+        thesis=thesis,
+        final_score=0.0,
+        final_confidence=0.0,
+        status=AgentStatus.DEGRADED,
+        coverage_notes=["No candidate symbols were available for Fundamental research."],
+        diagnostic_notes=[diagnostic],
+        metadata=deepcopy(metadata),
+    )
+    result = BranchResult(
+        branch_name="fundamental",
+        success=False,
+        final_score=0.0,
+        final_confidence=0.0,
+        symbol_scores={},
+        conclusion=thesis,
+        coverage_notes=list(verdict.coverage_notes),
+        diagnostic_notes=[diagnostic],
+        metadata=deepcopy(metadata),
+    )
+    return verdict, result
 
 
 async def _run_candidate_research_phase(
@@ -587,10 +631,28 @@ async def _run_candidate_research_phase(
     review_bundle.fallback_reasons = _dedupe_texts(fallback_reasons)
 
     branch_summaries = _aggregate_branch_summaries(research_by_symbol)
+    empty_fundamental_result: BranchResult | None = None
+    if not candidate_symbols:
+        empty_fundamental_verdict, empty_fundamental_result = (
+            _build_no_candidate_fundamental_outputs()
+        )
+        branch_summaries["fundamental"] = empty_fundamental_verdict
     branch_summaries["quant"] = global_quant_verdict
     branch_summaries["macro"] = macro_verdict
     branch_results = _build_branch_results(research_by_symbol, branch_summaries)
     branch_results["quant"] = quant_result
+    if empty_fundamental_result is not None:
+        branch_results["fundamental"] = empty_fundamental_result
+    branch_summaries = {
+        name: branch_summaries[name]
+        for name in CANONICAL_BRANCH_ORDER
+        if name in branch_summaries
+    }
+    branch_results = {
+        name: branch_results[name]
+        for name in CANONICAL_BRANCH_ORDER
+        if name in branch_results
+    }
 
     return CandidateResearchState(
         symbol_research_packets=symbol_research_packets,

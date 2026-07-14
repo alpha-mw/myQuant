@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 import pandas as pd
@@ -19,8 +20,11 @@ from quant_investor.market.branch_readiness import (
     load_fundamental_records,
     write_branch_readiness_report,
 )
-from quant_investor.market.fundamental_generation import publish_fundamental_generation
-from quant_investor.market.macro_mart import write_macro_mart
+from quant_investor.market.fundamental_generation import (
+    FundamentalGenerationError,
+    load_fundamental_pointer,
+    publish_fundamental_generation,
+)
 
 
 def _price_frame(symbol: str = "000001.SZ") -> pd.DataFrame:
@@ -73,18 +77,66 @@ def _write_fundamental_daily(root, symbols=("000001.SZ",), *, partial: bool = Fa
 
 
 def _write_macro(root):
-    write_macro_mart(
-        {
-            "trade_date": "20240510",
-            "macro_score": 0.2,
-            "liquidity_score": 0.4,
-            "volatility_percentile": 45.0,
-            "policy_signal": "neutral",
-            "source": "tushare_macro",
-            "source_priority": "tushare_primary",
-        },
-        data_root=root,
-        raw_snapshot_root=root.parent / "snapshots" / "macro",
+    generation = root / "_generations" / "fixture"
+    generation.mkdir(parents=True, exist_ok=True)
+    table = generation / "part.parquet"
+    pd.DataFrame(
+        [
+            {
+                "trade_date": "2024-05-10",
+                "macro_score": 0.2,
+                "liquidity_score": 0.4,
+                "volatility_percentile": 45.0,
+                "policy_signal": "neutral",
+                "source": "tushare_primary",
+                "source_priority": "tushare_primary",
+                "pit_status": "market_point_in_time",
+                "fetched_at": "2024-05-10T08:00:00+00:00",
+            }
+        ]
+    ).to_parquet(table, index=False)
+    table_sha = hashlib.sha256(table.read_bytes()).hexdigest()
+    manifest = generation / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": "cn-macro-mart.v14",
+                "generation_id": "fixture",
+                "table": "macro_daily",
+                "table_path": "part.parquet",
+                "parquet_sha256": table_sha,
+                "source": "tushare_primary",
+                "source_priority": "tushare_primary",
+                "provider_status": "verified_provider_snapshot",
+                "pit_status": "market_point_in_time",
+                "as_of": "2024-05-10",
+                "production_eligible": True,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    manifest_sha = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    relative_table = table.relative_to(root.parent).as_posix()
+    relative_manifest = manifest.relative_to(root.parent).as_posix()
+    (root.parent / "_catalog.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "strict-parquet-catalog.v1",
+                "required_tables": ["macro_daily"],
+                "tables": {
+                    "macro_daily": {
+                        "path": relative_table,
+                        "generation_manifest": relative_manifest,
+                        "generation_id": "fixture",
+                        "parquet_sha256": table_sha,
+                        "generation_manifest_sha256": manifest_sha,
+                    }
+                },
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
     )
 
 
@@ -221,7 +273,11 @@ def test_branch_readiness_prefers_generation_pointer_over_stale_legacy_table(tmp
     fundamental_root = tmp_path / "cn"
     legacy_root = fundamental_root / "fundamental_daily"
     _write_fundamental_daily(legacy_root)
-    generation_daily = pd.read_parquet(legacy_root / "part.parquet").assign(fin_roe=0.27)
+    generation_daily = pd.read_parquet(legacy_root / "part.parquet").assign(
+        fin_roe=0.27,
+        source="offline_generation_fixture",
+        source_priority="manual_offline_snapshot",
+    )
     publish_fundamental_generation(
         root=fundamental_root,
         run_id="new-generation",
@@ -230,7 +286,11 @@ def test_branch_readiness_prefers_generation_pointer_over_stale_legacy_table(tmp
             "fundamental_daily": generation_daily,
             "fundamental_quarantine": pd.DataFrame(columns=["ts_code"]),
         },
-        metadata={"run_id": "new-generation", "storage_backend": "parquet_canonical_generation"},
+        metadata={
+            "run_id": "new-generation",
+            "source_priority": "manual_offline_snapshot",
+            "storage_backend": "parquet_canonical_generation",
+        },
     )
 
     records, manifest = load_fundamental_records(
@@ -238,8 +298,121 @@ def test_branch_readiness_prefers_generation_pointer_over_stale_legacy_table(tmp
     )
 
     assert records["000001.SZ"]["fin_roe"] == 0.27
+    assert (
+        records["000001.SZ"]["fundamental_generation_id"]
+        == "new-generation"
+    )
     assert manifest["generation_id"] == "new-generation"
     assert manifest["storage_backend"] == "parquet_canonical_generation"
+
+
+def test_fundamental_generation_rejects_table_tamper_after_cached_pointer(
+    tmp_path,
+):
+    fundamental_root = tmp_path / "cn"
+    daily = pd.DataFrame(
+        [
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": "20240510",
+                "availability_date": "2024-04-30",
+                "source": "offline_generation_fixture",
+                "source_priority": "manual_offline_snapshot",
+                "fin_roe": 0.13,
+            }
+        ]
+    )
+    table_paths, _pointer = publish_fundamental_generation(
+        root=fundamental_root,
+        run_id="hash-bound-generation",
+        tables={
+            "fundamental_period": pd.DataFrame(columns=["ts_code"]),
+            "fundamental_daily": daily,
+            "fundamental_quarantine": pd.DataFrame(columns=["ts_code"]),
+        },
+        metadata={
+            "run_id": "hash-bound-generation",
+            "storage_backend": "parquet_canonical_generation",
+        },
+    )
+
+    assert load_fundamental_pointer(fundamental_root) is not None
+    daily.assign(fin_roe=0.99).to_parquet(
+        table_paths["fundamental_daily"],
+        index=False,
+    )
+
+    with pytest.raises(
+        FundamentalGenerationError,
+        match="fundamental table hash mismatch",
+    ):
+        load_fundamental_records(
+            ["000001.SZ"],
+            as_of="20240510",
+            root=fundamental_root,
+        )
+
+
+def test_fundamental_pointer_cache_does_not_expose_mutable_nested_state(
+    tmp_path,
+):
+    fundamental_root = tmp_path / "cn"
+    publish_fundamental_generation(
+        root=fundamental_root,
+        run_id="immutable-cache",
+        tables={
+            "fundamental_period": pd.DataFrame(columns=["ts_code"]),
+            "fundamental_daily": pd.DataFrame(columns=["ts_code"]),
+            "fundamental_quarantine": pd.DataFrame(columns=["ts_code"]),
+        },
+        metadata={"run_id": "immutable-cache"},
+    )
+
+    first = load_fundamental_pointer(fundamental_root)
+    assert first is not None
+    first["manifest"]["generation_id"] = "mutated-by-caller"
+
+    second = load_fundamental_pointer(fundamental_root)
+    assert second is not None
+    assert second["manifest"]["generation_id"] == "immutable-cache"
+
+
+def test_fundamental_generation_rejects_root_ancestor_symlink(tmp_path):
+    real_parent = tmp_path / "real"
+    real_parent.mkdir()
+    real_root = real_parent / "cn"
+    tables = {
+        table_name: pd.DataFrame(columns=["ts_code"])
+        for table_name in (
+            "fundamental_period",
+            "fundamental_daily",
+            "fundamental_quarantine",
+        )
+    }
+    publish_fundamental_generation(
+        root=real_root,
+        run_id="g1",
+        tables=tables,
+        metadata={},
+    )
+    alias = tmp_path / "alias"
+    alias.symlink_to(real_parent, target_is_directory=True)
+
+    with pytest.raises(
+        FundamentalGenerationError,
+        match="fundamental root ancestor symlink rejected",
+    ):
+        load_fundamental_pointer(alias / "cn")
+    with pytest.raises(
+        FundamentalGenerationError,
+        match="fundamental root ancestor symlink rejected",
+    ):
+        publish_fundamental_generation(
+            root=alias / "new-cn",
+            run_id="g2",
+            tables=tables,
+            metadata={},
+        )
 
 
 def test_fundamental_partial_record_warns_without_blocking(tmp_path):

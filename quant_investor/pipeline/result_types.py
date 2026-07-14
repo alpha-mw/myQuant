@@ -11,6 +11,7 @@ from quant_investor.agent_protocol import (
     StockReviewBundle,
 )
 from quant_investor.agents.agent_contracts import BaseBranchAgentOutput, MasterAgentOutput, RiskAgentOutput
+from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
 from quant_investor.branch_contracts import (
     BranchResult,
     CalibratedBranchSignal,
@@ -111,11 +112,21 @@ class QuantInvestorPipelineResult:
                     f"QuantInvestorPipelineResult {field_name} mismatch: "
                     f"expected {expected!r}, got {actual!r}."
                 )
-        unexpected = sorted(set(self.branch_results) - {"quant", "fundamental", "macro"})
+        expected_branches = set(CANONICAL_BRANCH_ORDER)
+        actual_branches = set(self.branch_results)
+        unexpected = sorted(actual_branches - expected_branches)
         if unexpected:
             raise ValueError(
                 "QuantInvestorPipelineResult has noncanonical branch keys: "
                 + ", ".join(unexpected)
+            )
+        if self.pipeline_mode == "bayesian" and actual_branches != expected_branches:
+            missing = sorted(expected_branches - actual_branches)
+            raise ValueError(
+                "QuantInvestorPipelineResult bayesian branch_results must contain "
+                "exactly the canonical branches "
+                f"{list(CANONICAL_BRANCH_ORDER)!r}; missing branches: "
+                + ", ".join(missing)
             )
         unexpected_calibrated = sorted(
             set(self.calibrated_signals) - {"quant", "fundamental", "macro"}
