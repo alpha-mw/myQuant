@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import math
 from dataclasses import asdict, dataclass, field
@@ -283,7 +284,7 @@ def assess_quant_readiness(
 
 def _read_latest_manifest(root: Path) -> dict[str, Any]:
     path = root / "latest_manifest.json"
-    if not path.exists():
+    if not path.exists() or path.is_symlink() or not path.is_file():
         return {}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -296,6 +297,25 @@ def _resolve_parquet_table_root(root: str | Path, table_name: str) -> Path:
     path = Path(root).expanduser()
     if path.suffix.lower() == ".parquet":
         return path
+    if table_name == "macro_daily":
+        pointer_path = path / "latest_manifest.json"
+        pointer = _read_latest_manifest(path)
+        if (pointer_path.exists() or pointer_path.is_symlink()) and not pointer:
+            return path / "__invalid_macro_generation_pointer__.parquet"
+        relative = Path(str(pointer.get("table_path") or ""))
+        if relative and not relative.is_absolute() and ".." not in relative.parts:
+            candidate = (path / relative).resolve()
+            resolved_root = path.resolve()
+            if resolved_root in candidate.parents and candidate.is_file() and not candidate.is_symlink():
+                declared_hash = str(pointer.get("parquet_sha256") or "")
+                if (
+                    pointer.get("generation_id")
+                    and declared_hash
+                    and hashlib.sha256(candidate.read_bytes()).hexdigest() == declared_hash
+                ):
+                    return candidate
+        if pointer.get("generation_id") or pointer.get("table_path"):
+            return path / "__invalid_macro_generation_pointer__.parquet"
     if table_name == "fundamental_daily":
         if load_fundamental_pointer(path) is not None:
             return resolve_fundamental_table_path(path, table_name)
@@ -425,9 +445,11 @@ def load_macro_record(
     as_of: str = "",
     root: str | Path = DEFAULT_MACRO_ROOT,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    table_path = _resolve_parquet_table_root(root, "macro_daily")
+    root_path = Path(root).expanduser()
+    pointer = _read_latest_manifest(root_path)
+    table_path = _resolve_parquet_table_root(root_path, "macro_daily")
     frame = _read_parquet_table(table_path)
-    manifest = _read_latest_manifest(table_path) or _manifest_from_parquet("macro_daily", frame, table_path)
+    manifest = pointer or _read_latest_manifest(table_path) or _manifest_from_parquet("macro_daily", frame, table_path)
     if frame.empty:
         return {}, manifest
     working = frame.copy()
