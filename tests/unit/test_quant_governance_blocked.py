@@ -165,7 +165,7 @@ def test_global_quant_summary_keeps_cross_section_metrics_diagnostic_when_blocke
         assert "diagnostic_breadth=0.950" in verdict.coverage_notes
 
 
-def test_global_quant_summary_uses_only_governed_quant_result_for_production_score() -> None:
+def test_global_quant_summary_rejects_forged_nested_ready_claims() -> None:
     score = _ready_score(
         {f"S{index:03d}": -0.25 for index in range(100)}
     )
@@ -194,10 +194,9 @@ def test_global_quant_summary_uses_only_governed_quant_result_for_production_sco
         quant_result=quant_result,
     )
 
-    assert verdict.final_score == -0.25
-    assert verdict.final_confidence == 0.72
-    assert verdict.metadata["production_quant_evidence"] is True
-    assert verdict.metadata["source"] == "governance_aware_quant_result"
+    assert verdict.final_score == 0.0
+    assert verdict.final_confidence == 0.0
+    assert verdict.metadata["production_quant_evidence"] is False
 
 
 def test_quant_agent_and_dag_reject_forged_ready_score_with_runtime_blocker(

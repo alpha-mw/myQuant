@@ -951,7 +951,7 @@ def score_with_mined_factors(
 def production_runtime_metadata_is_ready(
     metadata: Mapping[str, Any],
 ) -> bool:
-    """Defensively re-check serialized runtime claims at DAG boundaries."""
+    """Independently revalidate serialized production claims at DAG boundaries."""
 
     try:
         factor_count = metadata.get("factor_count")
@@ -993,15 +993,142 @@ def production_runtime_metadata_is_ready(
             for value in [*factor_weights.values(), *factor_coverages.values()]
         ):
             return False
+        if any(
+            not 0.0 <= float(value) <= 1.0
+            for value in factor_coverages.values()
+        ):
+            return False
     except (TypeError, ValueError):
         return False
     contracts_sha = governance.get("factor_runtime_contracts_sha256")
+    registry_path_value = registry_metadata.get("path")
+    if not isinstance(registry_path_value, str) or not registry_path_value.strip():
+        return False
+    if registry_metadata.get("strict_loader") is not True:
+        return False
+
+    # Recompute all executable identities instead of accepting well-shaped
+    # nested claims.  Imports stay local to avoid the protocol/runtime cycle.
+    try:
+        from quant_investor.factors.governance_protocol_v2 import (
+            governance_runtime_status,
+        )
+        from quant_investor.factors.runtime_contract import (
+            implementation_code_sha256,
+            production_runtime_contracts_sha256,
+        )
+
+        recomputed_contracts_sha = production_runtime_contracts_sha256(
+            runtime_contracts
+        )
+        recomputed_code_hashes: dict[str, str] = {}
+        for name in factors_used:
+            contract = runtime_contracts.get(name)
+            if not isinstance(contract, Mapping):
+                return False
+            implementation_id = contract.get("implementation_id")
+            if not isinstance(implementation_id, str) or not implementation_id:
+                return False
+            code_sha = implementation_code_sha256(implementation_id)
+            if contract.get("implementation_code_sha256") != code_sha:
+                return False
+            recomputed_code_hashes[name] = code_sha
+        if contracts_sha != recomputed_contracts_sha:
+            return False
+        if code_hashes != recomputed_code_hashes:
+            return False
+
+        strict_registry = MinedFactorRegistry.load_production(registry_path_value)
+        strict_metadata = dict(strict_registry.metadata or {})
+        current_governance = governance_runtime_status(strict_registry)
+        current_activation = dict(
+            current_governance.get("quant_production_activation", {}) or {}
+        )
+    except (OSError, TypeError, ValueError, KeyError):
+        return False
+
+    if strict_metadata.get("strict_load_error") or strict_metadata.get("load_error"):
+        return False
+    try:
+        claimed_path = Path(registry_path_value).expanduser().resolve()
+        strict_path = Path(str(strict_metadata.get("path") or "")).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    if claimed_path != strict_path:
+        return False
     if (
-        not isinstance(contracts_sha, str)
-        or len(contracts_sha) != 64
-        or any(char not in "0123456789abcdef" for char in contracts_sha)
+        registry_metadata.get("registry_sha256")
+        != strict_metadata.get("registry_sha256")
+        or registry_metadata.get("record_sha256s")
+        != strict_metadata.get("record_sha256s")
+        or registry_metadata.get("production_factor_runtime_contracts")
+        != strict_metadata.get("production_factor_runtime_contracts")
     ):
         return False
+
+    current_names = list(
+        current_governance.get("production_factor_names", []) or []
+    )
+    current_contracts = dict(
+        current_governance.get("factor_runtime_contracts", {}) or {}
+    )
+    current_code_hashes = dict(
+        current_governance.get(
+            "factor_runtime_implementation_code_sha256s", {}
+        )
+        or {}
+    )
+    if (
+        current_governance.get("status") != "ready"
+        or current_names != factors_used
+        or current_contracts != runtime_contracts
+        or current_governance.get("factor_runtime_contracts_sha256")
+        != recomputed_contracts_sha
+        or current_code_hashes != recomputed_code_hashes
+        or governance.get("protocol_version")
+        != current_governance.get("protocol_version")
+        or governance.get("protocol_hash")
+        != current_governance.get("protocol_hash")
+        or governance.get("production_factor_count")
+        != current_governance.get("production_factor_count")
+        or governance.get("production_factor_set_sha256")
+        != current_governance.get("production_factor_set_sha256")
+    ):
+        return False
+
+    current_records = {
+        record.name: record for record in strict_registry.selectable_factors()
+    }
+    try:
+        expected_weights = {
+            name: float(current_records[name].weight)
+            * (1.0 if float(current_records[name].direction) >= 0.0 else -1.0)
+            for name in factors_used
+        }
+        if any(
+            not math.isclose(
+                float(factor_weights[name]),
+                expected_weights[name],
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+            for name in factors_used
+        ):
+            return False
+    except (KeyError, TypeError, ValueError):
+        return False
+
+    receipt_sha = activation.get("receipt_file_sha256")
+    current_receipt_sha = current_activation.get("receipt_file_sha256")
+    if (
+        not isinstance(receipt_sha, str)
+        or len(receipt_sha) != 64
+        or any(char not in "0123456789abcdef" for char in receipt_sha)
+        or receipt_sha != current_receipt_sha
+        or activation.get("receipt_path") != current_activation.get("receipt_path")
+    ):
+        return False
+
     return bool(
         metadata.get("governance_status") == "ready"
         and metadata.get("factor_mode") == "governed_mined_factors"
@@ -1015,6 +1142,8 @@ def production_runtime_metadata_is_ready(
         and not list(governance.get("blockers", []) or [])
         and activation.get("status") == "ready"
         and not list(activation.get("blockers", []) or [])
+        and current_activation.get("status") == "ready"
+        and not list(current_activation.get("blockers", []) or [])
     )
 
 

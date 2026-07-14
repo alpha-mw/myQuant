@@ -342,9 +342,11 @@ def _contract_blockers(
         blockers.append(f"{prefix}:min_cross_section_invalid")
     if contract["factor_definition_sha256"] != factor_definition_sha256(record):
         blockers.append(f"{prefix}:factor_definition_sha256_mismatch")
+    current_record_sha256 = factor_record_payload_sha256(record)
     if (
         not _is_hash(expected_record_sha256)
-        or contract["factor_record_sha256"] != expected_record_sha256
+        or expected_record_sha256 != current_record_sha256
+        or contract["factor_record_sha256"] != current_record_sha256
     ):
         blockers.append(f"{prefix}:factor_record_sha256_mismatch")
     evidence_path_value = contract["factor_evidence_path"]
@@ -481,7 +483,7 @@ def validate_quant_production_activation(
 
     receipt_path = Path(receipt_value).expanduser()
     try:
-        if stat.S_IMODE(receipt_path.stat().st_mode) & 0o077:
+        if stat.S_IMODE(receipt_path.stat().st_mode) != 0o600:
             return {
                 "status": "governance_blocked",
                 "blockers": ["quant_production_activation_receipt_permissions_unsafe"],
@@ -499,9 +501,8 @@ def validate_quant_production_activation(
             "blockers": ["quant_production_activation_receipt_readback_mismatch"],
         }
     observed_receipt_sha = hashlib.sha256(first).hexdigest()
-    expected_receipt_sha = (
-        env.get("QUANT_PRODUCTION_ACTIVATION_RECEIPT_SHA256")
-        or registry_metadata.get("quant_production_activation_receipt_sha256")
+    expected_receipt_sha = env.get(
+        "QUANT_PRODUCTION_ACTIVATION_RECEIPT_SHA256"
     )
     if not _is_hash(expected_receipt_sha):
         return {

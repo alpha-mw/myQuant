@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -14,8 +15,16 @@ from quant_investor.factors.governance import (
     FactorRecord,
     GateResult,
 )
-from quant_investor.factors.runtime import MinedFactorRegistry, MinedFactorScorer
-from quant_investor.factors.governance_protocol_v2 import governance_runtime_status
+from quant_investor.factors.runtime import (
+    MinedFactorRegistry,
+    MinedFactorScorer,
+    RuntimeFactorScore,
+    production_runtime_metadata_is_ready,
+)
+from quant_investor.factors.governance_protocol_v2 import (
+    governance_runtime_status,
+    protocol_hash,
+)
 from quant_investor.factors.runtime_contract import (
     ACTIVATION_RECEIPT_SCHEMA_VERSION,
     RUNTIME_CONTRACT_SCHEMA_VERSION,
@@ -23,6 +32,7 @@ from quant_investor.factors.runtime_contract import (
     factor_definition_sha256,
     factor_record_payload_sha256,
     implementation_code_sha256,
+    production_implementation_spec,
     production_runtime_contracts_sha256,
     validate_production_runtime_contracts,
     validate_quant_production_activation,
@@ -68,18 +78,19 @@ def _record(
 
 def _contract(record: FactorRecord, evidence_path: Path) -> dict[str, object]:
     evidence_sha = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+    spec = production_implementation_spec(record.implementation)
     return {
         "schema_version": RUNTIME_CONTRACT_SCHEMA_VERSION,
         "factor_name": record.name,
         "factor_version": record.version,
         "implementation_id": record.implementation,
-        "implementation_version": "price-volume-runtime.v1",
+        "implementation_version": spec["implementation_version"],
         "implementation_code_sha256": implementation_code_sha256(
             record.implementation
         ),
-        "required_columns": ["trade_date", "amount"],
-        "data_semantics": "strict-parquet-cn-daily-adjusted.v1",
-        "lookback_rows": 5,
+        "required_columns": spec["required_columns"],
+        "data_semantics": spec["data_semantics"],
+        "lookback_rows": spec["lookback_rows"],
         "gate2_min_coverage_rate": 1.0,
         "min_cross_section": 20,
         "factor_definition_sha256": factor_definition_sha256(record),
@@ -202,6 +213,34 @@ def test_runtime_contract_rejects_every_bound_hash_drift(
     assert any("sha256" in item for item in result["blockers"])
 
 
+def test_runtime_contract_binds_snapshot_hash_to_current_factor_record(
+    tmp_path: Path,
+) -> None:
+    evidence = tmp_path / "evidence.json"
+    evidence.write_text("{}\n", encoding="utf-8")
+    snapshot_record = _record(weight=0.05)
+    contract = _contract(snapshot_record, evidence)
+    metadata = _contract_metadata(snapshot_record, contract)
+
+    current_record = _record(weight=0.10)
+    result = validate_production_runtime_contracts([current_record], metadata)
+
+    assert result["status"] == "governance_blocked"
+    assert any("factor_record_sha256" in item for item in result["blockers"])
+
+    metadata["production_factor_runtime_contracts"] = {
+        current_record.name: _contract(current_record, evidence)
+    }
+    recomputed_contract = validate_production_runtime_contracts(
+        [current_record], metadata
+    )
+    assert recomputed_contract["status"] == "governance_blocked"
+    assert any(
+        "factor_record_sha256" in item
+        for item in recomputed_contract["blockers"]
+    )
+
+
 def test_production_activation_defaults_blocked_and_false_requires_receipt(
     tmp_path: Path,
 ) -> None:
@@ -310,6 +349,117 @@ def test_production_activation_defaults_blocked_and_false_requires_receipt(
     assert (
         "quant_production_activation_receipt_exact_bytes_mismatch"
         in tampered["blockers"]
+    )
+
+
+def test_production_activation_sha_cannot_fall_back_to_registry_metadata(
+    tmp_path: Path,
+) -> None:
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text("{}\n", encoding="utf-8")
+    registry_sha = hashlib.sha256(registry_path.read_bytes()).hexdigest()
+    contracts_sha = "c" * 64
+    code_hashes = {"pv_low_dollar_volume_5d": "e" * 64}
+    receipt_path = tmp_path / "activation_receipt.json"
+    receipt = {
+        "schema_version": ACTIVATION_RECEIPT_SCHEMA_VERSION,
+        "status": "authorized",
+        "activation_id": "test-only-activation",
+        "approved_by": "test-fixture",
+        "issued_at": "2026-07-14T00:00:00Z",
+        "kill_switch_value": "false",
+        "registry_path": str(registry_path.resolve()),
+        "registry_sha256": registry_sha,
+        "production_factor_set_sha256": "b" * 64,
+        "production_runtime_contracts_sha256": contracts_sha,
+        "implementation_code_sha256s": code_hashes,
+        "factor_governance_protocol_version": "v2",
+        "factor_governance_protocol_hash": "d" * 64,
+    }
+    receipt["receipt_sha256"] = activation_receipt_payload_sha256(receipt)
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    receipt_path.chmod(0o600)
+    receipt_file_sha = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+    metadata = {
+        "strict_loader": True,
+        "path": str(registry_path),
+        "registry_sha256": registry_sha,
+        "quant_production_activation_receipt_sha256": receipt_file_sha,
+    }
+
+    result = validate_quant_production_activation(
+        metadata,
+        {"production_factor_set_sha256": "b" * 64},
+        contracts_sha,
+        implementation_code_sha256s=code_hashes,
+        protocol_version="v2",
+        protocol_hash_value="d" * 64,
+        environ={
+            "QUANT_PRODUCTION_KILL_SWITCH": "false",
+            "QUANT_PRODUCTION_ACTIVATION_RECEIPT": str(receipt_path),
+        },
+    )
+
+    assert result["status"] == "governance_blocked"
+    assert (
+        "quant_production_activation_receipt_expected_sha256_missing"
+        in result["blockers"]
+    )
+
+
+@pytest.mark.parametrize("mode", [0o400, 0o640, 0o644])
+def test_production_activation_requires_exact_0600_permissions(
+    tmp_path: Path,
+    mode: int,
+) -> None:
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text("{}\n", encoding="utf-8")
+    registry_sha = hashlib.sha256(registry_path.read_bytes()).hexdigest()
+    contracts_sha = "c" * 64
+    code_hashes = {"pv_low_dollar_volume_5d": "e" * 64}
+    receipt_path = tmp_path / "activation_receipt.json"
+    receipt = {
+        "schema_version": ACTIVATION_RECEIPT_SCHEMA_VERSION,
+        "status": "authorized",
+        "activation_id": "test-only-activation",
+        "approved_by": "test-fixture",
+        "issued_at": "2026-07-14T00:00:00Z",
+        "kill_switch_value": "false",
+        "registry_path": str(registry_path.resolve()),
+        "registry_sha256": registry_sha,
+        "production_factor_set_sha256": "b" * 64,
+        "production_runtime_contracts_sha256": contracts_sha,
+        "implementation_code_sha256s": code_hashes,
+        "factor_governance_protocol_version": "v2",
+        "factor_governance_protocol_hash": "d" * 64,
+    }
+    receipt["receipt_sha256"] = activation_receipt_payload_sha256(receipt)
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    receipt_path.chmod(mode)
+    receipt_file_sha = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+
+    result = validate_quant_production_activation(
+        {
+            "strict_loader": True,
+            "path": str(registry_path),
+            "registry_sha256": registry_sha,
+        },
+        {"production_factor_set_sha256": "b" * 64},
+        contracts_sha,
+        implementation_code_sha256s=code_hashes,
+        protocol_version="v2",
+        protocol_hash_value="d" * 64,
+        environ={
+            "QUANT_PRODUCTION_KILL_SWITCH": "false",
+            "QUANT_PRODUCTION_ACTIVATION_RECEIPT": str(receipt_path),
+            "QUANT_PRODUCTION_ACTIVATION_RECEIPT_SHA256": receipt_file_sha,
+        },
+    )
+
+    assert result["status"] == "governance_blocked"
+    assert (
+        "quant_production_activation_receipt_permissions_unsafe"
+        in result["blockers"]
     )
 
 
@@ -572,3 +722,142 @@ def test_contract_set_hash_is_order_independent() -> None:
     assert production_runtime_contracts_sha256(first) == (
         production_runtime_contracts_sha256(second)
     )
+
+
+def test_downstream_readiness_revalidates_real_strict_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import quant_investor.factors.governance_protocol_v2 as protocol_module
+
+    monkeypatch.setattr(
+        protocol_module,
+        "canonical_replay_producer_control",
+        lambda: {
+            "producer_available": True,
+            "artifact_bytes_readback_bound": True,
+            "production_apply_eligible": True,
+            "blocker": "",
+        },
+    )
+    evidence = tmp_path / "evidence.json"
+    evidence.write_text('{"status":"verified"}\n', encoding="utf-8")
+    factor_names = [
+        "pv_low_dollar_volume_5d",
+        "pv_high_dollar_volume_5d",
+        "pv_volume_stability_5d",
+        "pv_momentum_5d",
+        "pv_price_efficiency_5d",
+    ]
+    records = [_record(name, weight=0.20) for name in factor_names]
+    for index, record in enumerate(records):
+        record.metadata["factor_family"] = f"family-{index}"
+        record.metadata["dominant_primitive_cluster"] = f"cluster-{index}"
+    contracts = {record.name: _contract(record, evidence) for record in records}
+    registry = MinedFactorRegistry.from_records(records)
+    manifest = registry.selectable_manifest()
+    registry.metadata = {
+        **manifest,
+        "factor_governance_protocol_version": "v2",
+        "factor_governance_protocol_hash": protocol_hash(),
+        "factor_governance_last_evidence_hash": "e" * 64,
+        "factor_governance_last_evaluation_hash": "f" * 64,
+        "factor_governance_evidence_schema": (
+            "factor-governance-replay-evidence.v2"
+        ),
+        "factor_governance_production_apply_eligible": True,
+        "factor_governance_production_apply_blocker": "",
+        "production_factor_runtime_contracts": contracts,
+    }
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text(
+        json.dumps(
+            {
+                "schema_version": registry.schema_version,
+                "metadata": registry.metadata,
+                "factors": [record.to_dict() for record in records],
+            },
+            allow_nan=False,
+        ),
+        encoding="utf-8",
+    )
+    strict_registry = MinedFactorRegistry.load_production(registry_path)
+    assert "strict_load_error" not in strict_registry.metadata
+    contract_status = validate_production_runtime_contracts(
+        strict_registry.selectable_factors(), strict_registry.metadata
+    )
+    assert contract_status["status"] == "ready"
+
+    receipt_path = tmp_path / "activation_receipt.json"
+    receipt = {
+        "schema_version": ACTIVATION_RECEIPT_SCHEMA_VERSION,
+        "status": "authorized",
+        "activation_id": "controlled-test-activation",
+        "approved_by": "test-fixture",
+        "issued_at": "2026-07-14T00:00:00Z",
+        "kill_switch_value": "false",
+        "registry_path": str(registry_path.resolve()),
+        "registry_sha256": strict_registry.metadata["registry_sha256"],
+        "production_factor_set_sha256": manifest[
+            "production_factor_set_sha256"
+        ],
+        "production_runtime_contracts_sha256": contract_status[
+            "contracts_sha256"
+        ],
+        "implementation_code_sha256s": contract_status[
+            "implementation_code_sha256s"
+        ],
+        "factor_governance_protocol_version": "v2",
+        "factor_governance_protocol_hash": protocol_hash(),
+    }
+    receipt["receipt_sha256"] = activation_receipt_payload_sha256(receipt)
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    receipt_path.chmod(0o600)
+    monkeypatch.setenv("QUANT_PRODUCTION_KILL_SWITCH", "false")
+    monkeypatch.setenv(
+        "QUANT_PRODUCTION_ACTIVATION_RECEIPT", str(receipt_path)
+    )
+    monkeypatch.setenv(
+        "QUANT_PRODUCTION_ACTIVATION_RECEIPT_SHA256",
+        hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
+    )
+
+    status = governance_runtime_status(strict_registry)
+    assert status["status"] == "ready"
+    factors_used = list(status["production_factor_names"])
+    score = RuntimeFactorScore(
+        symbol_scores={"TEST.SZ": 0.25},
+        factor_count=len(factors_used),
+        factors_used=factors_used,
+        factor_weights={name: 0.20 for name in factors_used},
+        factor_coverages={name: 1.0 for name in factors_used},
+        registry_metadata={
+            **strict_registry.metadata,
+            "governance_runtime": {**status, "production_eligible": True},
+        },
+        governance_status="ready",
+        factor_mode="governed_mined_factors",
+        confidence_multiplier=1.0,
+        production_eligible=True,
+    )
+
+    ready_metadata = score.to_metadata()
+    assert production_runtime_metadata_is_ready(ready_metadata) is True
+
+    forged_contracts_sha = copy.deepcopy(ready_metadata)
+    forged_contracts_sha["registry"]["governance_runtime"][
+        "factor_runtime_contracts_sha256"
+    ] = "a" * 64
+    assert production_runtime_metadata_is_ready(forged_contracts_sha) is False
+
+    forged_code_sha = copy.deepcopy(ready_metadata)
+    forged_code_sha["registry"]["governance_runtime"][
+        "factor_runtime_implementation_code_sha256s"
+    ][factors_used[0]] = "b" * 64
+    assert production_runtime_metadata_is_ready(forged_code_sha) is False
+
+    forged_receipt_sha = copy.deepcopy(ready_metadata)
+    forged_receipt_sha["registry"]["governance_runtime"][
+        "quant_production_activation"
+    ]["receipt_file_sha256"] = "c" * 64
+    assert production_runtime_metadata_is_ready(forged_receipt_sha) is False

@@ -97,13 +97,15 @@ QUANT_PRODUCTION_ACTIVATION_RECEIPT_SHA256=
 ```
 
 Only the exact lowercase value `false` proceeds to receipt validation. The
-`quant-production-activation-receipt.v1` file must be private, read back without
-change, and match the separately supplied exact-byte SHA. Its payload binds the
-registry path and bytes SHA, production-set SHA, runtime-contract aggregate,
-per-factor implementation-code SHAs, FactorGovernanceProtocol version/hash,
-activation ID, approver, and its own canonical payload hash. The repository
-does not create or ship an activation receipt; the current canonical producer
-blocker remains authoritative even when these environment variables are set.
+`quant-production-activation-receipt.v1` file must have exact mode `0600`, be
+read back without change, and match the exact-byte SHA supplied only through
+`QUANT_PRODUCTION_ACTIVATION_RECEIPT_SHA256`; registry metadata is not a SHA
+fallback. Its payload binds the registry path and bytes SHA, production-set SHA,
+runtime-contract aggregate, per-factor implementation-code SHAs,
+FactorGovernanceProtocol version/hash, activation ID, approver, and its own
+canonical payload hash. The repository does not create or ship an activation
+receipt; the current canonical producer blocker remains authoritative even when
+these environment variables are set.
 
 Produce a deterministic, private **report-only** evidence artifact from a local
 full-chain replay:
