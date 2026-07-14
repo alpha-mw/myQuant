@@ -512,7 +512,7 @@ def production_runtime_input_sha256(
     _update_runtime_digest(
         digest,
         "symbol_set_sha256",
-        production_symbol_set_sha256(normalized_frames),
+        production_symbol_set_sha256(list(normalized_frames)),
     )
     for factor_name in sorted(requirements):
         columns, lookback = requirements[factor_name]

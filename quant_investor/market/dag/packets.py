@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from statistics import fmean
-from typing import Any, Mapping
+from typing import Any, Mapping, NoReturn
 
 import numpy as np
 import pandas as pd
@@ -56,7 +56,7 @@ class _QuantBranchValidationToken:
         if self._seal is not _QUANT_BRANCH_VALIDATION_SEAL:
             raise TypeError("quant branch validation tokens are internal")
 
-    def __reduce__(self) -> object:
+    def __reduce__(self) -> NoReturn:
         raise TypeError("quant branch validation tokens are not serializable")
 
 
