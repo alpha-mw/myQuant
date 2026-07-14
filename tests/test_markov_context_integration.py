@@ -6,7 +6,9 @@ from typing import Any
 import pandas as pd
 import pytest
 
+import quant_investor.market.dag.context as context_module
 from quant_investor.agent_protocol import BranchVerdict
+from quant_investor.branch_contracts import BranchResult
 from quant_investor.funnel.deterministic_funnel import FunnelOutput
 from quant_investor.market.dag.context import _prepare_market_context
 from quant_investor.market.read_result import MarketDataReadResult
@@ -224,6 +226,60 @@ def test_markov_context_disabled_preserves_legacy_macro_and_risk_budget(monkeypa
     assert markov["status"] == "disabled"
     assert markov["applied_target_exposure"] == pytest.approx(0.70)
     assert markov["applied_max_single_weight"] == pytest.approx(0.50)
+
+
+def test_quant_and_cross_section_receive_only_researchable_frames(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    _patch_branch_readiness(monkeypatch)
+    monkeypatch.setattr(context_module.config, "MARKOV_REGIME_ENABLED", False)
+    monkeypatch.setattr(
+        context_module,
+        "_is_quarantined_read_result",
+        lambda result: result.symbol == "000002.SZ",
+    )
+    captured: dict[str, list[str]] = {}
+    original_cross_section = context_module._build_cross_section_quant
+
+    def capture_cross_section(frames, **kwargs):
+        captured["cross_section"] = list(frames)
+        return original_cross_section(frames, **kwargs)
+
+    def capture_quant(frames, **_kwargs):
+        captured["quant"] = list(frames)
+        return (
+            BranchResult(
+                branch_name="quant",
+                final_score=0.0,
+                final_confidence=0.0,
+                symbol_scores={symbol: 0.0 for symbol in frames},
+                metadata={
+                    "governance_status": "governance_blocked",
+                    "factor_mode": "governance_blocked",
+                    "production_eligible": False,
+                },
+            ),
+            None,
+        )
+
+    monkeypatch.setattr(
+        context_module,
+        "_build_cross_section_quant",
+        capture_cross_section,
+    )
+    monkeypatch.setattr(
+        context_module,
+        "_build_quant_branch_result_with_validation",
+        capture_quant,
+    )
+
+    state = _prepare_market_context(**_context_kwargs())
+
+    assert state.researchable_symbols == ["000001.SZ"]
+    assert state.quarantined_symbols == ["000002.SZ"]
+    assert captured["cross_section"] == ["000001.SZ"]
+    assert captured["quant"] == ["000001.SZ"]
 
 
 def test_markov_context_forwards_turnover_cap_when_signal_sets_it(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:

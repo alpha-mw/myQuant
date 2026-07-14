@@ -31,7 +31,7 @@ def _frames() -> dict[str, pd.DataFrame]:
     }
 
 
-def _blocked_score(_frames):
+def _blocked_score(_frames, **_kwargs):
     return RuntimeFactorScore(
         symbol_scores={"TEST.SZ": 0.0},
         factor_count=0,
@@ -209,12 +209,12 @@ def test_quant_agent_and_dag_reject_forged_ready_score_with_runtime_blocker(
     monkeypatch.setattr(
         quant_agent_module,
         "score_with_mined_factors",
-        lambda _frames: forged,
+        lambda _frames, **_kwargs: forged,
     )
     monkeypatch.setattr(
         packets_module,
         "score_with_mined_factors",
-        lambda _frames: forged,
+        lambda _frames, **_kwargs: forged,
     )
 
     agent_verdict = QuantAgent().run(
@@ -296,7 +296,7 @@ def test_current_one_factor_registry_is_blocked_by_v2_runtime_contract() -> None
 def test_quant_agent_rejects_a_report_only_score_even_when_it_has_factors(
     monkeypatch,
 ) -> None:
-    def _report_only_score(_frames):
+    def _report_only_score(_frames, **_kwargs):
         return RuntimeFactorScore(
             symbol_scores={"TEST.SZ": 0.8},
             factor_count=1,

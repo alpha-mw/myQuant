@@ -242,7 +242,7 @@ def assess_quant_readiness(
                 missing_fields.add(field_name)
         latest = _latest_frame_date(frame)
         latest_dates[symbol] = latest
-        if target_date and latest and latest < target_date:
+        if target_date and latest != target_date:
             symbol_missing.append("freshness")
             missing_fields.add("freshness")
         if symbol_missing:
@@ -256,7 +256,15 @@ def assess_quant_readiness(
     if not universe:
         unique_blockers.append("empty_quant_universe")
         status = STATUS_BLOCK
-    freshness = "fresh" if not target_date or all(not latest or latest >= target_date for latest in latest_dates.values()) else "stale"
+    freshness = (
+        "fresh"
+        if not target_date
+        or (
+            len(latest_dates) == len(universe)
+            and all(latest == target_date for latest in latest_dates.values())
+        )
+        else "stale"
+    )
     if read_results:
         issue_count = sum(len(getattr(result, "issues", []) or []) for result in read_results.values())
         if issue_count:

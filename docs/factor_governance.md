@@ -1245,6 +1245,25 @@ instruction. Do not manually promote it:
 }
 ```
 
+### Production Quant evaluation boundary
+
+Production scoring additionally requires a readback-verified immutable
+evaluation context. It binds the exact market and universe symbol-set hash,
+one common `evaluation_as_of`, the canonical pointer and snapshot-manifest
+bytes, per-symbol read provenance, the latest complete trade date, open-day
+proof, and (for CN) complete required PIT-membership artifacts and statuses.
+Non-CN markets record PIT as explicitly not applicable. Missing context,
+artifact drift, a future/stale/duplicate/disordered/intraday date, symbol
+identity drift, or unequal terminal dates blocks Quant with confidence zero.
+Quarantined frames never enter the Quant or cross-section inputs.
+
+The context SHA is part of runtime metadata, output attestation, the
+process-local branch validation token, and the global Quant identity check.
+Serialized claims plus frames alone are insufficient to establish readiness;
+the boundary also requires the verified context or its internal validation
+token. This does not relax the activation receipt, canonical producer, kill
+switch, or freeze-exception merge gates.
+
 ## Future Roadmap
 
 1. Index-enhancement validation on top of the offline contribution layer.

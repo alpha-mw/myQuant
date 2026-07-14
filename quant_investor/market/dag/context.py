@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from datetime import timedelta
 from inspect import Parameter, signature
+from pathlib import Path
 from typing import Any, Callable, Mapping
 
 import pandas as pd
@@ -11,6 +14,12 @@ from quant_investor.agent_protocol import BranchVerdict, DataQualityIssue, Globa
 from quant_investor.branch_contracts import BranchResult
 from quant_investor.config import config
 from quant_investor.funnel.deterministic_funnel import FunnelConfig, FunnelOutput
+from quant_investor.factors.runtime import (
+    ProductionEvaluationContext,
+    _mint_production_evaluation_context,
+    production_symbol_set_sha256,
+    validate_production_evaluation_context,
+)
 from quant_investor.market.config import get_market_settings
 from quant_investor.market.dag.packets import (
     _clamp,
@@ -162,6 +171,288 @@ def _read_symbol_frames_with_projection(
     if end_date and _call_accepts_keyword(batch_reader, "end_date"):
         kwargs["end_date"] = end_date
     return dict(batch_reader(symbols, **kwargs) or {})
+
+
+def _read_symbol_frame_with_projection(
+    reader: Callable[..., Any],
+    symbol: str,
+    *,
+    universe_key: str,
+    start_date: str = "",
+    end_date: str = "",
+) -> MarketDataReadResult:
+    kwargs: dict[str, Any] = {"universe_key": universe_key}
+    if _call_accepts_keyword(reader, "columns"):
+        kwargs["columns"] = DAG_RUNTIME_PRICE_VOLUME_COLUMNS
+    if start_date and _call_accepts_keyword(reader, "start_date"):
+        kwargs["start_date"] = start_date
+    if end_date and _call_accepts_keyword(reader, "end_date"):
+        kwargs["end_date"] = end_date
+    return reader(symbol, **kwargs)
+
+
+def _researchable_frame_subset(
+    frames: Mapping[str, pd.DataFrame],
+    researchable_symbols: list[str],
+) -> dict[str, pd.DataFrame]:
+    """Preserve researchable order while excluding every quarantined frame."""
+
+    return {
+        symbol: frames[symbol]
+        for symbol in researchable_symbols
+        if symbol in frames
+    }
+
+
+def _readback_sha256(path_value: Any) -> tuple[str, str, bytes] | None:
+    try:
+        raw_path = Path(str(path_value or "")).expanduser()
+        if raw_path.is_symlink():
+            return None
+        path = raw_path.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not path.is_file():
+        return None
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    return str(path), hashlib.sha256(raw).hexdigest(), raw
+
+
+def _canonical_payload_sha256(payload: Mapping[str, Any]) -> str:
+    raw = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _build_production_evaluation_context(
+    *,
+    market: str,
+    universe_key: str,
+    symbols: list[str],
+    reader_snapshot: Mapping[str, Any],
+    scoped_data_snapshot: Mapping[str, Any],
+    read_results: Mapping[str, MarketDataReadResult] | None = None,
+) -> tuple[ProductionEvaluationContext | None, list[str]]:
+    """Mint Quant context only after dual-source and artifact readback."""
+
+    blockers: list[str] = []
+    normalized_market = str(market or "").strip().upper()
+    normalized_universe = str(universe_key or "").strip()
+    normalized_symbols = [str(symbol) for symbol in symbols]
+    gate = dict(scoped_data_snapshot.get("strict_parquet_gate", {}) or {})
+    if reader_snapshot.get("healthy") is not True or gate.get("healthy") is not True:
+        blockers.append("production_snapshot_not_healthy")
+    scoped_market = str(scoped_data_snapshot.get("market") or normalized_market).upper()
+    scoped_universe = str(
+        scoped_data_snapshot.get("universe_key") or normalized_universe
+    )
+    if scoped_market != normalized_market:
+        blockers.append("production_snapshot_market_mismatch")
+    if scoped_universe != normalized_universe:
+        blockers.append("production_snapshot_universe_mismatch")
+
+    evaluation_as_of = _compact_runtime_date(
+        scoped_data_snapshot.get("local_latest_trade_date")
+        or scoped_data_snapshot.get("latest_trade_date")
+    )
+    reader_latest = _compact_runtime_date(
+        reader_snapshot.get("latest_complete_trade_date")
+    )
+    gate_latest = _compact_runtime_date(gate.get("latest_complete_trade_date"))
+    if not evaluation_as_of or reader_latest != evaluation_as_of or gate_latest != evaluation_as_of:
+        blockers.append("production_latest_complete_trade_date_mismatch")
+    reader_snapshot_id = str(reader_snapshot.get("snapshot_id") or "").strip()
+    gate_snapshot_id = str(gate.get("snapshot_id") or "").strip()
+    if not reader_snapshot_id or reader_snapshot_id != gate_snapshot_id:
+        blockers.append("production_snapshot_id_mismatch")
+    for path_key in ("latest_pointer_path", "manifest_path"):
+        reader_path = str(reader_snapshot.get(path_key) or "").strip()
+        gate_path = str(gate.get(path_key) or "").strip()
+        if gate_path and reader_path != gate_path:
+            blockers.append(f"production_snapshot_{path_key}_mismatch")
+
+    artifact_hashes: dict[str, str] = {}
+    artifact_paths: dict[str, str] = {}
+    pointer_readback = _readback_sha256(reader_snapshot.get("latest_pointer_path"))
+    manifest_readback = _readback_sha256(reader_snapshot.get("manifest_path"))
+    if pointer_readback is None:
+        blockers.append("production_snapshot_pointer_readback_missing")
+    else:
+        artifact_paths["snapshot_pointer"] = pointer_readback[0]
+        artifact_hashes["snapshot_pointer"] = pointer_readback[1]
+    if manifest_readback is None:
+        blockers.append("production_snapshot_manifest_readback_missing")
+    else:
+        artifact_paths["snapshot_manifest"] = manifest_readback[0]
+        artifact_hashes["snapshot_manifest"] = manifest_readback[1]
+    for label, readback in (
+        ("pointer", pointer_readback),
+        ("manifest", manifest_readback),
+    ):
+        if readback is None:
+            continue
+        try:
+            payload = json.loads(readback[2].decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            blockers.append(f"production_snapshot_{label}_json_invalid")
+            continue
+        if not isinstance(payload, Mapping):
+            blockers.append(f"production_snapshot_{label}_json_invalid")
+            continue
+        if str(payload.get("snapshot_id") or "") != reader_snapshot_id:
+            blockers.append(f"production_snapshot_{label}_id_mismatch")
+        payload_latest = _compact_runtime_date(
+            payload.get("latest_complete_trade_date")
+            or payload.get("latest_trade_date")
+        )
+        if payload_latest != evaluation_as_of:
+            blockers.append(f"production_snapshot_{label}_date_mismatch")
+
+    provenance: dict[str, dict[str, Any]] = {}
+    for symbol in normalized_symbols:
+        read_result = (read_results or {}).get(symbol)
+        if read_results is None:
+            break
+        if read_result is None:
+            blockers.append(f"production_read_result_missing:{symbol}")
+            continue
+        metadata = dict(read_result.metadata or {})
+        if (
+            str(read_result.symbol) != symbol
+            or str(read_result.universe_key) != normalized_universe
+            or str(metadata.get("snapshot_id") or "") != reader_snapshot_id
+            or _compact_runtime_date(metadata.get("latest_complete_trade_date"))
+            != evaluation_as_of
+        ):
+            blockers.append(f"production_read_result_provenance_mismatch:{symbol}")
+            continue
+        provenance[symbol] = {
+            "symbol": symbol,
+            "universe_key": normalized_universe,
+            "snapshot_id": reader_snapshot_id,
+            "latest_complete_trade_date": evaluation_as_of,
+            "path": str(read_result.path or ""),
+        }
+    read_result_provenance_sha256 = ""
+    if read_results is not None and len(provenance) == len(normalized_symbols):
+        read_result_provenance_sha256 = _canonical_payload_sha256(provenance)
+    else:
+        blockers.append("production_read_result_provenance_incomplete")
+
+    pit_status = "not_applicable"
+    pit_as_of = ""
+    pit_proof_sha256 = ""
+    pit_na_reason = "market_not_cn"
+    if normalized_market == "CN":
+        pit_status = "verified"
+        pit_na_reason = ""
+        pit = dict(scoped_data_snapshot.get("pit_universe", {}) or {})
+        if not bool(getattr(config, "PIT_UNIVERSE_ENABLED", False)):
+            blockers.append("production_cn_pit_membership_disabled")
+        if not bool(getattr(config, "PIT_UNIVERSE_REQUIRED", False)):
+            blockers.append("production_cn_pit_membership_not_required")
+        if (
+            pit.get("enabled") is not True
+            or pit.get("required") is not True
+            or pit.get("status") != "applied"
+        ):
+            blockers.append("production_cn_pit_membership_not_applied")
+        pit_as_of = _compact_runtime_date(pit.get("as_of"))
+        if pit_as_of != evaluation_as_of:
+            blockers.append("production_pit_membership_as_of_mismatch")
+        missing_count = pit.get("missing_count")
+        coverage_ratio = pit.get("coverage_ratio")
+        if (
+            isinstance(missing_count, bool)
+            or not isinstance(missing_count, int)
+            or missing_count != 0
+            or isinstance(coverage_ratio, bool)
+            or not isinstance(coverage_ratio, (int, float))
+            or float(coverage_ratio) != 1.0
+        ):
+            blockers.append("production_cn_pit_membership_partial")
+        statuses = dict(pit.get("statuses", {}) or {})
+        selected_statuses: dict[str, Any] = {}
+        for symbol in normalized_symbols:
+            status = statuses.get(symbol)
+            if not isinstance(status, Mapping):
+                blockers.append(f"production_cn_pit_status_missing:{symbol}")
+                continue
+            if (
+                str(status.get("symbol") or "") != symbol
+                or _compact_runtime_date(status.get("date")) != evaluation_as_of
+                or status.get("in_universe") is not True
+                or status.get("research_eligible") is not True
+            ):
+                blockers.append(f"production_cn_pit_status_mismatch:{symbol}")
+                continue
+            selected_statuses[symbol] = dict(status)
+        pit_manifest_readback = _readback_sha256(pit.get("manifest_path"))
+        pit_canonical_readback = _readback_sha256(pit.get("canonical_path"))
+        if pit_manifest_readback is None or pit_canonical_readback is None:
+            blockers.append("production_cn_pit_artifact_readback_missing")
+        else:
+            artifact_paths["pit_manifest"] = pit_manifest_readback[0]
+            artifact_hashes["pit_manifest"] = pit_manifest_readback[1]
+            artifact_paths["pit_canonical"] = pit_canonical_readback[0]
+            artifact_hashes["pit_canonical"] = pit_canonical_readback[1]
+            try:
+                pit_manifest = json.loads(
+                    pit_manifest_readback[2].decode("utf-8")
+                )
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                pit_manifest = None
+            if (
+                not isinstance(pit_manifest, Mapping)
+                or str(pit_manifest.get("source_run_id") or "")
+                != str(pit.get("snapshot_id") or "")
+            ):
+                blockers.append("production_cn_pit_manifest_mismatch")
+        if len(selected_statuses) == len(normalized_symbols):
+            pit_proof_sha256 = _canonical_payload_sha256(
+                {
+                    "as_of": pit_as_of,
+                    "snapshot_id": pit.get("snapshot_id"),
+                    "statuses": selected_statuses,
+                    "manifest_sha256": artifact_hashes.get("pit_manifest", ""),
+                    "canonical_sha256": artifact_hashes.get("pit_canonical", ""),
+                }
+            )
+
+    if blockers:
+        return None, list(dict.fromkeys(blockers))
+    assert manifest_readback is not None
+    context = _mint_production_evaluation_context(
+        evaluation_as_of=evaluation_as_of,
+        market=normalized_market,
+        universe_key=normalized_universe,
+        universe_sha256=production_symbol_set_sha256(normalized_symbols),
+        snapshot_id=reader_snapshot_id,
+        latest_complete_trade_date=evaluation_as_of,
+        pit_membership_status=pit_status,
+        pit_membership_as_of=pit_as_of,
+        pit_membership_proof_sha256=pit_proof_sha256,
+        pit_membership_not_applicable_reason=pit_na_reason,
+        open_day_proof_sha256=manifest_readback[1],
+        read_result_provenance_sha256=read_result_provenance_sha256,
+        verified_artifact_paths=artifact_paths,
+        verified_artifact_sha256s=artifact_hashes,
+    )
+    context_blockers = validate_production_evaluation_context(
+        context,
+        expected_symbols=normalized_symbols,
+    )
+    if context_blockers:
+        return None, context_blockers
+    return context, []
 
 
 def _frame_summaries_from_tradability(
@@ -567,7 +858,13 @@ def _prepare_market_context(
             read_result = batch_read_results.get(symbol)
             if read_result is None:
                 per_symbol_fallback_count += 1
-                read_result = shared_reader.read_symbol_frame(symbol, universe_key=universe_key)
+                read_result = _read_symbol_frame_with_projection(
+                    shared_reader.read_symbol_frame,
+                    symbol,
+                    universe_key=universe_key,
+                    start_date=runtime_lookback_start_date,
+                    end_date=runtime_end_date,
+                )
             raw_read_results[symbol] = read_result
         stage_metadata["batch_result_count"] = len(batch_read_results)
         stage_metadata["per_symbol_fallback_count"] = per_symbol_fallback_count
@@ -613,6 +910,23 @@ def _prepare_market_context(
         stage_metadata["issue_count"] = len(data_quality_issues)
 
     symbols = list(researchable_symbols)
+    researchable_frames = _researchable_frame_subset(frames, symbols)
+    researchable_frame_summaries = {
+        symbol: frame_summaries[symbol]
+        for symbol in symbols
+        if symbol in frame_summaries
+    }
+    (
+        production_evaluation_context,
+        production_evaluation_context_blockers,
+    ) = _build_production_evaluation_context(
+        market=settings.market,
+        universe_key=universe_key,
+        symbols=symbols,
+        reader_snapshot=resolver_snapshot,
+        scoped_data_snapshot=scoped_data_snapshot,
+        read_results={symbol: read_results[symbol] for symbol in symbols},
+    )
 
     with profile_stage(
         runtime_profiler,
@@ -625,8 +939,8 @@ def _prepare_market_context(
             {"researchable_count": len(symbols), "frame_count": len(frames)},
         ) as cross_section_metadata:
             cross_section_quant = _build_cross_section_quant(
-                frames,
-                frame_summaries=frame_summaries,
+                researchable_frames,
+                frame_summaries=researchable_frame_summaries,
             )
             cross_section_metadata["breadth"] = float(cross_section_quant.get("breadth", 0.0))
             cross_section_metadata["average_return"] = float(
@@ -661,11 +975,11 @@ def _prepare_market_context(
             market_snapshot = _build_market_snapshot(
                 market=settings.market,
                 universe_key=universe_key,
-                frames=frames,
+                frames=researchable_frames,
                 global_summary={"candidate_count": len(symbols)},
                 latest_trade_date=effective_snapshot_trade_date,
                 macro_overview=macro_overview,
-                frame_summaries=frame_summaries,
+                frame_summaries=researchable_frame_summaries,
             )
             market_snapshot_metadata["snapshot_key_count"] = len(market_snapshot)
 
@@ -692,8 +1006,12 @@ def _prepare_market_context(
                 quant_result,
                 quant_validation_token,
             ) = _build_quant_branch_result_with_validation(
-                frames=frames,
-                frame_summaries=frame_summaries,
+                frames=researchable_frames,
+                frame_summaries=researchable_frame_summaries,
+                evaluation_context=production_evaluation_context,
+                evaluation_context_blockers=(
+                    production_evaluation_context_blockers
+                ),
             )
             quant_branch_metadata["scored_symbol_count"] = len(quant_result.symbol_scores)
         with profile_stage(
@@ -1069,6 +1387,14 @@ def _prepare_market_context(
             "quarantined_count": len(quarantined_symbols),
             "quarantined_symbols": list(quarantined_symbols[:32]),
             "global_quant_verdict": global_quant_verdict.to_dict(),
+            "production_evaluation_context": (
+                production_evaluation_context.to_metadata()
+                if production_evaluation_context is not None
+                else {}
+            ),
+            "production_evaluation_context_blockers": list(
+                production_evaluation_context_blockers
+            ),
             "provider_health": {},
             "data_snapshot": dict(scoped_data_snapshot),
             "symbol_market_state": symbol_market_state,

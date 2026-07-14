@@ -21,6 +21,8 @@ from quant_investor.factors.runtime import (
     MinedFactorRegistry,
     MinedFactorScorer,
     RuntimeFactorScore,
+    _mint_production_evaluation_context,
+    production_symbol_set_sha256,
     production_runtime_input_sha256,
     production_runtime_metadata_is_ready,
     production_runtime_score_is_ready,
@@ -642,8 +644,10 @@ def _frames(*, include_amount: bool = True) -> dict[str, pd.DataFrame]:
     result: dict[str, pd.DataFrame] = {}
     for index in range(20):
         rows = 6
+        symbol = f"S{index:02d}"
         frame = pd.DataFrame(
             {
+                "ts_code": [symbol] * rows,
                 "trade_date": pd.date_range("2026-01-01", periods=rows),
                 "adj_close": np.linspace(10 + index, 11 + index, rows),
                 "vol": np.array([100, 104, 108, 112, 116, 120 + index], dtype=float),
@@ -651,8 +655,57 @@ def _frames(*, include_amount: bool = True) -> dict[str, pd.DataFrame]:
         )
         if include_amount:
             frame["amount"] = np.linspace(1000 + index, 1200 + index, rows)
-        result[f"S{index:02d}"] = frame
+        result[symbol] = frame
     return result
+
+
+def _evaluation_context(frames: dict[str, pd.DataFrame], tmp_path: Path):
+    artifact_paths: dict[str, str] = {}
+    artifact_hashes: dict[str, str] = {}
+    payload = {
+        "snapshot_id": "runtime-fixture",
+        "latest_complete_trade_date": "20260106",
+    }
+    for name in ("snapshot_pointer", "snapshot_manifest"):
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        artifact_paths[name] = str(path.resolve())
+        artifact_hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    pit_manifest = tmp_path / "pit_manifest.json"
+    pit_manifest.write_text(
+        json.dumps({"source_run_id": "pit-runtime-fixture"}),
+        encoding="utf-8",
+    )
+    pit_canonical = tmp_path / "pit_canonical.parquet"
+    pit_canonical.write_bytes(b"pit-runtime-fixture")
+    artifact_paths.update(
+        {
+            "pit_manifest": str(pit_manifest.resolve()),
+            "pit_canonical": str(pit_canonical.resolve()),
+        }
+    )
+    artifact_hashes.update(
+        {
+            "pit_manifest": hashlib.sha256(pit_manifest.read_bytes()).hexdigest(),
+            "pit_canonical": hashlib.sha256(pit_canonical.read_bytes()).hexdigest(),
+        }
+    )
+    return _mint_production_evaluation_context(
+        evaluation_as_of="20260106",
+        market="CN",
+        universe_key="full_a",
+        universe_sha256=production_symbol_set_sha256(list(frames)),
+        snapshot_id="runtime-fixture",
+        latest_complete_trade_date="20260106",
+        pit_membership_status="verified",
+        pit_membership_as_of="20260106",
+        pit_membership_proof_sha256="a" * 64,
+        pit_membership_not_applicable_reason="",
+        open_day_proof_sha256=artifact_hashes["snapshot_manifest"],
+        read_result_provenance_sha256="c" * 64,
+        verified_artifact_paths=artifact_paths,
+        verified_artifact_sha256s=artifact_hashes,
+    )
 
 
 def _runtime_status_for(records: list[FactorRecord]) -> dict[str, object]:
@@ -681,6 +734,7 @@ def _runtime_status_for(records: list[FactorRecord]) -> dict[str, object]:
 
 def test_any_factor_compute_failure_blocks_whole_branch_without_renormalizing(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     records = [
         _record("pv_low_dollar_volume_5d", weight=0.05),
@@ -701,7 +755,11 @@ def test_any_factor_compute_failure_blocks_whole_branch_without_renormalizing(
 
     monkeypatch.setattr(scorer, "_price_volume_factor", fail_second)
 
-    result = scorer.score(_frames())
+    frames = _frames()
+    result = scorer.score(
+        frames,
+        evaluation_context=_evaluation_context(frames, tmp_path),
+    )
 
     assert result.factor_count == 0
     assert result.factors_used == []
@@ -711,6 +769,7 @@ def test_any_factor_compute_failure_blocks_whole_branch_without_renormalizing(
 
 def test_production_required_amount_cannot_fall_back_to_close_times_volume(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     record = _record()
     scorer = MinedFactorScorer(MinedFactorRegistry.from_records([record]))
@@ -720,7 +779,12 @@ def test_production_required_amount_cannot_fall_back_to_close_times_volume(
         lambda: ([record], _runtime_status_for([record])),
     )
 
-    result = scorer.score(_frames(include_amount=False))
+    missing_amount_frames = _frames(include_amount=False)
+    context = _evaluation_context(missing_amount_frames, tmp_path)
+    result = scorer.score(
+        missing_amount_frames,
+        evaluation_context=context,
+    )
 
     assert result.factor_count == 0
     assert result.governance_status == "governance_blocked"
@@ -730,7 +794,10 @@ def test_production_required_amount_cannot_fall_back_to_close_times_volume(
     non_finite_frames["S00"].loc[
         non_finite_frames["S00"].index[-1], "amount"
     ] = np.inf
-    non_finite = scorer.score(non_finite_frames)
+    non_finite = scorer.score(
+        non_finite_frames,
+        evaluation_context=_evaluation_context(non_finite_frames, tmp_path),
+    )
     assert non_finite.governance_status == "governance_blocked"
     assert any("required_columns" in item for item in non_finite.runtime_blockers)
 
@@ -752,6 +819,7 @@ def test_production_unknown_implementation_has_no_name_based_fallback() -> None:
 )
 def test_production_factor_output_must_be_finite_nonconstant_exact_symbol_set(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
     case: str,
 ) -> None:
     record = _record()
@@ -783,7 +851,10 @@ def test_production_factor_output_must_be_finite_nonconstant_exact_symbol_set(
         lambda *args, **kwargs: values,
     )
 
-    result = scorer.score(frames)
+    result = scorer.score(
+        frames,
+        evaluation_context=_evaluation_context(frames, tmp_path),
+    )
 
     assert result.factor_count == 0
     assert result.governance_status == "governance_blocked"
@@ -792,6 +863,7 @@ def test_production_factor_output_must_be_finite_nonconstant_exact_symbol_set(
 
 def test_production_factor_requires_full_lookback_and_minimum_cross_section(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     record = _record()
     scorer = MinedFactorScorer(MinedFactorRegistry.from_records([record]))
@@ -805,18 +877,25 @@ def test_production_factor_requires_full_lookback_and_minimum_cross_section(
         symbol: frame.tail(4)
         for symbol, frame in _frames().items()
     }
-    short_result = scorer.score(short_history)
+    short_result = scorer.score(
+        short_history,
+        evaluation_context=_evaluation_context(short_history, tmp_path),
+    )
     assert short_result.governance_status == "governance_blocked"
     assert any("lookback" in item for item in short_result.runtime_blockers)
 
     small_cross_section = dict(list(_frames().items())[:19])
-    small_result = scorer.score(small_cross_section)
+    small_result = scorer.score(
+        small_cross_section,
+        evaluation_context=_evaluation_context(small_cross_section, tmp_path),
+    )
     assert small_result.governance_status == "governance_blocked"
     assert any("min_cross_section" in item for item in small_result.runtime_blockers)
 
 
 def test_production_success_uses_exact_contract_factor_and_symbol_sets(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     records = [
         _record("pv_low_dollar_volume_5d"),
@@ -830,7 +909,10 @@ def test_production_success_uses_exact_contract_factor_and_symbol_sets(
         lambda: (records, _runtime_status_for(records)),
     )
 
-    result = scorer.score(frames)
+    result = scorer.score(
+        frames,
+        evaluation_context=_evaluation_context(frames, tmp_path),
+    )
 
     assert result.governance_status == "ready"
     assert result.factor_count == 2
@@ -1082,7 +1164,11 @@ def test_downstream_readiness_revalidates_real_strict_fixture(
     ) is False
 
     frames = _frames()
-    score = MinedFactorScorer(strict_registry).score(frames)
+    evaluation_context = _evaluation_context(frames, tmp_path)
+    score = MinedFactorScorer(strict_registry).score(
+        frames,
+        evaluation_context=evaluation_context,
+    )
     assert score.governance_status == "ready"
 
     ready_metadata = score.to_metadata()
@@ -1097,6 +1183,7 @@ def test_downstream_readiness_revalidates_real_strict_fixture(
             expected_symbols=list(frames),
             expected_symbol_scores=score.symbol_scores,
             expected_frames=frames,
+            expected_evaluation_context=evaluation_context,
         )
 
     assert production_runtime_metadata_is_ready(ready_metadata) is False
@@ -1105,12 +1192,14 @@ def test_downstream_readiness_revalidates_real_strict_fixture(
         score,
         expected_symbols=list(frames),
         expected_frames=frames,
+        expected_evaluation_context=evaluation_context,
     ) is True
     reordered_frames = dict(reversed(list(frames.items())))
     assert production_runtime_score_is_ready(
         score,
         expected_symbols=list(reordered_frames),
         expected_frames=reordered_frames,
+        expected_evaluation_context=evaluation_context,
     ) is True
 
     quant_result = BranchResult(
@@ -1162,13 +1251,17 @@ def test_downstream_readiness_revalidates_real_strict_fixture(
     monkeypatch.setattr(
         packets_module,
         "score_with_mined_factors",
-        lambda runtime_frames: MinedFactorScorer(strict_registry).score(
-            runtime_frames
+        lambda runtime_frames, *, evaluation_context=None: MinedFactorScorer(
+            strict_registry
+        ).score(
+            runtime_frames,
+            evaluation_context=evaluation_context,
         ),
     )
     validated_result, validation_token = (
         packets_module._build_quant_branch_result_with_validation(
-            frames=frames
+            frames=frames,
+            evaluation_context=evaluation_context,
         )
     )
     assert validation_token is not None
@@ -1195,6 +1288,16 @@ def test_downstream_readiness_revalidates_real_strict_fixture(
         validation_token=validation_token,
     ).metadata["production_quant_evidence"] is False
     assert digest_call_count == 2
+    drifted_context_result = copy.deepcopy(validated_result)
+    drifted_context_result.metadata["mined_factor_runtime"][
+        "production_evaluation_context_sha256"
+    ] = "d" * 64
+    assert _build_global_quant_verdict(
+        cross_section_quant={},
+        symbol_count=len(frames),
+        quant_result=drifted_context_result,
+        validation_token=validation_token,
+    ).metadata["production_quant_evidence"] is False
 
     coverage_below_exact = copy.deepcopy(ready_metadata)
     coverage_below_exact["factor_coverages"][factors_used[0]] = 0.99
@@ -1226,6 +1329,7 @@ def test_downstream_readiness_revalidates_real_strict_fixture(
         out_of_range,
         expected_symbols=list(frames),
         expected_frames=frames,
+        expected_evaluation_context=evaluation_context,
     ) is False
 
     forged_output = copy.deepcopy(score)
@@ -1237,6 +1341,7 @@ def test_downstream_readiness_revalidates_real_strict_fixture(
         forged_output,
         expected_symbols=list(frames),
         expected_frames=frames,
+        expected_evaluation_context=evaluation_context,
     ) is False
     forged_branch_result = copy.deepcopy(quant_result)
     forged_branch_result.symbol_scores[first_symbol] = (
@@ -1262,6 +1367,7 @@ def test_downstream_readiness_revalidates_real_strict_fixture(
         score,
         expected_symbols=list(frames),
         expected_frames=drifted_frames,
+        expected_evaluation_context=evaluation_context,
     ) is False
 
     forged_contracts_sha = copy.deepcopy(ready_metadata)

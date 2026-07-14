@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from datetime import date, datetime
 from dataclasses import dataclass, field
 from numbers import Integral, Real
@@ -31,6 +32,134 @@ PRODUCTION_RUNTIME_MODE = "production"
 REPORT_ONLY_SHADOW_RUNTIME_MODE = "report_only_shadow"
 PRODUCTION_RUNTIME_INPUT_SCHEMA_VERSION = "quant-production-runtime-input.v1"
 PRODUCTION_RUNTIME_OUTPUT_SCHEMA_VERSION = "quant-production-runtime-output.v1"
+PRODUCTION_EVALUATION_CONTEXT_SCHEMA_VERSION = (
+    "quant-production-evaluation-context.v1"
+)
+_PRODUCTION_EVALUATION_CONTEXT_SEAL = object()
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionEvaluationContext:
+    """Immutable as-of and provenance boundary for production Quant."""
+
+    evaluation_as_of: str
+    market: str
+    universe_key: str
+    universe_sha256: str
+    snapshot_id: str
+    latest_complete_trade_date: str
+    pit_membership_status: str
+    pit_membership_as_of: str
+    pit_membership_proof_sha256: str
+    pit_membership_not_applicable_reason: str
+    open_day_proof_sha256: str
+    read_result_provenance_sha256: str
+    verified_artifact_paths: tuple[tuple[str, str], ...] = ()
+    verified_artifact_sha256s: tuple[tuple[str, str], ...] = ()
+    schema_version: str = PRODUCTION_EVALUATION_CONTEXT_SCHEMA_VERSION
+    _sealed_payload_sha256: str = field(default="", repr=False, compare=False)
+    _seal: object | None = field(default=None, repr=False, compare=False)
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "evaluation_as_of": self.evaluation_as_of,
+            "market": self.market,
+            "universe_key": self.universe_key,
+            "universe_sha256": self.universe_sha256,
+            "snapshot_id": self.snapshot_id,
+            "latest_complete_trade_date": self.latest_complete_trade_date,
+            "pit_membership_status": self.pit_membership_status,
+            "pit_membership_as_of": self.pit_membership_as_of,
+            "pit_membership_proof_sha256": self.pit_membership_proof_sha256,
+            "pit_membership_not_applicable_reason": (
+                self.pit_membership_not_applicable_reason
+            ),
+            "open_day_proof_sha256": self.open_day_proof_sha256,
+            "read_result_provenance_sha256": (
+                self.read_result_provenance_sha256
+            ),
+            "verified_artifact_sha256s": {
+                name: digest for name, digest in self.verified_artifact_sha256s
+            },
+            "verified_artifact_paths": {
+                name: path for name, path in self.verified_artifact_paths
+            },
+        }
+
+    @property
+    def context_sha256(self) -> str:
+        return production_evaluation_context_sha256(self)
+
+    def to_metadata(self) -> dict[str, Any]:
+        return {**self.to_payload(), "context_sha256": self.context_sha256}
+
+
+def production_evaluation_context_sha256(
+    context: ProductionEvaluationContext,
+) -> str:
+    """Hash the complete immutable evaluation-context payload."""
+
+    if not isinstance(context, ProductionEvaluationContext):
+        raise TypeError("production evaluation context type invalid")
+    raw = json.dumps(
+        context.to_payload(),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _mint_production_evaluation_context(
+    *,
+    evaluation_as_of: str,
+    market: str,
+    universe_key: str,
+    universe_sha256: str,
+    snapshot_id: str,
+    latest_complete_trade_date: str,
+    pit_membership_status: str,
+    pit_membership_as_of: str,
+    pit_membership_proof_sha256: str,
+    pit_membership_not_applicable_reason: str,
+    open_day_proof_sha256: str,
+    read_result_provenance_sha256: str,
+    verified_artifact_paths: Mapping[str, str],
+    verified_artifact_sha256s: Mapping[str, str],
+) -> ProductionEvaluationContext:
+    """Mint a process-local context after authoritative readback succeeds."""
+
+    context = ProductionEvaluationContext(
+        evaluation_as_of=evaluation_as_of,
+        market=market,
+        universe_key=universe_key,
+        universe_sha256=universe_sha256,
+        snapshot_id=snapshot_id,
+        latest_complete_trade_date=latest_complete_trade_date,
+        pit_membership_status=pit_membership_status,
+        pit_membership_as_of=pit_membership_as_of,
+        pit_membership_proof_sha256=pit_membership_proof_sha256,
+        pit_membership_not_applicable_reason=(
+            pit_membership_not_applicable_reason
+        ),
+        open_day_proof_sha256=open_day_proof_sha256,
+        read_result_provenance_sha256=read_result_provenance_sha256,
+        verified_artifact_paths=tuple(
+            sorted((str(name), str(path)) for name, path in verified_artifact_paths.items())
+        ),
+        verified_artifact_sha256s=tuple(
+            sorted((str(name), str(digest)) for name, digest in verified_artifact_sha256s.items())
+        ),
+        _seal=_PRODUCTION_EVALUATION_CONTEXT_SEAL,
+    )
+    object.__setattr__(
+        context,
+        "_sealed_payload_sha256",
+        context.context_sha256,
+    )
+    return context
 
 
 def production_factor_set_sha256(names: Sequence[str]) -> str:
@@ -58,6 +187,236 @@ def _is_sha256(value: Any) -> bool:
         and len(value) == 64
         and all(char in "0123456789abcdef" for char in value)
     )
+
+
+def _context_from_metadata(
+    metadata: Mapping[str, Any],
+) -> ProductionEvaluationContext | None:
+    try:
+        artifact_hashes = dict(metadata["verified_artifact_sha256s"])
+        artifact_paths = dict(metadata["verified_artifact_paths"])
+        context = ProductionEvaluationContext(
+            evaluation_as_of=str(metadata["evaluation_as_of"]),
+            market=str(metadata["market"]),
+            universe_key=str(metadata["universe_key"]),
+            universe_sha256=str(metadata["universe_sha256"]),
+            snapshot_id=str(metadata["snapshot_id"]),
+            latest_complete_trade_date=str(
+                metadata["latest_complete_trade_date"]
+            ),
+            pit_membership_status=str(metadata["pit_membership_status"]),
+            pit_membership_as_of=str(metadata["pit_membership_as_of"]),
+            pit_membership_proof_sha256=str(
+                metadata["pit_membership_proof_sha256"]
+            ),
+            pit_membership_not_applicable_reason=str(
+                metadata["pit_membership_not_applicable_reason"]
+            ),
+            open_day_proof_sha256=str(metadata["open_day_proof_sha256"]),
+            read_result_provenance_sha256=str(
+                metadata["read_result_provenance_sha256"]
+            ),
+            verified_artifact_paths=tuple(
+                sorted(
+                    (str(name), str(path))
+                    for name, path in artifact_paths.items()
+                )
+            ),
+            verified_artifact_sha256s=tuple(
+                sorted(
+                    (str(name), str(digest))
+                    for name, digest in artifact_hashes.items()
+                )
+            ),
+            schema_version=str(metadata["schema_version"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    if metadata.get("context_sha256") != context.context_sha256:
+        return None
+    return context
+
+
+def validate_production_evaluation_context(
+    context: ProductionEvaluationContext | None,
+    *,
+    expected_symbols: Sequence[str],
+    _require_readback_seal: bool = True,
+) -> list[str]:
+    """Return fail-closed evaluation-context blockers."""
+
+    if context is None:
+        return ["production_evaluation_context_missing"]
+    if not isinstance(context, ProductionEvaluationContext):
+        return ["production_evaluation_context_type_invalid"]
+    blockers: list[str] = []
+    if _require_readback_seal and (
+        context._seal is not _PRODUCTION_EVALUATION_CONTEXT_SEAL
+        or context._sealed_payload_sha256 != context.context_sha256
+    ):
+        blockers.append("production_evaluation_context_not_readback_verified")
+    symbols = [str(symbol) for symbol in expected_symbols]
+    if context.schema_version != PRODUCTION_EVALUATION_CONTEXT_SCHEMA_VERSION:
+        blockers.append("production_evaluation_context_schema_invalid")
+    if not re.fullmatch(r"\d{8}", context.evaluation_as_of):
+        blockers.append("production_evaluation_as_of_invalid")
+    else:
+        parsed_as_of = pd.to_datetime(
+            context.evaluation_as_of,
+            format="%Y%m%d",
+            errors="coerce",
+        )
+        if pd.isna(parsed_as_of):
+            blockers.append("production_evaluation_as_of_invalid")
+    if not context.market or context.market != context.market.upper():
+        blockers.append("production_evaluation_market_invalid")
+    if not context.universe_key.strip():
+        blockers.append("production_evaluation_universe_key_missing")
+    if (
+        not symbols
+        or any(not symbol for symbol in symbols)
+        or len(symbols) != len(set(symbols))
+        or context.universe_sha256 != production_symbol_set_sha256(symbols)
+    ):
+        blockers.append("production_evaluation_universe_sha256_mismatch")
+    if not context.snapshot_id.strip():
+        blockers.append("production_snapshot_id_missing")
+    if context.latest_complete_trade_date != context.evaluation_as_of:
+        blockers.append("production_latest_complete_trade_date_mismatch")
+    if not _is_sha256(context.open_day_proof_sha256):
+        blockers.append("production_open_day_proof_missing_or_invalid")
+    if not _is_sha256(context.read_result_provenance_sha256):
+        blockers.append("production_read_result_provenance_missing_or_invalid")
+    artifact_hashes = dict(context.verified_artifact_sha256s)
+    artifact_paths = dict(context.verified_artifact_paths)
+    if (
+        len(artifact_hashes) != len(context.verified_artifact_sha256s)
+        or len(artifact_paths) != len(context.verified_artifact_paths)
+        or set(artifact_paths) != set(artifact_hashes)
+        or any(not name or not _is_sha256(digest) for name, digest in artifact_hashes.items())
+        or "snapshot_pointer" not in artifact_hashes
+        or "snapshot_manifest" not in artifact_hashes
+    ):
+        blockers.append("production_verified_artifact_set_invalid")
+    else:
+        for name, expected_sha in artifact_hashes.items():
+            try:
+                raw_path = Path(artifact_paths[name]).expanduser()
+                if raw_path.is_symlink():
+                    blockers.append(f"production_verified_artifact_symlink:{name}")
+                    continue
+                path = raw_path.resolve()
+            except (OSError, RuntimeError, ValueError):
+                blockers.append(f"production_verified_artifact_path_invalid:{name}")
+                continue
+            if not path.is_file():
+                blockers.append(f"production_verified_artifact_missing:{name}")
+                continue
+            try:
+                current_sha = hashlib.sha256(path.read_bytes()).hexdigest()
+            except OSError:
+                blockers.append(f"production_verified_artifact_unreadable:{name}")
+                continue
+            if current_sha != expected_sha:
+                blockers.append(f"production_verified_artifact_bytes_drift:{name}")
+    if context.market == "CN":
+        if context.pit_membership_status != "verified":
+            blockers.append("production_cn_pit_membership_not_verified")
+        if context.pit_membership_as_of != context.evaluation_as_of:
+            blockers.append("production_pit_membership_as_of_mismatch")
+        if not _is_sha256(context.pit_membership_proof_sha256):
+            blockers.append("production_pit_membership_proof_missing_or_invalid")
+        if context.pit_membership_not_applicable_reason:
+            blockers.append("production_cn_pit_not_applicable_forbidden")
+        if (
+            "pit_manifest" not in artifact_hashes
+            or "pit_canonical" not in artifact_hashes
+        ):
+            blockers.append("production_cn_pit_artifact_readback_missing")
+    else:
+        if context.pit_membership_status != "not_applicable":
+            blockers.append("production_non_cn_pit_status_invalid")
+        if (
+            context.pit_membership_as_of
+            or context.pit_membership_proof_sha256
+            or not context.pit_membership_not_applicable_reason.strip()
+        ):
+            blockers.append("production_non_cn_pit_not_applicable_invalid")
+    return list(dict.fromkeys(blockers))
+
+
+def _strict_daily_trade_dates(
+    values: pd.Series,
+) -> tuple[pd.DatetimeIndex | None, str | None]:
+    if isinstance(values.dtype, pd.DatetimeTZDtype):
+        return None, "production_frame_trade_date_timezone_aware"
+    parsed: list[pd.Timestamp] = []
+    for value in values:
+        if value is None or value is pd.NaT or pd.isna(value):
+            return None, "production_frame_trade_date_unparseable"
+        if isinstance(value, str):
+            text = value.strip()
+            if re.fullmatch(r"\d{8}", text):
+                timestamp = pd.to_datetime(text, format="%Y%m%d", errors="coerce")
+            elif re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+                timestamp = pd.to_datetime(text, format="%Y-%m-%d", errors="coerce")
+            else:
+                return None, "production_frame_trade_date_unparseable"
+        elif isinstance(value, (pd.Timestamp, np.datetime64, datetime, date)):
+            timestamp = pd.Timestamp(value)
+        else:
+            return None, "production_frame_trade_date_unparseable"
+        if pd.isna(timestamp):
+            return None, "production_frame_trade_date_unparseable"
+        if timestamp.tzinfo is not None:
+            return None, "production_frame_trade_date_timezone_aware"
+        if timestamp != timestamp.normalize():
+            return None, "production_frame_trade_date_not_daily"
+        parsed.append(timestamp)
+    return pd.DatetimeIndex(parsed), None
+
+
+def _validate_production_frames(
+    frames: Mapping[str, pd.DataFrame],
+    *,
+    symbols: Sequence[str],
+    context: ProductionEvaluationContext,
+) -> str | None:
+    as_of = pd.to_datetime(
+        context.evaluation_as_of,
+        format="%Y%m%d",
+        errors="coerce",
+    )
+    if pd.isna(as_of):
+        return "production_evaluation_as_of_invalid"
+    for symbol in symbols:
+        frame = frames.get(symbol)
+        if not isinstance(frame, pd.DataFrame) or frame.empty:
+            return f"production_frame_missing_or_empty:{symbol}"
+        symbol_columns = [
+            column for column in ("ts_code", "symbol") if column in frame.columns
+        ]
+        if not symbol_columns:
+            return f"production_frame_symbol_column_missing:{symbol}"
+        for column in symbol_columns:
+            values = [str(value).strip() for value in frame[column]]
+            if any(value != symbol for value in values):
+                return f"production_frame_symbol_mismatch:{symbol}:{column}"
+        if "trade_date" not in frame.columns:
+            return f"production_frame_trade_date_missing:{symbol}"
+        dates, error = _strict_daily_trade_dates(frame["trade_date"])
+        if error:
+            return f"{error}:{symbol}"
+        assert dates is not None
+        if dates.duplicated().any():
+            return f"production_frame_duplicate_trade_date:{symbol}"
+        if not dates.is_monotonic_increasing:
+            return f"production_frame_date_order_invalid:{symbol}"
+        if (dates > as_of).any():
+            return f"production_frame_future_row:{symbol}"
+        if dates[-1] != as_of:
+            return f"production_frame_terminal_date_mismatch:{symbol}"
+    return None
 
 
 def _update_runtime_digest(
@@ -223,6 +582,9 @@ def _production_output_attestation_sha256(metadata: Mapping[str, Any]) -> str:
     payload = {
         "schema_version": PRODUCTION_RUNTIME_OUTPUT_SCHEMA_VERSION,
         "production_input_sha256": metadata.get("production_input_sha256"),
+        "production_evaluation_context_sha256": metadata.get(
+            "production_evaluation_context_sha256"
+        ),
         "symbol_count": metadata.get("symbol_count"),
         "symbol_set_sha256": metadata.get("symbol_set_sha256"),
         "symbol_scores_sha256": metadata.get("symbol_scores_sha256"),
@@ -366,6 +728,8 @@ class RuntimeFactorScore:
     runtime_mode: str = PRODUCTION_RUNTIME_MODE
     runtime_blockers: list[str] = field(default_factory=list)
     production_input_sha256: str = ""
+    production_evaluation_context: dict[str, Any] = field(default_factory=dict)
+    production_evaluation_context_sha256: str = ""
     production_output_attestation_sha256: str = ""
 
     @property
@@ -416,6 +780,12 @@ class RuntimeFactorScore:
             "symbol_set_sha256": production_symbol_set_sha256(symbols),
             "symbol_scores_sha256": symbol_scores_sha256,
             "production_input_sha256": self.production_input_sha256,
+            "production_evaluation_context": dict(
+                self.production_evaluation_context
+            ),
+            "production_evaluation_context_sha256": (
+                self.production_evaluation_context_sha256
+            ),
             "production_output_attestation_sha256": (
                 self.production_output_attestation_sha256
             ),
@@ -594,7 +964,12 @@ class MinedFactorScorer:
             ],
         )
 
-    def score(self, frames: Mapping[str, pd.DataFrame]) -> RuntimeFactorScore:
+    def score(
+        self,
+        frames: Mapping[str, pd.DataFrame],
+        *,
+        evaluation_context: ProductionEvaluationContext | None = None,
+    ) -> RuntimeFactorScore:
         symbols = [str(symbol) for symbol in frames if str(symbol).strip()]
         active, runtime_status = self._runtime_contract()
         non_selectable = self.registry.non_selectable_reasons()
@@ -611,6 +986,21 @@ class MinedFactorScorer:
                 runtime_status=runtime_status,
             )
 
+        if self.runtime_mode == PRODUCTION_RUNTIME_MODE:
+            context_blockers = validate_production_evaluation_context(
+                evaluation_context,
+                expected_symbols=symbols,
+            )
+            if context_blockers:
+                blocked = dict(runtime_status)
+                for blocker in context_blockers:
+                    blocked = self._blocked_runtime_status(blocked, blocker)
+                return self._empty_score(
+                    symbols,
+                    skipped=skipped,
+                    runtime_status=blocked,
+                )
+
         if not active:
             return self._empty_score(
                 symbols,
@@ -619,12 +1009,14 @@ class MinedFactorScorer:
             )
 
         if self.runtime_mode == PRODUCTION_RUNTIME_MODE:
+            assert evaluation_context is not None
             return self._score_production(
                 frames,
                 symbols=symbols,
                 active=active,
                 skipped=skipped,
                 runtime_status=runtime_status,
+                evaluation_context=evaluation_context,
             )
 
         weighted_scores = pd.Series(0.0, index=symbols, dtype=float)
@@ -770,8 +1162,22 @@ class MinedFactorScorer:
         active: Sequence[FactorRecord],
         skipped: Mapping[str, str],
         runtime_status: Mapping[str, Any],
+        evaluation_context: ProductionEvaluationContext,
     ) -> RuntimeFactorScore:
         """Execute the exact active set atomically without data substitution."""
+
+        frame_blocker = _validate_production_frames(
+            frames,
+            symbols=symbols,
+            context=evaluation_context,
+        )
+        if frame_blocker:
+            blocked = self._blocked_runtime_status(runtime_status, frame_blocker)
+            return self._empty_score(
+                symbols,
+                skipped=skipped,
+                runtime_status=blocked,
+            )
 
         contracts = runtime_status.get("factor_runtime_contracts")
         if not isinstance(contracts, Mapping) or set(contracts) != {
@@ -1016,6 +1422,10 @@ class MinedFactorScorer:
             runtime_mode=self.runtime_mode,
             runtime_blockers=[],
             production_input_sha256=production_input_sha256,
+            production_evaluation_context=evaluation_context.to_metadata(),
+            production_evaluation_context_sha256=(
+                evaluation_context.context_sha256
+            ),
         )
         try:
             result.production_output_attestation_sha256 = (
@@ -1185,11 +1595,12 @@ def score_with_mined_factors(
     registry: MinedFactorRegistry | None = None,
     *,
     runtime_mode: str = PRODUCTION_RUNTIME_MODE,
+    evaluation_context: ProductionEvaluationContext | None = None,
 ) -> RuntimeFactorScore:
     return MinedFactorScorer(
         registry=registry,
         runtime_mode=runtime_mode,
-    ).score(frames)
+    ).score(frames, evaluation_context=evaluation_context)
 
 
 def production_runtime_metadata_is_ready(
@@ -1199,10 +1610,18 @@ def production_runtime_metadata_is_ready(
     expected_symbol_scores: Mapping[str, Any] | None = None,
     expected_frames: Mapping[str, pd.DataFrame] | None = None,
     expected_input_digest: str | None = None,
+    expected_evaluation_context: ProductionEvaluationContext | None = None,
+    expected_evaluation_context_sha256: str | None = None,
 ) -> bool:
     """Independently revalidate serialized production claims at DAG boundaries."""
 
-    if expected_frames is None and expected_input_digest is None:
+    if (
+        expected_frames is None
+        and expected_input_digest is None
+    ) or (
+        expected_evaluation_context is None
+        and expected_evaluation_context_sha256 is None
+    ):
         return False
     try:
         factor_count = metadata.get("factor_count")
@@ -1226,6 +1645,12 @@ def production_runtime_metadata_is_ready(
         symbol_set_sha256 = metadata.get("symbol_set_sha256")
         symbol_scores_sha256 = metadata.get("symbol_scores_sha256")
         production_input_digest = metadata.get("production_input_sha256")
+        evaluation_context_metadata = dict(
+            metadata.get("production_evaluation_context", {}) or {}
+        )
+        evaluation_context_sha256 = metadata.get(
+            "production_evaluation_context_sha256"
+        )
         output_attestation = metadata.get(
             "production_output_attestation_sha256"
         )
@@ -1244,9 +1669,44 @@ def production_runtime_metadata_is_ready(
         or not _is_sha256(symbol_set_sha256)
         or not _is_sha256(symbol_scores_sha256)
         or not _is_sha256(production_input_digest)
+        or not _is_sha256(evaluation_context_sha256)
         or not _is_sha256(output_attestation)
     ):
         return False
+
+    evaluation_context = _context_from_metadata(evaluation_context_metadata)
+    context_symbols = (
+        [str(symbol) for symbol in expected_symbols]
+        if expected_symbols is not None
+        else list(metadata.get("symbol_scores", {}) or {})
+    )
+    if evaluation_context is None:
+        return False
+    if evaluation_context.context_sha256 != evaluation_context_sha256:
+        return False
+    if expected_symbols is not None and validate_production_evaluation_context(
+        evaluation_context,
+        expected_symbols=context_symbols,
+        _require_readback_seal=False,
+    ):
+        return False
+    if expected_evaluation_context is not None and validate_production_evaluation_context(
+        expected_evaluation_context,
+        expected_symbols=context_symbols,
+    ):
+        return False
+    if (
+        expected_evaluation_context is not None
+        and evaluation_context != expected_evaluation_context
+    ):
+        return False
+    if expected_evaluation_context_sha256 is not None:
+        if (
+            not _is_sha256(expected_evaluation_context_sha256)
+            or evaluation_context_sha256
+            != expected_evaluation_context_sha256
+        ):
+            return False
     if (
         set(factor_weights) != set(factors_used)
         or set(factor_coverages) != set(factors_used)
@@ -1385,6 +1845,12 @@ def production_runtime_metadata_is_ready(
                 expected_frames,
                 runtime_contracts,
             )
+            if _validate_production_frames(
+                expected_frames,
+                symbols=frame_symbols,
+                context=evaluation_context,
+            ):
+                return False
         if expected_input_digest is not None:
             if not _is_sha256(expected_input_digest):
                 return False
@@ -1515,6 +1981,8 @@ def production_runtime_score_is_ready(
     expected_symbols: Sequence[str],
     expected_frames: Mapping[str, pd.DataFrame] | None = None,
     expected_input_digest: str | None = None,
+    expected_evaluation_context: ProductionEvaluationContext | None = None,
+    expected_evaluation_context_sha256: str | None = None,
 ) -> bool:
     """Reject partial or internally inconsistent ready claims."""
 
@@ -1542,6 +2010,10 @@ def production_runtime_score_is_ready(
         expected_symbol_scores=score.symbol_scores,
         expected_frames=expected_frames,
         expected_input_digest=expected_input_digest,
+        expected_evaluation_context=expected_evaluation_context,
+        expected_evaluation_context_sha256=(
+            expected_evaluation_context_sha256
+        ),
     )
 
 
@@ -1569,12 +2041,16 @@ __all__ = [
     "MinedFactorRegistry",
     "MinedFactorScorer",
     "PRODUCTION_RUNTIME_MODE",
+    "PRODUCTION_EVALUATION_CONTEXT_SCHEMA_VERSION",
+    "ProductionEvaluationContext",
     "REPORT_ONLY_SHADOW_RUNTIME_MODE",
     "RuntimeFactorScore",
     "production_runtime_metadata_is_ready",
+    "production_evaluation_context_sha256",
     "production_runtime_input_sha256",
     "production_runtime_score_is_ready",
     "production_factor_set_sha256",
     "production_symbol_set_sha256",
+    "validate_production_evaluation_context",
     "score_with_mined_factors",
 ]

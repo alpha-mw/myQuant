@@ -128,7 +128,7 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
             "master": {"model": str(kwargs.get("master_model", "")), "available": False},
         }
 
-    def _governance_blocked_quant(_frames):
+    def _governance_blocked_quant(_frames, **_kwargs):
         return RuntimeFactorScore(
             symbol_scores={str(symbol): 0.0 for symbol in _frames},
             governance_status="governance_blocked",

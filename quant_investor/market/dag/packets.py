@@ -10,6 +10,7 @@ import pandas as pd
 from quant_investor.agent_protocol import BranchVerdict, SymbolResearchPacket
 from quant_investor.branch_contracts import BranchResult, UnifiedDataBundle
 from quant_investor.factors.runtime import (
+    ProductionEvaluationContext,
     production_runtime_input_sha256,
     production_runtime_metadata_is_ready,
     production_runtime_score_is_ready,
@@ -39,6 +40,7 @@ class _QuantBranchValidationToken:
 
     production_input_sha256: str
     production_output_sha256: str
+    evaluation_context_sha256: str
     symbol_count: int
     symbol_set_sha256: str
     symbol_scores_sha256: str
@@ -407,6 +409,9 @@ def _quant_validation_identities(
             "production_output_sha256": str(
                 runtime_metadata["production_output_attestation_sha256"]
             ),
+            "evaluation_context_sha256": str(
+                runtime_metadata["production_evaluation_context_sha256"]
+            ),
             "symbol_count": int(runtime_metadata["symbol_count"]),
             "symbol_set_sha256": str(runtime_metadata["symbol_set_sha256"]),
             "symbol_scores_sha256": str(
@@ -502,6 +507,9 @@ def _build_global_quant_verdict(
             expected_symbols=list(quant_result.symbol_scores),
             expected_symbol_scores=quant_result.symbol_scores,
             expected_input_digest=validation_token.production_input_sha256,
+            expected_evaluation_context_sha256=(
+                validation_token.evaluation_context_sha256
+            ),
         )
         and len(quant_result.symbol_scores) == symbol_count
         and np.isclose(
@@ -581,8 +589,13 @@ def _build_quant_branch_result_with_validation(
     *,
     frames: Mapping[str, pd.DataFrame],
     frame_summaries: Mapping[str, Mapping[str, Any]] | None = None,
+    evaluation_context: ProductionEvaluationContext | None = None,
+    evaluation_context_blockers: list[str] | None = None,
 ) -> tuple[BranchResult, _QuantBranchValidationToken | None]:
-    mined = score_with_mined_factors(frames)
+    mined = score_with_mined_factors(
+        frames,
+        evaluation_context=evaluation_context,
+    )
     mined_metadata = mined.to_metadata()
     branch_input_digest: str | None = None
     if mined.production_input_sha256:
@@ -602,6 +615,7 @@ def _build_quant_branch_result_with_validation(
         mined,
         expected_symbols=list(frames),
         expected_input_digest=branch_input_digest,
+        expected_evaluation_context=evaluation_context,
     )
     if runtime_ready:
         symbol_scores = dict(mined.symbol_scores)
@@ -653,6 +667,10 @@ def _build_quant_branch_result_with_validation(
             "mined_factor_runtime_contract_not_ready",
             "legacy_fallback_forbidden",
             *[f"factor_runtime_blocker:{item}" for item in mined.runtime_blockers],
+            *[
+                f"production_evaluation_context_blocker:{item}"
+                for item in (evaluation_context_blockers or [])
+            ],
         ]
         metadata = {
             "reliability": 0.0,
@@ -663,6 +681,9 @@ def _build_quant_branch_result_with_validation(
             "runtime_mode": mined.runtime_mode,
             "legacy_fallback_allowed": False,
             "mined_factor_runtime": mined_metadata,
+            "production_evaluation_context_blockers": list(
+                evaluation_context_blockers or []
+            ),
         }
     result = BranchResult(
         branch_name="quant",
@@ -698,12 +719,16 @@ def _build_quant_branch_result(
     *,
     frames: Mapping[str, pd.DataFrame],
     frame_summaries: Mapping[str, Mapping[str, Any]] | None = None,
+    evaluation_context: ProductionEvaluationContext | None = None,
+    evaluation_context_blockers: list[str] | None = None,
 ) -> BranchResult:
     """Compatibility wrapper returning the historical BranchResult only."""
 
     result, _token = _build_quant_branch_result_with_validation(
         frames=frames,
         frame_summaries=frame_summaries,
+        evaluation_context=evaluation_context,
+        evaluation_context_blockers=evaluation_context_blockers,
     )
     return result
 
