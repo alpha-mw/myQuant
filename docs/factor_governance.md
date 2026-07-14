@@ -95,9 +95,12 @@ name/SHA set, parsed selectable records, and runtime contracts to that readback.
 Each ready score additionally attests the exact symbol count/set, full 100%
 per-factor coverage, contract minimum cross-section, required-column frame
 values, bounded symbol scores, registry/contracts/receipt identities, and the
-result hash. Downstream QuantAgent and DAG boundaries independently recompute
-the frame digest from their actual frames. Metadata without an independent
-frame digest is never production-ready.
+result hash. The digest streams canonical, typed consumed values for each
+factor's exact lookback without materializing a full-frame payload. The scorer
+and DAG branch boundary independently recompute it from their actual frames;
+the global boundary accepts only their sealed process-local validation token
+and independently revalidates its identities and current governance readback.
+Serialized metadata without that independent proof is never production-ready.
 
 The independent production switch is fail-closed by default:
 

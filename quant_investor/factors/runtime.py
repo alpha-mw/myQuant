@@ -14,7 +14,7 @@ import math
 import os
 from datetime import date, datetime
 from dataclasses import dataclass, field
-from numbers import Real
+from numbers import Integral, Real
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -60,19 +60,38 @@ def _is_sha256(value: Any) -> bool:
     )
 
 
-def _canonical_runtime_scalar(value: Any) -> dict[str, Any]:
-    if value is None:
-        return {"type": "null", "value": None}
-    missing = pd.isna(value)
+def _update_runtime_digest(
+    digest: Any,
+    label: str,
+    value: str | bytes | bytearray,
+) -> None:
+    """Add one unambiguous length-prefixed field to a streaming digest."""
+
+    label_bytes = label.encode("utf-8")
+    value_bytes = value.encode("utf-8") if isinstance(value, str) else value
+    digest.update(len(label_bytes).to_bytes(4, "big"))
+    digest.update(label_bytes)
+    digest.update(len(value_bytes).to_bytes(8, "big"))
+    digest.update(value_bytes)
+
+
+def _canonical_runtime_scalar_bytes(value: Any) -> bytes:
+    """Encode one consumed scalar without an intermediate lossy hash."""
+
+    if value is None or value is pd.NA or value is pd.NaT:
+        return b"N"
+    try:
+        missing = pd.isna(value)
+    except (TypeError, ValueError):
+        missing = False
     if isinstance(missing, (bool, np.bool_)) and bool(missing):
-        return {"type": "null", "value": None}
+        return b"N"
     if isinstance(value, (pd.Timestamp, np.datetime64, datetime, date)):
-        return {
-            "type": "datetime",
-            "value": pd.Timestamp(value).isoformat(),
-        }
+        return b"D" + pd.Timestamp(value).isoformat().encode("utf-8")
     if isinstance(value, (bool, np.bool_)):
-        return {"type": "bool", "value": bool(value)}
+        return b"B\x01" if bool(value) else b"B\x00"
+    if isinstance(value, Integral):
+        return b"I" + str(int(value)).encode("ascii")
     if isinstance(value, Real):
         numeric = float(value)
         if math.isnan(numeric):
@@ -81,9 +100,9 @@ def _canonical_runtime_scalar(value: Any) -> dict[str, Any]:
             encoded = "+inf" if numeric > 0.0 else "-inf"
         else:
             encoded = numeric.hex()
-        return {"type": "number", "value": encoded}
+        return b"F" + encoded.encode("ascii")
     if isinstance(value, str):
-        return {"type": "string", "value": value}
+        return b"S" + value.encode("utf-8")
     raise TypeError(f"unsupported production runtime scalar: {type(value).__name__}")
 
 
@@ -93,22 +112,26 @@ def production_runtime_input_sha256(
 ) -> str:
     """Hash the actual factor-required frame values consumed in production."""
 
-    requirements: dict[str, list[str]] = {}
-    required_columns: set[str] = set()
-    for factor_name in sorted(str(name) for name in contracts):
-        contract = contracts.get(factor_name)
+    requirements: dict[str, tuple[list[str], int]] = {}
+    for raw_factor_name, contract in contracts.items():
+        factor_name = str(raw_factor_name)
+        if not factor_name or factor_name in requirements:
+            raise ValueError("runtime contract names must be unique and non-empty")
         if not isinstance(contract, Mapping):
             raise ValueError(f"runtime contract is not an object: {factor_name}")
         columns = contract.get("required_columns")
+        lookback = contract.get("lookback_rows")
         if (
             not isinstance(columns, list)
             or not columns
             or any(not isinstance(column, str) or not column for column in columns)
             or len(columns) != len(set(columns))
+            or isinstance(lookback, bool)
+            or not isinstance(lookback, int)
+            or lookback <= 0
         ):
-            raise ValueError(f"runtime contract columns invalid: {factor_name}")
-        requirements[factor_name] = list(columns)
-        required_columns.update(columns)
+            raise ValueError(f"runtime contract input shape invalid: {factor_name}")
+        requirements[factor_name] = (list(columns), lookback)
 
     normalized_frames: dict[str, pd.DataFrame] = {}
     for raw_symbol, frame in frames.items():
@@ -118,39 +141,57 @@ def production_runtime_input_sha256(
         if not isinstance(frame, pd.DataFrame):
             raise TypeError(f"production runtime frame invalid: {symbol}")
         normalized_frames[symbol] = frame
-    columns = sorted(required_columns)
-    frame_payloads: list[dict[str, Any]] = []
-    for symbol in sorted(normalized_frames):
-        frame = normalized_frames[symbol]
-        if any(column not in frame.columns for column in columns):
-            raise ValueError(f"production runtime required column missing: {symbol}")
-        rows = [
-            [_canonical_runtime_scalar(value) for value in row]
-            for row in frame.loc[:, columns].itertuples(index=False, name=None)
-        ]
-        frame_payloads.append(
-            {
-                "symbol": symbol,
-                "columns": columns,
-                "row_count": len(rows),
-                "rows": rows,
-            }
-        )
-    payload = {
-        "schema_version": PRODUCTION_RUNTIME_INPUT_SCHEMA_VERSION,
-        "symbols": sorted(normalized_frames),
-        "symbol_set_sha256": production_symbol_set_sha256(normalized_frames),
-        "factor_required_columns": requirements,
-        "frames": frame_payloads,
-    }
-    raw = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(raw).hexdigest()
+
+    from quant_investor.factors.price_volume import _ordered_frame
+
+    digest = hashlib.sha256()
+    _update_runtime_digest(
+        digest, "schema_version", PRODUCTION_RUNTIME_INPUT_SCHEMA_VERSION
+    )
+    _update_runtime_digest(digest, "factor_count", str(len(requirements)))
+    _update_runtime_digest(digest, "symbol_count", str(len(normalized_frames)))
+    _update_runtime_digest(
+        digest,
+        "symbol_set_sha256",
+        production_symbol_set_sha256(normalized_frames),
+    )
+    for factor_name in sorted(requirements):
+        columns, lookback = requirements[factor_name]
+        _update_runtime_digest(digest, "factor", factor_name)
+        _update_runtime_digest(digest, "lookback_rows", str(lookback))
+        _update_runtime_digest(digest, "column_count", str(len(columns)))
+        for column in columns:
+            _update_runtime_digest(digest, "column", column)
+        for symbol in sorted(normalized_frames):
+            frame = normalized_frames[symbol]
+            if any(column not in frame.columns for column in columns):
+                raise ValueError(
+                    f"production runtime required column missing: {symbol}"
+                )
+            consumed = _ordered_frame(frame, lookback_rows=lookback).loc[
+                :, columns
+            ]
+            if len(consumed) != lookback:
+                raise ValueError(
+                    f"production runtime lookback missing: {factor_name}:{symbol}"
+                )
+            _update_runtime_digest(digest, "symbol", symbol)
+            _update_runtime_digest(digest, "row_count", str(len(consumed)))
+            for column, dtype in zip(columns, consumed.dtypes):
+                _update_runtime_digest(digest, f"dtype:{column}", str(dtype))
+                encoded_column = bytearray()
+                for value in consumed[column]:
+                    encoded_scalar = _canonical_runtime_scalar_bytes(value)
+                    encoded_column.extend(
+                        len(encoded_scalar).to_bytes(8, "big")
+                    )
+                    encoded_column.extend(encoded_scalar)
+                _update_runtime_digest(
+                    digest,
+                    f"values:{column}",
+                    encoded_column,
+                )
+    return digest.hexdigest()
 
 
 def _symbol_scores_sha256(symbol_scores: Mapping[str, Any]) -> str:

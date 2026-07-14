@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from statistics import fmean
 from typing import Any, Mapping
 
@@ -10,6 +10,7 @@ import pandas as pd
 from quant_investor.agent_protocol import BranchVerdict, SymbolResearchPacket
 from quant_investor.branch_contracts import BranchResult, UnifiedDataBundle
 from quant_investor.factors.runtime import (
+    production_runtime_input_sha256,
     production_runtime_metadata_is_ready,
     production_runtime_score_is_ready,
     score_with_mined_factors,
@@ -27,6 +28,34 @@ class _PreparedMarketStateFrame:
     summary: dict[str, Any]
     close: pd.Series
     volume: pd.Series
+
+
+_QUANT_BRANCH_VALIDATION_SEAL = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _QuantBranchValidationToken:
+    """Process-local proof that branch validation scanned the real frames."""
+
+    production_input_sha256: str
+    production_output_sha256: str
+    symbol_count: int
+    symbol_set_sha256: str
+    symbol_scores_sha256: str
+    registry_sha256: str
+    factor_set_sha256: str
+    contracts_sha256: str
+    receipt_sha256: str
+    final_score_hex: str
+    final_confidence_hex: str
+    _seal: object = field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self._seal is not _QUANT_BRANCH_VALIDATION_SEAL:
+            raise TypeError("quant branch validation tokens are internal")
+
+    def __reduce__(self) -> object:
+        raise TypeError("quant branch validation tokens are not serializable")
 
 
 def _empty_frame_summary(rows: int = 0) -> dict[str, Any]:
@@ -359,12 +388,85 @@ def _build_market_snapshot(
     }
 
 
+def _quant_validation_identities(
+    quant_result: BranchResult,
+) -> dict[str, Any] | None:
+    try:
+        runtime_metadata = dict(
+            quant_result.metadata.get("mined_factor_runtime", {}) or {}
+        )
+        registry = dict(runtime_metadata.get("registry", {}) or {})
+        governance = dict(registry.get("governance_runtime", {}) or {})
+        activation = dict(
+            governance.get("quant_production_activation", {}) or {}
+        )
+        return {
+            "production_input_sha256": str(
+                runtime_metadata["production_input_sha256"]
+            ),
+            "production_output_sha256": str(
+                runtime_metadata["production_output_attestation_sha256"]
+            ),
+            "symbol_count": int(runtime_metadata["symbol_count"]),
+            "symbol_set_sha256": str(runtime_metadata["symbol_set_sha256"]),
+            "symbol_scores_sha256": str(
+                runtime_metadata["symbol_scores_sha256"]
+            ),
+            "registry_sha256": str(registry["registry_sha256"]),
+            "factor_set_sha256": str(
+                governance["production_factor_set_sha256"]
+            ),
+            "contracts_sha256": str(
+                governance["factor_runtime_contracts_sha256"]
+            ),
+            "receipt_sha256": str(activation["receipt_file_sha256"]),
+            "final_score_hex": float(quant_result.final_score).hex(),
+            "final_confidence_hex": float(
+                quant_result.final_confidence
+            ).hex(),
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _new_quant_validation_token(
+    quant_result: BranchResult,
+) -> _QuantBranchValidationToken | None:
+    identities = _quant_validation_identities(quant_result)
+    if identities is None:
+        return None
+    return _QuantBranchValidationToken(
+        **identities,
+        _seal=_QUANT_BRANCH_VALIDATION_SEAL,
+    )
+
+
+def _quant_validation_token_matches(
+    token: _QuantBranchValidationToken | None,
+    quant_result: BranchResult,
+) -> bool:
+    if (
+        type(token) is not _QuantBranchValidationToken
+        or token._seal is not _QUANT_BRANCH_VALIDATION_SEAL
+    ):
+        return False
+    identities = _quant_validation_identities(quant_result)
+    return bool(
+        identities is not None
+        and all(
+            getattr(token, field_name) == value
+            for field_name, value in identities.items()
+        )
+    )
+
+
 def _build_global_quant_verdict(
     *,
     cross_section_quant: Mapping[str, Any],
     symbol_count: int,
     quant_result: BranchResult | None = None,
     expected_frames: Mapping[str, pd.DataFrame] | None = None,
+    validation_token: _QuantBranchValidationToken | None = None,
 ) -> BranchVerdict:
     average_return = float(cross_section_quant.get("average_return", 0.0))
     average_volatility = float(cross_section_quant.get("average_volatility", 0.0))
@@ -391,15 +493,15 @@ def _build_global_quant_verdict(
     )
     production_quant_evidence = bool(
         quant_result is not None
-        and expected_frames is not None
         and governance_status == "ready"
         and factor_mode == "governed_mined_factors"
         and production_eligible
+        and _quant_validation_token_matches(validation_token, quant_result)
         and production_runtime_metadata_is_ready(
             runtime_metadata,
             expected_symbols=list(quant_result.symbol_scores),
             expected_symbol_scores=quant_result.symbol_scores,
-            expected_frames=expected_frames,
+            expected_input_digest=validation_token.production_input_sha256,
         )
         and len(quant_result.symbol_scores) == symbol_count
         and np.isclose(
@@ -475,16 +577,31 @@ def _build_global_quant_verdict(
     )
 
 
-def _build_quant_branch_result(
+def _build_quant_branch_result_with_validation(
     *,
     frames: Mapping[str, pd.DataFrame],
     frame_summaries: Mapping[str, Mapping[str, Any]] | None = None,
-) -> BranchResult:
+) -> tuple[BranchResult, _QuantBranchValidationToken | None]:
     mined = score_with_mined_factors(frames)
+    mined_metadata = mined.to_metadata()
+    branch_input_digest: str | None = None
+    if mined.production_input_sha256:
+        try:
+            registry = dict(mined_metadata.get("registry", {}) or {})
+            governance = dict(registry.get("governance_runtime", {}) or {})
+            runtime_contracts = dict(
+                governance.get("factor_runtime_contracts", {}) or {}
+            )
+            branch_input_digest = production_runtime_input_sha256(
+                frames,
+                runtime_contracts,
+            )
+        except (TypeError, ValueError):
+            branch_input_digest = None
     runtime_ready = production_runtime_score_is_ready(
         mined,
         expected_symbols=list(frames),
-        expected_frames=frames,
+        expected_input_digest=branch_input_digest,
     )
     if runtime_ready:
         symbol_scores = dict(mined.symbol_scores)
@@ -512,7 +629,7 @@ def _build_quant_branch_result(
             "production_eligible": bool(mined.production_eligible),
             "runtime_mode": mined.runtime_mode,
             "legacy_fallback_allowed": False,
-            "mined_factor_runtime": mined.to_metadata(),
+            "mined_factor_runtime": mined_metadata,
         }
     else:
         symbol_scores = {str(symbol): 0.0 for symbol in frames}
@@ -545,9 +662,9 @@ def _build_quant_branch_result(
             "production_eligible": False,
             "runtime_mode": mined.runtime_mode,
             "legacy_fallback_allowed": False,
-            "mined_factor_runtime": mined.to_metadata(),
+            "mined_factor_runtime": mined_metadata,
         }
-    return BranchResult(
+    result = BranchResult(
         branch_name="quant",
         final_score=float(fmean(symbol_scores.values()) if symbol_scores else 0.0),
         final_confidence=(
@@ -573,6 +690,22 @@ def _build_quant_branch_result(
         diagnostic_notes=diagnostic_notes,
         metadata=metadata,
     )
+    token = _new_quant_validation_token(result) if runtime_ready else None
+    return result, token
+
+
+def _build_quant_branch_result(
+    *,
+    frames: Mapping[str, pd.DataFrame],
+    frame_summaries: Mapping[str, Mapping[str, Any]] | None = None,
+) -> BranchResult:
+    """Compatibility wrapper returning the historical BranchResult only."""
+
+    result, _token = _build_quant_branch_result_with_validation(
+        frames=frames,
+        frame_summaries=frame_summaries,
+    )
+    return result
 
 
 def _build_symbol_quant_verdict(

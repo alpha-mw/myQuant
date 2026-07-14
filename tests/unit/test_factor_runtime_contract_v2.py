@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import tracemalloc
 from pathlib import Path
 
 import numpy as np
@@ -20,6 +21,7 @@ from quant_investor.factors.runtime import (
     MinedFactorRegistry,
     MinedFactorScorer,
     RuntimeFactorScore,
+    production_runtime_input_sha256,
     production_runtime_metadata_is_ready,
     production_runtime_score_is_ready,
 )
@@ -876,6 +878,119 @@ def test_downstream_readiness_revalidates_real_strict_fixture(
         record.metadata["factor_family"] = f"family-{index}"
         record.metadata["dominant_primitive_cluster"] = f"cluster-{index}"
     contracts = {record.name: _contract(record, evidence) for record in records}
+
+    digest_contract = {
+        records[0].name: contracts[records[0].name],
+    }
+    digest_frames = _frames()
+    digest = production_runtime_input_sha256(digest_frames, digest_contract)
+    assert digest == production_runtime_input_sha256(
+        dict(reversed(list(digest_frames.items()))), digest_contract
+    )
+    reversed_rows = {
+        symbol: frame.iloc[::-1].reset_index(drop=True)
+        for symbol, frame in digest_frames.items()
+    }
+    assert digest == production_runtime_input_sha256(
+        reversed_rows, digest_contract
+    )
+    outside_lookback = {
+        symbol: pd.concat(
+            [
+                frame.iloc[[0]].assign(
+                    trade_date=pd.Timestamp("2025-12-01"),
+                    amount=1.0,
+                ),
+                frame,
+            ],
+            ignore_index=True,
+        )
+        for symbol, frame in digest_frames.items()
+    }
+    assert digest == production_runtime_input_sha256(
+        outside_lookback, digest_contract
+    )
+    irrelevant_column = {symbol: frame.copy() for symbol, frame in digest_frames.items()}
+    irrelevant_column[next(iter(irrelevant_column))].loc[:, "vol"] += 1.0
+    assert digest == production_runtime_input_sha256(
+        irrelevant_column, digest_contract
+    )
+    changed_value = {symbol: frame.copy() for symbol, frame in digest_frames.items()}
+    changed_symbol = next(iter(changed_value))
+    last_two = changed_value[changed_symbol].index[-2:]
+    changed_value[changed_symbol].loc[last_two, "amount"] = (
+        changed_value[changed_symbol].loc[last_two, "amount"].to_numpy()[::-1]
+    )
+    assert digest != production_runtime_input_sha256(changed_value, digest_contract)
+    changed_date = {symbol: frame.copy() for symbol, frame in digest_frames.items()}
+    changed_date[changed_symbol].loc[
+        changed_date[changed_symbol].index[-1], "trade_date"
+    ] += pd.Timedelta(days=1)
+    assert digest != production_runtime_input_sha256(changed_date, digest_contract)
+    two_contracts = {
+        records[0].name: contracts[records[0].name],
+        records[1].name: contracts[records[1].name],
+    }
+    assert production_runtime_input_sha256(digest_frames, two_contracts) == (
+        production_runtime_input_sha256(
+            digest_frames,
+            dict(reversed(list(two_contracts.items()))),
+        )
+    )
+
+    typed_contract = {
+        "typed-factor": {
+            "required_columns": ["trade_date", "value"],
+            "lookback_rows": 2,
+        }
+    }
+    typed_dates = pd.date_range("2026-01-01", periods=2)
+
+    def typed_digest(values: list[object]) -> str:
+        return production_runtime_input_sha256(
+            {
+                "TYPED": pd.DataFrame(
+                    {
+                        "trade_date": typed_dates,
+                        "value": pd.Series(values, dtype=object),
+                    }
+                )
+            },
+            typed_contract,
+        )
+
+    assert typed_digest([True, False]) != typed_digest([1, 0])
+    assert typed_digest([1, 0]) != typed_digest(["1", "0"])
+    assert typed_digest([np.inf, 0.0]) != typed_digest([-np.inf, 0.0])
+    assert typed_digest([None, pd.NA]) == typed_digest([np.nan, pd.NaT])
+
+    benchmark_dates = pd.date_range("2026-01-01", periods=91)
+    benchmark_frames = {
+        f"B{index:04d}": pd.DataFrame(
+            {
+                "trade_date": benchmark_dates,
+                "adj_close": np.linspace(10.0 + index, 11.0 + index, 91),
+                "vol": np.linspace(1000.0, 1100.0, 91),
+                "amount": np.linspace(10000.0, 11000.0, 91),
+            }
+        )
+        for index in range(1000)
+    }
+    benchmark_contract = copy.deepcopy(digest_contract)
+    benchmark_contract[records[0].name]["required_columns"] = [
+        "trade_date",
+        "adj_close",
+        "vol",
+        "amount",
+    ]
+    benchmark_contract[records[0].name]["lookback_rows"] = 91
+    tracemalloc.start()
+    production_runtime_input_sha256(benchmark_frames, benchmark_contract)
+    _current_bytes, peak_bytes = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert peak_bytes < 25 * 1024 * 1024
+    del benchmark_frames
+
     registry = MinedFactorRegistry.from_records(records)
     manifest = registry.selectable_manifest()
     registry.metadata = {
@@ -1016,12 +1131,70 @@ def test_downstream_readiness_revalidates_real_strict_fixture(
         quant_result=quant_result,
         expected_frames=frames,
     )
-    assert global_verdict.metadata["production_quant_evidence"] is True
+    assert global_verdict.metadata["production_quant_evidence"] is False
     assert _build_global_quant_verdict(
         cross_section_quant={},
         symbol_count=len(frames),
         quant_result=quant_result,
     ).metadata["production_quant_evidence"] is False
+
+    import quant_investor.factors.runtime as runtime_module
+    import quant_investor.market.dag.packets as packets_module
+
+    original_digest = runtime_module.production_runtime_input_sha256
+    digest_call_count = 0
+
+    def counting_digest(runtime_frames, runtime_contracts):
+        nonlocal digest_call_count
+        digest_call_count += 1
+        return original_digest(runtime_frames, runtime_contracts)
+
+    monkeypatch.setattr(
+        runtime_module,
+        "production_runtime_input_sha256",
+        counting_digest,
+    )
+    monkeypatch.setattr(
+        packets_module,
+        "production_runtime_input_sha256",
+        counting_digest,
+    )
+    monkeypatch.setattr(
+        packets_module,
+        "score_with_mined_factors",
+        lambda runtime_frames: MinedFactorScorer(strict_registry).score(
+            runtime_frames
+        ),
+    )
+    validated_result, validation_token = (
+        packets_module._build_quant_branch_result_with_validation(
+            frames=frames
+        )
+    )
+    assert validation_token is not None
+    with pytest.raises(TypeError):
+        json.dumps(validation_token)
+    validated_global = _build_global_quant_verdict(
+        cross_section_quant={},
+        symbol_count=len(frames),
+        quant_result=validated_result,
+        validation_token=validation_token,
+    )
+    assert validated_global.metadata["production_quant_evidence"] is True
+    assert digest_call_count == 2
+    forged_validated_result = copy.deepcopy(validated_result)
+    forged_validated_symbol = next(iter(forged_validated_result.symbol_scores))
+    forged_validated_result.symbol_scores[forged_validated_symbol] *= -1.0
+    forged_validated_result.final_score = float(
+        np.mean(list(forged_validated_result.symbol_scores.values()))
+    )
+    assert _build_global_quant_verdict(
+        cross_section_quant={},
+        symbol_count=len(frames),
+        quant_result=forged_validated_result,
+        validation_token=validation_token,
+    ).metadata["production_quant_evidence"] is False
+    assert digest_call_count == 2
 
     coverage_below_exact = copy.deepcopy(ready_metadata)
     coverage_below_exact["factor_coverages"][factors_used[0]] = 0.99

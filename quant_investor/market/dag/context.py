@@ -17,7 +17,7 @@ from quant_investor.market.dag.packets import (
     _build_cross_section_quant,
     _build_global_quant_verdict,
     _build_market_snapshot,
-    _build_quant_branch_result,
+    _build_quant_branch_result_with_validation,
     _build_symbol_tradability,
 )
 from quant_investor.market.dag.theme_context import (
@@ -688,7 +688,10 @@ def _prepare_market_context(
             "dag_quant_branch_result",
             {"researchable_count": len(symbols), "frame_count": len(frames)},
         ) as quant_branch_metadata:
-            quant_result = _build_quant_branch_result(
+            (
+                quant_result,
+                quant_validation_token,
+            ) = _build_quant_branch_result_with_validation(
                 frames=frames,
                 frame_summaries=frame_summaries,
             )
@@ -702,7 +705,7 @@ def _prepare_market_context(
                 cross_section_quant=cross_section_quant,
                 symbol_count=len(symbols),
                 quant_result=quant_result,
-                expected_frames=frames,
+                validation_token=quant_validation_token,
             )
             global_quant_metadata["global_quant_score"] = float(global_quant_verdict.final_score)
             global_quant_metadata["global_quant_confidence"] = float(
