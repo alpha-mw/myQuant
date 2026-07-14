@@ -10,6 +10,8 @@ import pytest
 from quant_investor.factors.governance import (
     FactorLifecycleState,
     FactorRecord,
+    GATE_SPECS,
+    GateResult,
 )
 from quant_investor.factors.registry_store import (
     METADATA_ABSENT,
@@ -38,6 +40,15 @@ def _record(
         implementation=f"builtin:{name}",
         weight=weight,
         owner=owner,
+        gate_results=[
+            GateResult(
+                gate_id=spec.gate_id,
+                gate_key=spec.key,
+                title=spec.title,
+                passed=True,
+            )
+            for spec in GATE_SPECS
+        ],
         metadata={"fixture": True},
     ).to_dict()
 
@@ -158,6 +169,128 @@ def test_strict_loader_rejects_unknown_factor_record_field(
     with pytest.raises(
         FactorRegistryValidationError,
         match="unsupported fields.*future_extension",
+    ):
+        load_registry_snapshot_strict(path)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("weight", True),
+        ("weight", "0.05"),
+        ("direction", True),
+        ("direction", "1"),
+        ("direction", 0),
+        ("direction", 2),
+        ("horizon_days", True),
+        ("horizon_days", "5"),
+        ("thematic", 1),
+        ("narrow_coverage", "false"),
+    ],
+)
+def test_strict_loader_rejects_coercible_record_field_types(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    path = tmp_path / f"invalid_{field}.json"
+    record = _record("alpha")
+    record[field] = value
+    _write_registry(path, [record])
+
+    with pytest.raises(FactorRegistryValidationError):
+        load_registry_snapshot_strict(path)
+
+
+@pytest.mark.parametrize("passed", [1, 0, "true", "false", None])
+def test_strict_loader_rejects_non_boolean_gate_passed(
+    tmp_path: Path,
+    passed: object,
+) -> None:
+    path = tmp_path / "invalid_gate_passed.json"
+    record = _record("alpha")
+    record["gate_results"][0]["passed"] = passed
+    _write_registry(path, [record])
+
+    with pytest.raises(
+        FactorRegistryValidationError,
+        match="passed must be a boolean",
+    ):
+        load_registry_snapshot_strict(path)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_gate",
+        "duplicate_gate",
+        "mismatched_gate_key",
+        "extra_gate",
+        "unknown_gate_field",
+    ],
+)
+def test_strict_loader_requires_exact_unique_gate_1_to_8_contract(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    path = tmp_path / f"{mutation}.json"
+    record = _record("alpha")
+    gates = record["gate_results"]
+    if mutation == "missing_gate":
+        gates.pop()
+    elif mutation == "duplicate_gate":
+        gates[-1] = copy.deepcopy(gates[0])
+    elif mutation == "mismatched_gate_key":
+        gates[0]["gate_key"] = "coverage_stability"
+    elif mutation == "extra_gate":
+        extra = copy.deepcopy(gates[-1])
+        extra["gate_id"] = 9
+        extra["gate_key"] = "gate_9"
+        gates.append(extra)
+    else:
+        gates[0]["future_extension"] = True
+    _write_registry(path, [record])
+
+    with pytest.raises(FactorRegistryValidationError):
+        load_registry_snapshot_strict(path)
+
+
+def test_strict_loader_rejects_unknown_top_level_field(tmp_path: Path) -> None:
+    path = tmp_path / "unknown_top_level.json"
+    _write_registry(path, [_record("alpha")])
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["future_extension"] = True
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(
+        FactorRegistryValidationError,
+        match="unsupported top-level fields",
+    ):
+        load_registry_snapshot_strict(path)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"schema_version":"mined-factor-registry.v1",'
+        '"schema_version":"mined-factor-registry.v1","metadata":{},"factors":[]}',
+        '{"schema_version":"mined-factor-registry.v1","metadata":{},"factors":['
+        '{"name":"alpha","name":"beta"}]}',
+        '{"schema_version":"mined-factor-registry.v1","metadata":{},"factors":['
+        '{"name":"alpha","state":"production_factor","gate_results":['
+        '{"gate_id":1,"gate_id":2}]}]}',
+    ],
+)
+def test_strict_loader_rejects_duplicate_json_keys(
+    tmp_path: Path,
+    raw: str,
+) -> None:
+    path = tmp_path / "duplicate_key.json"
+    path.write_text(raw, encoding="utf-8")
+
+    with pytest.raises(
+        FactorRegistryMalformedError,
+        match="duplicate JSON key",
     ):
         load_registry_snapshot_strict(path)
 

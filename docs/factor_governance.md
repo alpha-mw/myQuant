@@ -75,6 +75,36 @@ report-only shadow scoring may still compute comparison ranks, but it carries
 `factor_mode=historical_shadow_report_only`, confidence `0`, and
 `production_eligible=false`; it cannot enter the production DAG as evidence.
 
+Production scoring additionally requires an exact
+`factor-production-runtime-contract.v1` entry for every selectable factor under
+registry metadata `production_factor_runtime_contracts`. The contract binds the
+factor definition and raw record hashes, the allowlisted implementation version
+and local code-byte SHA, strict-Parquet column/data semantics and lookback, the
+Gate 2 runtime coverage floor, minimum cross-section, and a locally read-back
+evidence artifact SHA. Contract names must equal the production set exactly.
+`FactorLibrary` name fallback, amount reconstructed from close times volume,
+partial-factor renormalization, and neutral filling are forbidden in production;
+one compute, output, coverage, lookback, or symbol-set failure blocks the whole
+Quant branch. Report-only shadow scoring retains its historical compatibility
+helpers and remains confidence zero.
+
+The independent production switch is fail-closed by default:
+
+```bash
+QUANT_PRODUCTION_KILL_SWITCH=true
+QUANT_PRODUCTION_ACTIVATION_RECEIPT=
+QUANT_PRODUCTION_ACTIVATION_RECEIPT_SHA256=
+```
+
+Only the exact lowercase value `false` proceeds to receipt validation. The
+`quant-production-activation-receipt.v1` file must be private, read back without
+change, and match the separately supplied exact-byte SHA. Its payload binds the
+registry path and bytes SHA, production-set SHA, runtime-contract aggregate,
+per-factor implementation-code SHAs, FactorGovernanceProtocol version/hash,
+activation ID, approver, and its own canonical payload hash. The repository
+does not create or ship an activation receipt; the current canonical producer
+blocker remains authoritative even when these environment variables are set.
+
 Produce a deterministic, private **report-only** evidence artifact from a local
 full-chain replay:
 

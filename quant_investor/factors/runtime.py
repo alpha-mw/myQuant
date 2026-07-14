@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -65,6 +66,8 @@ class MinedFactorRegistry:
 
     @classmethod
     def load(cls, path: str | os.PathLike[str] | None = None) -> "MinedFactorRegistry":
+        """Load the research/report registry with historical forgiving semantics."""
+
         raw_path = path or os.getenv("MYQUANT_FACTOR_REGISTRY") or DEFAULT_REGISTRY_PATH
         registry_path = Path(raw_path).expanduser()
         if not registry_path.exists():
@@ -76,6 +79,40 @@ class MinedFactorRegistry:
             return registry
         except Exception as exc:
             return cls(metadata={"path": str(registry_path), "load_error": str(exc)})
+
+    @classmethod
+    def load_production(
+        cls,
+        path: str | os.PathLike[str] | None = None,
+    ) -> "MinedFactorRegistry":
+        """Load production bytes through the strict raw-payload validator."""
+
+        raw_path = path or os.getenv("MYQUANT_FACTOR_REGISTRY") or DEFAULT_REGISTRY_PATH
+        registry_path = Path(raw_path).expanduser()
+        try:
+            from quant_investor.factors.registry_store import (
+                load_registry_snapshot_strict,
+            )
+
+            snapshot = load_registry_snapshot_strict(registry_path)
+        except Exception as exc:
+            return cls(
+                metadata={
+                    "path": str(registry_path),
+                    "strict_loader": True,
+                    "strict_load_error": str(exc),
+                    "load_error": str(exc),
+                }
+            )
+        registry = snapshot.registry
+        registry.metadata = {
+            **dict(registry.metadata),
+            "path": str(snapshot.path),
+            "strict_loader": True,
+            "registry_sha256": snapshot.registry_sha256,
+            "record_sha256s": dict(snapshot.record_sha256s),
+        }
+        return registry
 
     def selectable_factors(self) -> list[FactorRecord]:
         return [factor for factor in self.factors if factor.selectable_in_quant_branch()]
@@ -240,7 +277,6 @@ class MinedFactorScorer:
         *,
         runtime_mode: str = PRODUCTION_RUNTIME_MODE,
     ) -> None:
-        self.registry = registry or MinedFactorRegistry.load()
         normalized_mode = str(runtime_mode or "").strip()
         if normalized_mode not in {
             PRODUCTION_RUNTIME_MODE,
@@ -248,6 +284,12 @@ class MinedFactorScorer:
         }:
             raise ValueError(f"unsupported factor runtime mode: {runtime_mode!r}")
         self.runtime_mode = normalized_mode
+        if registry is not None:
+            self.registry = registry
+        elif self.runtime_mode == PRODUCTION_RUNTIME_MODE:
+            self.registry = MinedFactorRegistry.load_production()
+        else:
+            self.registry = MinedFactorRegistry.load()
 
     def _runtime_contract(self) -> tuple[list[FactorRecord], dict[str, Any]]:
         if self.runtime_mode == REPORT_ONLY_SHADOW_RUNTIME_MODE:
@@ -284,7 +326,14 @@ class MinedFactorScorer:
         )
 
         status = governance_runtime_status(self.registry)
-        active = self.registry.selectable_factors() if status["status"] == "ready" else []
+        active = (
+            sorted(
+                self.registry.selectable_factors(),
+                key=lambda record: record.name,
+            )
+            if status["status"] == "ready"
+            else []
+        )
         return active, {
             **status,
             "production_eligible": status["status"] == "ready",
@@ -344,6 +393,15 @@ class MinedFactorScorer:
         if not active:
             return self._empty_score(
                 symbols,
+                skipped=skipped,
+                runtime_status=runtime_status,
+            )
+
+        if self.runtime_mode == PRODUCTION_RUNTIME_MODE:
+            return self._score_production(
+                frames,
+                symbols=symbols,
+                active=active,
                 skipped=skipped,
                 runtime_status=runtime_status,
             )
@@ -458,12 +516,286 @@ class MinedFactorScorer:
             ],
         )
 
+    @staticmethod
+    def _blocked_runtime_status(
+        runtime_status: Mapping[str, Any],
+        blocker: str,
+    ) -> dict[str, Any]:
+        return {
+            **dict(runtime_status),
+            "status": "governance_blocked",
+            "factor_mode": "governance_blocked",
+            "confidence_multiplier": 0.0,
+            "production_eligible": False,
+            "blockers": list(
+                dict.fromkeys(
+                    [
+                        *[
+                            str(item)
+                            for item in runtime_status.get("blockers", []) or []
+                            if str(item)
+                        ],
+                        blocker,
+                    ]
+                )
+            ),
+        }
+
+    def _score_production(
+        self,
+        frames: Mapping[str, pd.DataFrame],
+        *,
+        symbols: Sequence[str],
+        active: Sequence[FactorRecord],
+        skipped: Mapping[str, str],
+        runtime_status: Mapping[str, Any],
+    ) -> RuntimeFactorScore:
+        """Execute the exact active set atomically without data substitution."""
+
+        contracts = runtime_status.get("factor_runtime_contracts")
+        if not isinstance(contracts, Mapping) or set(contracts) != {
+            factor.name for factor in active
+        }:
+            blocked = self._blocked_runtime_status(
+                runtime_status,
+                "production_runtime_contract_factor_set_mismatch",
+            )
+            return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
+
+        factor_series: dict[str, pd.Series] = {}
+        factor_weights: dict[str, float] = {}
+        factor_coverages: dict[str, float] = {}
+        prepared: Mapping[str, Any] | None = None
+        factor_cache: dict[str, Any] = {}
+        price_volume_names = [
+            str(factor.implementation).split(":", 1)[1]
+            for factor in active
+            if str(factor.implementation).startswith("price_volume:")
+        ]
+        factor_cache["active_price_volume_names"] = tuple(price_volume_names)
+        include_amihud_base = any(
+            name.startswith("pv_amihud_illiquidity_")
+            or name.startswith("pv_blend_volstab19x2_mom90_amihud5_w")
+            for name in price_volume_names
+        )
+        required_lookback = max(
+            (
+                int(dict(contracts[factor.name]).get("lookback_rows", 0) or 0)
+                for factor in active
+            ),
+            default=0,
+        )
+
+        for factor in active:
+            raw_contract = contracts.get(factor.name)
+            if not isinstance(raw_contract, Mapping):
+                blocker = f"factor_runtime_contract_missing:{factor.name}"
+                blocked = self._blocked_runtime_status(runtime_status, blocker)
+                return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
+            contract = dict(raw_contract)
+            required_columns = contract.get("required_columns")
+            lookback = contract.get("lookback_rows")
+            minimum_coverage = contract.get("gate2_min_coverage_rate")
+            min_cross_section = contract.get("min_cross_section")
+            if (
+                not isinstance(required_columns, list)
+                or isinstance(lookback, bool)
+                or not isinstance(lookback, int)
+                or lookback <= 0
+                or isinstance(minimum_coverage, bool)
+                or not isinstance(minimum_coverage, (int, float))
+                or not math.isfinite(float(minimum_coverage))
+                or isinstance(min_cross_section, bool)
+                or not isinstance(min_cross_section, int)
+                or min_cross_section <= 0
+            ):
+                blocker = f"factor_runtime_contract_invalid:{factor.name}"
+                blocked = self._blocked_runtime_status(runtime_status, blocker)
+                return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
+            if len(symbols) < min_cross_section:
+                blocker = f"factor_min_cross_section_not_met:{factor.name}"
+                blocked = self._blocked_runtime_status(runtime_status, blocker)
+                return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
+
+            valid_frames: dict[str, pd.DataFrame] = {}
+            for symbol in symbols:
+                frame = frames.get(symbol)
+                if frame is None or frame.empty:
+                    continue
+                if any(column not in frame.columns for column in required_columns):
+                    continue
+                tail = frame.tail(lookback)
+                if len(tail) < lookback:
+                    continue
+                if tail[required_columns].isna().any(axis=None):
+                    continue
+                columns_valid = True
+                for column in required_columns:
+                    values = tail[column]
+                    if column == "trade_date":
+                        normalized_dates = values.astype(str).str.strip()
+                        if (
+                            normalized_dates.eq("").any()
+                            or normalized_dates.duplicated().any()
+                            or not normalized_dates.is_monotonic_increasing
+                        ):
+                            columns_valid = False
+                            break
+                        continue
+                    if (
+                        pd.api.types.is_bool_dtype(values.dtype)
+                        or not pd.api.types.is_numeric_dtype(values.dtype)
+                    ):
+                        columns_valid = False
+                        break
+                    numeric_values = values.to_numpy(dtype=float)
+                    if (
+                        not np.isfinite(numeric_values).all()
+                        or (numeric_values <= 0.0).any()
+                    ):
+                        columns_valid = False
+                        break
+                if not columns_valid:
+                    continue
+                valid_frames[symbol] = frame
+            coverage = len(valid_frames) / max(len(symbols), 1)
+            if set(valid_frames) != set(symbols):
+                blocker = (
+                    f"factor_required_columns_or_lookback_missing:{factor.name}:"
+                    f"coverage={coverage:.6f}"
+                )
+                blocked = self._blocked_runtime_status(runtime_status, blocker)
+                return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
+            if coverage < float(minimum_coverage) - 1e-12:
+                blocker = f"factor_gate2_runtime_coverage_below_contract:{factor.name}"
+                blocked = self._blocked_runtime_status(runtime_status, blocker)
+                return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
+            if len(valid_frames) < min_cross_section:
+                blocker = f"factor_runtime_cross_section_below_contract:{factor.name}"
+                blocked = self._blocked_runtime_status(runtime_status, blocker)
+                return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
+            implementation = str(factor.implementation or "").strip()
+            if not implementation.startswith("price_volume:"):
+                blocker = f"factor_implementation_not_allowlisted:{factor.name}"
+                blocked = self._blocked_runtime_status(runtime_status, blocker)
+                return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
+            implementation_name = implementation.split(":", 1)[1]
+            if implementation_name != factor.name:
+                blocker = f"factor_implementation_name_mismatch:{factor.name}"
+                blocked = self._blocked_runtime_status(runtime_status, blocker)
+                return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
+            try:
+                if prepared is None:
+                    from quant_investor.factors.price_volume import (
+                        prepare_price_volume_frames,
+                    )
+
+                    prepared = prepare_price_volume_frames(
+                        valid_frames,
+                        include_amihud_base=include_amihud_base,
+                        lookback_rows=required_lookback,
+                    )
+                raw = self._price_volume_factor(
+                    implementation_name,
+                    valid_frames,
+                    prepared_frames=prepared,
+                    factor_cache=factor_cache,
+                )
+            except Exception as exc:
+                blocker = f"factor_compute_error:{factor.name}:{exc}"
+                blocked = self._blocked_runtime_status(runtime_status, blocker)
+                return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
+            if not isinstance(raw, pd.Series) or raw.empty:
+                blocker = f"factor_empty_output:{factor.name}"
+                blocked = self._blocked_runtime_status(runtime_status, blocker)
+                return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
+            normalized_index = [str(item) for item in raw.index]
+            if len(normalized_index) != len(set(normalized_index)):
+                blocker = f"factor_duplicate_output_index:{factor.name}"
+                blocked = self._blocked_runtime_status(runtime_status, blocker)
+                return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
+            if set(normalized_index) != set(symbols):
+                blocker = f"factor_output_symbol_set_mismatch:{factor.name}"
+                blocked = self._blocked_runtime_status(runtime_status, blocker)
+                return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
+            raw = pd.Series(raw.to_numpy(), index=normalized_index)
+            numeric = pd.to_numeric(raw.reindex(symbols), errors="coerce")
+            if numeric.isna().any() or not np.isfinite(numeric.to_numpy(dtype=float)).all():
+                blocker = f"factor_non_finite_or_missing_output:{factor.name}"
+                blocked = self._blocked_runtime_status(runtime_status, blocker)
+                return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
+            if numeric.nunique(dropna=False) <= 1:
+                blocker = f"factor_constant_output:{factor.name}"
+                blocked = self._blocked_runtime_status(runtime_status, blocker)
+                return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
+            normalized = self._rank_normalize(numeric)
+            if normalized.isna().any():
+                blocker = f"factor_normalization_missing_output:{factor.name}"
+                blocked = self._blocked_runtime_status(runtime_status, blocker)
+                return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
+            weight = float(factor.weight) * (
+                1.0 if float(factor.direction) >= 0 else -1.0
+            )
+            factor_series[factor.name] = normalized
+            factor_weights[factor.name] = weight
+            factor_coverages[factor.name] = 1.0
+
+        expected_names = [factor.name for factor in active]
+        if list(factor_series) != expected_names:
+            blocked = self._blocked_runtime_status(
+                runtime_status,
+                "production_factor_execution_set_mismatch",
+            )
+            return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
+        total_abs_weight = sum(abs(value) for value in factor_weights.values())
+        if not math.isfinite(total_abs_weight) or total_abs_weight <= 1e-12:
+            blocked = self._blocked_runtime_status(
+                runtime_status,
+                "production_factor_total_abs_weight_invalid",
+            )
+            return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
+        matrix = pd.DataFrame(factor_series, index=symbols)
+        if matrix.isna().any(axis=None):
+            blocked = self._blocked_runtime_status(
+                runtime_status,
+                "production_factor_matrix_missing_output",
+            )
+            return self._empty_score(symbols, skipped=skipped, runtime_status=blocked)
+        weighted = sum(
+            matrix[name] * factor_weights[name]
+            for name in expected_names
+        )
+        symbol_scores = (weighted / total_abs_weight).clip(-1.0, 1.0)
+        return RuntimeFactorScore(
+            symbol_scores={symbol: float(symbol_scores.loc[symbol]) for symbol in symbols},
+            factor_count=len(expected_names),
+            factors_used=expected_names,
+            factor_weights=factor_weights,
+            factor_coverages=factor_coverages,
+            skipped_factors=dict(skipped),
+            registry_metadata={
+                **dict(self.registry.metadata),
+                "governance_runtime": dict(runtime_status),
+            },
+            governance_status="ready",
+            factor_mode="governed_mined_factors",
+            confidence_multiplier=1.0,
+            production_eligible=True,
+            runtime_mode=self.runtime_mode,
+            runtime_blockers=[],
+        )
+
     def _compute_factor(
         self,
         factor: FactorRecord,
         frames: Mapping[str, pd.DataFrame],
     ) -> pd.Series:
         impl = str(factor.implementation or "").strip()
+        if (
+            self.runtime_mode == PRODUCTION_RUNTIME_MODE
+            and not impl.startswith("price_volume:")
+        ):
+            raise ValueError(f"production implementation is not allowlisted: {impl}")
         if impl == "alpha158.FactorEngineer.cross_sectional_score":
             return self._alpha158_cross_sectional(frames)
         if impl.startswith("alpha_mining.FactorLibrary:"):
@@ -473,10 +805,14 @@ class MinedFactorScorer:
         if impl.startswith("aquant_expression:"):
             return self._aquant_expression_factor(factor, impl.split(":", 1)[1], frames)
         if impl.startswith("builtin:"):
-            return self._builtin_factor(impl.split(":", 1)[1], frames)
+            if self.runtime_mode == REPORT_ONLY_SHADOW_RUNTIME_MODE:
+                return self._builtin_factor(impl.split(":", 1)[1], frames)
+            raise ValueError(f"production implementation is not allowlisted: {impl}")
         # Backward-compatible convention: a registry factor named like a
         # FactorLibrary method can be used without a verbose implementation path.
-        return self._alpha_mining_factor(factor.name, frames)
+        if self.runtime_mode == REPORT_ONLY_SHADOW_RUNTIME_MODE:
+            return self._alpha_mining_factor(factor.name, frames)
+        raise ValueError(f"production implementation is not allowlisted: {impl}")
 
     @staticmethod
     def _alpha158_cross_sectional(frames: Mapping[str, pd.DataFrame]) -> pd.Series:
@@ -612,6 +948,99 @@ def score_with_mined_factors(
     ).score(frames)
 
 
+def production_runtime_metadata_is_ready(
+    metadata: Mapping[str, Any],
+) -> bool:
+    """Defensively re-check serialized runtime claims at DAG boundaries."""
+
+    try:
+        factor_count = metadata.get("factor_count")
+        factors_used = list(metadata.get("factors_used", []) or [])
+        factor_weights = dict(metadata.get("factor_weights", {}) or {})
+        factor_coverages = dict(metadata.get("factor_coverages", {}) or {})
+        runtime_blockers = list(metadata.get("runtime_blockers", []) or [])
+        registry_metadata = dict(metadata.get("registry", {}) or {})
+        governance = dict(registry_metadata.get("governance_runtime", {}) or {})
+        expected_names = list(governance.get("production_factor_names", []) or [])
+        runtime_contracts = dict(
+            governance.get("factor_runtime_contracts", {}) or {}
+        )
+        code_hashes = dict(
+            governance.get("factor_runtime_implementation_code_sha256s", {}) or {}
+        )
+        activation = dict(
+            governance.get("quant_production_activation", {}) or {}
+        )
+    except (TypeError, ValueError):
+        return False
+    if isinstance(factor_count, bool) or not isinstance(factor_count, int):
+        return False
+    if factor_count <= 0 or len(factors_used) != factor_count:
+        return False
+    if len(factors_used) != len(set(factors_used)):
+        return False
+    if (
+        set(factor_weights) != set(factors_used)
+        or set(factor_coverages) != set(factors_used)
+        or expected_names != factors_used
+        or set(runtime_contracts) != set(factors_used)
+        or set(code_hashes) != set(factors_used)
+    ):
+        return False
+    try:
+        if any(
+            not math.isfinite(float(value))
+            for value in [*factor_weights.values(), *factor_coverages.values()]
+        ):
+            return False
+    except (TypeError, ValueError):
+        return False
+    contracts_sha = governance.get("factor_runtime_contracts_sha256")
+    if (
+        not isinstance(contracts_sha, str)
+        or len(contracts_sha) != 64
+        or any(char not in "0123456789abcdef" for char in contracts_sha)
+    ):
+        return False
+    return bool(
+        metadata.get("governance_status") == "ready"
+        and metadata.get("factor_mode") == "governed_mined_factors"
+        and metadata.get("production_eligible") is True
+        and metadata.get("runtime_mode") == PRODUCTION_RUNTIME_MODE
+        and metadata.get("applied_to_score") is True
+        and not runtime_blockers
+        and governance.get("status") == "ready"
+        and governance.get("factor_mode") == "governed_mined_factors"
+        and governance.get("production_eligible") is True
+        and not list(governance.get("blockers", []) or [])
+        and activation.get("status") == "ready"
+        and not list(activation.get("blockers", []) or [])
+    )
+
+
+def production_runtime_score_is_ready(
+    score: RuntimeFactorScore,
+    *,
+    expected_symbols: Sequence[str],
+) -> bool:
+    """Reject partial or internally inconsistent ready claims."""
+
+    expected = [str(symbol) for symbol in expected_symbols]
+    if len(expected) != len(set(expected)):
+        return False
+    if set(score.symbol_scores) != set(expected):
+        return False
+    try:
+        if any(
+            not math.isfinite(float(value))
+            for value in score.symbol_scores.values()
+        ):
+            return False
+    except (TypeError, ValueError):
+        return False
+    return production_runtime_metadata_is_ready(score.to_metadata())
+
+
 def _close_series(frame: pd.DataFrame) -> pd.Series:
     if frame is None or frame.empty:
         return pd.Series(dtype=float)
@@ -638,6 +1067,8 @@ __all__ = [
     "PRODUCTION_RUNTIME_MODE",
     "REPORT_ONLY_SHADOW_RUNTIME_MODE",
     "RuntimeFactorScore",
+    "production_runtime_metadata_is_ready",
+    "production_runtime_score_is_ready",
     "production_factor_set_sha256",
     "score_with_mined_factors",
 ]

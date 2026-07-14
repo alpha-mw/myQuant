@@ -9,7 +9,11 @@ import pandas as pd
 
 from quant_investor.agent_protocol import BranchVerdict, SymbolResearchPacket
 from quant_investor.branch_contracts import BranchResult, UnifiedDataBundle
-from quant_investor.factors.runtime import score_with_mined_factors
+from quant_investor.factors.runtime import (
+    production_runtime_metadata_is_ready,
+    production_runtime_score_is_ready,
+    score_with_mined_factors,
+)
 from quant_investor.market.dag.common import _dedupe_texts
 from quant_investor.market.read_result import MarketDataReadResult
 
@@ -389,6 +393,8 @@ def _build_global_quant_verdict(
         and governance_status == "ready"
         and factor_mode == "governed_mined_factors"
         and production_eligible
+        and production_runtime_metadata_is_ready(runtime_metadata)
+        and len(quant_result.symbol_scores) == symbol_count
         and np.isfinite(float(quant_result.final_score))
         and np.isfinite(float(quant_result.final_confidence))
     )
@@ -462,10 +468,9 @@ def _build_quant_branch_result(
     frame_summaries: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> BranchResult:
     mined = score_with_mined_factors(frames)
-    runtime_ready = bool(
-        mined.factor_count > 0
-        and mined.production_eligible
-        and mined.governance_status == "ready"
+    runtime_ready = production_runtime_score_is_ready(
+        mined,
+        expected_symbols=list(frames),
     )
     if runtime_ready:
         symbol_scores = dict(mined.symbol_scores)

@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from quant_investor.factors.governance import (
+    GATE_SPECS,
     FactorAdmissionDecision,
     FactorLifecycleState,
     FactorRecord,
@@ -25,8 +26,13 @@ from scripts import factor_health_automation
 
 def _production_record() -> FactorRecord:
     gates = [
-        GateResult(gate_id=i, gate_key=f"gate_{i}", title=f"Gate {i}", passed=True)
-        for i in range(1, 9)
+        GateResult(
+            gate_id=spec.gate_id,
+            gate_key=spec.key,
+            title=spec.title,
+            passed=True,
+        )
+        for spec in GATE_SPECS
     ]
     return FactorRecord(
         name="pv_short_reversal_5d",

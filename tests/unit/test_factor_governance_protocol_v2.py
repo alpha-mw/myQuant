@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from quant_investor.factors.governance import (
+    GATE_SPECS,
     FactorLifecycleState,
     FactorRecord,
     GateResult,
@@ -77,13 +78,16 @@ def _artifact_hash(label: str) -> str:
 def _gates() -> list[GateResult]:
     return [
         GateResult(
-            gate_id=index,
-            gate_key=f"gate_{index}",
-            title=f"Gate {index}",
+            gate_id=spec.gate_id,
+            gate_key=spec.key,
+            title=spec.title,
             passed=True,
-            metrics={"artifact_hash": _artifact_hash(f"gate-{index}")},
+            metrics={
+                "artifact_hash": _artifact_hash(f"gate-{spec.gate_id}"),
+                **({"coverage_rate": 1.0} if spec.gate_id == 2 else {}),
+            },
         )
-        for index in range(1, 9)
+        for spec in GATE_SPECS
     ]
 
 
@@ -774,6 +778,33 @@ def _runtime_ready_registry(monkeypatch) -> MinedFactorRegistry:
             "blocker": "",
         },
     )
+    monkeypatch.setattr(
+        protocol_module,
+        "validate_production_runtime_contracts",
+        lambda records, metadata: {
+            "status": "ready",
+            "contracts": {
+                record.name: {
+                    "required_columns": ["trade_date", "adj_close"],
+                    "lookback_rows": 2,
+                    "gate2_min_coverage_rate": 1.0,
+                    "min_cross_section": 20,
+                }
+                for record in records
+            },
+            "contracts_sha256": _artifact_hash("contracts"),
+            "implementation_code_sha256s": {
+                record.name: _artifact_hash(f"code-{record.name}")
+                for record in records
+            },
+            "blockers": [],
+        },
+    )
+    monkeypatch.setattr(
+        protocol_module,
+        "validate_quant_production_activation",
+        lambda *args, **kwargs: {"status": "ready", "blockers": []},
+    )
     registry = MinedFactorRegistry.from_records(records)
     manifest = registry.selectable_manifest()
     registry.metadata = {
@@ -785,6 +816,7 @@ def _runtime_ready_registry(monkeypatch) -> MinedFactorRegistry:
         "factor_governance_evidence_schema": "factor-governance-replay-evidence.v2",
         "factor_governance_production_apply_eligible": True,
         "factor_governance_production_apply_blocker": "",
+        "strict_loader": True,
     }
     return registry
 
