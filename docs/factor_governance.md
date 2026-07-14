@@ -1250,12 +1250,17 @@ instruction. Do not manually promote it:
 Production scoring additionally requires a readback-verified immutable
 evaluation context. It binds the exact market and universe symbol-set hash,
 one common `evaluation_as_of`, the canonical pointer and snapshot-manifest
-bytes, per-symbol read provenance, the latest complete trade date, open-day
-proof, and (for CN) complete required PIT-membership artifacts and statuses.
+bytes, per-symbol read provenance, the latest complete trade date, an
+independent readback-verified market-calendar artifact proving that the date is
+open, and (for CN) complete required PIT-membership artifacts whose canonical
+Parquet rows are re-evaluated and matched exactly to the scoped statuses.
 Non-CN markets record PIT as explicitly not applicable. Missing context,
 artifact drift, a future/stale/duplicate/disordered/intraday date, symbol
 identity drift, or unequal terminal dates blocks Quant with confidence zero.
-Quarantined frames never enter the Quant or cross-section inputs.
+The DAG quarantines an invalid frame with a stable per-symbol diagnostic before
+building the context, so one stale or malformed symbol cannot poison otherwise
+eligible symbols. Quarantined frames never enter Quant or cross-section inputs;
+the scorer's direct API remains fail-closed if such a frame reaches it.
 
 The context SHA is part of runtime metadata, output attestation, the
 process-local branch validation token, and the global Quant identity check.

@@ -18,8 +18,8 @@ from quant_investor.regime.types import REGIME_RANGE_HIGH_VOL, REGIME_TREND_DOWN
 class FakeReader:
     def __init__(self) -> None:
         self.frames = {
-            "000001.SZ": _frame([10.0, 10.2, 10.5, 10.8]),
-            "000002.SZ": _frame([10.0, 9.9, 9.8, 9.7]),
+            "000001.SZ": _frame("000001.SZ", [10.0, 10.2, 10.5, 10.8]),
+            "000002.SZ": _frame("000002.SZ", [10.0, 9.9, 9.8, 9.7]),
         }
 
     def snapshot(self) -> dict[str, object]:
@@ -70,10 +70,15 @@ class FakeFunnel:
         )
 
 
-def _frame(closes: list[float]) -> pd.DataFrame:
+def _frame(symbol: str, closes: list[float]) -> pd.DataFrame:
     return pd.DataFrame(
         {
-            "trade_date": pd.date_range("2026-06-20", periods=len(closes), freq="D"),
+            "ts_code": [symbol] * len(closes),
+            "trade_date": pd.date_range(
+                end="2026-06-25",
+                periods=len(closes),
+                freq="D",
+            ),
             "close": closes,
             "volume": [1000.0 + 50.0 * idx for idx in range(len(closes))],
             "amount": [10000.0 + 100.0 * idx for idx in range(len(closes))],
@@ -234,11 +239,10 @@ def test_quant_and_cross_section_receive_only_researchable_frames(
 ) -> None:
     _patch_branch_readiness(monkeypatch)
     monkeypatch.setattr(context_module.config, "MARKOV_REGIME_ENABLED", False)
-    monkeypatch.setattr(
-        context_module,
-        "_is_quarantined_read_result",
-        lambda result: result.symbol == "000002.SZ",
-    )
+    kwargs = _context_kwargs()
+    reader = kwargs["shared_reader"]
+    assert isinstance(reader, FakeReader)
+    reader.frames["000002.SZ"] = reader.frames["000002.SZ"].iloc[:-1].copy()
     captured: dict[str, list[str]] = {}
     original_cross_section = context_module._build_cross_section_quant
 
@@ -274,12 +278,23 @@ def test_quant_and_cross_section_receive_only_researchable_frames(
         capture_quant,
     )
 
-    state = _prepare_market_context(**_context_kwargs())
+    state = _prepare_market_context(**kwargs)
 
     assert state.researchable_symbols == ["000001.SZ"]
     assert state.quarantined_symbols == ["000002.SZ"]
     assert captured["cross_section"] == ["000001.SZ"]
     assert captured["quant"] == ["000001.SZ"]
+    stale_issue = next(
+        issue
+        for issue in state.data_quality_issues
+        if issue.symbol == "000002.SZ"
+    )
+    assert stale_issue.issue_type == "production_frame_terminal_date_mismatch"
+    assert stale_issue.severity == "error"
+    assert stale_issue.metadata["evaluation_as_of"] == "20260625"
+    assert state.global_context.metadata["quant_frame_validation_blockers"] == {
+        "000002.SZ": "production_frame_terminal_date_mismatch:000002.SZ",
+    }
 
 
 def test_markov_context_forwards_turnover_cap_when_signal_sets_it(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:

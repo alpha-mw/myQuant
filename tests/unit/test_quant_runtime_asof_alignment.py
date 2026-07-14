@@ -4,12 +4,15 @@ from dataclasses import FrozenInstanceError, replace
 import hashlib
 import json
 from pathlib import Path
+from statistics import median
+from time import perf_counter
 
 import numpy as np
 import pandas as pd
 import pytest
 
 import quant_investor.agents.quant_agent as quant_agent_module
+import quant_investor.factors.runtime as runtime_module
 from quant_investor.agents.quant_agent import QuantAgent
 from quant_investor.branch_contracts import UnifiedDataBundle
 from quant_investor.factors.governance import (
@@ -74,6 +77,21 @@ def _context(
         )
         artifact_paths[name] = str(path.resolve())
         artifact_hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    calendar_path = tmp_path / "open_day_calendar.json"
+    calendar_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "market-open-days.v1",
+                "market": market,
+                "open_dates": [AS_OF],
+            }
+        ),
+        encoding="utf-8",
+    )
+    artifact_paths["open_day_calendar"] = str(calendar_path.resolve())
+    artifact_hashes["open_day_calendar"] = hashlib.sha256(
+        calendar_path.read_bytes()
+    ).hexdigest()
     if market == "CN":
         pit_manifest = tmp_path / "pit_manifest.json"
         pit_manifest.write_text(
@@ -81,7 +99,20 @@ def _context(
             encoding="utf-8",
         )
         pit_canonical = tmp_path / "pit_canonical.parquet"
-        pit_canonical.write_bytes(b"verified-pit-fixture")
+        pd.DataFrame(
+            [
+                {
+                    "schema_version": "cn_pit_universe.v1",
+                    "symbol": symbol,
+                    "source_list_status": "L",
+                    "list_date": "20200101",
+                    "effective_from": "20200101",
+                    "source_run_id": "pit-snapshot-20260106",
+                    "membership_quality": "ok",
+                }
+                for symbol in frames
+            ]
+        ).to_parquet(pit_canonical, index=False)
         artifact_paths.update(
             {
                 "pit_manifest": str(pit_manifest.resolve()),
@@ -107,7 +138,7 @@ def _context(
         pit_membership_not_applicable_reason=(
             "market_not_cn" if pit_status == "not_applicable" else ""
         ),
-        open_day_proof_sha256=artifact_hashes["snapshot_manifest"],
+        open_day_proof_sha256=artifact_hashes["open_day_calendar"],
         read_result_provenance_sha256="c" * 64,
         verified_artifact_paths=artifact_paths,
         verified_artifact_sha256s=artifact_hashes,
@@ -220,6 +251,52 @@ def test_self_reported_unsealed_context_cannot_enable_production(
 
 
 @pytest.mark.parametrize(
+    ("corruption", "expected_blocker"),
+    [
+        ("artifact_shape", "production_verified_artifact_set_invalid"),
+        ("scalar_type", "production_evaluation_context_field_type_invalid"),
+    ],
+)
+def test_malformed_public_evaluation_context_blocks_without_raising(
+    monkeypatch: pytest.MonkeyPatch,
+    corruption: str,
+    expected_blocker: str,
+) -> None:
+    frames = _frames()
+    kwargs = {
+        "evaluation_as_of": AS_OF,
+        "market": "CN",
+        "universe_key": "full_a",
+        "universe_sha256": production_symbol_set_sha256(list(frames)),
+        "snapshot_id": "snapshot-20260106",
+        "latest_complete_trade_date": AS_OF,
+        "pit_membership_status": "verified",
+        "pit_membership_as_of": AS_OF,
+        "pit_membership_proof_sha256": "a" * 64,
+        "pit_membership_not_applicable_reason": "",
+        "open_day_proof_sha256": "b" * 64,
+        "read_result_provenance_sha256": "c" * 64,
+    }
+    if corruption == "artifact_shape":
+        kwargs["verified_artifact_paths"] = ("bad",)
+        kwargs["verified_artifact_sha256s"] = ("bad",)
+    else:
+        kwargs["market"] = 7
+    context = ProductionEvaluationContext(**kwargs)  # type: ignore[arg-type]
+
+    result = _ready_scorer(monkeypatch).score(
+        frames,
+        evaluation_context=context,
+    )
+
+    assert result.governance_status == "governance_blocked"
+    assert "production_evaluation_context_not_readback_verified" in (
+        result.runtime_blockers
+    )
+    assert expected_blocker in result.runtime_blockers
+
+
+@pytest.mark.parametrize(
     ("mutation", "blocker"),
     [
         ("future_head", "production_frame_date_order_invalid"),
@@ -303,6 +380,56 @@ def test_production_scorer_rejects_temporal_or_symbol_misalignment(
 
     assert result.governance_status == "governance_blocked"
     assert any(blocker in item for item in result.runtime_blockers)
+
+
+def test_production_frame_validation_meets_full_a_throughput_budget() -> None:
+    frame_count = 1_200
+    rows_per_frame = 280
+    dates = pd.date_range(end="2026-01-06", periods=rows_per_frame, freq="B")
+    frames = {
+        (symbol := f"B{index:04d}"): pd.DataFrame(
+            {
+                "ts_code": np.full(rows_per_frame, symbol, dtype=object),
+                "trade_date": dates,
+            }
+        )
+        for index in range(frame_count)
+    }
+    context = ProductionEvaluationContext(
+        evaluation_as_of=AS_OF,
+        market="CN",
+        universe_key="full_a",
+        universe_sha256="a" * 64,
+        snapshot_id="benchmark",
+        latest_complete_trade_date=AS_OF,
+        pit_membership_status="verified",
+        pit_membership_as_of=AS_OF,
+        pit_membership_proof_sha256="b" * 64,
+        pit_membership_not_applicable_reason="",
+        open_day_proof_sha256="c" * 64,
+        read_result_provenance_sha256="d" * 64,
+    )
+    symbols = list(frames)
+
+    assert runtime_module._validate_production_frames(
+        frames,
+        symbols=symbols,
+        context=context,
+    ) is None
+    timings: list[float] = []
+    for _ in range(3):
+        started = perf_counter()
+        assert runtime_module._validate_production_frames(
+            frames,
+            symbols=symbols,
+            context=context,
+        ) is None
+        timings.append(perf_counter() - started)
+
+    median_seconds = median(timings)
+    rows_per_second = frame_count * rows_per_frame / median_seconds
+    assert median_seconds < 3.5
+    assert rows_per_second >= 100_000
 
 
 @pytest.mark.parametrize(
@@ -417,34 +544,90 @@ def _dag_snapshots(
     symbols = list(frames)
     pointer_path = tmp_path / "_latest.json"
     manifest_path = tmp_path / "snapshot.json"
-    snapshot_payload = {
+    table_root = tmp_path / "parquet" / market.lower() / "bars"
+    serving_root = tmp_path / "parquet_serving" / market.lower() / "bars"
+    table_root.mkdir(parents=True)
+    serving_root.mkdir(parents=True)
+    pointer_payload = {
         "snapshot_id": "snapshot-20260106",
+        "status": "OK",
+        "blockers": [],
         "latest_complete_trade_date": AS_OF,
+        "latest_trade_date": AS_OF,
+        "manifest_path": str(manifest_path.resolve()),
+        "table_root": str(table_root.resolve()),
+        "derived_serving_root": str(serving_root.resolve()),
     }
-    pointer_path.write_text(json.dumps(snapshot_payload), encoding="utf-8")
-    manifest_path.write_text(json.dumps(snapshot_payload), encoding="utf-8")
+    manifest_payload = {
+        **pointer_payload,
+        "market": market,
+        "readback_validated": True,
+    }
+    pointer_path.write_text(json.dumps(pointer_payload), encoding="utf-8")
+    manifest_path.write_text(json.dumps(manifest_payload), encoding="utf-8")
+    calendar_path = tmp_path / "open_day_calendar.json"
+    calendar_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "market-open-days.v1",
+                "market": market,
+                "open_dates": [AS_OF],
+            }
+        ),
+        encoding="utf-8",
+    )
     gate = {
+        "status": "ok",
         "healthy": True,
+        "blockers": [],
         "snapshot_id": "snapshot-20260106",
         "latest_complete_trade_date": AS_OF,
         "latest_pointer_path": str(pointer_path.resolve()),
         "manifest_path": str(manifest_path.resolve()),
+        "table_root": str(table_root.resolve()),
+        "serving_root": str(serving_root.resolve()),
     }
-    reader_snapshot: dict[str, object] = dict(gate)
+    reader_snapshot: dict[str, object] = {
+        **gate,
+        "market": market,
+        "storage_layer": "canonical+serving",
+        "resolution_strategy": "strict_parquet_serving",
+    }
     scoped: dict[str, object] = {
         "market": market,
         "universe_key": "full_a" if market == "CN" else "sp500",
         "local_latest_trade_date": AS_OF,
         "strict_parquet_gate": dict(gate),
+        "open_day_calendar": {"path": str(calendar_path.resolve())},
     }
     if market == "CN":
         pit_manifest_path = tmp_path / "pit_manifest.json"
         pit_canonical_path = tmp_path / "pit_canonical.parquet"
+        pit_rows = [
+            {
+                "schema_version": "cn_pit_universe.v1",
+                "symbol": symbol,
+                "source_list_status": "L",
+                "list_date": "20200101",
+                "effective_from": "20200101",
+                "source_run_id": "pit-snapshot-20260106",
+                "membership_quality": "ok",
+            }
+            for symbol in symbols
+        ]
+        pd.DataFrame(pit_rows).to_parquet(pit_canonical_path, index=False)
         pit_manifest_path.write_text(
-            json.dumps({"source_run_id": "pit-snapshot-20260106"}),
+            json.dumps(
+                {
+                    "schema_version": "cn_pit_universe_manifest.v1",
+                    "membership_schema_version": "cn_pit_universe.v1",
+                    "source_run_id": "pit-snapshot-20260106",
+                    "canonical_path": str(pit_canonical_path.resolve()),
+                    "row_count": len(pit_rows),
+                }
+            ),
             encoding="utf-8",
         )
-        pit_canonical_path.write_bytes(b"pit-canonical-fixture")
         scoped["pit_universe"] = {
             "enabled": True,
             "required": True,
@@ -461,6 +644,13 @@ def _dag_snapshots(
                     "date": AS_OF,
                     "in_universe": True,
                     "research_eligible": True,
+                    "tradable": True,
+                    "reason": "listed",
+                    "list_date": "20200101",
+                    "delist_date": "",
+                    "source_list_status": "L",
+                    "observed_at": "",
+                    "membership_quality": "ok",
                 }
                 for symbol in symbols
             },
@@ -468,12 +658,19 @@ def _dag_snapshots(
     read_results = {
         symbol: MarketDataReadResult(
             frame=frames[symbol],
-            path=str(tmp_path / f"{symbol}.parquet"),
+            path=str(table_root.resolve()),
             symbol=symbol,
             universe_key="full_a" if market == "CN" else "sp500",
+            resolver_trace={
+                **reader_snapshot,
+                "resolution_strategy": "strict_parquet_canonical_batch",
+            },
             metadata={
                 "snapshot_id": "snapshot-20260106",
                 "latest_complete_trade_date": AS_OF,
+                "storage_layer": "canonical_batch",
+                "resolution_strategy": "strict_parquet_canonical_batch",
+                "resolved": True,
             },
         )
         for symbol in symbols
@@ -553,6 +750,126 @@ def test_dag_context_requires_dual_source_snapshot_and_complete_cn_pit(
     assert "production_cn_pit_membership_disabled" in blockers
 
 
+def test_dag_context_rejects_snapshot_root_or_read_path_tampering(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    frames = _frames()
+    reader_snapshot, scoped, read_results = _dag_snapshots(frames, tmp_path)
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_ENABLED",
+        True,
+    )
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_REQUIRED",
+        True,
+    )
+    tampered_gate = json.loads(json.dumps(scoped))
+    tampered_gate["strict_parquet_gate"]["table_root"] = str(
+        (tmp_path / "other-bars").resolve()
+    )
+
+    context, blockers = _build_production_evaluation_context(
+        market="CN",
+        universe_key="full_a",
+        symbols=list(frames),
+        reader_snapshot=reader_snapshot,
+        scoped_data_snapshot=tampered_gate,
+        read_results=read_results,
+    )
+
+    assert context is None
+    assert "production_snapshot_table_root_mismatch" in blockers
+
+    first_symbol = next(iter(frames))
+    read_results[first_symbol].path = str((tmp_path / "forged").resolve())
+    context, blockers = _build_production_evaluation_context(
+        market="CN",
+        universe_key="full_a",
+        symbols=list(frames),
+        reader_snapshot=reader_snapshot,
+        scoped_data_snapshot=scoped,
+        read_results=read_results,
+    )
+
+    assert context is None
+    assert f"production_read_result_path_mismatch:{first_symbol}" in blockers
+
+
+@pytest.mark.parametrize(
+    ("artifact", "field", "value", "expected_blocker"),
+    [
+        ("pointer", "status", "BLOCKED", "production_snapshot_pointer_status_invalid"),
+        ("pointer", "blockers", ["x"], "production_snapshot_pointer_blockers_invalid"),
+        (
+            "manifest",
+            "readback_validated",
+            False,
+            "production_snapshot_manifest_not_readback_validated",
+        ),
+        (
+            "manifest",
+            "market",
+            "US",
+            "production_snapshot_manifest_market_mismatch",
+        ),
+        (
+            "manifest",
+            "table_root",
+            "/forged/table",
+            "production_snapshot_table_root_mismatch",
+        ),
+        (
+            "manifest",
+            "derived_serving_root",
+            "/forged/serving",
+            "production_snapshot_serving_root_mismatch",
+        ),
+        (
+            "manifest",
+            "manifest_path",
+            "/forged/manifest.json",
+            "production_snapshot_manifest_path_mismatch",
+        ),
+    ],
+)
+def test_dag_context_rejects_same_id_date_semantic_artifact_tampering(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    artifact: str,
+    field: str,
+    value: object,
+    expected_blocker: str,
+) -> None:
+    frames = _frames()
+    reader_snapshot, scoped, read_results = _dag_snapshots(frames, tmp_path)
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_ENABLED",
+        True,
+    )
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_REQUIRED",
+        True,
+    )
+    path_key = "latest_pointer_path" if artifact == "pointer" else "manifest_path"
+    artifact_path = Path(str(reader_snapshot[path_key]))
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    payload[field] = value
+    artifact_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    context, blockers = _build_production_evaluation_context(
+        market="CN",
+        universe_key="full_a",
+        symbols=list(frames),
+        reader_snapshot=reader_snapshot,
+        scoped_data_snapshot=scoped,
+        read_results=read_results,
+    )
+
+    assert context is None
+    assert expected_blocker in blockers
+
+
 def test_non_cn_context_uses_explicit_pit_not_applicable(tmp_path: Path) -> None:
     frames = _frames()
     reader_snapshot, scoped, read_results = _dag_snapshots(
@@ -574,6 +891,304 @@ def test_non_cn_context_uses_explicit_pit_not_applicable(tmp_path: Path) -> None
     assert context is not None
     assert context.pit_membership_status == "not_applicable"
     assert context.pit_membership_not_applicable_reason == "market_not_cn"
+
+
+def test_dag_context_accepts_serving_reader_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    frames = _frames()
+    reader_snapshot, scoped, read_results = _dag_snapshots(frames, tmp_path)
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_ENABLED",
+        True,
+    )
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_REQUIRED",
+        True,
+    )
+    serving_root = Path(
+        str(scoped["strict_parquet_gate"]["serving_root"])
+    )
+    for symbol, read_result in read_results.items():
+        read_result.path = str(
+            serving_root / f"symbol={symbol}" / "bars.parquet"
+        )
+        read_result.metadata.update(
+            {
+                "storage_layer": "serving",
+                "resolved": True,
+            }
+        )
+        read_result.metadata.pop("resolution_strategy", None)
+        read_result.resolver_trace["resolution_strategy"] = (
+            "strict_parquet_serving"
+        )
+
+    context, blockers = _build_production_evaluation_context(
+        market="CN",
+        universe_key="full_a",
+        symbols=list(frames),
+        reader_snapshot=reader_snapshot,
+        scoped_data_snapshot=scoped,
+        read_results=read_results,
+    )
+
+    assert blockers == []
+    assert context is not None
+
+
+def test_dag_context_rejects_as_of_absent_from_independent_open_day_calendar(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    frames = _frames()
+    reader_snapshot, scoped, read_results = _dag_snapshots(frames, tmp_path)
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_ENABLED",
+        True,
+    )
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_REQUIRED",
+        True,
+    )
+    sunday = "20260104"
+    snapshot_payload = {
+        "snapshot_id": "snapshot-20260106",
+        "latest_complete_trade_date": sunday,
+    }
+    for key in ("latest_pointer_path", "manifest_path"):
+        Path(str(reader_snapshot[key])).write_text(
+            json.dumps(snapshot_payload),
+            encoding="utf-8",
+        )
+    reader_snapshot["latest_complete_trade_date"] = sunday
+    scoped["local_latest_trade_date"] = sunday
+    scoped["strict_parquet_gate"]["latest_complete_trade_date"] = sunday
+    scoped["pit_universe"]["as_of"] = sunday
+    for status in scoped["pit_universe"]["statuses"].values():
+        status["date"] = sunday
+    for read_result in read_results.values():
+        read_result.metadata["latest_complete_trade_date"] = sunday
+
+    context, blockers = _build_production_evaluation_context(
+        market="CN",
+        universe_key="full_a",
+        symbols=list(frames),
+        reader_snapshot=reader_snapshot,
+        scoped_data_snapshot=scoped,
+        read_results=read_results,
+    )
+
+    assert context is None
+    assert "production_evaluation_as_of_not_open_day" in blockers
+
+
+def test_dag_context_recomputes_pit_status_from_canonical_parquet(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    frames = _frames()
+    reader_snapshot, scoped, read_results = _dag_snapshots(frames, tmp_path)
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_ENABLED",
+        True,
+    )
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_REQUIRED",
+        True,
+    )
+    first_symbol = next(iter(frames))
+    canonical_path = Path(scoped["pit_universe"]["canonical_path"])
+    canonical = pd.read_parquet(canonical_path)
+    canonical.loc[canonical["symbol"] == first_symbol, "source_list_status"] = "D"
+    canonical.loc[canonical["symbol"] == first_symbol, "delist_date"] = "20260105"
+    canonical.loc[canonical["symbol"] == first_symbol, "effective_to"] = "20260105"
+    canonical.to_parquet(canonical_path, index=False)
+
+    context, blockers = _build_production_evaluation_context(
+        market="CN",
+        universe_key="full_a",
+        symbols=list(frames),
+        reader_snapshot=reader_snapshot,
+        scoped_data_snapshot=scoped,
+        read_results=read_results,
+    )
+
+    assert context is None
+    assert f"production_cn_pit_canonical_status_mismatch:{first_symbol}" in blockers
+
+
+@pytest.mark.parametrize(
+    ("corruption", "expected_blocker"),
+    [
+        ("missing_schema", "production_cn_pit_canonical_schema_mismatch"),
+        ("wrong_schema", "production_cn_pit_canonical_schema_mismatch"),
+        ("mixed_source_run", "production_cn_pit_canonical_source_run_mismatch"),
+        ("unknown_list_status", "production_cn_pit_canonical_list_status_invalid"),
+    ],
+)
+def test_dag_context_rejects_invalid_pit_canonical_record_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    corruption: str,
+    expected_blocker: str,
+) -> None:
+    frames = _frames()
+    reader_snapshot, scoped, read_results = _dag_snapshots(frames, tmp_path)
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_ENABLED",
+        True,
+    )
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_REQUIRED",
+        True,
+    )
+    canonical_path = Path(scoped["pit_universe"]["canonical_path"])
+    canonical = pd.read_parquet(canonical_path)
+    first_row = canonical.index[0]
+    if corruption == "missing_schema":
+        canonical = canonical.drop(columns=["schema_version"], errors="ignore")
+    elif corruption == "wrong_schema":
+        canonical["schema_version"] = "cn_pit_universe.v1"
+        canonical.loc[first_row, "schema_version"] = "cn_pit_universe.v0"
+    elif corruption == "mixed_source_run":
+        canonical.loc[first_row, "source_run_id"] = "other-run"
+    else:
+        canonical.loc[first_row, "source_list_status"] = "X"
+    canonical.to_parquet(canonical_path, index=False)
+
+    context, blockers = _build_production_evaluation_context(
+        market="CN",
+        universe_key="full_a",
+        symbols=list(frames),
+        reader_snapshot=reader_snapshot,
+        scoped_data_snapshot=scoped,
+        read_results=read_results,
+    )
+
+    assert context is None
+    assert expected_blocker in blockers
+
+
+def test_dag_context_malformed_pit_statuses_returns_stable_blocker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    frames = _frames()
+    reader_snapshot, scoped, read_results = _dag_snapshots(frames, tmp_path)
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_ENABLED",
+        True,
+    )
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_REQUIRED",
+        True,
+    )
+    scoped["pit_universe"]["statuses"] = "bad"
+
+    context, blockers = _build_production_evaluation_context(
+        market="CN",
+        universe_key="full_a",
+        symbols=list(frames),
+        reader_snapshot=reader_snapshot,
+        scoped_data_snapshot=scoped,
+        read_results=read_results,
+    )
+
+    assert context is None
+    assert "production_cn_pit_statuses_invalid" in blockers
+
+
+@pytest.mark.parametrize(
+    ("corruption", "expected_blocker"),
+    [
+        ("gate_mapping", "production_snapshot_gate_metadata_invalid"),
+        ("calendar_mapping", "production_open_day_calendar_metadata_invalid"),
+        ("calendar_json", "production_open_day_calendar_json_invalid"),
+        ("read_metadata", "production_read_result_metadata_invalid:S00"),
+        ("pit_mapping", "production_cn_pit_metadata_invalid"),
+        ("pit_manifest_json", "production_cn_pit_manifest_mismatch"),
+        ("pit_canonical_parquet", "production_cn_pit_canonical_parquet_invalid"),
+    ],
+)
+def test_dag_context_malformed_inputs_fail_closed_without_raising(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    corruption: str,
+    expected_blocker: str,
+) -> None:
+    frames = _frames()
+    reader_snapshot, scoped, read_results = _dag_snapshots(frames, tmp_path)
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_ENABLED",
+        True,
+    )
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_REQUIRED",
+        True,
+    )
+    if corruption == "gate_mapping":
+        scoped["strict_parquet_gate"] = "bad"
+    elif corruption == "calendar_mapping":
+        scoped["open_day_calendar"] = "bad"
+    elif corruption == "calendar_json":
+        Path(str(scoped["open_day_calendar"]["path"])).write_text(
+            "{",
+            encoding="utf-8",
+        )
+    elif corruption == "read_metadata":
+        read_results["S00"].metadata = "bad"  # type: ignore[assignment]
+    elif corruption == "pit_mapping":
+        scoped["pit_universe"] = "bad"
+    elif corruption == "pit_manifest_json":
+        Path(str(scoped["pit_universe"]["manifest_path"])).write_text(
+            "{",
+            encoding="utf-8",
+        )
+    else:
+        Path(str(scoped["pit_universe"]["canonical_path"])).write_bytes(b"bad")
+
+    context, blockers = _build_production_evaluation_context(
+        market="CN",
+        universe_key="full_a",
+        symbols=list(frames),
+        reader_snapshot=reader_snapshot,
+        scoped_data_snapshot=scoped,
+        read_results=read_results,
+    )
+
+    assert context is None
+    assert expected_blocker in blockers
+
+
+def test_dag_context_invalid_read_result_returns_stable_blocker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    frames = _frames()
+    reader_snapshot, scoped, read_results = _dag_snapshots(frames, tmp_path)
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_ENABLED",
+        True,
+    )
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.config.PIT_UNIVERSE_REQUIRED",
+        True,
+    )
+    read_results["S00"] = "bad"  # type: ignore[assignment]
+
+    context, blockers = _build_production_evaluation_context(
+        market="CN",
+        universe_key="full_a",
+        symbols=list(frames),
+        reader_snapshot=reader_snapshot,
+        scoped_data_snapshot=scoped,
+        read_results=read_results,
+    )
+
+    assert context is None
+    assert "production_read_result_invalid:S00" in blockers
 
 
 def test_researchable_frame_subset_excludes_quarantined_symbols() -> None:

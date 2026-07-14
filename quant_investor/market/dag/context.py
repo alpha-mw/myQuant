@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -17,6 +18,7 @@ from quant_investor.funnel.deterministic_funnel import FunnelConfig, FunnelOutpu
 from quant_investor.factors.runtime import (
     ProductionEvaluationContext,
     _mint_production_evaluation_context,
+    production_frame_validation_blocker,
     production_symbol_set_sha256,
     validate_production_evaluation_context,
 )
@@ -37,6 +39,14 @@ from quant_investor.market.dag.theme_context import (
     persist_theme_rotation_snapshot,
 )
 from quant_investor.market.data_quality import build_data_quality_diagnostics
+from quant_investor.market.pit_universe import (
+    PIT_UNIVERSE_MANIFEST_SCHEMA_VERSION,
+    PIT_UNIVERSE_SCHEMA_VERSION,
+    PITUniverseRecord,
+    SUPPORTED_LIST_STATUSES,
+    evaluate_listing_status,
+    records_by_symbol,
+)
 from quant_investor.market.branch_readiness import (
     STATUS_BLOCK,
     assess_branch_data_readiness,
@@ -221,6 +231,34 @@ def _readback_sha256(path_value: Any) -> tuple[str, str, bytes] | None:
     return str(path), hashlib.sha256(raw).hexdigest(), raw
 
 
+def _resolved_path_string(path_value: Any) -> str:
+    if not isinstance(path_value, (str, Path)) or not str(path_value).strip():
+        return ""
+    try:
+        return str(Path(path_value).expanduser().resolve())
+    except (OSError, RuntimeError, ValueError):
+        return ""
+
+
+def _resolved_snapshot_path_string(path_value: Any, pointer_path: Any) -> str:
+    if not isinstance(path_value, (str, Path)) or not str(path_value).strip():
+        return ""
+    raw_path = Path(path_value).expanduser()
+    if raw_path.is_absolute():
+        return _resolved_path_string(raw_path)
+    candidates = [Path.cwd() / raw_path]
+    pointer = _resolved_path_string(pointer_path)
+    if pointer:
+        candidates.extend(parent / raw_path for parent in Path(pointer).parents)
+    for candidate in candidates:
+        try:
+            if candidate.exists():
+                return str(candidate.resolve())
+        except (OSError, RuntimeError):
+            continue
+    return _resolved_path_string(raw_path)
+
+
 def _canonical_payload_sha256(payload: Mapping[str, Any]) -> str:
     raw = json.dumps(
         payload,
@@ -247,9 +285,20 @@ def _build_production_evaluation_context(
     normalized_market = str(market or "").strip().upper()
     normalized_universe = str(universe_key or "").strip()
     normalized_symbols = [str(symbol) for symbol in symbols]
-    gate = dict(scoped_data_snapshot.get("strict_parquet_gate", {}) or {})
+    raw_gate = scoped_data_snapshot.get("strict_parquet_gate")
+    if isinstance(raw_gate, Mapping):
+        gate = dict(raw_gate)
+    else:
+        gate = {}
+        blockers.append("production_snapshot_gate_metadata_invalid")
     if reader_snapshot.get("healthy") is not True or gate.get("healthy") is not True:
         blockers.append("production_snapshot_not_healthy")
+    for label, payload in (("reader", reader_snapshot), ("gate", gate)):
+        if str(payload.get("status") or "").upper() != "OK":
+            blockers.append(f"production_snapshot_{label}_status_invalid")
+        raw_blockers = payload.get("blockers")
+        if not isinstance(raw_blockers, list) or raw_blockers:
+            blockers.append(f"production_snapshot_{label}_blockers_invalid")
     scoped_market = str(scoped_data_snapshot.get("market") or normalized_market).upper()
     scoped_universe = str(
         scoped_data_snapshot.get("universe_key") or normalized_universe
@@ -293,6 +342,7 @@ def _build_production_evaluation_context(
     else:
         artifact_paths["snapshot_manifest"] = manifest_readback[0]
         artifact_hashes["snapshot_manifest"] = manifest_readback[1]
+    snapshot_payloads: dict[str, Mapping[str, Any]] = {}
     for label, readback in (
         ("pointer", pointer_readback),
         ("manifest", manifest_readback),
@@ -307,6 +357,7 @@ def _build_production_evaluation_context(
         if not isinstance(payload, Mapping):
             blockers.append(f"production_snapshot_{label}_json_invalid")
             continue
+        snapshot_payloads[label] = payload
         if str(payload.get("snapshot_id") or "") != reader_snapshot_id:
             blockers.append(f"production_snapshot_{label}_id_mismatch")
         payload_latest = _compact_runtime_date(
@@ -315,6 +366,115 @@ def _build_production_evaluation_context(
         )
         if payload_latest != evaluation_as_of:
             blockers.append(f"production_snapshot_{label}_date_mismatch")
+        if str(payload.get("status") or "").upper() != "OK":
+            blockers.append(f"production_snapshot_{label}_status_invalid")
+        raw_payload_blockers = payload.get("blockers")
+        if not isinstance(raw_payload_blockers, list) or raw_payload_blockers:
+            blockers.append(f"production_snapshot_{label}_blockers_invalid")
+
+    pointer_payload = snapshot_payloads.get("pointer", {})
+    manifest_payload = snapshot_payloads.get("manifest", {})
+    if manifest_payload.get("readback_validated") is not True:
+        blockers.append("production_snapshot_manifest_not_readback_validated")
+    if str(manifest_payload.get("market") or "").upper() != normalized_market:
+        blockers.append("production_snapshot_manifest_market_mismatch")
+    for payload in (reader_snapshot, gate, pointer_payload):
+        payload_market = str(payload.get("market") or "").upper()
+        if payload_market and payload_market != normalized_market:
+            blockers.append("production_snapshot_market_mismatch")
+
+    def serving_path(payload: Mapping[str, Any]) -> Any:
+        return payload.get("serving_root") or payload.get("derived_serving_root")
+    path_sources = {
+        "manifest_path": (
+            reader_snapshot.get("manifest_path"),
+            gate.get("manifest_path"),
+            pointer_payload.get("manifest_path"),
+            manifest_payload.get("manifest_path"),
+        ),
+        "table_root": (
+            reader_snapshot.get("table_root"),
+            gate.get("table_root"),
+            pointer_payload.get("table_root"),
+            manifest_payload.get("table_root"),
+        ),
+        "serving_root": (
+            serving_path(reader_snapshot),
+            serving_path(gate),
+            serving_path(pointer_payload),
+            serving_path(manifest_payload),
+        ),
+    }
+    verified_snapshot_paths: dict[str, str] = {}
+    for label, raw_paths in path_sources.items():
+        normalized_paths = [
+            _resolved_snapshot_path_string(
+                path,
+                reader_snapshot.get("latest_pointer_path"),
+            )
+            for path in raw_paths
+        ]
+        if any(not path for path in normalized_paths) or len(set(normalized_paths)) != 1:
+            blockers.append(f"production_snapshot_{label}_mismatch")
+            continue
+        verified_snapshot_paths[label] = normalized_paths[0]
+
+    open_day_proof_sha256 = ""
+    raw_calendar = scoped_data_snapshot.get("open_day_calendar")
+    if not isinstance(raw_calendar, Mapping):
+        blockers.append("production_open_day_calendar_metadata_invalid")
+    else:
+        calendar_readback = _readback_sha256(raw_calendar.get("path"))
+        if calendar_readback is None:
+            blockers.append("production_open_day_calendar_readback_missing")
+        else:
+            artifact_paths["open_day_calendar"] = calendar_readback[0]
+            artifact_hashes["open_day_calendar"] = calendar_readback[1]
+            open_day_proof_sha256 = calendar_readback[1]
+            try:
+                calendar_payload = json.loads(
+                    calendar_readback[2].decode("utf-8")
+                )
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                calendar_payload = None
+            if not isinstance(calendar_payload, Mapping):
+                blockers.append("production_open_day_calendar_json_invalid")
+            else:
+                if calendar_payload.get("schema_version") != "market-open-days.v1":
+                    blockers.append("production_open_day_calendar_schema_invalid")
+                if str(calendar_payload.get("market") or "").upper() != normalized_market:
+                    blockers.append("production_open_day_calendar_market_mismatch")
+                raw_open_dates = calendar_payload.get(
+                    "open_dates",
+                    calendar_payload.get("valid_trading_days"),
+                )
+                if (
+                    not isinstance(raw_open_dates, list)
+                    or not raw_open_dates
+                ):
+                    blockers.append("production_open_day_calendar_dates_invalid")
+                else:
+                    open_dates: set[str] = set()
+                    invalid_open_date = False
+                    for value in raw_open_dates:
+                        compact = _compact_runtime_date(value)
+                        parsed = pd.to_datetime(
+                            compact,
+                            format="%Y%m%d",
+                            errors="coerce",
+                        )
+                        if (
+                            not compact
+                            or pd.isna(parsed)
+                            or int(parsed.dayofweek) >= 5
+                        ):
+                            invalid_open_date = True
+                            break
+                        open_dates.add(compact)
+                    if invalid_open_date or len(open_dates) != len(raw_open_dates):
+                        blockers.append("production_open_day_calendar_dates_invalid")
+                    elif evaluation_as_of not in open_dates:
+                        blockers.append("production_evaluation_as_of_not_open_day")
 
     provenance: dict[str, dict[str, Any]] = {}
     for symbol in normalized_symbols:
@@ -324,7 +484,13 @@ def _build_production_evaluation_context(
         if read_result is None:
             blockers.append(f"production_read_result_missing:{symbol}")
             continue
-        metadata = dict(read_result.metadata or {})
+        if not isinstance(read_result, MarketDataReadResult):
+            blockers.append(f"production_read_result_invalid:{symbol}")
+            continue
+        if not isinstance(read_result.metadata, Mapping):
+            blockers.append(f"production_read_result_metadata_invalid:{symbol}")
+            continue
+        metadata = dict(read_result.metadata)
         if (
             str(read_result.symbol) != symbol
             or str(read_result.universe_key) != normalized_universe
@@ -334,12 +500,46 @@ def _build_production_evaluation_context(
         ):
             blockers.append(f"production_read_result_provenance_mismatch:{symbol}")
             continue
+        if not isinstance(read_result.resolver_trace, Mapping):
+            blockers.append(f"production_read_result_resolver_invalid:{symbol}")
+            continue
+        storage_layer = str(metadata.get("storage_layer") or "")
+        resolution_strategy = str(
+            metadata.get("resolution_strategy")
+            or read_result.resolver_trace.get("resolution_strategy")
+            or ""
+        )
+        resolved_path = _resolved_path_string(read_result.path)
+        if metadata.get("resolved") is not True:
+            blockers.append(f"production_read_result_not_resolved:{symbol}")
+            continue
+        if storage_layer == "canonical_batch":
+            expected_path = verified_snapshot_paths.get("table_root", "")
+            mode_valid = resolution_strategy == "strict_parquet_canonical_batch"
+        elif storage_layer == "serving":
+            serving_root = verified_snapshot_paths.get("serving_root", "")
+            expected_path = _resolved_path_string(
+                Path(serving_root) / f"symbol={symbol}" / "bars.parquet"
+            ) if serving_root else ""
+            mode_valid = resolution_strategy == "strict_parquet_serving"
+        else:
+            expected_path = ""
+            mode_valid = False
+        if not mode_valid:
+            blockers.append(f"production_read_result_storage_mode_invalid:{symbol}")
+            continue
+        if not resolved_path or resolved_path != expected_path:
+            blockers.append(f"production_read_result_path_mismatch:{symbol}")
+            continue
         provenance[symbol] = {
             "symbol": symbol,
             "universe_key": normalized_universe,
             "snapshot_id": reader_snapshot_id,
             "latest_complete_trade_date": evaluation_as_of,
-            "path": str(read_result.path or ""),
+            "storage_layer": storage_layer,
+            "resolution_strategy": resolution_strategy,
+            "resolved": True,
+            "path": resolved_path,
         }
     read_result_provenance_sha256 = ""
     if read_results is not None and len(provenance) == len(normalized_symbols):
@@ -354,7 +554,12 @@ def _build_production_evaluation_context(
     if normalized_market == "CN":
         pit_status = "verified"
         pit_na_reason = ""
-        pit = dict(scoped_data_snapshot.get("pit_universe", {}) or {})
+        raw_pit = scoped_data_snapshot.get("pit_universe")
+        if isinstance(raw_pit, Mapping):
+            pit = dict(raw_pit)
+        else:
+            pit = {}
+            blockers.append("production_cn_pit_metadata_invalid")
         if not bool(getattr(config, "PIT_UNIVERSE_ENABLED", False)):
             blockers.append("production_cn_pit_membership_disabled")
         if not bool(getattr(config, "PIT_UNIVERSE_REQUIRED", False)):
@@ -379,8 +584,13 @@ def _build_production_evaluation_context(
             or float(coverage_ratio) != 1.0
         ):
             blockers.append("production_cn_pit_membership_partial")
-        statuses = dict(pit.get("statuses", {}) or {})
-        selected_statuses: dict[str, Any] = {}
+        raw_statuses = pit.get("statuses")
+        if isinstance(raw_statuses, Mapping):
+            statuses = dict(raw_statuses)
+        else:
+            statuses = {}
+            blockers.append("production_cn_pit_statuses_invalid")
+        claimed_statuses: dict[str, dict[str, Any]] = {}
         for symbol in normalized_symbols:
             status = statuses.get(symbol)
             if not isinstance(status, Mapping):
@@ -394,9 +604,10 @@ def _build_production_evaluation_context(
             ):
                 blockers.append(f"production_cn_pit_status_mismatch:{symbol}")
                 continue
-            selected_statuses[symbol] = dict(status)
+            claimed_statuses[symbol] = dict(status)
         pit_manifest_readback = _readback_sha256(pit.get("manifest_path"))
         pit_canonical_readback = _readback_sha256(pit.get("canonical_path"))
+        authoritative_statuses: dict[str, dict[str, Any]] = {}
         if pit_manifest_readback is None or pit_canonical_readback is None:
             blockers.append("production_cn_pit_artifact_readback_missing")
         else:
@@ -410,18 +621,113 @@ def _build_production_evaluation_context(
                 )
             except (UnicodeDecodeError, json.JSONDecodeError):
                 pit_manifest = None
-            if (
-                not isinstance(pit_manifest, Mapping)
-                or str(pit_manifest.get("source_run_id") or "")
-                != str(pit.get("snapshot_id") or "")
-            ):
+            if not isinstance(pit_manifest, Mapping):
                 blockers.append("production_cn_pit_manifest_mismatch")
-        if len(selected_statuses) == len(normalized_symbols):
+            else:
+                manifest_source_run_id = str(
+                    pit_manifest.get("source_run_id") or ""
+                )
+                if (
+                    pit_manifest.get("schema_version")
+                    != PIT_UNIVERSE_MANIFEST_SCHEMA_VERSION
+                    or pit_manifest.get("membership_schema_version")
+                    != PIT_UNIVERSE_SCHEMA_VERSION
+                    or manifest_source_run_id
+                    != str(pit.get("snapshot_id") or "")
+                    or isinstance(pit_manifest.get("row_count"), bool)
+                    or not isinstance(pit_manifest.get("row_count"), int)
+                ):
+                    blockers.append("production_cn_pit_manifest_mismatch")
+                try:
+                    declared_canonical_path = Path(
+                        str(pit_manifest.get("canonical_path") or "")
+                    ).expanduser().resolve()
+                except (OSError, RuntimeError, ValueError):
+                    declared_canonical_path = None
+                if (
+                    declared_canonical_path is None
+                    or str(declared_canonical_path) != pit_canonical_readback[0]
+                ):
+                    blockers.append("production_cn_pit_manifest_path_mismatch")
+            try:
+                canonical_frame = pd.read_parquet(
+                    io.BytesIO(pit_canonical_readback[2])
+                )
+                canonical_records = [
+                    PITUniverseRecord.from_dict(row)
+                    for row in canonical_frame.to_dict(orient="records")
+                ]
+            except Exception:
+                canonical_frame = None
+                canonical_records = []
+                blockers.append("production_cn_pit_canonical_parquet_invalid")
+            if canonical_frame is not None:
+                if (
+                    "schema_version" not in canonical_frame.columns
+                    or not canonical_frame["schema_version"].eq(
+                        PIT_UNIVERSE_SCHEMA_VERSION
+                    ).all()
+                ):
+                    blockers.append(
+                        "production_cn_pit_canonical_schema_mismatch"
+                    )
+                if (
+                    isinstance(pit_manifest, Mapping)
+                    and pit_manifest.get("row_count") != len(canonical_frame)
+                ):
+                    blockers.append("production_cn_pit_manifest_row_count_mismatch")
+                canonical_symbols = [record.symbol for record in canonical_records]
+                if (
+                    any(not symbol for symbol in canonical_symbols)
+                    or len(canonical_symbols) != len(set(canonical_symbols))
+                ):
+                    blockers.append("production_cn_pit_canonical_symbols_invalid")
+                canonical_by_symbol = records_by_symbol(canonical_records)
+                expected_source_run_id = str(pit.get("snapshot_id") or "")
+                if any(
+                    record.source_run_id != expected_source_run_id
+                    for record in canonical_records
+                ):
+                    blockers.append(
+                        "production_cn_pit_canonical_source_run_mismatch"
+                    )
+                if any(
+                    record.source_list_status not in SUPPORTED_LIST_STATUSES
+                    for record in canonical_records
+                ):
+                    blockers.append(
+                        "production_cn_pit_canonical_list_status_invalid"
+                    )
+                for symbol in normalized_symbols:
+                    record = canonical_by_symbol.get(symbol)
+                    if record is None:
+                        blockers.append(
+                            f"production_cn_pit_canonical_record_missing:{symbol}"
+                        )
+                        continue
+                    authoritative = evaluate_listing_status(
+                        record,
+                        symbol=symbol,
+                        as_of=evaluation_as_of,
+                    ).to_dict()
+                    claimed = claimed_statuses.get(symbol)
+                    if (
+                        record.source_run_id != expected_source_run_id
+                        or claimed != authoritative
+                        or authoritative.get("in_universe") is not True
+                        or authoritative.get("research_eligible") is not True
+                    ):
+                        blockers.append(
+                            f"production_cn_pit_canonical_status_mismatch:{symbol}"
+                        )
+                        continue
+                    authoritative_statuses[symbol] = authoritative
+        if len(authoritative_statuses) == len(normalized_symbols):
             pit_proof_sha256 = _canonical_payload_sha256(
                 {
                     "as_of": pit_as_of,
                     "snapshot_id": pit.get("snapshot_id"),
-                    "statuses": selected_statuses,
+                    "statuses": authoritative_statuses,
                     "manifest_sha256": artifact_hashes.get("pit_manifest", ""),
                     "canonical_sha256": artifact_hashes.get("pit_canonical", ""),
                 }
@@ -441,7 +747,7 @@ def _build_production_evaluation_context(
         pit_membership_as_of=pit_as_of,
         pit_membership_proof_sha256=pit_proof_sha256,
         pit_membership_not_applicable_reason=pit_na_reason,
-        open_day_proof_sha256=manifest_readback[1],
+        open_day_proof_sha256=open_day_proof_sha256,
         read_result_provenance_sha256=read_result_provenance_sha256,
         verified_artifact_paths=artifact_paths,
         verified_artifact_sha256s=artifact_hashes,
@@ -829,9 +1135,15 @@ def _prepare_market_context(
     batch_read_results: dict[str, MarketDataReadResult] = {}
     raw_read_results: dict[str, MarketDataReadResult] = {}
     frame_summaries: dict[str, dict[str, Any]] = {}
+    quant_frame_validation_blockers: dict[str, str] = {}
     runtime_end_date = _compact_runtime_date(
         scoped_data_snapshot.get("local_latest_trade_date")
         or scoped_data_snapshot.get("latest_trade_date")
+    )
+    runtime_as_of = pd.to_datetime(
+        runtime_end_date,
+        format="%Y%m%d",
+        errors="coerce",
     )
     runtime_lookback_start_date = _runtime_lookback_start_date(runtime_end_date)
     with profile_stage(
@@ -878,6 +1190,39 @@ def _prepare_market_context(
             read_result = raw_read_results[symbol]
             read_results[symbol] = read_result
             frames[symbol] = read_result.frame
+            frame_blocker = None
+            if runtime_end_date and not pd.isna(runtime_as_of):
+                frame_blocker = production_frame_validation_blocker(
+                    read_result.frame,
+                    symbol=symbol,
+                    evaluation_as_of=pd.Timestamp(runtime_as_of),
+                )
+            if frame_blocker:
+                quant_frame_validation_blockers[symbol] = frame_blocker
+                data_quality_issues.append(
+                    DataQualityIssue(
+                        path=str(read_result.path or ""),
+                        symbol=symbol,
+                        category=str(read_result.category or ""),
+                        universe_key=universe_key,
+                        issue_type=frame_blocker.split(":", 1)[0],
+                        severity="error",
+                        message=(
+                            "Production research frame excluded: "
+                            f"{frame_blocker}"
+                        ),
+                        resolver_strategy=str(
+                            read_result.resolver_trace.get(
+                                "resolution_strategy",
+                                "",
+                            )
+                        ),
+                        metadata={
+                            "blocker": frame_blocker,
+                            "evaluation_as_of": runtime_end_date,
+                        },
+                    )
+                )
             tradability = _build_symbol_tradability(
                 symbol,
                 read_result,
@@ -901,7 +1246,7 @@ def _prepare_market_context(
             if industry_label:
                 industry_map[symbol] = industry_label
             data_quality_issues.extend(read_result.issues)
-            if _is_quarantined_read_result(read_result):
+            if frame_blocker or _is_quarantined_read_result(read_result):
                 quarantined_symbols.append(symbol)
             else:
                 researchable_symbols.append(symbol)
@@ -1394,6 +1739,9 @@ def _prepare_market_context(
             ),
             "production_evaluation_context_blockers": list(
                 production_evaluation_context_blockers
+            ),
+            "quant_frame_validation_blockers": dict(
+                quant_frame_validation_blockers
             ),
             "provider_health": {},
             "data_snapshot": dict(scoped_data_snapshot),

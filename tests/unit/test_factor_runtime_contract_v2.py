@@ -671,13 +671,49 @@ def _evaluation_context(frames: dict[str, pd.DataFrame], tmp_path: Path):
         path.write_text(json.dumps(payload), encoding="utf-8")
         artifact_paths[name] = str(path.resolve())
         artifact_hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
-    pit_manifest = tmp_path / "pit_manifest.json"
-    pit_manifest.write_text(
-        json.dumps({"source_run_id": "pit-runtime-fixture"}),
+    calendar_path = tmp_path / "open_day_calendar.json"
+    calendar_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "market-open-days.v1",
+                "market": "CN",
+                "open_dates": ["20260106"],
+            }
+        ),
         encoding="utf-8",
     )
+    artifact_paths["open_day_calendar"] = str(calendar_path.resolve())
+    artifact_hashes["open_day_calendar"] = hashlib.sha256(
+        calendar_path.read_bytes()
+    ).hexdigest()
     pit_canonical = tmp_path / "pit_canonical.parquet"
-    pit_canonical.write_bytes(b"pit-runtime-fixture")
+    pd.DataFrame(
+        [
+            {
+                "schema_version": "cn_pit_universe.v1",
+                "symbol": symbol,
+                "source_list_status": "L",
+                "list_date": "20200101",
+                "effective_from": "20200101",
+                "source_run_id": "pit-runtime-fixture",
+                "membership_quality": "ok",
+            }
+            for symbol in frames
+        ]
+    ).to_parquet(pit_canonical, index=False)
+    pit_manifest = tmp_path / "pit_manifest.json"
+    pit_manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": "cn_pit_universe_manifest.v1",
+                "membership_schema_version": "cn_pit_universe.v1",
+                "source_run_id": "pit-runtime-fixture",
+                "row_count": len(frames),
+                "canonical_path": str(pit_canonical.resolve()),
+            }
+        ),
+        encoding="utf-8",
+    )
     artifact_paths.update(
         {
             "pit_manifest": str(pit_manifest.resolve()),
@@ -701,7 +737,7 @@ def _evaluation_context(frames: dict[str, pd.DataFrame], tmp_path: Path):
         pit_membership_as_of="20260106",
         pit_membership_proof_sha256="a" * 64,
         pit_membership_not_applicable_reason="",
-        open_day_proof_sha256=artifact_hashes["snapshot_manifest"],
+        open_day_proof_sha256=artifact_hashes["open_day_calendar"],
         read_result_provenance_sha256="c" * 64,
         verified_artifact_paths=artifact_paths,
         verified_artifact_sha256s=artifact_hashes,
@@ -1231,17 +1267,33 @@ def test_downstream_readiness_revalidates_real_strict_fixture(
     import quant_investor.market.dag.packets as packets_module
 
     original_digest = runtime_module.production_runtime_input_sha256
+    original_validate = runtime_module._validate_production_frames
     digest_call_count = 0
+    validate_call_count = 0
 
     def counting_digest(runtime_frames, runtime_contracts):
         nonlocal digest_call_count
         digest_call_count += 1
         return original_digest(runtime_frames, runtime_contracts)
 
+    def counting_validate(runtime_frames, *, symbols, context):
+        nonlocal validate_call_count
+        validate_call_count += 1
+        return original_validate(
+            runtime_frames,
+            symbols=symbols,
+            context=context,
+        )
+
     monkeypatch.setattr(
         runtime_module,
         "production_runtime_input_sha256",
         counting_digest,
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_validate_production_frames",
+        counting_validate,
     )
     monkeypatch.setattr(
         packets_module,
@@ -1275,6 +1327,7 @@ def test_downstream_readiness_revalidates_real_strict_fixture(
     )
     assert validated_global.metadata["production_quant_evidence"] is True
     assert digest_call_count == 2
+    assert validate_call_count == 1
     forged_validated_result = copy.deepcopy(validated_result)
     forged_validated_symbol = next(iter(forged_validated_result.symbol_scores))
     forged_validated_result.symbol_scores[forged_validated_symbol] *= -1.0
@@ -1288,6 +1341,7 @@ def test_downstream_readiness_revalidates_real_strict_fixture(
         validation_token=validation_token,
     ).metadata["production_quant_evidence"] is False
     assert digest_call_count == 2
+    assert validate_call_count == 1
     drifted_context_result = copy.deepcopy(validated_result)
     drifted_context_result.metadata["mined_factor_runtime"][
         "production_evaluation_context_sha256"

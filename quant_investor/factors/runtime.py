@@ -250,27 +250,95 @@ def validate_production_evaluation_context(
     if not isinstance(context, ProductionEvaluationContext):
         return ["production_evaluation_context_type_invalid"]
     blockers: list[str] = []
+    scalar_field_names = (
+        "schema_version",
+        "evaluation_as_of",
+        "market",
+        "universe_key",
+        "universe_sha256",
+        "snapshot_id",
+        "latest_complete_trade_date",
+        "pit_membership_status",
+        "pit_membership_as_of",
+        "pit_membership_proof_sha256",
+        "pit_membership_not_applicable_reason",
+        "open_day_proof_sha256",
+        "read_result_provenance_sha256",
+    )
+    scalar_fields_valid = all(
+        isinstance(getattr(context, name), str)
+        for name in scalar_field_names
+    )
+    if not scalar_fields_valid:
+        blockers.append("production_evaluation_context_field_type_invalid")
+        if _require_readback_seal:
+            blockers.append(
+                "production_evaluation_context_not_readback_verified"
+            )
+        return blockers
+
+    def artifact_mapping(value: Any) -> dict[str, str] | None:
+        if not isinstance(value, tuple):
+            return None
+        result: dict[str, str] = {}
+        for item in value:
+            if not isinstance(item, tuple) or len(item) != 2:
+                return None
+            name, entry = item
+            if (
+                not isinstance(name, str)
+                or not isinstance(entry, str)
+                or name in result
+            ):
+                return None
+            result[name] = entry
+        return result
+
+    artifact_hashes = artifact_mapping(context.verified_artifact_sha256s)
+    artifact_paths = artifact_mapping(context.verified_artifact_paths)
+    payload_sha256 = ""
+    if scalar_fields_valid and artifact_hashes is not None and artifact_paths is not None:
+        try:
+            payload_sha256 = production_evaluation_context_sha256(context)
+        except (TypeError, ValueError):
+            blockers.append("production_evaluation_context_payload_invalid")
     if _require_readback_seal and (
         context._seal is not _PRODUCTION_EVALUATION_CONTEXT_SEAL
-        or context._sealed_payload_sha256 != context.context_sha256
+        or not payload_sha256
+        or context._sealed_payload_sha256 != payload_sha256
     ):
         blockers.append("production_evaluation_context_not_readback_verified")
-    symbols = [str(symbol) for symbol in expected_symbols]
+    try:
+        symbols = [str(symbol) for symbol in expected_symbols]
+    except Exception:
+        symbols = []
     if context.schema_version != PRODUCTION_EVALUATION_CONTEXT_SCHEMA_VERSION:
         blockers.append("production_evaluation_context_schema_invalid")
-    if not re.fullmatch(r"\d{8}", context.evaluation_as_of):
+    evaluation_as_of = (
+        context.evaluation_as_of
+        if isinstance(context.evaluation_as_of, str)
+        else ""
+    )
+    market = context.market if isinstance(context.market, str) else ""
+    universe_key = (
+        context.universe_key if isinstance(context.universe_key, str) else ""
+    )
+    snapshot_id = (
+        context.snapshot_id if isinstance(context.snapshot_id, str) else ""
+    )
+    if not re.fullmatch(r"\d{8}", evaluation_as_of):
         blockers.append("production_evaluation_as_of_invalid")
     else:
         parsed_as_of = pd.to_datetime(
-            context.evaluation_as_of,
+            evaluation_as_of,
             format="%Y%m%d",
             errors="coerce",
         )
         if pd.isna(parsed_as_of):
             blockers.append("production_evaluation_as_of_invalid")
-    if not context.market or context.market != context.market.upper():
+    if not market or market != market.upper():
         blockers.append("production_evaluation_market_invalid")
-    if not context.universe_key.strip():
+    if not universe_key.strip():
         blockers.append("production_evaluation_universe_key_missing")
     if (
         not symbols
@@ -279,23 +347,22 @@ def validate_production_evaluation_context(
         or context.universe_sha256 != production_symbol_set_sha256(symbols)
     ):
         blockers.append("production_evaluation_universe_sha256_mismatch")
-    if not context.snapshot_id.strip():
+    if not snapshot_id.strip():
         blockers.append("production_snapshot_id_missing")
-    if context.latest_complete_trade_date != context.evaluation_as_of:
+    if context.latest_complete_trade_date != evaluation_as_of:
         blockers.append("production_latest_complete_trade_date_mismatch")
     if not _is_sha256(context.open_day_proof_sha256):
         blockers.append("production_open_day_proof_missing_or_invalid")
     if not _is_sha256(context.read_result_provenance_sha256):
         blockers.append("production_read_result_provenance_missing_or_invalid")
-    artifact_hashes = dict(context.verified_artifact_sha256s)
-    artifact_paths = dict(context.verified_artifact_paths)
     if (
-        len(artifact_hashes) != len(context.verified_artifact_sha256s)
-        or len(artifact_paths) != len(context.verified_artifact_paths)
+        artifact_hashes is None
+        or artifact_paths is None
         or set(artifact_paths) != set(artifact_hashes)
         or any(not name or not _is_sha256(digest) for name, digest in artifact_hashes.items())
         or "snapshot_pointer" not in artifact_hashes
         or "snapshot_manifest" not in artifact_hashes
+        or "open_day_calendar" not in artifact_hashes
     ):
         blockers.append("production_verified_artifact_set_invalid")
     else:
@@ -319,7 +386,12 @@ def validate_production_evaluation_context(
                 continue
             if current_sha != expected_sha:
                 blockers.append(f"production_verified_artifact_bytes_drift:{name}")
-    if context.market == "CN":
+        if (
+            artifact_hashes.get("open_day_calendar")
+            != context.open_day_proof_sha256
+        ):
+            blockers.append("production_open_day_proof_artifact_mismatch")
+    if market == "CN":
         if context.pit_membership_status != "verified":
             blockers.append("production_cn_pit_membership_not_verified")
         if context.pit_membership_as_of != context.evaluation_as_of:
@@ -329,7 +401,8 @@ def validate_production_evaluation_context(
         if context.pit_membership_not_applicable_reason:
             blockers.append("production_cn_pit_not_applicable_forbidden")
         if (
-            "pit_manifest" not in artifact_hashes
+            artifact_hashes is None
+            or "pit_manifest" not in artifact_hashes
             or "pit_canonical" not in artifact_hashes
         ):
             blockers.append("production_cn_pit_artifact_readback_missing")
@@ -339,6 +412,10 @@ def validate_production_evaluation_context(
         if (
             context.pit_membership_as_of
             or context.pit_membership_proof_sha256
+            or not isinstance(
+                context.pit_membership_not_applicable_reason,
+                str,
+            )
             or not context.pit_membership_not_applicable_reason.strip()
         ):
             blockers.append("production_non_cn_pit_not_applicable_invalid")
@@ -350,30 +427,95 @@ def _strict_daily_trade_dates(
 ) -> tuple[pd.DatetimeIndex | None, str | None]:
     if isinstance(values.dtype, pd.DatetimeTZDtype):
         return None, "production_frame_trade_date_timezone_aware"
-    parsed: list[pd.Timestamp] = []
-    for value in values:
-        if value is None or value is pd.NaT or pd.isna(value):
-            return None, "production_frame_trade_date_unparseable"
-        if isinstance(value, str):
-            text = value.strip()
-            if re.fullmatch(r"\d{8}", text):
-                timestamp = pd.to_datetime(text, format="%Y%m%d", errors="coerce")
-            elif re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
-                timestamp = pd.to_datetime(text, format="%Y-%m-%d", errors="coerce")
-            else:
+    if pd.api.types.is_datetime64_dtype(values.dtype):
+        dates = pd.DatetimeIndex(values.array)
+    else:
+        inferred = pd.api.types.infer_dtype(
+            values.to_numpy(copy=False),
+            skipna=False,
+        )
+        if inferred == "string":
+            strings = values.astype("string").str.strip()
+            compact_mask = strings.str.fullmatch(r"\d{8}", na=False)
+            iso_mask = strings.str.fullmatch(r"\d{4}-\d{2}-\d{2}", na=False)
+            if not bool((compact_mask | iso_mask).all()):
                 return None, "production_frame_trade_date_unparseable"
-        elif isinstance(value, (pd.Timestamp, np.datetime64, datetime, date)):
-            timestamp = pd.Timestamp(value)
+            parsed = pd.Series(pd.NaT, index=values.index, dtype="datetime64[ns]")
+            if bool(compact_mask.any()):
+                parsed.loc[compact_mask] = pd.to_datetime(
+                    strings.loc[compact_mask],
+                    format="%Y%m%d",
+                    errors="coerce",
+                )
+            if bool(iso_mask.any()):
+                parsed.loc[iso_mask] = pd.to_datetime(
+                    strings.loc[iso_mask],
+                    format="%Y-%m-%d",
+                    errors="coerce",
+                )
+            dates = pd.DatetimeIndex(parsed.array)
+        elif inferred in {"date", "datetime", "datetime64"}:
+            try:
+                dates = pd.DatetimeIndex(values)
+            except (TypeError, ValueError):
+                return None, "production_frame_trade_date_unparseable"
         else:
             return None, "production_frame_trade_date_unparseable"
-        if pd.isna(timestamp):
-            return None, "production_frame_trade_date_unparseable"
-        if timestamp.tzinfo is not None:
-            return None, "production_frame_trade_date_timezone_aware"
-        if timestamp != timestamp.normalize():
-            return None, "production_frame_trade_date_not_daily"
-        parsed.append(timestamp)
-    return pd.DatetimeIndex(parsed), None
+    if dates.hasnans:
+        return None, "production_frame_trade_date_unparseable"
+    if dates.tz is not None:
+        return None, "production_frame_trade_date_timezone_aware"
+    if not dates.equals(dates.normalize()):
+        return None, "production_frame_trade_date_not_daily"
+    return dates, None
+
+
+def production_frame_validation_blocker(
+    frame: pd.DataFrame,
+    *,
+    symbol: str,
+    evaluation_as_of: str | pd.Timestamp,
+) -> str | None:
+    """Return one stable blocker for a frame unsafe for production research."""
+
+    if isinstance(evaluation_as_of, pd.Timestamp):
+        as_of = evaluation_as_of
+    elif isinstance(evaluation_as_of, str):
+        as_of = pd.to_datetime(
+            evaluation_as_of,
+            format="%Y%m%d",
+            errors="coerce",
+        )
+    else:
+        as_of = pd.NaT
+    if pd.isna(as_of) or as_of.tzinfo is not None:
+        return "production_evaluation_as_of_invalid"
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return f"production_frame_missing_or_empty:{symbol}"
+    symbol_columns = [
+        column for column in ("ts_code", "symbol") if column in frame.columns
+    ]
+    if not symbol_columns:
+        return f"production_frame_symbol_column_missing:{symbol}"
+    for column in symbol_columns:
+        matches = frame[column].eq(symbol)
+        if bool(matches.isna().any()) or not bool(matches.all()):
+            return f"production_frame_symbol_mismatch:{symbol}:{column}"
+    if "trade_date" not in frame.columns:
+        return f"production_frame_trade_date_missing:{symbol}"
+    dates, error = _strict_daily_trade_dates(frame["trade_date"])
+    if error:
+        return f"{error}:{symbol}"
+    assert dates is not None
+    if dates.duplicated().any():
+        return f"production_frame_duplicate_trade_date:{symbol}"
+    if not dates.is_monotonic_increasing:
+        return f"production_frame_date_order_invalid:{symbol}"
+    if (dates > as_of).any():
+        return f"production_frame_future_row:{symbol}"
+    if dates[-1] != as_of:
+        return f"production_frame_terminal_date_mismatch:{symbol}"
+    return None
 
 
 def _validate_production_frames(
@@ -390,32 +532,13 @@ def _validate_production_frames(
     if pd.isna(as_of):
         return "production_evaluation_as_of_invalid"
     for symbol in symbols:
-        frame = frames.get(symbol)
-        if not isinstance(frame, pd.DataFrame) or frame.empty:
-            return f"production_frame_missing_or_empty:{symbol}"
-        symbol_columns = [
-            column for column in ("ts_code", "symbol") if column in frame.columns
-        ]
-        if not symbol_columns:
-            return f"production_frame_symbol_column_missing:{symbol}"
-        for column in symbol_columns:
-            values = [str(value).strip() for value in frame[column]]
-            if any(value != symbol for value in values):
-                return f"production_frame_symbol_mismatch:{symbol}:{column}"
-        if "trade_date" not in frame.columns:
-            return f"production_frame_trade_date_missing:{symbol}"
-        dates, error = _strict_daily_trade_dates(frame["trade_date"])
-        if error:
-            return f"{error}:{symbol}"
-        assert dates is not None
-        if dates.duplicated().any():
-            return f"production_frame_duplicate_trade_date:{symbol}"
-        if not dates.is_monotonic_increasing:
-            return f"production_frame_date_order_invalid:{symbol}"
-        if (dates > as_of).any():
-            return f"production_frame_future_row:{symbol}"
-        if dates[-1] != as_of:
-            return f"production_frame_terminal_date_mismatch:{symbol}"
+        blocker = production_frame_validation_blocker(
+            frames.get(symbol),
+            symbol=symbol,
+            evaluation_as_of=pd.Timestamp(as_of),
+        )
+        if blocker:
+            return blocker
     return None
 
 

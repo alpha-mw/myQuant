@@ -29,10 +29,11 @@ from quant_investor.market.runtime_profile import MarketRuntimeProfiler
 from quant_investor.model_roles import ModelRoleResolution
 
 
-def _frame(seed: float) -> pd.DataFrame:
+def _frame(symbol: str, seed: float) -> pd.DataFrame:
     return pd.DataFrame(
         {
-            "date": pd.date_range("2026-03-01", periods=40),
+            "ts_code": [symbol] * 40,
+            "trade_date": pd.date_range(end="2026-03-01", periods=40),
             "close": [10.0 + seed + idx * 0.1 for idx in range(40)],
             "volume": [1_000_000 + idx * 1_000 for idx in range(40)],
         }
@@ -59,10 +60,10 @@ class _FakeReader:
         type(self).batch_read_columns = ()
         type(self).batch_read_start_date = ""
         self._frames = {
-            "A": _frame(0.0),
-            "B": _frame(1.0),
-            "C": _frame(2.0),
-            "D": _frame(3.0),
+            "A": _frame("A", 0.0),
+            "B": _frame("B", 1.0),
+            "C": _frame("C", 2.0),
+            "D": _frame("D", 3.0),
         }
 
     def list_symbols(self, universe_key: str = "full_a"):
