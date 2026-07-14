@@ -7,12 +7,14 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 import shutil
 import time
 from collections import Counter
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime
 from enum import Enum
+from numbers import Real
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -1814,8 +1816,38 @@ def _symbol_key(value: Any) -> str:
     return str(value or "").strip().upper()
 
 
+def _candidate_branch_metric(
+    payload: Any,
+    primary_key: str,
+    fallback_key: str,
+) -> float | None:
+    if not isinstance(payload, Mapping):
+        return None
+    if primary_key in payload:
+        value = payload[primary_key]
+    elif fallback_key in payload:
+        value = payload[fallback_key]
+    else:
+        return None
+    if isinstance(value, bool) or not isinstance(value, Real):
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return numeric if math.isfinite(numeric) else None
+
+
 def _candidate_branch_payload_materialized(payload: Any) -> bool:
-    return isinstance(payload, Mapping) and bool(payload)
+    if not isinstance(payload, Mapping) or not payload:
+        return False
+    score = _candidate_branch_metric(payload, "final_score", "score")
+    confidence = _candidate_branch_metric(
+        payload,
+        "final_confidence",
+        "confidence",
+    )
+    return score is not None and confidence is not None
 
 
 def _candidate_dag_branch_state(
@@ -1834,10 +1866,15 @@ def _candidate_dag_branch_state(
         if _branch_evidence_limited(branch, branch_payloads.get(branch))
     ]
     qualified = [branch for branch in present if branch not in limited]
-    scores = {
-        branch: round(_safe_float(_mapping_payload(branch_payloads.get(branch)).get("final_score")), 6)
-        for branch in present
-    }
+    scores: dict[str, float] = {}
+    for branch in present:
+        score = _candidate_branch_metric(
+            branch_payloads.get(branch),
+            "final_score",
+            "score",
+        )
+        if score is not None:
+            scores[branch] = round(score, 6)
     return present, missing, qualified, limited, scores
 
 

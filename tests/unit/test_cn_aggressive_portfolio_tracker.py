@@ -1016,6 +1016,95 @@ def test_candidate_pool_rejects_non_mapping_branch_payloads():
     )
 
 
+@pytest.mark.parametrize(
+    "malformed_payload",
+    [
+        pytest.param({"garbage": 1}, id="schema-less"),
+        pytest.param(
+            {"final_score": True, "final_confidence": 0.7},
+            id="boolean-score",
+        ),
+        pytest.param(
+            {"final_score": 0.4, "final_confidence": False},
+            id="boolean-confidence",
+        ),
+        pytest.param(
+            {"final_score": float("nan"), "final_confidence": 0.7},
+            id="nan-score",
+        ),
+        pytest.param(
+            {"final_score": 0.4, "final_confidence": float("inf")},
+            id="infinite-confidence",
+        ),
+        pytest.param({"final_score": 0.4}, id="missing-confidence"),
+        pytest.param({"final_confidence": 0.7}, id="missing-score"),
+    ],
+)
+def test_candidate_pool_rejects_malformed_mapping_branch_payloads(
+    malformed_payload: dict[str, object],
+):
+    symbol = "688301.SH"
+    dag_artifacts = {
+        "symbol_research_packets": {
+            symbol: {
+                "symbol": symbol,
+                "company_name": "奕瑞科技",
+                "category": "full_a",
+                "branch_verdicts": {
+                    "quant": {"final_score": 0.6, "final_confidence": 0.7},
+                    "fundamental": {"score": 0.5, "confidence": 0.6},
+                    "intelligence": dict(malformed_payload),
+                    "macro": dict(malformed_payload),
+                },
+            }
+        },
+        "shortlist": [
+            {
+                "symbol": symbol,
+                "company_name": "奕瑞科技",
+                "category": "full_a",
+                "rank_score": 0.8,
+                "confidence": 0.7,
+                "expected_upside": 0.1,
+                "suggested_weight": 0.08,
+            }
+        ],
+        "bayesian_records": [
+            {
+                "symbol": symbol,
+                "posterior_action_score": 0.7,
+                "posterior_win_rate": 0.6,
+                "posterior_expected_alpha": 0.08,
+                "posterior_confidence": 0.7,
+                "rank": 1,
+            }
+        ],
+        "portfolio_decision": {
+            "target_weights": {symbol: 0.08},
+            "target_positions": {symbol: 0.08},
+        },
+    }
+
+    candidate_pool, status = tracker._build_candidate_pool_from_v13_dag(
+        dag_artifacts=dag_artifacts,
+        held_symbols=[],
+    )
+
+    assert candidate_pool.empty
+    assert status["candidate_generation_status"] == "blocked"
+    assert status["blocker"] == "candidate_dag_incomplete"
+    compliance = status["candidate_dag_four_branch_compliance"]
+    assert compliance["complete"] is False
+    assert compliance["present_branch_by_symbol"][symbol] == [
+        "quant",
+        "fundamental",
+    ]
+    assert compliance["missing_branch_by_symbol"][symbol] == [
+        "intelligence",
+        "macro",
+    ]
+
+
 def test_write_outputs_persists_theme_pool_audit(tmp_path: Path) -> None:
     run_dir = tmp_path / "strategy_records" / "20260630_theme_pool"
     manifest = {
