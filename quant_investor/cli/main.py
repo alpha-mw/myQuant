@@ -107,6 +107,56 @@ def run_storage_diff(**kwargs):
     return _run_storage_diff(**kwargs)
 
 
+def run_fundamental_research_prepare(**kwargs):
+    from quant_investor.fundamental_research.workflow import prepare_research_requests
+
+    return prepare_research_requests(**kwargs)
+
+
+def run_fundamental_research_import(**kwargs):
+    from quant_investor.fundamental_research.workflow import import_research_response
+
+    return import_research_response(**kwargs)
+
+
+def run_fundamental_research_status(**kwargs):
+    from quant_investor.fundamental_research.workflow import research_status
+
+    return research_status(**kwargs)
+
+
+def run_fundamental_research_gate_evidence(**kwargs):
+    from quant_investor.fundamental_research.workflow import (
+        generate_activation_gate_evidence,
+    )
+
+    return generate_activation_gate_evidence(**kwargs)
+
+
+def run_fundamental_research_longitudinal_import(**kwargs):
+    from quant_investor.fundamental_research.governance import (
+        append_longitudinal_observation,
+    )
+
+    return append_longitudinal_observation(**kwargs)
+
+
+def run_fundamental_research_target_weight_produce(**kwargs):
+    from quant_investor.fundamental_research.longitudinal_producer import (
+        produce_target_weight_observation,
+    )
+
+    return produce_target_weight_observation(**kwargs)
+
+
+def run_fundamental_research_nav_produce(**kwargs):
+    from quant_investor.fundamental_research.longitudinal_producer import (
+        produce_nav_attribution_observation,
+    )
+
+    return produce_nav_attribution_observation(**kwargs)
+
+
 def _print_json(payload) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
 
@@ -401,6 +451,106 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     market_storage_diff.add_argument("--market", required=True, choices=["CN"])
 
+    market_fundamental_prepare = market_subparsers.add_parser(
+        "fundamental-research-prepare",
+        help="从显式 analysis/manual manifests 生成离线 Codex fundamental 研究任务",
+    )
+    market_fundamental_prepare.add_argument("--market", required=True, choices=["CN"])
+    market_fundamental_prepare.add_argument(
+        "--as-of",
+        required=True,
+        help="带时区的决策截止 ISO-8601 时间，且不得晚于 analysis 数据截止",
+    )
+    market_fundamental_prepare.add_argument("--analysis-run", required=True)
+    market_fundamental_prepare.add_argument("--holdings-manifest", required=True)
+    market_fundamental_prepare.add_argument(
+        "--root", default="results/fundamental_research"
+    )
+    market_fundamental_prepare.add_argument(
+        "--prompt-version", default="fundamental-dossier-v1"
+    )
+    market_fundamental_prepare.add_argument(
+        "--policy-version", default="v13.2-fundamental-research"
+    )
+
+    market_fundamental_import = market_subparsers.add_parser(
+        "fundamental-research-import",
+        help="离线校验并导入外部 Codex fundamental dossier",
+    )
+    market_fundamental_import.add_argument("--request", required=True)
+    market_fundamental_import.add_argument("--response", required=True)
+    market_fundamental_import.add_argument(
+        "--root", default="results/fundamental_research"
+    )
+    market_fundamental_import.add_argument("--validate-only", action="store_true")
+
+    market_fundamental_status = market_subparsers.add_parser(
+        "fundamental-research-status",
+        help="只读查看 external fundamental research job 状态",
+    )
+    market_fundamental_status.add_argument("--market", default="CN", choices=["CN"])
+    market_fundamental_status.add_argument(
+        "--root", default="results/fundamental_research"
+    )
+
+    market_fundamental_gate_evidence = market_subparsers.add_parser(
+        "fundamental-research-gate-evidence",
+        help="从 private ledgers 重算并写入 activation gate evidence",
+    )
+    market_fundamental_gate_evidence.add_argument(
+        "--holdings-manifest", required=True
+    )
+    market_fundamental_gate_evidence.add_argument(
+        "--root", default="results/fundamental_research"
+    )
+    market_fundamental_longitudinal = market_subparsers.add_parser(
+        "fundamental-research-longitudinal-import",
+        help="校验并追加 target-weight/NAV 纵向反事实观察",
+    )
+    market_fundamental_longitudinal.add_argument("--observation", required=True)
+    market_fundamental_longitudinal.add_argument(
+        "--root", default="results/fundamental_research"
+    )
+    market_fundamental_target_weight = market_subparsers.add_parser(
+        "fundamental-research-target-weight-produce",
+        help="从真实双 control-chain analysis manifests 生成权重反事实观察",
+    )
+    market_fundamental_target_weight.add_argument("--request", required=True)
+    market_fundamental_target_weight.add_argument("--dossier-id", required=True)
+    market_fundamental_target_weight.add_argument("--actual-analysis", required=True)
+    market_fundamental_target_weight.add_argument(
+        "--counterfactual-analysis", required=True
+    )
+    market_fundamental_target_weight.add_argument(
+        "--root", default="results/fundamental_research"
+    )
+    market_fundamental_nav = market_subparsers.add_parser(
+        "fundamental-research-nav-produce",
+        help="用 strict Parquet 次日收益生成 canonical NAV 归因观察",
+    )
+    market_fundamental_nav.add_argument("--target-weight-observation", required=True)
+    market_fundamental_nav.add_argument("--attribution-date", required=True)
+    market_fundamental_nav.add_argument("--data-root", default="data")
+    market_fundamental_nav.add_argument(
+        "--root", default="results/fundamental_research"
+    )
+    market_fundamental_status.add_argument("--run-id", default="")
+    market_fundamental_status.add_argument("--symbol", default="")
+    market_fundamental_status.add_argument(
+        "--state",
+        default="",
+        choices=[
+            "",
+            "PREPARED",
+            "EXPORTED",
+            "RECEIVED",
+            "VALIDATED",
+            "REJECTED",
+            "EXPIRED",
+            "SUPERSEDED",
+        ],
+    )
+
     market_analyze = market_subparsers.add_parser(
         "analyze",
         help="分析全市场",
@@ -632,6 +782,95 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "market" and args.market_command == "storage-diff":
         _print_json(run_storage_diff(market=args.market))
+        return
+
+    if args.command == "market" and args.market_command == "fundamental-research-prepare":
+        result = run_fundamental_research_prepare(
+            market=args.market,
+            as_of=args.as_of,
+            analysis_run=args.analysis_run,
+            holdings_manifest=args.holdings_manifest,
+            root=args.root,
+            prompt_version=args.prompt_version,
+            policy_version=args.policy_version,
+        )
+        _print_json(result.model_dump(mode="json"))
+        return
+
+    if args.command == "market" and args.market_command == "fundamental-research-import":
+        _print_json(
+            run_fundamental_research_import(
+                request_path=args.request,
+                response_path=args.response,
+                root=args.root,
+                validate_only=args.validate_only,
+            )
+        )
+        return
+
+    if args.command == "market" and args.market_command == "fundamental-research-status":
+        _print_json(
+            run_fundamental_research_status(
+                market=args.market,
+                root=args.root,
+                run_id=args.run_id,
+                symbol=args.symbol,
+                state=args.state,
+            )
+        )
+        return
+
+    if (
+        args.command == "market"
+        and args.market_command == "fundamental-research-gate-evidence"
+    ):
+        _print_json(
+            run_fundamental_research_gate_evidence(
+                holdings_manifest=args.holdings_manifest,
+                root=args.root,
+            )
+        )
+        return
+
+    if (
+        args.command == "market"
+        and args.market_command == "fundamental-research-longitudinal-import"
+    ):
+        _print_json(
+            run_fundamental_research_longitudinal_import(
+                root=args.root,
+                observation_path=args.observation,
+            )
+        )
+        return
+
+    if (
+        args.command == "market"
+        and args.market_command == "fundamental-research-target-weight-produce"
+    ):
+        _print_json(
+            run_fundamental_research_target_weight_produce(
+                root=args.root,
+                request_path=args.request,
+                dossier_id=args.dossier_id,
+                actual_analysis_manifest=args.actual_analysis,
+                counterfactual_analysis_manifest=args.counterfactual_analysis,
+            )
+        )
+        return
+
+    if (
+        args.command == "market"
+        and args.market_command == "fundamental-research-nav-produce"
+    ):
+        _print_json(
+            run_fundamental_research_nav_produce(
+                root=args.root,
+                target_weight_observation=args.target_weight_observation,
+                attribution_date=args.attribution_date,
+                data_root=args.data_root,
+            )
+        )
         return
 
     if args.command == "market" and args.market_command == "analyze":

@@ -50,7 +50,11 @@ from quant_investor.bayesian.posterior import BayesianPosteriorEngine
 from quant_investor.bayesian.prior import HierarchicalPriorBuilder
 from quant_investor.config import config
 from quant_investor.funnel.deterministic_funnel import DeterministicFunnel
-from quant_investor.market.config import get_market_settings, normalize_categories, normalize_universe
+from quant_investor.market.config import (
+    get_market_settings,
+    normalize_categories,
+    normalize_universe,
+)
 from quant_investor.market.data_snapshot import build_market_data_snapshot
 from quant_investor.market.data_quality import build_data_quality_diagnostics
 from quant_investor.market.dag.assembly import (
@@ -61,6 +65,7 @@ from quant_investor.market.dag.assembly import (
 from quant_investor.market.dag.common import _run_async_coroutine_safely, _score_to_action
 from quant_investor.market.dag.context import _prepare_market_context
 from quant_investor.market.dag.decision import (
+    _build_counterfactual_control_inputs,
     _run_bayesian_selection_phase,
     _run_portfolio_construction_phase,
 )
@@ -76,7 +81,10 @@ from quant_investor.market.dag.packets import (
 from quant_investor.market.dag.research import _run_candidate_research_phase
 from quant_investor.market.dag.reporting import _build_reporting_artifacts
 from quant_investor.market.dag.review import _portfolio_master_advisory
-from quant_investor.market.dag.shortlist import _build_shortlist, _build_shortlist_from_bayesian_records
+from quant_investor.market.dag.shortlist import (
+    _build_shortlist,
+    _build_shortlist_from_bayesian_records,
+)
 from quant_investor.market.market_data_reader import MarketDataReader
 from quant_investor.market.name_map import (
     load_company_name_map as _load_cached_company_name_map,
@@ -118,10 +126,7 @@ def _codex_handoff_model_resolution(
         fallback_model=fallback_model,
         resolved_model="codex-handoff",
         fallback_used=False,
-        fallback_reason=str(
-            metadata.get("handoff_reason")
-            or "local_llm_disabled_codex_handoff"
-        ),
+        fallback_reason=str(metadata.get("handoff_reason") or "local_llm_disabled_codex_handoff"),
         provider_available=False,
         fallback_provider_available=False,
         metadata=metadata,
@@ -220,12 +225,14 @@ def _is_quarantined_read_result(read_result: Any) -> bool:
     issues = list(getattr(read_result, "issues", []) or [])
     return bool(issues)
 
+
 def _score_to_direction(score: float) -> str:
     if score >= 0.15:
         return "bullish"
     if score <= -0.15:
         return "bearish"
     return "neutral"
+
 
 def _branch_conviction_from_action(action: ActionLabel) -> str:
     if action == ActionLabel.BUY:
@@ -240,7 +247,9 @@ def _master_hint_to_ic_hint(hint: MasterICHint) -> dict[str, Any]:
         "score": float(hint.score_hint),
         "confidence": float(hint.confidence_hint),
         "action": hint.action.value if hasattr(hint.action, "value") else str(hint.action),
-        "direction": hint.direction.value if hasattr(hint.direction, "value") else str(hint.direction),
+        "direction": (
+            hint.direction.value if hasattr(hint.direction, "value") else str(hint.direction)
+        ),
         "rationale_points": list(hint.rationale_points[:4]),
         "agreement_points": list(hint.agreement_points[:3]),
         "conflict_points": list(hint.conflict_points[:3]),
@@ -248,10 +257,15 @@ def _master_hint_to_ic_hint(hint: MasterICHint) -> dict[str, Any]:
         "score_delta": float(hint.score_delta),
         "confidence_delta": float(hint.confidence_delta),
         "status": hint.status.value if hasattr(hint.status, "value") else str(hint.status),
-        "telemetry": hint.telemetry.to_dict() if hasattr(hint.telemetry, "to_dict") else asdict(hint.telemetry),
+        "telemetry": (
+            hint.telemetry.to_dict()
+            if hasattr(hint.telemetry, "to_dict")
+            else asdict(hint.telemetry)
+        ),
         "thesis": hint.thesis,
         "metadata": dict(hint.metadata or {}),
     }
+
 
 def _branch_output_to_verdict(output: BaseBranchAgentOutput, symbol: str) -> BranchVerdict:
     action = str(output.conviction).lower()
@@ -343,11 +357,17 @@ async def _execute_market_dag_async(
         if universe is not None
         else normalize_categories(settings.market, categories)
     )
-    universe_key = universe or (selected_categories[0] if len(selected_categories) == 1 else "custom")
+    universe_key = universe or (
+        selected_categories[0] if len(selected_categories) == 1 else "custom"
+    )
 
     shared_reader = MarketDataReader(market=settings.market)
 
-    explicit_symbols = list(dict.fromkeys(str(symbol).strip().upper() for symbol in (symbols or []) if str(symbol).strip()))
+    explicit_symbols = list(
+        dict.fromkeys(
+            str(symbol).strip().upper() for symbol in (symbols or []) if str(symbol).strip()
+        )
+    )
     market_cap_filter_metadata: dict[str, Any] = {}
     with profile_stage(
         runtime_profiler,
@@ -370,7 +390,9 @@ async def _execute_market_dag_async(
                 symbols.extend(shared_reader.list_symbols(category))
             symbols = list(dict.fromkeys(symbols))
         if settings.market == "US":
-            symbols, market_cap_filter_metadata = USMarketCapFilter().filter_symbols(symbols, fetch_missing=True)
+            symbols, market_cap_filter_metadata = USMarketCapFilter().filter_symbols(
+                symbols, fetch_missing=True
+            )
             if explicit_symbols:
                 explicit_symbols = list(symbols)
         unsampled_symbol_count = len(symbols)
@@ -427,7 +449,9 @@ async def _execute_market_dag_async(
         symbols = pit_filter.symbols
         pit_universe_metadata = dict(pit_filter.metadata)
         pit_universe_metadata["status"] = "applied" if pit_records else "missing_store"
-        pit_universe_metadata["snapshot_id"] = str(pit_store.load_manifest().get("source_run_id", ""))
+        pit_universe_metadata["snapshot_id"] = str(
+            pit_store.load_manifest().get("source_run_id", "")
+        )
         pit_universe_metadata["quarantine_symbols"] = list(pit_filter.quarantine_symbols)
         pit_universe_metadata["untradable_symbols"] = list(pit_filter.untradable_symbols)
         scoped_data_snapshot["pit_universe"] = pit_universe_metadata
@@ -439,19 +463,30 @@ async def _execute_market_dag_async(
             universe_symbols=[],
             latest_trade_date=str(scoped_data_snapshot.get("local_latest_trade_date", "")),
             freshness_mode=str(scoped_data_snapshot.get("freshness_mode", "stable")),
-            effective_target_trade_date=str(scoped_data_snapshot.get("local_latest_trade_date", "")),
+            effective_target_trade_date=str(
+                scoped_data_snapshot.get("local_latest_trade_date", "")
+            ),
             metadata={
                 "resolver": shared_reader.snapshot(),
                 "data_snapshot": scoped_data_snapshot,
                 "market_cap_filter": market_cap_filter_metadata,
                 "pit_universe": pit_universe_metadata,
                 "selection_profile": {
-                    "funnel_profile": str(funnel_profile or config.FUNNEL_PROFILE).strip().lower() or config.FUNNEL_PROFILE,
+                    "funnel_profile": str(funnel_profile or config.FUNNEL_PROFILE).strip().lower()
+                    or config.FUNNEL_PROFILE,
                     "trend_windows": list(trend_windows or config.FUNNEL_TREND_WINDOWS),
-                    "volume_spike_threshold": float(volume_spike_threshold or config.FUNNEL_VOLUME_SPIKE_THRESHOLD),
-                    "breakout_distance_pct": float(breakout_distance_pct or config.FUNNEL_BREAKOUT_DISTANCE_PCT),
+                    "volume_spike_threshold": float(
+                        volume_spike_threshold or config.FUNNEL_VOLUME_SPIKE_THRESHOLD
+                    ),
+                    "breakout_distance_pct": float(
+                        breakout_distance_pct or config.FUNNEL_BREAKOUT_DISTANCE_PCT
+                    ),
                     "max_candidates": int(max_candidates or config.FUNNEL_MAX_CANDIDATES),
-                    "sector_bucket_limit": int(sector_bucket_limit if sector_bucket_limit is not None else config.FUNNEL_SECTOR_BUCKET_LIMIT),
+                    "sector_bucket_limit": int(
+                        sector_bucket_limit
+                        if sector_bucket_limit is not None
+                        else config.FUNNEL_SECTOR_BUCKET_LIMIT
+                    ),
                 },
             },
         )
@@ -472,7 +507,12 @@ async def _execute_market_dag_async(
                 metadata={"resolver": shared_reader.snapshot()},
             ),
             analysis_meta={"batch_count": 0, "category_count": 0, "total_stocks": 0},
-            portfolio_plan={"selected_count": 0, "target_exposure": 0.0, "max_single_weight": 0.0, "risk_veto": False},
+            portfolio_plan={
+                "selected_count": 0,
+                "target_exposure": 0.0,
+                "max_single_weight": 0.0,
+                "risk_veto": False,
+            },
             download_stage=download_stage,
         )
         what_if = build_what_if_plan(
@@ -487,7 +527,15 @@ async def _execute_market_dag_async(
             "symbol_research_packets": {},
             "branch_verdicts_by_symbol": {},
             "branch_summaries": {},
-            "macro_verdict": MacroAgent().run({"market_snapshot": {"regime": "neutral", "macro_score": 0.0, "liquidity_score": 0.0}}),
+            "macro_verdict": MacroAgent().run(
+                {
+                    "market_snapshot": {
+                        "regime": "neutral",
+                        "macro_score": 0.0,
+                        "liquidity_score": 0.0,
+                    }
+                }
+            ),
             "risk_decision": RiskDecision(),
             "ic_decisions": [],
             "shortlist": [],
@@ -514,6 +562,8 @@ async def _execute_market_dag_async(
             company_name_map[symbol] = name
 
     codex_handoff_review = bool(enable_agent_layer) and local_llm_disabled()
+    branch_model_resolution: ModelRoleResolution
+    master_model_resolution: ModelRoleResolution
     if enable_agent_layer and codex_handoff_review:
         branch_model_resolution = _codex_handoff_model_resolution(
             role="branch",
@@ -526,12 +576,12 @@ async def _execute_market_dag_async(
             fallback_model=master_fallback_model,
         )
     elif enable_agent_layer:
-        branch_model_resolution: ModelRoleResolution = resolve_model_role(
+        branch_model_resolution = resolve_model_role(
             role="branch",
             primary_model=agent_model,
             fallback_model=agent_fallback_model,
         )
-        master_model_resolution: ModelRoleResolution = resolve_model_role(
+        master_model_resolution = resolve_model_role(
             role="master",
             primary_model=master_model,
             fallback_model=master_fallback_model,
@@ -577,12 +627,29 @@ async def _execute_market_dag_async(
             branch_candidate_models=branch_candidate_models,
             master_candidate_models=master_candidate_models,
             company_name_map=company_name_map,
-            funnel_profile=str(funnel_profile or config.FUNNEL_PROFILE).strip().lower() or config.FUNNEL_PROFILE,
+            funnel_profile=str(funnel_profile or config.FUNNEL_PROFILE).strip().lower()
+            or config.FUNNEL_PROFILE,
             max_candidates=max(1, int(max_candidates or config.FUNNEL_MAX_CANDIDATES)),
-            trend_windows=tuple(int(item) for item in (trend_windows or config.FUNNEL_TREND_WINDOWS) if int(item) > 0) or tuple(config.FUNNEL_TREND_WINDOWS),
-            volume_spike_threshold=float(volume_spike_threshold or config.FUNNEL_VOLUME_SPIKE_THRESHOLD),
-            breakout_distance_pct=float(breakout_distance_pct or config.FUNNEL_BREAKOUT_DISTANCE_PCT),
-            sector_bucket_limit=max(0, int(sector_bucket_limit if sector_bucket_limit is not None else config.FUNNEL_SECTOR_BUCKET_LIMIT)),
+            trend_windows=tuple(
+                int(item)
+                for item in (trend_windows or config.FUNNEL_TREND_WINDOWS)
+                if int(item) > 0
+            )
+            or tuple(config.FUNNEL_TREND_WINDOWS),
+            volume_spike_threshold=float(
+                volume_spike_threshold or config.FUNNEL_VOLUME_SPIKE_THRESHOLD
+            ),
+            breakout_distance_pct=float(
+                breakout_distance_pct or config.FUNNEL_BREAKOUT_DISTANCE_PCT
+            ),
+            sector_bucket_limit=max(
+                0,
+                int(
+                    sector_bucket_limit
+                    if sector_bucket_limit is not None
+                    else config.FUNNEL_SECTOR_BUCKET_LIMIT
+                ),
+            ),
             macro_agent=macro_agent,
             funnel_cls=DeterministicFunnel,
             provider_health_detector=detect_provider_health,
@@ -616,13 +683,17 @@ async def _execute_market_dag_async(
     with profile_stage(
         runtime_profiler,
         "dag_candidate_research",
-        {"candidate_count": len(candidate_symbols), "agent_layer_enabled": bool(enable_agent_layer)},
+        {
+            "candidate_count": len(candidate_symbols),
+            "agent_layer_enabled": bool(enable_agent_layer),
+        },
     ) as stage_metadata:
         research_state = await _run_candidate_research_phase(
             candidate_symbols=candidate_symbols,
             company_name_map=company_name_map,
             market=settings.market,
             market_snapshot=market_snapshot,
+            industry_map=global_context.industry_map,
             universe_key=universe_key,
             read_results=read_results,
             frames=frames,
@@ -657,7 +728,10 @@ async def _execute_market_dag_async(
     with profile_stage(
         runtime_profiler,
         "dag_bayesian_selection",
-        {"candidate_count": len(candidate_symbols), "top_k": max(1, int(shortlist_size if shortlist_size is not None else top_k))},
+        {
+            "candidate_count": len(candidate_symbols),
+            "top_k": max(1, int(shortlist_size if shortlist_size is not None else top_k)),
+        },
     ) as stage_metadata:
         selection_state = _run_bayesian_selection_phase(
             candidate_symbols=candidate_symbols,
@@ -714,8 +788,85 @@ async def _execute_market_dag_async(
             portfolio_constructor_cls=PortfolioConstructor,
             attach_symbol_to_ic_decision_fn=_attach_symbol_to_ic_decision,
         )
+        counterfactual_decision_state = None
+        counterfactual_variants = {
+            str(item.get("basis") or "")
+            for item in selection_state.counterfactual_by_symbol.values()
+        }
+        if selection_state.counterfactual_shortlist and len(counterfactual_variants) == 1:
+            (
+                counterfactual_research_by_symbol,
+                counterfactual_branch_summaries,
+            ) = _build_counterfactual_control_inputs(
+                research_by_symbol=research_by_symbol,
+                counterfactual_by_symbol=selection_state.counterfactual_by_symbol,
+            )
+            counterfactual_master_meta = {
+                "status": "disabled_for_deterministic_counterfactual_replay",
+                "reason": "actual_advisory_inputs_are_not_reused",
+                "confidence": 0.0,
+            }
+            counterfactual_decision_state = _run_portfolio_construction_phase(
+                shortlist=selection_state.counterfactual_shortlist,
+                branch_summaries=counterfactual_branch_summaries,
+                macro_verdict=macro_verdict,
+                global_context=global_context,
+                data_quality_issues=data_quality_issues,
+                ic_hints_by_symbol={},
+                research_by_symbol=counterfactual_research_by_symbol,
+                tradability_snapshot=tradability_snapshot,
+                funnel_summary=selection_state.funnel_summary,
+                bayesian_records=selection_state.counterfactual_bayesian_records,
+                candidate_symbols=candidate_symbols,
+                portfolio_master_output=None,
+                portfolio_master_meta=counterfactual_master_meta,
+                risk_guard_cls=RiskGuard,
+                ic_coordinator_cls=ICCoordinator,
+                portfolio_constructor_cls=PortfolioConstructor,
+                attach_symbol_to_ic_decision_fn=_attach_symbol_to_ic_decision,
+            )
+            decision_state.portfolio_decision.metadata[
+                "fundamental_research_counterfactual_replay"
+            ] = {
+                "schema_version": "fundamental-control-chain-replay.v1",
+                "measurement_only": True,
+                "variant": next(iter(counterfactual_variants)),
+                "branch_summaries": {
+                    name: verdict.to_dict()
+                    for name, verdict in counterfactual_branch_summaries.items()
+                },
+                "branch_verdicts_by_symbol": {
+                    symbol: {name: verdict.to_dict() for name, verdict in branch_map.items()}
+                    for symbol, branch_map in counterfactual_research_by_symbol.items()
+                },
+                "bayesian_records": [
+                    record.to_dict() for record in selection_state.counterfactual_bayesian_records
+                ],
+                "shortlist": [item.to_dict() for item in selection_state.counterfactual_shortlist],
+                "ic_hints_by_symbol": {},
+                "risk_decision": counterfactual_decision_state.risk_decision.to_dict(),
+                "ic_decisions": [
+                    decision.to_dict() for decision in counterfactual_decision_state.ic_decisions
+                ],
+                "portfolio_plan": counterfactual_decision_state.portfolio_plan.to_dict(),
+                "portfolio_decision": (counterfactual_decision_state.portfolio_decision.to_dict()),
+            }
+        elif selection_state.counterfactual_shortlist:
+            stage_metadata["counterfactual_replay_blocker"] = (
+                "mixed_or_missing_fundamental_research_variant"
+            )
         stage_metadata["ic_decision_count"] = len(decision_state.ic_decisions)
-        stage_metadata["target_weight_count"] = len(getattr(decision_state.portfolio_decision, "target_weights", {}) or {})
+        stage_metadata["target_weight_count"] = len(
+            getattr(decision_state.portfolio_decision, "target_weights", {}) or {}
+        )
+        stage_metadata["counterfactual_target_weight_count"] = len(
+            getattr(
+                getattr(counterfactual_decision_state, "portfolio_decision", None),
+                "target_weights",
+                {},
+            )
+            or {}
+        )
 
     with profile_stage(
         runtime_profiler,
@@ -768,7 +919,9 @@ async def _execute_market_dag_async(
             build_execution_trace_fn=build_execution_trace,
             build_bayesian_trace_fn=build_bayesian_trace,
         )
-        stage_metadata["artifact_keys"] = sorted(str(key) for key in reporting_state.dag_artifacts.keys())
+        stage_metadata["artifact_keys"] = sorted(
+            str(key) for key in reporting_state.dag_artifacts.keys()
+        )
     return reporting_state.dag_artifacts
 
 

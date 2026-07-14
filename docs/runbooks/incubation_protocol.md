@@ -113,3 +113,35 @@ kill/add 均采用「长窗口(8週) + 累计 + 有符号阈值」，与 60 日�
 7. G 归因切分：版本切段、人工 vs 系统、资金性质。
 
 若全窗口超额 vs 科创50 ≤ 0 且相位择时 alpha ≤ 0，复评结论必须沿用 Phase 12 预登记失败规则。
+
+## 8. v13.2 Fundamental Research 前瞻性版本分段
+
+Codex-backed fundamental dossier 对 fundamental 分数的任何非零调整均属于
+新研究信号，不是本协议第 2 节允许的 bug fix。其治理规则如下：
+
+1. `v13-frozen-20260707` 的历史决策、成交和绩效序列保持不可变，不回填、
+   不重算，也不与新版本拼接成同一冻结策略绩效。
+2. 新版本命名为 `v13.2-fundamental-research`，只能从 Maxwell 明确批准的
+   生效交易日和时间戳开始独立记录。
+3. 功能实现、PR 合并和生产激活是三个不同事件。每个 freeze-exception
+   PR 仍需 Maxwell 原文确认合并；从 `shadow`/`limited` 切入更高应用档位
+   还需独立的 hash-bound activation confirmation。
+4. `off` 和 `shadow` 不改变生产 fundamental 分数。`limited` 先以
+   `±0.03` 运行 5 个交易日，再在无 critical error 时以 `±0.05` 运行
+   5 个交易日；`production` 上限为 `±0.10`。
+5. 进入 limited 前至少需要 10 个不同交易日、30 份 validated dossiers、
+   10 家公司、3 个行业并覆盖全部持仓；进入 production 前累计至少
+   20 个不同交易日、60 份 validated dossiers、20 家公司、3 个行业，
+   且 PIT/hash/source/cap/exactly-once/control-chain critical error 为零。
+6. 新版本持续保存同输入、无 dossier 的 counterfactual，分别报告 shortlist、
+   Bayesian rank、目标权重和 NAV 归因差异。
+7. 接受未来信息、identity/hash 错配、secondary-only 非零贡献、分数叠加、
+   越过 cap、控制链绕过或私有数据泄漏时立即切回 `off`；最近 20 个
+   received jobs（样本至少 10）验证成功率低于 80% 时切回 `shadow`。
+8. 激活计数只能由 `fundamental-research-activation-evidence.v2` 从
+   job/application/longitudinal 三条 hash-chain ledger 重算；人工填写的 v1
+   count sheet 不再可用于激活。limited 至少需要 10 个目标权重反事实日期，
+   production 至少需要 20 个目标权重日期和 10 个 realized NAV 归因日期。
+
+详细协议、证据资格和离线操作流程见
+`docs/runbooks/fundamental_research_v13_2.md`。

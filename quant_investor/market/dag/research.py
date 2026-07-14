@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+import math
+from dataclasses import dataclass, field, replace
 from statistics import fmean
 from typing import Any, Callable, Mapping
 
@@ -26,6 +27,7 @@ from quant_investor.agents.stock_reviewers import (
     MasterSymbolPacket,
 )
 from quant_investor.branch_contracts import BranchResult
+from quant_investor.fundamental_research.runtime import consume_overlay
 from quant_investor.market.dag.assembly import _aggregate_branch_summaries, _build_branch_results
 from quant_investor.market.dag.common import _dedupe_texts, _score_to_action
 from quant_investor.market.dag.packets import _build_symbol_bundle, _build_symbol_research_packet
@@ -102,8 +104,7 @@ def _build_codex_handoff_overlay(
         branch_name=packet.branch_name,
         status=AgentStatus.DEGRADED,
         thesis=(
-            packet.thesis
-            or f"{packet.symbol} {packet.branch_name} branch awaiting Codex review."
+            packet.thesis or f"{packet.symbol} {packet.branch_name} branch awaiting Codex review."
         ),
         direction=_direction_enum_from_score(float(packet.base_score)),
         action=_score_to_action(float(packet.base_score)),
@@ -160,9 +161,7 @@ def _build_codex_handoff_master(
     return MasterICHint(
         symbol=packet.symbol,
         status=AgentStatus.DEGRADED,
-        thesis=(
-            f"{packet.symbol} per-symbol master review awaiting Codex handoff."
-        ),
+        thesis=(f"{packet.symbol} per-symbol master review awaiting Codex handoff."),
         action=_score_to_action(baseline_score),
         direction=_direction_enum_from_score(baseline_score),
         score_hint=baseline_score,
@@ -176,11 +175,7 @@ def _build_codex_handoff_master(
             f"baseline_confidence={baseline_confidence:.3f}",
         ],
         risk_flags=_dedupe_texts(
-            [
-                str(item)
-                for item in packet.risk_summary.get("risk_flags", [])
-                if str(item).strip()
-            ]
+            [str(item) for item in packet.risk_summary.get("risk_flags", []) if str(item).strip()]
         ),
         telemetry=telemetry,
         metadata={
@@ -256,6 +251,7 @@ async def _run_candidate_research_phase(
     company_name_map: Mapping[str, str],
     market: str,
     market_snapshot: Mapping[str, Any],
+    industry_map: Mapping[str, str],
     universe_key: str,
     read_results: Mapping[str, Any],
     frames: Mapping[str, pd.DataFrame],
@@ -313,8 +309,161 @@ async def _run_candidate_research_phase(
             symbol=symbol,
             branch_name="fundamental",
         )
+        deterministic_fundamental = fundamental
+        fundamental_data_generation = str(
+            dict(
+                deterministic_fundamental.metadata.get("fundamental_data_generation_by_symbol", {})
+                or {}
+            ).get(symbol, "")
+        )
+        runtime_cutoff = market_snapshot.get("latest_trade_date", "")
+        fundamental_runtime = consume_overlay(
+            market=market,
+            symbol=symbol,
+            base_score=float(deterministic_fundamental.final_score),
+            run_cutoff=runtime_cutoff,
+            run_key=f"{market}:{universe_key}:{runtime_cutoff}",
+            current_data_generation=fundamental_data_generation,
+        )
+        module_statuses = dict(
+            deterministic_fundamental.metadata.get("structured_signals", {}).get(
+                "module_coverages", {}
+            )
+            or {}
+        )
+        available_modules = sorted(
+            name
+            for name, status in module_statuses.items()
+            if str(status) in {"available", "partial"}
+        )
+        missing_modules = sorted(
+            name
+            for name, status in module_statuses.items()
+            if str(status) not in {"available", "partial"}
+        )
+        local_fundamental_context = dict(bundle.fundamentals.get(symbol, {}) or {})
+        industry = str(
+            local_fundamental_context.get("industry")
+            or local_fundamental_context.get("sector")
+            or industry_map.get(symbol)
+            or "UNCONFIRMED"
+        )
+        explicit_peer_set_confirmed = (
+            str(local_fundamental_context.get("peer_set_status", "")).lower() == "confirmed"
+        )
+        explicit_peer_symbols = (
+            sorted(
+                {
+                    str(item).strip()
+                    for item in list(local_fundamental_context.get("peer_symbols", []) or [])
+                    if str(item).strip() and str(item).strip() != symbol
+                }
+            )
+            if explicit_peer_set_confirmed
+            else []
+        )
+        derived_peer_symbols = sorted(
+            peer_symbol
+            for peer_symbol, peer_industry in industry_map.items()
+            if peer_symbol != symbol
+            and industry != "UNCONFIRMED"
+            and str(peer_industry).strip() == industry
+        )[:10]
+        if explicit_peer_set_confirmed:
+            peer_symbols = explicit_peer_symbols[:10]
+            peer_set_status = "confirmed"
+            peer_set_source = "explicit_local_mart"
+        elif derived_peer_symbols:
+            peer_symbols = derived_peer_symbols
+            peer_set_status = "confirmed"
+            peer_set_source = "derived_local_industry"
+        else:
+            peer_symbols = []
+            peer_set_status = "unconfirmed"
+            peer_set_source = "UNCONFIRMED"
+        valuation_price: float | None = None
+        valuation_price_as_of = ""
+        if frame is not None and not frame.empty and "close" in frame.columns:
+            closes = pd.to_numeric(frame["close"], errors="coerce")
+            valid_closes = closes[closes.map(lambda value: pd.notna(value) and float(value) > 0)]
+            if not valid_closes.empty:
+                last_index = valid_closes.index[-1]
+                candidate_price = float(valid_closes.loc[last_index])
+                if math.isfinite(candidate_price):
+                    valuation_price = candidate_price
+                    for date_column in ("date", "trade_date"):
+                        if date_column not in frame.columns:
+                            continue
+                        raw_date = frame.loc[last_index, date_column]
+                        if pd.isna(raw_date):
+                            continue
+                        parsed_date = pd.to_datetime(raw_date, errors="coerce")
+                        if pd.notna(parsed_date):
+                            valuation_price_as_of = parsed_date.date().isoformat()
+                            break
+        context_blockers = [] if peer_set_status == "confirmed" else ["peer_set_UNCONFIRMED"]
+        if valuation_price is None or not valuation_price_as_of:
+            context_blockers.append("valuation_price_UNCONFIRMED")
+        deterministic_base_record = {
+            "company_name": company_name_map.get(symbol, ""),
+            "industry": industry,
+            "peer_symbols": peer_symbols,
+            "peer_set_status": peer_set_status,
+            "peer_set_source": peer_set_source,
+            "base_score": float(deterministic_fundamental.final_score),
+            "base_confidence": float(deterministic_fundamental.final_confidence),
+            "valuation_price": valuation_price,
+            "valuation_price_as_of": valuation_price_as_of,
+            "data_generation": fundamental_data_generation,
+            "available_modules": available_modules,
+            "missing_modules": missing_modules,
+            "status": getattr(
+                deterministic_fundamental.status,
+                "value",
+                str(deterministic_fundamental.status),
+            ),
+            "context_blockers": context_blockers,
+            "runtime_audit": dict(fundamental_runtime.metadata),
+        }
+        fundamental = replace(
+            deterministic_fundamental,
+            final_score=(
+                float(fundamental_runtime.adjusted_score)
+                if fundamental_runtime.applied and fundamental_runtime.adjusted_score is not None
+                else float(deterministic_fundamental.final_score)
+            ),
+            direction=(
+                _direction_enum_from_score(float(fundamental_runtime.adjusted_score))
+                if fundamental_runtime.applied and fundamental_runtime.adjusted_score is not None
+                else deterministic_fundamental.direction
+            ),
+            action=(
+                _score_to_action(float(fundamental_runtime.adjusted_score))
+                if fundamental_runtime.applied and fundamental_runtime.adjusted_score is not None
+                else deterministic_fundamental.action
+            ),
+            metadata={
+                **dict(deterministic_fundamental.metadata or {}),
+                "deterministic_base_score": float(deterministic_fundamental.final_score),
+                "fundamental_deterministic_control_input": {
+                    "thesis": deterministic_fundamental.thesis,
+                    "status": deterministic_fundamental.status.value,
+                    "direction": deterministic_fundamental.direction.value,
+                    "action": deterministic_fundamental.action.value,
+                    "confidence_label": (deterministic_fundamental.confidence_label.value),
+                    "final_score": float(deterministic_fundamental.final_score),
+                    "final_confidence": float(deterministic_fundamental.final_confidence),
+                    "investment_risks": list(deterministic_fundamental.investment_risks),
+                    "coverage_notes": list(deterministic_fundamental.coverage_notes),
+                    "diagnostic_notes": list(deterministic_fundamental.diagnostic_notes),
+                },
+                "fundamental_research_runtime": dict(fundamental_runtime.metadata),
+            },
+        )
         intelligence = ensure_branch_verdict(
-            intelligence_agent.run({**branch_payload, "market_regime": macro_verdict.metadata.get("regime", "neutral")}),
+            intelligence_agent.run(
+                {**branch_payload, "market_regime": macro_verdict.metadata.get("regime", "neutral")}
+            ),
             symbol=symbol,
             branch_name="intelligence",
         )
@@ -339,6 +488,7 @@ async def _run_candidate_research_phase(
                 global_quant_verdict=global_quant_verdict,
                 review_bundle=None,
             )
+            packet.metadata["fundamental_deterministic_base"] = dict(deterministic_base_record)
             return symbol, base_branch_verdicts, packet, None, {}, {}, [], []
 
         codex_handoff_review = _is_codex_handoff_review(
@@ -355,7 +505,47 @@ async def _run_candidate_research_phase(
         branch_overlay_verdicts: dict[str, Any] = {}
         telemetry: list[Any] = []
         fallback_reasons: list[str] = []
+        if fundamental_runtime.suppress_generic_fundamental_overlay:
+            runtime_audit = dict(fundamental_runtime.metadata)
+            runtime_telemetry = ReviewTelemetry(
+                stage="fundamental_research_runtime",
+                model="codex-external-dossier",
+                provider="codex",
+                success=True,
+                fallback=False,
+                score_delta=float(runtime_audit.get("computed_delta", 0.0)),
+                confidence_delta=0.0,
+                metadata=runtime_audit,
+            )
+            branch_overlay_verdicts["fundamental"] = BranchOverlayVerdict(
+                symbol=symbol,
+                branch_name="fundamental",
+                status=fundamental.status,
+                thesis=fundamental.thesis,
+                direction=fundamental.direction,
+                action=fundamental.action,
+                base_score=float(deterministic_fundamental.final_score),
+                adjusted_score=float(fundamental.final_score),
+                base_confidence=float(deterministic_fundamental.final_confidence),
+                adjusted_confidence=float(deterministic_fundamental.final_confidence),
+                score_delta=float(runtime_audit.get("computed_delta", 0.0)),
+                confidence_delta=0.0,
+                agreement_points=["validated prior-run fundamental dossier applied"],
+                risk_flags=list(fundamental.investment_risks),
+                telemetry=runtime_telemetry,
+                metadata={
+                    "source": "fundamental_research_v13_2",
+                    "generic_overlay_suppressed": True,
+                    "runtime_audit": runtime_audit,
+                },
+            )
+            telemetry.append(runtime_telemetry)
         for branch_name in branch_names:
+            if (
+                branch_name == "fundamental"
+                and fundamental_runtime.suppress_generic_fundamental_overlay
+            ):
+                continue
             base_verdict = base_branch_verdicts[branch_name]
             overlay_packet = BranchOverlayPacket(
                 symbol=symbol,
@@ -365,10 +555,18 @@ async def _run_candidate_research_phase(
                 thesis=str(base_verdict.thesis),
                 direction=_score_to_direction(float(base_verdict.final_score)),
                 action=_score_to_action(float(base_verdict.final_score)).value,
-                agreement_points=_dedupe_texts(list(base_verdict.coverage_notes[:3]) or [base_verdict.thesis]),
-                conflict_points=_dedupe_texts(list(base_verdict.diagnostic_notes[:3]) or list(base_verdict.investment_risks[:3])),
+                agreement_points=_dedupe_texts(
+                    list(base_verdict.coverage_notes[:3]) or [base_verdict.thesis]
+                ),
+                conflict_points=_dedupe_texts(
+                    list(base_verdict.diagnostic_notes[:3])
+                    or list(base_verdict.investment_risks[:3])
+                ),
                 risk_points=_dedupe_texts(list(base_verdict.investment_risks[:4])),
-                branch_signals={"score": float(base_verdict.final_score), "confidence": float(base_verdict.final_confidence)},
+                branch_signals={
+                    "score": float(base_verdict.final_score),
+                    "confidence": float(base_verdict.final_confidence),
+                },
                 macro_summary=dict(market_snapshot),
                 risk_summary={
                     "macro_score": float(macro_verdict.final_score),
@@ -379,11 +577,7 @@ async def _run_candidate_research_phase(
                     "source_branch": branch_name,
                     "symbol": symbol,
                     "resolver": read_result.resolver_trace,
-                    "review_layer_mode": (
-                        "codex_handoff"
-                        if codex_handoff_review
-                        else "local_llm"
-                    ),
+                    "review_layer_mode": ("codex_handoff" if codex_handoff_review else "local_llm"),
                 },
             )
             if codex_handoff_review:
@@ -410,8 +604,7 @@ async def _run_candidate_research_phase(
                 and overlay.telemetry.fallback_reason
             ):
                 fallback_reasons.append(
-                    f"{symbol}/{branch_name}: "
-                    f"{overlay.telemetry.fallback_reason}"
+                    f"{symbol}/{branch_name}: " f"{overlay.telemetry.fallback_reason}"
                 )
 
         overlay_dicts = [overlay.to_dict() for overlay in branch_overlay_verdicts.values()]
@@ -432,17 +625,19 @@ async def _run_candidate_research_phase(
                     ][:2]
                 ),
             },
-            baseline_score=float(fmean([item["adjusted_score"] for item in overlay_dicts]) if overlay_dicts else 0.0),
-            baseline_confidence=float(fmean([item["adjusted_confidence"] for item in overlay_dicts]) if overlay_dicts else 0.0),
+            baseline_score=float(
+                fmean([item["adjusted_score"] for item in overlay_dicts]) if overlay_dicts else 0.0
+            ),
+            baseline_confidence=float(
+                fmean([item["adjusted_confidence"] for item in overlay_dicts])
+                if overlay_dicts
+                else 0.0
+            ),
             hard_veto=bool(False),
             metadata={
                 "symbol": symbol,
                 "resolver": read_result.resolver_trace,
-                "review_layer_mode": (
-                    "codex_handoff"
-                    if codex_handoff_review
-                    else "local_llm"
-                ),
+                "review_layer_mode": ("codex_handoff" if codex_handoff_review else "local_llm"),
             },
         )
         if codex_handoff_review:
@@ -462,7 +657,11 @@ async def _run_candidate_research_phase(
             )
             master_hint = await master_reviewer.deliberate(master_packet)
         telemetry.append(master_hint.telemetry)
-        if (not codex_handoff_review) and master_hint.telemetry.fallback and master_hint.telemetry.fallback_reason:
+        if (
+            (not codex_handoff_review)
+            and master_hint.telemetry.fallback
+            and master_hint.telemetry.fallback_reason
+        ):
             fallback_reasons.append(f"{symbol}: {master_hint.telemetry.fallback_reason}")
         if codex_handoff_review:
             fallback_reasons.append(f"{symbol}: codex_handoff_pending")
@@ -478,14 +677,32 @@ async def _run_candidate_research_phase(
                 thesis=overlay.thesis or base_verdict.thesis,
                 symbol=symbol,
                 status=base_verdict.status,
-                direction=overlay.direction if isinstance(overlay.direction, Direction) else base_verdict.direction,
-                action=overlay.action if isinstance(overlay.action, ActionLabel) else base_verdict.action,
+                direction=(
+                    overlay.direction
+                    if isinstance(overlay.direction, Direction)
+                    else base_verdict.direction
+                ),
+                action=(
+                    overlay.action
+                    if isinstance(overlay.action, ActionLabel)
+                    else base_verdict.action
+                ),
                 confidence_label=base_verdict.confidence_label,
                 final_score=float(overlay.adjusted_score),
                 final_confidence=float(overlay.adjusted_confidence),
-                investment_risks=_dedupe_texts(list(base_verdict.investment_risks) + list(overlay.risk_flags) + list(overlay.missing_risks)),
-                coverage_notes=_dedupe_texts(list(base_verdict.coverage_notes) + list(overlay.agreement_points)),
-                diagnostic_notes=_dedupe_texts(list(base_verdict.diagnostic_notes) + list(overlay.conflict_points) + list(overlay.contradictions)),
+                investment_risks=_dedupe_texts(
+                    list(base_verdict.investment_risks)
+                    + list(overlay.risk_flags)
+                    + list(overlay.missing_risks)
+                ),
+                coverage_notes=_dedupe_texts(
+                    list(base_verdict.coverage_notes) + list(overlay.agreement_points)
+                ),
+                diagnostic_notes=_dedupe_texts(
+                    list(base_verdict.diagnostic_notes)
+                    + list(overlay.conflict_points)
+                    + list(overlay.contradictions)
+                ),
                 metadata={
                     **dict(base_verdict.metadata or {}),
                     "branch_name": branch_name,
@@ -522,16 +739,10 @@ async def _run_candidate_research_phase(
                     "master_fallback_reason": master_model_resolution.fallback_reason,
                     "master_reasoning_effort": master_reasoning_effort,
                     "agent_layer_enabled": bool(enable_agent_layer),
-                    "review_layer_mode": (
-                        "codex_handoff"
-                        if codex_handoff_review
-                        else "local_llm"
-                    ),
+                    "review_layer_mode": ("codex_handoff" if codex_handoff_review else "local_llm"),
                     "codex_handoff_pending": bool(codex_handoff_review),
                     "codex_handoff_packet_count": (
-                        (len(branch_names) + 1)
-                        if codex_handoff_review
-                        else 0
+                        (len(branch_names) + 1) if codex_handoff_review else 0
                     ),
                     "universe_key": universe_key,
                     "symbol_count": len(candidate_symbols),
@@ -539,7 +750,17 @@ async def _run_candidate_research_phase(
                 },
             ),
         )
-        return symbol, reviewed_branch_verdicts, packet, master_hint, master_hint_to_ic_hint(master_hint), dict(branch_overlay_verdicts), telemetry, fallback_reasons
+        packet.metadata["fundamental_deterministic_base"] = dict(deterministic_base_record)
+        return (
+            symbol,
+            reviewed_branch_verdicts,
+            packet,
+            master_hint,
+            master_hint_to_ic_hint(master_hint),
+            dict(branch_overlay_verdicts),
+            telemetry,
+            fallback_reasons,
+        )
 
     semaphore = asyncio.Semaphore(8)
 
@@ -578,9 +799,7 @@ async def _run_candidate_research_phase(
             ),
             "codex_handoff_pending": bool(codex_handoff_review),
             "codex_handoff_packet_count": (
-                len(candidate_symbols) * 5
-                if codex_handoff_review
-                else 0
+                len(candidate_symbols) * 5 if codex_handoff_review else 0
             ),
             "universe_key": universe_key,
             "symbol_count": len(candidate_symbols),
@@ -595,7 +814,16 @@ async def _run_candidate_research_phase(
     for item in research_results:
         if isinstance(item, BaseException):
             raise item
-        symbol, reviewed_branch_verdicts, packet, master_hint, ic_hint, branch_overlays, telemetry, fallbacks = item
+        (
+            symbol,
+            reviewed_branch_verdicts,
+            packet,
+            master_hint,
+            ic_hint,
+            branch_overlays,
+            telemetry,
+            fallbacks,
+        ) = item
         research_by_symbol[symbol] = reviewed_branch_verdicts
         symbol_research_packets[symbol] = packet
         review_bundle.branch_overlay_verdicts_by_symbol[symbol] = dict(branch_overlays)
@@ -611,6 +839,12 @@ async def _run_candidate_research_phase(
 
     review_bundle.telemetry = telemetry_items
     review_bundle.fallback_reasons = _dedupe_texts(fallback_reasons)
+    review_bundle.metadata["fundamental_research_runtime"] = {
+        symbol: dict(
+            packet.metadata.get("fundamental_deterministic_base", {}).get("runtime_audit", {})
+        )
+        for symbol, packet in symbol_research_packets.items()
+    }
 
     branch_summaries = _aggregate_branch_summaries(research_by_symbol)
     branch_summaries["quant"] = global_quant_verdict

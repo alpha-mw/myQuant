@@ -4,9 +4,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from quant_investor.config import config
+from quant_investor.fundamental_research.storage import canonical_json_bytes, sha256_bytes
 from quant_investor.market.config import get_market_settings, normalize_categories, normalize_universe
 from quant_investor.market.data_snapshot import build_market_data_snapshot
 from quant_investor.llm_provider_priority import resolve_runtime_role_models
@@ -20,6 +22,7 @@ import quant_investor.market.legacy_batch_analysis as _legacy_batch
 from quant_investor.market import name_map as _name_map
 from quant_investor.market.report_persistence import (
     persist_market_analysis_outputs,
+    write_analysis_run_manifest,
 )
 from quant_investor.market.runtime_profile import (
     MarketRuntimeProfiler,
@@ -316,6 +319,22 @@ def run_market_analysis(
     bayesian_records = list(dag_artifacts.get("bayesian_records", []) or [])
     funnel_output = dag_artifacts.get("funnel_output")
     symbol_packets = dag_artifacts["symbol_research_packets"]
+    fundamental_deterministic_bases: dict[str, dict[str, Any]] = {}
+    for symbol, packet in symbol_packets.items():
+        record = dict(
+            getattr(packet, "metadata", {}).get(
+                "fundamental_deterministic_base", {}
+            )
+            or {}
+        )
+        if not record:
+            continue
+        base_score = float(record.get("base_score", 0.0))
+        record["base_score"] = base_score
+        record["base_score_sha256"] = sha256_bytes(
+            canonical_json_bytes({"base_score": base_score})
+        )
+        fundamental_deterministic_bases[str(symbol)] = record
     analysis_meta: dict[str, Any] = {
         "market": settings.market,
         "universe": dag_universe or "full_a",
@@ -344,6 +363,7 @@ def run_market_analysis(
             symbol: packet.to_dict()
             for symbol, packet in symbol_packets.items()
         },
+        "fundamental_deterministic_bases": fundamental_deterministic_bases,
         "shortlist": [item.to_dict() for item in shortlist],
         "bayesian_shortlist_symbols": [item.symbol for item in shortlist],
         "bayesian_record_count": len(bayesian_records),
@@ -396,6 +416,23 @@ def run_market_analysis(
         generate_full_report=generate_full_report,
     )
     analysis_meta["runtime_profile"] = persistence.runtime_profile
+    analysis_run_manifest = write_analysis_run_manifest(
+        market=settings.market,
+        analysis_output_dir=settings.analysis_output_dir,
+        report_paths=persistence.report_paths,
+        analysis_meta=analysis_meta,
+    )
+    persistence.report_paths["analysis_run_manifest"] = analysis_run_manifest
+    companion_manifests = sorted(
+        path
+        for path in Path(analysis_run_manifest).parent.glob(
+            "analysis_run_manifest.*_dossier.v1.json"
+        )
+    )
+    if companion_manifests:
+        persistence.report_paths[
+            "fundamental_research_counterfactual_analysis_manifest"
+        ] = str(companion_manifests[0])
     return {
         "results": all_results,
         "reports": persistence.report_paths,

@@ -125,7 +125,8 @@ class FundamentalBranch:
         if drag_points:
             return (
                 f"{symbol} 的基本面判断主要由{available_text}驱动，"
-                f"{driver_text}；未充分纳入评分的模块包括{missing_text}。"
+                f"{driver_text}；主要风险为{drag_points[0]}；"
+                f"未充分纳入评分的模块包括{missing_text}。"
             )
         return (
             f"{symbol} 的基本面判断主要由{available_text}驱动，"
@@ -293,6 +294,15 @@ class FundamentalBranch:
                     "missing_scope": missing_scope,
                     "provider_missing": provider_missing,
                     "snapshot_missing": snapshot_missing,
+                    "publish_time": str(
+                        getattr(snapshots[name], "publish_time", "") or ""
+                    ),
+                    "effective_time": str(
+                        getattr(snapshots[name], "effective_time", "") or ""
+                    ),
+                    "revision_id": str(
+                        getattr(snapshots[name], "revision_id", "") or ""
+                    ),
                 }
                 if status == "disabled_global":
                     module_coverage[name]["status"] = "disabled_global"
@@ -301,10 +311,28 @@ class FundamentalBranch:
                     missing_modules.append(name)
                     continue
 
+                if status == "available" and not component.available:
+                    status = "missing_symbol"
+                    symbol_module_coverage[name]["status"] = status
+                    symbol_snapshot_quality[name]["status"] = status
+
                 total_weight += weight
                 if component.available:
-                    coverage_weight += weight
-                    weighted_score += component.score * weight
+                    available_fields = snapshot_data_quality.get("available_fields")
+                    if available_fields is None:
+                        component_completeness = 1.0
+                    else:
+                        used_features = {str(item) for item in component.used_features}
+                        present_features = used_features.intersection(
+                            {str(item) for item in available_fields}
+                        )
+                        component_completeness = len(present_features) / max(len(used_features), 1)
+                    symbol_module_coverage[name]["field_coverage_ratio"] = round(component_completeness, 4)
+                    symbol_snapshot_quality[name]["field_coverage_ratio"] = round(component_completeness, 4)
+                    coverage_weight += weight * component_completeness
+                    # A component backed by only one of several expected fields must
+                    # not receive the same score weight as a complete snapshot.
+                    weighted_score += component.score * weight * component_completeness
                     available_modules.append(name)
                     module_coverage[name]["available_symbols"] += 1
                     module_average_scores[name].append(float(component.score))
@@ -436,6 +464,22 @@ class FundamentalBranch:
             + ("、".join(excluded_modules) if excluded_modules else "无")
             + "。"
         )
+        if drag_drivers:
+            conclusion += " 主要拖累为" + "、".join(drag_drivers) + "。"
+
+        degraded_reasons: list[str] = []
+        if avg_coverage < 0.9999:
+            degraded_reasons.append("fundamental_evidence_incomplete")
+        if not active_modules:
+            degraded_reasons.append("fundamental_modules_unavailable")
+        metadata = {
+            "branch_mode": "fundamental_snapshot_fusion",
+            "reliability": reliability,
+            "horizon_days": 30,
+            "documents_enabled": self.enable_document_semantics,
+        }
+        if degraded_reasons:
+            metadata["degraded_reason"] = ",".join(degraded_reasons)
 
         return BranchResult(
             branch_name="fundamental",
@@ -462,12 +506,8 @@ class FundamentalBranch:
             risks=deduped_risks[:8],
             explanation=explanation,
             symbol_scores=symbol_scores,
-            metadata={
-                "branch_mode": "fundamental_snapshot_fusion",
-                "reliability": reliability,
-                "horizon_days": 30,
-                "documents_enabled": self.enable_document_semantics,
-            },
+            metadata=metadata,
+            horizon_days=30,
             data_quality={
                 "coverage_ratio": round(avg_coverage, 4),
                 "documents_enabled": self.enable_document_semantics,

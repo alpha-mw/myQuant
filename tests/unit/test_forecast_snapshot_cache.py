@@ -82,3 +82,26 @@ def test_forecast_snapshot_cache_stale_returns_neutral_snapshot_without_online_f
     assert snapshot.available is False
     assert snapshot.data_quality["reason"] == "forecast_cache_missing_or_stale"
     assert snapshot.metadata["cached_as_of"] == "2026-03-20"
+
+
+def test_forecast_snapshot_cache_never_exposes_future_version(tmp_path):
+    store = ForecastSnapshotStore(tmp_path)
+    store.save_snapshot(_make_snapshot("000001.SZ", "2026-03-20"))
+    store.save_snapshot(_make_snapshot("000001.SZ", "2026-03-26"))
+
+    historical = store.get_snapshot("000001.SZ", "2026-03-20")
+
+    assert historical.available is True
+    assert historical.as_of == "2026-03-20"
+    assert store.load_snapshot("000001.SZ").as_of == "2026-03-26"
+
+
+def test_forecast_snapshot_cache_future_only_returns_neutral_snapshot(tmp_path):
+    store = ForecastSnapshotStore(tmp_path)
+    store.save_snapshot(_make_snapshot("000001.SZ", "2026-03-26"))
+
+    snapshot = store.get_snapshot("000001.SZ", "2026-03-20")
+
+    assert snapshot.available is False
+    assert snapshot.data_quality["reason"] == "forecast_cache_future_snapshot"
+    assert snapshot.metadata["cached_as_of"] == "2026-03-26"

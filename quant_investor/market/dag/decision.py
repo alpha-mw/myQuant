@@ -1,15 +1,20 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from copy import copy
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Mapping
 
 from quant_investor.agent_protocol import (
+    ActionLabel,
     AgentStatus,
     BayesianDecisionRecord,
+    ConfidenceLabel,
+    Direction,
     ICDecision,
     PortfolioDecision,
     RiskDecision,
 )
+from quant_investor.market.dag.assembly import _aggregate_branch_summaries
 from quant_investor.bayesian.calibration import CalibrationStore
 from quant_investor.config import config
 from quant_investor.governance import replay_v13_1
@@ -37,6 +42,9 @@ class BayesianSelectionState:
     portfolio_master_output: Any | None
     portfolio_master_meta: dict[str, Any]
     portfolio_master_reliability: float
+    counterfactual_shortlist: list[Any]
+    counterfactual_by_symbol: dict[str, dict[str, Any]]
+    counterfactual_bayesian_records: list[BayesianDecisionRecord]
 
 
 @dataclass
@@ -45,6 +53,30 @@ class PortfolioConstructionState:
     ic_decisions: list[ICDecision]
     portfolio_plan: Any
     portfolio_decision: PortfolioDecision
+
+
+def _branch_degraded_map(
+    *,
+    symbol: str,
+    research_by_symbol: Mapping[str, Mapping[str, Any]],
+    branch_summaries: Mapping[str, Any],
+    branch_results: Mapping[str, Any],
+) -> dict[str, bool]:
+    """Resolve actual per-symbol branch degradation for Bayesian fallback penalties."""
+
+    result: dict[str, bool] = {}
+    symbol_research = research_by_symbol.get(symbol, {})
+    for branch_name in ("quant", "fundamental", "intelligence", "macro"):
+        verdict = symbol_research.get(branch_name) or branch_summaries.get(branch_name)
+        status = _enum_text(getattr(verdict, "status", "")) if verdict is not None else ""
+        branch_result = branch_results.get(branch_name)
+        metadata = dict(getattr(branch_result, "metadata", {}) or {})
+        result[branch_name] = bool(
+            status in {"DEGRADED", "VETOED"}
+            or metadata.get("degraded_reason")
+            or (branch_result is not None and not bool(getattr(branch_result, "success", True)))
+        )
+    return result
 
 
 def _enum_text(value: Any) -> str:
@@ -60,29 +92,24 @@ def _post_control_theme_reconciliation(
     portfolio_plan: Any,
 ) -> dict[str, Any]:
     metadata = getattr(global_context, "metadata", {})
-    rotation = (
-        metadata.get("theme_rotation", {})
-        if isinstance(metadata, Mapping)
-        else {}
-    )
+    rotation = metadata.get("theme_rotation", {}) if isinstance(metadata, Mapping) else {}
     if not isinstance(rotation, dict):
         return {"status": "unavailable", "formal_pool": []}
     protocol = rotation.get("protocol_v2", {})
     if not isinstance(protocol, dict):
         return {"status": "unavailable", "formal_pool": []}
-    if (
-        protocol.get("formal_enabled") is not True
-        or protocol.get("formal_kill_switch") is True
-    ):
+    if protocol.get("formal_enabled") is not True or protocol.get("formal_kill_switch") is True:
         artifact = {
             "schema_version": "theme_formal_reconciliation.v1",
             "status": "observer_only",
             "formal_pool": [],
             "formal_symbols": [],
             "blockers": [
-                "formal_kill_switch_active"
-                if protocol.get("formal_kill_switch") is True
-                else "formal_switch_disabled"
+                (
+                    "formal_kill_switch_active"
+                    if protocol.get("formal_kill_switch") is True
+                    else "formal_switch_disabled"
+                )
             ],
         }
         rotation["formal_reconciliation"] = artifact
@@ -91,9 +118,7 @@ def _post_control_theme_reconciliation(
     activation_blockers: list[str] = []
     if not bool(getattr(config, "THEME_PORTFOLIO_CAP_ENABLED", False)):
         activation_blockers.append("theme_portfolio_cap_required_for_formal")
-    if not bool(
-        getattr(config, "THEME_FORMAL_RECONCILIATION_PERSIST_ENABLED", False)
-    ):
+    if not bool(getattr(config, "THEME_FORMAL_RECONCILIATION_PERSIST_ENABLED", False)):
         activation_blockers.append("formal_reconciliation_persistence_disabled")
     activation_blockers.extend(
         _theme_plan_cap_proof_blockers(
@@ -117,8 +142,7 @@ def _post_control_theme_reconciliation(
         persistence_status = {
             "status": (
                 "disabled"
-                if "formal_reconciliation_persistence_disabled"
-                in activation_blockers
+                if "formal_reconciliation_persistence_disabled" in activation_blockers
                 else "not_attempted"
             ),
             "path": "",
@@ -128,9 +152,7 @@ def _post_control_theme_reconciliation(
         rotation["formal_reconciliation_persistence"] = persistence_status
         if isinstance(metadata, dict):
             metadata["theme_formal_reconciliation"] = artifact
-            metadata["theme_formal_reconciliation_persistence"] = (
-                persistence_status
-            )
+            metadata["theme_formal_reconciliation_persistence"] = persistence_status
         return artifact
 
     shortlist_by_symbol = {
@@ -162,33 +184,25 @@ def _post_control_theme_reconciliation(
         set(shortlist_by_symbol)
         | {
             str(symbol).strip().upper()
-            for symbol in dict(
-                rotation.get("symbol_theme_membership_details", {}) or {}
-            )
+            for symbol in dict(rotation.get("symbol_theme_membership_details", {}) or {})
         }
     )
     for symbol in candidate_symbols:
         tradability = dict(tradability_snapshot.get(symbol, {}) or {})
         shortlist_item = shortlist_by_symbol.get(symbol)
-        shortlist_metadata = dict(
-            getattr(shortlist_item, "metadata", {}) or {}
-        )
+        shortlist_metadata = dict(getattr(shortlist_item, "metadata", {}) or {})
         try:
             liquidity_score = float(tradability.get("liquidity_score"))
         except (TypeError, ValueError):
             liquidity_score = 0.0
         try:
-            data_quality_issue_count = int(
-                tradability.get("data_quality_issue_count")
-            )
+            data_quality_issue_count = int(tradability.get("data_quality_issue_count"))
         except (TypeError, ValueError):
             data_quality_issue_count = -1
         positive_edge = False
         if shortlist_item is not None:
             try:
-                edge_after_costs = float(
-                    shortlist_metadata.get("posterior_edge_after_costs")
-                )
+                edge_after_costs = float(shortlist_metadata.get("posterior_edge_after_costs"))
             except (TypeError, ValueError):
                 edge_after_costs = 0.0
             positive_edge = (
@@ -205,9 +219,7 @@ def _post_control_theme_reconciliation(
             "tradability_pass": tradability.get("tradable") is True,
             "liquidity_pass": liquidity_score > 0.0,
             "positive_edge_or_buy": positive_edge,
-            "risk_guard_pass": (
-                risk_allows_buy and symbol not in blocked_symbols
-            ),
+            "risk_guard_pass": (risk_allows_buy and symbol not in blocked_symbols),
             "portfolio_constructor_pass": (
                 _enum_text(getattr(portfolio_plan, "status", "")) == "SUCCESS"
                 and portfolio_weight > 0.0
@@ -240,15 +252,13 @@ def _post_control_theme_reconciliation(
             "formal_symbols": [],
             "blockers": [f"post_control_reconciliation_blocked:{exc}"],
         }
-    persistence_status: dict[str, Any] = {
+    persistence_status = {
         "status": "not_attempted",
         "path": "",
         "readback_verified": False,
     }
     if artifact.get("status") in {"formal", "valid_empty"}:
-        if not bool(
-            getattr(config, "THEME_FORMAL_RECONCILIATION_PERSIST_ENABLED", False)
-        ):
+        if not bool(getattr(config, "THEME_FORMAL_RECONCILIATION_PERSIST_ENABLED", False)):
             persistence_status["status"] = "disabled"
             artifact = {
                 "schema_version": "theme_formal_reconciliation.v1",
@@ -281,9 +291,7 @@ def _post_control_theme_reconciliation(
                     "status": "blocked",
                     "formal_pool": [],
                     "formal_symbols": [],
-                    "blockers": [
-                        f"formal_reconciliation_persistence_blocked:{exc}"
-                    ],
+                    "blockers": [f"formal_reconciliation_persistence_blocked:{exc}"],
                 }
     rotation["formal_reconciliation"] = artifact
     rotation["formal_reconciliation_persistence"] = persistence_status
@@ -311,10 +319,7 @@ def _theme_plan_cap_proof_blockers(
     status = str(lane.get("status") or "")
     if status not in {"active", "closed_by_markov"}:
         blockers.append("theme_tactical_lane_status_invalid")
-    if (
-        not current_protocol_hash
-        or str(lane.get("protocol_hash") or "") != current_protocol_hash
-    ):
+    if not current_protocol_hash or str(lane.get("protocol_hash") or "") != current_protocol_hash:
         blockers.append("theme_tactical_lane_protocol_hash_mismatch")
     if lane.get("applied") is not True:
         blockers.append("theme_tactical_lane_not_applied")
@@ -324,8 +329,7 @@ def _theme_plan_cap_proof_blockers(
         *list(getattr(portfolio_plan, "execution_notes", []) or []),
     ]
     if status == "blocked_malformed" or any(
-        "malformed" in str(note).strip().lower()
-        for note in diagnostic_values
+        "malformed" in str(note).strip().lower() for note in diagnostic_values
     ):
         blockers.append("theme_portfolio_cap_malformed_diagnostic")
     return list(dict.fromkeys(blockers))
@@ -334,12 +338,10 @@ def _theme_plan_cap_proof_blockers(
 def _theme_joint_manifest_blockers(*, current_protocol_hash: str) -> list[str]:
     if replay_v13_1.CANONICAL_JOINT_REPLAY_PRODUCER_AVAILABLE is not True:
         return ["canonical_joint_replay_producer_not_implemented"]
-    path_text = str(
-        getattr(config, "THEME_V2_JOINT_MANIFEST_PATH", "") or ""
-    ).strip()
-    expected_sha = str(
-        getattr(config, "THEME_V2_EXPECTED_JOINT_MANIFEST_SHA256", "") or ""
-    ).strip().lower()
+    path_text = str(getattr(config, "THEME_V2_JOINT_MANIFEST_PATH", "") or "").strip()
+    expected_sha = (
+        str(getattr(config, "THEME_V2_EXPECTED_JOINT_MANIFEST_SHA256", "") or "").strip().lower()
+    )
     blockers: list[str] = []
     if not path_text:
         return ["theme_joint_manifest_path_missing"]
@@ -356,9 +358,7 @@ def _theme_joint_manifest_blockers(*, current_protocol_hash: str) -> list[str]:
     except (OSError, TypeError, ValueError) as exc:
         return [f"theme_joint_manifest_verification_error:{exc}"]
     blockers.extend(
-        str(blocker)
-        for blocker in list(verification.get("blockers") or [])
-        if str(blocker)
+        str(blocker) for blocker in list(verification.get("blockers") or []) if str(blocker)
     )
     if verification.get("ready") is not True:
         blockers.append("theme_joint_manifest_canonical_verification_failed")
@@ -399,10 +399,7 @@ def _compact_markov_regime_metadata(global_context: Any) -> dict[str, Any]:
             "enabled": True,
             "execution_mode": str(markov_payload.get("execution_mode") or "production"),
             "production_eligible": False,
-            "status": str(
-                markov_payload.get("status")
-                or "not_applied_insufficient_market_scope"
-            ),
+            "status": str(markov_payload.get("status") or "not_applied_insufficient_market_scope"),
             "regime_scope": str(markov_payload.get("regime_scope") or ""),
             "scope_key": str(markov_payload.get("scope_key") or ""),
         }
@@ -439,9 +436,7 @@ def _compact_theme_pool_symbol_metadata(
     symbol_map = theme_pool.get("symbols", {})
     policy = theme_pool.get("policy", {})
     symbol_payload = (
-        dict(symbol_map.get(symbol, {}) or {})
-        if isinstance(symbol_map, Mapping)
-        else {}
+        dict(symbol_map.get(symbol, {}) or {}) if isinstance(symbol_map, Mapping) else {}
     )
     policy_payload = policy if isinstance(policy, Mapping) else {}
     risk_flags = symbol_payload.get("risk_flags", [])
@@ -450,9 +445,7 @@ def _compact_theme_pool_symbol_metadata(
     else:
         try:
             compact_risk_flags = [
-                str(item)
-                for item in list(risk_flags or [])
-                if str(item or "").strip()
+                str(item) for item in list(risk_flags or []) if str(item or "").strip()
             ]
         except TypeError:
             compact_risk_flags = []
@@ -471,9 +464,7 @@ def _compact_theme_pool_symbol_metadata(
         "score_penalty": float(symbol_payload.get("score_penalty", 0.0) or 0.0),
         "theme_forced_admission": bool(symbol_payload.get("theme_forced_admission", False)),
         "theme_policy_regime": str(
-            symbol_payload.get("theme_policy_regime")
-            or policy_payload.get("regime")
-            or ""
+            symbol_payload.get("theme_policy_regime") or policy_payload.get("regime") or ""
         ),
         "theme_pool_reason": str(symbol_payload.get("theme_pool_reason") or ""),
     }
@@ -486,6 +477,130 @@ def _optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _fundamental_counterfactual_score(
+    *,
+    symbol: str,
+    research_by_symbol: Mapping[str, Mapping[str, Any]],
+) -> tuple[float | None, str]:
+    """Return the no-dossier/dossier alternative score for audit-only replay."""
+
+    fundamental = research_by_symbol.get(symbol, {}).get("fundamental")
+    metadata = dict(getattr(fundamental, "metadata", {}) or {})
+    runtime = dict(metadata.get("fundamental_research_runtime", {}) or {})
+    if runtime.get("blockers") or not runtime.get("request_id"):
+        return None, ""
+    if bool(runtime.get("counterfactual", False)):
+        return _optional_float(runtime.get("counterfactual_adjusted_score")), "with_dossier"
+    if bool(runtime.get("applied", False)):
+        return _optional_float(metadata.get("deterministic_base_score")), "without_dossier"
+    return None, ""
+
+
+def _counterfactual_branch_results(
+    *,
+    branch_results: Mapping[str, Any],
+    symbol: str,
+    fundamental_score: float,
+) -> dict[str, Any]:
+    """Copy only the fundamental branch score; never mutate the control-chain input."""
+
+    copied = dict(branch_results)
+    fundamental = branch_results.get("fundamental")
+    if fundamental is None:
+        return copied
+    alternate = copy(fundamental)
+    alternate.symbol_scores = dict(getattr(fundamental, "symbol_scores", {}) or {})
+    alternate.symbol_scores[symbol] = float(fundamental_score)
+    copied["fundamental"] = alternate
+    return copied
+
+
+def _build_counterfactual_control_inputs(
+    *,
+    research_by_symbol: Mapping[str, Mapping[str, Any]],
+    counterfactual_by_symbol: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    """Rebuild branch/IC inputs with only the dossier variant changed."""
+
+    rebuilt: dict[str, dict[str, Any]] = {}
+    for symbol, branch_map in research_by_symbol.items():
+        alternative_map = dict(branch_map)
+        alternative = counterfactual_by_symbol.get(symbol)
+        fundamental = branch_map.get("fundamental")
+        if alternative is not None and fundamental is not None:
+            score = float(alternative["fundamental_score"])
+            alternative_variant = str(alternative["basis"])
+            actual_metadata = dict(getattr(fundamental, "metadata", {}) or {})
+            deterministic = dict(
+                actual_metadata.get("fundamental_deterministic_control_input", {}) or {}
+            )
+            direction = (
+                Direction.BULLISH
+                if score >= 0.15
+                else Direction.BEARISH if score <= -0.15 else Direction.NEUTRAL
+            )
+            action = (
+                ActionLabel.BUY
+                if score >= 0.25
+                else ActionLabel.SELL if score <= -0.35 else ActionLabel.HOLD
+            )
+            alternative_map["fundamental"] = replace(
+                fundamental,
+                thesis=str(deterministic.get("thesis") or fundamental.thesis),
+                status=AgentStatus(
+                    str(deterministic.get("status") or fundamental.status.value).lower()
+                ),
+                final_score=score,
+                final_confidence=float(
+                    deterministic.get("final_confidence", fundamental.final_confidence)
+                ),
+                direction=direction,
+                action=action,
+                confidence_label=ConfidenceLabel(
+                    str(deterministic.get("confidence_label") or fundamental.confidence_label.value)
+                ),
+                investment_risks=list(
+                    deterministic.get("investment_risks", fundamental.investment_risks) or []
+                ),
+                coverage_notes=list(
+                    deterministic.get("coverage_notes", fundamental.coverage_notes) or []
+                ),
+                diagnostic_notes=list(
+                    deterministic.get("diagnostic_notes", fundamental.diagnostic_notes) or []
+                ),
+                metadata={
+                    **{
+                        key: value
+                        for key, value in actual_metadata.items()
+                        if key
+                        not in {
+                            "overlay",
+                            "fundamental_research_runtime",
+                        }
+                    },
+                    **(
+                        {
+                            "fundamental_research_runtime": {
+                                **dict(
+                                    actual_metadata.get("fundamental_research_runtime", {}) or {}
+                                ),
+                                "effective_mode": "counterfactual_replay",
+                                "applied": True,
+                                "counterfactual": False,
+                                "measurement_only": True,
+                            }
+                        }
+                        if alternative_variant == "with_dossier"
+                        else {}
+                    ),
+                    "fundamental_research_variant": alternative_variant,
+                    "fundamental_research_counterfactual_replay": True,
+                },
+            )
+        rebuilt[symbol] = alternative_map
+    return rebuilt, _aggregate_branch_summaries(rebuilt)
 
 
 def _run_bayesian_selection_phase(
@@ -529,13 +644,15 @@ def _run_bayesian_selection_phase(
     posterior_engine = posterior_engine_cls()
     markov_regime_metadata = _compact_markov_regime_metadata(global_context)
     bayesian_records: list[BayesianDecisionRecord] = []
-    degraded_map = {
-        "quant": False,
-        "fundamental": False,
-        "intelligence": False,
-        "macro": False,
-    }
+    counterfactual_bayesian_records: list[BayesianDecisionRecord] = []
+    counterfactual_by_symbol: dict[str, dict[str, Any]] = {}
     for symbol in candidate_symbols:
+        degraded_map = _branch_degraded_map(
+            symbol=symbol,
+            research_by_symbol=research_by_symbol,
+            branch_summaries=branch_summaries,
+            branch_results=branch_results,
+        )
         prior = prior_builder.build_prior(symbol, global_context)
         likelihoods = likelihood_mapper.compute_likelihoods(
             branch_results=branch_results,
@@ -550,6 +667,73 @@ def _run_bayesian_selection_phase(
             regime=global_context.macro_regime or "未知",
             is_degraded=degraded_map,
         )
+        counterfactual_score, counterfactual_basis = _fundamental_counterfactual_score(
+            symbol=symbol,
+            research_by_symbol=research_by_symbol,
+        )
+        if counterfactual_score is not None:
+            counterfactual_likelihoods = likelihood_mapper.compute_likelihoods(
+                branch_results=_counterfactual_branch_results(
+                    branch_results=branch_results,
+                    symbol=symbol,
+                    fundamental_score=counterfactual_score,
+                ),
+                symbol=symbol,
+                candidate_symbols=set(candidate_symbols),
+            )
+            counterfactual_posterior = posterior_engine.compute_posterior(
+                prior,
+                counterfactual_likelihoods,
+                symbol=symbol,
+                company_name=company_name_map.get(symbol, ""),
+                regime=global_context.macro_regime or "未知",
+                is_degraded=degraded_map,
+            )
+            counterfactual_by_symbol[symbol] = {
+                "basis": counterfactual_basis,
+                "fundamental_score": float(counterfactual_score),
+                "posterior_action_score": float(counterfactual_posterior.posterior_action_score),
+                "posterior_win_rate": float(counterfactual_posterior.posterior_win_rate),
+                "posterior_expected_alpha": float(
+                    counterfactual_posterior.posterior_expected_alpha
+                ),
+                "posterior_confidence": float(counterfactual_posterior.posterior_confidence),
+                "posterior_edge_after_costs": float(
+                    counterfactual_posterior.posterior_edge_after_costs
+                ),
+                "kill_switch": bool(
+                    (counterfactual_posterior.metadata or {}).get("kill_switch", False)
+                ),
+            }
+            counterfactual_bayesian_records.append(
+                BayesianDecisionRecord(
+                    symbol=symbol,
+                    company_name=company_name_map.get(symbol, ""),
+                    prior=counterfactual_posterior.prior.to_dict(),
+                    likelihoods=counterfactual_posterior.likelihoods.to_dict(),
+                    posterior_win_rate=counterfactual_posterior.posterior_win_rate,
+                    posterior_expected_alpha=(counterfactual_posterior.posterior_expected_alpha),
+                    posterior_confidence=(counterfactual_posterior.posterior_confidence),
+                    posterior_action_score=(counterfactual_posterior.posterior_action_score),
+                    posterior_edge_after_costs=(
+                        counterfactual_posterior.posterior_edge_after_costs
+                    ),
+                    posterior_capacity_penalty=(
+                        counterfactual_posterior.posterior_capacity_penalty
+                    ),
+                    correlation_discount=(counterfactual_posterior.correlation_discount),
+                    coverage_discount=counterfactual_posterior.coverage_discount,
+                    data_quality_penalty=(counterfactual_posterior.data_quality_penalty),
+                    fallback_penalty=counterfactual_posterior.fallback_penalty,
+                    regime_adjustment=counterfactual_posterior.regime_adjustment,
+                    evidence_sources=list(counterfactual_posterior.evidence_sources),
+                    action_threshold_used=(counterfactual_posterior.action_threshold_used),
+                    metadata={
+                        "fundamental_research_variant": counterfactual_basis,
+                        "fundamental_score": float(counterfactual_score),
+                    },
+                )
+            )
         bayesian_records.append(
             BayesianDecisionRecord(
                 symbol=symbol,
@@ -573,15 +757,51 @@ def _run_bayesian_selection_phase(
                     "category": str(symbol_research_packets[symbol].category),
                     "posterior_edge_after_costs": posterior.posterior_edge_after_costs,
                     "posterior_capacity_penalty": posterior.posterior_capacity_penalty,
-                    "profile": str((global_context.metadata or {}).get("selection_profile", {}).get("funnel_profile", "classic")),
-                    "momentum_strength": float((posterior.metadata or {}).get("momentum_strength", 0.0) if isinstance(getattr(posterior, "metadata", {}), Mapping) else 0.0),
-                    "fake_breakout_penalty": float((posterior.metadata or {}).get("fake_breakout_penalty", 0.0) if isinstance(getattr(posterior, "metadata", {}), Mapping) else 0.0),
-                    "setup_failure_penalty": float((posterior.metadata or {}).get("setup_failure_penalty", 0.0) if isinstance(getattr(posterior, "metadata", {}), Mapping) else 0.0),
-                    "crowding_penalty": float((posterior.metadata or {}).get("crowding_penalty", 0.0) if isinstance(getattr(posterior, "metadata", {}), Mapping) else 0.0),
-                    "history_confidence": float((posterior.metadata or {}).get("history_confidence", 0.0) if isinstance(getattr(posterior, "metadata", {}), Mapping) else 0.0),
-                    "calibration_samples": dict((posterior.metadata or {}).get("calibration_samples", {}) or {}) if isinstance(getattr(posterior, "metadata", {}), Mapping) else {},
-                    "kill_switch": bool((posterior.metadata or {}).get("kill_switch", False)) if isinstance(getattr(posterior, "metadata", {}), Mapping) else False,
-                    "sector": str((posterior.metadata or {}).get("sector", "")) if isinstance(getattr(posterior, "metadata", {}), Mapping) else "",
+                    "profile": str(
+                        (global_context.metadata or {})
+                        .get("selection_profile", {})
+                        .get("funnel_profile", "classic")
+                    ),
+                    "momentum_strength": float(
+                        (posterior.metadata or {}).get("momentum_strength", 0.0)
+                        if isinstance(getattr(posterior, "metadata", {}), Mapping)
+                        else 0.0
+                    ),
+                    "fake_breakout_penalty": float(
+                        (posterior.metadata or {}).get("fake_breakout_penalty", 0.0)
+                        if isinstance(getattr(posterior, "metadata", {}), Mapping)
+                        else 0.0
+                    ),
+                    "setup_failure_penalty": float(
+                        (posterior.metadata or {}).get("setup_failure_penalty", 0.0)
+                        if isinstance(getattr(posterior, "metadata", {}), Mapping)
+                        else 0.0
+                    ),
+                    "crowding_penalty": float(
+                        (posterior.metadata or {}).get("crowding_penalty", 0.0)
+                        if isinstance(getattr(posterior, "metadata", {}), Mapping)
+                        else 0.0
+                    ),
+                    "history_confidence": float(
+                        (posterior.metadata or {}).get("history_confidence", 0.0)
+                        if isinstance(getattr(posterior, "metadata", {}), Mapping)
+                        else 0.0
+                    ),
+                    "calibration_samples": (
+                        dict((posterior.metadata or {}).get("calibration_samples", {}) or {})
+                        if isinstance(getattr(posterior, "metadata", {}), Mapping)
+                        else {}
+                    ),
+                    "kill_switch": (
+                        bool((posterior.metadata or {}).get("kill_switch", False))
+                        if isinstance(getattr(posterior, "metadata", {}), Mapping)
+                        else False
+                    ),
+                    "sector": (
+                        str((posterior.metadata or {}).get("sector", ""))
+                        if isinstance(getattr(posterior, "metadata", {}), Mapping)
+                        else ""
+                    ),
                     "theme_rotation": extract_symbol_theme_metadata(
                         global_context=global_context,
                         symbol=symbol,
@@ -599,6 +819,80 @@ def _run_bayesian_selection_phase(
         record.rank = index
         record.metadata = dict(record.metadata or {})
         record.metadata["rank"] = index
+    counterfactual_record_by_symbol = {
+        record.symbol: record for record in counterfactual_bayesian_records
+    }
+    counterfactual_bayesian_records = [
+        counterfactual_record_by_symbol.get(record.symbol)
+        or replace(
+            record,
+            metadata={
+                **dict(record.metadata or {}),
+                "fundamental_research_variant": "unchanged_no_eligible_dossier",
+            },
+        )
+        for record in bayesian_records
+    ]
+    counterfactual_bayesian_records.sort(
+        key=lambda item: (-float(item.posterior_action_score), item.symbol)
+    )
+    for index, record in enumerate(counterfactual_bayesian_records, start=1):
+        record.rank = index
+        record.metadata = dict(record.metadata or {})
+        record.metadata["rank"] = index
+
+    counterfactual_shortlist: list[Any] = []
+    if counterfactual_by_symbol:
+        counterfactual_ranked = sorted(
+            bayesian_records,
+            key=lambda item: (
+                -float(
+                    counterfactual_by_symbol.get(item.symbol, {}).get(
+                        "posterior_action_score", item.posterior_action_score
+                    )
+                ),
+                item.symbol,
+            ),
+        )
+        for index, record in enumerate(counterfactual_ranked, start=1):
+            payload = counterfactual_by_symbol.get(record.symbol)
+            if payload is not None:
+                payload["rank"] = index
+
+        counterfactual_shortlist = _build_shortlist_from_bayesian_records(
+            posterior_results=[
+                {
+                    **record.to_dict(),
+                    **counterfactual_by_symbol.get(record.symbol, {}),
+                    "metadata": {
+                        **dict(record.metadata or {}),
+                        **counterfactual_by_symbol.get(record.symbol, {}),
+                    },
+                    "rank": int(
+                        counterfactual_by_symbol.get(record.symbol, {}).get("rank", record.rank)
+                    ),
+                }
+                for record in bayesian_records
+            ],
+            company_name_map=company_name_map,
+            top_k=top_k,
+        )
+        counterfactual_shortlist_by_symbol = {
+            item.symbol: item for item in counterfactual_shortlist
+        }
+        for record in bayesian_records:
+            payload = counterfactual_by_symbol.get(record.symbol)
+            if payload is None:
+                continue
+            counterfactual_item = counterfactual_shortlist_by_symbol.get(record.symbol)
+            payload["shortlisted"] = counterfactual_item is not None
+            payload["pre_control_suggested_weight"] = (
+                float(counterfactual_item.suggested_weight)
+                if counterfactual_item is not None
+                else 0.0
+            )
+            record.metadata = dict(record.metadata or {})
+            record.metadata["fundamental_research_counterfactual"] = payload
 
     shortlist = _build_shortlist_from_bayesian_records(
         posterior_results=bayesian_records,
@@ -607,11 +901,21 @@ def _run_bayesian_selection_phase(
     )
     for item in shortlist:
         branch_map = research_by_symbol.get(item.symbol, {})
-        item.risk_flags = _dedupe_texts([risk for verdict in branch_map.values() for risk in verdict.investment_risks])[:5]
-        item.rationale = _dedupe_texts(
-            list(item.rationale)
-            + [verdict.thesis for verdict in branch_map.values()]
+        item.risk_flags = _dedupe_texts(
+            [risk for verdict in branch_map.values() for risk in verdict.investment_risks]
         )[:5]
+        item.rationale = _dedupe_texts(
+            list(item.rationale) + [verdict.thesis for verdict in branch_map.values()]
+        )[:5]
+        matching_record = next(
+            (record for record in bayesian_records if record.symbol == item.symbol),
+            None,
+        )
+        if matching_record is not None:
+            item.metadata = dict(item.metadata or {})
+            item.metadata["fundamental_research_counterfactual"] = dict(
+                matching_record.metadata.get("fundamental_research_counterfactual", {})
+            )
 
     funnel_summary = build_funnel_summary(
         universe_size=len(all_symbols),
@@ -634,10 +938,7 @@ def _run_bayesian_selection_phase(
     )
 
     codex_handoff_review = _is_codex_handoff_model_roles(model_roles)
-    if (
-        bool(getattr(model_roles, "agent_layer_enabled", False))
-        and not codex_handoff_review
-    ):
+    if bool(getattr(model_roles, "agent_layer_enabled", False)) and not codex_handoff_review:
         portfolio_master_agent = master_agent_cls(
             llm_client=llm_client_cls(timeout=master_timeout),
             model=master_model_resolution.resolved_model,
@@ -669,13 +970,9 @@ def _run_bayesian_selection_phase(
                 "Portfolio Master advisory packaged for Codex handoff; "
                 "deterministic pipeline continued."
             ),
-            "risk_adjusted_exposure": float(
-                global_context.risk_budget.get("target_exposure", 0.0)
-            ),
+            "risk_adjusted_exposure": float(global_context.risk_budget.get("target_exposure", 0.0)),
             "evidence_pack_token_count": int(
-                evidence_pack.get("trace_fragments", {})
-                .get("budget", {})
-                .get("token_count", 0)
+                evidence_pack.get("trace_fragments", {}).get("budget", {}).get("token_count", 0)
                 or 0
             ),
             "evidence_pack": evidence_pack,
@@ -692,7 +989,8 @@ def _run_bayesian_selection_phase(
             "portfolio_narrative": "Portfolio Master advisory disabled by no-agent mode.",
             "risk_adjusted_exposure": float(global_context.risk_budget.get("target_exposure", 0.0)),
             "evidence_pack_token_count": int(
-                evidence_pack.get("trace_fragments", {}).get("budget", {}).get("token_count", 0) or 0
+                evidence_pack.get("trace_fragments", {}).get("budget", {}).get("token_count", 0)
+                or 0
             ),
         }
     return BayesianSelectionState(
@@ -703,6 +1001,9 @@ def _run_bayesian_selection_phase(
         portfolio_master_output=portfolio_master_output,
         portfolio_master_meta=portfolio_master_meta,
         portfolio_master_reliability=float(portfolio_master_meta.get("confidence", 0.0) or 0.0),
+        counterfactual_shortlist=counterfactual_shortlist,
+        counterfactual_by_symbol=counterfactual_by_symbol,
+        counterfactual_bayesian_records=counterfactual_bayesian_records,
     )
 
 
@@ -792,7 +1093,10 @@ def _run_portfolio_construction_phase(
             if not sector or sector == "unknown":
                 continue
             base_cap = float(risk_decision.max_weight) * max(sector_bucket_limit, 1) * 1.05
-            sector_caps[sector] = min(float(risk_decision.gross_exposure_cap), max(base_cap, float(risk_decision.max_weight)))
+            sector_caps[sector] = min(
+                float(risk_decision.gross_exposure_cap),
+                max(base_cap, float(risk_decision.max_weight)),
+            )
 
     position_limits = dict(risk_decision.position_limits)
     for symbol in shortlisted_symbols:
@@ -801,8 +1105,16 @@ def _run_portfolio_construction_phase(
             continue
         tradability = dict(tradability_snapshot.get(symbol, {}) or {})
         base_limit = float(position_limits.get(symbol, risk_decision.max_weight))
-        momentum_strength = float(getattr(item, "metadata", {}).get("momentum_strength", 0.0) or tradability.get("momentum_strength", 0.0) or 0.0)
-        fake_breakout_penalty = float(getattr(item, "metadata", {}).get("fake_breakout_penalty", 0.0) or tradability.get("fake_breakout_risk", 0.0) or 0.0)
+        momentum_strength = float(
+            getattr(item, "metadata", {}).get("momentum_strength", 0.0)
+            or tradability.get("momentum_strength", 0.0)
+            or 0.0
+        )
+        fake_breakout_penalty = float(
+            getattr(item, "metadata", {}).get("fake_breakout_penalty", 0.0)
+            or tradability.get("fake_breakout_risk", 0.0)
+            or 0.0
+        )
         liquidity_score = float(tradability.get("liquidity_score", 1.0) or 1.0)
         adjusted_limit = base_limit
         adjusted_limit *= 0.78 + 0.22 * max(momentum_strength, 0.0)
@@ -831,9 +1143,7 @@ def _run_portfolio_construction_phase(
         "theme_names": theme_portfolio_constraints["theme_names"],
         "theme_phases": theme_portfolio_constraints["theme_phases"],
         "theme_tactical_lane": theme_portfolio_constraints["theme_tactical_lane"],
-        "theme_portfolio_diagnostic_notes": theme_portfolio_constraints[
-            "diagnostic_notes"
-        ],
+        "theme_portfolio_diagnostic_notes": theme_portfolio_constraints["diagnostic_notes"],
     }
 
     portfolio_constructor = portfolio_constructor_cls()
@@ -873,7 +1183,12 @@ def _run_portfolio_construction_phase(
             "tradability_snapshot": tradability_snapshot,
         },
         master_hints={
-            "portfolio_master_output": portfolio_master_output.model_dump() if portfolio_master_output is not None and hasattr(portfolio_master_output, "model_dump") else dict(portfolio_master_meta),
+            "portfolio_master_output": (
+                portfolio_master_output.model_dump()
+                if portfolio_master_output is not None
+                and hasattr(portfolio_master_output, "model_dump")
+                else dict(portfolio_master_meta)
+            ),
         },
         metadata={
             "portfolio_master_meta": dict(portfolio_master_meta),
@@ -881,7 +1196,9 @@ def _run_portfolio_construction_phase(
             "branch_summary_count": len(branch_summaries),
             "funnel_summary": dict(funnel_summary),
             "bayesian_record_count": len(bayesian_records),
-            "bayesian_top_symbols": [record.symbol for record in bayesian_records[: min(len(bayesian_records), 10)]],
+            "bayesian_top_symbols": [
+                record.symbol for record in bayesian_records[: min(len(bayesian_records), 10)]
+            ],
             "candidate_symbols": list(candidate_symbols),
             "shortlist_symbols": [item.symbol for item in shortlist],
             "theme_formal_reconciliation": theme_formal_reconciliation,
@@ -920,17 +1237,11 @@ def _apply_theme_formal_reconciliation_to_plan(
     current_weights = dict(getattr(portfolio_plan, "target_weights", {}) or {})
     current_positions = dict(getattr(portfolio_plan, "target_positions", {}) or {})
     allowed_symbols = {
-        str(symbol)
-        for symbol in list(reconciliation.get("formal_symbols") or [])
-        if str(symbol)
+        str(symbol) for symbol in list(reconciliation.get("formal_symbols") or []) if str(symbol)
     }
     valid_status = str(reconciliation.get("status") or "") == "formal"
     kept_weights = (
-        {
-            symbol: weight
-            for symbol, weight in current_weights.items()
-            if symbol in allowed_symbols
-        }
+        {symbol: weight for symbol, weight in current_weights.items() if symbol in allowed_symbols}
         if valid_status
         else {}
     )
@@ -938,9 +1249,7 @@ def _apply_theme_formal_reconciliation_to_plan(
     if not removed and valid_status:
         return
     kept_positions = {
-        symbol: value
-        for symbol, value in current_positions.items()
-        if symbol in kept_weights
+        symbol: value for symbol, value in current_positions.items() if symbol in kept_weights
     }
     target_gross = round(sum(abs(float(weight)) for weight in kept_weights.values()), 6)
     target_net = round(sum(float(weight) for weight in kept_weights.values()), 6)

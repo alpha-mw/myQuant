@@ -343,6 +343,16 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
     assert quant_summary.final_confidence == 0.0
     assert quant_summary.metadata["production_quant_evidence"] is False
     assert quant_summary.metadata["cross_section_diagnostic_only"] is True
+    deterministic_base = result["symbol_research_packets"]["A"].metadata[
+        "fundamental_deterministic_base"
+    ]
+    assert deterministic_base["base_score"] == 0.4
+    assert deterministic_base["valuation_price"] == 13.9
+    assert deterministic_base["valuation_price_as_of"] == "2026-04-09"
+    assert deterministic_base["runtime_audit"]["effective_mode"] == "off"
+    assert deterministic_base["runtime_audit"]["blockers"] == [
+        "current_data_generation_missing"
+    ]
     assert _FakeReader.batch_read_count == 1
     assert _FakeReader.single_read_count == 0
     assert {"ts_code", "trade_date", "close", "vol", "amount"}.issubset(

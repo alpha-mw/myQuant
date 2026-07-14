@@ -31,6 +31,14 @@ class FundamentalComponentResult:
     used_features: list[str] = field(default_factory=list)
 
 
+def _feature_available(snapshot: object, feature: str) -> bool:
+    data_quality = dict(getattr(snapshot, "data_quality", {}) or {})
+    available_fields = data_quality.get("available_fields")
+    if available_fields is None:
+        return True
+    return feature in {str(item) for item in available_fields}
+
+
 def financial_quality_analyzer(snapshot: FundamentalSnapshot) -> FundamentalComponentResult:
     result = FundamentalComponentResult(
         name="financial_quality",
@@ -42,35 +50,43 @@ def financial_quality_analyzer(snapshot: FundamentalSnapshot) -> FundamentalComp
         return result
 
     score = 0.0
-    if snapshot.roe >= 0.12:
+    available_features = [feature for feature in result.used_features if _feature_available(snapshot, feature)]
+    result.available = bool(snapshot.available and available_features)
+    if not result.available:
+        result.risks.append("财务快照缺少可评分字段，财务质量回退中性。")
+        return result
+
+    if _feature_available(snapshot, "roe") and snapshot.roe >= 0.12:
         result.evidence.append("ROE 处于较优区间。")
         score += 0.30
-    elif snapshot.roe <= 0.05:
+    elif _feature_available(snapshot, "roe") and snapshot.roe <= 0.05:
         result.risks.append("ROE 偏低。")
         score -= 0.20
 
-    if snapshot.gross_margin >= 0.28:
+    if _feature_available(snapshot, "gross_margin") and snapshot.gross_margin >= 0.28:
         result.evidence.append("毛利率稳健。")
         score += 0.20
-    elif snapshot.gross_margin <= 0.15:
+    elif _feature_available(snapshot, "gross_margin") and snapshot.gross_margin <= 0.15:
         result.risks.append("毛利率偏弱。")
         score -= 0.10
 
-    if snapshot.profit_growth >= 0.10 or snapshot.revenue_growth >= 0.12:
+    profit_available = _feature_available(snapshot, "profit_growth")
+    revenue_available = _feature_available(snapshot, "revenue_growth")
+    if (profit_available and snapshot.profit_growth >= 0.10) or (revenue_available and snapshot.revenue_growth >= 0.12):
         result.evidence.append("成长性仍在延续。")
         score += 0.25
-    elif snapshot.profit_growth <= -0.05:
+    elif profit_available and snapshot.profit_growth <= -0.05:
         result.risks.append("盈利增速转弱。")
         score -= 0.20
 
-    if snapshot.debt_ratio >= 0.60:
+    if _feature_available(snapshot, "debt_ratio") and snapshot.debt_ratio >= 0.60:
         result.risks.append("负债率偏高。")
         score -= 0.20
-    elif 0.0 < snapshot.debt_ratio <= 0.35:
+    elif _feature_available(snapshot, "debt_ratio") and 0.0 < snapshot.debt_ratio <= 0.35:
         result.evidence.append("杠杆水平温和。")
         score += 0.12
 
-    if snapshot.current_ratio >= 1.2:
+    if _feature_available(snapshot, "current_ratio") and snapshot.current_ratio >= 1.2:
         result.evidence.append("短期偿债能力尚可。")
         score += 0.08
 
@@ -89,21 +105,29 @@ def forecast_revision_analyzer(snapshot: ForecastSnapshot) -> FundamentalCompone
         return result
 
     score = 0.0
-    if snapshot.forecast_revision > 0.03:
-        result.evidence.append("一致预期修正向上。")
+    available_features = [feature for feature in result.used_features if _feature_available(snapshot, feature)]
+    result.available = bool(snapshot.available and available_features)
+    if not result.available:
+        result.risks.append("盈利预测缺少可评分字段，预测修正回退中性。")
+        return result
+
+    forecast_kind = str(snapshot.data_quality.get("forecast_kind", "analyst_consensus"))
+    revision_label = "公司业绩指引" if forecast_kind == "corporate_guidance" else "一致预期"
+    if _feature_available(snapshot, "forecast_revision") and snapshot.forecast_revision > 0.03:
+        result.evidence.append(f"{revision_label}修正向上。")
         score += 0.30
-    elif snapshot.forecast_revision < -0.03:
-        result.risks.append("一致预期修正向下。")
+    elif _feature_available(snapshot, "forecast_revision") and snapshot.forecast_revision < -0.03:
+        result.risks.append(f"{revision_label}修正向下。")
         score -= 0.30
 
-    if snapshot.eps_growth > 0.12:
+    if _feature_available(snapshot, "eps_growth") and snapshot.eps_growth > 0.12:
         result.evidence.append("EPS 预期增速积极。")
         score += 0.18
-    elif snapshot.eps_growth < 0:
+    elif _feature_available(snapshot, "eps_growth") and snapshot.eps_growth < 0:
         result.risks.append("EPS 预期增速为负。")
         score -= 0.18
 
-    if snapshot.coverage_count <= 1:
+    if _feature_available(snapshot, "coverage_count") and snapshot.coverage_count <= 1:
         result.risks.append("分析师覆盖稀少，预测可信度有限。")
         score -= 0.05
 
@@ -125,8 +149,8 @@ def valuation_analyzer(snapshot: FundamentalSnapshot) -> FundamentalComponentRes
         snapshot.dividend_yield,
     )
     has_valuation_metric = any(
-        _has_nonzero_metric(value)
-        for value in valuation_metrics
+        _feature_available(snapshot, name) and _has_nonzero_metric(value)
+        for name, value in zip(result.used_features, valuation_metrics)
     )
     result.available = bool(
         snapshot.available
@@ -138,27 +162,27 @@ def valuation_analyzer(snapshot: FundamentalSnapshot) -> FundamentalComponentRes
         return result
 
     score = 0.0
-    if 0 < snapshot.pe <= 14:
+    if _feature_available(snapshot, "pe") and 0 < snapshot.pe <= 14:
         result.evidence.append("PE 估值处于相对合理区间。")
         score += 0.22
-    elif snapshot.pe >= 35:
+    elif _feature_available(snapshot, "pe") and snapshot.pe >= 35:
         result.risks.append("PE 偏高。")
         score -= 0.18
 
-    if 0 < snapshot.pb <= 2.0:
+    if _feature_available(snapshot, "pb") and 0 < snapshot.pb <= 2.0:
         result.evidence.append("PB 不算拥挤。")
         score += 0.18
-    elif snapshot.pb >= 5.0:
+    elif _feature_available(snapshot, "pb") and snapshot.pb >= 5.0:
         result.risks.append("PB 偏高。")
         score -= 0.15
 
-    if 0 < snapshot.ps <= 2.5:
+    if _feature_available(snapshot, "ps") and 0 < snapshot.ps <= 2.5:
         score += 0.08
-    elif snapshot.ps >= 6.0:
+    elif _feature_available(snapshot, "ps") and snapshot.ps >= 6.0:
         result.risks.append("PS 偏高。")
         score -= 0.08
 
-    if snapshot.dividend_yield >= 0.03:
+    if _feature_available(snapshot, "dividend_yield") and snapshot.dividend_yield >= 0.03:
         result.evidence.append("股息率提供一定保护。")
         score += 0.06
 
