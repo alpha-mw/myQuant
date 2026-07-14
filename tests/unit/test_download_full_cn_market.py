@@ -44,7 +44,7 @@ def _load_module(
         "quant_investor.market.config",
         "quant_investor.fetch_cn_index_components",
     ]:
-        sys.modules.pop(module_name, None)
+        monkeypatch.delitem(sys.modules, module_name, raising=False)
     module_name = "quant_investor.market.download_cn"
     module = importlib.import_module(module_name)
     monkeypatch.setattr(module, "TUSHARE_TOKEN", "dummy-token")
@@ -1765,7 +1765,7 @@ def test_invalid_cn_freshness_env_values_fall_back_to_defaults(monkeypatch, tmp_
         "quant_investor.market.config",
         "quant_investor.fetch_cn_index_components",
     ]:
-        sys.modules.pop(module_name, None)
+        monkeypatch.delitem(sys.modules, module_name, raising=False)
 
     download_module = importlib.import_module("quant_investor.market.download_cn")
     monkeypatch.setattr(download_module, "TUSHARE_TOKEN", "dummy-token")
@@ -1787,7 +1787,7 @@ def test_cn_market_data_dir_env_is_used(monkeypatch, tmp_path):
         "quant_investor.market.download_cn",
         "quant_investor.fetch_cn_index_components",
     ]:
-        sys.modules.pop(module_name, None)
+        monkeypatch.delitem(sys.modules, module_name, raising=False)
 
     fake_tushare = types.SimpleNamespace(pro_api=lambda token: object())
     monkeypatch.setitem(sys.modules, "tushare", fake_tushare)
@@ -1800,7 +1800,11 @@ def test_cn_market_data_dir_env_is_used(monkeypatch, tmp_path):
     downloader = download_module.CNFullMarketDownloader(years=3)
     assert downloader.data_dir == str(env_data_dir)
 
-    sys.modules.pop("quant_investor.fetch_cn_index_components", None)
+    monkeypatch.delitem(
+        sys.modules,
+        "quant_investor.fetch_cn_index_components",
+        raising=False,
+    )
     components_module = importlib.import_module("quant_investor.fetch_cn_index_components")
     captured: dict[str, str] = {}
 
