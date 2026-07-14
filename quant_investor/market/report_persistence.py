@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from quant_investor.market.config import resolve_market_analysis_output_dir
 from quant_investor.market.runtime_profile import profile_stage
 
 
@@ -45,10 +46,15 @@ def write_runtime_profile_artifacts(
 ) -> dict[str, str]:
     """Write runtime profile JSON/Markdown next to the market reports."""
 
+    resolved_output_dir = resolve_market_analysis_output_dir(
+        market,
+        analysis_output_dir,
+    )
     profile_dir = _runtime_profile_dir(
         report_paths,
-        analysis_output_dir=analysis_output_dir,
+        analysis_output_dir=resolved_output_dir,
     )
+    profile_dir = resolve_market_analysis_output_dir(market, profile_dir)
     profile_dir.mkdir(parents=True, exist_ok=True)
     profile_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     runtime_profile_json = (
@@ -90,6 +96,10 @@ def persist_market_analysis_outputs(
 ) -> MarketAnalysisPersistenceResult:
     """Persist full-market reports and runtime profile artifacts."""
 
+    resolved_output_dir = resolve_market_analysis_output_dir(
+        market,
+        analysis_output_dir,
+    )
     with profile_stage(
         runtime_profiler,
         "analysis_report_persistence",
@@ -102,6 +112,7 @@ def persist_market_analysis_outputs(
             generate_full_report(
                 all_results,
                 market=market,
+                output_dir=str(resolved_output_dir),
                 total_capital=total_capital,
                 top_k=top_k,
             )
@@ -111,7 +122,7 @@ def persist_market_analysis_outputs(
     runtime_profile_payload = runtime_profiler.to_dict()
     runtime_paths = write_runtime_profile_artifacts(
         market=market,
-        analysis_output_dir=analysis_output_dir,
+        analysis_output_dir=resolved_output_dir,
         report_paths=report_paths,
         runtime_profiler=runtime_profiler,
         runtime_profile_payload=runtime_profile_payload,

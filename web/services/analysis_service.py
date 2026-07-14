@@ -13,14 +13,21 @@ import sys
 import tempfile
 import threading
 import time
-from collections import Counter
 from copy import deepcopy
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
+from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
 from quant_investor.llm_provider_priority import resolve_runtime_role_models
+from quant_investor.versioning import (
+    ARCHITECTURE_VERSION,
+    BRANCH_SCHEMA_VERSION,
+    LIKELIHOOD_SCHEMA_VERSION,
+    REPORT_PROTOCOL_VERSION,
+)
 from web.config import APP_DB_PATH, PROJECT_ROOT, PROJECT_VENV_PYTHON, RESULTS_DIR, STOCK_DB_PATH, WEB_ANALYSIS_DIR
+from web.request_contract import reject_intelligence_named_keys
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +52,52 @@ CREATE TABLE IF NOT EXISTS analysis_sessions (
 );
 """
 
-BRANCH_ORDER = ["kline", "quant", "llm_debate", "intelligence", "macro"]
+BRANCH_ORDER = ["kline", "quant", "fundamental", "llm_debate", "macro"]
+BRANCH_SUPPORT_DENOMINATOR = len(CANONICAL_BRANCH_ORDER)
 BRANCH_LABELS = {
     "kline": "K线分析",
-    "quant": "传统量化分支",
+    "quant": "量化分支",
+    "fundamental": "基本面分支",
     "llm_debate": "LLM 多空辩论",
-    "intelligence": "多维智能融合",
     "macro": "宏观分支",
+}
+_BRANCH_REQUEST_ALIASES = {"kronos": "kline"}
+_SUPPORTED_BRANCH_REQUEST_KEYS = set(BRANCH_ORDER) | set(_BRANCH_REQUEST_ALIASES)
+_CURRENT_WEB_SCHEMA_ENVELOPE = {
+    "architecture_version": ARCHITECTURE_VERSION,
+    "branch_schema_version": BRANCH_SCHEMA_VERSION,
+    "likelihood_schema_version": LIKELIHOOD_SCHEMA_VERSION,
+    "report_protocol_version": REPORT_PROTOCOL_VERSION,
+}
+
+
+def _schema_envelope_from_object(value: Any, *, label: str) -> dict[str, str]:
+    envelope: dict[str, str] = {}
+    for field_name, expected_value in _CURRENT_WEB_SCHEMA_ENVELOPE.items():
+        actual = getattr(value, field_name, None)
+        if actual != expected_value:
+            raise ValueError(
+                f"{label} {field_name} mismatch: "
+                f"expected {expected_value!r}, got {actual!r}"
+            )
+        envelope[field_name] = actual
+    return envelope
+
+_ANALYSIS_REQUEST_KEYS = {
+    "mode",
+    "targets",
+    "preset",
+    "market",
+    "branches",
+    "risk",
+    "portfolio",
+    "llm_debate",
+    "stocks",
+    "capital",
+    "risk_level",
+    "enable_kline",
+    "enable_kronos",
+    "enable_llm_debate",
 }
 
 ANALYSIS_PRESETS: dict[str, dict[str, Any]] = {
@@ -62,10 +108,10 @@ ANALYSIS_PRESETS: dict[str, dict[str, Any]] = {
         "mode": "single",
         "branches": {
             "kline": {"enabled": True, "settings": {"prediction_horizon": "20d", "trend_window": "60d", "backend": "heuristic"}},
-            "quant": {"enabled": True, "settings": {"factor_pack": "core", "rebalance": "monthly"}},
+            "quant": {"settings": {"factor_pack": "core", "rebalance": "monthly"}},
+            "fundamental": {"settings": {}},
             "llm_debate": {"enabled": False, "settings": {"rounds": 2}},
-            "intelligence": {"enabled": True, "settings": {"event_risk": True, "capital_flow": True}},
-            "macro": {"enabled": True, "settings": {"overlay_strength": "medium"}},
+            "macro": {"settings": {"overlay_strength": "medium"}},
         },
         "risk": {
             "capital": 1_000_000.0,
@@ -92,10 +138,10 @@ ANALYSIS_PRESETS: dict[str, dict[str, Any]] = {
         "mode": "single",
         "branches": {
             "kline": {"enabled": True, "settings": {"prediction_horizon": "60d", "trend_window": "120d", "backend": "heuristic"}},
-            "quant": {"enabled": True, "settings": {"factor_pack": "expanded", "rebalance": "weekly"}},
+            "quant": {"settings": {"factor_pack": "expanded", "rebalance": "weekly"}},
+            "fundamental": {"settings": {}},
             "llm_debate": {"enabled": True, "settings": {"rounds": 3}},
-            "intelligence": {"enabled": True, "settings": {"event_risk": True, "capital_flow": True, "breadth": True}},
-            "macro": {"enabled": True, "settings": {"overlay_strength": "medium"}},
+            "macro": {"settings": {"overlay_strength": "medium"}},
         },
         "risk": {
             "capital": 1_000_000.0,
@@ -122,10 +168,10 @@ ANALYSIS_PRESETS: dict[str, dict[str, Any]] = {
         "mode": "holdings",
         "branches": {
             "kline": {"enabled": True, "settings": {"prediction_horizon": "20d", "trend_window": "60d", "backend": "heuristic"}},
-            "quant": {"enabled": True, "settings": {"factor_pack": "portfolio", "rebalance": "monthly"}},
+            "quant": {"settings": {"factor_pack": "portfolio", "rebalance": "monthly"}},
+            "fundamental": {"settings": {}},
             "llm_debate": {"enabled": True, "settings": {"rounds": 2}},
-            "intelligence": {"enabled": True, "settings": {"event_risk": True, "capital_flow": True, "breadth": True}},
-            "macro": {"enabled": True, "settings": {"overlay_strength": "high"}},
+            "macro": {"settings": {"overlay_strength": "high"}},
         },
         "risk": {
             "capital": 1_000_000.0,
@@ -152,10 +198,10 @@ ANALYSIS_PRESETS: dict[str, dict[str, Any]] = {
         "mode": "holdings",
         "branches": {
             "kline": {"enabled": True, "settings": {"prediction_horizon": "20d", "trend_window": "60d", "backend": "heuristic"}},
-            "quant": {"enabled": False, "settings": {"factor_pack": "core"}},
+            "quant": {"settings": {"factor_pack": "core"}},
+            "fundamental": {"settings": {}},
             "llm_debate": {"enabled": False, "settings": {"rounds": 2}},
-            "intelligence": {"enabled": True, "settings": {"event_risk": True, "capital_flow": True, "breadth": True}},
-            "macro": {"enabled": True, "settings": {"overlay_strength": "high"}},
+            "macro": {"settings": {"overlay_strength": "high"}},
         },
         "risk": {
             "capital": 1_000_000.0,
@@ -248,6 +294,8 @@ def _connect_session_db() -> sqlite3.Connection:
 
 
 def _save_analysis_session(result: dict[str, Any]) -> None:
+    _require_current_web_result_contract(result)
+    _normalize_request_payload(result.get("request", {}))
     conn = _connect_session_db()
     conn.execute(
         """
@@ -297,15 +345,6 @@ def _parse_iso_datetime(value: Any) -> datetime | None:
         return datetime.fromisoformat(str(value))
     except (TypeError, ValueError):
         return None
-
-
-def _parse_legacy_datetime(value: str | None) -> str:
-    if not value:
-        return datetime.now().isoformat(timespec="seconds")
-    try:
-        return datetime.strptime(value, "%Y%m%d_%H%M%S").isoformat(timespec="seconds")
-    except ValueError:
-        return datetime.now().isoformat(timespec="seconds")
 
 
 def _load_json(path: Path) -> dict[str, Any] | list[Any] | None:
@@ -511,11 +550,16 @@ def _normalize_rank_weights(
 
 def _rank_market_recommendation(item: dict[str, Any]) -> float:
     action_multiplier = 1.0 if str(item.get("action", "watch")) == "buy" else 0.45
+    branch_count = float(len(CANONICAL_BRANCH_ORDER))
+    positive_branch_count = min(
+        max(float(item.get("branch_positive_count", 0.0)), 0.0),
+        branch_count,
+    )
     return (
         max(float(item.get("suggested_weight", 0.0)), 0.001)
         * (1 + max(float(item.get("consensus_score", 0.0)), 0.0))
         * (0.8 + max(float(item.get("confidence", 0.0)), 0.0))
-        * (1 + max(float(item.get("branch_positive_count", 0.0)), 0.0) / 5.0)
+        * (1 + positive_branch_count / branch_count)
         * action_multiplier
     )
 
@@ -684,7 +728,25 @@ def _run_market_analysis(
     )
     portfolio_decision = dag_artifacts.get("portfolio_decision")
     report_bundle = dag_artifacts.get("report_bundle")
+    schema_envelope = _schema_envelope_from_object(
+        report_bundle,
+        label="market DAG ReportBundle",
+    )
     branch_summaries = dict(dag_artifacts.get("branch_summaries", {}))
+    branch_summary_names = set(branch_summaries)
+    expected_branch_summaries = set(CANONICAL_BRANCH_ORDER)
+    if branch_summary_names != expected_branch_summaries:
+        missing = sorted(expected_branch_summaries - branch_summary_names)
+        unexpected = sorted(branch_summary_names - expected_branch_summaries)
+        details: list[str] = []
+        if missing:
+            details.append("missing branches: " + ", ".join(missing))
+        if unexpected:
+            details.append("unsupported branches: " + ", ".join(unexpected))
+        raise ValueError(
+            "market DAG must return exactly the canonical branch summaries; "
+            + "; ".join(details)
+        )
     shortlist = list(dag_artifacts.get("shortlist", []) or [])
     global_context = dag_artifacts.get("global_context")
     data_snapshot = dict(
@@ -757,6 +819,7 @@ def _run_market_analysis(
     execution_notes.extend(warnings[:3])
 
     result = {
+        **schema_envelope,
         "analysis_id": str(normalized_request.get("analysis_id") or datetime.now().strftime("%Y%m%d_%H%M%S")),
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "source": "web",
@@ -915,7 +978,13 @@ def _build_llm_assignments(config: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _normalize_request_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    reject_intelligence_named_keys(raw)
     payload = deepcopy(raw)
+    unknown_request_keys = sorted(set(payload) - _ANALYSIS_REQUEST_KEYS)
+    if unknown_request_keys:
+        raise ValueError(
+            "unknown analysis request fields: " + ", ".join(unknown_request_keys)
+        )
     preset_id = str(payload.get("preset", "quick_scan"))
     preset = deepcopy(ANALYSIS_PRESETS.get(preset_id, ANALYSIS_PRESETS["quick_scan"]))
 
@@ -934,16 +1003,38 @@ def _normalize_request_payload(raw: dict[str, Any]) -> dict[str, Any]:
     branches = _default_branch_defaults()
     for name, config in preset.get("branches", {}).items():
         branches[name] = deepcopy(config)
-    for name, config in (payload.get("branches") or {}).items():
-        if name not in branches:
-            branches[name] = {"enabled": True, "settings": {}}
-        branches[name] = _merge_branch_settings(branches[name], config)
+    branch_overrides = payload.get("branches") or {}
+    if not isinstance(branch_overrides, dict):
+        raise ValueError("branches must be an object")
+    unknown_branch_keys = sorted(set(branch_overrides) - _SUPPORTED_BRANCH_REQUEST_KEYS)
+    if unknown_branch_keys:
+        raise ValueError(
+            "branches contains unsupported keys: "
+            + ", ".join(unknown_branch_keys)
+        )
+    for branch_name in CANONICAL_BRANCH_ORDER:
+        config = branch_overrides.get(branch_name)
+        if isinstance(config, dict) and "enabled" in config:
+            raise ValueError(
+                f"branches.{branch_name}.enabled is not supported; "
+                "v14 canonical branches always execute"
+            )
+    # Historical ``kronos`` request payloads map to the existing K-line
+    # configuration surface. If both are present, the current ``kline`` key wins.
+    for request_name in ("kronos", *BRANCH_ORDER):
+        if request_name not in branch_overrides:
+            continue
+        name = _BRANCH_REQUEST_ALIASES.get(request_name, request_name)
+        branches[name] = _merge_branch_settings(
+            branches[name], branch_overrides[request_name]
+        )
+
+    for branch_name in CANONICAL_BRANCH_ORDER:
+        branches.setdefault(branch_name, {"settings": {}}).pop("enabled", None)
 
     legacy_to_branch = {
-        "enable_macro": "macro",
         "enable_kronos": "kline",
         "enable_kline": "kline",
-        "enable_intelligence": "intelligence",
         "enable_llm_debate": "llm_debate",
     }
     for legacy_key, branch_name in legacy_to_branch.items():
@@ -967,11 +1058,21 @@ def _normalize_request_payload(raw: dict[str, Any]) -> dict[str, Any]:
     llm_debate = _default_llm_debate()
     llm_debate.update(deepcopy(preset.get("llm_debate", {})))
     llm_debate.update(deepcopy(payload.get("llm_debate", {})))
-    llm_debate["enabled"] = bool(branches.get("llm_debate", {}).get("enabled", llm_debate.get("enabled", True)))
+    llm_debate["enabled"] = bool(
+        branches.get("llm_debate", {}).get(
+            "enabled", llm_debate.get("enabled", True)
+        )
+    )
     llm_debate["assignments"] = _build_llm_assignments(llm_debate)
     branches["llm_debate"] = _merge_branch_settings(
-        branches.get("llm_debate", {"enabled": llm_debate["enabled"], "settings": {}}),
-        {"enabled": llm_debate["enabled"], "settings": {"rounds": llm_debate.get("rounds", 2)}},
+        branches.get(
+            "llm_debate",
+            {"enabled": llm_debate["enabled"], "settings": {}},
+        ),
+        {
+            "enabled": llm_debate["enabled"],
+            "settings": {"rounds": llm_debate.get("rounds", 2)},
+        },
     )
 
     normalized = {
@@ -986,10 +1087,8 @@ def _normalize_request_payload(raw: dict[str, Any]) -> dict[str, Any]:
         "stocks": targets,
         "capital": float(risk.get("capital", 1_000_000.0)),
         "risk_level": str(risk.get("risk_level", "中等")),
-        "enable_macro": bool(branches.get("macro", {}).get("enabled", True)),
         "enable_kline": bool(branches.get("kline", {}).get("enabled", True)),
         "enable_kronos": bool(branches.get("kline", {}).get("enabled", True)),
-        "enable_intelligence": bool(branches.get("intelligence", {}).get("enabled", True)),
         "enable_llm_debate": bool(branches.get("llm_debate", {}).get("enabled", True)),
     }
     return normalized
@@ -1022,7 +1121,8 @@ def _build_symbol_decision(item: dict[str, Any]) -> dict[str, Any]:
     risk_flags = [str(flag) for flag in item.get("risk_flags", [])]
     rationale_parts = [
         f"共识得分 {float(item.get('consensus_score', 0.0)):+.2f}",
-        f"支持分支 {int(item.get('branch_positive_count', 0))}/5",
+        "支持分支 "
+        f"{int(item.get('branch_positive_count', 0))}/{BRANCH_SUPPORT_DENOMINATOR}",
     ]
     if item.get("trend_regime"):
         rationale_parts.append(f"趋势状态 {item['trend_regime']}")
@@ -1047,17 +1147,43 @@ def _build_symbol_decision(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _require_current_web_result_contract(payload: dict[str, Any]) -> None:
+    for field_name, expected_value in _CURRENT_WEB_SCHEMA_ENVELOPE.items():
+        actual = payload.get(field_name)
+        if actual != expected_value:
+            raise ValueError(
+                f"current Web result {field_name} mismatch: "
+                f"expected {expected_value!r}, got {actual!r}"
+            )
+
+    raw_branches = payload.get("branches")
+    if not isinstance(raw_branches, list):
+        raise ValueError("current Web result branches must be an ordered list")
+
+    branch_names: list[str] = []
+    for index, branch in enumerate(raw_branches):
+        if not isinstance(branch, dict):
+            raise ValueError(f"current Web result branches[{index}] must be an object")
+        branch_name = str(branch.get("branch_name", ""))
+        branch_names.append(branch_name)
+        if branch_name in CANONICAL_BRANCH_ORDER and branch.get("enabled") is not True:
+            raise ValueError(
+                f"current Web result canonical branch {branch_name!r} "
+                "must be enabled"
+            )
+
+    if branch_names != BRANCH_ORDER:
+        raise ValueError(
+            "current Web result branches mismatch: "
+            f"expected {BRANCH_ORDER!r}, got {branch_names!r}"
+        )
+
+
 def _normalize_web_result(raw: dict[str, Any]) -> dict[str, Any]:
     payload = dict(raw)
+    _require_current_web_result_contract(payload)
     request = _normalize_request_payload(payload.get("request", {}))
     raw_branches = payload.get("branches", [])
-    if isinstance(raw_branches, dict):
-        raw_branches = [
-            {"branch_name": name, **branch} if isinstance(branch, dict) else {"branch_name": name}
-            for name, branch in raw_branches.items()
-        ]
-    elif not isinstance(raw_branches, list):
-        raw_branches = []
     normalized_branches = []
     for branch in raw_branches:
         if not isinstance(branch, dict):
@@ -1107,6 +1233,7 @@ def _normalize_web_result(raw: dict[str, Any]) -> dict[str, Any]:
         ),
     }
     normalized = {
+        **_CURRENT_WEB_SCHEMA_ENVELOPE,
         "analysis_id": str(payload.get("analysis_id", datetime.now().strftime("%Y%m%d_%H%M%S"))),
         "created_at": str(payload.get("created_at", datetime.now().isoformat(timespec="seconds"))),
         "source": str(payload.get("source", "web")),
@@ -1139,86 +1266,11 @@ def _normalize_web_result(raw: dict[str, Any]) -> dict[str, Any]:
             "enabled_branches": [
                 name
                 for name, branch in request.get("branches", {}).items()
-                if branch.get("enabled")
+                if name in CANONICAL_BRANCH_ORDER or branch.get("enabled")
             ],
         },
     }
     return normalized
-
-
-def _normalize_legacy_result(raw: dict[str, Any], source: str) -> dict[str, Any]:
-    market = str(raw.get("market") or ("US" if "us_backtest" in source else "CN")).upper()
-    strategy = raw.get("strategy", {})
-    timestamp = raw.get("timestamp")
-    latest_trade_date = str(
-        raw.get("latest_trade_date")
-        or strategy.get("latest_trade_date")
-        or strategy.get("effective_target_trade_date")
-        or ""
-    )
-    data_snapshot = deepcopy(_ensure_dict(raw.get("data_snapshot")))
-    if not data_snapshot:
-        data_snapshot = {
-            "market": market,
-            "universe_key": "full_a" if market == "CN" else "full_us",
-            "local_latest_trade_date": latest_trade_date,
-            "freshness_mode": str(raw.get("freshness_mode") or "stable"),
-            "category_symbol_counts": {},
-            "date_distribution_top": [],
-            "data_directories": [],
-            "resolver_priority": [],
-            "data_quality_issue_count": int(raw.get("data_quality_issue_count", 0) or 0),
-            "summary_text": (
-                f"本地 {market} 数据更新至 {latest_trade_date}。"
-                if latest_trade_date
-                else f"本地 {market} 数据日期未知。"
-            ),
-        }
-
-    branches = []
-    for branch_name, branch in (raw.get("branches") or {}).items():
-        branches.append(
-            {
-                "branch_name": branch_name,
-                "score": float(branch.get("score", 0.0)),
-                "confidence": float(branch.get("confidence", 0.0)),
-                "explanation": str(branch.get("signals_summary", "")),
-                "risks": [],
-                "top_symbols": [],
-            }
-        )
-
-    normalized = {
-        "analysis_id": timestamp or f"legacy_{Path(source).stem}",
-        "created_at": _parse_legacy_datetime(timestamp),
-        "source": "legacy",
-        "request": {
-            "targets": raw.get("stocks", []),
-            "market": market,
-            "preset": "portfolio_builder" if len(raw.get("stocks", [])) > 1 else "single_deep_dive",
-            "mode": "holdings" if len(raw.get("stocks", [])) > 1 else "single",
-        },
-        "total_time": 0.0,
-        "research_mode": "legacy",
-        "target_exposure": float(strategy.get("target_exposure", 0.0)),
-        "style_bias": str(strategy.get("style_bias", "均衡")),
-        "sector_preferences": [str(item) for item in strategy.get("sector_preferences", [])],
-        "candidate_symbols": [str(item) for item in strategy.get("candidate_symbols", [])],
-        "data_snapshot": data_snapshot,
-        "execution_notes": [],
-        "branches": branches,
-        "risk": {
-            "risk_level": str(strategy.get("risk_summary", {}).get("risk_level", "unknown")),
-            "volatility": float(strategy.get("risk_summary", {}).get("volatility", 0.0)),
-            "max_drawdown": float(strategy.get("risk_summary", {}).get("max_drawdown", 0.0)),
-            "sharpe_ratio": 0.0,
-            "warnings": [str(item) for item in strategy.get("risk_summary", {}).get("warnings", [])],
-        },
-        "trade_recommendations": [],
-        "report_markdown": str(raw.get("report", "")),
-        "execution_log": [],
-    }
-    return _normalize_web_result(normalized)
 
 
 def _iter_result_paths() -> list[tuple[str, Path]]:
@@ -1227,10 +1279,6 @@ def _iter_result_paths() -> list[tuple[str, Path]]:
     for path in sorted(WEB_ANALYSIS_DIR.glob("analysis_*.json"), reverse=True):
         if WEB_RESULT_FILE_RE.match(path.name):
             paths.append(("web", path))
-    for path in sorted((RESULTS_DIR / "cn_analysis").glob("analysis_*.json"), reverse=True):
-        paths.append(("legacy_cn", path))
-    for path in sorted((RESULTS_DIR / "us_backtest").glob("analysis_*.json"), reverse=True):
-        paths.append(("legacy_us", path))
     return paths
 
 
@@ -1238,9 +1286,9 @@ def _load_normalized_result(path: Path, source: str) -> dict[str, Any] | None:
     raw = _load_json(path)
     if not isinstance(raw, dict):
         return None
-    if source == "web":
-        return _normalize_web_result(raw)
-    return _normalize_legacy_result(raw, str(path))
+    if source != "web":
+        raise ValueError(f"legacy analysis artifact source is unsupported: {source}")
+    return _normalize_web_result(raw)
 
 
 def get_analysis_options() -> dict[str, Any]:
@@ -1261,7 +1309,11 @@ def get_analysis_options() -> dict[str, Any]:
             for preset in ANALYSIS_PRESETS.values()
         ],
         "branch_defaults": {
-            name: {"enabled": True, "settings": {}}
+            name: (
+                {"enabled": True, "settings": {}}
+                if name not in CANONICAL_BRANCH_ORDER
+                else {"settings": {}}
+            )
             for name in BRANCH_ORDER
         },
         "llm_models": [

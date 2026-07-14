@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from quant_investor.market.report_persistence import (
     persist_market_analysis_outputs,
 )
@@ -46,7 +48,10 @@ def test_persist_outputs_writes_profile_next_to_report(tmp_path):
     )
     report_dir = tmp_path / "reports"
 
+    captured: dict[str, object] = {}
+
     def _generate_full_report(*args, **kwargs):
+        captured.update(kwargs)
         return {
             "summary_report": str(report_dir / "summary.md"),
             "trade_report": str(report_dir / "trade.md"),
@@ -88,6 +93,37 @@ def test_persist_outputs_writes_profile_next_to_report(tmp_path):
     assert runtime_profile_json.startswith(str(report_dir))
     assert runtime_profile_md.startswith(str(report_dir))
     assert result.report_paths["report_bundle"].markdown_report == ""
+    assert captured["output_dir"] == str(tmp_path)
     assert Path(runtime_profile_md).read_text(encoding="utf-8").startswith(
         "# Market Runtime Profile"
     )
+
+
+def test_persistence_rejects_retired_output_root_before_writing(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.chdir(tmp_path)
+    profiler = MarketRuntimeProfiler(market="CN", universe="hs300")
+    called = False
+
+    def _generate_full_report(*args, **kwargs):
+        nonlocal called
+        called = True
+        return {}
+
+    with pytest.raises(ValueError, match="read-only"):
+        persist_market_analysis_outputs(
+            all_results={"hs300": []},
+            market="CN",
+            total_capital=1_000_000,
+            top_k=3,
+            analysis_output_dir="results/cn_analysis_full",
+            category_count=1,
+            runtime_profiler=profiler,
+            report_bundle=SimpleNamespace(markdown_report=""),
+            generate_full_report=_generate_full_report,
+        )
+
+    assert called is False
+    assert not (tmp_path / "results" / "cn_analysis_full").exists()

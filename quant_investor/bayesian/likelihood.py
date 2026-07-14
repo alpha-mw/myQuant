@@ -7,27 +7,50 @@ signal given the stock will outperform.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Mapping
 
 from quant_investor.bayesian.calibration import CalibrationStore
 from quant_investor.bayesian.types import LikelihoodSet
 from quant_investor.branch_contracts import BranchResult
+from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
 
 # Default branch reliabilities used when metadata is missing.
 _DEFAULT_RELIABILITY: dict[str, float] = {
     "quant": 0.70,
     "fundamental": 0.60,
-    "intelligence": 0.55,
-    "macro": 0.50,
 }
 
-# Default pairwise correlations between branch signals.
-# These are used to discount the joint information content.
-_DEFAULT_CORRELATIONS: dict[tuple[str, str], float] = {
-    ("fundamental", "intelligence"): 0.35,
-    ("quant", "fundamental"): 0.20,
-    ("quant", "intelligence"): 0.15,
+# Preserve the surviving v13 effective coefficients exactly.  These values are
+# already normalized against the former three-source mean; the posterior must
+# not re-normalize them after the v14 source-count reduction.
+_MOMENTUM_EFFECTIVE_WEIGHTS: dict[str, dict[str, float]] = {
+    "strong": {"quant": 1.0161290322580645, "fundamental": 0.7258064516129031},
+    "weak": {"quant": 1.0714285714285716, "fundamental": 0.8035714285714286},
+    "neutral": {"quant": 1.0327868852459017, "fundamental": 0.8360655737704918},
 }
+_MOMENTUM_BREAKOUT_EFFECTIVE_WEIGHTS: dict[str, dict[str, float]] = {
+    "strong": {"quant": 1.0606060606060608, "fundamental": 0.7575757575757577},
+    "weak": {"quant": 1.1131725417439704, "fundamental": 0.8348794063079777},
+    "neutral": {"quant": 1.0732538330494037, "fundamental": 0.8688245315161839},
+}
+
+
+def _finite_float(
+    value: Any,
+    field_name: str,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float:
+    resolved = float(value)
+    if not math.isfinite(resolved):
+        raise ValueError(f"{field_name} must be finite; got {value!r}.")
+    if minimum is not None and resolved < minimum:
+        raise ValueError(f"{field_name} must be >= {minimum}; got {value!r}.")
+    if maximum is not None and resolved > maximum:
+        raise ValueError(f"{field_name} must be <= {maximum}; got {value!r}.")
+    return resolved
 
 
 def _score_to_likelihood(
@@ -43,6 +66,17 @@ def _score_to_likelihood(
     - score in [-1, 1] drives the center
     - confidence and reliability moderate the extremity
     """
+    score = _finite_float(score, "score")
+    confidence = _finite_float(confidence, "confidence", minimum=0.0, maximum=1.0)
+    reliability = _finite_float(reliability, "reliability", minimum=0.0, maximum=1.0)
+    if calibrated_probability is not None:
+        calibrated_probability = _finite_float(
+            calibrated_probability,
+            "calibrated_probability",
+            minimum=0.0,
+            maximum=1.0,
+        )
+
     # Normalize score to [0, 1] range
     raw = (score + 1.0) / 2.0  # map [-1, 1] -> [0, 1]
     raw = max(0.0, min(1.0, raw))
@@ -54,7 +88,7 @@ def _score_to_likelihood(
     likelihood = 0.50 + (raw - 0.50) * blend_strength
     if calibrated_probability is not None:
         calibration_blend = 0.35 + 0.35 * blend_strength
-        likelihood = likelihood * (1.0 - calibration_blend) + float(calibrated_probability) * calibration_blend
+        likelihood = likelihood * (1.0 - calibration_blend) + calibrated_probability * calibration_blend
     return max(0.05, min(0.95, likelihood))
 
 
@@ -139,20 +173,31 @@ class SignalLikelihoodMapper:
         if self.global_context is None or self._selection_profile() != "momentum_leader":
             return {}
         regime = str(getattr(self.global_context, "macro_regime", "") or "")
-        breadth = float(getattr(self.global_context, "cross_section_quant", {}).get("breadth", 0.0) or 0.0)
+        breadth = _finite_float(
+            getattr(self.global_context, "cross_section_quant", {}).get("breadth", 0.0) or 0.0,
+            "cross_section_quant.breadth",
+        )
         state = self._symbol_state(symbol)
-        breakout_risk = float(state.get("fake_breakout_risk", 0.0) or 0.0)
+        breakout_risk = _finite_float(
+            state.get("fake_breakout_risk", 0.0) or 0.0,
+            "fake_breakout_risk",
+            minimum=0.0,
+            maximum=1.0,
+        )
         strong_regime = regime == "趋势上涨" or breadth >= 0.55
         weak_regime = regime in {"趋势下跌", "震荡高波"} or breadth <= 0.48
         if strong_regime:
-            weights = {"quant": 1.05, "fundamental": 0.75, "intelligence": 1.30}
+            bucket = "strong"
         elif weak_regime:
-            weights = {"quant": 1.00, "fundamental": 0.75, "intelligence": 1.05}
+            bucket = "weak"
         else:
-            weights = {"quant": 1.05, "fundamental": 0.85, "intelligence": 1.15}
-        if breakout_risk >= 0.65:
-            weights["intelligence"] *= 0.90
-        return weights
+            bucket = "neutral"
+        source = (
+            _MOMENTUM_BREAKOUT_EFFECTIVE_WEIGHTS
+            if breakout_risk >= 0.65
+            else _MOMENTUM_EFFECTIVE_WEIGHTS
+        )
+        return dict(source[bucket])
 
     def _branch_likelihood(
         self,
@@ -166,12 +211,24 @@ class SignalLikelihoodMapper:
                 "reliability": float(_DEFAULT_RELIABILITY.get(branch_name, 0.50)),
                 "sample_size": 0.0,
                 "calibration_probability": 0.50,
-                "setup_failure_penalty": 0.0,
             }
 
-        score = float(result.symbol_scores.get(symbol, result.final_score))
-        confidence = float(result.final_confidence)
-        reliability = float(result.metadata.get("reliability", _DEFAULT_RELIABILITY.get(branch_name, 0.50)))
+        score = _finite_float(
+            result.symbol_scores.get(symbol, result.final_score),
+            f"{branch_name}.score",
+        )
+        confidence = _finite_float(
+            result.final_confidence,
+            f"{branch_name}.confidence",
+            minimum=0.0,
+            maximum=1.0,
+        )
+        reliability = _finite_float(
+            result.metadata.get("reliability", _DEFAULT_RELIABILITY.get(branch_name, 0.50)),
+            f"{branch_name}.reliability",
+            minimum=0.0,
+            maximum=1.0,
+        )
         profile = self._selection_profile()
         calibration = (
             self.calibration_store.calibration_stats(branch_name, score)
@@ -189,37 +246,17 @@ class SignalLikelihoodMapper:
             ),
         )
 
-        setup_failure_penalty = 0.0
         if profile == "momentum_leader":
-            state = self._symbol_state(symbol)
             recall_bias = self._recall_bias(symbol)
-            volume_confirmation = float(state.get("volume_confirmation", 0.0) or 0.0)
-            breakout_readiness = float(state.get("breakout_readiness", 0.0) or 0.0)
-            fake_breakout_risk = float(state.get("fake_breakout_risk", 0.0) or 0.0)
-            if branch_name == "intelligence":
-                likelihood += 0.04 * volume_confirmation
-                likelihood += 0.03 * breakout_readiness
-                likelihood -= 0.08 * fake_breakout_risk
-            elif branch_name == "fundamental" and score < 0.0:
+            if branch_name == "fundamental" and score < 0.0:
                 likelihood -= 0.04
             likelihood += recall_bias
-            calibration_probability = float(calibration.get("probability", 0.50) or 0.50)
-            calibration_sample_size = float(calibration.get("sample_size", 0.0) or 0.0)
-            if (
-                branch_name == "intelligence"
-                and score > 0.20
-                and calibration_sample_size >= 3.0
-                and calibration_probability < 0.50
-            ):
-                setup_failure_penalty = min(1.0, (0.50 - calibration_probability) * 2.0)
-                likelihood -= 0.05 + 0.05 * setup_failure_penalty
         likelihood = max(0.05, min(0.95, likelihood))
         return likelihood, {
             "reliability": reliability,
             "sample_size": float(calibration.get("sample_size", 0.0) or 0.0),
             "calibration_probability": float(calibration.get("probability", 0.50) or 0.50),
             "recent_failure_rate": float(calibration.get("recent_failure_rate", 0.0) or 0.0),
-            "setup_failure_penalty": setup_failure_penalty,
         }
 
     def compute_likelihoods(
@@ -231,10 +268,18 @@ class SignalLikelihoodMapper:
     ) -> LikelihoodSet:
         """Compute likelihoods for a single symbol from all available branches.
 
-        For branches that only run on candidates (fundamental, intelligence),
+        Fundamental only runs on candidates, while Quant covers the funnel.
         non-candidate symbols get a neutral likelihood of 0.50.
         """
-        candidate_only_branches = {"fundamental", "intelligence"}
+        unexpected_branches = sorted(
+            set(branch_results) - set(CANONICAL_BRANCH_ORDER)
+        )
+        if unexpected_branches:
+            raise ValueError(
+                "Unexpected branch results for v14 likelihood mapping: "
+                + ", ".join(unexpected_branches)
+            )
+        candidate_only_branches = {"fundamental"}
         is_candidate = candidate_symbols is None or symbol in (candidate_symbols or set())
         profile = self._selection_profile()
         branch_meta: dict[str, dict[str, float]] = {}
@@ -243,27 +288,17 @@ class SignalLikelihoodMapper:
 
         if is_candidate:
             fundamental_l, branch_meta["fundamental"] = self._branch_likelihood("fundamental", branch_results, symbol)
-            intelligence_l, branch_meta["intelligence"] = self._branch_likelihood("intelligence", branch_results, symbol)
         else:
             fundamental_l = 0.50  # neutral for non-candidates
-            intelligence_l = 0.50
             branch_meta["fundamental"] = {
                 "reliability": float(_DEFAULT_RELIABILITY["fundamental"]),
                 "sample_size": 0.0,
                 "calibration_probability": 0.50,
                 "recent_failure_rate": 0.0,
-                "setup_failure_penalty": 0.0,
-            }
-            branch_meta["intelligence"] = {
-                "reliability": float(_DEFAULT_RELIABILITY["intelligence"]),
-                "sample_size": 0.0,
-                "calibration_probability": 0.50,
-                "recent_failure_rate": 0.0,
-                "setup_failure_penalty": 0.0,
             }
 
         evidence_sources = []
-        for name in ("quant", "fundamental", "intelligence"):
+        for name in ("quant", "fundamental"):
             if name in candidate_only_branches and not is_candidate:
                 continue
             if name in branch_results:
@@ -284,16 +319,23 @@ class SignalLikelihoodMapper:
             else 0.0
         )
         state = self._symbol_state(symbol)
-        fake_breakout_penalty = float(state.get("fake_breakout_risk", 0.0) or 0.0) if profile == "momentum_leader" else 0.0
-        setup_failure_penalty = (
-            max(float(branch_meta[name].get("setup_failure_penalty", 0.0)) for name in branch_meta)
-            if profile == "momentum_leader" and branch_meta
+        fake_breakout_penalty = (
+            _finite_float(
+                state.get("fake_breakout_risk", 0.0) or 0.0,
+                "fake_breakout_risk",
+                minimum=0.0,
+                maximum=1.0,
+            )
+            if profile == "momentum_leader"
             else 0.0
         )
         market_pressure = 0.0
         if self.global_context is not None and profile == "momentum_leader":
             regime = str(getattr(self.global_context, "macro_regime", "") or "")
-            breadth = float(getattr(self.global_context, "cross_section_quant", {}).get("breadth", 0.0) or 0.0)
+            breadth = _finite_float(
+                getattr(self.global_context, "cross_section_quant", {}).get("breadth", 0.0) or 0.0,
+                "cross_section_quant.breadth",
+            )
             if regime in {"趋势下跌", "震荡高波"} or breadth < 0.48:
                 market_pressure = 1.0
             elif regime == "趋势上涨" or breadth > 0.55:
@@ -302,10 +344,7 @@ class SignalLikelihoodMapper:
         return LikelihoodSet(
             quant_likelihood=quant_l,
             fundamental_likelihood=fundamental_l,
-            intelligence_likelihood=intelligence_l,
-            correlation_matrix={
-                f"{a}_{b}": corr for (a, b), corr in _DEFAULT_CORRELATIONS.items()
-            },
+            correlation_matrix={},
             metadata={
                 "evidence_sources": evidence_sources,
                 "profile": profile,
@@ -313,9 +352,11 @@ class SignalLikelihoodMapper:
                 "history_confidence": history_confidence,
                 "avg_reliability": avg_reliability,
                 "recall_bias": self._recall_bias(symbol) if profile == "momentum_leader" else 0.0,
-                "momentum_strength": float(state.get("momentum_strength", 0.0) or 0.0),
+                "momentum_strength": _finite_float(
+                    state.get("momentum_strength", 0.0) or 0.0,
+                    "momentum_strength",
+                ),
                 "fake_breakout_penalty": fake_breakout_penalty,
-                "setup_failure_penalty": setup_failure_penalty,
                 "crowding_penalty": self._crowding_penalty(symbol) if profile == "momentum_leader" else 0.0,
                 "calibration_samples": {
                     name: int(float(meta.get("sample_size", 0.0)))

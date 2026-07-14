@@ -61,7 +61,6 @@ class QuantInvestor:
         enable_quant: bool = True,
         enable_kline: bool = False,
         enable_fundamental: bool = True,
-        enable_intelligence: bool = True,
         kline_backend: str = "v13-retired",
         allow_synthetic_for_research: bool = False,
         enable_document_semantics: bool = True,
@@ -95,12 +94,11 @@ class QuantInvestor:
         self.enable_backtest = enable_backtest
         self.enable_alpha_mining = enable_alpha_mining
         self.enable_quant = enable_quant
-        # v13 canonical research has no kline branch. Preserve legacy kwargs as
+        # Canonical research has no kline branch. Preserve legacy kwargs as
         # accepted no-ops so older callers do not reactivate the retired path.
         self.enable_kline = False
         self.kline_backend = kline_backend
         self.enable_fundamental = enable_fundamental
-        self.enable_intelligence = enable_intelligence
         self.allow_synthetic_for_research = allow_synthetic_for_research
         self.enable_document_semantics = enable_document_semantics
         self.verbose = verbose

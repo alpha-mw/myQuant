@@ -110,7 +110,7 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
     import quant_investor.market.dag.context as dag_context
     import quant_investor.market.dag.packets as dag_packets
 
-    reviewed: dict[str, list[str]] = {"fundamental": [], "intelligence": []}
+    reviewed: dict[str, list[str]] = {"fundamental": []}
     frame_summary_calls = {"count": 0}
     provider_health_calls = {"count": 0}
     original_frame_summary = dag_packets._frame_summary
@@ -159,17 +159,6 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
             final_confidence=0.7,
         )
 
-    def _fake_intelligence_run(self, payload):
-        symbol = list(payload["stock_pool"])[0]
-        reviewed["intelligence"].append(symbol)
-        return BranchVerdict(
-            agent_name="intelligence",
-            thesis=f"intelligence {symbol}",
-            symbol=symbol,
-            final_score=0.3,
-            final_confidence=0.65,
-        )
-
     def _fake_macro_run(self, payload):
         return BranchVerdict(
             agent_name="macro",
@@ -186,7 +175,6 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
         return LikelihoodSet(
             quant_likelihood=0.6,
             fundamental_likelihood=0.65,
-            intelligence_likelihood=0.6,
         )
 
     def _fake_posterior(
@@ -211,7 +199,7 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
             posterior_action_score=rank_score,
             posterior_edge_after_costs=0.08,
             posterior_capacity_penalty=0.01,
-            evidence_sources=["quant", "fundamental", "intelligence"],
+            evidence_sources=["quant", "fundamental"],
             action_threshold_used=0.55,
         )
 
@@ -264,7 +252,6 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
     )
     monkeypatch.setattr(dag_module, "DeterministicFunnel", _FakeFunnel)
     monkeypatch.setattr(dag_module.FundamentalAgent, "run", _fake_fundamental_run)
-    monkeypatch.setattr(dag_module.IntelligenceAgent, "run", _fake_intelligence_run)
     monkeypatch.setattr(dag_module.MacroAgent, "run", _fake_macro_run)
     monkeypatch.setattr(dag_module.HierarchicalPriorBuilder, "build_prior", _fake_prior)
     monkeypatch.setattr(dag_module.SignalLikelihoodMapper, "compute_likelihoods", _fake_likelihoods)
@@ -291,7 +278,7 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
                     coverage_ratio=1.0,
                     source_priority=SOURCE_TUSHARE,
                 )
-                for branch in ("quant", "fundamental", "intelligence", "macro")
+                for branch in ("quant", "fundamental", "macro")
             },
             blocked_symbols=[],
             quantifiable_universe=["A", "B", "C", "D"],
@@ -332,7 +319,7 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
     )
 
     assert reviewed["fundamental"] == ["A", "B"]
-    assert reviewed["intelligence"] == ["A", "B"]
+    assert not hasattr(dag_module, "IntelligenceAgent")
     assert result["global_context"].universe_tiers["shortlistable"] == ["A", "B"]
     assert list(result["portfolio_decision"].target_weights) == ["A", "B"]
     assert result["portfolio_decision"].what_if_plan is not None
@@ -381,7 +368,7 @@ def test_holding_single_review_runs_branches_when_readiness_blocks_symbol(monkey
     import quant_investor.market.dag_executor as dag_module
     import quant_investor.market.dag.context as dag_context
 
-    reviewed: dict[str, list[str]] = {"fundamental": [], "intelligence": []}
+    reviewed: dict[str, list[str]] = {"fundamental": []}
 
     class _SingleFunnel:
         def __init__(self, *_args, **_kwargs):
@@ -407,18 +394,6 @@ def test_holding_single_review_runs_branches_when_readiness_blocks_symbol(monkey
             investment_risks=["fundamental readiness blocked; limited evidence"],
         )
 
-    def _fake_intelligence_run(self, payload):
-        symbol = list(payload["stock_pool"])[0]
-        reviewed["intelligence"].append(symbol)
-        return BranchVerdict(
-            agent_name="intelligence",
-            thesis=f"intelligence {symbol}",
-            symbol=symbol,
-            final_score=0.1,
-            final_confidence=0.35,
-            investment_risks=["intelligence readiness blocked; limited evidence"],
-        )
-
     def _fake_macro_run(self, payload):
         return BranchVerdict(
             agent_name="macro",
@@ -435,7 +410,6 @@ def test_holding_single_review_runs_branches_when_readiness_blocks_symbol(monkey
         return LikelihoodSet(
             quant_likelihood=0.5,
             fundamental_likelihood=0.4,
-            intelligence_likelihood=0.4,
         )
 
     def _fake_posterior(
@@ -458,7 +432,7 @@ def test_holding_single_review_runs_branches_when_readiness_blocks_symbol(monkey
             posterior_confidence=0.4,
             posterior_action_score=0.3,
             posterior_edge_after_costs=0.0,
-            evidence_sources=["quant", "fundamental", "intelligence"],
+            evidence_sources=["quant", "fundamental"],
             action_threshold_used=0.55,
         )
 
@@ -488,7 +462,6 @@ def test_holding_single_review_runs_branches_when_readiness_blocks_symbol(monkey
     monkeypatch.setattr(dag_module, "MarketDataReader", _FakeReader)
     monkeypatch.setattr(dag_module, "DeterministicFunnel", _SingleFunnel)
     monkeypatch.setattr(dag_module.FundamentalAgent, "run", _fake_fundamental_run)
-    monkeypatch.setattr(dag_module.IntelligenceAgent, "run", _fake_intelligence_run)
     monkeypatch.setattr(dag_module.MacroAgent, "run", _fake_macro_run)
     monkeypatch.setattr(dag_module.HierarchicalPriorBuilder, "build_prior", _fake_prior)
     monkeypatch.setattr(
@@ -529,12 +502,6 @@ def test_holding_single_review_runs_branches_when_readiness_blocks_symbol(monkey
                 ),
                 "fundamental": BranchDataReadiness(
                     branch="fundamental",
-                    status=STATUS_BLOCK,
-                    coverage_ratio=0.0,
-                    source_priority=SOURCE_TUSHARE,
-                ),
-                "intelligence": BranchDataReadiness(
-                    branch="intelligence",
                     status=STATUS_BLOCK,
                     coverage_ratio=0.0,
                     source_priority=SOURCE_TUSHARE,
@@ -572,11 +539,10 @@ def test_holding_single_review_runs_branches_when_readiness_blocks_symbol(monkey
         recall_context={"holding_symbol": "A"},
     )
 
-    assert reviewed == {"fundamental": ["A"], "intelligence": ["A"]}
+    assert reviewed == {"fundamental": ["A"]}
     assert set(result["branch_verdicts_by_symbol"]["A"]) == {
         "quant",
         "fundamental",
-        "intelligence",
         "macro",
     }
     assert result["global_context"].metadata["holding_review_branch_readiness_override"] is True
@@ -587,7 +553,7 @@ def test_holding_single_review_runs_branches_when_funnel_excludes_symbol(monkeyp
     import quant_investor.market.dag_executor as dag_module
     import quant_investor.market.dag.context as dag_context
 
-    reviewed: dict[str, list[str]] = {"fundamental": [], "intelligence": []}
+    reviewed: dict[str, list[str]] = {"fundamental": []}
 
     class _EmptyRequiredThemeFunnel:
         def __init__(self, *_args, **_kwargs):
@@ -620,17 +586,6 @@ def test_holding_single_review_runs_branches_when_funnel_excludes_symbol(monkeyp
             final_confidence=0.4,
         )
 
-    def _fake_intelligence_run(self, payload):
-        symbol = list(payload["stock_pool"])[0]
-        reviewed["intelligence"].append(symbol)
-        return BranchVerdict(
-            agent_name="intelligence",
-            thesis=f"intelligence {symbol}",
-            symbol=symbol,
-            final_score=0.1,
-            final_confidence=0.35,
-        )
-
     def _fake_macro_run(self, payload):
         return BranchVerdict(
             agent_name="macro",
@@ -647,7 +602,6 @@ def test_holding_single_review_runs_branches_when_funnel_excludes_symbol(monkeyp
         return LikelihoodSet(
             quant_likelihood=0.5,
             fundamental_likelihood=0.4,
-            intelligence_likelihood=0.4,
         )
 
     def _fake_posterior(
@@ -670,7 +624,7 @@ def test_holding_single_review_runs_branches_when_funnel_excludes_symbol(monkeyp
             posterior_confidence=0.4,
             posterior_action_score=0.3,
             posterior_edge_after_costs=0.0,
-            evidence_sources=["quant", "fundamental", "intelligence"],
+            evidence_sources=["quant", "fundamental"],
             action_threshold_used=0.55,
         )
 
@@ -700,7 +654,6 @@ def test_holding_single_review_runs_branches_when_funnel_excludes_symbol(monkeyp
     monkeypatch.setattr(dag_module, "MarketDataReader", _FakeReader)
     monkeypatch.setattr(dag_module, "DeterministicFunnel", _EmptyRequiredThemeFunnel)
     monkeypatch.setattr(dag_module.FundamentalAgent, "run", _fake_fundamental_run)
-    monkeypatch.setattr(dag_module.IntelligenceAgent, "run", _fake_intelligence_run)
     monkeypatch.setattr(dag_module.MacroAgent, "run", _fake_macro_run)
     monkeypatch.setattr(dag_module.HierarchicalPriorBuilder, "build_prior", _fake_prior)
     monkeypatch.setattr(
@@ -745,12 +698,6 @@ def test_holding_single_review_runs_branches_when_funnel_excludes_symbol(monkeyp
                     coverage_ratio=1.0,
                     source_priority=SOURCE_TUSHARE,
                 ),
-                "intelligence": BranchDataReadiness(
-                    branch="intelligence",
-                    status=STATUS_PASS,
-                    coverage_ratio=1.0,
-                    source_priority=SOURCE_TUSHARE,
-                ),
                 "macro": BranchDataReadiness(
                     branch="macro",
                     status=STATUS_PASS,
@@ -784,11 +731,10 @@ def test_holding_single_review_runs_branches_when_funnel_excludes_symbol(monkeyp
         recall_context={"holding_symbol": "A"},
     )
 
-    assert reviewed == {"fundamental": ["A"], "intelligence": ["A"]}
+    assert reviewed == {"fundamental": ["A"]}
     assert set(result["branch_verdicts_by_symbol"]["A"]) == {
         "quant",
         "fundamental",
-        "intelligence",
         "macro",
     }
     assert result["global_context"].metadata["holding_review_funnel_override"] is True

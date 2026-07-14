@@ -4,13 +4,16 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from quant_investor.config import config
+from web.request_contract import reject_intelligence_named_keys
 
 
 class ResearchRunRequest(BaseModel):
     """Maps 1:1 to QuantInvestor.__init__ parameters."""
+
+    model_config = ConfigDict(extra="forbid")
 
     stock_pool: list[str] = Field(min_length=1)
     market: Literal["CN", "US"] = "CN"
@@ -18,11 +21,7 @@ class ResearchRunRequest(BaseModel):
     risk_level: str = "中等"
     lookback_years: float = 1.0
     kline_backend: str = "hybrid"
-    enable_macro: bool = True
-    enable_quant: bool = True
     enable_kline: bool = True
-    enable_fundamental: bool = True
-    enable_intelligence: bool = True
     enable_agent_layer: bool = True
     review_model_priority: list[str] = Field(default_factory=list)
     agent_model: str = ""
@@ -36,6 +35,12 @@ class ResearchRunRequest(BaseModel):
     stock_input_mode: Literal["custom", "universe", "multi"] = "custom"
     universe_keys: list[str] = Field(default_factory=list)
     universe_operation: Literal["replace", "merge"] = "replace"
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_retired_intelligence_keys(cls, value: Any) -> Any:
+        reject_intelligence_named_keys(value)
+        return value
 
 
 class ResearchJobResponse(BaseModel):

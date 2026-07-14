@@ -1,4 +1,4 @@
-"""Four-branch data readiness contracts and offline assessment helpers."""
+"""Three-branch data readiness contracts and offline assessment helpers."""
 
 from __future__ import annotations
 
@@ -16,6 +16,8 @@ from quant_investor.market.fundamental_generation import (
     load_fundamental_pointer,
     resolve_fundamental_table_path,
 )
+from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
+from quant_investor.versioning import BRANCH_SCHEMA_VERSION
 
 
 STATUS_PASS = "pass"
@@ -28,9 +30,10 @@ SOURCE_PRIORITY_ORDER = (SOURCE_TUSHARE, SOURCE_PUBLIC_FALLBACK, SOURCE_OFFLINE)
 
 DEFAULT_PARQUET_CN_ROOT = Path("data/parquet/cn")
 DEFAULT_FUNDAMENTAL_ROOT = DEFAULT_PARQUET_CN_ROOT / "fundamental_daily"
-DEFAULT_INTELLIGENCE_ROOT = DEFAULT_PARQUET_CN_ROOT / "intelligence_daily"
 DEFAULT_MACRO_ROOT = DEFAULT_PARQUET_CN_ROOT / "macro_daily"
-DEFAULT_READINESS_ROOT = Path("reports/branch_readiness")
+DEFAULT_READINESS_ROOT = Path("reports/v14/branch_readiness")
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+_FROZEN_READINESS_ROOT = (_REPOSITORY_ROOT / "reports/branch_readiness").resolve()
 
 QUANT_REQUIRED_FIELDS = ("open", "high", "low", "close", "volume", "amount")
 FUNDAMENTAL_REQUIRED_FIELDS = (
@@ -42,14 +45,6 @@ FUNDAMENTAL_REQUIRED_FIELDS = (
     "fin_fcf_to_profit",
     "fcf_to_price",
     "forecast_revision",
-)
-INTELLIGENCE_REQUIRED_FIELDS = (
-    "intelligence_score",
-    "event_risk_score",
-    "sentiment_score",
-    "money_flow_score",
-    "breadth_score",
-    "rotation_score",
 )
 MACRO_REQUIRED_FIELDS = (
     "macro_score",
@@ -408,18 +403,6 @@ def load_fundamental_records(
     return _latest_records_by_symbol(frame, symbols=symbols, as_of=as_of), manifest
 
 
-def load_intelligence_records(
-    symbols: Sequence[str],
-    *,
-    as_of: str = "",
-    root: str | Path = DEFAULT_INTELLIGENCE_ROOT,
-) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
-    table_path = _resolve_parquet_table_root(root, "intelligence_daily")
-    frame = _read_parquet_table(table_path)
-    manifest = _read_latest_manifest(table_path) or _manifest_from_parquet("intelligence_daily", frame, table_path)
-    return _latest_records_by_symbol(frame, symbols=symbols, as_of=as_of), manifest
-
-
 def load_macro_record(
     *,
     as_of: str = "",
@@ -563,7 +546,6 @@ def assess_branch_data_readiness(
     category: str = "full_a",
     as_of: str = "",
     fundamental_root: str | Path = DEFAULT_FUNDAMENTAL_ROOT,
-    intelligence_root: str | Path = DEFAULT_INTELLIGENCE_ROOT,
     macro_root: str | Path = DEFAULT_MACRO_ROOT,
     run_id: str | None = None,
 ) -> BranchGovernanceReport:
@@ -576,7 +558,6 @@ def assess_branch_data_readiness(
         as_of=as_of,
     )
     fundamentals, fundamental_manifest = load_fundamental_records(symbols, as_of=as_of, root=fundamental_root)
-    intelligence, intelligence_manifest = load_intelligence_records(symbols, as_of=as_of, root=intelligence_root)
     macro_record, macro_manifest = load_macro_record(as_of=as_of, root=macro_root)
     fundamental = _assess_symbol_records(
         branch="fundamental",
@@ -586,19 +567,10 @@ def assess_branch_data_readiness(
         manifest=fundamental_manifest,
         as_of=as_of,
     )
-    intel = _assess_symbol_records(
-        branch="intelligence",
-        symbols=symbols,
-        records=intelligence,
-        required_fields=INTELLIGENCE_REQUIRED_FIELDS,
-        manifest=intelligence_manifest,
-        as_of=as_of,
-    )
     macro = assess_macro_readiness(macro_record=macro_record, manifest=macro_manifest, as_of=as_of)
     blocked = sorted(
         set(quant.affected_symbols)
         | set(fundamental.affected_symbols)
-        | set(intel.affected_symbols)
         | (set(symbols) if macro.status == STATUS_BLOCK else set())
     )
     quantifiable = [
@@ -609,19 +581,6 @@ def assess_branch_data_readiness(
     investable = [symbol for symbol in symbols if symbol not in set(blocked)]
     branch_data = {
         "fundamentals": fundamentals,
-        "event_data": {
-            symbol: list(records.get("events", []))
-            for symbol, records in intelligence.items()
-            if isinstance(records.get("events", []), list)
-        },
-        "sentiment_data": {
-            symbol: {
-                key: value
-                for key, value in records.items()
-                if key in set(INTELLIGENCE_REQUIRED_FIELDS) | {"source", "source_priority", "trade_date"}
-            }
-            for symbol, records in intelligence.items()
-        },
         "macro_data": macro_record,
     }
     return BranchGovernanceReport(
@@ -632,7 +591,6 @@ def assess_branch_data_readiness(
         readiness={
             "quant": quant,
             "fundamental": fundamental,
-            "intelligence": intel,
             "macro": macro,
         },
         blocked_symbols=blocked,
@@ -642,6 +600,8 @@ def assess_branch_data_readiness(
         metadata={
             "policy": "strict_when_used",
             "source_priority_order": list(SOURCE_PRIORITY_ORDER),
+            "branch_schema_version": BRANCH_SCHEMA_VERSION,
+            "canonical_branch_order": list(CANONICAL_BRANCH_ORDER),
             "candidate_count": len(symbols),
             "blocked_count": len(blocked),
             "investable_count": len(investable),
@@ -685,6 +645,15 @@ def write_branch_readiness_report(
     output_dir: str | Path = DEFAULT_READINESS_ROOT,
 ) -> dict[str, str]:
     out = Path(output_dir)
+    resolved_out = out.resolve(strict=False)
+    if (
+        resolved_out == _FROZEN_READINESS_ROOT
+        or _FROZEN_READINESS_ROOT in resolved_out.parents
+    ):
+        raise ValueError(
+            "reports/branch_readiness is frozen v13 retirement evidence; "
+            "write current artifacts under reports/v14/branch_readiness"
+        )
     out.mkdir(parents=True, exist_ok=True)
     json_path = out / f"{report.run_id}.json"
     md_path = out / f"{report.run_id}.md"
@@ -730,7 +699,6 @@ __all__ = [
     "BranchDataReadiness",
     "BranchGovernanceReport",
     "FUNDAMENTAL_REQUIRED_FIELDS",
-    "INTELLIGENCE_REQUIRED_FIELDS",
     "MACRO_REQUIRED_FIELDS",
     "QUANT_REQUIRED_FIELDS",
     "SOURCE_OFFLINE",
@@ -744,7 +712,6 @@ __all__ = [
     "assess_macro_readiness",
     "assess_quant_readiness",
     "load_fundamental_records",
-    "load_intelligence_records",
     "load_macro_record",
     "write_branch_readiness_report",
 ]

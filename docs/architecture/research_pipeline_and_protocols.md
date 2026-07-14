@@ -6,13 +6,13 @@
 
 治理层目标链路固定为：
 
-`snapshot -> DeterministicFunnel -> four branches -> Bayesian -> RiskGuard -> ICCoordinator -> PortfolioConstructor -> NarratorAgent`
+`snapshot -> DeterministicFunnel -> three branches -> Bayesian -> RiskGuard -> ICCoordinator -> PortfolioConstructor -> NarratorAgent`
 
 含义：
 
 - snapshot 负责披露本地数据来源、最新交易日和 strict Parquet 健康状态。
 - `DeterministicFunnel` 负责 quant-only 初筛和 candidate set 收敛。
-- four branches 只包含 `quant`、`fundamental`、`intelligence`、`macro`。
+- three branches 严格只包含 `quant`、`fundamental`、`macro`。
 - Bayesian selection 负责把分支证据映射为 posterior shortlist。
 - `RiskGuard` 负责硬约束、hard veto、exposure cap 和 symbol-level limit。
 - `ICCoordinator` 负责共识、分歧和结构化动作建议。
@@ -45,10 +45,13 @@
 
 - `quant`
 - `fundamental`
-- `intelligence`
 - `macro`
 
-`kline`、Kronos/Chronos 和 legacy batch pipeline 不属于 v13 canonical branch set；旧 payload 中的未知分支只能被过滤或作为历史兼容读取，不能重新进入 runtime branch set。
+`kline`、Kronos/Chronos 与 `llm_debate` 仍是 Web 分析的辅助配置面，但不计入 v14 canonical DAG 证据分支。现有 `branches.kline`、`branches.kronos`（归一到 `kline`）和 `branches.llm_debate` 请求继续受支持；已退役的 `intelligence` branch 与 `enable_intelligence` 字段会被严格拒绝且不会出现在响应中。
+
+三个 canonical 分支在 Web/API 运行中始终执行，不提供 `enable_quant`、`enable_fundamental`、`enable_macro` 或对应 `branches.*.enabled` 开关；出现这些字段时请求会失败，而不是静默忽略。
+
+Bayesian likelihood 证据仅包含 `quant` 与 `fundamental`（`x/2`）；`macro` 只作为 prior/context。
 
 ## Structured Control Contracts
 

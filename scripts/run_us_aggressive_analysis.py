@@ -11,7 +11,6 @@
 
 import os
 import pandas as pd
-from datetime import datetime
 from pathlib import Path
 
 # ──────────────────────────────────────────────
@@ -113,95 +112,36 @@ batch_module.get_all_local_symbols = _kronos_get_all_local_symbols
 print("✅ get_all_local_symbols 已补丁，读取 Kronos 股票列表")
 
 # ──────────────────────────────────────────────
-# Step 4: 补丁 analyze_batch() → risk_level='激进'
+# Step 4: 包装 current v14 analyze_batch() → risk_level='激进'
 # ──────────────────────────────────────────────
-from quant_investor import QuantInvestorV8
-from dataclasses import asdict
-
 _original_analyze_batch = batch_module.analyze_batch
 
-def _aggressive_analyze_batch(symbols, category, batch_id):
-    """激进风格版本的批次分析。"""
-    category_name_map = {
-        "large_cap": "大盘股 (S&P 500)",
-        "mid_cap": "中盘股 (Mid Cap)",
-        "small_cap": "小盘股 (Small Cap)",
-    }
-    category_name = category_name_map.get(category, category)
+def _aggressive_analyze_batch(symbols, category, batch_id, **kwargs):
+    """Run the current v14 producer with aggressive US settings."""
 
-    print(f"\n{'='*80}")
-    print(f"📊 激进分析 {category_name} - 批次 {batch_id}")
-    print(f"{'='*80}")
-    print(f"本批股票数: {len(symbols)}")
-    print(f"前10只: {symbols[:10]}")
-
-    try:
-        analyzer = QuantInvestorV8(
-            stock_pool=symbols,
-            market="US",
-            total_capital=100_000,   # 用户指定
-            risk_level="激进",        # 用户指定
-            enable_macro=True,
-            enable_kronos=True,
-            enable_intelligence=True,
-            enable_llm_debate=True,
-            verbose=False,            # 减少日志噪音
-        )
-
-        result = analyzer.run()
-
-        recommendations = []
-        for rec in result.final_strategy.trade_recommendations:
-            payload = asdict(rec)
-            payload["category"] = category
-            payload["category_name"] = category_name
-            recommendations.append(payload)
-
-        analysis = {
-            "category": category,
-            "category_name": category_name,
-            "batch_id": batch_id,
-            "timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
-            "stocks": symbols,
-            "stock_count": len(symbols),
-            "branches": {},
-            "strategy": {
-                "target_exposure": result.final_strategy.target_exposure,
-                "style_bias": result.final_strategy.style_bias,
-                "candidate_symbols": result.final_strategy.candidate_symbols,
-                "position_limits": result.final_strategy.position_limits,
-                "branch_consensus": result.final_strategy.branch_consensus,
-                "risk_summary": result.final_strategy.risk_summary,
-                "execution_notes": result.final_strategy.execution_notes,
-                "research_mode": result.final_strategy.research_mode,
-            },
-            "recommendations": recommendations,
-        }
-
-        for name, branch in result.branch_results.items():
-            analysis["branches"][name] = {
-                "score": branch.score,
-                "confidence": branch.confidence,
-                "top_symbols": [
-                    {"symbol": sym, "score": sc}
-                    for sym, sc in sorted(
-                        branch.symbol_scores.items(),
-                        key=lambda x: x[1],
-                        reverse=True,
-                    )[:5]
-                ],
-            }
-
-        n_candidates = len(analysis["strategy"]["candidate_symbols"])
-        print(f"✅ 批次 {batch_id} 完成 | 目标仓位: "
-              f"{analysis['strategy']['target_exposure']:.0%} | 候选: {n_candidates} 只")
-        return analysis
-
-    except Exception as e:
-        print(f"❌ 批次 {batch_id} 分析失败: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
+    for key in (
+        "market",
+        "total_capital",
+        "risk_level",
+        "verbose",
+        "analysis_kwargs",
+    ):
+        kwargs.pop(key, None)
+    return _original_analyze_batch(
+        symbols,
+        category,
+        batch_id,
+        market="US",
+        total_capital=100_000,
+        risk_level="激进",
+        verbose=False,
+        analysis_kwargs={
+            "enable_kline": True,
+            "enable_kronos": True,
+            "enable_agent_layer": True,
+        },
+        **kwargs,
+    )
 
 batch_module.analyze_batch = _aggressive_analyze_batch
 print("✅ analyze_batch 已补丁，使用激进风格 + capital=100,000")
@@ -209,7 +149,7 @@ print("✅ analyze_batch 已补丁，使用激进风格 + capital=100,000")
 # ──────────────────────────────────────────────
 # Step 5: 确保结果目录存在
 # ──────────────────────────────────────────────
-results_dir = PROJECT_ROOT / "results" / "us_analysis_full"
+results_dir = PROJECT_ROOT / "results" / "v14" / "us_analysis_full"
 results_dir.mkdir(parents=True, exist_ok=True)
 
 # ──────────────────────────────────────────────
@@ -226,16 +166,23 @@ if __name__ == "__main__":
 
     all_results = {}
     for cat in ["large_cap", "mid_cap", "small_cap"]:
-        results = batch_module.analyze_category_full(cat, batch_size=25)
+        results = batch_module.analyze_category_full(
+            cat,
+            market="US",
+            batch_size=25,
+            output_dir=str(results_dir),
+        )
         if results:
             all_results[cat] = results
 
     if all_results:
         batch_module.generate_full_report(
             all_results,
+            market="US",
+            output_dir=str(results_dir),
             total_capital=100_000,
             top_k=8,
         )
-        print("\n✅ 全量分析完成！结果保存在 results/us_analysis_full/")
+        print("\n✅ 全量分析完成！结果保存在 results/v14/us_analysis_full/")
     else:
         print("\n⚠️ 所有类别均无结果，请检查数据路径。")

@@ -5,7 +5,7 @@
 固定执行顺序：
 1. 加载 UnifiedDataBundle
 2. 运行一次 MacroAgent
-3. 对每个 symbol 运行 v13 canonical research agents
+3. 对每个 symbol 运行 v14 canonical research agents
 4. 对每个 symbol 运行 RiskGuard
 5. 对每个 symbol 运行 ICCoordinator
 6. 运行一次 PortfolioConstructor
@@ -41,7 +41,6 @@ from quant_investor.agent_protocol import (
 )
 from quant_investor.agents.fundamental_agent import FundamentalAgent
 from quant_investor.agents.ic_coordinator import ICCoordinator
-from quant_investor.agents.intelligence_agent import IntelligenceAgent
 from quant_investor.agents.macro_agent import MacroAgent
 from quant_investor.agents.narrator_agent import NarratorAgent
 from quant_investor.agents.portfolio_constructor import PortfolioConstructor
@@ -79,19 +78,17 @@ class ControlChainOrchestrator:
         kline_agent: Any | None = None,
         quant_agent: QuantAgent | None = None,
         fundamental_agent: FundamentalAgent | None = None,
-        intelligence_agent: IntelligenceAgent | None = None,
         risk_guard: RiskGuard | None = None,
         ic_coordinator: ICCoordinator | None = None,
         portfolio_constructor: PortfolioConstructor | None = None,
         narrator_agent: NarratorAgent | None = None,
     ) -> None:
         self.macro_agent = macro_agent or MacroAgent()
-        # v13 removed kline from the canonical branch set. Keep the optional
+        # Kline is outside the canonical branch set. Keep the optional
         # parameter for compatibility, but do not create or execute it.
         self.kline_agent = kline_agent
         self.quant_agent = quant_agent or QuantAgent()
         self.fundamental_agent = fundamental_agent or FundamentalAgent()
-        self.intelligence_agent = intelligence_agent or IntelligenceAgent()
         self.risk_guard = risk_guard or RiskGuard()
         self.ic_coordinator = ic_coordinator or ICCoordinator()
         self.portfolio_constructor = portfolio_constructor or PortfolioConstructor()
@@ -151,6 +148,7 @@ class ControlChainOrchestrator:
     ) -> dict[str, Any]:
         """兼容过渡入口：复用旧 pipeline 已算出的 branch_results。"""
 
+        self._validate_branch_names(branch_results, context="branch_results")
         normalized_constraints = self._normalize_constraints(constraints)
         normalized_portfolio = self._normalize_existing_portfolio(existing_portfolio)
         normalized_tradability = self._normalize_tradability_snapshot(
@@ -275,16 +273,6 @@ class ControlChainOrchestrator:
                     symbol=symbol,
                     branch_name="fundamental",
                 ),
-                "intelligence": self._ensure_symbol_verdict(
-                    self.intelligence_agent.run(
-                        {
-                            **branch_payload,
-                            "market_regime": data_bundle.macro_data.get("regime"),
-                        }
-                    ),
-                    symbol=symbol,
-                    branch_name="intelligence",
-                ),
             }
         return research_by_symbol
 
@@ -329,7 +317,6 @@ class ControlChainOrchestrator:
         agent_map = {
             "quant": self.quant_agent,
             "fundamental": self.fundamental_agent,
-            "intelligence": self.intelligence_agent,
         }
         research_by_symbol = {
             symbol: {}
@@ -591,6 +578,25 @@ class ControlChainOrchestrator:
         return payload
 
     @staticmethod
+    def _validate_branch_names(
+        payload: Mapping[str, Any],
+        *,
+        context: str,
+    ) -> None:
+        unknown = sorted(
+            {
+                str(branch_name)
+                for branch_name in payload
+                if str(branch_name) not in CANONICAL_BRANCH_ORDER
+                and str(branch_name) != "kline"
+            }
+        )
+        if unknown:
+            raise ValueError(
+                f"{context} 包含非 v14 canonical branch: {', '.join(unknown)}"
+            )
+
+    @staticmethod
     def _normalize_research_by_symbol(
         payload: Mapping[str, Mapping[str, BranchVerdict]],
     ) -> dict[str, dict[str, BranchVerdict]]:
@@ -600,10 +606,25 @@ class ControlChainOrchestrator:
         for symbol, branch_map in payload.items():
             if not isinstance(branch_map, Mapping):
                 raise TypeError("research_by_symbol 的 value 必须是 Mapping[str, BranchVerdict]")
+            ControlChainOrchestrator._validate_branch_names(
+                branch_map,
+                context=f"research_by_symbol[{symbol}]",
+            )
+            invalid_types = sorted(
+                str(branch_name)
+                for branch_name, verdict in branch_map.items()
+                if str(branch_name) in CANONICAL_BRANCH_ORDER
+                and not isinstance(verdict, BranchVerdict)
+            )
+            if invalid_types:
+                raise TypeError(
+                    "research_by_symbol 的 branch verdict 类型无效: "
+                    + ", ".join(invalid_types)
+                )
             result[str(symbol)] = {
                 str(branch_name): verdict
                 for branch_name, verdict in branch_map.items()
-                if str(branch_name) in CANONICAL_BRANCH_ORDER and isinstance(verdict, BranchVerdict)
+                if str(branch_name) in CANONICAL_BRANCH_ORDER
             }
         return result
 

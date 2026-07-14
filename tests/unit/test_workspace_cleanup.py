@@ -6,12 +6,20 @@ import json
 
 from scripts.workspace_cleanup import main as cleanup_main
 from scripts.workspace_layout import (
+    PROTECTED_INVENTORY_PATHS,
     build_cleanup_inventory,
     describe_environment_roles,
     ensure_runtime_tmp_dirs,
     find_legacy_workspace_root_references,
     iter_cleanup_targets,
     replace_legacy_workspace_root_references,
+)
+
+
+EXPECTED_CODE_RETIREMENT_CANDIDATES = sum(
+    1
+    for _path, classification, _reason in PROTECTED_INVENTORY_PATHS
+    if classification == "code_retirement_candidate"
 )
 
 
@@ -148,7 +156,9 @@ def test_cleanup_inventory_classifies_protected_sources_and_delete_candidates(tm
     )
     assert items["quant_investor/_vendor/kronos_model"]["classification"] == "code_retirement_candidate"
     assert manifest["summary"]["safe_cache"] == 1
-    assert manifest["summary"]["code_retirement_candidate"] == 8
+    assert manifest["summary"]["code_retirement_candidate"] == (
+        EXPECTED_CODE_RETIREMENT_CANDIDATES
+    )
     assert manifest["delete_candidate_count"] == 2
 
 
@@ -160,7 +170,9 @@ def test_cleanup_inventory_keeps_missing_code_retirement_candidates(tmp_path):
     assert candidate["classification"] == "code_retirement_candidate"
     assert candidate["exists"] is False
     assert candidate["delete_allowed"] is False
-    assert manifest["summary"]["code_retirement_candidate"] == 8
+    assert manifest["summary"]["code_retirement_candidate"] == (
+        EXPECTED_CODE_RETIREMENT_CANDIDATES
+    )
 
 
 def test_workspace_cleanup_script_writes_inventory_manifest(tmp_path, capsys):

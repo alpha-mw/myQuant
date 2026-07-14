@@ -90,7 +90,6 @@ def _make_research_by_symbol(symbols: list[str]) -> dict[str, dict[str, BranchVe
     branch_scores = {
         "quant": 0.58,
         "fundamental": 0.66,
-        "intelligence": 0.41,
         "macro": 0.22,
     }
     return {
@@ -106,7 +105,6 @@ def _make_branch_results(symbols: list[str]) -> dict[str, BranchResult]:
     branch_scores = {
         "quant": 0.58,
         "fundamental": 0.66,
-        "intelligence": 0.41,
         "macro": 0.22,
     }
     results: dict[str, BranchResult] = {}
@@ -146,6 +144,14 @@ def _make_macro_verdict() -> BranchVerdict:
 
 def test_plain_pytest_bootstrap_adds_project_root_to_sys_path():
     assert str(ROOT) in sys.path
+
+
+def test_quant_investor_rejects_retired_intelligence_keyword():
+    with pytest.raises(TypeError):
+        QuantInvestor(
+            stock_pool=["000001.SZ"],
+            enable_intelligence=True,
+        )
 
 
 def test_mainline_raises_when_requested_symbol_has_no_local_csv(monkeypatch):

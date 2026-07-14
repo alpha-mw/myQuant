@@ -134,6 +134,41 @@ def test_archive_gate_blocks_hash_mismatch(tmp_path):
     assert "archive_sha256_mismatch" in result["blockers"]
 
 
+def test_archive_gate_never_allows_retirement_evidence_root_deletion(tmp_path):
+    _archive_path, manifest = _write_archive_and_manifest(tmp_path)
+    manifest["source_root"] = "reports/daily"
+
+    report = build_archive_gate_report(manifest, repo_root=tmp_path)
+    result = report["result"]
+
+    assert result["delete_allowed"] is False
+    assert "retirement_evidence_protection_check" in result["failed_checks"]
+    assert "source_is_protected_retirement_evidence" in result["blockers"]
+
+
+def test_archive_gate_never_allows_parent_of_retirement_evidence(tmp_path):
+    _archive_path, manifest = _write_archive_and_manifest(tmp_path)
+    manifest["source_root"] = "reports"
+
+    result = build_archive_gate_report(manifest, repo_root=tmp_path)["result"]
+
+    assert result["delete_allowed"] is False
+    assert "source_is_protected_retirement_evidence" in result["blockers"]
+
+
+def test_archive_gate_canonicalizes_protected_source_root(tmp_path):
+    _archive_path, manifest = _write_archive_and_manifest(tmp_path)
+    protected = tmp_path / "reports" / "daily"
+    protected.mkdir()
+    (protected / "history.md").write_text("history", encoding="utf-8")
+    manifest["source_root"] = "reports/tmp/../daily"
+
+    result = build_archive_gate_report(manifest, repo_root=tmp_path)["result"]
+
+    assert result["delete_allowed"] is False
+    assert "source_is_protected_retirement_evidence" in result["blockers"]
+
+
 def test_archive_gate_writes_reports_and_cli_output(tmp_path, capsys):
     _archive_path, manifest = _write_archive_and_manifest(tmp_path)
     manifest_path = tmp_path / "restore_manifest.json"

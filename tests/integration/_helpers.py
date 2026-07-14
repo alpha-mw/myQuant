@@ -10,6 +10,7 @@ import pandas as pd
 from quant_investor import QuantInvestor
 from quant_investor.agent_protocol import (
     ActionLabel,
+    BayesianDecisionRecord,
     DataQualityDiagnostics,
     ExecutionTrace,
     ExecutionTraceStep,
@@ -176,10 +177,8 @@ def make_strategy(
         notes=[f"{thesis_prefix} notes"],
         style_bias="均衡",
         branch_consensus={
-            "kline": 0.71,
             "quant": 0.68,
             "fundamental": 0.73,
-            "intelligence": 0.63,
             "macro": 0.58,
         },
         risk_summary={
@@ -264,18 +263,6 @@ def make_artifacts(
         )
 
     branch_results = {
-        "kline": make_branch_result(
-            "kline",
-            symbol_scores={symbol: 0.71 - index * 0.05 for index, symbol in enumerate(symbols)},
-            thesis=f"{thesis_prefix} kline thesis",
-            score=0.71,
-            confidence=0.83,
-            investment_risks=["投资风险: 趋势拥挤导致回撤放大"],
-            coverage_notes=["覆盖说明: Kline 快筛覆盖正常"],
-            diagnostic_notes=["工程异常: Kline 使用离线快照"],
-            signals={"screen_mode": "fast-screen"},
-            metadata={"branch_mode": "fast-screen"},
-        ),
         "quant": make_branch_result(
             "quant",
             symbol_scores={symbol: 0.68 - index * 0.03 for index, symbol in enumerate(symbols)},
@@ -295,16 +282,6 @@ def make_artifacts(
             investment_risks=["投资风险: 盈利修正下行"],
             coverage_notes=["覆盖说明: 财报覆盖充足"],
             diagnostic_notes=["工程异常: 文档语义降级到摘要"],
-        ),
-        "intelligence": make_branch_result(
-            "intelligence",
-            symbol_scores={symbol: 0.63 - index * 0.02 for index, symbol in enumerate(symbols)},
-            thesis=f"{thesis_prefix} intelligence thesis",
-            score=0.63,
-            confidence=0.76,
-            investment_risks=["投资风险: 事件波动抬升"],
-            coverage_notes=["覆盖说明: 新闻覆盖正常"],
-            diagnostic_notes=["工程异常: 情绪接口限流后回退"],
         ),
         "macro": make_branch_result(
             "macro",
@@ -584,16 +561,16 @@ def make_dag_artifacts(
         else None
     )
     bayesian_records = [
-        {
-            "symbol": item.symbol,
-            "company_name": item.company_name,
-            "posterior_action_score": item.metadata["posterior_action_score"],
-            "posterior_win_rate": item.metadata["posterior_win_rate"],
-            "posterior_confidence": item.metadata["posterior_confidence"],
-            "posterior_edge_after_costs": item.metadata["posterior_edge_after_costs"],
-            "posterior_capacity_penalty": item.metadata["posterior_capacity_penalty"],
-            "rank": index + 1,
-        }
+        BayesianDecisionRecord(
+            symbol=item.symbol,
+            company_name=item.company_name,
+            posterior_action_score=item.metadata["posterior_action_score"],
+            posterior_win_rate=item.metadata["posterior_win_rate"],
+            posterior_confidence=item.metadata["posterior_confidence"],
+            posterior_edge_after_costs=item.metadata["posterior_edge_after_costs"],
+            posterior_capacity_penalty=item.metadata["posterior_capacity_penalty"],
+            rank=index + 1,
+        )
         for index, item in enumerate(shortlist)
     ]
     funnel_summary = {
@@ -682,7 +659,7 @@ def make_review_result(
             symbol_views={symbol: f"{thesis_prefix} {branch_name} view {symbol}" for symbol in symbols},
             reasoning="review reasoning should stay advisory",
         )
-        for branch_name in ["kline", "quant", "fundamental", "intelligence", "macro"]
+        for branch_name in versioning.CURRENT_BRANCH_ORDER
     }
     master_output = MasterAgentOutput(
         final_conviction="buy",
@@ -773,6 +750,17 @@ def run_stubbed_quant_path(
     )
     review_result = make_review_result(symbols, thesis_prefix=thesis_prefix) if review_enabled else None
     monkeypatch.setattr(mainline_module, "_execute_market_dag", lambda **_kwargs: dag_artifacts, raising=False)
+    monkeypatch.setattr(
+        mainline_module,
+        "build_market_data_snapshot",
+        lambda **_kwargs: {
+            "market": "CN",
+            "universe_key": "full_a",
+            "summary_text": "isolated integration fixture",
+            "missing_requested_symbols": [],
+            "unreadable_requested_symbols": [],
+        },
+    )
 
     investor = QuantInvestor(
         stock_pool=symbols,

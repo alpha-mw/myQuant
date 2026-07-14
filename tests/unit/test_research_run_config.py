@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from quant_investor.research_run_config import ResearchRunConfig, ResolvedReviewModels
 
 
@@ -40,7 +42,6 @@ def test_research_run_config_builds_quant_investor_kwargs_from_workspace_payload
             "enable_quant": True,
             "enable_kline": True,
             "enable_fundamental": False,
-            "enable_intelligence": True,
             "enable_agent_layer": True,
             "review_model_priority": ["deepseek-chat"],
             "agent_model": "deepseek-chat",
@@ -91,7 +92,6 @@ def test_research_run_config_honors_cli_negative_toggles():
             "no_quant": False,
             "no_kline": True,
             "no_fundamental": True,
-            "no_intelligence": False,
             "no_agent_layer": True,
             "disable_document_semantics": True,
             "allow_synthetic_for_research": True,
@@ -106,7 +106,27 @@ def test_research_run_config_honors_cli_negative_toggles():
     assert kwargs["enable_quant"] is True
     assert kwargs["enable_kline"] is False
     assert kwargs["enable_fundamental"] is False
-    assert kwargs["enable_intelligence"] is True
+    assert "enable_intelligence" not in kwargs
     assert kwargs["enable_agent_layer"] is False
     assert kwargs["enable_document_semantics"] is False
     assert kwargs["allow_synthetic_for_research"] is True
+
+
+@pytest.mark.parametrize(
+    "retired_payload",
+    [
+        {"enable_intelligence": True},
+        {"no_intelligence": True},
+        {"intelligence": {"enabled": True}},
+        {"intelligence_root": "data/legacy"},
+        {"settings": {"IntelligenceWeight": 0.2}},
+    ],
+)
+def test_research_run_config_rejects_retired_intelligence_keys(retired_payload):
+    with pytest.raises(TypeError, match="已删除 Intelligence 分支参数"):
+        ResearchRunConfig.from_mapping(
+            {
+                "stocks": ["600000.SH"],
+                **retired_payload,
+            }
+        )

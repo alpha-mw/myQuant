@@ -306,6 +306,15 @@ def run_market_analysis(
         categories=selected_categories,
         total_capital=total_capital,
     )
+    schema_envelope = _full_report._require_current_market_schema_envelope(
+        dag_artifacts.get("report_bundle"),
+        label="market DAG ReportBundle",
+    )
+    canonical_branch_summaries = _full_report._canonical_branch_map(
+        dict(dag_artifacts.get("branch_summaries", {}) or {}),
+        label="market DAG branch_summaries",
+        require_exact=True,
+    )
     review_bundle = dag_artifacts.get("review_bundle")
     model_role_metadata = dag_artifacts["model_role_metadata"]
     execution_trace = dag_artifacts["execution_trace"]
@@ -317,6 +326,7 @@ def run_market_analysis(
     funnel_output = dag_artifacts.get("funnel_output")
     symbol_packets = dag_artifacts["symbol_research_packets"]
     analysis_meta: dict[str, Any] = {
+        **schema_envelope,
         "market": settings.market,
         "universe": dag_universe or "full_a",
         "batch_count": len(selected_categories),
@@ -360,9 +370,6 @@ def run_market_analysis(
         "portfolio_decision": portfolio_decision.to_dict(),
         "review_bundle": review_bundle.to_dict() if hasattr(review_bundle, "to_dict") else {},
         "ic_hints_by_symbol": dict(review_bundle.ic_hints_by_symbol if review_bundle else {}),
-        "branch_schema_version": str(review_bundle.branch_schema_version if review_bundle else ""),
-        "ic_protocol_version": str(review_bundle.ic_protocol_version if review_bundle else ""),
-        "report_protocol_version": str(review_bundle.report_protocol_version if review_bundle else ""),
         "bayesian_records": [
             record.to_dict() if hasattr(record, "to_dict") else dict(record)
             for record in bayesian_records
@@ -370,7 +377,7 @@ def run_market_analysis(
         "funnel_summary": dict(dag_artifacts.get("funnel_summary", {})),
         "branch_summaries": {
             name: verdict.to_dict() if hasattr(verdict, "to_dict") else dict(verdict)
-            for name, verdict in dag_artifacts.get("branch_summaries", {}).items()
+            for name, verdict in canonical_branch_summaries.items()
         },
         "data_quality_issues": list(dag_artifacts.get("data_quality_issues", [])),
         "resolver": dict(dag_artifacts.get("resolver", {})),
@@ -397,6 +404,7 @@ def run_market_analysis(
     )
     analysis_meta["runtime_profile"] = persistence.runtime_profile
     return {
+        **schema_envelope,
         "results": all_results,
         "reports": persistence.report_paths,
         "analysis_meta": analysis_meta,

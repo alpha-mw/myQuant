@@ -1,15 +1,56 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timedelta
 import json
 import sqlite3
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
+from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
+from quant_investor.versioning import (
+    ARCHITECTURE_VERSION,
+    BRANCH_SCHEMA_VERSION,
+    LIKELIHOOD_SCHEMA_VERSION,
+    REPORT_PROTOCOL_VERSION,
+)
 from web.app import create_app
+from web.models.analysis_models import AnalysisSessionDetail, BranchDetailResult
 from web.services.analysis_service import _normalize_web_result
 from web.services import analysis_service, data_service, portfolio_service, settings_service
+
+
+CURRENT_WEB_ENVELOPE = {
+    "architecture_version": ARCHITECTURE_VERSION,
+    "branch_schema_version": BRANCH_SCHEMA_VERSION,
+    "likelihood_schema_version": LIKELIHOOD_SCHEMA_VERSION,
+    "report_protocol_version": REPORT_PROTOCOL_VERSION,
+}
+
+
+def _current_branches(
+    overrides: dict[str, dict[str, object]] | None = None,
+) -> list[dict[str, object]]:
+    overrides = overrides or {}
+    branches: list[dict[str, object]] = []
+    for branch_name in analysis_service.BRANCH_ORDER:
+        branch = {
+            "branch_name": branch_name,
+            "enabled": branch_name in CANONICAL_BRANCH_ORDER or branch_name == "kline",
+        }
+        branch.update(overrides.get(branch_name, {}))
+        branches.append(branch)
+    return branches
+
+
+def _current_result(**payload: object) -> dict[str, object]:
+    return {
+        **CURRENT_WEB_ENVELOPE,
+        "branches": _current_branches(),
+        **payload,
+    }
 
 
 def _make_frontend_dist(root: Path) -> Path:
@@ -23,6 +64,27 @@ def _make_frontend_dist(root: Path) -> Path:
     (dist / "favicon.svg").write_text("<svg></svg>", encoding="utf-8")
     (assets_dir / "app.js").write_text("console.log('ok')", encoding="utf-8")
     return dist
+
+
+def test_market_recommendation_rank_uses_three_canonical_branches():
+    base = {
+        "action": "buy",
+        "suggested_weight": 0.1,
+        "consensus_score": 0.0,
+        "confidence": 0.0,
+    }
+    no_support = analysis_service._rank_market_recommendation(
+        {**base, "branch_positive_count": 0}
+    )
+    full_support = analysis_service._rank_market_recommendation(
+        {**base, "branch_positive_count": 3}
+    )
+    stale_overflow = analysis_service._rank_market_recommendation(
+        {**base, "branch_positive_count": 5}
+    )
+
+    assert full_support == no_support * 2
+    assert stale_overflow == full_support
 
 
 def test_api_endpoints_smoke(tmp_path, monkeypatch):
@@ -146,22 +208,26 @@ def test_settings_accept_dashscope_and_return_env_key(tmp_path, monkeypatch):
 
 def test_analysis_branch_payload_is_normalized_when_optional_fields_are_null():
     result = _normalize_web_result(
-        {
-            "analysis_id": "test",
-            "request": {"targets": ["000001.SZ"], "branches": {"kline": {"enabled": True, "settings": None}}},
-            "branches": [
+        _current_result(
+            analysis_id="test",
+            request={
+                "targets": ["000001.SZ"],
+                "branches": {"kline": {"enabled": True, "settings": None}},
+            },
+            branches=_current_branches(
                 {
-                    "branch_name": "kline",
-                    "score": 0.1,
-                    "confidence": 0.8,
-                    "explanation": "ok",
-                    "risks": None,
-                    "top_symbols": None,
-                    "signals": None,
-                    "metadata": None,
+                    "kline": {
+                        "score": 0.1,
+                        "confidence": 0.8,
+                        "explanation": "ok",
+                        "risks": None,
+                        "top_symbols": None,
+                        "signals": None,
+                        "metadata": None,
+                    }
                 }
-            ],
-        }
+            ),
+        )
     )
 
     branch = result["branches"][0]
@@ -175,11 +241,10 @@ def test_analysis_branch_payload_is_normalized_when_optional_fields_are_null():
 
 def test_web_result_normalization_preserves_data_snapshot():
     result = _normalize_web_result(
-        {
-            "analysis_id": "test",
-            "request": {"targets": ["000001.SZ"], "market": "CN"},
-            "branches": [],
-            "data_snapshot": {
+        _current_result(
+            analysis_id="test",
+            request={"targets": ["000001.SZ"], "market": "CN"},
+            data_snapshot={
                 "market": "CN",
                 "universe_key": "full_a",
                 "local_latest_trade_date": "20260326",
@@ -191,11 +256,122 @@ def test_web_result_normalization_preserves_data_snapshot():
                 "data_quality_issue_count": 0,
                 "summary_text": "本地 A 股数据更新至 20260326。",
             },
-        }
+        )
     )
 
     assert result["data_snapshot"]["local_latest_trade_date"] == "20260326"
     assert result["data_snapshot"]["summary_text"] == "本地 A 股数据更新至 20260326。"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error_pattern"),
+    [
+        ({"architecture_version": None}, "architecture_version mismatch"),
+        ({"architecture_version": "13.0.0-stable"}, "architecture_version mismatch"),
+        ({"branch_schema_version": "branch-schema.v13.four-branch"}, "branch_schema_version mismatch"),
+        ({"likelihood_schema_version": "likelihood-schema.v13.three-likelihood"}, "likelihood_schema_version mismatch"),
+        ({"report_protocol_version": "report-protocol.v13.four-branch"}, "report_protocol_version mismatch"),
+    ],
+)
+def test_current_web_result_rejects_missing_or_stale_schema(mutation, error_pattern):
+    payload = _current_result()
+    payload.update(mutation)
+
+    with pytest.raises(ValueError, match=error_pattern):
+        _normalize_web_result(payload)
+
+
+@pytest.mark.parametrize("retired_branch", ["intelligence", "unknown_alpha"])
+def test_current_web_result_rejects_retired_or_unknown_branch(retired_branch):
+    branches = _current_branches()
+    branches[2] = {"branch_name": retired_branch, "enabled": True}
+
+    with pytest.raises(ValueError, match="branches mismatch"):
+        _normalize_web_result(_current_result(branches=branches))
+
+
+def test_persisted_web_result_rejects_nested_intelligence_request_key():
+    payload = _current_result(
+        request={
+            "targets": ["000001.SZ"],
+            "branches": {
+                "quant": {
+                    "settings": {"Intelligence_Weight": 0.2},
+                }
+            },
+        }
+    )
+
+    with pytest.raises(ValueError, match="Intelligence_Weight"):
+        _normalize_web_result(payload)
+
+
+def test_analysis_session_detail_exposes_exact_current_schema_envelope():
+    normalized = _normalize_web_result(_current_result(analysis_id="schema-test"))
+    detail = AnalysisSessionDetail.model_validate(normalized)
+
+    assert detail.architecture_version == ARCHITECTURE_VERSION
+    assert detail.branch_schema_version == BRANCH_SCHEMA_VERSION
+    assert detail.likelihood_schema_version == LIKELIHOOD_SCHEMA_VERSION
+    assert detail.report_protocol_version == REPORT_PROTOCOL_VERSION
+    assert set(detail.config_applied["enabled_branches"]) >= set(
+        CANONICAL_BRANCH_ORDER
+    )
+
+    with pytest.raises(ValueError, match="likelihood_schema_version mismatch"):
+        AnalysisSessionDetail.model_validate(
+            {**normalized, "likelihood_schema_version": "old-likelihood"}
+        )
+
+    reordered = deepcopy(normalized)
+    reordered["branches"][1], reordered["branches"][2] = (
+        reordered["branches"][2],
+        reordered["branches"][1],
+    )
+    with pytest.raises(ValueError, match="branches mismatch"):
+        AnalysisSessionDetail.model_validate(reordered)
+
+    disabled_core = deepcopy(normalized)
+    next(
+        branch
+        for branch in disabled_core["branches"]
+        if branch["branch_name"] == "quant"
+    )["enabled"] = False
+    with pytest.raises(ValueError, match="canonical branch 'quant' must be enabled"):
+        AnalysisSessionDetail.model_validate(disabled_core)
+
+
+def test_analysis_session_detail_directly_rejects_nested_retired_keys():
+    normalized = _normalize_web_result(_current_result(analysis_id="dto-key-gate"))
+    branches = [
+        BranchDetailResult.model_validate(branch)
+        for branch in normalized["branches"]
+    ]
+    branches[1].metadata["intelligence_score"] = 1.0
+
+    with pytest.raises(ValueError, match="intelligence_score"):
+        AnalysisSessionDetail.model_validate(
+            {**normalized, "branches": branches}
+        )
+
+
+def test_analysis_session_detail_allows_retired_name_in_prose_values():
+    normalized = _normalize_web_result(_current_result(analysis_id="dto-prose"))
+    normalized["branches"][1]["metadata"] = {
+        "note": "Intelligence was retired from the alpha architecture.",
+    }
+
+    detail = AnalysisSessionDetail.model_validate(normalized)
+
+    assert "Intelligence was retired" in detail.branches[1].metadata["note"]
+
+
+def test_legacy_analysis_artifact_is_not_wrapped_as_current_web_result(tmp_path):
+    legacy_path = tmp_path / "analysis_legacy.json"
+    legacy_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="legacy analysis artifact source"):
+        analysis_service._load_normalized_result(legacy_path, "legacy_cn")
 
 
 def test_market_mode_expands_all_downloaded_symbols_from_selected_market(tmp_path, monkeypatch):
@@ -216,6 +392,107 @@ def test_market_mode_expands_all_downloaded_symbols_from_selected_market(tmp_pat
     normalized = analysis_service._normalize_request_payload({"mode": "market", "market": "CN"})
     assert normalized["mode"] == "market"
     assert normalized["targets"] == ["000001.SZ"]
+
+
+def test_local_metadata_cache_does_not_consume_report_artifacts(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(data_service, "RESULTS_DIR", tmp_path / "results")
+    legacy_dir = tmp_path / "results" / "cn_analysis"
+    current_dir = tmp_path / "results" / "v14" / "cn_analysis_full"
+    legacy_dir.mkdir(parents=True)
+    current_dir.mkdir(parents=True)
+    (legacy_dir / "最新交易建议_fixture.json").write_text(
+        json.dumps(
+            [
+                {
+                    "ts_code": "999999.SZ",
+                    "name": "legacy report name",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (current_dir / "CN_Trade_Data_fixture.json").write_text(
+        json.dumps(
+            {
+                "recommendations": [
+                    {
+                        "symbol": "888888.SZ",
+                        "company_name": "alpha report name",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    data_service._local_metadata_cache.cache_clear()
+
+    metadata = data_service._local_metadata_cache()
+
+    assert "999999.SZ" not in metadata
+    assert "888888.SZ" not in metadata
+    data_service._local_metadata_cache.cache_clear()
+
+
+@pytest.mark.parametrize(
+    ("branch_summaries", "error_pattern"),
+    [
+        (
+            {"quant": {}, "fundamental": {}},
+            "missing branches: macro",
+        ),
+        (
+            {
+                "quant": {},
+                "fundamental": {},
+                "macro": {},
+                "intelligence": {},
+            },
+            "unsupported branches: intelligence",
+        ),
+    ],
+)
+def test_market_runner_rejects_non_exact_canonical_branch_summaries(
+    monkeypatch,
+    branch_summaries,
+    error_pattern,
+):
+    from quant_investor.market import dag_executor
+
+    monkeypatch.setattr(
+        analysis_service,
+        "resolve_runtime_role_models",
+        lambda **kwargs: (
+            type("RoleConfig", (), {"primary_model": "", "fallback_model": ""})(),
+            type("RoleConfig", (), {"primary_model": "", "fallback_model": ""})(),
+        ),
+    )
+    monkeypatch.setattr(
+        dag_executor,
+        "execute_market_dag",
+        lambda **kwargs: {
+            "report_bundle": type(
+                "ReportBundle",
+                (),
+                CURRENT_WEB_ENVELOPE,
+            )(),
+            "branch_summaries": branch_summaries,
+        },
+    )
+
+    with pytest.raises(ValueError, match=error_pattern):
+        analysis_service._run_market_analysis(
+            {
+                "targets": ["000001.SZ"],
+                "market": "CN",
+                "risk": {},
+                "portfolio": {},
+                "branches": {},
+                "llm_debate": {},
+            }
+        )
 
 
 def test_run_analysis_uses_market_batch_executor_for_market_mode(tmp_path, monkeypatch):
@@ -360,24 +637,23 @@ def test_stale_running_job_is_reconciled_and_saved_to_history(tmp_path, monkeypa
     monkeypatch.setattr(analysis_service, "WEB_ANALYSIS_DIR", web_analysis_dir)
     monkeypatch.setattr(analysis_service, "JOB_DIR", jobs_dir)
 
-    result_payload = {
-        "analysis_id": "20260315_010101",
-        "created_at": "2026-03-15T01:01:01",
-        "request": {
+    result_payload = _current_result(
+        analysis_id="20260315_010101",
+        created_at="2026-03-15T01:01:01",
+        request={
             "mode": "single",
             "market": "CN",
             "preset": "quick_scan",
             "targets": ["000001.SZ"],
             "branches": {"kronos": {"enabled": True, "settings": {"prediction_horizon": "20d"}}},
         },
-        "branches": [],
-        "candidate_symbols": ["000001.SZ"],
-        "target_exposure": 0.4,
-        "risk": {"risk_level": "中等", "warnings": []},
-        "report_markdown": "test",
-        "execution_log": [],
-        "trade_recommendations": [],
-    }
+        candidate_symbols=["000001.SZ"],
+        target_exposure=0.4,
+        risk={"risk_level": "中等", "warnings": []},
+        report_markdown="test",
+        execution_log=[],
+        trade_recommendations=[],
+    )
     analysis_service._result_file_for("20260315_010101").write_text(
         json.dumps(result_payload, ensure_ascii=False),
         encoding="utf-8",
@@ -425,15 +701,19 @@ def test_analysis_history_delete_endpoints_remove_saved_results(tmp_path, monkey
     monkeypatch.setattr(analysis_service, "JOB_DIR", jobs_dir)
 
     normalized = _normalize_web_result(
-        {
-            "analysis_id": "20260315_020202",
-            "created_at": "2026-03-15T02:02:02",
-            "request": {"targets": ["000001.SZ"], "market": "CN", "mode": "single", "preset": "quick_scan"},
-            "branches": [],
-            "candidate_symbols": [],
-            "target_exposure": 0.2,
-            "risk": {"risk_level": "中等", "warnings": []},
-        }
+        _current_result(
+            analysis_id="20260315_020202",
+            created_at="2026-03-15T02:02:02",
+            request={
+                "targets": ["000001.SZ"],
+                "market": "CN",
+                "mode": "single",
+                "preset": "quick_scan",
+            },
+            candidate_symbols=[],
+            target_exposure=0.2,
+            risk={"risk_level": "中等", "warnings": []},
+        )
     )
     analysis_service._save_analysis_session(normalized)
     analysis_service._result_file_for("20260315_020202").write_text(

@@ -118,6 +118,14 @@ def test_mainline_forwards_recall_context_to_unified_dag(monkeypatch):
         }
 
     monkeypatch.setattr(mainline_module, "_execute_market_dag", _fake_execute_market_dag, raising=False)
+    monkeypatch.setattr(
+        mainline_module,
+        "build_market_data_snapshot",
+        lambda **_kwargs: {
+            "missing_requested_symbols": [],
+            "unreadable_requested_symbols": [],
+        },
+    )
 
     investor = QuantInvestor(
         stock_pool=["000001.SZ"],

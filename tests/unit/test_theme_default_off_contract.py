@@ -72,7 +72,6 @@ def test_no_theme_likelihood_in_bayesian_types() -> None:
     likelihoods = LikelihoodSet(
         quant_likelihood=0.61,
         fundamental_likelihood=0.52,
-        intelligence_likelihood=0.49,
     )
 
     assert not hasattr(likelihoods, "theme_likelihood")
@@ -80,9 +79,8 @@ def test_no_theme_likelihood_in_bayesian_types() -> None:
     assert likelihoods.as_list() == [
         ("quant", 0.61),
         ("fundamental", 0.52),
-        ("intelligence", 0.49),
     ]
-    assert len(likelihoods.as_list()) == 3
+    assert len(likelihoods.as_list()) == 2
 
 
 def test_canonical_branch_order_has_no_theme() -> None:
@@ -90,7 +88,6 @@ def test_canonical_branch_order_has_no_theme() -> None:
     assert CANONICAL_BRANCH_ORDER == (
         "quant",
         "fundamental",
-        "intelligence",
         "macro",
     )
 

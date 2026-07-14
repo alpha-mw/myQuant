@@ -11,6 +11,7 @@ from quant_investor.versioning import (
     CALIBRATION_SCHEMA_VERSION,
     DEBATE_TEMPLATE_VERSION,
     IC_PROTOCOL_VERSION,
+    LIKELIHOOD_SCHEMA_VERSION,
     REPORT_PROTOCOL_VERSION,
 )
 
@@ -109,6 +110,7 @@ def build_pipeline_result_from_dag(
     result = QuantInvestorPipelineResult(
         architecture_version=ARCHITECTURE_VERSION,
         branch_schema_version=BRANCH_SCHEMA_VERSION,
+        likelihood_schema_version=LIKELIHOOD_SCHEMA_VERSION,
         ic_protocol_version=getattr(report_bundle, "ic_protocol_version", IC_PROTOCOL_VERSION),
         report_protocol_version=getattr(report_bundle, "report_protocol_version", REPORT_PROTOCOL_VERSION),
         calibration_schema_version=CALIBRATION_SCHEMA_VERSION,

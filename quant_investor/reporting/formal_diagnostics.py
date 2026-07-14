@@ -11,7 +11,6 @@ SUPPORTED_WARNING_CODES = {
     "snapshot_missing",
     "stale_snapshot",
     "llm_confidence_unavailable",
-    "retired_signal_suppressed",
 }
 SUPPORTED_WARNING_SCOPES = {"global", "universe", "holding", "branch", "review_layer"}
 SUPPORTED_WARNING_SEVERITIES = {"info", "warning", "material"}
@@ -472,27 +471,6 @@ def _fundamental_payload_for_symbol(
     }
 
 
-def _extract_intelligence_payloads(
-    branch_diagnostics: Mapping[str, Any],
-    intelligence_diagnostics: Mapping[str, Any],
-) -> list[dict[str, Any]]:
-    collected: list[dict[str, Any]] = []
-    for payload in intelligence_diagnostics.values():
-        mapping = _coerce_mapping(payload)
-        if mapping:
-            collected.append(mapping)
-    if collected:
-        return collected
-
-    for symbol_payload in branch_diagnostics.values():
-        mapping = _coerce_mapping(symbol_payload)
-        branch_verdicts = _coerce_mapping(mapping.get("reviewed_branch_verdicts") or mapping.get("branch_verdicts"))
-        intelligence = _coerce_mapping(branch_verdicts.get("intelligence"))
-        if intelligence:
-            collected.append(intelligence)
-    return collected
-
-
 def _extract_enhanced_data_flags_for_symbol(
     symbol: str,
     branch_diagnostics: Mapping[str, Any],
@@ -547,14 +525,12 @@ def collect_formal_report_warnings(
     branch_diagnostics: Mapping[str, Any] | None = None,
     fundamental_coverage_by_symbol: Mapping[str, Any] | None = None,
     enhanced_data_flags_by_symbol: Mapping[str, Any] | None = None,
-    intelligence_diagnostics: Mapping[str, Any] | None = None,
     review_layer_diagnostics: Mapping[str, Any] | None = None,
 ) -> list[ReportWarning]:
     completeness = _coerce_mapping(completeness_state)
     branch_diagnostics = _coerce_mapping(branch_diagnostics)
     fundamental_coverage_by_symbol = _coerce_mapping(fundamental_coverage_by_symbol)
     enhanced_data_flags_by_symbol = _coerce_mapping(enhanced_data_flags_by_symbol)
-    intelligence_diagnostics = _coerce_mapping(intelligence_diagnostics)
     review_layer_diagnostics = _coerce_mapping(review_layer_diagnostics)
     holdings = list(holdings_review or [])
 
@@ -641,33 +617,6 @@ def collect_formal_report_warnings(
                     human_message=f"{symbol} 缺少 symbol 级基本面模块：{'、'.join(named_modules)}。",
                 )
             )
-
-    retired_detected = False
-    for payload in _extract_intelligence_payloads(branch_diagnostics, intelligence_diagnostics):
-        coverage_notes = [str(item).strip().lower() for item in _coerce_sequence(payload.get("coverage_notes"))]
-        investment_risks = [str(item).strip().lower() for item in _coerce_sequence(payload.get("investment_risks"))]
-        metadata = _coerce_mapping(payload.get("metadata"))
-        branch_mode = str(metadata.get("branch_mode", "")).strip().lower()
-        if (
-            "legacy batch retired" in " ".join(coverage_notes)
-            or "旧 batch pipeline" in " ".join(investment_risks)
-            or branch_mode == "structured_intelligence_fusion"
-        ):
-            retired_detected = True
-            break
-    if retired_detected:
-        warnings.append(
-            ReportWarning(
-                code="retired_signal_suppressed",
-                scope="branch",
-                source="intelligence/structured_fusion",
-                severity="info",
-                data_date=normalized_dominant_date,
-                affected_symbol=None,
-                decision_impact="disclosure_only",
-                human_message="旧 intelligence batch 路径已退役，当前分支使用 lightweight structured fusion，这属于设计路径，不是数据缺失。",
-            )
-        )
 
     per_symbol_zero_confidence: list[str] = []
     codex_handoff_active = _review_layer_uses_codex_handoff(review_layer_diagnostics)

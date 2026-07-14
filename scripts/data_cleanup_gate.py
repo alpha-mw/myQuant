@@ -15,6 +15,11 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.workspace_layout import get_repo_root
+from scripts.intelligence_retirement_evidence import (
+    UnsafeRepositoryPath,
+    is_protected_retirement_evidence_path,
+    resolve_repo_relative_path,
+)
 
 SCHEMA_VERSION = "myquant.data_cleanup_gate.v1"
 DEFAULT_MAX_MARKDOWN_CANDIDATES = 500
@@ -81,13 +86,21 @@ def _load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _candidate_path_set(plan: dict[str, Any]) -> set[str]:
+def _candidate_path_set(plan: dict[str, Any], repo_root: Path) -> set[str]:
     paths: set[str] = set()
     for candidate in plan.get("candidates", []):
         for path in candidate.get("candidate_paths", []):
-            paths.add(str(path))
+            try:
+                _resolved, canonical = resolve_repo_relative_path(repo_root, str(path))
+            except UnsafeRepositoryPath:
+                continue
+            paths.add(canonical)
         for path in candidate.get("retained_paths", []):
-            paths.add(str(path))
+            try:
+                _resolved, canonical = resolve_repo_relative_path(repo_root, str(path))
+            except UnsafeRepositoryPath:
+                continue
+            paths.add(canonical)
     return paths
 
 
@@ -192,7 +205,11 @@ def _is_protected_runtime_path(path: str) -> bool:
 
 
 def _paths_exist(repo_root: Path, paths: list[str]) -> bool:
-    return all((repo_root / path).exists() for path in paths)
+    try:
+        resolved = [resolve_repo_relative_path(repo_root, path)[0] for path in paths]
+    except UnsafeRepositoryPath:
+        return False
+    return all(path.exists() for path in resolved)
 
 
 def _references_for_paths(
@@ -219,16 +236,55 @@ def _candidate_gate_result(
     retained_paths = [
         str(path) for path in candidate.get("retained_paths", [])
     ]
+    canonical_candidate_paths: list[str] = []
+    unsafe_candidate_paths: list[str] = []
+    for path in candidate_paths:
+        try:
+            _resolved, canonical = resolve_repo_relative_path(repo_root, path)
+        except UnsafeRepositoryPath:
+            unsafe_candidate_paths.append(path)
+        else:
+            canonical_candidate_paths.append(canonical)
+    canonical_retained_paths: list[str] = []
+    unsafe_retained_paths: list[str] = []
+    for path in retained_paths:
+        try:
+            _resolved, canonical = resolve_repo_relative_path(repo_root, path)
+        except UnsafeRepositoryPath:
+            unsafe_retained_paths.append(path)
+        else:
+            canonical_retained_paths.append(canonical)
     blockers = ["delete_disabled_by_policy"]
     passed_checks: list[str] = []
     failed_checks: list[str] = []
     pending_checks = ["restore_hash_readback_check"]
 
-    if any(_is_protected_runtime_path(path) for path in candidate_paths):
+    if unsafe_candidate_paths:
+        blockers.append("candidate_path_outside_repository")
+        failed_checks.append("candidate_path_containment_check")
+    else:
+        passed_checks.append("candidate_path_containment_check")
+
+    if unsafe_retained_paths:
+        blockers.append("retained_path_outside_repository")
+        failed_checks.append("retained_path_containment_check")
+    else:
+        passed_checks.append("retained_path_containment_check")
+
+    if any(_is_protected_runtime_path(path) for path in canonical_candidate_paths):
         blockers.append("candidate_is_active_runtime_path")
         failed_checks.append("active_runtime_path_check")
     else:
         passed_checks.append("active_runtime_path_check")
+
+    if any(
+        is_protected_retirement_evidence_path(path)
+        for path in canonical_candidate_paths
+    ):
+        blockers.append("candidate_is_protected_retirement_evidence")
+        failed_checks.append("retirement_evidence_protection_check")
+    else:
+        passed_checks.append("retirement_evidence_protection_check")
 
     if _paths_exist(repo_root, candidate_paths):
         passed_checks.append("candidate_path_exists")
@@ -243,7 +299,7 @@ def _candidate_gate_result(
         failed_checks.append("retained_path_exists")
 
     runtime_refs = _references_for_paths(
-        candidate_paths,
+        canonical_candidate_paths,
         runtime_references_by_path,
     )
     if runtime_refs:
@@ -253,7 +309,7 @@ def _candidate_gate_result(
         passed_checks.append("runtime_reference_check")
 
     strategy_refs = _references_for_paths(
-        candidate_paths,
+        canonical_candidate_paths,
         strategy_references_by_path,
     )
     if strategy_refs:
@@ -289,7 +345,7 @@ def build_data_cleanup_gate_report(
     max_text_file_bytes: int = DEFAULT_MAX_TEXT_FILE_BYTES,
 ) -> dict[str, Any]:
     """Build a no-delete gate report for cleanup plan candidates."""
-    candidate_paths = _candidate_path_set(plan)
+    candidate_paths = _candidate_path_set(plan, repo_root)
     runtime_scan = _scan_reference_files(
         repo_root,
         _runtime_reference_files(repo_root),

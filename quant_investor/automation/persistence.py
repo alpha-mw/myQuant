@@ -7,7 +7,7 @@ from quant_investor.automation import daily_runner as _runner
 
 
 class PersistenceManager:
-    """仅将 daily 报告保存到文件系统。"""
+    """仅将当前版本 daily 报告保存到文件系统。"""
 
     def save(
         self,
@@ -15,8 +15,8 @@ class PersistenceManager:
         pipeline_result: dict[str, Any],
         config: dict[str, Any],
     ) -> str:
-        """保存报告到 `reports/daily`，返回报告路径。"""
-        report_dir = _runner.ROOT / config["report_dir"]
+        """保存报告到 v14 输出目录，返回报告路径。"""
+        report_dir = _runner.resolve_daily_report_dir(config.get("report_dir"))
         report_dir.mkdir(parents=True, exist_ok=True)
         filename = f"{datetime.now().strftime('%Y-%m-%d_%H%M')}_analysis.md"
         report_path = report_dir / filename

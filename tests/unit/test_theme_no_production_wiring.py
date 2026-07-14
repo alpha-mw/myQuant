@@ -22,7 +22,6 @@ def test_no_theme_in_canonical_branch_order_source() -> None:
     assert CANONICAL_BRANCH_ORDER == (
         "quant",
         "fundamental",
-        "intelligence",
         "macro",
     )
 

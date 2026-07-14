@@ -118,6 +118,126 @@ def test_execution_apply_deletes_only_approved_file(tmp_path):
     assert retained.exists()
 
 
+def test_execution_blocks_approved_retirement_evidence_even_with_token(tmp_path):
+    content = "immutable intelligence history\n"
+    candidate_path = "reports/daily/2026-04-03_0249_analysis.md"
+    retained_path = "reports/intelligence_retirement/v14_receipt.json"
+    for relative_path in (candidate_path, retained_path):
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    item = _whitelist_item(approved=True, content=content)
+    item.update(
+        candidate_paths=[candidate_path],
+        retained_paths=[retained_path],
+        candidate_sha256=[_sha256(content)],
+        retained_sha256=[_sha256(content)],
+        candidate_size_bytes=[len(content.encode("utf-8"))],
+        retained_size_bytes=[len(content.encode("utf-8"))],
+    )
+    whitelist = {
+        "schema_version": "myquant.data_cleanup_whitelist.v1",
+        "items": [item],
+    }
+
+    report = build_data_cleanup_execution_report(
+        whitelist,
+        repo_root=tmp_path,
+        apply=True,
+        confirm_token=CONFIRM_TOKEN,
+    )
+
+    result = report["items"][0]
+    assert result["status"] == "blocked_protected_retirement_evidence"
+    assert result["action"] == "blocked"
+    assert (tmp_path / candidate_path).exists()
+
+
+def test_execution_blocks_parent_containing_retirement_evidence(tmp_path):
+    candidate_path = "reports"
+    candidate = tmp_path / candidate_path
+    candidate.mkdir()
+    (candidate / "daily").mkdir()
+    (candidate / "daily" / "history.md").write_text("history", encoding="utf-8")
+    retained = tmp_path / "retained.txt"
+    retained.write_text("history", encoding="utf-8")
+    item = _whitelist_item(approved=True, content="history")
+    item.update(
+        candidate_paths=[candidate_path],
+        retained_paths=["retained.txt"],
+        candidate_sha256=[_sha256("history")],
+        retained_sha256=[_sha256("history")],
+        candidate_size_bytes=[len("history")],
+        retained_size_bytes=[len("history")],
+    )
+
+    report = build_data_cleanup_execution_report(
+        {"items": [item]},
+        repo_root=tmp_path,
+        apply=True,
+        confirm_token=CONFIRM_TOKEN,
+    )
+
+    assert report["items"][0]["status"] == "blocked_protected_retirement_evidence"
+    assert candidate.exists()
+
+
+def test_execution_blocks_traversal_into_retirement_evidence(tmp_path):
+    content = "immutable intelligence history\n"
+    actual_path = tmp_path / "data" / "parquet" / "cn" / "intelligence_daily" / "part.parquet"
+    actual_path.parent.mkdir(parents=True)
+    actual_path.write_text(content, encoding="utf-8")
+    retained_path = tmp_path / "retained.txt"
+    retained_path.write_text(content, encoding="utf-8")
+    traversal = "data/parquet/cn/other/../intelligence_daily/part.parquet"
+    item = _whitelist_item(approved=True, content=content)
+    item.update(
+        candidate_paths=[traversal],
+        retained_paths=["retained.txt"],
+        candidate_sha256=[_sha256(content)],
+        retained_sha256=[_sha256(content)],
+        candidate_size_bytes=[len(content.encode("utf-8"))],
+        retained_size_bytes=[len(content.encode("utf-8"))],
+    )
+
+    report = build_data_cleanup_execution_report(
+        {"items": [item]},
+        repo_root=tmp_path,
+        apply=True,
+        confirm_token=CONFIRM_TOKEN,
+    )
+
+    assert report["items"][0]["status"] == "blocked_protected_retirement_evidence"
+    assert actual_path.exists()
+
+
+def test_execution_rejects_absolute_candidate_outside_repo(tmp_path):
+    content = "outside\n"
+    outside_path = tmp_path.parent / "outside-cleanup-candidate.txt"
+    outside_path.write_text(content, encoding="utf-8")
+    retained_path = tmp_path / "retained.txt"
+    retained_path.write_text(content, encoding="utf-8")
+    item = _whitelist_item(approved=True, content=content)
+    item.update(
+        candidate_paths=[str(outside_path)],
+        retained_paths=["retained.txt"],
+        candidate_sha256=[_sha256(content)],
+        retained_sha256=[_sha256(content)],
+        candidate_size_bytes=[len(content.encode("utf-8"))],
+        retained_size_bytes=[len(content.encode("utf-8"))],
+    )
+
+    report = build_data_cleanup_execution_report(
+        {"items": [item]},
+        repo_root=tmp_path,
+        apply=True,
+        confirm_token=CONFIRM_TOKEN,
+    )
+
+    assert report["items"][0]["status"] == "blocked_unsafe_candidate_path"
+    assert outside_path.exists()
+
+
 def test_execution_writes_report_and_cli_output(tmp_path, capsys):
     _write_fixture_files(tmp_path)
     whitelist_path = tmp_path / "whitelist.json"

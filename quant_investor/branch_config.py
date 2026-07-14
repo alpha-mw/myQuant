@@ -9,14 +9,12 @@ from numbers import Real
 CANONICAL_BRANCH_ORDER: tuple[str, ...] = (
     "quant",
     "fundamental",
-    "intelligence",
     "macro",
 )
 
-_RAW_FOUR_BRANCH_WEIGHTS: dict[str, float] = {
+_RAW_THREE_BRANCH_WEIGHTS: dict[str, float] = {
     "quant": 0.28,
     "fundamental": 0.15,
-    "intelligence": 0.20,
     "macro": 0.15,
 }
 
@@ -31,9 +29,9 @@ def _normalize_branch_weights(weights: Mapping[str, float]) -> dict[str, float]:
     }
 
 
-DEFAULT_BRANCH_WEIGHTS: dict[str, float] = _normalize_branch_weights(_RAW_FOUR_BRANCH_WEIGHTS)
+DEFAULT_BRANCH_WEIGHTS: dict[str, float] = _normalize_branch_weights(_RAW_THREE_BRANCH_WEIGHTS)
 
-BRANCH_WEIGHT_VERSION = "branch-weights.v2.four-branch"
+BRANCH_WEIGHT_VERSION = "branch-weights.v3.three-branch"
 
 _WEIGHT_SUM_TOLERANCE = 1e-9
 

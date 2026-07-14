@@ -39,7 +39,7 @@ Before any new-risk action can be filled, all of the following must pass:
 - candidate state progression and persistence gates pass;
 - score-gap and hysteresis gates pass;
 - portfolio count, turnover, and cooldown gates pass;
-- Parquet, v13 DAG, factor, and evidence gates pass;
+- Parquet, v14 DAG, factor, and evidence gates pass;
 - realtime quote gate passes for every buy and sell leg;
 - artifacts are written and the manifest marks the trade as filled.
 
@@ -72,7 +72,7 @@ as `buy_now`, `add_now`, `switch_now`, or any paired replacement buy.
 
 Sell timing is an independent portfolio-return decision. A sell does not need a
 replacement candidate when the action only reduces risk; cash is a valid
-position when no v13-complete candidate passes the new-risk gates.
+position when no v14-complete candidate passes the new-risk gates.
 
 Trailing profit protection is a primary review tool for profitable holdings.
 Every formal review must compute a moving take-profit status when enough local
@@ -120,7 +120,7 @@ Sell triggers:
 - Hard risk sell: broken stage stop plus weak score, or explicit stop-loss,
   risk event, hard data failure, or thesis invalidation.
 - Weak-holding sell: score below 60 in two of the last three valid reviews, or
-  below 50 with no complete four-branch support.
+  below 50 with no complete three-branch support.
 - Profit-protection trim: materially above target or cost basis, or trailing
   profit giveback reaches the review threshold, while score is falling, trend
   breadth weakens, position weight is oversized, or Markov / RiskGuard / theme

@@ -175,6 +175,14 @@ def test_quant_investor_run_uses_market_dag_not_legacy_research_core(monkeypatch
         raise AssertionError("legacy research core should not run")
 
     monkeypatch.setattr(mainline_module, "_execute_market_dag", _fake_execute_market_dag, raising=False)
+    monkeypatch.setattr(
+        mainline_module,
+        "build_market_data_snapshot",
+        lambda **_kwargs: {
+            "missing_requested_symbols": [],
+            "unreadable_requested_symbols": [],
+        },
+    )
 
     investor = QuantInvestor(
         stock_pool=["000001.SZ"],
@@ -244,6 +252,14 @@ def test_quant_investor_run_exposes_attempt_and_effective_llm_usage(monkeypatch)
         return _fake_dag_artifacts()
 
     monkeypatch.setattr(mainline_module, "_execute_market_dag", _fake_execute_market_dag, raising=False)
+    monkeypatch.setattr(
+        mainline_module,
+        "build_market_data_snapshot",
+        lambda **_kwargs: {
+            "missing_requested_symbols": [],
+            "unreadable_requested_symbols": [],
+        },
+    )
 
     investor = QuantInvestor(
         stock_pool=["000001.SZ"],

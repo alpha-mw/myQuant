@@ -11,6 +11,17 @@ from quant_investor.llm_provider_priority import (
 )
 
 
+def _reject_retired_intelligence_keys(value: Any, path: str = "config") -> None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if "intelligence" in str(key).casefold():
+                raise TypeError(f"v14 已删除 Intelligence 分支参数: {path}.{key}")
+            _reject_retired_intelligence_keys(item, f"{path}.{key}")
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _reject_retired_intelligence_keys(item, f"{path}[{index}]")
+
+
 def _as_str_list(value: Any) -> list[str]:
     if value is None:
         return []
@@ -148,6 +159,7 @@ class ResolvedReviewModels:
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, Any]) -> "ResolvedReviewModels":
+        _reject_retired_intelligence_keys(mapping)
         requested_priority = _requested_review_priority(mapping)
         branch_config, master_config = resolve_runtime_role_models(
             review_model_priority=requested_priority,
@@ -213,7 +225,6 @@ class ResearchRunConfig:
     enable_quant: bool = True
     enable_kline: bool = False
     enable_fundamental: bool = True
-    enable_intelligence: bool = True
     enable_agent_layer: bool = True
     kline_backend: str = "v13-retired"
     allow_synthetic_for_research: bool = False
@@ -235,6 +246,7 @@ class ResearchRunConfig:
         *,
         recall_context: Mapping[str, Any] | None = None,
     ) -> "ResearchRunConfig":
+        _reject_retired_intelligence_keys(mapping)
         review_models = ResolvedReviewModels.from_mapping(mapping)
         stock_pool = _as_str_list(mapping.get("stock_pool") or mapping.get("stocks"))
         return cls(
@@ -265,12 +277,6 @@ class ResearchRunConfig:
                 mapping,
                 enabled_key="enable_fundamental",
                 disabled_key="no_fundamental",
-                default=True,
-            ),
-            enable_intelligence=_mapping_bool(
-                mapping,
-                enabled_key="enable_intelligence",
-                disabled_key="no_intelligence",
                 default=True,
             ),
             enable_agent_layer=_mapping_bool(
@@ -339,7 +345,6 @@ class ResearchRunConfig:
             "enable_quant": bool(self.enable_quant),
             "enable_kline": False,
             "enable_fundamental": bool(self.enable_fundamental),
-            "enable_intelligence": bool(self.enable_intelligence),
             "kline_backend": self.kline_backend,
             "allow_synthetic_for_research": bool(self.allow_synthetic_for_research),
             "enable_document_semantics": bool(self.enable_document_semantics),

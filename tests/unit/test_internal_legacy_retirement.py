@@ -4,6 +4,8 @@ import importlib
 from pathlib import Path
 import sys
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -12,7 +14,6 @@ def test_production_paths_do_not_import_parallel_pipeline_directly():
     targets = [
         ROOT / "quant_investor" / "pipeline" / "mainline.py",
         ROOT / "quant_investor" / "agents" / "quant_agent.py",
-        ROOT / "quant_investor" / "agents" / "intelligence_agent.py",
     ]
 
     for path in targets:
@@ -22,14 +23,13 @@ def test_production_paths_do_not_import_parallel_pipeline_directly():
         )
 
 
-def test_v13_production_paths_do_not_import_retired_kline_or_kronos_runtime():
+def test_v14_production_paths_do_not_import_retired_kline_or_kronos_runtime():
     targets = [
         ROOT / "quant_investor" / "pipeline" / "mainline.py",
         ROOT / "quant_investor" / "market" / "analyze.py",
         ROOT / "quant_investor" / "market" / "dag_executor.py",
         ROOT / "quant_investor" / "market" / "run_pipeline.py",
         ROOT / "quant_investor" / "agents" / "quant_agent.py",
-        ROOT / "quant_investor" / "agents" / "intelligence_agent.py",
         ROOT / "quant_investor" / "branch_config.py",
     ]
     forbidden_markers = [
@@ -48,7 +48,7 @@ def test_v13_production_paths_do_not_import_retired_kline_or_kronos_runtime():
             )
 
 
-def test_subagents_package_exports_only_v13_runtime_agents():
+def test_subagents_package_exports_only_v14_runtime_agents():
     sys.modules.pop("quant_investor.agents.subagents", None)
     sys.modules.pop("quant_investor.agents.subagents.kline_agent", None)
 
@@ -56,21 +56,117 @@ def test_subagents_package_exports_only_v13_runtime_agents():
 
     assert set(subagents.__all__) == {
         "FundamentalSubAgent",
-        "IntelligenceSubAgent",
         "MacroSubAgent",
         "QuantSubAgent",
         "SpecializedRiskSubAgent",
     }
     assert subagents.FundamentalSubAgent.__name__ == "FundamentalSubAgent"
-    assert subagents.IntelligenceSubAgent.__name__ == "IntelligenceSubAgent"
     assert subagents.MacroSubAgent.__name__ == "MacroSubAgent"
     assert subagents.QuantSubAgent.__name__ == "QuantSubAgent"
     assert subagents.SpecializedRiskSubAgent.__name__ == "SpecializedRiskSubAgent"
     assert not hasattr(subagents, "KLineSubAgent")
+    assert not hasattr(subagents, "IntelligenceSubAgent")
     assert "quant_investor.agents.subagents.kline_agent" not in sys.modules
 
 
-def test_review_prompt_defaults_are_v13_four_branch_only():
+def test_intelligence_agent_modules_are_physically_deleted():
+    assert not (ROOT / "quant_investor" / "agents" / "intelligence_agent.py").exists()
+    assert not (ROOT / "quant_investor" / "agents" / "subagents" / "intelligence_agent.py").exists()
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("quant_investor.agents.intelligence_agent")
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("quant_investor.agents.subagents.intelligence_agent")
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "quant_investor.agents.intelligence_agent",
+        "quant_investor.agents.subagents.intelligence_agent",
+        "quant_investor.ensemble_judge",
+        "quant_investor.market.intelligence_mart",
+        "quant_investor.monitoring.intelligence_monitor",
+    ],
+)
+def test_sourceless_loader_blocks_retired_modules(module_name, tmp_path):
+    from quant_investor._sourceless import (
+        _QuantInvestorSourcelessFinder,
+        load_shadowed_module,
+    )
+
+    fake_pyc = tmp_path / "retired.pyc"
+    fake_pyc.write_bytes(b"not a real pyc")
+
+    with pytest.raises(ModuleNotFoundError, match="retired in v14"):
+        _QuantInvestorSourcelessFinder().find_spec(module_name)
+    with pytest.raises(ModuleNotFoundError, match="retired in v14"):
+        load_shadowed_module(module_name, fake_pyc)
+
+
+def test_intelligence_monitor_module_is_physically_deleted():
+    assert not (ROOT / "quant_investor" / "monitoring" / "intelligence_monitor.py").exists()
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("quant_investor.monitoring.intelligence_monitor")
+
+
+def test_current_protocol_constructors_reject_intelligence_fields():
+    from pydantic import ValidationError
+
+    from quant_investor.agent_protocol import BayesianDecisionRecord, ReportBundle
+    from quant_investor.agents.agent_contracts import BaseBranchAgentInput
+
+    with pytest.raises(TypeError):
+        BayesianDecisionRecord(intelligence_likelihood=0.7)
+    with pytest.raises(TypeError):
+        ReportBundle(intelligence={"score": 0.7})
+    with pytest.raises(ValidationError):
+        BaseBranchAgentInput(
+            branch_name="intelligence",
+            base_score=0.1,
+            final_score=0.1,
+            confidence=0.5,
+        )
+    with pytest.raises(ValidationError):
+        BaseBranchAgentInput(
+            branch_name="quant",
+            base_score=0.1,
+            final_score=0.1,
+            confidence=0.5,
+            catalyst_summary={"legacy": True},
+        )
+
+
+def test_current_protocol_constructors_reject_nested_intelligence_maps():
+    from pydantic import ValidationError
+
+    from quant_investor.agent_protocol import (
+        BayesianDecisionRecord,
+        BranchOverlayVerdict,
+        BranchVerdict,
+        ReportBundle,
+        StockReviewBundle,
+    )
+    from quant_investor.agents.agent_contracts import MasterAgentInput
+
+    with pytest.raises(ValueError, match="non-v14 branch keys"):
+        ReportBundle(branch_verdicts={"intelligence": BranchVerdict()})
+    with pytest.raises(ValueError, match="non-v14 branch keys"):
+        StockReviewBundle(branch_summaries={"intelligence": BranchVerdict()})
+    with pytest.raises(ValueError, match="Non-v14 branch overlay"):
+        BranchOverlayVerdict(branch_name="intelligence")
+    with pytest.raises(ValueError, match="likelihood fields must match v14"):
+        BayesianDecisionRecord(likelihoods={"intelligence_likelihood": 0.8})
+    with pytest.raises(ValidationError, match="non-v14 branch keys"):
+        MasterAgentInput(branch_results={"intelligence": {}})
+
+
+def test_legacy_ensemble_judge_is_physically_deleted():
+    assert not (ROOT / "quant_investor" / "ensemble_judge.py").exists()
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("quant_investor.ensemble_judge")
+
+
+def test_review_prompt_defaults_are_v14_three_branch_only():
     from quant_investor.agents import prompts
     from quant_investor.versioning import CURRENT_BRANCH_ORDER
 
@@ -92,6 +188,10 @@ def test_agent_contract_default_exports_do_not_include_retired_kline_contracts()
     assert "KLineAgentOutput" not in agent_contracts.__all__
     assert hasattr(agent_contracts, "KLineAgentInput")
     assert hasattr(agent_contracts, "KLineAgentOutput")
+    assert "IntelligenceAgentInput" not in agent_contracts.__all__
+    assert "IntelligenceAgentOutput" not in agent_contracts.__all__
+    assert not hasattr(agent_contracts, "IntelligenceAgentInput")
+    assert not hasattr(agent_contracts, "IntelligenceAgentOutput")
 
 
 def test_tests_no_longer_depend_on_legacy_batch_pipeline_or_mainline_helpers():

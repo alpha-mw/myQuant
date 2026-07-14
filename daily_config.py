@@ -53,5 +53,5 @@ DAILY_CONFIG = {
     "schedule_time": "17:30",      # 每日触发时间（A 股 15:00 收盘后）
 
     # ── 输出配置 ────────────────────────────────────────────────────────────────
-    "report_dir": "reports/daily",  # 报告保存目录
+    "report_dir": "reports/v14/daily",  # v13 reports/daily 已冻结为退役证据
 }

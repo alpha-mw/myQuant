@@ -271,7 +271,6 @@ async def _run_candidate_research_phase(
     master_timeout: float,
     resolver_snapshot: Mapping[str, Any],
     fundamental_agent: Any,
-    intelligence_agent: Any,
     quant_result: BranchResult,
     ensure_branch_verdict: Callable[..., BranchVerdict],
     master_hint_to_ic_hint: Callable[[Any], dict[str, Any]],
@@ -313,16 +312,10 @@ async def _run_candidate_research_phase(
             symbol=symbol,
             branch_name="fundamental",
         )
-        intelligence = ensure_branch_verdict(
-            intelligence_agent.run({**branch_payload, "market_regime": macro_verdict.metadata.get("regime", "neutral")}),
-            symbol=symbol,
-            branch_name="intelligence",
-        )
         macro = _build_symbol_macro_verdict(symbol=symbol, macro_verdict=macro_verdict)
         base_branch_verdicts = {
             "quant": quant,
             "fundamental": fundamental,
-            "intelligence": intelligence,
             "macro": macro,
         }
 

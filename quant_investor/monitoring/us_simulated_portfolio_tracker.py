@@ -18,7 +18,13 @@ from typing import Any
 
 import pandas as pd
 
+from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
 from quant_investor.market.download_us import FullMarketDownloader
+from quant_investor.market.config import get_market_settings
+from quant_investor.market.full_report import (
+    MarketArtifactContractError,
+    _require_current_market_report_batch,
+)
 from quant_investor.market.market_data_reader import MarketDataReader
 
 
@@ -41,6 +47,9 @@ DEFAULT_CAPS = {
     "AEP": 4,
 }
 NO_DATA_SAMPLE_LIMIT = 4
+BRANCH_SUPPORT_DENOMINATOR = len(CANONICAL_BRANCH_ORDER)
+# Add-on buys and core-hold labels require unanimous support from the v14 core.
+REQUIRED_BUY_BRANCH_SUPPORT = BRANCH_SUPPORT_DENOMINATOR
 THEME_BASKETS = {
     "software": ["MSFT", "NOW", "CRM", "ORCL", "SNOW", "PANW"],
     "ai": ["NVDA", "AVGO", "PLTR", "ANET", "SMCI", "AMD"],
@@ -114,16 +123,29 @@ def _load_latest_prices(symbols: list[str]) -> dict[str, dict[str, Any]]:
 
 
 def _load_latest_batch_recommendations() -> dict[str, dict[str, Any]]:
-    results_dir = PROJECT_ROOT / "results" / "us_analysis_full"
+    results_dir = PROJECT_ROOT / get_market_settings("US").analysis_output_dir
     pattern = re.compile(r"batch_.+?_\d+_(\d{8}_\d{6})\.json$")
     latest: dict[str, tuple[str, dict[str, Any]]] = {}
     for path in sorted(results_dir.glob("batch_*.json")):
         match = pattern.search(path.name)
         if not match:
-            continue
+            raise MarketArtifactContractError(
+                "US recommendation batch filename is not canonical v14: "
+                f"{path.name}"
+            )
         batch_ts = match.group(1)
         with open(path, "r", encoding="utf-8") as handle:
             payload = json.load(handle)
+        try:
+            _require_current_market_report_batch(
+                payload,
+                label=f"US recommendation batch {path.name}",
+            )
+        except MarketArtifactContractError as exc:
+            raise MarketArtifactContractError(
+                "US recommendation source is not a current v14 batch: "
+                f"{path.name}: {exc}"
+            ) from exc
         for rec in payload.get("recommendations", []):
             symbol = str(rec.get("symbol", "")).upper()
             if not symbol:
@@ -356,7 +378,7 @@ def _generate_trade_plan(
         branch_positive = int(rec.get("branch_positive_count", 0))
         if room <= 0 or symbol not in latest_prices:
             continue
-        if consensus < 0.15 or branch_positive < 3:
+        if consensus < 0.15 or branch_positive < REQUIRED_BUY_BRANCH_SUPPORT:
             continue
         add_candidates.append(
             (
@@ -381,7 +403,10 @@ def _generate_trade_plan(
                 shares=affordable,
                 price=round(price, 4),
                 trade_value=trade_value,
-                reason=f"模型对 {symbol} 维持 3/5 以上支持，且未达到持仓上限。",
+                reason=(
+                    f"模型对 {symbol} 维持 {REQUIRED_BUY_BRANCH_SUPPORT}/"
+                    f"{BRANCH_SUPPORT_DENOMINATOR} 一致支持，且未达到持仓上限。"
+                ),
             )
         )
         desired_increment = round(desired_increment - trade_value, 2)
@@ -399,7 +424,10 @@ def _generate_trade_plan(
             consensus = float(rec.get("consensus_score", 0.0))
             branch_positive = int(rec.get("branch_positive_count", 0))
             theme = _theme_for_symbol(symbol)
-            if consensus < 0.15 or branch_positive < 2:
+            if (
+                consensus < 0.15
+                or branch_positive < REQUIRED_BUY_BRANCH_SUPPORT
+            ):
                 continue
             if theme not in {"energy", "defensive"}:
                 continue
@@ -418,7 +446,12 @@ def _generate_trade_plan(
                     shares=affordable,
                     price=round(price, 4),
                     trade_value=trade_value,
-                    reason=f"{theme} 主线强于科技链，新增试仓 {symbol} 以承接强势方向。",
+                    reason=(
+                        f"{theme} 主线强于科技链，且获得 "
+                        f"{REQUIRED_BUY_BRANCH_SUPPORT}/"
+                        f"{BRANCH_SUPPORT_DENOMINATOR} 一致支持；"
+                        f"新增试仓 {symbol} 以承接强势方向。"
+                    ),
                 )
             )
             desired_increment = round(desired_increment - trade_value, 2)
@@ -754,14 +787,18 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         rec = recommendations.get(symbol, {})
         consensus = float(rec.get("consensus_score", 0.0))
         branch_positive = int(rec.get("branch_positive_count", 0))
-        if consensus >= 0.25 and branch_positive >= 3:
+        if (
+            consensus >= 0.25
+            and branch_positive >= REQUIRED_BUY_BRANCH_SUPPORT
+        ):
             thesis_status_map[symbol] = "核心持有"
         elif consensus >= 0.12:
             thesis_status_map[symbol] = "持有观察"
         else:
             thesis_status_map[symbol] = "谨慎观察"
         model_note_map[symbol] = (
-            f"consensus={consensus:.3f}, 支持分支={branch_positive}/5, 来源={rec.get('source_batch', 'N/A')}"
+            f"consensus={consensus:.3f}, 支持分支={branch_positive}/"
+            f"{BRANCH_SUPPORT_DENOMINATOR}, 来源={rec.get('source_batch', 'N/A')}"
         )
     holdings_review["thesis_status"] = holdings_review["symbol"].map(thesis_status_map)
     holdings_review["model_signal"] = holdings_review["symbol"].map(model_note_map)
@@ -960,7 +997,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "## 9. 模型信号复盘",
             "",
             "- 当前组合的核心有效信号仍是能源链的相对强度和大盘股广度稳定，而不是纯粹押注高 beta 风险偏好回升。",
-            "- `CVX/EOG/COP` 在最近批次扫描里都维持 3/5 支持，说明原有主线逻辑没有被短期波动推翻，反而得到最新完整日线的延续确认。",
+            f"- `CVX/EOG/COP` 在最近批次扫描里都维持 {REQUIRED_BUY_BRANCH_SUPPORT}/{BRANCH_SUPPORT_DENOMINATOR} 一致支持，说明原有主线逻辑没有被短期波动推翻，反而得到最新完整日线的延续确认。",
             "- `AEP` 的最新批次支持度明显降温，因此保留它的防守属性，但不继续把新增现金打到公用事业上。",
             f"- `{new_symbol_text}` 获得最新扫描的能源方向买入信号，用作新增试仓而不是直接重压，符合“长期过程不轻易推翻主线，但要识别结构切换”的要求。",
             "",
@@ -968,7 +1005,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "",
             f"- 继续跟踪能源主线是否由 `CVX/EOG/COP/{new_symbol_text}` 扩散到更广泛上游与炼化链。",
             "- 观察软件、AI、半导体篮子 20 日收益和 MA20>MA60 占比能否重新追平能源；若不能，暂不做风格切换。",
-            "- 关注 `AEP` 是否重新回到 3/5 模型支持；若继续走弱，下一轮优先考虑减持公用事业而不是减能源。",
+            f"- 关注 `AEP` 是否重新回到 {REQUIRED_BUY_BRANCH_SUPPORT}/{BRANCH_SUPPORT_DENOMINATOR} 一致支持；若继续走弱，下一轮优先考虑减持公用事业而不是减能源。",
             "- 若下一轮完整性再次因历史成分缺口受阻，需要先验证是否为不可交易旧成分，避免误判为当日更新失败。",
         ]
     )

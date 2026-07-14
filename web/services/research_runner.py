@@ -42,7 +42,6 @@ _PHASE_PROGRESS: list[tuple[str, float, str, str]] = [
     ("kline",       0.25, "kline",       "K线预测"),
     ("quant",       0.35, "quant",       "量化因子"),
     ("fundamental", 0.45, "fundamental", "基本面分析"),
-    ("intelligence",0.55, "intelligence","智能融合"),
     ("macro",       0.60, "macro",       "宏观风险"),
     ("risk",        0.65, "risk",        "风险评估"),
     ("calibrat",    0.70, "calibration", "信号校准"),

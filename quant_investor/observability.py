@@ -505,16 +505,11 @@ def discover_phase_artifacts(
 ) -> list[ArtifactReference]:
     refs: list[ArtifactReference] = []
 
-    try:
-        from quant_investor.bayesian.outcome_ledger import (
-            DEFAULT_OUTCOME_LEDGER_DIR,
-            DEFAULT_OUTCOMES_FILENAME,
-            DEFAULT_PREDICTIONS_FILENAME,
-        )
-    except ImportError:
-        DEFAULT_OUTCOME_LEDGER_DIR = Path("data/bayesian_outcome_ledger")
-        DEFAULT_PREDICTIONS_FILENAME = "predictions.jsonl"
-        DEFAULT_OUTCOMES_FILENAME = "outcomes.jsonl"
+    from quant_investor.bayesian.outcome_ledger import (
+        DEFAULT_OUTCOME_LEDGER_DIR,
+        DEFAULT_OUTCOMES_FILENAME,
+        DEFAULT_PREDICTIONS_FILENAME,
+    )
     outcome_root = Path(outcome_ledger_dir) if outcome_ledger_dir is not None else DEFAULT_OUTCOME_LEDGER_DIR
     _add_expected_ref(
         refs,
@@ -531,16 +526,11 @@ def discover_phase_artifacts(
         module="outcome_ledger",
     )
 
-    try:
-        from quant_investor.bayesian.calibration_v2 import (
-            DEFAULT_CALIBRATION_MODEL_FILENAME,
-            DEFAULT_CALIBRATION_REPORT_FILENAME,
-            DEFAULT_CALIBRATION_V2_DIR,
-        )
-    except ImportError:
-        DEFAULT_CALIBRATION_V2_DIR = Path("data/bayesian_calibration_v2")
-        DEFAULT_CALIBRATION_MODEL_FILENAME = "calibration_model_v2.json"
-        DEFAULT_CALIBRATION_REPORT_FILENAME = "calibration_report_v2.json"
+    from quant_investor.bayesian.calibration_v2 import (
+        DEFAULT_CALIBRATION_MODEL_FILENAME,
+        DEFAULT_CALIBRATION_REPORT_FILENAME,
+        DEFAULT_CALIBRATION_V2_DIR,
+    )
     calibration_root = Path(calibration_v2_dir) if calibration_v2_dir is not None else DEFAULT_CALIBRATION_V2_DIR
     _add_expected_ref(
         refs,
@@ -1120,6 +1110,8 @@ def _gather_schema_versions() -> dict[str, str]:
     schema_versions: dict[str, str] = {}
     names = [
         "ARCHITECTURE_VERSION",
+        "BRANCH_SCHEMA_VERSION",
+        "LIKELIHOOD_SCHEMA_VERSION",
         "CALIBRATION_SCHEMA_VERSION",
         "OUTCOME_LEDGER_SCHEMA_VERSION",
         "CALIBRATION_V2_SCHEMA_VERSION",
@@ -1145,12 +1137,9 @@ def _gather_schema_versions() -> dict[str, str]:
         value = getattr(versioning, name, None)
         if value is not None:
             schema_versions[name] = str(value)
-    try:
-        from quant_investor.branch_config import BRANCH_WEIGHT_VERSION
-    except ImportError:
-        BRANCH_WEIGHT_VERSION = None
-    if BRANCH_WEIGHT_VERSION is not None:
-        schema_versions["BRANCH_WEIGHT_VERSION"] = str(BRANCH_WEIGHT_VERSION)
+    from quant_investor.branch_config import BRANCH_WEIGHT_VERSION
+
+    schema_versions["BRANCH_WEIGHT_VERSION"] = str(BRANCH_WEIGHT_VERSION)
     return dict(sorted(schema_versions.items()))
 
 

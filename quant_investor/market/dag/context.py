@@ -1319,7 +1319,7 @@ def _prepare_market_context(
     global_context.metadata["shortlistable_count"] = len(candidate_symbols)
     global_context.metadata["branch_data_readiness"] = branch_data_readiness
     global_context.metadata["branch_readiness_artifacts"] = branch_governance_artifacts
-    global_context.metadata["four_branch_fusion_blocked"] = macro_blocked
+    global_context.metadata["branch_fusion_blocked"] = macro_blocked
     global_context.metadata["blocked_branch_symbols"] = list(branch_governance_report.blocked_symbols[:128])
     global_context.metadata["holding_review_funnel_override"] = holding_review_funnel_override
     global_context.metadata["holding_review_branch_readiness_override"] = holding_review_readiness_override

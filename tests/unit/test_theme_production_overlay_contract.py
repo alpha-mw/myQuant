@@ -50,11 +50,10 @@ def test_theme_production_overlay_all_explicit_toggles_formalize_baseline() -> N
     assert overlay["posterior_formula_changed"] is False
 
 
-def test_theme_overlay_keeps_v13_branch_and_bayesian_boundaries() -> None:
+def test_theme_overlay_keeps_v14_branch_and_bayesian_boundaries() -> None:
     assert CANONICAL_BRANCH_ORDER == (
         "quant",
         "fundamental",
-        "intelligence",
         "macro",
     )
     assert "theme" not in CANONICAL_BRANCH_ORDER
@@ -62,7 +61,6 @@ def test_theme_overlay_keeps_v13_branch_and_bayesian_boundaries() -> None:
     likelihoods = LikelihoodSet(
         quant_likelihood=0.61,
         fundamental_likelihood=0.52,
-        intelligence_likelihood=0.49,
     )
     assert not hasattr(likelihoods, "theme_likelihood")
     assert "theme_likelihood" not in likelihoods.to_dict()

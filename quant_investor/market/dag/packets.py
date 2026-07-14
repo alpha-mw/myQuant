@@ -719,20 +719,14 @@ def _build_symbol_bundle(
 ) -> UnifiedDataBundle:
     branch_payload = dict(branch_data_payload or {})
     fundamentals_by_symbol = dict(branch_payload.get("fundamentals", {}) or {})
-    event_data_by_symbol = dict(branch_payload.get("event_data", {}) or {})
-    sentiment_data_by_symbol = dict(branch_payload.get("sentiment_data", {}) or {})
     macro_payload = dict(market_snapshot)
     macro_payload.update(dict(branch_payload.get("macro_data", {}) or {}))
     symbol_fundamentals = dict(fundamentals_by_symbol.get(symbol, {}) or {})
-    symbol_events = list(event_data_by_symbol.get(symbol, []) or [])
-    symbol_sentiment = dict(sentiment_data_by_symbol.get(symbol, {}) or {})
     return UnifiedDataBundle(
         market=market,
         symbols=[symbol],
         symbol_data={symbol: frame},
         fundamentals={symbol: symbol_fundamentals} if symbol_fundamentals else {},
-        event_data={symbol: symbol_events} if symbol_events else {},
-        sentiment_data={symbol: symbol_sentiment} if symbol_sentiment else {},
         macro_data=macro_payload,
         metadata={
             "symbol_provenance": {
@@ -745,7 +739,6 @@ def _build_symbol_bundle(
             "branch_data_readiness": dict(branch_data_readiness or {}),
             "branch_data_sources": {
                 "fundamental": symbol_fundamentals.get("source", ""),
-                "intelligence": symbol_sentiment.get("source", ""),
                 "macro": macro_payload.get("source", ""),
             },
         },

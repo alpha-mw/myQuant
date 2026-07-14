@@ -5,11 +5,7 @@ export interface ResearchRunRequest {
   risk_level: string
   lookback_years: number
   kline_backend: string
-  enable_macro: boolean
-  enable_quant: boolean
   enable_kline: boolean
-  enable_fundamental: boolean
-  enable_intelligence: boolean
   enable_agent_layer: boolean
   review_model_priority: string[]
   agent_model: string

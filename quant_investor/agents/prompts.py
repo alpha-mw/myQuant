@@ -1,7 +1,7 @@
 """
-V13 Master Agent system prompt.
+V14 Master Agent system prompt.
 
-The review layer reads v13 four-branch research artifacts directly and remains
+The review layer reads v14 three-branch research artifacts directly and remains
 advisory-only; deterministic control-chain gates stay authoritative.
 """
 
@@ -67,10 +67,9 @@ JSON schema:
 MASTER_SYSTEM_PROMPT = """\
 你是投资委员会（IC）主席兼首席策略师。
 
-你直接拿到 v13 四个 canonical 研究分支的原始数据（不经过任何中间层加工）：
+你直接拿到 v14 三个 canonical 研究分支的原始数据（不经过任何中间层加工）：
 - quant 分支：多因子模型、Alpha 挖掘、因子 z-score 排名
 - fundamental 分支：财务质量、估值、治理、盈利预测修正（注意：数据可能缺失，需判断可靠性）
-- intelligence 分支：事件风险、市场情绪、资金流向、市场广度
 - macro 分支：宏观流动性、波动率结构、跨资产联动
 
 同时你还有：
@@ -81,18 +80,18 @@ MASTER_SYSTEM_PROMPT = """\
 你的决策流程是**五轮多空辩论**：
 
 【第一轮：数据层确认】
-- 逐一核查四个 canonical 分支的数据质量和信号可靠性
+- 逐一核查三个 canonical 分支的数据质量和信号可靠性
 - 标记数据缺失或存疑的分支（如 fundamental 数据不全），降低其权重
 - 确认哪些分支的信号在当前 market_regime 下最具参考价值
 
 【第二轮：多方立论】
 - 整合所有支持买入/做多的证据
-- 因子信号强？估值合理？情绪积极？宏观支持？
+- 因子信号强？估值合理？宏观支持？
 - 形成 bull_case：最有力的多方论点是什么？
 
 【第三轮：空方立论】
 - 整合所有反对买入的证据
-- 因子拥挤？估值高估？情绪极端贪婪？宏观压制？系统性风险累积？
+- 因子拥挤？估值高估？宏观压制？系统性风险累积？
 - 形成 bear_case：最有力的空方论点是什么？
 
 【第四轮：交叉辩驳】
@@ -136,21 +135,18 @@ MASTER_SYSTEM_PROMPT = """\
 CONVICTION_DEVIATION_CAP: dict[str, float] = {
     "quant": 0.25,
     "fundamental": 0.35,
-    "intelligence": 0.30,
     "macro": 0.25,
 }
 
 BRANCH_OVERLAY_SCORE_CAP: dict[str, float] = {
     "quant": 0.10,
     "fundamental": 0.14,
-    "intelligence": 0.12,
     "macro": 0.08,
 }
 
 BRANCH_OVERLAY_CONFIDENCE_CAP: dict[str, float] = {
     "quant": 0.10,
     "fundamental": 0.12,
-    "intelligence": 0.12,
     "macro": 0.08,
 }
 
@@ -288,26 +284,6 @@ BRANCH_SYSTEM_PROMPTS: dict[str, str] = {
 
 """ + _BRANCH_OUTPUT_SCHEMA_TEMPLATE.format(deviation_cap=CONVICTION_DEVIATION_CAP["fundamental"]),
 
-    "intelligence": """\
-你是一位多维信息情报分析师（智能分支 SubAgent），专注于事件驱动、市场情绪和资金流向分析。
-
-你的专业领域：
-- 事件风险评估：重大新闻、公告、政策变化的影响判断
-- 市场情绪分析：恐惧-贪婪指数、情绪极端值的识别
-- 资金流向：日内量能比率、主力资金动向
-- 市场广度与轮动：涨跌比、板块轮动节奏
-
-你的任务：
-1. 审阅智能分支的 4 个融合组件（事件风险、情绪、资金流、市场广度）
-2. 判断当前情绪是否处于极端区间（极度恐惧/贪婪，往往是反向信号）
-3. 识别催化剂事件：是否有即将发生的重大事件可能改变当前格局
-4. 评估信息不对称：是否有「聪明钱」已经在行动的迹象
-5. 给出你的独立研判
-
-注意：情绪指标有较强的反转特征——极端恐惧常是买入机会，极端贪婪常是卖出信号。
-
-""" + _BRANCH_OUTPUT_SCHEMA_TEMPLATE.format(deviation_cap=CONVICTION_DEVIATION_CAP["intelligence"]),
-
     "macro": """\
 你是一位宏观策略师（宏观分支 SubAgent），专注于市场整体环境、流动性和跨资产联动分析。
 
@@ -347,7 +323,7 @@ RISK_SYSTEM_PROMPT = """\
 
 你的任务：
 1. 审阅风险管理层的量化输出（风险指标、仓位建议、止损水平）
-2. 综合四个 v13 canonical 分支的研判，评估整体风险水平
+2. 综合三个 v14 canonical 分支的研判，评估整体风险水平
 3. 特别关注：
    - 分支间严重分歧（说明不确定性高，应降低风险敞口）
    - 极端 conviction score（无论多空，极端都意味着风险）
@@ -364,13 +340,13 @@ def format_agent_display_name(branch_name: str) -> str:
     labels = {
         "quant": "QuantAgent",
         "fundamental": "FundamentalAgent",
-        "intelligence": "IntelligenceAgent",
         "macro": "MacroAgent",
         "risk": "RiskAgent",
         "branch_overlay": "BranchOverlayReviewer",
         "master_ic": "MasterICAgent",
     }
     return labels.get(str(branch_name).strip().lower(), str(branch_name).strip() or "UnknownAgent")
+
 
 def build_branch_agent_messages(
     branch_name: str,

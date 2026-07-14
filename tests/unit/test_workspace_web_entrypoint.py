@@ -58,4 +58,4 @@ def test_workspace_app_exposes_api_health():
     response = client.get("/api/health")
 
     assert response.status_code == 200
-    assert response.json() == {"ok": True, "version": "13.0.0"}
+    assert response.json() == {"ok": True, "version": "14.0.0"}

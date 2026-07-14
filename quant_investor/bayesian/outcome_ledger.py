@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -16,25 +17,17 @@ from typing import Any, Mapping, Sequence, TypeVar
 
 from quant_investor.agent_protocol import GlobalContext
 from quant_investor.bayesian.types import PosteriorResult
+from quant_investor.branch_config import BRANCH_WEIGHT_VERSION, CANONICAL_BRANCH_ORDER
 from quant_investor.versioning import (
     ARCHITECTURE_VERSION,
+    BRANCH_SCHEMA_VERSION,
     CALIBRATION_SCHEMA_VERSION,
+    LIKELIHOOD_SCHEMA_VERSION,
     OUTCOME_LEDGER_SCHEMA_VERSION,
 )
 
-try:
-    from quant_investor.branch_config import BRANCH_WEIGHT_VERSION, CANONICAL_BRANCH_ORDER
-except ImportError:  # pragma: no cover - compatibility fallback for older trees
-    BRANCH_WEIGHT_VERSION = ""
-    CANONICAL_BRANCH_ORDER = (
-        "quant",
-        "fundamental",
-        "intelligence",
-        "macro",
-    )
 
-
-DEFAULT_OUTCOME_LEDGER_DIR = Path("data/bayesian_outcome_ledger")
+DEFAULT_OUTCOME_LEDGER_DIR = Path("data/bayesian_outcome_ledger/v14")
 DEFAULT_PREDICTIONS_FILENAME = "predictions.jsonl"
 DEFAULT_OUTCOMES_FILENAME = "outcomes.jsonl"
 
@@ -45,6 +38,28 @@ OUTCOME_STATUS_UNTRADABLE = "untradable"
 
 _ID_SAFE_PATTERN = re.compile(r"[^A-Za-z0-9_.-]+")
 _T = TypeVar("_T")
+_LIKELIHOOD_KEYS = frozenset(
+    {"schema_version", "quant_likelihood", "fundamental_likelihood", "correlation_matrix"}
+)
+_EVIDENCE_SOURCE_KEYS = frozenset({"quant", "fundamental"})
+_REQUIRED_SCHEMA_METADATA = {
+    "architecture_version": ARCHITECTURE_VERSION,
+    "branch_schema_version": BRANCH_SCHEMA_VERSION,
+    "likelihood_schema_version": LIKELIHOOD_SCHEMA_VERSION,
+    "calibration_schema_version": CALIBRATION_SCHEMA_VERSION,
+    "outcome_ledger_schema_version": OUTCOME_LEDGER_SCHEMA_VERSION,
+    "branch_weight_version": BRANCH_WEIGHT_VERSION,
+}
+
+
+def _require_schema(payload: Mapping[str, Any], *, record_type: str) -> str:
+    schema_version = str(payload.get("schema_version", ""))
+    if schema_version != OUTCOME_LEDGER_SCHEMA_VERSION:
+        raise ValueError(
+            f"{record_type} schema mismatch: expected "
+            f"{OUTCOME_LEDGER_SCHEMA_VERSION!r}, got {schema_version!r}."
+        )
+    return schema_version
 
 
 def _json_safe(value: Any) -> Any:
@@ -63,6 +78,26 @@ def _float_or_none(value: Any) -> float | None:
     if value is None:
         return None
     return float(value)
+
+
+def _require_finite(value: Any, field_name: str) -> float:
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{field_name} must be finite; got {value!r}.")
+    return number
+
+
+def _require_probability(value: Any, field_name: str) -> float:
+    probability = _require_finite(value, field_name)
+    if not 0.0 <= probability <= 1.0:
+        raise ValueError(f"{field_name} must be in [0, 1]; got {value!r}.")
+    return probability
+
+
+def _require_optional_finite(value: Any, field_name: str) -> float | None:
+    if value is None:
+        return None
+    return _require_finite(value, field_name)
 
 
 def _safe_id_part(value: Any) -> str:
@@ -100,6 +135,28 @@ def _coerce_mapping(value: Mapping[str, Any] | None) -> dict[str, Any]:
     return dict(_json_safe(value))
 
 
+def _bind_schema_metadata(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    metadata = _coerce_mapping(value)
+    metadata.update(_REQUIRED_SCHEMA_METADATA)
+    return metadata
+
+
+def _require_schema_metadata(value: Any, *, record_type: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{record_type} metadata schema mismatch: expected mapping.")
+    metadata = dict(value)
+    mismatches = {
+        key: {"expected": expected, "actual": metadata.get(key)}
+        for key, expected in _REQUIRED_SCHEMA_METADATA.items()
+        if metadata.get(key) != expected
+    }
+    if mismatches:
+        raise ValueError(
+            f"{record_type} metadata schema mismatch: {mismatches}."
+        )
+    return metadata
+
+
 def horizon_label_for_days(horizon_days: int) -> str:
     return f"{int(horizon_days)}D"
 
@@ -111,7 +168,17 @@ def make_deterministic_run_id(
     rebalance_date: str,
     universe_hash: str,
 ) -> str:
-    suffix = _digest(market, universe_key, rebalance_date, universe_hash, length=10)
+    suffix = _digest(
+        ARCHITECTURE_VERSION,
+        BRANCH_SCHEMA_VERSION,
+        LIKELIHOOD_SCHEMA_VERSION,
+        OUTCOME_LEDGER_SCHEMA_VERSION,
+        market,
+        universe_key,
+        rebalance_date,
+        universe_hash,
+        length=10,
+    )
     return "-".join(
         [
             "run",
@@ -124,7 +191,9 @@ def make_deterministic_run_id(
 
 
 def make_prediction_id(*, run_id: str, symbol: str, horizon_days: int) -> str:
-    suffix = _digest(run_id, symbol, horizon_days, length=10)
+    suffix = _digest(
+        OUTCOME_LEDGER_SCHEMA_VERSION, run_id, symbol, horizon_days, length=10
+    )
     return "-".join(
         [
             "pred",
@@ -137,7 +206,13 @@ def make_prediction_id(*, run_id: str, symbol: str, horizon_days: int) -> str:
 
 
 def make_outcome_id(*, prediction_id: str, resolution_date: str, status: str) -> str:
-    suffix = _digest(prediction_id, resolution_date, status, length=10)
+    suffix = _digest(
+        OUTCOME_LEDGER_SCHEMA_VERSION,
+        prediction_id,
+        resolution_date,
+        status,
+        length=10,
+    )
     return "-".join(
         [
             "out",
@@ -216,14 +291,104 @@ class PredictionRecord:
     evidence_sources: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        if self.metadata:
+            for key, expected in _REQUIRED_SCHEMA_METADATA.items():
+                if key in self.metadata and self.metadata[key] != expected:
+                    raise ValueError(
+                        "Prediction record metadata schema mismatch: "
+                        f"{key}={self.metadata[key]!r}, expected {expected!r}."
+                    )
+        self.metadata = _bind_schema_metadata(self.metadata)
+        self.validate()
+
+    def validate(self) -> None:
+        _require_schema(self.to_shallow_dict(), record_type="Prediction record")
+        _require_schema_metadata(self.metadata, record_type="Prediction record")
+        if self.likelihoods:
+            for key in ("quant_likelihood", "fundamental_likelihood"):
+                _require_probability(self.likelihoods.get(key), f"likelihoods.{key}")
+            if self.likelihoods.get("correlation_matrix") != {}:
+                raise ValueError("Prediction likelihood correlation_matrix must be empty for v14.")
+        for key, value in self.prior.items():
+            if isinstance(value, (int, float)):
+                _require_probability(value, f"prior.{key}")
+        for key, value in self.branch_scores.items():
+            _require_finite(value, f"branch_scores.{key}")
+        for key, value in self.branch_confidences.items():
+            _require_probability(value, f"branch_confidences.{key}")
+        for field_name in (
+            "posterior_expected_alpha",
+            "posterior_action_score",
+            "posterior_edge_after_costs",
+            "posterior_capacity_penalty",
+            "correlation_discount",
+            "coverage_discount",
+            "data_quality_penalty",
+            "fallback_penalty",
+            "regime_adjustment",
+        ):
+            _require_finite(getattr(self, field_name), field_name)
+        _require_probability(self.posterior_win_rate, "posterior_win_rate")
+        _require_probability(self.posterior_confidence, "posterior_confidence")
+        _require_probability(self.action_threshold_used, "action_threshold_used")
+
+    def to_shallow_dict(self) -> dict[str, Any]:
+        return {"schema_version": self.schema_version}
+
     def to_dict(self) -> dict[str, Any]:
+        self.validate()
         return dict(_json_safe(asdict(self)))
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "PredictionRecord":
         data = dict(payload)
+        schema_version = _require_schema(data, record_type="Prediction record")
+        metadata = _require_schema_metadata(
+            data.get("metadata"),
+            record_type="Prediction record",
+        )
+        likelihoods = dict(data.get("likelihoods", {}) or {})
+        actual_likelihoods = set(likelihoods)
+        if actual_likelihoods != _LIKELIHOOD_KEYS:
+            missing_likelihoods = sorted(_LIKELIHOOD_KEYS - actual_likelihoods)
+            unexpected_likelihoods = sorted(actual_likelihoods - _LIKELIHOOD_KEYS)
+            raise ValueError(
+                "Prediction likelihood fields must match the v14 schema; "
+                f"missing={missing_likelihoods}, unexpected={unexpected_likelihoods}."
+            )
+        likelihood_schema = str(likelihoods.get("schema_version", ""))
+        if likelihood_schema != LIKELIHOOD_SCHEMA_VERSION:
+            raise ValueError(
+                "Prediction likelihood schema mismatch: "
+                f"expected {LIKELIHOOD_SCHEMA_VERSION!r}, got {likelihood_schema!r}."
+            )
+        correlation_matrix = likelihoods.get("correlation_matrix")
+        if not isinstance(correlation_matrix, Mapping) or correlation_matrix:
+            raise ValueError(
+                "Prediction likelihood correlation_matrix must be empty for v14."
+            )
+        branch_scores = dict(data.get("branch_scores", {}) or {})
+        branch_confidences = dict(data.get("branch_confidences", {}) or {})
+        expected_branches = set(CANONICAL_BRANCH_ORDER)
+        score_branches = set(branch_scores)
+        confidence_branches = set(branch_confidences)
+        if score_branches != expected_branches or confidence_branches != expected_branches:
+            raise ValueError(
+                "Prediction branch maps must contain exactly the canonical branches; "
+                f"score_missing={sorted(expected_branches - score_branches)}, "
+                f"score_unexpected={sorted(score_branches - expected_branches)}, "
+                f"confidence_missing={sorted(expected_branches - confidence_branches)}, "
+                f"confidence_unexpected={sorted(confidence_branches - expected_branches)}."
+            )
+        evidence_sources = [str(item) for item in list(data.get("evidence_sources", []) or [])]
+        unexpected_sources = sorted(set(evidence_sources) - _EVIDENCE_SOURCE_KEYS)
+        if unexpected_sources:
+            raise ValueError(
+                f"Unexpected Bayesian evidence sources: {', '.join(unexpected_sources)}."
+            )
         return cls(
-            schema_version=str(data.get("schema_version", OUTCOME_LEDGER_SCHEMA_VERSION)),
+            schema_version=schema_version,
             record_type=str(data.get("record_type", "prediction")),
             prediction_id=str(data.get("prediction_id", "")),
             run_id=str(data.get("run_id", "")),
@@ -240,9 +405,9 @@ class PredictionRecord:
             macro_regime=str(data.get("macro_regime", "")),
             rank=int(data.get("rank", 0) or 0),
             prior=dict(data.get("prior", {}) or {}),
-            likelihoods=dict(data.get("likelihoods", {}) or {}),
-            branch_scores={str(key): float(value or 0.0) for key, value in dict(data.get("branch_scores", {}) or {}).items()},
-            branch_confidences={str(key): float(value or 0.0) for key, value in dict(data.get("branch_confidences", {}) or {}).items()},
+            likelihoods=likelihoods,
+            branch_scores={str(key): float(value or 0.0) for key, value in branch_scores.items()},
+            branch_confidences={str(key): float(value or 0.0) for key, value in branch_confidences.items()},
             posterior_win_rate=float(data.get("posterior_win_rate", 0.0) or 0.0),
             posterior_expected_alpha=float(data.get("posterior_expected_alpha", 0.0) or 0.0),
             posterior_confidence=float(data.get("posterior_confidence", 0.0) or 0.0),
@@ -255,8 +420,8 @@ class PredictionRecord:
             fallback_penalty=float(data.get("fallback_penalty", 0.0) or 0.0),
             regime_adjustment=float(data.get("regime_adjustment", 0.0) or 0.0),
             action_threshold_used=float(data.get("action_threshold_used", 0.0) or 0.0),
-            evidence_sources=[str(item) for item in list(data.get("evidence_sources", []) or [])],
-            metadata=dict(data.get("metadata", {}) or {}),
+            evidence_sources=evidence_sources,
+            metadata=metadata,
         )
 
 
@@ -290,15 +455,49 @@ class OutcomeRecord:
             self.excess_return = float(self.realized_return) - float(self.benchmark_return)
         if not self.horizon_label:
             self.horizon_label = horizon_label_for_days(self.horizon_days)
+        if self.metadata:
+            for key, expected in _REQUIRED_SCHEMA_METADATA.items():
+                if key in self.metadata and self.metadata[key] != expected:
+                    raise ValueError(
+                        "Outcome record metadata schema mismatch: "
+                        f"{key}={self.metadata[key]!r}, expected {expected!r}."
+                    )
+        self.metadata = _bind_schema_metadata(self.metadata)
+        self.validate()
+
+    def validate(self) -> None:
+        _require_schema(
+            {"schema_version": self.schema_version},
+            record_type="Outcome record",
+        )
+        _require_schema_metadata(self.metadata, record_type="Outcome record")
+        for field_name in (
+            "entry_price",
+            "exit_price",
+            "realized_return",
+            "benchmark_return",
+            "excess_return",
+            "max_drawdown",
+            "turnover",
+            "cost_estimate",
+            "slippage_estimate",
+        ):
+            _require_optional_finite(getattr(self, field_name), field_name)
 
     def to_dict(self) -> dict[str, Any]:
+        self.validate()
         return dict(_json_safe(asdict(self)))
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "OutcomeRecord":
         data = dict(payload)
+        schema_version = _require_schema(data, record_type="Outcome record")
+        metadata = _require_schema_metadata(
+            data.get("metadata"),
+            record_type="Outcome record",
+        )
         return cls(
-            schema_version=str(data.get("schema_version", OUTCOME_LEDGER_SCHEMA_VERSION)),
+            schema_version=schema_version,
             record_type=str(data.get("record_type", "outcome")),
             outcome_id=str(data.get("outcome_id", "")),
             prediction_id=str(data.get("prediction_id", "")),
@@ -319,7 +518,7 @@ class OutcomeRecord:
             turnover=_float_or_none(data.get("turnover")),
             cost_estimate=_float_or_none(data.get("cost_estimate")),
             slippage_estimate=_float_or_none(data.get("slippage_estimate")),
-            metadata=dict(data.get("metadata", {}) or {}),
+            metadata=metadata,
         )
 
 
@@ -348,11 +547,7 @@ def build_prediction_record(
     result_metadata = getattr(result, "metadata", {}) or {}
     if isinstance(result_metadata, Mapping) and result_metadata:
         record_metadata.setdefault("posterior_metadata", dict(_json_safe(result_metadata)))
-    record_metadata.setdefault("architecture_version", ARCHITECTURE_VERSION)
-    record_metadata.setdefault("calibration_schema_version", CALIBRATION_SCHEMA_VERSION)
-    record_metadata.setdefault("outcome_ledger_schema_version", OUTCOME_LEDGER_SCHEMA_VERSION)
-    if BRANCH_WEIGHT_VERSION:
-        record_metadata.setdefault("branch_weight_version", BRANCH_WEIGHT_VERSION)
+    record_metadata = _bind_schema_metadata(record_metadata)
 
     return PredictionRecord(
         schema_version=OUTCOME_LEDGER_SCHEMA_VERSION,
@@ -432,7 +627,15 @@ class OutcomeLedgerStore:
     def _append_jsonl(self, path: Path, payload: Mapping[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as file:
-            file.write(json.dumps(dict(_json_safe(payload)), ensure_ascii=False, sort_keys=True) + "\n")
+            file.write(
+                json.dumps(
+                    dict(_json_safe(payload)),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    allow_nan=False,
+                )
+                + "\n"
+            )
 
     def _read_jsonl(self, path: Path) -> list[dict[str, Any]]:
         if not path.exists():
@@ -453,6 +656,7 @@ class OutcomeLedgerStore:
         return rows
 
     def append_prediction(self, record: PredictionRecord) -> None:
+        PredictionRecord.from_dict(record.to_dict())
         if record.prediction_id in self.get_prediction_ids():
             raise ValueError(f"Duplicate prediction_id in prediction ledger: {record.prediction_id}")
         self._append_jsonl(self.predictions_path, record.to_dict())
@@ -461,6 +665,7 @@ class OutcomeLedgerStore:
         existing_ids = self.get_prediction_ids()
         batch_ids: set[str] = set()
         for record in records:
+            PredictionRecord.from_dict(record.to_dict())
             if record.prediction_id in existing_ids or record.prediction_id in batch_ids:
                 raise ValueError(f"Duplicate prediction_id in prediction ledger: {record.prediction_id}")
             batch_ids.add(record.prediction_id)
@@ -469,6 +674,7 @@ class OutcomeLedgerStore:
         return len(records)
 
     def append_outcome(self, record: OutcomeRecord) -> None:
+        OutcomeRecord.from_dict(record.to_dict())
         if record.prediction_id in self.get_resolved_prediction_ids():
             raise ValueError(f"Duplicate prediction_id in outcome ledger: {record.prediction_id}")
         self._append_jsonl(self.outcomes_path, record.to_dict())
@@ -538,7 +744,7 @@ class OutcomeLedgerStore:
             turnover=turnover,
             cost_estimate=cost_estimate,
             slippage_estimate=slippage_estimate,
-            metadata=_coerce_mapping(metadata),
+            metadata=_bind_schema_metadata(metadata),
         )
         self.append_outcome(outcome)
         return outcome

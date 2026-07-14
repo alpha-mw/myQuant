@@ -532,8 +532,6 @@ def _run_bayesian_selection_phase(
     degraded_map = {
         "quant": False,
         "fundamental": False,
-        "intelligence": False,
-        "macro": False,
     }
     for symbol in candidate_symbols:
         prior = prior_builder.build_prior(symbol, global_context)
@@ -576,7 +574,6 @@ def _run_bayesian_selection_phase(
                     "profile": str((global_context.metadata or {}).get("selection_profile", {}).get("funnel_profile", "classic")),
                     "momentum_strength": float((posterior.metadata or {}).get("momentum_strength", 0.0) if isinstance(getattr(posterior, "metadata", {}), Mapping) else 0.0),
                     "fake_breakout_penalty": float((posterior.metadata or {}).get("fake_breakout_penalty", 0.0) if isinstance(getattr(posterior, "metadata", {}), Mapping) else 0.0),
-                    "setup_failure_penalty": float((posterior.metadata or {}).get("setup_failure_penalty", 0.0) if isinstance(getattr(posterior, "metadata", {}), Mapping) else 0.0),
                     "crowding_penalty": float((posterior.metadata or {}).get("crowding_penalty", 0.0) if isinstance(getattr(posterior, "metadata", {}), Mapping) else 0.0),
                     "history_confidence": float((posterior.metadata or {}).get("history_confidence", 0.0) if isinstance(getattr(posterior, "metadata", {}), Mapping) else 0.0),
                     "calibration_samples": dict((posterior.metadata or {}).get("calibration_samples", {}) or {}) if isinstance(getattr(posterior, "metadata", {}), Mapping) else {},

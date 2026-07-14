@@ -26,6 +26,7 @@ def _all_results_with_theme_shadow() -> dict[str, list[dict[str, object]]]:
     return {
         "hs300": [
             {
+                **full_report.CURRENT_MARKET_REPORT_SCHEMA_ENVELOPE,
                 "stock_count": 1,
                 "batch_id": 1,
                 "execution_log": ["[INFO] batch finished"],
@@ -34,7 +35,17 @@ def _all_results_with_theme_shadow() -> dict[str, list[dict[str, object]]]:
                         "score": 0.1,
                         "confidence": 0.7,
                         "conclusion": "quant ok",
-                    }
+                    },
+                    "fundamental": {
+                        "score": 0.0,
+                        "confidence": 0.5,
+                        "conclusion": "fundamental neutral",
+                    },
+                    "macro": {
+                        "score": 0.0,
+                        "confidence": 0.5,
+                        "conclusion": "macro neutral",
+                    },
                 },
                 "strategy": {
                     "target_exposure": 0.0,
@@ -44,6 +55,7 @@ def _all_results_with_theme_shadow() -> dict[str, list[dict[str, object]]]:
                 },
                 "recommendations": [],
                 "analysis_meta": {
+                    **full_report.CURRENT_MARKET_REPORT_SCHEMA_ENVELOPE,
                     "market": "CN",
                     "universe": "full_a",
                     "global_context": {

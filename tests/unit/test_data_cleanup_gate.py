@@ -136,6 +136,76 @@ def test_cleanup_gate_blocks_runtime_and_strategy_references(tmp_path):
     assert report["summary"]["strategy_candidate_reference_count"] == 1
 
 
+def test_cleanup_gate_blocks_retired_intelligence_evidence(tmp_path):
+    candidate = "data/parquet/cn/intelligence_daily/part.parquet"
+    retained = "data/parquet/cn/intelligence_daily/part.parquet.sha256"
+    for relative_path in (candidate, retained):
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"immutable retirement evidence")
+    plan = {
+        "schema_version": "myquant.data_cleanup_plan.v1",
+        "candidates": [
+            {
+                "group_id": "retired-intelligence-mart",
+                "candidate_type": "retirement_evidence",
+                "candidate_paths": [candidate],
+                "retained_paths": [retained],
+            }
+        ],
+    }
+
+    report = build_data_cleanup_gate_report(plan, repo_root=tmp_path)
+    result = report["candidates"][0]
+
+    assert result["gate_status"] == "blocked"
+    assert "retirement_evidence_protection_check" in result["failed_checks"]
+    assert "candidate_is_protected_retirement_evidence" in result["blockers"]
+
+
+def test_cleanup_gate_blocks_parent_containing_retirement_evidence(tmp_path):
+    candidate = tmp_path / "data" / "parquet" / "cn"
+    candidate.mkdir(parents=True)
+    retained = tmp_path / "retained"
+    retained.mkdir()
+    plan = {
+        "candidates": [
+            {
+                "group_id": "broad-parent",
+                "candidate_paths": ["data/parquet/cn"],
+                "retained_paths": ["retained"],
+            }
+        ]
+    }
+
+    result = build_data_cleanup_gate_report(plan, repo_root=tmp_path)["candidates"][0]
+
+    assert result["gate_status"] == "blocked"
+    assert "candidate_is_protected_retirement_evidence" in result["blockers"]
+
+
+def test_cleanup_gate_canonicalizes_retirement_evidence_paths(tmp_path):
+    actual = tmp_path / "reports" / "daily" / "historical.md"
+    actual.parent.mkdir(parents=True)
+    actual.write_text("history", encoding="utf-8")
+    retained = tmp_path / "retained.md"
+    retained.write_text("history", encoding="utf-8")
+    plan = {
+        "candidates": [
+            {
+                "group_id": "traversal",
+                "candidate_paths": ["reports/tmp/../daily/historical.md"],
+                "retained_paths": ["retained.md"],
+            }
+        ]
+    }
+
+    result = build_data_cleanup_gate_report(plan, repo_root=tmp_path)["candidates"][0]
+
+    assert "candidate_is_protected_retirement_evidence" in result["blockers"]
+    assert "retirement_evidence_protection_check" in result["failed_checks"]
+
+
 def test_cleanup_gate_writes_reports_and_cli_output(tmp_path, capsys):
     _write_fixture_files(tmp_path)
     plan_path = tmp_path / "plan.json"

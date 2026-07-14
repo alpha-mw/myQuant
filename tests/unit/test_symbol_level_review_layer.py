@@ -429,7 +429,11 @@ def test_unified_dag_preserves_symbol_ic_hints_and_review_bundle(monkeypatch):
                 ic_hints_by_symbol=hints,
             ),
             "review_bundle": review_bundle,
-            "branch_results": {"kline": _make_branch_result("kline", 0.4, 0.7)},
+            "branch_results": {
+                "quant": _make_branch_result("quant", 0.4, 0.7),
+                "fundamental": _make_branch_result("fundamental", 0.2, 0.6),
+                "macro": _make_branch_result("macro", 0.1, 0.5),
+            },
             "branch_summaries": {},
             "branch_verdicts_by_symbol": {},
             "shortlist": [],
@@ -440,6 +444,14 @@ def test_unified_dag_preserves_symbol_ic_hints_and_review_bundle(monkeypatch):
             "portfolio_master_output": MasterAgentOutput(final_conviction="buy", final_score=0.2, confidence=0.7),
         },
         raising=False,
+    )
+    monkeypatch.setattr(
+        mainline_module,
+        "build_market_data_snapshot",
+        lambda **_kwargs: {
+            "missing_requested_symbols": [],
+            "unreadable_requested_symbols": [],
+        },
     )
 
     result = investor.run()

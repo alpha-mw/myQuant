@@ -8,10 +8,8 @@ from quant_investor.config import config as runtime_config
 
 
 _BRANCH_LABEL_MAP = {
-    "kline": "K线技术",
     "quant": "量化因子",
     "fundamental": "基本面",
-    "intelligence": "智能融合",
     "macro": "宏观",
 }
 
@@ -280,8 +278,9 @@ class ReportBuilder:
             f"- Subagent 超时: {config['agent_timeout']}s\n"
             f"- Master Agent 超时: {config['master_timeout']}s\n"
             f"- Agent Layer 启用: {'是' if config['enable_agent_layer'] else '否'}\n\n"
-            f"**分析层级（统一 DAG）:** GlobalContext → 全市场分支（K线+量化） → "
-            f"漏斗压缩（{config.get('funnel_max_candidates', runtime_config.FUNNEL_MAX_CANDIDATES)} 候选） → 候选分支（基本面+智能融合） → "
+            f"**分析层级（统一 DAG）:** GlobalContext → 确定性漏斗压缩"
+            f"（{config.get('funnel_max_candidates', runtime_config.FUNNEL_MAX_CANDIDATES)} 候选） → "
+            f"三分支（量化+基本面+宏观） → "
             f"Bayesian 后验决策 → Master Discussion（Top {config.get('bayesian_shortlist_size', 50)}） → "
             f"确定性控制链 → 组合构建 → 报告生成"
         )
@@ -469,7 +468,7 @@ class ReportBuilder:
             rows.append(
                 f"\n### {rank}. {emoji} {symbol} {name}  |  {action}\n\n"
                 f"- **一句话结论**: {one_line or '详见驱动因素。'}\n"
-                f"- **分支支持**: {pos_count}/5 路正向  |  可信度: {_confidence_label(conf)}（{conf:.2f}）\n"
+                f"- **分支支持**: {pos_count}/3 路正向  |  可信度: {_confidence_label(conf)}（{conf:.2f}）\n"
                 f"- **价格参数**: 现价 ¥{cur_price:.2f}  →  参考买点 ¥{entry_price:.2f}  |  目标价 ¥{target_price:.2f}  |  止损价 ¥{stop_loss:.2f}\n"
                 f"- **支撑因素**: {support_str}\n"
                 f"- **拖累/风险**: {drag_str}"

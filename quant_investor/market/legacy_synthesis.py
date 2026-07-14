@@ -5,8 +5,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Mapping
 
-from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
 from quant_investor.market.config import get_market_settings
+from quant_investor.market.full_report import (
+    _canonical_branch_map,
+    _require_current_market_schema_envelope,
+)
 from quant_investor.market.name_map import get_stock_name
 
 
@@ -35,14 +38,6 @@ def _sanitize_text(text: Any) -> str:
     if lowered == "unknown":
         return "已按默认状态处理。"
     return normalized
-
-
-def _canonical_branch_map(payload: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        branch_name: payload[branch_name]
-        for branch_name in CANONICAL_BRANCH_ORDER
-        if branch_name in payload
-    }
 
 
 def _category_name(category: str, market: str = "CN") -> str:
@@ -213,10 +208,19 @@ def synthesize_legacy_analysis_results_from_dag(
     categories: list[str],
     total_capital: float,
 ) -> dict[str, list[dict[str, Any]]]:
+    report_bundle = dag_artifacts.get("report_bundle")
+    schema_envelope = _require_current_market_schema_envelope(
+        report_bundle,
+        label="market DAG ReportBundle",
+    )
     packets = dict(dag_artifacts.get("symbol_research_packets", {}) or {})
     shortlist = list(dag_artifacts.get("shortlist", []) or [])
     portfolio_decision = dag_artifacts.get("portfolio_decision")
-    branch_summaries = dict(dag_artifacts.get("branch_summaries", {}) or {})
+    branch_summaries = _canonical_branch_map(
+        dict(dag_artifacts.get("branch_summaries", {}) or {}),
+        label="market DAG branch_summaries",
+        require_exact=True,
+    )
     selected_categories = list(categories or [universe])
     shortlist_by_symbol = {
         getattr(item, "symbol", ""): item for item in shortlist
@@ -231,7 +235,7 @@ def synthesize_legacy_analysis_results_from_dag(
         symbols_by_category[category].append(symbol)
 
     branches_as_dict: dict[str, dict[str, Any]] = {}
-    for name, branch in _canonical_branch_map(branch_summaries).items():
+    for name, branch in branch_summaries.items():
         branch_payload = _to_dict(branch)
         branches_as_dict[name] = {
             "score": float(
@@ -332,6 +336,7 @@ def synthesize_legacy_analysis_results_from_dag(
                 recommendations.append(recommendation)
         all_results[category] = [
             {
+                **schema_envelope,
                 "market": market,
                 "universe": universe,
                 "category": category,
@@ -366,6 +371,7 @@ def synthesize_legacy_analysis_results_from_dag(
                 "recommendations": recommendations,
                 "execution_log": list(execution_log),
                 "analysis_meta": {
+                    **schema_envelope,
                     "global_context": _to_dict(
                         dag_artifacts.get("global_context")
                     ),
@@ -402,21 +408,6 @@ def synthesize_legacy_analysis_results_from_dag(
                         dag_artifacts.get("review_bundle").ic_hints_by_symbol
                         if dag_artifacts.get("review_bundle")
                         else {}
-                    ),
-                    "branch_schema_version": getattr(
-                        dag_artifacts.get("review_bundle"),
-                        "branch_schema_version",
-                        "",
-                    ),
-                    "ic_protocol_version": getattr(
-                        dag_artifacts.get("review_bundle"),
-                        "ic_protocol_version",
-                        "",
-                    ),
-                    "report_protocol_version": getattr(
-                        dag_artifacts.get("review_bundle"),
-                        "report_protocol_version",
-                        "",
                     ),
                 },
             }

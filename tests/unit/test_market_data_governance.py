@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import importlib
 import json
 
 import pandas as pd
+import pytest
 
 from quant_investor.market.data_governance import run_data_governance
-from quant_investor.market.intelligence_mart import build_intelligence_daily, write_intelligence_mart
 from quant_investor.market.macro_mart import write_macro_mart
 
 
@@ -90,12 +91,8 @@ def _write_fundamental(root):
 def test_data_governance_default_is_local_read_only(tmp_path):
     data_root = _write_parquet_market_data(tmp_path)
     fundamental_root = tmp_path / "cn_fundamental"
-    intelligence_root = tmp_path / "cn_intelligence"
     macro_root = tmp_path / "cn_macro"
     _write_fundamental(fundamental_root)
-    frame = _daily_frame()
-    intelligence_daily = build_intelligence_daily({"000001.SZ": frame})
-    write_intelligence_mart(intelligence_daily, data_root=intelligence_root, raw_snapshot_root=tmp_path / "snapshots" / "intelligence")
     write_macro_mart(
         {
             "trade_date": "20240510",
@@ -116,7 +113,6 @@ def test_data_governance_default_is_local_read_only(tmp_path):
         as_of="20240510",
         data_dir=data_root,
         fundamental_root=fundamental_root,
-        intelligence_root=intelligence_root,
         macro_root=macro_root,
         output_dir=tmp_path / "reports",
     )
@@ -129,17 +125,12 @@ def test_data_governance_default_is_local_read_only(tmp_path):
 
 def test_data_governance_allow_live_uses_explicit_maintenance_path(tmp_path, monkeypatch):
     data_root = _write_parquet_market_data(tmp_path)
-    calls = {"fundamental": 0, "intelligence": 0, "macro": 0}
+    calls = {"fundamental": 0, "macro": 0}
 
     def _fake_fundamental(**kwargs):
         calls["fundamental"] += 1
         assert kwargs["allow_live"] is True
         assert kwargs["universes"] == "full_a"
-        return {}
-
-    def _fake_intelligence(**kwargs):
-        calls["intelligence"] += 1
-        assert kwargs["allow_live"] is True
         return {}
 
     def _fake_macro(**kwargs):
@@ -148,7 +139,6 @@ def test_data_governance_allow_live_uses_explicit_maintenance_path(tmp_path, mon
         return {}
 
     monkeypatch.setattr("quant_investor.market.fundamental_mart.run_cn_fundamental_maintenance", _fake_fundamental)
-    monkeypatch.setattr("quant_investor.market.intelligence_mart.run_cn_intelligence_maintenance", _fake_intelligence)
     monkeypatch.setattr("quant_investor.market.macro_mart.run_cn_macro_maintenance", _fake_macro)
 
     result = run_data_governance(
@@ -158,10 +148,21 @@ def test_data_governance_allow_live_uses_explicit_maintenance_path(tmp_path, mon
         allow_live=True,
         data_dir=data_root,
         fundamental_root=tmp_path / "fundamental",
-        intelligence_root=tmp_path / "intelligence",
         macro_root=tmp_path / "macro",
         output_dir=tmp_path / "reports",
     )
 
-    assert calls == {"fundamental": 1, "intelligence": 1, "macro": 1}
+    assert calls == {"fundamental": 1, "macro": 1}
     assert result["local_read_only"] is False
+
+
+def test_data_governance_rejects_retired_root_argument(tmp_path):
+    with pytest.raises(TypeError):
+        run_data_governance(
+            intelligence_root=tmp_path / "retired",  # type: ignore[call-arg]
+        )
+
+
+def test_retired_market_mart_module_is_physically_absent():
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("quant_investor.market.intelligence_mart")

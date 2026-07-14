@@ -174,13 +174,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--kline-backend",
         default="v13-retired",
         choices=["v13-retired", "heuristic", "kronos", "chronos", "hybrid"],
-        help="兼容保留参数；v13 四分支主线不再执行 kline 分支。",
+        help="兼容保留参数；v14 三分支主线不再执行 kline 分支。",
     )
     research_run.add_argument("--no-macro", action="store_true")
-    research_run.add_argument("--no-kline", "--no-kronos", action="store_true", help="兼容保留参数；v13 默认已禁用 kline。")
+    research_run.add_argument("--no-kline", "--no-kronos", action="store_true", help="兼容保留参数；v14 默认不执行 kline 分支。")
     research_run.add_argument("--no-quant", action="store_true")
     research_run.add_argument("--no-fundamental", action="store_true")
-    research_run.add_argument("--no-intelligence", action="store_true")
     research_run.add_argument(
         "--disable-document-semantics",
         action="store_true",
@@ -347,7 +346,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     market_data_governance = market_subparsers.add_parser(
         "data-governance",
-        help="审计四分支数据 readiness，默认只读本地数据",
+        help="审计三分支数据 readiness，默认只读本地数据",
     )
     market_data_governance.add_argument("--market", required=True, choices=["CN"])
     market_data_governance.add_argument(
@@ -358,7 +357,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="可重复；默认 full_a",
     )
     market_data_governance.add_argument("--as-of", default="")
-    market_data_governance.add_argument("--output-dir", default="reports/branch_readiness")
+    market_data_governance.add_argument(
+        "--output-dir", default="reports/v14/branch_readiness"
+    )
     market_data_governance.add_argument(
         "--allow-live",
         action="store_true",

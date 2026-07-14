@@ -9,8 +9,8 @@ contracts before changing model behavior.
 ## Phase 1: Engineering Contracts and Executable Specs
 
 Deliverables:
-- Single-source canonical branch weights for quant, kline, intelligence, fundamental,
-  and macro research branches.
+- Single-source canonical branch weights for quant, fundamental, and macro research
+  branches under the v14 three-branch contract.
 - Offline contract tests for branch weights, README alignment, protocol dataclasses,
   and the CalibrationStore V1 outcome ledger anchor.
 - Local quality gate script for Phase 1 tests, unit tests, and lightweight type checks.
