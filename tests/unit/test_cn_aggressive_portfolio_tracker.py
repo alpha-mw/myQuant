@@ -960,6 +960,62 @@ def test_candidate_pool_keeps_positive_target_with_limited_quant_evidence():
     assert tracker._candidate_codex_score(qualified_row) - tracker._candidate_codex_score(row) == 14
 
 
+def test_candidate_pool_rejects_non_mapping_branch_payloads():
+    symbol = "688301.SH"
+    dag_artifacts = {
+        "symbol_research_packets": {
+            symbol: {
+                "symbol": symbol,
+                "company_name": "奕瑞科技",
+                "category": "full_a",
+                "branch_verdicts": {
+                    branch: "corrupt" for branch in tracker.REQUIRED_DAG_BRANCHES
+                },
+            }
+        },
+        "shortlist": [
+            {
+                "symbol": symbol,
+                "company_name": "奕瑞科技",
+                "category": "full_a",
+                "rank_score": 0.8,
+                "confidence": 0.7,
+                "expected_upside": 0.1,
+                "suggested_weight": 0.08,
+            }
+        ],
+        "bayesian_records": [
+            {
+                "symbol": symbol,
+                "posterior_action_score": 0.7,
+                "posterior_win_rate": 0.6,
+                "posterior_expected_alpha": 0.08,
+                "posterior_confidence": 0.7,
+                "rank": 1,
+            }
+        ],
+        "portfolio_decision": {
+            "target_weights": {symbol: 0.08},
+            "target_positions": {symbol: 0.08},
+        },
+    }
+
+    candidate_pool, status = tracker._build_candidate_pool_from_v13_dag(
+        dag_artifacts=dag_artifacts,
+        held_symbols=[],
+    )
+
+    assert candidate_pool.empty
+    assert status["candidate_generation_status"] == "blocked"
+    assert status["blocker"] == "candidate_dag_incomplete"
+    compliance = status["candidate_dag_four_branch_compliance"]
+    assert compliance["complete"] is False
+    assert compliance["present_branch_by_symbol"][symbol] == []
+    assert compliance["missing_branch_by_symbol"][symbol] == list(
+        tracker.REQUIRED_DAG_BRANCHES
+    )
+
+
 def test_write_outputs_persists_theme_pool_audit(tmp_path: Path) -> None:
     run_dir = tmp_path / "strategy_records" / "20260630_theme_pool"
     manifest = {

@@ -1814,6 +1814,10 @@ def _symbol_key(value: Any) -> str:
     return str(value or "").strip().upper()
 
 
+def _candidate_branch_payload_materialized(payload: Any) -> bool:
+    return isinstance(payload, Mapping) and bool(payload)
+
+
 def _candidate_dag_branch_state(
     packet: dict[str, Any],
 ) -> tuple[list[str], list[str], list[str], list[str], dict[str, float]]:
@@ -1821,7 +1825,7 @@ def _candidate_dag_branch_state(
     present = [
         branch
         for branch in REQUIRED_DAG_BRANCHES
-        if _branch_payload_present(branch_payloads.get(branch))
+        if _candidate_branch_payload_materialized(branch_payloads.get(branch))
     ]
     missing = [branch for branch in REQUIRED_DAG_BRANCHES if branch not in present]
     limited = [
