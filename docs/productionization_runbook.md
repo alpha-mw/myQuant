@@ -386,6 +386,99 @@ Parquet is the canonical runtime store. CSV deletion flags only apply to legacy
 human export cleanup; production market-data reads must use the Parquet store or
 JSON manifests.
 
+### CN Canonical Coverage Provenance Gate
+
+For every CN target date, full-A coverage is the pairwise-disjoint union of
+symbols with an observed bar, exact-date verified suspended symbols without a
+bar, exact-date `verified_nontrading_bak_daily_zero` symbols, date-proven
+inactive/pre-listing symbols without a bar, and true missing symbols. The union
+must equal the component scope after PIT membership classification. A missing
+bar is therefore not itself a failure; only a PIT-active symbol without an
+observed bar or valid non-trading evidence is a blocking `true_missing_symbol`.
+
+Suspension evidence must come from a successful exact-date `suspend_d` query and
+the v5 cache contract, including the `trade_date` query parameters, shared query
+run ID, raw-response SHA, every exact-date S/R/other event record and its SHA,
+timestamp, and reproducible payload SHA. An empty exact-date event response is
+not proof that a symbol traded and cannot erase stronger non-trading evidence.
+The separate `verified_suspension_continuity_absent` classification is allowed
+only when the immediately previous and next open-day v5 records both contain an
+S event for the same symbol, the target v5 record contains no event of any type,
+the exact target `bak_daily` result rejects that symbol only as
+`exact_row_missing`, PIT says listed/tradable on all three dates, and canonical
+bars are absent on all three dates. Its persisted evidence binds the ordered
+calendar, PIT, canonical table/serving window, all source files, and the shared
+query run ID. It is an explicit continuity inference, not a claim that the
+target day had a direct regulatory event. If a qualifying triplet has mixed
+query run IDs, refresh exactly those three dates under one explicit shared ID
+and repeat full readback before classifying it. `verified_nontrading_bak_daily_zero`
+requires one exact symbol/date row for a PIT-active primary-bar absence with
+zero open/high/low/volume/amount, positive `close == pre_close`, and zero change
+fields when present. These rows are typed evidence only: they are never written
+as synthetic OHLCV bars or described as a regulatory suspension. Inactive or
+pre-listing evidence requires `list_date > target_date` or a non-empty
+`delist_date <= target_date`; equality on the delisting date is excluded from
+the active scope. Current status alone is not sufficient historical evidence. A generic
+`--allowed-stale-symbols` list is diagnostic only and produces
+`unverified_allowed_stale_symbols_not_permitted`; it cannot clear a coverage
+blocker.
+
+Historical upserts require verified latest-date coverage and must preserve the
+latest coverage date, scope SHA, classification sets, and canonical fingerprint.
+Historical-target evidence is stored separately under
+`historical_upsert_target_coverage`. The narrow exception is an exact same-date
+republish that repairs a provenance-only quarantine. After any canonical write,
+validation must parse the JSON result and require `status=passed`, empty
+`blockers`, and empty `coverage_provenance_blockers`; process exit code alone is
+not sufficient.
+
+The 100-open-day audit must be a full recomputation from canonical Parquet and
+current hash-bound evidence. It must report `prior_trade_dates_reused=0`; a
+delta report that reuses prior date classifications cannot close the gate.
+Refresh the PIT stock-basic snapshot before publishing the current canonical
+date so target-day delist boundaries are evaluated from current source facts.
+The refresh must have a nonempty listed frame, cover every current full-A
+component, and retain every symbol already present in canonical PIT; otherwise
+it fails before replacing the PIT files.
+
+```bash
+PIT_UNIVERSE_BACKFILL_ENABLED=1 \
+uv run python scripts/refresh_pit_universe.py \
+  --market CN \
+  --allow-online \
+  --execute \
+  --output data/cn_market_full/pit_universe_refresh_YYYYMMDD.json
+```
+
+```bash
+UV_CACHE_DIR=/tmp/uv-cache \
+MYQUANT_MARKET_DATA_BACKEND=parquet \
+MYQUANT_MARKET_DATA_MODE_POLICY=strict \
+PATH="$PWD/.venv/bin:$PATH" \
+uv run python scripts/run_cn_history_audit.py \
+  --market CN \
+  --days 100 \
+  --end-date auto \
+  --allow-online \
+  --output-root data/cn_market_full
+```
+
+If the full audit identifies genuine primary-bar gaps on at most five target
+dates, repair only those exact dates with the bounded atomic helper, then rerun
+the complete 100-open-day audit. The helper never advances or weakens the latest
+coverage contract and never synthesizes bars. It rejects an audit whose payload
+SHA, schema, full-window status, pointer, manifest, PIT, or table/serving window
+binding is stale, and refuses to overwrite any target symbol-date that is
+already present in current canonical storage.
+
+```bash
+uv run python scripts/repair_cn_history_gaps.py \
+  --audit-path data/cn_market_full/history_audit_<timestamp>_full_recompute.json \
+  --trade-dates YYYYMMDD [YYYYMMDD ...] \
+  --allow-online \
+  --output-root data/cn_market_full
+```
+
 Focused gate:
 
 ```bash

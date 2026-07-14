@@ -12,7 +12,7 @@ import json
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import pandas as pd
 
@@ -644,16 +644,45 @@ def refresh_pit_universe_from_tushare(
     execute: bool = False,
     observed_at: str | None = None,
     source_run_id: str | None = None,
+    required_symbols: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     resolved_observed_at = observed_at or _utc_now_iso()
     resolved_run_id = source_run_id or _source_run_id(resolved_observed_at)
     frames = fetch_stock_basic_frames(pro)
+    listed_frame = frames.get(LIST_STATUS_LISTED, pd.DataFrame())
+    if not isinstance(listed_frame, pd.DataFrame) or listed_frame.empty:
+        raise RuntimeError("stock_basic listed status returned no rows")
     raw_records = records_from_stock_basic_frames(
         frames,
         observed_at=resolved_observed_at,
         source_run_id=resolved_run_id,
     )
     latest_records = dedupe_latest_records(raw_records)
+    latest_symbols = {record.symbol for record in latest_records if record.symbol}
+    required = {
+        normalize_symbol(symbol)
+        for symbol in required_symbols or []
+        if normalize_symbol(symbol)
+    }
+    missing_required = sorted(required - latest_symbols)
+    if missing_required:
+        raise RuntimeError(
+            "stock_basic refresh omits required current components: "
+            f"count={len(missing_required)},symbols={missing_required[:20]}"
+        )
+    existing_symbols: set[str] = set()
+    if store.canonical_path.exists():
+        existing_symbols = {
+            record.symbol
+            for record in store.load_latest_records()
+            if record.symbol
+        }
+    missing_existing = sorted(existing_symbols - latest_symbols)
+    if missing_existing:
+        raise RuntimeError(
+            "stock_basic refresh would shrink canonical PIT membership: "
+            f"count={len(missing_existing)},symbols={missing_existing[:20]}"
+        )
     status_counts = {status: int(len(frames.get(status, pd.DataFrame()))) for status in SUPPORTED_LIST_STATUSES}
     report: dict[str, Any] = {
         "schema_version": PIT_UNIVERSE_REFRESH_SCHEMA_VERSION,
@@ -665,6 +694,11 @@ def refresh_pit_universe_from_tushare(
         "raw_row_count": len(raw_records),
         "row_count": len(latest_records),
         "status_counts": status_counts,
+        "required_symbol_count": len(required),
+        "required_symbols_missing": missing_required,
+        "existing_symbol_count": len(existing_symbols),
+        "existing_symbols_missing": missing_existing,
+        "membership_nonshrinking": True,
         "manifest": {},
     }
     if execute:

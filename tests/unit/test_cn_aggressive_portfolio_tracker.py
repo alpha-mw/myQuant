@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +18,47 @@ CANONICAL_FACTOR_FIXTURE_ROOT = ROOT / "tests" / "fixtures" / "factor_library_sh
 
 class _Sentinel(Exception):
     pass
+
+
+def _ready_dag_branches() -> dict[str, dict[str, object]]:
+    branches = {
+        branch: {
+            "branch_name": branch,
+            "status": "success",
+            "final_score": 0.5,
+            "final_confidence": 0.6,
+            "evidence": [f"{branch}_evidence"],
+        }
+        for branch in tracker.REQUIRED_DAG_BRANCHES
+    }
+    branches["quant"]["metadata"] = {
+        "factor_mode": "governed_mined_factors",
+        "mined_factor_runtime": {
+            "governance_status": "ready",
+            "factor_mode": "governed_mined_factors",
+            "production_eligible": True,
+            "legacy_fallback_allowed": False,
+            "runtime_blockers": [],
+            "factor_count": 1,
+            "factors_used": ["factor_ready"],
+            "factor_coverages": {"factor_ready": 1.0},
+            "applied_to_score": True,
+        },
+    }
+    return branches
+
+
+def _seal_v3_manual_manifest(
+    payload: dict[str, object],
+    *,
+    ledger_sha256: str,
+) -> dict[str, object]:
+    sealed = dict(payload)
+    sealed["financial_state_sha256"] = tracker._manual_financial_state_sha256(
+        sealed,
+        ledger_sha256=ledger_sha256,
+    )
+    return sealed
 
 
 def _fake_market_metrics_bundle(
@@ -123,6 +165,16 @@ def test_build_parser_accepts_allowed_stale_symbols():
 
     debug_args = parser.parse_args(["--skip-market-metrics-prewarm"])
     assert debug_args.skip_market_metrics_prewarm is True
+    assert debug_args.advisory_only is True
+    assert debug_args.allow_live_quotes is False
+    assert debug_args.quote_input_json == ""
+    assert debug_args.quote_max_age_seconds == 300
+
+    manual_args = parser.parse_args(
+        ["--allow-local-manual-fills", "--allow-live-quotes"]
+    )
+    assert manual_args.advisory_only is False
+    assert manual_args.allow_live_quotes is True
 
 
 def test_parquet_canonical_completeness_drives_analysis_date_from_reader():
@@ -166,6 +218,278 @@ def test_parquet_canonical_completeness_drives_analysis_date_from_reader():
     assert report["coverage_ratio"] == 1.0
     assert tracker._resolve_analysis_trade_date(report) == "20260618"
     assert report["resolver"]["physical_directories_used_for_full_a"] == []
+
+
+def test_parquet_canonical_completeness_uses_date_and_scope_bound_nontrading_evidence():
+    full_a = ["000001.SZ", "000002.SZ", "000003.SZ"]
+    scope_sha = hashlib.sha256("\n".join(sorted(full_a)).encode("utf-8")).hexdigest()
+
+    class _FakeReader:
+        def snapshot(self):
+            return {
+                "healthy": True,
+                "snapshot_id": "snap-20260618",
+                "latest_complete_trade_date": "20260618",
+                "coverage": {
+                    "complete": True,
+                    "blocking_incomplete_count": 0,
+                    "expected_scope_count": 3,
+                    "coverage_trade_date": "20260618",
+                    "expected_scope_sha256": scope_sha,
+                    "inactive_symbols": ["000003.SZ"],
+                },
+            }
+
+        def read_cross_section(self, trade_date, **_kwargs):
+            return pd.DataFrame(
+                {
+                    "ts_code": ["000001.SZ", "000002.SZ"],
+                    "trade_date": [trade_date, trade_date],
+                }
+            )
+
+    report = tracker.build_parquet_canonical_completeness_report(
+        reader=_FakeReader(),
+        components={
+            "full_a": full_a,
+            "hs300": ["000001.SZ", "000003.SZ"],
+            "zz500": ["000002.SZ"],
+            "zz1000": [],
+        },
+    )
+
+    assert report["complete"] is True
+    assert report["coverage_provenance_status"] == "verified"
+    assert report["expected_scope_count"] == 3
+    assert report["coverage_complete_count"] == 3
+    assert report["blocking_incomplete_count"] == 0
+    assert report["categories"]["full_a"]["inactive_symbols"] == ["000003.SZ"]
+
+
+def test_parquet_canonical_completeness_requires_symbol_identity_for_absence():
+    full_a = ["000001.SZ", "000002.SZ", "000003.SZ"]
+    scope_sha = hashlib.sha256("\n".join(sorted(full_a)).encode("utf-8")).hexdigest()
+
+    class _FakeReader:
+        def snapshot(self):
+            return {
+                "healthy": True,
+                "snapshot_id": "identity-mismatch",
+                "latest_complete_trade_date": "20260618",
+                "coverage": {
+                    "complete": True,
+                    "blocking_incomplete_count": 0,
+                    "expected_scope_count": 3,
+                    "coverage_complete_count": 3,
+                    "coverage_trade_date": "20260618",
+                    "expected_scope_sha256": scope_sha,
+                    "inactive_symbols": ["000003.SZ"],
+                    "non_blocking_absent_symbols": ["000003.SZ"],
+                },
+            }
+
+        def read_cross_section(self, trade_date, **_kwargs):
+            return pd.DataFrame(
+                {
+                    "ts_code": ["000001.SZ", "000003.SZ"],
+                    "trade_date": [trade_date, trade_date],
+                }
+            )
+
+    report = tracker.build_parquet_canonical_completeness_report(
+        reader=_FakeReader(),
+        components={"full_a": full_a, "hs300": [], "zz500": [], "zz1000": []},
+    )
+
+    assert report["complete"] is False
+    assert report["categories"]["full_a"]["missing_symbols"] == ["000002.SZ"]
+    assert report["categories"]["full_a"]["canonical_non_trading_absent_symbols"] == []
+
+
+def test_parquet_canonical_completeness_does_not_trust_unbound_inactive_list():
+    class _FakeReader:
+        def snapshot(self):
+            return {
+                "healthy": True,
+                "snapshot_id": "legacy-unbound",
+                "latest_complete_trade_date": "20260618",
+                "coverage": {
+                    "complete": True,
+                    "blocking_incomplete_count": 0,
+                    "expected_scope_count": 2,
+                    "coverage_trade_date": "20260618",
+                    "inactive_symbols": ["000002.SZ"],
+                },
+            }
+
+        def read_cross_section(self, trade_date, **_kwargs):
+            return pd.DataFrame(
+                {"ts_code": ["000001.SZ"], "trade_date": [trade_date]}
+            )
+
+    report = tracker.build_parquet_canonical_completeness_report(
+        reader=_FakeReader(),
+        components={
+            "full_a": ["000001.SZ", "000002.SZ"],
+            "hs300": [],
+            "zz500": [],
+            "zz1000": [],
+        },
+    )
+
+    assert report["coverage_provenance_status"] == "legacy_unbound"
+    assert report["complete"] is False
+    assert report["blocking_incomplete_count"] == 1
+    assert report["categories"]["full_a"]["inactive_symbols"] == []
+
+
+def test_parquet_canonical_completeness_rejects_contaminated_scope_hash():
+    full_a = ["000001.SZ", "000002.SZ"]
+    scope_sha = hashlib.sha256("\n".join(full_a).encode("utf-8")).hexdigest()
+
+    class _FakeReader:
+        def snapshot(self):
+            return {
+                "healthy": True,
+                "snapshot_id": "contaminated",
+                "latest_complete_trade_date": "20260618",
+                "coverage_provenance_blockers": [
+                    "coverage_scope_hash_backfilled_from_historical_target"
+                ],
+                "coverage": {
+                    "complete": True,
+                    "blocking_incomplete_count": 0,
+                    "expected_scope_count": 2,
+                    "coverage_trade_date": "20260618",
+                    "expected_scope_sha256": scope_sha,
+                    "inactive_symbols": ["000002.SZ"],
+                },
+            }
+
+        def read_cross_section(self, trade_date, **_kwargs):
+            return pd.DataFrame(
+                {"ts_code": ["000001.SZ"], "trade_date": [trade_date]}
+            )
+
+    report = tracker.build_parquet_canonical_completeness_report(
+        reader=_FakeReader(),
+        components={
+            "full_a": full_a,
+            "hs300": [],
+            "zz500": [],
+            "zz1000": [],
+        },
+    )
+
+    assert report["coverage_provenance_status"] == "unverified"
+    assert report["complete"] is False
+    assert report["blocking_incomplete_count"] == 1
+    assert report["coverage_provenance_blockers"] == [
+        "coverage_scope_hash_backfilled_from_historical_target"
+    ]
+
+
+def test_parquet_canonical_completeness_does_not_trust_runtime_allowlist():
+    class _FakeReader:
+        def snapshot(self):
+            return {
+                "healthy": True,
+                "snapshot_id": "runtime-allowlist",
+                "latest_complete_trade_date": "20260618",
+            }
+
+        def read_cross_section(self, trade_date, **_kwargs):
+            return pd.DataFrame(
+                {"ts_code": ["000001.SZ"], "trade_date": [trade_date]}
+            )
+
+    report = tracker.build_parquet_canonical_completeness_report(
+        reader=_FakeReader(),
+        components={
+            "full_a": ["000001.SZ", "000002.SZ"],
+            "hs300": [],
+            "zz500": [],
+            "zz1000": [],
+        },
+        allowed_stale_symbols=["000002.SZ"],
+    )
+
+    assert report["complete"] is False
+    assert report["blocking_incomplete_count"] == 1
+    assert report["requested_allowed_stale_symbols"] == ["000002.SZ"]
+    assert report["unverified_allowed_stale_symbols"] == ["000002.SZ"]
+    assert report["categories"]["full_a"]["blocking_missing_symbols"] == [
+        "000002.SZ"
+    ]
+
+
+def test_parquet_canonical_completeness_rejects_persisted_generic_allowlist():
+    full_a = ["000001.SZ", "000002.SZ"]
+    scope_sha = hashlib.sha256("\n".join(full_a).encode("utf-8")).hexdigest()
+
+    class _FakeReader:
+        def snapshot(self):
+            return {
+                "healthy": True,
+                "snapshot_id": "persisted-allowlist",
+                "latest_complete_trade_date": "20260618",
+                "coverage": {
+                    "complete": True,
+                    "blocking_incomplete_count": 0,
+                    "expected_scope_count": 2,
+                    "coverage_trade_date": "20260618",
+                    "expected_scope_sha256": scope_sha,
+                    "allowed_stale_symbols": ["000002.SZ"],
+                },
+            }
+
+        def read_cross_section(self, trade_date, **_kwargs):
+            return pd.DataFrame(
+                {"ts_code": ["000001.SZ"], "trade_date": [trade_date]}
+            )
+
+    report = tracker.build_parquet_canonical_completeness_report(
+        reader=_FakeReader(),
+        components={
+            "full_a": full_a,
+            "hs300": [],
+            "zz500": [],
+            "zz1000": [],
+        },
+    )
+
+    assert report["complete"] is False
+    assert report["coverage_provenance_status"] == "unverified"
+    assert "coverage_unverified_allowed_stale_symbols_not_permitted" in (
+        report["coverage_provenance_blockers"]
+    )
+
+
+def test_data_snapshot_lines_render_string_suspended_symbols():
+    lines = tracker._build_data_snapshot_lines(
+        completeness_report={
+            "complete": True,
+            "latest_trade_date": "20260618",
+            "strict_trade_date": "20260618",
+            "stable_trade_date": "20260618",
+            "effective_target_trade_date": "20260618",
+            "categories_checked": ["full_a"],
+            "categories": {
+                "full_a": {
+                    "expected": 2,
+                    "latest_trade_date": "20260618",
+                    "date_counts": {"20260618": 1},
+                    "coverage_complete_count": 2,
+                    "blocking_incomplete_count": 0,
+                    "suspended_stale_symbols": ["000002.SZ"],
+                }
+            },
+        },
+        quote_snapshot="",
+        analysis_trade_date="20260618",
+    )
+
+    assert any("000002.SZ" in line for line in lines)
 
 
 def test_realtime_execution_price_accepts_non_current_realtime_field():
@@ -216,6 +540,59 @@ def test_realtime_execution_price_rejects_static_daily_price_only():
 
     assert price == 0.0
     assert field == ""
+
+
+def test_realtime_execution_price_rejects_stale_or_cross_day_quote():
+    now = pd.Timestamp("2026-06-17 10:30:00", tz="Asia/Shanghai").to_pydatetime()
+    stale = {
+        "quote_timestamp": "2026-06-17 10:20:00",
+        "current": 42.8,
+        "high": 43.2,
+        "low": 41.6,
+    }
+    cross_day = {**stale, "quote_timestamp": "2026-06-16 14:59:00"}
+
+    assert tracker._resolve_realtime_execution_price(stale, now=now) == (0.0, "")
+    assert tracker._resolve_realtime_execution_price(cross_day, now=now) == (0.0, "")
+    assert tracker._quote_freshness(stale, now=now, max_age_seconds=300)[1] == (
+        "quote_ttl_expired"
+    )
+    assert tracker._quote_freshness(cross_day, now=now, max_age_seconds=300)[1] == (
+        "quote_not_same_local_trade_date"
+    )
+
+
+def test_local_quote_input_requires_results_containment_0600_and_has_no_fallback(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(tracker, "PROJECT_ROOT", tmp_path)
+    quote_dir = tmp_path / "results" / "quotes"
+    quote_dir.mkdir(parents=True)
+    quote_path = quote_dir / "cn_quotes.json"
+    quote_path.write_text(
+        json.dumps(
+            {
+                "schema_version": tracker.QUOTE_INPUT_SCHEMA_VERSION,
+                "source": "manual_local_quote",
+                "captured_at": "2026-06-17 10:30:00+08:00",
+                "quotes": {"sh600000": {"current": 10.5, "high": 10.8, "low": 10.0}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    quote_path.chmod(0o600)
+
+    quotes, provenance = tracker._load_local_quote_input(quote_path)
+
+    assert quotes["sh600000"]["source"] == "manual_local_quote"
+    assert provenance["permissions"] == "0o600"
+    assert provenance["provider_fallback_used"] is False
+    assert len(provenance["sha256"]) == 64
+
+    quote_path.chmod(0o644)
+    with pytest.raises(RuntimeError, match="permissions_must_be_0600"):
+        tracker._load_local_quote_input(quote_path)
 
 
 def test_fallback_current_price_numeric_when_metric_missing_and_row_value_is_string():
@@ -347,7 +724,7 @@ def test_load_previous_record_rejects_legacy_pnl_summary_csv(tmp_path):
         tracker._load_previous_record(base_dir)
 
 
-def test_load_previous_record_resolves_manual_ledger_parquet_sidecar_from_legacy_manifest(tmp_path):
+def test_load_previous_record_uses_exact_declared_manual_ledger_from_legacy_manifest(tmp_path):
     base_dir = tmp_path / "strategy_records"
     base_dir.mkdir()
     record_dir = base_dir / "20260617_0932"
@@ -386,7 +763,7 @@ def test_load_previous_record_resolves_manual_ledger_parquet_sidecar_from_legacy
 
     ledger, manifest, pnl_summary = tracker._load_previous_record(base_dir)
 
-    assert manifest["effective_manual_ledger_path"].endswith("ledger_after_manual_switch.parquet")
+    assert manifest["effective_manual_ledger_path"].endswith("ledger_after_manual_switch.csv")
     assert ledger.iloc[0]["symbol"] == "600487.SH"
     assert int(ledger.iloc[0]["shares"]) == 1200
     assert pnl_summary.iloc[0]["cash_after"] == 76_796.0
@@ -493,6 +870,291 @@ def test_load_previous_record_skips_invalidated_manual_manifest(tmp_path):
     )
     assert ledger.iloc[0]["symbol"] == "688301.SH"
     assert pnl_summary.iloc[0]["cash_after"] == 42.0
+
+
+def test_load_previous_record_falls_back_when_newest_declared_ledger_hash_is_invalid(
+    tmp_path,
+):
+    base_dir = tmp_path / "strategy_records"
+    base_dir.mkdir()
+    valid_dir = base_dir / "20260701_1000"
+    invalid_dir = base_dir / "20260702_1000"
+    malformed_dir = base_dir / "20260703_1000"
+    for record_dir in (valid_dir, invalid_dir, malformed_dir):
+        record_dir.mkdir()
+        (record_dir / "manifest.json").write_text(
+            json.dumps({"timestamp": record_dir.name, "capital_cny": 1_000_000.0}),
+            encoding="utf-8",
+        )
+        pd.DataFrame([{"cash_after": 10.0, "total_value_after": 130.0}]).to_parquet(
+            record_dir / "pnl_summary.parquet",
+            index=False,
+        )
+
+    valid_ledger = valid_dir / "ledger_after_manual_switch.csv"
+    pd.DataFrame(
+        [
+            {
+                "symbol": "688301.SH",
+                "shares": 700,
+                "avg_cost": 164.24,
+                "current_value": 120.0,
+            }
+        ]
+    ).to_csv(valid_ledger, index=False, encoding="utf-8-sig")
+    valid_hash = hashlib.sha256(valid_ledger.read_bytes()).hexdigest()
+    valid_manifest = _seal_v3_manual_manifest(
+        {
+            "schema_version": tracker.MANUAL_EXECUTION_SCHEMA_VERSION,
+            "status": "no_action_carry_forward",
+            "recorded_at": "2026-07-01 10:00:00+08:00",
+            "next_ledger_path": valid_ledger.name,
+            "next_ledger_sha256": valid_hash,
+            "effective_manual_holding_count": 1,
+            "capital_cny": 1_000_000.0,
+            "cash_after": 42.0,
+            "market_value_after": 120.0,
+            "total_value_after": 162.0,
+            "portfolio_pnl_after": -999_838.0,
+            "portfolio_return_after": -0.999838,
+        },
+        ledger_sha256=valid_hash,
+    )
+    (valid_dir / "manual_execution_manifest.json").write_text(
+        json.dumps(valid_manifest),
+        encoding="utf-8",
+    )
+
+    invalid_ledger = invalid_dir / "ledger_after_manual_switch.csv"
+    pd.DataFrame(
+        [{"symbol": "600903.SH", "shares": 100, "avg_cost": 9.83}]
+    ).to_csv(invalid_ledger, index=False, encoding="utf-8-sig")
+    (invalid_dir / "manual_execution_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": tracker.MANUAL_EXECUTION_SCHEMA_VERSION,
+                "status": "no_action_carry_forward",
+                "recorded_at": "2026-07-02 10:00:00+08:00",
+                "next_ledger_path": invalid_ledger.name,
+                "next_ledger_sha256": "0" * 64,
+                "effective_manual_holding_count": 1,
+                "cash_after": 99.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (malformed_dir / "manual_execution_manifest.json").write_text(
+        "{malformed",
+        encoding="utf-8",
+    )
+
+    ledger, manifest, pnl_summary = tracker._load_previous_record(base_dir)
+
+    assert ledger.iloc[0]["symbol"] == "688301.SH"
+    assert manifest["effective_manual_ledger_sha256"] == valid_hash
+    assert manifest["effective_manual_ledger_provenance"]["hash_status"] == "verified"
+    assert pnl_summary.iloc[0]["cash_after"] == 42.0
+
+
+def test_load_previous_record_falls_back_on_v3_financial_mismatch_or_future_time(
+    tmp_path,
+):
+    base_dir = tmp_path / "strategy_records"
+    base_dir.mkdir()
+    records = [
+        ("20260701_1000", "2026-07-01 10:00:00+08:00", 120.0, 1_000.0),
+        ("20260702_1000", "2026-07-02 10:00:00+08:00", 999.0, 1_000.0),
+        ("20260703_1000", "2026-07-03 10:00:00+08:00", 120.0, 999.0),
+        ("20260704_1000", "2099-07-04 10:00:00+08:00", 120.0, 1_000.0),
+    ]
+    for name, recorded_at, declared_market_value, declared_capital in records:
+        run_dir = base_dir / name
+        run_dir.mkdir()
+        (run_dir / "manifest.json").write_text(
+            json.dumps({"timestamp": name, "capital_cny": 1_000.0}),
+            encoding="utf-8",
+        )
+        pd.DataFrame([{"cash_after": 10.0, "total_value_after": 130.0}]).to_parquet(
+            run_dir / "pnl_summary.parquet",
+            index=False,
+        )
+        ledger_path = run_dir / "ledger_after_manual_switch.csv"
+        pd.DataFrame(
+            [
+                {
+                    "symbol": "688301.SH",
+                    "shares": 1,
+                    "avg_cost": 100.0,
+                    "current_value": 120.0,
+                }
+            ]
+        ).to_csv(ledger_path, index=False, encoding="utf-8-sig")
+        ledger_hash = hashlib.sha256(ledger_path.read_bytes()).hexdigest()
+        total_value = 42.0 + declared_market_value
+        portfolio_pnl = total_value - declared_capital
+        manual_manifest = _seal_v3_manual_manifest(
+            {
+                "schema_version": tracker.MANUAL_EXECUTION_SCHEMA_VERSION,
+                "status": "no_action_carry_forward",
+                "recorded_at": recorded_at,
+                "next_ledger_path": ledger_path.name,
+                "next_ledger_sha256": ledger_hash,
+                "effective_manual_holding_count": 1,
+                "capital_cny": declared_capital,
+                "cash_after": 42.0,
+                "market_value_after": declared_market_value,
+                "total_value_after": total_value,
+                "portfolio_pnl_after": portfolio_pnl,
+                "portfolio_return_after": portfolio_pnl / declared_capital,
+            },
+            ledger_sha256=ledger_hash,
+        )
+        (run_dir / "manual_execution_manifest.json").write_text(
+            json.dumps(manual_manifest),
+            encoding="utf-8",
+        )
+
+    ledger, manifest, pnl_summary = tracker._load_previous_record(base_dir)
+
+    assert manifest["effective_manual_manifest_path"].endswith(
+        "20260701_1000/manual_execution_manifest.json"
+    )
+    assert manifest["effective_manual_ledger_provenance"][
+        "financial_reconciliation_status"
+    ] == "verified"
+    assert ledger.iloc[0]["current_value"] == pytest.approx(120.0)
+    assert pnl_summary.iloc[0]["cash_after"] == pytest.approx(42.0)
+    assert pnl_summary.iloc[0]["market_value_after"] == pytest.approx(120.0)
+
+
+def test_manual_ledger_resolution_rejects_path_outside_manifest_directory(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    outside = tmp_path / "ledger_after_manual_switch.csv"
+    outside.write_text("symbol,shares,avg_cost\n688301.SH,100,10\n", encoding="utf-8")
+    manifest_path = run_dir / "manual_execution_manifest.json"
+
+    assert tracker._resolve_manual_ledger_path(
+        manifest_path,
+        {"next_ledger_path": str(outside)},
+    ) is None
+
+
+def test_manual_manifest_requires_known_status_and_parseable_time():
+    assert tracker._manual_manifest_is_valid_baseline(
+        {"status": "no_action_carry_forward"}
+    ) is True
+    assert tracker._manual_manifest_is_valid_baseline({"status": "unknown"}) is False
+    assert tracker._manual_manifest_is_valid_baseline({"status": ""}) is False
+    assert tracker._validated_datetime_key("2026-07-13 10:42:02 CST") == (
+        "20260713104202"
+    )
+    assert tracker._validated_datetime_key("9999-99-99 99:99:99") == ""
+    assert tracker._validated_datetime("2026-07-13 10:42:02 UTC") == (
+        pd.Timestamp("2026-07-13 10:42:02", tz="UTC").to_pydatetime()
+    )
+
+
+def test_manual_fill_authorization_requires_same_day_explicit_pair(tmp_path):
+    path = tmp_path / "decision_log.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "schema_version": "decision_log.v1",
+                        "event_id": "advisory-1",
+                        "event_type": "advisory",
+                        "trade_date": "2026-07-13",
+                        "symbol": "002463.SZ",
+                        "action": "reduce_risk",
+                        "metadata": {"shares": 100},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "schema_version": "decision_log.v1",
+                        "event_id": "human-1",
+                        "event_type": "human_action",
+                        "trade_date": "2026-07-13",
+                        "symbol": "002463.SZ",
+                        "action": "sell",
+                        "metadata": {
+                            "paired_advisory_event_id": "advisory-1",
+                            "human_confirmation": "Maxwell明确确认",
+                            "authorized": True,
+                            "approved_by": "maxwell",
+                            "shares": 100,
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "schema_version": "decision_log.v1",
+                        "event_id": "advisory-2",
+                        "event_type": "advisory",
+                        "trade_date": "2026-07-13",
+                        "symbol": "002384.SZ",
+                        "action": "reduce_risk",
+                        "metadata": {"shares": 100},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "schema_version": "decision_log.v1",
+                        "event_id": "human-2",
+                        "event_type": "human_action",
+                        "trade_date": "2026-07-13",
+                        "symbol": "002384.SZ",
+                        "action": "sell",
+                        "metadata": {
+                            "paired_advisory_event_id": "advisory-2",
+                            "human_confirmation": "Maxwell rejected the sell",
+                            "authorized": False,
+                            "approved_by": "maxwell",
+                            "shares": 100,
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    authorized = tracker._same_day_manual_fill_authorization(
+        decision_log_path=path,
+        trade_date="20260713",
+        symbol="002463.SZ",
+        order_action="sell",
+        order_shares=100,
+        allowed_root=tmp_path,
+    )
+    wrong_day = tracker._same_day_manual_fill_authorization(
+        decision_log_path=path,
+        trade_date="20260714",
+        symbol="002463.SZ",
+        order_action="sell",
+        order_shares=100,
+        allowed_root=tmp_path,
+    )
+    rejected = tracker._same_day_manual_fill_authorization(
+        decision_log_path=path,
+        trade_date="20260713",
+        symbol="002384.SZ",
+        order_action="sell",
+        order_shares=100,
+        allowed_root=tmp_path,
+    )
+
+    assert authorized["authorized"] is True
+    assert authorized["advisory_event_id"] == "advisory-1"
+    assert authorized["human_action_event_id"] == "human-1"
+    assert wrong_day["authorized"] is False
+    assert rejected["authorized"] is False
+    assert wrong_day["blockers"] == [
+        "same_day_paired_advisory_human_action_missing"
+    ]
 
 
 def test_load_previous_record_prefers_latest_manual_manifest_recorded_at(tmp_path):
@@ -685,10 +1347,7 @@ def test_candidate_quote_gate_is_per_symbol_and_fail_closed():
 
 
 def test_candidate_pool_from_v13_dag_requires_candidate_level_four_branches():
-    complete_branches = {
-        branch: {"branch_name": branch, "final_score": 0.8, "final_confidence": 0.7}
-        for branch in tracker.REQUIRED_DAG_BRANCHES
-    }
+    complete_branches = _ready_dag_branches()
     incomplete_branches = {
         "quant": {"branch_name": "quant", "final_score": 0.9, "final_confidence": 0.8},
         "macro": {"branch_name": "macro", "final_score": 0.7, "final_confidence": 0.6},
@@ -829,7 +1488,7 @@ def test_candidate_pool_from_v13_dag_requires_candidate_level_four_branches():
     assert "ret20" not in candidate_pool.columns
     assert status["candidate_generation_status"] == "complete"
     assert status["candidate_dag_four_branch_compliance"]["missing_branch_by_symbol"] == {
-        "002409.SZ": ["fundamental", "intelligence"]
+        "002409.SZ": ["quant", "fundamental", "intelligence"]
     }
     theme_pool = status["theme_candidate_pool"]
     assert theme_pool["status"] == "applied"
@@ -1005,10 +1664,7 @@ def test_theme_pool_report_lines_expose_forced_core_candidates() -> None:
 
 
 def test_candidate_pool_from_v13_dag_falls_back_to_report_bundle_shortlist():
-    complete_branches = {
-        branch: {"branch_name": branch, "final_score": 0.8, "final_confidence": 0.7}
-        for branch in tracker.REQUIRED_DAG_BRANCHES
-    }
+    complete_branches = _ready_dag_branches()
     shortlist = [
         {
             "symbol": "688301.SH",
@@ -1093,10 +1749,7 @@ def test_candidate_pool_from_v13_dag_blocks_when_shortlist_artifact_missing():
 
 
 def test_candidate_pool_from_v13_dag_empty_when_no_shortlist_or_positive_targets():
-    complete_branches = {
-        branch: {"branch_name": branch, "final_score": 0.5, "final_confidence": 0.6}
-        for branch in tracker.REQUIRED_DAG_BRANCHES
-    }
+    complete_branches = _ready_dag_branches()
     dag_artifacts = {
         "symbol_research_packets": {
             "688301.SH": {
@@ -1142,6 +1795,227 @@ def test_candidate_pool_from_v13_dag_empty_when_no_shortlist_or_positive_targets
     lines = tracker._format_candidate_decay_waterfall_report_lines(status)
     assert any("空 shortlist 衰减瀑布" in line for line in lines)
     assert any("Bayesian records -> shortlist" in line for line in lines)
+
+
+def test_candidate_pool_does_not_substitute_shortlist_weight_for_constructor_target():
+    dag_artifacts = {
+        "symbol_research_packets": {
+            "688301.SH": {
+                "symbol": "688301.SH",
+                "company_name": "奕瑞科技",
+                "category": "full_a",
+                "branch_verdicts": _ready_dag_branches(),
+            }
+        },
+        "bayesian_records": [
+            {
+                "symbol": "688301.SH",
+                "posterior_action_score": 0.7,
+                "posterior_win_rate": 0.6,
+                "posterior_expected_alpha": 0.05,
+                "posterior_confidence": 0.7,
+                "rank": 1,
+            }
+        ],
+        "shortlist": [
+            {
+                "symbol": "688301.SH",
+                "action": "buy",
+                "confidence": 0.7,
+                "suggested_weight": 0.1,
+            }
+        ],
+        "portfolio_decision": {"target_weights": {}},
+    }
+
+    candidate_pool, status = tracker._build_candidate_pool_from_v13_dag(
+        dag_artifacts=dag_artifacts,
+        held_symbols=[],
+    )
+
+    assert candidate_pool.empty
+    assert status["candidate_generation_status"] == "empty"
+    assert status["blocker"] == "no_candidate_selected_by_portfolio_constructor"
+    assert status["dag_pipeline"]["portfolio_target_count"] == 0
+
+
+def test_candidate_pool_reports_theme_gate_empty_before_bayesian_or_constructor(
+    tmp_path,
+):
+    dag_artifacts = {
+        "symbol_research_packets": {},
+        "bayesian_records": [],
+        "portfolio_decision": {"target_weights": {}},
+        "funnel_summary": {
+            "funnel_metadata": {
+                "theme_pool_status": "applied",
+                "theme_pool": {
+                    "enabled": True,
+                    "required": True,
+                    "status": "applied",
+                    "admitted_theme_count": 0,
+                    "natural_admitted_theme_count": 0,
+                    "forced_theme_count": 0,
+                    "residual_symbol_count": 0,
+                    "symbols": {},
+                },
+            }
+        },
+    }
+
+    candidate_pool, status = tracker._build_candidate_pool_from_v13_dag(
+        dag_artifacts=dag_artifacts,
+        held_symbols=[],
+    )
+
+    assert candidate_pool.empty
+    assert list(candidate_pool.columns) == list(tracker.CANDIDATE_POOL_COLUMNS)
+    assert status["candidate_generation_status"] == "empty"
+    assert status["blocker"] == "no_candidate_admitted_by_theme_pool"
+    assert status["theme_candidate_pool"]["forced_theme_count"] == 0
+    assert status["theme_candidate_pool"]["residual_symbol_count"] == 0
+
+    candidate_path = tmp_path / "candidate_pool.csv"
+    switch_path = tmp_path / "switch_plan.csv"
+    candidate_pool.to_csv(candidate_path, index=False, encoding="utf-8-sig")
+    switch_plan = tracker._build_switch_plan(
+        holdings_review=pd.DataFrame([{"symbol": "002008.SZ"}]),
+        candidate_pool=candidate_pool,
+        completeness_passed=False,
+        decision_data_sufficient=False,
+    )
+    switch_plan.to_csv(switch_path, index=False, encoding="utf-8-sig")
+
+    assert list(pd.read_csv(candidate_path).columns) == list(
+        tracker.CANDIDATE_POOL_COLUMNS
+    )
+    assert list(pd.read_csv(switch_path).columns) == list(
+        tracker.SWITCH_PLAN_COLUMNS
+    )
+
+
+def test_holding_dag_blocks_when_factor_governance_is_blocked_and_keeps_recall_symbol():
+    branch_signals = {
+        "688301.SH": {
+            "recall_context": {"holding_symbol": "688301.SH"},
+            "reviewed_branch_verdicts": {
+                "quant": {
+                    "branch_name": "quant",
+                    "metadata": {
+                        "mined_factor_runtime": {
+                            "governance_status": "governance_blocked",
+                            "factor_mode": "governance_blocked",
+                            "confidence_multiplier": 0.0,
+                            "factors_used": [],
+                            "runtime_blockers": [
+                                "family_abs_weight_above_0.35:liquidity",
+                                "canonical_full_chain_replay_producer_unavailable",
+                            ],
+                            "registry": {
+                                "governance_runtime": {
+                                    "status": "governance_blocked",
+                                    "factor_mode": "governance_blocked",
+                                    "slot_incumbents": {
+                                        "liquidity::amount": ["factor_a"]
+                                    },
+                                    "normalized_abs_weights": {"factor_a": 1.0},
+                                    "family_normalized_abs_weights": {
+                                        "liquidity": 1.0
+                                    },
+                                    "canonical_replay_producer_control": {
+                                        "producer_available": False
+                                    },
+                                }
+                            },
+                        }
+                    },
+                },
+                "fundamental": {"branch_name": "fundamental"},
+                "intelligence": {"branch_name": "intelligence"},
+                "macro": {"branch_name": "macro"},
+            },
+        }
+    }
+
+    assessments = tracker._build_holding_dag_assessments(branch_signals)
+    factor_runtime = tracker._summarize_factor_governance_runtime(branch_signals)
+
+    holding = assessments["688301.SH"]
+    assert holding["holding_dag_status"] == "blocked"
+    assert holding["recall_holding_symbol"] == "688301.SH"
+    assert holding["allowed_action_scope"] == "read_only_risk_reducing_sell_or_clear_only"
+    assert "quant_governance_status:governance_blocked" in holding["holding_dag_blockers"]
+    assert factor_runtime["governance_status"] == "governance_blocked"
+    assert factor_runtime["confidence"] == 0.0
+    assert factor_runtime["factors_used"] == []
+    assert factor_runtime["slot_incumbents"] == {
+        "liquidity::amount": ["factor_a"]
+    }
+    assert factor_runtime["family_blockers"] == [
+        "family_abs_weight_above_0.35:liquidity"
+    ]
+    assert factor_runtime["evidence_blockers"] == [
+        "canonical_full_chain_replay_producer_unavailable"
+    ]
+
+
+def test_holding_and_factor_runtime_fail_closed_on_error_or_legacy_fallback():
+    branches = _ready_dag_branches()
+    branches["fundamental"] = {
+        "branch_name": "fundamental",
+        "status": "error",
+        "final_score": 0.5,
+        "final_confidence": 0.6,
+    }
+    quant_runtime = branches["quant"]["metadata"]["mined_factor_runtime"]
+    quant_runtime["legacy_fallback_allowed"] = True
+    branch_signals = {
+        "688301.SH": {
+            "recall_context": {"holding_symbol": "688301.SH"},
+            "reviewed_branch_verdicts": branches,
+        }
+    }
+
+    assessment = tracker._build_holding_dag_assessments(branch_signals)[
+        "688301.SH"
+    ]
+    factor_runtime = tracker._summarize_factor_governance_runtime(branch_signals)
+
+    assert assessment["holding_dag_status"] == "blocked"
+    assert "limited_evidence:fundamental" in assessment["holding_dag_blockers"]
+    assert "quant_legacy_fallback_allowed:true" in assessment[
+        "holding_dag_blockers"
+    ]
+    assert factor_runtime["governance_status"] == "governance_blocked"
+    assert factor_runtime["legacy_fallback_allowed"] is True
+
+
+def test_factor_runtime_summary_rejects_nominal_ready_with_incomplete_evidence():
+    branch_signals = {
+        "688301.SH": {
+            "reviewed_branch_verdicts": _ready_dag_branches(),
+        }
+    }
+
+    summary = tracker._summarize_factor_governance_runtime(branch_signals)
+
+    assert summary["governance_status"] == "governance_blocked"
+    assert summary["production_eligible"] is False
+    assert summary["confidence"] == 0.0
+    assert "holding_factor_runtime_confidence_non_positive" in summary["blockers"]
+    assert "holding_factor_registry_sha256_invalid" in summary["blockers"]
+    assert "holding_factor_canonical_control_not_ready" in summary["blockers"]
+
+
+def test_candidate_dag_rejects_error_branch_even_when_payload_is_nonempty():
+    branches = _ready_dag_branches()
+    branches["fundamental"]["status"] = "error"
+    present, missing, _ = tracker._candidate_dag_branch_state(
+        {"branch_verdicts": branches}
+    )
+
+    assert "fundamental" not in present
+    assert "fundamental" in missing
 
 
 def test_trailing_take_profit_review_sets_explicit_watch_from_entry_date():
@@ -1194,6 +2068,18 @@ def test_trailing_take_profit_review_sets_explicit_watch_from_entry_date():
     assert row["stop_loss_status"] == "not_triggered_above_stage_stop"
     assert row["history_record_count"] == 3
     assert tracker._position_action(row) == "移动止盈观察"
+
+
+def test_unconfirmed_trailing_basis_deduplicates_carried_prefixes():
+    basis = tracker._unconfirmed_trailing_basis(
+        "unconfirmed_missing_entry_anchor:unconfirmed_missing_entry_anchor:"
+        "manual_ledger_entry_date"
+    )
+
+    assert basis == (
+        "unconfirmed_missing_entry_anchor:"
+        "prior_manual_ledger_entry_date_without_current_anchor"
+    )
 
 
 def test_trailing_take_profit_review_falls_back_to_symbol_serving_history():
@@ -1861,8 +2747,13 @@ def test_dag_compliance_does_not_mark_governed_quant_limited():
                     ],
                     "metadata": {
                         "factor_mode": "governed_mined_factors",
-                        "mined_factor_runtime": {
-                            "factor_count": 14,
+                            "mined_factor_runtime": {
+                                "governance_status": "ready",
+                                "factor_mode": "governed_mined_factors",
+                                "production_eligible": True,
+                                "legacy_fallback_allowed": False,
+                                "runtime_blockers": [],
+                                "factor_count": 14,
                             "factors_used": ["pv_volume_stability_15d"],
                             "factor_coverages": {
                                 "pv_volume_stability_15d": 1.0,
@@ -2565,7 +3456,8 @@ def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypa
     assert "Codex 评分 `" in report_text
     assert "#### 5.4.3 证据质量与工程诊断" in report_text
     assert "provider、snapshot、旧 intelligence batch" in report_text
-    assert "### 5.7 因子库状态（只读影子观察）" in report_text
+    assert "### 5.7 FactorGovernanceProtocol v2 生产运行时" in report_text
+    assert "### 5.8 Legacy Factor Library（只读影子观察）" in report_text
     assert "This factor library status is read-only" in report_text
     assert "does not alter stock selection, portfolio construction, RiskGuard" in report_text
     assert "| Verdict | `fail` |" in report_text
@@ -2615,8 +3507,8 @@ def test_legacy_overweight_holding_warning_only_does_not_force_sell():
                 "stage_stop_price": 30.0,
                 "score_full_market": 0.90,
                 "today_change_pct": 2.0,
-                    "market_weight": 0.22,
-                    "nav_weight": 0.22,
+                "market_weight": 0.22,
+                "nav_weight": 0.22,
             }
         ]
     )
@@ -2655,7 +3547,40 @@ def test_prune_holdings_review_to_effective_ledger_removes_exited_symbols():
     assert invariant["pre_prune"]["status"] == "warning"
 
 
-def test_run_tracker_auto_fills_risk_reduction_sell_with_realtime_quote(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    (
+        "advisory_only",
+        "holding_dag_ready",
+        "expected_status",
+        "expected_shares",
+        "expected_action",
+    ),
+    [
+        (
+            True,
+            True,
+            "advisory_only_pending_authorization_carry_forward",
+            500,
+            False,
+        ),
+        (False, True, "filled_local_manual_paper_rebalance", 400, True),
+        (False, False, "rejected_no_fill_carry_forward", 500, False),
+    ],
+)
+def test_run_tracker_enforces_advisory_boundary_for_risk_reduction_sell(
+    monkeypatch,
+    tmp_path,
+    advisory_only,
+    holding_dag_ready,
+    expected_status,
+    expected_shares,
+    expected_action,
+):
+    monkeypatch.setattr(
+        tracker,
+        "_now_local",
+        lambda: pd.Timestamp("2026-06-18 10:17:00", tz="Asia/Shanghai").to_pydatetime(),
+    )
     ledger = pd.DataFrame(
         [
             {
@@ -2854,13 +3779,61 @@ def test_run_tracker_auto_fills_risk_reduction_sell_with_realtime_quote(monkeypa
                     "llm_attempt_summary": {"call_count": 0, "success_count": 0, "failed_count": 0, "fallback_count": 0, "total_tokens": 0, "estimated_cost_usd": 0.0},
                     "llm_effective_summary": {"call_count": 0, "success_count": 0, "failed_count": 0, "fallback_count": 0, "total_tokens": 0, "estimated_cost_usd": 0.0},
                     "reviewed_branch_verdicts": {
-                        "quant": {"branch_name": "quant"},
-                        "fundamental": {"branch_name": "fundamental", "metadata": {"data_quality": {}}},
+                        "quant": {
+                            "branch_name": "quant",
+                            "status": "success",
+                            "final_score": 0.6,
+                            "final_confidence": 0.7,
+                            "evidence": ["governed factor evidence"],
+                            "metadata": {
+                                "factor_mode": (
+                                    "governed_mined_factors"
+                                    if holding_dag_ready
+                                    else "governance_blocked"
+                                ),
+                                "mined_factor_runtime": {
+                                    "governance_status": (
+                                        "ready" if holding_dag_ready else "governance_blocked"
+                                    ),
+                                    "factor_mode": (
+                                        "governed_mined_factors"
+                                        if holding_dag_ready
+                                        else "governance_blocked"
+                                    ),
+                                    "production_eligible": holding_dag_ready,
+                                    "legacy_fallback_allowed": False,
+                                    "runtime_blockers": (
+                                        []
+                                        if holding_dag_ready
+                                        else ["governance_blocked"]
+                                    ),
+                                    "factor_count": 1 if holding_dag_ready else 0,
+                                    "factors_used": (
+                                        ["factor_ready"] if holding_dag_ready else []
+                                    ),
+                                    "factor_coverages": (
+                                        {"factor_ready": 1.0}
+                                        if holding_dag_ready
+                                        else {}
+                                    ),
+                                    "applied_to_score": holding_dag_ready,
+                                }
+                            },
+                        },
+                        "fundamental": {
+                            "branch_name": "fundamental",
+                            "status": "success",
+                            "final_score": 0.5,
+                            "final_confidence": 0.6,
+                            "evidence": ["fundamental evidence"],
+                            "metadata": {"data_quality": {}},
+                        },
                         "intelligence": {"branch_name": "intelligence"},
                         "macro": {"branch_name": "macro"},
                     },
                     "branch_overlays": {},
                     "report_excerpt": "sell",
+                    "recall_context": {"holding_symbol": "688301.SH"},
                 }
             },
             "degraded_symbols": {},
@@ -2881,29 +3854,94 @@ def test_run_tracker_auto_fills_risk_reduction_sell_with_realtime_quote(monkeypa
         lambda **_kwargs: factor_shadow_status,
     )
 
+    decision_log_path = tmp_path / "decision_log.jsonl"
+    decision_log_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "schema_version": "decision_log.v1",
+                        "event_id": "advisory-test",
+                        "event_type": "advisory",
+                        "trade_date": "2026-06-18",
+                        "symbol": "688301.SH",
+                        "action": "reduce_risk",
+                        "machine_suggestion": "risk_reducing_sell_review",
+                        "metadata": {"shares": 100},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "schema_version": "decision_log.v1",
+                        "event_id": "human-test",
+                        "event_type": "human_action",
+                        "trade_date": "2026-06-18",
+                        "symbol": "688301.SH",
+                        "action": "sell",
+                        "metadata": {
+                            "paired_advisory_event_id": "advisory-test",
+                            "human_confirmation": "Maxwell明确确认本地/manual模拟减仓",
+                            "authorized": True,
+                            "approved_by": "maxwell",
+                            "shares": 100,
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
     args = argparse.Namespace(
         base_dir=str(tmp_path / "strategy_records"),
         years=7,
         max_rounds=0,
         source_record=None,
         allowed_stale_symbols=[],
+        advisory_only=advisory_only,
+        allow_live_quotes=True,
+        quote_input_json="",
+        quote_max_age_seconds=300,
+        decision_log_path=str(decision_log_path),
+        decision_log_allowed_root=str(tmp_path),
     )
     result = tracker.run_tracker(args)
 
-    assert result["action_taken_today"] is True
+    assert result["action_taken_today"] is expected_action
     assert result["decision_data_sufficient"] is False
-    assert result["manual_execution"]["status"] == "filled_local_manual_paper_rebalance"
+    assert result["manual_execution"]["status"] == expected_status
     run_dir = tmp_path / "strategy_records" / result["timestamp"]
     manual_manifest = json.loads((run_dir / "manual_execution_manifest.json").read_text(encoding="utf-8"))
     manual_orders = pd.read_csv(run_dir / "manual_switch_and_take_profit_orders.csv")
     next_ledger = pd.read_csv(run_dir / "ledger_after_manual_switch.csv")
     formal_manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
 
-    assert manual_manifest["price_basis"] == "execution_time_realtime_quote"
+    assert manual_manifest["advisory_only"] is advisory_only
+    assert manual_manifest["local_manual_fills_allowed"] is (not advisory_only)
+    assert manual_manifest["next_ledger_sha256"] == manual_manifest[
+        "ledger_after_manual_switch_csv_sha256"
+    ]
     assert manual_manifest["decision_data_sufficient"] is False
-    assert manual_manifest["applied_local_trades"][0]["symbol"] == "688301.SH"
-    assert manual_orders.iloc[0]["status"] == "filled"
-    assert manual_orders.iloc[0]["execution_price"] == pytest.approx(120.75)
-    assert int(next_ledger.iloc[0]["shares"]) == 400
-    assert formal_manifest["manual_execution"]["status"] == "filled_local_manual_paper_rebalance"
+    if not holding_dag_ready:
+        assert manual_manifest["applied_local_trades"] == []
+        assert manual_orders.iloc[0]["status"] == "rejected"
+        assert manual_orders.iloc[0]["reason"] == (
+            "holding_dag_blocked_read_only_risk_reduction_advisory"
+        )
+        assert manual_manifest["price_basis"] == (
+            "no_fill_realtime_quote_missing_or_gate_rejected"
+        )
+    elif advisory_only:
+        assert manual_manifest["applied_local_trades"] == []
+        assert manual_orders.iloc[0]["status"] == "pending_authorization"
+        assert manual_manifest["price_basis"] == "no_fill_advisory_only_pending_authorization"
+    else:
+        assert manual_manifest["applied_local_trades"][0]["symbol"] == "688301.SH"
+        assert manual_orders.iloc[0]["status"] == "filled"
+        assert manual_manifest["price_basis"] == "execution_time_realtime_quote"
+    if holding_dag_ready:
+        assert manual_orders.iloc[0]["execution_price"] == pytest.approx(120.75)
+    assert int(next_ledger.iloc[0]["shares"]) == expected_shares
+    assert formal_manifest["manual_execution"]["status"] == expected_status
     assert formal_manifest["execution_price_gate"]["data_gate_allows_new_risk"] is False

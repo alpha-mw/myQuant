@@ -27,6 +27,7 @@ from quant_investor.themes.governance import (
     load_theme_governance_registry,
     write_theme_governance_artifact,
 )
+from quant_investor.governance import replay_v13_1
 
 
 SCHEMA_VERSION = "theme_rotation.v1"
@@ -1668,6 +1669,65 @@ def _membership_v2_formal_activation_blockers(
     return blockers
 
 
+def _theme_live_shadow_formal_activation_blockers(
+    *,
+    current_protocol_hash: str,
+) -> list[str]:
+    blocker = "theme_live_shadow_20_distinct_days_unverified"
+    if replay_v13_1.CANONICAL_JOINT_REPLAY_PRODUCER_AVAILABLE is not True:
+        return [blocker]
+    try:
+        from quant_investor.config import Config
+
+        manifest_path = str(
+            getattr(Config, "THEME_V2_JOINT_MANIFEST_PATH", "") or ""
+        ).strip()
+        expected_sha256 = str(
+            getattr(
+                Config,
+                "THEME_V2_EXPECTED_JOINT_MANIFEST_SHA256",
+                "",
+            )
+            or ""
+        ).strip().lower()
+    except Exception:
+        return [blocker]
+    if not manifest_path or len(expected_sha256) != 64 or any(
+        character not in "0123456789abcdef" for character in expected_sha256
+    ):
+        return [blocker]
+    try:
+        verification = replay_v13_1.verify_joint_replay_manifest(
+            manifest_path,
+            expected_artifact_sha256=expected_sha256,
+            expected_theme_protocol_hash=current_protocol_hash,
+        )
+    except (OSError, TypeError, ValueError):
+        return [blocker]
+    if (
+        verification.get("ready") is not True
+        or verification.get("readback_verified") is not True
+        or str(verification.get("artifact_sha256") or "").lower()
+        != expected_sha256
+    ):
+        return [blocker]
+    manifest = _mapping_or_empty(verification.get("manifest"))
+    shadow = _mapping_or_empty(manifest.get("theme_live_shadow"))
+    dates = [
+        str(value)
+        for value in list(shadow.get("dates") or [])
+        if str(value)
+    ]
+    if (
+        shadow.get("passed") is not True
+        or int(_safe_float(shadow.get("distinct_trade_day_count"), -1.0))
+        < replay_v13_1.MIN_THEME_LIVE_SHADOW_DAYS
+        or len(set(dates)) < replay_v13_1.MIN_THEME_LIVE_SHADOW_DAYS
+    ):
+        return [blocker]
+    return []
+
+
 def _valid_membership_updated_at(value: Any) -> bool:
     text = str(value or "").strip()
     if not text:
@@ -1709,6 +1769,7 @@ def _build_protocol_v2_metadata(
     )
     resolved_formal_enabled = False
     resolved_kill_switch = True
+    resolved_reconciliation_persistence_enabled = False
     try:
         from quant_investor.config import Config
 
@@ -1733,6 +1794,13 @@ def _build_protocol_v2_metadata(
         )
         resolved_kill_switch = bool(
             getattr(Config, "THEME_V2_FORMAL_KILL_SWITCH", True)
+        )
+        resolved_reconciliation_persistence_enabled = bool(
+            getattr(
+                Config,
+                "THEME_FORMAL_RECONCILIATION_PERSIST_ENABLED",
+                False,
+            )
         )
     except Exception:
         pass
@@ -1781,6 +1849,21 @@ def _build_protocol_v2_metadata(
             for detail in list(details or [])
             if isinstance(detail, Mapping)
         ]
+        formal_activation_blockers = _membership_v2_formal_activation_blockers(
+            membership_v2_context
+        )
+        if replay_v13_1.CANONICAL_JOINT_REPLAY_PRODUCER_AVAILABLE is not True:
+            formal_activation_blockers.append(
+                "canonical_joint_replay_producer_not_implemented"
+            )
+        formal_activation_blockers.append(
+            "theme_live_shadow_20_distinct_days_unverified"
+        )
+        if not resolved_reconciliation_persistence_enabled:
+            formal_activation_blockers.append(
+                "formal_reconciliation_persistence_disabled"
+            )
+        formal_activation_blockers = list(dict.fromkeys(formal_activation_blockers))
         payload = evaluate_theme_protocol_v2(
             theme_scores=theme_scores,
             taxonomy=taxonomy,
@@ -1795,13 +1878,53 @@ def _build_protocol_v2_metadata(
             formal_enabled=resolved_formal_enabled,
             formal_kill_switch=resolved_kill_switch,
             valid_trading_dates=valid_trading_dates,
-            formal_activation_blockers=(
-                _membership_v2_formal_activation_blockers(
-                    membership_v2_context
-                )
-                if resolved_formal_enabled
-                else []
-            ),
+            formal_activation_blockers=formal_activation_blockers,
+        )
+        live_shadow_blockers = _theme_live_shadow_formal_activation_blockers(
+            current_protocol_hash=str(payload.get("protocol_hash") or ""),
+        )
+        if not live_shadow_blockers:
+            formal_activation_blockers = [
+                item
+                for item in formal_activation_blockers
+                if item != "theme_live_shadow_20_distinct_days_unverified"
+            ]
+            payload = evaluate_theme_protocol_v2(
+                theme_scores=theme_scores,
+                taxonomy=taxonomy,
+                as_of=as_of,
+                evidence_events=events,
+                pevc_theses=theses,
+                valid_membership_theme_ids=membership_ids,
+                theme_membership_details=membership_details,
+                previous_states=previous_states,
+                downstream_gates=downstream_gates,
+                markov_regime=markov_regime,
+                formal_enabled=resolved_formal_enabled,
+                formal_kill_switch=resolved_kill_switch,
+                valid_trading_dates=valid_trading_dates,
+                formal_activation_blockers=formal_activation_blockers,
+            )
+        payload["formal_control_blockers"] = list(
+            dict.fromkeys(
+                [
+                    *(
+                        ["formal_switch_disabled"]
+                        if not resolved_formal_enabled
+                        else []
+                    ),
+                    *(
+                        ["formal_kill_switch_active"]
+                        if resolved_kill_switch
+                        else []
+                    ),
+                    *(
+                        ["formal_reconciliation_persistence_disabled"]
+                        if not resolved_reconciliation_persistence_enabled
+                        else []
+                    ),
+                ]
+            )
         )
         payload["diagnostic_notes"] = diagnostic_notes
         payload["taxonomy_path"] = resolved_taxonomy_path

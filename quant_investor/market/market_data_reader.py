@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -10,6 +12,9 @@ from typing import Any, Iterable, Mapping, Sequence
 import pandas as pd
 
 from quant_investor.agent_protocol import DataQualityIssue
+from quant_investor.market.cn_nontrading_evidence import (
+    validate_bak_daily_nontrading_evidence,
+)
 from quant_investor.market.read_result import MarketDataReadResult
 
 
@@ -47,6 +52,202 @@ def _normalize_symbol_list(values: Iterable[Any]) -> list[str]:
         if symbol and symbol not in result:
             result.append(symbol)
     return result
+
+
+def coverage_fingerprint(value: Any) -> str:
+    """Return a deterministic digest for a JSON coverage object."""
+
+    coverage = value if isinstance(value, dict) else {}
+    encoded = json.dumps(
+        coverage,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+# Compatibility alias for existing internal callers.
+_coverage_fingerprint = coverage_fingerprint
+
+
+def _coverage_integer(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    try:
+        if float(value) != float(number):
+            return None
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number
+
+
+def _complete_coverage_blockers(
+    coverage: Mapping[str, Any],
+    *,
+    latest_complete_trade_date: str,
+) -> list[str]:
+    """Validate the closed-world claims required by complete coverage."""
+
+    if coverage.get("complete") is not True:
+        return []
+
+    blockers: list[str] = []
+    coverage_trade_date = _normalize_trade_date(coverage.get("coverage_trade_date"))
+    if not coverage_trade_date:
+        blockers.append("coverage_trade_date_missing")
+    elif coverage_trade_date != latest_complete_trade_date:
+        blockers.append(
+            "coverage_trade_date_mismatch:"
+            f"{coverage_trade_date}!={latest_complete_trade_date}"
+        )
+
+    expected_scope_sha256 = str(
+        coverage.get("expected_scope_sha256") or ""
+    ).strip().lower()
+    if not expected_scope_sha256:
+        blockers.append("coverage_expected_scope_sha256_missing")
+    elif len(expected_scope_sha256) != 64 or any(
+        ch not in "0123456789abcdef" for ch in expected_scope_sha256
+    ):
+        blockers.append("coverage_expected_scope_sha256_invalid")
+
+    allowed_stale_symbols = [
+        str(symbol).strip().upper()
+        for symbol in list(coverage.get("allowed_stale_symbols", []) or [])
+        if str(symbol).strip()
+    ]
+    if allowed_stale_symbols:
+        blockers.append("coverage_unverified_allowed_stale_symbols_not_permitted")
+
+    blocking_incomplete_count = _coverage_integer(
+        coverage.get("blocking_incomplete_count")
+    )
+    if blocking_incomplete_count is None:
+        blockers.append("coverage_blocking_incomplete_count_missing_or_invalid")
+    elif blocking_incomplete_count != 0:
+        blockers.append(
+            "coverage_blocking_incomplete_count_nonzero:"
+            f"{blocking_incomplete_count}"
+        )
+
+    expected_scope_count = _coverage_integer(coverage.get("expected_scope_count"))
+    if expected_scope_count is None or expected_scope_count <= 0:
+        blockers.append("coverage_expected_scope_count_missing_or_nonpositive")
+
+    coverage_complete_count = _coverage_integer(
+        coverage.get("coverage_complete_count")
+    )
+    if coverage_complete_count is None:
+        blockers.append("coverage_complete_count_missing_or_invalid")
+    elif (
+        expected_scope_count is not None
+        and expected_scope_count > 0
+        and coverage_complete_count != expected_scope_count
+    ):
+        blockers.append(
+            "coverage_complete_count_mismatch:"
+            f"{coverage_complete_count}!={expected_scope_count}"
+        )
+
+    try:
+        coverage_ratio = float(coverage.get("coverage_ratio"))
+    except (TypeError, ValueError, OverflowError):
+        coverage_ratio = math.nan
+    if not math.isfinite(coverage_ratio) or coverage_ratio != 1.0:
+        blockers.append("coverage_ratio_not_one")
+
+    coverage_schema_version = str(
+        coverage.get("coverage_schema_version") or ""
+    )
+    if coverage_schema_version in {
+        "cn-full-a-coverage.v2",
+        "cn-full-a-coverage.v3",
+    }:
+        def _symbol_set(key: str) -> set[str]:
+            raw = coverage.get(key, []) or []
+            if not isinstance(raw, (list, tuple, set)):
+                blockers.append(f"coverage_{key}_invalid")
+                return set()
+            normalized = {
+                str(symbol).strip().upper()
+                for symbol in raw
+                if str(symbol).strip()
+            }
+            if len(normalized) != len(raw):
+                blockers.append(f"coverage_{key}_contains_duplicates_or_empty")
+            return normalized
+
+        suspended = _symbol_set("suspended_symbols")
+        inactive = _symbol_set("inactive_symbols")
+        verified_nontrading = (
+            _symbol_set("verified_nontrading_bak_daily_zero_symbols")
+            if coverage_schema_version == "cn-full-a-coverage.v3"
+            else set()
+        )
+        allowed = _symbol_set("allowed_stale_symbols")
+        non_blocking_absent = _symbol_set("non_blocking_absent_symbols")
+        true_missing = _symbol_set("true_missing_symbols")
+        classification_sets = [
+            suspended,
+            inactive,
+            verified_nontrading,
+            allowed,
+            true_missing,
+        ]
+        if coverage.get("classification_sets_disjoint") is not True or any(
+            left & right
+            for index, left in enumerate(classification_sets)
+            for right in classification_sets[index + 1 :]
+        ):
+            blockers.append("coverage_classification_sets_not_disjoint")
+        declared_non_blocking = (
+            suspended | inactive | verified_nontrading | allowed
+        )
+        if declared_non_blocking != non_blocking_absent:
+            blockers.append("coverage_non_blocking_absent_union_mismatch")
+        if true_missing:
+            blockers.append(
+                f"coverage_true_missing_symbols_nonempty:{len(true_missing)}"
+            )
+        observed_bar_count = _coverage_integer(coverage.get("observed_bar_count"))
+        if observed_bar_count is None or observed_bar_count < 0:
+            blockers.append("coverage_observed_bar_count_missing_or_invalid")
+        elif (
+            coverage_complete_count is not None
+            and observed_bar_count + len(non_blocking_absent)
+            != coverage_complete_count
+        ):
+            blockers.append("coverage_classification_union_count_mismatch")
+        if coverage_schema_version == "cn-full-a-coverage.v3" and verified_nontrading:
+            evidence_path = str(
+                coverage.get("verified_nontrading_evidence_path") or ""
+            ).strip()
+            evidence_sha256 = str(
+                coverage.get("verified_nontrading_evidence_sha256") or ""
+            ).strip().lower()
+            pit_path = str(coverage.get("pit_membership_path") or "").strip()
+            pit_sha256 = str(
+                coverage.get("pit_membership_sha256") or ""
+            ).strip().lower()
+            if not evidence_path:
+                blockers.append("coverage_nontrading_evidence_path_missing")
+            if len(evidence_sha256) != 64 or any(
+                ch not in "0123456789abcdef" for ch in evidence_sha256
+            ):
+                blockers.append("coverage_nontrading_evidence_sha256_invalid")
+            if not pit_path:
+                blockers.append("coverage_pit_membership_path_missing")
+            if len(pit_sha256) != 64 or any(
+                ch not in "0123456789abcdef" for ch in pit_sha256
+            ):
+                blockers.append("coverage_pit_membership_sha256_invalid")
+    return blockers
 
 
 @dataclass(frozen=True)
@@ -188,6 +389,152 @@ class MarketDataReader:
         if not snapshot.manifest_path.exists():
             blockers.append(f"manifest missing: {snapshot.manifest_path}")
 
+        coverage = (
+            dict(payload.get("coverage") or {})
+            if isinstance(payload.get("coverage"), dict)
+            else {}
+        )
+        coverage_provenance_blockers: list[str] = []
+        snapshot_manifest: dict[str, Any] | None = None
+        if snapshot.manifest_path.exists():
+            try:
+                raw_snapshot_manifest = json.loads(
+                    snapshot.manifest_path.read_text(encoding="utf-8")
+                )
+            except Exception as exc:
+                blockers.append(
+                    f"manifest unreadable: {snapshot.manifest_path}: {exc}"
+                )
+            else:
+                if isinstance(raw_snapshot_manifest, dict):
+                    snapshot_manifest = raw_snapshot_manifest
+                else:
+                    blockers.append(f"manifest invalid: {snapshot.manifest_path}")
+
+        if snapshot_manifest is not None:
+            manifest_has_coverage = isinstance(snapshot_manifest.get("coverage"), dict)
+            manifest_coverage = (
+                dict(snapshot_manifest.get("coverage") or {})
+                if manifest_has_coverage
+                else {}
+            )
+            # Legacy snapshots may expose informational row/symbol statistics only
+            # in the pointer.  Once either side publishes a bound coverage object,
+            # or the pointer claims completeness, the two records must match.
+            if manifest_has_coverage or coverage.get("complete") is True:
+                pointer_coverage_sha256 = _coverage_fingerprint(coverage)
+                manifest_coverage_sha256 = _coverage_fingerprint(manifest_coverage)
+                if pointer_coverage_sha256 != manifest_coverage_sha256:
+                    blockers.append(
+                        "coverage_pointer_manifest_mismatch:"
+                        f"{pointer_coverage_sha256}!={manifest_coverage_sha256}"
+                    )
+            blockers.extend(
+                _complete_coverage_blockers(
+                    coverage,
+                    latest_complete_trade_date=snapshot.latest_complete_trade_date,
+                )
+            )
+            if snapshot_manifest.get(
+                "historical_scope_hash_backfilled"
+            ) is True:
+                coverage_provenance_blockers.append(
+                    "coverage_scope_hash_backfilled_from_historical_target"
+                )
+
+        if str(coverage.get("coverage_schema_version") or "") == "cn-full-a-coverage.v3":
+            verified_nontrading = list(
+                coverage.get(
+                    "verified_nontrading_bak_daily_zero_symbols", []
+                )
+                or []
+            )
+            if verified_nontrading:
+                resolved_evidence_path: Path | None = None
+                for path_key, sha_key, blocker_prefix in (
+                    (
+                        "verified_nontrading_evidence_path",
+                        "verified_nontrading_evidence_sha256",
+                        "coverage_nontrading_evidence",
+                    ),
+                    (
+                        "pit_membership_path",
+                        "pit_membership_sha256",
+                        "coverage_pit_membership",
+                    ),
+                ):
+                    raw_path = str(coverage.get(path_key) or "").strip()
+                    expected_sha256 = str(
+                        coverage.get(sha_key) or ""
+                    ).strip().lower()
+                    if not raw_path or not expected_sha256:
+                        continue
+                    resolved_path = self._resolve_data_path(
+                        raw_path,
+                        Path(raw_path),
+                    )
+                    if not resolved_path.exists():
+                        blockers.append(f"{blocker_prefix}_missing:{resolved_path}")
+                        continue
+                    digest = hashlib.sha256(resolved_path.read_bytes()).hexdigest()
+                    if digest != expected_sha256:
+                        blockers.append(
+                            f"{blocker_prefix}_sha256_mismatch:"
+                            f"{digest}!={expected_sha256}"
+                        )
+                    elif path_key == "verified_nontrading_evidence_path":
+                        resolved_evidence_path = resolved_path
+                if resolved_evidence_path is not None:
+                    try:
+                        evidence_payload = json.loads(
+                            resolved_evidence_path.read_text(encoding="utf-8")
+                        )
+                    except Exception as exc:
+                        blockers.append(
+                            "coverage_nontrading_evidence_unreadable:"
+                            f"{resolved_evidence_path}:{exc}"
+                        )
+                    else:
+                        if not isinstance(evidence_payload, dict):
+                            blockers.append(
+                                "coverage_nontrading_evidence_invalid_payload"
+                            )
+                        else:
+                            semantic_blockers = (
+                                validate_bak_daily_nontrading_evidence(
+                                    evidence_payload,
+                                    trade_date=str(
+                                        coverage.get("coverage_trade_date") or ""
+                                    ),
+                                    primary_missing_symbols=evidence_payload.get(
+                                        "primary_missing_symbols", []
+                                    )
+                                    or [],
+                                    pit_membership_sha256=str(
+                                        coverage.get("pit_membership_sha256") or ""
+                                    ),
+                                )
+                            )
+                            blockers.extend(
+                                "coverage_nontrading_evidence_semantic:"
+                                f"{item}"
+                                for item in semantic_blockers
+                            )
+                            evidence_symbols = set(
+                                _normalize_symbol_list(
+                                    evidence_payload.get(
+                                        "verified_symbols", []
+                                    )
+                                    or []
+                                )
+                            )
+                            if evidence_symbols != set(
+                                _normalize_symbol_list(verified_nontrading)
+                            ):
+                                blockers.append(
+                                    "coverage_nontrading_evidence_symbols_mismatch"
+                                )
+
         gate_payload = {
             "status": "ok" if not blockers else "blocked",
             "healthy": not blockers,
@@ -200,6 +547,8 @@ class MarketDataReader:
             "manifest_path": str(snapshot.manifest_path),
             "latest_pointer_path": str(snapshot.latest_pointer_path),
             "mode_policy": self.mode_policy,
+            "coverage": coverage,
+            "coverage_provenance_blockers": coverage_provenance_blockers,
         }
         self._snapshot_gate_cache = dict(gate_payload)
         return dict(gate_payload)
@@ -844,4 +1193,5 @@ __all__ = [
     "MarketDataReadResult",
     "MarketDataReader",
     "MarketDataUnavailableError",
+    "coverage_fingerprint",
 ]
