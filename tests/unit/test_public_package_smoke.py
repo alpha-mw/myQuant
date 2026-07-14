@@ -90,6 +90,251 @@ def test_cli_market_data_governance_dispatches_local_read_only(monkeypatch):
     assert captured["allow_public_fallback"] is False
 
 
+def test_cli_market_macro_maintain_without_input_is_fail_closed(monkeypatch, capsys):
+    captured = {}
+
+    def _fake_run_macro_maintenance(**kwargs):
+        captured.update(kwargs)
+        return {"status": "blocked", "promoted": False}
+
+    monkeypatch.setattr(cli_main, "run_macro_maintenance", _fake_run_macro_maintenance)
+    cli_main.main(["market", "macro-maintain", "--market", "CN", "--as-of", "20240510"])
+
+    assert captured["indicators"] is None
+    assert captured["allow_live"] is False
+    assert '"promoted": false' in capsys.readouterr().out
+
+
+def test_cli_market_macro_analyze_is_explicit_local_observer(monkeypatch, tmp_path, capsys):
+    observations = tmp_path / "observations.json"
+    observations.write_text("[]", encoding="utf-8")
+    captured = {}
+
+    def _fake_run_macro_analysis(**kwargs):
+        captured.update(kwargs)
+        return {"active": True, "applied": False}
+
+    monkeypatch.setattr(cli_main, "run_macro_analysis", _fake_run_macro_analysis)
+    cli_main.main(
+        [
+            "market",
+            "macro-analyze",
+            "--market",
+            "CN",
+            "--as-of",
+            "20240510",
+            "--observations",
+            str(observations),
+        ]
+    )
+
+    assert captured["observations_path"] == str(observations)
+    assert captured["market"] == "CN"
+    assert '"applied": false' in capsys.readouterr().out
+
+
+def test_cli_market_macro_observation_maintenance_is_explicit(monkeypatch, tmp_path, capsys):
+    observations = tmp_path / "observations.json"
+    observations.write_text('{"observations": []}', encoding="utf-8")
+    captured = {}
+
+    monkeypatch.setattr(
+        cli_main,
+        "run_macro_observation_maintenance",
+        lambda **kwargs: captured.update(kwargs) or {"promoted": False},
+    )
+    cli_main.main(
+        [
+            "market",
+            "macro-maintain",
+            "--market",
+            "CN",
+            "--as-of",
+            "20240510",
+            "--input-observations",
+            str(observations),
+            "--run-id",
+            "fixture",
+        ]
+    )
+
+    assert captured["allow_live"] is False
+    assert captured["allow_tushare_fallback"] is False
+    assert captured["run_id"] == "fixture"
+    assert '"promoted": false' in capsys.readouterr().out
+
+
+def test_cli_market_macro_replay_dispatch(monkeypatch, tmp_path, capsys):
+    captured = {}
+    monkeypatch.setattr(
+        cli_main,
+        "run_macro_replay",
+        lambda **kwargs: captured.update(kwargs) or {"applied": False},
+    )
+    cli_main.main(
+        [
+            "market",
+            "macro-replay",
+            "--market",
+            "CN",
+            "--start-date",
+            "2024-05-09",
+            "--end-date",
+            "2024-05-10",
+            "--calendar",
+            str(tmp_path / "calendar.parquet"),
+        ]
+    )
+
+    assert captured["market"] == "CN"
+    assert captured["calendar_path"].endswith("calendar.parquet")
+    assert '"applied": false' in capsys.readouterr().out
+
+
+def test_cli_market_macro_normalize_tushare_dispatch(monkeypatch, tmp_path, capsys):
+    captured = {}
+    monkeypatch.setattr(
+        cli_main,
+        "run_macro_tushare_normalization",
+        lambda **kwargs: captured.update(kwargs) or {"promoted": False},
+    )
+    cli_main.main(
+        [
+            "market",
+            "macro-normalize-tushare",
+            "--market",
+            "CN",
+            "--input-json",
+            str(tmp_path / "raw.json"),
+            "--plan-json",
+            str(tmp_path / "plan.json"),
+            "--evidence-json",
+            str(tmp_path / "evidence.json"),
+            "--run-id",
+            "fixture",
+        ]
+    )
+    assert captured["path"].endswith("raw.json")
+    assert captured["plan_path"].endswith("plan.json")
+    assert captured["evidence_path"].endswith("evidence.json")
+    assert captured["run_id"] == "fixture"
+    assert '"promoted": false' in capsys.readouterr().out
+
+
+def test_cli_market_macro_backfill_publish_dispatch(monkeypatch, tmp_path, capsys):
+    captured = {}
+    monkeypatch.setattr(
+        cli_main,
+        "run_macro_backfill_publish",
+        lambda **kwargs: captured.update(kwargs) or {"promoted": True},
+    )
+    cli_main.main(
+        [
+            "market",
+            "macro-backfill-publish",
+            "--market",
+            "CN",
+            "--manifest",
+            str(tmp_path / "normalization_manifest.json"),
+            "--run-id",
+            "g1",
+            "--expected-pointer-sha256",
+            "EMPTY",
+            "--expected-manifest-sha256",
+            "1" * 64,
+            "--expected-plan-sha256",
+            "2" * 64,
+        ]
+    )
+    assert captured["expected_pointer_sha256"] == ""
+    assert captured["expected_manifest_sha256"] == "1" * 64
+    assert captured["expected_plan_sha256"] == "2" * 64
+    assert captured["run_id"] == "g1"
+    assert '"promoted": true' in capsys.readouterr().out
+
+
+def test_cli_market_macro_forward_observation_dispatch(monkeypatch, tmp_path, capsys):
+    captured = {}
+    monkeypatch.setattr(
+        cli_main,
+        "run_macro_forward_observation",
+        lambda **kwargs: captured.update(kwargs) or {"promoted": True},
+    )
+    cli_main.main(
+        [
+            "market",
+            "macro-observe-forward",
+            "--market",
+            "CN",
+            "--calendar",
+            str(tmp_path / "calendar.parquet"),
+            "--state-root",
+            str(tmp_path / "forward"),
+            "--expected-pointer-sha256",
+            "EMPTY",
+        ]
+    )
+    assert captured["expected_pointer_sha256"] == ""
+    assert captured["calendar_path"].endswith("calendar.parquet")
+    assert captured["root"].endswith("forward")
+    assert '"promoted": true' in capsys.readouterr().out
+
+
+def test_cli_market_macro_coverage_audit_dispatch(monkeypatch, tmp_path, capsys):
+    captured = {}
+    monkeypatch.setattr(
+        cli_main,
+        "run_macro_coverage",
+        lambda **kwargs: captured.update(kwargs) or {"status": "blocked"},
+    )
+    cli_main.main(
+        [
+            "market",
+            "macro-coverage-audit",
+            "--market",
+            "CN",
+            "--as-of",
+            "2024-05-10",
+            "--observations",
+            str(tmp_path / "observations"),
+            "--raw-root",
+            str(tmp_path / "raw"),
+            "--output-dir",
+            str(tmp_path / "coverage"),
+        ]
+    )
+    assert captured["as_of"] == "2024-05-10"
+    assert captured["observations_path"].endswith("observations")
+    assert captured["raw_root"].endswith("raw")
+    assert captured["output_root"].endswith("coverage")
+    assert '"status": "blocked"' in capsys.readouterr().out
+
+
+def test_cli_market_macro_acquisition_plan_dispatch(monkeypatch, tmp_path, capsys):
+    captured = {}
+    monkeypatch.setattr(
+        cli_main,
+        "run_macro_acquisition",
+        lambda **kwargs: captured.update(kwargs) or {"status": "blocked"},
+    )
+    cli_main.main(
+        [
+            "market",
+            "macro-acquisition-plan",
+            "--market",
+            "CN",
+            "--coverage-audit",
+            str(tmp_path / "coverage_audit.json"),
+            "--output-dir",
+            str(tmp_path / "plans"),
+        ]
+    )
+    assert captured["market"] == "CN"
+    assert captured["coverage_audit"].endswith("coverage_audit.json")
+    assert captured["output_root"].endswith("plans")
+    assert '"status": "blocked"' in capsys.readouterr().out
+
+
 def test_datahub_public_sources_are_not_sourceless():
     required = [
         "quant_investor/data/hub.py",
