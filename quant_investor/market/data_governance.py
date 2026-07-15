@@ -212,6 +212,15 @@ def _resolve_current_full_a_scope(
         blockers.append("coverage_suspended_evidence_mismatch")
     if not classifications["inactive_symbols"].issubset(inactive_evidence):
         blockers.append("coverage_inactive_evidence_mismatch")
+    terminal_delisting = set(
+        _normalized_symbols(
+            coverage.get("verified_terminal_delisting_symbols", []),
+            field="verified_terminal_delisting_symbols",
+            blockers=blockers,
+        )
+    )
+    if not terminal_delisting.issubset(classifications["inactive_symbols"]):
+        blockers.append("coverage_terminal_delisting_not_inactive")
     if not (suspended_evidence | inactive_evidence).issubset(expected_symbol_set):
         blockers.append("coverage_status_evidence_outside_expected_scope")
 

@@ -203,6 +203,38 @@ def test_pit_store_round_trips_manifest_and_latest_records(tmp_path: Path) -> No
     assert is_listed("000002.SZ", "20260101", loaded) is False
 
 
+def test_custom_pit_root_keeps_default_side_outputs_inside_temp_root(
+    tmp_path: Path,
+) -> None:
+    repository_compatibility = Path(
+        "data/cn_universe/stock_basic_membership_latest.json"
+    )
+    before = (
+        repository_compatibility.read_bytes()
+        if repository_compatibility.exists()
+        else None
+    )
+    store = PITUniverseStore(root_dir=tmp_path / "reference")
+
+    store.write_snapshot(
+        raw_records=[_record("000001.SZ")],
+        observed_at="2026-07-15T00:00:00Z",
+        source_run_id="unit-test-isolated",
+    )
+
+    assert store.raw_root == tmp_path / "raw"
+    assert store.compatibility_path == (
+        tmp_path / "stock_basic_membership_latest.json"
+    )
+    assert store.compatibility_path.exists()
+    after = (
+        repository_compatibility.read_bytes()
+        if repository_compatibility.exists()
+        else None
+    )
+    assert after == before
+
+
 class _FakeTusharePro:
     def __init__(self) -> None:
         self.calls: list[str] = []

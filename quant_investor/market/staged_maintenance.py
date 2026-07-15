@@ -462,10 +462,19 @@ def run_staged_maintenance(
     )
     components = downloader.load_components()
     target_categories = downloader._resolve_target_categories(components, categories)
-    same_day_probe = downloader._probe_strict_same_day_close_availability(
-        components=components,
-        target_categories=target_categories,
-    )
+    explicit_target = _compact_trade_date(target_date)
+    if explicit_target and str(target_date or "").strip().lower() != "auto":
+        same_day_probe = {
+            "applicable": False,
+            "available": True,
+            "reason": "explicit_target_date",
+            "trade_date": explicit_target,
+        }
+    else:
+        same_day_probe = downloader._probe_strict_same_day_close_availability(
+            components=components,
+            target_categories=target_categories,
+        )
     target_trade_date, effective_target_trade_date, early_stop_reason = _resolve_effective_target(
         downloader=downloader,
         target_date=target_date,

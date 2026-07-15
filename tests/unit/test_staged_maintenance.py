@@ -68,6 +68,7 @@ class FakeDownloader:
     same_day_probe: dict[str, Any] = {"applicable": False}
     download_status_by_symbol: dict[str, str] = {}
     download_calls: list[dict[str, Any]] = []
+    probe_calls = 0
     last: "FakeDownloader | None" = None
 
     REQUESTS_PER_STOCK = 2
@@ -101,6 +102,7 @@ class FakeDownloader:
         return categories or ["full_a"]
 
     def _probe_strict_same_day_close_availability(self, **_kwargs: Any) -> dict[str, Any]:
+        FakeDownloader.probe_calls += 1
         return deepcopy(FakeDownloader.same_day_probe)
 
     def build_completeness_report(self, **_kwargs: Any) -> dict[str, Any]:
@@ -151,6 +153,7 @@ def _fake_downloader(monkeypatch):
     FakeDownloader.same_day_probe = {"applicable": False}
     FakeDownloader.download_status_by_symbol = {}
     FakeDownloader.download_calls = []
+    FakeDownloader.probe_calls = 0
     FakeDownloader.last = None
     monkeypatch.setattr(staged, "CNFullMarketDownloader", FakeDownloader)
 
@@ -348,7 +351,7 @@ def test_staged_maintenance_95pct_decision_data_is_not_complete(tmp_path):
 def test_staged_maintenance_daily_window_narrows_downloader_dates(tmp_path):
     FakeDownloader.reports = [_report(["000001.SZ"])]
 
-    staged.run_staged_maintenance(
+    result = staged.run_staged_maintenance(
         market="CN",
         categories=["full_a"],
         data_dir=str(tmp_path),
@@ -361,3 +364,15 @@ def test_staged_maintenance_daily_window_narrows_downloader_dates(tmp_path):
     assert FakeDownloader.last is not None
     assert FakeDownloader.last.start_date.strftime("%Y%m%d") == "20260306"
     assert FakeDownloader.last.end_date.strftime("%Y%m%d") == "20260316"
+    assert FakeDownloader.probe_calls == 0
+    progress = json.loads(
+        (Path(result["run_dir"]) / "progress_summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert progress["same_day_close_probe"] == {
+        "applicable": False,
+        "available": True,
+        "reason": "explicit_target_date",
+        "trade_date": "20260316",
+    }

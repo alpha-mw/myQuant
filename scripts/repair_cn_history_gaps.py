@@ -17,6 +17,10 @@ from quant_investor.market.cn_nontrading_evidence import (
     canonical_json_sha256,
     file_sha256,
 )
+from quant_investor.market.cn_terminal_delisting_evidence import (
+    read_terminal_delisting_evidence,
+    terminal_delist_dates,
+)
 from quant_investor.market.download import CNParquetBatchMaintainer
 from quant_investor.market.market_data_reader import (
     MarketDataReader,
@@ -155,6 +159,64 @@ def main(argv: Sequence[str] | None = None) -> dict:
         or file_sha256(pit_store.canonical_path) != audit_pit.get("sha256")
     ):
         raise SystemExit("Source audit PIT binding is stale.")
+    audit_terminal = audit.get("terminal_delisting_evidence", {}) or {}
+    terminal_symbols = sorted(
+        {
+            str(symbol or "").strip().upper()
+            for symbol in audit_terminal.get("symbols", []) or []
+            if str(symbol or "").strip()
+        }
+    )
+    if terminal_symbols:
+        raw_terminal_path = str(audit_terminal.get("path") or "").strip()
+        if not raw_terminal_path:
+            raise SystemExit(
+                "Source audit terminal-delisting path is missing."
+            )
+        terminal_path = Path(raw_terminal_path)
+        if (
+            not terminal_path.exists()
+            or file_sha256(terminal_path)
+            != str(audit_terminal.get("file_sha256") or "")
+        ):
+            raise SystemExit(
+                "Source audit terminal-delisting file binding is stale."
+            )
+        terminal_payload, terminal_blockers = read_terminal_delisting_evidence(
+            terminal_path,
+            target_trade_date=str(audit.get("effective_trade_date") or ""),
+            candidate_symbols=terminal_symbols,
+            pit_membership_path=str(audit_pit.get("path") or ""),
+            pit_membership_sha256=str(audit_pit.get("sha256") or ""),
+        )
+        if terminal_blockers:
+            raise SystemExit(
+                "Source audit terminal-delisting evidence is stale: "
+                + ",".join(terminal_blockers)
+            )
+        if (
+            str(terminal_payload.get("payload_sha256") or "")
+            != str(audit_terminal.get("payload_sha256") or "")
+            or terminal_delist_dates(terminal_payload)
+            != dict(audit_terminal.get("inferred_delist_dates", {}) or {})
+        ):
+            raise SystemExit(
+                "Source audit terminal-delisting payload binding is stale."
+            )
+        latest_terminal_symbols = sorted(
+            {
+                str(symbol or "").strip().upper()
+                for symbol in before_latest.get("coverage", {}).get(
+                    "verified_terminal_delisting_symbols", []
+                )
+                or []
+                if str(symbol or "").strip()
+            }
+        )
+        if latest_terminal_symbols != terminal_symbols:
+            raise SystemExit(
+                "Source audit terminal-delisting coverage binding is stale."
+            )
     selected_dates = [
         _compact_date(value)
         for value in audit.get("audited_trade_dates", []) or []

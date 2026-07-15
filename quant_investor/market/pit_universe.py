@@ -509,18 +509,44 @@ class PITUniverseStore:
         self,
         root_dir: str | Path = "data/parquet/cn/reference",
         *,
-        raw_root: str | Path = "data/cn_universe/raw",
-        compatibility_path: str | Path = "data/cn_universe/stock_basic_membership_latest.json",
+        raw_root: str | Path | None = None,
+        compatibility_path: str | Path | None = None,
     ) -> None:
         self.root_dir = Path(root_dir)
-        self.raw_root = Path(raw_root)
-        self.compatibility_path = Path(compatibility_path)
+        production_root = Path("data/parquet/cn/reference")
+        custom_root = self.root_dir != production_root
+        self.raw_root = Path(
+            raw_root
+            if raw_root is not None
+            else (
+                self.root_dir.parent / "raw"
+                if custom_root
+                else "data/cn_universe/raw"
+            )
+        )
+        self.compatibility_path = Path(
+            compatibility_path
+            if compatibility_path is not None
+            else (
+                self.root_dir.parent / "stock_basic_membership_latest.json"
+                if custom_root
+                else "data/cn_universe/stock_basic_membership_latest.json"
+            )
+        )
 
     @classmethod
     def from_config(cls) -> "PITUniverseStore":
         from quant_investor.config import config
 
-        return cls(root_dir=getattr(config, "PIT_UNIVERSE_SOURCE_ROOT", "data/parquet/cn/reference"))
+        return cls(
+            root_dir=getattr(
+                config,
+                "PIT_UNIVERSE_SOURCE_ROOT",
+                "data/parquet/cn/reference",
+            ),
+            raw_root="data/cn_universe/raw",
+            compatibility_path="data/cn_universe/stock_basic_membership_latest.json",
+        )
 
     @property
     def canonical_path(self) -> Path:

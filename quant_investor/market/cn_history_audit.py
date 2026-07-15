@@ -19,6 +19,10 @@ from quant_investor.market.cn_nontrading_evidence import (
     symbol_set_sha256,
     write_evidence_cache,
 )
+from quant_investor.market.cn_terminal_delisting_evidence import (
+    read_terminal_delisting_evidence,
+    terminal_delist_dates,
+)
 from quant_investor.market.market_data_reader import (
     MarketDataReader,
     coverage_fingerprint,
@@ -90,6 +94,7 @@ def _membership_split(
     component_symbols: Iterable[str],
     records_by_symbol: Mapping[str, Any],
     trade_date: str,
+    terminal_delist_dates_by_symbol: Mapping[str, str] | None = None,
 ) -> dict[str, list[str]]:
     active: list[str] = []
     prelisting: list[str] = []
@@ -97,7 +102,14 @@ def _membership_split(
     unknown: list[str] = []
     unknown_reasons: dict[str, str] = {}
     delisted_on_target: list[str] = []
+    terminal_dates = terminal_delist_dates_by_symbol or {}
     for symbol in _normalize_symbols(component_symbols):
+        terminal_delist_date = _compact_trade_date(terminal_dates.get(symbol))
+        if terminal_delist_date and trade_date >= terminal_delist_date:
+            delisted.append(symbol)
+            if trade_date == terminal_delist_date:
+                delisted_on_target.append(symbol)
+            continue
         status = evaluate_listing_status(
             records_by_symbol.get(symbol),
             symbol=symbol,
@@ -134,6 +146,7 @@ def build_cn_history_audit(
     nontrading_evidence_by_date: Mapping[str, Mapping[str, Any]],
     suspension_continuity_by_date: Mapping[str, Iterable[str]] | None = None,
     evidence_references_by_date: Mapping[str, Mapping[str, Any]] | None = None,
+    terminal_delist_dates_by_symbol: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Pure classification core used by the CLI and unit tests."""
 
@@ -167,6 +180,7 @@ def build_cn_history_audit(
             components,
             pit_records_by_symbol,
             trade_date,
+            terminal_delist_dates_by_symbol,
         )
         active = set(split["active"])
         date_frame = work.loc[work.get("trade_date", pd.Series(dtype=str)).eq(trade_date)].copy()
@@ -181,6 +195,15 @@ def build_cn_history_audit(
             split["delisted"]
         )
         inactive_or_prelisting_absent = inactive_or_prelisting - observed
+        terminal_delisting_absent = {
+            symbol
+            for symbol, delist_date in (
+                terminal_delist_dates_by_symbol or {}
+            ).items()
+            if _compact_trade_date(delist_date)
+            and trade_date >= _compact_trade_date(delist_date)
+            and symbol in component_set
+        } - observed
         primary_missing = active - observed_active
         exact_suspended = (
             set(_normalize_symbols(suspended_evidence_by_date.get(trade_date, [])))
@@ -301,6 +324,9 @@ def build_cn_history_audit(
                 "verified_inactive_or_prelisting_absent": sorted(
                     inactive_or_prelisting_absent
                 ),
+                "verified_terminal_delisting_absent": sorted(
+                    terminal_delisting_absent
+                ),
                 "true_missing_symbols": sorted(true_missing),
                 "adj_factor_missing_symbols": sorted(adj_missing),
                 "classification_sets_disjoint": disjoint,
@@ -324,6 +350,12 @@ def build_cn_history_audit(
                 "suspension_continuity_evidence_sha256": str(
                     references.get("suspension_continuity_evidence_sha256")
                     or ""
+                ),
+                "terminal_delisting_evidence_path": str(
+                    references.get("terminal_delisting_evidence_path") or ""
+                ),
+                "terminal_delisting_evidence_sha256": str(
+                    references.get("terminal_delisting_evidence_sha256") or ""
                 ),
                 "blockers": blockers,
                 "status": "passed" if not blockers else "blocked",
@@ -1154,6 +1186,77 @@ def run_cn_history_audit(
             f"symbols={pit_missing_current_components[:20]}"
         )
 
+    coverage = latest_payload.get("coverage", {}) or {}
+    if not isinstance(coverage, Mapping):
+        coverage = {}
+    terminal_symbols = _normalize_symbols(
+        coverage.get("verified_terminal_delisting_symbols", []) or []
+    )
+    terminal_evidence_payload: dict[str, Any] = {}
+    terminal_evidence_path: Path | None = None
+    terminal_evidence_file_sha256 = ""
+    terminal_dates_by_symbol: dict[str, str] = {}
+    if terminal_symbols:
+        raw_terminal_path = str(
+            coverage.get("verified_terminal_delisting_evidence_path") or ""
+        ).strip()
+        if not raw_terminal_path:
+            raise RuntimeError("terminal delisting evidence path is missing")
+        terminal_evidence_path = Path(raw_terminal_path)
+        if not terminal_evidence_path.is_absolute():
+            terminal_evidence_path = Path.cwd() / terminal_evidence_path
+        expected_file_sha256 = str(
+            coverage.get("verified_terminal_delisting_evidence_sha256") or ""
+        ).lower()
+        if not terminal_evidence_path.exists():
+            raise RuntimeError(
+                "terminal delisting evidence is missing: "
+                f"{terminal_evidence_path}"
+            )
+        terminal_evidence_file_sha256 = file_sha256(
+            terminal_evidence_path
+        )
+        if terminal_evidence_file_sha256 != expected_file_sha256:
+            raise RuntimeError(
+                "terminal delisting evidence file binding is stale"
+            )
+        terminal_evidence_payload, terminal_blockers = (
+            read_terminal_delisting_evidence(
+                terminal_evidence_path,
+                target_trade_date=effective_end,
+                candidate_symbols=terminal_symbols,
+                pit_membership_path=str(
+                    coverage.get("pit_membership_path") or ""
+                ),
+                pit_membership_sha256=pit_sha256,
+            )
+        )
+        if terminal_blockers:
+            raise RuntimeError(
+                "terminal delisting evidence is invalid: "
+                + ",".join(terminal_blockers)
+            )
+        if str(
+            terminal_evidence_payload.get("payload_sha256") or ""
+        ).lower() != str(
+            coverage.get("verified_terminal_delisting_payload_sha256") or ""
+        ).lower():
+            raise RuntimeError(
+                "terminal delisting evidence payload binding is stale"
+            )
+        terminal_dates_by_symbol = terminal_delist_dates(
+            terminal_evidence_payload
+        )
+        if terminal_dates_by_symbol != dict(
+            coverage.get(
+                "verified_terminal_delisting_inferred_dates", {}
+            )
+            or {}
+        ):
+            raise RuntimeError(
+                "terminal delisting inferred-date binding is stale"
+            )
+
     reader = MarketDataReader(market="CN", data_root=root, mode_policy="strict")
     snapshot = reader._require_snapshot()
     bars, canonical_window_evidence = _read_canonical_window(
@@ -1301,7 +1404,12 @@ def run_cn_history_audit(
     for current_index, current_date in enumerate(selected_dates):
         if current_index <= 0 or current_index >= len(selected_dates) - 1:
             continue
-        split = _membership_split(audit_symbols, pit_records, current_date)
+        split = _membership_split(
+            audit_symbols,
+            pit_records,
+            current_date,
+            terminal_dates_by_symbol,
+        )
         primary_missing = set(split["active"]) - observed_symbols_by_date[
             current_date
         ]
@@ -1350,7 +1458,12 @@ def run_cn_history_audit(
             )
 
     for current_index, current_date in enumerate(selected_dates):
-        split = _membership_split(audit_symbols, pit_records, current_date)
+        split = _membership_split(
+            audit_symbols,
+            pit_records,
+            current_date,
+            terminal_dates_by_symbol,
+        )
         active = set(split["active"])
         observed = observed_symbols_by_date[current_date]
         primary_missing = active - observed
@@ -1513,6 +1626,16 @@ def run_cn_history_audit(
                 if continuity_path is not None and continuity_path.exists()
                 else ""
             ),
+            "terminal_delisting_evidence_path": (
+                str(terminal_evidence_path)
+                if terminal_evidence_path is not None
+                else ""
+            ),
+            "terminal_delisting_evidence_sha256": (
+                terminal_evidence_file_sha256
+                if terminal_evidence_path is not None
+                else ""
+            ),
             "evidence_blockers": evidence_blockers,
         }
 
@@ -1525,6 +1648,7 @@ def run_cn_history_audit(
         nontrading_evidence_by_date=nontrading_by_date,
         suspension_continuity_by_date=suspension_continuity_by_date,
         evidence_references_by_date=references_by_date,
+        terminal_delist_dates_by_symbol=terminal_dates_by_symbol,
     )
     if (
         audit.get("audited_trade_dates_count") != days
@@ -1580,6 +1704,19 @@ def run_cn_history_audit(
             "path": str(pit_path),
             "sha256": pit_sha256,
             "record_count": len(pit_records),
+        },
+        "terminal_delisting_evidence": {
+            "path": (
+                str(terminal_evidence_path)
+                if terminal_evidence_path is not None
+                else ""
+            ),
+            "file_sha256": terminal_evidence_file_sha256,
+            "payload_sha256": str(
+                terminal_evidence_payload.get("payload_sha256") or ""
+            ),
+            "symbols": terminal_symbols,
+            "inferred_delist_dates": terminal_dates_by_symbol,
         },
         "maintenance_status": (
             "complete" if audit["history_audit_status"] == "passed" else "partial"

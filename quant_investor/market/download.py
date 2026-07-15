@@ -20,6 +20,11 @@ from quant_investor.market.cn_nontrading_evidence import (
     read_evidence_cache,
     write_evidence_cache,
 )
+from quant_investor.market.cn_terminal_delisting_evidence import (
+    read_terminal_delisting_evidence,
+    resolve_terminal_delisting_evidence,
+    select_terminal_delisting_candidates,
+)
 from quant_investor.market.config import get_market_settings, normalize_categories
 from quant_investor.market.download_cn import CNFullMarketDownloader
 from quant_investor.market.download_us import FullMarketDownloader as USFullMarketDownloader
@@ -325,6 +330,30 @@ class CNParquetBatchMaintainer:
             verified_nontrading_evidence_symbols
             & primary_missing_after_status
         )
+        terminal_candidate_pool = (
+            primary_missing_after_status - verified_nontrading_absent
+        )
+        terminal_candidates = select_terminal_delisting_candidates(
+            terminal_candidate_pool,
+            target_trade_date=target_trade_date,
+            pit_records_by_symbol=(
+                pit_records if isinstance(pit_records, dict) else {}
+            ),
+        )
+        terminal_delisting_evidence = self._load_verified_terminal_delisting(
+            target_trade_date,
+            set(terminal_candidates),
+            pit_binding=pit_binding,
+        )
+        verified_terminal_delisting_absent = {
+            str(symbol).strip().upper()
+            for symbol in list(
+                terminal_delisting_evidence.get("verified_symbols", []) or []
+            )
+            if str(symbol).strip()
+        } & terminal_candidate_pool
+        inactive_absent |= verified_terminal_delisting_absent
+        scope_inactive_symbols |= verified_terminal_delisting_absent
         allowed_absent = (
             scope_allowed_symbols
             - daily_symbols
@@ -361,6 +390,14 @@ class CNParquetBatchMaintainer:
         blockers: list[str] = []
         if daily_error:
             blockers.append(f"daily_endpoint_error:{daily_error}")
+        terminal_evidence_blockers = list(
+            terminal_delisting_evidence.get("blockers", []) or []
+        )
+        if terminal_candidates and terminal_evidence_blockers:
+            blockers.append(
+                "terminal_delisting_evidence_unresolved:"
+                f"{len(terminal_candidates)}"
+            )
         if missing_daily:
             blockers.append(f"daily_missing:{len(missing_daily)}")
         if missing_adj:
@@ -369,6 +406,14 @@ class CNParquetBatchMaintainer:
             blockers.append(f"adj_factor_endpoint_error:{adj_error}")
         if scope_allowed_symbols:
             blockers.append("unverified_allowed_stale_symbols_not_permitted")
+        if not blockers and verified_terminal_delisting_absent:
+            blockers.extend(
+                self._terminal_delisting_binding_blockers(
+                    target_trade_date,
+                    terminal_delisting_evidence,
+                    pit_binding=pit_binding,
+                )
+            )
         expected_count = len(target_symbols)
         coverage_complete_count = len(observed_target_symbols | non_blocking_absent)
         coverage_ratio = coverage_complete_count / expected_count if expected_count else 1.0
@@ -407,6 +452,10 @@ class CNParquetBatchMaintainer:
             inactive_symbols=sorted(inactive_absent),
             verified_nontrading_symbols=sorted(verified_nontrading_absent),
             verified_nontrading_evidence=nontrading_evidence,
+            verified_terminal_delisting_symbols=sorted(
+                verified_terminal_delisting_absent
+            ),
+            verified_terminal_delisting_evidence=terminal_delisting_evidence,
             requested_allowed_stale_symbols=sorted(scope_allowed_symbols),
             requested_allowed_absent_symbols=sorted(allowed_absent),
             non_blocking_absent_symbols=sorted(non_blocking_absent),
@@ -454,6 +503,9 @@ class CNParquetBatchMaintainer:
                         "verified_nontrading_bak_daily_zero_symbols": sorted(
                             verified_nontrading_absent
                         ),
+                        "verified_terminal_delisting_symbols": sorted(
+                            verified_terminal_delisting_absent
+                        ),
                         "allowed_stale_symbols": [],
                         "requested_allowed_stale_symbols": sorted(scope_allowed_symbols),
                         "requested_allowed_absent_symbols": sorted(allowed_absent),
@@ -467,6 +519,26 @@ class CNParquetBatchMaintainer:
                         ),
                         "verified_nontrading_evidence_sha256": str(
                             nontrading_evidence.get("evidence_sha256") or ""
+                        ),
+                        "verified_terminal_delisting_evidence_path": str(
+                            terminal_delisting_evidence.get("evidence_path")
+                            or ""
+                        ),
+                        "verified_terminal_delisting_evidence_sha256": str(
+                            terminal_delisting_evidence.get(
+                                "evidence_sha256"
+                            )
+                            or ""
+                        ),
+                        "verified_terminal_delisting_payload_sha256": str(
+                            terminal_delisting_evidence.get("payload_sha256")
+                            or ""
+                        ),
+                        "verified_terminal_delisting_inferred_dates": dict(
+                            terminal_delisting_evidence.get(
+                                "inferred_delist_dates", {}
+                            )
+                            or {}
                         ),
                         "pit_membership_path": str(
                             pit_binding.get("path") or ""
@@ -510,6 +582,9 @@ class CNParquetBatchMaintainer:
                     "verified_nontrading_bak_daily_zero_symbols": sorted(
                         verified_nontrading_absent
                     ),
+                    "verified_terminal_delisting_symbols": sorted(
+                        verified_terminal_delisting_absent
+                    ),
                     "allowed_stale_symbols": [],
                     "requested_allowed_stale_symbols": sorted(scope_allowed_symbols),
                     "requested_allowed_absent_symbols": sorted(allowed_absent),
@@ -523,6 +598,21 @@ class CNParquetBatchMaintainer:
                     ),
                     "verified_nontrading_evidence_sha256": str(
                         nontrading_evidence.get("evidence_sha256") or ""
+                    ),
+                    "verified_terminal_delisting_evidence_path": str(
+                        terminal_delisting_evidence.get("evidence_path") or ""
+                    ),
+                    "verified_terminal_delisting_evidence_sha256": str(
+                        terminal_delisting_evidence.get("evidence_sha256") or ""
+                    ),
+                    "verified_terminal_delisting_payload_sha256": str(
+                        terminal_delisting_evidence.get("payload_sha256") or ""
+                    ),
+                    "verified_terminal_delisting_inferred_dates": dict(
+                        terminal_delisting_evidence.get(
+                            "inferred_delist_dates", {}
+                        )
+                        or {}
                     ),
                     "pit_membership_path": str(pit_binding.get("path") or ""),
                     "pit_membership_sha256": str(
@@ -769,6 +859,117 @@ class CNParquetBatchMaintainer:
         payload["blockers"] = []
         return payload
 
+    def _load_verified_terminal_delisting(
+        self,
+        target_trade_date: str,
+        candidate_symbols: set[str],
+        *,
+        pit_binding: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not candidate_symbols:
+            return {
+                "status": "not_needed",
+                "verified_symbols": [],
+                "inferred_delist_dates": {},
+                "evidence_path": "",
+                "evidence_sha256": "",
+                "payload_sha256": "",
+                "blockers": [],
+            }
+        pit_records = pit_binding.get("records", {})
+        pit_path = str(pit_binding.get("path") or "")
+        pit_sha256 = str(pit_binding.get("sha256") or "")
+        if (
+            list(pit_binding.get("blockers") or [])
+            or not isinstance(pit_records, dict)
+            or not pit_path
+            or not pit_sha256
+        ):
+            return {
+                "status": "blocked",
+                "verified_symbols": [],
+                "inferred_delist_dates": {},
+                "evidence_path": "",
+                "evidence_sha256": "",
+                "payload_sha256": "",
+                "blockers": list(
+                    pit_binding.get("blockers")
+                    or ["pit_membership_unavailable"]
+                ),
+            }
+        return resolve_terminal_delisting_evidence(
+            self.downloader.pro,
+            cache_root=self.data_dir,
+            target_trade_date=target_trade_date,
+            candidate_symbols=candidate_symbols,
+            pit_records_by_symbol=pit_records,
+            pit_membership_path=pit_path,
+            pit_membership_sha256=pit_sha256,
+        )
+
+    @staticmethod
+    def _terminal_delisting_binding_blockers(
+        target_trade_date: str,
+        evidence: dict[str, Any],
+        *,
+        pit_binding: dict[str, Any],
+    ) -> list[str]:
+        symbols = sorted(
+            {
+                str(symbol).strip().upper()
+                for symbol in list(evidence.get("verified_symbols", []) or [])
+                if str(symbol).strip()
+            }
+        )
+        if not symbols:
+            return []
+        blockers: list[str] = []
+        raw_pit_path = str(pit_binding.get("path") or "").strip()
+        if not raw_pit_path:
+            return ["terminal_delisting_precommit_pit_path_missing"]
+        pit_path = Path(raw_pit_path)
+        pit_sha256 = str(pit_binding.get("sha256") or "").lower()
+        if not pit_path.exists() or file_sha256(pit_path) != pit_sha256:
+            blockers.append("terminal_delisting_precommit_pit_binding_changed")
+        raw_evidence_path = str(evidence.get("evidence_path") or "").strip()
+        if not raw_evidence_path:
+            blockers.append(
+                "terminal_delisting_precommit_evidence_path_missing"
+            )
+            return blockers
+        evidence_path = Path(raw_evidence_path)
+        expected_evidence_sha256 = str(
+            evidence.get("evidence_sha256") or ""
+        ).lower()
+        if (
+            not evidence_path.exists()
+            or file_sha256(evidence_path) != expected_evidence_sha256
+        ):
+            blockers.append(
+                "terminal_delisting_precommit_evidence_file_changed"
+            )
+            return blockers
+        persisted, semantic_blockers = read_terminal_delisting_evidence(
+            evidence_path,
+            target_trade_date=target_trade_date,
+            candidate_symbols=symbols,
+            pit_membership_path=str(pit_path),
+            pit_membership_sha256=pit_sha256,
+        )
+        if semantic_blockers:
+            blockers.extend(
+                "terminal_delisting_precommit_semantic:"
+                f"{item}"
+                for item in semantic_blockers
+            )
+        elif str(persisted.get("payload_sha256") or "") != str(
+            evidence.get("payload_sha256") or ""
+        ):
+            blockers.append(
+                "terminal_delisting_precommit_payload_sha256_changed"
+            )
+        return blockers
+
     @staticmethod
     def _build_bars_frame(daily_df: pd.DataFrame, adj_df: pd.DataFrame, daily_basic_df: pd.DataFrame) -> pd.DataFrame:
         if daily_df.empty:
@@ -807,6 +1008,8 @@ class CNParquetBatchMaintainer:
         inactive_symbols: list[str],
         verified_nontrading_symbols: list[str],
         verified_nontrading_evidence: dict[str, Any],
+        verified_terminal_delisting_symbols: list[str],
+        verified_terminal_delisting_evidence: dict[str, Any],
         requested_allowed_stale_symbols: list[str],
         requested_allowed_absent_symbols: list[str],
         non_blocking_absent_symbols: list[str],
@@ -835,6 +1038,9 @@ class CNParquetBatchMaintainer:
                 "inactive_symbols": list(inactive_symbols),
                 "verified_nontrading_bak_daily_zero_symbols": list(
                     verified_nontrading_symbols
+                ),
+                "verified_terminal_delisting_symbols": list(
+                    verified_terminal_delisting_symbols
                 ),
                 "allowed_stale_symbols": [],
                 "requested_allowed_stale_symbols": list(
@@ -880,6 +1086,27 @@ class CNParquetBatchMaintainer:
             ),
             "verified_nontrading_evidence_sha256": str(
                 verified_nontrading_evidence.get("evidence_sha256") or ""
+            ),
+            "verified_terminal_delisting_symbols": list(
+                verified_terminal_delisting_symbols
+            ),
+            "verified_terminal_delisting_evidence_path": str(
+                verified_terminal_delisting_evidence.get("evidence_path")
+                or ""
+            ),
+            "verified_terminal_delisting_evidence_sha256": str(
+                verified_terminal_delisting_evidence.get("evidence_sha256")
+                or ""
+            ),
+            "verified_terminal_delisting_payload_sha256": str(
+                verified_terminal_delisting_evidence.get("payload_sha256")
+                or ""
+            ),
+            "verified_terminal_delisting_inferred_dates": dict(
+                verified_terminal_delisting_evidence.get(
+                    "inferred_delist_dates", {}
+                )
+                or {}
             ),
             "allowed_stale_symbols": [],
             "requested_allowed_stale_symbols": list(

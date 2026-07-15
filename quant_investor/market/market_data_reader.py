@@ -15,6 +15,9 @@ from quant_investor.agent_protocol import DataQualityIssue
 from quant_investor.market.cn_nontrading_evidence import (
     validate_bak_daily_nontrading_evidence,
 )
+from quant_investor.market.cn_terminal_delisting_evidence import (
+    validate_terminal_delisting_evidence,
+)
 from quant_investor.market.read_result import MarketDataReadResult
 
 
@@ -185,6 +188,9 @@ def _complete_coverage_blockers(
 
         suspended = _symbol_set("suspended_symbols")
         inactive = _symbol_set("inactive_symbols")
+        verified_terminal_delisting = _symbol_set(
+            "verified_terminal_delisting_symbols"
+        )
         verified_nontrading = (
             _symbol_set("verified_nontrading_bak_daily_zero_symbols")
             if coverage_schema_version == "cn-full-a-coverage.v3"
@@ -247,6 +253,47 @@ def _complete_coverage_blockers(
                 ch not in "0123456789abcdef" for ch in pit_sha256
             ):
                 blockers.append("coverage_pit_membership_sha256_invalid")
+        if not verified_terminal_delisting.issubset(inactive):
+            blockers.append(
+                "coverage_terminal_delisting_not_subset_of_inactive"
+            )
+        if verified_terminal_delisting:
+            evidence_path = str(
+                coverage.get("verified_terminal_delisting_evidence_path")
+                or ""
+            ).strip()
+            evidence_sha256 = str(
+                coverage.get("verified_terminal_delisting_evidence_sha256")
+                or ""
+            ).strip().lower()
+            payload_sha256 = str(
+                coverage.get("verified_terminal_delisting_payload_sha256")
+                or ""
+            ).strip().lower()
+            inferred_dates = coverage.get(
+                "verified_terminal_delisting_inferred_dates", {}
+            )
+            if not evidence_path:
+                blockers.append(
+                    "coverage_terminal_delisting_evidence_path_missing"
+                )
+            for name, digest in (
+                ("evidence", evidence_sha256),
+                ("payload", payload_sha256),
+            ):
+                if len(digest) != 64 or any(
+                    character not in "0123456789abcdef"
+                    for character in digest
+                ):
+                    blockers.append(
+                        f"coverage_terminal_delisting_{name}_sha256_invalid"
+                    )
+            if not isinstance(inferred_dates, Mapping) or set(
+                _normalize_symbol_list(inferred_dates)
+            ) != verified_terminal_delisting:
+                blockers.append(
+                    "coverage_terminal_delisting_inferred_dates_mismatch"
+                )
     return blockers
 
 
@@ -534,6 +581,129 @@ class MarketDataReader:
                                 blockers.append(
                                     "coverage_nontrading_evidence_symbols_mismatch"
                                 )
+
+        verified_terminal_delisting = _normalize_symbol_list(
+            coverage.get("verified_terminal_delisting_symbols", []) or []
+        )
+        if verified_terminal_delisting:
+            raw_evidence_path = str(
+                coverage.get("verified_terminal_delisting_evidence_path")
+                or ""
+            ).strip()
+            raw_pit_path = str(
+                coverage.get("pit_membership_path") or ""
+            ).strip()
+            expected_evidence_sha256 = str(
+                coverage.get("verified_terminal_delisting_evidence_sha256")
+                or ""
+            ).strip().lower()
+            expected_payload_sha256 = str(
+                coverage.get("verified_terminal_delisting_payload_sha256")
+                or ""
+            ).strip().lower()
+            expected_pit_sha256 = str(
+                coverage.get("pit_membership_sha256") or ""
+            ).strip().lower()
+            resolved_terminal_path = (
+                self._resolve_data_path(
+                    raw_evidence_path,
+                    Path(raw_evidence_path),
+                )
+                if raw_evidence_path
+                else None
+            )
+            resolved_pit_path = (
+                self._resolve_data_path(
+                    raw_pit_path,
+                    Path(raw_pit_path),
+                )
+                if raw_pit_path
+                else None
+            )
+            if resolved_terminal_path is None:
+                blockers.append(
+                    "coverage_terminal_delisting_evidence_path_missing"
+                )
+            elif not resolved_terminal_path.exists():
+                blockers.append(
+                    "coverage_terminal_delisting_evidence_missing:"
+                    f"{resolved_terminal_path}"
+                )
+            elif (
+                hashlib.sha256(resolved_terminal_path.read_bytes()).hexdigest()
+                != expected_evidence_sha256
+            ):
+                blockers.append(
+                    "coverage_terminal_delisting_evidence_sha256_mismatch"
+                )
+            if resolved_pit_path is None:
+                blockers.append(
+                    "coverage_terminal_delisting_pit_path_missing"
+                )
+            elif not resolved_pit_path.exists():
+                blockers.append(
+                    f"coverage_terminal_delisting_pit_missing:{resolved_pit_path}"
+                )
+            elif hashlib.sha256(resolved_pit_path.read_bytes()).hexdigest() != (
+                expected_pit_sha256
+            ):
+                blockers.append(
+                    "coverage_terminal_delisting_pit_sha256_mismatch"
+                )
+            if (
+                resolved_terminal_path is not None
+                and resolved_pit_path is not None
+                and resolved_terminal_path.exists()
+                and resolved_pit_path.exists()
+            ):
+                try:
+                    terminal_payload = json.loads(
+                        resolved_terminal_path.read_text(encoding="utf-8")
+                    )
+                except Exception as exc:
+                    blockers.append(
+                        "coverage_terminal_delisting_evidence_unreadable:"
+                        f"{exc}"
+                    )
+                else:
+                    if not isinstance(terminal_payload, dict):
+                        blockers.append(
+                            "coverage_terminal_delisting_evidence_invalid_payload"
+                        )
+                    else:
+                        terminal_blockers = validate_terminal_delisting_evidence(
+                            terminal_payload,
+                            target_trade_date=str(
+                                coverage.get("coverage_trade_date") or ""
+                            ),
+                            candidate_symbols=verified_terminal_delisting,
+                            pit_membership_path=raw_pit_path,
+                            pit_membership_sha256=expected_pit_sha256,
+                        )
+                        blockers.extend(
+                            "coverage_terminal_delisting_evidence_semantic:"
+                            f"{item}"
+                            for item in terminal_blockers
+                        )
+                        if str(
+                            terminal_payload.get("payload_sha256") or ""
+                        ).lower() != expected_payload_sha256:
+                            blockers.append(
+                                "coverage_terminal_delisting_payload_sha256_mismatch"
+                            )
+                        if dict(
+                            terminal_payload.get("inferred_delist_dates", {})
+                            or {}
+                        ) != dict(
+                            coverage.get(
+                                "verified_terminal_delisting_inferred_dates",
+                                {},
+                            )
+                            or {}
+                        ):
+                            blockers.append(
+                                "coverage_terminal_delisting_inferred_dates_mismatch"
+                            )
 
         gate_payload = {
             "status": "ok" if not blockers else "blocked",

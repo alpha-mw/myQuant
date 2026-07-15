@@ -92,6 +92,42 @@ def test_full_100_date_audit_excludes_target_day_delist_and_accepts_typed_nontra
     ]
 
 
+def test_terminal_sidecar_boundary_keeps_last_session_and_excludes_delist_day():
+    dates = ["20260713", "20260714"]
+    audit = build_cn_history_audit(
+        bars=pd.DataFrame(
+            [
+                {
+                    "ts_code": "000004.SZ",
+                    "trade_date": "20260713",
+                    "adj_factor": 1.0,
+                }
+            ]
+        ),
+        trade_dates=dates,
+        component_symbols=["000004.SZ"],
+        pit_records_by_symbol={"000004.SZ": _record("000004.SZ")},
+        suspended_evidence_by_date={},
+        nontrading_evidence_by_date={},
+        terminal_delist_dates_by_symbol={"000004.SZ": "20260714"},
+    )
+
+    assert audit["history_audit_status"] == "passed"
+    last_session, delist_day = audit["per_date"]
+    assert last_session["observed_active_count"] == 1
+    assert last_session["excluded_delisted_symbols"] == []
+    assert delist_day["excluded_delisted_on_target_symbols"] == [
+        "000004.SZ"
+    ]
+    assert delist_day["verified_terminal_delisting_absent"] == [
+        "000004.SZ"
+    ]
+    assert delist_day["verified_inactive_or_prelisting_absent"] == [
+        "000004.SZ"
+    ]
+    assert delist_day["true_missing_symbols"] == []
+
+
 def test_unexplained_active_primary_absence_remains_fail_closed():
     trade_date = "20260707"
     audit = build_cn_history_audit(
