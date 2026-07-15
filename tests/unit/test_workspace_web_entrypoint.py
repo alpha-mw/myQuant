@@ -31,7 +31,7 @@ def test_workspace_app_serves_frontend_dist_and_preserves_api_boundary(
         encoding="utf-8",
     )
 
-    client = TestClient(create_app(frontend_dist=dist))
+    client = TestClient(create_app(frontend_dist=dist, auth_token=""))
 
     root = client.get("/")
     detail = client.get("/history/test-id")

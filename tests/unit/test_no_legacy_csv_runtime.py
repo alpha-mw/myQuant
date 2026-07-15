@@ -13,8 +13,20 @@ SCAN_ROOTS = [
 ]
 
 ALLOWLIST = {
+    # Formal-review and audit readers consume strategy-record CSV artifacts,
+    # never canonical market bars.
+    "quant_investor/monitoring/cn_aggressive_daily_review.py",
+    "scripts/build_holdings_fundamental_sheet.py",
+    "scripts/print_pipeline_state.py",
+    "scripts/run_track_record_audit.py",
     # Dashboard export reads strategy-record CSV artifacts, not runtime market data.
     "scripts/export_cn_aggressive_dashboard_data.py",
+    "scripts/backfill_cn_dashboard_benchmark.py",
+    "scripts/check_cn_dashboard_export.py",
+    "scripts/merge_cn_dashboard_benchmark_fills.py",
+    # Offline migration and calibration tools accept explicit CSV inputs.
+    "quant_investor/themes/membership_migration.py",
+    "scripts/run_theme_threshold_sweep.py",
     # Hash-bound offline retirement replay reads frozen evidence, never market runtime data.
     "scripts/run_v14_retirement_replay_gate.py",
     "scripts/migrate_legacy_csv_state_to_parquet.py",
