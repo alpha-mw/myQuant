@@ -699,7 +699,7 @@ def assess_branch_data_readiness(
             required_fields=list(FUNDAMENTAL_REQUIRED_FIELDS),
             missing_fields=list(FUNDAMENTAL_REQUIRED_FIELDS),
             blockers=["fundamental_generation_invalid"],
-            affected_symbols=list(symbols),
+            affected_symbols=sorted(set(symbols)),
             fallback_used=False,
             provider_status="blocked_invalid_generation",
             metadata={"manifest": dict(fundamental_manifest)},

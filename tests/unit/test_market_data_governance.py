@@ -118,6 +118,7 @@ def test_data_governance_default_is_local_read_only(tmp_path):
     )
 
     assert result["local_read_only"] is True
+    assert result["status"] == "blocked"
     assert result["allow_live"] is False
     assert result["reports"][0]["readiness"]["macro"]["status"] == "block"
     assert "macro_catalog_missing" in result["reports"][0]["readiness"][
@@ -164,6 +165,33 @@ def test_data_governance_rejects_retired_root_argument(tmp_path):
         run_data_governance(
             intelligence_root=tmp_path / "retired",  # type: ignore[call-arg]
         )
+
+
+def test_data_governance_deduplicates_categories(tmp_path, monkeypatch):
+    data_root = _write_parquet_market_data(tmp_path)
+    calls: list[str] = []
+
+    def _read_once(*, market, category, as_of, data_dir=None):
+        calls.append(category)
+        return ({}, {}, type("Reader", (), {"snapshot": lambda self: {}})())
+
+    monkeypatch.setattr(
+        "quant_investor.market.data_governance._read_local_frames",
+        _read_once,
+    )
+
+    result = run_data_governance(
+        market="CN",
+        categories=["full_a", "full_a"],
+        category="full_a",
+        data_dir=data_root,
+        fundamental_root=tmp_path / "fundamental",
+        macro_root=tmp_path / "macro",
+        output_dir=tmp_path / "reports",
+    )
+
+    assert calls == ["full_a"]
+    assert result["categories"] == ["full_a"]
 
 
 def test_retired_market_mart_module_is_physically_absent():

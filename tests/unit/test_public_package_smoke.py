@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import quant_investor
 import quant_investor.cli.main as cli_main
 
@@ -63,11 +65,12 @@ def test_cli_market_fundamental_maintain_dispatches(monkeypatch):
     assert captured["allow_live"] is False
 
 
-def test_cli_market_data_governance_dispatches_local_read_only(monkeypatch):
+def test_cli_market_data_governance_dispatches_local_read_only(monkeypatch, capsys):
     captured = {}
 
     def _fake_run_data_governance(**kwargs):
         captured.update(kwargs)
+        return {"status": "passed", "reports": []}
 
     monkeypatch.setattr(cli_main, "run_data_governance", _fake_run_data_governance)
     cli_main.main(
@@ -88,6 +91,23 @@ def test_cli_market_data_governance_dispatches_local_read_only(monkeypatch):
     assert captured["as_of"] == "20240510"
     assert captured["allow_live"] is False
     assert captured["allow_public_fallback"] is False
+    assert '"status": "passed"' in capsys.readouterr().out
+
+
+def test_cli_market_data_governance_exits_two_when_blocked(monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli_main,
+        "run_data_governance",
+        lambda **_kwargs: {"status": "blocked", "reports": []},
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        cli_main.main(["market", "data-governance", "--market", "CN"])
+
+    assert exc.value.code == 2
+    captured = capsys.readouterr()
+    assert '"status": "blocked"' in captured.out
+    assert captured.err == ""
 
 
 def test_cli_market_macro_maintain_without_input_is_fail_closed(monkeypatch, capsys):

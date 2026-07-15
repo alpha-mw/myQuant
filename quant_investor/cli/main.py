@@ -1171,7 +1171,7 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.command == "market" and args.market_command == "data-governance":
-        run_data_governance(
+        result = run_data_governance(
             market=args.market,
             categories=args.categories or ["full_a"],
             as_of=args.as_of,
@@ -1179,6 +1179,9 @@ def main(argv: list[str] | None = None) -> None:
             allow_live=args.allow_live,
             allow_public_fallback=args.allow_public_fallback,
         )
+        _print_json(result)
+        if result.get("status") == "blocked":
+            raise SystemExit(2)
         return
 
     if args.command == "market" and args.market_command == "storage-validate":

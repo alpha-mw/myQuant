@@ -24,9 +24,9 @@ def _normalize_categories(categories: Sequence[str] | str | None, category: str 
         values.extend(item.strip() for item in categories.split(",") if item.strip())
     elif categories:
         values.extend(str(item).strip() for item in categories if str(item).strip())
-    if category:
+    if category and not values:
         values.extend(item.strip() for item in str(category).split(",") if item.strip())
-    return values or ["full_a"]
+    return list(dict.fromkeys(values or ["full_a"]))
 
 
 def _read_local_frames(
@@ -129,8 +129,19 @@ def run_data_governance(
         payload["artifacts"] = artifacts
         reports.append(payload)
 
+    overall_status = (
+        "blocked"
+        if any(
+            readiness.get("status") == "block"
+            for report in reports
+            for readiness in dict(report.get("readiness", {})).values()
+            if isinstance(readiness, dict)
+        )
+        else "passed"
+    )
     return {
         "run_id": run_id,
+        "status": overall_status,
         "market": "CN",
         "categories": selected_categories,
         "as_of": as_of,
