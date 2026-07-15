@@ -21,6 +21,15 @@
    - 人工动作单独进入 `human_action` 事件；
    - 未绕过正式管线、RiskGuard、Markov/Theme gate 和冻结协议。
 
+4. **默认只建议**：A 股日度正式复盘默认 `advisory_only=true`。即使风险减仓建议和
+   fresh quote 均通过，也只能记录为 `pending_authorization` 并原样结转 ledger；只有
+   Maxwell 明确授权的 `--allow-local-manual-fills` 运行，且既有 decision log 中存在
+   同交易日、同标的、通过 `paired_advisory_event_id` 绑定的 advisory 与显式
+   `human_action`，才可写本地/manual paper fill。CLI flag 不能替代该配对证据；仍禁止
+   券商或真实下单接口。可执行配对必须使用结构化字段：advisory 的精确动作与
+   `metadata.shares`；human_action 的精确动作、`metadata.authorized=true`、
+   `approved_by=maxwell`、完全相等的 `shares`。
+
 ## 允许与禁止
 
 允许：

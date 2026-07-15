@@ -7,13 +7,14 @@ import os
 import shutil
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import pandas as pd
 
 from quant_investor.market.market_data_reader import (
     MarketDataReader,
     MarketDataUnavailableError,
+    _complete_coverage_blockers,
 )
 
 
@@ -78,6 +79,31 @@ class MarketDataStore:
             coverage = dict(raw_coverage or {}) if isinstance(raw_coverage, dict) else {}
         except Exception:
             coverage = {}
+        latest_complete_trade_date = self._normalize_trade_date(
+            gate.get("latest_complete_trade_date")
+        )
+        blockers.extend(
+            str(item)
+            for item in list(gate.get("coverage_provenance_blockers", []) or [])
+            if str(item).strip()
+        )
+        blockers.extend(
+            _complete_coverage_blockers(
+                coverage,
+                latest_complete_trade_date=latest_complete_trade_date,
+            )
+        )
+        blockers = list(dict.fromkeys(str(item) for item in blockers if str(item).strip()))
+        coverage_provenance_blockers = list(
+            dict.fromkeys(
+                str(item)
+                for item in list(
+                    gate.get("coverage_provenance_blockers", []) or []
+                )
+                if str(item).strip()
+            )
+        )
+        status = "passed" if not blockers else "failed"
         return {
             "market": self.market,
             "status": status,
@@ -93,6 +119,7 @@ class MarketDataStore:
             "coverage": coverage,
             "coverage_ratio": coverage.get("coverage_ratio"),
             "macro_generation": macro_generation,
+            "coverage_provenance_blockers": coverage_provenance_blockers,
         }
 
     def _atomic_write_parquet(self, frame: pd.DataFrame, path: Path) -> None:
@@ -294,6 +321,7 @@ class MarketDataStore:
         frame: pd.DataFrame,
         *,
         target_trade_date: str,
+        target_trade_dates: Iterable[str] | None = None,
         source: str,
         snapshot_id: str | None = None,
         metadata: Mapping[str, Any] | None = None,
@@ -303,10 +331,19 @@ class MarketDataStore:
             raise ValueError("target_trade_date is required for bars upsert")
         incoming = self._normalize_bars_frame(frame)
         incoming_dates = set(incoming["trade_date"].astype(str))
-        if incoming_dates != {target_date}:
+        declared_target_dates = {
+            self._normalize_trade_date(value)
+            for value in (target_trade_dates or [target_date])
+            if self._normalize_trade_date(value)
+        }
+        if not declared_target_dates or target_date != max(declared_target_dates):
             raise ValueError(
-                "upsert_bars only accepts rows for target_trade_date: "
-                f"{sorted(incoming_dates)} != {target_date}"
+                "target_trade_date must equal the latest declared target date"
+            )
+        if incoming_dates != declared_target_dates:
+            raise ValueError(
+                "upsert_bars incoming dates must equal declared target dates: "
+                f"{sorted(incoming_dates)} != {sorted(declared_target_dates)}"
             )
         self._validate_adj_factor(incoming)
 
@@ -314,7 +351,61 @@ class MarketDataStore:
         if not gate.get("healthy"):
             blockers = "; ".join(str(item) for item in gate.get("blockers", []) if str(item).strip())
             raise ValueError(blockers or "cannot upsert without a healthy latest Parquet snapshot")
-        snapshot = self.reader._snapshot_from_payload(self.reader._load_latest_payload(refresh=True))
+        previous_latest_payload = self.reader._load_latest_payload(refresh=True)
+        snapshot = self.reader._snapshot_from_payload(previous_latest_payload)
+        previous_coverage = previous_latest_payload.get("coverage", {})
+        if not isinstance(previous_coverage, dict):
+            previous_coverage = {}
+        previous_coverage = dict(previous_coverage)
+        previous_coverage_provenance_blockers = [
+            str(item)
+            for item in list(gate.get("coverage_provenance_blockers", []) or [])
+            if str(item).strip()
+        ]
+        try:
+            previous_snapshot_manifest = json.loads(
+                snapshot.manifest_path.read_text(encoding="utf-8")
+            )
+        except Exception:
+            previous_snapshot_manifest = {}
+        if (
+            isinstance(previous_snapshot_manifest, dict)
+            and previous_snapshot_manifest.get("historical_scope_hash_backfilled")
+            is True
+        ):
+            previous_coverage_provenance_blockers.append(
+                "coverage_scope_hash_backfilled_from_historical_target"
+            )
+        previous_coverage_provenance_blockers = list(
+            dict.fromkeys(previous_coverage_provenance_blockers)
+        )
+
+        historical_target = bool(
+            snapshot.latest_complete_trade_date
+            and target_date < snapshot.latest_complete_trade_date
+        )
+        if historical_target:
+            latest_coverage_blockers = list(previous_coverage_provenance_blockers)
+            if previous_coverage.get("complete") is not True:
+                latest_coverage_blockers.append("coverage_complete_claim_missing")
+            latest_coverage_blockers.extend(
+                _complete_coverage_blockers(
+                    previous_coverage,
+                    latest_complete_trade_date=snapshot.latest_complete_trade_date,
+                )
+            )
+            latest_coverage_blockers = list(
+                dict.fromkeys(
+                    str(item)
+                    for item in latest_coverage_blockers
+                    if str(item).strip()
+                )
+            )
+            if latest_coverage_blockers:
+                raise ValueError(
+                    "historical_upsert_requires_verified_latest_coverage:"
+                    + ",".join(latest_coverage_blockers)
+                )
 
         resolved_snapshot_id = snapshot_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         staging_base = self.data_root / "parquet_staging" / self.market.lower() / resolved_snapshot_id
@@ -368,6 +459,28 @@ class MarketDataStore:
                     "row_count": int(len(full_frame)),
                     "symbol_count": int(full_frame["ts_code"].nunique()) if "ts_code" in full_frame.columns else 0,
                 }
+            else:
+                coverage = dict(coverage)
+            coverage.setdefault("coverage_trade_date", target_date)
+            incoming_target_coverage = dict(coverage)
+            historical_coverage_preserved = False
+            previous_coverage_date = self._normalize_trade_date(
+                previous_coverage.get("coverage_trade_date")
+                or previous_coverage.get("latest_complete_trade_date")
+                or snapshot.latest_complete_trade_date
+            )
+            incoming_coverage_date = self._normalize_trade_date(
+                coverage.get("coverage_trade_date") or target_date
+            )
+            if (
+                previous_coverage
+                and not previous_coverage_provenance_blockers
+                and previous_coverage_date
+                and incoming_coverage_date
+                and incoming_coverage_date < previous_coverage_date
+            ):
+                coverage = previous_coverage
+                historical_coverage_preserved = True
             manifest = {
                 "snapshot_id": resolved_snapshot_id,
                 "market": self.market,
@@ -385,11 +498,19 @@ class MarketDataStore:
                 "parquet_size_bytes": int(parquet_size),
                 "quarantined_tail_dates": list((metadata or {}).get("quarantined_tail_dates") or []),
                 "coverage": coverage,
+                "historical_upsert_coverage_preserved": historical_coverage_preserved,
+                "historical_upsert_target_coverage": (
+                    incoming_target_coverage if historical_coverage_preserved else {}
+                ),
+                "previous_coverage_provenance_blockers": (
+                    previous_coverage_provenance_blockers
+                ),
                 "blockers": list((metadata or {}).get("blockers") or []),
                 "metadata": {
                     **dict(metadata or {}),
                     "previous_snapshot_id": snapshot.snapshot_id,
                     "upsert_target_trade_date": target_date,
+                    "upsert_target_trade_dates": sorted(declared_target_dates),
                     "upsert_affected_symbols": sorted(set(incoming["ts_code"].astype(str))),
                 },
             }
@@ -412,12 +533,45 @@ class MarketDataStore:
             self._copytree_hardlink_or_copy(staged_table, snapshot_payload_dir / "table" / "bars")
             self._copytree_hardlink_or_copy(staged_serving, snapshot_payload_dir / "serving" / "bars")
             self._atomic_write_json(manifest, snapshot_manifest_path)
+
+            def _write_pointer_and_validate() -> None:
+                pointer_written = False
+                try:
+                    self._atomic_write_json(
+                        latest_payload,
+                        self.reader.latest_pointer_path,
+                    )
+                    pointer_written = True
+                    self.reader._latest_payload = None
+                    self.reader._snapshot_gate_cache = None
+                    self.reader._serving_symbols_cache = None
+                    validation = self.validate_latest()
+                    if validation.get("status") != "passed":
+                        raise ValueError(
+                            "post_commit_storage_validation_failed:"
+                            + ",".join(
+                                str(item)
+                                for item in list(validation.get("blockers", []) or [])
+                                if str(item).strip()
+                            )
+                        )
+                except Exception:
+                    if pointer_written:
+                        self._atomic_write_json(
+                            dict(previous_latest_payload),
+                            self.reader.latest_pointer_path,
+                        )
+                    self.reader._latest_payload = None
+                    self.reader._snapshot_gate_cache = None
+                    self.reader._serving_symbols_cache = None
+                    raise
+
             self._replace_directories(
                 [
                     (staged_table, snapshot.table_root),
                     (staged_serving, snapshot.serving_root),
                 ],
-                after_replace=lambda: self._atomic_write_json(latest_payload, self.reader.latest_pointer_path),
+                after_replace=_write_pointer_and_validate,
             )
             self.reader._latest_payload = None
             self.reader._snapshot_gate_cache = None

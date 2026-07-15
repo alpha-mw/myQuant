@@ -23,6 +23,42 @@ from quant_investor.market.pit_universe import (
 )
 
 
+def _remove_module_for_reload(monkeypatch, module_name: str) -> None:
+    """Remove a module while restoring both import caches after the test."""
+    parent_name, _, attribute_name = module_name.rpartition(".")
+    parent = sys.modules.get(parent_name)
+    if parent is not None:
+        if hasattr(parent, attribute_name):
+            monkeypatch.setattr(parent, attribute_name, getattr(parent, attribute_name))
+        else:
+            monkeypatch.setattr(parent, attribute_name, None, raising=False)
+    if module_name not in sys.modules:
+        monkeypatch.setitem(sys.modules, module_name, None)
+    monkeypatch.delitem(sys.modules, module_name)
+
+
+def test_remove_module_for_reload_restores_initially_absent_import_caches(
+    monkeypatch,
+) -> None:
+    parent_name = "_myquant_reload_probe"
+    module_name = f"{parent_name}.child"
+    parent = types.ModuleType(parent_name)
+    sys.modules[parent_name] = parent
+    try:
+        _remove_module_for_reload(monkeypatch, module_name)
+        reloaded = types.ModuleType(module_name)
+        sys.modules[module_name] = reloaded
+        parent.child = reloaded
+
+        monkeypatch.undo()
+
+        assert module_name not in sys.modules
+        assert not hasattr(parent, "child")
+    finally:
+        sys.modules.pop(module_name, None)
+        sys.modules.pop(parent_name, None)
+
+
 def _load_module(
     monkeypatch,
     *,
@@ -44,7 +80,7 @@ def _load_module(
         "quant_investor.market.config",
         "quant_investor.fetch_cn_index_components",
     ]:
-        sys.modules.pop(module_name, None)
+        _remove_module_for_reload(monkeypatch, module_name)
     module_name = "quant_investor.market.download_cn"
     module = importlib.import_module(module_name)
     monkeypatch.setattr(module, "TUSHARE_TOKEN", "dummy-token")
@@ -905,6 +941,138 @@ def test_build_completeness_report_records_suspend_probe_exception(
     assert issue["message"] == "suspend probe failed"
 
 
+def test_suspend_cache_v2_is_requeried_and_rewritten_with_bound_evidence(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_module(monkeypatch, freshness_mode="strict")
+
+    class _SuspendPro(FakePro):
+        def __init__(self):
+            super().__init__()
+            self.suspend_calls: list[dict[str, str]] = []
+
+        def suspend_d(self, **kwargs):
+            self.suspend_calls.append(dict(kwargs))
+            return pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000002.SZ",
+                        "trade_date": "20260316",
+                        "suspend_type": "S",
+                    }
+                ]
+            )
+
+    fake_pro = _SuspendPro()
+    monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
+    downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
+    cache_path = downloader._suspend_cache_path("20260316")
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "trade_date": "20260316",
+                "symbols": ["999999.SZ"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    symbols = downloader._load_latest_suspended_symbols("20260316")
+
+    assert symbols == {"000002.SZ"}
+    assert fake_pro.suspend_calls == [{"trade_date": "20260316"}]
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    declared_sha256 = payload.pop("payload_sha256")
+    computed_sha256 = module.canonical_json_sha256(payload)
+    assert payload["version"] == 5
+    assert payload["query_succeeded"] is True
+    assert payload["source"] == "tushare.suspend_d"
+    assert payload["query_variant"] == "trade_date"
+    assert payload["query_params"] == {"trade_date": "20260316"}
+    assert payload["continuation_state_complete"] is False
+    assert payload["exact_date_rows_validated"] is True
+    assert payload["raw_row_count"] == 1
+    assert payload["matched_row_count"] == 1
+    assert payload["exact_event_records"] == [
+        {
+            "ts_code": "000002.SZ",
+            "trade_date": "20260316",
+            "suspend_type": "S",
+        }
+    ]
+    assert payload["resume_symbols"] == []
+    assert payload["other_event_symbols"] == []
+    assert payload["query_run_id"]
+    assert declared_sha256 == computed_sha256
+
+    downloader._load_latest_suspended_symbols(
+        "20260316",
+        force_refresh=True,
+        query_run_id="shared-history-audit-run",
+    )
+    refreshed = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert fake_pro.suspend_calls == [
+        {"trade_date": "20260316"},
+        {"trade_date": "20260316"},
+    ]
+    assert refreshed["query_run_id"] == "shared-history-audit-run"
+
+
+def test_suspend_cache_v5_preserves_resume_and_other_exact_events(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_module(monkeypatch, freshness_mode="strict")
+
+    class _SuspendPro(FakePro):
+        def suspend_d(self, **_kwargs):
+            return pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000001.SZ",
+                        "trade_date": "20260316",
+                        "suspend_type": "S",
+                    },
+                    {
+                        "ts_code": "000002.SZ",
+                        "trade_date": "20260316",
+                        "suspend_type": "R",
+                    },
+                    {
+                        "ts_code": "000003.SZ",
+                        "trade_date": "20260316",
+                        "suspend_type": "X",
+                    },
+                ]
+            )
+
+    fake_pro = _SuspendPro()
+    monkeypatch.setattr(
+        module,
+        "create_tushare_pro",
+        lambda *_args, **_kwargs: fake_pro,
+    )
+    downloader = module.CNFullMarketDownloader(
+        data_dir=str(tmp_path),
+        years=3,
+    )
+
+    assert downloader._load_latest_suspended_symbols("20260316") == {
+        "000001.SZ"
+    }
+    payload = json.loads(
+        downloader._suspend_cache_path("20260316").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert payload["resume_symbols"] == ["000002.SZ"]
+    assert payload["other_event_symbols"] == ["000003.SZ"]
+    assert payload["exact_event_row_count"] == 3
+
+
 def test_load_active_listing_dates_uses_pit_universe_when_enabled(
     monkeypatch,
     tmp_path,
@@ -1633,7 +1801,7 @@ def test_invalid_cn_freshness_env_values_fall_back_to_defaults(monkeypatch, tmp_
         "quant_investor.market.config",
         "quant_investor.fetch_cn_index_components",
     ]:
-        sys.modules.pop(module_name, None)
+        _remove_module_for_reload(monkeypatch, module_name)
 
     download_module = importlib.import_module("quant_investor.market.download_cn")
     monkeypatch.setattr(download_module, "TUSHARE_TOKEN", "dummy-token")
@@ -1655,7 +1823,7 @@ def test_cn_market_data_dir_env_is_used(monkeypatch, tmp_path):
         "quant_investor.market.download_cn",
         "quant_investor.fetch_cn_index_components",
     ]:
-        sys.modules.pop(module_name, None)
+        _remove_module_for_reload(monkeypatch, module_name)
 
     fake_tushare = types.SimpleNamespace(pro_api=lambda token: object())
     monkeypatch.setitem(sys.modules, "tushare", fake_tushare)
@@ -1668,7 +1836,7 @@ def test_cn_market_data_dir_env_is_used(monkeypatch, tmp_path):
     downloader = download_module.CNFullMarketDownloader(years=3)
     assert downloader.data_dir == str(env_data_dir)
 
-    sys.modules.pop("quant_investor.fetch_cn_index_components", None)
+    _remove_module_for_reload(monkeypatch, "quant_investor.fetch_cn_index_components")
     components_module = importlib.import_module("quant_investor.fetch_cn_index_components")
     captured: dict[str, str] = {}
 

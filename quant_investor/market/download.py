@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,10 +13,23 @@ from typing import Any
 import pandas as pd
 
 from quant_investor.config import config
+from quant_investor.market.cn_nontrading_evidence import (
+    build_bak_daily_nontrading_evidence,
+    evidence_cache_path,
+    file_sha256,
+    read_evidence_cache,
+    write_evidence_cache,
+)
 from quant_investor.market.config import get_market_settings, normalize_categories
 from quant_investor.market.download_cn import CNFullMarketDownloader
 from quant_investor.market.download_us import FullMarketDownloader as USFullMarketDownloader
 from quant_investor.market.market_data_store import MarketDataStore
+from quant_investor.market.pit_universe import (
+    PITUniverseStore,
+    REASON_DELISTED,
+    REASON_PRE_LISTING,
+    evaluate_listing_status,
+)
 from quant_investor.market.tushare_data_cleaning import CLEANING_STATUS_FAIL, clean_tushare_dataframe
 
 
@@ -265,12 +279,66 @@ class CNParquetBatchMaintainer:
             for symbol in components.get(category, []) or []
             if str(symbol or "").strip()
         }
+        expected_scope_sha256 = hashlib.sha256(
+            "\n".join(sorted(target_symbols)).encode("utf-8")
+        ).hexdigest()
         daily_symbols = set(daily_df["ts_code"].astype(str)) if not daily_df.empty else set()
         allowed = self.downloader._normalize_allowed_symbols(allowed_stale_symbols)
         suspended_symbols = self.downloader._load_latest_suspended_symbols(target_trade_date)
         inactive_symbols = self._load_inactive_symbols(target_trade_date, target_symbols)
-        non_blocking_absent = (allowed | suspended_symbols | inactive_symbols) & target_symbols
-        missing_daily = sorted(target_symbols - daily_symbols - non_blocking_absent)
+        pit_binding = self._load_pit_membership_binding()
+        pit_records = pit_binding.get("records", {})
+        if isinstance(pit_records, dict):
+            for symbol in target_symbols:
+                status = evaluate_listing_status(
+                    pit_records.get(symbol),
+                    symbol=symbol,
+                    as_of=target_trade_date,
+                )
+                if status.reason in {REASON_PRE_LISTING, REASON_DELISTED}:
+                    inactive_symbols.add(symbol)
+        scope_suspended_symbols = suspended_symbols & target_symbols
+        scope_inactive_symbols = inactive_symbols & target_symbols
+        scope_allowed_symbols = allowed & target_symbols
+        observed_target_symbols = daily_symbols & target_symbols
+        inactive_absent = scope_inactive_symbols - daily_symbols
+        suspended_absent = (
+            scope_suspended_symbols - daily_symbols - inactive_absent
+        )
+        primary_missing_after_status = (
+            target_symbols
+            - observed_target_symbols
+            - inactive_absent
+            - suspended_absent
+        )
+        nontrading_evidence = self._load_verified_nontrading_bak_daily_zero(
+            target_trade_date,
+            primary_missing_after_status,
+            pit_binding=pit_binding,
+        )
+        verified_nontrading_evidence_symbols = {
+            str(symbol).strip().upper()
+            for symbol in list(nontrading_evidence.get("verified_symbols", []) or [])
+            if str(symbol).strip()
+        }
+        verified_nontrading_absent = (
+            verified_nontrading_evidence_symbols
+            & primary_missing_after_status
+        )
+        allowed_absent = (
+            scope_allowed_symbols
+            - daily_symbols
+            - inactive_absent
+            - suspended_absent
+            - verified_nontrading_absent
+        )
+        non_blocking_absent = (
+            suspended_absent
+            | inactive_absent
+            | verified_nontrading_absent
+        )
+        true_missing_symbols = target_symbols - observed_target_symbols - non_blocking_absent
+        missing_daily = sorted(true_missing_symbols)
         bars_frame = self._build_bars_frame(daily_df, adj_df, daily_basic_df)
         valid_adj_symbols: set[str] = set()
         if not bars_frame.empty and "adj_factor" in bars_frame.columns:
@@ -299,8 +367,10 @@ class CNParquetBatchMaintainer:
             blockers.append("adj_factor_missing")
         if adj_error:
             blockers.append(f"adj_factor_endpoint_error:{adj_error}")
+        if scope_allowed_symbols:
+            blockers.append("unverified_allowed_stale_symbols_not_permitted")
         expected_count = len(target_symbols)
-        coverage_complete_count = len((daily_symbols & target_symbols) | non_blocking_absent)
+        coverage_complete_count = len(observed_target_symbols | non_blocking_absent)
         coverage_ratio = coverage_complete_count / expected_count if expected_count else 1.0
         complete = not blockers
         existing_latest_available = ""
@@ -333,8 +403,13 @@ class CNParquetBatchMaintainer:
             coverage_ratio=coverage_ratio,
             missing_daily=missing_daily,
             missing_adj=missing_adj,
-            suspended_symbols=sorted(non_blocking_absent),
-            inactive_symbols=sorted(inactive_symbols & target_symbols),
+            suspended_symbols=sorted(suspended_absent),
+            inactive_symbols=sorted(inactive_absent),
+            verified_nontrading_symbols=sorted(verified_nontrading_absent),
+            verified_nontrading_evidence=nontrading_evidence,
+            requested_allowed_stale_symbols=sorted(scope_allowed_symbols),
+            requested_allowed_absent_symbols=sorted(allowed_absent),
+            non_blocking_absent_symbols=sorted(non_blocking_absent),
             blockers=blockers,
             early_stop_reason=early_stop_reason,
         )
@@ -361,16 +436,44 @@ class CNParquetBatchMaintainer:
                     "latest_available_trade_date": commit_latest_available,
                     "latest_complete_trade_date": commit_latest_complete,
                     "coverage": {
+                        "coverage_schema_version": "cn-full-a-coverage.v3",
                         "complete": True,
                         "coverage_ratio": coverage_ratio,
                         "coverage_complete_count": coverage_complete_count,
                         "expected_scope_count": expected_count,
+                        "observed_bar_count": len(observed_target_symbols),
                         "blocking_incomplete_count": 0,
                         "categories_checked": list(target_categories),
                         "latest_available_trade_date": commit_latest_available,
                         "latest_complete_trade_date": commit_latest_complete,
                         "upsert_target_trade_date": target_trade_date,
-                        "inactive_symbols": sorted(inactive_symbols & target_symbols),
+                        "coverage_trade_date": target_trade_date,
+                        "expected_scope_sha256": expected_scope_sha256,
+                        "suspended_symbols": sorted(suspended_absent),
+                        "inactive_symbols": sorted(inactive_absent),
+                        "verified_nontrading_bak_daily_zero_symbols": sorted(
+                            verified_nontrading_absent
+                        ),
+                        "allowed_stale_symbols": [],
+                        "requested_allowed_stale_symbols": sorted(scope_allowed_symbols),
+                        "requested_allowed_absent_symbols": sorted(allowed_absent),
+                        "non_blocking_absent_symbols": sorted(non_blocking_absent),
+                        "true_missing_symbols": [],
+                        "classification_sets_disjoint": True,
+                        "suspended_evidence_symbols": sorted(scope_suspended_symbols),
+                        "inactive_evidence_symbols": sorted(scope_inactive_symbols),
+                        "verified_nontrading_evidence_path": str(
+                            nontrading_evidence.get("evidence_path") or ""
+                        ),
+                        "verified_nontrading_evidence_sha256": str(
+                            nontrading_evidence.get("evidence_sha256") or ""
+                        ),
+                        "pit_membership_path": str(
+                            pit_binding.get("path") or ""
+                        ),
+                        "pit_membership_sha256": str(
+                            pit_binding.get("sha256") or ""
+                        ),
                         "daily_basic_coverage": daily_basic_coverage,
                         "adj_factor_coverage": adj_factor_coverage,
                     },
@@ -390,15 +493,41 @@ class CNParquetBatchMaintainer:
                 "latest_trade_date": latest_complete,
                 "quarantined_tail_dates": [target_trade_date] if target_trade_date and target_trade_date != latest_complete else [],
                 "coverage": {
+                    "coverage_schema_version": "cn-full-a-coverage.v3",
                     "complete": False,
                     "coverage_ratio": coverage_ratio,
                     "coverage_complete_count": coverage_complete_count,
                     "expected_scope_count": expected_count,
+                    "observed_bar_count": len(observed_target_symbols),
                     "blocking_incomplete_count": len(missing_daily) + len(missing_adj),
                     "categories_checked": list(target_categories),
                     "latest_available_trade_date": target_trade_date,
                     "latest_complete_trade_date": latest_complete,
-                    "inactive_symbols": sorted(inactive_symbols & target_symbols),
+                    "coverage_trade_date": target_trade_date,
+                    "expected_scope_sha256": expected_scope_sha256,
+                    "suspended_symbols": sorted(suspended_absent),
+                    "inactive_symbols": sorted(inactive_absent),
+                    "verified_nontrading_bak_daily_zero_symbols": sorted(
+                        verified_nontrading_absent
+                    ),
+                    "allowed_stale_symbols": [],
+                    "requested_allowed_stale_symbols": sorted(scope_allowed_symbols),
+                    "requested_allowed_absent_symbols": sorted(allowed_absent),
+                    "non_blocking_absent_symbols": sorted(non_blocking_absent),
+                    "true_missing_symbols": sorted(true_missing_symbols),
+                    "classification_sets_disjoint": True,
+                    "suspended_evidence_symbols": sorted(scope_suspended_symbols),
+                    "inactive_evidence_symbols": sorted(scope_inactive_symbols),
+                    "verified_nontrading_evidence_path": str(
+                        nontrading_evidence.get("evidence_path") or ""
+                    ),
+                    "verified_nontrading_evidence_sha256": str(
+                        nontrading_evidence.get("evidence_sha256") or ""
+                    ),
+                    "pit_membership_path": str(pit_binding.get("path") or ""),
+                    "pit_membership_sha256": str(
+                        pit_binding.get("sha256") or ""
+                    ),
                     "daily_basic_coverage": daily_basic_coverage,
                     "adj_factor_coverage": adj_factor_coverage,
                 },
@@ -497,13 +626,148 @@ class CNParquetBatchMaintainer:
                 delist_dates = work["delist_date"].map(_compact_trade_date)
                 delisted_by_target = delist_dates.ne("") & delist_dates.le(target_date)
                 inactive.update(work.loc[delisted_by_target, "ts_code"].astype(str))
-                if list_status == "D":
-                    inactive.update(work.loc[delist_dates.eq(""), "ts_code"].astype(str))
-            elif list_status == "D":
-                inactive.update(work["ts_code"].astype(str))
-            if list_status == "P":
-                inactive.update(work["ts_code"].astype(str))
         return inactive & target_symbols
+
+    def _load_pit_membership_binding(self) -> dict[str, Any]:
+        local_root = self.store.data_root / "parquet" / "cn" / "reference"
+        configured_root = Path(
+            getattr(config, "PIT_UNIVERSE_SOURCE_ROOT", local_root)
+        )
+        root = local_root if (local_root / "stock_basic_membership.parquet").exists() else configured_root
+        store = PITUniverseStore(
+            root_dir=root,
+            raw_root=self.store.data_root / "cn_universe" / "raw",
+            compatibility_path=(
+                self.store.data_root
+                / "cn_universe"
+                / "stock_basic_membership_latest.json"
+            ),
+        )
+        path = store.canonical_path
+        if not path.exists():
+            return {
+                "path": str(path),
+                "sha256": "",
+                "records": {},
+                "blockers": ["pit_membership_missing"],
+            }
+        try:
+            records = store.records_by_symbol()
+            digest = file_sha256(path)
+        except Exception as exc:
+            return {
+                "path": str(path),
+                "sha256": "",
+                "records": {},
+                "blockers": [f"pit_membership_unreadable:{exc}"],
+            }
+        return {
+            "path": str(path),
+            "sha256": digest,
+            "records": records,
+            "blockers": [],
+        }
+
+    def _load_verified_nontrading_bak_daily_zero(
+        self,
+        target_trade_date: str,
+        primary_missing_symbols: set[str],
+        *,
+        pit_binding: dict[str, Any],
+    ) -> dict[str, Any]:
+        candidates = sorted(primary_missing_symbols)
+        if not candidates:
+            return {
+                "status": "not_needed",
+                "verified_symbols": [],
+                "evidence_path": "",
+                "evidence_sha256": "",
+                "blockers": [],
+            }
+        pit_sha256 = str(pit_binding.get("sha256") or "")
+        pit_path = str(pit_binding.get("path") or "")
+        pit_records = pit_binding.get("records", {})
+        if not pit_sha256 or not isinstance(pit_records, dict):
+            return {
+                "status": "blocked",
+                "verified_symbols": [],
+                "evidence_path": "",
+                "evidence_sha256": "",
+                "blockers": list(pit_binding.get("blockers") or ["pit_membership_unavailable"]),
+            }
+        pit_active_candidates = []
+        for symbol in candidates:
+            status = evaluate_listing_status(
+                pit_records.get(symbol),
+                symbol=symbol,
+                as_of=target_trade_date,
+            )
+            if status.in_universe and status.research_eligible and status.tradable:
+                pit_active_candidates.append(symbol)
+        if not pit_active_candidates:
+            return {
+                "status": "blocked",
+                "verified_symbols": [],
+                "evidence_path": "",
+                "evidence_sha256": "",
+                "blockers": ["no_pit_active_primary_missing_symbols"],
+            }
+
+        cache_path = evidence_cache_path(
+            self.data_dir,
+            trade_date=target_trade_date,
+            primary_missing_symbols=pit_active_candidates,
+        )
+        cached, cache_blockers = read_evidence_cache(
+            cache_path,
+            trade_date=target_trade_date,
+            primary_missing_symbols=pit_active_candidates,
+            pit_membership_sha256=pit_sha256,
+        )
+        if not cache_blockers:
+            cached["status"] = "cache_hit"
+            cached["evidence_path"] = str(cache_path)
+            cached["evidence_sha256"] = file_sha256(cache_path)
+            cached["blockers"] = []
+            return cached
+
+        provider = getattr(self.downloader, "pro", None)
+        endpoint = getattr(provider, "bak_daily", None) if provider is not None else None
+        if endpoint is None:
+            return {
+                "status": "blocked",
+                "verified_symbols": [],
+                "evidence_path": str(cache_path),
+                "evidence_sha256": "",
+                "blockers": ["bak_daily_provider_unavailable"],
+            }
+        query_params = {"trade_date": target_trade_date}
+        try:
+            frame = endpoint(**query_params)
+        except Exception as exc:
+            return {
+                "status": "blocked",
+                "verified_symbols": [],
+                "evidence_path": str(cache_path),
+                "evidence_sha256": "",
+                "blockers": [f"bak_daily_query_failed:{exc}"],
+            }
+        if frame is None or not isinstance(frame, pd.DataFrame):
+            frame = pd.DataFrame()
+        payload = build_bak_daily_nontrading_evidence(
+            frame,
+            trade_date=target_trade_date,
+            primary_missing_symbols=pit_active_candidates,
+            query_params=query_params,
+            pit_membership_path=pit_path,
+            pit_membership_sha256=pit_sha256,
+        )
+        write_evidence_cache(cache_path, payload)
+        payload["status"] = "queried"
+        payload["evidence_path"] = str(cache_path)
+        payload["evidence_sha256"] = file_sha256(cache_path)
+        payload["blockers"] = []
+        return payload
 
     @staticmethod
     def _build_bars_frame(daily_df: pd.DataFrame, adj_df: pd.DataFrame, daily_basic_df: pd.DataFrame) -> pd.DataFrame:
@@ -541,17 +805,27 @@ class CNParquetBatchMaintainer:
         missing_adj: list[str],
         suspended_symbols: list[str],
         inactive_symbols: list[str],
+        verified_nontrading_symbols: list[str],
+        verified_nontrading_evidence: dict[str, Any],
+        requested_allowed_stale_symbols: list[str],
+        requested_allowed_absent_symbols: list[str],
+        non_blocking_absent_symbols: list[str],
         blockers: list[str],
         early_stop_reason: str,
     ) -> dict[str, Any]:
         blocking_symbols = sorted(set(missing_daily) | set(missing_adj))
+        observed_count = max(
+            coverage_complete_count - len(non_blocking_absent_symbols),
+            0,
+        )
         categories = {
             category: {
                 "expected": expected_count,
                 "latest_trade_date": target_trade_date,
                 "date_counts": {target_trade_date: coverage_complete_count},
                 "status_counts": {
-                    "up_to_date": coverage_complete_count,
+                    "up_to_date": observed_count,
+                    "non_trading_or_allowed": len(non_blocking_absent_symbols),
                     "missing": len(missing_daily),
                     "adj_factor_missing": len(missing_adj),
                 },
@@ -559,6 +833,17 @@ class CNParquetBatchMaintainer:
                 "stale_symbols": [],
                 "suspended_stale_symbols": [{"symbol": symbol, "latest_local_date": ""} for symbol in suspended_symbols],
                 "inactive_symbols": list(inactive_symbols),
+                "verified_nontrading_bak_daily_zero_symbols": list(
+                    verified_nontrading_symbols
+                ),
+                "allowed_stale_symbols": [],
+                "requested_allowed_stale_symbols": list(
+                    requested_allowed_stale_symbols
+                ),
+                "requested_allowed_absent_symbols": list(
+                    requested_allowed_absent_symbols
+                ),
+                "non_blocking_absent_symbols": list(non_blocking_absent_symbols),
                 "unreadable_symbols": [],
                 "blocking_missing_symbols": blocking_symbols,
                 "blocking_stale_symbols": [],
@@ -584,6 +869,27 @@ class CNParquetBatchMaintainer:
             "coverage_ratio": coverage_ratio,
             "coverage_complete_count": coverage_complete_count,
             "expected_scope_count": expected_count,
+            "observed_bar_count": observed_count,
+            "suspended_absent_symbols": list(suspended_symbols),
+            "inactive_absent_symbols": list(inactive_symbols),
+            "verified_nontrading_bak_daily_zero_symbols": list(
+                verified_nontrading_symbols
+            ),
+            "verified_nontrading_evidence_path": str(
+                verified_nontrading_evidence.get("evidence_path") or ""
+            ),
+            "verified_nontrading_evidence_sha256": str(
+                verified_nontrading_evidence.get("evidence_sha256") or ""
+            ),
+            "allowed_stale_symbols": [],
+            "requested_allowed_stale_symbols": list(
+                requested_allowed_stale_symbols
+            ),
+            "requested_allowed_absent_symbols": list(
+                requested_allowed_absent_symbols
+            ),
+            "non_blocking_absent_symbols": list(non_blocking_absent_symbols),
+            "true_missing_symbols": list(missing_daily),
             "coverage_threshold": self.downloader.coverage_threshold,
             "early_stop_reason": early_stop_reason,
             "blockers": blockers,
