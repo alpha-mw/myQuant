@@ -5,8 +5,10 @@ from types import SimpleNamespace
 import pytest
 
 from quant_investor.agent_protocol import (
+    ActionLabel,
     AgentStatus,
     BranchVerdict,
+    Direction,
     GlobalContext,
     SymbolResearchPacket,
 )
@@ -14,6 +16,7 @@ from quant_investor.bayesian.types import LikelihoodSet, PosteriorResult, PriorS
 from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
 from quant_investor.branch_contracts import BranchResult
 from quant_investor.market.dag.decision import _run_bayesian_selection_phase
+from quant_investor.market.dag import decision as decision_module
 from quant_investor.market.dag.theme_context import extract_symbol_theme_metadata
 
 
@@ -60,6 +63,62 @@ def test_extract_symbol_theme_metadata_success_from_theme_rotation():
     assert metadata["theme_score"] == pytest.approx(72.5)
     assert metadata["theme_confidence"] == pytest.approx(0.66)
     assert metadata["theme_member_count"] == 18
+
+
+def test_counterfactual_control_inputs_rebuild_only_fundamental_in_v14() -> None:
+    actual_fundamental = BranchVerdict(
+        agent_name="fundamental",
+        symbol="000001.SZ",
+        final_score=0.40,
+        final_confidence=0.95,
+        thesis="actual dossier thesis",
+        direction=Direction.BULLISH,
+        action=ActionLabel.BUY,
+        metadata={
+            "fundamental_research_runtime": {"applied": True},
+            "overlay": {"model": "actual-review"},
+            "fundamental_deterministic_control_input": {
+                "thesis": "deterministic thesis",
+                "status": "SUCCESS",
+                "confidence_label": "medium",
+                "final_score": 0.10,
+                "final_confidence": 0.60,
+                "investment_risks": ["deterministic risk"],
+                "coverage_notes": ["deterministic coverage"],
+                "diagnostic_notes": [],
+            },
+        },
+    )
+    research = {
+        "000001.SZ": {
+            "quant": BranchVerdict(agent_name="quant", final_score=0.10),
+            "fundamental": actual_fundamental,
+            "macro": BranchVerdict(agent_name="macro", final_score=0.0),
+        }
+    }
+
+    rebuilt, summaries = decision_module._build_counterfactual_control_inputs(
+        research_by_symbol=research,
+        counterfactual_by_symbol={
+            "000001.SZ": {
+                "basis": "without_dossier",
+                "fundamental_score": -0.40,
+            }
+        },
+    )
+
+    alternative = rebuilt["000001.SZ"]["fundamental"]
+    assert tuple(rebuilt["000001.SZ"]) == CANONICAL_BRANCH_ORDER
+    assert alternative is not actual_fundamental
+    assert alternative.final_score == pytest.approx(-0.40)
+    assert alternative.direction == Direction.BEARISH
+    assert alternative.action == ActionLabel.SELL
+    assert alternative.thesis == "deterministic thesis"
+    assert alternative.final_confidence == pytest.approx(0.60)
+    assert "overlay" not in alternative.metadata
+    assert "fundamental_research_runtime" not in alternative.metadata
+    assert summaries["fundamental"].final_score == pytest.approx(-0.40)
+    assert actual_fundamental.final_score == pytest.approx(0.40)
 
 
 def test_extract_symbol_theme_metadata_disabled():

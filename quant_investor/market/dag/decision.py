@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from copy import copy
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Mapping
 
 from quant_investor.agent_protocol import (
+    ActionLabel,
     AgentStatus,
     BayesianDecisionRecord,
+    ConfidenceLabel,
+    Direction,
     ICDecision,
     PortfolioDecision,
     RiskDecision,
@@ -16,6 +20,7 @@ from quant_investor.branch_contracts import BranchResult
 from quant_investor.config import config
 from quant_investor.governance import replay_v13_1
 from quant_investor.market.dag.common import _dedupe_texts
+from quant_investor.market.dag.assembly import _aggregate_branch_summaries
 from quant_investor.market.dag.evidence import _build_master_evidence_pack
 from quant_investor.market.dag.shortlist import _build_shortlist_from_bayesian_records
 from quant_investor.market.dag.theme_context import (
@@ -39,6 +44,9 @@ class BayesianSelectionState:
     portfolio_master_output: Any | None
     portfolio_master_meta: dict[str, Any]
     portfolio_master_reliability: float
+    counterfactual_shortlist: list[Any]
+    counterfactual_by_symbol: dict[str, dict[str, Any]]
+    counterfactual_bayesian_records: list[BayesianDecisionRecord]
 
 
 @dataclass
@@ -116,7 +124,7 @@ def _post_control_theme_reconciliation(
             "formal_symbols": [],
             "blockers": activation_blockers,
         }
-        persistence_status = {
+        blocked_persistence_status = {
             "status": (
                 "disabled"
                 if "formal_reconciliation_persistence_disabled"
@@ -127,11 +135,11 @@ def _post_control_theme_reconciliation(
             "readback_verified": False,
         }
         rotation["formal_reconciliation"] = artifact
-        rotation["formal_reconciliation_persistence"] = persistence_status
+        rotation["formal_reconciliation_persistence"] = blocked_persistence_status
         if isinstance(metadata, dict):
             metadata["theme_formal_reconciliation"] = artifact
             metadata["theme_formal_reconciliation_persistence"] = (
-                persistence_status
+                blocked_persistence_status
             )
         return artifact
 
@@ -562,6 +570,141 @@ def _require_valid_canonical_branch_results(
             )
 
 
+def _fundamental_counterfactual_score(
+    *,
+    symbol: str,
+    research_by_symbol: Mapping[str, Mapping[str, Any]],
+) -> tuple[float | None, str]:
+    fundamental = research_by_symbol.get(symbol, {}).get("fundamental")
+    metadata = dict(getattr(fundamental, "metadata", {}) or {})
+    runtime = dict(metadata.get("fundamental_research_runtime", {}) or {})
+    if runtime.get("blockers") or not runtime.get("request_id"):
+        return None, ""
+    if bool(runtime.get("counterfactual", False)):
+        return _optional_float(runtime.get("counterfactual_adjusted_score")), "with_dossier"
+    if bool(runtime.get("applied", False)):
+        return _optional_float(metadata.get("deterministic_base_score")), "without_dossier"
+    return None, ""
+
+
+def _counterfactual_branch_results(
+    *,
+    branch_results: Mapping[str, Any],
+    symbol: str,
+    fundamental_score: float,
+) -> dict[str, Any]:
+    _require_valid_canonical_branch_results(branch_results)
+    copied = dict(branch_results)
+    fundamental = branch_results["fundamental"]
+    alternate = copy(fundamental)
+    alternate.symbol_scores = dict(getattr(fundamental, "symbol_scores", {}) or {})
+    alternate.symbol_scores[symbol] = float(fundamental_score)
+    copied["fundamental"] = alternate
+    _require_valid_canonical_branch_results(copied)
+    return copied
+
+
+def _build_counterfactual_control_inputs(
+    *,
+    research_by_symbol: Mapping[str, Mapping[str, Any]],
+    counterfactual_by_symbol: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    rebuilt: dict[str, dict[str, Any]] = {}
+    for symbol, branch_map in research_by_symbol.items():
+        _require_exact_canonical_branches(
+            branch_map,
+            label=f"counterfactual research_by_symbol[{symbol!r}]",
+        )
+        alternative_map = dict(branch_map)
+        alternative = counterfactual_by_symbol.get(symbol)
+        fundamental = branch_map.get("fundamental")
+        if alternative is not None and fundamental is not None:
+            score = float(alternative["fundamental_score"])
+            variant = str(alternative["basis"])
+            actual_metadata = dict(getattr(fundamental, "metadata", {}) or {})
+            deterministic = dict(
+                actual_metadata.get("fundamental_deterministic_control_input", {}) or {}
+            )
+            direction = (
+                Direction.BULLISH
+                if score >= 0.15
+                else Direction.BEARISH if score <= -0.15 else Direction.NEUTRAL
+            )
+            action = (
+                ActionLabel.BUY
+                if score >= 0.25
+                else ActionLabel.SELL if score <= -0.35 else ActionLabel.HOLD
+            )
+            alternative_map["fundamental"] = replace(
+                fundamental,
+                thesis=str(deterministic.get("thesis") or fundamental.thesis),
+                status=AgentStatus(
+                    str(deterministic.get("status") or fundamental.status.value).lower()
+                ),
+                final_score=score,
+                final_confidence=float(
+                    deterministic.get("final_confidence", fundamental.final_confidence)
+                ),
+                direction=direction,
+                action=action,
+                confidence_label=ConfidenceLabel(
+                    str(
+                        deterministic.get("confidence_label")
+                        or fundamental.confidence_label.value
+                    )
+                ),
+                investment_risks=list(
+                    deterministic.get("investment_risks", fundamental.investment_risks)
+                    or []
+                ),
+                coverage_notes=list(
+                    deterministic.get("coverage_notes", fundamental.coverage_notes) or []
+                ),
+                diagnostic_notes=list(
+                    deterministic.get("diagnostic_notes", fundamental.diagnostic_notes)
+                    or []
+                ),
+                metadata={
+                    **{
+                        key: value
+                        for key, value in actual_metadata.items()
+                        if key not in {"overlay", "fundamental_research_runtime"}
+                    },
+                    **(
+                        {
+                            "fundamental_research_runtime": {
+                                **dict(
+                                    actual_metadata.get(
+                                        "fundamental_research_runtime", {}
+                                    )
+                                    or {}
+                                ),
+                                "effective_mode": "counterfactual_replay",
+                                "applied": True,
+                                "counterfactual": False,
+                                "measurement_only": True,
+                            }
+                        }
+                        if variant == "with_dossier"
+                        else {}
+                    ),
+                    "fundamental_research_variant": variant,
+                    "fundamental_research_counterfactual_replay": True,
+                },
+            )
+        _require_exact_canonical_branches(
+            alternative_map,
+            label=f"rebuilt counterfactual research_by_symbol[{symbol!r}]",
+        )
+        rebuilt[symbol] = alternative_map
+    summaries = _aggregate_branch_summaries(rebuilt)
+    _require_exact_canonical_branches(
+        summaries,
+        label="counterfactual branch_summaries",
+    )
+    return rebuilt, summaries
+
+
 def _run_bayesian_selection_phase(
     *,
     candidate_symbols: list[str],
@@ -613,6 +756,8 @@ def _run_bayesian_selection_phase(
     posterior_engine = posterior_engine_cls()
     markov_regime_metadata = _compact_markov_regime_metadata(global_context)
     bayesian_records: list[BayesianDecisionRecord] = []
+    counterfactual_bayesian_records: list[BayesianDecisionRecord] = []
+    counterfactual_by_symbol: dict[str, dict[str, Any]] = {}
     degraded_map = _likelihood_branch_degraded_map(
         branch_summaries=branch_summaries,
         branch_results=branch_results,
@@ -632,6 +777,73 @@ def _run_bayesian_selection_phase(
             regime=global_context.macro_regime or "未知",
             is_degraded=degraded_map,
         )
+        counterfactual_score, counterfactual_basis = _fundamental_counterfactual_score(
+            symbol=symbol,
+            research_by_symbol=research_by_symbol,
+        )
+        if counterfactual_score is not None:
+            counterfactual_likelihoods = likelihood_mapper.compute_likelihoods(
+                branch_results=_counterfactual_branch_results(
+                    branch_results=branch_results,
+                    symbol=symbol,
+                    fundamental_score=counterfactual_score,
+                ),
+                symbol=symbol,
+                candidate_symbols=set(candidate_symbols),
+            )
+            counterfactual_posterior = posterior_engine.compute_posterior(
+                prior,
+                counterfactual_likelihoods,
+                symbol=symbol,
+                company_name=company_name_map.get(symbol, ""),
+                regime=global_context.macro_regime or "未知",
+                is_degraded=degraded_map,
+            )
+            counterfactual_by_symbol[symbol] = {
+                "basis": counterfactual_basis,
+                "fundamental_score": float(counterfactual_score),
+                "posterior_action_score": float(
+                    counterfactual_posterior.posterior_action_score
+                ),
+                "posterior_win_rate": float(counterfactual_posterior.posterior_win_rate),
+                "posterior_expected_alpha": float(
+                    counterfactual_posterior.posterior_expected_alpha
+                ),
+                "posterior_confidence": float(
+                    counterfactual_posterior.posterior_confidence
+                ),
+                "posterior_edge_after_costs": float(
+                    counterfactual_posterior.posterior_edge_after_costs
+                ),
+                "kill_switch": bool(
+                    (counterfactual_posterior.metadata or {}).get("kill_switch", False)
+                ),
+            }
+            counterfactual_bayesian_records.append(
+                BayesianDecisionRecord(
+                    symbol=symbol,
+                    company_name=company_name_map.get(symbol, ""),
+                    prior=counterfactual_posterior.prior.to_dict(),
+                    likelihoods=counterfactual_posterior.likelihoods.to_dict(),
+                    posterior_win_rate=counterfactual_posterior.posterior_win_rate,
+                    posterior_expected_alpha=counterfactual_posterior.posterior_expected_alpha,
+                    posterior_confidence=counterfactual_posterior.posterior_confidence,
+                    posterior_action_score=counterfactual_posterior.posterior_action_score,
+                    posterior_edge_after_costs=counterfactual_posterior.posterior_edge_after_costs,
+                    posterior_capacity_penalty=counterfactual_posterior.posterior_capacity_penalty,
+                    correlation_discount=counterfactual_posterior.correlation_discount,
+                    coverage_discount=counterfactual_posterior.coverage_discount,
+                    data_quality_penalty=counterfactual_posterior.data_quality_penalty,
+                    fallback_penalty=counterfactual_posterior.fallback_penalty,
+                    regime_adjustment=counterfactual_posterior.regime_adjustment,
+                    evidence_sources=list(counterfactual_posterior.evidence_sources),
+                    action_threshold_used=counterfactual_posterior.action_threshold_used,
+                    metadata={
+                        "fundamental_research_variant": counterfactual_basis,
+                        "fundamental_score": float(counterfactual_score),
+                    },
+                )
+            )
         bayesian_records.append(
             BayesianDecisionRecord(
                 symbol=symbol,
@@ -680,6 +892,47 @@ def _run_bayesian_selection_phase(
         record.rank = index
         record.metadata = dict(record.metadata or {})
         record.metadata["rank"] = index
+
+    counterfactual_record_by_symbol = {
+        record.symbol: record for record in counterfactual_bayesian_records
+    }
+    counterfactual_bayesian_records = [
+        counterfactual_record_by_symbol.get(record.symbol)
+        or replace(
+            record,
+            metadata={
+                **dict(record.metadata or {}),
+                "fundamental_research_variant": "unchanged_no_eligible_dossier",
+            },
+        )
+        for record in bayesian_records
+    ]
+    counterfactual_bayesian_records.sort(
+        key=lambda item: (-float(item.posterior_action_score), item.symbol)
+    )
+    for index, record in enumerate(counterfactual_bayesian_records, start=1):
+        record.rank = index
+        record.metadata = dict(record.metadata or {})
+        record.metadata["rank"] = index
+
+    counterfactual_shortlist: list[Any] = []
+    if counterfactual_by_symbol:
+        counterfactual_shortlist = _build_shortlist_from_bayesian_records(
+            posterior_results=counterfactual_bayesian_records,
+            company_name_map=company_name_map,
+            top_k=top_k,
+        )
+        by_symbol = {item.symbol: item for item in counterfactual_shortlist}
+        for record in counterfactual_bayesian_records:
+            payload = counterfactual_by_symbol.get(record.symbol)
+            if payload is None:
+                continue
+            item = by_symbol.get(record.symbol)
+            payload["rank"] = int(record.rank)
+            payload["shortlisted"] = item is not None
+            payload["pre_control_suggested_weight"] = (
+                float(item.suggested_weight) if item is not None else 0.0
+            )
 
     shortlist = _build_shortlist_from_bayesian_records(
         posterior_results=bayesian_records,
@@ -787,6 +1040,9 @@ def _run_bayesian_selection_phase(
         portfolio_master_output=portfolio_master_output,
         portfolio_master_meta=portfolio_master_meta,
         portfolio_master_reliability=float(portfolio_master_meta.get("confidence", 0.0) or 0.0),
+        counterfactual_shortlist=counterfactual_shortlist,
+        counterfactual_by_symbol=counterfactual_by_symbol,
+        counterfactual_bayesian_records=counterfactual_bayesian_records,
     )
 
 

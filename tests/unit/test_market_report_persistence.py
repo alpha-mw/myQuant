@@ -10,6 +10,7 @@ import pytest
 
 from quant_investor.market.report_persistence import (
     persist_market_analysis_outputs,
+    write_analysis_run_manifest,
 )
 from quant_investor.market.runtime_profile import MarketRuntimeProfiler
 
@@ -97,6 +98,24 @@ def test_persist_outputs_writes_profile_next_to_report(tmp_path):
     assert Path(runtime_profile_md).read_text(encoding="utf-8").startswith(
         "# Market Runtime Profile"
     )
+
+
+def test_analysis_manifest_writer_rejects_symlinked_report_parent(tmp_path):
+    output_root = tmp_path / "allowed"
+    outside = tmp_path / "outside"
+    output_root.mkdir()
+    outside.mkdir()
+    (outside / "trade.md").write_text("report", encoding="utf-8")
+    report_link = output_root / "reports"
+    report_link.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="must not contain symlinks"):
+        write_analysis_run_manifest(
+            market="CN",
+            analysis_output_dir=output_root,
+            report_paths={"trade_report": str(report_link / "trade.md")},
+            analysis_meta={"portfolio_decision": {}},
+        )
 
 
 def test_persistence_rejects_retired_output_root_before_writing(

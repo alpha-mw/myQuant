@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from statistics import fmean
 from typing import Any, Callable, Mapping
 
@@ -27,6 +28,7 @@ from quant_investor.agents.stock_reviewers import (
 )
 from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
 from quant_investor.branch_contracts import BranchResult
+from quant_investor.fundamental_research.runtime import consume_overlay
 from quant_investor.market.dag.assembly import _aggregate_branch_summaries, _build_branch_results
 from quant_investor.market.dag.common import _dedupe_texts, _score_to_action
 from quant_investor.market.dag.packets import _build_symbol_bundle, _build_symbol_research_packet
@@ -297,6 +299,7 @@ async def _run_candidate_research_phase(
     *,
     candidate_symbols: list[str],
     company_name_map: Mapping[str, str],
+    industry_map: Mapping[str, str] | None = None,
     market: str,
     market_snapshot: Mapping[str, Any],
     universe_key: str,
@@ -355,6 +358,153 @@ async def _run_candidate_research_phase(
             symbol=symbol,
             branch_name="fundamental",
         )
+        deterministic_fundamental = fundamental
+        generation_by_symbol = dict(
+            deterministic_fundamental.metadata.get(
+                "fundamental_data_generation_by_symbol", {}
+            )
+            or {}
+        )
+        fundamental_data_generation = str(generation_by_symbol.get(symbol, ""))
+        runtime_cutoff = market_snapshot.get("latest_trade_date", "")
+        fundamental_runtime = consume_overlay(
+            market=market,
+            symbol=symbol,
+            base_score=float(deterministic_fundamental.final_score),
+            run_cutoff=runtime_cutoff,
+            run_key=f"{market}:{universe_key}:{runtime_cutoff}",
+            current_data_generation=fundamental_data_generation,
+        )
+        module_statuses = dict(
+            deterministic_fundamental.metadata.get("structured_signals", {}).get(
+                "module_coverages", {}
+            )
+            or {}
+        )
+        available_modules = sorted(
+            name for name, status in module_statuses.items()
+            if str(status) in {"available", "partial"}
+        )
+        missing_modules = sorted(
+            name for name, status in module_statuses.items()
+            if str(status) not in {"available", "partial"}
+        )
+        local_context = dict(bundle.fundamentals.get(symbol, {}) or {})
+        industry = str(
+            local_context.get("industry")
+            or local_context.get("sector")
+            or (industry_map or {}).get(symbol)
+            or "UNCONFIRMED"
+        )
+        explicit_peer_set_confirmed = (
+            str(local_context.get("peer_set_status", "")).lower() == "confirmed"
+        )
+        explicit_peers = sorted(
+            {
+                str(item).strip()
+                for item in list(local_context.get("peer_symbols", []) or [])
+                if str(item).strip() and str(item).strip() != symbol
+            }
+        ) if explicit_peer_set_confirmed else []
+        derived_peers = sorted(
+            peer_symbol
+            for peer_symbol, peer_industry in (industry_map or {}).items()
+            if peer_symbol != symbol
+            and industry != "UNCONFIRMED"
+            and str(peer_industry).strip() == industry
+        )[:10]
+        if explicit_peer_set_confirmed:
+            peer_symbols, peer_set_status, peer_set_source = (
+                explicit_peers[:10], "confirmed", "explicit_local_mart"
+            )
+        elif derived_peers:
+            peer_symbols, peer_set_status, peer_set_source = (
+                derived_peers, "confirmed", "derived_local_industry"
+            )
+        else:
+            peer_symbols, peer_set_status, peer_set_source = (
+                [], "unconfirmed", "UNCONFIRMED"
+            )
+        valuation_price: float | None = None
+        valuation_price_as_of = ""
+        if frame is not None and not frame.empty and "close" in frame.columns:
+            closes = pd.to_numeric(frame["close"], errors="coerce")
+            valid = closes[closes.map(lambda value: pd.notna(value) and float(value) > 0)]
+            if not valid.empty:
+                last_index = valid.index[-1]
+                candidate_price = float(valid.loc[last_index])
+                if math.isfinite(candidate_price):
+                    valuation_price = candidate_price
+                    for date_column in ("date", "trade_date"):
+                        if date_column not in frame.columns:
+                            continue
+                        parsed = pd.to_datetime(frame.loc[last_index, date_column], errors="coerce")
+                        if pd.notna(parsed):
+                            valuation_price_as_of = parsed.date().isoformat()
+                            break
+        context_blockers = [] if peer_set_status == "confirmed" else ["peer_set_UNCONFIRMED"]
+        if valuation_price is None or not valuation_price_as_of:
+            context_blockers.append("valuation_price_UNCONFIRMED")
+        deterministic_base_record = {
+            "company_name": company_name_map.get(symbol, ""),
+            "industry": industry,
+            "peer_symbols": peer_symbols,
+            "peer_set_status": peer_set_status,
+            "peer_set_source": peer_set_source,
+            "base_score": float(deterministic_fundamental.final_score),
+            "base_confidence": float(deterministic_fundamental.final_confidence),
+            "valuation_price": valuation_price,
+            "valuation_price_as_of": valuation_price_as_of,
+            "data_generation": fundamental_data_generation,
+            "available_modules": available_modules,
+            "missing_modules": missing_modules,
+            "status": getattr(
+                deterministic_fundamental.status,
+                "value",
+                str(deterministic_fundamental.status),
+            ),
+            "context_blockers": context_blockers,
+            "runtime_audit": dict(fundamental_runtime.metadata),
+        }
+        if fundamental_runtime.applied and fundamental_runtime.adjusted_score is not None:
+            adjusted_score = float(fundamental_runtime.adjusted_score)
+            fundamental = replace(
+                deterministic_fundamental,
+                final_score=adjusted_score,
+                direction=_direction_enum_from_score(adjusted_score),
+                action=_score_to_action(adjusted_score),
+                metadata={
+                    **dict(deterministic_fundamental.metadata or {}),
+                    "deterministic_base_score": float(deterministic_fundamental.final_score),
+                    "fundamental_deterministic_control_input": {
+                        "thesis": deterministic_fundamental.thesis,
+                        "status": deterministic_fundamental.status.value,
+                        "direction": deterministic_fundamental.direction.value,
+                        "action": deterministic_fundamental.action.value,
+                        "confidence_label": deterministic_fundamental.confidence_label.value,
+                        "final_score": float(deterministic_fundamental.final_score),
+                        "final_confidence": float(deterministic_fundamental.final_confidence),
+                        "investment_risks": list(deterministic_fundamental.investment_risks),
+                        "coverage_notes": list(deterministic_fundamental.coverage_notes),
+                        "diagnostic_notes": list(deterministic_fundamental.diagnostic_notes),
+                    },
+                    "fundamental_research_runtime": dict(fundamental_runtime.metadata),
+                },
+            )
+        elif (
+            fundamental_runtime.metadata.get("request_id")
+            and not fundamental_runtime.metadata.get("blockers")
+        ):
+            fundamental = replace(
+                deterministic_fundamental,
+                metadata={
+                    **dict(deterministic_fundamental.metadata or {}),
+                    "deterministic_base_score": float(deterministic_fundamental.final_score),
+                    "fundamental_research_runtime": dict(fundamental_runtime.metadata),
+                },
+            )
+        else:
+            fundamental = deterministic_fundamental
         macro = _build_symbol_macro_verdict(symbol=symbol, macro_verdict=macro_verdict)
         base_branch_verdicts = {
             "quant": quant,
@@ -375,6 +525,9 @@ async def _run_candidate_research_phase(
                 global_quant_verdict=global_quant_verdict,
                 review_bundle=None,
             )
+            packet.metadata["fundamental_deterministic_base"] = dict(
+                deterministic_base_record
+            )
             return symbol, base_branch_verdicts, packet, None, {}, {}, [], []
 
         codex_handoff_review = _is_codex_handoff_review(
@@ -391,7 +544,47 @@ async def _run_candidate_research_phase(
         branch_overlay_verdicts: dict[str, Any] = {}
         telemetry: list[Any] = []
         fallback_reasons: list[str] = []
+        if fundamental_runtime.suppress_generic_fundamental_overlay:
+            runtime_audit = dict(fundamental_runtime.metadata)
+            runtime_telemetry = ReviewTelemetry(
+                stage="fundamental_research_runtime",
+                model="codex-external-dossier",
+                provider="codex",
+                success=True,
+                fallback=False,
+                score_delta=float(runtime_audit.get("computed_delta", 0.0)),
+                confidence_delta=0.0,
+                metadata=runtime_audit,
+            )
+            branch_overlay_verdicts["fundamental"] = BranchOverlayVerdict(
+                symbol=symbol,
+                branch_name="fundamental",
+                status=fundamental.status,
+                thesis=fundamental.thesis,
+                direction=fundamental.direction,
+                action=fundamental.action,
+                base_score=float(deterministic_fundamental.final_score),
+                adjusted_score=float(fundamental.final_score),
+                base_confidence=float(deterministic_fundamental.final_confidence),
+                adjusted_confidence=float(deterministic_fundamental.final_confidence),
+                score_delta=float(runtime_audit.get("computed_delta", 0.0)),
+                confidence_delta=0.0,
+                agreement_points=["validated prior-run fundamental dossier applied"],
+                risk_flags=list(fundamental.investment_risks),
+                telemetry=runtime_telemetry,
+                metadata={
+                    "source": "fundamental_research_v14",
+                    "generic_overlay_suppressed": True,
+                    "runtime_audit": runtime_audit,
+                },
+            )
+            telemetry.append(runtime_telemetry)
         for branch_name in branch_names:
+            if (
+                branch_name == "fundamental"
+                and fundamental_runtime.suppress_generic_fundamental_overlay
+            ):
+                continue
             base_verdict = base_branch_verdicts[branch_name]
             overlay_packet = BranchOverlayPacket(
                 symbol=symbol,
@@ -555,6 +748,9 @@ async def _run_candidate_research_phase(
                 },
             ),
         )
+        packet.metadata["fundamental_deterministic_base"] = dict(
+            deterministic_base_record
+        )
         return symbol, reviewed_branch_verdicts, packet, master_hint, master_hint_to_ic_hint(master_hint), dict(branch_overlay_verdicts), telemetry, fallback_reasons
 
     semaphore = asyncio.Semaphore(8)
@@ -629,6 +825,14 @@ async def _run_candidate_research_phase(
 
     review_bundle.telemetry = telemetry_items
     review_bundle.fallback_reasons = _dedupe_texts(fallback_reasons)
+    review_bundle.metadata["fundamental_research_runtime"] = {
+        symbol: dict(
+            packet.metadata.get("fundamental_deterministic_base", {}).get(
+                "runtime_audit", {}
+            )
+        )
+        for symbol, packet in symbol_research_packets.items()
+    }
 
     branch_summaries = _aggregate_branch_summaries(research_by_symbol)
     empty_fundamental_result: BranchResult | None = None

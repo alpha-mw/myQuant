@@ -47,6 +47,7 @@ from quant_investor.agents.llm_client import LLMClient as GatewayLLMClient
 from quant_investor.bayesian.likelihood import SignalLikelihoodMapper
 from quant_investor.bayesian.posterior import BayesianPosteriorEngine
 from quant_investor.bayesian.prior import HierarchicalPriorBuilder
+from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
 from quant_investor.config import config
 from quant_investor.funnel.deterministic_funnel import DeterministicFunnel
 from quant_investor.market.config import get_market_settings, normalize_categories, normalize_universe
@@ -60,6 +61,7 @@ from quant_investor.market.dag.assembly import (
 from quant_investor.market.dag.common import _run_async_coroutine_safely, _score_to_action
 from quant_investor.market.dag.context import _prepare_market_context
 from quant_investor.market.dag.decision import (
+    _build_counterfactual_control_inputs,
     _run_bayesian_selection_phase,
     _run_portfolio_construction_phase,
 )
@@ -125,6 +127,14 @@ def _codex_handoff_model_resolution(
         fallback_provider_available=False,
         metadata=metadata,
     )
+
+
+def _counterfactual_replay_ready(selection_state: Any) -> tuple[bool, set[str]]:
+    variants = {
+        str(item.get("basis") or "")
+        for item in selection_state.counterfactual_by_symbol.values()
+    }
+    return bool(selection_state.counterfactual_by_symbol) and len(variants) == 1, variants
 
 
 def _load_company_name_map(market: str) -> dict[str, str]:
@@ -530,12 +540,12 @@ async def _execute_market_dag_async(
             fallback_model=master_fallback_model,
         )
     elif enable_agent_layer:
-        branch_model_resolution: ModelRoleResolution = resolve_model_role(
+        branch_model_resolution = resolve_model_role(
             role="branch",
             primary_model=agent_model,
             fallback_model=agent_fallback_model,
         )
-        master_model_resolution: ModelRoleResolution = resolve_model_role(
+        master_model_resolution = resolve_model_role(
             role="master",
             primary_model=master_model,
             fallback_model=master_fallback_model,
@@ -624,6 +634,14 @@ async def _execute_market_dag_async(
         research_state = await _run_candidate_research_phase(
             candidate_symbols=candidate_symbols,
             company_name_map=company_name_map,
+            industry_map={
+                symbol: str(
+                    dict(tradability_snapshot.get(symbol, {}) or {}).get("industry")
+                    or dict(tradability_snapshot.get(symbol, {}) or {}).get("sector")
+                    or ""
+                )
+                for symbol in candidate_symbols
+            },
             market=settings.market,
             market_snapshot=market_snapshot,
             universe_key=universe_key,
@@ -716,8 +734,89 @@ async def _execute_market_dag_async(
             portfolio_constructor_cls=PortfolioConstructor,
             attach_symbol_to_ic_decision_fn=_attach_symbol_to_ic_decision,
         )
+        counterfactual_decision_state = None
+        counterfactual_ready, counterfactual_variants = _counterfactual_replay_ready(
+            selection_state
+        )
+        if counterfactual_ready:
+            (
+                counterfactual_research_by_symbol,
+                counterfactual_branch_summaries,
+            ) = _build_counterfactual_control_inputs(
+                research_by_symbol=research_by_symbol,
+                counterfactual_by_symbol=selection_state.counterfactual_by_symbol,
+            )
+            counterfactual_master_meta = {
+                "status": "disabled_for_deterministic_counterfactual_replay",
+                "reason": "actual_advisory_inputs_are_not_reused",
+                "confidence": 0.0,
+            }
+            counterfactual_decision_state = _run_portfolio_construction_phase(
+                shortlist=selection_state.counterfactual_shortlist,
+                branch_summaries=counterfactual_branch_summaries,
+                macro_verdict=counterfactual_branch_summaries["macro"],
+                global_context=global_context,
+                data_quality_issues=data_quality_issues,
+                ic_hints_by_symbol={},
+                research_by_symbol=counterfactual_research_by_symbol,
+                tradability_snapshot=tradability_snapshot,
+                funnel_summary=selection_state.funnel_summary,
+                bayesian_records=selection_state.counterfactual_bayesian_records,
+                candidate_symbols=candidate_symbols,
+                portfolio_master_output=None,
+                portfolio_master_meta=counterfactual_master_meta,
+                risk_guard_cls=RiskGuard,
+                ic_coordinator_cls=ICCoordinator,
+                portfolio_constructor_cls=PortfolioConstructor,
+                attach_symbol_to_ic_decision_fn=_attach_symbol_to_ic_decision,
+            )
+            decision_state.portfolio_decision.metadata[
+                "fundamental_research_counterfactual_replay"
+            ] = {
+                "schema_version": "fundamental-control-chain-replay.v1",
+                "measurement_only": True,
+                "variant": next(iter(counterfactual_variants)),
+                "branch_summaries": {
+                    name: counterfactual_branch_summaries[name].to_dict()
+                    for name in CANONICAL_BRANCH_ORDER
+                },
+                "branch_verdicts_by_symbol": {
+                    symbol: {
+                        name: branch_map[name].to_dict()
+                        for name in CANONICAL_BRANCH_ORDER
+                    }
+                    for symbol, branch_map in counterfactual_research_by_symbol.items()
+                },
+                "bayesian_records": [
+                    record.to_dict()
+                    for record in selection_state.counterfactual_bayesian_records
+                ],
+                "shortlist": [
+                    item.to_dict() for item in selection_state.counterfactual_shortlist
+                ],
+                "ic_hints_by_symbol": {},
+                "risk_decision": counterfactual_decision_state.risk_decision.to_dict(),
+                "ic_decisions": [
+                    decision.to_dict()
+                    for decision in counterfactual_decision_state.ic_decisions
+                ],
+                "portfolio_plan": counterfactual_decision_state.portfolio_plan.to_dict(),
+                "portfolio_decision": counterfactual_decision_state.portfolio_decision.to_dict(),
+            }
+        elif selection_state.counterfactual_by_symbol:
+            stage_metadata["counterfactual_replay_blocker"] = (
+                "mixed_or_missing_fundamental_research_variant"
+            )
         stage_metadata["ic_decision_count"] = len(decision_state.ic_decisions)
         stage_metadata["target_weight_count"] = len(getattr(decision_state.portfolio_decision, "target_weights", {}) or {})
+        stage_metadata["counterfactual_target_weight_count"] = len(
+            getattr(
+                getattr(counterfactual_decision_state, "portfolio_decision", None),
+                "target_weights",
+                {},
+            )
+            or {}
+        )
 
     with profile_stage(
         runtime_profiler,

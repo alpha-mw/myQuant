@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -23,7 +24,10 @@ from quant_investor.market.branch_readiness import (
     STATUS_PASS,
     SOURCE_TUSHARE,
 )
-from quant_investor.market.dag_executor import execute_market_dag
+from quant_investor.market.dag_executor import (
+    _counterfactual_replay_ready,
+    execute_market_dag,
+)
 from quant_investor.market.read_result import MarketDataReadResult
 from quant_investor.market.runtime_profile import MarketRuntimeProfiler
 from quant_investor.model_roles import ModelRoleResolution
@@ -65,7 +69,6 @@ class _FakeReader:
             "C": _frame("C", 2.0),
             "D": _frame("D", 3.0),
         }
-
     def list_symbols(self, universe_key: str = "full_a"):
         return list(self._frames)
 
@@ -106,6 +109,18 @@ class _FakeReader:
             "directory_priority": ["full_a"],
             "physical_directories_used_for_full_a": ["/tmp/full_a"],
         }
+
+
+def test_empty_counterfactual_shortlist_still_requires_control_chain_replay():
+    state = SimpleNamespace(
+        counterfactual_by_symbol={"A": {"basis": "without_dossier"}},
+        counterfactual_shortlist=[],
+    )
+
+    ready, variants = _counterfactual_replay_ready(state)
+
+    assert ready is True
+    assert variants == {"without_dossier"}
 
 
 def test_candidate_review_only_runs_after_funnel(monkeypatch):
@@ -346,6 +361,16 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
     assert quant_summary.final_confidence == 0.0
     assert quant_summary.metadata["production_quant_evidence"] is False
     assert quant_summary.metadata["cross_section_diagnostic_only"] is True
+    deterministic_base = result["symbol_research_packets"]["A"].metadata[
+        "fundamental_deterministic_base"
+    ]
+    assert deterministic_base["base_score"] == 0.4
+    assert deterministic_base["valuation_price"] == 13.9
+    assert deterministic_base["valuation_price_as_of"] == "2026-03-01"
+    assert deterministic_base["runtime_audit"]["effective_mode"] == "off"
+    assert deterministic_base["runtime_audit"]["blockers"] == [
+        "current_data_generation_missing"
+    ]
     assert _FakeReader.batch_read_count == 1
     assert _FakeReader.single_read_count == 0
     assert {"ts_code", "trade_date", "close", "vol", "amount"}.issubset(
