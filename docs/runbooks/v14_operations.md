@@ -22,6 +22,11 @@ Retiring the v13 freeze does not relax these controls:
 - Canonical CN data must pass `quant-investor market storage-validate --market CN`.
 - Branch readiness and data governance fail closed when v14 provenance or
   generation evidence is missing.
+- Current full-A Quant readiness is bound to the complete canonical coverage
+  scope and its component hash. Evidence-backed non-trading absences are
+  excluded; historical serving files are never added to the current scope.
+  Coverage, classification, evidence, or PIT hash drift returns a structured
+  blocked report.
 - RiskGuard and deterministic control-chain vetoes remain authoritative.
 - Quant FactorGovernanceProtocol v2 stays report-only until its independent
   production-apply authorization is implemented; PR4 stops at
