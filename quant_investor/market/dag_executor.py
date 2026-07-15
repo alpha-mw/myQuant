@@ -59,8 +59,14 @@ from quant_investor.market.dag.assembly import (
     _build_branch_results,
 )
 from quant_investor.market.dag.common import _run_async_coroutine_safely, _score_to_action
-from quant_investor.market.dag.context import _prepare_market_context
+from quant_investor.market.dag.context import (
+    DAG_SINGLE_NAME_WEIGHT_CAP,
+    _blocked_macro_verdict,
+    _prepare_market_context,
+    _resolve_effective_data_state,
+)
 from quant_investor.market.dag.decision import (
+    PortfolioConstructionState,
     _build_counterfactual_control_inputs,
     _run_bayesian_selection_phase,
     _run_portfolio_construction_phase,
@@ -79,6 +85,12 @@ from quant_investor.market.dag.reporting import _build_reporting_artifacts
 from quant_investor.market.dag.review import _portfolio_master_advisory
 from quant_investor.market.dag.shortlist import _build_shortlist, _build_shortlist_from_bayesian_records
 from quant_investor.market.market_data_reader import MarketDataReader
+from quant_investor.market.branch_readiness import (
+    STATUS_BLOCK,
+    assess_macro_readiness,
+    load_macro_record,
+    macro_generation_identity,
+)
 from quant_investor.market.name_map import (
     load_company_name_map as _load_cached_company_name_map,
 )
@@ -135,6 +147,105 @@ def _counterfactual_replay_ready(selection_state: Any) -> tuple[bool, set[str]]:
         for item in selection_state.counterfactual_by_symbol.values()
     }
     return bool(selection_state.counterfactual_by_symbol) and len(variants) == 1, variants
+
+
+def _empty_universe_macro_contract(
+    *,
+    as_of: str,
+) -> tuple[dict[str, Any], Any, dict[str, str], BranchVerdict]:
+    record, manifest = load_macro_record(as_of=as_of)
+    readiness = assess_macro_readiness(
+        macro_record=record,
+        manifest=manifest,
+        as_of=as_of,
+    )
+    identity = macro_generation_identity(manifest)
+    if readiness.status == STATUS_BLOCK:
+        verdict = _blocked_macro_verdict(
+            blockers=list(readiness.blockers),
+            generation_identity=identity,
+        )
+        return record, readiness, identity, verdict
+
+    market_snapshot = {
+        "regime": "neutral",
+        "macro_score": float(record["macro_score"]),
+        "liquidity_score": float(record["liquidity_score"]),
+        "volatility_percentile": float(record["volatility_percentile"]),
+        "policy_signal": str(record["policy_signal"]),
+        "macro_data_readiness_status": readiness.status,
+        "canonical_macro_generation": dict(identity),
+        "decision_authorized": True,
+    }
+    verdict = MacroAgent().run({"market_snapshot": market_snapshot})
+    verdict.metadata = dict(verdict.metadata or {})
+    verdict.metadata.update(
+        {
+            "decision_authorized": True,
+            "macro_data_readiness_status": readiness.status,
+            "canonical_macro_generation": dict(identity),
+        }
+    )
+    return record, readiness, identity, verdict
+
+
+def _blocked_macro_control_state(
+    *,
+    global_context: GlobalContext,
+    tradability_snapshot: Mapping[str, Mapping[str, Any]],
+) -> PortfolioConstructionState:
+    """Stop before the deterministic control-chain agents on blocked Macro."""
+
+    identity = dict(
+        global_context.metadata.get("canonical_macro_generation", {}) or {}
+    )
+    risk_decision = RiskDecision(
+        status=AgentStatus.VETOED,
+        hard_veto=True,
+        veto=True,
+        action_cap=ActionLabel.HOLD,
+        max_weight=DAG_SINGLE_NAME_WEIGHT_CAP,
+        gross_exposure_cap=0.55,
+        target_exposure_cap=0.55,
+        reasons=[
+            "Canonical Macro readiness is blocked; no new portfolio "
+            "decision is authorized."
+        ],
+        metadata={
+            "decision_authorized": False,
+            "branch_fusion_blocked": True,
+            "canonical_macro_generation": identity,
+        },
+    )
+    portfolio_plan = PortfolioPlan(
+        status=AgentStatus.VETOED,
+        metadata={
+            "decision_authorized": False,
+            "branch_fusion_blocked": True,
+            "reason": "canonical_macro_readiness_blocked",
+            "canonical_macro_generation": identity,
+        },
+    )
+    portfolio_decision = PortfolioDecision(
+        status=AgentStatus.VETOED,
+        risk_constraints={
+            "risk_decision": risk_decision.to_dict(),
+            "tradability_snapshot": dict(tradability_snapshot),
+        },
+        metadata={
+            "decision_authorized": False,
+            "branch_fusion_blocked": True,
+            "reason": "canonical_macro_readiness_blocked",
+            "canonical_macro_generation": identity,
+            "risk_summary": risk_decision.to_dict(),
+        },
+    )
+    return PortfolioConstructionState(
+        risk_decision=risk_decision,
+        ic_decisions=[],
+        portfolio_plan=portfolio_plan,
+        portfolio_decision=portfolio_decision,
+    )
 
 
 def _load_company_name_map(market: str) -> dict[str, str]:
@@ -447,18 +558,94 @@ async def _execute_market_dag_async(
     scoped_data_snapshot["pit_universe"] = pit_universe_metadata
 
     if not symbols:
+        (
+            empty_completeness,
+            empty_as_of,
+            empty_freshness_mode,
+        ) = _resolve_effective_data_state(
+            scoped_data_snapshot=scoped_data_snapshot,
+            download_stage=download_stage,
+        )
+        (
+            pinned_macro_record,
+            pinned_macro_readiness,
+            pinned_macro_identity,
+            empty_macro_verdict,
+        ) = _empty_universe_macro_contract(as_of=empty_as_of)
+        macro_blocked = pinned_macro_readiness.status == STATUS_BLOCK
+        baseline_target_exposure = float(
+            empty_macro_verdict.metadata.get("target_gross_exposure", 0.55)
+        )
+        empty_status = (
+            AgentStatus.VETOED if macro_blocked else AgentStatus.SUCCESS
+        )
+        empty_decision = PortfolioDecision(
+            status=empty_status,
+            metadata={
+                "decision_authorized": False,
+                "reason": "empty_universe",
+                "canonical_macro_generation": dict(pinned_macro_identity),
+            },
+        )
+        empty_plan = PortfolioPlan(
+            status=empty_status,
+            metadata={
+                "decision_authorized": False,
+                "reason": "empty_universe",
+            },
+        )
+        empty_risk = RiskDecision(
+            status=empty_status,
+            hard_veto=macro_blocked,
+            veto=macro_blocked,
+            action_cap=(
+                ActionLabel.HOLD if macro_blocked else ActionLabel.BUY
+            ),
+            max_weight=DAG_SINGLE_NAME_WEIGHT_CAP,
+            gross_exposure_cap=baseline_target_exposure,
+            target_exposure_cap=baseline_target_exposure,
+            reasons=[
+                "No portfolio decision is authorized for an empty universe."
+            ],
+            metadata={
+                "decision_authorized": False,
+                "canonical_macro_generation": dict(pinned_macro_identity),
+            },
+        )
         empty_context = GlobalContext(
             market=settings.market,
             universe_key=universe_key,
             universe_symbols=[],
-            latest_trade_date=str(scoped_data_snapshot.get("local_latest_trade_date", "")),
-            freshness_mode=str(scoped_data_snapshot.get("freshness_mode", "stable")),
-            effective_target_trade_date=str(scoped_data_snapshot.get("local_latest_trade_date", "")),
+            latest_trade_date=empty_as_of,
+            freshness_mode=empty_freshness_mode,
+            effective_target_trade_date=str(
+                empty_completeness.get("effective_target_trade_date")
+                or empty_as_of
+            ),
+            macro_regime=str(
+                empty_macro_verdict.metadata.get("regime", "neutral")
+            ),
+            macro_data=(
+                dict(pinned_macro_record) if not macro_blocked else {}
+            ),
+            risk_budget={
+                "target_exposure": baseline_target_exposure,
+                "max_single_weight": DAG_SINGLE_NAME_WEIGHT_CAP,
+                "baseline_target_exposure": baseline_target_exposure,
+                "baseline_max_single_weight": DAG_SINGLE_NAME_WEIGHT_CAP,
+            },
             metadata={
                 "resolver": shared_reader.snapshot(),
                 "data_snapshot": scoped_data_snapshot,
                 "market_cap_filter": market_cap_filter_metadata,
                 "pit_universe": pit_universe_metadata,
+                "canonical_macro_generation": dict(pinned_macro_identity),
+                "canonical_macro_readiness": (
+                    pinned_macro_readiness.to_dict()
+                ),
+                "branch_fusion_blocked": macro_blocked,
+                "decision_authorized": False,
+                "empty_universe": True,
                 "selection_profile": {
                     "funnel_profile": str(funnel_profile or config.FUNNEL_PROFILE).strip().lower() or config.FUNNEL_PROFILE,
                     "trend_windows": list(trend_windows or config.FUNNEL_TREND_WINDOWS),
@@ -469,7 +656,6 @@ async def _execute_market_dag_async(
                 },
             },
         )
-        empty_decision = PortfolioDecision()
         empty_trace = build_execution_trace(
             model_roles=build_model_role_metadata(
                 branch_model=agent_model,
@@ -486,12 +672,31 @@ async def _execute_market_dag_async(
                 metadata={"resolver": shared_reader.snapshot()},
             ),
             analysis_meta={"batch_count": 0, "category_count": 0, "total_stocks": 0},
-            portfolio_plan={"selected_count": 0, "target_exposure": 0.0, "max_single_weight": 0.0, "risk_veto": False},
+            portfolio_plan={
+                "selected_count": 0,
+                "target_exposure": baseline_target_exposure,
+                "max_single_weight": DAG_SINGLE_NAME_WEIGHT_CAP,
+                "risk_veto": macro_blocked,
+                "action_cap": empty_risk.action_cap.value,
+                "risk_summary": {
+                    "status": empty_risk.status.value,
+                    "hard_veto": empty_risk.hard_veto,
+                    "veto": empty_risk.veto,
+                    "action_cap": empty_risk.action_cap.value,
+                    "gross_exposure_cap": empty_risk.gross_exposure_cap,
+                    "target_exposure_cap": empty_risk.target_exposure_cap,
+                    "max_weight": empty_risk.max_weight,
+                    "decision_authorized": False,
+                },
+            },
             download_stage=download_stage,
         )
         what_if = build_what_if_plan(
             portfolio_plan=empty_decision.to_dict(),
-            market_summary={"candidate_count": 0, "macro_score": 0.0},
+            market_summary={
+                "candidate_count": 0,
+                "macro_score": float(empty_macro_verdict.final_score),
+            },
             model_roles=empty_trace.model_roles,
             candidate_count=0,
             selected_count=0,
@@ -501,11 +706,11 @@ async def _execute_market_dag_async(
             "symbol_research_packets": {},
             "branch_verdicts_by_symbol": {},
             "branch_summaries": {},
-            "macro_verdict": MacroAgent().run({"market_snapshot": {"regime": "neutral", "macro_score": 0.0, "liquidity_score": 0.0}}),
-            "risk_decision": RiskDecision(),
+            "macro_verdict": empty_macro_verdict,
+            "risk_decision": empty_risk,
             "ic_decisions": [],
             "shortlist": [],
-            "portfolio_plan": PortfolioPlan(),
+            "portfolio_plan": empty_plan,
             "portfolio_decision": empty_decision,
             "review_bundle": StockReviewBundle(),
             "model_role_metadata": empty_trace.model_roles,
@@ -715,30 +920,41 @@ async def _execute_market_dag_async(
         "dag_control_chain",
         {"shortlist_count": len(selection_state.shortlist)},
     ) as stage_metadata:
-        decision_state = _run_portfolio_construction_phase(
-            shortlist=selection_state.shortlist,
-            branch_summaries=branch_summaries,
-            macro_verdict=macro_verdict,
-            global_context=global_context,
-            data_quality_issues=data_quality_issues,
-            ic_hints_by_symbol=ic_hints_by_symbol,
-            research_by_symbol=research_by_symbol,
-            tradability_snapshot=tradability_snapshot,
-            funnel_summary=selection_state.funnel_summary,
-            bayesian_records=selection_state.bayesian_records,
-            candidate_symbols=candidate_symbols,
-            portfolio_master_output=selection_state.portfolio_master_output,
-            portfolio_master_meta=selection_state.portfolio_master_meta,
-            risk_guard_cls=RiskGuard,
-            ic_coordinator_cls=ICCoordinator,
-            portfolio_constructor_cls=PortfolioConstructor,
-            attach_symbol_to_ic_decision_fn=_attach_symbol_to_ic_decision,
+        macro_control_blocked = bool(
+            global_context.metadata.get("branch_fusion_blocked", False)
         )
+        if macro_control_blocked:
+            decision_state = _blocked_macro_control_state(
+                global_context=global_context,
+                tradability_snapshot=tradability_snapshot,
+            )
+            stage_metadata["status"] = "blocked_by_canonical_macro_readiness"
+            stage_metadata["decision_authorized"] = False
+        else:
+            decision_state = _run_portfolio_construction_phase(
+                shortlist=selection_state.shortlist,
+                branch_summaries=branch_summaries,
+                macro_verdict=macro_verdict,
+                global_context=global_context,
+                data_quality_issues=data_quality_issues,
+                ic_hints_by_symbol=ic_hints_by_symbol,
+                research_by_symbol=research_by_symbol,
+                tradability_snapshot=tradability_snapshot,
+                funnel_summary=selection_state.funnel_summary,
+                bayesian_records=selection_state.bayesian_records,
+                candidate_symbols=candidate_symbols,
+                portfolio_master_output=selection_state.portfolio_master_output,
+                portfolio_master_meta=selection_state.portfolio_master_meta,
+                risk_guard_cls=RiskGuard,
+                ic_coordinator_cls=ICCoordinator,
+                portfolio_constructor_cls=PortfolioConstructor,
+                attach_symbol_to_ic_decision_fn=_attach_symbol_to_ic_decision,
+            )
         counterfactual_decision_state = None
         counterfactual_ready, counterfactual_variants = _counterfactual_replay_ready(
             selection_state
         )
-        if counterfactual_ready:
+        if counterfactual_ready and not macro_control_blocked:
             (
                 counterfactual_research_by_symbol,
                 counterfactual_branch_summaries,

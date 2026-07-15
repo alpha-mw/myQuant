@@ -21,6 +21,7 @@ from quant_investor.market.macro_mart import (
     run_cn_macro_maintenance,
 )
 from quant_investor.market.market_data_store import MarketDataStore
+from tests.helpers.macro_fixture import bind_macro_generation
 
 
 def _sha256(path: Path) -> str:
@@ -46,46 +47,10 @@ def _bind_catalog_generation(
     *,
     row: dict[str, object] | None = None,
 ) -> tuple[Path, Path]:
-    generation = market_root / "macro_daily" / "_generations" / "g1"
-    generation.mkdir(parents=True)
-    table = generation / "part.parquet"
-    pd.DataFrame([row or _row()]).to_parquet(table, index=False)
-    manifest = generation / "manifest.json"
-    manifest.write_text(
-        json.dumps(
-            {
-                "schema_version": "cn-macro-mart.v14",
-                "generation_id": "g1",
-                "table": "macro_daily",
-                "table_path": "part.parquet",
-                "parquet_sha256": _sha256(table),
-                "source": "tushare_primary",
-                "source_priority": "tushare_primary",
-                "provider_status": "verified_provider_snapshot",
-                "pit_status": "market_point_in_time",
-                "as_of": "2024-05-10",
-                "production_eligible": True,
-            },
-            sort_keys=True,
-        ),
-        encoding="utf-8",
-    )
-    catalog = {
-        "schema_version": "strict-parquet-catalog.v1",
-        "required_tables": ["macro_daily"],
-        "tables": {
-            "macro_daily": {
-                "path": "macro_daily/_generations/g1/part.parquet",
-                "generation_manifest": "macro_daily/_generations/g1/manifest.json",
-                "generation_id": "g1",
-                "parquet_sha256": _sha256(table),
-                "generation_manifest_sha256": _sha256(manifest),
-            }
-        },
-    }
-    (market_root / "_catalog.json").write_text(
-        json.dumps(catalog, sort_keys=True),
-        encoding="utf-8",
+    _, table, manifest, _ = bind_macro_generation(
+        market_root / "macro_daily",
+        generation_id="g1",
+        row=row or _row(),
     )
     return table, manifest
 

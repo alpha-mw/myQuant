@@ -12,7 +12,15 @@ from typing import Any, Callable, Mapping
 
 import pandas as pd
 
-from quant_investor.agent_protocol import BranchVerdict, DataQualityIssue, GlobalContext
+from quant_investor.agent_protocol import (
+    ActionLabel,
+    AgentStatus,
+    BranchVerdict,
+    ConfidenceLabel,
+    DataQualityIssue,
+    Direction,
+    GlobalContext,
+)
 from quant_investor.branch_contracts import BranchResult
 from quant_investor.config import config
 from quant_investor.funnel.deterministic_funnel import FunnelConfig, FunnelOutput
@@ -51,7 +59,10 @@ from quant_investor.market.pit_universe import (
 )
 from quant_investor.market.branch_readiness import (
     STATUS_BLOCK,
+    assess_macro_readiness,
     assess_branch_data_readiness,
+    load_macro_record,
+    macro_generation_identity,
     write_branch_readiness_report,
 )
 from quant_investor.market.read_result import MarketDataReadResult
@@ -83,6 +94,7 @@ DAG_RUNTIME_PRICE_VOLUME_COLUMNS: tuple[str, ...] = (
 )
 DAG_RUNTIME_LOOKBACK_CALENDAR_DAYS = 420
 DAG_SINGLE_NAME_WEIGHT_CAP = 0.50
+DAG_NEUTRAL_TARGET_EXPOSURE = 0.55
 
 
 @dataclass
@@ -1218,6 +1230,75 @@ def _holding_single_review_active(
     return len(normalized) == 1 and normalized[0] == holding_symbol
 
 
+def _blocked_macro_verdict(
+    *,
+    blockers: list[str],
+    generation_identity: Mapping[str, str],
+) -> BranchVerdict:
+    diagnostic_notes = ["canonical_macro_readiness_blocked", *blockers]
+    return BranchVerdict(
+        agent_name="MacroAgent",
+        thesis=(
+            "Canonical Macro evidence is blocked; this neutral diagnostic "
+            "does not authorize a decision."
+        ),
+        status=AgentStatus.VETOED,
+        direction=Direction.NEUTRAL,
+        action=ActionLabel.HOLD,
+        confidence_label=ConfidenceLabel.VERY_LOW,
+        final_score=0.0,
+        final_confidence=0.0,
+        diagnostic_notes=diagnostic_notes,
+        metadata={
+            "regime": "neutral",
+            "target_gross_exposure": DAG_NEUTRAL_TARGET_EXPOSURE,
+            "style_bias": "balanced_quality",
+            "decision_authorized": False,
+            "macro_data_readiness_status": STATUS_BLOCK,
+            "canonical_macro_generation": dict(generation_identity),
+            "blockers": list(blockers),
+        },
+    )
+
+
+def _resolve_effective_data_state(
+    *,
+    scoped_data_snapshot: Mapping[str, Any],
+    download_stage: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any], str, str]:
+    snapshot_latest_trade_date = str(
+        scoped_data_snapshot.get("local_latest_trade_date")
+        or scoped_data_snapshot.get("latest_trade_date")
+        or ""
+    )
+    snapshot_freshness_mode = str(
+        scoped_data_snapshot.get("freshness_mode") or "stable"
+    )
+    completeness_payload = (
+        dict(
+            download_stage.get("completeness_after")
+            or download_stage.get("completeness_before")
+            or {}
+        )
+        if download_stage
+        else {}
+    )
+    effective_latest_trade_date = str(
+        completeness_payload.get("latest_trade_date")
+        or snapshot_latest_trade_date
+    )
+    effective_freshness_mode = str(
+        completeness_payload.get("freshness_mode")
+        or snapshot_freshness_mode
+        or "stable"
+    )
+    return (
+        completeness_payload,
+        effective_latest_trade_date,
+        effective_freshness_mode,
+    )
+
+
 def _annotate_theme_rotation_scope(
     theme_rotation: dict[str, Any],
     *,
@@ -1494,26 +1575,50 @@ def _prepare_market_context(
             cross_section_metadata["average_volatility"] = float(
                 cross_section_quant.get("average_volatility", 0.0)
             )
-        macro_overview = {
-            "regime": "neutral",
-            "macro_score": cross_section_quant.get("average_return", 0.0),
-            "liquidity_score": cross_section_quant.get("breadth", 0.0),
-            "volatility_percentile": min(95.0, max(5.0, cross_section_quant.get("average_volatility", 0.0) * 100.0 + 50.0)),
-            "policy_signal": "neutral",
-        }
-        snapshot_latest_trade_date = str(scoped_data_snapshot.get("local_latest_trade_date", ""))
-        snapshot_freshness_mode = str(scoped_data_snapshot.get("freshness_mode", "stable"))
-        effective_snapshot_trade_date = (
-            download_stage.get("completeness_after", {}).get("latest_trade_date", "")
-            if download_stage
-            else snapshot_latest_trade_date
+        (
+            completeness_payload,
+            effective_latest_trade_date,
+            effective_freshness_mode,
+        ) = _resolve_effective_data_state(
+            scoped_data_snapshot=scoped_data_snapshot,
+            download_stage=download_stage,
         )
+        pinned_macro_record, pinned_macro_manifest = load_macro_record(
+            as_of=effective_latest_trade_date,
+        )
+        pinned_macro_readiness = assess_macro_readiness(
+            macro_record=pinned_macro_record,
+            manifest=pinned_macro_manifest,
+            as_of=effective_latest_trade_date,
+        )
+        pinned_macro_blocked = pinned_macro_readiness.status == STATUS_BLOCK
+        pinned_macro_identity = macro_generation_identity(pinned_macro_manifest)
+        if pinned_macro_blocked:
+            macro_overview = {
+                "regime": "neutral",
+                "macro_score": 0.0,
+                "liquidity_score": 0.0,
+                "volatility_percentile": 50.0,
+                "policy_signal": "neutral",
+            }
+        else:
+            macro_overview = {
+                "regime": "neutral",
+                "macro_score": float(pinned_macro_record["macro_score"]),
+                "liquidity_score": float(
+                    pinned_macro_record["liquidity_score"]
+                ),
+                "volatility_percentile": float(
+                    pinned_macro_record["volatility_percentile"]
+                ),
+                "policy_signal": str(pinned_macro_record["policy_signal"]),
+            }
         with profile_stage(
             runtime_profiler,
             "dag_market_snapshot",
             {
                 "researchable_count": len(symbols),
-                "latest_trade_date": effective_snapshot_trade_date,
+                "latest_trade_date": effective_latest_trade_date,
                 "universe_key": universe_key,
             },
         ) as market_snapshot_metadata:
@@ -1522,9 +1627,16 @@ def _prepare_market_context(
                 universe_key=universe_key,
                 frames=researchable_frames,
                 global_summary={"candidate_count": len(symbols)},
-                latest_trade_date=effective_snapshot_trade_date,
+                latest_trade_date=effective_latest_trade_date,
                 macro_overview=macro_overview,
                 frame_summaries=researchable_frame_summaries,
+            )
+            market_snapshot.update(
+                {
+                    "macro_data_readiness_status": pinned_macro_readiness.status,
+                    "canonical_macro_generation": dict(pinned_macro_identity),
+                    "decision_authorized": not pinned_macro_blocked,
+                }
             )
             market_snapshot_metadata["snapshot_key_count"] = len(market_snapshot)
 
@@ -1533,15 +1645,40 @@ def _prepare_market_context(
             "dag_macro_verdict",
             {"market": settings.market, "universe_key": universe_key},
         ) as macro_metadata:
-            macro_verdict = macro_agent.run({"market_snapshot": market_snapshot})
+            if pinned_macro_blocked:
+                macro_verdict = _blocked_macro_verdict(
+                    blockers=list(pinned_macro_readiness.blockers),
+                    generation_identity=pinned_macro_identity,
+                )
+            else:
+                macro_verdict = macro_agent.run(
+                    {"market_snapshot": market_snapshot}
+                )
+                macro_verdict.metadata = dict(macro_verdict.metadata or {})
+                macro_verdict.metadata.update(
+                    {
+                        "decision_authorized": True,
+                        "macro_data_readiness_status": (
+                            pinned_macro_readiness.status
+                        ),
+                        "canonical_macro_generation": dict(
+                            pinned_macro_identity
+                        ),
+                    }
+                )
             macro_metadata["macro_regime"] = str(
                 macro_verdict.metadata.get("regime", "neutral")
             )
             macro_metadata["macro_score"] = float(macro_verdict.final_score)
+            macro_metadata["macro_data_readiness_status"] = (
+                pinned_macro_readiness.status
+            )
+            macro_metadata["canonical_macro_generation"] = dict(
+                pinned_macro_identity
+            )
         macro_overview["regime"] = str(macro_verdict.metadata.get("regime", "neutral"))
-        macro_overview["macro_score"] = float(macro_verdict.final_score)
-        macro_overview["liquidity_score"] = float(cross_section_quant.get("breadth", 0.0))
         market_snapshot.update(macro_overview)
+        market_snapshot["macro_agent_score"] = float(macro_verdict.final_score)
         with profile_stage(
             runtime_profiler,
             "dag_quant_branch_result",
@@ -1631,25 +1768,12 @@ def _prepare_market_context(
             "momentum_strength": momentum_strength,
         }
 
-    completeness_payload = {}
-    if download_stage:
-        completeness_payload = dict(
-            download_stage.get("completeness_after")
-            or download_stage.get("completeness_before")
-            or {}
-        )
-    effective_latest_trade_date = str(
-        completeness_payload.get("latest_trade_date")
-        or snapshot_latest_trade_date
-    )
-    effective_freshness_mode = str(
-        completeness_payload.get("freshness_mode")
-        or snapshot_freshness_mode
-        or "stable"
-    )
     target_exposure = float(macro_verdict.metadata.get("target_gross_exposure", 0.5))
     max_single_weight = DAG_SINGLE_NAME_WEIGHT_CAP
-    if str(funnel_profile or "").strip().lower() == "momentum_leader":
+    if (
+        not pinned_macro_blocked
+        and str(funnel_profile or "").strip().lower() == "momentum_leader"
+    ):
         breadth = float(cross_section_quant.get("breadth", 0.0))
         weak_regime = str(macro_verdict.metadata.get("regime", "neutral")) in {"趋势下跌", "震荡高波"}
         if weak_regime or float(macro_verdict.final_score) < 0.0 or breadth < 0.48:
@@ -1682,7 +1806,19 @@ def _prepare_market_context(
         "baseline_max_single_weight": baseline_max_single_weight,
         "applied_max_single_weight": baseline_max_single_weight,
     }
-    if markov_enabled:
+    if pinned_macro_blocked:
+        markov_payload.update(
+            {
+                "status": "blocked_by_canonical_macro_readiness",
+                "execution_mode": "not_run",
+                "diagnostic_notes": [
+                    "markov_not_run_canonical_macro_readiness_blocked",
+                    *list(pinned_macro_readiness.blockers),
+                ],
+                "canonical_macro_generation": dict(pinned_macro_identity),
+            }
+        )
+    elif markov_enabled:
         markov_reference_input = _resolve_markov_reference_input(
             market=settings.market,
             universe_key=universe_key,
@@ -1918,6 +2054,9 @@ def _prepare_market_context(
             or effective_latest_trade_date
         ),
         regime_params={"markov": markov_payload},
+        macro_data=(
+            dict(pinned_macro_record) if not pinned_macro_blocked else {}
+        ),
         universe_tiers={
             "total": list(all_symbols),
             "researchable": list(researchable_symbols),
@@ -1962,6 +2101,9 @@ def _prepare_market_context(
             "markov_regime": markov_payload,
             "markov_regime_diagnostic_notes": list(markov_payload.get("diagnostic_notes", []) or []),
             "macro_agent_regime": macro_agent_regime,
+            "canonical_macro_generation": dict(pinned_macro_identity),
+            "canonical_macro_readiness": pinned_macro_readiness.to_dict(),
+            "decision_authorized": not pinned_macro_blocked,
             "selection_profile": {
                 "funnel_profile": str(funnel_profile or "classic").strip().lower() or "classic",
                 "trend_windows": list(trend_windows),
@@ -2143,6 +2285,8 @@ def _prepare_market_context(
             market=settings.market,
             category=universe_key,
             as_of=effective_latest_trade_date,
+            pinned_macro_record=pinned_macro_record,
+            pinned_macro_manifest=pinned_macro_manifest,
         )
         branch_governance_artifacts = write_branch_readiness_report(branch_governance_report)
         stage_metadata["blocked_symbol_count"] = len(branch_governance_report.blocked_symbols)
@@ -2151,11 +2295,23 @@ def _prepare_market_context(
     branch_data_readiness = branch_governance_report.to_dict(include_branch_data=False)
     branch_data_payload = dict(branch_governance_report.branch_data)
     macro_ready = branch_governance_report.readiness.get("macro")
-    macro_blocked = bool(macro_ready and macro_ready.status == STATUS_BLOCK)
+    macro_blocked = pinned_macro_blocked or bool(
+        macro_ready and macro_ready.status == STATUS_BLOCK
+    )
+    if macro_blocked:
+        macro_verdict.metadata = dict(macro_verdict.metadata or {})
+        macro_verdict.metadata["decision_authorized"] = False
+        market_snapshot["decision_authorized"] = False
     blocked_symbols = set(branch_governance_report.blocked_symbols)
     holding_review_readiness_override = _holding_single_review_active(
         recall_context=recall_context,
         symbols=candidate_symbols,
+    )
+    holding_review_funnel_override_applied = (
+        holding_review_funnel_override and not macro_blocked
+    )
+    holding_review_readiness_override_applied = (
+        holding_review_readiness_override and not macro_blocked
     )
     for symbol in list(blocked_symbols):
         if symbol in candidate_symbols:
@@ -2163,8 +2319,7 @@ def _prepare_market_context(
     if macro_blocked:
         for symbol in candidate_symbols:
             funnel_output.excluded_symbols.setdefault(symbol, "macro_data_readiness_block")
-        if not holding_review_readiness_override:
-            candidate_symbols = []
+        candidate_symbols = []
     else:
         if not holding_review_readiness_override:
             candidate_symbols = [symbol for symbol in candidate_symbols if symbol not in blocked_symbols]
@@ -2183,11 +2338,21 @@ def _prepare_market_context(
             },
             "branch_data_blocked_count": len(branch_governance_report.blocked_symbols),
             "macro_data_readiness_block": macro_blocked,
-            "holding_review_funnel_override": holding_review_funnel_override,
-            "holding_review_branch_readiness_override": holding_review_readiness_override,
+            "holding_review_funnel_override": (
+                holding_review_funnel_override_applied
+            ),
+            "holding_review_funnel_override_requested": (
+                holding_review_funnel_override
+            ),
+            "holding_review_branch_readiness_override": (
+                holding_review_readiness_override_applied
+            ),
+            "holding_review_branch_readiness_override_requested": (
+                holding_review_readiness_override
+            ),
         }
     )
-    if branch_data_payload.get("macro_data"):
+    if not macro_blocked and branch_data_payload.get("macro_data"):
         market_snapshot.update(dict(branch_data_payload.get("macro_data") or {}))
         global_context.macro_data.update(dict(branch_data_payload.get("macro_data") or {}))
     global_context.universe_tiers = {
@@ -2209,9 +2374,20 @@ def _prepare_market_context(
     global_context.metadata["branch_data_readiness"] = branch_data_readiness
     global_context.metadata["branch_readiness_artifacts"] = branch_governance_artifacts
     global_context.metadata["branch_fusion_blocked"] = macro_blocked
+    global_context.metadata["decision_authorized"] = not macro_blocked
     global_context.metadata["blocked_branch_symbols"] = list(branch_governance_report.blocked_symbols[:128])
-    global_context.metadata["holding_review_funnel_override"] = holding_review_funnel_override
-    global_context.metadata["holding_review_branch_readiness_override"] = holding_review_readiness_override
+    global_context.metadata["holding_review_funnel_override"] = (
+        holding_review_funnel_override_applied
+    )
+    global_context.metadata["holding_review_funnel_override_requested"] = (
+        holding_review_funnel_override
+    )
+    global_context.metadata["holding_review_branch_readiness_override"] = (
+        holding_review_readiness_override_applied
+    )
+    global_context.metadata[
+        "holding_review_branch_readiness_override_requested"
+    ] = holding_review_readiness_override
     global_context.metadata["quantifiable_universe_count"] = len(branch_governance_report.quantifiable_universe)
     global_context.metadata["investable_universe_count"] = len(branch_governance_report.investable_universe)
     candidate_sector_counts: dict[str, int] = {}

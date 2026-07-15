@@ -90,6 +90,30 @@ def _frame(symbol: str, closes: list[float]) -> pd.DataFrame:
 
 
 def _patch_branch_readiness(monkeypatch: pytest.MonkeyPatch) -> None:
+    macro_record = {
+        "trade_date": "2026-06-25",
+        "macro_score": 0.2,
+        "liquidity_score": 0.4,
+        "volatility_percentile": 45.0,
+        "policy_signal": "neutral",
+        "source": "tushare_primary",
+        "source_priority": "tushare_primary",
+        "pit_status": "market_point_in_time",
+        "fetched_at": "2026-06-25T08:00:00+00:00",
+    }
+    macro_manifest = {
+        "generation_id": "fixture-macro-generation",
+        "parquet_sha256": "a" * 64,
+        "generation_manifest_sha256": "b" * 64,
+        "source": "tushare_primary",
+        "source_priority": "tushare_primary",
+        "provider_status": "verified_provider_snapshot",
+        "production_eligible": True,
+    }
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.load_macro_record",
+        lambda **kwargs: (dict(macro_record), dict(macro_manifest)),
+    )
     readiness = SimpleNamespace(status="ok")
     report = SimpleNamespace(
         blocked_symbols=[],
@@ -155,6 +179,287 @@ def _context_kwargs() -> dict[str, Any]:
         "funnel_cls": FakeFunnel,
         "provider_health_detector": lambda **kwargs: {},
     }
+
+
+def test_canonical_macro_is_loaded_once_and_drives_macro_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from quant_investor.agents.macro_agent import MacroAgent
+
+    records = [
+        {
+            "trade_date": "2026-06-25",
+            "macro_score": -0.6,
+            "liquidity_score": 0.2,
+            "volatility_percentile": 50.0,
+            "policy_signal": "neutral",
+            "source": "tushare_primary",
+            "source_priority": "tushare_primary",
+            "pit_status": "market_point_in_time",
+            "fetched_at": "2026-06-25T08:00:00+00:00",
+        },
+        {
+            "trade_date": "2026-06-25",
+            "macro_score": 0.6,
+            "liquidity_score": 0.2,
+            "volatility_percentile": 50.0,
+            "policy_signal": "neutral",
+            "source": "tushare_primary",
+            "source_priority": "tushare_primary",
+            "pit_status": "market_point_in_time",
+            "fetched_at": "2026-06-25T08:00:00+00:00",
+        },
+    ]
+    manifests = [
+        {
+            "generation_id": f"macro-g{index}",
+            "parquet_sha256": str(index) * 64,
+            "generation_manifest_sha256": chr(96 + index) * 64,
+            "source": "tushare_primary",
+            "source_priority": "tushare_primary",
+            "provider_status": "verified_provider_snapshot",
+            "production_eligible": True,
+        }
+        for index in (1, 2)
+    ]
+    load_calls = 0
+    pinned_inputs: list[tuple[object, object]] = []
+
+    def load_once(**_kwargs: object):
+        nonlocal load_calls
+        record = records[load_calls]
+        manifest = manifests[load_calls]
+        load_calls += 1
+        return record, manifest
+
+    def assess_pinned(**kwargs: object) -> SimpleNamespace:
+        record = kwargs["pinned_macro_record"]
+        manifest = kwargs["pinned_macro_manifest"]
+        pinned_inputs.append((record, manifest))
+        symbols = list(kwargs.get("candidate_symbols", []) or [])
+        return SimpleNamespace(
+            blocked_symbols=[],
+            quantifiable_universe=symbols,
+            investable_universe=symbols,
+            readiness={"macro": SimpleNamespace(status="pass")},
+            branch_data={"macro_data": record},
+            to_dict=lambda include_branch_data=False: {"status": "pass"},
+        )
+
+    monkeypatch.setattr(context_module, "load_macro_record", load_once)
+    monkeypatch.setattr(
+        context_module,
+        "assess_branch_data_readiness",
+        assess_pinned,
+    )
+    monkeypatch.setattr(
+        context_module,
+        "write_branch_readiness_report",
+        lambda report: {"status": "disabled"},
+    )
+    monkeypatch.setattr(context_module.config, "MARKOV_REGIME_ENABLED", False)
+
+    states = []
+    for _ in range(2):
+        kwargs = _context_kwargs()
+        kwargs["macro_agent"] = MacroAgent()
+        states.append(_prepare_market_context(**kwargs))
+
+    assert load_calls == 2
+    assert pinned_inputs == list(zip(records, manifests))
+    for index, (record, manifest) in enumerate(pinned_inputs):
+        assert record is records[index]
+        assert manifest is manifests[index]
+    assert states[0].macro_verdict.final_score < states[1].macro_verdict.final_score
+    for index, state in enumerate(states, start=1):
+        assert state.market_snapshot["macro_score"] == records[index - 1][
+            "macro_score"
+        ]
+        assert state.market_snapshot["liquidity_score"] == 0.2
+        assert state.macro_verdict.metadata["decision_authorized"] is True
+        assert state.macro_verdict.metadata["canonical_macro_generation"] == {
+            "generation_id": f"macro-g{index}",
+            "parquet_sha256": str(index) * 64,
+            "generation_manifest_sha256": chr(96 + index) * 64,
+        }
+        assert state.global_context.metadata["canonical_macro_generation"] == (
+            state.macro_verdict.metadata["canonical_macro_generation"]
+        )
+
+
+def test_blocked_canonical_macro_skips_agent_and_markov_and_clears_holding_override(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    load_calls = 0
+    load_as_of: list[object] = []
+    pinned_inputs: list[tuple[object, object]] = []
+    history_path = tmp_path / "history.jsonl"
+    blocked_record = {
+        "trade_date": "2026-06-24",
+        "macro_score": 0.9,
+        "liquidity_score": 0.8,
+        "volatility_percentile": 10.0,
+        "policy_signal": "supportive",
+        "source": "tushare_primary",
+        "source_priority": "tushare_primary",
+        "pit_status": "market_point_in_time",
+        "fetched_at": "2026-06-24T08:00:00+00:00",
+    }
+    blocked_manifest = {
+        "generation_id": "stale-macro-generation",
+        "parquet_sha256": "a" * 64,
+        "generation_manifest_sha256": "b" * 64,
+        "source": "tushare_primary",
+        "source_priority": "tushare_primary",
+        "provider_status": "verified_provider_snapshot",
+        "production_eligible": True,
+    }
+
+    def blocked_load(**_kwargs: object):
+        nonlocal load_calls
+        load_calls += 1
+        load_as_of.append(_kwargs.get("as_of"))
+        return blocked_record, blocked_manifest
+
+    def blocked_assessment(**kwargs: object) -> SimpleNamespace:
+        pinned_inputs.append(
+            (
+                kwargs["pinned_macro_record"],
+                kwargs["pinned_macro_manifest"],
+            )
+        )
+        return SimpleNamespace(
+            blocked_symbols=["000001.SZ"],
+            quantifiable_universe=["000001.SZ"],
+            investable_universe=[],
+            readiness={"macro": SimpleNamespace(status="block")},
+            branch_data={"macro_data": {}},
+            to_dict=lambda include_branch_data=False: {"status": "block"},
+        )
+
+    class ExplodingMacroAgent:
+        def run(self, payload: object) -> BranchVerdict:
+            raise AssertionError("blocked canonical Macro must bypass MacroAgent")
+
+    class ExplodingMarkovEngine:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            raise AssertionError("blocked canonical Macro must bypass Markov")
+
+    monkeypatch.setattr(context_module, "load_macro_record", blocked_load)
+    monkeypatch.setattr(
+        context_module,
+        "assess_branch_data_readiness",
+        blocked_assessment,
+    )
+    monkeypatch.setattr(
+        context_module,
+        "write_branch_readiness_report",
+        lambda report: {"status": "disabled"},
+    )
+    monkeypatch.setattr(
+        context_module,
+        "MarkovRegimeEngine",
+        ExplodingMarkovEngine,
+    )
+    monkeypatch.setattr(context_module.config, "MARKOV_REGIME_ENABLED", True)
+    monkeypatch.setattr(
+        context_module.config,
+        "MARKOV_REGIME_PERSIST_ENABLED",
+        True,
+    )
+    monkeypatch.setattr(
+        context_module.config,
+        "MARKOV_REGIME_HISTORY_PATH",
+        str(history_path),
+    )
+    kwargs = _context_kwargs()
+    kwargs.update(
+        {
+            "symbols": ["000001.SZ"],
+            "company_profile_map": {
+                "000001.SZ": {"industry": "Banking"},
+            },
+            "company_name_map": {"000001.SZ": "平安银行"},
+            "macro_agent": ExplodingMacroAgent(),
+            "funnel_profile": "momentum_leader",
+            "download_stage": {
+                "completeness_after": {},
+                "completeness_before": {},
+            },
+            "recall_context": {"holding_symbol": "000001.SZ"},
+        }
+    )
+
+    state = _prepare_market_context(**kwargs)
+
+    assert load_calls == 1
+    assert load_as_of == ["20260625"]
+    assert pinned_inputs == [(blocked_record, blocked_manifest)]
+    assert state.macro_verdict.status.value == "vetoed"
+    assert state.macro_verdict.direction.value == "neutral"
+    assert state.macro_verdict.action.value == "hold"
+    assert state.macro_verdict.final_score == 0.0
+    assert state.macro_verdict.metadata["decision_authorized"] is False
+    assert state.market_snapshot["macro_score"] == 0.0
+    assert state.market_snapshot["liquidity_score"] == 0.0
+    assert state.market_snapshot["decision_authorized"] is False
+    assert state.global_context.macro_data == {}
+    assert state.candidate_symbols == []
+    assert state.funnel_output.candidates == []
+    assert state.global_context.universe_tiers["shortlistable"] == []
+    assert state.global_context.metadata["decision_authorized"] is False
+    assert state.global_context.metadata["holding_review_funnel_override"] is False
+    assert (
+        state.global_context.metadata["holding_review_funnel_override_requested"]
+        is True
+    )
+    assert (
+        state.global_context.metadata["holding_review_branch_readiness_override"]
+        is False
+    )
+    assert (
+        state.global_context.metadata[
+            "holding_review_branch_readiness_override_requested"
+        ]
+        is True
+    )
+    assert state.global_context.risk_budget["target_exposure"] == pytest.approx(
+        0.55
+    )
+    assert state.global_context.risk_budget["target_exposure"] == (
+        state.global_context.risk_budget["baseline_target_exposure"]
+    )
+    assert state.global_context.risk_budget["max_single_weight"] == (
+        state.global_context.risk_budget["baseline_max_single_weight"]
+    )
+    assert "turnover_cap" not in state.global_context.risk_budget
+    markov = state.global_context.metadata["markov_regime"]
+    assert markov["enabled"] is False
+    assert markov["status"] == "blocked_by_canonical_macro_readiness"
+    assert markov["execution_mode"] == "not_run"
+    assert history_path.exists() is False
+
+    missing_date_kwargs = _context_kwargs()
+    missing_date_kwargs.update(
+        {
+            "scoped_data_snapshot": {"freshness_mode": "stable"},
+            "macro_agent": ExplodingMacroAgent(),
+        }
+    )
+    missing_date_state = _prepare_market_context(**missing_date_kwargs)
+
+    assert load_calls == 2
+    assert load_as_of == ["20260625", ""]
+    assert missing_date_state.macro_verdict.status.value == "vetoed"
+    assert "macro_as_of_missing" in missing_date_state.macro_verdict.metadata[
+        "blockers"
+    ]
+    assert missing_date_state.global_context.metadata[
+        "decision_authorized"
+    ] is False
+    assert missing_date_state.candidate_symbols == []
+    assert history_path.exists() is False
 
 
 def test_markov_context_default_production_caps_risk_budget_and_preserves_macro_agent_regime(

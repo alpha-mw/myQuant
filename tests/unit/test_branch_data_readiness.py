@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import hashlib
 from pathlib import Path
 
 import pandas as pd
@@ -25,6 +24,7 @@ from quant_investor.market.fundamental_generation import (
     load_fundamental_pointer,
     publish_fundamental_generation,
 )
+from tests.helpers.macro_fixture import bind_macro_generation
 
 
 def _price_frame(symbol: str = "000001.SZ") -> pd.DataFrame:
@@ -77,66 +77,20 @@ def _write_fundamental_daily(root, symbols=("000001.SZ",), *, partial: bool = Fa
 
 
 def _write_macro(root):
-    generation = root / "_generations" / "fixture"
-    generation.mkdir(parents=True, exist_ok=True)
-    table = generation / "part.parquet"
-    pd.DataFrame(
-        [
-            {
-                "trade_date": "2024-05-10",
-                "macro_score": 0.2,
-                "liquidity_score": 0.4,
-                "volatility_percentile": 45.0,
-                "policy_signal": "neutral",
-                "source": "tushare_primary",
-                "source_priority": "tushare_primary",
-                "pit_status": "market_point_in_time",
-                "fetched_at": "2024-05-10T08:00:00+00:00",
-            }
-        ]
-    ).to_parquet(table, index=False)
-    table_sha = hashlib.sha256(table.read_bytes()).hexdigest()
-    manifest = generation / "manifest.json"
-    manifest.write_text(
-        json.dumps(
-            {
-                "schema_version": "cn-macro-mart.v14",
-                "generation_id": "fixture",
-                "table": "macro_daily",
-                "table_path": "part.parquet",
-                "parquet_sha256": table_sha,
-                "source": "tushare_primary",
-                "source_priority": "tushare_primary",
-                "provider_status": "verified_provider_snapshot",
-                "pit_status": "market_point_in_time",
-                "as_of": "2024-05-10",
-                "production_eligible": True,
-            },
-            sort_keys=True,
-        ),
-        encoding="utf-8",
-    )
-    manifest_sha = hashlib.sha256(manifest.read_bytes()).hexdigest()
-    relative_table = table.relative_to(root.parent).as_posix()
-    relative_manifest = manifest.relative_to(root.parent).as_posix()
-    (root.parent / "_catalog.json").write_text(
-        json.dumps(
-            {
-                "schema_version": "strict-parquet-catalog.v1",
-                "required_tables": ["macro_daily"],
-                "tables": {
-                    "macro_daily": {
-                        "path": relative_table,
-                        "generation_manifest": relative_manifest,
-                        "generation_id": "fixture",
-                        "parquet_sha256": table_sha,
-                        "generation_manifest_sha256": manifest_sha,
-                    }
-                },
-            },
-            sort_keys=True,
-        ),
-        encoding="utf-8",
+    bind_macro_generation(
+        root,
+        generation_id="fixture",
+        row={
+            "trade_date": "2024-05-10",
+            "macro_score": 0.2,
+            "liquidity_score": 0.4,
+            "volatility_percentile": 45.0,
+            "policy_signal": "neutral",
+            "source": "tushare_primary",
+            "source_priority": "tushare_primary",
+            "pit_status": "market_point_in_time",
+            "fetched_at": "2024-05-10T08:00:00+00:00",
+        },
     )
 
 
@@ -304,6 +258,61 @@ def test_branch_readiness_loads_default_canonical_parquet(tmp_path, monkeypatch)
     assert report.readiness["fundamental"].status == STATUS_PASS
     assert report.readiness["macro"].status == STATUS_PASS
     assert report.readiness["fundamental"].metadata["manifest"]["storage_backend"] == "parquet_canonical"
+
+
+def test_branch_readiness_reuses_pinned_macro_without_second_canonical_read(
+    tmp_path,
+    monkeypatch,
+):
+    fundamental_root = tmp_path / "cn_fundamental"
+    _write_fundamental_daily(fundamental_root)
+    macro_record = {
+        "trade_date": "2024-05-10",
+        "macro_score": 0.2,
+        "liquidity_score": 0.4,
+        "volatility_percentile": 45.0,
+        "policy_signal": "neutral",
+        "source": "tushare_primary",
+        "source_priority": "tushare_primary",
+        "pit_status": "market_point_in_time",
+        "fetched_at": "2024-05-10T08:00:00+00:00",
+    }
+    macro_manifest = {
+        "generation_id": "pinned-generation",
+        "parquet_sha256": "a" * 64,
+        "generation_manifest_sha256": "b" * 64,
+        "source": "tushare_primary",
+        "source_priority": "tushare_primary",
+        "provider_status": "verified_provider_snapshot",
+        "production_eligible": True,
+    }
+
+    monkeypatch.setattr(
+        branch_readiness,
+        "load_macro_record",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("pinned Macro must not be read again")
+        ),
+    )
+
+    report = assess_branch_data_readiness(
+        frames={"000001.SZ": _price_frame()},
+        candidate_symbols=["000001.SZ"],
+        as_of="20240510",
+        fundamental_root=fundamental_root,
+        pinned_macro_record=macro_record,
+        pinned_macro_manifest=macro_manifest,
+        run_id="pinned-macro",
+    )
+
+    readiness = report.readiness["macro"]
+    assert readiness.status == STATUS_PASS
+    assert report.branch_data["macro_data"] == macro_record
+    assert readiness.metadata["canonical_identity"] == {
+        "generation_id": "pinned-generation",
+        "parquet_sha256": "a" * 64,
+        "generation_manifest_sha256": "b" * 64,
+    }
 
 
 def test_branch_readiness_prefers_generation_pointer_over_stale_legacy_table(tmp_path):

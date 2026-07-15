@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-import json
 
-import pandas as pd
 import pytest
 
 import quant_investor.market.macro_mart as macro_mart
@@ -13,6 +11,7 @@ from quant_investor.market.macro_mart import (
     run_cn_macro_maintenance,
     write_macro_mart,
 )
+from tests.helpers.macro_fixture import bind_macro_generation
 
 
 def _row(trade_date: str = "2024-05-10") -> dict[str, object]:
@@ -32,9 +31,6 @@ def _digest(path) -> str:
 
 
 def _bind_catalog_generation(root, *, generation_id: str = "canonical-good"):
-    generation = root / "_generations" / generation_id
-    generation.mkdir(parents=True)
-    table = generation / "part.parquet"
     canonical_row = {
         **_row(),
         "source": "tushare_primary",
@@ -42,48 +38,10 @@ def _bind_catalog_generation(root, *, generation_id: str = "canonical-good"):
         "pit_status": "market_point_in_time",
         "fetched_at": "2024-05-10T08:00:00+00:00",
     }
-    pd.DataFrame([canonical_row]).to_parquet(table, index=False)
-    manifest_path = generation / "manifest.json"
-    manifest_path.write_text(
-        json.dumps(
-            {
-                "schema_version": "cn-macro-mart.v14",
-                "generation_id": generation_id,
-                "table": "macro_daily",
-                "table_path": table.name,
-                "parquet_sha256": _digest(table),
-                "source": "tushare_primary",
-                "source_priority": "tushare_primary",
-                "provider_status": "verified_provider_snapshot",
-                "pit_status": "market_point_in_time",
-                "as_of": "2024-05-10",
-                "production_eligible": True,
-            },
-            sort_keys=True,
-        ),
-        encoding="utf-8",
-    )
-    catalog_path = root.parent / "_catalog.json"
-    catalog_path.write_text(
-        json.dumps(
-            {
-                "schema_version": "strict-parquet-catalog.v1",
-                "required_tables": ["macro_daily"],
-                "tables": {
-                    "macro_daily": {
-                        "path": str(table.relative_to(root.parent)),
-                        "generation_manifest": str(
-                            manifest_path.relative_to(root.parent)
-                        ),
-                        "generation_id": generation_id,
-                        "parquet_sha256": _digest(table),
-                        "generation_manifest_sha256": _digest(manifest_path),
-                    }
-                },
-            },
-            sort_keys=True,
-        ),
-        encoding="utf-8",
+    catalog_path, table, manifest_path, _ = bind_macro_generation(
+        root,
+        generation_id=generation_id,
+        row=canonical_row,
     )
     return catalog_path, table, manifest_path
 

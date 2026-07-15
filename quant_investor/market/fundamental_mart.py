@@ -4088,6 +4088,30 @@ def _checkpoint_pointer_revision_for_cas(
     return revision
 
 
+def _checkpoint_financial_coverage_contract_valid(
+    outcome: Mapping[str, Any],
+) -> bool:
+    table = str(outcome.get("table") or "")
+    status = str(outcome.get("status") or "")
+    if table not in FINANCIAL_SOURCE_TABLES or status not in {
+        "success",
+        "empty",
+    }:
+        return True
+    coverage = outcome.get("financial_coverage")
+    if not isinstance(coverage, Mapping):
+        return False
+    coverage_status = str(coverage.get("status") or "")
+    coverage_passed = coverage.get("passed")
+    declared_passed = outcome.get("financial_coverage_passed")
+    return bool(
+        coverage_status in {"applicable", "not_applicable"}
+        and type(coverage_passed) is bool
+        and type(declared_passed) is bool
+        and declared_passed is coverage_passed
+    )
+
+
 def _write_fetch_checkpoint(
     checkpoint_root: Path,
     *,
@@ -4189,6 +4213,11 @@ def _write_fetch_checkpoint(
                     "checkpoint outcomes contain duplicates"
                 )
             seen_outcome_keys.add(key)
+            if not _checkpoint_financial_coverage_contract_valid(outcome):
+                raise FundamentalFetchCheckpointError(
+                    "checkpoint financial coverage is missing or inconsistent: "
+                    f"{key[0]}/{key[1]}"
+                )
         for table in SOURCE_TABLES:
             declared_rows = sum(
                 strict_nonnegative_int(
@@ -4258,7 +4287,8 @@ def _write_fetch_checkpoint(
             "revision": next_revision,
         }
         candidate_pointer_bytes = _canonical_json_file_bytes(pointer)
-        try:
+
+        def revalidate_candidate() -> None:
             for table in SOURCE_TABLES:
                 table_path = generation_root / str(table_files[table]["path"])
                 if _stable_regular_file_sha256(
@@ -4268,22 +4298,21 @@ def _write_fetch_checkpoint(
                     raise FundamentalFetchCheckpointError(
                         f"checkpoint candidate table changed before publication: {table}"
                     )
-            if _stable_regular_file_sha256(
+            if _stable_regular_file_bytes(
                 outcomes_path,
                 label="checkpoint candidate outcomes publication recheck",
-            ) != hashlib.sha256(outcomes_bytes).hexdigest():
+            ) != outcomes_bytes:
                 raise FundamentalFetchCheckpointError(
                     "checkpoint candidate outcomes changed before publication"
                 )
-            if _stable_regular_file_sha256(
+            if _stable_regular_file_bytes(
                 manifest_path,
                 label="checkpoint candidate manifest publication recheck",
-            ) != hashlib.sha256(manifest_bytes).hexdigest():
+            ) != manifest_bytes:
                 raise FundamentalFetchCheckpointError(
                     "checkpoint candidate manifest changed before publication"
                 )
-        except ValueError as exc:
-            raise FundamentalFetchCheckpointError(str(exc)) from exc
+
         latest_path = checkpoint_root / "latest.json"
         latest_before_switch = (
             _stable_regular_file_bytes(
@@ -4299,6 +4328,13 @@ def _write_fetch_checkpoint(
         )
         if latest_before_switch_sha256 != expected_pointer_sha256:
             raise FundamentalFetchCheckpointError("checkpoint pointer CAS mismatch")
+        try:
+            # Recheck exact candidate identity after the pointer CAS read and as
+            # close as possible to the canonical latest.json switch.  This
+            # closes the validation-to-switch window for same-user mutation.
+            revalidate_candidate()
+        except ValueError as exc:
+            raise FundamentalFetchCheckpointError(str(exc)) from exc
         _atomic_json_write(checkpoint_root / "latest.json", pointer)
         published_pointer_bytes = _stable_regular_file_bytes(
             checkpoint_root / "latest.json", label="published checkpoint pointer"
@@ -4335,12 +4371,12 @@ def _checkpoint_outcome_requires_refetch(
             return False
         return status != "success" or outcome.get("history_complete") is not True
     if table in FINANCIAL_SOURCE_TABLES:
+        if status != "success":
+            return True
         coverage = outcome.get("financial_coverage")
-        if not isinstance(coverage, Mapping):
+        if not _checkpoint_financial_coverage_contract_valid(outcome):
             return True
-        coverage_status = str(coverage.get("status") or "")
-        if coverage_status not in {"applicable", "not_applicable"}:
-            return True
+        assert isinstance(coverage, Mapping)
         if (
             coverage.get("passed") is not True
             or outcome.get("financial_coverage_passed") is not True
@@ -4432,23 +4468,41 @@ def _fetch_tushare_tables(
         table: checkpoint_state.tables[table]
         for table in SOURCE_TABLES
     }
-    checkpoint_outcomes = _attach_daily_history_coverage(
-        normalized_symbols,
+
+    def attach_checkpoint_coverage(
+        checkpoint_tables: Mapping[str, pd.DataFrame],
+        checkpoint_outcomes: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        attached = _attach_daily_history_coverage(
+            normalized_symbols,
+            checkpoint_outcomes,
+            checkpoint_tables,
+            daily_start=start_text,
+            as_of=end_text,
+            scope_evidence=validated_scope_evidence,
+            policy=audit_policy,
+        )
+        return _attach_financial_coverage(
+            normalized_symbols,
+            attached,
+            checkpoint_tables,
+            financial_start=financial_start_text,
+            as_of=end_text,
+            scope_evidence=validated_scope_evidence,
+            policy=audit_policy,
+        )
+
+    invalid_checkpoint_coverage_keys = {
+        (
+            normalize_ts_code(outcome.get("symbol")),
+            str(outcome.get("table") or ""),
+        )
+        for outcome in checkpoint_state.outcomes
+        if not _checkpoint_financial_coverage_contract_valid(outcome)
+    }
+    checkpoint_outcomes = attach_checkpoint_coverage(
+        base_tables,
         checkpoint_state.outcomes,
-        base_tables,
-        daily_start=start_text,
-        as_of=end_text,
-        scope_evidence=validated_scope_evidence,
-        policy=audit_policy,
-    )
-    checkpoint_outcomes = _attach_financial_coverage(
-        normalized_symbols,
-        checkpoint_outcomes,
-        base_tables,
-        financial_start=financial_start_text,
-        as_of=end_text,
-        scope_evidence=validated_scope_evidence,
-        policy=audit_policy,
     )
     outcome_by_key: dict[tuple[str, str], dict[str, Any]] = {}
     for outcome in checkpoint_outcomes:
@@ -4462,9 +4516,16 @@ def _fetch_tushare_tables(
             )
         outcome_by_key[key] = dict(outcome)
     resumed_valid_request_count = sum(
-        not _checkpoint_outcome_requires_refetch(
-            outcome,
-            daily_basic_empty_exception_symbols=audit_tail_gap_exceptions,
+        (
+            (
+                normalize_ts_code(outcome.get("symbol")),
+                str(outcome.get("table") or ""),
+            )
+            not in invalid_checkpoint_coverage_keys
+            and not _checkpoint_outcome_requires_refetch(
+                outcome,
+                daily_basic_empty_exception_symbols=audit_tail_gap_exceptions,
+            )
         )
         for outcome in checkpoint_outcomes
     )
@@ -4690,12 +4751,15 @@ def _fetch_tushare_tables(
         symbol: [
             table
             for table in SOURCE_TABLES
-            if _checkpoint_outcome_requires_refetch(
-                outcome_by_key.get(
-                    (symbol, table),
-                    {"symbol": symbol, "table": table, "status": ""},
-                ),
-                daily_basic_empty_exception_symbols=audit_tail_gap_exceptions,
+            if (
+                (symbol, table) in invalid_checkpoint_coverage_keys
+                or _checkpoint_outcome_requires_refetch(
+                    outcome_by_key.get(
+                        (symbol, table),
+                        {"symbol": symbol, "table": table, "status": ""},
+                    ),
+                    daily_basic_empty_exception_symbols=audit_tail_gap_exceptions,
+                )
             )
         ]
         for symbol in normalized_symbols
@@ -4743,11 +4807,16 @@ def _fetch_tushare_tables(
             outcome_by_key[key] = combined
         completed_since_checkpoint += 1
         if resolved_checkpoint_root is not None and completed_since_checkpoint >= batch_size:
+            checkpoint_tables = materialize_tables()
+            covered_checkpoint_outcomes = attach_checkpoint_coverage(
+                checkpoint_tables,
+                list(outcome_by_key.values()),
+            )
             checkpoint_state = _write_fetch_checkpoint(
                 resolved_checkpoint_root,
                 binding=binding,
-                tables=materialize_tables(),
-                outcomes=list(outcome_by_key.values()),
+                tables=checkpoint_tables,
+                outcomes=covered_checkpoint_outcomes,
                 expected_pointer_sha256=checkpoint_state.pointer_sha256,
                 expected_revision=checkpoint_state.revision,
             )
@@ -4797,23 +4866,9 @@ def _fetch_tushare_tables(
             validated_scope_evidence,
             normalized_symbols,
         )
-    outcomes = _attach_daily_history_coverage(
-        normalized_symbols,
+    outcomes = attach_checkpoint_coverage(
+        tables,
         list(outcome_by_key.values()),
-        tables,
-        daily_start=start_text,
-        as_of=end_text,
-        scope_evidence=validated_scope_evidence,
-        policy=audit_policy,
-    )
-    outcomes = _attach_financial_coverage(
-        normalized_symbols,
-        outcomes,
-        tables,
-        financial_start=financial_start_text,
-        as_of=end_text,
-        scope_evidence=validated_scope_evidence,
-        policy=audit_policy,
     )
     if resolved_checkpoint_root is not None:
         checkpoint_unchanged = bool(

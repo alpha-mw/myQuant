@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -18,6 +20,10 @@ from quant_investor.market.pit_universe import (
     PITUniverseRecord,
     PITUniverseStore,
 )
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _write_parquet_fixture(root: Path, *, status: str = "OK") -> dict[str, Path]:
@@ -145,6 +151,212 @@ def test_strict_parquet_reader_reads_symbol_batch_cross_section_and_catalog_tabl
     )
     assert daily_basic["total_mv"].sum() == 300.0
     assert set(daily_basic["trade_date"]) == {"20260103"}
+
+
+def test_strict_catalog_resolves_table_path_relative_to_parquet_market_root(
+    tmp_path: Path,
+) -> None:
+    _write_parquet_fixture(tmp_path)
+    generation_path = (
+        tmp_path
+        / "parquet"
+        / "cn"
+        / "macro_daily"
+        / "_generations"
+        / "macro-gen-001"
+        / "macro_daily.parquet"
+    )
+    generation_path.parent.mkdir(parents=True)
+    pd.DataFrame(
+        [{"trade_date": "20260103", "macro_score": 0.25}],
+    ).to_parquet(generation_path, index=False)
+    catalog_path = tmp_path / "parquet" / "cn" / "_catalog.json"
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "strict-parquet-catalog.v1",
+                "market": "CN",
+                "tables": {
+                    "macro_daily": {
+                        "path": (
+                            "macro_daily/_generations/macro-gen-001/"
+                            "macro_daily.parquet"
+                        ),
+                        "date_column": "trade_date",
+                        "sha256": _sha256(generation_path),
+                        "size_bytes": generation_path.stat().st_size,
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    frame = MarketDataReader(market="CN", data_root=tmp_path).read_table(
+        "macro_daily",
+        as_of="20260103",
+    )
+
+    assert frame.to_dict(orient="records") == [
+        {"trade_date": "20260103", "macro_score": 0.25}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("metadata", "message"),
+    [
+        ({}, "hash missing"),
+        ({"sha256": "0" * 64}, "hash mismatch"),
+        (
+            {"sha256": "0" * 64, "parquet_sha256": "1" * 64},
+            "hash conflict",
+        ),
+        ({"size_bytes": 1}, "size mismatch"),
+    ],
+)
+def test_strict_catalog_requires_consistent_hash_and_size(
+    tmp_path: Path,
+    metadata: dict[str, object],
+    message: str,
+) -> None:
+    _write_parquet_fixture(tmp_path)
+    table_path = tmp_path / "parquet" / "cn" / "daily_basic" / "part.parquet"
+    entry: dict[str, object] = {
+        "path": "daily_basic/part.parquet",
+        "date_column": "trade_date",
+        "sha256": _sha256(table_path),
+        **metadata,
+    }
+    if not metadata:
+        entry.pop("sha256")
+    catalog_path = tmp_path / "parquet" / "cn" / "_catalog.json"
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "strict-parquet-catalog.v1",
+                "tables": {"daily_basic": entry},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MarketDataUnavailableError, match=message):
+        MarketDataReader(market="CN", data_root=tmp_path).read_table(
+            "daily_basic"
+        )
+
+
+def test_strict_catalog_blocks_path_replacement_during_same_fd_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_parquet_fixture(tmp_path)
+    table_path = tmp_path / "parquet" / "cn" / "daily_basic" / "part.parquet"
+    catalog_path = tmp_path / "parquet" / "cn" / "_catalog.json"
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "strict-parquet-catalog.v1",
+                "tables": {
+                    "daily_basic": {
+                        "path": "daily_basic/part.parquet",
+                        "date_column": "trade_date",
+                        "sha256": _sha256(table_path),
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    replacement = table_path.with_name("replacement.parquet")
+    pd.DataFrame(
+        [{"ts_code": "999999.SZ", "trade_date": "20260103"}]
+    ).to_parquet(replacement, index=False)
+    original_read = pd.read_parquet
+
+    def _replace_after_fd_read(*args, **kwargs):
+        frame = original_read(*args, **kwargs)
+        os.replace(replacement, table_path)
+        return frame
+
+    monkeypatch.setattr(pd, "read_parquet", _replace_after_fd_read)
+    with pytest.raises(MarketDataUnavailableError, match="replaced during read"):
+        MarketDataReader(market="CN", data_root=tmp_path).read_table(
+            "daily_basic"
+        )
+
+
+@pytest.mark.parametrize(
+    ("entry", "message"),
+    [
+        ({}, "path missing"),
+        ({"path": "/tmp/macro_daily.parquet"}, "absolute path rejected"),
+        (
+            {"path": "macro_daily/../daily_basic/part.parquet"},
+            "parent traversal rejected",
+        ),
+        (
+            {"path": "macro_daily/_generations/missing.parquet"},
+            "path missing or unreadable",
+        ),
+    ],
+)
+def test_strict_catalog_rejects_unsafe_or_missing_table_paths(
+    tmp_path: Path,
+    entry: dict[str, str],
+    message: str,
+) -> None:
+    _write_parquet_fixture(tmp_path)
+    catalog_path = tmp_path / "parquet" / "cn" / "_catalog.json"
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "strict-parquet-catalog.v1",
+                "market": "CN",
+                "tables": {
+                    "macro_daily": {"date_column": "trade_date", **entry}
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    reader = MarketDataReader(market="CN", data_root=tmp_path)
+    with pytest.raises(MarketDataUnavailableError, match=message):
+        reader.read_table("macro_daily")
+
+
+def test_strict_catalog_rejects_symlink_table_path(tmp_path: Path) -> None:
+    _write_parquet_fixture(tmp_path)
+    outside = tmp_path / "outside_macro_daily.parquet"
+    pd.DataFrame(
+        [{"trade_date": "20260103", "macro_score": 0.25}],
+    ).to_parquet(outside, index=False)
+    link_path = tmp_path / "parquet" / "cn" / "macro_daily.parquet"
+    link_path.symlink_to(outside)
+    catalog_path = tmp_path / "parquet" / "cn" / "_catalog.json"
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "strict-parquet-catalog.v1",
+                "market": "CN",
+                "tables": {
+                    "macro_daily": {
+                        "path": "macro_daily.parquet",
+                        "date_column": "trade_date",
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    reader = MarketDataReader(market="CN", data_root=tmp_path)
+    with pytest.raises(MarketDataUnavailableError, match="symlink rejected"):
+        reader.read_table("macro_daily")
 
 
 def test_reader_list_symbols_filters_by_pit_universe_only_when_enabled(

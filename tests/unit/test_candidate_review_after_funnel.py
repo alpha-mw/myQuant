@@ -111,6 +111,34 @@ class _FakeReader:
         }
 
 
+def _patch_canonical_macro(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.load_macro_record",
+        lambda **kwargs: (
+            {
+                "trade_date": "2026-03-01",
+                "macro_score": 0.2,
+                "liquidity_score": 0.4,
+                "volatility_percentile": 45.0,
+                "policy_signal": "neutral",
+                "source": "tushare_primary",
+                "source_priority": "tushare_primary",
+                "pit_status": "market_point_in_time",
+                "fetched_at": "2026-03-01T08:00:00+00:00",
+            },
+            {
+                "generation_id": "fixture-macro-generation",
+                "parquet_sha256": "a" * 64,
+                "generation_manifest_sha256": "b" * 64,
+                "source": "tushare_primary",
+                "source_priority": "tushare_primary",
+                "provider_status": "verified_provider_snapshot",
+                "production_eligible": True,
+            },
+        ),
+    )
+
+
 def test_empty_counterfactual_shortlist_still_requires_control_chain_replay():
     state = SimpleNamespace(
         counterfactual_by_symbol={"A": {"basis": "without_dossier"}},
@@ -127,6 +155,8 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
     import quant_investor.market.dag_executor as dag_module
     import quant_investor.market.dag.context as dag_context
     import quant_investor.market.dag.packets as dag_packets
+
+    _patch_canonical_macro(monkeypatch)
 
     reviewed: dict[str, list[str]] = {"fundamental": []}
     frame_summary_calls = {"count": 0}
@@ -604,6 +634,8 @@ def test_holding_single_review_runs_branches_when_readiness_blocks_symbol(monkey
     import quant_investor.market.dag_executor as dag_module
     import quant_investor.market.dag.context as dag_context
 
+    _patch_canonical_macro(monkeypatch)
+
     reviewed: dict[str, list[str]] = {"fundamental": []}
 
     class _SingleFunnel:
@@ -788,6 +820,8 @@ def test_holding_single_review_runs_branches_when_readiness_blocks_symbol(monkey
 def test_holding_single_review_runs_branches_when_funnel_excludes_symbol(monkeypatch):
     import quant_investor.market.dag_executor as dag_module
     import quant_investor.market.dag.context as dag_context
+
+    _patch_canonical_macro(monkeypatch)
 
     reviewed: dict[str, list[str]] = {"fundamental": []}
 
@@ -975,3 +1009,447 @@ def test_holding_single_review_runs_branches_when_funnel_excludes_symbol(monkeyp
     }
     assert result["global_context"].metadata["holding_review_funnel_override"] is True
     assert result["global_context"].universe_tiers["shortlistable"] == ["A"]
+
+
+def test_blocked_canonical_macro_holding_review_produces_no_decision_or_targets(
+    monkeypatch,
+):
+    import quant_investor.market.dag.context as dag_context
+    import quant_investor.market.dag_executor as dag_module
+
+    class _SingleCandidateFunnel:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def run(self, *, quant_result, global_context):
+            return _FakeFunnelOutput(
+                candidates=["A"],
+                candidate_scores={"A": 0.9},
+                excluded_symbols={},
+                funnel_metadata={"after_gates": 1, "final_candidates": 1},
+            )
+
+    class _ExplodingMarkovEngine:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("blocked Macro must not instantiate Markov")
+
+    class _ExplodingRiskGuard:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("blocked Macro must not instantiate RiskGuard")
+
+    class _ExplodingICCoordinator:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("blocked Macro must not instantiate ICCoordinator")
+
+    class _ExplodingPortfolioConstructor:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError(
+                "blocked Macro must not instantiate PortfolioConstructor"
+            )
+
+    def _unexpected_macro_run(self, payload):
+        raise AssertionError("blocked Macro must not call MacroAgent")
+
+    monkeypatch.setattr(dag_module, "MarketDataReader", _FakeReader)
+    monkeypatch.setattr(dag_module, "DeterministicFunnel", _SingleCandidateFunnel)
+    monkeypatch.setattr(dag_module.MacroAgent, "run", _unexpected_macro_run)
+    monkeypatch.setattr(dag_module, "RiskGuard", _ExplodingRiskGuard)
+    monkeypatch.setattr(dag_module, "ICCoordinator", _ExplodingICCoordinator)
+    monkeypatch.setattr(
+        dag_module,
+        "PortfolioConstructor",
+        _ExplodingPortfolioConstructor,
+    )
+    monkeypatch.setattr(dag_context, "MarkovRegimeEngine", _ExplodingMarkovEngine)
+    monkeypatch.setattr(
+        dag_context,
+        "load_macro_record",
+        lambda **kwargs: ({}, {"read_error": "macro_catalog_missing"}),
+    )
+    monkeypatch.setattr(
+        dag_context,
+        "assess_branch_data_readiness",
+        lambda **kwargs: BranchGovernanceReport(
+            run_id="macro-blocked",
+            market="CN",
+            category="full_a",
+            as_of="2026-03-01",
+            readiness={
+                "quant": BranchDataReadiness(
+                    branch="quant",
+                    status=STATUS_PASS,
+                    coverage_ratio=1.0,
+                    source_priority=SOURCE_TUSHARE,
+                ),
+                "fundamental": BranchDataReadiness(
+                    branch="fundamental",
+                    status=STATUS_PASS,
+                    coverage_ratio=1.0,
+                    source_priority=SOURCE_TUSHARE,
+                ),
+                "macro": BranchDataReadiness(
+                    branch="macro",
+                    status=STATUS_BLOCK,
+                    coverage_ratio=0.0,
+                    source_priority=SOURCE_TUSHARE,
+                    blockers=["macro_catalog_missing"],
+                ),
+            },
+            blocked_symbols=["A"],
+            quantifiable_universe=["A"],
+            investable_universe=[],
+            branch_data={"macro_data": {}},
+        ),
+    )
+    monkeypatch.setattr(
+        dag_context,
+        "write_branch_readiness_report",
+        lambda report: {"status": "disabled"},
+    )
+    monkeypatch.setattr(
+        dag_module,
+        "_load_company_name_map",
+        lambda market: {"A": "Alpha"},
+    )
+    monkeypatch.setattr(
+        dag_module,
+        "_load_company_profile_map",
+        lambda market: {},
+    )
+    monkeypatch.setattr(dag_module, "detect_provider_health", lambda **kwargs: {})
+    monkeypatch.setattr(dag_module.config, "PIT_UNIVERSE_ENABLED", False)
+    monkeypatch.setattr(dag_context.config, "MARKOV_REGIME_ENABLED", True)
+    monkeypatch.setattr(dag_context.config, "MARKOV_REGIME_PERSIST_ENABLED", True)
+
+    result = execute_market_dag(
+        market="CN",
+        symbols=["A"],
+        universe="full_a",
+        categories=["full_a"],
+        mode="full",
+        batch_size=None,
+        total_capital=100_000.0,
+        top_k=1,
+        data_snapshot={
+            "local_latest_trade_date": "20260301",
+            "freshness_mode": "stable",
+        },
+        verbose=False,
+        enable_agent_layer=False,
+        recall_context={"holding_symbol": "A"},
+    )
+
+    assert result["global_context"].metadata["decision_authorized"] is False
+    assert result["global_context"].universe_tiers["shortlistable"] == []
+    assert result["global_context"].metadata["holding_review_funnel_override"] is False
+    assert (
+        result["global_context"].metadata[
+            "holding_review_funnel_override_requested"
+        ]
+        is True
+    )
+    assert (
+        result["global_context"].metadata[
+            "holding_review_branch_readiness_override"
+        ]
+        is False
+    )
+    assert result["macro_verdict"].status.value == "vetoed"
+    assert result["macro_verdict"].metadata["decision_authorized"] is False
+    assert result["risk_decision"].status.value == "vetoed"
+    assert result["risk_decision"].hard_veto is True
+    assert result["risk_decision"].veto is True
+    assert result["risk_decision"].action_cap.value == "hold"
+    assert result["risk_decision"].gross_exposure_cap == 0.55
+    assert result["risk_decision"].max_weight == 0.50
+    assert result["risk_decision"].metadata["decision_authorized"] is False
+    assert result["shortlist"] == []
+    assert result["ic_decisions"] == []
+    assert result["portfolio_plan"].status.value == "vetoed"
+    assert result["portfolio_plan"].metadata["decision_authorized"] is False
+    assert result["portfolio_plan"].target_weights == {}
+    assert result["portfolio_plan"].target_positions == {}
+    assert result["portfolio_decision"].status.value == "vetoed"
+    assert result["portfolio_decision"].metadata["decision_authorized"] is False
+    assert result["portfolio_decision"].target_weights == {}
+    assert result["portfolio_decision"].target_positions == {}
+    trace_outcome = result["execution_trace"].final_deterministic_outcome
+    assert trace_outcome["hard_veto"] is True
+    assert trace_outcome["final_action_cap"] == "hold"
+
+
+def test_empty_universe_still_pins_canonical_macro_once_and_fails_closed(
+    monkeypatch,
+):
+    import quant_investor.market.dag_executor as dag_module
+
+    class _EmptyReader:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def list_symbols(self, universe_key="full_a"):
+            return []
+
+        def snapshot(self):
+            return {"resolution_strategy": "fixture_empty"}
+
+    load_calls = 0
+
+    def _blocked_macro_load(**kwargs):
+        nonlocal load_calls
+        load_calls += 1
+        assert kwargs["as_of"] == "20260301"
+        return {}, {"read_error": "macro_catalog_missing"}
+
+    def _unexpected_macro_run(self, payload):
+        raise AssertionError("blocked empty-universe Macro must not call MacroAgent")
+
+    monkeypatch.setattr(dag_module, "MarketDataReader", _EmptyReader)
+    monkeypatch.setattr(dag_module, "load_macro_record", _blocked_macro_load)
+    monkeypatch.setattr(dag_module.MacroAgent, "run", _unexpected_macro_run)
+    monkeypatch.setattr(dag_module.config, "PIT_UNIVERSE_ENABLED", False)
+
+    result = execute_market_dag(
+        market="CN",
+        universe="full_a",
+        categories=["full_a"],
+        mode="full",
+        batch_size=None,
+        total_capital=100_000.0,
+        top_k=1,
+        data_snapshot={
+            "local_latest_trade_date": "20260227",
+            "freshness_mode": "stable",
+        },
+        download_stage={
+            "completeness_after": {},
+            "completeness_before": {
+                "latest_trade_date": "20260301",
+                "freshness_mode": "stable",
+            },
+        },
+        verbose=False,
+        enable_agent_layer=False,
+    )
+
+    assert load_calls == 1
+    assert result["global_context"].metadata["empty_universe"] is True
+    assert result["global_context"].metadata["decision_authorized"] is False
+    assert result["global_context"].metadata["branch_fusion_blocked"] is True
+    assert result["global_context"].macro_data == {}
+    assert result["global_context"].risk_budget["target_exposure"] == 0.55
+    assert result["global_context"].risk_budget["target_exposure"] == (
+        result["global_context"].risk_budget["baseline_target_exposure"]
+    )
+    assert result["macro_verdict"].status.value == "vetoed"
+    assert result["macro_verdict"].metadata["decision_authorized"] is False
+    assert result["risk_decision"].status.value == "vetoed"
+    assert result["shortlist"] == []
+    assert result["ic_decisions"] == []
+    assert result["portfolio_plan"].status.value == "vetoed"
+    assert result["portfolio_plan"].target_weights == {}
+    assert result["portfolio_decision"].status.value == "vetoed"
+    assert result["portfolio_decision"].target_weights == {}
+    trace_outcome = result["execution_trace"].final_deterministic_outcome
+    assert trace_outcome["target_exposure"] == 0.55
+    assert trace_outcome["max_single_weight"] == 0.50
+    assert trace_outcome["hard_veto"] is True
+    assert trace_outcome["final_action_cap"] == "hold"
+    risk_step = next(
+        step
+        for step in result["execution_trace"].steps
+        if step.stage == "deterministic_risk_and_sizing"
+    )
+    assert risk_step.parameters["risk_veto"] is True
+    assert risk_step.parameters["action_cap"] == "hold"
+    assert risk_step.metadata["risk_summary"] == {
+        "status": "vetoed",
+        "hard_veto": True,
+        "veto": True,
+        "action_cap": "hold",
+        "gross_exposure_cap": 0.55,
+        "target_exposure_cap": 0.55,
+        "max_weight": 0.50,
+        "decision_authorized": False,
+    }
+
+
+def test_empty_universe_valid_macro_pin_drives_agent_and_trace(monkeypatch):
+    import quant_investor.market.dag_executor as dag_module
+
+    class _EmptyReader:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def list_symbols(self, universe_key="full_a"):
+            return []
+
+        def snapshot(self):
+            return {"resolution_strategy": "fixture_empty"}
+
+    record = {
+        "trade_date": "2026-03-01",
+        "macro_score": 0.7,
+        "liquidity_score": 0.4,
+        "volatility_percentile": 35.0,
+        "policy_signal": "supportive",
+        "source": "tushare_primary",
+        "source_priority": "tushare_primary",
+        "pit_status": "market_point_in_time",
+        "fetched_at": "2026-03-01T08:00:00+00:00",
+    }
+    manifest = {
+        "generation_id": "empty-valid-generation",
+        "parquet_sha256": "a" * 64,
+        "generation_manifest_sha256": "b" * 64,
+        "source": "tushare_primary",
+        "source_priority": "tushare_primary",
+        "provider_status": "verified_provider_snapshot",
+        "production_eligible": True,
+    }
+    load_calls = 0
+    observed_snapshot = {}
+
+    def _valid_macro_load(**kwargs):
+        nonlocal load_calls
+        load_calls += 1
+        assert kwargs["as_of"] == "20260301"
+        return record, manifest
+
+    def _capture_macro_run(self, payload):
+        observed_snapshot.update(payload["market_snapshot"])
+        return BranchVerdict(
+            agent_name="macro",
+            thesis="canonical empty-universe macro",
+            final_score=0.7,
+            metadata={
+                "regime": "expansion",
+                "target_gross_exposure": 0.63,
+            },
+        )
+
+    monkeypatch.setattr(dag_module, "MarketDataReader", _EmptyReader)
+    monkeypatch.setattr(dag_module, "load_macro_record", _valid_macro_load)
+    monkeypatch.setattr(dag_module.MacroAgent, "run", _capture_macro_run)
+    monkeypatch.setattr(dag_module.config, "PIT_UNIVERSE_ENABLED", False)
+
+    result = execute_market_dag(
+        market="CN",
+        universe="full_a",
+        categories=["full_a"],
+        mode="full",
+        batch_size=None,
+        total_capital=100_000.0,
+        top_k=1,
+        data_snapshot={
+            "local_latest_trade_date": "20260301",
+            "freshness_mode": "stable",
+        },
+        verbose=False,
+        enable_agent_layer=False,
+    )
+
+    identity = {
+        "generation_id": "empty-valid-generation",
+        "parquet_sha256": "a" * 64,
+        "generation_manifest_sha256": "b" * 64,
+    }
+    assert load_calls == 1
+    assert observed_snapshot["macro_score"] == 0.7
+    assert observed_snapshot["liquidity_score"] == 0.4
+    assert observed_snapshot["volatility_percentile"] == 35.0
+    assert observed_snapshot["policy_signal"] == "supportive"
+    assert observed_snapshot["canonical_macro_generation"] == identity
+    assert result["macro_verdict"].metadata[
+        "canonical_macro_generation"
+    ] == identity
+    assert result["global_context"].metadata[
+        "canonical_macro_generation"
+    ] == identity
+    assert result["global_context"].macro_data == record
+    assert result["global_context"].metadata["branch_fusion_blocked"] is False
+    assert result["global_context"].metadata["decision_authorized"] is False
+    assert result["shortlist"] == []
+    assert result["portfolio_decision"].target_weights == {}
+    trace_outcome = result["execution_trace"].final_deterministic_outcome
+    assert trace_outcome["target_exposure"] == 0.63
+    assert trace_outcome["max_single_weight"] == 0.50
+    assert trace_outcome["hard_veto"] is False
+    assert trace_outcome["final_action_cap"] == "buy"
+
+
+def test_empty_universe_missing_as_of_blocks_valid_macro_without_agent(
+    monkeypatch,
+):
+    import quant_investor.market.dag_executor as dag_module
+
+    class _EmptyReader:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def list_symbols(self, universe_key="full_a"):
+            return []
+
+        def snapshot(self):
+            return {"resolution_strategy": "fixture_empty"}
+
+    record = {
+        "trade_date": "2026-03-01",
+        "macro_score": 0.7,
+        "liquidity_score": 0.4,
+        "volatility_percentile": 35.0,
+        "policy_signal": "supportive",
+        "source": "tushare_primary",
+        "source_priority": "tushare_primary",
+        "pit_status": "market_point_in_time",
+        "fetched_at": "2026-03-01T08:00:00+00:00",
+    }
+    manifest = {
+        "generation_id": "empty-missing-as-of-generation",
+        "parquet_sha256": "c" * 64,
+        "generation_manifest_sha256": "d" * 64,
+        "source": "tushare_primary",
+        "source_priority": "tushare_primary",
+        "provider_status": "verified_provider_snapshot",
+        "production_eligible": True,
+    }
+    load_calls = 0
+
+    def _valid_macro_load(**kwargs):
+        nonlocal load_calls
+        load_calls += 1
+        assert kwargs["as_of"] == ""
+        return record, manifest
+
+    def _unexpected_macro_run(self, payload):
+        raise AssertionError("missing as-of must block MacroAgent")
+
+    monkeypatch.setattr(dag_module, "MarketDataReader", _EmptyReader)
+    monkeypatch.setattr(dag_module, "load_macro_record", _valid_macro_load)
+    monkeypatch.setattr(dag_module.MacroAgent, "run", _unexpected_macro_run)
+    monkeypatch.setattr(dag_module.config, "PIT_UNIVERSE_ENABLED", False)
+
+    result = execute_market_dag(
+        market="CN",
+        universe="full_a",
+        categories=["full_a"],
+        mode="full",
+        batch_size=None,
+        total_capital=100_000.0,
+        top_k=1,
+        data_snapshot={"freshness_mode": "stable"},
+        verbose=False,
+        enable_agent_layer=False,
+    )
+
+    assert load_calls == 1
+    assert result["macro_verdict"].status.value == "vetoed"
+    assert "macro_as_of_missing" in result["macro_verdict"].metadata[
+        "blockers"
+    ]
+    assert result["global_context"].metadata["decision_authorized"] is False
+    assert result["global_context"].macro_data == {}
+    assert result["portfolio_decision"].target_weights == {}
+    assert result["execution_trace"].final_deterministic_outcome[
+        "hard_veto"
+    ] is True

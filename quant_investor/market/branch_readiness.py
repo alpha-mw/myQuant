@@ -502,6 +502,18 @@ def load_macro_record(
     return dict(_json_safe(row)), manifest
 
 
+def macro_generation_identity(manifest: Mapping[str, Any]) -> dict[str, str]:
+    """Return the immutable canonical Macro identity used by DAG consumers."""
+
+    return {
+        "generation_id": str(manifest.get("generation_id") or "").strip(),
+        "parquet_sha256": str(manifest.get("parquet_sha256") or "").strip(),
+        "generation_manifest_sha256": str(
+            manifest.get("generation_manifest_sha256") or ""
+        ).strip(),
+    }
+
+
 def _assess_symbol_records(
     *,
     branch: str,
@@ -631,7 +643,9 @@ def assess_macro_readiness(
         blockers.append("macro_fetched_at_missing_or_invalid")
     target_date = _date_text(as_of)
     record_date = _date_text(macro_record.get("trade_date"))
-    if target_date and record_date != target_date:
+    if not target_date:
+        blockers.append("macro_as_of_missing")
+    elif record_date != target_date:
         blockers.append("macro_trade_date_as_of_mismatch")
     blockers = list(dict.fromkeys(blockers))
     return BranchDataReadiness(
@@ -649,7 +663,11 @@ def assess_macro_readiness(
         affected_symbols=[],
         fallback_used=fallback_used,
         provider_status=str(manifest.get("provider_status") or "local_snapshot"),
-        metadata={"manifest": dict(manifest), "macro_record": dict(_json_safe(macro_record))},
+        metadata={
+            "manifest": dict(manifest),
+            "macro_record": dict(_json_safe(macro_record)),
+            "canonical_identity": macro_generation_identity(manifest),
+        },
     )
 
 
@@ -663,6 +681,8 @@ def assess_branch_data_readiness(
     as_of: str = "",
     fundamental_root: str | Path = DEFAULT_FUNDAMENTAL_ROOT,
     macro_root: str | Path = DEFAULT_MACRO_ROOT,
+    pinned_macro_record: Mapping[str, Any] | None = None,
+    pinned_macro_manifest: Mapping[str, Any] | None = None,
     run_id: str | None = None,
 ) -> BranchGovernanceReport:
     symbols = [_normalize_symbol(symbol) for symbol in (candidate_symbols or frames.keys()) if _normalize_symbol(symbol)]
@@ -685,7 +705,23 @@ def assess_branch_data_readiness(
             "read_error": str(exc) or "fundamental_generation_invalid",
             "storage_backend": "parquet_canonical_generation",
         }
-    macro_record, macro_manifest = load_macro_record(as_of=as_of, root=macro_root)
+    pinned_macro_supplied = (
+        pinned_macro_record is not None or pinned_macro_manifest is not None
+    )
+    if pinned_macro_supplied and (
+        pinned_macro_record is None or pinned_macro_manifest is None
+    ):
+        raise ValueError(
+            "pinned_macro_record and pinned_macro_manifest must be supplied together"
+        )
+    if pinned_macro_supplied:
+        macro_record = dict(pinned_macro_record or {})
+        macro_manifest = dict(pinned_macro_manifest or {})
+    else:
+        macro_record, macro_manifest = load_macro_record(
+            as_of=as_of,
+            root=macro_root,
+        )
     if fundamental_manifest.get("read_error"):
         fundamental = BranchDataReadiness(
             branch="fundamental",
@@ -859,5 +895,6 @@ __all__ = [
     "assess_quant_readiness",
     "load_fundamental_records",
     "load_macro_record",
+    "macro_generation_identity",
     "write_branch_readiness_report",
 ]

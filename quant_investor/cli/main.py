@@ -76,6 +76,14 @@ def run_macro_maintenance(**kwargs):
     return _run_cn_macro_maintenance(**kwargs)
 
 
+def run_macro_refresh(**kwargs):
+    from quant_investor.market.macro_mart import (
+        refresh_cn_macro_mart as _refresh_cn_macro_mart,
+    )
+
+    return _refresh_cn_macro_mart(**kwargs)
+
+
 def run_macro_analysis(**kwargs):
     from quant_investor.macro.observer import (
         build_macro_observer,
@@ -508,6 +516,35 @@ def _build_parser() -> argparse.ArgumentParser:
     market_fundamental_promote.add_argument(
         "--expected-pointer-sha256",
         required=True,
+    )
+
+    market_macro_refresh = market_subparsers.add_parser(
+        "macro-refresh",
+        help="以显式 live 授权和双 SHA CAS 刷新 CN Macro canonical mart",
+    )
+    market_macro_refresh.add_argument(
+        "--market",
+        required=True,
+        choices=["CN"],
+    )
+    market_macro_refresh.add_argument("--as-of", default="")
+    market_macro_refresh.add_argument(
+        "--data-root",
+        default="data/parquet/cn/macro_daily",
+    )
+    market_macro_refresh.add_argument("--run-id", required=True)
+    market_macro_refresh.add_argument(
+        "--expected-catalog-sha256",
+        required=True,
+    )
+    market_macro_refresh.add_argument(
+        "--expected-market-pointer-sha256",
+        required=True,
+    )
+    market_macro_refresh.add_argument(
+        "--allow-live",
+        action="store_true",
+        help="显式允许调用 live provider；缺失时命令 fail-closed",
     )
 
     market_macro_maintain = market_subparsers.add_parser(
@@ -1059,6 +1096,24 @@ def main(argv: list[str] | None = None) -> None:
                 staging_root=args.staging_root,
                 canonical_root=args.canonical_root,
                 expected_pointer_sha256=args.expected_pointer_sha256,
+            )
+        )
+        return
+
+    if args.command == "market" and args.market_command == "macro-refresh":
+        if not args.allow_live:
+            parser.error("market macro-refresh requires explicit --allow-live")
+        _print_json(
+            run_macro_refresh(
+                market=args.market,
+                as_of=args.as_of,
+                data_root=args.data_root,
+                run_id=args.run_id,
+                expected_catalog_sha256=args.expected_catalog_sha256,
+                expected_market_pointer_sha256=(
+                    args.expected_market_pointer_sha256
+                ),
+                allow_live=args.allow_live,
             )
         )
         return

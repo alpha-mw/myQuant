@@ -45,6 +45,25 @@ JSON 或 JSONL 也不是生产真相。
    bytes；读取期间发生 replace 或原地改写时立即阻断；
 7. canonical frame 只含声明字段，数值范围、日期、`fetched_at`、PIT 状态以及
    manifest/row source lineage 全部一致。
+8. generation 同目录必须包含 hash-bound `provider_bundle.json`，完整保留
+   `cn_pmi`、`cn_cpi`、`cn_ppi`、`sf_month`、`cn_m` 五个 Tushare 响应和
+   selected-input 证据；不能自报 official release timestamp；
+9. `primary_provenance` 必须绑定 provider bundle、canonical market pointer、
+   逐个行情分区、输出 frame 和 Parquet 的 SHA-256，并使用
+   `cn-macro-market-confirmation.v1`；该快照只供 capture 后的下一次决策，固定
+   `historical_replay_eligible=false`；
+10. catalog 发布必须持有全局 writer lock，同时对 catalog 与 market pointer
+    执行 exact-byte/文件身份 CAS。事务 journal 只允许
+    `prepared -> switched -> committed`，并绑定 expected market-pointer SHA；
+    崩溃恢复只能在该 SHA、完整 required-table 闭包和 generation 全量 readback
+    仍一致时完成，否则原字节回滚。无 journal 的 orphan transaction 与已落盘但
+    未发布的同 run-id generation 必须可确定性清理后安全重试。
+11. provider `fetched_at` 必须取最后一个 endpoint 响应完成时间；I/O 后和 catalog
+    switch 前都要重验 72 小时窗口。每个 endpoint 的最新月份不得早于
+    `month_end + max_release_lag_days` 所推导的截止下界。
+12. 市场公式横截面只包含 terminal bar 等于目标 session 的证券；历史已终止证券
+    不得进入当前 `macro_score`、breadth 或 volatility 计算，且该公式 universe
+    必须进入 hash-bound provenance。
 
 任何一个条件缺失或不一致都必须 fail closed。读取器不接受目录内“看起来最新”的
 文件，也不根据 mtime、文件名或局部 pointer 猜测 canonical generation。
@@ -65,6 +84,35 @@ latest pointer，也不会把候选 generation 暴露给生产读取器。
 因此，offline compatibility 输入只能用于审计和后续人工治理；它不能通过改名、
 复制文件或直接修改候选 manifest 获得生产资格。正式 Macro 数据只能由完整的
 strict-Parquet catalog 发布流程原子绑定。
+
+### Live primary refresh：显式、最新 session、不可由 schedule 自动执行
+
+正式补数入口是：
+
+```bash
+quant-investor market macro-refresh \
+  --market CN \
+  --as-of <latest_complete_trade_date> \
+  --data-root data/parquet/cn/macro_daily \
+  --run-id <new_generation_id> \
+  --expected-catalog-sha256 <current_catalog_sha256> \
+  --expected-market-pointer-sha256 <current_market_pointer_sha256> \
+  --allow-live
+```
+
+该命令只接受当前 `_latest.json` 的 latest-complete session，且 capture 必须在
+上海收盘后 72 小时内。`--allow-live`、两个 expected SHA 或新 run id 缺一即
+fail closed；任一 provider 月份晚于 capture 或早于声明的最晚可用月份也会阻断。
+它从 exact bar files 中 terminal date 等于目标 session 的证券计算：逐证券最近
+20 日收益的等权市场确认
+分数、正收益 breadth、20 日等权市场年化波动率的 trailing-252 weak-rank；
+`policy_signal` 只使用已保留的 M2 阈值（`>10` supportive、`<=8` restrictive、
+其余 neutral），其余四个端点只作 provenance/context。
+
+若同一 market pointer 已有有效同版本 generation，命令只返回
+`already_current`，不再次调用 provider，也不创建 generation。readiness schedule
+只能核对该入口的 `--help` 并给出人工补数建议，不得添加 `--allow-live`、不得
+推进 catalog。
 
 ### `macro_observations`：严格 `_latest.json`
 

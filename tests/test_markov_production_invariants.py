@@ -78,6 +78,31 @@ class InvariantFunnel:
 
 
 def _patch_branch_readiness(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.load_macro_record",
+        lambda **kwargs: (
+            {
+                "trade_date": "2026-06-25",
+                "macro_score": 0.2,
+                "liquidity_score": 0.4,
+                "volatility_percentile": 45.0,
+                "policy_signal": "neutral",
+                "source": "tushare_primary",
+                "source_priority": "tushare_primary",
+                "pit_status": "market_point_in_time",
+                "fetched_at": "2026-06-25T08:00:00+00:00",
+            },
+            {
+                "generation_id": "fixture-macro-generation",
+                "parquet_sha256": "a" * 64,
+                "generation_manifest_sha256": "b" * 64,
+                "source": "tushare_primary",
+                "source_priority": "tushare_primary",
+                "provider_status": "verified_provider_snapshot",
+                "production_eligible": True,
+            },
+        ),
+    )
     readiness = SimpleNamespace(status="ok")
     report = SimpleNamespace(
         blocked_symbols=[],

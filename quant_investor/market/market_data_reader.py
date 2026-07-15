@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -23,6 +25,17 @@ from quant_investor.market.read_result import MarketDataReadResult
 
 class MarketDataUnavailableError(RuntimeError):
     """Raised when strict Parquet market data is not healthy enough to read."""
+
+
+def _file_signature(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        stat.S_IFMT(value.st_mode),
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
 
 
 def _normalize_trade_date(value: Any) -> str:
@@ -354,6 +367,237 @@ class MarketDataReader:
             if candidate.exists():
                 return candidate
         return candidates[0]
+
+    def _resolve_catalog_table_path(
+        self,
+        *,
+        catalog: Mapping[str, Any],
+        table_meta: Mapping[str, Any],
+        logical_table: str,
+    ) -> Path:
+        raw_path = table_meta.get("path") or table_meta.get("table_root")
+        schema_version = str(catalog.get("schema_version") or "").strip()
+        if schema_version != "strict-parquet-catalog.v1":
+            return self._resolve_data_path(
+                raw_path,
+                self.parquet_market_root / logical_table,
+            )
+
+        error_prefix = f"strict catalog table path invalid for {logical_table}"
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            raise MarketDataUnavailableError(f"{error_prefix}: path missing")
+
+        relative_path = Path(raw_path.strip())
+        if relative_path.is_absolute():
+            raise MarketDataUnavailableError(
+                f"{error_prefix}: absolute path rejected"
+            )
+        if not relative_path.parts:
+            raise MarketDataUnavailableError(f"{error_prefix}: path missing")
+        if ".." in relative_path.parts:
+            raise MarketDataUnavailableError(
+                f"{error_prefix}: parent traversal rejected"
+            )
+
+        candidate = self.parquet_market_root / relative_path
+        current = self.parquet_market_root
+        for part in relative_path.parts:
+            if part == ".":
+                continue
+            current = current / part
+            if current.is_symlink():
+                raise MarketDataUnavailableError(
+                    f"{error_prefix}: symlink rejected"
+                )
+
+        try:
+            market_root = self.parquet_market_root.resolve(strict=True)
+            resolved = candidate.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise MarketDataUnavailableError(
+                f"{error_prefix}: path missing or unreadable"
+            ) from exc
+        try:
+            resolved.relative_to(market_root)
+        except ValueError as exc:
+            raise MarketDataUnavailableError(
+                f"{error_prefix}: path escape rejected"
+            ) from exc
+        return resolved
+
+    @staticmethod
+    def _strict_catalog_expected_hash(
+        table_meta: Mapping[str, Any],
+        *,
+        logical_table: str,
+    ) -> str:
+        declared = [
+            str(value).strip()
+            for value in (
+                table_meta.get("sha256"),
+                table_meta.get("parquet_sha256"),
+            )
+            if value not in (None, "")
+        ]
+        prefix = f"strict catalog table hash invalid for {logical_table}"
+        if not declared:
+            raise MarketDataUnavailableError(
+                f"strict catalog table hash missing for {logical_table}"
+            )
+        if any(
+            len(value) != 64
+            or value.lower() != value
+            or any(character not in "0123456789abcdef" for character in value)
+            for value in declared
+        ):
+            raise MarketDataUnavailableError(prefix)
+        if len(set(declared)) != 1:
+            raise MarketDataUnavailableError(
+                f"strict catalog table hash conflict for {logical_table}"
+            )
+        return declared[0]
+
+    def _read_strict_catalog_parquet(
+        self,
+        path: Path,
+        *,
+        table_meta: Mapping[str, Any],
+        logical_table: str,
+    ) -> pd.DataFrame:
+        expected_sha = self._strict_catalog_expected_hash(
+            table_meta,
+            logical_table=logical_table,
+        )
+        prefix = f"strict catalog table read invalid for {logical_table}"
+        descriptor: int | None = None
+        try:
+            before = os.lstat(path)
+            if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+                raise MarketDataUnavailableError(
+                    f"{prefix}: regular file required"
+                )
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(path, flags)
+            opened = os.fstat(descriptor)
+            opened_signature = _file_signature(opened)
+            if _file_signature(before) != opened_signature:
+                raise MarketDataUnavailableError(
+                    f"{prefix}: file identity changed before read"
+                )
+            digest = hashlib.sha256()
+            size_read = 0
+            with os.fdopen(descriptor, "rb", closefd=False) as handle:
+                while True:
+                    chunk = handle.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    size_read += len(chunk)
+                if size_read != opened.st_size:
+                    raise MarketDataUnavailableError(
+                        f"{prefix}: file size changed during hash"
+                    )
+                declared_size = table_meta.get("size_bytes")
+                if declared_size not in (None, ""):
+                    if isinstance(declared_size, bool):
+                        raise MarketDataUnavailableError(
+                            f"strict catalog table size invalid for {logical_table}"
+                        )
+                    try:
+                        expected_size = int(declared_size)
+                    except (TypeError, ValueError, OverflowError) as exc:
+                        raise MarketDataUnavailableError(
+                            f"strict catalog table size invalid for {logical_table}"
+                        ) from exc
+                    try:
+                        size_is_exact_integer = (
+                            float(declared_size) == float(expected_size)
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        size_is_exact_integer = False
+                    if expected_size < 0 or not size_is_exact_integer:
+                        raise MarketDataUnavailableError(
+                            f"strict catalog table size invalid for {logical_table}"
+                        )
+                    if expected_size != size_read:
+                        raise MarketDataUnavailableError(
+                            f"strict catalog table size mismatch for {logical_table}"
+                        )
+                if digest.hexdigest() != expected_sha:
+                    raise MarketDataUnavailableError(
+                        f"strict catalog table hash mismatch for {logical_table}"
+                    )
+                handle.seek(0)
+                try:
+                    frame = pd.read_parquet(handle)
+                except Exception as exc:
+                    raise MarketDataUnavailableError(
+                        f"{prefix}: parquet unreadable"
+                    ) from exc
+            after_opened = os.fstat(descriptor)
+            try:
+                after_path = os.lstat(path)
+            except OSError as exc:
+                raise MarketDataUnavailableError(
+                    f"{prefix}: path replaced during read"
+                ) from exc
+            if (
+                _file_signature(after_opened) != opened_signature
+                or _file_signature(after_path) != opened_signature
+            ):
+                raise MarketDataUnavailableError(
+                    f"{prefix}: file changed or replaced during read"
+                )
+            return frame
+        except MarketDataUnavailableError:
+            raise
+        except OSError as exc:
+            raise MarketDataUnavailableError(
+                f"{prefix}: file open failed"
+            ) from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    @staticmethod
+    def _filter_catalog_table_frame(
+        frame: pd.DataFrame,
+        *,
+        date_column: str,
+        as_of: str,
+        date_range: tuple[str, str] | None,
+        columns: Sequence[str] | None,
+    ) -> pd.DataFrame:
+        result = frame.copy()
+        target = _normalize_trade_date(as_of)
+        start = _normalize_trade_date(date_range[0]) if date_range else target
+        end = _normalize_trade_date(date_range[1]) if date_range else target
+        requires_date = bool(target or start or end)
+        if requires_date and date_column not in result.columns:
+            raise MarketDataUnavailableError(
+                f"strict catalog date column missing: {date_column}"
+            )
+        if date_column in result.columns:
+            normalized = result[date_column].map(_normalize_trade_date)
+            result[date_column] = normalized
+            mask = normalized.str.len().eq(8)
+            if start:
+                mask &= normalized >= start
+            if end:
+                mask &= normalized <= end
+            result = result.loc[mask].copy()
+        if "symbol" not in result.columns and "ts_code" in result.columns:
+            result["symbol"] = result["ts_code"].map(_normalize_symbol)
+        if "ts_code" not in result.columns and "symbol" in result.columns:
+            result["ts_code"] = result["symbol"].map(_normalize_symbol)
+        if columns is not None:
+            wanted = [str(column) for column in columns if str(column)]
+            if "symbol" in result.columns and "symbol" not in wanted:
+                wanted.append("symbol")
+            available = [column for column in wanted if column in result.columns]
+            result = result.loc[:, available].copy()
+        return result.reset_index(drop=True)
 
     def _load_latest_payload(self, *, refresh: bool = False) -> dict[str, Any]:
         if self._latest_payload is not None and not refresh:
@@ -1345,11 +1589,27 @@ class MarketDataReader:
         table_meta = tables.get(key)
         if not isinstance(table_meta, dict):
             raise MarketDataUnavailableError(f"Parquet logical table not found in catalog: {key}")
-        path = self._resolve_data_path(
-            table_meta.get("path") or table_meta.get("table_root"),
-            self.parquet_market_root / key,
+        path = self._resolve_catalog_table_path(
+            catalog=catalog,
+            table_meta=table_meta,
+            logical_table=key,
         )
         date_column = str(table_meta.get("date_column") or "trade_date")
+        if str(catalog.get("schema_version") or "").strip() == (
+            "strict-parquet-catalog.v1"
+        ):
+            frame = self._read_strict_catalog_parquet(
+                path,
+                table_meta=table_meta,
+                logical_table=key,
+            )
+            return self._filter_catalog_table_frame(
+                frame,
+                date_column=date_column,
+                as_of=as_of,
+                date_range=date_range,
+                columns=columns,
+            )
         return self._read_dataset(
             path,
             date_column=date_column,
