@@ -11,8 +11,8 @@
 - CN bounded maintenance 入口：`quant-investor market maintain --market CN --staged --resume`；每次只处理配置的 batch，并在 `data/cn_market_full/_maintenance_runs/<run_id>/` 写入进度。
 - `quant-investor market download` 仅作为 `market maintain` 的兼容 alias 保留；新流程应优先使用 `market maintain`。
 - Storage 验证入口：`quant-investor market storage-validate --market CN` 校验 Parquet canonical；`quant-investor market storage-validate-clean --market CN` 只读校验 clean/readiness lineage，不触发补数、provider 或写入。
-- CN Fundamental 隔离重建入口：`quant-investor market fundamental-maintain --market CN --allow-live --authoritative-full-rebuild ...`；该入口只在显式授权后调用 provider，并把 accepted raw、逐请求结果和派生表写入独立 staging/checkpoint。
-- CN Fundamental 晋升入口：`quant-investor market fundamental-promote --staging-root <path> --expected-pointer-sha256 <sha>`；该入口从 v3 checkpoint 重放派生、验证 exact-byte provenance，并以 CAS 推进 `_fundamental_latest.json`。
+- CN Fundamental 隔离重建入口：`quant-investor market fundamental-maintain --market CN --allow-live --authoritative-full-rebuild ...`；该入口只在显式授权后调用 provider，并把 accepted raw、逐请求结果和派生表写入独立 staging/checkpoint。v3 权威 scope 同时绑定 canonical bar 文件集合 SHA、逐证券首末交易边界和固定审计策略；binding 变化必须使用新 checkpoint root。
+- CN Fundamental 晋升入口：`quant-investor market fundamental-promote --staging-root <path> --expected-pointer-sha256 <sha>`；该入口从 v3 checkpoint 重放 raw→derived、财务成熟资格期与 canonical-bar 日频覆盖，验证 exact-byte provenance，并以 CAS 推进 `_fundamental_latest.json`。
 
 ## Workspace Entrypoints
 

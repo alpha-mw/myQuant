@@ -218,11 +218,53 @@ def _market_pointer_file(
     path = tmp_path / "_latest.json"
     scope_sha = fundamental_mart._symbol_scope_sha256(["000001.SZ"])
     resolved_membership = membership_path or _membership_file(tmp_path)
+    membership = pd.read_parquet(resolved_membership)
+    bars_root = tmp_path / "canonical-bars"
+    bars_root.mkdir(exist_ok=True)
+    as_of_ts = pd.Timestamp(pd.to_datetime(as_of, format="%Y%m%d"))
+    rows: list[dict[str, str]] = []
+    for membership_row in membership.to_dict("records"):
+        symbol = str(membership_row["symbol"])
+        list_date_value = pd.to_datetime(
+            str(membership_row["list_date"]),
+            format="%Y%m%d",
+            errors="coerce",
+        )
+        list_date = (
+            pd.Timestamp(list_date_value)
+            if not pd.isna(list_date_value)
+            else as_of_ts - pd.DateOffset(years=5)
+        )
+        end_values: list[pd.Timestamp] = []
+        for field in ("effective_to", "delist_date"):
+            value = str(membership_row.get(field) or "").strip()
+            if value:
+                parsed_end = pd.to_datetime(
+                    value,
+                    format="%Y%m%d",
+                    errors="coerce",
+                )
+                if not pd.isna(parsed_end):
+                    end_values.append(pd.Timestamp(parsed_end))
+        history_start = max(as_of_ts - pd.DateOffset(years=5), list_date)
+        history_end = min(as_of_ts, max(end_values)) if end_values else as_of_ts
+        dates = pd.bdate_range(history_start, history_end)
+        if dates.empty:
+            dates = pd.DatetimeIndex([history_end])
+        rows.extend(
+            {
+                "ts_code": symbol,
+                "trade_date": trade_date.strftime("%Y%m%d"),
+            }
+            for trade_date in dates
+        )
+    pd.DataFrame(rows).to_parquet(bars_root / "part.parquet", index=False)
     path.write_text(
         json.dumps(
             {
                 "snapshot_id": "scope-test",
                 "latest_complete_trade_date": as_of,
+                "table_root": str(bars_root.resolve()),
                 "coverage": {
                     "expected_scope_count": 1,
                     "expected_scope_sha256": scope_sha,
@@ -1553,6 +1595,12 @@ def test_endpoint_audit_blocks_unexcepted_daily_empty_below_ratio_tolerance() ->
     assert excepted["passed"] is True
     assert excepted["daily_basic_history_exception_symbols"] == [symbols[-1]]
     assert incomplete_success["passed"] is False
+    assert "daily_basic_per_symbol_history_incomplete" in incomplete_success[
+        "blockers"
+    ]
+    assert "daily_basic_success_ratio_below_threshold" not in incomplete_success[
+        "blockers"
+    ]
 
 
 def test_financial_coverage_blocks_latest_and_consecutive_baseline_gaps() -> None:
@@ -1646,6 +1694,191 @@ def test_financial_expected_zero_is_not_applicable_and_excluded_from_denominator
     assert income["financial_coverage_not_applicable"] == 1
     assert income["financial_coverage_denominator"] == 0
     assert income["financial_coverage_pass_ratio"] is None
+
+
+def test_financial_prelisting_cross_table_periods_do_not_expand_denominator() -> None:
+    symbol = "001220.SZ"
+    outcomes = [
+        _audit_outcome(symbol, table, "success")
+        for table in fundamental_mart.FINANCIAL_SOURCE_TABLES
+    ]
+    tables = {
+        "fina_indicator": pd.DataFrame(
+            {"ts_code": symbol, "end_date": ["20191231", "20231231"]}
+        ),
+        "income": pd.DataFrame(
+            {"ts_code": symbol, "end_date": ["20231231"]}
+        ),
+        "balancesheet": pd.DataFrame(
+            {"ts_code": symbol, "end_date": ["20191231", "20231231"]}
+        ),
+        "cashflow": pd.DataFrame(
+            {"ts_code": symbol, "end_date": ["20231231"]}
+        ),
+    }
+
+    attached = fundamental_mart._attach_financial_coverage(
+        [symbol],
+        outcomes,
+        tables,
+        financial_start="20190714",
+        as_of="20260714",
+        scope_evidence={
+            "listing_dates": {symbol: "20260203"},
+            "history_end_dates": {symbol: "20260714"},
+        },
+        policy=fundamental_mart.FundamentalEndpointAuditPolicy(),
+    )
+
+    assert all(
+        outcome["financial_coverage"]["status"] == "not_applicable"
+        and outcome["financial_coverage_passed"] is True
+        for outcome in attached
+    )
+
+
+def test_daily_history_boundary_tolerance_is_inclusive() -> None:
+    expected_start = pd.Timestamp("2019-01-01")
+    expected_end = pd.Timestamp("2024-01-01")
+    inclusive = pd.bdate_range(expected_start + pd.Timedelta(days=62), expected_end)
+    outside = pd.bdate_range(expected_start + pd.Timedelta(days=63), expected_end)
+
+    inclusive_metrics = fundamental_mart._daily_history_coverage_metrics(
+        pd.Series(inclusive),
+        expected_start="20190101",
+        expected_end="20240101",
+        allow_tail_gap=False,
+        boundary_tolerance_days=62,
+    )
+    outside_metrics = fundamental_mart._daily_history_coverage_metrics(
+        pd.Series(outside),
+        expected_start="20190101",
+        expected_end="20240101",
+        allow_tail_gap=False,
+        boundary_tolerance_days=62,
+    )
+
+    assert inclusive_metrics["history_start_complete"] is True
+    assert inclusive_metrics["history_complete"] is True
+    assert outside_metrics["history_start_complete"] is False
+    assert outside_metrics["history_complete"] is False
+
+
+def test_scope_evidence_rejects_missing_canonical_bar_symbol(tmp_path: Path) -> None:
+    membership_path = _membership_file(tmp_path)
+    pointer_path = _market_pointer_file(
+        tmp_path,
+        membership_path=membership_path,
+    )
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    bars_root = Path(pointer["table_root"])
+    pd.DataFrame(
+        [{"ts_code": "000002.SZ", "trade_date": "20240510"}]
+    ).to_parquet(bars_root / "part.parquet", index=False)
+
+    with pytest.raises(ValueError, match="bar bounds missing symbol"):
+        fundamental_mart.build_canonical_scope_evidence(
+            ["000001.SZ"],
+            canonical_path=_scope_file(tmp_path),
+            market_pointer_path=pointer_path,
+            membership_path=membership_path,
+            as_of="20240510",
+            daily_start="20190510",
+        )
+
+
+def test_scope_evidence_rejects_symlinked_canonical_bar_partition(
+    tmp_path: Path,
+) -> None:
+    membership_path = _membership_file(tmp_path)
+    pointer_path = _market_pointer_file(
+        tmp_path,
+        membership_path=membership_path,
+    )
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    bars_root = Path(pointer["table_root"])
+    outside = tmp_path / "outside-bars"
+    outside.mkdir()
+    pd.DataFrame(
+        [{"ts_code": "000001.SZ", "trade_date": "20240510"}]
+    ).to_parquet(outside / "part.parquet", index=False)
+    (bars_root / "linked-partition").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="bar dataset contains a symlink"):
+        fundamental_mart.build_canonical_scope_evidence(
+            ["000001.SZ"],
+            canonical_path=_scope_file(tmp_path),
+            market_pointer_path=pointer_path,
+            membership_path=membership_path,
+            as_of="20240510",
+            daily_start="20190510",
+        )
+
+
+def test_scope_evidence_rejects_symlinked_canonical_bar_ancestor(
+    tmp_path: Path,
+) -> None:
+    real_root = tmp_path / "real"
+    real_root.mkdir()
+    membership_path = _membership_file(real_root)
+    pointer_path = _market_pointer_file(
+        real_root,
+        membership_path=membership_path,
+    )
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    alias = tmp_path / "alias"
+    alias.symlink_to(real_root, target_is_directory=True)
+    pointer["table_root"] = str(alias / "canonical-bars")
+    pointer_path.write_text(json.dumps(pointer), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="bar dataset contains a symlink"):
+        fundamental_mart.build_canonical_scope_evidence(
+            ["000001.SZ"],
+            canonical_path=_scope_file(real_root),
+            market_pointer_path=pointer_path,
+            membership_path=membership_path,
+            as_of="20240510",
+            daily_start="20190510",
+        )
+
+
+def test_scope_evidence_binds_bar_hash_and_bounds_to_same_stable_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    membership_path = _membership_file(tmp_path)
+    pointer_path = _market_pointer_file(
+        tmp_path,
+        membership_path=membership_path,
+    )
+    original_stable_read = fundamental_mart._stable_regular_file_bytes
+    swapped = False
+
+    def swap_after_first_bar_read(path: Path, *, label: str) -> bytes:
+        nonlocal swapped
+        payload = original_stable_read(path, label=label)
+        if label == "canonical market bar dataset file" and not swapped:
+            swapped = True
+            bars = pd.read_parquet(path)
+            bars.loc[0, "trade_date"] = "20240509"
+            bars.to_parquet(path, index=False)
+        return payload
+
+    monkeypatch.setattr(
+        fundamental_mart,
+        "_stable_regular_file_bytes",
+        swap_after_first_bar_read,
+    )
+    with pytest.raises(ValueError, match="bar dataset changed during read"):
+        fundamental_mart.build_canonical_scope_evidence(
+            ["000001.SZ"],
+            canonical_path=_scope_file(tmp_path),
+            market_pointer_path=pointer_path,
+            membership_path=membership_path,
+            as_of="20240510",
+            daily_start="20190510",
+        )
+    assert swapped is True
 
 
 def test_daily_empty_exception_requires_active_as_of_history_end() -> None:

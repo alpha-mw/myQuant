@@ -678,6 +678,54 @@ def _merge_quarantine_table(
     }
 
 
+def _validate_authoritative_derived_bundle(
+    tables: Mapping[str, pd.DataFrame],
+) -> None:
+    """Validate an isolated full-rebuild bundle without copying its frames."""
+
+    if set(tables) != set(FUNDAMENTAL_TABLES):
+        raise ValueError("v3 derived table bundle is incomplete")
+    key_fields = {
+        "fundamental_period": ("ts_code", "end_date", "availability_date"),
+        "fundamental_daily": ("ts_code", "trade_date"),
+        "fundamental_quarantine": ("ts_code", "quarantine_reason"),
+    }
+    for table_name in FUNDAMENTAL_TABLES:
+        frame = tables[table_name]
+        if not isinstance(frame, pd.DataFrame):
+            raise TypeError(
+                f"v3 derived table is not a DataFrame: {table_name}"
+            )
+        required = key_fields[table_name]
+        missing = [field for field in required if field not in frame.columns]
+        if missing and not frame.empty:
+            raise ValueError(
+                f"v3 derived table missing keys: {table_name}:" + ",".join(missing)
+            )
+        if frame.empty:
+            continue
+        for field in required:
+            values = frame[field].astype("string").fillna("").str.strip()
+            if values.eq("").any():
+                raise ValueError(
+                    f"v3 derived table has empty key: {table_name}:{field}"
+                )
+        if frame.duplicated(subset=list(required)).any():
+            raise ValueError(f"v3 derived table has duplicate keys: {table_name}")
+
+
+def _authoritative_replace_stats(frame: pd.DataFrame) -> dict[str, Any]:
+    rows = int(len(frame))
+    return {
+        "existing_rows": 0,
+        "incoming_rows": rows,
+        "merged_rows": rows,
+        "retained_existing_rows": 0,
+        "accepted_incoming_rows": rows,
+        "merge_path": "authoritative_isolated_replace",
+    }
+
+
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc).replace(microsecond=0)
 
@@ -1154,43 +1202,62 @@ def build_fundamental_daily(
     if period.empty or daily.empty:
         return pd.DataFrame(columns=["ts_code", "trade_date", *DERIVED_DAILY_FIELDS])
     period_work = period.copy()
-    period_work["availability_date"] = pd.to_datetime(period_work["availability_date"], errors="coerce")
-    period_groups = {
-        str(symbol): group.sort_values("availability_date")
-        for symbol, group in period_work.groupby("ts_code", sort=False)
+    period_work["ts_code"] = period_work["ts_code"].map(normalize_ts_code)
+    period_work["availability_date"] = pd.to_datetime(
+        period_work["availability_date"],
+        errors="coerce",
+    )
+    period_symbols = {
+        str(symbol)
+        for symbol in period_work["ts_code"].dropna().drop_duplicates()
+        if str(symbol)
     }
-    forecast_groups = {
-        str(symbol): group.sort_values("availability_date")
-        for symbol, group in forecast_daily.groupby("ts_code", sort=False)
-    }
-    outputs: list[pd.DataFrame] = []
-    for symbol, daily_group in daily.groupby("ts_code", sort=True):
-        period_group = period_groups.get(str(symbol))
-        if period_group is None or period_group.empty:
-            continue
-        joined = pd.merge_asof(
-            daily_group.sort_values("trade_date"),
-            period_group,
+    daily = daily[daily["ts_code"].isin(period_symbols)]
+    if daily.empty:
+        return pd.DataFrame(columns=["ts_code", "trade_date", *DERIVED_DAILY_FIELDS])
+    # ``merge_asof`` selects the last right-hand row when several fiscal
+    # periods share an availability date.  The pre-v3 implementation sorted
+    # each symbol independently with pandas' default sort before joining.  Its
+    # tie winner is therefore part of the historical PIT contract even though
+    # that default sort is not stable.  Collapse only the small right-hand
+    # tables with the legacy ordering before the global vectorized join; this
+    # preserves prior values without rebuilding millions of per-symbol daily
+    # frames.
+    period_work = _legacy_asof_tie_winners(period_work)
+    daily = daily.sort_values(
+        ["trade_date", "ts_code"],
+        kind="mergesort",
+    )
+    period_work = period_work.sort_values(
+        ["availability_date", "ts_code"],
+        kind="mergesort",
+    )
+    out = pd.merge_asof(
+        daily,
+        period_work,
+        by="ts_code",
+        left_on="trade_date",
+        right_on="availability_date",
+        direction="backward",
+        suffixes=("", "_period"),
+    )
+    del daily, period_work
+    if not forecast_daily.empty:
+        forecast_daily = _legacy_asof_tie_winners(forecast_daily)
+        forecast_work = forecast_daily.sort_values(
+            ["availability_date", "ts_code"],
+            kind="mergesort",
+        )
+        out = pd.merge_asof(
+            out.sort_values(["trade_date", "ts_code"], kind="mergesort"),
+            forecast_work,
+            by="ts_code",
             left_on="trade_date",
             right_on="availability_date",
             direction="backward",
-            suffixes=("", "_period"),
+            suffixes=("", "_forecast"),
         )
-        forecast_group = forecast_groups.get(str(symbol))
-        if forecast_group is not None and not forecast_group.empty:
-            joined = pd.merge_asof(
-                joined.sort_values("trade_date"),
-                forecast_group.drop(columns=["ts_code"]),
-                left_on="trade_date",
-                right_on="availability_date",
-                direction="backward",
-                suffixes=("", "_forecast"),
-            )
-        joined["ts_code"] = symbol
-        outputs.append(joined)
-    if not outputs:
-        return pd.DataFrame(columns=["ts_code", "trade_date", *DERIVED_DAILY_FIELDS])
-    out = pd.concat(outputs, ignore_index=True)
+        del forecast_work
     out["fcf_to_price"] = pd.to_numeric(out.get("free_cashflow"), errors="coerce").div(
         pd.to_numeric(out.get("total_mv_rmb"), errors="coerce").where(
             pd.to_numeric(out.get("total_mv_rmb"), errors="coerce") > 0
@@ -1221,6 +1288,26 @@ def build_fundamental_daily(
     return out[[column for column in keep if column in out.columns]].sort_values(
         ["ts_code", "trade_date"]
     ).reset_index(drop=True)
+
+
+def _legacy_asof_tie_winners(frame: pd.DataFrame) -> pd.DataFrame:
+    """Select the exact right-row winners used by the legacy PIT join."""
+
+    if frame.empty:
+        return frame
+    row_position = "__legacy_asof_row_position"
+    if row_position in frame.columns:
+        raise ValueError(f"reserved column present in asof input: {row_position}")
+    working = frame.copy()
+    working[row_position] = np.arange(len(working), dtype=np.int64)
+    winner_positions: list[int] = []
+    for _symbol, group in working.groupby("ts_code", sort=False):
+        winners = group.sort_values("availability_date").drop_duplicates(
+            subset=["availability_date"],
+            keep="last",
+        )
+        winner_positions.extend(int(value) for value in winners[row_position])
+    return working.iloc[winner_positions].drop(columns=[row_position])
 
 
 def _size_buckets(frame: pd.DataFrame) -> pd.Series:
@@ -1629,6 +1716,7 @@ def write_fundamental_mart(
     publish_on_gate_failure: bool = True,
     _live_tushare_attestation: _LiveTushareAttestation | None = None,
     _derived_tables_v3: Mapping[str, pd.DataFrame] | None = None,
+    _published_pointer_out: dict[str, Any] | None = None,
 ) -> tuple[FundamentalMartArtifacts, dict[str, Any]]:
     run_id = run_id or _run_id()
     source_priority = _provider_source_priority(
@@ -1668,31 +1756,54 @@ def write_fundamental_mart(
     else:
         if set(_derived_tables_v3) != set(FUNDAMENTAL_TABLES):
             raise ValueError("v3 derived table bundle is incomplete")
-        incoming_period = _derived_tables_v3["fundamental_period"].copy()
-        incoming_daily = _derived_tables_v3["fundamental_daily"].copy()
-        incoming_quarantine = _derived_tables_v3["fundamental_quarantine"].copy()
+        incoming_period = _derived_tables_v3["fundamental_period"]
+        incoming_daily = _derived_tables_v3["fundamental_daily"]
+        incoming_quarantine = _derived_tables_v3["fundamental_quarantine"]
     predecessor_pointer_sha256 = fundamental_pointer_sha256(data_dir)
     prior_pointer = load_fundamental_pointer(data_dir)
     existing = {
         table_name: _read_existing_fundamental_table(data_dir, table_name)
         for table_name in FUNDAMENTAL_TABLES
     }
-    period, period_merge = _merge_fundamental_table(
-        existing["fundamental_period"],
-        incoming_period,
-        key_fields=("ts_code", "end_date", "availability_date"),
-        quality_fields=DERIVED_PERIOD_FIELDS,
+    authoritative_isolated_replace = bool(
+        _derived_tables_v3 is not None
+        and dict(provider_manifest or {}).get("authoritative_full_rebuild") is True
     )
-    daily, daily_merge = _merge_fundamental_table(
-        existing["fundamental_daily"],
-        incoming_daily,
-        key_fields=("ts_code", "trade_date"),
-        quality_fields=DERIVED_DAILY_FIELDS,
-    )
-    quarantine, quarantine_merge = _merge_quarantine_table(
-        existing["fundamental_quarantine"],
-        incoming_quarantine,
-    )
+    if authoritative_isolated_replace:
+        if source_priority != "tushare_primary":
+            raise ValueError(
+                "authoritative isolated rebuild requires tushare_primary"
+            )
+        if prior_pointer is not None or any(
+            not frame.empty for frame in existing.values()
+        ):
+            raise ValueError(
+                "authoritative isolated rebuild data root must be empty"
+            )
+        _validate_authoritative_derived_bundle(_derived_tables_v3)
+        period = incoming_period
+        daily = incoming_daily
+        quarantine = incoming_quarantine
+        period_merge = _authoritative_replace_stats(period)
+        daily_merge = _authoritative_replace_stats(daily)
+        quarantine_merge = _authoritative_replace_stats(quarantine)
+    else:
+        period, period_merge = _merge_fundamental_table(
+            existing["fundamental_period"],
+            incoming_period,
+            key_fields=("ts_code", "end_date", "availability_date"),
+            quality_fields=DERIVED_PERIOD_FIELDS,
+        )
+        daily, daily_merge = _merge_fundamental_table(
+            existing["fundamental_daily"],
+            incoming_daily,
+            key_fields=("ts_code", "trade_date"),
+            quality_fields=DERIVED_DAILY_FIELDS,
+        )
+        quarantine, quarantine_merge = _merge_quarantine_table(
+            existing["fundamental_quarantine"],
+            incoming_quarantine,
+        )
     retained_existing_rows = sum(
         int(stats.get("retained_existing_rows", 0) or 0)
         for stats in (period_merge, daily_merge, quarantine_merge)
@@ -1812,6 +1923,9 @@ def write_fundamental_mart(
         _primary_attestation=primary_generation_attestation,
         expected_pointer_sha256=predecessor_pointer_sha256,
     )
+    if _published_pointer_out is not None:
+        _published_pointer_out.clear()
+        _published_pointer_out.update(pointer)
     period_path = generation_paths["fundamental_period"]
     daily_path = generation_paths["fundamental_daily"]
     quarantine_path = generation_paths["fundamental_quarantine"]
@@ -1902,6 +2016,7 @@ def _stable_regular_file_bytes(path: Path, *, label: str) -> bytes:
     absolute = path.expanduser()
     if not absolute.is_absolute():
         absolute = Path.cwd().resolve(strict=True) / absolute
+    absolute = Path(os.path.abspath(absolute))
     cursor = Path(absolute.anchor)
     for part in absolute.parts[1:]:
         cursor = cursor / part
@@ -1921,11 +2036,20 @@ def _stable_regular_file_bytes(path: Path, *, label: str) -> bytes:
         raise ValueError(f"{label} is unreadable: {absolute}") from exc
     try:
         opened = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(opened.st_mode)
-            or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-            != (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns)
-        ):
+        signature = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        if not stat.S_ISREG(opened.st_mode) or (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_size,
+            opened.st_mtime_ns,
+            opened.st_ctime_ns,
+        ) != signature:
             raise ValueError(f"{label} changed during open")
         chunks: list[bytes] = []
         while True:
@@ -1935,11 +2059,22 @@ def _stable_regular_file_bytes(path: Path, *, label: str) -> bytes:
             chunks.append(chunk)
         after = os.fstat(descriptor)
         current = os.lstat(absolute)
-        signature = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
         if (
-            (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+            (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+            )
             != signature
-            or (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns)
+            or (
+                current.st_dev,
+                current.st_ino,
+                current.st_size,
+                current.st_mtime_ns,
+                current.st_ctime_ns,
+            )
             != signature
         ):
             raise ValueError(f"{label} changed during read")
@@ -2037,6 +2172,234 @@ def _symbol_scope_sha256(symbols: Sequence[str]) -> str:
     return hashlib.sha256("\n".join(normalized).encode("utf-8")).hexdigest()
 
 
+def _canonical_bar_file_evidence(root: Path) -> list[dict[str, Any]]:
+    expanded_root = root.expanduser()
+    if not expanded_root.is_absolute():
+        expanded_root = Path.cwd().resolve(strict=True) / expanded_root
+    root = Path(os.path.abspath(expanded_root))
+    paths = _canonical_bar_paths(root)
+    evidence: list[dict[str, Any]] = []
+    for path in paths:
+        payload = _stable_regular_file_bytes(
+            path,
+            label="canonical market bar dataset file",
+        )
+        evidence.append(
+            {
+                "path": path.relative_to(root).as_posix(),
+                "size": int(len(payload)),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        )
+    if _canonical_bar_paths(root) != paths:
+        raise ValueError("canonical market bar dataset changed during read")
+    return evidence
+
+
+def _canonical_bar_paths(root: Path) -> list[Path]:
+    """Enumerate a canonical Parquet tree while rejecting every symlink."""
+
+    absolute = root.expanduser()
+    if not absolute.is_absolute():
+        absolute = Path.cwd().resolve(strict=True) / absolute
+    absolute = Path(os.path.abspath(absolute))
+    cursor = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        cursor = cursor / part
+        try:
+            metadata = os.lstat(cursor)
+        except OSError as exc:
+            raise ValueError(
+                f"canonical market bar dataset is unreadable: {cursor}"
+            ) from exc
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError(
+                f"canonical market bar dataset contains a symlink: {cursor}"
+            )
+    if not stat.S_ISDIR(os.lstat(absolute).st_mode):
+        raise ValueError("canonical market bar root is not a directory")
+
+    paths: list[Path] = []
+    for directory, dirnames, filenames in os.walk(
+        absolute,
+        topdown=True,
+        followlinks=False,
+    ):
+        directory_path = Path(directory)
+        directory_metadata = os.lstat(directory_path)
+        if stat.S_ISLNK(directory_metadata.st_mode) or not stat.S_ISDIR(
+            directory_metadata.st_mode
+        ):
+            raise ValueError(
+                "canonical market bar dataset contains an unsafe directory"
+            )
+        dirnames.sort()
+        filenames.sort()
+        for dirname in dirnames:
+            child = directory_path / dirname
+            child_metadata = os.lstat(child)
+            if stat.S_ISLNK(child_metadata.st_mode):
+                raise ValueError(
+                    f"canonical market bar dataset contains a symlink: {child}"
+                )
+            if not stat.S_ISDIR(child_metadata.st_mode):
+                raise ValueError(
+                    "canonical market bar dataset contains an unsafe directory"
+                )
+        for filename in filenames:
+            child = directory_path / filename
+            child_metadata = os.lstat(child)
+            if stat.S_ISLNK(child_metadata.st_mode):
+                raise ValueError(
+                    f"canonical market bar dataset contains a symlink: {child}"
+                )
+            if filename.startswith(".") or child.suffix.lower() != ".parquet":
+                continue
+            if not stat.S_ISREG(child_metadata.st_mode):
+                raise ValueError(
+                    "canonical market bar dataset contains an unsafe file"
+                )
+            paths.append(child)
+    paths.sort(key=lambda path: path.relative_to(absolute).as_posix())
+    if not paths:
+        raise ValueError("canonical market bar dataset has no Parquet files")
+    return paths
+
+
+def _canonical_bar_history_bounds(
+    pointer_payload: Mapping[str, Any],
+    *,
+    symbols: Sequence[str],
+    listing_dates: Mapping[str, str],
+    history_end_dates: Mapping[str, str],
+    daily_start: str,
+    as_of: str,
+) -> tuple[dict[str, str], dict[str, str], dict[str, Any]]:
+    table_root_value = str(pointer_payload.get("table_root") or "").strip()
+    if not table_root_value:
+        raise ValueError("canonical market pointer table_root is missing")
+    raw_root = Path(table_root_value).expanduser()
+    if not raw_root.is_absolute():
+        raw_root = Path.cwd().resolve(strict=True) / raw_root
+    root = Path(os.path.abspath(raw_root))
+    file_paths = _canonical_bar_paths(root)
+    requested_symbols = sorted(
+        {normalize_ts_code(symbol) for symbol in symbols if normalize_ts_code(symbol)}
+    )
+    symbol_set = set(requested_symbols)
+    start_ts = pd.Timestamp(pd.to_datetime(daily_start, format="%Y%m%d"))
+    as_of_ts = pd.Timestamp(pd.to_datetime(as_of, format="%Y%m%d"))
+    if start_ts > as_of_ts:
+        raise ValueError("canonical daily history window is reversed")
+    eligibility_starts: dict[str, pd.Timestamp] = {}
+    eligibility_ends: dict[str, pd.Timestamp] = {}
+    for symbol in requested_symbols:
+        listing_ts = pd.Timestamp(
+            pd.to_datetime(str(listing_dates.get(symbol) or ""), format="%Y%m%d")
+        )
+        history_end_ts = pd.Timestamp(
+            pd.to_datetime(str(history_end_dates.get(symbol) or ""), format="%Y%m%d")
+        )
+        eligibility_starts[symbol] = max(start_ts, listing_ts)
+        eligibility_ends[symbol] = min(as_of_ts, history_end_ts)
+        if eligibility_starts[symbol] > eligibility_ends[symbol]:
+            raise ValueError(
+                f"canonical daily history eligibility is reversed: {symbol}"
+            )
+    first_bounds: dict[str, pd.Timestamp] = {}
+    last_bounds: dict[str, pd.Timestamp] = {}
+    file_evidence_before: list[dict[str, Any]] = []
+    for path in file_paths:
+        payload = _stable_regular_file_bytes(
+            path,
+            label="canonical market bar dataset file",
+        )
+        file_evidence_before.append(
+            {
+                "path": path.relative_to(root).as_posix(),
+                "size": int(len(payload)),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        )
+        try:
+            bars = pd.read_parquet(
+                io.BytesIO(payload),
+                columns=["ts_code", "trade_date"],
+            )
+        except Exception as exc:
+            raise ValueError("canonical market bar dataset is unreadable") from exc
+        if set(bars.columns) != {"ts_code", "trade_date"}:
+            raise ValueError("canonical market bar dataset schema is invalid")
+        bars["_symbol"] = bars["ts_code"].map(normalize_ts_code)
+        trade_date_text = bars["trade_date"].astype("string").fillna("").str.strip()
+        trade_date_exact = trade_date_text.str.fullmatch(r"\d{8}", na=False)
+        bars["_trade_date"] = pd.to_datetime(
+            trade_date_text.where(trade_date_exact),
+            format="%Y%m%d",
+            errors="coerce",
+        )
+        relevant = bars["_symbol"].isin(symbol_set)
+        if (relevant & (~trade_date_exact | bars["_trade_date"].isna())).any():
+            raise ValueError(
+                "canonical market bar dataset contains an invalid trade date"
+            )
+        scoped = bars.loc[relevant, ["_symbol", "_trade_date"]].copy()
+        scoped["_eligibility_start"] = scoped["_symbol"].map(eligibility_starts)
+        scoped["_eligibility_end"] = scoped["_symbol"].map(eligibility_ends)
+        scoped = scoped[
+            scoped["_trade_date"].ge(scoped["_eligibility_start"])
+            & scoped["_trade_date"].le(scoped["_eligibility_end"])
+        ]
+        grouped = scoped.groupby("_symbol", sort=False)["_trade_date"].agg(
+            ["min", "max"]
+        )
+        for symbol, row in grouped.iterrows():
+            normalized_symbol = str(symbol)
+            first = pd.Timestamp(row["min"])
+            last = pd.Timestamp(row["max"])
+            first_bounds[normalized_symbol] = min(
+                first,
+                first_bounds.get(normalized_symbol, first),
+            )
+            last_bounds[normalized_symbol] = max(
+                last,
+                last_bounds.get(normalized_symbol, last),
+            )
+        del payload, bars, scoped, grouped
+    file_evidence_after = _canonical_bar_file_evidence(root)
+    if file_evidence_after != file_evidence_before:
+        raise ValueError("canonical market bar dataset changed during read")
+    first_dates: dict[str, str] = {}
+    last_dates: dict[str, str] = {}
+    for symbol in requested_symbols:
+        if symbol not in first_bounds or symbol not in last_bounds:
+            raise ValueError(f"canonical market bar bounds missing symbol: {symbol}")
+        first = first_bounds[symbol]
+        last = last_bounds[symbol]
+        if (
+            first < eligibility_starts[symbol]
+            or last > eligibility_ends[symbol]
+            or first > last
+        ):
+            raise ValueError(f"canonical market bar bounds are invalid: {symbol}")
+        first_dates[symbol] = first.strftime("%Y%m%d")
+        last_dates[symbol] = last.strftime("%Y%m%d")
+    bounds_lines = [
+        f"{symbol}|{first_dates[symbol]}|{last_dates[symbol]}"
+        for symbol in requested_symbols
+    ]
+    return first_dates, last_dates, {
+        "canonical_bar_table_root": str(root),
+        "canonical_bar_file_count": int(len(file_evidence_after)),
+        "canonical_bar_files_sha256": canonical_json_sha256(file_evidence_after),
+        "canonical_bar_bounds_sha256": hashlib.sha256(
+            "\n".join(bounds_lines).encode("utf-8")
+        ).hexdigest(),
+        "canonical_bar_daily_start": daily_start,
+        "canonical_bar_as_of": as_of,
+    }
+
+
 def build_canonical_scope_evidence(
     symbols: Sequence[str],
     *,
@@ -2044,6 +2407,7 @@ def build_canonical_scope_evidence(
     market_pointer_path: str | Path,
     membership_path: str | Path,
     as_of: str,
+    daily_start: str | None = None,
 ) -> dict[str, Any]:
     """Bind a provider rebuild to the exact canonical scope source and symbols."""
 
@@ -2122,6 +2486,9 @@ def build_canonical_scope_evidence(
     ):
         raise ValueError("canonical market pointer PIT membership binding mismatch")
     requested_as_of = _normalize_fetch_as_of(as_of)
+    requested_daily_start = _normalize_fetch_as_of(daily_start or "19000101")
+    if requested_daily_start > requested_as_of:
+        raise ValueError("canonical daily history start is after as_of")
     complete_trade_date = str(
         pointer_payload.get("latest_complete_trade_date") or ""
     ).strip()
@@ -2274,8 +2641,26 @@ def build_canonical_scope_evidence(
                 f"canonical PIT membership date order is invalid: {symbol}"
             )
         history_end_dates[symbol] = history_end
+    canonical_bar_first_dates, canonical_bar_last_dates, bar_evidence = (
+        _canonical_bar_history_bounds(
+            pointer_payload,
+            symbols=normalized,
+            listing_dates=listing_dates,
+            history_end_dates=history_end_dates,
+            daily_start=requested_daily_start,
+            as_of=requested_as_of,
+        )
+    )
     eligibility_lines = [
-        f"{symbol}|{listing_dates[symbol]}|{history_end_dates[symbol]}"
+        "|".join(
+            (
+                symbol,
+                listing_dates[symbol],
+                history_end_dates[symbol],
+                canonical_bar_first_dates[symbol],
+                canonical_bar_last_dates[symbol],
+            )
+        )
         for symbol in normalized
     ]
     return {
@@ -2291,6 +2676,9 @@ def build_canonical_scope_evidence(
         "symbol_set_sha256": scope_sha256,
         "listing_dates": listing_dates,
         "history_end_dates": history_end_dates,
+        "canonical_bar_first_dates": canonical_bar_first_dates,
+        "canonical_bar_last_dates": canonical_bar_last_dates,
+        **bar_evidence,
         "history_eligibility_sha256": hashlib.sha256(
             "\n".join(eligibility_lines).encode("utf-8")
         ).hexdigest(),
@@ -2315,6 +2703,14 @@ def _validate_canonical_scope_evidence(
         "symbol_set_sha256",
         "listing_dates",
         "history_end_dates",
+        "canonical_bar_first_dates",
+        "canonical_bar_last_dates",
+        "canonical_bar_table_root",
+        "canonical_bar_file_count",
+        "canonical_bar_files_sha256",
+        "canonical_bar_bounds_sha256",
+        "canonical_bar_daily_start",
+        "canonical_bar_as_of",
         "history_eligibility_sha256",
         "non_blocking_absent_symbols",
     }
@@ -2332,6 +2728,7 @@ def _validate_canonical_scope_evidence(
         ),
         membership_path=str(evidence.get("canonical_membership_path") or ""),
         as_of=str(evidence.get("canonical_market_trade_date") or ""),
+        daily_start=str(evidence.get("canonical_bar_daily_start") or ""),
     )
     if _canonical_mapping_sha256(rebuilt) != _canonical_mapping_sha256(evidence):
         raise ValueError("canonical scope evidence changed after binding")
@@ -2652,6 +3049,130 @@ class _RequestRateLimiter:
             self._last_started = self._monotonic()
 
 
+_DAILY_HISTORY_OUTCOME_FIELDS = (
+    "expected_history_start",
+    "expected_history_end",
+    "evaluated_history_end",
+    "observed_history_start",
+    "observed_history_end",
+    "observed_history_rows",
+    "minimum_history_rows",
+    "expected_history_months",
+    "observed_history_months",
+    "monthly_history_coverage_ratio",
+    "max_consecutive_missing_months",
+    "history_start_complete",
+    "history_end_complete",
+    "history_density_complete",
+    "history_monthly_complete",
+    "history_boundary_tolerance_days",
+    "history_complete",
+    "history_exception_evidence_bound",
+)
+
+
+def _attach_daily_history_coverage(
+    symbols: Sequence[str],
+    outcomes: Sequence[Mapping[str, Any]],
+    tables: Mapping[str, pd.DataFrame],
+    *,
+    daily_start: str,
+    as_of: str,
+    scope_evidence: Mapping[str, Any] | None,
+    policy: FundamentalEndpointAuditPolicy,
+) -> list[dict[str, Any]]:
+    """Replay daily-history coverage against the bound canonical bar window."""
+
+    evidence = dict(scope_evidence or {})
+    listing_dates = dict(evidence.get("listing_dates", {}) or {})
+    history_end_dates = dict(evidence.get("history_end_dates", {}) or {})
+    bar_first_dates = dict(evidence.get("canonical_bar_first_dates", {}) or {})
+    bar_last_dates = dict(evidence.get("canonical_bar_last_dates", {}) or {})
+    by_key = {
+        (
+            normalize_ts_code(outcome.get("symbol")),
+            str(outcome.get("table") or ""),
+        ): dict(outcome)
+        for outcome in outcomes
+    }
+    frame = tables.get("daily_basic", pd.DataFrame())
+    dates_by_symbol: dict[str, pd.Series] = {}
+    if not frame.empty:
+        if "ts_code" not in frame.columns or "trade_date" not in frame.columns:
+            raise ValueError("daily_basic table is missing history columns")
+        working = frame.loc[:, ["ts_code", "trade_date"]].copy()
+        working["_symbol"] = working["ts_code"].map(normalize_ts_code)
+        working["_trade_date"] = pd.to_datetime(
+            working["trade_date"].astype("string"),
+            format="%Y%m%d",
+            errors="coerce",
+        )
+        if working["_trade_date"].isna().any():
+            raise ValueError("daily_basic table contains an invalid trade date")
+        dates_by_symbol = {
+            str(symbol): group["_trade_date"]
+            for symbol, group in working.groupby("_symbol", sort=False)
+            if str(symbol)
+        }
+    authoritative = bool(
+        listing_dates and history_end_dates and bar_first_dates and bar_last_dates
+    )
+    normalized_symbols = [
+        normalize_ts_code(symbol)
+        for symbol in symbols
+        if normalize_ts_code(symbol)
+    ]
+    for symbol in normalized_symbols:
+        outcome = by_key.get((symbol, "daily_basic"))
+        if outcome is None:
+            continue
+        for field in _DAILY_HISTORY_OUTCOME_FIELDS:
+            outcome.pop(field, None)
+        if str(outcome.get("status") or "") != "success":
+            continue
+        dates = dates_by_symbol.get(symbol, pd.Series(dtype="datetime64[ns]"))
+        if authoritative:
+            required = {
+                "listing_date": str(listing_dates.get(symbol) or ""),
+                "history_end": str(history_end_dates.get(symbol) or ""),
+                "bar_first": str(bar_first_dates.get(symbol) or ""),
+                "bar_last": str(bar_last_dates.get(symbol) or ""),
+            }
+            if any(not value for value in required.values()):
+                raise ValueError(f"canonical daily history bounds missing symbol: {symbol}")
+            expected_start = max(
+                daily_start,
+                required["listing_date"],
+                required["bar_first"],
+            )
+            expected_end = min(
+                as_of,
+                required["history_end"],
+                required["bar_last"],
+            )
+            if expected_start > expected_end:
+                raise ValueError(f"canonical daily history bounds are reversed: {symbol}")
+        else:
+            expected_start = daily_start
+            expected_end = as_of
+        outcome.update(
+            _daily_history_coverage_metrics(
+                dates,
+                expected_start=expected_start,
+                expected_end=expected_end,
+                allow_tail_gap=False,
+                boundary_tolerance_days=int(
+                    policy.daily_history_boundary_tolerance_days
+                ),
+            )
+        )
+        outcome["history_exception_evidence_bound"] = False
+    return sorted(
+        by_key.values(),
+        key=lambda item: (str(item.get("symbol")), str(item.get("table"))),
+    )
+
+
 def _attach_financial_coverage(
     symbols: Sequence[str],
     outcomes: Sequence[Mapping[str, Any]],
@@ -2695,13 +3216,6 @@ def _attach_financial_coverage(
         }
     for symbol in symbols:
         normalized_symbol = normalize_ts_code(symbol)
-        periods_by_table = {
-            table: periods_by_table_and_symbol[table].get(normalized_symbol, [])
-            for table in FINANCIAL_SOURCE_TABLES
-        }
-        observed_periods = sorted(
-            {period for periods in periods_by_table.values() for period in periods}
-        )
         if listing_dates and history_end_dates:
             baseline = matured_quarter_baseline(
                 financial_start,
@@ -2709,9 +3223,8 @@ def _attach_financial_coverage(
                 str(history_end_dates.get(normalized_symbol) or ""),
                 as_of,
             )
-            expected = sorted(set(baseline).union(observed_periods))[-20:]
+            expected = list(baseline)
             expected_set = set(expected)
-            baseline = [period for period in baseline if period in expected_set]
         else:
             # Non-authoritative fetches have no exact PIT membership bounds and
             # therefore cannot claim a financial-history denominator.
@@ -2722,7 +3235,14 @@ def _attach_financial_coverage(
             outcome = by_key.get((normalized_symbol, table))
             if outcome is None:
                 continue
-            covered = [period for period in periods_by_table[table] if period in expected_set]
+            covered = [
+                period
+                for period in periods_by_table_and_symbol[table].get(
+                    normalized_symbol,
+                    [],
+                )
+                if period in expected_set
+            ]
             coverage = build_financial_coverage(
                 expected,
                 baseline,
@@ -2877,7 +3397,7 @@ def _build_endpoint_audit(
                 and (table != "daily_basic" or daily_history_incomplete == 0)
             )
         )
-        if critical and not endpoint_passed:
+        if critical and success_ratio < minimum:
             blockers.append(f"{table}_success_ratio_below_threshold")
         financial_coverage_denominator = (
             counts["financial_coverage_applicable_passed"]
@@ -2955,6 +3475,9 @@ def _build_endpoint_audit(
             ),
             "financial_require_latest_baseline": bool(
                 policy.financial_require_latest_baseline
+            ),
+            "daily_history_boundary_tolerance_days": int(
+                policy.daily_history_boundary_tolerance_days
             ),
             "max_error_requests": int(policy.max_error_requests),
             "max_malformed_requests": int(policy.max_malformed_requests),
@@ -3903,9 +4426,32 @@ def _fetch_tushare_tables(
             as_of=end_text,
         )
     )
+    audit_policy = endpoint_audit_policy or FundamentalEndpointAuditPolicy()
     expected_keys = {(symbol, table) for symbol in normalized_symbols for table in SOURCE_TABLES}
+    base_tables: dict[str, pd.DataFrame] = {
+        table: checkpoint_state.tables[table]
+        for table in SOURCE_TABLES
+    }
+    checkpoint_outcomes = _attach_daily_history_coverage(
+        normalized_symbols,
+        checkpoint_state.outcomes,
+        base_tables,
+        daily_start=start_text,
+        as_of=end_text,
+        scope_evidence=validated_scope_evidence,
+        policy=audit_policy,
+    )
+    checkpoint_outcomes = _attach_financial_coverage(
+        normalized_symbols,
+        checkpoint_outcomes,
+        base_tables,
+        financial_start=financial_start_text,
+        as_of=end_text,
+        scope_evidence=validated_scope_evidence,
+        policy=audit_policy,
+    )
     outcome_by_key: dict[tuple[str, str], dict[str, Any]] = {}
-    for outcome in checkpoint_state.outcomes:
+    for outcome in checkpoint_outcomes:
         key = (
             normalize_ts_code(outcome.get("symbol")),
             str(outcome.get("table") or ""),
@@ -3920,12 +4466,8 @@ def _fetch_tushare_tables(
             outcome,
             daily_basic_empty_exception_symbols=audit_tail_gap_exceptions,
         )
-        for outcome in checkpoint_state.outcomes
+        for outcome in checkpoint_outcomes
     )
-    base_tables: dict[str, pd.DataFrame] = {
-        table: checkpoint_state.tables[table]
-        for table in SOURCE_TABLES
-    }
     replacement_frames: dict[tuple[str, str], pd.DataFrame] = {}
     limiter = _RequestRateLimiter(
         float(requests_per_second),
@@ -3987,34 +4529,45 @@ def _fetch_tushare_tables(
                             history_end_dates = dict(
                                 scope_evidence.get("history_end_dates", {}) or {}
                             )
-                            non_blocking_absent = set(
-                                scope_evidence.get("non_blocking_absent_symbols", [])
-                                or []
+                            bar_first_dates = dict(
+                                scope_evidence.get("canonical_bar_first_dates", {})
+                                or {}
+                            )
+                            bar_last_dates = dict(
+                                scope_evidence.get("canonical_bar_last_dates", {})
+                                or {}
                             )
                             expected_start = max(
                                 start_text,
                                 str(listing_dates.get(symbol) or start_text),
+                                str(bar_first_dates.get(symbol) or start_text),
                             )
-                            expected_end = str(
-                                history_end_dates.get(symbol) or end_text
+                            expected_end = min(
+                                end_text,
+                                str(history_end_dates.get(symbol) or end_text),
+                                str(bar_last_dates.get(symbol) or end_text),
                             )
+                            if expected_start > expected_end:
+                                raise ValueError(
+                                    "canonical daily history bounds are reversed: "
+                                    f"{symbol}"
+                                )
                             dates = pd.to_datetime(
                                 accepted["trade_date"].astype("string"),
                                 format="%Y%m%d",
                                 errors="coerce",
-                            )
-                            allow_tail_gap = bool(
-                                symbol in non_blocking_absent
-                                and expected_end == end_text
                             )
                             history_evidence = {
                                 **_daily_history_coverage_metrics(
                                     dates,
                                     expected_start=expected_start,
                                     expected_end=expected_end,
-                                    allow_tail_gap=allow_tail_gap,
+                                    allow_tail_gap=False,
+                                    boundary_tolerance_days=int(
+                                        audit_policy.daily_history_boundary_tolerance_days
+                                    ),
                                 ),
-                                "history_exception_evidence_bound": allow_tail_gap,
+                                "history_exception_evidence_bound": False,
                             }
                         outcome = {
                             "schema_version": FUNDAMENTAL_REQUEST_OUTCOME_SCHEMA,
@@ -4244,10 +4797,18 @@ def _fetch_tushare_tables(
             validated_scope_evidence,
             normalized_symbols,
         )
-    audit_policy = endpoint_audit_policy or FundamentalEndpointAuditPolicy()
-    outcomes = _attach_financial_coverage(
+    outcomes = _attach_daily_history_coverage(
         normalized_symbols,
         list(outcome_by_key.values()),
+        tables,
+        daily_start=start_text,
+        as_of=end_text,
+        scope_evidence=validated_scope_evidence,
+        policy=audit_policy,
+    )
+    outcomes = _attach_financial_coverage(
+        normalized_symbols,
+        outcomes,
         tables,
         financial_start=financial_start_text,
         as_of=end_text,
@@ -4440,6 +5001,10 @@ def fetch_tushare_fundamental_full_rebuild(
     requested_as_of = str(as_of or "").strip()
     if len(requested_as_of) != 8 or not requested_as_of.isdigit():
         raise ValueError("full rebuild as_of must be YYYYMMDD")
+    requested_daily_start = (
+        pd.Timestamp(pd.to_datetime(requested_as_of, format="%Y%m%d"))
+        - pd.DateOffset(years=int(years))
+    ).strftime("%Y%m%d")
     normalized_symbols = [
         symbol for symbol in dict.fromkeys(normalize_ts_code(value) for value in symbols) if symbol
     ]
@@ -4449,6 +5014,7 @@ def fetch_tushare_fundamental_full_rebuild(
         market_pointer_path=canonical_market_pointer_path,
         membership_path=canonical_membership_path,
         as_of=requested_as_of,
+        daily_start=requested_daily_start,
     )
     return _fetch_tushare_tables(
         normalized_symbols,
@@ -4664,6 +5230,7 @@ def run_cn_fundamental_maintenance(
         raise RuntimeError(f"authoritative full rebuild provider unavailable: {provider_status}")
     if not tables:
         tables = {table: pd.DataFrame() for table in SOURCE_TABLES}
+    published_pointer: dict[str, Any] = {}
     artifacts, readiness = write_fundamental_mart(
         tables,
         data_root=data_root,
@@ -4677,8 +5244,9 @@ def run_cn_fundamental_maintenance(
         publish_on_gate_failure=False,
         _live_tushare_attestation=live_tushare_attestation,
         _derived_tables_v3=derived_tables_v3,
+        _published_pointer_out=published_pointer,
     )
-    pointer = load_fundamental_pointer(data_root)
+    pointer = published_pointer
     if authoritative_full_rebuild and (
         pointer is None
         or pointer.get("generation_id") != resolved_run_id

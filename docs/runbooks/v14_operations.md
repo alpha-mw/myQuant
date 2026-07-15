@@ -58,17 +58,29 @@ An authoritative full-A Fundamental refresh is an explicit two-stage operation:
 1. `market fundamental-maintain --allow-live --authoritative-full-rebuild`
    fetches into an isolated data root and a separate v3 checkpoint root. It
    binds the exact full-A scope, market pointer, PIT membership, request
-   outcomes, financial-period coverage, and Parquet readback fingerprints.
+   outcomes, financial-period coverage, canonical market-bar file set and
+   per-symbol first/last trade bounds, and Parquet readback fingerprints.
 2. `market fundamental-promote --expected-pointer-sha256 <sha>` independently
    revalidates the staged generation and advances the canonical Fundamental
    pointer with compare-and-swap semantics.
 
+Financial completeness is measured only against matured post-listing quarters;
+an observed pre-listing period in one endpoint does not expand another
+endpoint's denominator, and a quarter whose reporting lag ends after the bound
+eligibility end is not mature. Daily history is intersected with the exact
+canonical bar bounds; the authoritative boundary tolerance is 62 days while
+monthly coverage still requires at least 90% and no run of more than two
+missing months. The bar file-set SHA, bounds SHA, and policy are replayed during
+promotion.
+
 The live rebuild must use a new run/checkpoint root after any v2 checkpoint,
-scope drift, malformed response, or failed request. Promotion rejects legacy
-primary provenance, checkpoint drift, incomplete financial coverage, or a
-derived mart that cannot be reproduced from the accepted raw checkpoint and
-the exact bound PIT membership. Weekly readiness schedules remain local and
-read-only; they must never add `--allow-live` or perform promotion.
+scope drift, audit-policy or evidence-binding change, malformed response, or
+failed request. Do not edit or weaken an older checkpoint binding to make it
+resume. Promotion rejects legacy primary provenance, checkpoint or canonical
+bar drift, incomplete endpoint coverage, or a derived mart that cannot be
+reproduced from the accepted raw checkpoint and the exact bound PIT membership.
+Weekly readiness schedules remain local and read-only; they must never add
+`--allow-live` or perform promotion.
 
 ## Schedule routing
 

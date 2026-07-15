@@ -212,6 +212,143 @@ def test_fundamental_mart_pit_join_readiness_and_quarantine(tmp_path):
     assert json.loads(artifacts.readiness_json_path.read_text())["gate2_passed"] is True
 
 
+def test_vectorized_daily_pit_join_matches_per_symbol_reference() -> None:
+    raw = _raw_tables()
+    raw["daily_basic"] = pd.concat(
+        [
+            raw["daily_basic"],
+            pd.DataFrame(
+                [
+                    {
+                        "ts_code": "999999.SZ",
+                        "trade_date": "20240510",
+                        "total_mv": 1.0,
+                        "sector": "out-of-period-scope",
+                    }
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    timestamp = "2024-05-10T12:00:00Z"
+    period, _quarantine = fundamental_mart.derive_fundamental_period(
+        raw,
+        run_id="vectorized-reference",
+        source="live_tushare",
+        derivation_timestamp=timestamp,
+    )
+    tie_seed = period[period["ts_code"] == "000001.SZ"].iloc[0]
+    tie_rows = []
+    for ordinal in range(32):
+        row = tie_seed.copy()
+        row["end_date"] = pd.Timestamp("2016-03-31") + pd.offsets.QuarterEnd(ordinal)
+        row["availability_date"] = pd.Timestamp("2024-04-30")
+        row["fin_roe"] = float(ordinal)
+        row["free_cashflow"] = float(ordinal + 1)
+        tie_rows.append(row)
+    period = pd.concat([period, pd.DataFrame(tie_rows)], ignore_index=True)
+
+    daily = fundamental_mart._normalize_daily_basic(
+        raw["daily_basic"],
+        run_id="vectorized-reference",
+        source="live_tushare",
+        sector_map=None,
+        derivation_timestamp=timestamp,
+    )
+    forecast = fundamental_mart._normalize_forecast(
+        raw["forecast"],
+        run_id="vectorized-reference",
+        source="live_tushare",
+        derivation_timestamp=timestamp,
+    )
+    period_work = period.copy()
+    period_work["availability_date"] = pd.to_datetime(
+        period_work["availability_date"], errors="coerce"
+    )
+    period_groups = {
+        str(symbol): group.sort_values("availability_date")
+        for symbol, group in period_work.groupby("ts_code", sort=False)
+    }
+    forecast_groups = {
+        str(symbol): group.sort_values("availability_date")
+        for symbol, group in forecast.groupby("ts_code", sort=False)
+    }
+    outputs: list[pd.DataFrame] = []
+    for symbol, daily_group in daily.groupby("ts_code", sort=True):
+        period_group = period_groups.get(str(symbol))
+        if period_group is None or period_group.empty:
+            continue
+        joined = pd.merge_asof(
+            daily_group.sort_values("trade_date"),
+            period_group,
+            left_on="trade_date",
+            right_on="availability_date",
+            direction="backward",
+            suffixes=("", "_period"),
+        )
+        forecast_group = forecast_groups.get(str(symbol))
+        if forecast_group is not None and not forecast_group.empty:
+            joined = pd.merge_asof(
+                joined.sort_values("trade_date"),
+                forecast_group.drop(columns=["ts_code"]),
+                left_on="trade_date",
+                right_on="availability_date",
+                direction="backward",
+                suffixes=("", "_forecast"),
+            )
+        joined["ts_code"] = symbol
+        outputs.append(joined)
+    reference = pd.concat(outputs, ignore_index=True)
+    reference["fcf_to_price"] = pd.to_numeric(
+        reference.get("free_cashflow"), errors="coerce"
+    ).div(
+        pd.to_numeric(reference.get("total_mv_rmb"), errors="coerce").where(
+            pd.to_numeric(reference.get("total_mv_rmb"), errors="coerce") > 0
+        )
+    )
+    reference["size_bucket"] = fundamental_mart._size_buckets(reference)
+    keep = [
+        "ts_code",
+        "trade_date",
+        "end_date",
+        "availability_date",
+        "source_version",
+        "source",
+        "fetched_at",
+        "sector",
+        "size_bucket",
+        "total_mv_rmb",
+        *fundamental_mart.DERIVED_DAILY_FIELDS,
+        "forecast_end_date",
+        "forecast_ann_date",
+        "forecast_type",
+        "forecast_summary",
+        "forecast_change_reason",
+        "forecast_source",
+        "forecast_fetched_at",
+        "forecast_ingest_run_id",
+    ]
+    reference = reference[
+        [column for column in keep if column in reference.columns]
+    ].sort_values(["ts_code", "trade_date"]).reset_index(drop=True)
+
+    actual = fundamental_mart.build_fundamental_daily(
+        period,
+        raw["daily_basic"],
+        raw["forecast"],
+        run_id="vectorized-reference",
+        source="live_tushare",
+        derivation_timestamp=timestamp,
+    )
+
+    fundamental_mart.assert_frame_semantics_equal(
+        reference,
+        actual,
+        label="vectorized daily PIT join",
+    )
+    assert "999999.SZ" not in set(actual["ts_code"])
+
+
 def test_default_local_mart_is_offline_and_likelihood_neutral(tmp_path):
     data_root = tmp_path / "clean" / "cn_fundamental"
     _artifacts, readiness = write_fundamental_mart(
@@ -929,6 +1066,177 @@ def test_generation_pointer_failure_cleans_final_directory_for_retry(
     assert all(path.exists() for path in paths.values())
 
 
+def test_generation_pointer_semantic_readback_rejects_disk_forgery(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / "cn"
+    tables = {
+        "fundamental_period": pd.DataFrame(columns=["ts_code"]),
+        "fundamental_daily": pd.DataFrame(
+            [{"ts_code": "000001.SZ", "trade_date": "20240510"}]
+        ),
+        "fundamental_quarantine": pd.DataFrame(columns=["ts_code"]),
+    }
+    original_write = fundamental_generation._atomic_write_json
+
+    def forge_pointer_on_disk(path, payload):
+        if path.name == fundamental_generation.FUNDAMENTAL_POINTER_FILENAME:
+            payload = {**dict(payload), "generation_id": "disk-forged"}
+        return original_write(path, payload)
+
+    monkeypatch.setattr(
+        fundamental_generation,
+        "_atomic_write_json",
+        forge_pointer_on_disk,
+    )
+    with pytest.raises(
+        FundamentalGenerationError,
+        match="pointer semantic readback mismatch",
+    ):
+        publish_fundamental_generation(
+            root=root,
+            run_id="expected-generation",
+            tables=tables,
+            metadata={"run_id": "expected-generation"},
+        )
+
+    assert not (
+        root / fundamental_generation.FUNDAMENTAL_POINTER_FILENAME
+    ).exists()
+    assert not (
+        root
+        / fundamental_generation.FUNDAMENTAL_GENERATIONS_DIRNAME
+        / "expected-generation"
+    ).exists()
+
+
+def test_generation_pointer_readback_failure_restores_predecessor(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / "cn"
+    tables = {
+        "fundamental_period": pd.DataFrame(columns=["ts_code"]),
+        "fundamental_daily": pd.DataFrame(
+            [{"ts_code": "000001.SZ", "trade_date": "20240510"}]
+        ),
+        "fundamental_quarantine": pd.DataFrame(columns=["ts_code"]),
+    }
+    publish_fundamental_generation(
+        root=root,
+        run_id="predecessor",
+        tables=tables,
+        metadata={"run_id": "predecessor"},
+    )
+    pointer_path = root / fundamental_generation.FUNDAMENTAL_POINTER_FILENAME
+    predecessor_bytes = pointer_path.read_bytes()
+    predecessor_sha256 = fundamental_generation.pointer_sha256(root)
+    original_write = fundamental_generation._atomic_write_json
+
+    def forge_pointer_on_disk(path, payload):
+        if path.name == fundamental_generation.FUNDAMENTAL_POINTER_FILENAME:
+            payload = {**dict(payload), "generation_id": "disk-forged"}
+        return original_write(path, payload)
+
+    monkeypatch.setattr(
+        fundamental_generation,
+        "_atomic_write_json",
+        forge_pointer_on_disk,
+    )
+    with pytest.raises(
+        FundamentalGenerationError,
+        match="pointer semantic readback mismatch",
+    ):
+        publish_fundamental_generation(
+            root=root,
+            run_id="replacement",
+            tables=tables,
+            metadata={"run_id": "replacement"},
+            expected_pointer_sha256=predecessor_sha256,
+        )
+
+    assert pointer_path.read_bytes() == predecessor_bytes
+    assert load_fundamental_pointer(root)["generation_id"] == "predecessor"
+    assert not (
+        root
+        / fundamental_generation.FUNDAMENTAL_GENERATIONS_DIRNAME
+        / "replacement"
+    ).exists()
+
+
+def test_primary_metadata_mutation_during_streaming_publish_fails_closed(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / "cn"
+    tables = {
+        "fundamental_period": pd.DataFrame(columns=["ts_code"]),
+        "fundamental_daily": pd.DataFrame(
+            [{"ts_code": "000001.SZ", "trade_date": "20240510"}]
+        ),
+        "fundamental_quarantine": pd.DataFrame(columns=["ts_code"]),
+    }
+    provider_manifest = {"provider": "tushare", "run_id": "metadata-race"}
+    raw_tables = _raw_tables()
+    metadata = {
+        "run_id": "metadata-race",
+        "provider_status": "live_tushare",
+        "source_priority": "tushare_primary",
+        "source_provenance": "live_tushare_explicit",
+        "provider_manifest": provider_manifest,
+        "gate2_passed": True,
+    }
+    capability = fundamental_generation._issue_primary_generation_attestation(
+        tables=tables,
+        metadata=metadata,
+        source="live_tushare",
+        provider_manifest_sha256=(
+            fundamental_mart._canonical_mapping_sha256(provider_manifest)
+        ),
+        raw_table_fingerprints=(
+            fundamental_mart._raw_table_fingerprints(raw_tables)
+        ),
+    )
+    monkeypatch.setattr(
+        fundamental_generation,
+        "FUNDAMENTAL_STREAMING_READBACK_MIN_ROWS",
+        1,
+    )
+    original_streaming = fundamental_generation._streaming_parquet_table_evidence
+    mutated = False
+
+    def mutate_metadata_during_readback(*args, **kwargs):
+        nonlocal mutated
+        evidence = original_streaming(*args, **kwargs)
+        if not mutated:
+            metadata["merge"] = {"tampered_during_publish": True}
+            mutated = True
+        return evidence
+
+    monkeypatch.setattr(
+        fundamental_generation,
+        "_streaming_parquet_table_evidence",
+        mutate_metadata_during_readback,
+    )
+    with pytest.raises(
+        FundamentalGenerationError,
+        match="metadata changed after attestation",
+    ):
+        publish_fundamental_generation(
+            root=root,
+            run_id="metadata-race",
+            tables=tables,
+            metadata=metadata,
+            _primary_attestation=capability,
+        )
+
+    assert mutated is True
+    assert not (
+        root / fundamental_generation.FUNDAMENTAL_POINTER_FILENAME
+    ).exists()
+
+
 def test_offline_canonical_rebuild_can_skip_duplicate_raw_csv_snapshots(
     tmp_path,
 ):
@@ -1301,10 +1609,13 @@ def test_authoritative_full_rebuild_writes_verified_isolated_generation(
     market_pointer = tmp_path / "market_latest.json"
     market_pointer.write_text(
         json.dumps(
-            {
-                "snapshot_id": "fixture-20240510",
-                "latest_complete_trade_date": "20240510",
-                "coverage": {
+                {
+                    "snapshot_id": "fixture-20240510",
+                    "latest_complete_trade_date": "20240510",
+                    "table_root": str(
+                        (market_data_root / "parquet" / "cn" / "bars").resolve()
+                    ),
+                    "coverage": {
                     "expected_scope_count": len(symbols),
                     "expected_scope_sha256": scope_sha,
                     "pit_membership_path": str(membership_path.resolve()),
@@ -1320,7 +1631,36 @@ def test_authoritative_full_rebuild_writes_verified_isolated_generation(
     canonical_root.mkdir()
     monkeypatch.setattr(fundamental_mart, "DEFAULT_MARKET_DATA_ROOT", market_data_root)
     monkeypatch.setattr(fundamental_mart, "DEFAULT_FUNDAMENTAL_ROOT", canonical_root)
+    monkeypatch.setattr(
+        fundamental_mart,
+        "_merge_fundamental_table",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("authoritative isolated replace must not merge/copy")
+        ),
+    )
+    monkeypatch.setattr(
+        fundamental_mart,
+        "_merge_quarantine_table",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("authoritative isolated replace must not merge/copy")
+        ),
+    )
     raw = _raw_tables()
+    original_pointer_loader = fundamental_mart.load_fundamental_pointer
+
+    def reject_post_publish_full_load(root):
+        if (fundamental_mart._resolve_data_base(root) / "_fundamental_latest.json").exists():
+            raise AssertionError(
+                "maintenance must reuse the verified published pointer instead of "
+                "full-loading tables while source frames are resident"
+            )
+        return original_pointer_loader(root)
+
+    monkeypatch.setattr(
+        fundamental_mart,
+        "load_fundamental_pointer",
+        reject_post_publish_full_load,
+    )
 
     class _Provider:
         def __getattr__(self, table):
@@ -1371,9 +1711,40 @@ def test_authoritative_full_rebuild_writes_verified_isolated_generation(
     assert result["generation_id"] == "fixture-primary-rebuild"
     assert result["primary_provenance_verified"] is True
     assert result["readiness"]["gate2_passed"] is True
+    assert {
+        stats["merge_path"]
+        for stats in result["readiness"]["merge"].values()
+        if isinstance(stats, dict)
+    } == {"authoritative_isolated_replace"}
     assert pointer["manifest"]["metadata"]["provider_manifest"][
         "authoritative_full_rebuild"
     ] is True
+    before_generation = pointer["generation_id"]
+    with pytest.raises(
+        ValueError,
+        match="staging pointer already exists|data root must be empty",
+    ):
+        run_cn_fundamental_maintenance(
+            market="CN",
+            universes="full_a",
+            years=5,
+            as_of="20240510",
+            workers=1,
+            data_root=staging_root,
+            raw_snapshot_root=tmp_path / "snapshots-second",
+            reports_root=tmp_path / "reports-second",
+            allow_live=True,
+            pro=_Provider(),
+            run_id="fixture-primary-rebuild-second",
+            authoritative_full_rebuild=True,
+            canonical_scope_path=components_path,
+            canonical_market_pointer_path=market_pointer,
+            canonical_membership_path=membership_path,
+            checkpoint_root=tmp_path / "checkpoint-second",
+            requests_per_second=0,
+            retry_backoff_seconds=0,
+        )
+    assert load_fundamental_pointer(staging_root)["generation_id"] == before_generation
 
 
 def test_v3_rederive_uses_exact_membership_sector_map_and_fixed_timestamp(

@@ -249,3 +249,17 @@ def test_policy_rejects_bool_threshold_and_negative_request_limit() -> None:
         FundamentalEndpointAuditPolicy(critical_min_success_ratio=True)
     with pytest.raises(ValueError):
         FundamentalEndpointAuditPolicy(max_error_requests=-1)
+    with pytest.raises(ValueError):
+        FundamentalEndpointAuditPolicy(daily_history_boundary_tolerance_days=-1)
+
+
+def test_matured_baseline_excludes_report_due_after_eligibility_end() -> None:
+    baseline = matured_quarter_baseline(
+        "20210101",
+        "20210101",
+        "20260413",
+        "20260714",
+    )
+
+    assert baseline[-1] == "20250930"
+    assert "20251231" not in baseline

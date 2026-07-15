@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping
 
 import pandas as pd
+import pyarrow.parquet as pq
 
 from .fundamental_provider_contract import (
     FUNDAMENTAL_DERIVATION_CONTRACT,
@@ -31,6 +32,7 @@ from .fundamental_provider_contract import (
     FUNDAMENTAL_FETCH_PIT_CONTRACT,
     FUNDAMENTAL_PROVIDER_MANIFEST_SCHEMA,
     HARD_INVALID_SUBCOUNTER_FIELDS,
+    _scalar_token,
     assert_frame_semantics_equal,
     canonical_json_sha256,
     frame_fingerprint,
@@ -59,7 +61,9 @@ PRIMARY_PROVENANCE_SCHEMA_VERSION = "cn-fundamental-primary-provenance.v2"
 FUNDAMENTAL_PROMOTION_LOCK_FILENAME = ".fundamental-promotion.lock"
 FUNDAMENTAL_HISTORY_MIN_MONTHLY_COVERAGE = 0.90
 FUNDAMENTAL_HISTORY_MAX_CONSECUTIVE_MISSING_MONTHS = 2
-FUNDAMENTAL_HISTORY_BOUNDARY_TOLERANCE_DAYS = 31
+FUNDAMENTAL_HISTORY_BOUNDARY_TOLERANCE_DAYS = 62
+FUNDAMENTAL_STREAMING_READBACK_MIN_ROWS = 250_000
+FUNDAMENTAL_STREAMING_ROW_GROUP_SIZE = 100_000
 
 
 class FundamentalGenerationError(ValueError):
@@ -207,7 +211,15 @@ def _primary_generation_attestation_matches(
         return bool(
             attestation.capability is _PRIMARY_GENERATION_CAPABILITY
             and attestation.metadata_sha256 == _metadata_sha256(metadata)
-            and attestation.table_fingerprints == _table_fingerprints(tables)
+            and set(tables) == set(FUNDAMENTAL_TABLES)
+            and all(
+                isinstance(tables[table_name], pd.DataFrame)
+                for table_name in FUNDAMENTAL_TABLES
+            )
+            and _valid_named_fingerprints(
+                attestation.table_fingerprints,
+                expected_names=FUNDAMENTAL_TABLES,
+            )
         )
     except FundamentalGenerationError:
         return False
@@ -237,6 +249,22 @@ def _primary_provenance_envelope(
     metadata: Mapping[str, Any],
     table_manifest: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
+    if attestation.metadata_sha256 != _metadata_sha256(metadata):
+        raise FundamentalGenerationError(
+            "primary generation metadata changed after attestation"
+        )
+    readback_fingerprints = tuple(
+        (
+            table_name,
+            str(table_manifest[table_name].get("frame_fingerprint") or ""),
+        )
+        for table_name in FUNDAMENTAL_TABLES
+    )
+    if readback_fingerprints != attestation.table_fingerprints:
+        raise FundamentalGenerationError(
+            "tushare_primary generation requires an internal primary capability "
+            "matching the table readback"
+        )
     body: dict[str, Any] = {
         "schema_version": PRIMARY_PROVENANCE_SCHEMA_VERSION,
         "status": "verified_live_tushare",
@@ -592,6 +620,182 @@ def _stable_file_bytes(path: Path) -> tuple[bytes, tuple[int, ...]]:
     except OSError as exc:
         raise FundamentalGenerationError(
             f"fundamental artifact changed during read: {path}: {exc}"
+        ) from exc
+    finally:
+        os.close(descriptor)
+
+
+def _stable_file_sha256(path: Path) -> tuple[str, tuple[int, ...]]:
+    """Hash one stable regular artifact without retaining its bytes."""
+
+    try:
+        before = os.lstat(path)
+        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+            raise FundamentalGenerationError(
+                f"fundamental artifact is not a regular file: {path}"
+            )
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        )
+    except OSError as exc:
+        raise FundamentalGenerationError(
+            f"fundamental artifact unreadable: {path}: {exc}"
+        ) from exc
+    try:
+        opened = os.fstat(descriptor)
+        signature = _file_signature(before)
+        if _file_signature(opened) != signature:
+            raise FundamentalGenerationError(
+                f"fundamental artifact changed during open: {path}"
+            )
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+        after = os.fstat(descriptor)
+        current = os.lstat(path)
+        if (
+            _file_signature(after) != signature
+            or _file_signature(current) != signature
+        ):
+            raise FundamentalGenerationError(
+                f"fundamental artifact changed during read: {path}"
+            )
+        return digest.hexdigest(), signature
+    except OSError as exc:
+        raise FundamentalGenerationError(
+            f"fundamental artifact changed during read: {path}: {exc}"
+        ) from exc
+    finally:
+        os.close(descriptor)
+
+
+def _streaming_parquet_table_evidence(
+    path: Path,
+    *,
+    table_name: str,
+    file_sha256: str,
+    expected_signature: tuple[int, ...],
+) -> dict[str, Any]:
+    """Compute exact table identity one bounded Parquet row group at a time."""
+
+    try:
+        before = os.lstat(path)
+        if _file_signature(before) != expected_signature:
+            raise FundamentalGenerationError(
+                f"fundamental artifact changed before readback: {path}"
+            )
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        )
+    except OSError as exc:
+        raise FundamentalGenerationError(
+            f"fundamental table streaming readback failed: {table_name}"
+        ) from exc
+    try:
+        opened = os.fstat(descriptor)
+        if _file_signature(opened) != expected_signature:
+            raise FundamentalGenerationError(
+                f"fundamental artifact changed during open: {path}"
+            )
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            parquet = pq.ParquetFile(handle)
+            row_count = int(parquet.metadata.num_rows)
+            columns = list(parquet.schema_arrow.names)
+            logical_schema: list[dict[str, Any]] | None = None
+            observed_rows = 0
+            for row_group in range(parquet.num_row_groups):
+                arrow_table = parquet.read_row_group(row_group)
+                chunk = arrow_table.to_pandas()
+                if list(chunk.columns) != columns:
+                    raise FundamentalGenerationError(
+                        f"fundamental table columns changed by row group: {table_name}"
+                    )
+                chunk_schema = frame_logical_schema(chunk)
+                if logical_schema is None:
+                    logical_schema = [dict(item) for item in chunk_schema]
+                else:
+                    if len(chunk_schema) != len(logical_schema):
+                        raise FundamentalGenerationError(
+                            f"fundamental table schema changed by row group: {table_name}"
+                        )
+                    for aggregate, observed in zip(logical_schema, chunk_schema):
+                        if (
+                            aggregate["position"] != observed["position"]
+                            or aggregate["name"] != observed["name"]
+                        ):
+                            raise FundamentalGenerationError(
+                                "fundamental table schema changed by row group: "
+                                f"{table_name}"
+                            )
+                        aggregate["logical_scalar_types"] = sorted(
+                            set(aggregate["logical_scalar_types"])
+                            | set(observed["logical_scalar_types"])
+                        )
+                        aggregate["nullable"] = bool(
+                            aggregate["nullable"] or observed["nullable"]
+                        )
+                observed_rows += int(len(chunk))
+                del arrow_table, chunk, chunk_schema
+            if logical_schema is None or observed_rows != row_count:
+                raise FundamentalGenerationError(
+                    f"fundamental table streaming row count mismatch: {table_name}"
+                )
+
+            digest = hashlib.sha256()
+            digest.update(
+                json.dumps(
+                    {"rows": row_count, "schema": logical_schema},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
+            fingerprint_rows = 0
+            for row_group in range(parquet.num_row_groups):
+                arrow_table = parquet.read_row_group(row_group)
+                chunk = arrow_table.to_pandas()
+                for row in chunk.itertuples(index=False, name=None):
+                    tokens = [list(_scalar_token(value)) for value in row]
+                    digest.update(b"\x00")
+                    digest.update(
+                        json.dumps(
+                            tokens,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    )
+                fingerprint_rows += int(len(chunk))
+                del arrow_table, chunk
+            if fingerprint_rows != row_count:
+                raise FundamentalGenerationError(
+                    f"fundamental table streaming fingerprint count mismatch: {table_name}"
+                )
+        after = os.fstat(descriptor)
+        current = os.lstat(path)
+        if (
+            _file_signature(after) != expected_signature
+            or _file_signature(current) != expected_signature
+        ):
+            raise FundamentalGenerationError(
+                f"fundamental artifact changed during readback: {path}"
+            )
+        return {
+            "rows": row_count,
+            "columns": columns,
+            "sha256": file_sha256,
+            "frame_fingerprint": digest.hexdigest(),
+            "logical_schema": logical_schema,
+        }
+    except FundamentalGenerationError:
+        raise
+    except Exception as exc:
+        raise FundamentalGenerationError(
+            f"fundamental table streaming readback failed: {table_name}"
         ) from exc
     finally:
         os.close(descriptor)
@@ -1578,6 +1782,7 @@ def _daily_history_coverage_metrics(
     expected_start: str,
     expected_end: str,
     allow_tail_gap: bool,
+    boundary_tolerance_days: int = FUNDAMENTAL_HISTORY_BOUNDARY_TOLERANCE_DAYS,
 ) -> dict[str, Any]:
     """Measure per-symbol daily history without allowing clustered rows to pass."""
 
@@ -1617,7 +1822,11 @@ def _daily_history_coverage_metrics(
         1,
         int(max(0, (evaluation_end - start_ts).days) * 100 / 365),
     )
-    tolerance = pd.Timedelta(days=FUNDAMENTAL_HISTORY_BOUNDARY_TOLERANCE_DAYS)
+    tolerance_days = strict_nonnegative_int(
+        boundary_tolerance_days,
+        label="daily history boundary tolerance days",
+    )
+    tolerance = pd.Timedelta(days=tolerance_days)
     start_ok = bool(
         not window.empty
         and ((window >= start_ts) & (window <= start_ts + tolerance)).any()
@@ -1659,6 +1868,7 @@ def _daily_history_coverage_metrics(
         "history_end_complete": end_ok,
         "history_density_complete": density_ok,
         "history_monthly_complete": monthly_ok,
+        "history_boundary_tolerance_days": tolerance_days,
         "history_complete": bool(start_ok and end_ok and density_ok and monthly_ok),
     }
 
@@ -2024,8 +2234,10 @@ def _validate_raw_to_derived_replay_v3(
     try:
         from .fundamental_mart import (
             FundamentalEndpointAuditPolicy,
+            _attach_daily_history_coverage,
             _attach_financial_coverage,
             _build_endpoint_audit,
+            _validate_canonical_scope_evidence,
             rederive_fundamental_tables_v3,
         )
 
@@ -2042,13 +2254,26 @@ def _validate_raw_to_derived_replay_v3(
             checkpoint,
             as_of=str(provider.get("strict_pit_as_of") or ""),
         )
-        recomputed_outcomes = _attach_financial_coverage(
+        validated_scope_evidence = _validate_canonical_scope_evidence(
+            dict(provider.get("canonical_scope_evidence", {}) or {}),
+            outcome_symbols,
+        )
+        recomputed_outcomes = _attach_daily_history_coverage(
             outcome_symbols,
             checkpoint.outcomes,
             verified_raw_tables,
+            daily_start=str(provider.get("daily_start_date") or ""),
+            as_of=str(provider.get("strict_pit_as_of") or ""),
+            scope_evidence=validated_scope_evidence,
+            policy=policy,
+        )
+        recomputed_outcomes = _attach_financial_coverage(
+            outcome_symbols,
+            recomputed_outcomes,
+            verified_raw_tables,
             financial_start=str(provider.get("financial_start_date") or ""),
             as_of=str(provider.get("strict_pit_as_of") or ""),
-            scope_evidence=dict(provider.get("canonical_scope_evidence", {}) or {}),
+            scope_evidence=validated_scope_evidence,
             policy=policy,
         )
         if recomputed_outcomes != checkpoint.outcomes:
@@ -2056,7 +2281,7 @@ def _validate_raw_to_derived_replay_v3(
                 "staged fundamental financial coverage evidence mismatch"
             )
         history_end_dates = dict(
-            dict(provider.get("canonical_scope_evidence", {}) or {}).get(
+            validated_scope_evidence.get(
                 "history_end_dates",
                 {},
             )
@@ -2398,6 +2623,18 @@ def _validate_primary_rebuild_capture(
         str(symbol).strip().upper(): str(value).strip()
         for symbol, value in dict(scope.get("history_end_dates", {}) or {}).items()
     }
+    canonical_bar_first_dates = {
+        str(symbol).strip().upper(): str(value).strip()
+        for symbol, value in dict(
+            scope.get("canonical_bar_first_dates", {}) or {}
+        ).items()
+    }
+    canonical_bar_last_dates = {
+        str(symbol).strip().upper(): str(value).strip()
+        for symbol, value in dict(
+            scope.get("canonical_bar_last_dates", {}) or {}
+        ).items()
+    }
     non_blocking_absent = {
         str(symbol).strip().upper()
         for symbol in list(scope.get("non_blocking_absent_symbols", []) or [])
@@ -2419,12 +2656,26 @@ def _validate_primary_rebuild_capture(
         non_blocking_absent=non_blocking_absent,
     )
     eligibility_lines = [
-        f"{symbol}|{listing_dates.get(symbol, '')}|{history_end_dates.get(symbol, '')}"
+        "|".join(
+            (
+                symbol,
+                listing_dates.get(symbol, ""),
+                history_end_dates.get(symbol, ""),
+                canonical_bar_first_dates.get(symbol, ""),
+                canonical_bar_last_dates.get(symbol, ""),
+            )
+        )
+        for symbol in outcome_symbols
+    ]
+    bar_bounds_lines = [
+        f"{symbol}|{canonical_bar_first_dates.get(symbol, '')}|{canonical_bar_last_dates.get(symbol, '')}"
         for symbol in outcome_symbols
     ]
     if (
         set(listing_dates) != set(outcome_symbols)
         or set(history_end_dates) != set(outcome_symbols)
+        or set(canonical_bar_first_dates) != set(outcome_symbols)
+        or set(canonical_bar_last_dates) != set(outcome_symbols)
         or not non_blocking_absent.issubset(outcome_symbols)
         or pointer_non_blocking_absent != non_blocking_absent
         or listing_dates != recomputed_listing_dates
@@ -2432,8 +2683,24 @@ def _validate_primary_rebuild_capture(
         or any(
             not re.fullmatch(r"\d{8}", listing_dates[symbol])
             or not re.fullmatch(r"\d{8}", history_end_dates[symbol])
+            or not re.fullmatch(r"\d{8}", canonical_bar_first_dates[symbol])
+            or not re.fullmatch(r"\d{8}", canonical_bar_last_dates[symbol])
+            or max(start_date, listing_dates[symbol], canonical_bar_first_dates[symbol])
+            > min(as_of, history_end_dates[symbol], canonical_bar_last_dates[symbol])
             for symbol in outcome_symbols
         )
+        or str(scope.get("canonical_bar_daily_start") or "") != start_date
+        or str(scope.get("canonical_bar_as_of") or "") != as_of
+        or not _valid_sha256(
+            str(scope.get("canonical_bar_files_sha256") or "").strip().lower()
+        )
+        or not _valid_sha256(
+            str(scope.get("canonical_bar_bounds_sha256") or "").strip().lower()
+        )
+        or hashlib.sha256(
+            "\n".join(bar_bounds_lines).encode("utf-8")
+        ).hexdigest()
+        != str(scope.get("canonical_bar_bounds_sha256") or "").strip().lower()
         or hashlib.sha256("\n".join(eligibility_lines).encode("utf-8")).hexdigest()
         != str(scope.get("history_eligibility_sha256") or "").strip().lower()
     ):
@@ -2549,8 +2816,16 @@ def _validate_primary_rebuild_capture(
             "staged fundamental eligible symbols are missing daily history"
         )
     for symbol, _row in by_symbol.iterrows():
-        expected_start = max(start_date, listing_dates[symbol])
-        expected_end = history_end_dates[symbol]
+        expected_start = max(
+            start_date,
+            listing_dates[symbol],
+            canonical_bar_first_dates[symbol],
+        )
+        expected_end = min(
+            as_of,
+            history_end_dates[symbol],
+            canonical_bar_last_dates[symbol],
+        )
         if daily_by_symbol.get_group(symbol).gt(
             pd.Timestamp(pd.to_datetime(expected_end, format="%Y%m%d"))
         ).any():
@@ -2561,7 +2836,8 @@ def _validate_primary_rebuild_capture(
             daily_by_symbol.get_group(symbol),
             expected_start=expected_start,
             expected_end=expected_end,
-            allow_tail_gap=symbol in tail_gap_exceptions,
+            allow_tail_gap=False,
+            boundary_tolerance_days=FUNDAMENTAL_HISTORY_BOUNDARY_TOLERANCE_DAYS,
         )
         if metrics["history_complete"] is not True:
             raise FundamentalGenerationError(
@@ -2603,6 +2879,54 @@ def _validate_primary_rebuild_capture(
         "raw_to_derived_replay_sha256": replay_validation_sha256,
     }
     return _metadata_sha256(aggregate)
+
+
+def _revalidate_captured_primary_scope(
+    captured: _CapturedFundamentalGeneration,
+) -> str:
+    """Replay the exact canonical source binding immediately around promotion."""
+
+    manifest = _json_object_from_bytes(
+        captured.manifest_bytes,
+        label="staged manifest",
+    )
+    provider = dict(
+        dict(manifest.get("metadata", {}) or {}).get("provider_manifest", {}) or {}
+    )
+    scope = dict(provider.get("canonical_scope_evidence", {}) or {})
+    outcomes = provider.get("symbol_table_outcomes")
+    if not isinstance(outcomes, list):
+        raise FundamentalGenerationError(
+            "staged fundamental request outcome evidence is missing"
+        )
+    symbols = sorted(
+        {
+            str(outcome.get("symbol") or "").strip().upper()
+            for outcome in outcomes
+            if isinstance(outcome, Mapping)
+            and str(outcome.get("symbol") or "").strip()
+        }
+    )
+    if not symbols:
+        raise FundamentalGenerationError(
+            "staged fundamental canonical scope is empty"
+        )
+    try:
+        from .fundamental_mart import _validate_canonical_scope_evidence
+
+        rebuilt = _validate_canonical_scope_evidence(scope, symbols)
+    except FundamentalGenerationError:
+        raise
+    except Exception as exc:
+        raise FundamentalGenerationError(
+            f"staged fundamental canonical scope replay failed: {exc}"
+        ) from exc
+    rebuilt_sha256 = canonical_json_sha256(rebuilt)
+    if rebuilt_sha256 != canonical_json_sha256(scope):
+        raise FundamentalGenerationError(
+            "staged fundamental canonical scope replay mismatch"
+        )
+    return rebuilt_sha256
 
 
 def _write_private_generation_file(path: Path, payload: bytes) -> None:
@@ -2784,6 +3108,7 @@ def promote_staged_fundamental_generation(
             canonical_base,
             expected_sha256=expected_hash,
         )
+        pre_switch_scope_sha256 = _revalidate_captured_primary_scope(captured)
         generations_root = _write_data_root(canonical_base / FUNDAMENTAL_GENERATIONS_DIRNAME)
         final_root = generations_root / captured.generation_id
         try:
@@ -2847,6 +3172,13 @@ def promote_staged_fundamental_generation(
                     expected_pointer_bytes=next_pointer_bytes,
                     expected_pointer_sha256=next_pointer_hash,
                 )
+                post_switch_scope_sha256 = _revalidate_captured_primary_scope(
+                    captured
+                )
+                if post_switch_scope_sha256 != pre_switch_scope_sha256:
+                    raise FundamentalGenerationError(
+                        "fundamental canonical scope changed during promotion"
+                    )
             except Exception as exc:
                 try:
                     current_hash = pointer_sha256(canonical_base)
@@ -2899,6 +3231,11 @@ def _publish_fundamental_generation_locked(
     metadata: Mapping[str, Any],
     _primary_attestation: _PrimaryGenerationAttestation | None = None,
 ) -> tuple[dict[str, Path], dict[str, Any]]:
+    caller_metadata = metadata
+    metadata = _json_object_from_bytes(
+        _json_bytes(metadata),
+        label="fundamental generation metadata snapshot",
+    )
     generation_id = _safe_generation_id(run_id)
     if set(tables) != set(FUNDAMENTAL_TABLES):
         raise FundamentalGenerationError("fundamental publish table set mismatch")
@@ -2921,6 +3258,12 @@ def _publish_fundamental_generation_locked(
             "non-primary generation contains tushare_primary row claims"
         )
     base = _write_data_root(root)
+    pointer_path = base / FUNDAMENTAL_POINTER_FILENAME
+    predecessor_pointer_bytes = (
+        _stable_file_bytes(pointer_path)[0]
+        if pointer_path.exists() or pointer_path.is_symlink()
+        else None
+    )
     generations_root = _write_data_root(
         base / FUNDAMENTAL_GENERATIONS_DIRNAME
     )
@@ -2943,23 +3286,74 @@ def _publish_fundamental_generation_locked(
     )
     table_paths: dict[str, Path] = {}
     table_manifest: dict[str, dict[str, Any]] = {}
+    table_file_signatures: dict[str, tuple[int, ...]] = {}
+    streaming_table_names: set[str] = set()
+    attested_fingerprints = (
+        dict(_primary_attestation.table_fingerprints)
+        if _primary_attestation is not None
+        else {}
+    )
     try:
         for table_name in FUNDAMENTAL_TABLES:
             frame = tables[table_name]
             path = staging_root / f"{table_name}.parquet"
-            frame.to_parquet(path, index=False)
+            streaming_readback = (
+                len(frame) >= FUNDAMENTAL_STREAMING_READBACK_MIN_ROWS
+            )
+            if streaming_readback:
+                frame.to_parquet(
+                    path,
+                    index=False,
+                    engine="pyarrow",
+                    row_group_size=FUNDAMENTAL_STREAMING_ROW_GROUP_SIZE,
+                )
+                streaming_table_names.add(table_name)
+            else:
+                frame.to_parquet(path, index=False)
             _fsync_regular_file(path)
-            table_payload, _signature = _stable_file_bytes(path)
-            readback, readback_evidence = _readback_table_contract(
-                table_payload,
-                table_name=table_name,
-            )
-            _assert_table_roundtrip(
-                frame,
-                readback,
-                table_name=table_name,
-            )
+            if streaming_readback:
+                file_sha256, signature = _stable_file_sha256(path)
+                readback_evidence = _streaming_parquet_table_evidence(
+                    path,
+                    table_name=table_name,
+                    file_sha256=file_sha256,
+                    expected_signature=signature,
+                )
+                expected_fingerprint = attested_fingerprints.get(table_name)
+                if expected_fingerprint is None:
+                    expected_fingerprint = _frame_fingerprint(frame)
+                if (
+                    readback_evidence["rows"] != int(len(frame))
+                    or readback_evidence["columns"] != list(frame.columns)
+                    or readback_evidence["frame_fingerprint"]
+                    != expected_fingerprint
+                ):
+                    raise FundamentalGenerationError(
+                        f"fundamental table semantic readback mismatch: {table_name}"
+                    )
+            else:
+                table_payload, signature = _stable_file_bytes(path)
+                readback, readback_evidence = _readback_table_contract(
+                    table_payload,
+                    table_name=table_name,
+                )
+                _assert_table_roundtrip(
+                    frame,
+                    readback,
+                    table_name=table_name,
+                )
+                del table_payload, readback
+            table_file_signatures[table_name] = signature
             table_manifest[table_name] = readback_evidence
+        if (
+            source_priority == "tushare_primary"
+            and _primary_attestation is not None
+            and _primary_attestation.metadata_sha256
+            != _metadata_sha256(caller_metadata)
+        ):
+            raise FundamentalGenerationError(
+                "primary generation metadata changed after attestation"
+            )
         primary_provenance = (
             _primary_provenance_envelope(
                 _primary_attestation,
@@ -2995,15 +3389,26 @@ def _publish_fundamental_generation_locked(
                 "fundamental generation manifest readback mismatch"
             )
         for table_name in FUNDAMENTAL_TABLES:
-            final_table_bytes, _signature = _stable_file_bytes(
+            final_sha256, final_signature = _stable_file_sha256(
                 final_root / f"{table_name}.parquet"
             )
-            _readback_table_contract(
-                final_table_bytes,
-                table_name=table_name,
-                table_manifest=table_manifest[table_name],
-                require_v2=True,
-            )
+            if (
+                final_signature != table_file_signatures[table_name]
+                or final_sha256 != table_manifest[table_name]["sha256"]
+            ):
+                raise FundamentalGenerationError(
+                    f"fundamental installed table identity mismatch: {table_name}"
+                )
+            if table_name not in streaming_table_names:
+                final_table_bytes, _signature = _stable_file_bytes(
+                    final_root / f"{table_name}.parquet"
+                )
+                _readback_table_contract(
+                    final_table_bytes,
+                    table_name=table_name,
+                    table_manifest=table_manifest[table_name],
+                    require_v2=True,
+                )
         relative_root = final_root.relative_to(base)
         for table_name in FUNDAMENTAL_TABLES:
             table_paths[table_name] = final_root / f"{table_name}.parquet"
@@ -3034,8 +3439,66 @@ def _publish_fundamental_generation_locked(
         }
         if primary_provenance is not None:
             pointer["primary_provenance"] = primary_provenance
-        _atomic_write_json(base / FUNDAMENTAL_POINTER_FILENAME, pointer)
-        return table_paths, pointer
+        _atomic_write_json(pointer_path, pointer)
+        pointer_bytes, _pointer_signature = _stable_file_bytes(pointer_path)
+        try:
+            pointer_readback = _json_object_from_bytes(
+                pointer_bytes,
+                label="published pointer",
+            )
+        except FundamentalGenerationError as exc:
+            pointer_readback = None
+            pointer_readback_error: Exception | None = exc
+        else:
+            pointer_readback_error = None
+        if pointer_readback != pointer:
+            try:
+                current_pointer_bytes, _current_signature = _stable_file_bytes(
+                    pointer_path
+                )
+                if current_pointer_bytes != pointer_bytes:
+                    raise FundamentalGenerationError(
+                        "fundamental pointer drifted before publication rollback"
+                    )
+                if predecessor_pointer_bytes is None:
+                    pointer_path.unlink()
+                    _fsync_directory(base)
+                else:
+                    _atomic_write_bytes(
+                        pointer_path,
+                        predecessor_pointer_bytes,
+                    )
+                if final_root.exists():
+                    shutil.rmtree(final_root)
+            except Exception as rollback_exc:
+                raise FundamentalGenerationError(
+                    "fundamental pointer readback and rollback failed"
+                ) from rollback_exc
+            raise FundamentalGenerationError(
+                "fundamental pointer semantic readback mismatch"
+            ) from pointer_readback_error
+        # Publication has already performed semantic readback for every table.
+        # Return the same lightweight provenance enrichment as the public
+        # loader without decoding the Parquet files a second time while the
+        # source DataFrames are still resident in the caller.
+        published_pointer = dict(pointer)
+        primary_provenance_verified = _verify_primary_provenance(
+            published_pointer,
+            manifest,
+        )
+        published_pointer["primary_provenance_verified"] = (
+            primary_provenance_verified
+        )
+        published_metadata = dict(published_pointer.get("metadata", {}) or {})
+        published_metadata["primary_provenance_verified"] = (
+            primary_provenance_verified
+        )
+        published_pointer["metadata"] = published_metadata
+        published_pointer["pointer_path"] = str(
+            base / FUNDAMENTAL_POINTER_FILENAME
+        )
+        published_pointer["manifest"] = manifest
+        return table_paths, published_pointer
     except Exception:
         if staging_root.exists():
             shutil.rmtree(staging_root)

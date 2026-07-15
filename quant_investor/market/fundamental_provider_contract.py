@@ -59,6 +59,7 @@ class FundamentalEndpointAuditPolicy:
     financial_period_min_coverage_ratio: float = 0.90
     financial_max_consecutive_missing_baseline_periods: int = 1
     financial_require_latest_baseline: bool = True
+    daily_history_boundary_tolerance_days: int = 62
     max_error_requests: int = 0
     max_malformed_requests: int = 0
 
@@ -75,6 +76,7 @@ class FundamentalEndpointAuditPolicy:
                 raise ValueError(f"{field_name} must be between 0 and 1")
         for field_name in (
             "financial_max_consecutive_missing_baseline_periods",
+            "daily_history_boundary_tolerance_days",
             "max_error_requests",
             "max_malformed_requests",
         ):
@@ -334,7 +336,7 @@ def matured_quarter_baseline(
             period = date(year, month, day)
             if (
                 start <= period <= effective_end
-                and period + timedelta(days=lag) <= cutoff
+                and period + timedelta(days=lag) <= effective_end
             ):
                 quarter_ends.append(period)
     return [period.strftime("%Y%m%d") for period in quarter_ends[-period_limit:]]

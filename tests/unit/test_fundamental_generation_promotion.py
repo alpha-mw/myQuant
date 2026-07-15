@@ -5,6 +5,8 @@ import json
 import os
 import threading
 import time
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable, cast
 
@@ -274,6 +276,9 @@ def _publish_verified_primary(
     scope_exception_symbols: list[str] | None = None,
     pointer_exception_symbols: list[str] | None = None,
     membership_override: pd.DataFrame | None = None,
+    requested_daily_start: str = "20230510",
+    requested_financial_start: str = "20210510",
+    canonical_bar_start: str = "20230510",
     expected_pointer_sha256: str | None = None,
 ) -> None:
     symbols = sorted(
@@ -309,12 +314,25 @@ def _publish_verified_primary(
         membership = membership.assign(industry="fixture-sector")
     membership.to_parquet(membership_path, index=False)
     symbol_set_sha256 = hashlib.sha256("\n".join(symbols).encode()).hexdigest()
+    bars_root = evidence_dir / "canonical-bars"
+    bars_root.mkdir(exist_ok=True)
+    pd.DataFrame(
+        [
+            {
+                "ts_code": symbol,
+                "trade_date": trade_date.strftime("%Y%m%d"),
+            }
+            for symbol in symbols
+            for trade_date in pd.bdate_range(canonical_bar_start, "2024-05-10")
+        ]
+    ).to_parquet(bars_root / "part.parquet", index=False)
     market_pointer_payload: dict[str, object] = (
-        market_pointer_override
+        dict(market_pointer_override)
         if market_pointer_override is not None
         else {
             "snapshot_id": "fixture-market-snapshot",
             "latest_complete_trade_date": "20240510",
+            "table_root": str(bars_root.resolve()),
             "coverage": {
                 "expected_scope_count": len(symbols),
                 "expected_scope_sha256": symbol_set_sha256,
@@ -328,15 +346,41 @@ def _publish_verified_primary(
             },
         }
     )
+    market_pointer_payload.setdefault("table_root", str(bars_root.resolve()))
     market_pointer_path.write_text(
         json.dumps(market_pointer_payload),
         encoding="utf-8",
     )
-    listing_dates = {symbol: "20230510" for symbol in symbols}
+    membership_by_symbol = membership.assign(
+        _symbol=membership["symbol"].astype("string").str.strip().str.upper()
+    ).set_index("_symbol")
+    listing_dates = {
+        symbol: str(membership_by_symbol.at[symbol, "list_date"]).strip()
+        for symbol in symbols
+    }
     history_end_dates = {symbol: "20240510" for symbol in symbols}
+    canonical_bar_first_dates = {symbol: canonical_bar_start for symbol in symbols}
+    canonical_bar_last_dates = {symbol: "20240510" for symbol in symbols}
+    bar_file_evidence = fundamental_mart._canonical_bar_file_evidence(
+        bars_root.resolve()
+    )
+    bar_bounds_sha = hashlib.sha256(
+        "\n".join(
+            f"{symbol}|{canonical_bar_first_dates[symbol]}|{canonical_bar_last_dates[symbol]}"
+            for symbol in symbols
+        ).encode()
+    ).hexdigest()
     eligibility_sha = hashlib.sha256(
         "\n".join(
-            f"{symbol}|{listing_dates[symbol]}|{history_end_dates[symbol]}"
+            "|".join(
+                (
+                    symbol,
+                    listing_dates[symbol],
+                    history_end_dates[symbol],
+                    canonical_bar_first_dates[symbol],
+                    canonical_bar_last_dates[symbol],
+                )
+            )
             for symbol in symbols
         ).encode()
     ).hexdigest()
@@ -357,17 +401,34 @@ def _publish_verified_primary(
         "symbol_set_sha256": symbol_set_sha256,
         "listing_dates": listing_dates,
         "history_end_dates": history_end_dates,
+        "canonical_bar_first_dates": canonical_bar_first_dates,
+        "canonical_bar_last_dates": canonical_bar_last_dates,
+        "canonical_bar_table_root": str(bars_root.resolve()),
+        "canonical_bar_file_count": len(bar_file_evidence),
+        "canonical_bar_files_sha256": canonical_json_sha256(bar_file_evidence),
+        "canonical_bar_bounds_sha256": bar_bounds_sha,
+        "canonical_bar_daily_start": requested_daily_start,
+        "canonical_bar_as_of": "20240510",
         "history_eligibility_sha256": eligibility_sha,
         "non_blocking_absent_symbols": list(scope_exception_symbols or []),
     }
     raw_tables = _raw_tables(symbols)
     outcomes = _clean_outcomes(raw_tables, symbols)
     audit_policy = fundamental_mart.FundamentalEndpointAuditPolicy()
+    outcomes = fundamental_mart._attach_daily_history_coverage(
+        symbols,
+        outcomes,
+        raw_tables,
+        daily_start=requested_daily_start,
+        as_of="20240510",
+        scope_evidence=canonical_scope_evidence,
+        policy=audit_policy,
+    )
     outcomes = fundamental_mart._attach_financial_coverage(
         symbols,
         outcomes,
         raw_tables,
-        financial_start="20210510",
+        financial_start=requested_financial_start,
         as_of="20240510",
         scope_evidence=canonical_scope_evidence,
         policy=audit_policy,
@@ -375,8 +436,8 @@ def _publish_verified_primary(
     binding = fundamental_mart._checkpoint_binding(
         symbols=symbols,
         years=1,
-        start_date="20230510",
-        financial_start_date="20210510",
+        start_date=requested_daily_start,
+        financial_start_date=requested_financial_start,
         as_of="20240510",
         canonical_scope_evidence=canonical_scope_evidence,
     )
@@ -473,8 +534,8 @@ def _publish_verified_primary(
         "pit_contract_version": FUNDAMENTAL_FETCH_PIT_CONTRACT,
         "request_fields": dict(fundamental_mart.SOURCE_REQUEST_FIELDS),
         "strict_pit_as_of": "20240510",
-        "daily_start_date": "20230510",
-        "financial_start_date": "20210510",
+        "daily_start_date": requested_daily_start,
+        "financial_start_date": requested_financial_start,
         "years": 1,
         "requests_attempted": len(symbols) * len(generation.FUNDAMENTAL_RAW_TABLES),
         "requests_succeeded_with_rows": len(outcomes),
@@ -732,6 +793,73 @@ def test_real_v3_checkpoint_writer_evidence_promotes(tmp_path: Path) -> None:
     )
     assert checkpoint_manifest["table_evidence_sha256"] == exact_table_evidence_sha256
     assert checkpoint["table_evidence_sha256"] == exact_table_evidence_sha256
+
+    result = promote_staged_fundamental_generation(
+        staging_root=staging,
+        canonical_root=canonical,
+        expected_pointer_sha256=pointer_sha256(canonical),
+    )
+
+    assert result["promoted"] is True
+
+
+def test_promotion_rejects_bound_canonical_bar_file_drift(tmp_path: Path) -> None:
+    canonical = tmp_path / "canonical"
+    staging = tmp_path / "staging"
+    _publish_offline(canonical)
+    _publish_verified_primary(staging)
+    staged_pointer = json.loads(
+        (staging / generation.FUNDAMENTAL_POINTER_FILENAME).read_text(
+            encoding="utf-8"
+        )
+    )
+    staged_manifest = json.loads(
+        (staging / staged_pointer["manifest_path"]).read_text(encoding="utf-8")
+    )
+    scope = staged_manifest["metadata"]["provider_manifest"][
+        "canonical_scope_evidence"
+    ]
+    bars_root = Path(scope["canonical_bar_table_root"])
+    bars = pd.read_parquet(bars_root / "part.parquet")
+    bars.loc[0, "trade_date"] = "20230511"
+    bars.to_parquet(bars_root / "part.parquet", index=False)
+
+    with pytest.raises(
+        FundamentalGenerationError,
+        match="scope evidence changed|bar dataset",
+    ):
+        promote_staged_fundamental_generation(
+            staging_root=staging,
+            canonical_root=canonical,
+            expected_pointer_sha256=pointer_sha256(canonical),
+        )
+
+
+@pytest.mark.parametrize("listing_date", ["19961217", "20210831"])
+def test_promotion_uses_bound_canonical_bar_start_for_long_history_gap(
+    tmp_path: Path,
+    listing_date: str,
+) -> None:
+    canonical = tmp_path / "canonical"
+    staging = tmp_path / "staging"
+    _publish_offline(canonical)
+    _publish_verified_primary(
+        staging,
+        membership_override=pd.DataFrame(
+            [
+                {
+                    "symbol": "000002.SZ",
+                    "list_date": listing_date,
+                    "effective_from": listing_date,
+                    "effective_to": "",
+                    "industry": "fixture-sector",
+                }
+            ]
+        ),
+        requested_daily_start="20220101",
+        requested_financial_start="20230630",
+        canonical_bar_start="20230510",
+    )
 
     result = promote_staged_fundamental_generation(
         staging_root=staging,
@@ -1275,6 +1403,172 @@ def test_primary_manifest_binds_exact_readback_after_object_string_roundtrip(
     assert pointer["primary_provenance"]["output_frame_fingerprints"][
         "fundamental_daily"
     ] == table_manifest["frame_fingerprint"]
+
+
+def test_streaming_parquet_readback_preserves_exact_frame_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "streaming"
+    tables = _tables("000002.SZ")
+    tables["fundamental_daily"] = pd.DataFrame(
+        {
+            "ts_code": ["000002.SZ", "000002.SZ", "000002.SZ"],
+            "trade_date": ["20240508", "20240509", "20240510"],
+            "end_date": ["20221231", "20221231", "20221231"],
+            "availability_date": ["20230501", "20230501", "20230501"],
+            "sector": [None, "银行", "bank"],
+            "fin_roe": [float("nan"), float("inf"), 0.3],
+            "nullable_bool": pd.Series([pd.NA, True, False], dtype="boolean"),
+            "nullable_int": pd.Series([pd.NA, 1, 2], dtype="Int64"),
+            "bytes_value": [None, b"a", b"\x00"],
+            "date_value": [None, date(2024, 5, 9), date(2024, 5, 10)],
+            "timestamp_value": [pd.NaT, pd.Timestamp("2024-05-09"), pd.Timestamp("2024-05-10")],
+            "timedelta_value": [pd.NaT, pd.Timedelta(days=1), pd.Timedelta(days=2)],
+            "decimal_value": [None, Decimal("1.25"), Decimal("2.50")],
+        }
+    )
+    expected = frame_fingerprint(tables["fundamental_daily"])
+    monkeypatch.setattr(
+        generation,
+        "FUNDAMENTAL_STREAMING_READBACK_MIN_ROWS",
+        1,
+    )
+    monkeypatch.setattr(
+        generation,
+        "FUNDAMENTAL_STREAMING_ROW_GROUP_SIZE",
+        1,
+    )
+    original_readback = generation._readback_table_contract
+
+    def reject_full_daily_readback(*args: Any, **kwargs: Any):
+        if kwargs.get("table_name") == "fundamental_daily":
+            raise AssertionError("streaming daily must not use full-byte readback")
+        return original_readback(*args, **kwargs)
+
+    monkeypatch.setattr(
+        generation,
+        "_readback_table_contract",
+        reject_full_daily_readback,
+    )
+
+    publish_fundamental_generation(
+        root=root,
+        run_id="streaming-identity",
+        tables=tables,
+        metadata={
+            "run_id": "streaming-identity",
+            "source_priority": "manual_offline_snapshot",
+            "gate2_passed": True,
+        },
+    )
+
+    pointer = json.loads(
+        (root / generation.FUNDAMENTAL_POINTER_FILENAME).read_text(encoding="utf-8")
+    )
+    manifest = json.loads(
+        (root / pointer["manifest_path"]).read_text(encoding="utf-8")
+    )
+    table_manifest = manifest["tables"]["fundamental_daily"]
+    assert table_manifest["frame_fingerprint"] == expected
+    assert table_manifest["rows"] == 3
+    assert table_manifest["columns"] == list(tables["fundamental_daily"].columns)
+    table_path = root / pointer["tables"]["fundamental_daily"]
+    parquet = generation.pq.ParquetFile(table_path)
+    assert parquet.num_row_groups == 3
+    assert max(
+        parquet.metadata.row_group(index).num_rows
+        for index in range(parquet.num_row_groups)
+    ) <= 1
+    full_readback = pd.read_parquet(table_path)
+    assert frame_fingerprint(full_readback) == expected
+    assert frame_logical_schema(full_readback) == table_manifest["logical_schema"]
+
+
+def test_streaming_parquet_readback_rejects_inode_swap_before_pointer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "streaming-race"
+    tables = _tables("000002.SZ")
+    monkeypatch.setattr(
+        generation,
+        "FUNDAMENTAL_STREAMING_READBACK_MIN_ROWS",
+        1,
+    )
+    original_streaming = generation._streaming_parquet_table_evidence
+    swapped = False
+
+    def swap_then_read(path: Path, **kwargs: Any):
+        nonlocal swapped
+        if kwargs.get("table_name") == "fundamental_daily" and not swapped:
+            swapped = True
+            replacement = path.with_name("replacement.parquet")
+            replacement.write_bytes(path.read_bytes())
+            os.replace(replacement, path)
+        return original_streaming(path, **kwargs)
+
+    monkeypatch.setattr(
+        generation,
+        "_streaming_parquet_table_evidence",
+        swap_then_read,
+    )
+    with pytest.raises(
+        FundamentalGenerationError,
+        match="changed before readback",
+    ):
+        publish_fundamental_generation(
+            root=root,
+            run_id="streaming-race",
+            tables=tables,
+            metadata={
+                "run_id": "streaming-race",
+                "source_priority": "manual_offline_snapshot",
+                "gate2_passed": True,
+            },
+        )
+
+    assert swapped is True
+    assert not (root / generation.FUNDAMENTAL_POINTER_FILENAME).exists()
+
+
+def test_streaming_parquet_readback_rejects_inode_swap_between_passes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "streaming.parquet"
+    pd.DataFrame(
+        {
+            "ts_code": ["000001.SZ", "000001.SZ"],
+            "trade_date": ["20240509", "20240510"],
+        }
+    ).to_parquet(path, index=False, engine="pyarrow", row_group_size=1)
+    file_sha256, signature = generation._stable_file_sha256(path)
+    original_schema = generation.frame_logical_schema
+    swapped = False
+
+    def swap_after_first_schema(frame: pd.DataFrame):
+        nonlocal swapped
+        result = original_schema(frame)
+        if not swapped:
+            swapped = True
+            replacement = tmp_path / "replacement.parquet"
+            replacement.write_bytes(path.read_bytes())
+            os.replace(replacement, path)
+        return result
+
+    monkeypatch.setattr(generation, "frame_logical_schema", swap_after_first_schema)
+    with pytest.raises(
+        FundamentalGenerationError,
+        match="changed during readback",
+    ):
+        generation._streaming_parquet_table_evidence(
+            path,
+            table_name="fundamental_daily",
+            file_sha256=file_sha256,
+            expected_signature=signature,
+        )
+    assert swapped is True
 
 
 def test_promotion_rejects_forged_readback_fingerprint_before_pointer_change(
@@ -1944,6 +2238,50 @@ def test_post_switch_failure_rolls_pointer_back_by_cas(
     assert (canonical / generation.FUNDAMENTAL_GENERATIONS_DIRNAME / "verified-stage").is_dir()
 
 
+def test_post_switch_canonical_scope_drift_rolls_pointer_back(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canonical = tmp_path / "canonical"
+    staging = tmp_path / "staging"
+    _publish_offline(canonical)
+    _publish_verified_primary(staging)
+    before = pointer_sha256(canonical)
+    staged = load_fundamental_pointer(staging)
+    assert staged is not None
+    scope = staged["manifest"]["metadata"]["provider_manifest"][
+        "canonical_scope_evidence"
+    ]
+    bars_path = Path(scope["canonical_bar_table_root"]) / "part.parquet"
+    original_revalidate = generation._revalidate_captured_primary_scope
+    calls = 0
+
+    def drift_on_post_switch(captured: Any) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            bars = pd.read_parquet(bars_path)
+            bars.loc[0, "trade_date"] = "20230511"
+            bars.to_parquet(bars_path, index=False)
+        return original_revalidate(captured)
+
+    monkeypatch.setattr(
+        generation,
+        "_revalidate_captured_primary_scope",
+        drift_on_post_switch,
+    )
+    with pytest.raises(FundamentalGenerationError, match="pointer rolled back"):
+        promote_staged_fundamental_generation(
+            staging_root=staging,
+            canonical_root=canonical,
+            expected_pointer_sha256=before,
+        )
+
+    assert calls == 2
+    assert pointer_sha256(canonical) == before
+    assert load_fundamental_pointer(canonical)["generation_id"] == "canonical-old"
+
+
 def test_post_switch_installed_table_drift_rolls_pointer_back(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1965,6 +2303,46 @@ def test_post_switch_installed_table_drift_rolls_pointer_back(
         generation,
         "_validate_installed_promotion_identity",
         tamper_then_validate,
+    )
+    with pytest.raises(FundamentalGenerationError, match="pointer rolled back"):
+        promote_staged_fundamental_generation(
+            staging_root=staging,
+            canonical_root=canonical,
+            expected_pointer_sha256=before,
+        )
+
+    assert pointer_sha256(canonical) == before
+    assert load_fundamental_pointer(canonical)["generation_id"] == "canonical-old"
+
+
+def test_scope_drift_during_installed_validation_rolls_pointer_back(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canonical = tmp_path / "canonical"
+    staging = tmp_path / "staging"
+    _publish_offline(canonical)
+    _publish_verified_primary(staging)
+    before = pointer_sha256(canonical)
+    staged = load_fundamental_pointer(staging)
+    assert staged is not None
+    scope = staged["manifest"]["metadata"]["provider_manifest"][
+        "canonical_scope_evidence"
+    ]
+    bars_path = Path(scope["canonical_bar_table_root"]) / "part.parquet"
+    original_validate = generation._validate_installed_promotion_identity
+
+    def validate_then_drift(**kwargs: Any):
+        installed = original_validate(**kwargs)
+        bars = pd.read_parquet(bars_path)
+        bars.loc[0, "trade_date"] = "20230511"
+        bars.to_parquet(bars_path, index=False)
+        return installed
+
+    monkeypatch.setattr(
+        generation,
+        "_validate_installed_promotion_identity",
+        validate_then_drift,
     )
     with pytest.raises(FundamentalGenerationError, match="pointer rolled back"):
         promote_staged_fundamental_generation(
