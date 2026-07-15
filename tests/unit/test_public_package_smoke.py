@@ -65,6 +65,84 @@ def test_cli_market_fundamental_maintain_dispatches(monkeypatch):
     assert captured["allow_live"] is False
 
 
+def test_cli_market_fundamental_full_rebuild_dispatches(monkeypatch, capsys):
+    captured = {}
+
+    def _fake_run_fundamental_maintenance(**kwargs):
+        captured.update(kwargs)
+        return {"status": "OK"}
+
+    monkeypatch.setattr(
+        cli_main,
+        "run_fundamental_maintenance",
+        _fake_run_fundamental_maintenance,
+    )
+    cli_main.main(
+        [
+            "market",
+            "fundamental-maintain",
+            "--market",
+            "CN",
+            "--universes",
+            "full_a",
+            "--as-of",
+            "20260713",
+            "--run-id",
+            "fundamental_20260713_primary",
+            "--data-root",
+            "data/parquet/cn/_fundamental_rebuild/fundamental_20260713_primary",
+            "--canonical-scope-path",
+            "data/cn_universe/cn_index_components.json",
+            "--canonical-market-pointer-path",
+            "data/parquet/cn/_latest.json",
+            "--canonical-membership-path",
+            "data/parquet/cn/reference/stock_basic_membership.parquet",
+            "--checkpoint-root",
+            "data/cn_market_full/_snapshots/fundamental/checkpoint_20260713",
+            "--allow-live",
+            "--authoritative-full-rebuild",
+        ]
+    )
+
+    assert captured["authoritative_full_rebuild"] is True
+    assert captured["run_id"] == "fundamental_20260713_primary"
+    assert captured["checkpoint_root"].endswith("checkpoint_20260713")
+    assert '"status": "OK"' in capsys.readouterr().out
+
+
+def test_cli_market_fundamental_promotion_dispatches(monkeypatch, capsys):
+    captured = {}
+
+    def _fake_run_fundamental_promotion(**kwargs):
+        captured.update(kwargs)
+        return {"status": "OK", "promoted": True}
+
+    monkeypatch.setattr(
+        cli_main,
+        "run_fundamental_promotion",
+        _fake_run_fundamental_promotion,
+    )
+    cli_main.main(
+        [
+            "market",
+            "fundamental-promote",
+            "--staging-root",
+            "staging",
+            "--canonical-root",
+            "canonical",
+            "--expected-pointer-sha256",
+            "a" * 64,
+        ]
+    )
+
+    assert captured == {
+        "staging_root": "staging",
+        "canonical_root": "canonical",
+        "expected_pointer_sha256": "a" * 64,
+    }
+    assert '"promoted": true' in capsys.readouterr().out
+
+
 def test_cli_market_data_governance_dispatches_local_read_only(monkeypatch, capsys):
     captured = {}
 

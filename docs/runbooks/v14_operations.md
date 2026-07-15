@@ -51,6 +51,25 @@ schedule. Missing source data, provenance, receipts, or approvals is a blocker;
 do not substitute CSV, stale snapshots, inferred values, or hand-written pass
 flags.
 
+## Fundamental authoritative rebuild
+
+An authoritative full-A Fundamental refresh is an explicit two-stage operation:
+
+1. `market fundamental-maintain --allow-live --authoritative-full-rebuild`
+   fetches into an isolated data root and a separate v3 checkpoint root. It
+   binds the exact full-A scope, market pointer, PIT membership, request
+   outcomes, financial-period coverage, and Parquet readback fingerprints.
+2. `market fundamental-promote --expected-pointer-sha256 <sha>` independently
+   revalidates the staged generation and advances the canonical Fundamental
+   pointer with compare-and-swap semantics.
+
+The live rebuild must use a new run/checkpoint root after any v2 checkpoint,
+scope drift, malformed response, or failed request. Promotion rejects legacy
+primary provenance, checkpoint drift, incomplete financial coverage, or a
+derived mart that cannot be reproduced from the accepted raw checkpoint and
+the exact bound PIT membership. Weekly readiness schedules remain local and
+read-only; they must never add `--allow-live` or perform promotion.
+
 ## Schedule routing
 
 Current schedules must name the three active branches, omit Intelligence from

@@ -111,12 +111,43 @@ def _write_canonical_pointer(
     root = tmp_path / generation_id
     if source_priority == "tushare_primary":
         raw_tables = _verified_live_raw_tables()
-        outcomes = [
-            {"symbol": symbol, "table": table, "status": "rows"}
-            for symbol in ("000001.SZ", "000002.SZ", "000003.SZ")
-            for table in fundamental_mart.SOURCE_TABLES
-        ]
+        outcomes = []
+        for symbol in ("000001.SZ", "000002.SZ", "000003.SZ"):
+            for table in fundamental_mart.SOURCE_TABLES:
+                rows = int(
+                    raw_tables[table]["ts_code"].eq(symbol).sum()
+                )
+                outcomes.append(
+                    {
+                        "schema_version": (
+                            fundamental_mart.FUNDAMENTAL_REQUEST_OUTCOME_SCHEMA
+                        ),
+                        "symbol": symbol,
+                        "table": table,
+                        "status": "success" if rows else "empty",
+                        "rows_received": rows,
+                        "rows": rows,
+                        "rows_hard_invalid": 0,
+                        "rows_filtered_future": 0,
+                        "rows_filtered_missing_availability": 0,
+                        "rows_filtered_core_values": 0,
+                        "rows_deduplicated": 0,
+                        "rows_discarded_request_malformed": 0,
+                        "rows_hard_invalid_schema": 0,
+                        "rows_hard_invalid_symbol": 0,
+                        "rows_hard_invalid_availability_date": 0,
+                        "rows_hard_invalid_end_date": 0,
+                        "rows_hard_invalid_end_after_availability": 0,
+                        "rows_hard_invalid_core_numeric": 0,
+                    }
+                )
+        succeeded = sum(
+            outcome["status"] == "success" for outcome in outcomes
+        )
         provider_manifest = {
+            "schema_version": (
+                fundamental_mart.FUNDAMENTAL_PROVIDER_MANIFEST_SCHEMA
+            ),
             "provider": "tushare",
             "provider_status": "live_tushare",
             "source_priority": "tushare_primary",
@@ -126,11 +157,23 @@ def _write_canonical_pointer(
                 table: len(raw_tables[table])
                 for table in fundamental_mart.SOURCE_TABLES
             },
+            "raw_table_fingerprints": {
+                table: fundamental_mart.frame_fingerprint(raw_tables[table])
+                for table in fundamental_mart.SOURCE_TABLES
+            },
             "requests_attempted": len(outcomes),
-            "requests_succeeded_with_rows": len(outcomes),
-            "requests_empty": 0,
+            "requests_succeeded_with_rows": succeeded,
+            "requests_empty": len(outcomes) - succeeded,
             "requests_failed": 0,
             "symbol_table_outcomes": outcomes,
+            "request_outcome_accounting_sha256": (
+                fundamental_mart.canonical_json_sha256(outcomes)
+            ),
+            "endpoint_audit": {
+                "schema_version": (
+                    fundamental_mart.FUNDAMENTAL_ENDPOINT_AUDIT_SCHEMA
+                ),
+            },
         }
         attestation = fundamental_mart._issue_live_tushare_attestation(
             "live_tushare",

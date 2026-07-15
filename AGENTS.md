@@ -23,6 +23,9 @@ offline by default, and compatible with the existing public CLI/API contracts.
 - `pytest tests/unit/test_forecast_snapshot_cache.py -v`
 - `pytest tests/unit/test_llm_env_inventory.py -v`
 - `pytest tests/unit/test_tushare_url_defaults.py -v`
+- `pytest tests/unit/test_fundamental_provider_contract.py -v`
+- `pytest tests/unit/test_fundamental_live_fetch_resilience.py -v`
+- `pytest tests/unit/test_fundamental_generation_promotion.py -v`
 - `pytest tests/integration/test_review_layer_timeout_budget.py -v`
 
 For staged upgrade work, run `PYTHON=./.venv/bin/python scripts/staged_upgrade_quality_gate.sh`.

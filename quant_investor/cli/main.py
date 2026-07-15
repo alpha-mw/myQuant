@@ -60,6 +60,14 @@ def run_fundamental_maintenance(**kwargs):
     return _run_cn_fundamental_maintenance(**kwargs)
 
 
+def run_fundamental_promotion(**kwargs):
+    from quant_investor.market.fundamental_generation import (
+        promote_staged_fundamental_generation,
+    )
+
+    return promote_staged_fundamental_generation(**kwargs)
+
+
 def run_macro_maintenance(**kwargs):
     from quant_investor.market.macro_mart import (
         run_cn_macro_maintenance as _run_cn_macro_maintenance,
@@ -463,10 +471,43 @@ def _build_parser() -> argparse.ArgumentParser:
         default="data/cn_market_full/_snapshots/fundamental",
     )
     market_fundamental.add_argument("--reports-root", default="reports/fundamental_readiness")
+    market_fundamental.add_argument("--run-id", default="")
     market_fundamental.add_argument(
         "--allow-live",
         action="store_true",
         help="显式允许调用 live provider；本地测试默认不使用",
+    )
+    market_fundamental.add_argument(
+        "--authoritative-full-rebuild",
+        action="store_true",
+        help="在隔离 data root 执行 scope/hash/PIT/audit 绑定的权威全量重建",
+    )
+    market_fundamental.add_argument("--canonical-scope-path", default="")
+    market_fundamental.add_argument("--canonical-market-pointer-path", default="")
+    market_fundamental.add_argument("--canonical-membership-path", default="")
+    market_fundamental.add_argument("--checkpoint-root", default="")
+    market_fundamental.add_argument("--checkpoint-batch-size", type=int, default=500)
+    market_fundamental.add_argument("--max-attempts", type=int, default=3)
+    market_fundamental.add_argument("--retry-backoff-seconds", type=float, default=0.5)
+    market_fundamental.add_argument(
+        "--max-retry-backoff-seconds",
+        type=float,
+        default=8.0,
+    )
+    market_fundamental.add_argument("--requests-per-second", type=float, default=8.0)
+
+    market_fundamental_promote = market_subparsers.add_parser(
+        "fundamental-promote",
+        help="以 expected-pointer SHA 原子晋升已验证的 Fundamental staging generation",
+    )
+    market_fundamental_promote.add_argument("--staging-root", required=True)
+    market_fundamental_promote.add_argument(
+        "--canonical-root",
+        default="data/parquet/cn",
+    )
+    market_fundamental_promote.add_argument(
+        "--expected-pointer-sha256",
+        required=True,
     )
 
     market_macro_maintain = market_subparsers.add_parser(
@@ -971,7 +1012,19 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.command == "market" and args.market_command == "fundamental-maintain":
-        run_fundamental_maintenance(
+        if args.authoritative_full_rebuild and (
+            not args.canonical_scope_path
+            or not args.canonical_market_pointer_path
+            or not args.canonical_membership_path
+            or not args.checkpoint_root
+            or not args.run_id
+        ):
+            parser.error(
+                "--authoritative-full-rebuild requires --run-id, "
+                "--canonical-scope-path, --canonical-market-pointer-path, "
+                "--canonical-membership-path, and --checkpoint-root"
+            )
+        result = run_fundamental_maintenance(
             market=args.market,
             universes=args.universes,
             years=args.years,
@@ -982,6 +1035,31 @@ def main(argv: list[str] | None = None) -> None:
             reports_root=args.reports_root,
             raw_input_dir=args.raw_input_dir or None,
             allow_live=args.allow_live,
+            run_id=args.run_id,
+            authoritative_full_rebuild=args.authoritative_full_rebuild,
+            canonical_scope_path=args.canonical_scope_path or None,
+            canonical_market_pointer_path=(
+                args.canonical_market_pointer_path or None
+            ),
+            canonical_membership_path=args.canonical_membership_path or None,
+            checkpoint_root=args.checkpoint_root or None,
+            checkpoint_batch_size=args.checkpoint_batch_size,
+            max_attempts=args.max_attempts,
+            retry_backoff_seconds=args.retry_backoff_seconds,
+            max_retry_backoff_seconds=args.max_retry_backoff_seconds,
+            requests_per_second=args.requests_per_second,
+        )
+        if args.authoritative_full_rebuild:
+            _print_json(result)
+        return
+
+    if args.command == "market" and args.market_command == "fundamental-promote":
+        _print_json(
+            run_fundamental_promotion(
+                staging_root=args.staging_root,
+                canonical_root=args.canonical_root,
+                expected_pointer_sha256=args.expected_pointer_sha256,
+            )
         )
         return
 

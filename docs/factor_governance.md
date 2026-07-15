@@ -1224,10 +1224,13 @@ Global mart readiness and candidate-level readiness are separate controls. A
 full-A coverage failure is disclosed globally; it does not erase complete PIT
 records for covered symbols. Candidate and holding review still blocks a symbol
 with no record, warns on a partial record, and admits a complete record only
-when its generation has an auditable provider priority. Offline reconstruction
-from canonical raw data may claim `tushare_primary` only when its generation
-manifest names local Tushare refresh evidence; otherwise it remains
-`manual_offline_snapshot`.
+when its generation has an auditable provider priority. `tushare_primary` is
+reserved for an explicitly authorized live full-A rebuild whose v3 provider
+manifest, request outcomes, accepted-raw checkpoint, PIT membership binding,
+financial-period coverage, and exact Parquet readback all verify. Naming a
+local refresh artifact is not sufficient. Offline reconstruction remains
+`manual_offline_snapshot` and cannot be promoted as authoritative primary
+evidence.
 
 An operator-directed rebuild from already-canonical local raw Parquet may call
 `write_fundamental_mart(..., write_raw_snapshots=False)` to avoid duplicating

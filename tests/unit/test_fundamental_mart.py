@@ -332,11 +332,35 @@ def test_verified_local_evidence_cannot_mint_primary_generation(tmp_path):
 def _live_provider_manifest(
     tables: dict[str, pd.DataFrame],
 ) -> dict[str, object]:
-    outcomes = [
-        {"symbol": "000001.SZ", "table": table, "status": "rows"}
-        for table in fundamental_mart.SOURCE_TABLES
-    ]
+    outcomes: list[dict[str, object]] = []
+    for table in fundamental_mart.SOURCE_TABLES:
+        rows = len(tables.get(table, pd.DataFrame()))
+        outcomes.append(
+            {
+                "schema_version": fundamental_mart.FUNDAMENTAL_REQUEST_OUTCOME_SCHEMA,
+                "symbol": "000001.SZ",
+                "table": table,
+                "status": "success" if rows else "empty",
+                "rows_received": rows,
+                "rows": rows,
+                "rows_hard_invalid": 0,
+                "rows_filtered_future": 0,
+                "rows_filtered_missing_availability": 0,
+                "rows_filtered_core_values": 0,
+                "rows_deduplicated": 0,
+                "rows_discarded_request_malformed": 0,
+                "rows_hard_invalid_schema": 0,
+                "rows_hard_invalid_symbol": 0,
+                "rows_hard_invalid_availability_date": 0,
+                "rows_hard_invalid_end_date": 0,
+                "rows_hard_invalid_end_after_availability": 0,
+                "rows_hard_invalid_core_numeric": 0,
+            }
+        )
+    succeeded = sum(outcome["status"] == "success" for outcome in outcomes)
+    empty = len(outcomes) - succeeded
     return {
+        "schema_version": fundamental_mart.FUNDAMENTAL_PROVIDER_MANIFEST_SCHEMA,
         "provider": "tushare",
         "provider_status": "live_tushare",
         "source_priority": "tushare_primary",
@@ -346,11 +370,23 @@ def _live_provider_manifest(
             table: len(tables.get(table, pd.DataFrame()))
             for table in fundamental_mart.SOURCE_TABLES
         },
+        "raw_table_fingerprints": {
+            table: fundamental_mart.frame_fingerprint(
+                tables.get(table, pd.DataFrame())
+            )
+            for table in fundamental_mart.SOURCE_TABLES
+        },
         "requests_attempted": len(outcomes),
-        "requests_succeeded_with_rows": len(outcomes),
-        "requests_empty": 0,
+        "requests_succeeded_with_rows": succeeded,
+        "requests_empty": empty,
         "requests_failed": 0,
         "symbol_table_outcomes": outcomes,
+        "request_outcome_accounting_sha256": (
+            fundamental_mart.canonical_json_sha256(outcomes)
+        ),
+        "endpoint_audit": {
+            "schema_version": fundamental_mart.FUNDAMENTAL_ENDPOINT_AUDIT_SCHEMA,
+        },
     }
 
 
@@ -1235,6 +1271,220 @@ def test_live_maintenance_wires_internal_primary_attestation(
     assert pointer["metadata"]["source_priority"] == "tushare_primary"
 
 
+def test_authoritative_full_rebuild_writes_verified_isolated_generation(
+    tmp_path,
+    monkeypatch,
+):
+    symbols = ["000001.SZ", "000002.SZ", "000003.SZ"]
+    market_data_root = _write_parquet_market_data(tmp_path, symbols)
+    components_path = market_data_root / "cn_universe" / "cn_index_components.json"
+    components_path.parent.mkdir(parents=True, exist_ok=True)
+    components_path.write_text(
+        json.dumps({"full_a": symbols}),
+        encoding="utf-8",
+    )
+    scope_sha = hashlib.sha256("\n".join(symbols).encode("utf-8")).hexdigest()
+    membership_path = tmp_path / "stock_basic_membership.parquet"
+    pd.DataFrame(
+        [
+            {
+                "symbol": symbol,
+                "list_date": "20240429",
+                "effective_from": "20240429",
+                "effective_to": "",
+                "delist_date": "",
+                "industry": f"sector-{index % 3}",
+            }
+            for index, symbol in enumerate(symbols)
+        ]
+    ).to_parquet(membership_path, index=False)
+    market_pointer = tmp_path / "market_latest.json"
+    market_pointer.write_text(
+        json.dumps(
+            {
+                "snapshot_id": "fixture-20240510",
+                "latest_complete_trade_date": "20240510",
+                "coverage": {
+                    "expected_scope_count": len(symbols),
+                    "expected_scope_sha256": scope_sha,
+                    "pit_membership_path": str(membership_path.resolve()),
+                    "pit_membership_sha256": hashlib.sha256(
+                        membership_path.read_bytes()
+                    ).hexdigest(),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    canonical_root = tmp_path / "canonical"
+    canonical_root.mkdir()
+    monkeypatch.setattr(fundamental_mart, "DEFAULT_MARKET_DATA_ROOT", market_data_root)
+    monkeypatch.setattr(fundamental_mart, "DEFAULT_FUNDAMENTAL_ROOT", canonical_root)
+    raw = _raw_tables()
+
+    class _Provider:
+        def __getattr__(self, table):
+            if table not in fundamental_mart.SOURCE_TABLES:
+                raise AttributeError(table)
+
+            def fetch(**kwargs):
+                frame = raw[table]
+                result = frame[frame["ts_code"] == kwargs["ts_code"]].copy()
+                for column in fundamental_mart.SOURCE_REQUIRED_COLUMNS[table]:
+                    if column not in result.columns:
+                        result[column] = "0" if column == "update_flag" else pd.NA
+                if table == "income":
+                    result["n_income"] = result["n_income_attr_p"]
+                elif table == "cashflow":
+                    result["free_cashflow"] = (
+                        result["n_cashflow_act"] - result["c_pay_acq_const_fiolta"]
+                    )
+                elif table == "daily_basic":
+                    result["circ_mv"] = result["total_mv"]
+                return result
+
+            return fetch
+
+    staging_root = tmp_path / "staging"
+    result = run_cn_fundamental_maintenance(
+        market="CN",
+        universes="full_a",
+        years=5,
+        as_of="20240510",
+        workers=1,
+        data_root=staging_root,
+        raw_snapshot_root=tmp_path / "snapshots",
+        reports_root=tmp_path / "reports",
+        allow_live=True,
+        pro=_Provider(),
+        run_id="fixture-primary-rebuild",
+        authoritative_full_rebuild=True,
+        canonical_scope_path=components_path,
+        canonical_market_pointer_path=market_pointer,
+        canonical_membership_path=membership_path,
+        checkpoint_root=tmp_path / "checkpoint",
+        requests_per_second=0,
+        retry_backoff_seconds=0,
+    )
+
+    pointer = load_fundamental_pointer(staging_root)
+    assert result["generation_id"] == "fixture-primary-rebuild"
+    assert result["primary_provenance_verified"] is True
+    assert result["readiness"]["gate2_passed"] is True
+    assert pointer["manifest"]["metadata"]["provider_manifest"][
+        "authoritative_full_rebuild"
+    ] is True
+
+
+def test_v3_rederive_uses_exact_membership_sector_map_and_fixed_timestamp(
+    tmp_path,
+    monkeypatch,
+):
+    symbols = ["000001.SZ", "000002.SZ", "000003.SZ"]
+    raw = {
+        table: frame[frame["ts_code"].isin(symbols)].reset_index(drop=True)
+        for table, frame in _raw_tables().items()
+    }
+    membership_path = tmp_path / "membership.parquet"
+    pd.DataFrame(
+        [
+            {
+                "symbol": symbol,
+                "effective_from": "20200101",
+                "effective_to": "",
+                "industry": f"bound-sector-{index}",
+            }
+            for index, symbol in enumerate(symbols)
+        ]
+    ).to_parquet(membership_path, index=False)
+    membership_bytes = membership_path.read_bytes()
+    monkeypatch.setattr(
+        fundamental_mart,
+        "_load_sector_map",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("ambient sector metadata must not be read")
+        ),
+    )
+
+    first, evidence = fundamental_mart.rederive_fundamental_tables_v3(
+        raw,
+        membership_bytes=membership_bytes,
+        membership_sha256=hashlib.sha256(membership_bytes).hexdigest(),
+        as_of="20240510",
+        symbols=symbols,
+        non_blocking_absent_symbols=[],
+        run_id="v3-rederive",
+        source="live_tushare",
+        derivation_timestamp="2024-05-10T12:00:00Z",
+    )
+    second, second_evidence = fundamental_mart.rederive_fundamental_tables_v3(
+        raw,
+        membership_bytes=membership_bytes,
+        membership_sha256=hashlib.sha256(membership_bytes).hexdigest(),
+        as_of="20240510",
+        symbols=symbols,
+        non_blocking_absent_symbols=[],
+        run_id="v3-rederive",
+        source="live_tushare",
+        derivation_timestamp="2024-05-10T12:00:00Z",
+    )
+
+    assert set(first["fundamental_daily"]["sector"]) == {
+        "bound-sector-0",
+        "bound-sector-1",
+        "bound-sector-2",
+    }
+    assert evidence["sector_map_sha256"] == second_evidence["sector_map_sha256"]
+    assert evidence["output_frame_fingerprints"] == second_evidence[
+        "output_frame_fingerprints"
+    ]
+    for table in fundamental_mart.FUNDAMENTAL_TABLES:
+        fundamental_mart.assert_frame_semantics_equal(
+            first[table],
+            second[table],
+            label=table,
+        )
+
+
+def test_v3_rederive_expired_membership_requires_bound_exception(tmp_path):
+    symbol = "000001.SZ"
+    raw = _only_symbol(_raw_tables(), symbol)
+    membership_path = tmp_path / "expired-membership.parquet"
+    pd.DataFrame(
+        [
+            {
+                "symbol": symbol,
+                "effective_from": "20200101",
+                "effective_to": "20240501",
+                "industry": "expired-sector",
+            }
+        ]
+    ).to_parquet(membership_path, index=False)
+    membership_bytes = membership_path.read_bytes()
+    kwargs = {
+        "membership_bytes": membership_bytes,
+        "membership_sha256": hashlib.sha256(membership_bytes).hexdigest(),
+        "as_of": "20240510",
+        "symbols": [symbol],
+        "run_id": "v3-expired",
+        "source": "live_tushare",
+        "derivation_timestamp": "2024-05-10T12:00:00Z",
+    }
+
+    with pytest.raises(ValueError, match="no active interval"):
+        fundamental_mart.rederive_fundamental_tables_v3(
+            raw,
+            non_blocking_absent_symbols=[],
+            **kwargs,
+        )
+    _tables, evidence = fundamental_mart.rederive_fundamental_tables_v3(
+        raw,
+        non_blocking_absent_symbols=[symbol],
+        **kwargs,
+    )
+    assert evidence["expired_fallback_symbol_count"] == 1
+
+
 def test_offline_partial_scope_fails_closed_without_publishing_pointer(
     tmp_path,
     monkeypatch,
@@ -1317,7 +1567,14 @@ def test_live_fetch_records_partial_provider_errors(monkeypatch):
                         "ts_code": ts_code,
                         "end_date": "20231231",
                         "ann_date": "20240430",
+                        "f_ann_date": "20240430",
+                        "roe_dt": 10.0,
                         "roe": 10.0,
+                        "roa": 5.0,
+                        "debt_to_assets": 40.0,
+                        "netprofit_yoy": 1.0,
+                        "ocf_to_profit": 1.0,
+                        "update_flag": "0",
                     }
                 ]
             )
