@@ -1,6 +1,10 @@
 # Bayesian A-Share DAG
 
-## Active Execution Graph
+> Archived v13 design note. Superseded by
+> `docs/architecture/research_pipeline_and_protocols.md`; it is not a v14
+> runtime contract.
+
+## Historical Execution Graph
 
 All supported public entrypoints now converge on one primary internal graph:
 

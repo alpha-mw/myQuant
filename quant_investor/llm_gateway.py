@@ -159,8 +159,6 @@ LLM_STAGE_NAMES: dict[str, str] = {
     "review_master_agent": "Review master agent",
     "review_branch_overlay": "Review branch overlay",
     "review_master_symbol": "Review master symbol",
-    "intelligence_summary": "Intelligence synthesis",
-    "news_sentiment": "News sentiment analysis",
     "factor_brainstorm": "Factor brainstorm",
 }
 

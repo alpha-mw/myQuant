@@ -19,12 +19,27 @@ from types import ModuleType
 
 _CACHE_TAG = sys.implementation.cache_tag or "cpython-313"
 _PACKAGE_ROOT = Path(__file__).resolve().parent
+_RETIRED_V14_MODULES = frozenset(
+    {
+        "quant_investor.agents.intelligence_agent",
+        "quant_investor.agents.subagents.intelligence_agent",
+        "quant_investor.ensemble_judge",
+        "quant_investor.market.intelligence_mart",
+        "quant_investor.monitoring.intelligence_monitor",
+    }
+)
+
+
+def _reject_retired_module(fullname: str) -> None:
+    if fullname in _RETIRED_V14_MODULES:
+        raise ModuleNotFoundError(f"{fullname} was retired in v14")
 
 
 class _QuantInvestorSourcelessFinder(MetaPathFinder):
     """仅为 quant_investor 包提供 sourceless 导入兜底。"""
 
     def find_spec(self, fullname: str, path=None, target=None) -> ModuleSpec | None:
+        _reject_retired_module(fullname)
         if fullname == "quant_investor":
             return None
         if not fullname.startswith("quant_investor."):
@@ -80,6 +95,7 @@ def install_sourceless_finder() -> None:
 def load_shadowed_module(fullname: str, pyc_path: str | Path | None = None) -> ModuleType:
     """以私有别名直接加载仓库里的 sourceless 原始实现。"""
 
+    _reject_retired_module(fullname)
     if fullname == "quant_investor" or not fullname.startswith("quant_investor."):
         raise ValueError(f"unsupported module name: {fullname}")
 

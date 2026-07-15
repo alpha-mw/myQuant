@@ -317,7 +317,10 @@ def _load_observations(
     if not path.exists():
         return [], {}, "missing", ["observation_input_missing"]
     try:
-        rows, generation = load_macro_observation_generation(path)
+        rows, generation = load_macro_observation_generation(
+            path,
+            allow_standalone_offline=True,
+        )
     except Exception as exc:
         return [], {}, "blocked", [f"observation_input_blocked:{exc}"]
     if path.is_file():

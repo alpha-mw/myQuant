@@ -8,19 +8,14 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  RadarChart,
-  Radar,
-  PolarGrid,
-  PolarAngleAxis,
-  PolarRadiusAxis,
 } from 'recharts';
 import type { BranchDetailResult } from '../../types/api';
 
 const branchTitleMap: Record<string, string> = {
   kline: 'K线分析',
-  quant: '传统量化分支',
+  quant: '量化分支',
+  fundamental: '基本面分支',
   llm_debate: 'LLM 多空辩论',
-  intelligence: '多维智能融合',
   macro: '宏观分支',
 };
 
@@ -206,10 +201,10 @@ function BranchVisualization({ branch }: { branch: BranchDetailResult }) {
       return <KronosDetail signals={branch.signals} />;
     case 'quant':
       return <QuantDetail signals={branch.signals} />;
+    case 'fundamental':
+      return <GenericSignals signals={branch.signals} />;
     case 'llm_debate':
       return <LlmDebateDetail signals={branch.signals} />;
-    case 'intelligence':
-      return <IntelligenceDetail signals={branch.signals} />;
     case 'macro':
       return <MacroDetail signals={branch.signals} />;
     default:
@@ -221,14 +216,11 @@ function KronosDetail({ signals }: { signals: Record<string, unknown> }) {
   const predictedReturn = asNumberRecord(signals.predicted_return);
   const trendRegime = asStringRecord(signals.trend_regime);
   const modelMode = signals.model_mode as string | undefined;
-
-  const chartData = Object.keys(predictedReturn).length
-    ? Object.entries(predictedReturn).map(([symbol, ret]) => ({
-        symbol,
-        predicted_return: Number((Number(ret) * 100).toFixed(2)),
-        regime: trendRegime?.[symbol] ?? '未知',
-      }))
-    : [];
+  const chartData = Object.entries(predictedReturn).map(([symbol, ret]) => ({
+    symbol,
+    predicted_return: Number((Number(ret) * 100).toFixed(2)),
+    regime: trendRegime[symbol] ?? '未知',
+  }));
 
   return (
     <div className="space-y-4">
@@ -369,7 +361,6 @@ function LlmDebateDetail({ signals }: { signals: Record<string, unknown> }) {
   const bullCase = asNestedStringArrayRecord(signals.bull_case);
   const bearCase = asNestedStringArrayRecord(signals.bear_case);
   const keyRisks = asNestedStringArrayRecord(signals.key_risks);
-
   const symbols = [...new Set([
     ...Object.keys(bullCase),
     ...Object.keys(bearCase),
@@ -419,84 +410,6 @@ function LlmDebateDetail({ signals }: { signals: Record<string, unknown> }) {
           ) : null}
         </div>
       ))}
-    </div>
-  );
-}
-
-function IntelligenceDetail({ signals }: { signals: Record<string, unknown> }) {
-  const financialHealth = asNumberRecord(signals.financial_health_score);
-  const eventRisk = asNumberRecord(signals.event_risk_score);
-  const sentiment = asNumberRecord(signals.sentiment_score);
-  const breadth = asNumberRecord(signals.breadth_score);
-  const alerts = asStringArray(signals.alerts);
-
-  const symbols = [...new Set([
-    ...Object.keys(financialHealth),
-    ...Object.keys(eventRisk),
-    ...Object.keys(sentiment),
-    ...Object.keys(breadth),
-  ])];
-
-  const radarData = symbols.length > 0
-    ? symbols.map((symbol) => ({
-        symbol,
-        '财务健康': Number(((financialHealth?.[symbol] ?? 0) * 100).toFixed(0)),
-        '事件风险': Number(((eventRisk?.[symbol] ?? 0) * 100).toFixed(0)),
-        '情绪': Number(((sentiment?.[symbol] ?? 0) * 100).toFixed(0)),
-        '市场广度': Number(((breadth?.[symbol] ?? 0) * 100).toFixed(0)),
-      }))
-    : [];
-
-  // Build data for radar chart (one chart per symbol)
-  const radarAxes = ['财务健康', '事件风险', '情绪', '市场广度'];
-
-  return (
-    <div className="space-y-4">
-      {radarData.length > 0 && (
-        <div className="rounded-[20px] border border-[var(--line)] bg-[rgba(255,255,255,0.72)] p-4">
-          <div className="text-sm font-semibold text-[var(--ink)]">多维评分</div>
-          <div className="mt-4 grid gap-4 md:grid-cols-2">
-            {radarData.map((item) => {
-              const data = radarAxes.map((axis) => ({
-                axis,
-                value: item[axis as keyof typeof item] as number,
-              }));
-              return (
-                <div key={item.symbol} className="text-center">
-                  <div className="text-sm font-semibold text-[var(--ink)]">{item.symbol}</div>
-                  <div style={{ height: 220 }}>
-                    <ResponsiveContainer width="100%" height="100%">
-                      <RadarChart data={data} cx="50%" cy="50%" outerRadius="70%">
-                        <PolarGrid stroke="rgba(12,33,60,0.12)" />
-                        <PolarAngleAxis dataKey="axis" tick={{ fontSize: 11 }} />
-                        <PolarRadiusAxis tick={{ fontSize: 10 }} domain={[-100, 100]} />
-                        <Radar dataKey="value" stroke="#2e8b57" fill="#2e8b57" fillOpacity={0.2} />
-                      </RadarChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {alerts.length > 0 && (
-        <div className="rounded-[20px] border border-[rgba(190,92,44,0.2)] bg-[rgba(190,92,44,0.06)] p-4">
-          <div className="text-sm font-semibold text-[var(--danger)]">风险警报</div>
-          <ul className="mt-2 space-y-1">
-            {alerts.map((alert, i) => (
-              <li key={`${alert}-${i}`} className="text-sm text-[var(--danger)]">· {alert}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {radarData.length === 0 && alerts.length === 0 && (
-        <div className="rounded-[20px] border border-[var(--line)] bg-[rgba(255,255,255,0.72)] p-4">
-          <div className="text-sm text-[var(--muted)]">暂无多维评分数据。</div>
-        </div>
-      )}
     </div>
   );
 }

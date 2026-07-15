@@ -75,6 +75,52 @@ report-only shadow scoring may still compute comparison ranks, but it carries
 `factor_mode=historical_shadow_report_only`, confidence `0`, and
 `production_eligible=false`; it cannot enter the production DAG as evidence.
 
+Production scoring additionally requires an exact
+`factor-production-runtime-contract.v1` entry for every selectable factor under
+registry metadata `production_factor_runtime_contracts`. The contract binds the
+factor definition and raw record hashes, the allowlisted implementation version
+and local code-byte SHA, strict-Parquet column/data semantics and lookback, the
+Gate 2 runtime coverage floor, minimum cross-section, and a locally read-back
+evidence artifact SHA. Contract names must equal the production set exactly.
+`FactorLibrary` name fallback, amount reconstructed from close times volume,
+partial-factor renormalization, and neutral filling are forbidden in production;
+one compute, output, coverage, lookback, or symbol-set failure blocks the whole
+Quant branch. Report-only shadow scoring retains its historical compatibility
+helpers and remains confidence zero.
+
+Runtime admission does not trust injected registry objects or serialized
+`strict_loader` claims. It reloads `registry_metadata.path` through the strict
+snapshot parser and binds the exact registry bytes SHA, complete raw-record
+name/SHA set, parsed selectable records, and runtime contracts to that readback.
+Each ready score additionally attests the exact symbol count/set, full 100%
+per-factor coverage, contract minimum cross-section, required-column frame
+values, bounded symbol scores, registry/contracts/receipt identities, and the
+result hash. The digest streams canonical, typed consumed values for each
+factor's exact lookback without materializing a full-frame payload. The scorer
+and DAG branch boundary independently recompute it from their actual frames;
+the global boundary accepts only their sealed process-local validation token
+and independently revalidates its identities and current governance readback.
+Serialized metadata without that independent proof is never production-ready.
+
+The independent production switch is fail-closed by default:
+
+```bash
+QUANT_PRODUCTION_KILL_SWITCH=true
+QUANT_PRODUCTION_ACTIVATION_RECEIPT=
+QUANT_PRODUCTION_ACTIVATION_RECEIPT_SHA256=
+```
+
+Only the exact lowercase value `false` proceeds to receipt validation. The
+`quant-production-activation-receipt.v1` file must have exact mode `0600`, be
+read back without change, and match the exact-byte SHA supplied only through
+`QUANT_PRODUCTION_ACTIVATION_RECEIPT_SHA256`; registry metadata is not a SHA
+fallback. Its payload binds the registry path and bytes SHA, production-set SHA,
+runtime-contract aggregate, per-factor implementation-code SHAs,
+FactorGovernanceProtocol version/hash, activation ID, approver, and its own
+canonical payload hash. The repository does not create or ship an activation
+receipt; the current canonical producer blocker remains authoritative even when
+these environment variables are set.
+
 Produce a deterministic, private **report-only** evidence artifact from a local
 full-chain replay:
 
@@ -1198,6 +1244,55 @@ instruction. Do not manually promote it:
   ]
 }
 ```
+
+### Production Quant evaluation boundary
+
+Production scoring additionally requires a readback-verified immutable
+evaluation context. It binds the exact market and universe symbol-set hash,
+one common `evaluation_as_of`, the canonical pointer and snapshot-manifest
+bytes, per-symbol read provenance, the latest complete trade date, an
+independent, physically distinct readback-verified market-calendar artifact
+proving that the date is open, and (for CN) complete required PIT-membership
+artifacts whose canonical Parquet rows are re-evaluated and matched exactly to
+the scoped statuses. The CN canonical Parquet must expose the complete
+`PITUniverseRecord` v1 columns in dataclass order; its manifest and every row
+must bind `source=tushare.stock_basic` and one identical non-empty
+`observed_at` value.
+Verified artifacts must have distinct resolved paths and distinct filesystem
+device/inode identities. The market calendar is a dedicated
+`market-open-days.v1` JSON object whose top-level keys are exactly
+`schema_version`, `market`, and `open_dates`; `open_dates` must be a non-empty,
+unique list of eight-ASCII-digit open dates. Legacy `valid_trading_days`,
+snapshot fields, and every other extra field are rejected.
+Non-CN markets record PIT as explicitly not applicable. Missing context,
+artifact drift, a future/stale/duplicate/disordered/intraday date, symbol
+identity drift, or unequal terminal dates blocks Quant with confidence zero.
+
+Before the evaluation context is minted, production Quant now builds one
+process-local sealed `ProductionRuntimePlan` from the strict registry snapshot.
+It evaluates every input symbol against the dynamic required columns, lookback,
+tail-value, dtype, finite/positive-value, and trade-date requirements of every
+active factor, then uses their common eligible intersection. Contract-ineligible
+symbols are recorded as `production_factor_runtime_ineligible` data-quality
+issues and quarantined before the evaluation context, cross-section diagnostics,
+and Quant scoring, so all three consumers receive the exact same symbol set.
+The plan is owner-bound and non-serializable. Plan construction seals the
+eligible input digest; after every factor computation, scoring re-attests the
+required frame inputs against that digest before it can return a ready result.
+Frame, registry, context, seal, payload, or post-compute input drift blocks the
+run. When governance has no active production factor, the plan does not filter
+and preserves the historical governance-blocked input behavior.
+The DAG quarantines an invalid frame with a stable per-symbol diagnostic before
+building the context, so one stale or malformed symbol cannot poison otherwise
+eligible symbols. Quarantined frames never enter Quant or cross-section inputs;
+the scorer's direct API remains fail-closed if such a frame reaches it.
+
+The context SHA is part of runtime metadata, output attestation, the
+process-local branch validation token, and the global Quant identity check.
+Serialized claims plus frames alone are insufficient to establish readiness;
+the boundary also requires the verified context or its internal validation
+token. This does not relax the activation receipt, canonical producer, kill
+switch, or freeze-exception merge gates.
 
 ## Future Roadmap
 

@@ -15,6 +15,11 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.workspace_layout import get_repo_root
+from scripts.intelligence_retirement_evidence import (
+    UnsafeRepositoryPath,
+    is_protected_retirement_evidence_path,
+    resolve_repo_relative_path,
+)
 
 SCHEMA_VERSION = "myquant.data_cleanup_execute.v1"
 CONFIRM_TOKEN = "DELETE_APPROVED_CLEANUP_FILES"
@@ -83,16 +88,14 @@ def _candidate_metadata(item: dict[str, Any]) -> dict[str, tuple[int, str]]:
 
 
 def _validate_approved_item(
-    repo_root: Path,
     item: dict[str, Any],
+    candidate_paths: list[tuple[str, Path]],
+    retained_paths: list[tuple[str, Path]],
 ) -> list[str]:
     errors: list[str] = []
     metadata = _candidate_metadata(item)
-    candidate_paths = [str(path) for path in item.get("candidate_paths", [])]
-    retained_paths = [str(path) for path in item.get("retained_paths", [])]
 
-    for relative_path in candidate_paths:
-        path = repo_root / relative_path
+    for relative_path, path in candidate_paths:
         if not path.exists():
             errors.append(f"candidate missing: {relative_path}")
             continue
@@ -112,8 +115,8 @@ def _validate_approved_item(
         if actual_hash != expected_hash:
             errors.append(f"candidate hash mismatch: {relative_path}")
 
-    for relative_path in retained_paths:
-        if not (repo_root / relative_path).exists():
+    for relative_path, path in retained_paths:
+        if not path.exists():
             errors.append(f"retained source missing: {relative_path}")
 
     return errors
@@ -147,7 +150,67 @@ def _execution_item(
             ),
         )
 
-    validation_errors = _validate_approved_item(repo_root, item)
+    try:
+        resolved_candidates = [
+            (path, *resolve_repo_relative_path(repo_root, path))
+            for path in candidate_paths
+        ]
+    except UnsafeRepositoryPath as exc:
+        return CleanupExecutionItem(
+            group_id=group_id,
+            status="blocked_unsafe_candidate_path",
+            action="blocked",
+            reclaimable_bytes=0,
+            candidate_paths=candidate_paths,
+            retained_paths=retained_paths,
+            deleted_paths=[],
+            errors=[str(exc)],
+            reason="candidate path must stay inside the repository",
+        )
+
+    try:
+        resolved_retained = [
+            (path, *resolve_repo_relative_path(repo_root, path))
+            for path in retained_paths
+        ]
+    except UnsafeRepositoryPath as exc:
+        return CleanupExecutionItem(
+            group_id=group_id,
+            status="blocked_unsafe_retained_path",
+            action="blocked",
+            reclaimable_bytes=0,
+            candidate_paths=candidate_paths,
+            retained_paths=retained_paths,
+            deleted_paths=[],
+            errors=[str(exc)],
+            reason="retained path must stay inside the repository",
+        )
+
+    protected_paths = [
+        original
+        for original, _resolved, canonical in resolved_candidates
+        if is_protected_retirement_evidence_path(canonical)
+    ]
+    if protected_paths:
+        return CleanupExecutionItem(
+            group_id=group_id,
+            status="blocked_protected_retirement_evidence",
+            action="blocked",
+            reclaimable_bytes=0,
+            candidate_paths=candidate_paths,
+            retained_paths=retained_paths,
+            deleted_paths=[],
+            errors=[
+                f"protected retirement evidence: {path}" for path in protected_paths
+            ],
+            reason="retired Intelligence evidence is immutable",
+        )
+
+    validation_errors = _validate_approved_item(
+        item,
+        [(original, resolved) for original, resolved, _ in resolved_candidates],
+        [(original, resolved) for original, resolved, _ in resolved_retained],
+    )
     if validation_errors:
         return CleanupExecutionItem(
             group_id=group_id,
@@ -189,12 +252,19 @@ def _execution_item(
 
     deleted_paths: list[str] = []
     errors: list[str] = []
-    for relative_path in candidate_paths:
-        path = repo_root / relative_path
+    for relative_path, resolved_path, canonical_path in resolved_candidates:
         try:
-            path.unlink()
+            current_path, current_canonical = resolve_repo_relative_path(
+                repo_root,
+                relative_path,
+            )
+            if current_path != resolved_path or current_canonical != canonical_path:
+                raise UnsafeRepositoryPath(
+                    f"candidate path changed after validation: {relative_path}"
+                )
+            current_path.unlink()
             deleted_paths.append(relative_path)
-        except OSError as exc:
+        except (OSError, UnsafeRepositoryPath) as exc:
             errors.append(f"delete failed: {relative_path}: {exc}")
 
     status = "deleted" if not errors else "blocked_delete_failed"

@@ -34,4 +34,4 @@ def test_shortlist_second_pass_end_to_end(monkeypatch):
     assert bundle.portfolio_plan.target_weights
     assert sum(bundle.portfolio_plan.target_weights.values()) > 0
     assert set(bundle.portfolio_plan.target_weights) == set(run.artifacts["portfolio_plan"].target_weights)
-    assert set(bundle.branch_verdicts) == {"kline", "quant", "fundamental", "intelligence", "macro"}
+    assert set(bundle.branch_verdicts) == {"quant", "fundamental", "macro"}

@@ -104,6 +104,7 @@ def test_fundamental_branch_emits_review_signal_payloads():
 
     result = branch.run(data_bundle)
 
+    assert result.horizon_days == 30
     assert "component_scores" in result.signals
     assert result.signals["module_scores"]["financial_quality"] != 0.0
     assert result.signals["module_confidences"]["financial_quality"] == 1.0

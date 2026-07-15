@@ -26,7 +26,6 @@ BRANCH_DEBATE_ADJUSTMENT_CAPS: dict[str, float] = {
     "kline": 0.10,
     "quant": 0.10,
     "fundamental": 0.20,
-    "intelligence": 0.15,
     "macro": 0.10,
 }
 
@@ -34,7 +33,6 @@ BRANCH_DEBATE_INTENTS: dict[str, str] = {
     "kline": "校验趋势/波动/图形结构是否支持 base signal，并只做小幅置信度与风险修正。",
     "quant": "校验因子/模型/稳定性是否支持 base signal，并只做小幅修正。",
     "fundamental": "校验财务、预测、估值、管理层、股东结构和文档语义是否支持 base signal。",
-    "intelligence": "校验新闻、事件、情绪、资金流、广度、行业轮动是否支持 base signal。",
     "macro": "校验全市场宏观 overlay 是否支持 base signal，只允许市场级一次性审查。",
 }
 

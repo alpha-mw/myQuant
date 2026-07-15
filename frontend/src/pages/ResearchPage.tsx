@@ -19,12 +19,10 @@ import { RightRail } from '../features/research/RightRail'
 import { LiveLogPanel } from '../features/research/LiveLogPanel'
 import { RunButton } from '../features/research/RunButton'
 
-const BRANCHES = [
-  { name: 'K-Line', key: 'enable_kline', description: 'Trend structure, regime shifts, and timing pressure.' },
-  { name: 'Quant', key: 'enable_quant', description: 'Factor signals, alpha estimates, and crowding pressure.' },
-  { name: 'Fundamental', key: 'enable_fundamental', description: 'Quality, valuation, earnings, and governance coverage.' },
-  { name: 'Intelligence', key: 'enable_intelligence', description: 'Events, sentiment, flows, and information asymmetry.' },
-  { name: 'Macro', key: 'enable_macro', description: 'Shared macro regime context for the full run.' },
+const CANONICAL_BRANCHES = [
+  { name: 'Quant', description: 'Factor signals, alpha estimates, and crowding pressure.' },
+  { name: 'Fundamental', description: 'Quality, valuation, earnings, and governance coverage.' },
+  { name: 'Macro', description: 'Shared macro regime context for the full run.' },
 ] as const
 
 const CONTROL_CHAIN = [
@@ -49,8 +47,6 @@ const CONTROL_CHAIN = [
     description: 'The report explains the outcome without changing the decision.',
   },
 ] as const
-
-type BranchName = (typeof BRANCHES)[number]['key']
 
 type WorkspaceState = 'idle' | 'running' | 'completed' | 'failed'
 
@@ -131,24 +127,18 @@ export function ResearchPage() {
   const riskLevel = useResearchStore((state) => state.risk_level)
   const enableAgentLayer = useResearchStore((state) => state.enable_agent_layer)
   const enableKline = useResearchStore((state) => state.enable_kline)
-  const enableQuant = useResearchStore((state) => state.enable_quant)
-  const enableFundamental = useResearchStore((state) => state.enable_fundamental)
-  const enableIntelligence = useResearchStore((state) => state.enable_intelligence)
-  const enableMacro = useResearchStore((state) => state.enable_macro)
 
-  const branches: BranchState[] = BRANCHES.map((branch) => ({
-    name: branch.name,
-    enabled: Boolean(
-      {
-        enable_kline: enableKline,
-        enable_quant: enableQuant,
-        enable_fundamental: enableFundamental,
-        enable_intelligence: enableIntelligence,
-        enable_macro: enableMacro,
-      }[branch.key as BranchName],
-    ),
-    description: branch.description,
-  }))
+  const branches: BranchState[] = [
+    {
+      name: 'K-Line',
+      enabled: enableKline,
+      description: 'Trend structure, regime shifts, and timing pressure.',
+    },
+    ...CANONICAL_BRANCHES.map((branch) => ({
+      ...branch,
+      enabled: true,
+    })),
+  ]
   const activeBranches = branches.filter((branch) => branch.enabled)
   const selectionSummary =
     stockPool.length > 0

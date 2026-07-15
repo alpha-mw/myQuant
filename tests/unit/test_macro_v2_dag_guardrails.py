@@ -19,6 +19,7 @@ def test_macro_v2_dag_metadata_kill_switch_precedes_missing_input(monkeypatch):
     result = context._macro_v2_observer_metadata(market="CN", as_of="20240510")
 
     assert result["active"] is False
+    assert result["observer_only"] is True
     assert result["applied"] is False
     assert result["reason"] == "kill_switch_active"
 
@@ -33,6 +34,7 @@ def test_macro_v2_observer_failure_is_diagnostic_only(monkeypatch, tmp_path):
     result = context._macro_v2_observer_metadata(market="CN", as_of="20240510")
 
     assert result["active"] is False
+    assert result["observer_only"] is True
     assert result["applied"] is False
     assert result["production_eligible"] is False
     assert result["reason"] == "observer_build_failed"

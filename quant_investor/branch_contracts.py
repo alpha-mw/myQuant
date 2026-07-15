@@ -18,14 +18,34 @@ from typing import Any, Optional
 
 import pandas as pd
 
+from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
 from quant_investor.versioning import (
     ARCHITECTURE_VERSION,
     BRANCH_SCHEMA_VERSION,
     CALIBRATION_SCHEMA_VERSION,
     DEBATE_TEMPLATE_VERSION,
     IC_PROTOCOL_VERSION,
+    LIKELIHOOD_SCHEMA_VERSION,
     REPORT_PROTOCOL_VERSION,
+    reject_retired_intelligence_keys,
 )
+
+
+_ALLOWED_BRANCH_RESULT_NAMES = frozenset((*CANONICAL_BRANCH_ORDER, "kline"))
+
+
+def _require_branch_name(branch_name: str, field_name: str) -> str:
+    resolved = str(branch_name).strip()
+    if resolved not in _ALLOWED_BRANCH_RESULT_NAMES:
+        raise ValueError(f"{field_name} is not a v14 branch: {branch_name!r}.")
+    return resolved
+
+
+def _require_version(actual: str, expected: str, field_name: str) -> None:
+    if actual != expected:
+        raise ValueError(
+            f"{field_name} mismatch: expected {expected!r}, got {actual!r}."
+        )
 
 
 @dataclass
@@ -36,8 +56,6 @@ class UnifiedDataBundle:
     symbols: list[str] = field(default_factory=list)
     symbol_data: dict[str, pd.DataFrame] = field(default_factory=dict)
     fundamentals: dict[str, dict[str, Any]] = field(default_factory=dict)
-    event_data: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
-    sentiment_data: dict[str, dict[str, Any]] = field(default_factory=dict)
     macro_data: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
     stock_data: dict[str, pd.DataFrame] = field(init=False, repr=False)
@@ -49,8 +67,6 @@ class UnifiedDataBundle:
         symbols: list[str] | None = None,
         symbol_data: dict[str, pd.DataFrame] | None = None,
         fundamentals: dict[str, dict[str, Any]] | None = None,
-        event_data: dict[str, list[dict[str, Any]]] | None = None,
-        sentiment_data: dict[str, dict[str, Any]] | None = None,
         macro_data: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
         stock_data: dict[str, pd.DataFrame] | None = None,
@@ -61,8 +77,6 @@ class UnifiedDataBundle:
         self.symbol_data = dict(payload or {})
         self.symbols = list(symbols or stock_pool or self.symbol_data.keys())
         self.fundamentals = dict(fundamentals or {})
-        self.event_data = dict(event_data or {})
-        self.sentiment_data = dict(sentiment_data or {})
         self.macro_data = dict(macro_data or {})
         self.metadata = dict(metadata or {})
         self.stock_data = self.symbol_data
@@ -142,6 +156,20 @@ class EvidencePacket:
     feature_values: dict[str, Any] = field(default_factory=dict)
     symbol_context: dict[str, dict[str, Any]] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.branch_name = _require_branch_name(
+            self.branch_name,
+            "EvidencePacket.branch_name",
+        )
+        reject_retired_intelligence_keys(
+            {
+                "feature_values": self.feature_values,
+                "symbol_context": self.symbol_context,
+                "metadata": self.metadata,
+            },
+            path="EvidencePacket",
+        )
 
 
 @dataclass
@@ -333,7 +361,7 @@ class BranchResult:
     calibration_schema_version: str = CALIBRATION_SCHEMA_VERSION
     debate_template_version: str = DEBATE_TEMPLATE_VERSION
     horizon_days: int = 5
-    evidence: EvidencePacket = field(default_factory=lambda: EvidencePacket(branch_name="unknown"))
+    evidence: EvidencePacket = field(default_factory=lambda: EvidencePacket(branch_name="quant"))
     debate_verdict: DebateVerdict = field(default_factory=DebateVerdict)
     data_quality: dict[str, Any] = field(default_factory=dict)
     conclusion: str = ""
@@ -379,7 +407,27 @@ class BranchResult:
         weight_cap_reasons: Optional[list[str]] = None,
         module_coverage: Optional[dict[str, Any]] = None,
     ) -> None:
-        self.branch_name = branch_name
+        self.branch_name = _require_branch_name(branch_name, "BranchResult.branch_name")
+        _require_version(
+            architecture_version,
+            ARCHITECTURE_VERSION,
+            "BranchResult.architecture_version",
+        )
+        _require_version(
+            branch_schema_version,
+            BRANCH_SCHEMA_VERSION,
+            "BranchResult.branch_schema_version",
+        )
+        _require_version(
+            calibration_schema_version,
+            CALIBRATION_SCHEMA_VERSION,
+            "BranchResult.calibration_schema_version",
+        )
+        _require_version(
+            debate_template_version,
+            DEBATE_TEMPLATE_VERSION,
+            "BranchResult.debate_template_version",
+        )
         self.signals = dict(signals or {})
         self.risks = list(risks or [])
         self.explanation = explanation
@@ -414,8 +462,34 @@ class BranchResult:
         self.horizon_days = int(self.horizon_days or self.metadata.get("horizon_days", 5) or 5)
         self.metadata.setdefault("horizon_days", self.horizon_days)
 
-        if self.evidence.branch_name == "unknown":
-            self.evidence.branch_name = self.branch_name
+        if self.evidence.branch_name != self.branch_name:
+            raise ValueError(
+                "BranchResult evidence branch mismatch: "
+                f"{self.evidence.branch_name!r} != {self.branch_name!r}."
+            )
+
+    def validate(self) -> None:
+        self.branch_name = _require_branch_name(self.branch_name, "BranchResult.branch_name")
+        for field_name, actual, expected in (
+            ("architecture_version", self.architecture_version, ARCHITECTURE_VERSION),
+            ("branch_schema_version", self.branch_schema_version, BRANCH_SCHEMA_VERSION),
+            ("calibration_schema_version", self.calibration_schema_version, CALIBRATION_SCHEMA_VERSION),
+            ("debate_template_version", self.debate_template_version, DEBATE_TEMPLATE_VERSION),
+        ):
+            _require_version(actual, expected, f"BranchResult.{field_name}")
+        self.evidence.__post_init__()
+        if self.evidence.branch_name != self.branch_name:
+            raise ValueError("BranchResult evidence branch mismatch.")
+        reject_retired_intelligence_keys(
+            {
+                "signals": self.signals,
+                "metadata": self.metadata,
+                "data_quality": self.data_quality,
+                "module_coverage": self.module_coverage,
+                "debate_metadata": self.debate_verdict.metadata,
+            },
+            path="BranchResult",
+        )
 
     @property
     def score(self) -> float:
@@ -452,6 +526,24 @@ class CalibratedBranchSignal:
     symbol_convictions: dict[str, float] = field(default_factory=dict)
     data_source_status: str = "unknown"
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.branch_name = _require_branch_name(
+            self.branch_name,
+            "CalibratedBranchSignal.branch_name",
+        )
+        _require_version(
+            self.branch_schema_version,
+            BRANCH_SCHEMA_VERSION,
+            "CalibratedBranchSignal.branch_schema_version",
+        )
+        _require_version(self.architecture_version, ARCHITECTURE_VERSION, "CalibratedBranchSignal.architecture_version")
+        _require_version(self.calibration_schema_version, CALIBRATION_SCHEMA_VERSION, "CalibratedBranchSignal.calibration_schema_version")
+        _require_version(self.debate_template_version, DEBATE_TEMPLATE_VERSION, "CalibratedBranchSignal.debate_template_version")
+        reject_retired_intelligence_keys(
+            self.metadata,
+            path="CalibratedBranchSignal.metadata",
+        )
 
 
 @dataclass
@@ -543,6 +635,32 @@ class PortfolioStrategy:
     recommendations: list["TradeRecommendation"] = field(default_factory=list)
     trade_recommendations: list["TradeRecommendation"] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        for field_name, actual, expected in (
+            ("architecture_version", self.architecture_version, ARCHITECTURE_VERSION),
+            ("branch_schema_version", self.branch_schema_version, BRANCH_SCHEMA_VERSION),
+            ("calibration_schema_version", self.calibration_schema_version, CALIBRATION_SCHEMA_VERSION),
+            ("debate_template_version", self.debate_template_version, DEBATE_TEMPLATE_VERSION),
+        ):
+            _require_version(actual, expected, f"PortfolioStrategy.{field_name}")
+        unexpected = sorted(set(self.branch_consensus) - set(CANONICAL_BRANCH_ORDER))
+        if unexpected:
+            raise ValueError(
+                "PortfolioStrategy has noncanonical branch keys: "
+                + ", ".join(unexpected)
+            )
+        for recommendation in (*self.recommendations, *self.trade_recommendations):
+            recommendation.__post_init__()
+        reject_retired_intelligence_keys(
+            {
+                "stop_loss_policy": self.stop_loss_policy,
+                "risk_summary": self.risk_summary,
+                "provenance_summary": self.provenance_summary,
+                "metadata": self.metadata,
+            },
+            path="PortfolioStrategy",
+        )
+
 
 @dataclass
 class TradeRecommendation:
@@ -584,6 +702,25 @@ class TradeRecommendation:
     data_source_status: str = "unknown"
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        for field_name, values in (
+            ("branch_scores", self.branch_scores),
+            ("branch_expected_returns", self.branch_expected_returns),
+        ):
+            unexpected = sorted(set(values) - set(CANONICAL_BRANCH_ORDER))
+            if unexpected:
+                raise ValueError(
+                    f"TradeRecommendation.{field_name} has noncanonical branches: "
+                    + ", ".join(unexpected)
+                )
+        reject_retired_intelligence_keys(
+            {
+                "entry_price_range": self.entry_price_range,
+                "metadata": self.metadata,
+            },
+            path="TradeRecommendation",
+        )
+
 
 @dataclass
 class ResearchPipelineResult:
@@ -592,6 +729,7 @@ class ResearchPipelineResult:
     data_bundle: UnifiedDataBundle
     architecture_version: str = ARCHITECTURE_VERSION
     branch_schema_version: str = BRANCH_SCHEMA_VERSION
+    likelihood_schema_version: str = LIKELIHOOD_SCHEMA_VERSION
     calibration_schema_version: str = CALIBRATION_SCHEMA_VERSION
     ic_protocol_version: str = IC_PROTOCOL_VERSION
     report_protocol_version: str = REPORT_PROTOCOL_VERSION
@@ -603,6 +741,71 @@ class ResearchPipelineResult:
     execution_log: list[str] = field(default_factory=list)
     timings: dict[str, float] = field(default_factory=dict)
     calibrated_signals: dict[str, CalibratedBranchSignal] = field(default_factory=dict)
+    pipeline_mode: str = "draft"
+
+    def __post_init__(self) -> None:
+        for field_name, actual, expected in (
+            ("architecture_version", self.architecture_version, ARCHITECTURE_VERSION),
+            ("branch_schema_version", self.branch_schema_version, BRANCH_SCHEMA_VERSION),
+            ("likelihood_schema_version", self.likelihood_schema_version, LIKELIHOOD_SCHEMA_VERSION),
+            ("calibration_schema_version", self.calibration_schema_version, CALIBRATION_SCHEMA_VERSION),
+            ("ic_protocol_version", self.ic_protocol_version, IC_PROTOCOL_VERSION),
+            ("report_protocol_version", self.report_protocol_version, REPORT_PROTOCOL_VERSION),
+            ("debate_template_version", self.debate_template_version, DEBATE_TEMPLATE_VERSION),
+        ):
+            _require_version(actual, expected, f"ResearchPipelineResult.{field_name}")
+        unexpected = sorted(set(self.branch_results) - set(CANONICAL_BRANCH_ORDER))
+        if unexpected:
+            raise ValueError(
+                "ResearchPipelineResult has noncanonical branch keys: "
+                + ", ".join(unexpected)
+            )
+        if self.pipeline_mode not in {"draft", "bayesian"}:
+            raise ValueError(
+                "ResearchPipelineResult pipeline_mode must be 'draft' or 'bayesian'."
+            )
+        if self.pipeline_mode == "bayesian" and set(self.branch_results) != set(
+            CANONICAL_BRANCH_ORDER
+        ):
+            missing = sorted(
+                set(CANONICAL_BRANCH_ORDER) - set(self.branch_results)
+            )
+            raise ValueError(
+                "ResearchPipelineResult bayesian branch_results must contain "
+                "exactly the canonical branches "
+                f"{list(CANONICAL_BRANCH_ORDER)!r}; missing branches: "
+                + ", ".join(missing)
+            )
+        unexpected_calibrated = sorted(
+            set(self.calibrated_signals) - set(CANONICAL_BRANCH_ORDER)
+        )
+        if unexpected_calibrated:
+            raise ValueError(
+                "ResearchPipelineResult has noncanonical calibrated signal keys: "
+                + ", ".join(unexpected_calibrated)
+            )
+        for branch_name, result in self.branch_results.items():
+            if not isinstance(result, BranchResult):
+                raise ValueError("ResearchPipelineResult branch results must be BranchResult objects.")
+            result.validate()
+            if result.branch_name != branch_name:
+                raise ValueError("ResearchPipelineResult branch result key/name mismatch.")
+        for branch_name, signal in self.calibrated_signals.items():
+            if not isinstance(signal, CalibratedBranchSignal):
+                raise ValueError(
+                    "ResearchPipelineResult calibrated signals must be CalibratedBranchSignal objects."
+                )
+            signal.__post_init__()
+            if signal.branch_name != branch_name:
+                raise ValueError("ResearchPipelineResult calibrated signal key/name mismatch.")
+        self.final_strategy.__post_init__()
+        reject_retired_intelligence_keys(
+            {
+                "data_bundle_metadata": self.data_bundle.metadata,
+                "timings": self.timings,
+            },
+            path="ResearchPipelineResult",
+        )
 
 
 __all__ = [

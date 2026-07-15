@@ -13,20 +13,30 @@ import copy
 import fcntl
 import hashlib
 import json
+import math
 import os
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from numbers import Real
 from typing import Any, Iterator, Mapping, Sequence
 
-from quant_investor.factors.governance import FactorRecord
+from quant_investor.factors.governance import (
+    GATE_BY_ID,
+    FactorLifecycleState,
+    FactorRecord,
+)
 from quant_investor.factors.runtime import MinedFactorRegistry
 
 
 FACTOR_REGISTRY_MUTATION_SCHEMA_VERSION = "factor-registry-mutation.v1"
 SUPPORTED_FACTOR_REGISTRY_SCHEMA_VERSION = "mined-factor-registry.v1"
 FACTOR_RECORD_FIELDS = frozenset(FactorRecord(name="_").to_dict())
+FACTOR_REGISTRY_FIELDS = frozenset({"schema_version", "metadata", "factors"})
+FACTOR_GATE_FIELDS = frozenset(
+    {"gate_id", "gate_key", "title", "passed", "reasons", "metrics", "severity"}
+)
 
 
 class FactorRegistryStoreError(ValueError):
@@ -127,6 +137,17 @@ def _reject_json_constant(value: str) -> None:
     raise ValueError(f"non-finite JSON constant {value}")
 
 
+def _reject_duplicate_json_keys(
+    pairs: Sequence[tuple[str, Any]],
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        payload[key] = value
+    return payload
+
+
 def _strict_payload_from_bytes(raw: bytes, path: Path) -> dict[str, Any]:
     try:
         text = raw.decode("utf-8")
@@ -138,6 +159,7 @@ def _strict_payload_from_bytes(raw: bytes, path: Path) -> dict[str, Any]:
         payload = json.loads(
             text,
             parse_constant=_reject_json_constant,
+            object_pairs_hook=_reject_duplicate_json_keys,
         )
     except (json.JSONDecodeError, ValueError) as exc:
         message = (
@@ -158,6 +180,12 @@ def _validate_registry_payload(
     *,
     path: Path,
 ) -> tuple[MinedFactorRegistry, dict[str, dict[str, Any]]]:
+    unknown_top_level_fields = sorted(set(payload) - FACTOR_REGISTRY_FIELDS)
+    if unknown_top_level_fields:
+        raise FactorRegistryValidationError(
+            "factor registry has unsupported top-level fields: "
+            f"{unknown_top_level_fields}: {path}"
+        )
     schema_version = payload.get("schema_version")
     if not isinstance(schema_version, str) or not schema_version.strip():
         raise FactorRegistryValidationError(
@@ -202,6 +230,7 @@ def _validate_registry_payload(
                 f"factor registry record {name} has unsupported fields: "
                 f"{unknown_fields}"
             )
+        _validate_factor_record_raw(record_payload, name=name)
         if name in record_payloads:
             raise FactorRegistryValidationError(
                 f"duplicate factor name in registry: {name}"
@@ -227,6 +256,195 @@ def _validate_registry_payload(
             f"factor registry parsing dropped one or more records: {path}"
         )
     return registry, record_payloads
+
+
+def _require_raw_string(
+    payload: Mapping[str, Any],
+    field: str,
+    *,
+    context: str,
+    allow_empty: bool = True,
+) -> None:
+    if field not in payload:
+        return
+    value = payload[field]
+    if not isinstance(value, str) or (not allow_empty and not value.strip()):
+        raise FactorRegistryValidationError(
+            f"{context} {field} must be a string"
+        )
+
+
+def _require_raw_bool(
+    payload: Mapping[str, Any],
+    field: str,
+    *,
+    context: str,
+) -> None:
+    if field in payload and type(payload[field]) is not bool:
+        raise FactorRegistryValidationError(
+            f"{context} {field} must be a boolean"
+        )
+
+
+def _validate_factor_record_raw(
+    record_payload: Mapping[str, Any],
+    *,
+    name: str,
+) -> None:
+    """Validate source JSON types before permissive dataclass coercion."""
+
+    context = f"factor registry record {name}"
+    for field in (
+        "name",
+        "version",
+        "state",
+        "category",
+        "implementation",
+        "owner",
+        "description",
+        "approved_by",
+        "approved_at",
+        "deprecated_reason",
+    ):
+        _require_raw_string(
+            record_payload,
+            field,
+            context=context,
+            allow_empty=field != "name",
+        )
+    admission_decision = record_payload.get("admission_decision")
+    if admission_decision is not None and not isinstance(admission_decision, str):
+        raise FactorRegistryValidationError(
+            f"{context} admission_decision must be a string or null"
+        )
+
+    for field in ("thematic", "narrow_coverage"):
+        _require_raw_bool(record_payload, field, context=context)
+
+    weight = record_payload.get("weight", 0.0)
+    if isinstance(weight, bool) or not isinstance(weight, Real):
+        raise FactorRegistryValidationError(
+            f"{context} weight must be a finite number"
+        )
+    if not math.isfinite(float(weight)):
+        raise FactorRegistryValidationError(
+            f"{context} weight must be a finite number"
+        )
+
+    direction = record_payload.get("direction", 1.0)
+    if isinstance(direction, bool) or not isinstance(direction, Real):
+        raise FactorRegistryValidationError(
+            f"{context} direction must be numeric +1 or -1"
+        )
+    if not math.isfinite(float(direction)) or float(direction) not in {-1.0, 1.0}:
+        raise FactorRegistryValidationError(
+            f"{context} direction must be numeric +1 or -1"
+        )
+
+    horizon_days = record_payload.get("horizon_days", 5)
+    if (
+        isinstance(horizon_days, bool)
+        or not isinstance(horizon_days, int)
+        or horizon_days <= 0
+    ):
+        raise FactorRegistryValidationError(
+            f"{context} horizon_days must be a positive integer"
+        )
+
+    tags = record_payload.get("tags", [])
+    if not isinstance(tags, list) or any(not isinstance(item, str) for item in tags):
+        raise FactorRegistryValidationError(
+            f"{context} tags must be a list of strings"
+        )
+    for field in ("metrics", "metadata"):
+        value = record_payload.get(field, {})
+        if not isinstance(value, Mapping):
+            raise FactorRegistryValidationError(
+                f"{context} {field} must be an object"
+            )
+        _canonical_json_bytes(dict(value))
+
+    gate_rows = record_payload.get("gate_results", [])
+    if not isinstance(gate_rows, list):
+        raise FactorRegistryValidationError(
+            f"{context} gate_results must be a list"
+        )
+    state = record_payload.get("state", FactorLifecycleState.DRAFT.value)
+    if gate_rows or state == FactorLifecycleState.PRODUCTION_FACTOR.value:
+        _validate_gate_results(
+            gate_rows,
+            context=context,
+            require_complete=(state == FactorLifecycleState.PRODUCTION_FACTOR.value),
+        )
+
+
+def _validate_gate_results(
+    gate_rows: Sequence[Any],
+    *,
+    context: str,
+    require_complete: bool,
+) -> None:
+    if require_complete and len(gate_rows) != 8:
+        raise FactorRegistryValidationError(
+            f"{context} must contain exactly Gate 1-8"
+        )
+    observed_ids: set[int] = set()
+    observed_keys: set[str] = set()
+    for index, raw_gate in enumerate(gate_rows):
+        gate_context = f"{context} gate_results[{index}]"
+        if not isinstance(raw_gate, Mapping):
+            raise FactorRegistryValidationError(
+                f"{gate_context} must be an object"
+            )
+        gate = dict(raw_gate)
+        unknown_fields = sorted(set(gate) - FACTOR_GATE_FIELDS)
+        if unknown_fields:
+            raise FactorRegistryValidationError(
+                f"{gate_context} has unsupported fields: {unknown_fields}"
+            )
+        gate_id = gate.get("gate_id")
+        if isinstance(gate_id, bool) or not isinstance(gate_id, int):
+            raise FactorRegistryValidationError(
+                f"{gate_context} gate_id must be an integer"
+            )
+        spec = GATE_BY_ID.get(gate_id)
+        gate_key = gate.get("gate_key")
+        if spec is None or not isinstance(gate_key, str) or gate_key != spec.key:
+            raise FactorRegistryValidationError(
+                f"{gate_context} gate_id/gate_key must match canonical Gate 1-8"
+            )
+        if gate_id in observed_ids or gate_key in observed_keys:
+            raise FactorRegistryValidationError(
+                f"{context} contains duplicate gate {gate_id}/{gate_key}"
+            )
+        observed_ids.add(gate_id)
+        observed_keys.add(gate_key)
+        if type(gate.get("passed")) is not bool:
+            raise FactorRegistryValidationError(
+                f"{gate_context} passed must be a boolean"
+            )
+        for field in ("title", "severity"):
+            if not isinstance(gate.get(field), str):
+                raise FactorRegistryValidationError(
+                    f"{gate_context} {field} must be a string"
+                )
+        reasons = gate.get("reasons")
+        if not isinstance(reasons, list) or any(
+            not isinstance(reason, str) for reason in reasons
+        ):
+            raise FactorRegistryValidationError(
+                f"{gate_context} reasons must be a list of strings"
+            )
+        metrics = gate.get("metrics")
+        if not isinstance(metrics, Mapping):
+            raise FactorRegistryValidationError(
+                f"{gate_context} metrics must be an object"
+            )
+        _canonical_json_bytes(dict(metrics))
+    if require_complete and observed_ids != set(range(1, 9)):
+        raise FactorRegistryValidationError(
+            f"{context} must contain exact unique Gate 1-8"
+        )
 
 
 def load_registry_snapshot_strict(
@@ -285,6 +503,7 @@ def _record_payload(
             f"factor record patch {name} has unsupported fields: "
             f"{unknown_fields}"
         )
+    _validate_factor_record_raw(payload, name=name)
     try:
         parsed = FactorRecord.from_dict(payload)
         parsed.to_dict()

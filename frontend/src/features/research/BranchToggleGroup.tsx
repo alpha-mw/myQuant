@@ -2,17 +2,10 @@ import { useResearchStore } from '../../stores/researchStore'
 import type { ResearchRunRequest } from '../../types/research'
 
 const BRANCHES: {
-  key: keyof Pick<
-    ResearchRunRequest,
-    'enable_macro' | 'enable_quant' | 'enable_kline' | 'enable_fundamental' | 'enable_intelligence'
-  >
+  key: keyof Pick<ResearchRunRequest, 'enable_kline'>
   label: string
 }[] = [
   { key: 'enable_kline', label: 'K-Line' },
-  { key: 'enable_quant', label: 'Quant' },
-  { key: 'enable_fundamental', label: 'Fundamental' },
-  { key: 'enable_intelligence', label: 'Intelligence' },
-  { key: 'enable_macro', label: 'Macro' },
 ]
 
 const BUTTON_CLASS_NAME =
@@ -24,7 +17,7 @@ export function BranchToggleGroup() {
   return (
     <div>
       <label className="mb-2 block text-[11px] font-medium uppercase tracking-[0.18em] text-slate-500">
-        Research branches
+        Auxiliary analysis
       </label>
       <div className="grid gap-2 sm:grid-cols-2">
         {BRANCHES.map(({ key, label }) => {

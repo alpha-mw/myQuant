@@ -9,21 +9,60 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from quant_investor.agent_protocol import StockReviewBundle
 
 
-class _CompatModel(BaseModel):
-    """Allow additive compatibility fields across partially migrated modules."""
+_ALLOWED_REVIEW_BRANCHES = frozenset({"quant", "fundamental", "macro", "kline"})
+_BRANCH_MAP_FIELDS = frozenset(
+    {
+        "branch_agent_outputs",
+        "branch_agent_summaries",
+        "branch_reports",
+        "branch_results",
+        "branch_verdicts_summary",
+        "review_overlays",
+    }
+)
 
-    model_config = ConfigDict(extra="allow")
+
+def _reject_retired_intelligence_keys(value: Any, path: str = "contract") -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if "intelligence" in str(key).casefold():
+                raise ValueError(f"Retired Intelligence field at {path}.{key}")
+            _reject_retired_intelligence_keys(item, f"{path}.{key}")
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _reject_retired_intelligence_keys(item, f"{path}[{index}]")
 
 
-class BaseBranchAgentInput(_CompatModel):
+class _AgentContractModel(BaseModel):
+    """Strict current review-layer contract."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def validate_current_branch_contract(self) -> "_AgentContractModel":
+        for field_name in _BRANCH_MAP_FIELDS:
+            value = getattr(self, field_name, None)
+            if not isinstance(value, dict):
+                continue
+            unexpected = sorted(set(value) - _ALLOWED_REVIEW_BRANCHES)
+            if unexpected:
+                raise ValueError(
+                    f"{field_name} contains non-v14 branch keys: "
+                    + ", ".join(unexpected)
+                )
+        _reject_retired_intelligence_keys(self.model_dump())
+        return self
+
+
+class BaseBranchAgentInput(_AgentContractModel):
     """Common input shared by all branch review agents."""
 
-    branch_name: str
+    branch_name: Literal["quant", "fundamental", "macro", "kline"]
     base_score: float = Field(description="算法基础分 (-1.0 ~ 1.0)")
     final_score: float = Field(description="debate 调整后分数")
     confidence: float = Field(ge=0.0, le=1.0)
@@ -42,10 +81,10 @@ class BaseBranchAgentInput(_CompatModel):
     )
 
 
-class BaseBranchAgentOutput(_CompatModel):
+class BaseBranchAgentOutput(_AgentContractModel):
     """Common output shared by all branch review agents."""
 
-    branch_name: str
+    branch_name: Literal["quant", "fundamental", "macro", "kline"]
     conviction: Literal["strong_buy", "buy", "neutral", "sell", "strong_sell"] = "neutral"
     conviction_score: float = Field(default=0.0, ge=-1.0, le=1.0)
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
@@ -122,18 +161,6 @@ class QuantAgentOutput(BaseBranchAgentOutput):
     recommended_factor_tilts: dict[str, str] = Field(default_factory=dict)
 
 
-class IntelligenceAgentInput(BaseBranchAgentInput):
-    catalyst_summary: dict[str, Any] = Field(default_factory=dict)
-
-
-class IntelligenceAgentOutput(BaseBranchAgentOutput):
-    sentiment_regime: str = "neutral"
-    contrarian_signal: str = "none"
-    catalyst_assessment: list[str] = Field(default_factory=list)
-    information_asymmetry: str = "none"
-    event_timing_risk: float = Field(default=0.0, ge=0.0, le=1.0)
-
-
 class MacroAgentInput(BaseBranchAgentInput):
     macro_summary: dict[str, Any] = Field(default_factory=dict)
 
@@ -147,7 +174,7 @@ class MacroAgentOutput(BaseBranchAgentOutput):
     regime_transition_risk: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
-class RiskAgentInput(_CompatModel):
+class RiskAgentInput(_AgentContractModel):
     """Risk review input, still advisory-only."""
 
     risk_metrics_summary: dict[str, Any] = Field(default_factory=dict)
@@ -157,7 +184,7 @@ class RiskAgentInput(_CompatModel):
     portfolio_level_risks: list[str] = Field(default_factory=list)
 
 
-class RiskAgentOutput(_CompatModel):
+class RiskAgentOutput(_AgentContractModel):
     """Risk review output, never overrides deterministic hard-veto semantics."""
 
     risk_assessment: Literal["acceptable", "elevated", "high", "extreme"] = "elevated"
@@ -172,7 +199,7 @@ class RiskAgentOutput(_CompatModel):
     reasoning: str = ""
 
 
-class SymbolRecommendation(_CompatModel):
+class SymbolRecommendation(_AgentContractModel):
     """Review-layer recommendation for a single symbol."""
 
     symbol: str
@@ -183,7 +210,7 @@ class SymbolRecommendation(_CompatModel):
     target_weight: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
-class TradeDecision(_CompatModel):
+class TradeDecision(_AgentContractModel):
     """单个标的的交易决策。"""
 
     symbol: str
@@ -198,7 +225,7 @@ class TradeDecision(_CompatModel):
     risk_report: RiskAgentOutput | None = None
 
 
-class ShortlistEvidencePack(_CompatModel):
+class ShortlistEvidencePack(_AgentContractModel):
     """Compact evidence pack for a single shortlisted symbol.
 
     Used as input to the Master Discussion Layer — contains only the
@@ -225,20 +252,25 @@ class ShortlistEvidencePack(_CompatModel):
     portfolio_constraints: dict[str, Any] = Field(default_factory=dict)
 
 
-class MasterAgentInput(_CompatModel):
+class MasterAgentInput(_AgentContractModel):
     """IC master review input — 直接接收原始分支量化数据，不经过 SubAgent 处理。"""
 
     branch_results: dict[str, Any] = Field(
         default_factory=dict,
-        description="v13 四分支的序列化 BranchResult（量化分数、signals、evidence）",
+        description="v14 三分支的序列化 BranchResult（量化分数、signals、evidence）",
+    )
+    branch_reports: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Explicit legacy review input; never used as a DAG branch map.",
     )
     risk_result: dict[str, Any] = Field(
         default_factory=dict,
         description="风控层序列化输出（VaR、仓位建议、stop loss 等）",
     )
+    risk_report: RiskAgentOutput | None = None
     ensemble_baseline: dict[str, Any] = Field(
         default_factory=dict,
-        description="算法 EnsembleJudge / Bayesian 输出，作为参考基准",
+        description="Bayesian 输出，作为参考基准",
     )
     market_regime: str = "default"
     candidate_symbols: list[str] = Field(default_factory=list)
@@ -252,7 +284,7 @@ class MasterAgentInput(_CompatModel):
     )
 
 
-class MasterAgentOutput(_CompatModel):
+class MasterAgentOutput(_AgentContractModel):
     """IC master review output — 包含多轮多空辩论记录及完整投资决策。"""
 
     final_conviction: Literal["strong_buy", "buy", "neutral", "sell", "strong_sell"] = "neutral"
@@ -279,7 +311,7 @@ class MasterAgentOutput(_CompatModel):
     dissenting_views: list[str] = Field(default_factory=list, description="保留的少数派意见")
 
 
-class AgentEnhancedStrategy(_CompatModel):
+class AgentEnhancedStrategy(_AgentContractModel):
     """Agent-enhanced review bundle."""
 
     algorithmic_strategy: dict[str, Any] = Field(default_factory=dict)
@@ -302,8 +334,6 @@ __all__ = [
     "BranchAgentOutput",
     "FundamentalAgentInput",
     "FundamentalAgentOutput",
-    "IntelligenceAgentInput",
-    "IntelligenceAgentOutput",
     "MacroAgentInput",
     "MacroAgentOutput",
     "MasterAgentInput",

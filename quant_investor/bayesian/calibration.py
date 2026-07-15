@@ -7,24 +7,19 @@ Future: active learning from realized outcomes.
 from __future__ import annotations
 
 import json
+import math
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
 from quant_investor.logger import get_logger
+from quant_investor.versioning import CALIBRATION_SCHEMA_VERSION
 
 _logger = get_logger("CalibrationStore")
 
 # Preset calibration buckets: branch_name -> {score_bucket: empirical_probability}
 # These are initial estimates; the learning loop will refine them over time.
 _PRESET_CALIBRATION: dict[str, dict[str, float]] = {
-    "kline": {
-        "strong_negative": 0.25,
-        "negative": 0.38,
-        "neutral": 0.50,
-        "positive": 0.62,
-        "strong_positive": 0.75,
-    },
     "quant": {
         "strong_negative": 0.22,
         "negative": 0.35,
@@ -39,17 +34,20 @@ _PRESET_CALIBRATION: dict[str, dict[str, float]] = {
         "positive": 0.60,
         "strong_positive": 0.72,
     },
-    "intelligence": {
-        "strong_negative": 0.30,
-        "negative": 0.42,
-        "neutral": 0.50,
-        "positive": 0.58,
-        "strong_positive": 0.68,
-    },
 }
 
 
+def _require_supported_branch(branch_name: str) -> str:
+    resolved = str(branch_name).strip()
+    if resolved not in _PRESET_CALIBRATION:
+        raise ValueError(f"Unsupported calibration branch: {branch_name!r}.")
+    return resolved
+
+
 def _score_to_bucket(score: float) -> str:
+    score = float(score)
+    if not math.isfinite(score):
+        raise ValueError(f"Calibration score must be finite: {score!r}.")
     if score <= -0.50:
         return "strong_negative"
     if score <= -0.15:
@@ -69,7 +67,7 @@ class CalibrationStore:
     """
 
     def __init__(self, store_path: str | None = None) -> None:
-        self._store_path = Path(store_path or "data/bayesian_calibration.json")
+        self._store_path = Path(store_path or "data/bayesian_calibration/v14/calibration.json")
         self._curves = dict(_PRESET_CALIBRATION)
         self._outcome_stats: dict[str, dict[str, dict[str, float]]] = defaultdict(dict)
         self._load()
@@ -79,13 +77,27 @@ class CalibrationStore:
         if self._store_path.exists():
             try:
                 data = json.loads(self._store_path.read_text(encoding="utf-8"))
-                if isinstance(data, dict) and "curves" in data:
-                    self._curves.update(data["curves"])
+                if not isinstance(data, dict):
+                    raise ValueError("Calibration store must be a JSON object.")
+                schema_version = str(data.get("schema_version", ""))
+                if schema_version != CALIBRATION_SCHEMA_VERSION:
+                    raise ValueError(
+                        "Calibration schema mismatch: "
+                        f"expected {CALIBRATION_SCHEMA_VERSION!r}, got {schema_version!r}."
+                    )
+                curves = data.get("curves", {})
+                if not isinstance(curves, dict):
+                    raise ValueError("Calibration curves must be a JSON object.")
+                unexpected = sorted(set(curves) - set(_PRESET_CALIBRATION))
+                if unexpected:
+                    raise ValueError(f"Unexpected calibration branches: {', '.join(unexpected)}")
+                self._curves.update(curves)
             except Exception as exc:
-                _logger.warning("Failed to load calibration store: %s", exc)
+                raise ValueError(f"Failed to load calibration store {self._store_path}: {exc}") from exc
 
     def get_calibration_curve(self, branch_name: str) -> dict[str, float]:
-        return dict(self._curves.get(branch_name, _PRESET_CALIBRATION.get(branch_name, {})))
+        branch_name = _require_supported_branch(branch_name)
+        return dict(self._curves.get(branch_name, _PRESET_CALIBRATION[branch_name]))
 
     def _load_outcomes(self) -> None:
         outcomes_path = self._store_path.parent / "bayesian_outcomes.jsonl"
@@ -97,18 +109,33 @@ class CalibrationStore:
         try:
             rows = outcomes_path.read_text(encoding="utf-8").splitlines()
         except Exception as exc:
-            _logger.warning("Failed to read calibration outcomes: %s", exc)
-            return
-        recent_rows = rows[-200:]
-        for line in recent_rows:
+            raise ValueError(f"Failed to read calibration outcomes {outcomes_path}: {exc}") from exc
+        parsed_rows: list[tuple[int, dict[str, Any]]] = []
+        for line_number, line in enumerate(rows, start=1):
             try:
                 payload = json.loads(line)
-            except Exception:
-                continue
+            except Exception as exc:
+                raise ValueError(
+                    f"Malformed calibration outcome in {outcomes_path} at line {line_number}."
+                ) from exc
+            if not isinstance(payload, dict):
+                raise ValueError(
+                    f"Calibration outcome at line {line_number} must be a JSON object."
+                )
+            schema_version = str(payload.get("schema_version", ""))
+            if schema_version != CALIBRATION_SCHEMA_VERSION:
+                raise ValueError(
+                    f"Calibration outcome schema mismatch at line {line_number}: "
+                    f"expected {CALIBRATION_SCHEMA_VERSION!r}, got {schema_version!r}."
+                )
+            parsed_rows.append((line_number, payload))
+        for line_number, payload in parsed_rows[-200:]:
             branch_name = str(payload.get("branch", "")).strip()
             bucket = str(payload.get("bucket", "")).strip() or _score_to_bucket(float(payload.get("score", 0.0)))
-            if not branch_name or not bucket:
-                continue
+            if branch_name not in _PRESET_CALIBRATION:
+                raise ValueError(f"Unexpected calibration branch at line {line_number}: {branch_name!r}.")
+            if not bucket:
+                raise ValueError(f"Missing calibration bucket at line {line_number}.")
             realized_return = float(payload.get("realized_return", 0.0) or 0.0)
             key = (branch_name, bucket)
             aggregates[key]["sample_size"] += 1.0
@@ -128,6 +155,7 @@ class CalibrationStore:
             }
 
     def calibration_stats(self, branch_name: str, score: float) -> dict[str, float | str]:
+        branch_name = _require_supported_branch(branch_name)
         bucket = _score_to_bucket(score)
         curve = self._curves.get(branch_name, {})
         preset_probability = float(curve.get(bucket, 0.50))
@@ -166,7 +194,9 @@ class CalibrationStore:
         run_date: str = "",
     ) -> None:
         """Persist a prediction-vs-outcome pair for future calibration."""
+        branch_name = _require_supported_branch(branch_name)
         record = {
+            "schema_version": CALIBRATION_SCHEMA_VERSION,
             "symbol": symbol,
             "branch": branch_name,
             "score": predicted_score,
@@ -186,7 +216,10 @@ class CalibrationStore:
         """Persist current calibration curves."""
         try:
             self._store_path.parent.mkdir(parents=True, exist_ok=True)
-            data = {"curves": self._curves, "version": "v1"}
+            data = {
+                "schema_version": CALIBRATION_SCHEMA_VERSION,
+                "curves": self._curves,
+            }
             self._store_path.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2),
                 encoding="utf-8",

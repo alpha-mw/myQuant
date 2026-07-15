@@ -13,7 +13,10 @@ from quant_investor.agent_protocol import (
 )
 from quant_investor.agents.narrator_agent import NarratorAgent
 from quant_investor.market.dag.reporting import _build_reporting_artifacts
-from quant_investor.market.full_report import generate_full_report
+from quant_investor.market.full_report import (
+    CURRENT_MARKET_REPORT_SCHEMA_ENVELOPE,
+    generate_full_report,
+)
 from quant_investor.reporting.theme_renderer import render_theme_rotation_markdown
 
 
@@ -295,6 +298,7 @@ def test_full_market_report_includes_theme_governance_section(tmp_path):
     all_results = {
         "full_a": [
             {
+                **CURRENT_MARKET_REPORT_SCHEMA_ENVELOPE,
                 "stock_count": 1,
                 "stocks": ["000001.SZ"],
                 "strategy": {
@@ -312,11 +316,6 @@ def test_full_market_report_includes_theme_governance_section(tmp_path):
                         "confidence": 0.5,
                         "conclusion": "fundamental neutral",
                     },
-                    "intelligence": {
-                        "score": 0.1,
-                        "confidence": 0.4,
-                        "conclusion": "intelligence neutral",
-                    },
                     "macro": {
                         "score": 0.0,
                         "confidence": 0.8,
@@ -326,6 +325,7 @@ def test_full_market_report_includes_theme_governance_section(tmp_path):
                 "recommendations": [],
                 "execution_log": [],
                 "analysis_meta": {
+                    **CURRENT_MARKET_REPORT_SCHEMA_ENVELOPE,
                     "market": "CN",
                     "universe": "full_a",
                     "theme_rotation": _theme_rotation(),

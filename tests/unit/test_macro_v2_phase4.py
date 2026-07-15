@@ -106,10 +106,67 @@ def test_first_completed_session_is_recorded_privately_and_not_eligible(
 
     market_root = tmp_path / "forward" / "CN"
     pointer = json.loads((market_root / "_latest.json").read_text())
+    assert pointer["observer_only"] is True
+    assert pointer["production_eligible"] is False
+    assert pointer["applied"] is False
     generation = market_root / "_generations" / pointer["generation_id"]
     for path in generation.iterdir():
         assert os.stat(path).st_mode & 0o777 == 0o600
     assert os.stat(market_root / "_latest.json").st_mode & 0o777 == 0o600
+
+
+def test_forward_pointer_rejects_invalid_observer_flags(
+    tmp_path: Path,
+    monkeypatch,
+):
+    observations = _observations(tmp_path)
+    calendar = _calendar(tmp_path)
+    _record(
+        tmp_path,
+        monkeypatch,
+        observations=observations,
+        calendar=calendar,
+    )
+    market_root = tmp_path / "forward" / "CN"
+    pointer_path = market_root / "_latest.json"
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    pointer["observer_only"] = False
+    pointer_path.write_text(json.dumps(pointer), encoding="utf-8")
+
+    with pytest.raises(
+        MacroForwardError,
+        match="macro_forward_pointer_observer_flags_invalid",
+    ):
+        _record(
+            tmp_path,
+            monkeypatch,
+            expected=forward_pointer_sha256(tmp_path / "forward"),
+            observations=observations,
+            calendar=calendar,
+        )
+
+
+@pytest.mark.parametrize("generation_id", [".", ".."])
+def test_forward_pointer_rejects_dot_generation_id(
+    tmp_path: Path,
+    monkeypatch,
+    generation_id: str,
+):
+    _record(tmp_path, monkeypatch)
+    pointer_path = tmp_path / "forward" / "CN" / "_latest.json"
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    pointer["generation_id"] = generation_id
+    pointer_path.write_text(json.dumps(pointer), encoding="utf-8")
+
+    with pytest.raises(
+        MacroForwardError,
+        match="macro_forward_generation_id_invalid",
+    ):
+        _record(
+            tmp_path,
+            monkeypatch,
+            expected=forward_pointer_sha256(tmp_path / "forward"),
+        )
 
 
 def test_same_session_is_idempotent_only_for_same_snapshot_and_generation(

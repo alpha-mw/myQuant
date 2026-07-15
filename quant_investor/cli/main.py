@@ -74,7 +74,10 @@ def run_macro_analysis(**kwargs):
         load_macro_observation_generation,
     )
 
-    observations, generation = load_macro_observation_generation(kwargs.pop("observations_path"))
+    observations, generation = load_macro_observation_generation(
+        kwargs.pop("observations_path"),
+        allow_standalone_offline=True,
+    )
     return build_macro_observer(
         observations,
         enabled=True,
@@ -98,13 +101,17 @@ def run_macro_replay(**kwargs):
 
 
 def run_macro_tushare_normalization(**kwargs):
-    from quant_investor.macro.tushare_normalizer import normalize_tushare_bundle_file
+    from quant_investor.macro.tushare_normalizer import (
+        normalize_tushare_bundle_file,
+    )
 
     return normalize_tushare_bundle_file(**kwargs)
 
 
 def run_macro_backfill_publish(**kwargs):
-    from quant_investor.macro.tushare_normalizer import publish_tushare_normalization
+    from quant_investor.macro.tushare_normalizer import (
+        publish_tushare_normalization,
+    )
 
     return publish_tushare_normalization(**kwargs)
 
@@ -242,13 +249,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--kline-backend",
         default="v13-retired",
         choices=["v13-retired", "heuristic", "kronos", "chronos", "hybrid"],
-        help="兼容保留参数；v13 四分支主线不再执行 kline 分支。",
+        help="兼容保留参数；v14 三分支主线不再执行 kline 分支。",
     )
     research_run.add_argument("--no-macro", action="store_true")
-    research_run.add_argument("--no-kline", "--no-kronos", action="store_true", help="兼容保留参数；v13 默认已禁用 kline。")
+    research_run.add_argument("--no-kline", "--no-kronos", action="store_true", help="兼容保留参数；v14 默认不执行 kline 分支。")
     research_run.add_argument("--no-quant", action="store_true")
     research_run.add_argument("--no-fundamental", action="store_true")
-    research_run.add_argument("--no-intelligence", action="store_true")
     research_run.add_argument(
         "--disable-document-semantics",
         action="store_true",
@@ -415,75 +421,114 @@ def _build_parser() -> argparse.ArgumentParser:
 
     market_macro_maintain = market_subparsers.add_parser(
         "macro-maintain",
-        help="维护 CN macro 兼容 mart；默认离线且无输入不写入",
+        help="暂存 CN Macro 兼容数据或维护 hash-bound observations",
     )
     market_macro_maintain.add_argument("--market", required=True, choices=["CN"])
     market_macro_maintain.add_argument("--as-of", required=True)
-    market_macro_maintain.add_argument(
+    macro_input_group = market_macro_maintain.add_mutually_exclusive_group()
+    macro_input_group.add_argument(
         "--input-json",
         default="",
-        help="包含四字段兼容 macro row 的本地 JSON；不接受隐式 fallback",
+        help="四字段本地兼容行；只能暂存，不能晋升 canonical",
     )
-    market_macro_maintain.add_argument("--data-root", default="data/parquet/cn/macro_daily")
-    market_macro_maintain.add_argument("--snapshot-root", default="data/cn_market_full/_snapshots/macro")
-    market_macro_maintain.add_argument("--input-observations", default="")
-    market_macro_maintain.add_argument("--observations-root", default="data/parquet/cn/macro_observations")
+    macro_input_group.add_argument(
+        "--input-observations",
+        default="",
+        help=(
+            "本地 observations 仅写 sanitized observer staging；"
+            "永不推进 canonical pointer"
+        ),
+    )
+    market_macro_maintain.add_argument(
+        "--data-root",
+        default="data/parquet/cn/macro_daily",
+    )
+    market_macro_maintain.add_argument(
+        "--snapshot-root",
+        default="data/cn_market_full/_snapshots/macro",
+    )
+    market_macro_maintain.add_argument(
+        "--observations-root",
+        default="data/parquet/cn/macro_observations",
+    )
+    market_macro_maintain.add_argument(
+        "--staging-root",
+        default="results/v14/macro_observation_staging",
+    )
     market_macro_maintain.add_argument("--run-id", default="")
-    market_macro_maintain.add_argument("--indicator-id", action="append", default=[])
-    market_macro_maintain.add_argument("--allow-tushare-fallback", action="store_true")
+    market_macro_maintain.add_argument(
+        "--indicator-id",
+        action="append",
+        default=[],
+    )
+    market_macro_maintain.add_argument(
+        "--allow-tushare-fallback",
+        action="store_true",
+    )
     market_macro_maintain.add_argument("--allow-live", action="store_true")
 
     market_macro_analyze = market_subparsers.add_parser(
         "macro-analyze",
-        help="从本地 PIT observations 生成 measurement-only macro v2 observer 报告",
+        help="显式读取本地 observations，生成 observer-only v14 报告",
     )
     market_macro_analyze.add_argument("--market", required=True, choices=["CN"])
     market_macro_analyze.add_argument("--as-of", required=True)
     market_macro_analyze.add_argument("--observations", required=True)
-    market_macro_analyze.add_argument("--output-dir", default="results/macro_observer")
+    market_macro_analyze.add_argument(
+        "--output-dir",
+        default="results/v14/macro_observer",
+    )
 
     market_macro_replay = market_subparsers.add_parser(
         "macro-replay",
-        help="固定一个本地 observations generation，按严格交易日历做 observer-only PIT 回放",
+        help="固定 canonical observations generation 做 observer-only PIT 回放",
     )
     market_macro_replay.add_argument("--market", required=True, choices=["CN"])
     market_macro_replay.add_argument("--start-date", required=True)
     market_macro_replay.add_argument("--end-date", required=True)
-    market_macro_replay.add_argument("--observations-root", default="data/parquet/cn/macro_observations")
+    market_macro_replay.add_argument(
+        "--observations-root",
+        default="data/parquet/cn/macro_observations",
+    )
     market_macro_replay.add_argument("--calendar", required=True)
-    market_macro_replay.add_argument("--output-dir", default="results/macro_replay")
+    market_macro_replay.add_argument(
+        "--output-dir",
+        default="results/v14/macro_replay",
+    )
     market_macro_replay.add_argument("--run-id", default="")
 
     market_macro_normalize = market_subparsers.add_parser(
         "macro-normalize-tushare",
-        help="离线编译本地 Tushare 宏观 raw bundle；默认只产出证据包，不晋升",
+        help="离线编译 hash-bound Tushare 证据；不自动晋升",
     )
     market_macro_normalize.add_argument("--market", required=True, choices=["CN"])
     market_macro_normalize.add_argument("--input-json", required=True)
     market_macro_normalize.add_argument("--plan-json", required=True)
     market_macro_normalize.add_argument("--evidence-json", required=True)
-    market_macro_normalize.add_argument("--output-dir", default="results/macro_normalization")
-    market_macro_normalize.add_argument("--run-id", default="")
+    market_macro_normalize.add_argument(
+        "--output-dir",
+        default="results/v14/macro_normalization",
+    )
+    market_macro_normalize.add_argument("--run-id", required=True)
 
     market_macro_publish = market_subparsers.add_parser(
         "macro-backfill-publish",
-        help="显式 CAS 晋升一个零 quarantine 的离线 normalization bundle",
+        help="显式 CAS 晋升零 quarantine 的 observations bundle",
     )
     market_macro_publish.add_argument("--market", required=True, choices=["CN"])
     market_macro_publish.add_argument("--manifest", required=True)
-    market_macro_publish.add_argument("--observations-root", default="data/parquet/cn/macro_observations")
-    market_macro_publish.add_argument("--run-id", required=True)
     market_macro_publish.add_argument(
-        "--expected-pointer-sha256",
-        required=True,
-        help="首次发布传 EMPTY；否则传当前 _latest.json 的 SHA-256",
+        "--observations-root",
+        default="data/parquet/cn/macro_observations",
     )
+    market_macro_publish.add_argument("--run-id", required=True)
+    market_macro_publish.add_argument("--expected-pointer-sha256", required=True)
     market_macro_publish.add_argument("--expected-manifest-sha256", required=True)
     market_macro_publish.add_argument("--expected-plan-sha256", required=True)
 
     market_macro_forward = market_subparsers.add_parser(
         "macro-observe-forward",
-        help="按已完成交易日追加 observer-only Macro 观察期证据；禁止历史回填",
+        help="追加一个已完成交易日的 observer-only forward 证据",
     )
     market_macro_forward.add_argument("--market", required=True, choices=["CN"])
     market_macro_forward.add_argument(
@@ -493,17 +538,13 @@ def _build_parser() -> argparse.ArgumentParser:
     market_macro_forward.add_argument("--calendar", required=True)
     market_macro_forward.add_argument(
         "--state-root",
-        default="results/macro_forward_observation",
+        default="results/v14/macro_forward_observation",
     )
-    market_macro_forward.add_argument(
-        "--expected-pointer-sha256",
-        required=True,
-        help="首次记录传 EMPTY；否则传当前 Macro forward _latest.json 的 SHA-256",
-    )
+    market_macro_forward.add_argument("--expected-pointer-sha256", required=True)
 
     market_macro_coverage = market_subparsers.add_parser(
         "macro-coverage-audit",
-        help="离线审计国家指标与 12 条产业链的真实 PIT 覆盖和采集缺口",
+        help="离线审计国家指标与产业链 PIT 覆盖",
     )
     market_macro_coverage.add_argument("--market", required=True, choices=["CN"])
     market_macro_coverage.add_argument("--as-of", required=True)
@@ -517,7 +558,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     market_macro_coverage.add_argument(
         "--output-dir",
-        default="results/macro_coverage_audit",
+        default="results/v14/macro_coverage_audit",
     )
 
     market_macro_acquisition = market_subparsers.add_parser(
@@ -531,12 +572,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--coverage-audit", required=True
     )
     market_macro_acquisition.add_argument(
-        "--output-dir", default="results/macro_acquisition_plan"
+        "--output-dir", default="results/v14/macro_acquisition_plan"
     )
 
     market_data_governance = market_subparsers.add_parser(
         "data-governance",
-        help="审计四分支数据 readiness，默认只读本地数据",
+        help="审计三分支数据 readiness，默认只读本地数据",
     )
     market_data_governance.add_argument("--market", required=True, choices=["CN"])
     market_data_governance.add_argument(
@@ -547,7 +588,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="可重复；默认 full_a",
     )
     market_data_governance.add_argument("--as-of", default="")
-    market_data_governance.add_argument("--output-dir", default="reports/branch_readiness")
+    market_data_governance.add_argument(
+        "--output-dir", default="reports/v14/branch_readiness"
+    )
     market_data_governance.add_argument(
         "--allow-live",
         action="store_true",
@@ -793,12 +836,41 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.command == "market" and args.market_command == "macro-maintain":
-        if args.input_observations or (args.allow_live and not args.input_json):
+        if args.allow_tushare_fallback and not args.allow_live:
+            parser.error(
+                "--allow-tushare-fallback requires explicit --allow-live"
+            )
+        if args.input_observations and (
+            args.allow_live or args.allow_tushare_fallback
+        ):
+            parser.error(
+                "standalone --input-observations cannot be combined with "
+                "live provider flags"
+            )
+        if args.input_json and (
+            args.allow_live or args.allow_tushare_fallback
+        ):
+            parser.error(
+                "compatibility --input-json cannot be combined with live provider flags"
+            )
+        if args.input_observations or args.allow_live:
             from quant_investor.macro.observer import load_macro_observations
 
-            observations = load_macro_observations(args.input_observations) if args.input_observations else []
-            generated_suffix = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-            run_id = args.run_id or f"cn_macro_observations_{generated_suffix}"
+            observations = (
+                load_macro_observations(
+                    args.input_observations,
+                    allow_standalone_offline=True,
+                )
+                if args.input_observations
+                else []
+            )
+            generated_suffix = datetime.now(timezone.utc).strftime(
+                "%Y%m%dT%H%M%S%fZ"
+            )
+            run_id = (
+                args.run_id
+                or f"cn_macro_observations_{generated_suffix}"
+            )
             _print_json(
                 run_macro_observation_maintenance(
                     local_observations=observations,
@@ -806,6 +878,7 @@ def main(argv: list[str] | None = None) -> None:
                     as_of=args.as_of,
                     indicator_ids=args.indicator_id,
                     root=args.observations_root,
+                    staging_root=args.staging_root,
                     run_id=run_id,
                     allow_live=args.allow_live,
                     allow_tushare_fallback=args.allow_tushare_fallback,
@@ -815,7 +888,11 @@ def main(argv: list[str] | None = None) -> None:
         indicators = None
         if args.input_json:
             input_path = Path(args.input_json).expanduser()
-            if not input_path.exists() or input_path.is_symlink() or not input_path.is_file():
+            if (
+                not input_path.exists()
+                or input_path.is_symlink()
+                or not input_path.is_file()
+            ):
                 parser.error("--input-json must reference a safe local file")
             payload = json.loads(input_path.read_text(encoding="utf-8"))
             if not isinstance(payload, dict):
@@ -827,7 +904,9 @@ def main(argv: list[str] | None = None) -> None:
                 as_of=args.as_of,
                 data_root=args.data_root,
                 raw_snapshot_root=args.snapshot_root,
-                allow_live=args.allow_live,
+                allow_live=False,
+                allow_public_fallback=False,
+                run_id=args.run_id,
             )
         )
         return
@@ -839,6 +918,8 @@ def main(argv: list[str] | None = None) -> None:
                 market=args.market,
                 as_of=args.as_of,
                 output_root=args.output_dir,
+                production_enabled=False,
+                production_kill_switch=True,
             )
         )
         return
@@ -857,51 +938,64 @@ def main(argv: list[str] | None = None) -> None:
         )
         return
 
-    if args.command == "market" and args.market_command == "macro-normalize-tushare":
-        generated_suffix = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    if (
+        args.command == "market"
+        and args.market_command == "macro-normalize-tushare"
+    ):
         _print_json(
             run_macro_tushare_normalization(
                 path=args.input_json,
                 plan_path=args.plan_json,
                 evidence_path=args.evidence_json,
                 output_root=args.output_dir,
-                run_id=args.run_id or f"cn_macro_normalization_{generated_suffix}",
+                run_id=args.run_id,
             )
         )
         return
 
-    if args.command == "market" and args.market_command == "macro-backfill-publish":
-        expected_pointer = str(args.expected_pointer_sha256).strip()
-        if expected_pointer == "EMPTY":
-            expected_pointer = ""
+    if (
+        args.command == "market"
+        and args.market_command == "macro-backfill-publish"
+    ):
         _print_json(
             run_macro_backfill_publish(
                 manifest_path=args.manifest,
                 observations_root=args.observations_root,
                 run_id=args.run_id,
-                expected_pointer_sha256=expected_pointer,
+                expected_pointer_sha256=(
+                    ""
+                    if args.expected_pointer_sha256 == "EMPTY"
+                    else args.expected_pointer_sha256
+                ),
                 expected_manifest_sha256=args.expected_manifest_sha256,
                 expected_plan_sha256=args.expected_plan_sha256,
             )
         )
         return
 
-    if args.command == "market" and args.market_command == "macro-observe-forward":
-        expected_pointer = str(args.expected_pointer_sha256).strip()
-        if expected_pointer == "EMPTY":
-            expected_pointer = ""
+    if (
+        args.command == "market"
+        and args.market_command == "macro-observe-forward"
+    ):
         _print_json(
             run_macro_forward_observation(
                 market=args.market,
                 observations_root=args.observations_root,
                 calendar_path=args.calendar,
                 root=args.state_root,
-                expected_pointer_sha256=expected_pointer,
+                expected_pointer_sha256=(
+                    ""
+                    if args.expected_pointer_sha256 == "EMPTY"
+                    else args.expected_pointer_sha256
+                ),
             )
         )
         return
 
-    if args.command == "market" and args.market_command == "macro-coverage-audit":
+    if (
+        args.command == "market"
+        and args.market_command == "macro-coverage-audit"
+    ):
         _print_json(
             run_macro_coverage(
                 market=args.market,
@@ -913,7 +1007,10 @@ def main(argv: list[str] | None = None) -> None:
         )
         return
 
-    if args.command == "market" and args.market_command == "macro-acquisition-plan":
+    if (
+        args.command == "market"
+        and args.market_command == "macro-acquisition-plan"
+    ):
         _print_json(
             run_macro_acquisition(
                 market=args.market,

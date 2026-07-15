@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 
@@ -11,6 +12,9 @@ from quant_investor.bayesian.calibration_v2 import (
     GROUP_ALL_REGIMES,
     TARGET_POSTERIOR_WIN_RATE,
     CalibrationCurveKey,
+    CalibrationCurve,
+    CalibrationBucket,
+    CalibrationModelV2,
     CalibrationTrainingExample,
     CalibrationV2Store,
     brier_score,
@@ -30,7 +34,27 @@ from quant_investor.bayesian.outcome_ledger import (
     PredictionRecord,
     make_outcome_id,
 )
+from quant_investor.bayesian.types import LikelihoodSet
 from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
+from quant_investor.branch_config import BRANCH_WEIGHT_VERSION
+from quant_investor.versioning import (
+    ARCHITECTURE_VERSION,
+    BRANCH_SCHEMA_VERSION,
+    CALIBRATION_SCHEMA_VERSION,
+    LIKELIHOOD_SCHEMA_VERSION,
+    OUTCOME_LEDGER_SCHEMA_VERSION,
+)
+
+
+def _schema_metadata() -> dict[str, str]:
+    return {
+        "architecture_version": ARCHITECTURE_VERSION,
+        "branch_schema_version": BRANCH_SCHEMA_VERSION,
+        "likelihood_schema_version": LIKELIHOOD_SCHEMA_VERSION,
+        "calibration_schema_version": CALIBRATION_SCHEMA_VERSION,
+        "outcome_ledger_schema_version": OUTCOME_LEDGER_SCHEMA_VERSION,
+        "branch_weight_version": BRANCH_WEIGHT_VERSION,
+    }
 
 
 def _prediction(prediction_id: str, posterior: float = 0.62, rank: int = 1) -> PredictionRecord:
@@ -50,21 +74,24 @@ def _prediction(prediction_id: str, posterior: float = 0.62, rank: int = 1) -> P
         macro_regime="趋势上涨",
         rank=rank,
         prior={"composite_prior": 0.55},
-        likelihoods={"quant_likelihood": 0.64},
+        likelihoods=LikelihoodSet(quant_likelihood=0.64).to_dict(),
         branch_scores={
             "quant": 0.4,
-            "intelligence": 0.1,
             "fundamental": -0.4,
             "macro": -0.2,
-            "noncanonical": 0.99,
         },
-        branch_confidences={"quant": 0.7},
+        branch_confidences={
+            "quant": 0.7,
+            "fundamental": 0.6,
+            "macro": 0.5,
+        },
         posterior_win_rate=posterior,
         posterior_expected_alpha=0.03,
         posterior_confidence=0.7,
         posterior_action_score=0.6,
         posterior_edge_after_costs=0.02,
         action_threshold_used=0.55,
+        metadata=_schema_metadata(),
     )
 
 
@@ -87,6 +114,7 @@ def _outcome(prediction: PredictionRecord, *, status: str = OUTCOME_STATUS_RESOL
         realized_return=realized,
         benchmark_return=0.01,
         excess_return=excess,
+        metadata=_schema_metadata(),
     )
 
 
@@ -120,7 +148,7 @@ def test_build_training_examples_uses_resolved_outcomes_and_deterministic_order(
     assert examples[0].excess_return == pytest.approx(0.04)
     assert examples[2].target_name == "branch:fundamental"
     assert examples[2].raw_value == pytest.approx(-0.4)
-    assert all("noncanonical" not in example.target_name for example in examples)
+    assert len(examples) == 1 + len(CANONICAL_BRANCH_ORDER)
 
 
 def test_build_training_examples_filters_small_returns() -> None:
@@ -192,7 +220,8 @@ def test_model_training_creates_global_fallback_and_calibrates() -> None:
     assert model.get_curve(CalibrationCurveKey(TARGET_POSTERIOR_WIN_RATE, GROUP_ALL_MARKETS, GROUP_ALL_HORIZONS, GROUP_ALL_REGIMES)) is not None
     assert model.get_curve(CalibrationCurveKey("branch:quant", GROUP_ALL_MARKETS, GROUP_ALL_HORIZONS, GROUP_ALL_REGIMES)) is not None
     assert 0.0 <= model.calibrate(TARGET_POSTERIOR_WIN_RATE, 0.7, market="CN", horizon_label="20D", macro_regime="趋势上涨") <= 1.0
-    assert model.calibrate("missing_target", -0.4) == pytest.approx(0.3)
+    with pytest.raises(ValueError, match="Unsupported calibration target"):
+        model.calibrate("missing_target", -0.4)
 
 
 def test_metric_helpers_return_known_values() -> None:
@@ -266,3 +295,144 @@ def test_empty_report_has_no_summaries() -> None:
 
     assert report.total_examples == 0
     assert report.metric_summaries == []
+
+
+def test_calibration_v2_rejects_old_schema_and_uses_v14_namespace() -> None:
+    model = train_calibration_model([], trained_at="2026-04-26T00:00:00Z")
+    payload = dict(model.to_dict(), schema_version="old-calibration")
+
+    with pytest.raises(ValueError, match="schema mismatch"):
+        type(model).from_dict(payload)
+
+    assert CalibrationV2Store().root_dir.as_posix().endswith("bayesian_calibration_v2/v14")
+
+
+def test_calibration_v2_rejects_retired_or_unknown_targets(tmp_path: Path) -> None:
+    old_target = "branch:intelligence"
+    with pytest.raises(ValueError, match="Unsupported calibration target"):
+        CalibrationCurveKey(target_name=old_target)
+    with pytest.raises(ValueError, match="Unsupported calibration target"):
+        CalibrationTrainingExample(target_name=old_target)
+
+    model = train_calibration_model([], trained_at="2026-04-26T00:00:00Z")
+    with pytest.raises(ValueError, match="Unsupported calibration target"):
+        model.select_curve(old_target)
+    with pytest.raises(ValueError, match="Unsupported calibration target"):
+        model.calibrate(old_target, 0.5)
+
+    payload = model.to_dict()
+    payload["curves"] = [
+        {
+            "schema_version": payload["schema_version"],
+            "key": {"target_name": old_target},
+            "buckets": [],
+        }
+    ]
+    store = CalibrationV2Store(tmp_path)
+    store.model_path.parent.mkdir(parents=True, exist_ok=True)
+    store.model_path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="Unsupported calibration target"):
+        store.load_model()
+
+
+@pytest.mark.parametrize(
+    "overrides,match",
+    [
+        ({"calibrated_probability": float("nan")}, "finite"),
+        ({"total_count": -1}, "non-negative"),
+        ({"total_count": 1, "positive_count": 2}, "exceeds"),
+        ({"lower_bound": 0.8, "upper_bound": 0.2}, "lower_bound exceeds"),
+    ],
+)
+def test_calibration_bucket_rejects_invalid_current_values(overrides, match) -> None:
+    payload = {
+        "bucket_index": 0,
+        "lower_bound": 0.0,
+        "upper_bound": 1.0,
+        "center": 0.5,
+        "total_count": 1,
+        "positive_count": 1,
+        "raw_mean": 0.5,
+        "empirical_rate": 1.0,
+        "prior_alpha": 1.0,
+        "prior_beta": 1.0,
+        "calibrated_probability": 0.5,
+        **overrides,
+    }
+
+    with pytest.raises(ValueError, match=match):
+        CalibrationBucket.from_dict(payload)
+
+
+def _curve_payload(*, bucket_count: int = 2) -> dict[str, object]:
+    examples = [
+        CalibrationTrainingExample(normalized_value=0.2, realized_label=1),
+        CalibrationTrainingExample(normalized_value=0.8, realized_label=0),
+    ]
+    return build_calibration_curve(
+        examples,
+        CalibrationCurveKey(),
+        bucket_count=bucket_count,
+        prior_strength=4.0,
+    ).to_dict()
+
+
+@pytest.mark.parametrize(
+    "mutator,match",
+    [
+        (lambda payload: payload.update(bucket_count=0), "bucket_count must be positive"),
+        (lambda payload: payload["buckets"].pop(), "bucket length mismatch"),
+        (
+            lambda payload: payload["buckets"][1].update(bucket_index=0),
+            "indices must be contiguous",
+        ),
+        (
+            lambda payload: payload["buckets"][0].update(center=0.4),
+            "center is inconsistent",
+        ),
+        (lambda payload: payload.update(total_examples=3), "total_examples does not match"),
+        (lambda payload: payload.update(positive_examples=2), "positive_examples does not match"),
+        (lambda payload: payload.update(base_rate=0.9), "base_rate does not match"),
+    ],
+)
+def test_calibration_curve_rejects_structural_corruption(mutator, match) -> None:
+    payload = _curve_payload()
+    mutator(payload)
+
+    with pytest.raises(ValueError, match=match):
+        CalibrationCurve.from_dict(payload)
+
+
+@pytest.mark.parametrize(
+    "field_name,value,match",
+    [
+        ("bucket_count", 0, "bucket_count must be positive"),
+        ("prior_strength", float("nan"), "finite and non-negative"),
+        ("min_examples_per_curve", 0, "must be positive"),
+    ],
+)
+def test_calibration_model_rejects_invalid_structure(field_name, value, match) -> None:
+    model = CalibrationModelV2(
+        bucket_count=2,
+        prior_strength=4.0,
+        min_examples_per_curve=1,
+        curves=[CalibrationCurve.from_dict(_curve_payload())],
+    )
+    payload = model.to_dict()
+    payload[field_name] = value
+
+    with pytest.raises(ValueError, match=match):
+        CalibrationModelV2.from_dict(payload)
+
+
+def test_calibration_model_rejects_curve_configuration_mismatch() -> None:
+    payload = CalibrationModelV2(
+        bucket_count=2,
+        prior_strength=4.0,
+        min_examples_per_curve=1,
+        curves=[CalibrationCurve.from_dict(_curve_payload())],
+    ).to_dict()
+    payload["bucket_count"] = 3
+
+    with pytest.raises(ValueError, match="bucket_count mismatch"):
+        CalibrationModelV2.from_dict(payload)

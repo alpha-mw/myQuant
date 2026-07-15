@@ -31,13 +31,68 @@ def _digest(path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _bind_catalog_generation(root, *, generation_id: str = "canonical-good"):
+    generation = root / "_generations" / generation_id
+    generation.mkdir(parents=True)
+    table = generation / "part.parquet"
+    canonical_row = {
+        **_row(),
+        "source": "tushare_primary",
+        "source_priority": "tushare_primary",
+        "pit_status": "market_point_in_time",
+        "fetched_at": "2024-05-10T08:00:00+00:00",
+    }
+    pd.DataFrame([canonical_row]).to_parquet(table, index=False)
+    manifest_path = generation / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "cn-macro-mart.v14",
+                "generation_id": generation_id,
+                "table": "macro_daily",
+                "table_path": table.name,
+                "parquet_sha256": _digest(table),
+                "source": "tushare_primary",
+                "source_priority": "tushare_primary",
+                "provider_status": "verified_provider_snapshot",
+                "pit_status": "market_point_in_time",
+                "as_of": "2024-05-10",
+                "production_eligible": True,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    catalog_path = root.parent / "_catalog.json"
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "strict-parquet-catalog.v1",
+                "required_tables": ["macro_daily"],
+                "tables": {
+                    "macro_daily": {
+                        "path": str(table.relative_to(root.parent)),
+                        "generation_manifest": str(
+                            manifest_path.relative_to(root.parent)
+                        ),
+                        "generation_id": generation_id,
+                        "parquet_sha256": _digest(table),
+                        "generation_manifest_sha256": _digest(manifest_path),
+                    }
+                },
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return catalog_path, table, manifest_path
+
+
 def test_empty_and_unimplemented_live_paths_preserve_last_good(tmp_path):
-    root = tmp_path / "macro"
+    root = tmp_path / "parquet" / "cn" / "macro_daily"
     raw = tmp_path / "raw"
-    manifest = write_macro_mart(_row(), data_root=root, raw_snapshot_root=raw, run_id="good")
-    pointer = root / "latest_manifest.json"
-    table = root / manifest["table_path"]
-    before = (_digest(pointer), _digest(table), pointer.read_bytes())
+    catalog, table, manifest = _bind_catalog_generation(root)
+    before = tuple(_digest(path) for path in (catalog, table, manifest))
 
     result = run_cn_macro_maintenance(
         allow_live=True,
@@ -48,48 +103,60 @@ def test_empty_and_unimplemented_live_paths_preserve_last_good(tmp_path):
 
     assert result["status"] == "blocked"
     assert result["promoted"] is False
-    assert (_digest(pointer), _digest(table), pointer.read_bytes()) == before
+    assert tuple(_digest(path) for path in (catalog, table, manifest)) == before
+    frame, loaded = read_macro_mart(data_root=root)
+    assert loaded["generation_id"] == "canonical-good"
+    assert frame.iloc[0]["trade_date"] == "2024-05-10"
 
 
-def test_invalid_and_older_candidate_cannot_advance_pointer(tmp_path):
-    root = tmp_path / "macro"
+def test_invalid_and_older_candidate_cannot_advance_catalog(tmp_path):
+    root = tmp_path / "parquet" / "cn" / "macro_daily"
     raw = tmp_path / "raw"
-    write_macro_mart(_row("2024-05-10"), data_root=root, raw_snapshot_root=raw, run_id="good")
-    pointer = root / "latest_manifest.json"
-    before = pointer.read_bytes()
+    catalog, table, manifest = _bind_catalog_generation(root)
+    before = tuple(_digest(path) for path in (catalog, table, manifest))
 
-    with pytest.raises(MacroMartPromotionError, match="required_fields_missing"):
+    with pytest.raises(
+        MacroMartPromotionError,
+        match="macro_required_fields_missing",
+    ):
         write_macro_mart(
             {"trade_date": "2024-05-11", "macro_score": 0.1},
             data_root=root,
             raw_snapshot_root=raw,
             run_id="invalid",
         )
-    with pytest.raises(MacroMartPromotionError, match="older_generation"):
-        write_macro_mart(
-            _row("2024-05-09"),
-            data_root=root,
-            raw_snapshot_root=raw,
-            run_id="older",
-        )
-    assert pointer.read_bytes() == before
+    older = write_macro_mart(
+        _row("2024-05-09"),
+        data_root=root,
+        raw_snapshot_root=raw,
+        run_id="older",
+    )
+    assert older["production_eligible"] is False
+    assert older["applied"] is False
+    assert tuple(_digest(path) for path in (catalog, table, manifest)) == before
+    frame, loaded = read_macro_mart(data_root=root)
+    assert loaded["generation_id"] == "canonical-good"
+    assert frame.iloc[0]["trade_date"] == "2024-05-10"
 
 
-def test_failure_before_pointer_swap_keeps_readable_last_good(tmp_path, monkeypatch):
-    root = tmp_path / "macro"
+def test_candidate_manifest_failure_keeps_catalog_last_good(tmp_path, monkeypatch):
+    root = tmp_path / "parquet" / "cn" / "macro_daily"
     raw = tmp_path / "raw"
-    first = write_macro_mart(_row(), data_root=root, raw_snapshot_root=raw, run_id="good")
-    pointer = root / "latest_manifest.json"
-    before = pointer.read_bytes()
+    catalog, table, manifest = _bind_catalog_generation(root)
+    before = tuple(_digest(path) for path in (catalog, table, manifest))
     original = macro_mart._atomic_write_bytes
 
-    def _fail_pointer(path, payload, **kwargs):
-        if path.name == "latest_manifest.json":
-            raise OSError("simulated_pointer_failure")
+    def _fail_candidate_manifest(path, payload, **kwargs):
+        if path.name == "manifest.json":
+            raise OSError("simulated_candidate_manifest_failure")
         return original(path, payload, **kwargs)
 
-    monkeypatch.setattr(macro_mart, "_atomic_write_bytes", _fail_pointer)
-    with pytest.raises(OSError, match="simulated_pointer_failure"):
+    monkeypatch.setattr(
+        macro_mart,
+        "_atomic_write_bytes",
+        _fail_candidate_manifest,
+    )
+    with pytest.raises(OSError, match="simulated_candidate_manifest_failure"):
         write_macro_mart(
             _row("2024-05-11"),
             data_root=root,
@@ -97,14 +164,14 @@ def test_failure_before_pointer_swap_keeps_readable_last_good(tmp_path, monkeypa
             run_id="candidate",
         )
 
-    assert pointer.read_bytes() == before
-    frame, manifest = read_macro_mart(data_root=root)
-    assert manifest["generation_id"] == first["generation_id"]
+    assert tuple(_digest(path) for path in (catalog, table, manifest)) == before
+    frame, loaded = read_macro_mart(data_root=root)
+    assert loaded["generation_id"] == "canonical-good"
     assert frame.iloc[0]["trade_date"] == "2024-05-10"
 
 
 def test_unsafe_paths_and_run_ids_are_rejected(tmp_path):
-    with pytest.raises(MacroMartPromotionError, match="run_id_unsafe"):
+    with pytest.raises(MacroMartPromotionError, match="macro_run_id_unsafe"):
         write_macro_mart(
             _row(),
             data_root=tmp_path / "macro",
@@ -115,7 +182,10 @@ def test_unsafe_paths_and_run_ids_are_rejected(tmp_path):
     real.mkdir()
     link = tmp_path / "link"
     link.symlink_to(real, target_is_directory=True)
-    with pytest.raises(MacroMartPromotionError, match="root_symlink"):
+    with pytest.raises(
+        MacroMartPromotionError,
+        match="macro_root_symlink_rejected",
+    ):
         write_macro_mart(
             _row(),
             data_root=link,
@@ -124,71 +194,57 @@ def test_unsafe_paths_and_run_ids_are_rejected(tmp_path):
         )
 
 
-def test_corrupt_v2_pointer_never_falls_back_to_legacy_table(tmp_path):
-    root = tmp_path / "macro"
+def test_same_as_of_candidates_are_isolated_from_catalog(tmp_path):
+    root = tmp_path / "parquet" / "cn" / "macro_daily"
     raw = tmp_path / "raw"
-    write_macro_mart(_row(), data_root=root, raw_snapshot_root=raw, run_id="good")
-    pd.DataFrame([_row()]).to_parquet(root / "part.parquet", index=False)
-    (root / "latest_manifest.json").write_text("{broken", encoding="utf-8")
-
-    with pytest.raises(MacroMartPromotionError, match="pointer_invalid"):
-        read_macro_mart(data_root=root)
-
-    from quant_investor.market.branch_readiness import load_macro_record
-
-    record, manifest = load_macro_record(as_of="20240510", root=root)
-    assert record == {}
-    assert manifest == {}
-
-
-def test_bad_hash_and_symlink_pointer_are_fail_closed(tmp_path):
-    from quant_investor.market.branch_readiness import load_macro_record
-
-    for case in ("bad_hash", "symlink"):
-        root = tmp_path / case / "macro"
-        raw = tmp_path / case / "raw"
-        write_macro_mart(_row(), data_root=root, raw_snapshot_root=raw, run_id="good")
-        pd.DataFrame([_row()]).to_parquet(root / "part.parquet", index=False)
-        pointer = root / "latest_manifest.json"
-        if case == "bad_hash":
-            payload = json.loads(pointer.read_text(encoding="utf-8"))
-            payload["parquet_sha256"] = "0" * 64
-            pointer.write_text(json.dumps(payload), encoding="utf-8")
-            expected = "hash_mismatch"
-        else:
-            external = tmp_path / case / "external.json"
-            external.write_bytes(pointer.read_bytes())
-            pointer.unlink()
-            pointer.symlink_to(external)
-            expected = "pointer_invalid"
-
-        with pytest.raises(MacroMartPromotionError, match=expected):
-            read_macro_mart(data_root=root)
-        record, _ = load_macro_record(as_of="20240510", root=root)
-        assert record == {}
-
-
-def test_same_as_of_is_idempotent_only_for_identical_payload(tmp_path):
-    root = tmp_path / "macro"
-    raw = tmp_path / "raw"
-    first = write_macro_mart(_row(), data_root=root, raw_snapshot_root=raw, run_id="first")
-    pointer = root / "latest_manifest.json"
-    before = pointer.read_bytes()
-
-    second = write_macro_mart(_row(), data_root=root, raw_snapshot_root=raw, run_id="same")
-    assert second["idempotent"] is True
-    assert pointer.read_bytes() == before
-
-    conflicting = dict(_row(), macro_score=-0.4)
-    with pytest.raises(MacroMartPromotionError, match="same_as_of_conflict"):
-        write_macro_mart(conflicting, data_root=root, raw_snapshot_root=raw, run_id="conflict")
-    assert pointer.read_bytes() == before
-    assert json.loads(pointer.read_text(encoding="utf-8"))["generation_id"] == first["generation_id"]
+    catalog, table, manifest = _bind_catalog_generation(root)
+    before = tuple(_digest(path) for path in (catalog, table, manifest))
+    first = write_macro_mart(
+        _row(),
+        data_root=root,
+        raw_snapshot_root=raw,
+        run_id="first",
+    )
+    second = write_macro_mart(
+        _row(),
+        data_root=root,
+        raw_snapshot_root=raw,
+        run_id="same",
+    )
+    conflicting = write_macro_mart(
+        dict(_row(), macro_score=-0.4),
+        data_root=root,
+        raw_snapshot_root=raw,
+        run_id="conflict",
+    )
+    assert {
+        first["generation_id"],
+        second["generation_id"],
+        conflicting["generation_id"],
+    } == {"first", "same", "conflict"}
+    assert all(
+        candidate["production_eligible"] is False
+        and candidate["applied"] is False
+        for candidate in (first, second, conflicting)
+    )
+    assert tuple(_digest(path) for path in (catalog, table, manifest)) == before
+    with pytest.raises(
+        MacroMartPromotionError,
+        match="macro_candidate_generation_exists",
+    ):
+        write_macro_mart(
+            _row(),
+            data_root=root,
+            raw_snapshot_root=raw,
+            run_id="first",
+        )
+    _, loaded = read_macro_mart(data_root=root)
+    assert loaded["generation_id"] == "canonical-good"
 
 
 def test_blank_policy_signal_is_rejected(tmp_path):
     row = dict(_row(), policy_signal="   ")
-    with pytest.raises(MacroMartPromotionError, match="policy_signal_empty"):
+    with pytest.raises(MacroMartPromotionError, match="macro_policy_signal_empty"):
         write_macro_mart(
             row,
             data_root=tmp_path / "macro",
@@ -198,19 +254,15 @@ def test_blank_policy_signal_is_rejected(tmp_path):
 
 
 def test_future_trade_date_cannot_poison_requested_as_of(tmp_path):
-    root = tmp_path / "macro"
+    root = tmp_path / "parquet" / "cn" / "macro_daily"
     raw = tmp_path / "raw"
-    write_macro_mart(
-        _row("2024-05-10"),
-        as_of="2024-05-10",
-        data_root=root,
-        raw_snapshot_root=raw,
-        run_id="good",
-    )
-    pointer = root / "latest_manifest.json"
-    before = pointer.read_bytes()
+    catalog, table, manifest = _bind_catalog_generation(root)
+    before = tuple(_digest(path) for path in (catalog, table, manifest))
 
-    with pytest.raises(MacroMartPromotionError, match="trade_date_as_of_mismatch"):
+    with pytest.raises(
+        MacroMartPromotionError,
+        match="macro_trade_date_as_of_mismatch",
+    ):
         write_macro_mart(
             _row("2099-01-01"),
             as_of="2024-05-11",
@@ -218,26 +270,6 @@ def test_future_trade_date_cannot_poison_requested_as_of(tmp_path):
             raw_snapshot_root=raw,
             run_id="future-poison",
         )
-    assert pointer.read_bytes() == before
-
-
-def test_hashless_v2_like_pointer_cannot_use_legacy_fallback(tmp_path):
-    from quant_investor.market.branch_readiness import load_macro_record
-
-    root = tmp_path / "macro"
-    root.mkdir()
-    pd.DataFrame([_row()]).to_parquet(root / "part.parquet", index=False)
-    (root / "latest_manifest.json").write_text(
-        json.dumps(
-            {
-                "schema_version": "cn-macro-mart.v2",
-                "generation_id": "incomplete",
-                "table_path": "part.parquet",
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    record, _ = load_macro_record(as_of="20240510", root=root)
-
-    assert record == {}
+    assert tuple(_digest(path) for path in (catalog, table, manifest)) == before
+    _, loaded = read_macro_mart(data_root=root)
+    assert loaded["generation_id"] == "canonical-good"

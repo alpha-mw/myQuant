@@ -3,7 +3,78 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from typing import Any
+
+from quant_investor.artifact_validation import (
+    require_finite_structure,
+    validate_posterior_numeric_fields,
+)
+from quant_investor.versioning import LIKELIHOOD_SCHEMA_VERSION
+
+
+def _require_probability(value: float, field_name: str) -> float:
+    probability = float(value)
+    if not math.isfinite(probability):
+        raise ValueError(f"{field_name} must be finite; got {value!r}.")
+    if not 0.0 <= probability <= 1.0:
+        raise ValueError(f"{field_name} must be in [0, 1]; got {value!r}.")
+    return probability
+
+
+def _require_finite_metadata(metadata: dict[str, Any]) -> None:
+    numeric_fields = (
+        "history_confidence",
+        "avg_reliability",
+        "recall_bias",
+        "momentum_strength",
+        "fake_breakout_penalty",
+        "crowding_penalty",
+        "market_pressure",
+    )
+    for field_name in numeric_fields:
+        if field_name not in metadata:
+            continue
+        value = float(metadata[field_name])
+        if not math.isfinite(value):
+            raise ValueError(f"Likelihood metadata {field_name} must be finite.")
+    branch_weights = metadata.get("branch_weights", {})
+    if branch_weights and not isinstance(branch_weights, dict):
+        raise ValueError("Likelihood metadata branch_weights must be a mapping.")
+    unexpected_weight_branches = sorted(
+        set(dict(branch_weights or {})) - {"quant", "fundamental"}
+    )
+    if unexpected_weight_branches:
+        raise ValueError(
+            "Likelihood metadata has unexpected branch weights: "
+            + ", ".join(unexpected_weight_branches)
+        )
+    for branch_name, raw_weight in dict(branch_weights or {}).items():
+        weight = float(raw_weight)
+        if not math.isfinite(weight) or weight < 0.0:
+            raise ValueError(
+                f"Likelihood metadata branch weight must be finite and non-negative: "
+                f"{branch_name}={raw_weight!r}."
+            )
+    calibration_samples = metadata.get("calibration_samples", {})
+    if calibration_samples and not isinstance(calibration_samples, dict):
+        raise ValueError("Likelihood metadata calibration_samples must be a mapping.")
+    unexpected_sample_branches = sorted(
+        set(dict(calibration_samples or {})) - {"quant", "fundamental"}
+    )
+    if unexpected_sample_branches:
+        raise ValueError(
+            "Likelihood metadata has unexpected calibration branches: "
+            + ", ".join(unexpected_sample_branches)
+        )
+
+
+def _require_empty_correlation_matrix(value: dict[str, float]) -> None:
+    if value:
+        raise ValueError(
+            "v14 likelihood correlation_matrix must be empty; "
+            "cross-likelihood correlation is not enabled."
+        )
 
 
 @dataclass
@@ -18,7 +89,22 @@ class PriorSet:
     composite_prior: float = 0.50
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def validate(self) -> None:
+        for field_name in (
+            "market_prior",
+            "regime_prior",
+            "sector_prior",
+            "tradability_prior",
+            "data_quality_prior",
+            "composite_prior",
+        ):
+            setattr(self, field_name, _require_probability(getattr(self, field_name), field_name))
+
+    def __post_init__(self) -> None:
+        self.validate()
+
     def to_dict(self) -> dict[str, Any]:
+        self.validate()
         return {
             "market_prior": self.market_prior,
             "regime_prior": self.regime_prior,
@@ -33,41 +119,63 @@ class PriorSet:
 class LikelihoodSet:
     """Per-signal-family likelihood values for a single symbol."""
 
+    schema_version: str = LIKELIHOOD_SCHEMA_VERSION
     quant_likelihood: float = 0.50
     fundamental_likelihood: float = 0.50
-    intelligence_likelihood: float = 0.50
     correlation_matrix: dict[str, float] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __init__(
         self,
         *,
+        schema_version: str = LIKELIHOOD_SCHEMA_VERSION,
         quant_likelihood: float = 0.50,
         fundamental_likelihood: float = 0.50,
-        intelligence_likelihood: float = 0.50,
         correlation_matrix: dict[str, float] | None = None,
         metadata: dict[str, Any] | None = None,
-        kline_likelihood: float | None = None,
     ) -> None:
-        self.quant_likelihood = float(quant_likelihood)
-        self.fundamental_likelihood = float(fundamental_likelihood)
-        self.intelligence_likelihood = float(intelligence_likelihood)
-        self.correlation_matrix = dict(correlation_matrix or {})
+        if str(schema_version) != LIKELIHOOD_SCHEMA_VERSION:
+            raise ValueError(
+                "Likelihood schema mismatch: "
+                f"expected {LIKELIHOOD_SCHEMA_VERSION!r}, got {schema_version!r}."
+            )
+        self.schema_version = LIKELIHOOD_SCHEMA_VERSION
+        self.quant_likelihood = _require_probability(
+            quant_likelihood,
+            "quant_likelihood",
+        )
+        self.fundamental_likelihood = _require_probability(
+            fundamental_likelihood,
+            "fundamental_likelihood",
+        )
+        resolved_correlation_matrix = dict(correlation_matrix or {})
+        _require_empty_correlation_matrix(resolved_correlation_matrix)
+        self.correlation_matrix = resolved_correlation_matrix
         self.metadata = dict(metadata or {})
-        if kline_likelihood is not None:
-            self.metadata.setdefault("ignored_legacy_kline_likelihood", float(kline_likelihood))
 
-    @property
-    def kline_likelihood(self) -> float:
-        """Compatibility shim for legacy payloads; not part of v13 likelihoods."""
-
-        return 0.50
+    def validate(self) -> None:
+        if self.schema_version != LIKELIHOOD_SCHEMA_VERSION:
+            raise ValueError(
+                "Likelihood schema mismatch: expected "
+                f"{LIKELIHOOD_SCHEMA_VERSION!r}, got {self.schema_version!r}."
+            )
+        self.quant_likelihood = _require_probability(
+            self.quant_likelihood,
+            "quant_likelihood",
+        )
+        self.fundamental_likelihood = _require_probability(
+            self.fundamental_likelihood,
+            "fundamental_likelihood",
+        )
+        _require_empty_correlation_matrix(self.correlation_matrix)
+        _require_finite_metadata(self.metadata)
 
     def to_dict(self) -> dict[str, Any]:
+        self.validate()
         return {
+            "schema_version": self.schema_version,
             "quant_likelihood": self.quant_likelihood,
             "fundamental_likelihood": self.fundamental_likelihood,
-            "intelligence_likelihood": self.intelligence_likelihood,
             "correlation_matrix": dict(self.correlation_matrix),
         }
 
@@ -75,7 +183,6 @@ class LikelihoodSet:
         return [
             ("quant", self.quant_likelihood),
             ("fundamental", self.fundamental_likelihood),
-            ("intelligence", self.intelligence_likelihood),
         ]
 
 
@@ -105,7 +212,28 @@ class PosteriorResult:
     action_threshold_used: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def validate(self) -> None:
+        self.prior.validate()
+        self.likelihoods.validate()
+        self.raw_posterior = _require_probability(self.raw_posterior, "raw_posterior")
+        self.correlation_discounted_posterior = _require_probability(
+            self.correlation_discounted_posterior,
+            "correlation_discounted_posterior",
+        )
+        validate_posterior_numeric_fields(self)
+        unexpected_sources = sorted(set(self.evidence_sources) - {"quant", "fundamental"})
+        if unexpected_sources:
+            raise ValueError(
+                "PosteriorResult has unexpected evidence sources: "
+                + ", ".join(unexpected_sources)
+            )
+        require_finite_structure(self.metadata, path="PosteriorResult.metadata")
+
+    def __post_init__(self) -> None:
+        self.validate()
+
     def to_dict(self) -> dict[str, Any]:
+        self.validate()
         return {
             "symbol": self.symbol,
             "company_name": self.company_name,

@@ -4,8 +4,18 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
+from quant_investor.market.full_report import MarketArtifactContractError
 from quant_investor.market.legacy_synthesis import (
     synthesize_legacy_analysis_results_from_dag,
+)
+from quant_investor.versioning import (
+    ARCHITECTURE_VERSION,
+    BRANCH_SCHEMA_VERSION,
+    IC_PROTOCOL_VERSION,
+    LIKELIHOOD_SCHEMA_VERSION,
+    REPORT_PROTOCOL_VERSION,
 )
 
 
@@ -14,7 +24,27 @@ class _Payload(SimpleNamespace):
         return dict(self.__dict__)
 
 
-def test_synthesize_legacy_results_filters_retired_branches():
+def _current_report_bundle(**overrides):
+    payload = {
+        "architecture_version": ARCHITECTURE_VERSION,
+        "branch_schema_version": BRANCH_SCHEMA_VERSION,
+        "likelihood_schema_version": LIKELIHOOD_SCHEMA_VERSION,
+        "ic_protocol_version": IC_PROTOCOL_VERSION,
+        "report_protocol_version": REPORT_PROTOCOL_VERSION,
+    }
+    payload.update(overrides)
+    return _Payload(**payload)
+
+
+def _branch_summaries():
+    return {
+        "quant": {"score": 0.4, "confidence": 0.8},
+        "fundamental": {"score": 0.2, "confidence": 0.7},
+        "macro": {"score": 0.0, "confidence": 0.5},
+    }
+
+
+def _dag_artifacts():
     packet = _Payload(
         symbol="000001.SZ",
         company_name="平安银行",
@@ -22,18 +52,18 @@ def test_synthesize_legacy_results_filters_retired_branches():
         branch_scores={
             "quant": 0.4,
             "fundamental": 0.2,
-            "intelligence": 0.1,
             "macro": 0.0,
-            "kline": 0.9,
         },
         branch_confidences={
             "quant": 0.8,
             "fundamental": 0.7,
-            "intelligence": 0.6,
             "macro": 0.5,
-            "kline": 0.9,
         },
-        branch_theses={"quant": "量化正向", "kline": "retired"},
+        branch_theses={
+            "quant": "量化正向",
+            "fundamental": "基本面正向",
+            "macro": "宏观中性",
+        },
         metadata={"latest_close": 10.0},
         diagnostic_notes=[],
         risk_flags=[],
@@ -55,14 +85,12 @@ def test_synthesize_legacy_results_filters_retired_branches():
         metadata={"style_bias": "均衡"},
         risk_constraints={"risk_decision": {"hard_veto": False}},
     )
-    dag_artifacts = {
+    return {
         "symbol_research_packets": {"000001.SZ": packet},
         "shortlist": [shortlist_item],
         "portfolio_decision": portfolio_decision,
-        "branch_summaries": {
-            "quant": {"score": 0.4, "confidence": 0.8},
-            "kline": {"score": 0.9, "confidence": 0.9},
-        },
+        "branch_summaries": _branch_summaries(),
+        "report_bundle": _current_report_bundle(),
         "execution_trace": _Payload(steps=[]),
         "data_quality_issues": [],
         "global_context": _Payload(
@@ -70,6 +98,10 @@ def test_synthesize_legacy_results_filters_retired_branches():
         ),
         "data_snapshot": {"market": "CN"},
     }
+
+
+def test_synthesize_legacy_results_emits_current_three_branch_contract():
+    dag_artifacts = _dag_artifacts()
 
     results = synthesize_legacy_analysis_results_from_dag(
         dag_artifacts=dag_artifacts,
@@ -81,8 +113,46 @@ def test_synthesize_legacy_results_filters_retired_branches():
 
     batch = results["hs300"][0]
     recommendation = batch["recommendations"][0]
-    assert set(batch["branches"]) == {"quant"}
+    assert list(batch["branches"]) == ["quant", "fundamental", "macro"]
+    assert batch["architecture_version"] == ARCHITECTURE_VERSION
+    assert batch["analysis_meta"]["likelihood_schema_version"] == (
+        LIKELIHOOD_SCHEMA_VERSION
+    )
+    assert batch["analysis_meta"]["ic_protocol_version"] == IC_PROTOCOL_VERSION
     assert recommendation["symbol"] == "000001.SZ"
     assert recommendation["company_name"] == "平安银行"
     assert recommendation["portfolio_amount"] == 120_000
-    assert recommendation["branch_positive_count"] == 3
+    assert recommendation["branch_positive_count"] == 2
+
+
+def test_synthesis_rejects_retired_branch_instead_of_filtering_it():
+    dag_artifacts = _dag_artifacts()
+    dag_artifacts["branch_summaries"]["intelligence"] = {
+        "score": 0.9,
+        "confidence": 0.9,
+    }
+
+    with pytest.raises(MarketArtifactContractError, match="intelligence"):
+        synthesize_legacy_analysis_results_from_dag(
+            dag_artifacts=dag_artifacts,
+            market="CN",
+            universe="hs300",
+            categories=["hs300"],
+            total_capital=1_000_000,
+        )
+
+
+def test_synthesis_rejects_stale_report_bundle():
+    dag_artifacts = _dag_artifacts()
+    dag_artifacts["report_bundle"] = _current_report_bundle(
+        report_protocol_version="report-protocol.v13.four-branch"
+    )
+
+    with pytest.raises(MarketArtifactContractError, match="report_protocol_version"):
+        synthesize_legacy_analysis_results_from_dag(
+            dag_artifacts=dag_artifacts,
+            market="CN",
+            universe="hs300",
+            categories=["hs300"],
+            total_capital=1_000_000,
+        )

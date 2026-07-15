@@ -6,13 +6,13 @@
 
 治理层目标链路固定为：
 
-`snapshot -> DeterministicFunnel -> four branches -> Bayesian -> RiskGuard -> ICCoordinator -> PortfolioConstructor -> NarratorAgent`
+`snapshot -> DeterministicFunnel -> three branches -> Bayesian -> RiskGuard -> ICCoordinator -> PortfolioConstructor -> NarratorAgent`
 
 含义：
 
 - snapshot 负责披露本地数据来源、最新交易日和 strict Parquet 健康状态。
 - `DeterministicFunnel` 负责 quant-only 初筛和 candidate set 收敛。
-- four branches 只包含 `quant`、`fundamental`、`intelligence`、`macro`。
+- three branches 严格只包含 `quant`、`fundamental`、`macro`。
 - Bayesian selection 负责把分支证据映射为 posterior shortlist。
 - `RiskGuard` 负责硬约束、hard veto、exposure cap 和 symbol-level limit。
 - `ICCoordinator` 负责共识、分歧和结构化动作建议。
@@ -45,10 +45,27 @@
 
 - `quant`
 - `fundamental`
-- `intelligence`
 - `macro`
 
-`kline`、Kronos/Chronos 和 legacy batch pipeline 不属于 v13 canonical branch set；旧 payload 中的未知分支只能被过滤或作为历史兼容读取，不能重新进入 runtime branch set。
+`kline`、Kronos/Chronos 与 `llm_debate` 仍是 Web 分析的辅助配置面，但不计入 v14 canonical DAG 证据分支。现有 `branches.kline`、`branches.kronos`（归一到 `kline`）和 `branches.llm_debate` 请求继续受支持；已退役的 `intelligence` branch 与 `enable_intelligence` 字段会被严格拒绝且不会出现在响应中。
+
+三个 canonical 分支在 Web/API 运行中始终执行，不提供 `enable_quant`、`enable_fundamental`、`enable_macro` 或对应 `branches.*.enabled` 开关；出现这些字段时请求会失败，而不是静默忽略。
+
+Bayesian likelihood 证据仅包含 `quant` 与 `fundamental`（`x/2`）；`macro` 只作为 prior/context。
+
+Fundamental 只有在 canonical generation pointer 验证通过、branch readiness 为
+`pass`/`warn`、generation 与逐行 lineage 均绑定 `tushare_primary` 时才可进入
+likelihood。任一 generation、来源、PIT 或 readiness 证据缺失/冲突时，分支仍可
+输出诊断，但该标的的 Fundamental likelihood 必须严格中性化为 `0.50`。
+公开 `publish_fundamental_generation()` 只能发布非 primary generation；
+`tushare_primary` 必须由 live maintenance 内部能力签发，并同时绑定 provider
+manifest、六张 raw table 与三张 generation output table，不能由调用方 metadata
+或行字段自报获得。该证明以 `cn-fundamental-primary-provenance.v1` envelope
+持久化到 generation manifest 与 pointer；缺少该 envelope 的旧 primary generation
+可作为历史文件保留，但读取会 fail closed，不能确认 generation 或贡献 likelihood。
+增量 primary generation 若保留旧行，父 generation 也必须通过同一 durable
+provenance 校验，并把父 generation ID 与 envelope hash 绑定到新 generation；
+离线或旧格式父数据不能借一次 live partial refresh 被整体升级为 primary。
 
 ## Structured Control Contracts
 

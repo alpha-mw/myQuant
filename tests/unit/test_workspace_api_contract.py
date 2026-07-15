@@ -63,11 +63,7 @@ def _make_payload(**overrides):
         "risk_level": "中等",
         "lookback_years": 1,
         "kline_backend": "hybrid",
-        "enable_macro": True,
-        "enable_quant": True,
         "enable_kline": True,
-        "enable_fundamental": True,
-        "enable_intelligence": True,
         "enable_agent_layer": True,
         "review_model_priority": [],
         "agent_timeout": 15,
@@ -86,6 +82,44 @@ def test_research_run_request_schema_exposes_explicit_role_model_fields():
     assert "master_model" in properties
     assert "master_fallback_model" in properties
     assert "review_model_priority" in properties
+    assert "enable_intelligence" not in properties
+    assert "enable_quant" not in properties
+    assert "enable_fundamental" not in properties
+    assert "enable_macro" not in properties
+
+
+def test_research_run_request_rejects_removed_intelligence_field():
+    with pytest.raises(ValueError, match="enable_intelligence"):
+        ResearchRunRequest.model_validate(
+            {
+                "stock_pool": ["000001.SZ"],
+                "enable_intelligence": True,
+            }
+        )
+
+
+def test_research_run_request_recursively_rejects_intelligence_named_keys():
+    with pytest.raises(ValueError, match="INTELLIGENCE_WEIGHT"):
+        ResearchRunRequest.model_validate(
+            {
+                "stock_pool": ["000001.SZ"],
+                "metadata": {"nested": [{"INTELLIGENCE_WEIGHT": 0.2}]},
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "removed_switch",
+    ["enable_quant", "enable_fundamental", "enable_macro"],
+)
+def test_research_run_request_rejects_canonical_branch_switches(removed_switch):
+    with pytest.raises(ValueError, match=removed_switch):
+        ResearchRunRequest.model_validate(
+            {
+                "stock_pool": ["000001.SZ"],
+                removed_switch: False,
+            }
+        )
 
 
 def test_research_run_request_defaults_leave_role_overrides_blank():
@@ -632,7 +666,7 @@ def test_recall_context_regression_deterministic_chain(workspace_client: TestCli
 
     # Instantiation without recall_context should work (default empty)
     branch_input = BaseBranchAgentInput(
-        branch_name="test",
+        branch_name="quant",
         base_score=0.1,
         final_score=0.1,
         confidence=0.5,
@@ -644,7 +678,7 @@ def test_recall_context_regression_deterministic_chain(workspace_client: TestCli
 
     # Instantiation with recall_context should also work
     branch_with_ctx = BaseBranchAgentInput(
-        branch_name="test",
+        branch_name="quant",
         base_score=0.1,
         final_score=0.1,
         confidence=0.5,

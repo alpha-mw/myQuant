@@ -9,6 +9,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, time
 from typing import Any, Mapping
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -32,6 +33,35 @@ OFFICIAL_SOURCE_SYSTEMS = frozenset(
     }
 )
 TUSHARE_SOURCE_SYSTEMS = frozenset({"tushare", "tushare_fallback", "tushare_primary"})
+SUPPORTED_SOURCE_SYSTEMS = OFFICIAL_SOURCE_SYSTEMS | TUSHARE_SOURCE_SYSTEMS
+_SOURCE_HOSTS = {
+    "nbs_official": ("stats.gov.cn",),
+    "stats.gov.cn": ("stats.gov.cn",),
+    "pbc_official": ("pbc.gov.cn",),
+    "pboc_official": ("pbc.gov.cn",),
+    "pbc.gov.cn": ("pbc.gov.cn",),
+    "customs_official": ("customs.gov.cn",),
+    "customs.gov.cn": ("customs.gov.cn",),
+    "mof_official": ("mof.gov.cn",),
+    "mof.gov.cn": ("mof.gov.cn",),
+    "ndrc_official": ("ndrc.gov.cn",),
+    "ndrc.gov.cn": ("ndrc.gov.cn",),
+    "tushare": ("tushare.pro",),
+    "tushare_fallback": ("tushare.pro",),
+    "tushare_primary": ("tushare.pro",),
+}
+_SENSITIVE_QUERY_KEYS = frozenset(
+    {
+        "access_token",
+        "api_key",
+        "apikey",
+        "auth",
+        "authorization",
+        "password",
+        "secret",
+        "token",
+    }
+)
 
 
 def is_official_source(value: Any) -> bool:
@@ -40,6 +70,41 @@ def is_official_source(value: Any) -> bool:
 
 def is_tushare_source(value: Any) -> bool:
     return str(value or "").strip().lower() in TUSHARE_SOURCE_SYSTEMS
+
+
+def normalize_source_url(value: Any, *, source_system: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("source_url_missing")
+    try:
+        parsed = urlsplit(text)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("source_url_invalid") from exc
+    if parsed.scheme.lower() != "https":
+        raise ValueError("source_url_https_required")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("source_url_userinfo_rejected")
+    if port not in {None, 443}:
+        raise ValueError("source_url_port_rejected")
+    hostname = str(parsed.hostname or "").lower().rstrip(".")
+    if not hostname:
+        raise ValueError("source_url_host_missing")
+    system = str(source_system or "").strip().lower()
+    allowed_hosts = _SOURCE_HOSTS.get(system, ())
+    if not any(
+        hostname == allowed or hostname.endswith(f".{allowed}")
+        for allowed in allowed_hosts
+    ):
+        raise ValueError("source_url_issuer_mismatch")
+    query_items = parse_qsl(parsed.query, keep_blank_values=True)
+    if any(key.strip().lower() in _SENSITIVE_QUERY_KEYS for key, _ in query_items):
+        raise ValueError("source_url_sensitive_query_rejected")
+    if parsed.fragment:
+        raise ValueError("source_url_fragment_rejected")
+    normalized_query = urlencode(sorted(query_items), doseq=True)
+    path = parsed.path or "/"
+    return urlunsplit(("https", hostname, path, normalized_query, ""))
 
 
 def canonical_json(payload: Mapping[str, Any]) -> str:
@@ -114,6 +179,11 @@ class MacroObservation:
             if period_text.isdigit() and len(period_text) == 8
             else date.fromisoformat(period_text).isoformat()
         )
+        source_system = str(payload.get("source_system") or "").strip().lower()
+        source_url = normalize_source_url(
+            payload.get("source_url"),
+            source_system=source_system,
+        )
         return {
             "indicator_id": str(payload.get("indicator_id") or "").strip(),
             "dimension_type": str(payload.get("dimension_type") or "national").strip().lower(),
@@ -125,8 +195,9 @@ class MacroObservation:
             "value": float(payload.get("value")),
             "unit": str(payload.get("unit") or "").strip(),
             "frequency": str(payload.get("frequency") or "monthly").strip().lower(),
-            "source_system": str(payload.get("source_system") or "").strip(),
+            "source_system": source_system,
             "source_record_id": str(payload.get("source_record_id") or "").strip(),
+            "source_url": source_url,
             "quality_status": str(payload.get("quality_status") or "pass").strip().lower(),
         }
 
@@ -160,7 +231,7 @@ class MacroObservation:
         vintage_id = str(payload.get("vintage_id") or "initial").strip()
         unit = str(payload.get("unit") or "").strip()
         frequency = str(payload.get("frequency") or "monthly").strip().lower()
-        source_system = str(payload.get("source_system") or "").strip()
+        source_system = str(payload.get("source_system") or "").strip().lower()
         quality_status = str(payload.get("quality_status") or "pass").strip().lower()
         if not vintage_id:
             raise ValueError("vintage_id_missing")
@@ -170,6 +241,8 @@ class MacroObservation:
             raise ValueError("frequency_unsupported")
         if not source_system:
             raise ValueError("source_system_missing")
+        if source_system not in SUPPORTED_SOURCE_SYSTEMS:
+            raise ValueError("source_system_unsupported")
         if quality_status not in SUPPORTED_QUALITY_STATUSES:
             raise ValueError("quality_status_unsupported")
         industry_chain = str(payload.get("industry_chain") or "").strip()
@@ -188,6 +261,15 @@ class MacroObservation:
             raise ValueError("indicator_frequency_mismatch")
         if definition.unit and definition.unit != unit:
             raise ValueError("indicator_unit_mismatch")
+        source_record_id = str(payload.get("source_record_id") or "").strip()
+        if not source_record_id:
+            raise ValueError("source_record_id_missing")
+        if any(ord(character) < 32 for character in source_record_id):
+            raise ValueError("source_record_id_invalid")
+        source_url = normalize_source_url(
+            payload.get("source_url"),
+            source_system=source_system,
+        )
         content_hash = str(payload.get("content_hash") or "").strip()
         if content_hash and not _SHA256_RE.fullmatch(content_hash.lower()):
             raise ValueError("content_hash_invalid")
@@ -208,8 +290,8 @@ class MacroObservation:
             unit=unit,
             frequency=frequency,
             source_system=source_system,
-            source_record_id=str(payload.get("source_record_id") or "").strip(),
-            source_url=str(payload.get("source_url") or "").strip(),
+            source_record_id=source_record_id,
+            source_url=source_url,
             fetched_at=fetched_at.isoformat(),
             content_hash=content_hash,
             quality_status=quality_status,

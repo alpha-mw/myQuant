@@ -29,9 +29,12 @@ MAINLINE_ENV_DEFAULTS: dict[str, str] = {
     "MACRO_V2_PRODUCTION_ENABLED": "0",
     "MACRO_V2_PRODUCTION_KILL_SWITCH": "1",
     "MACRO_V2_OBSERVATIONS_PATH": "data/parquet/cn/macro_observations",
-    "MACRO_V2_OBSERVER_OUTPUT_DIR": "results/macro_observer",
+    "MACRO_V2_OBSERVER_OUTPUT_DIR": "results/v14/macro_observer",
     "MYQUANT_LLM_HANDOFF": "codex",
     "MYQUANT_DISABLE_LOCAL_LLM": "true",
+    "QUANT_PRODUCTION_KILL_SWITCH": "true",
+    "QUANT_PRODUCTION_ACTIVATION_RECEIPT": "",
+    "QUANT_PRODUCTION_ACTIVATION_RECEIPT_SHA256": "",
     "THEME_SCANNER_ENABLED": "1",
     "THEME_MIN_MEMBER_COUNT": "5",
     "THEME_TOP_N": "20",
@@ -149,6 +152,7 @@ MAINLINE_ENV_KEYS: tuple[str, ...] = tuple(MAINLINE_ENV_DEFAULTS)
 
 load_env_file()
 
+
 def _env_float(name: str, default: float) -> float:
     try:
         return float(os.environ.get(name, str(default)))
@@ -214,7 +218,19 @@ class Config:
 
     MAINLINE_ENV_DEFAULTS: dict[str, str] = MAINLINE_ENV_DEFAULTS
     MAINLINE_ENV_KEYS: tuple[str, ...] = MAINLINE_ENV_KEYS
-    
+    QUANT_PRODUCTION_KILL_SWITCH: str = _env_str(
+        'QUANT_PRODUCTION_KILL_SWITCH',
+        MAINLINE_ENV_DEFAULTS['QUANT_PRODUCTION_KILL_SWITCH'],
+    )
+    QUANT_PRODUCTION_ACTIVATION_RECEIPT: str = _env_str(
+        'QUANT_PRODUCTION_ACTIVATION_RECEIPT',
+        MAINLINE_ENV_DEFAULTS['QUANT_PRODUCTION_ACTIVATION_RECEIPT'],
+    )
+    QUANT_PRODUCTION_ACTIVATION_RECEIPT_SHA256: str = _env_str(
+        'QUANT_PRODUCTION_ACTIVATION_RECEIPT_SHA256',
+        MAINLINE_ENV_DEFAULTS['QUANT_PRODUCTION_ACTIVATION_RECEIPT_SHA256'],
+    )
+
     # Tushare配置
     TUSHARE_TOKEN: str = get_secret('TUSHARE_TOKEN')
     TUSHARE_URL: str = _env_str(
@@ -304,7 +320,7 @@ class Config:
     DASHSCOPE_API_KEY: str = get_secret('DASHSCOPE_API_KEY')
     FRED_API_KEY: str = get_secret('FRED_API_KEY')
     FINNHUB_API_KEY: str = get_secret('FINNHUB_API_KEY')
-    
+
     # 数据库配置
     DB_PATH: str = os.environ.get('DB_PATH', 'data/stock_database.db')
     DATA_DIR: str = os.environ.get('DATA_DIR', 'data')
@@ -512,12 +528,12 @@ class Config:
 
     # 日志配置
     LOG_LEVEL: str = os.environ.get('LOG_LEVEL', 'INFO')
-    
+
     # Redis配置
     REDIS_HOST: str = os.environ.get('REDIS_HOST', 'localhost')
     REDIS_PORT: int = int(os.environ.get('REDIS_PORT', '6379'))
     REDIS_DB: int = int(os.environ.get('REDIS_DB', '0'))
-    
+
     # 回测配置
     INITIAL_CASH: float = float(os.environ.get('INITIAL_CASH', '1000000'))
     COMMISSION_RATE: float = float(os.environ.get('COMMISSION_RATE', '0.0003'))
@@ -528,10 +544,10 @@ class Config:
     def validate(cls) -> list:
         """验证配置是否完整"""
         errors = []
-        
+
         if not cls.TUSHARE_TOKEN:
             errors.append("TUSHARE_TOKEN 未设置")
-        
+
         return errors
 
 

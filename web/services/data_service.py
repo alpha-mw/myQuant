@@ -600,32 +600,10 @@ def _ensure_metadata_for_codes(items: list[dict[str, Any]]) -> dict[str, dict[st
 
 @lru_cache(maxsize=1)
 def _local_metadata_cache() -> dict[str, dict[str, str]]:
-    metadata = {code: dict(values) for code, values in _CURATED_STOCK_METADATA.items()}
-    recommendation_globs = [
-        RESULTS_DIR / "cn_analysis" / "最新交易建议_*.json",
-        RESULTS_DIR / "cn_analysis_full" / "交易建议数据_*.json",
-    ]
-
-    for pattern in recommendation_globs:
-        for path in pattern.parent.glob(pattern.name):
-            payload = _load_json(path)
-            if not isinstance(payload, list):
-                continue
-            for item in payload:
-                if not isinstance(item, dict):
-                    continue
-                ts_code = str(item.get("ts_code", "")).strip().upper()
-                if not ts_code:
-                    continue
-                entry = metadata.setdefault(ts_code, {})
-                if item.get("name"):
-                    entry.setdefault("name", str(item["name"]))
-                if item.get("industry"):
-                    entry.setdefault("industry", str(item["industry"]))
-                if item.get("category"):
-                    entry.setdefault("category", str(item["category"]))
-
-    return metadata
+    return {
+        code: dict(values)
+        for code, values in _CURATED_STOCK_METADATA.items()
+    }
 
 
 def _guess_market(ts_code: str) -> str:

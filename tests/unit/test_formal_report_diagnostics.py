@@ -283,31 +283,6 @@ def test_collect_warnings_distinguishes_provider_and_snapshot_missing():
     assert any(item.affected_symbol == "BBB.SH" for item in snapshot)
 
 
-def test_collect_warnings_for_retired_intelligence_signal():
-    warnings = collect_formal_report_warnings(
-        target_date="20260424",
-        dominant_local_snapshot_date="20260424",
-        holdings_review=[
-            {"symbol": "AAA.SH", "llm_confidence": 0.4, "llm_effective_calls": 1, "llm_confidence_source": "x"},
-        ],
-        branch_diagnostics={
-            "AAA.SH": {
-                "reviewed_branch_verdicts": {
-                    "intelligence": {
-                        "metadata": {"branch_mode": "structured_intelligence_fusion"},
-                        "coverage_notes": ["legacy batch retired"],
-                    },
-                }
-            }
-        },
-        review_layer_diagnostics={"effective_call_count": 1},
-    )
-
-    codes = [item.code for item in warnings]
-    assert "retired_signal_suppressed" in codes
-    assert "provider_missing" not in codes
-
-
 def test_reconcile_branch_vs_final_requires_arbitration_on_structured_conflict():
     branch_vs_final, note = reconcile_branch_vs_final(
         symbol="AAA.SH",

@@ -18,6 +18,7 @@ from quant_investor.agent_protocol import (
     WhatIfPlan,
 )
 from quant_investor.branch_contracts import BranchResult
+from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
 from quant_investor.llm_gateway import current_usage_session_id, record_fallback_event, record_usage
 from quant_investor.market.dag_executor import _run_async_coroutine_safely
 from quant_investor.pipeline.mainline import QuantInvestor
@@ -152,6 +153,8 @@ def _fake_dag_artifacts() -> dict[str, object]:
         "portfolio_master_output": SimpleNamespace(final_score=0.7, confidence=0.8),
         "portfolio_master_meta": {"confidence": 0.8},
         "branch_results": {
+            "quant": BranchResult(branch_name="quant"),
+            "fundamental": BranchResult(branch_name="fundamental"),
             "macro": BranchResult(
                 branch_name="macro",
                 final_score=0.2,
@@ -175,6 +178,14 @@ def test_quant_investor_run_uses_market_dag_not_legacy_research_core(monkeypatch
         raise AssertionError("legacy research core should not run")
 
     monkeypatch.setattr(mainline_module, "_execute_market_dag", _fake_execute_market_dag, raising=False)
+    monkeypatch.setattr(
+        mainline_module,
+        "build_market_data_snapshot",
+        lambda **_kwargs: {
+            "missing_requested_symbols": [],
+            "unreadable_requested_symbols": [],
+        },
+    )
 
     investor = QuantInvestor(
         stock_pool=["000001.SZ"],
@@ -194,13 +205,29 @@ def test_quant_investor_run_uses_market_dag_not_legacy_research_core(monkeypatch
     assert result.master_review_output is not None
 
 
-def test_async_runner_preserves_llm_usage_session_in_thread_path():
-    async def _inner() -> str | None:
-        return current_usage_session_id()
-
-    async def _outer() -> str | None:
-        return _run_async_coroutine_safely(_inner)
-
+@pytest.mark.parametrize("missing_branch", CANONICAL_BRANCH_ORDER)
+def test_mainline_result_builder_rejects_missing_bayesian_branch(
+    monkeypatch,
+    missing_branch: str,
+) -> None:
+    dag_artifacts = _fake_dag_artifacts()
+    branch_results = dict(dag_artifacts["branch_results"])
+    branch_results.pop(missing_branch)
+    dag_artifacts["branch_results"] = branch_results
+    monkeypatch.setattr(
+        mainline_module,
+        "_execute_market_dag",
+        lambda **_kwargs: dag_artifacts,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        mainline_module,
+        "build_market_data_snapshot",
+        lambda **_kwargs: {
+            "missing_requested_symbols": [],
+            "unreadable_requested_symbols": [],
+        },
+    )
     investor = QuantInvestor(
         stock_pool=["000001.SZ"],
         market="CN",
@@ -208,6 +235,21 @@ def test_async_runner_preserves_llm_usage_session_in_thread_path():
         enable_agent_layer=True,
         verbose=False,
     )
+
+    with pytest.raises(
+        ValueError,
+        match=rf"bayesian branch_results.*missing branches: {missing_branch}",
+    ):
+        investor.run()
+
+
+def test_async_runner_preserves_llm_usage_session_in_thread_path():
+    async def _inner() -> str | None:
+        return current_usage_session_id()
+
+    async def _outer() -> str | None:
+        return _run_async_coroutine_safely(_inner)
+
     session = mainline_module.start_usage_session(label="thread-path-session")
     try:
         observed = asyncio.run(_outer())
@@ -244,6 +286,14 @@ def test_quant_investor_run_exposes_attempt_and_effective_llm_usage(monkeypatch)
         return _fake_dag_artifacts()
 
     monkeypatch.setattr(mainline_module, "_execute_market_dag", _fake_execute_market_dag, raising=False)
+    monkeypatch.setattr(
+        mainline_module,
+        "build_market_data_snapshot",
+        lambda **_kwargs: {
+            "missing_requested_symbols": [],
+            "unreadable_requested_symbols": [],
+        },
+    )
 
     investor = QuantInvestor(
         stock_pool=["000001.SZ"],

@@ -184,10 +184,6 @@ class DebateScheduler:
         missing_modules = quality.get("missing_modules", {})
         if isinstance(missing_modules, dict) and missing_modules.get(symbol):
             return True
-        if branch_name == "intelligence" and data_bundle is not None:
-            events = (data_bundle.event_data or {}).get(symbol, [])
-            if any(abs(float(item.get("impact", 0.0))) >= 0.35 for item in events):
-                return True
         return False
 
     def _has_budget(self, branch_name: str, symbol: str) -> bool:

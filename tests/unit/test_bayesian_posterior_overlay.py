@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import math
-
 import pytest
 
 from quant_investor.bayesian.calibration_v2 import (
@@ -16,6 +14,7 @@ from quant_investor.bayesian.calibration_v2 import (
 )
 from quant_investor.bayesian.posterior_overlay import (
     OVERLAY_METADATA_KEY,
+    CalibrationOverlayDiagnostics,
     EdgeCostConfig,
     attach_overlay_metadata,
     bps_to_decimal_return,
@@ -27,7 +26,12 @@ from quant_investor.bayesian.posterior_overlay import (
 from quant_investor.bayesian.types import PosteriorResult
 
 
-def _bucket(index: int, probability: float, bucket_count: int = 2) -> CalibrationBucket:
+def _bucket(
+    index: int,
+    probability: float,
+    bucket_count: int = 2,
+    total_count: int = 10,
+) -> CalibrationBucket:
     lower = index / bucket_count
     upper = (index + 1) / bucket_count
     return CalibrationBucket(
@@ -35,8 +39,8 @@ def _bucket(index: int, probability: float, bucket_count: int = 2) -> Calibratio
         lower_bound=lower,
         upper_bound=upper,
         center=(lower + upper) / 2.0,
-        total_count=10,
-        positive_count=int(probability * 10),
+        total_count=total_count,
+        positive_count=int(probability * total_count),
         raw_mean=(lower + upper) / 2.0,
         empirical_rate=probability,
         prior_alpha=0.0,
@@ -52,17 +56,21 @@ def _curve(
     high_probability: float = 0.80,
     total_examples: int = 20,
 ) -> CalibrationCurve:
+    low_count = total_examples // 2
+    high_count = total_examples - low_count
+    buckets = [
+        _bucket(0, low_probability, total_count=low_count),
+        _bucket(1, high_probability, total_count=high_count),
+    ]
+    positive_examples = sum(bucket.positive_count for bucket in buckets)
     return CalibrationCurve(
         key=key,
         bucket_count=2,
         prior_strength=0.0,
         total_examples=total_examples,
-        positive_examples=int(total_examples * 0.5),
-        base_rate=0.5,
-        buckets=[
-            _bucket(0, low_probability),
-            _bucket(1, high_probability),
-        ],
+        positive_examples=positive_examples,
+        base_rate=positive_examples / total_examples,
+        buckets=buckets,
     )
 
 
@@ -75,6 +83,23 @@ def _model(*curves: CalibrationCurve) -> CalibrationModelV2:
         min_examples_per_curve=1,
         curves=list(curves),
     )
+
+
+def test_overlay_rejects_nested_old_calibration_curve_schema() -> None:
+    curve = _curve(CalibrationCurveKey())
+    model = _model(curve)
+    curve.schema_version = "old-child-schema"
+
+    with pytest.raises(ValueError, match="schema mismatch"):
+        build_calibrated_posterior_overlay(_posterior(), model)
+
+
+def test_overlay_diagnostics_rejects_nonposterior_target() -> None:
+    payload = CalibrationOverlayDiagnostics().to_dict()
+    payload["target_name"] = "branch:intelligence"
+
+    with pytest.raises(ValueError, match="target must be posterior_win_rate"):
+        CalibrationOverlayDiagnostics.from_dict(payload)
 
 
 def _posterior(symbol: str = "000001.SZ", win_rate: float = 0.75) -> PosteriorResult:
@@ -244,7 +269,8 @@ def test_calibration_v2_select_curve_fallback_order_and_calibrate_behavior() -> 
 
     assert selected_exact is exact
     assert selected_fallback is global_curve
-    assert model.select_curve("missing_target", market="CN", horizon_label="20D") is None
+    with pytest.raises(ValueError, match="Unsupported calibration target"):
+        model.select_curve("missing_target", market="CN", horizon_label="20D")
     assert model.calibrate(
         TARGET_POSTERIOR_WIN_RATE,
         0.75,
@@ -252,4 +278,17 @@ def test_calibration_v2_select_curve_fallback_order_and_calibrate_behavior() -> 
         horizon_label="20D",
         macro_regime="趋势上涨",
     ) == pytest.approx(0.66)
-    assert model.calibrate("missing_target", -0.4) == pytest.approx(0.3)
+    with pytest.raises(ValueError, match="Unsupported calibration target"):
+        model.calibrate("missing_target", -0.4)
+
+
+def test_overlay_and_model_schema_mismatches_fail_closed() -> None:
+    model = _model(_curve(CalibrationCurveKey()))
+    overlay = build_calibrated_posterior_overlay(_posterior(), model)
+
+    with pytest.raises(ValueError, match="schema mismatch"):
+        type(overlay).from_dict(dict(overlay.to_dict(), schema_version="old-overlay"))
+
+    model.schema_version = "old-calibration"
+    with pytest.raises(ValueError, match="schema mismatch"):
+        build_calibrated_posterior_overlay(_posterior(), model)

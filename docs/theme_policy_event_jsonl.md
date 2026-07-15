@@ -100,5 +100,5 @@ THEME_POLICY_EVENT_PATH=data/theme_policy_events.jsonl
 - Policy events do not create official `candidate_pool` entries.
 - Policy events do not add a canonical branch.
 - Policy events do not add `theme_likelihood`.
-- Bayesian posterior math, RiskGuard, PortfolioConstructor, and v13 DAG
+- Bayesian posterior math, RiskGuard, PortfolioConstructor, and v14 DAG
   execution remain unchanged.

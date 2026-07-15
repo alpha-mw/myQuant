@@ -2,14 +2,40 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
+from quant_investor.versioning import (
+    ARCHITECTURE_VERSION,
+    BRANCH_SCHEMA_VERSION,
+    LIKELIHOOD_SCHEMA_VERSION,
+    REPORT_PROTOCOL_VERSION,
+)
+from web.request_contract import reject_intelligence_named_keys
 
 
-class AnalysisBranchConfig(BaseModel):
-    enabled: bool = True
-    settings: dict[str, Any] = Field(default_factory=dict)
+WebAnalysisBranch = Literal[
+    "kline",
+    "quant",
+    "fundamental",
+    "llm_debate",
+    "macro",
+]
+_SUPPORTED_BRANCH_REQUEST_KEYS = {
+    *CANONICAL_BRANCH_ORDER,
+    "kline",
+    "kronos",
+    "llm_debate",
+}
+_CURRENT_WEB_RESULT_BRANCH_ORDER = (
+    "kline",
+    "quant",
+    "fundamental",
+    "llm_debate",
+    "macro",
+)
 
 
 class AnalysisRiskConfig(BaseModel):
@@ -38,24 +64,63 @@ class AnalysisLlmDebateConfig(BaseModel):
 
 
 class AnalysisRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     mode: str = "single"
     targets: list[str] = Field(default_factory=list)
     preset: str = "quick_scan"
     market: str = "CN"
-    branches: dict[str, AnalysisBranchConfig] = Field(default_factory=dict)
+    branches: dict[str, dict[str, Any]] = Field(default_factory=dict)
     risk: AnalysisRiskConfig = Field(default_factory=AnalysisRiskConfig)
     portfolio: AnalysisPortfolioConfig = Field(default_factory=AnalysisPortfolioConfig)
     llm_debate: AnalysisLlmDebateConfig = Field(default_factory=AnalysisLlmDebateConfig)
 
-    # Legacy compatibility fields.
+    # Supported non-branch compatibility fields.
     stocks: list[str] = Field(default_factory=list)
     capital: Optional[float] = None
     risk_level: Optional[str] = None
-    enable_macro: Optional[bool] = None
     enable_kline: Optional[bool] = None
     enable_kronos: Optional[bool] = None  # 向后兼容别名
-    enable_intelligence: Optional[bool] = None
     enable_llm_debate: Optional[bool] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_branch_contract(
+        cls,
+        value: Any,
+    ) -> Any:
+        if not isinstance(value, dict):
+            return value
+        reject_intelligence_named_keys(value)
+        branches = value.get("branches", {}) or {}
+        if not isinstance(branches, dict):
+            raise ValueError("branches must be an object")
+        unknown = sorted(set(branches) - _SUPPORTED_BRANCH_REQUEST_KEYS)
+        if unknown:
+            raise ValueError(
+                "branches contains unsupported keys: " + ", ".join(unknown)
+            )
+        for branch_name, config in branches.items():
+            if not isinstance(config, dict):
+                raise ValueError(f"branches.{branch_name} must be an object")
+            if branch_name in CANONICAL_BRANCH_ORDER and "enabled" in config:
+                raise ValueError(
+                    f"branches.{branch_name}.enabled is not supported; "
+                    "v14 canonical branches always execute"
+                )
+            allowed_config_keys = {"settings"}
+            if branch_name not in CANONICAL_BRANCH_ORDER:
+                allowed_config_keys.add("enabled")
+            unknown_config_keys = sorted(set(config) - allowed_config_keys)
+            if unknown_config_keys:
+                raise ValueError(
+                    f"branches.{branch_name} contains unsupported keys: "
+                    + ", ".join(unknown_config_keys)
+                )
+            settings = config.get("settings", {})
+            if settings is not None and not isinstance(settings, dict):
+                raise ValueError(f"branches.{branch_name}.settings must be an object")
+        return value
 
 
 class AnalysisPresetOption(BaseModel):
@@ -76,7 +141,7 @@ class AnalysisModelOption(BaseModel):
 
 class AnalysisOptionsResponse(BaseModel):
     presets: list[AnalysisPresetOption] = Field(default_factory=list)
-    branch_defaults: dict[str, AnalysisBranchConfig] = Field(default_factory=dict)
+    branch_defaults: dict[str, dict[str, Any]] = Field(default_factory=dict)
     llm_models: list[AnalysisModelOption] = Field(default_factory=list)
     risk_templates: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -98,7 +163,7 @@ class AnalysisHistoryItem(BaseModel):
 
 
 class BranchDetailResult(BaseModel):
-    branch_name: str
+    branch_name: WebAnalysisBranch
     enabled: bool = True
     score: float = 0.0
     confidence: float = 0.0
@@ -152,6 +217,12 @@ class ExecutionPlan(BaseModel):
 
 
 class AnalysisSessionDetail(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    architecture_version: str
+    branch_schema_version: str
+    likelihood_schema_version: str
+    report_protocol_version: str
     analysis_id: str
     created_at: str
     source: str = "web"
@@ -163,6 +234,7 @@ class AnalysisSessionDetail(BaseModel):
     style_bias: str = "均衡"
     sector_preferences: list[str] = Field(default_factory=list)
     candidate_symbols: list[str] = Field(default_factory=list)
+    data_snapshot: dict[str, Any] = Field(default_factory=dict)
     execution_notes: list[str] = Field(default_factory=list)
     branches: list[BranchDetailResult] = Field(default_factory=list)
     risk: RiskReview = Field(default_factory=RiskReview)
@@ -172,6 +244,44 @@ class AnalysisSessionDetail(BaseModel):
     execution_log: list[str] = Field(default_factory=list)
     llm_assignments: list[dict[str, Any]] = Field(default_factory=list)
     config_applied: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_retired_response_keys(cls, value: Any) -> Any:
+        reject_intelligence_named_keys(value, path="analysis_session")
+        return value
+
+    @model_validator(mode="after")
+    def validate_current_schema_envelope(self) -> "AnalysisSessionDetail":
+        expected = {
+            "architecture_version": ARCHITECTURE_VERSION,
+            "branch_schema_version": BRANCH_SCHEMA_VERSION,
+            "likelihood_schema_version": LIKELIHOOD_SCHEMA_VERSION,
+            "report_protocol_version": REPORT_PROTOCOL_VERSION,
+        }
+        for field_name, expected_value in expected.items():
+            actual = getattr(self, field_name)
+            if actual != expected_value:
+                raise ValueError(
+                    f"{field_name} mismatch: expected {expected_value!r}, "
+                    f"got {actual!r}"
+                )
+        branch_names = tuple(branch.branch_name for branch in self.branches)
+        if branch_names != _CURRENT_WEB_RESULT_BRANCH_ORDER:
+            raise ValueError(
+                "branches mismatch: expected "
+                f"{list(_CURRENT_WEB_RESULT_BRANCH_ORDER)!r}, "
+                f"got {list(branch_names)!r}"
+            )
+        for branch in self.branches:
+            if (
+                branch.branch_name in CANONICAL_BRANCH_ORDER
+                and branch.enabled is not True
+            ):
+                raise ValueError(
+                    f"canonical branch {branch.branch_name!r} must be enabled"
+                )
+        return self
 
 
 class AnalysisResult(AnalysisSessionDetail):

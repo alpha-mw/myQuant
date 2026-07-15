@@ -4,17 +4,21 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 from quant_investor.branch_config import get_default_branch_weights
 
-ARCHITECTURE_VERSION = "13.0.0-stable"
+ARCHITECTURE_VERSION = "14.0.0-stable"
 
-AGENT_SCHEMA_VERSION = "2026-03-23.agent.v1"
+AGENT_SCHEMA_VERSION = "2026-07-14.agent.v14.three-branch"
 
-BRANCH_SCHEMA_VERSION = "branch-schema.v13.four-branch"
-CALIBRATION_SCHEMA_VERSION = "2026-03-22.calibration.v2"
-OUTCOME_LEDGER_SCHEMA_VERSION = "2026-04-26.outcome-ledger.v1"
-CALIBRATION_V2_SCHEMA_VERSION = "2026-04-26.calibration-v2.v1"
-POSTERIOR_OVERLAY_SCHEMA_VERSION = "2026-04-26.posterior-overlay.v1"
+BRANCH_SCHEMA_VERSION = "branch-schema.v14.three-branch"
+LIKELIHOOD_SCHEMA_VERSION = "likelihood-schema.v14.two-likelihood"
+CALIBRATION_SCHEMA_VERSION = "2026-07-14.calibration.v14.three-branch"
+OUTCOME_LEDGER_SCHEMA_VERSION = "2026-07-14.outcome-ledger.v14.three-branch"
+CALIBRATION_V2_SCHEMA_VERSION = "2026-07-14.calibration-v2.v14.two-likelihood"
+POSTERIOR_OVERLAY_SCHEMA_VERSION = "2026-07-14.posterior-overlay.v14.two-likelihood"
 DATA_QUALITY_CONTRACT_SCHEMA_VERSION = "2026-04-26.data-quality-contract.v1"
 RISK_TENSOR_SCHEMA_VERSION = "2026-04-26.risk-tensor.v1"
 PORTFOLIO_OPTIMIZER_SCHEMA_VERSION = "2026-04-26.portfolio-optimizer.v1"
@@ -54,10 +58,10 @@ FACTOR_EXECUTION_COST_SIMULATION_SCHEMA_VERSION = (
     "2026-04-27.factor-execution-cost-simulation.v1"
 )
 FACTOR_EXECUTION_PENALTY_SCHEMA_VERSION = "2026-04-27.factor-execution-penalty.v1"
-BRANCH_TRACKER_SCHEMA_VERSION = "2026-03-22.branch-tracker.v2"
-DEBATE_TEMPLATE_VERSION = "2026-03-22.branch-debate.v2"
-IC_PROTOCOL_VERSION = "ic-protocol.v13.four-branch"
-REPORT_PROTOCOL_VERSION = "report-protocol.v13.four-branch"
+BRANCH_TRACKER_SCHEMA_VERSION = "2026-07-14.branch-tracker.v14.three-branch"
+DEBATE_TEMPLATE_VERSION = "2026-07-14.branch-debate.v14.three-branch"
+IC_PROTOCOL_VERSION = "ic-protocol.v14.three-branch"
+REPORT_PROTOCOL_VERSION = "report-protocol.v14.three-branch"
 
 PROMOTION_CANDIDATE_SCHEMA_VERSION = "learning.promotion_candidate.v1"
 PROMOTION_DECISION_SCHEMA_VERSION = "learning.promotion_decision.v1"
@@ -75,7 +79,6 @@ TRADE_CASE_SCHEMA_VERSION = "learning.trade_case.v1"
 CURRENT_BRANCH_ORDER = (
     "quant",
     "fundamental",
-    "intelligence",
     "macro",
 )
 BRANCH_ORDER = CURRENT_BRANCH_ORDER
@@ -85,6 +88,28 @@ CURRENT_BRANCH_WEIGHTS: dict[str, float] = {
 }
 
 
+def reject_retired_intelligence_keys(value: Any, *, path: str = "artifact") -> None:
+    """Fail closed when a current artifact contains a retired structural key.
+
+    Values are intentionally not inspected: prose can describe historical
+    Intelligence behavior, while current machine-readable field names cannot
+    resurrect the retired branch.
+    """
+
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            key_text = str(key)
+            child_path = f"{path}.{key_text}"
+            if "intelligence" in key_text.casefold():
+                raise ValueError(
+                    f"{child_path} contains a retired Intelligence key."
+                )
+            reject_retired_intelligence_keys(child, path=child_path)
+    elif isinstance(value, (list, tuple)):
+        for index, child in enumerate(value):
+            reject_retired_intelligence_keys(child, path=f"{path}[{index}]")
+
+
 def output_version_payload(
     architecture_version: str = ARCHITECTURE_VERSION,
     branch_schema_version: str = BRANCH_SCHEMA_VERSION,
@@ -92,6 +117,7 @@ def output_version_payload(
     return {
         "architecture_version": architecture_version,
         "branch_schema_version": branch_schema_version,
+        "likelihood_schema_version": LIKELIHOOD_SCHEMA_VERSION,
         "calibration_schema_version": CALIBRATION_SCHEMA_VERSION,
         "ic_protocol_version": IC_PROTOCOL_VERSION,
         "report_protocol_version": REPORT_PROTOCOL_VERSION,

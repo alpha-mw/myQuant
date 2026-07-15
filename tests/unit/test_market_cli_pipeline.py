@@ -10,6 +10,13 @@ import pytest
 import quant_investor.cli.main as cli_main
 import quant_investor.market.analyze as market_analyze
 import quant_investor.market.run_pipeline as market_pipeline
+from quant_investor.versioning import (
+    ARCHITECTURE_VERSION,
+    BRANCH_SCHEMA_VERSION,
+    IC_PROTOCOL_VERSION,
+    LIKELIHOOD_SCHEMA_VERSION,
+    REPORT_PROTOCOL_VERSION,
+)
 
 
 def test_market_maintain_cli_dispatches_to_maintenance(monkeypatch):
@@ -238,6 +245,23 @@ def test_cli_timeout_defaults_are_long_running():
     assert run_args.agent_timeout == 180.0
     assert run_args.master_timeout == 900.0
     assert run_args.max_candidates == 500
+
+
+def test_research_cli_rejects_retired_intelligence_switch():
+    parser = cli_main._build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "research",
+                "run",
+                "--market",
+                "CN",
+                "--stocks",
+                "600000.SH",
+                "--no-intelligence",
+            ]
+        )
 
 
 def test_market_run_cli_dispatches_to_unified_pipeline(monkeypatch):
@@ -703,15 +727,28 @@ def test_run_market_analysis_exposes_role_metadata(monkeypatch, tmp_path):
             "review_bundle": _Payload(
                 {
                     "ic_hints_by_symbol": {"000001.SZ": {"action": "buy"}},
-                    "branch_schema_version": "branch-schema.v13.four-branch",
-                    "ic_protocol_version": "ic.v1",
-                    "report_protocol_version": "report.v1",
+                    "branch_schema_version": BRANCH_SCHEMA_VERSION,
+                    "ic_protocol_version": IC_PROTOCOL_VERSION,
+                    "report_protocol_version": REPORT_PROTOCOL_VERSION,
                 }
             ),
-            "branch_summaries": {},
+            "branch_summaries": {
+                "quant": {"score": 0.1},
+                "fundamental": {"score": 0.1},
+                "macro": {"score": 0.0},
+            },
             "data_quality_issues": [],
             "resolver": {"resolution_strategy": "logical_full_a"},
-            "report_bundle": SimpleNamespace(markdown_report="", executive_summary=[], market_view=[]),
+            "report_bundle": SimpleNamespace(
+                architecture_version=ARCHITECTURE_VERSION,
+                branch_schema_version=BRANCH_SCHEMA_VERSION,
+                likelihood_schema_version=LIKELIHOOD_SCHEMA_VERSION,
+                ic_protocol_version=IC_PROTOCOL_VERSION,
+                report_protocol_version=REPORT_PROTOCOL_VERSION,
+                markdown_report="",
+                executive_summary=[],
+                market_view=[],
+            ),
         }
 
     monkeypatch.setattr(market_analyze, "execute_market_dag", _fake_execute_market_dag)
@@ -796,6 +833,11 @@ def test_run_market_analysis_exposes_role_metadata(monkeypatch, tmp_path):
     assert output["analysis_meta"]["what_if_plan"]["scenarios"][0]["scenario_name"] == "macro_turns_weaker"
     assert output["runtime_profile"]["stages"][-1]["name"] == "analysis_report_persistence"
     assert output["analysis_meta"]["runtime_profile"] == output["runtime_profile"]
+    assert output["architecture_version"] == ARCHITECTURE_VERSION
+    assert output["analysis_meta"]["likelihood_schema_version"] == (
+        LIKELIHOOD_SCHEMA_VERSION
+    )
+    assert output["analysis_meta"]["ic_protocol_version"] == IC_PROTOCOL_VERSION
     runtime_profile_json = output["reports"]["runtime_profile_json"]
     runtime_profile_md = output["reports"]["runtime_profile_md"]
     assert json.loads(Path(runtime_profile_json).read_text(encoding="utf-8"))["stages"][-1]["name"] == "analysis_report_persistence"

@@ -10,7 +10,6 @@ import pandas as pd
 from quant_investor.market.branch_readiness import (
     DEFAULT_READINESS_ROOT,
     DEFAULT_FUNDAMENTAL_ROOT,
-    DEFAULT_INTELLIGENCE_ROOT,
     DEFAULT_MACRO_ROOT,
     assess_branch_data_readiness,
     make_run_id,
@@ -64,7 +63,6 @@ def run_data_governance(
     output_dir: str | Path = DEFAULT_READINESS_ROOT,
     data_dir: str | Path | None = None,
     fundamental_root: str | Path = DEFAULT_FUNDAMENTAL_ROOT,
-    intelligence_root: str | Path = DEFAULT_INTELLIGENCE_ROOT,
     macro_root: str | Path = DEFAULT_MACRO_ROOT,
 ) -> dict[str, Any]:
     """Audit branch data readiness and optionally refresh local marts.
@@ -80,7 +78,6 @@ def run_data_governance(
 
     if allow_live or allow_public_fallback:
         from quant_investor.market.fundamental_mart import run_cn_fundamental_maintenance
-        from quant_investor.market.intelligence_mart import run_cn_intelligence_maintenance
         from quant_investor.market.macro_mart import run_cn_macro_maintenance
 
         run_cn_fundamental_maintenance(
@@ -89,12 +86,6 @@ def run_data_governance(
             as_of=as_of,
             data_root=fundamental_root,
             allow_live=bool(allow_live),
-        )
-        run_cn_intelligence_maintenance(
-            data_root=intelligence_root,
-            allow_live=bool(allow_live),
-            allow_public_fallback=bool(allow_public_fallback),
-            run_id=run_id,
         )
         run_cn_macro_maintenance(
             as_of=as_of,
@@ -122,7 +113,6 @@ def run_data_governance(
             category=selected_category,
             as_of=effective_as_of,
             fundamental_root=fundamental_root,
-            intelligence_root=intelligence_root,
             macro_root=macro_root,
             run_id=run_id if len(selected_categories) == 1 else f"{run_id}_{selected_category}",
         )

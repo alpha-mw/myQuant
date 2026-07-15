@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -64,18 +65,18 @@ def _fake_empty_candidate_dag_status() -> dict[str, object]:
         "candidate_generation_status": "blocked",
         "blocker": "candidate_dag_incomplete",
         "required_branches": list(tracker.REQUIRED_DAG_BRANCHES),
-        "candidate_source": "v13_full_market_dag",
+        "candidate_source": "v14_full_market_dag",
         "dag_pipeline": {
             "universe": "full_a",
             "deterministic_funnel": True,
-            "candidate_level_four_branch": True,
+            "candidate_level_branch_contract": True,
             "bayesian_shortlist": True,
             "riskguard_ic_portfolio_constructor": True,
             "bayesian_record_count": 0,
             "shortlist_count": 0,
             "portfolio_target_count": 0,
         },
-        "candidate_dag_four_branch_compliance": {
+        "candidate_dag_branch_contract_compliance": {
             "complete": False,
             "evaluated_symbols": [],
             "accepted_symbols": [],
@@ -85,6 +86,31 @@ def _fake_empty_candidate_dag_status() -> dict[str, object]:
         },
         "error": "unit_test_stub",
     }
+
+
+def _qualified_candidate_branches(
+    *,
+    score: float,
+    confidence: float,
+) -> dict[str, dict[str, object]]:
+    branches = {
+        branch: {
+            "branch_name": branch,
+            "final_score": score,
+            "final_confidence": confidence,
+        }
+        for branch in tracker.REQUIRED_DAG_BRANCHES
+    }
+    branches["quant"]["metadata"] = {
+        "factor_mode": "governed_mined_factors",
+        "mined_factor_runtime": {
+            "factor_count": 1,
+            "factors_used": ["fixture_factor"],
+            "factor_coverages": {"fixture_factor": 1.0},
+            "applied_to_score": True,
+        },
+    }
+    return branches
 
 
 def _patch_parquet_completeness(
@@ -106,10 +132,10 @@ def _patch_parquet_completeness(
 
 
 @pytest.fixture(autouse=True)
-def _stub_candidate_level_v13_dag(monkeypatch):
+def _stub_candidate_level_v14_dag(monkeypatch):
     monkeypatch.setattr(
         tracker,
-        "_run_candidate_level_v13_dag",
+        "_run_candidate_level_v14_dag",
         lambda **_kwargs: (pd.DataFrame(dtype=object), _fake_empty_candidate_dag_status(), {}),
     )
 
@@ -620,8 +646,8 @@ def test_switch_plan_blocks_hold_negative_alpha_and_requires_manual_override():
         "symbol": "600988.SH",
         "name": "赤峰黄金",
         "theme_label": "黄金",
-        "candidate_source": "v13_full_market_dag",
-        "candidate_dag_four_branch_complete": True,
+        "candidate_source": "v14_full_market_dag",
+        "candidate_dag_branch_contract_complete": True,
         "portfolio_target_weight": 0.05,
         "posterior_action_score": 0.4,
         "posterior_confidence": 0.6,
@@ -684,7 +710,7 @@ def test_candidate_quote_gate_is_per_symbol_and_fail_closed():
     assert bool(fresh.iloc[0]["new_position_eligible"]) is True
 
 
-def test_candidate_pool_from_v13_dag_requires_candidate_level_four_branches():
+def test_candidate_pool_from_v14_dag_requires_candidate_level_three_branches():
     complete_branches = {
         branch: {"branch_name": branch, "final_score": 0.8, "final_confidence": 0.7}
         for branch in tracker.REQUIRED_DAG_BRANCHES
@@ -777,7 +803,7 @@ def test_candidate_pool_from_v13_dag_requires_candidate_level_four_branches():
                 "expected_upside": 0.16,
                 "suggested_weight": 0.08,
                 "risk_flags": ["估值波动"],
-                "rationale": ["四分支共振"],
+                "rationale": ["三分支共振"],
             },
             {
                 "symbol": "002409.SZ",
@@ -796,6 +822,7 @@ def test_candidate_pool_from_v13_dag_requires_candidate_level_four_branches():
                 "posterior_win_rate": 0.62,
                 "posterior_expected_alpha": 0.08,
                 "posterior_confidence": 0.71,
+                "evidence_sources": ["quant", "fundamental"],
                 "rank": 2,
             },
             {
@@ -804,6 +831,7 @@ def test_candidate_pool_from_v13_dag_requires_candidate_level_four_branches():
                 "posterior_win_rate": 0.68,
                 "posterior_expected_alpha": 0.12,
                 "posterior_confidence": 0.80,
+                "evidence_sources": ["quant", "fundamental"],
                 "rank": 1,
             },
         ],
@@ -814,22 +842,26 @@ def test_candidate_pool_from_v13_dag_requires_candidate_level_four_branches():
         },
     }
 
-    candidate_pool, status = tracker._build_candidate_pool_from_v13_dag(
+    candidate_pool, status = tracker._build_candidate_pool_from_v14_dag(
         dag_artifacts=dag_artifacts,
         held_symbols=[],
     )
 
     assert candidate_pool["symbol"].tolist() == ["688301.SH"]
     row = candidate_pool.iloc[0]
-    assert row["candidate_source"] == "v13_full_market_dag"
-    assert row["candidate_dag_four_branch_complete"] is True
-    assert row["present_branches"] == "quant,fundamental,intelligence,macro"
+    assert row["candidate_source"] == "v14_full_market_dag"
+    assert row["candidate_dag_branch_contract_complete"] is True
+    assert row["candidate_dag_branch_support_count"] == 3
+    assert row["candidate_dag_branch_support_total"] == 3
+    assert row["bayesian_evidence_count"] == 2
+    assert row["bayesian_evidence_total"] == 2
+    assert row["present_branches"] == "quant,fundamental,macro"
     assert row["portfolio_target_weight"] == pytest.approx(0.08)
     assert "score_full_market" not in candidate_pool.columns
     assert "ret20" not in candidate_pool.columns
     assert status["candidate_generation_status"] == "complete"
-    assert status["candidate_dag_four_branch_compliance"]["missing_branch_by_symbol"] == {
-        "002409.SZ": ["fundamental", "intelligence"]
+    assert status["candidate_dag_branch_contract_compliance"]["missing_branch_by_symbol"] == {
+        "002409.SZ": ["fundamental"]
     }
     theme_pool = status["theme_candidate_pool"]
     assert theme_pool["status"] == "applied"
@@ -845,6 +877,250 @@ def test_candidate_pool_from_v13_dag_requires_candidate_level_four_branches():
     assert theme_pool["excluded_symbols_by_reason_sample"][
         "theme_pool_theme_not_admitted"
     ] == ["600519.SH"]
+
+    for incomplete_evidence in ([], ["quant"]):
+        incomplete_artifacts = deepcopy(dag_artifacts)
+        incomplete_artifacts["bayesian_records"][0][
+            "evidence_sources"
+        ] = incomplete_evidence
+        incomplete_pool, incomplete_status = tracker._build_candidate_pool_from_v14_dag(
+            dag_artifacts=incomplete_artifacts,
+            held_symbols=[],
+        )
+        assert incomplete_pool.empty
+        assert incomplete_status["candidate_dag_branch_contract_compliance"][
+            "missing_branch_by_symbol"
+        ]["688301.SH"] == ["bayesian_evidence_contract"]
+
+
+def test_candidate_pool_keeps_positive_target_with_limited_quant_evidence():
+    branches = {
+        "quant": {
+            "branch_name": "quant",
+            "status": "success",
+            "final_score": 0.0,
+            "final_confidence": 0.0,
+            "metadata": {
+                "factor_mode": "governance_blocked",
+                "mined_factor_runtime": {
+                    "factor_count": 0,
+                    "factors_used": [],
+                    "applied_to_score": False,
+                },
+            },
+        },
+        "fundamental": {
+            "branch_name": "fundamental",
+            "status": "success",
+            "final_score": 0.4,
+            "final_confidence": 0.7,
+        },
+        "macro": {
+            "branch_name": "macro",
+            "status": "success",
+            "final_score": 0.2,
+            "final_confidence": 0.8,
+        },
+    }
+    dag_artifacts = {
+        "symbol_research_packets": {
+            "688301.SH": {
+                "symbol": "688301.SH",
+                "company_name": "奕瑞科技",
+                "category": "full_a",
+                "branch_verdicts": branches,
+            }
+        },
+        "shortlist": [
+            {
+                "symbol": "688301.SH",
+                "company_name": "奕瑞科技",
+                "category": "full_a",
+                "rank_score": 0.8,
+                "confidence": 0.7,
+                "expected_upside": 0.1,
+                "suggested_weight": 0.08,
+            }
+        ],
+        "bayesian_records": [
+            {
+                "symbol": "688301.SH",
+                "posterior_action_score": 0.7,
+                "posterior_win_rate": 0.6,
+                "posterior_expected_alpha": 0.08,
+                "posterior_confidence": 0.7,
+                "evidence_sources": ["quant", "fundamental"],
+                "rank": 1,
+            }
+        ],
+        "portfolio_decision": {
+            "target_weights": {"688301.SH": 0.08},
+            "target_positions": {"688301.SH": 0.08},
+        },
+    }
+
+    candidate_pool, status = tracker._build_candidate_pool_from_v14_dag(
+        dag_artifacts=dag_artifacts,
+        held_symbols=[],
+    )
+
+    assert candidate_pool["symbol"].tolist() == ["688301.SH"]
+    row = candidate_pool.iloc[0]
+    assert row["present_branches"] == "quant,fundamental,macro"
+    assert row["evidence_qualified_branches"] == "fundamental,macro"
+    assert row["evidence_limited_branches"] == "quant"
+    assert row["candidate_dag_branch_contract_complete"] is True
+    assert row["candidate_dag_branch_evidence_complete"] is False
+    assert row["evidence_quality"] == "中"
+    assert status["candidate_generation_status"] == "complete"
+
+    qualified_row = row.copy()
+    qualified_row["candidate_dag_branch_evidence_complete"] = True
+    qualified_row["evidence_quality"] = "高"
+    assert tracker._candidate_codex_score(qualified_row) - tracker._candidate_codex_score(row) == 14
+
+
+def test_candidate_pool_rejects_non_mapping_branch_payloads():
+    symbol = "688301.SH"
+    dag_artifacts = {
+        "symbol_research_packets": {
+            symbol: {
+                "symbol": symbol,
+                "company_name": "奕瑞科技",
+                "category": "full_a",
+                "branch_verdicts": {
+                    branch: "corrupt" for branch in tracker.REQUIRED_DAG_BRANCHES
+                },
+            }
+        },
+        "shortlist": [
+            {
+                "symbol": symbol,
+                "company_name": "奕瑞科技",
+                "category": "full_a",
+                "rank_score": 0.8,
+                "confidence": 0.7,
+                "expected_upside": 0.1,
+                "suggested_weight": 0.08,
+            }
+        ],
+        "bayesian_records": [
+            {
+                "symbol": symbol,
+                "posterior_action_score": 0.7,
+                "posterior_win_rate": 0.6,
+                "posterior_expected_alpha": 0.08,
+                "posterior_confidence": 0.7,
+                "evidence_sources": ["quant", "fundamental"],
+                "rank": 1,
+            }
+        ],
+        "portfolio_decision": {
+            "target_weights": {symbol: 0.08},
+            "target_positions": {symbol: 0.08},
+        },
+    }
+
+    candidate_pool, status = tracker._build_candidate_pool_from_v14_dag(
+        dag_artifacts=dag_artifacts,
+        held_symbols=[],
+    )
+
+    assert candidate_pool.empty
+    assert status["candidate_generation_status"] == "blocked"
+    assert status["blocker"] == "candidate_dag_incomplete"
+    compliance = status["candidate_dag_branch_contract_compliance"]
+    assert compliance["complete"] is False
+    assert compliance["present_branch_by_symbol"][symbol] == []
+    assert compliance["missing_branch_by_symbol"][symbol] == list(
+        tracker.REQUIRED_DAG_BRANCHES
+    )
+
+
+@pytest.mark.parametrize(
+    "malformed_payload",
+    [
+        pytest.param({"garbage": 1}, id="schema-less"),
+        pytest.param(
+            {"final_score": True, "final_confidence": 0.7},
+            id="boolean-score",
+        ),
+        pytest.param(
+            {"final_score": 0.4, "final_confidence": False},
+            id="boolean-confidence",
+        ),
+        pytest.param(
+            {"final_score": float("nan"), "final_confidence": 0.7},
+            id="nan-score",
+        ),
+        pytest.param(
+            {"final_score": 0.4, "final_confidence": float("inf")},
+            id="infinite-confidence",
+        ),
+        pytest.param({"final_score": 0.4}, id="missing-confidence"),
+        pytest.param({"final_confidence": 0.7}, id="missing-score"),
+    ],
+)
+def test_candidate_pool_rejects_malformed_mapping_branch_payloads(
+    malformed_payload: dict[str, object],
+):
+    symbol = "688301.SH"
+    dag_artifacts = {
+        "symbol_research_packets": {
+            symbol: {
+                "symbol": symbol,
+                "company_name": "奕瑞科技",
+                "category": "full_a",
+                "branch_verdicts": {
+                    "quant": {"final_score": 0.6, "final_confidence": 0.7},
+                    "fundamental": {"score": 0.5, "confidence": 0.6},
+                    "macro": dict(malformed_payload),
+                },
+            }
+        },
+        "shortlist": [
+            {
+                "symbol": symbol,
+                "company_name": "奕瑞科技",
+                "category": "full_a",
+                "rank_score": 0.8,
+                "confidence": 0.7,
+                "expected_upside": 0.1,
+                "suggested_weight": 0.08,
+            }
+        ],
+        "bayesian_records": [
+            {
+                "symbol": symbol,
+                "posterior_action_score": 0.7,
+                "posterior_win_rate": 0.6,
+                "posterior_expected_alpha": 0.08,
+                "posterior_confidence": 0.7,
+                "evidence_sources": ["quant", "fundamental"],
+                "rank": 1,
+            }
+        ],
+        "portfolio_decision": {
+            "target_weights": {symbol: 0.08},
+            "target_positions": {symbol: 0.08},
+        },
+    }
+
+    candidate_pool, status = tracker._build_candidate_pool_from_v14_dag(
+        dag_artifacts=dag_artifacts,
+        held_symbols=[],
+    )
+
+    assert candidate_pool.empty
+    assert status["candidate_generation_status"] == "blocked"
+    assert status["blocker"] == "candidate_dag_incomplete"
+    compliance = status["candidate_dag_branch_contract_compliance"]
+    assert compliance["complete"] is False
+    assert compliance["present_branch_by_symbol"][symbol] == [
+        "quant",
+        "fundamental",
+    ]
+    assert compliance["missing_branch_by_symbol"][symbol] == ["macro"]
 
 
 def test_write_outputs_persists_theme_pool_audit(tmp_path: Path) -> None:
@@ -1004,7 +1280,7 @@ def test_theme_pool_report_lines_expose_forced_core_candidates() -> None:
     assert "证券" in text
 
 
-def test_candidate_pool_from_v13_dag_falls_back_to_report_bundle_shortlist():
+def test_candidate_pool_from_v14_dag_falls_back_to_report_bundle_shortlist():
     complete_branches = {
         branch: {"branch_name": branch, "final_score": 0.8, "final_confidence": 0.7}
         for branch in tracker.REQUIRED_DAG_BRANCHES
@@ -1019,7 +1295,7 @@ def test_candidate_pool_from_v13_dag_falls_back_to_report_bundle_shortlist():
             "expected_upside": 0.16,
             "suggested_weight": 0.08,
             "risk_flags": ["估值波动"],
-            "rationale": ["四分支共振"],
+            "rationale": ["三分支共振"],
         }
     ]
     dag_artifacts = {
@@ -1039,6 +1315,7 @@ def test_candidate_pool_from_v13_dag_falls_back_to_report_bundle_shortlist():
                 "posterior_win_rate": 0.62,
                 "posterior_expected_alpha": 0.08,
                 "posterior_confidence": 0.71,
+                "evidence_sources": ["quant", "fundamental"],
                 "rank": 1,
             }
         ],
@@ -1048,7 +1325,7 @@ def test_candidate_pool_from_v13_dag_falls_back_to_report_bundle_shortlist():
         },
     }
 
-    candidate_pool, status = tracker._build_candidate_pool_from_v13_dag(
+    candidate_pool, status = tracker._build_candidate_pool_from_v14_dag(
         dag_artifacts=dag_artifacts,
         held_symbols=[],
     )
@@ -1061,7 +1338,7 @@ def test_candidate_pool_from_v13_dag_falls_back_to_report_bundle_shortlist():
     assert status["dag_pipeline"]["shortlist_artifact_missing"] is False
 
 
-def test_candidate_pool_from_v13_dag_blocks_when_shortlist_artifact_missing():
+def test_candidate_pool_from_v14_dag_blocks_when_shortlist_artifact_missing():
     dag_artifacts = {
         "symbol_research_packets": {},
         "bayesian_records": [
@@ -1079,7 +1356,7 @@ def test_candidate_pool_from_v13_dag_blocks_when_shortlist_artifact_missing():
         },
     }
 
-    candidate_pool, status = tracker._build_candidate_pool_from_v13_dag(
+    candidate_pool, status = tracker._build_candidate_pool_from_v14_dag(
         dag_artifacts=dag_artifacts,
         held_symbols=[],
     )
@@ -1092,7 +1369,7 @@ def test_candidate_pool_from_v13_dag_blocks_when_shortlist_artifact_missing():
     assert "shortlist artifact missing" in status["error"]
 
 
-def test_candidate_pool_from_v13_dag_empty_when_no_shortlist_or_positive_targets():
+def test_candidate_pool_from_v14_dag_empty_when_no_shortlist_or_positive_targets():
     complete_branches = {
         branch: {"branch_name": branch, "final_score": 0.5, "final_confidence": 0.6}
         for branch in tracker.REQUIRED_DAG_BRANCHES
@@ -1121,7 +1398,7 @@ def test_candidate_pool_from_v13_dag_empty_when_no_shortlist_or_positive_targets
         },
     }
 
-    candidate_pool, status = tracker._build_candidate_pool_from_v13_dag(
+    candidate_pool, status = tracker._build_candidate_pool_from_v14_dag(
         dag_artifacts=dag_artifacts,
         held_symbols=[],
     )
@@ -1744,7 +2021,6 @@ def test_run_unified_review_mainline_keeps_non_llm_dag_when_local_llm_disabled(m
                 reviewed_research_by_symbol={
                     self.symbol: {
                         "fundamental": {"branch_name": "fundamental", "action": "hold"},
-                        "intelligence": {"branch_name": "intelligence", "action": "hold"},
                     }
                 },
                 reviewed_branch_summaries={
@@ -1785,7 +2061,7 @@ def test_run_unified_review_mainline_keeps_non_llm_dag_when_local_llm_disabled(m
     )
 
 
-def test_build_dag_four_branch_compliance_marks_complete_when_all_branches_present():
+def test_build_dag_branch_contract_compliance_marks_complete_when_all_branches_present():
     branch_signals = {
         "601869.SH": {
             "reviewed_branch_verdicts": {
@@ -1795,14 +2071,14 @@ def test_build_dag_four_branch_compliance_marks_complete_when_all_branches_prese
         }
     }
 
-    result = tracker._build_dag_four_branch_compliance(
+    result = tracker._build_dag_branch_contract_compliance(
         review_symbols=["601869.SH"],
         effective_local_holding_symbols=["601869.SH"],
         branch_signals_by_symbol=branch_signals,
     )
 
     assert result["complete"] is True
-    assert result["status"] == "DAG四分支完整执行"
+    assert result["status"] == "DAG三分支完整执行"
     assert result["missing_branch_by_symbol"]["601869.SH"] == []
 
 
@@ -1873,13 +2149,12 @@ def test_dag_compliance_does_not_mark_governed_quant_limited():
                     },
                 },
                 "fundamental": {"status": "success"},
-                "intelligence": {"status": "success"},
                 "macro": {"status": "success"},
             }
         }
     }
 
-    result = tracker._build_dag_four_branch_compliance(
+    result = tracker._build_dag_branch_contract_compliance(
         review_symbols=["688519.SH"],
         effective_local_holding_symbols=[],
         branch_signals_by_symbol=branch_signals,
@@ -1937,13 +2212,12 @@ def test_dag_compliance_does_not_mark_substantive_fundamental_notes_limited():
                         },
                     },
                 },
-                "intelligence": {"status": "success"},
                 "macro": {"status": "success"},
             }
         }
     }
 
-    result = tracker._build_dag_four_branch_compliance(
+    result = tracker._build_dag_branch_contract_compliance(
         review_symbols=["688519.SH"],
         effective_local_holding_symbols=[],
         branch_signals_by_symbol=branch_signals,
@@ -1976,13 +2250,12 @@ def test_dag_compliance_keeps_legacy_quant_proxy_limited():
                     },
                 },
                 "fundamental": {"status": "success"},
-                "intelligence": {"status": "success"},
                 "macro": {"status": "success"},
             }
         }
     }
 
-    result = tracker._build_dag_four_branch_compliance(
+    result = tracker._build_dag_branch_contract_compliance(
         review_symbols=["688519.SH"],
         effective_local_holding_symbols=[],
         branch_signals_by_symbol=branch_signals,
@@ -2501,12 +2774,6 @@ def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypa
                                 "module_coverage": {},
                             }
                         },
-                        "intelligence": {
-                            "action": "hold",
-                            "metadata": {"branch_mode": "structured_intelligence_fusion"},
-                            "coverage_notes": ["legacy batch retired"],
-                            "investment_risks": ["智能融合当前未调用旧 batch pipeline，文本证据为候选层可扩展能力。"],
-                        },
                         "quant": {
                             "branch_name": "quant",
                             "factor_mode": "governed_mined_factors",
@@ -2558,13 +2825,13 @@ def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypa
     runtime_profile_payload = json.loads((run_dir / "runtime_profile.json").read_text(encoding="utf-8"))
 
     assert "#### 5.4.1 决策诊断" in report_text
-    assert "#### 5.3.1 DAG 四分支执行验收" in report_text
-    assert "DAG四分支完整执行" in report_text
+    assert "#### 5.3.1 DAG 三分支执行验收" in report_text
+    assert "DAG三分支完整执行" in report_text
     assert "stale_snapshot" in report_text
     assert "601869.SH(长飞光纤) 持有成本 `100.00`，PNL `+6,000.00 元`（+20.00%）" in report_text
     assert "Codex 评分 `" in report_text
     assert "#### 5.4.3 证据质量与工程诊断" in report_text
-    assert "provider、snapshot、旧 intelligence batch" in report_text
+    assert "provider 与 snapshot 诊断" in report_text
     assert "### 5.7 因子库状态（只读影子观察）" in report_text
     assert "This factor library status is read-only" in report_text
     assert "does not alter stock selection, portfolio construction, RiskGuard" in report_text
@@ -2580,7 +2847,7 @@ def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypa
     assert "provider_missing" not in advice_section
     assert manifest_payload["action_taken_today"] is False
     assert manifest_payload["formal_diagnostics"]["decision_guardrail"]["display_label"] == "no_action_evidence_impaired"
-    assert manifest_payload["dag_four_branch_compliance"]["complete"] is True
+    assert manifest_payload["dag_branch_contract_compliance"]["complete"] is True
     assert manifest_payload["market_metrics_prewarm"]["status"] == "blocking_generated"
     assert manifest_payload["data_snapshot"]["market_metrics_cache"]["status"] == "blocking_generated"
     assert manifest_payload["files"]["runtime_profile"] == "runtime_profile.json"
@@ -2590,8 +2857,8 @@ def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypa
     assert runtime_profile_payload["stages"][0]["status"] == "blocking_generated"
     assert result["full_market_metrics_cache"]["status"] == "blocking_generated"
     assert (
-        manifest_payload["formal_diagnostics"]["dag_four_branch_compliance"]["status"]
-        == "DAG四分支完整执行"
+        manifest_payload["formal_diagnostics"]["dag_branch_contract_compliance"]["status"]
+        == "DAG三分支完整执行"
     )
     orders_payload = (run_dir / "orders.csv").read_text(encoding="utf-8-sig")
     assert orders_payload == "timestamp,action,symbol,name,shares,price,trade_value,realized_pnl,reason\n"
@@ -2856,7 +3123,6 @@ def test_run_tracker_auto_fills_risk_reduction_sell_with_realtime_quote(monkeypa
                     "reviewed_branch_verdicts": {
                         "quant": {"branch_name": "quant"},
                         "fundamental": {"branch_name": "fundamental", "metadata": {"data_quality": {}}},
-                        "intelligence": {"branch_name": "intelligence"},
                         "macro": {"branch_name": "macro"},
                     },
                     "branch_overlays": {},

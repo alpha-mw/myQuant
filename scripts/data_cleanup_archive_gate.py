@@ -21,6 +21,11 @@ from scripts.data_cleanup_gate import (  # noqa: E402
     _runtime_reference_files,
     _strategy_record_files,
 )
+from scripts.intelligence_retirement_evidence import (  # noqa: E402
+    UnsafeRepositoryPath,
+    is_protected_retirement_evidence_path,
+    resolve_repo_relative_path,
+)
 from scripts.workspace_layout import get_repo_root  # noqa: E402
 
 SCHEMA_VERSION = "myquant.data_cleanup_archive_gate.v1"
@@ -143,14 +148,35 @@ def build_archive_gate_report(
     max_text_file_bytes: int = DEFAULT_MAX_TEXT_FILE_BYTES,
 ) -> dict[str, Any]:
     """Build an archive-backed deletion gate report for one cleanup root."""
-    source_root_text = str(manifest.get("source_root", "")).strip().strip("/")
+    raw_source_root_text = str(manifest.get("source_root", "")).strip()
     archive_path_text = str(manifest.get("archive_path", "")).strip()
     archive_path = Path(archive_path_text)
-    source_root = repo_root / source_root_text
 
     passed_checks: list[str] = []
     failed_checks: list[str] = []
     blockers: list[str] = []
+
+    try:
+        source_root, source_root_text = resolve_repo_relative_path(
+            repo_root,
+            raw_source_root_text,
+        )
+    except UnsafeRepositoryPath:
+        source_root_text = raw_source_root_text
+        source_root = repo_root / "__unsafe_cleanup_source_root__"
+        failed_checks.append("source_root_containment_check")
+        blockers.append("source_root_outside_repository")
+    else:
+        passed_checks.append("source_root_containment_check")
+
+    _append_check(
+        passed=not is_protected_retirement_evidence_path(source_root_text),
+        check_name="retirement_evidence_protection_check",
+        blocker="source_is_protected_retirement_evidence",
+        passed_checks=passed_checks,
+        failed_checks=failed_checks,
+        blockers=blockers,
+    )
 
     source_files = _iter_source_files(source_root)
     source_dirs = _iter_source_dirs(source_root)

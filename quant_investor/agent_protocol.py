@@ -7,15 +7,22 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, fields as dc_fields
+from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import Any, Callable, Optional, cast
+from typing import Any, Mapping, Optional
 
+from quant_investor.artifact_validation import (
+    require_finite_structure,
+    validate_posterior_numeric_fields,
+)
+from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
 from quant_investor.versioning import (
     ARCHITECTURE_VERSION,
     BRANCH_SCHEMA_VERSION,
     IC_PROTOCOL_VERSION,
+    LIKELIHOOD_SCHEMA_VERSION,
     REPORT_PROTOCOL_VERSION,
+    reject_retired_intelligence_keys,
 )
 
 
@@ -61,27 +68,31 @@ class RiskLevel(str, Enum):
     EXTREME = "extreme"
 
 
-def _make_compat_init(cls: type[Any]) -> None:
-    orig_init = cast(Callable[..., None], getattr(cls, "__init__"))
-    known_fields = {item.name for item in dc_fields(cls)}
+_ALLOWED_REVIEW_BRANCHES = frozenset((*CANONICAL_BRANCH_ORDER, "kline"))
 
-    def _compat_init(self: Any, *args: Any, **kwargs: Any) -> None:
-        extras: dict[str, Any] = {}
-        for key in list(kwargs):
-            if key not in known_fields:
-                extras[key] = kwargs.pop(key)
-        orig_init(self, *args, **kwargs)
-        for key, value in extras.items():
-            if isinstance(getattr(type(self), key, None), property):
-                prop = getattr(type(self), key)
-                if prop.fset is not None:
-                    prop.fset(self, value)
-                elif hasattr(self, "metadata"):
-                    self.metadata[key] = value
-            else:
-                object.__setattr__(self, key, value)
 
-    setattr(cls, "__init__", _compat_init)
+def _require_current_version(actual: str, expected: str, field_name: str) -> None:
+    if actual != expected:
+        raise ValueError(
+            f"{field_name} mismatch: expected {expected!r}, got {actual!r}."
+        )
+
+
+def _require_allowed_branch_keys(value: Mapping[str, Any], field_name: str) -> None:
+    unexpected = sorted(set(value) - _ALLOWED_REVIEW_BRANCHES)
+    if unexpected:
+        raise ValueError(
+            f"{field_name} contains non-v14 branch keys: {', '.join(unexpected)}."
+        )
+
+
+def _default_likelihood_payload() -> dict[str, Any]:
+    return {
+        "schema_version": LIKELIHOOD_SCHEMA_VERSION,
+        "quant_likelihood": 0.5,
+        "fundamental_likelihood": 0.5,
+        "correlation_matrix": {},
+    }
 
 
 @dataclass
@@ -163,8 +174,27 @@ class BranchVerdict:
     architecture_version: str = ARCHITECTURE_VERSION
     branch_schema_version: str = BRANCH_SCHEMA_VERSION
 
+    def __post_init__(self) -> None:
+        _require_current_version(
+            self.architecture_version,
+            ARCHITECTURE_VERSION,
+            "BranchVerdict architecture_version",
+        )
+        _require_current_version(
+            self.branch_schema_version,
+            BRANCH_SCHEMA_VERSION,
+            "BranchVerdict branch_schema_version",
+        )
+        reject_retired_intelligence_keys(
+            self.metadata,
+            path="BranchVerdict.metadata",
+        )
+
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        self.__post_init__()
+        payload = asdict(self)
+        reject_retired_intelligence_keys(payload, path="BranchVerdict")
+        return payload
 
 
 @dataclass
@@ -186,7 +216,14 @@ class RiskDecision:
     branch_schema_version: str = BRANCH_SCHEMA_VERSION
     ic_protocol_version: str = IC_PROTOCOL_VERSION
 
+    def __post_init__(self) -> None:
+        _require_current_version(self.architecture_version, ARCHITECTURE_VERSION, "RiskDecision architecture_version")
+        _require_current_version(self.branch_schema_version, BRANCH_SCHEMA_VERSION, "RiskDecision branch_schema_version")
+        _require_current_version(self.ic_protocol_version, IC_PROTOCOL_VERSION, "RiskDecision ic_protocol_version")
+        reject_retired_intelligence_keys(self.metadata, path="RiskDecision.metadata")
+
     def to_dict(self) -> dict[str, Any]:
+        self.__post_init__()
         return asdict(self)
 
 
@@ -210,7 +247,14 @@ class ICDecision:
     branch_schema_version: str = BRANCH_SCHEMA_VERSION
     ic_protocol_version: str = IC_PROTOCOL_VERSION
 
+    def __post_init__(self) -> None:
+        _require_current_version(self.architecture_version, ARCHITECTURE_VERSION, "ICDecision architecture_version")
+        _require_current_version(self.branch_schema_version, BRANCH_SCHEMA_VERSION, "ICDecision branch_schema_version")
+        _require_current_version(self.ic_protocol_version, IC_PROTOCOL_VERSION, "ICDecision ic_protocol_version")
+        reject_retired_intelligence_keys(self.metadata, path="ICDecision.metadata")
+
     def to_dict(self) -> dict[str, Any]:
+        self.__post_init__()
         return asdict(self)
 
 
@@ -235,7 +279,14 @@ class PortfolioPlan:
     branch_schema_version: str = BRANCH_SCHEMA_VERSION
     ic_protocol_version: str = IC_PROTOCOL_VERSION
 
+    def __post_init__(self) -> None:
+        _require_current_version(self.architecture_version, ARCHITECTURE_VERSION, "PortfolioPlan architecture_version")
+        _require_current_version(self.branch_schema_version, BRANCH_SCHEMA_VERSION, "PortfolioPlan branch_schema_version")
+        _require_current_version(self.ic_protocol_version, IC_PROTOCOL_VERSION, "PortfolioPlan ic_protocol_version")
+        reject_retired_intelligence_keys(self.metadata, path="PortfolioPlan.metadata")
+
     def to_dict(self) -> dict[str, Any]:
+        self.__post_init__()
         return asdict(self)
 
 
@@ -272,11 +323,68 @@ class ReportBundle:
     metadata: dict[str, Any] = field(default_factory=dict)
     architecture_version: str = ARCHITECTURE_VERSION
     branch_schema_version: str = BRANCH_SCHEMA_VERSION
+    likelihood_schema_version: str = LIKELIHOOD_SCHEMA_VERSION
     ic_protocol_version: str = IC_PROTOCOL_VERSION
     report_protocol_version: str = REPORT_PROTOCOL_VERSION
 
+    def __post_init__(self) -> None:
+        _require_current_version(
+            self.architecture_version,
+            ARCHITECTURE_VERSION,
+            "ReportBundle architecture_version",
+        )
+        _require_current_version(
+            self.branch_schema_version,
+            BRANCH_SCHEMA_VERSION,
+            "ReportBundle branch_schema_version",
+        )
+        _require_current_version(
+            self.likelihood_schema_version,
+            LIKELIHOOD_SCHEMA_VERSION,
+            "ReportBundle likelihood_schema_version",
+        )
+        _require_current_version(
+            self.report_protocol_version,
+            REPORT_PROTOCOL_VERSION,
+            "ReportBundle report_protocol_version",
+        )
+        _require_current_version(
+            self.ic_protocol_version,
+            IC_PROTOCOL_VERSION,
+            "ReportBundle ic_protocol_version",
+        )
+        _require_allowed_branch_keys(self.branch_verdicts, "ReportBundle.branch_verdicts")
+        for verdict in self.branch_verdicts.values():
+            verdict.__post_init__()
+        if self.macro_verdict is not None:
+            self.macro_verdict.__post_init__()
+        if self.risk_decision is not None:
+            self.risk_decision.__post_init__()
+        if self.ic_decision is not None:
+            self.ic_decision.__post_init__()
+        for decision in self.ic_decisions:
+            decision.__post_init__()
+        if self.portfolio_plan is not None:
+            self.portfolio_plan.__post_init__()
+        if self.portfolio_decision is not None:
+            self.portfolio_decision.__post_init__()
+        if self.review_bundle is not None:
+            self.review_bundle.__post_init__()
+        for packet in self.symbol_research_packets.values():
+            packet.__post_init__()
+        reject_retired_intelligence_keys(
+            {
+                "metadata": self.metadata,
+                "ic_hints_by_symbol": self.ic_hints_by_symbol,
+            },
+            path="ReportBundle",
+        )
+
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        self.__post_init__()
+        payload = asdict(self)
+        reject_retired_intelligence_keys(payload, path="ReportBundle")
+        return payload
 
 
 @dataclass
@@ -324,7 +432,19 @@ class BranchOverlayVerdict:
     branch_schema_version: str = BRANCH_SCHEMA_VERSION
     ic_protocol_version: str = IC_PROTOCOL_VERSION
 
+    def __post_init__(self) -> None:
+        _require_current_version(self.architecture_version, ARCHITECTURE_VERSION, "BranchOverlayVerdict architecture_version")
+        _require_current_version(self.branch_schema_version, BRANCH_SCHEMA_VERSION, "BranchOverlayVerdict branch_schema_version")
+        _require_current_version(self.ic_protocol_version, IC_PROTOCOL_VERSION, "BranchOverlayVerdict ic_protocol_version")
+        if self.branch_name and self.branch_name not in _ALLOWED_REVIEW_BRANCHES:
+            raise ValueError(f"Non-v14 branch overlay: {self.branch_name!r}.")
+        reject_retired_intelligence_keys(
+            self.metadata,
+            path="BranchOverlayVerdict.metadata",
+        )
+
     def to_dict(self) -> dict[str, Any]:
+        self.__post_init__()
         return asdict(self)
 
 
@@ -349,7 +469,14 @@ class MasterICHint:
     branch_schema_version: str = BRANCH_SCHEMA_VERSION
     ic_protocol_version: str = IC_PROTOCOL_VERSION
 
+    def __post_init__(self) -> None:
+        _require_current_version(self.architecture_version, ARCHITECTURE_VERSION, "MasterICHint architecture_version")
+        _require_current_version(self.branch_schema_version, BRANCH_SCHEMA_VERSION, "MasterICHint branch_schema_version")
+        _require_current_version(self.ic_protocol_version, IC_PROTOCOL_VERSION, "MasterICHint ic_protocol_version")
+        reject_retired_intelligence_keys(self.metadata, path="MasterICHint.metadata")
+
     def to_dict(self) -> dict[str, Any]:
+        self.__post_init__()
         return asdict(self)
 
 
@@ -370,8 +497,59 @@ class StockReviewBundle:
     ic_protocol_version: str = IC_PROTOCOL_VERSION
     report_protocol_version: str = REPORT_PROTOCOL_VERSION
 
+    def __post_init__(self) -> None:
+        _require_current_version(
+            self.architecture_version,
+            ARCHITECTURE_VERSION,
+            "StockReviewBundle architecture_version",
+        )
+        _require_current_version(
+            self.branch_schema_version,
+            BRANCH_SCHEMA_VERSION,
+            "StockReviewBundle branch_schema_version",
+        )
+        _require_current_version(
+            self.ic_protocol_version,
+            IC_PROTOCOL_VERSION,
+            "StockReviewBundle ic_protocol_version",
+        )
+        _require_current_version(
+            self.report_protocol_version,
+            REPORT_PROTOCOL_VERSION,
+            "StockReviewBundle report_protocol_version",
+        )
+        _require_allowed_branch_keys(
+            self.branch_summaries,
+            "StockReviewBundle.branch_summaries",
+        )
+        for symbol, branch_map in self.branch_overlay_verdicts_by_symbol.items():
+            _require_allowed_branch_keys(
+                branch_map,
+                f"StockReviewBundle.branch_overlay_verdicts_by_symbol[{symbol}]",
+            )
+            for verdict in branch_map.values():
+                verdict.__post_init__()
+        for verdict in self.branch_summaries.values():
+            verdict.__post_init__()
+        for hint in self.master_hints_by_symbol.values():
+            hint.__post_init__()
+        if self.macro_verdict is not None:
+            self.macro_verdict.__post_init__()
+        if self.risk_decision is not None:
+            self.risk_decision.__post_init__()
+        reject_retired_intelligence_keys(
+            {
+                "metadata": self.metadata,
+                "ic_hints_by_symbol": self.ic_hints_by_symbol,
+            },
+            path="StockReviewBundle",
+        )
+
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        self.__post_init__()
+        payload = asdict(self)
+        reject_retired_intelligence_keys(payload, path="StockReviewBundle")
+        return payload
 
 
 @dataclass
@@ -488,7 +666,9 @@ class GlobalContext:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        reject_retired_intelligence_keys(payload, path="GlobalContext")
+        return payload
 
 
 @dataclass
@@ -507,8 +687,29 @@ class SymbolResearchPacket:
     diagnostic_notes: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        for field_name, value in (
+            ("branch_verdicts", self.branch_verdicts),
+            ("branch_scores", self.branch_scores),
+            ("branch_confidences", self.branch_confidences),
+            ("branch_theses", self.branch_theses),
+        ):
+            _require_allowed_branch_keys(
+                value,
+                f"SymbolResearchPacket.{field_name}",
+            )
+        for verdict in self.branch_verdicts.values():
+            verdict.__post_init__()
+        reject_retired_intelligence_keys(
+            self.metadata,
+            path="SymbolResearchPacket.metadata",
+        )
+
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        self.__post_init__()
+        payload = asdict(self)
+        reject_retired_intelligence_keys(payload, path="SymbolResearchPacket")
+        return payload
 
 
 @dataclass
@@ -548,7 +749,21 @@ class PortfolioDecision:
     branch_schema_version: str = BRANCH_SCHEMA_VERSION
     ic_protocol_version: str = IC_PROTOCOL_VERSION
 
+    def __post_init__(self) -> None:
+        _require_current_version(self.architecture_version, ARCHITECTURE_VERSION, "PortfolioDecision architecture_version")
+        _require_current_version(self.branch_schema_version, BRANCH_SCHEMA_VERSION, "PortfolioDecision branch_schema_version")
+        _require_current_version(self.ic_protocol_version, IC_PROTOCOL_VERSION, "PortfolioDecision ic_protocol_version")
+        reject_retired_intelligence_keys(
+            {
+                "risk_constraints": self.risk_constraints,
+                "master_hints": self.master_hints,
+                "metadata": self.metadata,
+            },
+            path="PortfolioDecision",
+        )
+
     def to_dict(self) -> dict[str, Any]:
+        self.__post_init__()
         return asdict(self)
 
 
@@ -559,7 +774,7 @@ class BayesianDecisionRecord:
     symbol: str = ""
     company_name: str = ""
     prior: dict[str, float] = field(default_factory=dict)
-    likelihoods: dict[str, float] = field(default_factory=dict)
+    likelihoods: dict[str, Any] = field(default_factory=_default_likelihood_payload)
     posterior_win_rate: float = 0.0
     posterior_expected_alpha: float = 0.0
     posterior_confidence: float = 0.0
@@ -575,35 +790,81 @@ class BayesianDecisionRecord:
     evidence_sources: list[str] = field(default_factory=list)
     action_threshold_used: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
+    architecture_version: str = ARCHITECTURE_VERSION
+    branch_schema_version: str = BRANCH_SCHEMA_VERSION
+    likelihood_schema_version: str = LIKELIHOOD_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        _require_current_version(
+            self.architecture_version,
+            ARCHITECTURE_VERSION,
+            "BayesianDecisionRecord architecture_version",
+        )
+        _require_current_version(
+            self.branch_schema_version,
+            BRANCH_SCHEMA_VERSION,
+            "BayesianDecisionRecord branch_schema_version",
+        )
+        _require_current_version(
+            self.likelihood_schema_version,
+            LIKELIHOOD_SCHEMA_VERSION,
+            "BayesianDecisionRecord likelihood_schema_version",
+        )
+        expected_keys = {
+            "schema_version",
+            "quant_likelihood",
+            "fundamental_likelihood",
+            "correlation_matrix",
+        }
+        actual_keys = set(self.likelihoods)
+        if actual_keys != expected_keys:
+            raise ValueError(
+                "BayesianDecisionRecord likelihood fields must match v14; "
+                f"unexpected={sorted(actual_keys - expected_keys)}, "
+                f"missing={sorted(expected_keys - actual_keys)}."
+            )
+        if self.likelihoods.get("schema_version") != LIKELIHOOD_SCHEMA_VERSION:
+            raise ValueError("BayesianDecisionRecord likelihood schema mismatch.")
+        if self.likelihoods.get("correlation_matrix") != {}:
+            raise ValueError(
+                "BayesianDecisionRecord correlation_matrix must be empty."
+            )
+        for field_name in ("quant_likelihood", "fundamental_likelihood"):
+            value = float(self.likelihoods[field_name])
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(
+                    f"BayesianDecisionRecord {field_name} must be in [0, 1]."
+                )
+        for field_name, raw_value in self.prior.items():
+            if not isinstance(raw_value, (int, float)) or isinstance(raw_value, bool):
+                raise ValueError(
+                    f"BayesianDecisionRecord prior.{field_name} must be numeric."
+                )
+            value = float(raw_value)
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(
+                    f"BayesianDecisionRecord prior.{field_name} must be in [0, 1]."
+                )
+        validate_posterior_numeric_fields(self)
+        require_finite_structure(self.metadata, path="BayesianDecisionRecord.metadata")
+        unexpected_sources = sorted(
+            set(self.evidence_sources) - {"quant", "fundamental"}
+        )
+        if unexpected_sources:
+            raise ValueError(
+                "BayesianDecisionRecord has unexpected evidence sources: "
+                + ", ".join(unexpected_sources)
+            )
+        reject_retired_intelligence_keys(
+            {"prior": self.prior, "likelihoods": self.likelihoods, "metadata": self.metadata},
+            path="BayesianDecisionRecord",
+        )
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-_make_compat_init(BayesianDecisionRecord)
-
-_make_compat_init(EventNote)
-_make_compat_init(DataQualityIssue)
-_make_compat_init(DataQualityDiagnostics)
-_make_compat_init(EvidenceItem)
-_make_compat_init(BranchVerdict)
-_make_compat_init(RiskDecision)
-_make_compat_init(ICDecision)
-_make_compat_init(PortfolioPlan)
-_make_compat_init(ReportBundle)
-_make_compat_init(ReviewTelemetry)
-_make_compat_init(BranchOverlayVerdict)
-_make_compat_init(MasterICHint)
-_make_compat_init(StockReviewBundle)
-_make_compat_init(ModelRoleMetadata)
-_make_compat_init(ExecutionTraceStep)
-_make_compat_init(ExecutionTrace)
-_make_compat_init(WhatIfScenario)
-_make_compat_init(WhatIfPlan)
-_make_compat_init(GlobalContext)
-_make_compat_init(SymbolResearchPacket)
-_make_compat_init(ShortlistItem)
-_make_compat_init(PortfolioDecision)
+        self.__post_init__()
+        payload = asdict(self)
+        reject_retired_intelligence_keys(payload, path="BayesianDecisionRecord")
+        return payload
 
 
 __all__ = [

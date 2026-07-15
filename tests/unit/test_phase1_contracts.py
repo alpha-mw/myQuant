@@ -25,6 +25,7 @@ from quant_investor.branch_config import (
     get_default_branch_weights,
     validate_branch_weights,
 )
+from quant_investor.regime_detector import _REGIME_PARAMS
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,44 +40,46 @@ def test_default_branch_weights_validate_and_sum_to_one() -> None:
     assert math.isclose(sum(copied_weights.values()), 1.0, abs_tol=1e-9)
 
 
+def test_regime_weight_adjustments_only_name_current_branches() -> None:
+    expected = set(CANONICAL_BRANCH_ORDER)
+    for params in _REGIME_PARAMS.values():
+        assert set(params.branch_weight_adjustments) <= expected
+
+
 @pytest.mark.parametrize(
     "weights, message",
     [
-        ({"quant": 0.28, "intelligence": 0.20, "fundamental": 0.15}, "missing"),
+        ({"quant": 0.48, "fundamental": 0.26}, "missing"),
         (
             {
-                "quant": 0.28,
-                "intelligence": 0.20,
-                "fundamental": 0.15,
-                "macro": 0.15,
-                "sentiment": 0.0,
+                "quant": 0.48,
+                "fundamental": 0.26,
+                "macro": 0.26,
+                "intelligence": 0.0,
             },
             "extra",
         ),
         (
             {
-                "quant": -0.28,
-                "intelligence": 0.20,
-                "fundamental": 0.15,
-                "macro": 0.71,
+                "quant": -0.48,
+                "fundamental": 0.26,
+                "macro": 1.22,
             },
             "non-negative",
         ),
         (
             {
                 "quant": float("nan"),
-                "intelligence": 0.20,
-                "fundamental": 0.15,
-                "macro": 0.43,
+                "fundamental": 0.26,
+                "macro": 0.74,
             },
             "finite",
         ),
         (
             {
                 "quant": float("inf"),
-                "intelligence": 0.20,
-                "fundamental": 0.15,
-                "macro": 0.43,
+                "fundamental": 0.26,
+                "macro": 0.74,
             },
             "finite",
         ),
@@ -113,15 +116,18 @@ def test_readme_branch_percentages_match_default_branch_weights() -> None:
     readme_weights = _read_branch_weight_table()
     expected_labels = {
         "Quant Factor": "quant",
-        "Intelligence": "intelligence",
         "Fundamental": "fundamental",
         "Macro": "macro",
     }
 
+    assert "Intelligence" not in readme_weights
+
     for label, branch_name in expected_labels.items():
         assert label in readme_weights
-        displayed_percent = int(re.search(r"(\d+)\s*%", readme_weights[label]).group(1))
-        assert displayed_percent == round(DEFAULT_BRANCH_WEIGHTS[branch_name] * 100)
+        displayed_percent = float(
+            re.search(r"(\d+(?:\.\d+)?)\s*%", readme_weights[label]).group(1)
+        )
+        assert displayed_percent == round(DEFAULT_BRANCH_WEIGHTS[branch_name] * 100, 2)
 
 
 @pytest.mark.parametrize(
@@ -163,7 +169,7 @@ def test_calibration_v1_anchor_records_outcome_jsonl(tmp_path: Path) -> None:
     store_path = tmp_path / "bayesian_calibration.json"
     store = CalibrationStore(str(store_path))
 
-    for branch_name in CANONICAL_BRANCH_ORDER:
+    for branch_name in ("quant", "fundamental"):
         for score in (-0.60, 0.0, 0.60):
             probability = store.calibrated_probability(branch_name, score)
             assert 0.0 <= probability <= 1.0

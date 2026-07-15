@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
-from quant_investor.bayesian.calibration import CalibrationStore
 from quant_investor.bayesian.likelihood import SignalLikelihoodMapper, _score_to_likelihood
 from quant_investor.bayesian.posterior import BayesianPosteriorEngine
 from quant_investor.bayesian.types import LikelihoodSet, PosteriorResult, PriorSet
@@ -42,14 +39,18 @@ class TestSignalLikelihoodMapper:
             "quant": BranchResult(branch_name="quant", final_score=0.5, final_confidence=0.8,
                                   symbol_scores={"A": 0.5}, metadata={"reliability": 0.75}),
             "fundamental": BranchResult(branch_name="fundamental", final_score=0.2, final_confidence=0.6,
-                                        symbol_scores={"A": 0.2}, metadata={"reliability": 0.6}),
-            "intelligence": BranchResult(branch_name="intelligence", final_score=0.1, final_confidence=0.5,
-                                          symbol_scores={"A": 0.1}, metadata={"reliability": 0.55}),
+                                        symbol_scores={"A": 0.2}, metadata={
+                                            "reliability": 0.6,
+                                            "fundamental_data_generation_by_symbol": {"A": "g1"},
+                                            "fundamental_data_generation_status_by_symbol": {"A": "confirmed"},
+                                        }),
         }
         mapper = SignalLikelihoodMapper()
         ls = mapper.compute_likelihoods(branch_results=branches, symbol="A")
         assert ls.quant_likelihood > 0.50  # positive score
-        assert len(ls.as_list()) == 3
+        assert ls.fundamental_likelihood > 0.50
+        assert len(ls.as_list()) == 2
+        assert [name for name, _value in ls.as_list()] == ["quant", "fundamental"]
 
     def test_non_candidate_gets_neutral_for_expensive_branches(self):
         branches = {
@@ -61,7 +62,6 @@ class TestSignalLikelihoodMapper:
             branch_results=branches, symbol="A", candidate_symbols=set(),
         )
         assert ls.fundamental_likelihood == 0.50
-        assert ls.intelligence_likelihood == 0.50
 
     def test_missing_branch_gives_neutral(self):
         branches = {}
@@ -69,34 +69,34 @@ class TestSignalLikelihoodMapper:
         ls = mapper.compute_likelihoods(branch_results=branches, symbol="A")
         assert ls.quant_likelihood == 0.50
 
-    def test_momentum_profile_uses_calibration_and_recall_bias(self, tmp_path):
-        outcomes = tmp_path / "bayesian_outcomes.jsonl"
-        outcomes.write_text(
-            "\n".join(
-                json.dumps(
-                    {
-                        "symbol": "A",
-                        "branch": "intelligence",
-                        "score": 0.7,
-                        "bucket": "strong_positive",
-                        "realized_return": value,
-                    }
-                )
-                for value in ([-0.03] * 10 + [0.01, -0.02])
-            ),
-            encoding="utf-8",
-        )
-        store_path = tmp_path / "bayesian_calibration.json"
-        store_path.write_text("{}", encoding="utf-8")
-        calibration_store = CalibrationStore(str(store_path))
+    def test_unconfirmed_fundamental_generation_is_strictly_neutral(self):
         branches = {
-            "intelligence": BranchResult(
-                branch_name="intelligence",
-                final_score=0.7,
-                final_confidence=0.8,
-                symbol_scores={"A": 0.7},
-                metadata={"reliability": 0.7},
-            ),
+            "fundamental": BranchResult(
+                branch_name="fundamental",
+                final_score=0.9,
+                final_confidence=0.9,
+                symbol_scores={"A": 0.9},
+                metadata={
+                    "reliability": 0.9,
+                    "fundamental_data_generation_by_symbol": {"A": ""},
+                    "fundamental_data_generation_status_by_symbol": {
+                        "A": "UNCONFIRMED"
+                    },
+                },
+            )
+        }
+
+        likelihoods = SignalLikelihoodMapper().compute_likelihoods(
+            branch_results=branches,
+            symbol="A",
+            candidate_symbols={"A"},
+        )
+
+        assert likelihoods.fundamental_likelihood == 0.50
+        assert likelihoods.metadata["evidence_sources"] == []
+
+    def test_momentum_profile_preserves_surviving_v13_effective_weights(self):
+        branches = {
             "quant": BranchResult(
                 branch_name="quant",
                 final_score=0.4,
@@ -124,16 +124,96 @@ class TestSignalLikelihoodMapper:
             },
         )
         mapper = SignalLikelihoodMapper(
-            calibration_store=calibration_store,
             recall_context={"top_picks": [{"symbol": "A", "action": "sell"}]},
             global_context=ctx,
         )
 
         ls = mapper.compute_likelihoods(branch_results=branches, symbol="A")
 
-        assert ls.intelligence_likelihood < 0.70
+        assert ls.metadata["branch_weights"] == pytest.approx(
+            {"quant": 1.0161290322580645, "fundamental": 0.7258064516129031}
+        )
         assert ls.metadata["history_confidence"] > 0.0
-        assert ls.metadata["setup_failure_penalty"] > 0.0
+
+    def test_retired_likelihood_input_is_rejected(self):
+        with pytest.raises(TypeError):
+            LikelihoodSet(intelligence_likelihood=0.60)  # type: ignore[call-arg]
+        with pytest.raises(ValueError, match="schema mismatch"):
+            LikelihoodSet(schema_version="old-likelihood")
+        with pytest.raises(ValueError, match="correlation_matrix must be empty"):
+            LikelihoodSet(
+                correlation_matrix={"fundamental_intelligence": 0.35},
+            )
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), -0.01, 1.01])
+    def test_probability_inputs_must_be_finite_unit_interval(self, value):
+        with pytest.raises(ValueError, match=r"finite|\[0, 1\]"):
+            LikelihoodSet(quant_likelihood=value)
+        with pytest.raises(ValueError, match=r"finite|\[0, 1\]"):
+            PriorSet(composite_prior=value)
+
+    def test_likelihood_mapper_rejects_noncanonical_branch_payload(self):
+        mapper = SignalLikelihoodMapper()
+        branches = {
+            "quant": BranchResult(
+                branch_name="quant",
+                final_score=0.5,
+                final_confidence=0.8,
+            )
+        }
+        branches["intelligence"] = BranchResult(
+            branch_name="quant",
+            final_score=0.9,
+            final_confidence=0.9,
+        )
+
+        with pytest.raises(ValueError, match="Unexpected branch results"):
+            mapper.compute_likelihoods(branch_results=branches, symbol="A")
+
+    def test_likelihood_mapper_rejects_branch_key_name_swap(self):
+        branches = {
+            "quant": BranchResult(branch_name="fundamental"),
+            "fundamental": BranchResult(branch_name="quant"),
+        }
+
+        with pytest.raises(ValueError, match="key/name mismatch"):
+            SignalLikelihoodMapper().compute_likelihoods(
+                branch_results=branches,
+                symbol="A",
+            )
+
+    def test_likelihood_mapper_validates_nested_retired_metadata(self):
+        branches = {
+            "quant": BranchResult(
+                branch_name="quant",
+                metadata={"intelligence_score": 0.9},
+            )
+        }
+
+        with pytest.raises(ValueError, match="retired Intelligence key"):
+            SignalLikelihoodMapper().compute_likelihoods(
+                branch_results=branches,
+                symbol="A",
+            )
+
+    def test_mutated_correlation_matrix_cannot_be_serialized(self):
+        likelihoods = LikelihoodSet()
+        likelihoods.correlation_matrix["fundamental_intelligence"] = 0.35
+
+        with pytest.raises(ValueError, match="correlation_matrix must be empty"):
+            likelihoods.to_dict()
+
+    def test_mutated_likelihood_schema_and_metadata_are_rejected(self):
+        likelihoods = LikelihoodSet()
+        likelihoods.schema_version = "old-likelihood"
+        with pytest.raises(ValueError, match="schema mismatch"):
+            likelihoods.to_dict()
+
+        likelihoods = LikelihoodSet(
+            metadata={"branch_weights": {"intelligence": 1.0}},
+        )
+        with pytest.raises(ValueError, match="unexpected branch weights"):
+            likelihoods.to_dict()
 
 
 class TestBayesianPosteriorEngine:
@@ -153,7 +233,6 @@ class TestBayesianPosteriorEngine:
         likelihoods = LikelihoodSet(
             quant_likelihood=0.80,
             fundamental_likelihood=0.70,
-            intelligence_likelihood=0.65,
         )
 
         result = engine.compute_posterior(prior, likelihoods, symbol="A")
@@ -167,43 +246,58 @@ class TestBayesianPosteriorEngine:
         likelihoods = LikelihoodSet(
             quant_likelihood=0.20,
             fundamental_likelihood=0.30,
-            intelligence_likelihood=0.35,
         )
 
         result = engine.compute_posterior(prior, likelihoods, symbol="A")
         assert result.posterior_win_rate < 0.35
         assert result.posterior_expected_alpha < 0.0
 
-    def test_correlation_discount_applied(self):
+    def test_quant_fundamental_correlation_is_not_enabled(self):
         engine = BayesianPosteriorEngine()
         prior = PriorSet(composite_prior=0.50)
 
-        # Two correlated branches with strong agreement
         likelihoods_high = LikelihoodSet(
-            quant_likelihood=0.50,
+            quant_likelihood=0.80,
             fundamental_likelihood=0.80,
-            intelligence_likelihood=0.80,
         )
 
         result = engine.compute_posterior(prior, likelihoods_high, symbol="A")
-        assert result.correlation_discount > 0.0
-        # Posterior should be high but not as high as if branches were independent
+        assert result.correlation_discount == 0.0
         assert result.posterior_win_rate > 0.60
+
+    def test_mutated_nonfinite_likelihood_cannot_create_positive_posterior(self):
+        engine = BayesianPosteriorEngine()
+        likelihoods = LikelihoodSet()
+        likelihoods.quant_likelihood = float("nan")
+
+        with pytest.raises(ValueError, match="finite"):
+            engine.compute_posterior(PriorSet(), likelihoods, symbol="A")
 
     def test_degraded_backend_penalty(self):
         engine = BayesianPosteriorEngine()
         prior = PriorSet(composite_prior=0.50)
-        likelihoods = LikelihoodSet(quant_likelihood=0.80)
+        likelihoods = LikelihoodSet(
+            quant_likelihood=0.80,
+            fundamental_likelihood=0.80,
+        )
 
         normal = engine.compute_posterior(prior, likelihoods, symbol="A")
-        degraded = engine.compute_posterior(
+        quant_degraded = engine.compute_posterior(
             prior, likelihoods, symbol="A",
             is_degraded={"quant": True},
         )
+        fundamental_degraded = engine.compute_posterior(
+            prior,
+            likelihoods,
+            symbol="A",
+            is_degraded={"fundamental": True},
+        )
 
-        assert degraded.fallback_penalty > 0.0
+        assert quant_degraded.fallback_penalty > 0.0
+        assert fundamental_degraded.fallback_penalty > 0.0
         # Degraded result should have lower posterior
-        assert degraded.posterior_win_rate < normal.posterior_win_rate
+        assert quant_degraded.posterior_win_rate < normal.posterior_win_rate
+        assert fundamental_degraded.posterior_win_rate < normal.posterior_win_rate
 
     def test_coverage_discount_with_missing_branches(self):
         engine = BayesianPosteriorEngine()
@@ -218,7 +312,7 @@ class TestBayesianPosteriorEngine:
     def test_regime_aware_thresholds(self):
         engine = BayesianPosteriorEngine()
         prior = PriorSet(composite_prior=0.50)
-        likelihoods = LikelihoodSet(quant_likelihood=0.70, intelligence_likelihood=0.70)
+        likelihoods = LikelihoodSet(quant_likelihood=0.70, fundamental_likelihood=0.70)
 
         bull = engine.compute_posterior(prior, likelihoods, symbol="A", regime="趋势上涨")
         bear = engine.compute_posterior(prior, likelihoods, symbol="A", regime="趋势下跌")
@@ -257,18 +351,16 @@ class TestBayesianPosteriorEngine:
             LikelihoodSet(
                 quant_likelihood=0.66,
                 fundamental_likelihood=0.58,
-                intelligence_likelihood=0.68,
                 metadata={
                     "profile": "momentum_leader",
-                    "branch_weights": {"quant": 1.0, "fundamental": 0.7, "intelligence": 1.2},
+                    "branch_weights": {"quant": 1.0, "fundamental": 0.7},
                     "history_confidence": 0.70,
                     "avg_reliability": 0.68,
                     "momentum_strength": 0.84,
                     "fake_breakout_penalty": 0.10,
-                    "setup_failure_penalty": 0.0,
                     "crowding_penalty": 0.0,
                     "market_pressure": 0.0,
-                    "calibration_samples": {"intelligence": 8},
+                    "calibration_samples": {"quant": 8, "fundamental": 8},
                     "sector": "半导体",
                 },
             ),
@@ -280,18 +372,16 @@ class TestBayesianPosteriorEngine:
             LikelihoodSet(
                 quant_likelihood=0.66,
                 fundamental_likelihood=0.58,
-                intelligence_likelihood=0.68,
                 metadata={
                     "profile": "momentum_leader",
-                    "branch_weights": {"quant": 1.0, "fundamental": 0.7, "intelligence": 1.2},
+                    "branch_weights": {"quant": 1.0, "fundamental": 0.7},
                     "history_confidence": 0.70,
                     "avg_reliability": 0.68,
                     "momentum_strength": 0.84,
                     "fake_breakout_penalty": 0.85,
-                    "setup_failure_penalty": 0.45,
                     "crowding_penalty": 0.30,
                     "market_pressure": 0.5,
-                    "calibration_samples": {"intelligence": 8},
+                    "calibration_samples": {"quant": 8, "fundamental": 8},
                     "sector": "半导体",
                 },
             ),
@@ -302,3 +392,24 @@ class TestBayesianPosteriorEngine:
         assert risky.posterior_action_score < base.posterior_action_score
         assert risky.posterior_confidence < base.posterior_confidence
         assert risky.metadata["kill_switch"] is True
+
+
+@pytest.mark.parametrize(
+    "field_name,value,match",
+    [
+        ("posterior_win_rate", float("nan"), "finite"),
+        ("posterior_confidence", float("inf"), "finite"),
+        ("posterior_action_score", 1.1, r"\[-1.0, 1.0\]"),
+        ("posterior_capacity_penalty", -0.1, r"\[0.0, 1.0\]"),
+        ("coverage_discount", 1.1, r"\[0.0, 1.0\]"),
+        ("rank", -1, "non-negative integer"),
+    ],
+)
+def test_posterior_result_rejects_invalid_current_scalars(field_name, value, match):
+    with pytest.raises(ValueError, match=match):
+        PosteriorResult(**{field_name: value})
+
+
+def test_posterior_result_rejects_nonfinite_nested_metadata():
+    with pytest.raises(ValueError, match="PosteriorResult.metadata.metrics.score must be finite"):
+        PosteriorResult(metadata={"metrics": {"score": float("nan")}})

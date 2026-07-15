@@ -14,7 +14,7 @@
 <br/>
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org)
-[![Version](https://img.shields.io/badge/Version-v13.0.0-FF6B35?style=flat-square)](https://github.com/alpha-mw/myQuant/releases)
+[![Version](https://img.shields.io/badge/Version-v14.0.0-FF6B35?style=flat-square)](https://github.com/alpha-mw/myQuant/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-22C55E?style=flat-square)](LICENSE)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black)](https://react.dev)
@@ -40,7 +40,7 @@ Quant-Investor 的解法是严格分层：
         ↑
 LLM 审阅层（advisory-only，提供观点，不做决策）
         ↑
-数据快照 + DeterministicFunnel + v13 四分支 DAG
+数据快照 + DeterministicFunnel + v14 三分支 DAG
 ```
 
 **RiskGuard 具有一票否决权。** LLM 的任何输出只能作为参考信号进入 ICCoordinator，永远无法绕过风控硬约束。
@@ -52,7 +52,7 @@ LLM 审阅层（advisory-only，提供观点，不做决策）
 | 能力 | 说明 |
 |------|------|
 | 🏗 **三层数据协议** | `GlobalContext` → `SymbolResearchPacket` → `PortfolioDecision`，全程 Pydantic 结构化，可追溯 |
-| 🔬 **v13 四分支研究 DAG** | 本地快照 → quant-only `DeterministicFunnel` → 量化 · 基本面 · 情报 · 宏观 → Bayesian selection |
+| 🔬 **v14 三分支研究 DAG** | 本地快照 → quant-only `DeterministicFunnel` → 量化 · 基本面 · 宏观 → Bayesian selection |
 | 🛡 **确定性风控** | RiskGuard 硬否决 → ICCoordinator 一致性校验 → PortfolioConstructor 权重分配 |
 | 🧭 **生产 Markov 市场状态** | 生产默认启用，必须使用 full-market 或 broad reference 数据；小股票池不会定义全局市场状态 |
 | 🤖 **可选 LLM 审阅层** | 支持 OpenAI / Claude / DeepSeek / Gemini / 通义 / Kimi，无 API Key 自动降级 |
@@ -76,9 +76,9 @@ LLM 审阅层（advisory-only，提供观点，不做决策）
 └────────────────────────────┬────────────────────────────────┘
                              │
 ┌────────────────────────────▼────────────────────────────────┐
-│                  Stage 2: v13 Research DAG                   │
+│                  Stage 2: v14 Research DAG                   │
 │                                                             │
-│   QuantAgent · FundamentalAgent · IntelligenceAgent · Macro │
+│          QuantAgent · FundamentalAgent · MacroAgent         │
 │        │                                                    │
 │        ▼                                                    │
 │   SymbolResearchPacket ──► Bayesian selection               │
@@ -102,16 +102,17 @@ LLM 审阅层（advisory-only，提供观点，不做决策）
 
 **分支权重**
 
-| 分支 | Quant Factor | Intelligence | Fundamental | Macro |
-|------|:------------:|:------------:|:-----------:|:-----:|
-| 权重 | 36% | 26% | 19% | 19% |
+| 分支 | Quant Factor | Fundamental | Macro |
+|------|:------------:|:-----------:|:-----:|
+| 权重 | 48.28% | 25.86% | 25.86% |
 
 ```
-Quant Factor    ████████████████████████████████████  36%
-Intelligence    ██████████████████████████            26%
-Fundamental     ███████████████████                   19%
-Macro           ███████████████████                   19%
+Quant Factor    ████████████████████████████████████  48.3%
+Fundamental     ███████████████████                   25.9%
+Macro           ███████████████████                   25.9%
 ```
+
+Bayesian 证据源为 Quant 与 Fundamental（`x/2`）；Macro 只作为 prior/context，不占用 likelihood 槽位。
 
 ### 数据协议
 
@@ -278,7 +279,6 @@ myQuant/
 │   ├── agents/
 │   │   ├── quant_agent.py       # 量化因子
 │   │   ├── fundamental_agent.py # 基本面
-│   │   ├── intelligence_agent.py# 舆情情报
 │   │   ├── macro_agent.py       # 宏观
 │   │   ├── risk_guard.py        # 硬否决风控 ⛔
 │   │   ├── ic_coordinator.py    # 一致性协调
@@ -292,7 +292,7 @@ myQuant/
 │   │   ├── read_result.py       # 市场数据读取结果类型
 │   │   ├── runtime_profile.py   # market run/analyze stage profile
 │   │   ├── dag/                 # context/research/Bayesian/control/reporting
-│   │   ├── dag_executor.py      # v13 全市场 DAG 执行器
+│   │   ├── dag_executor.py      # v14 全市场 DAG 执行器
 │   │   └── download.py          # maintain/download 兼容入口
 │   ├── llm_gateway.py           # 统一 LLM 网关
 │   └── reporting/               # Markdown 报告渲染

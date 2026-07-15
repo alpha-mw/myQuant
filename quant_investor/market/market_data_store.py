@@ -33,7 +33,44 @@ class MarketDataStore:
     def validate_latest(self) -> dict[str, Any]:
         gate = self.reader.clean_snapshot_gate(refresh=True)
         blockers = list(gate.get("blockers", []) or [])
-        status = "passed" if gate.get("healthy") else "failed"
+        macro_generation: dict[str, Any] = {}
+        if self.market == "CN" and self.reader.catalog_path.exists():
+            try:
+                catalog_payload = json.loads(
+                    self.reader.catalog_path.read_text(encoding="utf-8")
+                )
+            except Exception:
+                catalog_payload = {}
+            tables = (
+                catalog_payload.get("tables", {})
+                if isinstance(catalog_payload, Mapping)
+                else {}
+            )
+            required_tables = (
+                catalog_payload.get("required_tables", [])
+                if isinstance(catalog_payload, Mapping)
+                else []
+            )
+            if (
+                isinstance(tables, Mapping)
+                and "macro_daily" in tables
+            ) or (
+                isinstance(required_tables, list)
+                and "macro_daily" in required_tables
+            ):
+                from quant_investor.market.macro_mart import (
+                    MacroMartPromotionError,
+                    read_macro_mart,
+                )
+
+                try:
+                    _frame, macro_generation = read_macro_mart(
+                        data_root=self.reader.parquet_market_root / "macro_daily"
+                    )
+                except (MacroMartPromotionError, OSError, ValueError) as exc:
+                    blockers.append(str(exc) or "macro_catalog_generation_invalid")
+        blockers = list(dict.fromkeys(blockers))
+        status = "passed" if gate.get("healthy") and not blockers else "failed"
         coverage: dict[str, Any] = {}
         try:
             latest_payload = self.reader._load_latest_payload(refresh=True)
@@ -55,6 +92,7 @@ class MarketDataStore:
             "mode_policy": gate.get("mode_policy", "strict"),
             "coverage": coverage,
             "coverage_ratio": coverage.get("coverage_ratio"),
+            "macro_generation": macro_generation,
         }
 
     def _atomic_write_parquet(self, frame: pd.DataFrame, path: Path) -> None:

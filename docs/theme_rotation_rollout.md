@@ -31,7 +31,7 @@ Validation:
 
 - Run default-off and no-production-wiring contract tests.
 - Confirm `CANONICAL_BRANCH_ORDER` remains
-  `quant/fundamental/intelligence/macro`.
+  `quant/fundamental/macro`.
 
 ## Stage 1: Metadata Only
 

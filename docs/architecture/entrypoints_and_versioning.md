@@ -21,13 +21,35 @@
 
 ## Runtime Versions
 
-- package version：`13.0.0`
-- `ARCHITECTURE_VERSION = "13.0.0-stable"`
-- `BRANCH_SCHEMA_VERSION = "branch-schema.v13.four-branch"`
-- `IC_PROTOCOL_VERSION = "ic-protocol.v13.four-branch"`
-- `REPORT_PROTOCOL_VERSION = "report-protocol.v13.four-branch"`
-- `CALIBRATION_SCHEMA_VERSION = "2026-03-22.calibration.v2"`
-- `AGENT_SCHEMA_VERSION = "2026-03-23.agent.v1"`
+- package version：`14.0.0`
+- `ARCHITECTURE_VERSION = "14.0.0-stable"`
+- `BRANCH_SCHEMA_VERSION = "branch-schema.v14.three-branch"`
+- `LIKELIHOOD_SCHEMA_VERSION = "likelihood-schema.v14.two-likelihood"`
+- `IC_PROTOCOL_VERSION = "ic-protocol.v14.three-branch"`
+- `REPORT_PROTOCOL_VERSION = "report-protocol.v14.three-branch"`
+- `CALIBRATION_SCHEMA_VERSION = "2026-07-14.calibration.v14.three-branch"`
+- `AGENT_SCHEMA_VERSION = "2026-07-14.agent.v14.three-branch"`
+
+## Current Web Result Envelope
+
+`AnalysisSessionDetail` 与 Web 持久化结果必须在顶层同时携带并精确匹配：
+
+- `architecture_version = "14.0.0-stable"`
+- `branch_schema_version = "branch-schema.v14.three-branch"`
+- `likelihood_schema_version = "likelihood-schema.v14.two-likelihood"`
+- `report_protocol_version = "report-protocol.v14.three-branch"`
+
+当前 Web DTO 只接受按 `kline, quant, fundamental, llm_debate, macro` 排序的分支列表，其中三个 canonical 分支必须启用。缺失 schema、旧 v13 schema、Intelligence、未知分支及旧 CN/US legacy artifact 都会 fail closed，不会被补字段、过滤或包装成当前 DTO。
+
+## Current Market Report Artifact Envelope
+
+`market analyze`、DAG-to-report synthesis、batch report artifact 与 full-market report builder 必须同时携带并精确匹配 Web envelope 的四项版本以及：
+
+- `ic_protocol_version = "ic-protocol.v14.three-branch"`
+
+每个 batch 顶层及其 `analysis_meta` 都必须携带这五项版本，`branches` 必须恰好包含 `quant, fundamental, macro`，任意嵌套结构也不得出现以 Intelligence 命名的机器字段。逐批持久化、full-market 汇总和 US 模拟组合 recommendation loader 都在读写或动作生成前执行同一合同；缺失 canonical 分支、额外的 K-Line/Intelligence/未知分支、旧版本或无版本 artifact 会明确报错，当前链路不再静默过滤、升级或消费旧 artifact。
+
+当前 market batch 只写入 `results/v14/cn_analysis_full` 与 `results/v14/us_analysis_full`；旧的无版本目录仅保留为历史快照，不参与当前报告、Web metadata 或模拟组合 recommendation 消费。
 
 ## Public Protocol Names
 

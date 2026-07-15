@@ -5,7 +5,7 @@ artifacts, and audit reports before any runtime decision path changes.
 
 ## Markov Regime Operations
 
-Markov regime is production-first in the v13 DAG.
+Markov regime is production-first in the v14 DAG.
 
 - Production default: `MARKOV_REGIME_ENABLED=1`.
 - Emergency disable: `MARKOV_REGIME_ENABLED=0`.
@@ -91,13 +91,13 @@ Generate Calibration V2 artifacts from an offline outcome ledger:
 
 ```bash
 ./.venv/bin/python scripts/train_calibration_v2.py \
-  --ledger-dir data/bayesian_outcome_ledger \
-  --output-dir data/bayesian_calibration_v2
+  --ledger-dir data/bayesian_outcome_ledger/v14 \
+  --output-dir data/bayesian_calibration_v2/v14
 ```
 
 Expected outputs:
-- `data/bayesian_calibration_v2/calibration_model_v2.json`
-- `data/bayesian_calibration_v2/calibration_report_v2.json`
+- `data/bayesian_calibration_v2/v14/calibration_model_v2.json`
+- `data/bayesian_calibration_v2/v14/calibration_report_v2.json`
 
 ## Audit Bundle Generation
 
@@ -270,8 +270,8 @@ charge participation-based impact inside backtest accounting only.
 
 ## Expected Artifact Directories
 
-- `data/bayesian_outcome_ledger`
-- `data/bayesian_calibration_v2`
+- `data/bayesian_outcome_ledger/v14`
+- `data/bayesian_calibration_v2/v14`
 - `data/data_quality_contract`
 - `data/risk_tensor`
 - `data/portfolio_optimizer`

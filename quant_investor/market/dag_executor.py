@@ -38,7 +38,6 @@ from quant_investor.agent_protocol import (
 from quant_investor.agents.agent_contracts import BaseBranchAgentOutput
 from quant_investor.agents.fundamental_agent import FundamentalAgent
 from quant_investor.agents.ic_coordinator import ICCoordinator
-from quant_investor.agents.intelligence_agent import IntelligenceAgent
 from quant_investor.agents.macro_agent import MacroAgent
 from quant_investor.agents.master_agent import MasterAgent
 from quant_investor.agents.narrator_agent import NarratorAgent
@@ -427,10 +426,15 @@ async def _execute_market_dag_async(
         symbols = pit_filter.symbols
         pit_universe_metadata = dict(pit_filter.metadata)
         pit_universe_metadata["status"] = "applied" if pit_records else "missing_store"
-        pit_universe_metadata["snapshot_id"] = str(pit_store.load_manifest().get("source_run_id", ""))
+        pit_manifest = pit_store.load_manifest()
+        pit_universe_metadata["snapshot_id"] = str(pit_manifest.get("source_run_id", ""))
+        pit_universe_metadata["manifest_path"] = str(pit_store.manifest_path.resolve())
+        pit_universe_metadata["canonical_path"] = str(pit_store.canonical_path.resolve())
         pit_universe_metadata["quarantine_symbols"] = list(pit_filter.quarantine_symbols)
         pit_universe_metadata["untradable_symbols"] = list(pit_filter.untradable_symbols)
-        scoped_data_snapshot["pit_universe"] = pit_universe_metadata
+    # The current run's local PIT filter is authoritative.  Never accept a
+    # caller-injected snapshot claim when PIT is disabled or unavailable.
+    scoped_data_snapshot["pit_universe"] = pit_universe_metadata
 
     if not symbols:
         empty_context = GlobalContext(
@@ -612,7 +616,6 @@ async def _execute_market_dag_async(
     funnel_output = context_state.funnel_output
 
     fundamental_agent = FundamentalAgent()
-    intelligence_agent = IntelligenceAgent()
     with profile_stage(
         runtime_profiler,
         "dag_candidate_research",
@@ -640,7 +643,6 @@ async def _execute_market_dag_async(
             branch_data_readiness=context_state.branch_data_readiness,
             branch_data_payload=context_state.branch_data_payload,
             fundamental_agent=fundamental_agent,
-            intelligence_agent=intelligence_agent,
             quant_result=quant_result,
             ensure_branch_verdict=_ensure_branch_verdict,
             master_hint_to_ic_hint=_master_hint_to_ic_hint,

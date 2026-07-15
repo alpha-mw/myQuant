@@ -6,8 +6,8 @@ Scope for a future split of
 ## Current Responsibility Clusters
 
 - Review mainline and DAG compliance: `_run_unified_review_mainline_for_holdings`,
-  `_build_dag_four_branch_compliance`, DAG artifact extraction, candidate-level
-  v13 DAG helpers.
+  `_build_dag_branch_contract_compliance`, DAG artifact extraction,
+  candidate-level v14 DAG helpers.
 - Market and execution inputs: realtime quote parsing/fetching, canonical
   completeness checks, previous-record loading, manual ledger resolution.
 - Portfolio policy: trailing take-profit review, risk-reduction sell gates,

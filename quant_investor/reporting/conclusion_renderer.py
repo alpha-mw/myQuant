@@ -25,7 +25,6 @@ from quant_investor.reporting.executive_summary import confidence_label
 BRANCH_LABELS = {
     "quant": "量化",
     "fundamental": "基本面",
-    "intelligence": "智能融合",
     "macro": "宏观",
 }
 

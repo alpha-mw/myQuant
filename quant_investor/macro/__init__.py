@@ -1,4 +1,4 @@
-"""Pure, measurement-only macro v2 observer contracts."""
+"""Pure, measurement-only Macro v2 observer surface."""
 
 from quant_investor.macro.contracts import MacroObservation, MacroSnapshot
 from quant_investor.macro.acquisition import build_macro_acquisition_plan

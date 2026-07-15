@@ -35,6 +35,26 @@ from quant_investor.llm_provider_priority import (
 # ── 项目根目录 ─────────────────────────────────────────────────────────────────
 ROOT = Path(__file__).resolve().parents[2]
 RUN_DIR_PATTERN = re.compile(r"^\d{8}_\d{3,6}$")
+DEFAULT_DAILY_REPORT_DIR = "reports/v14/daily"
+
+
+def resolve_daily_report_dir(value: Any) -> Path:
+    """Resolve a v14 daily output and reject the frozen v13 evidence tree."""
+
+    raw = str(value or DEFAULT_DAILY_REPORT_DIR).strip()
+    report_dir = Path(raw)
+    resolved = (
+        report_dir.resolve(strict=False)
+        if report_dir.is_absolute()
+        else (ROOT / report_dir).resolve(strict=False)
+    )
+    frozen = (ROOT / "reports/daily").resolve(strict=False)
+    if resolved == frozen or frozen in resolved.parents:
+        raise ValueError(
+            "reports/daily is frozen v13 retirement evidence; "
+            "set report_dir to reports/v14/daily"
+        )
+    return resolved
 
 
 def run_staged_maintenance(**kwargs: Any) -> dict[str, Any]:
@@ -154,7 +174,7 @@ def load_config(config_path: Optional[str] = None) -> dict[str, Any]:
         "maintenance_target_date": "auto",
         "maintenance_daily_window": True,
         "schedule_time": "17:30",
-        "report_dir": "reports/daily",
+        "report_dir": DEFAULT_DAILY_REPORT_DIR,
     }
     for key, val in defaults.items():
         normalized.setdefault(key, val)
@@ -171,6 +191,8 @@ def load_config(config_path: Optional[str] = None) -> dict[str, Any]:
 
 def _normalize_runtime_config(config: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(config)
+    normalized.setdefault("report_dir", DEFAULT_DAILY_REPORT_DIR)
+    resolve_daily_report_dir(normalized["report_dir"])
     normalized["review_model_priority"] = _resolve_review_model_priority(normalized)
     normalized.update(_normalize_role_model_overrides(normalized))
     for key in (

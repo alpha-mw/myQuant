@@ -117,12 +117,9 @@ def _build_shortlist_from_bayesian_records(
             continue
         risk_flags: list[str] = []
         fake_breakout_penalty = float(metadata.get("fake_breakout_penalty", 0.0) or 0.0)
-        setup_failure_penalty = float(metadata.get("setup_failure_penalty", 0.0) or 0.0)
         crowding_penalty = float(metadata.get("crowding_penalty", 0.0) or 0.0)
         if fake_breakout_penalty >= 0.35:
             risk_flags.append(f"fake_breakout_risk={fake_breakout_penalty:.2f}")
-        if setup_failure_penalty >= 0.25:
-            risk_flags.append(f"setup_failure_penalty={setup_failure_penalty:.2f}")
         if crowding_penalty >= 0.20:
             risk_flags.append(f"crowding_penalty={crowding_penalty:.2f}")
         shortlist.append(

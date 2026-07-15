@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from quant_investor.config import config
 
@@ -32,7 +33,7 @@ MARKET_SETTINGS: dict[str, MarketSettings] = {
         report_flag="🇨🇳",
         currency_symbol="¥",
         data_dir=config.CN_MARKET_DATA_DIR,
-        analysis_output_dir="results/cn_analysis_full",
+        analysis_output_dir="results/v14/cn_analysis_full",
         backtest_output_dir="results/cn_backtest",
         name_cache_file="data/cn_universe/stock_names.json",
         default_batch_size=30,
@@ -55,7 +56,7 @@ MARKET_SETTINGS: dict[str, MarketSettings] = {
         report_flag="🇺🇸",
         currency_symbol="$",
         data_dir="data/us_market_full",
-        analysis_output_dir="results/us_analysis_full",
+        analysis_output_dir="results/v14/us_analysis_full",
         backtest_output_dir="results/us_backtest",
         name_cache_file="data/us_universe/stock_names.json",
         default_batch_size=25,
@@ -74,12 +75,50 @@ MARKET_SETTINGS: dict[str, MarketSettings] = {
     ),
 }
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_RETIRED_ANALYSIS_OUTPUT_DIRS = {
+    Path("results/cn_analysis_full"),
+    Path("results/us_analysis_full"),
+}
+
 
 def get_market_settings(market: str) -> MarketSettings:
     normalized = market.upper()
     if normalized not in MARKET_SETTINGS:
         raise ValueError(f"不支持的市场: {market!r}，可选 {sorted(MARKET_SETTINGS)}")
     return MARKET_SETTINGS[normalized]
+
+
+def resolve_market_analysis_output_dir(
+    market: str,
+    output_dir: str | Path | None = None,
+) -> Path:
+    """Resolve a current writer target and reject the retired physical roots."""
+
+    settings = get_market_settings(market)
+    target = Path(output_dir or settings.analysis_output_dir)
+    resolved_target = (
+        target.resolve(strict=False)
+        if target.is_absolute()
+        else (Path.cwd() / target).resolve(strict=False)
+    )
+    retired_absolute = {
+        (_PROJECT_ROOT / retired).resolve(strict=False)
+        for retired in _RETIRED_ANALYSIS_OUTPUT_DIRS
+    }
+    targets_retired_relative = any(
+        target == retired or retired in target.parents
+        for retired in _RETIRED_ANALYSIS_OUTPUT_DIRS
+    )
+    targets_retired_absolute = any(
+        resolved_target == retired or retired in resolved_target.parents
+        for retired in retired_absolute
+    )
+    if targets_retired_relative or targets_retired_absolute:
+        raise ValueError(
+            f"retired unversioned market analysis output directory is read-only: {target}"
+        )
+    return target
 
 
 def normalize_categories(market: str, categories: list[str] | None) -> list[str]:

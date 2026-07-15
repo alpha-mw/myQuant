@@ -1,9 +1,8 @@
-"""Four-branch data readiness contracts and offline assessment helpers."""
+"""Three-branch data readiness contracts and offline assessment helpers."""
 
 from __future__ import annotations
 
 import csv
-import hashlib
 import json
 import math
 from dataclasses import asdict, dataclass, field
@@ -14,9 +13,13 @@ from typing import Any, Mapping, Sequence
 import pandas as pd
 
 from quant_investor.market.fundamental_generation import (
+    FundamentalGenerationError,
     load_fundamental_pointer,
+    load_fundamental_table,
     resolve_fundamental_table_path,
 )
+from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
+from quant_investor.versioning import BRANCH_SCHEMA_VERSION
 
 
 STATUS_PASS = "pass"
@@ -26,12 +29,18 @@ SOURCE_TUSHARE = "tushare_primary"
 SOURCE_PUBLIC_FALLBACK = "public_structured_fallback"
 SOURCE_OFFLINE = "manual_offline_snapshot"
 SOURCE_PRIORITY_ORDER = (SOURCE_TUSHARE, SOURCE_PUBLIC_FALLBACK, SOURCE_OFFLINE)
+_MACRO_SOURCE_PRIORITY_BY_SOURCE = {
+    SOURCE_TUSHARE: SOURCE_TUSHARE,
+    SOURCE_PUBLIC_FALLBACK: SOURCE_PUBLIC_FALLBACK,
+    SOURCE_OFFLINE: SOURCE_OFFLINE,
+}
 
 DEFAULT_PARQUET_CN_ROOT = Path("data/parquet/cn")
 DEFAULT_FUNDAMENTAL_ROOT = DEFAULT_PARQUET_CN_ROOT / "fundamental_daily"
-DEFAULT_INTELLIGENCE_ROOT = DEFAULT_PARQUET_CN_ROOT / "intelligence_daily"
 DEFAULT_MACRO_ROOT = DEFAULT_PARQUET_CN_ROOT / "macro_daily"
-DEFAULT_READINESS_ROOT = Path("reports/branch_readiness")
+DEFAULT_READINESS_ROOT = Path("reports/v14/branch_readiness")
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+_FROZEN_READINESS_ROOT = (_REPOSITORY_ROOT / "reports/branch_readiness").resolve()
 
 QUANT_REQUIRED_FIELDS = ("open", "high", "low", "close", "volume", "amount")
 FUNDAMENTAL_REQUIRED_FIELDS = (
@@ -43,14 +52,6 @@ FUNDAMENTAL_REQUIRED_FIELDS = (
     "fin_fcf_to_profit",
     "fcf_to_price",
     "forecast_revision",
-)
-INTELLIGENCE_REQUIRED_FIELDS = (
-    "intelligence_score",
-    "event_risk_score",
-    "sentiment_score",
-    "money_flow_score",
-    "breadth_score",
-    "rotation_score",
 )
 MACRO_REQUIRED_FIELDS = (
     "macro_score",
@@ -243,7 +244,7 @@ def assess_quant_readiness(
                 missing_fields.add(field_name)
         latest = _latest_frame_date(frame)
         latest_dates[symbol] = latest
-        if target_date and latest and latest < target_date:
+        if target_date and latest != target_date:
             symbol_missing.append("freshness")
             missing_fields.add("freshness")
         if symbol_missing:
@@ -257,7 +258,15 @@ def assess_quant_readiness(
     if not universe:
         unique_blockers.append("empty_quant_universe")
         status = STATUS_BLOCK
-    freshness = "fresh" if not target_date or all(not latest or latest >= target_date for latest in latest_dates.values()) else "stale"
+    freshness = (
+        "fresh"
+        if not target_date
+        or (
+            len(latest_dates) == len(universe)
+            and all(latest == target_date for latest in latest_dates.values())
+        )
+        else "stale"
+    )
     if read_results:
         issue_count = sum(len(getattr(result, "issues", []) or []) for result in read_results.values())
         if issue_count:
@@ -284,7 +293,7 @@ def assess_quant_readiness(
 
 def _read_latest_manifest(root: Path) -> dict[str, Any]:
     path = root / "latest_manifest.json"
-    if not path.exists() or path.is_symlink() or not path.is_file():
+    if not path.exists():
         return {}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -297,25 +306,6 @@ def _resolve_parquet_table_root(root: str | Path, table_name: str) -> Path:
     path = Path(root).expanduser()
     if path.suffix.lower() == ".parquet":
         return path
-    if table_name == "macro_daily":
-        pointer_path = path / "latest_manifest.json"
-        pointer = _read_latest_manifest(path)
-        if (pointer_path.exists() or pointer_path.is_symlink()) and not pointer:
-            return path / "__invalid_macro_generation_pointer__.parquet"
-        relative = Path(str(pointer.get("table_path") or ""))
-        if relative and not relative.is_absolute() and ".." not in relative.parts:
-            candidate = (path / relative).resolve()
-            resolved_root = path.resolve()
-            if resolved_root in candidate.parents and candidate.is_file() and not candidate.is_symlink():
-                declared_hash = str(pointer.get("parquet_sha256") or "")
-                if (
-                    pointer.get("generation_id")
-                    and declared_hash
-                    and hashlib.sha256(candidate.read_bytes()).hexdigest() == declared_hash
-                ):
-                    return candidate
-        if pointer.get("generation_id") or pointer.get("table_path"):
-            return path / "__invalid_macro_generation_pointer__.parquet"
     if table_name == "fundamental_daily":
         if load_fundamental_pointer(path) is not None:
             return resolve_fundamental_table_path(path, table_name)
@@ -409,9 +399,22 @@ def load_fundamental_records(
     as_of: str = "",
     root: str | Path = DEFAULT_FUNDAMENTAL_ROOT,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
-    table_path = _resolve_parquet_table_root(root, "fundamental_daily")
-    frame = _read_parquet_table(table_path)
     pointer = load_fundamental_pointer(root)
+    if pointer is not None:
+        frame, pointer = load_fundamental_table(
+            root,
+            "fundamental_daily",
+        )
+        table_path = Path(
+            str(
+                dict(pointer.get("tables", {}) or {}).get(
+                    "fundamental_daily", ""
+                )
+            )
+        )
+    else:
+        table_path = _resolve_parquet_table_root(root, "fundamental_daily")
+        frame = _read_parquet_table(table_path)
     manifest = (
         dict(pointer.get("metadata", {}) or {})
         if pointer is not None
@@ -425,19 +428,44 @@ def load_fundamental_records(
                 "storage_backend": "parquet_canonical_generation",
             }
         )
-    return _latest_records_by_symbol(frame, symbols=symbols, as_of=as_of), manifest
-
-
-def load_intelligence_records(
-    symbols: Sequence[str],
-    *,
-    as_of: str = "",
-    root: str | Path = DEFAULT_INTELLIGENCE_ROOT,
-) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
-    table_path = _resolve_parquet_table_root(root, "intelligence_daily")
-    frame = _read_parquet_table(table_path)
-    manifest = _read_latest_manifest(table_path) or _manifest_from_parquet("intelligence_daily", frame, table_path)
-    return _latest_records_by_symbol(frame, symbols=symbols, as_of=as_of), manifest
+    records = _latest_records_by_symbol(
+        frame,
+        symbols=symbols,
+        as_of=as_of,
+    )
+    if pointer is not None:
+        generation_id = str(pointer.get("generation_id") or "").strip()
+        if not generation_id:
+            raise FundamentalGenerationError(
+                "fundamental canonical generation_id missing"
+            )
+        generation_source_priority = str(
+            dict(pointer.get("metadata", {}) or {}).get(
+                "source_priority"
+            )
+            or ""
+        ).strip()
+        for symbol, record in records.items():
+            declared = str(
+                record.get("fundamental_generation_id") or ""
+            ).strip()
+            if declared and declared != generation_id:
+                raise FundamentalGenerationError(
+                    "fundamental row generation mismatch: " + symbol
+                )
+            declared_source_priority = str(
+                record.get("source_priority") or ""
+            ).strip()
+            if (
+                declared_source_priority
+                and declared_source_priority != generation_source_priority
+            ):
+                raise FundamentalGenerationError(
+                    "fundamental row source priority mismatch: " + symbol
+                )
+            record["fundamental_generation_id"] = generation_id
+            record["source_priority"] = generation_source_priority
+    return records, manifest
 
 
 def load_macro_record(
@@ -445,11 +473,19 @@ def load_macro_record(
     as_of: str = "",
     root: str | Path = DEFAULT_MACRO_ROOT,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    root_path = Path(root).expanduser()
-    pointer = _read_latest_manifest(root_path)
-    table_path = _resolve_parquet_table_root(root_path, "macro_daily")
-    frame = _read_parquet_table(table_path)
-    manifest = pointer or _read_latest_manifest(table_path) or _manifest_from_parquet("macro_daily", frame, table_path)
+    # Macro has a stricter generation contract than generic logical tables.
+    # Import lazily because the mart writer uses this module's source constants.
+    from quant_investor.market.macro_mart import (
+        MacroMartPromotionError,
+        read_macro_mart,
+    )
+
+    try:
+        frame, manifest = read_macro_mart(data_root=root)
+    except (MacroMartPromotionError, OSError, ValueError) as exc:
+        return {}, {
+            "read_error": str(exc) or "macro_catalog_generation_invalid"
+        }
     if frame.empty:
         return {}, manifest
     working = frame.copy()
@@ -547,16 +583,57 @@ def assess_macro_readiness(
     as_of: str = "",
 ) -> BranchDataReadiness:
     missing = [field_name for field_name in MACRO_REQUIRED_FIELDS if not _is_present(macro_record.get(field_name))]
-    source = str(macro_record.get("source") or manifest.get("provider_status") or manifest.get("source") or "parquet_canonical")
-    priority = _source_priority(source, str(macro_record.get("source_priority") or manifest.get("source_priority") or ""))
-    fallback_used = priority != SOURCE_TUSHARE
+    source = str(manifest.get("source") or "").strip()
+    priority = _source_priority(
+        source,
+        str(manifest.get("source_priority") or ""),
+    )
+    declared_priority = str(
+        manifest.get("source_priority") or ""
+    ).strip()
+    source_priority_valid = (
+        _MACRO_SOURCE_PRIORITY_BY_SOURCE.get(source) == declared_priority
+    )
+    fallback_used = priority != SOURCE_TUSHARE or not source_priority_valid
     blockers = []
+    read_error = str(manifest.get("read_error") or "").strip()
+    if read_error:
+        blockers.append(read_error)
     if not macro_record:
         blockers.append("macro_parquet_table_missing_or_empty")
     if missing:
         blockers.append("macro_required_fields_missing")
     if fallback_used:
         blockers.append("macro_not_tushare_primary")
+    if not source_priority_valid:
+        blockers.append("macro_source_priority_mismatch")
+    if manifest.get("production_eligible") is not True:
+        blockers.append("macro_generation_not_production_eligible")
+    if not str(manifest.get("generation_id") or "").strip():
+        blockers.append("macro_generation_id_missing")
+    if str(manifest.get("provider_status") or "") != "verified_provider_snapshot":
+        blockers.append("macro_provider_manifest_unverified")
+    record_source = str(macro_record.get("source") or "").strip()
+    record_priority = str(macro_record.get("source_priority") or "").strip()
+    if macro_record and (
+        record_source != source
+        or record_priority != str(manifest.get("source_priority") or "").strip()
+    ):
+        blockers.append("macro_source_lineage_mismatch")
+    if str(macro_record.get("pit_status") or "") != "market_point_in_time":
+        blockers.append("macro_pit_status_invalid")
+    fetched_at = pd.to_datetime(
+        str(macro_record.get("fetched_at") or "").strip(),
+        errors="coerce",
+        utc=True,
+    )
+    if pd.isna(fetched_at):
+        blockers.append("macro_fetched_at_missing_or_invalid")
+    target_date = _date_text(as_of)
+    record_date = _date_text(macro_record.get("trade_date"))
+    if target_date and record_date != target_date:
+        blockers.append("macro_trade_date_as_of_mismatch")
+    blockers = list(dict.fromkeys(blockers))
     return BranchDataReadiness(
         branch="macro",
         status=STATUS_PASS if not blockers else STATUS_BLOCK,
@@ -585,7 +662,6 @@ def assess_branch_data_readiness(
     category: str = "full_a",
     as_of: str = "",
     fundamental_root: str | Path = DEFAULT_FUNDAMENTAL_ROOT,
-    intelligence_root: str | Path = DEFAULT_INTELLIGENCE_ROOT,
     macro_root: str | Path = DEFAULT_MACRO_ROOT,
     run_id: str | None = None,
 ) -> BranchGovernanceReport:
@@ -598,7 +674,6 @@ def assess_branch_data_readiness(
         as_of=as_of,
     )
     fundamentals, fundamental_manifest = load_fundamental_records(symbols, as_of=as_of, root=fundamental_root)
-    intelligence, intelligence_manifest = load_intelligence_records(symbols, as_of=as_of, root=intelligence_root)
     macro_record, macro_manifest = load_macro_record(as_of=as_of, root=macro_root)
     fundamental = _assess_symbol_records(
         branch="fundamental",
@@ -608,19 +683,10 @@ def assess_branch_data_readiness(
         manifest=fundamental_manifest,
         as_of=as_of,
     )
-    intel = _assess_symbol_records(
-        branch="intelligence",
-        symbols=symbols,
-        records=intelligence,
-        required_fields=INTELLIGENCE_REQUIRED_FIELDS,
-        manifest=intelligence_manifest,
-        as_of=as_of,
-    )
     macro = assess_macro_readiness(macro_record=macro_record, manifest=macro_manifest, as_of=as_of)
     blocked = sorted(
         set(quant.affected_symbols)
         | set(fundamental.affected_symbols)
-        | set(intel.affected_symbols)
         | (set(symbols) if macro.status == STATUS_BLOCK else set())
     )
     quantifiable = [
@@ -631,19 +697,6 @@ def assess_branch_data_readiness(
     investable = [symbol for symbol in symbols if symbol not in set(blocked)]
     branch_data = {
         "fundamentals": fundamentals,
-        "event_data": {
-            symbol: list(records.get("events", []))
-            for symbol, records in intelligence.items()
-            if isinstance(records.get("events", []), list)
-        },
-        "sentiment_data": {
-            symbol: {
-                key: value
-                for key, value in records.items()
-                if key in set(INTELLIGENCE_REQUIRED_FIELDS) | {"source", "source_priority", "trade_date"}
-            }
-            for symbol, records in intelligence.items()
-        },
         "macro_data": macro_record,
     }
     return BranchGovernanceReport(
@@ -654,7 +707,6 @@ def assess_branch_data_readiness(
         readiness={
             "quant": quant,
             "fundamental": fundamental,
-            "intelligence": intel,
             "macro": macro,
         },
         blocked_symbols=blocked,
@@ -664,6 +716,8 @@ def assess_branch_data_readiness(
         metadata={
             "policy": "strict_when_used",
             "source_priority_order": list(SOURCE_PRIORITY_ORDER),
+            "branch_schema_version": BRANCH_SCHEMA_VERSION,
+            "canonical_branch_order": list(CANONICAL_BRANCH_ORDER),
             "candidate_count": len(symbols),
             "blocked_count": len(blocked),
             "investable_count": len(investable),
@@ -707,6 +761,15 @@ def write_branch_readiness_report(
     output_dir: str | Path = DEFAULT_READINESS_ROOT,
 ) -> dict[str, str]:
     out = Path(output_dir)
+    resolved_out = out.resolve(strict=False)
+    if (
+        resolved_out == _FROZEN_READINESS_ROOT
+        or _FROZEN_READINESS_ROOT in resolved_out.parents
+    ):
+        raise ValueError(
+            "reports/branch_readiness is frozen v13 retirement evidence; "
+            "write current artifacts under reports/v14/branch_readiness"
+        )
     out.mkdir(parents=True, exist_ok=True)
     json_path = out / f"{report.run_id}.json"
     md_path = out / f"{report.run_id}.md"
@@ -752,7 +815,6 @@ __all__ = [
     "BranchDataReadiness",
     "BranchGovernanceReport",
     "FUNDAMENTAL_REQUIRED_FIELDS",
-    "INTELLIGENCE_REQUIRED_FIELDS",
     "MACRO_REQUIRED_FIELDS",
     "QUANT_REQUIRED_FIELDS",
     "SOURCE_OFFLINE",
@@ -766,7 +828,6 @@ __all__ = [
     "assess_macro_readiness",
     "assess_quant_readiness",
     "load_fundamental_records",
-    "load_intelligence_records",
     "load_macro_record",
     "write_branch_readiness_report",
 ]

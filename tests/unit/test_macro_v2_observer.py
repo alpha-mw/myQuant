@@ -24,6 +24,11 @@ def _observation(
     source: str = "nbs_official",
 ) -> dict[str, object]:
     available = datetime.fromisoformat(available_at.replace("Z", "+00:00")).astimezone(UTC)
+    source_url = (
+        "https://www.pbc.gov.cn/fixture"
+        if source == "pbc_official"
+        else "https://www.stats.gov.cn/fixture"
+    )
     return {
         "indicator_id": indicator_id,
         "dimension_type": "industry" if indicator_id.startswith("industry.") else "national",
@@ -36,6 +41,8 @@ def _observation(
         "unit": (definition_for(indicator_id) or definition_for(indicator_id, "monthly")).unit or "%",
         "frequency": (definition_for(indicator_id) or definition_for(indicator_id, "monthly")).frequency,
         "source_system": source,
+        "source_record_id": f"{source}:{indicator_id}:{period_end}:{vintage}",
+        "source_url": source_url,
         "fetched_at": (available + timedelta(minutes=5)).isoformat(),
         "quality_status": "pass",
     }
@@ -161,7 +168,9 @@ def test_observer_double_gate(enabled, kill_switch, active):
         kill_switch=kill_switch,
     )
     assert result["active"] is active
+    assert result["observer_only"] is True
     assert result["applied"] is False
+    assert result["production_eligible"] is False
     assert result["production_enabled"] is False
     assert ("snapshot_hash" in result) is active
 
@@ -178,9 +187,29 @@ def test_observer_reports_are_private_and_readback_safe(tmp_path):
     payload = json.loads(open(artifacts["snapshot"], encoding="utf-8").read())
     readiness = json.loads(open(artifacts["readiness"], encoding="utf-8").read())
     assert payload["snapshot_hash"] == snapshot.snapshot_hash
+    assert payload["observer_only"] is True
+    assert readiness["observer_only"] is True
     assert readiness["applied"] is False
     assert readiness["production_enabled"] is True
     assert readiness["production_kill_switch"] is False
     assert readiness["production_eligible"] is False
     for path in artifacts.values():
         assert int(oct(__import__("os").stat(path).st_mode & 0o777), 8) == 0o600
+
+
+@pytest.mark.parametrize("generation_id", [".", ".."])
+def test_observer_persistence_rejects_dot_generation_ids(
+    tmp_path,
+    generation_id,
+):
+    snapshot = build_macro_snapshot(
+        _complete_fixture(),
+        as_of="2024-05-10",
+    )
+
+    with pytest.raises(ValueError, match="generation_id_unsafe"):
+        persist_macro_observer(
+            snapshot,
+            output_root=tmp_path / "observer",
+            generation_provenance={"generation_id": generation_id},
+        )

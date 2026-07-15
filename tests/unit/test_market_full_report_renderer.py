@@ -4,6 +4,23 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from quant_investor.versioning import (
+    ARCHITECTURE_VERSION,
+    BRANCH_SCHEMA_VERSION,
+    IC_PROTOCOL_VERSION,
+    LIKELIHOOD_SCHEMA_VERSION,
+    REPORT_PROTOCOL_VERSION,
+)
+
+
+CURRENT_MARKET_ENVELOPE = {
+    "architecture_version": ARCHITECTURE_VERSION,
+    "branch_schema_version": BRANCH_SCHEMA_VERSION,
+    "likelihood_schema_version": LIKELIHOOD_SCHEMA_VERSION,
+    "ic_protocol_version": IC_PROTOCOL_VERSION,
+    "report_protocol_version": REPORT_PROTOCOL_VERSION,
+}
+
 
 def test_full_report_renderer_writes_named_stock_report(monkeypatch, tmp_path):
     from quant_investor.market import full_report
@@ -23,6 +40,7 @@ def test_full_report_renderer_writes_named_stock_report(monkeypatch, tmp_path):
         {
             "hs300": [
                 {
+                    **CURRENT_MARKET_ENVELOPE,
                     "stock_count": 1,
                     "batch_id": 1,
                     "execution_log": [],
@@ -31,7 +49,17 @@ def test_full_report_renderer_writes_named_stock_report(monkeypatch, tmp_path):
                             "score": 0.12,
                             "confidence": 0.62,
                             "conclusion": "量化结论偏正。",
-                        }
+                        },
+                        "fundamental": {
+                            "score": 0.08,
+                            "confidence": 0.58,
+                            "conclusion": "基本面结论偏正。",
+                        },
+                        "macro": {
+                            "score": 0.0,
+                            "confidence": 0.5,
+                            "conclusion": "宏观结论中性。",
+                        },
                     },
                     "strategy": {
                         "target_exposure": 0.3,
@@ -53,7 +81,7 @@ def test_full_report_renderer_writes_named_stock_report(monkeypatch, tmp_path):
                             "model_expected_return": 0.11,
                             "consensus_score": 0.32,
                             "confidence": 0.56,
-                            "branch_positive_count": 4,
+                            "branch_positive_count": 3,
                             "lot_size": 100,
                             "entry_price_range": {
                                 "low": 9.8,
@@ -64,6 +92,11 @@ def test_full_report_renderer_writes_named_stock_report(monkeypatch, tmp_path):
                             "macro_score": 0.0,
                         }
                     ],
+                    "analysis_meta": {
+                        **CURRENT_MARKET_ENVELOPE,
+                        "market": "CN",
+                        "universe": "hs300",
+                    },
                 }
             ]
         },

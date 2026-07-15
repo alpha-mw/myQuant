@@ -11,6 +11,8 @@ from quant_investor.agent_protocol import (
     RiskDecision,
 )
 from quant_investor.bayesian.calibration import CalibrationStore
+from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
+from quant_investor.branch_contracts import BranchResult
 from quant_investor.config import config
 from quant_investor.governance import replay_v13_1
 from quant_investor.market.dag.common import _dedupe_texts
@@ -488,6 +490,78 @@ def _optional_float(value: Any) -> float | None:
         return None
 
 
+def _likelihood_branch_degraded_map(
+    *,
+    branch_summaries: Mapping[str, Any],
+    branch_results: Mapping[str, Any],
+) -> dict[str, bool]:
+    """Map only the two v14 likelihood branches to explicit degraded state."""
+
+    degraded: dict[str, bool] = {}
+    for branch_name in ("quant", "fundamental"):
+        summary = branch_summaries.get(branch_name)
+        result = branch_results.get(branch_name)
+        summary_degraded = bool(
+            summary is not None
+            and _enum_text(getattr(summary, "status", AgentStatus.SUCCESS))
+            in {"DEGRADED", "VETOED"}
+        )
+        result_metadata = dict(getattr(result, "metadata", {}) or {})
+        result_degraded = bool(
+            result is not None
+            and (
+                not bool(getattr(result, "success", True))
+                or str(result_metadata.get("degraded_reason") or "").strip()
+            )
+        )
+        degraded[branch_name] = summary_degraded or result_degraded
+    return degraded
+
+
+def _require_exact_canonical_branches(
+    payload: Mapping[str, Any],
+    *,
+    label: str,
+) -> None:
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"{label} must be a mapping")
+    expected = set(CANONICAL_BRANCH_ORDER)
+    actual = set(payload)
+    missing = sorted(expected - actual)
+    unexpected = sorted(actual - expected)
+    if missing or unexpected:
+        details: list[str] = []
+        if missing:
+            details.append("missing branches: " + ", ".join(missing))
+        if unexpected:
+            details.append("unsupported branches: " + ", ".join(unexpected))
+        raise ValueError(
+            f"{label} must contain exactly the canonical branches "
+            f"{list(CANONICAL_BRANCH_ORDER)!r}; {'; '.join(details)}"
+        )
+
+
+def _require_valid_canonical_branch_results(
+    branch_results: Mapping[str, Any],
+) -> None:
+    _require_exact_canonical_branches(
+        branch_results,
+        label="Bayesian selection branch_results",
+    )
+    for branch_name in CANONICAL_BRANCH_ORDER:
+        result = branch_results[branch_name]
+        if not isinstance(result, BranchResult):
+            raise ValueError(
+                "Bayesian selection branch_results must contain BranchResult objects"
+            )
+        result.validate()
+        if result.branch_name != branch_name:
+            raise ValueError(
+                "Bayesian selection branch result key/name mismatch: "
+                f"{branch_name!r} != {result.branch_name!r}"
+            )
+
+
 def _run_bayesian_selection_phase(
     *,
     candidate_symbols: list[str],
@@ -517,6 +591,16 @@ def _run_bayesian_selection_phase(
     llm_client_cls: Any,
     portfolio_master_advisory_fn: Callable[..., tuple[Any | None, dict[str, Any]]],
 ) -> BayesianSelectionState:
+    _require_valid_canonical_branch_results(branch_results)
+    _require_exact_canonical_branches(
+        branch_summaries,
+        label="Bayesian selection branch_summaries",
+    )
+    if branch_summaries["macro"] != macro_verdict:
+        raise ValueError(
+            "Bayesian selection macro_verdict must match branch_summaries['macro']"
+        )
+
     prior_builder = hierarchical_prior_builder_cls()
     try:
         likelihood_mapper = likelihood_mapper_cls(
@@ -529,12 +613,10 @@ def _run_bayesian_selection_phase(
     posterior_engine = posterior_engine_cls()
     markov_regime_metadata = _compact_markov_regime_metadata(global_context)
     bayesian_records: list[BayesianDecisionRecord] = []
-    degraded_map = {
-        "quant": False,
-        "fundamental": False,
-        "intelligence": False,
-        "macro": False,
-    }
+    degraded_map = _likelihood_branch_degraded_map(
+        branch_summaries=branch_summaries,
+        branch_results=branch_results,
+    )
     for symbol in candidate_symbols:
         prior = prior_builder.build_prior(symbol, global_context)
         likelihoods = likelihood_mapper.compute_likelihoods(
@@ -576,7 +658,6 @@ def _run_bayesian_selection_phase(
                     "profile": str((global_context.metadata or {}).get("selection_profile", {}).get("funnel_profile", "classic")),
                     "momentum_strength": float((posterior.metadata or {}).get("momentum_strength", 0.0) if isinstance(getattr(posterior, "metadata", {}), Mapping) else 0.0),
                     "fake_breakout_penalty": float((posterior.metadata or {}).get("fake_breakout_penalty", 0.0) if isinstance(getattr(posterior, "metadata", {}), Mapping) else 0.0),
-                    "setup_failure_penalty": float((posterior.metadata or {}).get("setup_failure_penalty", 0.0) if isinstance(getattr(posterior, "metadata", {}), Mapping) else 0.0),
                     "crowding_penalty": float((posterior.metadata or {}).get("crowding_penalty", 0.0) if isinstance(getattr(posterior, "metadata", {}), Mapping) else 0.0),
                     "history_confidence": float((posterior.metadata or {}).get("history_confidence", 0.0) if isinstance(getattr(posterior, "metadata", {}), Mapping) else 0.0),
                     "calibration_samples": dict((posterior.metadata or {}).get("calibration_samples", {}) or {}) if isinstance(getattr(posterior, "metadata", {}), Mapping) else {},
@@ -695,6 +776,9 @@ def _run_bayesian_selection_phase(
                 evidence_pack.get("trace_fragments", {}).get("budget", {}).get("token_count", 0) or 0
             ),
         }
+    portfolio_master_meta = dict(portfolio_master_meta)
+    portfolio_master_meta["advisory_only"] = True
+    portfolio_master_meta["deterministic_control_chain_effect"] = "none"
     return BayesianSelectionState(
         bayesian_records=bayesian_records,
         shortlist=shortlist,
@@ -765,11 +849,12 @@ def _run_portfolio_construction_phase(
     shortlist_by_symbol = {item.symbol: item for item in shortlist}
     ic_decisions: list[ICDecision] = []
     for symbol in shortlisted_symbols:
+        advisory_ic_hint = ic_hints_by_symbol.get(symbol, {})
         decision = ic_coordinator.run(
             {
                 "branch_verdicts": research_by_symbol[symbol],
                 "risk_decision": risk_decision,
-                "ic_hints": ic_hints_by_symbol.get(symbol, {}),
+                "ic_hints": {},
             }
         )
         decision = attach_symbol_to_ic_decision_fn(
@@ -778,7 +863,7 @@ def _run_portfolio_construction_phase(
             risk_decision=risk_decision,
             current_weight=0.0,
             tradability_info=tradability_snapshot[symbol],
-            ic_hint=ic_hints_by_symbol.get(symbol, {}),
+            ic_hint=advisory_ic_hint,
             shortlist_item=shortlist_by_symbol.get(symbol),
         )
         ic_decisions.append(decision)

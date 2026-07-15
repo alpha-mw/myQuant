@@ -194,6 +194,21 @@ def test_artifact_discovery_includes_expected_names_and_missing_refs(tmp_path) -
     assert any(ref.name == "outcome_ledger_outcomes" and ref.exists is False for ref in refs)
 
 
+def test_artifact_discovery_defaults_to_v14_bayesian_namespaces(tmp_path) -> None:
+    refs = discover_phase_artifacts(
+        data_quality_dir=tmp_path / "quality",
+        risk_tensor_dir=tmp_path / "risk",
+        portfolio_optimizer_dir=tmp_path / "optimizer",
+        factor_library_dir=tmp_path / "factor_library",
+        docs_dir=tmp_path / "docs",
+        scripts_dir=tmp_path / "scripts",
+    )
+    paths = {ref.name: ref.path for ref in refs}
+
+    assert "/bayesian_outcome_ledger/v14/" in f"/{paths['outcome_ledger_predictions']}"
+    assert "/bayesian_calibration_v2/v14/" in f"/{paths['calibration_v2_model']}"
+
+
 def test_module_summaries_count_records_and_warn_or_fail(tmp_path) -> None:
     outcome_dir = tmp_path / "outcome"
     _write_jsonl(
@@ -267,6 +282,8 @@ def test_audit_bundle_builders_are_serializable_and_deterministic(tmp_path) -> N
 
     assert "OBSERVABILITY_SCHEMA_VERSION" in manifest.schema_versions
     assert "AUDIT_BUNDLE_SCHEMA_VERSION" in manifest.schema_versions
+    assert "BRANCH_SCHEMA_VERSION" in manifest.schema_versions
+    assert "LIKELIHOOD_SCHEMA_VERSION" in manifest.schema_versions
     assert "BRANCH_WEIGHT_VERSION" in manifest.schema_versions
     assert summary.overall_status == HEALTH_STATUS_WARN
     json.dumps(dashboard, ensure_ascii=False, sort_keys=True)

@@ -30,14 +30,29 @@ FORWARD_SUMMARY_SCHEMA = "macro-forward-summary.v1"
 FORWARD_MANIFEST_SCHEMA = "macro-forward-generation-manifest.v1"
 FORWARD_POINTER_SCHEMA = "macro-forward-pointer.v1"
 DEFAULT_FORWARD_ROOT = Path("results/macro_forward_observation")
+_OBSERVER_FLAGS = {
+    "observer_only": True,
+    "production_eligible": False,
+    "applied": False,
+}
 REQUIRED_FORWARD_SESSIONS = 90
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_SAFE_GENERATION_ID = re.compile(r"^[A-Za-z0-9_.-]+$")
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _UTC = ZoneInfo("UTC")
 
 
 class MacroForwardError(RuntimeError):
     """Raised when forward evidence cannot be proven safe and sequential."""
+
+
+def _valid_generation_id(value: Any) -> bool:
+    text = str(value or "").strip()
+    return bool(
+        text
+        and text not in {".", ".."}
+        and _SAFE_GENERATION_ID.fullmatch(text)
+    )
 
 
 def _utc_now() -> datetime:
@@ -241,7 +256,7 @@ def _validate_ledger(rows: list[Mapping[str, Any]]) -> None:
         ):
             raise MacroForwardError("macro_forward_ledger_evidence_invalid")
         generation_id = str(row.get("observation_generation_id") or "")
-        if not generation_id or "/" in generation_id or ".." in generation_id:
+        if not _valid_generation_id(generation_id):
             raise MacroForwardError("macro_forward_ledger_evidence_invalid")
         industry_coverage = row.get("industry_chain_coverage")
         try:
@@ -307,8 +322,15 @@ def _load_generation(
         or pointer.get("schema_version") != FORWARD_POINTER_SCHEMA
     ):
         raise MacroForwardError("macro_forward_pointer_schema_invalid")
+    if any(
+        pointer.get(key) is not value
+        for key, value in _OBSERVER_FLAGS.items()
+    ):
+        raise MacroForwardError(
+            "macro_forward_pointer_observer_flags_invalid"
+        )
     generation_id = str(pointer.get("generation_id") or "")
-    if not generation_id or "/" in generation_id or ".." in generation_id:
+    if not _valid_generation_id(generation_id):
         raise MacroForwardError("macro_forward_generation_id_invalid")
     generation = market_root / "_generations" / generation_id
     manifest_path = generation / "manifest.json"
@@ -332,6 +354,13 @@ def _load_generation(
         or manifest.get("generation_id") != generation_id
     ):
         raise MacroForwardError("macro_forward_manifest_schema_invalid")
+    if any(
+        manifest.get(key) is not value
+        for key, value in _OBSERVER_FLAGS.items()
+    ):
+        raise MacroForwardError(
+            "macro_forward_manifest_observer_flags_invalid"
+        )
     ledger_bytes = ledger_path.read_bytes()
     summary_bytes = summary_path.read_bytes()
     if _sha256(ledger_bytes) != manifest.get("ledger_sha256"):
@@ -571,6 +600,7 @@ def record_macro_forward_observation(
                 "manifest_sha256": _sha256(manifest_bytes),
                 "latest_event_hash": event["event_hash"],
                 "event_count": len(updated),
+                **_OBSERVER_FLAGS,
             }
             pointer_bytes = _canonical_bytes(pointer)
             _atomic_bytes(market_root / "_latest.json", pointer_bytes)

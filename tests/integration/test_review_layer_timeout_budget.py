@@ -26,7 +26,7 @@ class _TimedBranchAgent:
         self.branch_name = branch_name
 
     def analyze(self, agent_input):
-        required_timeout = 40.0 if self.branch_name in {"kline", "fundamental", "macro"} else 5.0
+        required_timeout = 40.0 if self.branch_name in {"fundamental", "macro"} else 5.0
         return _TimedAwaitable(
             required_timeout=required_timeout,
             result=BaseBranchAgentOutput(
@@ -126,7 +126,7 @@ def test_review_layer_budget_allows_slow_branch_agents(monkeypatch):
     assert result.agent_layer_success is True
 
 
-def test_v13_four_branch_request_budget_uses_current_branch_order(monkeypatch):
+def test_v14_three_branch_request_budget_uses_current_branch_order(monkeypatch):
     monkeypatch.setattr(orchestrator_module, "has_any_provider", lambda: True)
 
     _RequestBudgetAwareBranchAgent.observed_timeouts = {}

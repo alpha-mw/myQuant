@@ -7,12 +7,14 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 import shutil
 import time
 from collections import Counter
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime
 from enum import Enum
+from numbers import Real
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -122,9 +124,10 @@ CATEGORY_THEME_LABELS = {
     "hs300": "大盘核心资产",
     "zz500": "中盘制造主线",
     "zz1000": "小盘成长弹性",
-    "full_a": "全市场 v13 DAG",
+    "full_a": "全市场 v14 DAG",
 }
-REQUIRED_DAG_BRANCHES = ("quant", "fundamental", "intelligence", "macro")
+REQUIRED_DAG_BRANCHES = ("quant", "fundamental", "macro")
+BAYESIAN_EVIDENCE_SOURCES = ("quant", "fundamental")
 CANDIDATE_DAG_TOP_K = 12
 CANDIDATE_DECAY_WATERFALL_SCHEMA_VERSION = "cn_aggressive_candidate_decay_waterfall.v1"
 CANDIDATE_DECAY_SINGLE_REASON_THRESHOLD = 0.95
@@ -488,7 +491,7 @@ def _branch_evidence_limited(branch_name: str, payload: Any) -> bool:
     return False
 
 
-def _build_dag_four_branch_compliance(
+def _build_dag_branch_contract_compliance(
     *,
     review_symbols: list[str],
     effective_local_holding_symbols: list[str],
@@ -558,7 +561,7 @@ def _build_dag_four_branch_compliance(
         )
     return {
         "required_branches": list(REQUIRED_DAG_BRANCHES),
-        "status": "DAG四分支完整执行" if complete else "DAG四分支未完整执行",
+        "status": "DAG三分支完整执行" if complete else "DAG三分支未完整执行",
         "complete": complete,
         "present_branch_by_symbol": present_by_symbol,
         "missing_branch_by_symbol": missing_by_symbol,
@@ -579,7 +582,7 @@ def _render_dag_compliance_markdown(compliance: dict[str, Any]) -> list[str]:
     present_by_symbol = dict(compliance.get("present_branch_by_symbol", {}) or {})
     limited_by_symbol = dict(compliance.get("limited_evidence_branch_by_symbol", {}) or {})
     lines = [
-        "#### 5.3.1 DAG 四分支执行验收",
+        "#### 5.3.1 DAG 三分支执行验收",
         "",
         f"- required_branches：`{', '.join(compliance.get('required_branches', REQUIRED_DAG_BRANCHES))}`",
         f"- status：`{compliance.get('status', 'unknown')}`",
@@ -1814,19 +1817,66 @@ def _symbol_key(value: Any) -> str:
     return str(value or "").strip().upper()
 
 
-def _candidate_dag_branch_state(packet: dict[str, Any]) -> tuple[list[str], list[str], dict[str, float]]:
+def _candidate_branch_metric(
+    payload: Any,
+    primary_key: str,
+    fallback_key: str,
+) -> float | None:
+    if not isinstance(payload, Mapping):
+        return None
+    if primary_key in payload:
+        value = payload[primary_key]
+    elif fallback_key in payload:
+        value = payload[fallback_key]
+    else:
+        return None
+    if isinstance(value, bool) or not isinstance(value, Real):
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return numeric if math.isfinite(numeric) else None
+
+
+def _candidate_branch_payload_materialized(payload: Any) -> bool:
+    if not isinstance(payload, Mapping) or not payload:
+        return False
+    score = _candidate_branch_metric(payload, "final_score", "score")
+    confidence = _candidate_branch_metric(
+        payload,
+        "final_confidence",
+        "confidence",
+    )
+    return score is not None and confidence is not None
+
+
+def _candidate_dag_branch_state(
+    packet: dict[str, Any],
+) -> tuple[list[str], list[str], list[str], list[str], dict[str, float]]:
     branch_payloads = _mapping_payload(packet.get("branch_verdicts"))
     present = [
         branch
         for branch in REQUIRED_DAG_BRANCHES
-        if _branch_payload_present(branch_payloads.get(branch))
+        if _candidate_branch_payload_materialized(branch_payloads.get(branch))
     ]
     missing = [branch for branch in REQUIRED_DAG_BRANCHES if branch not in present]
-    scores = {
-        branch: round(_safe_float(_mapping_payload(branch_payloads.get(branch)).get("final_score")), 6)
+    limited = [
+        branch
         for branch in present
-    }
-    return present, missing, scores
+        if _branch_evidence_limited(branch, branch_payloads.get(branch))
+    ]
+    qualified = [branch for branch in present if branch not in limited]
+    scores: dict[str, float] = {}
+    for branch in present:
+        score = _candidate_branch_metric(
+            branch_payloads.get(branch),
+            "final_score",
+            "score",
+        )
+        if score is not None:
+            scores[branch] = round(score, 6)
+    return present, missing, qualified, limited, scores
 
 
 def _positive_reason_counts(value: Any) -> dict[str, int]:
@@ -2218,7 +2268,7 @@ def _candidate_dag_status(
         "candidate_generation_status": candidate_generation_status,
         "blocker": blocker,
         "required_branches": list(REQUIRED_DAG_BRANCHES),
-        "candidate_source": "v13_full_market_dag",
+        "candidate_source": "v14_full_market_dag",
         "theme_candidate_pool": _jsonable(theme_summary),
         "dag_pipeline": {
             "universe": "full_a",
@@ -2226,7 +2276,7 @@ def _candidate_dag_status(
             "theme_candidate_pool_status": str(
                 theme_summary.get("status") or theme_summary.get("theme_pool_status") or ""
             ),
-            "candidate_level_four_branch": bool(dag_executed),
+            "candidate_level_branch_contract": bool(dag_executed),
             "bayesian_shortlist": bool(dag_executed),
             "riskguard_ic_portfolio_constructor": bool(dag_executed),
             "bayesian_record_count": int(bayesian_record_count),
@@ -2236,7 +2286,7 @@ def _candidate_dag_status(
             "shortlist_fallback_used": bool(shortlist_fallback_used),
             "shortlist_artifact_missing": bool(shortlist_artifact_missing),
         },
-        "candidate_dag_four_branch_compliance": {
+        "candidate_dag_branch_contract_compliance": {
             "complete": bool(accepted_symbols),
             "evaluated_symbols": list(evaluated_symbols),
             "accepted_symbols": list(accepted_symbols),
@@ -2248,7 +2298,7 @@ def _candidate_dag_status(
     }
 
 
-def _build_candidate_pool_from_v13_dag(
+def _build_candidate_pool_from_v14_dag(
     *,
     dag_artifacts: dict[str, Any],
     held_symbols: list[str],
@@ -2315,7 +2365,9 @@ def _build_candidate_pool_from_v13_dag(
     zero_target_symbols: list[str] = []
     for symbol in evaluated_symbols:
         packet = packets.get(symbol, {})
-        present, missing, branch_scores = _candidate_dag_branch_state(packet)
+        present, missing, qualified, limited, branch_scores = (
+            _candidate_dag_branch_state(packet)
+        )
         present_by_symbol[symbol] = present
         if missing:
             missing_by_symbol[symbol] = missing
@@ -2324,6 +2376,15 @@ def _build_candidate_pool_from_v13_dag(
         if bayesian is None:
             missing_by_symbol[symbol] = ["bayesian"]
             continue
+        evidence_sources = [
+            str(item).strip()
+            for item in list(bayesian.get("evidence_sources") or [])
+            if str(item).strip()
+        ]
+        if evidence_sources != list(BAYESIAN_EVIDENCE_SOURCES):
+            missing_by_symbol[symbol] = ["bayesian_evidence_contract"]
+            continue
+        bayesian_evidence_count = len(BAYESIAN_EVIDENCE_SOURCES)
         shortlist = shortlist_by_symbol[symbol]
         target_weight = _safe_float(
             target_weights.get(symbol),
@@ -2333,6 +2394,7 @@ def _build_candidate_pool_from_v13_dag(
             zero_target_symbols.append(symbol)
             continue
         category = str(packet.get("category") or shortlist.get("category") or "full_a")
+        branch_evidence_complete = not limited
         rows.append(
             {
                 "symbol": symbol,
@@ -2342,17 +2404,25 @@ def _build_candidate_pool_from_v13_dag(
                 ),
                 "category": category,
                 "theme_label": _theme_label_for_symbol(symbol, category),
-                "candidate_source": "v13_full_market_dag",
+                "candidate_source": "v14_full_market_dag",
                 "candidate_rank": 0,
-                "candidate_dag_four_branch_complete": True,
-                "present_branches": ",".join(REQUIRED_DAG_BRANCHES),
+                "candidate_dag_branch_contract_complete": True,
+                "candidate_dag_branch_evidence_complete": branch_evidence_complete,
+                "candidate_dag_branch_support_count": len(REQUIRED_DAG_BRANCHES),
+                "candidate_dag_branch_support_total": len(REQUIRED_DAG_BRANCHES),
+                "present_branches": ",".join(present),
                 "missing_branches": "",
-                "evidence_quality": "高",
+                "evidence_qualified_branches": ",".join(qualified),
+                "evidence_limited_branches": ",".join(limited),
+                "evidence_quality": "高" if branch_evidence_complete else "中",
                 "bayesian_rank": int(_safe_float(bayesian.get("rank"), len(rows) + 1)),
                 "posterior_action_score": round(_safe_float(bayesian.get("posterior_action_score")), 6),
                 "posterior_win_rate": round(_safe_float(bayesian.get("posterior_win_rate")), 6),
                 "posterior_expected_alpha": round(_safe_float(bayesian.get("posterior_expected_alpha")), 6),
                 "posterior_confidence": round(_safe_float(bayesian.get("posterior_confidence")), 6),
+                "bayesian_evidence_count": bayesian_evidence_count,
+                "bayesian_evidence_total": len(BAYESIAN_EVIDENCE_SOURCES),
+                "bayesian_evidence_sources": ",".join(evidence_sources),
                 "rank_score": round(_safe_float(shortlist.get("rank_score")), 6),
                 "shortlist_action": str(shortlist.get("action") or ""),
                 "shortlist_confidence": round(_safe_float(shortlist.get("confidence")), 6),
@@ -2364,7 +2434,6 @@ def _build_candidate_pool_from_v13_dag(
                 "rationale": "；".join(str(item).strip() for item in list(shortlist.get("rationale") or []) if str(item).strip()),
                 "branch_quant_score": branch_scores.get("quant"),
                 "branch_fundamental_score": branch_scores.get("fundamental"),
-                "branch_intelligence_score": branch_scores.get("intelligence"),
                 "branch_macro_score": branch_scores.get("macro"),
             }
         )
@@ -2492,7 +2561,7 @@ def _attach_candidate_quote_gate(
     return result
 
 
-def _run_candidate_level_v13_dag(
+def _run_candidate_level_v14_dag(
     *,
     held_symbols: list[str],
     analysis_trade_date: str,
@@ -2505,7 +2574,7 @@ def _run_candidate_level_v13_dag(
     data_snapshot = {
         "local_latest_trade_date": analysis_trade_date,
         "analysis_trade_date": analysis_trade_date,
-        "summary_text": "CN aggressive formal candidate generation uses strict v13 DAG.",
+        "summary_text": "CN aggressive formal candidate generation uses strict v14 DAG.",
         "completeness": _jsonable(completeness_report),
     }
     try:
@@ -2543,7 +2612,7 @@ def _run_candidate_level_v13_dag(
             dag_executed=False,
         )
         return pd.DataFrame(dtype=object), status, {}
-    candidate_pool, status = _build_candidate_pool_from_v13_dag(
+    candidate_pool, status = _build_candidate_pool_from_v14_dag(
         dag_artifacts=dag_artifacts,
         held_symbols=held_symbols,
     )
@@ -2562,7 +2631,7 @@ def _build_switch_plan(
         return pd.DataFrame()
     required_candidate_columns = {
         "candidate_source",
-        "candidate_dag_four_branch_complete",
+        "candidate_dag_branch_contract_complete",
         "portfolio_target_weight",
         "posterior_action_score",
         "posterior_confidence",
@@ -2571,8 +2640,8 @@ def _build_switch_plan(
     if not required_candidate_columns.issubset(set(candidate_pool.columns)):
         return pd.DataFrame()
     dag_candidates = candidate_pool[
-        (candidate_pool["candidate_source"].astype(str) == "v13_full_market_dag")
-        & (candidate_pool["candidate_dag_four_branch_complete"].astype(bool))
+        (candidate_pool["candidate_source"].astype(str) == "v14_full_market_dag")
+        & (candidate_pool["candidate_dag_branch_contract_complete"].astype(bool))
         & (candidate_pool["portfolio_target_weight"].map(lambda value: _safe_float(value) > 0))
     ].copy()
     if dag_candidates.empty:
@@ -2650,9 +2719,9 @@ def _build_switch_plan(
                 "action": "pending_manual_override" if actionable else ("prepare_switch" if superior else "watch_only"),
                 "switch_ratio_hint": "等待 Maxwell 人工 override" if actionable else "先观察，不执行",
                 "trigger_threshold": (
-                    "候选保持 candidate-level v13 DAG 四分支完整，且 PortfolioConstructor 维持正目标权重；现持仓仍未解除降级/减仓信号"
+                    "候选保持 candidate-level v14 DAG 三分支完整，且 PortfolioConstructor 维持正目标权重；现持仓仍未解除降级/减仓信号"
                     if not actionable
-                    else "按20%试探性换仓；后续只在 candidate-level v13 DAG 仍完整且目标权重提升时递增"
+                    else "按20%试探性换仓；后续只在 candidate-level v14 DAG 仍完整且目标权重提升时递增"
                 ),
                 "no_switch_condition": (
                     "当前前日线+实时行情口径仍未满足决策数据要求，先不把结构优势直接转成实单"
@@ -3118,7 +3187,9 @@ def _candidate_codex_score(row: pd.Series) -> int:
     posterior_confidence = _safe_float(row.get("posterior_confidence"), 0.0)
     expected_upside = _safe_float(row.get("expected_upside"), 0.0)
     portfolio_target_weight = _safe_float(row.get("portfolio_target_weight"), 0.0)
-    branch_complete = bool(row.get("candidate_dag_four_branch_complete"))
+    branch_evidence_complete = bool(
+        row.get("candidate_dag_branch_evidence_complete")
+    )
     evidence_quality = str(row.get("evidence_quality") or "").strip()
     risk_flags = str(row.get("risk_flags") or "").strip()
 
@@ -3127,7 +3198,7 @@ def _candidate_codex_score(row: pd.Series) -> int:
     score += 20.0 * _clamp(posterior_confidence / 0.70, 0.0, 1.0)
     score += 15.0 * _clamp(expected_upside / 0.03, 0.0, 1.0)
     score += 10.0 * _clamp(portfolio_target_weight / 0.10, 0.0, 1.0)
-    score += 10.0 if branch_complete else 0.0
+    score += 10.0 if branch_evidence_complete else 0.0
     score += {"高": 10.0, "中": 6.0}.get(evidence_quality, 3.0)
     if risk_flags:
         score -= min(8.0, 2.0 * risk_flags.count("；"))
@@ -3171,7 +3242,7 @@ def _format_holding_advice_line(row: Any) -> str:
 
 
 def _format_candidate_advice_line(row: Any, switch_row: dict[str, Any] | None) -> str:
-    source_label = "全市场 v13 DAG"
+    source_label = "全市场 v14 DAG"
     relative_advantage = (
         f"相对 `{switch_row['sell_symbol']}`，候选由 PortfolioConstructor 给出目标权重 "
         f"`{float(switch_row['buy_portfolio_target_weight']):.2%}`，"
@@ -3192,13 +3263,17 @@ def _format_candidate_advice_line(row: Any, switch_row: dict[str, Any] | None) -
     trigger = (
         str(switch_row["trigger_threshold"])
         if switch_row
-        else "若下一轮仍保持 candidate-level v13 DAG 完整且 PortfolioConstructor 正目标权重，可继续观察或准备换仓"
+        else "若下一轮仍保持 candidate-level v14 DAG 完整且 PortfolioConstructor 正目标权重，可继续观察或准备换仓"
     )
     codex_score = int(_safe_float(getattr(row, "codex_recommendation_score", 0), 0.0))
     codex_rating = str(getattr(row, "codex_recommendation_rating", "") or _codex_rating_from_score(codex_score))
     return (
         f"- `{row.symbol}`（{row.name}）：主线 `{row.theme_label}`，来源 `{source_label}`；"
         f"Codex 评分 `{codex_score}/100`（`{codex_rating}`）；"
+        f"分支支持 `{int(getattr(row, 'candidate_dag_branch_support_count', 0))}/"
+        f"{int(getattr(row, 'candidate_dag_branch_support_total', len(REQUIRED_DAG_BRANCHES)))}`；"
+        f"Bayesian 证据 `{int(getattr(row, 'bayesian_evidence_count', 0))}/"
+        f"{int(getattr(row, 'bayesian_evidence_total', len(BAYESIAN_EVIDENCE_SOURCES)))}`；"
         f"{relative_advantage}主要风险：{major_risk}"
         f"触发条件：{trigger}；证据质量：`{row.evidence_quality}`。"
     )
@@ -3823,7 +3898,7 @@ def _write_manual_execution_outputs(
     quote_error: str,
     completeness_passed: bool,
     decision_data_sufficient: bool,
-    dag_four_branch_compliance: dict[str, Any],
+    dag_branch_contract_compliance: dict[str, Any],
     execution_price_gate: dict[str, Any],
 ) -> dict[str, Any]:
     raw_dir = run_dir / "raw_exports"
@@ -3888,7 +3963,7 @@ def _write_manual_execution_outputs(
         "quote_fetch_error": quote_error or "",
         "decision_data_sufficient": bool(decision_data_sufficient),
         "completeness_passed": bool(completeness_passed),
-        "dag_four_branch_complete": bool(dag_four_branch_compliance.get("complete")),
+        "dag_branch_contract_complete": bool(dag_branch_contract_compliance.get("complete")),
         "execution_price_gate": execution_price_gate,
         "applied_local_trades": applied_trades,
         "rejected_or_pending_trades": rejected_trades,
@@ -3921,7 +3996,7 @@ def _write_manual_execution_outputs(
         f"- 有效持仓数：`{len(next_symbols)}`；组合纪律上限 `{MAX_EFFECTIVE_HOLDING_COUNT}`。",
         f"- quote_snapshot：`{quote_snapshot or 'N/A'}`；价格口径 `{price_basis}`。",
         f"- 数据闸门：decision_data_sufficient=`{bool(decision_data_sufficient)}`，completeness_passed=`{bool(completeness_passed)}`。",
-        f"- DAG 四分支：complete=`{bool(dag_four_branch_compliance.get('complete'))}`。",
+        f"- DAG 三分支：complete=`{bool(dag_branch_contract_compliance.get('complete'))}`。",
     ]
     if applied_trades:
         review_lines.append("- 已写入本地/manual成交：")
@@ -3991,7 +4066,12 @@ def _build_notes_payload(
     else:
         top_rows = candidate_pool.head(3)
         candidate_text = "；".join(
-            f"{row.symbol}({row.name})/{row.theme_label}/评分{int(getattr(row, 'codex_recommendation_score', 0))}/证据{row.evidence_quality}"
+            f"{row.symbol}({row.name})/{row.theme_label}/评分{int(getattr(row, 'codex_recommendation_score', 0))}"
+            f"/分支{int(getattr(row, 'candidate_dag_branch_support_count', 0))}/"
+            f"{int(getattr(row, 'candidate_dag_branch_support_total', len(REQUIRED_DAG_BRANCHES)))}"
+            f"/Bayesian证据{int(getattr(row, 'bayesian_evidence_count', 0))}/"
+            f"{int(getattr(row, 'bayesian_evidence_total', len(BAYESIAN_EVIDENCE_SOURCES)))}"
+            f"/证据质量{row.evidence_quality}"
             for row in top_rows.itertuples()
         )
     theme_exposure_text = ""
@@ -4292,7 +4372,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         ascending=[False, False, True],
     ).reset_index(drop=True)
     trailing_take_profit_summary = _summarize_trailing_take_profit(holdings_review)
-    candidate_pool, candidate_level_dag_status, theme_pool_audit = _run_candidate_level_v13_dag(
+    candidate_pool, candidate_level_dag_status, theme_pool_audit = _run_candidate_level_v14_dag(
         held_symbols=holdings_review["symbol"].tolist(),
         analysis_trade_date=analysis_trade_date,
         completeness_report=completeness_after,
@@ -4551,7 +4631,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         }
         for symbol, payload in review_by_symbol.items()
     }
-    dag_four_branch_compliance = _build_dag_four_branch_compliance(
+    dag_branch_contract_compliance = _build_dag_branch_contract_compliance(
         review_symbols=list(branch_signals_by_symbol.keys()),
         effective_local_holding_symbols=[
             str(symbol).strip().upper()
@@ -4562,7 +4642,6 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     )
     fundamental_coverage_by_symbol: dict[str, dict[str, Any]] = {}
     enhanced_data_flags_by_symbol: dict[str, dict[str, Any]] = {}
-    intelligence_diagnostics: dict[str, dict[str, Any]] = {}
     for symbol, payload in branch_signals_by_symbol.items():
         reviewed_branchs = dict(payload.get("reviewed_branch_verdicts", {}) or {})
         fundamental_payload = dict(reviewed_branchs.get("fundamental", {}) or {})
@@ -4580,8 +4659,6 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "module_coverage": dict(fundamental_meta.get("module_coverage", {}) or {}),
         }
         enhanced_data_flags_by_symbol[symbol] = dict(snapshot_quality_by_symbol.get(symbol, {}) or {})
-        if reviewed_branchs.get("intelligence"):
-            intelligence_diagnostics[symbol] = dict(reviewed_branchs.get("intelligence", {}) or {})
 
     formal_warnings = collect_formal_report_warnings(
         target_date=str(completeness_after.get("effective_target_trade_date") or latest_trade_date or ""),
@@ -4591,7 +4668,6 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         branch_diagnostics=branch_signals_by_symbol,
         fundamental_coverage_by_symbol=fundamental_coverage_by_symbol,
         enhanced_data_flags_by_symbol=enhanced_data_flags_by_symbol,
-        intelligence_diagnostics=intelligence_diagnostics,
         review_layer_diagnostics={
             "effective_call_count": int(review_effective_summary.get("call_count", 0) or 0),
             "attempt_call_count": int(review_attempt_summary.get("call_count", 0) or 0),
@@ -4722,8 +4798,8 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "- 分析口径：**直接基于本地已有数据，不自动补数，不把完整性校验作为正式结论前置阻断。**",
         "- 分析链路：**统一 DAG / review-layer（逐持仓主线复核）**",
         (
-            f"- DAG 四分支执行状态：**{dag_four_branch_compliance['status']}**；"
-            f"`complete={str(bool(dag_four_branch_compliance['complete'])).lower()}`"
+            f"- DAG 三分支执行状态：**{dag_branch_contract_compliance['status']}**；"
+            f"`complete={str(bool(dag_branch_contract_compliance['complete'])).lower()}`"
         ),
         (
             f"- Candidate-level DAG：`{candidate_level_dag_status.get('candidate_generation_status', 'unknown')}`"
@@ -4952,7 +5028,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
                 else "- review-layer 降级标的：无"
             ),
             "",
-            *_render_dag_compliance_markdown(dag_four_branch_compliance),
+            *_render_dag_compliance_markdown(dag_branch_contract_compliance),
             "",
             "### 5.4 是否需要调仓",
             "",
@@ -5002,7 +5078,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
                     else "无逐标的 review-layer 降级。"
                 )
             ),
-            "- 工程诊断说明：provider、snapshot、旧 intelligence batch 等诊断仅用于说明证据等级，不直接作为逐票投资建议正文。",
+            "- 工程诊断说明：provider 与 snapshot 诊断仅用于说明证据等级，不直接作为逐票投资建议正文。",
             "",
             "##### 持仓诊断明细",
             "",
@@ -5015,7 +5091,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "### 5.5 备选投资建议",
             "",
             (
-                "- 本轮备选池来自全市场 v13 DAG：DeterministicFunnel → candidate-level 四分支 → Bayesian → RiskGuard/IC/PortfolioConstructor。"
+                "- 本轮备选池来自全市场 v14 DAG：DeterministicFunnel → candidate-level 三分支 → Bayesian → RiskGuard/IC/PortfolioConstructor。"
                 if not candidate_pool.empty
                 else (
                     "- 本轮未提取到有效备选池；"
@@ -5108,7 +5184,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         quote_error=quote_error,
         completeness_passed=completeness_passed,
         decision_data_sufficient=decision_data_sufficient,
-        dag_four_branch_compliance=dag_four_branch_compliance,
+        dag_branch_contract_compliance=dag_branch_contract_compliance,
         execution_price_gate=execution_price_gate,
     )
     holdings_review_output, holdings_review_invariant = _prune_holdings_review_to_effective_ledger(
@@ -5138,7 +5214,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "decision_guardrail": _jsonable(decision_guardrail.to_dict()),
         "typed_warning_codes": typed_warning_codes,
         "branch_diagnostics_by_symbol": _jsonable(branch_signals_by_symbol),
-        "dag_four_branch_compliance": _jsonable(dag_four_branch_compliance),
+        "dag_branch_contract_compliance": _jsonable(dag_branch_contract_compliance),
         "candidate_level_dag_status": _jsonable(candidate_level_dag_status),
         "theme_candidate_pool": _jsonable(theme_pool_summary),
         "trailing_take_profit": _jsonable(trailing_take_profit_summary),
@@ -5246,7 +5322,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "codex_handoff": codex_handoff_active,
             "local_llm_disabled": bool(review_layer.get("local_llm_disabled", False)),
         },
-        "dag_four_branch_compliance": _jsonable(dag_four_branch_compliance),
+        "dag_branch_contract_compliance": _jsonable(dag_branch_contract_compliance),
         "candidate_level_dag_status": _jsonable(candidate_level_dag_status),
         "candidate_generation_status": candidate_level_dag_status.get("candidate_generation_status"),
         "blocker": candidate_level_dag_status.get("blocker"),
@@ -5299,7 +5375,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "codex_handoff": codex_handoff_active,
             "local_llm_disabled": bool(review_layer.get("local_llm_disabled", False)),
         },
-        "dag_four_branch_compliance": _jsonable(dag_four_branch_compliance),
+        "dag_branch_contract_compliance": _jsonable(dag_branch_contract_compliance),
         "candidate_level_dag_status": _jsonable(candidate_level_dag_status),
         "candidate_generation_status": candidate_level_dag_status.get("candidate_generation_status"),
         "blocker": candidate_level_dag_status.get("blocker"),
@@ -5350,7 +5426,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "strongest": strongest_theme_text,
             "weakest": weakest_theme_text,
         },
-        "dag_four_branch_compliance": _jsonable(dag_four_branch_compliance),
+        "dag_branch_contract_compliance": _jsonable(dag_branch_contract_compliance),
         "candidate_level_dag_status": _jsonable(candidate_level_dag_status),
         "candidate_generation_status": candidate_level_dag_status.get("candidate_generation_status"),
         "blocker": candidate_level_dag_status.get("blocker"),

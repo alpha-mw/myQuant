@@ -105,7 +105,7 @@ rebuild.
 Theme Rotation is deliberately not a canonical branch.
 
 - `CANONICAL_BRANCH_ORDER` remains
-  `("quant", "fundamental", "intelligence", "macro")`.
+  `("quant", "fundamental", "macro")`.
 - `ThemeAgent` is a standalone helper with `branch_name == "theme"` metadata,
   not an input to canonical branch weighting.
 - The research DAG does not import `ThemeAgent` as a fifth branch.
@@ -114,8 +114,8 @@ Theme Rotation is deliberately not a canonical branch.
 
 There is also no `theme_likelihood`.
 
-- `LikelihoodSet` remains the quant, fundamental, and intelligence likelihood
-  contract.
+- `LikelihoodSet` remains the quant and fundamental likelihood contract; Macro
+  remains prior/context.
 - No posterior formula includes a theme term.
 - Theme signals can be calibrated offline, but they do not alter Bayesian math
   unless a future explicit phase changes that contract.
@@ -416,7 +416,7 @@ All behavior-changing consumers require explicit configuration:
   `theme_governance.v1` metadata. `THEME_GOVERNANCE_ARTIFACT_ENABLED=1` writes
   a local governance JSON artifact under `THEME_GOVERNANCE_OUTPUT_DIR`.
 - Policy catalyst: `THEME_POLICY_CATALYST_ENABLED=1` reads local JSONL policy
-  events and adds only capped theme-score metadata. It does not bypass the v13
+  events and adds only capped theme-score metadata. It does not bypass the v14
   DAG or create candidate-pool entries.
 - Crowding diagnostics: `THEME_CROWDING_ENABLED=1` lets the scanner add local
   crowding metrics and gated risk flags. `THEME_CROWDING_MIN_UNIVERSE` defaults

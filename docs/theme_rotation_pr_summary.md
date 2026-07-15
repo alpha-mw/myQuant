@@ -22,7 +22,7 @@
 
 - No `theme` canonical branch was added.
 - `CANONICAL_BRANCH_ORDER` remains
-  `quant/fundamental/intelligence/macro`.
+  `quant/fundamental/macro`.
 - No `theme_likelihood` was added.
 - Bayesian likelihood/types/posterior formulas are unchanged.
 - DAG canonical branch logic is unchanged.

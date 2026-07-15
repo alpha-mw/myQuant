@@ -7,6 +7,7 @@ operations, and it treats missing announcement dates as a hard quarantine.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -21,6 +22,8 @@ import pandas as pd
 from quant_investor.factors.pit_fundamentals import normalize_ts_code
 from quant_investor.market.fundamental_generation import (
     FUNDAMENTAL_TABLES,
+    _issue_primary_generation_attestation,
+    load_fundamental_pointer,
     publish_fundamental_generation,
     resolve_fundamental_table_path,
 )
@@ -31,7 +34,6 @@ DEFAULT_RAW_SNAPSHOT_ROOT = Path("data/cn_market_full/_snapshots/fundamental")
 DEFAULT_READINESS_ROOT = Path("reports/fundamental_readiness")
 DEFAULT_MARKET_DATA_ROOT = Path("data")
 DEFAULT_METADATA_ROOT = Path("data/metadata")
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_UNIVERSES = ("hs300", "zz500", "zz1000")
 FULL_A_UNIVERSE_KEYS = {"full_a", "full_market", "all_a", "all", "full"}
 FULL_A_PHYSICAL_DIRECTORIES = ("hs300", "zz500", "zz1000", "other")
@@ -86,64 +88,186 @@ class FundamentalReadinessError(RuntimeError):
         super().__init__(f"fundamental readiness gate failed: {blockers or 'unknown'}")
 
 
+_LIVE_TUSHARE_CAPABILITY = object()
+
+
+@dataclass(frozen=True)
+class _LiveTushareAttestation:
+    capability: object
+    source: str
+    provider_manifest_sha256: str
+    raw_table_fingerprints: tuple[tuple[str, str], ...]
+
+
+def _canonical_mapping_sha256(value: Mapping[str, Any]) -> str:
+    encoded = json.dumps(
+        dict(value),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _frame_sha256(frame: pd.DataFrame) -> str:
+    if not isinstance(frame, pd.DataFrame):
+        raise TypeError("fundamental raw tables must contain pandas DataFrames")
+    digest = hashlib.sha256()
+    schema = [
+        {"position": index, "name": repr(column), "dtype": str(dtype)}
+        for index, (column, dtype) in enumerate(zip(frame.columns, frame.dtypes))
+    ]
+    digest.update(
+        json.dumps(schema, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+    digest.update(
+        pd.util.hash_pandas_object(frame, index=True, categorize=True)
+        .to_numpy(dtype="uint64", copy=False)
+        .tobytes()
+    )
+    return digest.hexdigest()
+
+
+def _raw_table_fingerprints(
+    raw_tables: Mapping[str, pd.DataFrame],
+) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (
+            table,
+            _frame_sha256(raw_tables.get(table, pd.DataFrame())),
+        )
+        for table in SOURCE_TABLES
+    )
+
+
+def _issue_live_tushare_attestation(
+    source: str,
+    provider_manifest: Mapping[str, Any],
+    raw_tables: Mapping[str, pd.DataFrame],
+) -> _LiveTushareAttestation:
+    if not _has_verified_live_tushare_provenance(
+        source,
+        provider_manifest,
+        raw_tables,
+    ):
+        raise ValueError("live Tushare provenance attestation failed")
+    return _LiveTushareAttestation(
+        capability=_LIVE_TUSHARE_CAPABILITY,
+        source=str(source),
+        provider_manifest_sha256=_canonical_mapping_sha256(provider_manifest),
+        raw_table_fingerprints=_raw_table_fingerprints(raw_tables),
+    )
+
+
+def _live_tushare_attestation_matches(
+    attestation: _LiveTushareAttestation | None,
+    *,
+    source: str,
+    provider_manifest: Mapping[str, Any],
+    raw_tables: Mapping[str, pd.DataFrame],
+) -> bool:
+    if not isinstance(attestation, _LiveTushareAttestation):
+        return False
+    try:
+        return bool(
+            attestation.capability is _LIVE_TUSHARE_CAPABILITY
+            and attestation.source == str(source)
+            and attestation.provider_manifest_sha256
+            == _canonical_mapping_sha256(provider_manifest)
+            and attestation.raw_table_fingerprints
+            == _raw_table_fingerprints(raw_tables)
+        )
+    except (TypeError, ValueError):
+        return False
+
+
 def _provider_source_priority(
     source: str,
     provider_manifest: Mapping[str, Any] | None,
+    raw_tables: Mapping[str, pd.DataFrame],
+    live_tushare_attestation: _LiveTushareAttestation | None = None,
 ) -> str:
     manifest = dict(provider_manifest or {})
     explicit = str(manifest.get("source_priority") or "").strip()
     source_is_tushare = "tushare" in str(source or "").lower()
     if explicit == "tushare_primary":
-        if source_is_tushare or _has_verified_tushare_provenance(manifest):
+        if _live_tushare_attestation_matches(
+            live_tushare_attestation,
+            source=source,
+            provider_manifest=manifest,
+            raw_tables=raw_tables,
+        ):
             return explicit
         raise ValueError(
-            "tushare_primary requires live Tushare source or verified local evidence"
+            "tushare_primary requires an internal live Tushare attestation"
         )
     if explicit:
         return explicit
     if source_is_tushare:
-        return "tushare_primary"
+        raise ValueError(
+            "Tushare source requires verified provider provenance"
+        )
     return "manual_offline_snapshot"
 
 
-def _has_verified_tushare_provenance(
+def _has_verified_live_tushare_provenance(
+    source: str,
     provider_manifest: Mapping[str, Any],
+    raw_tables: Mapping[str, pd.DataFrame],
 ) -> bool:
+    if str(source or "").strip() not in {
+        "live_tushare",
+        "live_tushare_partial",
+    }:
+        return False
     if (
-        str(provider_manifest.get("source_provenance") or "").strip()
-        != "verified_local_tushare_refresh_manifests"
+        str(provider_manifest.get("provider") or "").strip().lower()
+        != "tushare"
+        or str(
+            provider_manifest.get("source_provenance") or ""
+        ).strip()
+        != "live_tushare_explicit"
     ):
         return False
-    evidence = provider_manifest.get("provenance_evidence", [])
-    evidence_paths = [evidence] if isinstance(evidence, str) else list(evidence or [])
-    for value in evidence_paths:
-        path = Path(str(value or "")).expanduser()
-        if not path.is_absolute():
-            path = PROJECT_ROOT / path
-        if not path.is_file() or path.suffix.lower() != ".json":
-            continue
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        if not isinstance(payload, Mapping):
-            continue
-        metadata = dict(payload.get("metadata", {}) or {})
-        evidence_manifest = dict(
-            payload.get("provider_manifest", {})
-            or metadata.get("provider_manifest", {})
-            or {}
+    try:
+        expected_counts = {
+            table: int(len(raw_tables.get(table, pd.DataFrame())))
+            for table in SOURCE_TABLES
+        }
+        declared_counts = {
+            str(key): int(value)
+            for key, value in dict(
+                provider_manifest.get("raw_row_counts", {}) or {}
+            ).items()
+        }
+    except (TypeError, ValueError):
+        return False
+    if declared_counts != expected_counts:
+        return False
+    try:
+        attempted = int(provider_manifest.get("requests_attempted", -1))
+        accounted = sum(
+            int(provider_manifest.get(field, -1))
+            for field in (
+                "requests_succeeded_with_rows",
+                "requests_empty",
+                "requests_failed",
+            )
         )
-        provider = str(evidence_manifest.get("provider") or "").lower()
-        provider_status = str(
-            payload.get("provider_status")
-            or metadata.get("provider_status")
-            or evidence_manifest.get("provider_status")
-            or ""
-        ).lower()
-        if provider == "tushare" or "tushare" in provider_status:
-            return True
-    return False
+    except (TypeError, ValueError):
+        return False
+    outcomes = provider_manifest.get("symbol_table_outcomes")
+    try:
+        declared_tables = set(provider_manifest.get("tables", []))
+    except TypeError:
+        return False
+    return bool(
+        attempted > 0
+        and attempted == accounted
+        and isinstance(outcomes, list)
+        and len(outcomes) == attempted
+        and declared_tables == set(SOURCE_TABLES)
+    )
 
 
 def _resolve_data_base(data_root: str | Path) -> Path:
@@ -367,26 +491,32 @@ def _merge_quarantine_table(
     columns = list(
         dict.fromkeys([*existing.columns, *incoming_aligned.columns])
     )
-    frames = [
-        frame.reindex(columns=columns)
-        for frame in (existing, incoming_aligned)
-        if not frame.empty
-    ]
-    merged = (
-        pd.concat(frames, ignore_index=True, sort=False).drop_duplicates()
-        if frames
-        else incoming.copy()
-    )
+    origin_column = "_fundamental_quarantine_merge_origin"
+    while origin_column in columns:
+        origin_column = f"_{origin_column}"
+    frames: list[pd.DataFrame] = []
+    for origin, frame in ((0, existing), (1, incoming_aligned)):
+        if frame.empty:
+            continue
+        working = frame.reindex(columns=columns).copy()
+        working[origin_column] = origin
+        frames.append(working)
+    if frames:
+        combined = pd.concat(frames, ignore_index=True, sort=False)
+        winners = combined.drop_duplicates(subset=columns, keep="last")
+        retained_existing_rows = int((winners[origin_column] == 0).sum())
+        accepted_incoming_rows = int((winners[origin_column] == 1).sum())
+        merged = winners.drop(columns=[origin_column])
+    else:
+        merged = incoming.copy()
+        retained_existing_rows = 0
+        accepted_incoming_rows = 0
     return merged.reset_index(drop=True), {
         "existing_rows": int(len(existing)),
         "incoming_rows": int(len(incoming_aligned)),
         "merged_rows": int(len(merged)),
-        "retained_existing_rows": int(
-            max(len(merged) - len(incoming_aligned), 0)
-        ),
-        "accepted_incoming_rows": int(
-            min(len(incoming_aligned), len(merged))
-        ),
+        "retained_existing_rows": retained_existing_rows,
+        "accepted_incoming_rows": accepted_incoming_rows,
     }
 
 
@@ -1070,14 +1200,20 @@ def write_fundamental_mart(
     raw_snapshot_root: str | Path = DEFAULT_RAW_SNAPSHOT_ROOT,
     reports_root: str | Path = DEFAULT_READINESS_ROOT,
     run_id: str | None = None,
-    source: str = "tushare",
+    source: str = "manual_offline_snapshot",
     provider_manifest: Mapping[str, Any] | None = None,
     write_raw_snapshots: bool = True,
     require_expected_symbol_scope: bool = False,
     publish_on_gate_failure: bool = True,
+    _live_tushare_attestation: _LiveTushareAttestation | None = None,
 ) -> tuple[FundamentalMartArtifacts, dict[str, Any]]:
     run_id = run_id or _run_id()
-    source_priority = _provider_source_priority(source, provider_manifest)
+    source_priority = _provider_source_priority(
+        source,
+        provider_manifest,
+        raw_tables,
+        _live_tushare_attestation,
+    )
     data_dir = _resolve_data_base(data_root)
     snapshot_dir = Path(raw_snapshot_root).expanduser()
     reports_dir = Path(reports_root).expanduser()
@@ -1105,6 +1241,7 @@ def write_fundamental_mart(
         run_id=run_id,
         source=source,
     )
+    prior_pointer = load_fundamental_pointer(data_dir)
     existing = {
         table_name: _read_existing_fundamental_table(data_dir, table_name)
         for table_name in FUNDAMENTAL_TABLES
@@ -1125,6 +1262,29 @@ def write_fundamental_mart(
         existing["fundamental_quarantine"],
         incoming_quarantine,
     )
+    retained_existing_rows = sum(
+        int(stats.get("retained_existing_rows", 0) or 0)
+        for stats in (period_merge, daily_merge, quarantine_merge)
+    )
+    parent_generation_id = ""
+    parent_primary_provenance_sha256 = ""
+    if source_priority == "tushare_primary" and retained_existing_rows:
+        if (
+            prior_pointer is None
+            or prior_pointer.get("primary_provenance_verified") is not True
+        ):
+            raise ValueError(
+                "primary generation cannot retain rows from an unverified parent"
+            )
+        parent_generation_id = str(
+            prior_pointer.get("generation_id") or ""
+        ).strip()
+        parent_primary_provenance_sha256 = str(
+            dict(prior_pointer.get("primary_provenance", {}) or {}).get(
+                "envelope_sha256"
+            )
+            or ""
+        ).strip()
     expected_symbol_count = int(
         dict(provider_manifest or {}).get("symbols_requested", 0) or 0
     )
@@ -1175,15 +1335,50 @@ def write_fundamental_mart(
         "gate2_passed": readiness["gate2_passed"],
         "merge": readiness["merge"],
     }
+    if parent_generation_id:
+        generation_metadata.update(
+            {
+                "parent_generation_id": parent_generation_id,
+                "parent_primary_provenance_sha256": (
+                    parent_primary_provenance_sha256
+                ),
+            }
+        )
+    generation_tables = {
+        "fundamental_period": period,
+        "fundamental_daily": daily,
+        "fundamental_quarantine": quarantine,
+    }
+    primary_generation_attestation = None
+    if source_priority == "tushare_primary":
+        if not _live_tushare_attestation_matches(
+            _live_tushare_attestation,
+            source=source,
+            provider_manifest=dict(provider_manifest or {}),
+            raw_tables=raw_tables,
+        ):
+            raise ValueError(
+                "live Tushare attestation changed before generation publication"
+            )
+        primary_generation_attestation = (
+            _issue_primary_generation_attestation(
+                tables=generation_tables,
+                metadata=generation_metadata,
+                source=_live_tushare_attestation.source,
+                provider_manifest_sha256=(
+                    _live_tushare_attestation.provider_manifest_sha256
+                ),
+                raw_table_fingerprints=(
+                    _live_tushare_attestation.raw_table_fingerprints
+                ),
+            )
+        )
     generation_paths, pointer = publish_fundamental_generation(
         root=data_dir,
         run_id=run_id,
-        tables={
-            "fundamental_period": period,
-            "fundamental_daily": daily,
-            "fundamental_quarantine": quarantine,
-        },
+        tables=generation_tables,
         metadata=generation_metadata,
+        _primary_attestation=primary_generation_attestation,
     )
     period_path = generation_paths["fundamental_period"]
     daily_path = generation_paths["fundamental_daily"]
@@ -1496,6 +1691,7 @@ def run_cn_fundamental_maintenance(
     }
     if scope_error:
         provider_manifest["symbol_scope_error"] = scope_error
+    live_tushare_attestation: _LiveTushareAttestation | None = None
     tables = dict(raw_tables or {})
     if not tables:
         tables = _read_raw_input_dir(raw_input_dir)
@@ -1544,6 +1740,12 @@ def run_cn_fundamental_maintenance(
                 if int(provider_manifest.get("requests_failed", 0)) > 0
                 else "live_tushare"
             )
+            provider_manifest["provider_status"] = provider_status
+            live_tushare_attestation = _issue_live_tushare_attestation(
+                provider_status,
+                provider_manifest,
+                tables,
+            )
     if not tables:
         tables = {table: pd.DataFrame() for table in SOURCE_TABLES}
     artifacts, readiness = write_fundamental_mart(
@@ -1556,6 +1758,7 @@ def run_cn_fundamental_maintenance(
         provider_manifest=provider_manifest,
         require_expected_symbol_scope=True,
         publish_on_gate_failure=False,
+        _live_tushare_attestation=live_tushare_attestation,
     )
     return {
         "run_id": run_id,

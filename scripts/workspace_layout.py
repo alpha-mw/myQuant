@@ -105,7 +105,7 @@ PROTECTED_INVENTORY_PATHS: tuple[tuple[Path, str, str], ...] = (
     (
         Path("quant_investor") / "intelligence.py",
         "code_retirement_candidate",
-        "retired Kronos-era intelligence layer; v13 runtime uses canonical intelligence branch artifacts",
+        "retired Kronos-era intelligence layer; v14 has no Intelligence runtime branch",
     ),
     (
         Path("quant_investor") / "_vendor" / "chronos",
@@ -145,12 +145,12 @@ PROTECTED_INVENTORY_PATHS: tuple[tuple[Path, str, str], ...] = (
     (
         _retired_module_path("news_analysis"),
         "code_retirement_candidate",
-        "retired orphaned news analyzer; runtime intelligence path must not call external news APIs here",
+        "retired orphaned news analyzer; v14 runtime must not call external news APIs here",
     ),
     (
         _retired_module_path("sentiment_analysis"),
         "code_retirement_candidate",
-        "retired orphaned sentiment analyzer; canonical intelligence path owns text sentiment metadata",
+        "retired orphaned sentiment analyzer; v14 has no sentiment research branch",
     ),
     (
         _retired_module_path("signal_calibration"),

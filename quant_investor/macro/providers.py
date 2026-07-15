@@ -15,6 +15,10 @@ from quant_investor.macro.contracts import (
     is_official_source,
     is_tushare_source,
 )
+from quant_investor.macro.observer import (
+    DEFAULT_STANDALONE_STAGING_ROOT,
+    stage_standalone_macro_observations,
+)
 from quant_investor.macro.store import DEFAULT_OBSERVATIONS_ROOT, publish_observations
 
 
@@ -116,17 +120,48 @@ def fetch_official_first(
     """Fetch official rows first and use Tushare only for missing indicators."""
 
     official = (official_provider or OfficialMacroProvider(None)).fetch(request)
-    observations = list(official.observations)
+    observations: list[MacroObservation] = []
     manifests: list[Mapping[str, Any]] = [official.provider_manifest]
     blockers = list(official.blockers)
+    for item in official.observations:
+        try:
+            observation = MacroObservation.from_mapping(item.to_dict())
+        except Exception as exc:
+            blockers.append(
+                "provider_observation_invalid:official:"
+                f"{type(exc).__name__}:{exc}"
+            )
+            continue
+        if not is_official_source(observation.source_system):
+            blockers.append(
+                "provider_source_provenance_mismatch:official:"
+                + observation.indicator_id
+            )
+            continue
+        observations.append(observation)
     covered = {item.indicator_id for item in observations}
     missing = tuple(item for item in request.indicator_ids if item not in covered)
     if missing and allow_tushare_fallback:
         fallback_request = MacroFetchRequest(request.market, request.as_of, missing)
         fallback = (tushare_provider or TushareMacroProvider(None)).fetch(fallback_request)
-        observations.extend(fallback.observations)
         manifests.append(fallback.provider_manifest)
         blockers.extend(fallback.blockers)
+        for item in fallback.observations:
+            try:
+                observation = MacroObservation.from_mapping(item.to_dict())
+            except Exception as exc:
+                blockers.append(
+                    "provider_observation_invalid:tushare_fallback:"
+                    f"{type(exc).__name__}:{exc}"
+                )
+                continue
+            if not is_tushare_source(observation.source_system):
+                blockers.append(
+                    "provider_source_provenance_mismatch:tushare_fallback:"
+                    + observation.indicator_id
+                )
+                continue
+            observations.append(observation)
     elif missing:
         blockers.extend(f"official_observation_missing:{item}" for item in missing)
     final_covered = {item.indicator_id for item in observations}
@@ -148,15 +183,45 @@ def maintain_macro_observations(
     as_of: str,
     indicator_ids: Sequence[str] = (),
     root: str = str(DEFAULT_OBSERVATIONS_ROOT),
+    staging_root: str = str(DEFAULT_STANDALONE_STAGING_ROOT),
     run_id: str,
     allow_live: bool = False,
     allow_tushare_fallback: bool = False,
     official_provider: MacroProvider | None = None,
     tushare_provider: MacroProvider | None = None,
 ) -> dict[str, Any]:
-    """Validate local rows and optionally call explicitly injected live providers."""
+    """Stage local rows or publish rows from an explicitly injected provider."""
 
-    candidates: list[MacroObservation | Mapping[str, Any]] = list(local_observations)
+    local_rows: list[MacroObservation | Mapping[str, Any]] = list(
+        local_observations
+    )
+    if local_rows:
+        if allow_live or allow_tushare_fallback:
+            return {
+                "status": "blocked",
+                "promoted": False,
+                "reason": (
+                    "standalone_and_live_modes_are_mutually_exclusive"
+                ),
+                "blockers": [
+                    "macro_standalone_observations_live_combination_rejected"
+                ],
+            }
+        return stage_standalone_macro_observations(
+            local_rows,
+            market=market,
+            as_of=as_of,
+            run_id=run_id,
+            output_root=staging_root,
+        )
+    if allow_tushare_fallback and not allow_live:
+        return {
+            "status": "blocked",
+            "promoted": False,
+            "reason": "tushare_fallback_requires_live",
+            "blockers": ["macro_tushare_fallback_requires_live"],
+        }
+
     provider_result = ProviderFetchResult(
         provider_manifest={"strategy": "local_only", "live_requested": False},
         status="not_requested",
@@ -169,7 +234,6 @@ def maintain_macro_observations(
             tushare_provider=tushare_provider,
             allow_tushare_fallback=allow_tushare_fallback,
         )
-        candidates.extend(provider_result.observations)
         fatal_provider_blockers = [
             item
             for item in provider_result.blockers
@@ -183,6 +247,7 @@ def maintain_macro_observations(
                 "blockers": list(provider_result.blockers),
                 "provider_manifest": dict(provider_result.provider_manifest),
             }
+    candidates = list(provider_result.observations)
     if not candidates:
         return {
             "status": provider_result.status if allow_live else "no_update",

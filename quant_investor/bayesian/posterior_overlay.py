@@ -25,6 +25,16 @@ OVERLAY_MODE_SHADOW = "shadow"
 OVERLAY_METADATA_KEY = "calibrated_posterior_overlay"
 
 
+def _require_schema(payload: Mapping[str, Any], *, artifact_type: str) -> str:
+    schema_version = str(payload.get("schema_version", ""))
+    if schema_version != POSTERIOR_OVERLAY_SCHEMA_VERSION:
+        raise ValueError(
+            f"{artifact_type} schema mismatch: expected "
+            f"{POSTERIOR_OVERLAY_SCHEMA_VERSION!r}, got {schema_version!r}."
+        )
+    return schema_version
+
+
 def _json_safe(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {str(key): _json_safe(item) for key, item in value.items()}
@@ -153,18 +163,37 @@ class CalibrationOverlayDiagnostics:
     normalized_raw_value: float = 0.50
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        if self.schema_version != POSTERIOR_OVERLAY_SCHEMA_VERSION:
+            raise ValueError("Posterior overlay diagnostics schema mismatch.")
+        if self.calibration_schema_version != CALIBRATION_V2_SCHEMA_VERSION:
+            raise ValueError("Posterior overlay calibration schema mismatch.")
+        if self.target_name != TARGET_POSTERIOR_WIN_RATE:
+            raise ValueError(
+                "Posterior overlay target must be posterior_win_rate; "
+                f"got {self.target_name!r}."
+            )
+
     def to_dict(self) -> dict[str, Any]:
         return dict(_json_safe(asdict(self)))
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "CalibrationOverlayDiagnostics":
         data = dict(payload)
+        schema_version = _require_schema(data, artifact_type="Posterior overlay diagnostics")
+        calibration_schema_version = str(data.get("calibration_schema_version", ""))
+        if calibration_schema_version != CALIBRATION_V2_SCHEMA_VERSION:
+            raise ValueError(
+                "Posterior overlay calibration schema mismatch: "
+                f"expected {CALIBRATION_V2_SCHEMA_VERSION!r}, "
+                f"got {calibration_schema_version!r}."
+            )
         selected_curve_key = data.get("selected_curve_key")
         return cls(
-            schema_version=str(data.get("schema_version", POSTERIOR_OVERLAY_SCHEMA_VERSION)),
+            schema_version=schema_version,
             overlay_mode=str(data.get("overlay_mode", OVERLAY_MODE_SHADOW)),
             model_id=str(data.get("model_id", "")),
-            calibration_schema_version=str(data.get("calibration_schema_version", CALIBRATION_V2_SCHEMA_VERSION)),
+            calibration_schema_version=calibration_schema_version,
             target_name=str(data.get("target_name", TARGET_POSTERIOR_WIN_RATE)),
             selected_curve_key=dict(selected_curve_key) if isinstance(selected_curve_key, Mapping) else None,
             selected_curve_examples=(
@@ -249,10 +278,11 @@ class CalibratedPosteriorOverlay:
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "CalibratedPosteriorOverlay":
         data = dict(payload)
+        schema_version = _require_schema(data, artifact_type="Posterior overlay")
         diagnostics_payload = data.get("diagnostics", {}) or {}
         edge_payload = data.get("edge_breakdown", {}) or {}
         return cls(
-            schema_version=str(data.get("schema_version", POSTERIOR_OVERLAY_SCHEMA_VERSION)),
+            schema_version=schema_version,
             symbol=str(data.get("symbol", "")),
             company_name=str(data.get("company_name", "")),
             market=str(data.get("market", "")),
@@ -299,6 +329,7 @@ def build_calibrated_posterior_overlay(
     overlay_mode: str = OVERLAY_MODE_SHADOW,
     metadata: Mapping[str, Any] | None = None,
 ) -> CalibratedPosteriorOverlay:
+    model = CalibrationModelV2.from_dict(model.to_dict())
     config = edge_cost_config or EdgeCostConfig()
     resolved_horizon_label = horizon_label or horizon_label_for_days(horizon_days)
     raw_win_rate = clamp_probability(result.posterior_win_rate)

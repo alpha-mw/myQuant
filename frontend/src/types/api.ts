@@ -251,6 +251,17 @@ export interface AnalysisBranchConfig {
   settings: Record<string, unknown>;
 }
 
+export interface CanonicalAnalysisBranchConfig {
+  settings: Record<string, unknown>;
+}
+
+export type CanonicalAnalysisBranch = 'quant' | 'fundamental' | 'macro';
+export type AnalysisBranchName = CanonicalAnalysisBranch | 'kline' | 'llm_debate';
+export type AnalysisBranchRequestKey = AnalysisBranchName | 'kronos';
+export type AnalysisRunBranches =
+  Partial<Record<CanonicalAnalysisBranch, CanonicalAnalysisBranchConfig>> &
+  Partial<Record<'kline' | 'kronos' | 'llm_debate', AnalysisBranchConfig>>;
+
 export interface AnalysisRiskConfig {
   capital: number;
   risk_level: string;
@@ -281,17 +292,15 @@ export interface AnalysisRunRequest {
   targets: string[];
   preset: string;
   market: string;
-  branches: Record<string, AnalysisBranchConfig>;
+  branches: AnalysisRunBranches;
   risk: AnalysisRiskConfig;
   portfolio: AnalysisPortfolioConfig;
   llm_debate: AnalysisLlmDebateConfig;
   stocks?: string[];
   capital?: number | null;
   risk_level?: string | null;
-  enable_macro?: boolean | null;
   enable_kline?: boolean | null;
   enable_kronos?: boolean | null; // backward compat
-  enable_intelligence?: boolean | null;
   enable_llm_debate?: boolean | null;
 }
 
@@ -313,7 +322,9 @@ export interface AnalysisModelOption {
 
 export interface AnalysisOptionsResponse {
   presets: AnalysisPresetOption[];
-  branch_defaults: Record<string, AnalysisBranchConfig>;
+  branch_defaults:
+    Record<CanonicalAnalysisBranch, CanonicalAnalysisBranchConfig> &
+    Record<'kline' | 'llm_debate', AnalysisBranchConfig>;
   llm_models: AnalysisModelOption[];
   risk_templates: Array<Record<string, unknown>>;
 }
@@ -335,7 +346,7 @@ export interface AnalysisHistoryItem {
 }
 
 export interface BranchDetailResult {
-  branch_name: string;
+  branch_name: AnalysisBranchName;
   enabled: boolean;
   score: number;
   confidence: number;
@@ -389,6 +400,10 @@ export interface ExecutionPlan {
 }
 
 export interface AnalysisSessionDetail {
+  architecture_version: '14.0.0-stable';
+  branch_schema_version: 'branch-schema.v14.three-branch';
+  likelihood_schema_version: 'likelihood-schema.v14.two-likelihood';
+  report_protocol_version: 'report-protocol.v14.three-branch';
   analysis_id: string;
   created_at: string;
   source: string;
@@ -400,6 +415,7 @@ export interface AnalysisSessionDetail {
   style_bias: string;
   sector_preferences: string[];
   candidate_symbols: string[];
+  data_snapshot: Record<string, unknown>;
   execution_notes: string[];
   branches: BranchDetailResult[];
   risk: RiskReview;

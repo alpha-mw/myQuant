@@ -8,11 +8,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from quant_investor.market.config import get_market_settings
+from quant_investor.market.config import (
+    get_market_settings,
+    resolve_market_analysis_output_dir,
+)
 from quant_investor.market.full_report import (
+    MarketArtifactContractError,
+    _canonical_branch_map,
     _derive_stock_conclusion,
     _derive_stock_drag_drivers,
     _derive_stock_support_drivers,
+    _require_current_market_schema_envelope,
+    _require_current_market_report_batch,
     _to_mapping,
     category_name,
 )
@@ -32,6 +39,10 @@ def _analysis_meta_from_result(
     symbols: list[str],
     analysis_kwargs: dict[str, Any],
 ) -> dict[str, Any]:
+    schema_envelope = _require_current_market_schema_envelope(
+        result,
+        label="QuantInvestor pipeline result",
+    )
     report_bundle = getattr(result, "agent_report_bundle", None)
     orchestration = dict(getattr(result, "agent_orchestration", {}) or {})
     model_role_metadata = getattr(result, "model_role_metadata", None)
@@ -89,6 +100,7 @@ def _analysis_meta_from_result(
     bayesian_records = list(getattr(result, "bayesian_records", []) or [])
     funnel_output = getattr(result, "funnel_output", None)
     return {
+        **schema_envelope,
         "market": market,
         "universe": universe,
         "category": category,
@@ -121,15 +133,6 @@ def _analysis_meta_from_result(
         "review_bundle": _to_mapping(report_bundle),
         "ic_hints_by_symbol": dict(
             getattr(result, "ic_hints_by_symbol", {}) or {}
-        ),
-        "report_protocol_version": str(
-            getattr(report_bundle, "report_protocol_version", "")
-        ),
-        "ic_protocol_version": str(
-            getattr(report_bundle, "ic_protocol_version", "")
-        ),
-        "branch_schema_version": str(
-            getattr(result, "branch_schema_version", "")
         ),
         "global_context": global_context_payload,
         "data_snapshot": data_snapshot_payload,
@@ -248,7 +251,6 @@ def analyze_batch(
     analyzer_kwargs.setdefault("enable_macro", True)
     analyzer_kwargs.setdefault("enable_quant", True)
     analyzer_kwargs.setdefault("enable_fundamental", True)
-    analyzer_kwargs.setdefault("enable_intelligence", True)
     analyzer_kwargs.setdefault("verbose", verbose)
     analyzer_kwargs.setdefault("master_reasoning_effort", "high")
     analyzer_kwargs.setdefault("universe_key", universe)
@@ -268,6 +270,15 @@ def analyze_batch(
             **analyzer_kwargs,
         )
         result = analyzer.run()
+        schema_envelope = _require_current_market_schema_envelope(
+            result,
+            label="QuantInvestor pipeline result",
+        )
+        canonical_branch_results = _canonical_branch_map(
+            getattr(result, "branch_results", {}),
+            label="QuantInvestor pipeline result branch_results",
+            require_exact=True,
+        )
 
         recommendations = []
         for recommendation in result.final_strategy.trade_recommendations:
@@ -301,6 +312,7 @@ def analyze_batch(
             recommendations.append(payload)
 
         analysis: dict[str, Any] = {
+            **schema_envelope,
             "market": settings.market,
             "universe": universe,
             "category": category,
@@ -333,7 +345,7 @@ def analyze_batch(
             analysis_kwargs=analyzer_kwargs,
         )
 
-        for name, branch in result.branch_results.items():
+        for name, branch in canonical_branch_results.items():
             analysis["branches"][name] = {
                 "score": branch.score,
                 "confidence": branch.confidence,
@@ -361,6 +373,8 @@ def analyze_batch(
         print(f"   目标仓位: {analysis['strategy']['target_exposure']:.0%}")
         print(f"   候选标的: {len(analysis['strategy']['candidate_symbols'])} 只")
         return analysis
+    except MarketArtifactContractError:
+        raise
     except Exception as exc:
         print(f"❌ 批次 {batch_id} 分析失败: {exc}")
         import traceback
@@ -374,8 +388,11 @@ def save_batch_result(
     market: str = "CN",
     output_dir: str | None = None,
 ) -> str:
-    settings = get_market_settings(market)
-    target_dir = Path(output_dir or settings.analysis_output_dir)
+    _require_current_market_report_batch(
+        result,
+        label="batch result",
+    )
+    target_dir = resolve_market_analysis_output_dir(market, output_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     output_path = target_dir / (
         f"batch_{result['category']}_"

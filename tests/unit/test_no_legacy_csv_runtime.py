@@ -15,6 +15,8 @@ SCAN_ROOTS = [
 ALLOWLIST = {
     # Dashboard export reads strategy-record CSV artifacts, not runtime market data.
     "scripts/export_cn_aggressive_dashboard_data.py",
+    # Hash-bound offline retirement replay reads frozen evidence, never market runtime data.
+    "scripts/run_v14_retirement_replay_gate.py",
     "scripts/migrate_legacy_csv_state_to_parquet.py",
     "scripts/run_us_aggressive_analysis.py",
 }

@@ -35,6 +35,10 @@ from quant_investor.factors.runtime import (
     MinedFactorRegistry,
     production_factor_set_sha256,
 )
+from quant_investor.factors.runtime_contract import (
+    validate_production_runtime_contracts,
+    validate_quant_production_activation,
+)
 
 
 PROTOCOL_VERSION = "v2"
@@ -1248,6 +1252,10 @@ def governance_runtime_status(registry: MinedFactorRegistry) -> dict[str, Any]:
         blockers.append("registry_missing")
     if metadata.get("load_error"):
         blockers.append("registry_load_error")
+    if metadata.get("strict_load_error"):
+        blockers.append("registry_strict_load_error")
+    if metadata.get("strict_loader") is not True:
+        blockers.append("registry_not_strictly_loaded")
     if not selectable:
         blockers.append("no_selectable_production_factors")
     if len(manifest["production_factor_names"]) != len(
@@ -1358,6 +1366,23 @@ def governance_runtime_status(registry: MinedFactorRegistry) -> dict[str, Any]:
     ).strip():
         blockers.append("registry_canonical_evidence_has_apply_blocker")
 
+    runtime_contract_status = validate_production_runtime_contracts(
+        selectable,
+        metadata,
+    )
+    blockers.extend(runtime_contract_status.get("blockers", []))
+    activation_status = validate_quant_production_activation(
+        metadata,
+        manifest,
+        str(runtime_contract_status.get("contracts_sha256") or ""),
+        implementation_code_sha256s=dict(
+            runtime_contract_status.get("implementation_code_sha256s", {}) or {}
+        ),
+        protocol_version=PROTOCOL_VERSION,
+        protocol_hash_value=protocol_hash(),
+    )
+    blockers.extend(activation_status.get("blockers", []))
+
     blockers = list(dict.fromkeys(blockers))
     ready = not blockers
     return {
@@ -1378,6 +1403,16 @@ def governance_runtime_status(registry: MinedFactorRegistry) -> dict[str, Any]:
         "family_normalized_abs_weights": family_weights,
         "slot_incumbents": slot_records,
         "canonical_replay_producer_control": producer_control,
+        "factor_runtime_contracts": dict(
+            runtime_contract_status.get("contracts", {}) or {}
+        ),
+        "factor_runtime_contracts_sha256": str(
+            runtime_contract_status.get("contracts_sha256") or ""
+        ),
+        "factor_runtime_implementation_code_sha256s": dict(
+            runtime_contract_status.get("implementation_code_sha256s", {}) or {}
+        ),
+        "quant_production_activation": dict(activation_status),
         "blockers": blockers,
     }
 

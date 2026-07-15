@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from dataclasses import dataclass, field
 from statistics import fmean
 from typing import Any, Callable, Mapping
@@ -8,7 +9,6 @@ from typing import Any, Callable, Mapping
 import pandas as pd
 
 from quant_investor.agent_protocol import (
-    ActionLabel,
     AgentStatus,
     BranchOverlayVerdict,
     BranchVerdict,
@@ -25,6 +25,7 @@ from quant_investor.agents.stock_reviewers import (
     MasterICAgent,
     MasterSymbolPacket,
 )
+from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
 from quant_investor.branch_contracts import BranchResult
 from quant_investor.market.dag.assembly import _aggregate_branch_summaries, _build_branch_results
 from quant_investor.market.dag.common import _dedupe_texts, _score_to_action
@@ -250,6 +251,48 @@ def _build_symbol_macro_verdict(
     )
 
 
+def _build_no_candidate_fundamental_outputs() -> tuple[BranchVerdict, BranchResult]:
+    diagnostic = "not_run_no_candidates"
+    generation_evidence = {
+        "status": "UNCONFIRMED",
+        "all_symbols_confirmed": False,
+        "reason": diagnostic,
+    }
+    metadata = {
+        "branch_name": "fundamental",
+        "degraded_reason": diagnostic,
+        "reliability": 0.0,
+        "horizon_days": 5,
+        "fundamental_data_generation_status": "UNCONFIRMED",
+        "fundamental_data_generation_by_symbol": {},
+        "fundamental_data_generation_status_by_symbol": {},
+        "fundamental_data_generation_evidence": generation_evidence,
+    }
+    thesis = "No candidates entered Fundamental research; evidence is UNCONFIRMED."
+    verdict = BranchVerdict(
+        agent_name="fundamental",
+        thesis=thesis,
+        final_score=0.0,
+        final_confidence=0.0,
+        status=AgentStatus.DEGRADED,
+        coverage_notes=["No candidate symbols were available for Fundamental research."],
+        diagnostic_notes=[diagnostic],
+        metadata=deepcopy(metadata),
+    )
+    result = BranchResult(
+        branch_name="fundamental",
+        success=False,
+        final_score=0.0,
+        final_confidence=0.0,
+        symbol_scores={},
+        conclusion=thesis,
+        coverage_notes=list(verdict.coverage_notes),
+        diagnostic_notes=[diagnostic],
+        metadata=deepcopy(metadata),
+    )
+    return verdict, result
+
+
 async def _run_candidate_research_phase(
     *,
     candidate_symbols: list[str],
@@ -271,7 +314,6 @@ async def _run_candidate_research_phase(
     master_timeout: float,
     resolver_snapshot: Mapping[str, Any],
     fundamental_agent: Any,
-    intelligence_agent: Any,
     quant_result: BranchResult,
     ensure_branch_verdict: Callable[..., BranchVerdict],
     master_hint_to_ic_hint: Callable[[Any], dict[str, Any]],
@@ -313,16 +355,10 @@ async def _run_candidate_research_phase(
             symbol=symbol,
             branch_name="fundamental",
         )
-        intelligence = ensure_branch_verdict(
-            intelligence_agent.run({**branch_payload, "market_regime": macro_verdict.metadata.get("regime", "neutral")}),
-            symbol=symbol,
-            branch_name="intelligence",
-        )
         macro = _build_symbol_macro_verdict(symbol=symbol, macro_verdict=macro_verdict)
         base_branch_verdicts = {
             "quant": quant,
             "fundamental": fundamental,
-            "intelligence": intelligence,
             "macro": macro,
         }
 
@@ -467,31 +503,9 @@ async def _run_candidate_research_phase(
         if codex_handoff_review:
             fallback_reasons.append(f"{symbol}: codex_handoff_pending")
 
-        reviewed_branch_verdicts: dict[str, BranchVerdict] = {}
-        for branch_name, base_verdict in base_branch_verdicts.items():
-            overlay = branch_overlay_verdicts.get(branch_name)
-            if overlay is None:
-                reviewed_branch_verdicts[branch_name] = base_verdict
-                continue
-            reviewed_branch_verdicts[branch_name] = BranchVerdict(
-                agent_name=base_verdict.agent_name,
-                thesis=overlay.thesis or base_verdict.thesis,
-                symbol=symbol,
-                status=base_verdict.status,
-                direction=overlay.direction if isinstance(overlay.direction, Direction) else base_verdict.direction,
-                action=overlay.action if isinstance(overlay.action, ActionLabel) else base_verdict.action,
-                confidence_label=base_verdict.confidence_label,
-                final_score=float(overlay.adjusted_score),
-                final_confidence=float(overlay.adjusted_confidence),
-                investment_risks=_dedupe_texts(list(base_verdict.investment_risks) + list(overlay.risk_flags) + list(overlay.missing_risks)),
-                coverage_notes=_dedupe_texts(list(base_verdict.coverage_notes) + list(overlay.agreement_points)),
-                diagnostic_notes=_dedupe_texts(list(base_verdict.diagnostic_notes) + list(overlay.conflict_points) + list(overlay.contradictions)),
-                metadata={
-                    **dict(base_verdict.metadata or {}),
-                    "branch_name": branch_name,
-                    "overlay": overlay.to_dict(),
-                },
-            )
+        # LLM overlays remain report-only evidence. The deterministic DAG and
+        # control chain consume the exact base verdict objects for every branch.
+        reviewed_branch_verdicts = dict(base_branch_verdicts)
         packet = _build_symbol_research_packet(
             symbol=symbol,
             company_name=company_name_map.get(symbol, ""),
@@ -522,6 +536,8 @@ async def _run_candidate_research_phase(
                     "master_fallback_reason": master_model_resolution.fallback_reason,
                     "master_reasoning_effort": master_reasoning_effort,
                     "agent_layer_enabled": bool(enable_agent_layer),
+                    "advisory_only": True,
+                    "deterministic_control_chain_isolated": True,
                     "review_layer_mode": (
                         "codex_handoff"
                         if codex_handoff_review
@@ -571,6 +587,8 @@ async def _run_candidate_research_phase(
             "master_fallback_reason": master_model_resolution.fallback_reason,
             "master_reasoning_effort": master_reasoning_effort,
             "agent_layer_enabled": bool(enable_agent_layer),
+            "advisory_only": True,
+            "deterministic_control_chain_isolated": True,
             "review_layer_mode": (
                 "codex_handoff"
                 if codex_handoff_review
@@ -613,10 +631,28 @@ async def _run_candidate_research_phase(
     review_bundle.fallback_reasons = _dedupe_texts(fallback_reasons)
 
     branch_summaries = _aggregate_branch_summaries(research_by_symbol)
+    empty_fundamental_result: BranchResult | None = None
+    if not candidate_symbols:
+        empty_fundamental_verdict, empty_fundamental_result = (
+            _build_no_candidate_fundamental_outputs()
+        )
+        branch_summaries["fundamental"] = empty_fundamental_verdict
     branch_summaries["quant"] = global_quant_verdict
     branch_summaries["macro"] = macro_verdict
     branch_results = _build_branch_results(research_by_symbol, branch_summaries)
     branch_results["quant"] = quant_result
+    if empty_fundamental_result is not None:
+        branch_results["fundamental"] = empty_fundamental_result
+    branch_summaries = {
+        name: branch_summaries[name]
+        for name in CANONICAL_BRANCH_ORDER
+        if name in branch_summaries
+    }
+    branch_results = {
+        name: branch_results[name]
+        for name in CANONICAL_BRANCH_ORDER
+        if name in branch_results
+    }
 
     return CandidateResearchState(
         symbol_research_packets=symbol_research_packets,

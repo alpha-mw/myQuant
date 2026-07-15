@@ -4,7 +4,7 @@ from collections import defaultdict
 from statistics import fmean
 from typing import Any, Mapping
 
-from quant_investor.agent_protocol import ActionLabel, BranchVerdict, ICDecision, RiskDecision
+from quant_investor.agent_protocol import AgentStatus, ActionLabel, BranchVerdict, ICDecision, RiskDecision
 from quant_investor.agents.agent_contracts import BaseBranchAgentOutput
 from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
 from quant_investor.branch_contracts import BranchResult
@@ -31,6 +31,13 @@ def _aggregate_branch_summaries(
             "coverage": [],
             "diagnostic": [],
             "symbols": [],
+            "degraded_symbols": [],
+            "reliabilities": [],
+            "structured_signals": {},
+            "horizon_days": [],
+            "fundamental_generations": {},
+            "fundamental_generation_statuses": {},
+            "fundamental_generation_evidence": {},
         }
     )
     for symbol, branch_map in research_by_symbol.items():
@@ -45,6 +52,47 @@ def _aggregate_branch_summaries(
             bucket["coverage"].extend(verdict.coverage_notes)
             bucket["diagnostic"].extend(verdict.diagnostic_notes)
             bucket["symbols"].append(symbol)
+            if verdict.status != AgentStatus.SUCCESS:
+                bucket["degraded_symbols"].append(symbol)
+            reliability = verdict.metadata.get("reliability")
+            if reliability is not None:
+                bucket["reliabilities"].append(float(reliability))
+            if verdict.metadata.get("structured_signals"):
+                bucket["structured_signals"][symbol] = dict(
+                    verdict.metadata["structured_signals"]
+                )
+            if verdict.metadata.get("horizon_days") is not None:
+                bucket["horizon_days"].append(
+                    int(verdict.metadata["horizon_days"])
+                )
+            if branch_name == "fundamental":
+                generation_map = dict(
+                    verdict.metadata.get(
+                        "fundamental_data_generation_by_symbol", {}
+                    )
+                    or {}
+                )
+                status_map = dict(
+                    verdict.metadata.get(
+                        "fundamental_data_generation_status_by_symbol", {}
+                    )
+                    or {}
+                )
+                if symbol in generation_map:
+                    bucket["fundamental_generations"][symbol] = str(
+                        generation_map[symbol]
+                    )
+                if symbol in status_map:
+                    bucket["fundamental_generation_statuses"][symbol] = str(
+                        status_map[symbol]
+                    )
+                generation_evidence = verdict.metadata.get(
+                    "fundamental_data_generation_evidence"
+                )
+                if isinstance(generation_evidence, Mapping):
+                    bucket["fundamental_generation_evidence"][symbol] = dict(
+                        generation_evidence
+                    )
     result: dict[str, BranchVerdict] = {}
     for branch_name in CANONICAL_BRANCH_ORDER:
         bucket = buckets.get(branch_name)
@@ -52,20 +100,55 @@ def _aggregate_branch_summaries(
             continue
         avg_score = fmean(bucket["scores"]) if bucket["scores"] else 0.0
         avg_conf = fmean(bucket["confidences"]) if bucket["confidences"] else 0.0
+        summary_metadata = {
+            "branch_name": branch_name,
+            "symbol_count": len(bucket["symbols"]),
+            "symbols": list(dict.fromkeys(bucket["symbols"]))[:15],
+            "degraded_symbols": list(dict.fromkeys(bucket["degraded_symbols"])),
+            "reliability": (
+                fmean(bucket["reliabilities"])
+                if bucket["reliabilities"]
+                else avg_conf
+            ),
+            "structured_signals_by_symbol": dict(bucket["structured_signals"]),
+            "horizon_days": (
+                max(bucket["horizon_days"])
+                if bucket["horizon_days"]
+                else 5
+            ),
+        }
+        if branch_name == "fundamental":
+            summary_metadata.update(
+                {
+                    "fundamental_data_generation_by_symbol": dict(
+                        bucket["fundamental_generations"]
+                    ),
+                    "fundamental_data_generation_status_by_symbol": dict(
+                        bucket["fundamental_generation_statuses"]
+                    ),
+                    "fundamental_data_generation_evidence_by_symbol": dict(
+                        bucket["fundamental_generation_evidence"]
+                    ),
+                    "fundamental_data_generation_evidence": dict(
+                        bucket["fundamental_generation_evidence"]
+                    ),
+                }
+            )
         result[branch_name] = BranchVerdict(
             agent_name=branch_name,
             thesis=next((text for text in bucket["theses"] if text.strip()), f"{branch_name} 分支已完成全市场汇总。"),
             symbol=None,
             final_score=float(avg_score),
             final_confidence=float(avg_conf),
+            status=(
+                AgentStatus.DEGRADED
+                if bucket["degraded_symbols"]
+                else AgentStatus.SUCCESS
+            ),
             investment_risks=_dedupe_texts(list(bucket["risks"]))[:8],
             coverage_notes=_dedupe_texts(list(bucket["coverage"]))[:8],
             diagnostic_notes=_dedupe_texts(list(bucket["diagnostic"]))[:8],
-            metadata={
-                "branch_name": branch_name,
-                "symbol_count": len(bucket["symbols"]),
-                "symbols": list(dict.fromkeys(bucket["symbols"]))[:15],
-            },
+            metadata=summary_metadata,
         )
     return result
 
@@ -86,16 +169,25 @@ def _build_branch_results(
         verdict = branch_summaries.get(branch_name)
         if verdict is None:
             continue
+        metadata = dict(verdict.metadata)
+        if verdict.status != AgentStatus.SUCCESS:
+            metadata.setdefault("degraded_reason", "symbol_research_degraded")
         results[branch_name] = BranchResult(
             branch_name=branch_name,
             final_score=float(verdict.final_score),
             final_confidence=float(verdict.final_confidence),
             symbol_scores=dict(branch_scores_by_symbol.get(branch_name, {})),
+            signals={
+                "structured_signals_by_symbol": dict(
+                    metadata.get("structured_signals_by_symbol", {}) or {}
+                )
+            },
             conclusion=str(verdict.thesis),
             investment_risks=list(verdict.investment_risks),
             coverage_notes=list(verdict.coverage_notes),
             diagnostic_notes=list(verdict.diagnostic_notes),
-            metadata=dict(verdict.metadata),
+            metadata=metadata,
+            horizon_days=int(metadata.get("horizon_days", 5)),
         )
     return results
 
@@ -177,4 +269,5 @@ def _attach_symbol_to_ic_decision(
     )
     if ic_hint:
         payload.metadata["llm_master_hint"] = dict(ic_hint)
+        payload.metadata["llm_master_hint_advisory_only"] = True
     return payload

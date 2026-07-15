@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import io
 import json
 import os
 import re
 import shutil
+import stat
 import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -23,6 +25,11 @@ POINTER_FILENAME = "_latest.json"
 GENERATIONS_DIRNAME = "_generations"
 OBSERVATION_COLUMNS = tuple(MacroObservation.__dataclass_fields__)
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_.-]+$")
+_OBSERVER_FLAGS = {
+    "observer_only": True,
+    "production_eligible": False,
+    "applied": False,
+}
 
 
 class MacroObservationStoreError(RuntimeError):
@@ -31,6 +38,59 @@ class MacroObservationStoreError(RuntimeError):
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _stat_signature(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        stat.S_IFMT(value.st_mode),
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _stable_file_bytes(
+    path: Path,
+    *,
+    unsafe_blocker: str,
+    changed_blocker: str,
+) -> bytes:
+    try:
+        before = os.lstat(path)
+        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+            raise MacroObservationStoreError(unsafe_blocker)
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        )
+    except MacroObservationStoreError:
+        raise
+    except OSError as exc:
+        raise MacroObservationStoreError(unsafe_blocker) from exc
+    try:
+        signature = _stat_signature(before)
+        if _stat_signature(os.fstat(descriptor)) != signature:
+            raise MacroObservationStoreError(changed_blocker)
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        if (
+            _stat_signature(os.fstat(descriptor)) != signature
+            or _stat_signature(os.lstat(path)) != signature
+        ):
+            raise MacroObservationStoreError(changed_blocker)
+        return b"".join(chunks)
+    except MacroObservationStoreError:
+        raise
+    except OSError as exc:
+        raise MacroObservationStoreError(changed_blocker) from exc
+    finally:
+        os.close(descriptor)
 
 
 def _now_utc() -> str:
@@ -52,12 +112,61 @@ def _safe_id(value: str) -> str:
     return text
 
 
-def _safe_root(value: str | Path) -> Path:
-    root = Path(value).expanduser()
-    if root.exists() and (root.is_symlink() or not root.is_dir()):
+def _observer_flags_valid(payload: Mapping[str, Any]) -> bool:
+    return all(payload.get(key) is value for key, value in _OBSERVER_FLAGS.items())
+
+
+def _absolute_root(value: str | Path) -> Path:
+    raw = Path(value).expanduser()
+    if ".." in raw.parts:
         raise MacroObservationStoreError("macro_observation_root_unsafe")
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    return root.resolve()
+    return raw if raw.is_absolute() else Path.cwd() / raw
+
+
+def _read_root(value: str | Path) -> Path:
+    root = _absolute_root(value)
+    cursor = Path(root.anchor)
+    for part in root.parts[1:]:
+        cursor = cursor / part
+        try:
+            metadata = os.lstat(cursor)
+        except OSError as exc:
+            raise MacroObservationStoreError(
+                "macro_observation_root_missing"
+            ) from exc
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(
+            metadata.st_mode
+        ):
+            raise MacroObservationStoreError(
+                "macro_observation_root_unsafe"
+            )
+    return cursor.resolve(strict=True)
+
+
+def _write_root(value: str | Path) -> Path:
+    root = _absolute_root(value)
+    cursor = Path(root.anchor)
+    for part in root.parts[1:]:
+        cursor = cursor / part
+        try:
+            metadata = os.lstat(cursor)
+        except FileNotFoundError:
+            try:
+                os.mkdir(cursor, mode=0o700)
+                metadata = os.lstat(cursor)
+            except FileExistsError:
+                metadata = os.lstat(cursor)
+        except OSError as exc:
+            raise MacroObservationStoreError(
+                "macro_observation_root_unsafe"
+            ) from exc
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(
+            metadata.st_mode
+        ):
+            raise MacroObservationStoreError(
+                "macro_observation_root_unsafe"
+            )
+    return cursor.resolve(strict=True)
 
 
 def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
@@ -97,11 +206,15 @@ def _strict_pointer(root: Path) -> dict[str, Any] | None:
     path = root / POINTER_FILENAME
     if not path.exists() and not path.is_symlink():
         return None
-    if path.is_symlink() or not path.is_file():
-        raise MacroObservationStoreError("macro_observation_pointer_unsafe")
     try:
-        pointer_bytes = path.read_bytes()
+        pointer_bytes = _stable_file_bytes(
+            path,
+            unsafe_blocker="macro_observation_pointer_unsafe",
+            changed_blocker="macro_observation_pointer_changed_during_read",
+        )
         payload = json.loads(pointer_bytes.decode("utf-8"))
+    except MacroObservationStoreError:
+        raise
     except Exception as exc:
         raise MacroObservationStoreError("macro_observation_pointer_invalid") from exc
     if not isinstance(payload, Mapping):
@@ -109,23 +222,43 @@ def _strict_pointer(root: Path) -> dict[str, Any] | None:
     pointer = dict(payload)
     if pointer.get("schema_version") != "macro-observation-pointer.v1" or pointer.get("status") != "OK":
         raise MacroObservationStoreError("macro_observation_pointer_shape_invalid")
+    if not _observer_flags_valid(pointer):
+        raise MacroObservationStoreError(
+            "macro_observation_pointer_observer_flags_invalid"
+        )
     pointer["pointer_sha256"] = hashlib.sha256(pointer_bytes).hexdigest()
     return pointer
 
 
 def pointer_sha256(root: str | Path) -> str:
-    path = Path(root).expanduser() / POINTER_FILENAME
-    if not path.exists() or path.is_symlink() or not path.is_file():
+    unresolved = Path(root).expanduser()
+    path = unresolved / POINTER_FILENAME
+    if not path.exists() and not path.is_symlink():
         return ""
-    return _sha256(path)
+    base = _read_root(unresolved)
+    pointer_bytes = _stable_file_bytes(
+        base / POINTER_FILENAME,
+        unsafe_blocker="macro_observation_pointer_unsafe",
+        changed_blocker="macro_observation_pointer_changed_during_read",
+    )
+    return hashlib.sha256(pointer_bytes).hexdigest()
 
 
-def _resolve_generation(root: Path, pointer: Mapping[str, Any]) -> tuple[Path, dict[str, Any]]:
-    generation_id = str(pointer.get("generation_id") or "").strip()
+def _resolve_generation(
+    root: Path,
+    pointer: Mapping[str, Any],
+) -> tuple[bytes, dict[str, Any]]:
+    generation_id = _safe_id(
+        str(pointer.get("generation_id") or "").strip()
+    )
     relative = Path(str(pointer.get("table_path") or ""))
     manifest_relative = Path(str(pointer.get("manifest_path") or ""))
     declared = str(pointer.get("parquet_sha256") or "")
     manifest_declared = str(pointer.get("manifest_sha256") or "")
+    if not _observer_flags_valid(pointer):
+        raise MacroObservationStoreError(
+            "macro_observation_pointer_observer_flags_invalid"
+        )
     invalid_pointer = any(
         (
             not generation_id,
@@ -156,12 +289,22 @@ def _resolve_generation(root: Path, pointer: Mapping[str, Any]) -> tuple[Path, d
         raise MacroObservationStoreError("macro_observation_generation_table_unsafe")
     if root not in manifest_path.parents or not manifest_path.is_file():
         raise MacroObservationStoreError("macro_observation_generation_manifest_unsafe")
-    if _sha256(table) != declared:
+    table_bytes = _stable_file_bytes(
+        table,
+        unsafe_blocker="macro_observation_generation_table_unsafe",
+        changed_blocker="macro_observation_generation_table_changed_during_read",
+    )
+    manifest_bytes = _stable_file_bytes(
+        manifest_path,
+        unsafe_blocker="macro_observation_generation_manifest_unsafe",
+        changed_blocker="macro_observation_generation_manifest_changed_during_read",
+    )
+    if hashlib.sha256(table_bytes).hexdigest() != declared:
         raise MacroObservationStoreError("macro_observation_generation_hash_mismatch")
-    if _sha256(manifest_path) != manifest_declared:
+    if hashlib.sha256(manifest_bytes).hexdigest() != manifest_declared:
         raise MacroObservationStoreError("macro_observation_manifest_hash_mismatch")
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = json.loads(manifest_bytes.decode("utf-8"))
     except Exception as exc:
         raise MacroObservationStoreError("macro_observation_manifest_invalid") from exc
     invalid_manifest = not isinstance(manifest, Mapping) or any(
@@ -174,7 +317,11 @@ def _resolve_generation(root: Path, pointer: Mapping[str, Any]) -> tuple[Path, d
     )
     if invalid_manifest:
         raise MacroObservationStoreError("macro_observation_manifest_shape_invalid")
-    return table, dict(manifest)
+    if not _observer_flags_valid(manifest):
+        raise MacroObservationStoreError(
+            "macro_observation_manifest_observer_flags_invalid"
+        )
+    return table_bytes, dict(manifest)
 
 
 def load_observations(
@@ -182,18 +329,25 @@ def load_observations(
     *,
     generation_id: str = "",
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    base = _safe_root(root)
+    base = _read_root(root)
     pointer = _strict_pointer(base)
     if pointer is None and not generation_id:
-        return [], {}
+        raise MacroObservationStoreError("macro_observation_pointer_missing")
     if generation_id:
         safe_generation = _safe_id(generation_id)
         generation_root = Path(GENERATIONS_DIRNAME) / safe_generation
         manifest_path = base / generation_root / "manifest.json"
-        if not manifest_path.is_file() or manifest_path.is_symlink():
-            raise MacroObservationStoreError("macro_observation_generation_missing")
         try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest_bytes = _stable_file_bytes(
+                manifest_path,
+                unsafe_blocker="macro_observation_generation_missing",
+                changed_blocker=(
+                    "macro_observation_generation_manifest_changed_during_read"
+                ),
+            )
+            manifest = json.loads(manifest_bytes.decode("utf-8"))
+        except MacroObservationStoreError:
+            raise
         except Exception as exc:
             raise MacroObservationStoreError("macro_observation_manifest_invalid") from exc
         pointer = {
@@ -203,13 +357,19 @@ def load_observations(
             "table_path": str(generation_root / "observations.parquet"),
             "manifest_path": str(generation_root / "manifest.json"),
             "parquet_sha256": manifest.get("parquet_sha256"),
-            "manifest_sha256": _sha256(manifest_path),
+            "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
             "content_set_hash": manifest.get("content_set_hash"),
             "row_count": manifest.get("row_count"),
+            **_OBSERVER_FLAGS,
         }
     assert pointer is not None
-    table, manifest = _resolve_generation(base, pointer)
-    frame = pd.read_parquet(table)
+    table_bytes, manifest = _resolve_generation(base, pointer)
+    try:
+        frame = pd.read_parquet(io.BytesIO(table_bytes))
+    except Exception as exc:
+        raise MacroObservationStoreError(
+            "macro_observation_generation_table_invalid"
+        ) from exc
     if tuple(frame.columns) != OBSERVATION_COLUMNS:
         raise MacroObservationStoreError("macro_observation_generation_schema_mismatch")
     rows: list[dict[str, Any]] = []
@@ -256,7 +416,7 @@ def publish_observations(
     expected_pointer_sha256: str | None = None,
     metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    base = _safe_root(root)
+    base = _write_root(root)
     generation_id = _safe_id(run_id)
     incoming = _normalize_rows(observations)
     if not incoming:
@@ -266,7 +426,11 @@ def publish_observations(
         current_sha = pointer_sha256(base)
         if expected_pointer_sha256 is not None and current_sha != expected_pointer_sha256:
             raise MacroObservationStoreError("macro_observation_pointer_cas_mismatch")
-        existing, pointer = load_observations(base)
+        current_pointer = _strict_pointer(base)
+        if current_pointer is None:
+            existing, pointer = [], {}
+        else:
+            existing, pointer = load_observations(base)
         combined = _normalize_rows([*existing, *incoming])
         if len(combined) == len(existing):
             return {**pointer, "status": "no_update", "promoted": False, "reason": "all_rows_exist"}
@@ -308,6 +472,7 @@ def publish_observations(
                 "added_content_hashes": added_hashes,
                 "min_available_at": min(row["available_at"] for row in combined),
                 "max_available_at": max(row["available_at"] for row in combined),
+                **_OBSERVER_FLAGS,
                 "metadata": dict(metadata or {}),
             }
             manifest_path = staging / "manifest.json"
@@ -329,6 +494,7 @@ def publish_observations(
                 "content_set_hash": content_set_hash,
                 "row_count": len(frame),
                 "previous_generation_id": str(pointer.get("generation_id") or ""),
+                **_OBSERVER_FLAGS,
                 "metadata": dict(metadata or {}),
             }
             _atomic_json(base / POINTER_FILENAME, next_pointer)

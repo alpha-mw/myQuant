@@ -90,7 +90,6 @@ def _make_research_by_symbol(symbols: list[str]) -> dict[str, dict[str, BranchVe
     branch_scores = {
         "quant": 0.58,
         "fundamental": 0.66,
-        "intelligence": 0.41,
         "macro": 0.22,
     }
     return {
@@ -106,7 +105,6 @@ def _make_branch_results(symbols: list[str]) -> dict[str, BranchResult]:
     branch_scores = {
         "quant": 0.58,
         "fundamental": 0.66,
-        "intelligence": 0.41,
         "macro": 0.22,
     }
     results: dict[str, BranchResult] = {}
@@ -146,6 +144,14 @@ def _make_macro_verdict() -> BranchVerdict:
 
 def test_plain_pytest_bootstrap_adds_project_root_to_sys_path():
     assert str(ROOT) in sys.path
+
+
+def test_quant_investor_rejects_retired_intelligence_keyword():
+    with pytest.raises(TypeError):
+        QuantInvestor(
+            stock_pool=["000001.SZ"],
+            enable_intelligence=True,
+        )
 
 
 def test_mainline_raises_when_requested_symbol_has_no_local_csv(monkeypatch):
@@ -213,7 +219,10 @@ def test_control_chain_keeps_risk_veto_over_buy_hints():
     )
 
     assert result["risk_by_symbol"]["000001.SZ"].veto is True
-    assert result["ic_by_symbol"]["000001.SZ"].metadata["llm_hint_applied"] is True
+    ic_metadata = result["ic_by_symbol"]["000001.SZ"].metadata
+    assert ic_metadata["llm_hint_applied"] is False
+    assert ic_metadata["llm_master_hint"]["action"] == "buy"
+    assert ic_metadata["llm_master_hint_advisory_only"] is True
     assert result["portfolio_plan"].target_weights == {}
     assert result["report_bundle"].risk_decision.veto is True
     assert result["report_bundle"].portfolio_plan.target_weights == {}
@@ -254,8 +263,21 @@ def test_control_chain_is_deterministic_for_identical_inputs():
         ic_hints_by_symbol=ic_hints,
         persist_outputs=False,
     )
+    without_hints = orchestrator.run_with_structured_research(
+        data_bundle=data_bundle,
+        macro_verdict=macro_verdict,
+        research_by_symbol=research_by_symbol,
+        constraints={},
+        existing_portfolio={"current_weights": {}},
+        tradability_snapshot={},
+        ic_hints_by_symbol={},
+        persist_outputs=False,
+    )
 
     assert first["portfolio_plan"] == second["portfolio_plan"]
+    assert first["portfolio_plan"].target_weights == without_hints[
+        "portfolio_plan"
+    ].target_weights
     assert first["portfolio_plan"].metadata["deterministic"] is True
     assert first["report_bundle"].portfolio_plan == second["report_bundle"].portfolio_plan
 

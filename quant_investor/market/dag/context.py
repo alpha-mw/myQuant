@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import hashlib
+import io
+import json
+import re
+from dataclasses import dataclass, field, fields as dataclass_fields
 from datetime import timedelta
 from inspect import Parameter, signature
 from pathlib import Path
@@ -12,13 +16,21 @@ from quant_investor.agent_protocol import BranchVerdict, DataQualityIssue, Globa
 from quant_investor.branch_contracts import BranchResult
 from quant_investor.config import config
 from quant_investor.funnel.deterministic_funnel import FunnelConfig, FunnelOutput
+from quant_investor.factors.runtime import (
+    MinedFactorScorer,
+    ProductionEvaluationContext,
+    _mint_production_evaluation_context,
+    production_frame_validation_blocker,
+    production_symbol_set_sha256,
+    validate_production_evaluation_context,
+)
 from quant_investor.market.config import get_market_settings
 from quant_investor.market.dag.packets import (
     _clamp,
     _build_cross_section_quant,
     _build_global_quant_verdict,
     _build_market_snapshot,
-    _build_quant_branch_result,
+    _build_quant_branch_result_with_validation,
     _build_symbol_tradability,
 )
 from quant_investor.market.dag.theme_context import (
@@ -29,6 +41,14 @@ from quant_investor.market.dag.theme_context import (
     persist_theme_rotation_snapshot,
 )
 from quant_investor.market.data_quality import build_data_quality_diagnostics
+from quant_investor.market.pit_universe import (
+    PIT_UNIVERSE_MANIFEST_SCHEMA_VERSION,
+    PIT_UNIVERSE_SCHEMA_VERSION,
+    PITUniverseRecord,
+    SUPPORTED_LIST_STATUSES,
+    evaluate_listing_status,
+    records_by_symbol,
+)
 from quant_investor.market.branch_readiness import (
     STATUS_BLOCK,
     assess_branch_data_readiness,
@@ -165,6 +185,665 @@ def _read_symbol_frames_with_projection(
     return dict(batch_reader(symbols, **kwargs) or {})
 
 
+def _read_symbol_frame_with_projection(
+    reader: Callable[..., Any],
+    symbol: str,
+    *,
+    universe_key: str,
+    start_date: str = "",
+    end_date: str = "",
+) -> MarketDataReadResult:
+    kwargs: dict[str, Any] = {"universe_key": universe_key}
+    if _call_accepts_keyword(reader, "columns"):
+        kwargs["columns"] = DAG_RUNTIME_PRICE_VOLUME_COLUMNS
+    if start_date and _call_accepts_keyword(reader, "start_date"):
+        kwargs["start_date"] = start_date
+    if end_date and _call_accepts_keyword(reader, "end_date"):
+        kwargs["end_date"] = end_date
+    return reader(symbol, **kwargs)
+
+
+def _researchable_frame_subset(
+    frames: Mapping[str, pd.DataFrame],
+    researchable_symbols: list[str],
+) -> dict[str, pd.DataFrame]:
+    """Preserve researchable order while excluding every quarantined frame."""
+
+    return {
+        symbol: frames[symbol]
+        for symbol in researchable_symbols
+        if symbol in frames
+    }
+
+
+def _readback_sha256(path_value: Any) -> tuple[str, str, bytes] | None:
+    try:
+        raw_path = Path(str(path_value or "")).expanduser()
+        if raw_path.is_symlink():
+            return None
+        path = raw_path.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not path.is_file():
+        return None
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    return str(path), hashlib.sha256(raw).hexdigest(), raw
+
+
+def _resolved_path_string(path_value: Any) -> str:
+    if not isinstance(path_value, (str, Path)) or not str(path_value).strip():
+        return ""
+    try:
+        return str(Path(path_value).expanduser().resolve())
+    except (OSError, RuntimeError, ValueError):
+        return ""
+
+
+def _resolved_snapshot_path_string(path_value: Any, pointer_path: Any) -> str:
+    if not isinstance(path_value, (str, Path)) or not str(path_value).strip():
+        return ""
+    raw_path = Path(path_value).expanduser()
+    if raw_path.is_absolute():
+        return _resolved_path_string(raw_path)
+    candidates = [Path.cwd() / raw_path]
+    pointer = _resolved_path_string(pointer_path)
+    if pointer:
+        candidates.extend(parent / raw_path for parent in Path(pointer).parents)
+    for candidate in candidates:
+        try:
+            if candidate.exists():
+                return str(candidate.resolve())
+        except (OSError, RuntimeError):
+            continue
+    return _resolved_path_string(raw_path)
+
+
+def _canonical_payload_sha256(payload: Mapping[str, Any]) -> str:
+    raw = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _build_production_evaluation_context(
+    *,
+    market: str,
+    universe_key: str,
+    symbols: list[str],
+    reader_snapshot: Mapping[str, Any],
+    scoped_data_snapshot: Mapping[str, Any],
+    read_results: Mapping[str, MarketDataReadResult] | None = None,
+) -> tuple[ProductionEvaluationContext | None, list[str]]:
+    """Mint Quant context only after dual-source and artifact readback."""
+
+    blockers: list[str] = []
+    normalized_market = str(market or "").strip().upper()
+    normalized_universe = str(universe_key or "").strip()
+    normalized_symbols = [str(symbol) for symbol in symbols]
+    raw_gate = scoped_data_snapshot.get("strict_parquet_gate")
+    if isinstance(raw_gate, Mapping):
+        gate = dict(raw_gate)
+    else:
+        gate = {}
+        blockers.append("production_snapshot_gate_metadata_invalid")
+    if reader_snapshot.get("healthy") is not True or gate.get("healthy") is not True:
+        blockers.append("production_snapshot_not_healthy")
+    for label, payload in (("reader", reader_snapshot), ("gate", gate)):
+        if str(payload.get("status") or "").upper() != "OK":
+            blockers.append(f"production_snapshot_{label}_status_invalid")
+        raw_blockers = payload.get("blockers")
+        if not isinstance(raw_blockers, list) or raw_blockers:
+            blockers.append(f"production_snapshot_{label}_blockers_invalid")
+    scoped_market = str(scoped_data_snapshot.get("market") or normalized_market).upper()
+    scoped_universe = str(
+        scoped_data_snapshot.get("universe_key") or normalized_universe
+    )
+    if scoped_market != normalized_market:
+        blockers.append("production_snapshot_market_mismatch")
+    if scoped_universe != normalized_universe:
+        blockers.append("production_snapshot_universe_mismatch")
+
+    evaluation_as_of = _compact_runtime_date(
+        scoped_data_snapshot.get("local_latest_trade_date")
+        or scoped_data_snapshot.get("latest_trade_date")
+    )
+    reader_latest = _compact_runtime_date(
+        reader_snapshot.get("latest_complete_trade_date")
+    )
+    gate_latest = _compact_runtime_date(gate.get("latest_complete_trade_date"))
+    if not evaluation_as_of or reader_latest != evaluation_as_of or gate_latest != evaluation_as_of:
+        blockers.append("production_latest_complete_trade_date_mismatch")
+    reader_snapshot_id = str(reader_snapshot.get("snapshot_id") or "").strip()
+    gate_snapshot_id = str(gate.get("snapshot_id") or "").strip()
+    if not reader_snapshot_id or reader_snapshot_id != gate_snapshot_id:
+        blockers.append("production_snapshot_id_mismatch")
+    for path_key in ("latest_pointer_path", "manifest_path"):
+        reader_path = str(reader_snapshot.get(path_key) or "").strip()
+        gate_path = str(gate.get(path_key) or "").strip()
+        if gate_path and reader_path != gate_path:
+            blockers.append(f"production_snapshot_{path_key}_mismatch")
+
+    artifact_hashes: dict[str, str] = {}
+    artifact_paths: dict[str, str] = {}
+    pointer_readback = _readback_sha256(reader_snapshot.get("latest_pointer_path"))
+    manifest_readback = _readback_sha256(reader_snapshot.get("manifest_path"))
+    if pointer_readback is None:
+        blockers.append("production_snapshot_pointer_readback_missing")
+    else:
+        artifact_paths["snapshot_pointer"] = pointer_readback[0]
+        artifact_hashes["snapshot_pointer"] = pointer_readback[1]
+    if manifest_readback is None:
+        blockers.append("production_snapshot_manifest_readback_missing")
+    else:
+        artifact_paths["snapshot_manifest"] = manifest_readback[0]
+        artifact_hashes["snapshot_manifest"] = manifest_readback[1]
+    snapshot_payloads: dict[str, Mapping[str, Any]] = {}
+    for label, readback in (
+        ("pointer", pointer_readback),
+        ("manifest", manifest_readback),
+    ):
+        if readback is None:
+            continue
+        try:
+            payload = json.loads(readback[2].decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            blockers.append(f"production_snapshot_{label}_json_invalid")
+            continue
+        if not isinstance(payload, Mapping):
+            blockers.append(f"production_snapshot_{label}_json_invalid")
+            continue
+        snapshot_payloads[label] = payload
+        if str(payload.get("snapshot_id") or "") != reader_snapshot_id:
+            blockers.append(f"production_snapshot_{label}_id_mismatch")
+        payload_latest = _compact_runtime_date(
+            payload.get("latest_complete_trade_date")
+            or payload.get("latest_trade_date")
+        )
+        if payload_latest != evaluation_as_of:
+            blockers.append(f"production_snapshot_{label}_date_mismatch")
+        if str(payload.get("status") or "").upper() != "OK":
+            blockers.append(f"production_snapshot_{label}_status_invalid")
+        raw_payload_blockers = payload.get("blockers")
+        if not isinstance(raw_payload_blockers, list) or raw_payload_blockers:
+            blockers.append(f"production_snapshot_{label}_blockers_invalid")
+
+    pointer_payload = snapshot_payloads.get("pointer", {})
+    manifest_payload = snapshot_payloads.get("manifest", {})
+    if manifest_payload.get("readback_validated") is not True:
+        blockers.append("production_snapshot_manifest_not_readback_validated")
+    if str(manifest_payload.get("market") or "").upper() != normalized_market:
+        blockers.append("production_snapshot_manifest_market_mismatch")
+    for payload in (reader_snapshot, gate, pointer_payload):
+        payload_market = str(payload.get("market") or "").upper()
+        if payload_market and payload_market != normalized_market:
+            blockers.append("production_snapshot_market_mismatch")
+
+    def serving_path(payload: Mapping[str, Any]) -> Any:
+        return payload.get("serving_root") or payload.get("derived_serving_root")
+    path_sources = {
+        "manifest_path": (
+            reader_snapshot.get("manifest_path"),
+            gate.get("manifest_path"),
+            pointer_payload.get("manifest_path"),
+            manifest_payload.get("manifest_path"),
+        ),
+        "table_root": (
+            reader_snapshot.get("table_root"),
+            gate.get("table_root"),
+            pointer_payload.get("table_root"),
+            manifest_payload.get("table_root"),
+        ),
+        "serving_root": (
+            serving_path(reader_snapshot),
+            serving_path(gate),
+            serving_path(pointer_payload),
+            serving_path(manifest_payload),
+        ),
+    }
+    verified_snapshot_paths: dict[str, str] = {}
+    for label, raw_paths in path_sources.items():
+        normalized_paths = [
+            _resolved_snapshot_path_string(
+                path,
+                reader_snapshot.get("latest_pointer_path"),
+            )
+            for path in raw_paths
+        ]
+        if any(not path for path in normalized_paths) or len(set(normalized_paths)) != 1:
+            blockers.append(f"production_snapshot_{label}_mismatch")
+            continue
+        verified_snapshot_paths[label] = normalized_paths[0]
+
+    open_day_proof_sha256 = ""
+    raw_calendar = scoped_data_snapshot.get("open_day_calendar")
+    if not isinstance(raw_calendar, Mapping):
+        blockers.append("production_open_day_calendar_metadata_invalid")
+    else:
+        calendar_readback = _readback_sha256(raw_calendar.get("path"))
+        if calendar_readback is None:
+            blockers.append("production_open_day_calendar_readback_missing")
+        else:
+            artifact_paths["open_day_calendar"] = calendar_readback[0]
+            artifact_hashes["open_day_calendar"] = calendar_readback[1]
+            open_day_proof_sha256 = calendar_readback[1]
+            try:
+                calendar_payload = json.loads(
+                    calendar_readback[2].decode("utf-8")
+                )
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                calendar_payload = None
+            if not isinstance(calendar_payload, Mapping):
+                blockers.append("production_open_day_calendar_json_invalid")
+            else:
+                if set(calendar_payload) != {
+                    "schema_version",
+                    "market",
+                    "open_dates",
+                }:
+                    blockers.append(
+                        "production_open_day_calendar_fields_invalid"
+                    )
+                if calendar_payload.get("schema_version") != "market-open-days.v1":
+                    blockers.append("production_open_day_calendar_schema_invalid")
+                if str(calendar_payload.get("market") or "").upper() != normalized_market:
+                    blockers.append("production_open_day_calendar_market_mismatch")
+                raw_open_dates = calendar_payload.get("open_dates")
+                if (
+                    not isinstance(raw_open_dates, list)
+                    or not raw_open_dates
+                ):
+                    blockers.append("production_open_day_calendar_dates_invalid")
+                else:
+                    open_dates: set[str] = set()
+                    invalid_open_date = False
+                    for value in raw_open_dates:
+                        if (
+                            not isinstance(value, str)
+                            or re.fullmatch(r"[0-9]{8}", value) is None
+                        ):
+                            invalid_open_date = True
+                            break
+                        parsed = pd.to_datetime(
+                            value,
+                            format="%Y%m%d",
+                            errors="coerce",
+                        )
+                        if (
+                            pd.isna(parsed)
+                            or int(parsed.dayofweek) >= 5
+                        ):
+                            invalid_open_date = True
+                            break
+                        open_dates.add(value)
+                    if invalid_open_date or len(open_dates) != len(raw_open_dates):
+                        blockers.append("production_open_day_calendar_dates_invalid")
+                    elif evaluation_as_of not in open_dates:
+                        blockers.append("production_evaluation_as_of_not_open_day")
+
+    provenance: dict[str, dict[str, Any]] = {}
+    for symbol in normalized_symbols:
+        read_result = (read_results or {}).get(symbol)
+        if read_results is None:
+            break
+        if read_result is None:
+            blockers.append(f"production_read_result_missing:{symbol}")
+            continue
+        if not isinstance(read_result, MarketDataReadResult):
+            blockers.append(f"production_read_result_invalid:{symbol}")
+            continue
+        if not isinstance(read_result.metadata, Mapping):
+            blockers.append(f"production_read_result_metadata_invalid:{symbol}")
+            continue
+        metadata = dict(read_result.metadata)
+        if (
+            str(read_result.symbol) != symbol
+            or str(read_result.universe_key) != normalized_universe
+            or str(metadata.get("snapshot_id") or "") != reader_snapshot_id
+            or _compact_runtime_date(metadata.get("latest_complete_trade_date"))
+            != evaluation_as_of
+        ):
+            blockers.append(f"production_read_result_provenance_mismatch:{symbol}")
+            continue
+        if not isinstance(read_result.resolver_trace, Mapping):
+            blockers.append(f"production_read_result_resolver_invalid:{symbol}")
+            continue
+        storage_layer = str(metadata.get("storage_layer") or "")
+        resolution_strategy = str(
+            metadata.get("resolution_strategy")
+            or read_result.resolver_trace.get("resolution_strategy")
+            or ""
+        )
+        resolved_path = _resolved_path_string(read_result.path)
+        if metadata.get("resolved") is not True:
+            blockers.append(f"production_read_result_not_resolved:{symbol}")
+            continue
+        if storage_layer == "canonical_batch":
+            expected_path = verified_snapshot_paths.get("table_root", "")
+            mode_valid = resolution_strategy == "strict_parquet_canonical_batch"
+        elif storage_layer == "serving":
+            serving_root = verified_snapshot_paths.get("serving_root", "")
+            expected_path = _resolved_path_string(
+                Path(serving_root) / f"symbol={symbol}" / "bars.parquet"
+            ) if serving_root else ""
+            mode_valid = resolution_strategy == "strict_parquet_serving"
+        else:
+            expected_path = ""
+            mode_valid = False
+        if not mode_valid:
+            blockers.append(f"production_read_result_storage_mode_invalid:{symbol}")
+            continue
+        if not resolved_path or resolved_path != expected_path:
+            blockers.append(f"production_read_result_path_mismatch:{symbol}")
+            continue
+        provenance[symbol] = {
+            "symbol": symbol,
+            "universe_key": normalized_universe,
+            "snapshot_id": reader_snapshot_id,
+            "latest_complete_trade_date": evaluation_as_of,
+            "storage_layer": storage_layer,
+            "resolution_strategy": resolution_strategy,
+            "resolved": True,
+            "path": resolved_path,
+        }
+    read_result_provenance_sha256 = ""
+    if read_results is not None and len(provenance) == len(normalized_symbols):
+        read_result_provenance_sha256 = _canonical_payload_sha256(provenance)
+    else:
+        blockers.append("production_read_result_provenance_incomplete")
+
+    pit_status = "not_applicable"
+    pit_as_of = ""
+    pit_proof_sha256 = ""
+    pit_na_reason = "market_not_cn"
+    if normalized_market == "CN":
+        pit_status = "verified"
+        pit_na_reason = ""
+        raw_pit = scoped_data_snapshot.get("pit_universe")
+        if isinstance(raw_pit, Mapping):
+            pit = dict(raw_pit)
+        else:
+            pit = {}
+            blockers.append("production_cn_pit_metadata_invalid")
+        if not bool(getattr(config, "PIT_UNIVERSE_ENABLED", False)):
+            blockers.append("production_cn_pit_membership_disabled")
+        if not bool(getattr(config, "PIT_UNIVERSE_REQUIRED", False)):
+            blockers.append("production_cn_pit_membership_not_required")
+        if (
+            pit.get("enabled") is not True
+            or pit.get("required") is not True
+            or pit.get("status") != "applied"
+        ):
+            blockers.append("production_cn_pit_membership_not_applied")
+        pit_as_of = _compact_runtime_date(pit.get("as_of"))
+        if pit_as_of != evaluation_as_of:
+            blockers.append("production_pit_membership_as_of_mismatch")
+        missing_count = pit.get("missing_count")
+        coverage_ratio = pit.get("coverage_ratio")
+        if (
+            isinstance(missing_count, bool)
+            or not isinstance(missing_count, int)
+            or missing_count != 0
+            or isinstance(coverage_ratio, bool)
+            or not isinstance(coverage_ratio, (int, float))
+            or float(coverage_ratio) != 1.0
+        ):
+            blockers.append("production_cn_pit_membership_partial")
+        raw_statuses = pit.get("statuses")
+        if isinstance(raw_statuses, Mapping):
+            statuses = dict(raw_statuses)
+        else:
+            statuses = {}
+            blockers.append("production_cn_pit_statuses_invalid")
+        claimed_statuses: dict[str, dict[str, Any]] = {}
+        for symbol in normalized_symbols:
+            status = statuses.get(symbol)
+            if not isinstance(status, Mapping):
+                blockers.append(f"production_cn_pit_status_missing:{symbol}")
+                continue
+            if (
+                str(status.get("symbol") or "") != symbol
+                or _compact_runtime_date(status.get("date")) != evaluation_as_of
+                or status.get("in_universe") is not True
+                or status.get("research_eligible") is not True
+            ):
+                blockers.append(f"production_cn_pit_status_mismatch:{symbol}")
+                continue
+            claimed_statuses[symbol] = dict(status)
+        pit_manifest_readback = _readback_sha256(pit.get("manifest_path"))
+        pit_canonical_readback = _readback_sha256(pit.get("canonical_path"))
+        authoritative_statuses: dict[str, dict[str, Any]] = {}
+        if pit_manifest_readback is None or pit_canonical_readback is None:
+            blockers.append("production_cn_pit_artifact_readback_missing")
+        else:
+            artifact_paths["pit_manifest"] = pit_manifest_readback[0]
+            artifact_hashes["pit_manifest"] = pit_manifest_readback[1]
+            artifact_paths["pit_canonical"] = pit_canonical_readback[0]
+            artifact_hashes["pit_canonical"] = pit_canonical_readback[1]
+            manifest_source = ""
+            manifest_observed_at = ""
+            try:
+                pit_manifest = json.loads(
+                    pit_manifest_readback[2].decode("utf-8")
+                )
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                pit_manifest = None
+            if not isinstance(pit_manifest, Mapping):
+                blockers.append("production_cn_pit_manifest_mismatch")
+            else:
+                manifest_source = str(pit_manifest.get("source") or "")
+                manifest_observed_at = str(
+                    pit_manifest.get("observed_at") or ""
+                )
+                manifest_source_run_id = str(
+                    pit_manifest.get("source_run_id") or ""
+                )
+                if (
+                    pit_manifest.get("schema_version")
+                    != PIT_UNIVERSE_MANIFEST_SCHEMA_VERSION
+                    or pit_manifest.get("membership_schema_version")
+                    != PIT_UNIVERSE_SCHEMA_VERSION
+                    or manifest_source_run_id
+                    != str(pit.get("snapshot_id") or "")
+                    or isinstance(pit_manifest.get("row_count"), bool)
+                    or not isinstance(pit_manifest.get("row_count"), int)
+                ):
+                    blockers.append("production_cn_pit_manifest_mismatch")
+                if manifest_source != "tushare.stock_basic":
+                    blockers.append(
+                        "production_cn_pit_manifest_source_invalid"
+                    )
+                if not manifest_observed_at:
+                    blockers.append(
+                        "production_cn_pit_manifest_observed_at_invalid"
+                    )
+                try:
+                    declared_canonical_path = Path(
+                        str(pit_manifest.get("canonical_path") or "")
+                    ).expanduser().resolve()
+                except (OSError, RuntimeError, ValueError):
+                    declared_canonical_path = None
+                if (
+                    declared_canonical_path is None
+                    or str(declared_canonical_path) != pit_canonical_readback[0]
+                ):
+                    blockers.append("production_cn_pit_manifest_path_mismatch")
+            try:
+                canonical_frame = pd.read_parquet(io.BytesIO(pit_canonical_readback[2]))
+            except Exception:
+                canonical_frame = None
+                blockers.append("production_cn_pit_canonical_parquet_invalid")
+            canonical_records: list[PITUniverseRecord] = []
+            if canonical_frame is not None:
+                expected_canonical_columns = [
+                    item.name for item in dataclass_fields(PITUniverseRecord)
+                ]
+                if list(canonical_frame.columns) != expected_canonical_columns:
+                    blockers.append(
+                        "production_cn_pit_canonical_columns_mismatch"
+                    )
+                try:
+                    canonical_records = [
+                        PITUniverseRecord.from_dict(row)
+                        for row in canonical_frame.to_dict(orient="records")
+                    ]
+                except Exception:
+                    canonical_records = []
+                    blockers.append(
+                        "production_cn_pit_canonical_records_invalid"
+                    )
+            if canonical_frame is not None:
+                if (
+                    "schema_version" not in canonical_frame.columns
+                    or not canonical_frame["schema_version"].eq(
+                        PIT_UNIVERSE_SCHEMA_VERSION
+                    ).all()
+                ):
+                    blockers.append(
+                        "production_cn_pit_canonical_schema_mismatch"
+                    )
+                if (
+                    isinstance(pit_manifest, Mapping)
+                    and pit_manifest.get("row_count") != len(canonical_frame)
+                ):
+                    blockers.append("production_cn_pit_manifest_row_count_mismatch")
+                canonical_symbols = [record.symbol for record in canonical_records]
+                if (
+                    any(not symbol for symbol in canonical_symbols)
+                    or len(canonical_symbols) != len(set(canonical_symbols))
+                ):
+                    blockers.append("production_cn_pit_canonical_symbols_invalid")
+                canonical_by_symbol = records_by_symbol(canonical_records)
+                expected_source_run_id = str(pit.get("snapshot_id") or "")
+                if any(
+                    record.source_run_id != expected_source_run_id
+                    for record in canonical_records
+                ):
+                    blockers.append(
+                        "production_cn_pit_canonical_source_run_mismatch"
+                    )
+                if any(
+                    record.source_list_status not in SUPPORTED_LIST_STATUSES
+                    for record in canonical_records
+                ):
+                    blockers.append(
+                        "production_cn_pit_canonical_list_status_invalid"
+                    )
+                if any(
+                    record.source != manifest_source
+                    or record.source != "tushare.stock_basic"
+                    for record in canonical_records
+                ):
+                    blockers.append(
+                        "production_cn_pit_canonical_source_mismatch"
+                    )
+                if any(
+                    record.observed_at != manifest_observed_at
+                    for record in canonical_records
+                ):
+                    blockers.append(
+                        "production_cn_pit_canonical_observed_at_mismatch"
+                    )
+                for symbol in normalized_symbols:
+                    record = canonical_by_symbol.get(symbol)
+                    if record is None:
+                        blockers.append(
+                            f"production_cn_pit_canonical_record_missing:{symbol}"
+                        )
+                        continue
+                    authoritative = evaluate_listing_status(
+                        record,
+                        symbol=symbol,
+                        as_of=evaluation_as_of,
+                    ).to_dict()
+                    claimed = claimed_statuses.get(symbol)
+                    if (
+                        record.source_run_id != expected_source_run_id
+                        or claimed != authoritative
+                        or authoritative.get("in_universe") is not True
+                        or authoritative.get("research_eligible") is not True
+                    ):
+                        blockers.append(
+                            f"production_cn_pit_canonical_status_mismatch:{symbol}"
+                        )
+                        continue
+                    authoritative_statuses[symbol] = authoritative
+        if len(authoritative_statuses) == len(normalized_symbols):
+            pit_proof_sha256 = _canonical_payload_sha256(
+                {
+                    "as_of": pit_as_of,
+                    "snapshot_id": pit.get("snapshot_id"),
+                    "statuses": authoritative_statuses,
+                    "manifest_sha256": artifact_hashes.get("pit_manifest", ""),
+                    "canonical_sha256": artifact_hashes.get("pit_canonical", ""),
+                }
+            )
+
+    resolved_artifact_owners: dict[str, str] = {}
+    resolved_artifact_file_owners: dict[tuple[int, int], str] = {}
+    for name, artifact_path in artifact_paths.items():
+        resolved_artifact_path = _resolved_path_string(artifact_path)
+        prior_name = resolved_artifact_owners.get(resolved_artifact_path)
+        if prior_name is not None:
+            blockers.append("production_verified_artifact_path_reused")
+            if "open_day_calendar" in {name, prior_name}:
+                blockers.append(
+                    "production_open_day_calendar_not_independent"
+                )
+        else:
+            resolved_artifact_owners[resolved_artifact_path] = name
+        try:
+            file_stat = Path(resolved_artifact_path).stat()
+        except (OSError, ValueError):
+            blockers.append(
+                f"production_verified_artifact_identity_invalid:{name}"
+            )
+            continue
+        file_identity = (int(file_stat.st_dev), int(file_stat.st_ino))
+        prior_file_name = resolved_artifact_file_owners.get(file_identity)
+        if prior_file_name is not None:
+            blockers.append("production_verified_artifact_file_reused")
+            if "open_day_calendar" in {name, prior_file_name}:
+                blockers.append(
+                    "production_open_day_calendar_not_independent"
+                )
+        else:
+            resolved_artifact_file_owners[file_identity] = name
+
+    if blockers:
+        return None, list(dict.fromkeys(blockers))
+    assert manifest_readback is not None
+    context = _mint_production_evaluation_context(
+        evaluation_as_of=evaluation_as_of,
+        market=normalized_market,
+        universe_key=normalized_universe,
+        universe_sha256=production_symbol_set_sha256(normalized_symbols),
+        snapshot_id=reader_snapshot_id,
+        latest_complete_trade_date=evaluation_as_of,
+        pit_membership_status=pit_status,
+        pit_membership_as_of=pit_as_of,
+        pit_membership_proof_sha256=pit_proof_sha256,
+        pit_membership_not_applicable_reason=pit_na_reason,
+        open_day_proof_sha256=open_day_proof_sha256,
+        read_result_provenance_sha256=read_result_provenance_sha256,
+        verified_artifact_paths=artifact_paths,
+        verified_artifact_sha256s=artifact_hashes,
+    )
+    context_blockers = validate_production_evaluation_context(
+        context,
+        expected_symbols=normalized_symbols,
+    )
+    if context_blockers:
+        return None, context_blockers
+    return context, []
+
+
 def _frame_summaries_from_tradability(
     tradability_snapshot: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, dict[str, Any]]:
@@ -184,9 +863,15 @@ def _macro_v2_observer_metadata(*, market: str, as_of: str) -> dict[str, Any]:
     """Build one run-level observer diagnostic without touching decisions."""
 
     enabled = bool(getattr(config, "MACRO_V2_OBSERVER_ENABLED", False))
-    kill_switch = bool(getattr(config, "MACRO_V2_OBSERVER_KILL_SWITCH", True))
-    production_enabled = bool(getattr(config, "MACRO_V2_PRODUCTION_ENABLED", False))
-    production_kill_switch = bool(getattr(config, "MACRO_V2_PRODUCTION_KILL_SWITCH", True))
+    kill_switch = bool(
+        getattr(config, "MACRO_V2_OBSERVER_KILL_SWITCH", True)
+    )
+    production_enabled = bool(
+        getattr(config, "MACRO_V2_PRODUCTION_ENABLED", False)
+    )
+    production_kill_switch = bool(
+        getattr(config, "MACRO_V2_PRODUCTION_KILL_SWITCH", True)
+    )
     base = {
         "schema_version": "macro-observer-runtime.v2",
         "enabled": enabled,
@@ -194,13 +879,16 @@ def _macro_v2_observer_metadata(*, market: str, as_of: str) -> dict[str, Any]:
         "active": False,
         "production_enabled": production_enabled,
         "production_kill_switch": production_kill_switch,
+        "observer_only": True,
         "production_eligible": False,
         "applied": False,
     }
     if not enabled or kill_switch:
-        base["reason"] = "kill_switch_active" if kill_switch else "observer_disabled"
+        base["reason"] = (
+            "kill_switch_active" if kill_switch else "observer_disabled"
+        )
         return base
-    observations_path = Path(
+    observations_root = Path(
         str(
             getattr(
                 config,
@@ -210,22 +898,28 @@ def _macro_v2_observer_metadata(*, market: str, as_of: str) -> dict[str, Any]:
         )
     )
     try:
-        from quant_investor.macro.observer import build_macro_observer, load_macro_observation_generation
+        from quant_investor.macro.observer import build_macro_observer
+        from quant_investor.macro.store import load_observations
 
-        observations, generation = load_macro_observation_generation(observations_path)
-        result = build_macro_observer(
+        observations, generation = load_observations(observations_root)
+        return build_macro_observer(
             observations,
             market=market,
             as_of=as_of,
             enabled=True,
             kill_switch=False,
             persist=True,
-            output_root=str(getattr(config, "MACRO_V2_OBSERVER_OUTPUT_DIR", "results/macro_observer")),
+            output_root=str(
+                getattr(
+                    config,
+                    "MACRO_V2_OBSERVER_OUTPUT_DIR",
+                    "results/v14/macro_observer",
+                )
+            ),
             production_enabled=production_enabled,
             production_kill_switch=production_kill_switch,
             generation_provenance=generation,
         )
-        return result
     except Exception as exc:
         base["reason"] = "observer_build_failed"
         base["blockers"] = [f"{type(exc).__name__}:{exc}"]
@@ -591,9 +1285,16 @@ def _prepare_market_context(
     batch_read_results: dict[str, MarketDataReadResult] = {}
     raw_read_results: dict[str, MarketDataReadResult] = {}
     frame_summaries: dict[str, dict[str, Any]] = {}
+    quant_frame_validation_blockers: dict[str, str] = {}
+    quant_contract_eligibility_blockers: dict[str, list[str]] = {}
     runtime_end_date = _compact_runtime_date(
         scoped_data_snapshot.get("local_latest_trade_date")
         or scoped_data_snapshot.get("latest_trade_date")
+    )
+    runtime_as_of = pd.to_datetime(
+        runtime_end_date,
+        format="%Y%m%d",
+        errors="coerce",
     )
     runtime_lookback_start_date = _runtime_lookback_start_date(runtime_end_date)
     with profile_stage(
@@ -620,7 +1321,13 @@ def _prepare_market_context(
             read_result = batch_read_results.get(symbol)
             if read_result is None:
                 per_symbol_fallback_count += 1
-                read_result = shared_reader.read_symbol_frame(symbol, universe_key=universe_key)
+                read_result = _read_symbol_frame_with_projection(
+                    shared_reader.read_symbol_frame,
+                    symbol,
+                    universe_key=universe_key,
+                    start_date=runtime_lookback_start_date,
+                    end_date=runtime_end_date,
+                )
             raw_read_results[symbol] = read_result
         stage_metadata["batch_result_count"] = len(batch_read_results)
         stage_metadata["per_symbol_fallback_count"] = per_symbol_fallback_count
@@ -634,6 +1341,39 @@ def _prepare_market_context(
             read_result = raw_read_results[symbol]
             read_results[symbol] = read_result
             frames[symbol] = read_result.frame
+            frame_blocker = None
+            if runtime_end_date and not pd.isna(runtime_as_of):
+                frame_blocker = production_frame_validation_blocker(
+                    read_result.frame,
+                    symbol=symbol,
+                    evaluation_as_of=pd.Timestamp(runtime_as_of),
+                )
+            if frame_blocker:
+                quant_frame_validation_blockers[symbol] = frame_blocker
+                data_quality_issues.append(
+                    DataQualityIssue(
+                        path=str(read_result.path or ""),
+                        symbol=symbol,
+                        category=str(read_result.category or ""),
+                        universe_key=universe_key,
+                        issue_type=frame_blocker.split(":", 1)[0],
+                        severity="error",
+                        message=(
+                            "Production research frame excluded: "
+                            f"{frame_blocker}"
+                        ),
+                        resolver_strategy=str(
+                            read_result.resolver_trace.get(
+                                "resolution_strategy",
+                                "",
+                            )
+                        ),
+                        metadata={
+                            "blocker": frame_blocker,
+                            "evaluation_as_of": runtime_end_date,
+                        },
+                    )
+                )
             tradability = _build_symbol_tradability(
                 symbol,
                 read_result,
@@ -657,7 +1397,7 @@ def _prepare_market_context(
             if industry_label:
                 industry_map[symbol] = industry_label
             data_quality_issues.extend(read_result.issues)
-            if _is_quarantined_read_result(read_result):
+            if frame_blocker or _is_quarantined_read_result(read_result):
                 quarantined_symbols.append(symbol)
             else:
                 researchable_symbols.append(symbol)
@@ -666,6 +1406,72 @@ def _prepare_market_context(
         stage_metadata["issue_count"] = len(data_quality_issues)
 
     symbols = list(researchable_symbols)
+    researchable_frames = _researchable_frame_subset(frames, symbols)
+    production_factor_scorer = MinedFactorScorer()
+    production_runtime_plan = (
+        production_factor_scorer.build_production_runtime_plan(
+            researchable_frames
+        )
+    )
+    if production_runtime_plan.filter_applied:
+        quant_contract_eligibility_blockers = {
+            symbol: list(blockers)
+            for symbol, blockers in (
+                production_runtime_plan.symbol_blockers.items()
+            )
+        }
+        for symbol, blockers in quant_contract_eligibility_blockers.items():
+            read_result = read_results[symbol]
+            data_quality_issues.append(
+                DataQualityIssue(
+                    path=str(read_result.path or ""),
+                    symbol=symbol,
+                    category=str(read_result.category or ""),
+                    universe_key=universe_key,
+                    issue_type="production_factor_runtime_ineligible",
+                    severity="error",
+                    message=(
+                        "Production factor runtime input excluded: "
+                        + ";".join(blockers)
+                    ),
+                    resolver_strategy=str(
+                        read_result.resolver_trace.get(
+                            "resolution_strategy",
+                            "",
+                        )
+                    ),
+                    metadata={
+                        "blockers": list(blockers),
+                        "evaluation_as_of": runtime_end_date,
+                    },
+                )
+            )
+            if symbol not in quarantined_symbols:
+                quarantined_symbols.append(symbol)
+        researchable_symbols = list(
+            production_runtime_plan.eligible_symbols
+        )
+        symbols = list(researchable_symbols)
+        researchable_frames = _researchable_frame_subset(frames, symbols)
+    stage_metadata["researchable_count"] = len(researchable_symbols)
+    stage_metadata["quarantined_count"] = len(quarantined_symbols)
+    stage_metadata["issue_count"] = len(data_quality_issues)
+    researchable_frame_summaries = {
+        symbol: frame_summaries[symbol]
+        for symbol in symbols
+        if symbol in frame_summaries
+    }
+    (
+        production_evaluation_context,
+        production_evaluation_context_blockers,
+    ) = _build_production_evaluation_context(
+        market=settings.market,
+        universe_key=universe_key,
+        symbols=symbols,
+        reader_snapshot=resolver_snapshot,
+        scoped_data_snapshot=scoped_data_snapshot,
+        read_results={symbol: read_results[symbol] for symbol in symbols},
+    )
 
     with profile_stage(
         runtime_profiler,
@@ -678,8 +1484,8 @@ def _prepare_market_context(
             {"researchable_count": len(symbols), "frame_count": len(frames)},
         ) as cross_section_metadata:
             cross_section_quant = _build_cross_section_quant(
-                frames,
-                frame_summaries=frame_summaries,
+                researchable_frames,
+                frame_summaries=researchable_frame_summaries,
             )
             cross_section_metadata["breadth"] = float(cross_section_quant.get("breadth", 0.0))
             cross_section_metadata["average_return"] = float(
@@ -714,11 +1520,11 @@ def _prepare_market_context(
             market_snapshot = _build_market_snapshot(
                 market=settings.market,
                 universe_key=universe_key,
-                frames=frames,
+                frames=researchable_frames,
                 global_summary={"candidate_count": len(symbols)},
                 latest_trade_date=effective_snapshot_trade_date,
                 macro_overview=macro_overview,
-                frame_summaries=frame_summaries,
+                frame_summaries=researchable_frame_summaries,
             )
             market_snapshot_metadata["snapshot_key_count"] = len(market_snapshot)
 
@@ -741,9 +1547,18 @@ def _prepare_market_context(
             "dag_quant_branch_result",
             {"researchable_count": len(symbols), "frame_count": len(frames)},
         ) as quant_branch_metadata:
-            quant_result = _build_quant_branch_result(
-                frames=frames,
-                frame_summaries=frame_summaries,
+            (
+                quant_result,
+                quant_validation_token,
+            ) = _build_quant_branch_result_with_validation(
+                frames=researchable_frames,
+                frame_summaries=researchable_frame_summaries,
+                evaluation_context=production_evaluation_context,
+                evaluation_context_blockers=(
+                    production_evaluation_context_blockers
+                ),
+                scorer=production_factor_scorer,
+                production_runtime_plan=production_runtime_plan,
             )
             quant_branch_metadata["scored_symbol_count"] = len(quant_result.symbol_scores)
         with profile_stage(
@@ -755,6 +1570,7 @@ def _prepare_market_context(
                 cross_section_quant=cross_section_quant,
                 symbol_count=len(symbols),
                 quant_result=quant_result,
+                validation_token=quant_validation_token,
             )
             global_quant_metadata["global_quant_score"] = float(global_quant_verdict.final_score)
             global_quant_metadata["global_quant_confidence"] = float(
@@ -1118,6 +1934,20 @@ def _prepare_market_context(
             "quarantined_count": len(quarantined_symbols),
             "quarantined_symbols": list(quarantined_symbols[:32]),
             "global_quant_verdict": global_quant_verdict.to_dict(),
+            "production_evaluation_context": (
+                production_evaluation_context.to_metadata()
+                if production_evaluation_context is not None
+                else {}
+            ),
+            "production_evaluation_context_blockers": list(
+                production_evaluation_context_blockers
+            ),
+            "quant_frame_validation_blockers": dict(
+                quant_frame_validation_blockers
+            ),
+            "quant_contract_eligibility_blockers": dict(
+                quant_contract_eligibility_blockers
+            ),
             "provider_health": {},
             "data_snapshot": dict(scoped_data_snapshot),
             "symbol_market_state": symbol_market_state,
@@ -1144,9 +1974,11 @@ def _prepare_market_context(
     )
     global_context.model_capability_map = provider_health
     global_context.metadata["provider_health"] = provider_health
-    global_context.metadata["macro_v2_observer"] = _macro_v2_observer_metadata(
-        market=settings.market,
-        as_of=effective_latest_trade_date,
+    global_context.metadata["macro_v2_observer"] = (
+        _macro_v2_observer_metadata(
+            market=settings.market,
+            as_of=effective_latest_trade_date,
+        )
     )
     if symbols:
         import hashlib
@@ -1376,7 +2208,7 @@ def _prepare_market_context(
     global_context.metadata["shortlistable_count"] = len(candidate_symbols)
     global_context.metadata["branch_data_readiness"] = branch_data_readiness
     global_context.metadata["branch_readiness_artifacts"] = branch_governance_artifacts
-    global_context.metadata["four_branch_fusion_blocked"] = macro_blocked
+    global_context.metadata["branch_fusion_blocked"] = macro_blocked
     global_context.metadata["blocked_branch_symbols"] = list(branch_governance_report.blocked_symbols[:128])
     global_context.metadata["holding_review_funnel_override"] = holding_review_funnel_override
     global_context.metadata["holding_review_branch_readiness_override"] = holding_review_readiness_override

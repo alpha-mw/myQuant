@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -12,6 +14,7 @@ from quant_investor.macro.contracts import MacroObservation
 from quant_investor.macro.providers import (
     MacroFetchRequest,
     OfficialMacroProvider,
+    ProviderFetchResult,
     TushareMacroProvider,
     fetch_official_first,
     maintain_macro_observations,
@@ -36,6 +39,11 @@ def _row(
     source: str = "nbs_official",
     vintage: str = "initial",
 ) -> dict[str, object]:
+    source_url = (
+        "https://www.stats.gov.cn/fixture"
+        if source == "nbs_official"
+        else "https://tushare.pro/document/fixture"
+    )
     return {
         "indicator_id": "cn.pmi_manufacturing",
         "dimension_type": "national",
@@ -49,7 +57,7 @@ def _row(
         "frequency": "monthly",
         "source_system": source,
         "source_record_id": f"{source}:{period}:{vintage}",
-        "source_url": "",
+        "source_url": source_url,
         "fetched_at": available,
         "quality_status": "pass",
     }
@@ -93,7 +101,20 @@ def test_observation_store_append_idempotence_and_pointer_cas(tmp_path: Path):
     first = publish_observations([_row()], root=root, run_id="g1")
     first_pointer = pointer_sha256(root)
     assert first["promoted"] is True
+    assert first["observer_only"] is True
+    assert first["production_eligible"] is False
+    assert first["applied"] is False
     assert int(oct((root / "_latest.json").stat().st_mode & 0o777), 8) == 0o600
+    pointer_payload = json.loads(
+        (root / "_latest.json").read_text(encoding="utf-8")
+    )
+    manifest_payload = json.loads(
+        (root / pointer_payload["manifest_path"]).read_text(encoding="utf-8")
+    )
+    for payload in (pointer_payload, manifest_payload):
+        assert payload["observer_only"] is True
+        assert payload["production_eligible"] is False
+        assert payload["applied"] is False
 
     duplicate = publish_observations([_row()], root=root, run_id="unused")
     assert duplicate["promoted"] is False
@@ -142,6 +163,116 @@ def test_observation_store_rejects_generation_parent_symlink(tmp_path: Path):
     generation.rename(moved)
     generation.symlink_to(moved, target_is_directory=True)
     with pytest.raises(MacroObservationStoreError, match="symlink_rejected"):
+        load_observations(root)
+
+
+def test_observation_store_rejects_root_ancestor_symlink(tmp_path: Path):
+    real_parent = tmp_path / "real"
+    root = real_parent / "observations"
+    publish_observations([_row()], root=root, run_id="g1")
+    alias = tmp_path / "alias"
+    alias.symlink_to(real_parent, target_is_directory=True)
+
+    with pytest.raises(
+        MacroObservationStoreError,
+        match="macro_observation_root_unsafe",
+    ):
+        load_observations(alias / "observations")
+    with pytest.raises(
+        MacroObservationStoreError,
+        match="macro_observation_root_unsafe",
+    ):
+        pointer_sha256(alias / "observations")
+
+
+def test_observation_store_parses_the_same_verified_table_bytes(
+    tmp_path: Path,
+    monkeypatch,
+):
+    root = tmp_path / "observations"
+    publish_observations([_row()], root=root, run_id="g1")
+    pointer = json.loads((root / "_latest.json").read_text(encoding="utf-8"))
+    table = root / pointer["table_path"]
+    original_read = observation_store.pd.read_parquet
+    mutated = False
+
+    def mutate_path_then_parse(source, *args, **kwargs):
+        nonlocal mutated
+        if isinstance(source, io.BytesIO) and not mutated:
+            table.write_bytes(b"corrupt-after-verified-read")
+            mutated = True
+        return original_read(source, *args, **kwargs)
+
+    monkeypatch.setattr(
+        observation_store.pd,
+        "read_parquet",
+        mutate_path_then_parse,
+    )
+
+    rows, _generation = load_observations(root)
+
+    assert mutated is True
+    assert rows[0]["value"] == 10.0
+    with pytest.raises(
+        MacroObservationStoreError,
+        match="generation_hash_mismatch",
+    ):
+        load_observations(root)
+
+
+@pytest.mark.parametrize("generation_id", [".", ".."])
+def test_observation_pointer_rejects_dot_generation_ids_before_resolution(
+    tmp_path: Path,
+    generation_id: str,
+):
+    root = tmp_path / "observations"
+    publish_observations([_row()], root=root, run_id="g1")
+    pointer_path = root / "_latest.json"
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    pointer["generation_id"] = generation_id
+    pointer_path.write_text(json.dumps(pointer), encoding="utf-8")
+
+    with pytest.raises(MacroObservationStoreError, match="run_id_unsafe"):
+        load_observations(root)
+
+
+def test_observation_pointer_rejects_invalid_observer_flags(
+    tmp_path: Path,
+):
+    root = tmp_path / "observations"
+    publish_observations([_row()], root=root, run_id="g1")
+    pointer_path = root / "_latest.json"
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    pointer["observer_only"] = False
+    pointer_path.write_text(json.dumps(pointer), encoding="utf-8")
+
+    with pytest.raises(
+        MacroObservationStoreError,
+        match="pointer_observer_flags_invalid",
+    ):
+        load_observations(root)
+
+
+def test_observation_manifest_rejects_invalid_observer_flags(
+    tmp_path: Path,
+):
+    root = tmp_path / "observations"
+    publish_observations([_row()], root=root, run_id="g1")
+    pointer_path = root / "_latest.json"
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    manifest_path = root / pointer["manifest_path"]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["production_eligible"] = True
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    pointer["manifest_sha256"] = hashlib.sha256(
+        manifest_path.read_bytes()
+    ).hexdigest()
+    pointer_path.write_text(json.dumps(pointer), encoding="utf-8")
+
+    with pytest.raises(
+        MacroObservationStoreError,
+        match="manifest_observer_flags_invalid",
+    ):
         load_observations(root)
 
 
@@ -254,6 +385,38 @@ def test_provider_rejects_spoofed_tushare_source():
     assert result.status == "blocked"
     assert result.observations == ()
     assert any("provider_source_provenance_mismatch" in item for item in result.blockers)
+
+
+def test_provider_composition_revalidates_custom_official_source():
+    class SpoofedOfficialProvider:
+        provider_id = "custom-official"
+
+        def fetch(self, request: MacroFetchRequest):
+            return ProviderFetchResult(
+                observations=(
+                    MacroObservation.from_mapping(
+                        _row(source="tushare_fallback")
+                    ),
+                ),
+                provider_manifest={"provider_id": self.provider_id},
+            )
+
+    result = fetch_official_first(
+        MacroFetchRequest(
+            "CN",
+            "2024-05-10",
+            ("cn.pmi_manufacturing",),
+        ),
+        official_provider=SpoofedOfficialProvider(),
+    )
+
+    assert result.status == "blocked"
+    assert result.observations == ()
+    assert any(
+        "provider_source_provenance_mismatch:official"
+        in item
+        for item in result.blockers
+    )
 
 
 def test_live_without_injected_transport_is_blocked_and_writes_nothing(tmp_path: Path):

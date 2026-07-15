@@ -10,7 +10,10 @@ from typing import Any, Mapping
 
 from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
 from quant_investor.market import name_map as _name_map
-from quant_investor.market.config import get_market_settings
+from quant_investor.market.config import (
+    get_market_settings,
+    resolve_market_analysis_output_dir,
+)
 from quant_investor.reporting.theme_governance_renderer import (
     append_theme_governance_section_once,
 )
@@ -18,6 +21,14 @@ from quant_investor.reporting.theme_renderer import render_theme_rotation_markdo
 from quant_investor.reporting.theme_shadow_renderer import (
     append_theme_production_overlay_section_once,
     append_theme_shadow_section_once,
+)
+from quant_investor.versioning import (
+    ARCHITECTURE_VERSION,
+    BRANCH_SCHEMA_VERSION,
+    IC_PROTOCOL_VERSION,
+    LIKELIHOOD_SCHEMA_VERSION,
+    REPORT_PROTOCOL_VERSION,
+    reject_retired_intelligence_keys,
 )
 
 _STOCK_NAME_CACHE = _name_map._STOCK_NAME_CACHE
@@ -28,10 +39,20 @@ load_stock_names = _name_map.load_stock_names
 BRANCH_LABELS = {
     "quant": "量化",
     "fundamental": "基本面",
-    "intelligence": "智能融合",
     "macro": "宏观",
 }
 BRANCH_SUPPORT_DENOMINATOR = len(CANONICAL_BRANCH_ORDER)
+CURRENT_MARKET_REPORT_SCHEMA_ENVELOPE = {
+    "architecture_version": ARCHITECTURE_VERSION,
+    "branch_schema_version": BRANCH_SCHEMA_VERSION,
+    "likelihood_schema_version": LIKELIHOOD_SCHEMA_VERSION,
+    "ic_protocol_version": IC_PROTOCOL_VERSION,
+    "report_protocol_version": REPORT_PROTOCOL_VERSION,
+}
+
+
+class MarketArtifactContractError(ValueError):
+    """Raised when a market report input is not a current v14 artifact."""
 
 
 def _dedupe_text(items: list[str]) -> list[str]:
@@ -73,14 +94,109 @@ def _branch_label(branch_name: str) -> str:
     return BRANCH_LABELS.get(branch_name, branch_name)
 
 
-def _canonical_branch_map(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Return v13 canonical branch payloads and drop legacy keys."""
+def _require_current_market_schema_envelope(
+    payload: Mapping[str, Any] | Any,
+    *,
+    label: str,
+) -> dict[str, str]:
+    envelope: dict[str, str] = {}
+    for field_name, expected_value in CURRENT_MARKET_REPORT_SCHEMA_ENVELOPE.items():
+        actual = (
+            payload.get(field_name)
+            if isinstance(payload, Mapping)
+            else getattr(payload, field_name, None)
+        )
+        if actual != expected_value:
+            raise MarketArtifactContractError(
+                f"{label} {field_name} mismatch: "
+                f"expected {expected_value!r}, got {actual!r}"
+            )
+        envelope[field_name] = actual
+    return envelope
 
+
+def _canonical_branch_map(
+    payload: Mapping[str, Any],
+    *,
+    label: str = "branch payload",
+    require_exact: bool = False,
+) -> dict[str, Any]:
+    """Return canonical branches without silently discarding retired keys."""
+
+    if not isinstance(payload, Mapping):
+        raise MarketArtifactContractError(f"{label} must be a mapping")
+    expected = set(CANONICAL_BRANCH_ORDER)
+    actual = set(payload)
+    unexpected = sorted(actual - expected)
+    missing = sorted(expected - actual)
+    if unexpected or (require_exact and missing):
+        details: list[str] = []
+        if missing and require_exact:
+            details.append("missing branches: " + ", ".join(missing))
+        if unexpected:
+            details.append("unsupported branches: " + ", ".join(unexpected))
+        raise MarketArtifactContractError(
+            f"{label} must contain exactly the canonical branches "
+            f"{list(CANONICAL_BRANCH_ORDER)!r}; {'; '.join(details)}"
+        )
     return {
         branch_name: payload[branch_name]
         for branch_name in CANONICAL_BRANCH_ORDER
         if branch_name in payload
     }
+
+
+def _require_current_market_report_batch(
+    batch: Mapping[str, Any],
+    *,
+    label: str = "market report batch",
+) -> None:
+    if not isinstance(batch, Mapping):
+        raise MarketArtifactContractError(f"{label} must be a mapping")
+    try:
+        reject_retired_intelligence_keys(batch, path=label)
+    except ValueError as exc:
+        raise MarketArtifactContractError(str(exc)) from exc
+    _require_current_market_schema_envelope(batch, label=label)
+    _canonical_branch_map(
+        batch.get("branches", {}),
+        label=f"{label} branches",
+        require_exact=True,
+    )
+    analysis_meta = batch.get("analysis_meta")
+    if not isinstance(analysis_meta, Mapping):
+        raise MarketArtifactContractError(
+            f"{label} analysis_meta must be a mapping"
+        )
+    _require_current_market_schema_envelope(
+        analysis_meta,
+        label=f"{label} analysis_meta",
+    )
+
+
+def _require_current_full_market_artifacts(
+    all_results: Mapping[str, Any],
+) -> None:
+    if not isinstance(all_results, Mapping):
+        raise MarketArtifactContractError("full market report input must be a mapping")
+
+    batch_count = 0
+    for category, batches in all_results.items():
+        if not isinstance(batches, list):
+            raise MarketArtifactContractError(
+                f"full market report category {category!r} must contain a batch list"
+            )
+        for index, batch in enumerate(batches):
+            batch_count += 1
+            _require_current_market_report_batch(
+                batch,
+                label=f"full market report batch {category}[{index}]",
+            )
+
+    if batch_count == 0:
+        raise MarketArtifactContractError(
+            "full market report input must contain at least one current v14 batch"
+        )
 
 
 def _to_mapping(value: Any) -> dict[str, Any]:
@@ -245,15 +361,8 @@ def _build_analysis_meta(
         meta["ic_hints_by_symbol"] = dict(
             first_meta.get("ic_hints_by_symbol", {})
         )
-        meta["branch_schema_version"] = str(
-            first_meta.get("branch_schema_version", "")
-        )
-        meta["ic_protocol_version"] = str(
-            first_meta.get("ic_protocol_version", "")
-        )
-        meta["report_protocol_version"] = str(
-            first_meta.get("report_protocol_version", "")
-        )
+        for field_name in CURRENT_MARKET_REPORT_SCHEMA_ENVELOPE:
+            meta[field_name] = str(first_meta.get(field_name, ""))
         meta["analysis_kwargs"] = dict(first_meta.get("analysis_kwargs", {}))
         theme_shadow_monitor = _extract_theme_shadow_monitor(first_meta)
         if theme_shadow_monitor:
@@ -337,9 +446,9 @@ def _derive_stock_conclusion(payload: dict[str, Any]) -> str:
         return (
             f"{payload['symbol']} 当前获得 {support_count}/"
             f"{BRANCH_SUPPORT_DENOMINATOR} "
-            f"个 v13 分支支持，预期空间约 {expected_upside:.1%}。"
+            f"个 v14 分支支持，预期空间约 {expected_upside:.1%}。"
         )
-    if support_count >= 3 and confidence >= 0.40:
+    if support_count >= BRANCH_SUPPORT_DENOMINATOR and confidence >= 0.40:
         return f"{payload['symbol']} 当前结论偏正，但更适合分批跟踪。"
     return f"{payload['symbol']} 当前信号仍需观察，暂不宜激进执行。"
 
@@ -446,6 +555,7 @@ def build_full_market_trade_plan(
     total_capital: float = 1_000_000,
     top_k: int = 12,
 ) -> dict[str, Any]:
+    _require_current_full_market_artifacts(all_results)
     settings = get_market_settings(market)
     summary = _build_market_summary(all_results, market=settings.market)
     collected: list[dict[str, Any]] = []
@@ -744,7 +854,7 @@ class ActionConsistencyGuard:
         reasons = list(payload.get("weight_cap_reasons", []))
         if weak_support:
             reasons.append(
-                f"v13 四分支支持仅 {positive_count}/"
+                f"v14 三分支支持仅 {positive_count}/"
                 f"{BRANCH_SUPPORT_DENOMINATOR}，不宜激进。"
             )
         if low_confidence:
@@ -1110,7 +1220,7 @@ class ConclusionRenderer:
                 f"{item['symbol']} {stock_name} 当前获得 "
                 f"{int(item.get('branch_positive_count', 0))}/"
                 f"{BRANCH_SUPPORT_DENOMINATOR} "
-                "个 v13 分支支持，可按计划分批执行。"
+                "个 v14 分支支持，可按计划分批执行。"
             )
         elif action == "轻仓试错":
             conclusion = (
@@ -1154,8 +1264,8 @@ def save_candidate_index(
     market: str = "CN",
     output_dir: str | None = None,
 ) -> str:
-    settings = get_market_settings(market)
-    target_dir = Path(output_dir or settings.analysis_output_dir)
+    _require_current_full_market_artifacts(all_results)
+    target_dir = resolve_market_analysis_output_dir(market, output_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     payload: dict[str, list[str]] = {}
     for category, batches in all_results.items():
@@ -1189,6 +1299,7 @@ def _build_full_market_report_bundle(
     total_capital: float,
     top_k: int,
 ) -> tuple[dict[str, Any], Any | None]:
+    _require_current_full_market_artifacts(all_results)
     plan = build_full_market_trade_plan(
         all_results,
         market=market,
@@ -1205,8 +1316,9 @@ def generate_full_report(
     total_capital: float = 1_000_000,
     top_k: int = 12,
 ) -> dict[str, str]:
+    _require_current_full_market_artifacts(all_results)
     settings = get_market_settings(market)
-    target_dir = Path(output_dir or settings.analysis_output_dir)
+    target_dir = resolve_market_analysis_output_dir(settings.market, output_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     print(f"\n{'=' * 80}")
     print(f"📊 生成{settings.market_name}全市场综合分析报告")
@@ -1286,7 +1398,7 @@ def generate_full_report(
             f"{settings.market_name}全市场组合级交易建议报告\n"
         ),
         f"**生成时间**: {summary['generated_at']}\n",
-        "**分析架构**: Quant-Investor V13 四分支研究契约\n",
+        "**分析架构**: Quant-Investor V14 三分支研究契约\n",
         (
             f"**分析覆盖**: {summary['total_stocks']} 只股票，"
             f"{summary['total_batches']} 个批次\n"
@@ -1393,7 +1505,7 @@ def generate_full_report(
                 (
                     "| 排名 | 代码 | 名称 | 类别 | 现价 | 推荐买入价 | "
                     "目标卖出价 | 止损价 | 推荐仓位 | 金额 | "
-                    "预期空间 | v13分支支持 |\n"
+                    "预期空间 | v14分支支持 |\n"
                 ),
                 (
                     "|:---:|:---|:---|:---|---:|---:|---:|---:|"
@@ -1477,7 +1589,7 @@ def generate_full_report(
             "- 当前没有满足条件的最终候选，建议继续以现金和观察仓位为主。\n"
         )
 
-    report_lines.append("\n## v13 四分支结论\n")
+    report_lines.append("\n## v14 三分支结论\n")
     for branch_name in CANONICAL_BRANCH_ORDER:
         if branch_name in branch_summary:
             report_lines.extend(

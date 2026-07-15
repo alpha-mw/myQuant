@@ -1,0 +1,60 @@
+"""Strict, offline fundamental research protocol core."""
+
+from .ledger import HashChainLedger, LedgerConflictError, validate_job_transition
+from .models import (
+    ApplicationEventV1,
+    ApplicationState,
+    ClaimKind,
+    ClaimV1,
+    Dimension,
+    DimensionAssessmentV1,
+    DimensionSignal,
+    FundamentalOverlayV1,
+    FundamentalResearchDossierV1,
+    FundamentalResearchRequestV1,
+    FundamentalResearchResponseV1,
+    JobEventV1,
+    JobState,
+    LocalFundamentalContextV1,
+    SourceEligibilityPolicyV1,
+    SourceRecordV1,
+    SourceTier,
+    compute_base_score_sha256,
+    compute_source_policy_sha256,
+)
+from .scoring import DIMENSION_WEIGHTS, build_overlay
+from .service import ResponseBindingError, import_response_files, validate_response
+from .storage import atomic_write_json_model, load_json_model, model_sha256
+
+__all__ = [
+    "ApplicationEventV1",
+    "ApplicationState",
+    "ClaimKind",
+    "ClaimV1",
+    "DIMENSION_WEIGHTS",
+    "Dimension",
+    "DimensionAssessmentV1",
+    "DimensionSignal",
+    "FundamentalOverlayV1",
+    "FundamentalResearchDossierV1",
+    "FundamentalResearchRequestV1",
+    "FundamentalResearchResponseV1",
+    "HashChainLedger",
+    "JobEventV1",
+    "JobState",
+    "LedgerConflictError",
+    "LocalFundamentalContextV1",
+    "ResponseBindingError",
+    "SourceEligibilityPolicyV1",
+    "SourceRecordV1",
+    "SourceTier",
+    "atomic_write_json_model",
+    "build_overlay",
+    "compute_base_score_sha256",
+    "compute_source_policy_sha256",
+    "import_response_files",
+    "load_json_model",
+    "model_sha256",
+    "validate_job_transition",
+    "validate_response",
+]
