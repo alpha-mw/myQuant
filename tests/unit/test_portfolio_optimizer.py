@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quant_investor.bayesian.posterior_overlay import CalibratedPosteriorOverlay
+import quant_investor.portfolio_optimizer as optimizer_module
 from quant_investor.portfolio_optimizer import (
     CONSTRAINT_BLOCKED_SYMBOL,
     CONSTRAINT_MIN_EDGE,
@@ -36,16 +36,6 @@ from quant_investor.portfolio_optimizer import (
     optimize_portfolio,
     run_walk_forward_loop,
     validate_finite_number,
-)
-from quant_investor.risk_tensor import (
-    EXECUTION_BLOCKED,
-    RISK_ISSUE_DATA_QUARANTINE,
-    RISK_SEVERITY_BLOCKER,
-    ExecutionFeasibility,
-    LiquidityProfile,
-    RiskIssue,
-    SymbolExposure,
-    SymbolRiskTensor,
 )
 from quant_investor.versioning import PORTFOLIO_OPTIMIZER_SCHEMA_VERSION
 
@@ -117,6 +107,28 @@ def _plan() -> OptimizedPortfolioPlan:
             "optimization_method": "deterministic_greedy_v1",
         },
     )
+
+
+_OVERLAY_PROVENANCE_CASES = [
+    (
+        "payload-key",
+        {"calibrated_posterior_overlay": {"schema_version": "v2"}},
+    ),
+    (
+        "schema-key",
+        {"posterior_overlay_schema_version": "2026-07-14.posterior-overlay.v2"},
+    ),
+    ("shadow-mode", {"overlay_mode": "shadow"}),
+    (
+        "report-contract",
+        {
+            "report_only": True,
+            "production_eligible": False,
+            "production_weight": 0.0,
+        },
+    ),
+    ("source-type", {"source_type": "posterior_overlay"}),
+]
 
 
 def test_dataclass_round_trips() -> None:
@@ -201,7 +213,35 @@ def test_numeric_helpers() -> None:
         validate_finite_number(float("inf"), field_name="bad")
 
 
-def test_candidate_bridge_from_stubs_and_duplicate_overlay_rejection() -> None:
+def test_candidate_bridges_fail_closed_before_reading_overlay_or_risk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reads: list[str] = []
+
+    class Poison:
+        def __getattribute__(self, name: str):
+            reads.append(name)
+            raise AssertionError(f"bridge read forbidden input: {name}")
+
+    with pytest.raises(ValueError, match="report-only"):
+        build_candidate_from_overlay(
+            Poison(),
+            risk_tensor=Poison(),
+            current_weight=0.35,
+            metadata=Poison(),
+        )
+    assert reads == []
+
+    legacy_v1 = {
+        "schema_version": "2026-04-26.posterior-overlay.v1",
+        "symbol": "000001.SZ",
+        "calibrated_posterior_expected_alpha": 0.05,
+        "calibrated_edge_after_costs": 0.03,
+        "calibrated_posterior_action_score": 0.70,
+    }
+    with pytest.raises(ValueError, match="report-only"):
+        build_candidate_from_overlay(legacy_v1, current_weight=0.35)
+
     overlay = SimpleNamespace(
         symbol="000001.SZ",
         company_name="测试公司",
@@ -212,42 +252,21 @@ def test_candidate_bridge_from_stubs_and_duplicate_overlay_rejection() -> None:
         diagnostics=SimpleNamespace(metadata={"posterior_confidence": 0.65}),
         metadata={"posterior_confidence": 0.10},
     )
-    risk_tensor = SimpleNamespace(
-        symbol="000001.SZ",
-        market="CN",
-        as_of="2026-04-26",
-        exposure=SimpleNamespace(sector="Technology"),
-        risk_score=0.30,
-        liquidity=SimpleNamespace(liquidity_score=0.75, estimated_market_impact_bps=3.0),
-        execution=SimpleNamespace(
-            status="blocked",
-            blocked_reasons=["suspended"],
-            estimated_transaction_cost_bps=9.0,
-            estimated_slippage_bps=2.0,
-            estimated_market_impact_bps=None,
-        ),
-        quarantine=False,
-        is_tradable=True,
-        issues=[SimpleNamespace(issue_type="data_quarantine", severity="blocker")],
-        metadata={"max_weight": 0.08},
+    constructed = 0
+
+    def counting_candidate(**kwargs):
+        nonlocal constructed
+        constructed += 1
+        return SimpleNamespace(**kwargs)
+
+    monkeypatch.setattr(
+        optimizer_module,
+        "OptimizationCandidate",
+        counting_candidate,
     )
-
-    candidate = build_candidate_from_overlay(overlay, risk_tensor=risk_tensor, current_weight=0.04)
-
-    assert candidate.symbol == "000001.SZ"
-    assert candidate.expected_alpha == pytest.approx(0.05)
-    assert candidate.edge_after_costs == pytest.approx(0.03)
-    assert candidate.sector == "Technology"
-    assert candidate.risk_score == pytest.approx(0.30)
-    assert candidate.liquidity_score == pytest.approx(0.75)
-    assert candidate.estimated_transaction_cost_bps == pytest.approx(9.0)
-    assert candidate.estimated_market_impact_bps == pytest.approx(3.0)
-    assert candidate.is_blocked is True
-    assert candidate.block_reasons == ["data_quarantine", "suspended"]
-    assert candidate.max_weight == pytest.approx(0.08)
-
-    with pytest.raises(ValueError, match="Duplicate"):
+    with pytest.raises(ValueError, match="report-only"):
         build_candidates_from_overlays([overlay, overlay])
+    assert constructed == 0
 
 
 def test_optimizer_clean_case_respects_caps_and_ordering() -> None:
@@ -415,58 +434,420 @@ def test_store_round_trips_and_rejects_duplicates_and_bad_json(tmp_path) -> None
         bad_store.read_plans()
 
 
-def test_actual_phase4_and_phase6_bridge_instances() -> None:
-    overlay = CalibratedPosteriorOverlay(
-        symbol="000001.SZ",
-        company_name="真实测试",
-        market="CN",
-        calibrated_posterior_expected_alpha=0.04,
-        calibrated_edge_after_costs=0.025,
-        calibrated_posterior_action_score=0.66,
-        metadata={"posterior_confidence": 0.70},
-    )
-    risk_tensor = SymbolRiskTensor(
-        tensor_id="tensor",
-        symbol="000001.SZ",
-        market="CN",
-        as_of="2026-04-26",
-        latest_trade_date="2026-04-25",
-        exposure=SymbolExposure(symbol="000001.SZ", market="CN", as_of="2026-04-26", sector="Technology"),
-        liquidity=LiquidityProfile(
-            symbol="000001.SZ",
-            market="CN",
-            as_of="2026-04-26",
-            liquidity_score=0.60,
-            estimated_market_impact_bps=4.0,
-        ),
-        execution=ExecutionFeasibility(
-            symbol="000001.SZ",
-            market="CN",
-            as_of="2026-04-26",
-            status=EXECUTION_BLOCKED,
-            blocked_reasons=["untradable"],
-            estimated_transaction_cost_bps=8.0,
-            estimated_slippage_bps=2.0,
-        ),
-        issues=[
-            RiskIssue(
-                issue_id="issue",
-                symbol="000001.SZ",
-                market="CN",
-                as_of="2026-04-26",
-                issue_type=RISK_ISSUE_DATA_QUARANTINE,
-                severity=RISK_SEVERITY_BLOCKER,
-                message="quarantine",
+def test_bridge_cannot_convert_report_only_overlay_into_forced_exit() -> None:
+    class RiskTensorPoison:
+        def __getattribute__(self, name: str):
+            raise AssertionError(
+                f"bridge read risk field before fail-closed rejection: {name}"
             )
-        ],
-        risk_score=0.40,
+
+    report_only_overlay = SimpleNamespace(
+        schema_version="2026-07-14.posterior-overlay.v2",
+        overlay_mode="shadow",
+        report_only=True,
+        production_eligible=False,
+        production_weight=0.0,
     )
 
-    candidate = build_candidate_from_overlay(overlay, risk_tensor=risk_tensor)
+    with pytest.raises(ValueError, match="report-only"):
+        build_candidate_from_overlay(
+            report_only_overlay,
+            risk_tensor=RiskTensorPoison(),
+            current_weight=0.40,
+        )
 
-    assert candidate.symbol == "000001.SZ"
-    assert candidate.sector == "Technology"
-    assert candidate.confidence == pytest.approx(0.70)
-    assert candidate.risk_score == pytest.approx(0.40)
-    assert candidate.is_blocked is True
-    assert candidate.block_reasons == [RISK_ISSUE_DATA_QUARANTINE, "untradable"]
+
+@pytest.mark.parametrize(
+    ("marker_name", "marker"),
+    _OVERLAY_PROVENANCE_CASES,
+    ids=[case[0] for case in _OVERLAY_PROVENANCE_CASES],
+)
+def test_optimizer_rejects_recursive_overlay_candidate_metadata_before_scoring(
+    marker_name: str,
+    marker: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = OptimizationCandidate.from_dict(
+        _candidate(
+            "000001.SZ",
+            current_weight=0.40,
+            metadata={"nested": [{"marker": marker}]},
+        ).to_dict()
+    )
+    score_reads = 0
+
+    def explode_score(*args, **kwargs):
+        nonlocal score_reads
+        score_reads += 1
+        raise AssertionError(f"scored overlay-derived candidate: {marker_name}")
+
+    monkeypatch.setattr(optimizer_module, "_candidate_adjusted_score", explode_score)
+
+    with pytest.raises(ValueError, match="overlay"):
+        optimize_portfolio(
+            [candidate],
+            current_weights={candidate.symbol: 0.40},
+        )
+    assert score_reads == 0
+
+
+@pytest.mark.parametrize(
+    ("marker_name", "marker"),
+    _OVERLAY_PROVENANCE_CASES,
+    ids=[case[0] for case in _OVERLAY_PROVENANCE_CASES],
+)
+def test_constructor_patch_rejects_recursive_overlay_plan_metadata(
+    marker_name: str,
+    marker: dict[str, object],
+) -> None:
+    payload = _plan().to_dict()
+    payload["metadata"] = {"nested": [{"marker": marker}]}
+    round_tripped = OptimizedPortfolioPlan.from_dict(payload)
+
+    with pytest.raises(ValueError, match="overlay"):
+        build_portfolio_constructor_patch(round_tripped)
+
+
+def test_optimizer_rejects_report_only_ineligible_marker_without_weight() -> None:
+    candidate = _candidate(
+        "CURRENT",
+        current_weight=0.40,
+        metadata={
+            "nested": {
+                "report_only": True,
+                "production_eligible": False,
+            }
+        },
+    )
+
+    with pytest.raises(ValueError, match="overlay"):
+        optimize_portfolio(
+            [candidate],
+            current_weights={candidate.symbol: 0.40},
+        )
+
+
+def test_constructor_patch_rejects_report_only_ineligible_without_weight() -> None:
+    payload = _plan().to_dict()
+    payload["metadata"] = {
+        "nested": {
+            "report_only": True,
+            "eligible": False,
+        }
+    }
+    plan = OptimizedPortfolioPlan.from_dict(payload)
+
+    with pytest.raises(ValueError, match="overlay"):
+        build_portfolio_constructor_patch(plan)
+
+
+@pytest.mark.parametrize("location", ["input_metadata", "config_metadata"])
+def test_optimizer_rejects_overlay_provenance_destined_for_plan_metadata(
+    location: str,
+) -> None:
+    marker = {"nested": {"source_type": "posterior_overlay"}}
+    kwargs: dict[str, object] = {}
+    if location == "input_metadata":
+        kwargs["metadata"] = marker
+    else:
+        kwargs["config"] = PortfolioOptimizerConfig(metadata=marker)
+
+    with pytest.raises(ValueError, match="overlay"):
+        optimize_portfolio([_candidate("000001.SZ")], **kwargs)
+
+
+def test_optimizer_preserves_non_overlay_metadata_behavior() -> None:
+    metadata = {
+        "nested": {
+            "overlay_mode": "off",
+            "report_only": False,
+            "production_eligible": False,
+            "production_weight": 0.0,
+            "source_type": "posterior",
+        }
+    }
+    candidate = _candidate("NORMAL", metadata=metadata)
+
+    plan = optimize_portfolio(
+        [candidate],
+        config=PortfolioOptimizerConfig(
+            max_weight=0.20,
+            sector_cap=None,
+            turnover_cap=None,
+        ),
+    )
+    patch = build_portfolio_constructor_patch(plan)
+
+    assert plan.target_weights == {"NORMAL": pytest.approx(0.20)}
+    assert patch["target_weights"] == {"NORMAL": pytest.approx(0.20)}
+
+
+@pytest.mark.parametrize(
+    "schema_version",
+    [
+        "2026-07-14.posterior-overlay.v2",
+        "2026-04-26.portfolio-optimizer.v1",
+        "evil-schema.v999",
+    ],
+)
+def test_optimizer_execution_rejects_non_current_candidate_schema_before_scoring(
+    schema_version: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _candidate("CURRENT", current_weight=0.40).to_dict()
+    payload["schema_version"] = schema_version
+    observed = OptimizationCandidate.from_dict(payload)
+    score_reads = 0
+
+    def explode_score(*args, **kwargs):
+        nonlocal score_reads
+        score_reads += 1
+        raise AssertionError("non-current candidate reached scoring")
+
+    monkeypatch.setattr(optimizer_module, "_candidate_adjusted_score", explode_score)
+    assert observed.schema_version == schema_version
+
+    with pytest.raises(ValueError, match="schema"):
+        optimize_portfolio(
+            [observed],
+            current_weights={observed.symbol: 0.40},
+        )
+    assert score_reads == 0
+
+
+@pytest.mark.parametrize(
+    "schema_version",
+    [
+        "2026-07-14.posterior-overlay.v2",
+        "2026-04-26.portfolio-optimizer.v1",
+        "evil-schema.v999",
+    ],
+)
+def test_constructor_patch_rejects_non_current_plan_schema(
+    schema_version: str,
+) -> None:
+    payload = _plan().to_dict()
+    payload["schema_version"] = schema_version
+    observed = OptimizedPortfolioPlan.from_dict(payload)
+    assert observed.schema_version == schema_version
+
+    with pytest.raises(ValueError, match="schema"):
+        build_portfolio_constructor_patch(observed)
+
+
+_FINAL_NORMALIZED_PROVENANCE_CASES: list[
+    tuple[str, dict[object, object]]
+] = [
+    (
+        "schema-v2-value",
+        {"note": "2026-07-14.posterior-overlay.v2"},
+    ),
+    (
+        "schema-v1-value",
+        {"note": "2026-04-26.posterior-overlay.v1"},
+    ),
+    (
+        "standalone-report-only",
+        {"Report-Only": True},
+    ),
+    (
+        "marker-string",
+        {"note": "Calibrated Posterior Overlay"},
+    ),
+    (
+        "schema-marker-string",
+        {"note": "Posterior-Overlay-Schema.Version"},
+    ),
+    (
+        "mode-list-pair",
+        {"pairs": [["Overlay Mode", "SHADOW"]]},
+    ),
+    (
+        "source-list-pair",
+        {"pairs": [["Source-Type", "Posterior Overlay"]]},
+    ),
+    (
+        "non-string-key",
+        {("Overlay", "Mode"): "Shadow"},
+    ),
+    (
+        "case-separated-key",
+        {"SOURCE.TYPE": "POSTERIOR-OVERLAY"},
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "location",
+    ["candidate", "plan", "input_metadata", "config_metadata"],
+)
+@pytest.mark.parametrize(
+    ("marker_name", "metadata"),
+    _FINAL_NORMALIZED_PROVENANCE_CASES,
+    ids=[case[0] for case in _FINAL_NORMALIZED_PROVENANCE_CASES],
+)
+def test_final_recursive_detector_rejects_normalized_overlay_markers(
+    location: str,
+    marker_name: str,
+    metadata: dict[object, object],
+) -> None:
+    if location == "candidate":
+        candidate = _candidate("MARKED", metadata=metadata)
+        with pytest.raises(ValueError, match="overlay"):
+            optimize_portfolio([candidate])
+    elif location == "plan":
+        payload = _plan().to_dict()
+        payload["metadata"] = metadata
+        with pytest.raises(ValueError, match="overlay"):
+            build_portfolio_constructor_patch(
+                OptimizedPortfolioPlan.from_dict(payload)
+            )
+    elif location == "input_metadata":
+        with pytest.raises(ValueError, match="overlay"):
+            optimize_portfolio(
+                [_candidate("MARKED")],
+                metadata=metadata,  # type: ignore[arg-type]
+            )
+    else:
+        config = PortfolioOptimizerConfig(
+            metadata=metadata,  # type: ignore[arg-type]
+        )
+        with pytest.raises(ValueError, match="overlay"):
+            optimize_portfolio([_candidate("MARKED")], config=config)
+
+
+@pytest.mark.parametrize(
+    "location",
+    ["candidate", "plan", "input_metadata", "config_metadata"],
+)
+def test_final_recursive_detector_preserves_normalized_ordinary_metadata(
+    location: str,
+) -> None:
+    metadata = {
+        "Report-Only": False,
+        "Source.Type": "Posterior",
+        "Overlay Mode": "OFF",
+        "note": "posterior calibration observation",
+    }
+    if location == "candidate":
+        plan = optimize_portfolio([_candidate("NORMAL", metadata=metadata)])
+        assert plan.target_weights
+    elif location == "plan":
+        payload = _plan().to_dict()
+        payload["metadata"] = metadata
+        patch = build_portfolio_constructor_patch(
+            OptimizedPortfolioPlan.from_dict(payload)
+        )
+        assert patch["target_weights"]
+    elif location == "input_metadata":
+        plan = optimize_portfolio(
+            [_candidate("NORMAL")],
+            metadata=metadata,
+        )
+        assert plan.target_weights
+    else:
+        plan = optimize_portfolio(
+            [_candidate("NORMAL")],
+            config=PortfolioOptimizerConfig(metadata=metadata),
+        )
+        assert plan.target_weights
+
+
+@pytest.mark.parametrize("artifact", ["candidate", "plan"])
+@pytest.mark.parametrize("attack", ["unknown", "missing"])
+def test_current_v2_from_dict_requires_exact_top_level_fields(
+    artifact: str,
+    attack: str,
+) -> None:
+    if artifact == "candidate":
+        payload = _candidate("CURRENT").to_dict()
+        parser = OptimizationCandidate.from_dict
+        missing_field = "symbol"
+    else:
+        payload = _plan().to_dict()
+        parser = OptimizedPortfolioPlan.from_dict
+        missing_field = "plan_id"
+    if attack == "unknown":
+        payload.update(
+            {
+                "overlay_mode": "shadow",
+                "report_only": True,
+                "production_eligible": False,
+                "production_weight": 0.0,
+            }
+        )
+    else:
+        payload.pop(missing_field)
+
+    with pytest.raises(ValueError, match="fields"):
+        parser(payload)
+
+
+class EqualCurrent:
+    def __str__(self) -> str:
+        return PORTFOLIO_OPTIMIZER_SCHEMA_VERSION
+
+    def __eq__(self, other: object) -> bool:
+        return other == PORTFOLIO_OPTIMIZER_SCHEMA_VERSION
+
+    def __ne__(self, other: object) -> bool:
+        return not self == other
+
+
+@pytest.mark.parametrize("artifact", ["candidate", "plan"])
+def test_from_dict_rejects_non_exact_string_schema(artifact: str) -> None:
+    payload = (
+        _candidate("CURRENT").to_dict()
+        if artifact == "candidate"
+        else _plan().to_dict()
+    )
+    payload["schema_version"] = EqualCurrent()
+    parser = (
+        OptimizationCandidate.from_dict
+        if artifact == "candidate"
+        else OptimizedPortfolioPlan.from_dict
+    )
+
+    with pytest.raises(TypeError, match="schema"):
+        parser(payload)
+
+
+@pytest.mark.parametrize("artifact", ["candidate", "plan"])
+def test_execution_guards_reject_equal_current_objects(artifact: str) -> None:
+    if artifact == "candidate":
+        candidate = _candidate("CURRENT", schema_version=EqualCurrent())
+        with pytest.raises(ValueError, match="schema"):
+            optimize_portfolio([candidate])
+    else:
+        plan = _plan()
+        plan.schema_version = EqualCurrent()  # type: ignore[assignment]
+        with pytest.raises(ValueError, match="schema"):
+            build_portfolio_constructor_patch(plan)
+
+
+@pytest.mark.parametrize("artifact", ["candidate", "plan"])
+def test_legacy_payload_remains_observable_but_not_executable(
+    artifact: str,
+) -> None:
+    if artifact == "candidate":
+        observed = OptimizationCandidate.from_dict(
+            {
+                "schema_version": "2026-04-26.portfolio-optimizer.v1",
+                "symbol": "OBSERVED",
+                "unknown_control": {"report_only": False},
+            }
+        )
+        assert observed.symbol == "OBSERVED"
+        with pytest.raises(ValueError, match="schema"):
+            optimize_portfolio([observed])
+    else:
+        observed = OptimizedPortfolioPlan.from_dict(
+            {
+                "schema_version": "legacy-plan.observation.v1",
+                "plan_id": "observed-plan",
+                "unknown_control": {"report_only": False},
+            }
+        )
+        assert observed.plan_id == "observed-plan"
+        with pytest.raises(ValueError, match="schema"):
+            build_portfolio_constructor_patch(observed)

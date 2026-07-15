@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
-SCHEMA_VERSION = "2026-07-11.quant-factor-replacement-readiness.v1"
+SCHEMA_VERSION = "2026-07-15.quant-factor-replacement-readiness.v2"
 
 OUTCOME_KEEP = "keep"
 OUTCOME_WATCHLIST = "watchlist"
@@ -1203,11 +1203,14 @@ def assess_replacement_readiness(
         "status": overall_outcome,
         "measurement_only": True,
         "freeze": {
-            "active": True,
-            "policy": "v13_frozen_measurement_only",
+            "active": False,
+            "policy": "retired_v13_incubation",
+        },
+        "mutation_governance": {
+            "mode": "read_only_proposal",
             "registry_mutation_allowed": False,
             "production_weight_change_allowed": False,
-            "requires_explicit_governance_and_Maxwell_confirmation": True,
+            "production_apply_authorization": "required",
         },
         "registry_update_status": "not_written_read_only_proposal",
         "candidate": {

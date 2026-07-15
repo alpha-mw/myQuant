@@ -425,7 +425,12 @@ def test_cli_writes_only_measurement_reports(tmp_path) -> None:
         (output / "quant_factor_replacement_readiness.json").read_text(encoding="utf-8")
     )
     assert payload["measurement_only"] is True
-    assert payload["freeze"]["registry_mutation_allowed"] is False
+    assert payload["freeze"] == {
+        "active": False,
+        "policy": "retired_v13_incubation",
+    }
+    assert payload["mutation_governance"]["registry_mutation_allowed"] is False
+    assert payload["mutation_governance"]["production_weight_change_allowed"] is False
     assert payload["factor_decisions"][0]["outcome"] == OUTCOME_WATCHLIST
     assert sorted(path.name for path in output.iterdir()) == [
         "quant_factor_replacement_readiness.json",

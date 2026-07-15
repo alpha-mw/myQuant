@@ -673,16 +673,46 @@ def assess_branch_data_readiness(
         symbols=symbols,
         as_of=as_of,
     )
-    fundamentals, fundamental_manifest = load_fundamental_records(symbols, as_of=as_of, root=fundamental_root)
+    try:
+        fundamentals, fundamental_manifest = load_fundamental_records(
+            symbols,
+            as_of=as_of,
+            root=fundamental_root,
+        )
+    except FundamentalGenerationError as exc:
+        fundamentals = {}
+        fundamental_manifest = {
+            "read_error": str(exc) or "fundamental_generation_invalid",
+            "storage_backend": "parquet_canonical_generation",
+        }
     macro_record, macro_manifest = load_macro_record(as_of=as_of, root=macro_root)
-    fundamental = _assess_symbol_records(
-        branch="fundamental",
-        symbols=symbols,
-        records=fundamentals,
-        required_fields=FUNDAMENTAL_REQUIRED_FIELDS,
-        manifest=fundamental_manifest,
-        as_of=as_of,
-    )
+    if fundamental_manifest.get("read_error"):
+        fundamental = BranchDataReadiness(
+            branch="fundamental",
+            status=STATUS_BLOCK,
+            coverage_ratio=0.0,
+            freshness_status="unknown",
+            pit_status="invalid_canonical_generation",
+            source_priority=SOURCE_OFFLINE,
+            source="",
+            as_of=_date_text(as_of),
+            required_fields=list(FUNDAMENTAL_REQUIRED_FIELDS),
+            missing_fields=list(FUNDAMENTAL_REQUIRED_FIELDS),
+            blockers=["fundamental_generation_invalid"],
+            affected_symbols=list(symbols),
+            fallback_used=False,
+            provider_status="blocked_invalid_generation",
+            metadata={"manifest": dict(fundamental_manifest)},
+        )
+    else:
+        fundamental = _assess_symbol_records(
+            branch="fundamental",
+            symbols=symbols,
+            records=fundamentals,
+            required_fields=FUNDAMENTAL_REQUIRED_FIELDS,
+            manifest=fundamental_manifest,
+            as_of=as_of,
+        )
     macro = assess_macro_readiness(macro_record=macro_record, manifest=macro_manifest, as_of=as_of)
     blocked = sorted(
         set(quant.affected_symbols)

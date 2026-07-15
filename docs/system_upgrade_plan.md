@@ -271,3 +271,42 @@ Phase 8 non-goals:
 - No posterior, CalibrationStore V1, Calibration V2, or posterior overlay math changes.
 - No frontend or web integration.
 - No broker or execution integration.
+
+## PR3b: Posterior Overlay Containment Hardening
+
+PR3b supersedes the current availability of the historical Phase 7 overlay bridge
+without changing the historical implementation record above. Posterior overlay v2
+is an offline, report-only diagnostic surface. Its single lazy runner defaults to
+exact `off`; explicit `shadow` requires a timezone-aware decision time, an external
+ledger-bound cutoff proof, and a calibration-model loader. The cutoff envelope is a
+canonical integrity binding, not an authenticity or non-forgeability claim. Missing,
+malformed, future-dated, or model-mismatched proof input fails closed before the
+model is used.
+
+The v2 overlay always records `shadow`, `report_only=true`,
+`production_eligible=false`, and `production_weight=0.0`, while binding the complete
+posterior source, decision time, loaded model, and cutoff proof. The previous
+overlay-to-optimizer bridge names remain compatibility stubs, but every non-empty
+bridge request now raises before reading calibrated values, risk state, or current
+holdings and before constructing an optimization candidate. This prevents a
+report-only overlay from becoming a blocked candidate or triggering an existing
+holding exit. The optimizer schema is v2 to reflect that bridge-contract change;
+ordinary optimizer candidates and deterministic optimization behavior are
+unchanged.
+
+Overlay attachment also requires the target posterior's complete source digest to
+match the overlay. Direct construction and serialization revalidate the Calibration
+V2 schema, exact curve identity, blend/cap/alpha/action formulas, and edge cost
+identities. As defense in depth, optimizer execution rejects non-current candidate
+schemas and recursively marked overlay provenance before scoring; constructor patch
+generation applies the same provenance check and requires the current plan schema.
+Current-v2 candidate and plan payloads require exact top-level field sets and exact
+string schemas. Provenance detection normalizes key case and separators and covers
+schema values, marker strings, pair encodings, and standalone report-only flags.
+Historical candidate and plan payloads with an explicit schema remain readable for
+observation, but are not executable or patch-eligible.
+
+No production market DAG, DAG executor, control chain, pipeline, orchestrator,
+RiskGuard, or PortfolioConstructor surface imports or invokes the overlay runner or
+optimizer bridge. PR3b adds an AST regression check for that boundary and does not
+wire the overlay into production.

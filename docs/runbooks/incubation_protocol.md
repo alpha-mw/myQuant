@@ -1,4 +1,9 @@
-# v13 冻结与孵化协议
+# v13 冻结与孵化协议（已退役）
+
+> 状态：`retired`，自 2026-07-15 起不再约束当前 `main`、PR 合并或
+> schedule 运行。以下内容仅用于解释 `v13-frozen-20260707` 历史绩效与
+> 证据，不得作为 v14 的激活、冻结或回滚授权。历史 tag、账本和报告保持
+> 不变；当前运行契约见 `docs/runbooks/v14_operations.md`。
 
 ## 1. 冻结对象
 
@@ -8,9 +13,9 @@
 - `incubation_length_trading_days = 90`
 - `weekly_tracking_time = 周五 17:30`
 
-## 2. 冻结期代码规则
+## 2. 历史冻结期代码规则
 
-冻结期内唯一允许的代码变更是 bug 修复。每次例外必须满足：
+以下规则只描述已结束的 v13 冻结期，不再是当前合并门：
 
 1. 通过 PR 提交，不直接绕过代码审查。
 2. PR 必须打 `freeze-exception` 标签。
@@ -43,9 +48,10 @@
 16. 两条影子账本差值：`shadow_nav_cap050` vs actual、`shadow_nav_machine_exit` vs actual。
 17. 决策日志完整率：`advisory` 与 `human_action` 有同日配对记录的比例。
 
-## 4. Kill / 加仓规则
+## 4. 历史 Kill / 加仓规则
 
-以下阈值为 `maxwell` 的预登记风险偏好输入。本节生效后，90 个交易日冻结期评估只能按这些事先规则打分，不允许事后重写解释口径。
+以下阈值是 v13 的预登记风险偏好输入，只能用于复现和解释对应历史窗口；
+它们不再冻结 v14 的代码或调度面，也不自动授权交易动作。
 
 ### 回撤阶梯
 
@@ -114,10 +120,11 @@ kill/add 均采用「长窗口(8週) + 累计 + 有符号阈值」，与 60 日�
 
 若全窗口超额 vs 科创50 ≤ 0 且相位择时 alpha ≤ 0，复评结论必须沿用 Phase 12 预登记失败规则。
 
-## 8. v14 Fundamental Research 主线扩展分段
+## 8. v14 Fundamental Research 历史过渡分段
 
-Codex-backed fundamental dossier 对 fundamental 分数的任何非零调整均属于
-新研究信号，不是本协议第 2 节允许的 bug fix。其治理规则如下：
+本节记录从 v13 向 Fundamental v14 迁移时采用的历史边界。当前权威运行
+契约已经迁移到 `docs/runbooks/fundamental_research_v14.md` 和
+`docs/runbooks/v14_operations.md`；下列 freeze-exception 合并要求不再生效。
 
 1. `v13-frozen-20260707` 的历史决策、成交和绩效序列保持不可变，不回填、
    不重算，也不与新版本拼接成同一冻结策略绩效。

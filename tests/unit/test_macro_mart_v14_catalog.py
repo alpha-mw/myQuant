@@ -476,6 +476,68 @@ def test_storage_validate_and_readiness_verify_the_same_macro_generation(
     assert "macro_catalog_table_hash_mismatch" in failed["blockers"]
 
 
+def test_storage_validate_keeps_legacy_macro_catalog_as_nonblocking_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "data"
+    market_root = data_root / "parquet" / "cn"
+    market_root.mkdir(parents=True)
+    (market_root / "_catalog.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "myquant-cn-clean-catalog.v1",
+                "required_tables": ["macro_daily"],
+                "tables": {
+                    "macro_daily": {
+                        "logical_table": "macro_daily",
+                        "path": "data/parquet/cn/macro_daily/part.parquet",
+                    }
+                },
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    store = MarketDataStore(market="CN", data_root=data_root)
+    monkeypatch.setattr(
+        store.reader,
+        "clean_snapshot_gate",
+        lambda refresh=True: {
+            "healthy": True,
+            "blockers": [],
+            "snapshot_id": "fixture",
+            "latest_complete_trade_date": "20240510",
+            "latest_trade_date": "20240510",
+            "latest_pointer_path": "fixture",
+            "table_root": "fixture",
+            "serving_root": "fixture",
+            "manifest_path": "fixture",
+            "mode_policy": "strict",
+        },
+    )
+    monkeypatch.setattr(store.reader, "_load_latest_payload", lambda refresh=True: {})
+    monkeypatch.setattr(
+        macro_mart_module,
+        "read_macro_mart",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("legacy catalog must not be claimed as a v14 generation")
+        ),
+    )
+
+    result = store.validate_latest()
+
+    assert result["status"] == "passed"
+    assert result["blockers"] == []
+    assert result["macro_generation"] == {
+        "status": "legacy_catalog_entry_not_v14_generation",
+        "catalog_schema_version": "myquant-cn-clean-catalog.v1",
+        "production_eligible": False,
+        "branch_readiness": "blocked",
+        "blockers": ["macro_v14_generation_unavailable"],
+    }
+
+
 def test_macro_readiness_does_not_trust_row_reported_source_priority() -> None:
     record = _row(source="offline_input")
     readiness = assess_macro_readiness(

@@ -817,7 +817,7 @@ def phase14_4_candidate_decay_waterfall(
     )
     single_reason = str(classification.get("classification") or "") == "single_reason_requires_constraint_review"
     conclusion = (
-        "single mechanical reason >=95%; inspect constraint snapshot before any freeze-exception behavior fix."
+        "single mechanical reason >=95%; inspect constraint snapshot under current governance before any behavior fix."
         if single_reason
         else (
             "20260708_0910 historical artifact shows Theme hard-filter core was nonempty, "

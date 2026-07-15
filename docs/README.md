@@ -17,6 +17,9 @@ is `./run_web.sh`; the Python CLI entrypoint is `quant-investor`.
 
 ## Runtime Notes
 
+- [v14 Operations](runbooks/v14_operations.md) is the current DAG and schedule
+  contract. The v13 freeze runbooks are retained only as historical evidence.
+
 - `quant-investor research run` executes the current single mainline.
 - `quant-investor market maintain --staged` runs bounded CN staged maintenance:
   it validates Parquet canonical health, fills only target-date gaps in limited

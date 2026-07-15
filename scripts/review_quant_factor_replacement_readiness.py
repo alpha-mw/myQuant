@@ -117,7 +117,8 @@ def render_markdown(payload: Mapping[str, Any]) -> str:
         "",
         f"- Status: `{payload.get('status')}`",
         f"- Measurement only: `{payload.get('measurement_only')}`",
-        f"- Freeze policy: `{payload.get('freeze', {}).get('policy')}`",
+        f"- Retired freeze policy: `{payload.get('freeze', {}).get('policy')}`",
+        f"- Mutation mode: `{payload.get('mutation_governance', {}).get('mode')}`",
         f"- Registry update: `{payload.get('registry_update_status')}`",
         f"- Candidate: `{candidate.get('name', '')}`",
         (
@@ -165,7 +166,7 @@ def render_markdown(payload: Mapping[str, Any]) -> str:
             "## Governance boundary",
             "",
             (
-                "This report is measurement-only and freeze-bound. Outcomes ending in "
+                "This report is measurement-only and governed independently of the retired v13 freeze. Outcomes ending in "
                 "`_proposal` are review proposals, never registry actions. The runner has "
                 "no registry path, write, promotion, or deprecation option."
             ),

@@ -288,7 +288,7 @@ def test_current_one_factor_registry_is_blocked_by_v2_runtime_contract() -> None
     assert metadata["governance_status"] == "governance_blocked"
     assert metadata["confidence_multiplier"] == 0.0
     assert metadata["production_eligible"] is False
-    assert "canonical_full_chain_replay_producer_unavailable" in metadata[
+    assert "forward_factor_apply_not_authorized_pr4" in metadata[
         "runtime_blockers"
     ]
 

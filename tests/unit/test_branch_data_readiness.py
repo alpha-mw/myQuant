@@ -202,6 +202,43 @@ def test_three_branch_readiness_blocks_only_missing_surviving_branch_data(tmp_pa
     assert set(report.branch_data) == {"fundamentals", "macro_data"}
 
 
+def test_three_branch_readiness_reports_invalid_fundamental_generation_as_blocked(
+    tmp_path,
+    monkeypatch,
+):
+    def _invalid_generation(*_args, **_kwargs):
+        raise FundamentalGenerationError(
+            "fundamental primary provenance envelope missing"
+        )
+
+    monkeypatch.setattr(
+        branch_readiness,
+        "load_fundamental_records",
+        _invalid_generation,
+    )
+    macro_root = tmp_path / "cn_macro"
+    _write_macro(macro_root)
+
+    report = assess_branch_data_readiness(
+        frames={"000001.SZ": _price_frame("000001.SZ")},
+        candidate_symbols=["000001.SZ"],
+        as_of="20240510",
+        fundamental_root=tmp_path / "invalid_fundamental",
+        macro_root=macro_root,
+        run_id="invalid-fundamental-generation",
+    )
+
+    fundamental = report.readiness["fundamental"]
+    assert fundamental.status == STATUS_BLOCK
+    assert fundamental.blockers == ["fundamental_generation_invalid"]
+    assert fundamental.provider_status == "blocked_invalid_generation"
+    assert fundamental.metadata["manifest"]["read_error"] == (
+        "fundamental primary provenance envelope missing"
+    )
+    assert report.blocked_symbols == ["000001.SZ"]
+    assert report.investable_universe == []
+
+
 def test_retired_readiness_root_argument_is_rejected(tmp_path):
     with pytest.raises(TypeError):
         assess_branch_data_readiness(
@@ -472,11 +509,17 @@ def test_branch_readiness_writes_standard_artifacts(tmp_path):
     assert payload["readiness"]["quant"]["status"] == STATUS_PASS
 
 
-def test_branch_readiness_default_is_v14_and_frozen_v13_root_is_rejected():
+def test_branch_readiness_default_is_v14_and_frozen_v13_root_is_rejected(
+    tmp_path: Path,
+):
     assert DEFAULT_READINESS_ROOT == Path("reports/v14/branch_readiness")
 
     report = assess_branch_data_readiness(
-        frames={}, candidate_symbols=[], run_id="fixture"
+        frames={},
+        candidate_symbols=[],
+        fundamental_root=tmp_path / "missing_fundamental",
+        macro_root=tmp_path / "missing_macro",
+        run_id="fixture",
     )
     with pytest.raises(ValueError, match="frozen v13 retirement evidence"):
         write_branch_readiness_report(

@@ -1,15 +1,17 @@
 # Factor Governance
 
-## FactorGovernanceProtocol v2 (v13.1 freeze exception)
+## FactorGovernanceProtocol v2
 
-FactorGovernanceProtocol v2 freezes the research and mutation method, not the
+FactorGovernanceProtocol v2 governs the research and mutation method, not the
 factor identities. Weekly mining and health runs are report-only. The current
-branch does **not** permit a new production transition: the available replay
-normalizer does not read back the actual bytes of every v13 DAG artifact, so
-`canonical_full_chain_replay_producer_unavailable` is a hard blocker. Once a
-readback-bound producer exists, the protocol still permits at most one
-one-for-one slot transition on the last valid trading day of a month. The
-stable local policy hash is
+implementation does **not** permit a new production transition. PR4 implements a local
+canonical replay producer and strict byte readback, but local integrity is not
+producer identity authentication and is not production-apply authorization.
+`FORWARD_PRODUCTION_APPLY_ENABLED` therefore remains `False`, and every forward
+apply request stops with `forward_factor_apply_not_authorized_pr4`. The pure
+`canonical_replay_producer_contract` is part of the protocol hash; the dynamic
+`canonical_replay_producer_control` is deliberately not hashed and cannot lift
+the static gate. The stable local policy hash is
 available from `quant_investor.factors.governance_protocol_v2.protocol_hash()`.
 Retrieve it without touching the registry with:
 
@@ -39,12 +41,14 @@ nor clears an independent alpha-failure streak; two distinct mature failures
 make an incumbent reduced/watch eligible, and three make it deprecation
 eligible.
 
-A C-arm replacement will be accepted only from a future readback-bound
-canonical producer and a full `Quant -> Theme -> Bayesian -> RiskGuard ->
-PortfolioConstructor` replay. The current JSON normalizer verifies structure,
+A C-arm replacement still requires a full `Quant -> Theme -> Bayesian ->
+RiskGuard -> PortfolioConstructor` replay plus a separately authenticated and
+authorized producer. The local canonical producer can bind and re-read exact
+artifact bytes for research evidence; that integrity proof alone grants no
+production authority. The older JSON normalizer verifies structure,
 self-hashes, strict-snapshot calendar/hash, and A/B/C/D arm hashes for research
 reports, but caller-provided 64-hex hashes are not proof of actual DAG artifact
-bytes and therefore cannot authorize mutation. Paired after-cost daily deltas,
+bytes. Neither form of local evidence can authorize mutation under PR4. Paired after-cost daily deltas,
 coverage and drawdown
 are recomputed from the incumbent/challenger return arrays; caller-supplied
 pass booleans or delta scalars are ignored. The delta uses a deterministic moving-block
@@ -69,8 +73,9 @@ protocol version/hash to equal the local v2 policy, exact production-set
 count/names/hash metadata, a non-empty family and dominant-primitive cluster
 for every live record, one incumbent per slot, valid 20%/35% normalized risk
 budgets, and canonical readback-bound evidence marked production eligible.
-Until the canonical producer exists, the current one-factor baseline therefore
-reports `governance_blocked`, confidence `0`, and no legacy fallback. Explicit
+Until canonical producer authentication and production authorization exist,
+the current one-factor baseline therefore reports `governance_blocked`,
+confidence `0`, and no legacy fallback. Explicit
 report-only shadow scoring may still compute comparison ranks, but it carries
 `factor_mode=historical_shadow_report_only`, confidence `0`, and
 `production_eligible=false`; it cannot enter the production DAG as evidence.
@@ -118,8 +123,8 @@ fallback. Its payload binds the registry path and bytes SHA, production-set SHA,
 runtime-contract aggregate, per-factor implementation-code SHAs,
 FactorGovernanceProtocol version/hash, activation ID, approver, and its own
 canonical payload hash. The repository does not create or ship an activation
-receipt; the current canonical producer blocker remains authoritative even when
-these environment variables are set.
+receipt; the static PR4 forward-authorization blocker remains authoritative
+even when these environment variables are set.
 
 Produce a deterministic, private **report-only** evidence artifact from a local
 full-chain replay:
@@ -132,9 +137,56 @@ python scripts/build_factor_governance_replay_evidence.py \
 
 The normalizer output is content-addressed and mode `0600`, but it is marked
 `production_apply_eligible=false`. Hand-written transition/mutation envelopes
-are not accepted. Supplying all apply arguments below still exits blocked with
-`canonical_full_chain_replay_producer_unavailable` until the real producer is
-implemented:
+are not accepted.
+
+PR4 local byte readback uses a separate explicit graph. Pre-create an
+owner-only `0700` root; the draft must name the exact registry, snapshot,
+calendar, PIT, market, code/config and 20 stage paths and hashes. The command
+does not scan, select `latest`, or fall back to another receipt:
+
+```bash
+python scripts/build_factor_governance_canonical_replay.py \
+  --private-root "$PWD/private/factor/canonical_replay" \
+  --registry-path "$PWD/quant_investor/factor_registry/mined_factors.json" \
+  --draft-path "$PWD/private/factor/canonical_replay_draft.json"
+
+# Re-read only the receipt selected by the current registry byte SHA.
+python scripts/build_factor_governance_canonical_replay.py \
+  --private-root "$PWD/private/factor/canonical_replay" \
+  --registry-path "$PWD/quant_investor/factor_registry/mined_factors.json"
+```
+
+All `path` values embedded in the draft and its referenced manifests must also
+be normalized absolute paths. Relative paths are rejected rather than resolved
+against an ambient working directory.
+
+The current schema binds one PIT membership snapshot, so `as_of` must equal
+`window_end`; a later review date cannot supply membership for an earlier
+replay window. Before creating `bundles/`, `receipts/`, a lock, temp, or final
+artifact, the publisher creates and removes unique probes under the existing
+`0700` private root and requires requested file `0600` and directory `0700`
+modes to be born exact. An unsupported umask fails closed before those named
+paths exist. A crash may leave only an unselected random probe orphan; it is
+never scanned or treated as evidence.
+
+Immutable publication uses one exact per-destination `flock` file and a
+deterministic reserved temp name derived from the destination and canonical
+byte SHA. A retry can therefore recover a fully prepared temp or a post-link
+`nlink=2` state without scanning the directory. If publication reports an
+ambiguous failure, either rerun the exact same draft bytes or omit
+`--draft-path` to verify the receipt selected by the current registry SHA.
+Never glob for another bundle, select `latest`, or manually delete/replace the
+final bundle or receipt. A failed call may have left a correct exact commit, a
+recoverable reserved temp, or an unselected orphan; none grants production
+authority. Receipt and bundle verification also requires exact compact,
+sorted canonical JSON bytes with one trailing newline; rebinding a SHA does
+not legitimize indented or whitespace-modified final bytes.
+
+Success prints logical IDs and SHA-256 values only, with
+`local_bytes_readback_verified=true` but authentication, authorization and
+production eligibility all `false`. Supplying any apply request below exits immediately with
+`forward_factor_apply_not_authorized_pr4`, regardless of local replay bytes or
+caller-supplied protocol/evidence arguments:
 
 ```bash
 python scripts/daily_factor_mining_automation.py \
@@ -145,11 +197,62 @@ python scripts/daily_factor_mining_automation.py \
   --mutation-budget-ledger <private-monthly-budget-ledger.jsonl>
 ```
 
-The CLI re-verifies normalized evidence and internally builds a report-only
-transition/mutation plan. It cannot reserve the monthly budget, write a WAL, or
-touch the registry while the producer blocker is active. Any apply request
-exits non-zero. Inverse-WAL rollback remains available for an already-existing
-valid mutation and never deletes or refunds its monthly reservation.
+The apply CLI stops after argument parsing, before semantic validation, evidence
+loading, mining, path conversion, report creation, registry reads, ledger
+reservation, WAL creation, or mutation planning. Direct Python write helpers
+use the same first-operation gate. Inverse-WAL rollback remains available for
+an already-existing valid mutation and never deletes or refunds its monthly
+reservation.
+
+PR5 adds one explicit, non-default runtime performance audit. It uses only
+deterministic synthetic frames and existing local runtime code, emits exactly
+one versioned JSON document to stdout, and writes no persistent governance or
+runtime artifact. Its deterministic inputs exist only inside an automatically
+removed temporary directory; normal Python bytecode caching is outside this
+audit contract:
+
+```bash
+PYTHONPATH="$PWD" ./.venv/bin/python scripts/run_quant_runtime_performance_audit.py
+```
+
+The default reference profile uses 5,520 symbols, 280 validation rows, 91
+runtime rows, factor sets of 5 and 14, one timed warmup per operation, and three
+measured samples. Before those timings, the native-memory preflight performs one
+untimed 14-factor digest and one untimed frame validation; the JSON discloses
+this separately from the timed warmup count.
+On the reference Apple Silicon host it is intentionally a long audit (roughly
+20 minutes) and prints nothing until the final JSON. The fixed ceilings are
+15 seconds and 100,000 symbol-rows/second for frame validation; 5-factor
+digest/score/plan/combined ceilings of 30/35/45/75 seconds; and 14-factor
+ceilings of 90/90/125/210 seconds. Individual digest, score, and plan operations
+must process at least 80,000 factor-symbol-row observations/second. Combined
+is the sum of score and plan medians, so it is governed by its seconds ceiling
+and the 14-to-5 scaling ceiling, not by the single-operation throughput floor.
+Every per-operation and combined 14-to-5 ratio must be at most 3.5.
+
+Native incremental memory is sampled from one common current-RSS baseline with
+both input sets already resident, around a sequential 14-factor digest and
+frame-validation operation; the peak increment must stay at or below 128 MiB.
+This common baseline prevents allocator reuse between two probes from
+understating the peak. Lifetime `ru_maxrss`, current RSS,
+and a separate five-factor `tracemalloc` probe are disclosed but are not
+substitutes for that native gate. The real orchestration probe must observe
+exactly two input-digest calls and one frame validation. The deliberately
+non-authoritative synthetic context must issue no production validation token;
+the separate forward-apply fault matrix, not this runtime probe, verifies the
+exact PR4 blocker.
+
+Only the no-argument reference dimensions and budgets are comparable across
+runs. Smaller or relaxed command-line dimensions exist for deterministic unit
+tests and local diagnostics, not for reference acceptance. Consumers must
+require both `reference_profile=true` and
+`reference_acceptance_eligible=true`; a diagnostic `status=pass` is not
+reference evidence. A reference-eligible `pass` remains audit-only:
+`production_apply_authorized=false`, every enumerated guarded-surface counter
+must be zero, and the canonical registry must retain its fixed SHA, mode
+`0644`, and `nlink=1` before and after the process. The JSON poison counters are
+negative evidence only for their explicitly enumerated apply, socket, urllib,
+and subprocess surfaces; they are not an exhaustive network/write proof.
 
 Rollback is dry-run by default. It requires the exact current registry SHA,
 input WAL SHA, protocol/transition/mutation/evidence hashes, and the same
@@ -180,7 +283,7 @@ proxy fallback.
 
 > Legacy offline-library reference: the Pass 1-Pass 13 sections below document
 > older manual admission and research-library contracts. They are not an
-> activation authority for FactorGovernanceProtocol v2. The v2 freeze-exception
+> activation authority for FactorGovernanceProtocol v2. The current v2
 > section above, its protocol hash, canonical evidence gate, and month-end
 > mutation budget take precedence.
 
@@ -268,10 +371,11 @@ directories. If the pointer, manifest, table dataset, serving cache, PIT input,
 or readback is unavailable, the run fails closed as
 `parquet_canonical_unavailable` or a specific fresh-evaluation blocker.
 
-`--apply-registry-actions` is a retired compatibility flag: it emits a blocked,
-report-only health result and can never mutate the registry. Health evidence
-feeds the v2 transition plan; only the v2 month-end apply path may change
-production membership. Registry evidence alone is always report-only.
+`--apply-registry-actions` is a retired compatibility flag: it exits non-zero
+with `forward_factor_apply_not_authorized_pr4` before semantic validation,
+directory creation, report generation, or registry reads. Report-only health
+runs remain available without the flag. Registry evidence alone is always
+report-only.
 
 ## Quant Factor Selection Shadow
 
@@ -380,12 +484,10 @@ The current writer accepts only `mined-factor-registry.v1` and rejects unknown
 record fields, so a future schema or extension cannot be silently truncated by
 a health or mining rewrite.
 
-All work in these sections is a `v13-frozen-20260707` freeze exception. A
-protocol-valid v2 month-end transition no longer needs case-by-case manual
-approval, but the protocol, PIT, maturity, mutation budget and deterministic
-risk gates remain mandatory. Merging this freeze-exception branch still
-requires Maxwell's explicit confirmation. No factor workflow calls a broker or
-creates orders/trades.
+The `v13-frozen-20260707` freeze and freeze-exception merge gate are retired.
+The protocol, PIT, maturity, mutation budget and deterministic risk gates remain
+mandatory, and the PR4 production-apply gate remains independently closed. No
+factor workflow calls a broker or creates orders/trades.
 
 ## Admission Gates
 
@@ -1292,7 +1394,7 @@ process-local branch validation token, and the global Quant identity check.
 Serialized claims plus frames alone are insufficient to establish readiness;
 the boundary also requires the verified context or its internal validation
 token. This does not relax the activation receipt, canonical producer, kill
-switch, or freeze-exception merge gates.
+switch, or production-apply authorization gates.
 
 ## Future Roadmap
 

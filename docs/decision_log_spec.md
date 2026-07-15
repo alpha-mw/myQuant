@@ -1,6 +1,6 @@
 # 决策日志规范
 
-`results/decision_log/decision_log.jsonl` 是冻结期买卖问询与人工动作的本地治理账本。该目录被 `.gitignore` 覆盖，不得 commit。
+`results/decision_log/decision_log.jsonl` 是买卖问询与人工动作的本地治理账本。该目录被 `.gitignore` 覆盖，不得 commit。
 
 ## 事件类型
 

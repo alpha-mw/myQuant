@@ -2637,7 +2637,7 @@ def _candidate_decay_classification(stages: list[dict[str, Any]]) -> dict[str, A
             "classification": "single_reason_requires_constraint_review",
             "dominant_reason": dominant_reason,
             "dominant_reason_share": round(share, 6),
-            "decision": "single reason >=95%; print constraint snapshot and review as freeze-exception before behavior changes.",
+            "decision": "single reason >=95%; print constraint snapshot and review under current governance before behavior changes.",
         }
     return {
         "classification": "by_design_or_artifact_limited",

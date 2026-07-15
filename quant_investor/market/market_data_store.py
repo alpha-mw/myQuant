@@ -52,13 +52,17 @@ class MarketDataStore:
                 if isinstance(catalog_payload, Mapping)
                 else []
             )
-            if (
+            macro_declared = (
                 isinstance(tables, Mapping)
                 and "macro_daily" in tables
             ) or (
                 isinstance(required_tables, list)
                 and "macro_daily" in required_tables
-            ):
+            )
+            catalog_schema_version = str(
+                catalog_payload.get("schema_version") or ""
+            )
+            if macro_declared and catalog_schema_version == "strict-parquet-catalog.v1":
                 from quant_investor.market.macro_mart import (
                     MacroMartPromotionError,
                     read_macro_mart,
@@ -70,6 +74,19 @@ class MarketDataStore:
                     )
                 except (MacroMartPromotionError, OSError, ValueError) as exc:
                     blockers.append(str(exc) or "macro_catalog_generation_invalid")
+            elif (
+                macro_declared
+                and catalog_schema_version == "myquant-cn-clean-catalog.v1"
+            ):
+                macro_generation = {
+                    "status": "legacy_catalog_entry_not_v14_generation",
+                    "catalog_schema_version": catalog_schema_version,
+                    "production_eligible": False,
+                    "branch_readiness": "blocked",
+                    "blockers": ["macro_v14_generation_unavailable"],
+                }
+            elif macro_declared:
+                blockers.append("macro_catalog_schema_invalid")
         blockers = list(dict.fromkeys(blockers))
         status = "passed" if gate.get("healthy") and not blockers else "failed"
         coverage: dict[str, Any] = {}

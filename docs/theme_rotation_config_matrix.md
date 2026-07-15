@@ -1,7 +1,7 @@
 # Theme Rotation Configuration Matrix
 
-> Legacy Phase 6 reference. For v13.1 operations use
-> `docs/runbooks/v13_1_freeze_exception.md` and current `Config`; notably the
+> Legacy Phase 6 reference. For current operations use
+> `docs/runbooks/v14_operations.md` and current `Config`; notably the
 > portfolio cap defaults on as a safety constraint while Theme v2 formal stays
 > observer-only/kill-switched. Historical default-off stages below are not the
 > current activation authority.

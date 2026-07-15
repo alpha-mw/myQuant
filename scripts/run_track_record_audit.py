@@ -73,7 +73,7 @@ DEFAULT_REGIME_HISTORY = PROJECT_ROOT / "results" / "regime" / "markov_regime_hi
 os.environ.setdefault("ARROW_USER_SIMD_LEVEL", "NONE")
 os.environ.setdefault("MPLCONFIGDIR", str(PROJECT_ROOT / "results" / "track_record_audit" / ".matplotlib"))
 PREREGISTERED_FAILURE_CONCLUSION = (
-    "日频机器未在战略先验之上增值，优势主张不成立，待冻结期复验。"
+    "日频机器未在战略先验之上增值，优势主张不成立，待后续独立样本复验。"
 )
 BENCHMARK_CODE_TO_FIELD = {
     "000300.SH": "csi300_nav",
@@ -1019,7 +1019,7 @@ def _beta_adjusted_excess(
         "beta_times_star50_return": beta_times_star50,
         "interpretation_triggered": triggered,
         "interpretation_line": (
-            "β 调整后 vs 科创50 无正 α，原始超额来自杠杆性暴露而非风险调整后技能，待冻结期复验。"
+            "β 调整后 vs 科创50 无正 α，原始超额来自杠杆性暴露而非风险调整后技能，待后续独立样本复验。"
             if triggered
             else "未触发"
         ),

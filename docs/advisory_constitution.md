@@ -1,6 +1,6 @@
 # 对话层交易建议宪法
 
-冻结期内，任何 AI 通道面对买卖问询只允许做正式管线状态翻译与决策框架展开，不另立判断。
+在当前治理下，任何 AI 通道面对买卖问询只允许做正式管线状态翻译与决策框架展开，不另立判断。
 
 ## 三条硬规则
 
@@ -12,14 +12,14 @@
 
    答复只能基于该快照、正式策略记录、审计报告和已登记决策日志。
 
-2. **日志先行**：任何 advisory 答复与后续人工动作必须当日写入 `results/decision_log/decision_log.jsonl`。未入日志的建议不得作为冻结期审计证据。
+2. **日志先行**：任何 advisory 答复与后续人工动作必须当日写入 `results/decision_log/decision_log.jsonl`。未入日志的建议不得作为治理审计证据。
 
 3. **执行代理无效**：有代码写权限的线程给出的交易建议默认无效，除非同时满足：
 
    - 已产出 `print_pipeline_state` 快照；
    - advisory 已进入决策日志；
    - 人工动作单独进入 `human_action` 事件；
-   - 未绕过正式管线、RiskGuard、Markov/Theme gate 和冻结协议。
+   - 未绕过正式管线、RiskGuard、Markov/Theme gate 和当前治理协议。
 
 4. **默认只建议**：A 股日度正式复盘默认 `advisory_only=true`。即使风险减仓建议和
    fresh quote 均通过，也只能记录为 `pending_authorization` 并原样结转 ledger；只有

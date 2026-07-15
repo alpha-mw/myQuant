@@ -37,6 +37,7 @@ from quant_investor.factors.registry_store import (  # noqa: E402
 )
 from quant_investor.factors.governance_protocol_v2 import (  # noqa: E402
     FDR_Q,
+    FORWARD_PRODUCTION_APPLY_BLOCKER,
     benjamini_hochberg_by_family,
 )
 from scripts.retest_aquant_alpha_mix_8gate import (  # noqa: E402
@@ -1770,6 +1771,35 @@ def apply_production_candidate_registry_updates(
 ) -> dict[str, Any]:
     """Compatibility shim: direct mining writes are retired under protocol v2."""
 
+    if write:
+        return {
+            "requested": True,
+            "registry_path": "",
+            "run_id": "",
+            "source_report": "",
+            "max_candidates": 0,
+            "qualified_count": 0,
+            "diversity_policy_version": "",
+            "diversity_policy_hash": "",
+            "selected_champions": [],
+            "diversity_skipped_factors": [],
+            "written_count": 0,
+            "updated_count": 0,
+            "skipped_count": 0,
+            "written_factors": [],
+            "updated_factors": [],
+            "skipped_factors": [],
+            "registry_mutation_manifest": None,
+            "registry_mutation_manifest_path": "",
+            "before_registry_sha256": "",
+            "after_registry_sha256": "",
+            "changed_record_names": [],
+            "status": "blocked",
+            "fail_closed_reason": FORWARD_PRODUCTION_APPLY_BLOCKER,
+            "blockers": [FORWARD_PRODUCTION_APPLY_BLOCKER],
+            "replacement_command": "",
+        }
+
     del (
         run_timestamp,
         owner,
@@ -1937,6 +1967,22 @@ def apply_production_family_governance(
     transition plan and record-scoped CAS/WAL.  Keeping this callable blocked
     prevents an older automation prompt from deprecating unrelated factors.
     """
+
+    if write:
+        return {
+            "requested": True,
+            "registry_path": "",
+            "run_id": "",
+            "source_report": "",
+            "status": "blocked",
+            "fail_closed_reason": FORWARD_PRODUCTION_APPLY_BLOCKER,
+            "blockers": [FORWARD_PRODUCTION_APPLY_BLOCKER],
+            "before_registry_sha256": "",
+            "after_registry_sha256": "",
+            "changed_record_names": [],
+            "deprecated_factors": [],
+            "registry_mutation_manifest": None,
+        }
 
     del results, run_timestamp, journal_path
     snapshot = load_registry_snapshot_strict(Path(registry_path).expanduser())
@@ -2512,11 +2558,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     if args.write_production_candidates:
-        print(
-            "direct_candidate_registry_write_retired_use_"
-            "factor_governance_protocol_v2",
-            file=sys.stderr,
-        )
+        print(FORWARD_PRODUCTION_APPLY_BLOCKER, file=sys.stderr)
         return 2
     payload = run_mining(args)
     print(payload["output_dir"])
