@@ -183,6 +183,6 @@ if __name__ == "__main__":
             total_capital=100_000,
             top_k=8,
         )
-        print("\n✅ 全量分析完成！结果保存在 results/v14/us_analysis_full/")
+        print("\n✅ 全量分析完成！结果保存在 results/v15/us_analysis_full/")
     else:
         print("\n⚠️ 所有类别均无结果，请检查数据路径。")

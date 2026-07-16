@@ -88,7 +88,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def run_rollback(args: argparse.Namespace) -> dict[str, Any]:
     del args
     raise ValueError(
-        "FactorGovernanceProtocol v2 rollback is retired; "
+        "Legacy governance rollback is retired; "
         + FORWARD_PRODUCTION_APPLY_BLOCKER
     )
 
@@ -177,7 +177,7 @@ def run_rollback(args: argparse.Namespace) -> dict[str, Any]:
         registry_path,
         mutation_manifest,
         mutation_id=rollback_id,
-        reason="FactorGovernanceProtocol v2 explicit inverse WAL rollback",
+        reason="historical explicit inverse WAL rollback",
         manifest_metadata={
             "protocol_version": PROTOCOL_VERSION,
             **expected_hashes,

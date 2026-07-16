@@ -52,7 +52,7 @@ def build_registry_mutation_plan_from_evidence(
 ) -> None:
     """Retired v2 hook retained only so stale callers fail explicitly."""
 
-    raise ValueError("FactorGovernanceProtocol v2 mutation plans are retired")
+    raise ValueError("legacy mutation plans are retired; v3 evidence cannot be auto-upgraded")
 
 
 def apply_governed_transition(*_args: Any, **_kwargs: Any) -> None:

@@ -1962,7 +1962,7 @@ def apply_production_family_governance(
 ) -> dict[str, Any]:
     """Retired bulk reconciler retained as a fail-closed compatibility shim.
 
-    A mining batch is not the production pool.  FactorGovernanceProtocol v2
+    A mining batch is not the production pool.  FactorGovernanceProtocol v3
     permits only a month-end, one-for-one slot transition through a versioned
     transition plan and record-scoped CAS/WAL.  Keeping this callable blocked
     prevents an older automation prompt from deprecating unrelated factors.
@@ -2549,7 +2549,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help=(
             "Retired compatibility flag. Direct registry writes are blocked; "
-            "use FactorGovernanceProtocol v2 canonical evidence and apply CLI."
+            "use FactorGovernanceProtocol v3 canonical evidence and separate authorization."
         ),
     )
     return parser.parse_args(argv)

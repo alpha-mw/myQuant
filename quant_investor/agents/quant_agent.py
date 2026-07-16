@@ -84,12 +84,12 @@ class QuantAgent(BaseAgent):
             factors_used = []
             factor_mode = "governance_blocked"
             conclusion = (
-                "量化分支没有通过 FactorGovernanceProtocol v2 完整运行时契约的因子，"
+                "量化分支没有通过 FactorGovernanceProtocol v3 完整运行时契约的因子，"
                 "按治理协议阻断量化证据；"
                 "不会回退到 legacy proxy。"
             )
             investment_risks = [
-                "当前 selectable 记录未通过 v2 protocol/set/slot/budget/evidence 完整门禁。",
+                "当前 selectable 记录未通过 v3 protocol/set/slot/budget/evidence 完整门禁。",
                 "量化分支置信度为 0；不得以收益/波动率代理替代缺失 alpha。",
             ]
             coverage_notes = [

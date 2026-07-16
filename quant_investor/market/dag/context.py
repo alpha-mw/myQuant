@@ -918,7 +918,7 @@ def _macro_v2_observer_metadata(*, market: str, as_of: str) -> dict[str, Any]:
                 getattr(
                     config,
                     "MACRO_V2_OBSERVER_OUTPUT_DIR",
-                    "results/v14/macro_observer",
+                    "results/v15/macro_observer",
                 )
             ),
             production_enabled=production_enabled,

@@ -531,10 +531,10 @@ def _build_global_quant_verdict(
         else 0.0
     )
     thesis = (
-        "全局 Quant 汇总仅使用 FactorGovernanceProtocol v2 合资格生产因子结果。"
+        "全局 Quant 汇总仅使用 FactorGovernanceProtocol v3 合资格生产因子结果。"
         if production_quant_evidence
         else (
-            "FactorGovernanceProtocol v2 未授权生产 Quant 证据；"
+            "FactorGovernanceProtocol v3 未授权生产 Quant 证据；"
             "横截面收益、波动率和广度仅作诊断。"
         )
     )
@@ -674,7 +674,7 @@ def _build_quant_branch_result_with_validation(
         factors_used = []
         factor_mode = "governance_blocked"
         conclusion = (
-            "横截面量化分支没有通过 FactorGovernanceProtocol v2 完整运行时契约的因子，"
+            "横截面量化分支没有通过 FactorGovernanceProtocol v3 完整运行时契约的因子，"
             "按治理协议阻断；"
             "不会回退到收益/波动率代理。"
         )

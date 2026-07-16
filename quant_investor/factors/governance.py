@@ -32,7 +32,7 @@ class FactorAdmissionDecision(str, Enum):
     """Allowed factor-review decisions.
 
     The evaluator only creates candidates.  A production transition is owned
-    exclusively by FactorGovernanceProtocol v2 and may run automatically only
+    exclusively by FactorGovernanceProtocol v3 and may run automatically only
     through its explicit, hash-bound month-end apply path.
     """
 
@@ -811,7 +811,7 @@ class FactorGateEvaluator:
                     FactorLifecycleState.PRODUCTION_CANDIDATE,
                     [
                         "8 道门全部通过，达到 production candidate 标准；"
-                        "只有 FactorGovernanceProtocol v2 的成熟度、FDR、全链回放、"
+                        "只有 FactorGovernanceProtocol v3 的成熟度、FDR、全链回放、"
                         "slot 预算与月末单次 transition 全部通过后才能成为 production_factor。"
                     ],
                 )
