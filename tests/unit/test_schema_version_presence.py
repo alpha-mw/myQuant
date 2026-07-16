@@ -105,7 +105,7 @@ def test_report_stack_objects_expose_non_empty_version_fields():
 def test_current_artifact_envelopes_reject_old_versions_and_nested_intelligence():
     with pytest.raises(ValueError, match="branch_schema_version mismatch"):
         ReportBundle(branch_schema_version="branch-schema.v13.four-branch")
-    with pytest.raises(ValueError, match="non-v14 branch keys"):
+    with pytest.raises(ValueError, match="non-v15 branch keys"):
         ReportBundle(branch_verdicts={"intelligence": BranchVerdict()})
     with pytest.raises(ValueError, match="noncanonical branch"):
         QuantInvestorPipelineResult(branch_results={"intelligence": object()})
@@ -139,7 +139,7 @@ def test_current_artifact_envelopes_reject_old_versions_and_nested_intelligence(
     with pytest.raises(ValueError, match="retired Intelligence key"):
         nested.to_dict()
 
-    with pytest.raises(ValueError, match="likelihood fields must match v14"):
+    with pytest.raises(ValueError, match="likelihood fields must match v15"):
         BayesianDecisionRecord(likelihoods={})
 
 

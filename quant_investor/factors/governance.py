@@ -12,6 +12,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Mapping
 
+from quant_investor.factors.governance_canonical_replay_v3 import (
+    EVIDENCE_SCHEMA_VERSION,
+)
+
 
 class FactorLifecycleState(str, Enum):
     """Lifecycle states for every mined factor."""
@@ -32,7 +36,7 @@ class FactorAdmissionDecision(str, Enum):
     """Allowed factor-review decisions.
 
     The evaluator only creates candidates.  A production transition is owned
-    exclusively by FactorGovernanceProtocol v2 and may run automatically only
+    exclusively by FactorGovernanceProtocol v3 and may run automatically only
     through its explicit, hash-bound month-end apply path.
     """
 
@@ -409,6 +413,12 @@ class FactorGateEvaluator:
                 "缺少 coverage/nan/monthly/sector/size/extreme 完整证据。"
             )
             return self._result(2, False, reasons, dict(m), "error")
+        assert coverage is not None
+        assert nan_rate is not None
+        assert monthly_min is not None
+        assert sector_share is not None
+        assert size_share is not None
+        assert extreme_ratio is not None
         min_cov = p.thematic_min_coverage_rate if thematic else p.min_coverage_rate
         max_nan = p.thematic_max_nan_rate if thematic else p.max_nan_rate
         for label, value in (
@@ -730,7 +740,7 @@ class FactorGateEvaluator:
             reasons.append("缺少与现有系统信号相关性证据。")
         elif abs(signal_corr) > p.max_existing_factor_corr:
             reasons.append("与现有系统信号相关性过高，组合增量不足。")
-        if evidence_schema != "factor-governance-replay-evidence.v2":
+        if evidence_schema != EVIDENCE_SCHEMA_VERSION:
             reasons.append("Gate 8 缺少 canonical A/B/C/D replay schema。")
         if full_chain is not True:
             reasons.append("Gate 8 未走完整 deterministic control chain。")
@@ -805,7 +815,7 @@ class FactorGateEvaluator:
                     FactorLifecycleState.PRODUCTION_CANDIDATE,
                     [
                         "8 道门全部通过，达到 production candidate 标准；"
-                        "只有 FactorGovernanceProtocol v2 的成熟度、FDR、全链回放、"
+                        "只有 FactorGovernanceProtocol v3 的成熟度、FDR、全链回放、"
                         "slot 预算与月末单次 transition 全部通过后才能成为 production_factor。"
                     ],
                 )

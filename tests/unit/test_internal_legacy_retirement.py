@@ -23,7 +23,7 @@ def test_production_paths_do_not_import_parallel_pipeline_directly():
         )
 
 
-def test_v14_production_paths_do_not_import_retired_kline_or_kronos_runtime():
+def test_v15_production_paths_do_not_import_retired_kline_or_kronos_runtime():
     targets = [
         ROOT / "quant_investor" / "pipeline" / "mainline.py",
         ROOT / "quant_investor" / "market" / "analyze.py",
@@ -48,7 +48,7 @@ def test_v14_production_paths_do_not_import_retired_kline_or_kronos_runtime():
             )
 
 
-def test_subagents_package_exports_only_v14_runtime_agents():
+def test_subagents_package_exports_only_v15_runtime_agents():
     sys.modules.pop("quant_investor.agents.subagents", None)
     sys.modules.pop("quant_investor.agents.subagents.kline_agent", None)
 
@@ -97,9 +97,13 @@ def test_sourceless_loader_blocks_retired_modules(module_name, tmp_path):
     fake_pyc = tmp_path / "retired.pyc"
     fake_pyc.write_bytes(b"not a real pyc")
 
-    with pytest.raises(ModuleNotFoundError, match="retired in v14"):
+    with pytest.raises(
+        ModuleNotFoundError, match="retired from the current runtime"
+    ):
         _QuantInvestorSourcelessFinder().find_spec(module_name)
-    with pytest.raises(ModuleNotFoundError, match="retired in v14"):
+    with pytest.raises(
+        ModuleNotFoundError, match="retired from the current runtime"
+    ):
         load_shadowed_module(module_name, fake_pyc)
 
 
@@ -148,15 +152,15 @@ def test_current_protocol_constructors_reject_nested_intelligence_maps():
     )
     from quant_investor.agents.agent_contracts import MasterAgentInput
 
-    with pytest.raises(ValueError, match="non-v14 branch keys"):
+    with pytest.raises(ValueError, match="non-v15 branch keys"):
         ReportBundle(branch_verdicts={"intelligence": BranchVerdict()})
-    with pytest.raises(ValueError, match="non-v14 branch keys"):
+    with pytest.raises(ValueError, match="non-v15 branch keys"):
         StockReviewBundle(branch_summaries={"intelligence": BranchVerdict()})
-    with pytest.raises(ValueError, match="Non-v14 branch overlay"):
+    with pytest.raises(ValueError, match="Non-v15 branch overlay"):
         BranchOverlayVerdict(branch_name="intelligence")
-    with pytest.raises(ValueError, match="likelihood fields must match v14"):
+    with pytest.raises(ValueError, match="likelihood fields must match v15"):
         BayesianDecisionRecord(likelihoods={"intelligence_likelihood": 0.8})
-    with pytest.raises(ValidationError, match="non-v14 branch keys"):
+    with pytest.raises(ValidationError, match="non-v15 branch keys"):
         MasterAgentInput(branch_results={"intelligence": {}})
 
 
@@ -166,7 +170,7 @@ def test_legacy_ensemble_judge_is_physically_deleted():
         importlib.import_module("quant_investor.ensemble_judge")
 
 
-def test_review_prompt_defaults_are_v14_three_branch_only():
+def test_review_prompt_defaults_are_v15_three_branch_only():
     from quant_investor.agents import prompts
     from quant_investor.versioning import CURRENT_BRANCH_ORDER
 

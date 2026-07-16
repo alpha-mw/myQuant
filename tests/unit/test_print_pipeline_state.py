@@ -42,10 +42,6 @@ def test_pipeline_state_uses_effective_ledger_for_exposure(tmp_path):
         encoding="utf-8",
     )
     (run_dir / "candidate_pool.csv").write_text("", encoding="utf-8")
-    (run_dir / "theme_pool_audit.json").write_text(
-        json.dumps({"summary": {"residual_symbol_count": 0}}, ensure_ascii=False),
-        encoding="utf-8",
-    )
     (run_dir / "market_snapshot.json").write_text(
         json.dumps({"candidate_generation_status": "empty"}, ensure_ascii=False),
         encoding="utf-8",

@@ -42,7 +42,7 @@ authorizes a BUY, broker call or real order.
   --authoritative-refresh` with that SHA, the exact market pointer SHA and
   catalog SHA. The stage writes an immutable MacroSnapshot and v15 control
   projection; `market macro-promote --expected-catalog-sha256` revalidates the
-  stage and performs the catalog/market-pointer CAS. Local `--input-json` and
+  stage and performs catalog/market-pointer/observation-pointer CAS. Local `--input-json` and
   `--input-observations` modes remain non-production and unchanged.
 - Factor bootstrap generation is plan-only.  It cannot write the registry,
   release a kill switch or create an activation receipt.
@@ -58,6 +58,14 @@ itself. It must come from a replayable official NBS/PBC web bundle plus an
 explicit cutoff-safe strict-Parquet market observation, or from another
 reviewed hash/CAS-bound publisher. Standalone observation files and sanitized
 observer staging are ineligible.
+
+A production schema label is never sufficient. Bootstrap and local-update
+metadata, immutable parent lineage, exact official/local row scope, evidence
+roles, and every observation-to-evidence mapping are recomputed before the
+generation may feed v15. Logical `as_of` and real `decision_cutoff_at` are
+independent: selected rows must satisfy both `period_end <= as_of` and
+`available_at <= decision_cutoff_at`, and an update cannot regress its parent
+target date or cutoff.
 
 The current bootstrap compiles 36 observations for 12 official indicators
 (three periods each) directly from fixed National Bureau of Statistics and
@@ -187,6 +195,11 @@ the generation manifest, primary provenance and strict catalog. Production
 readers and the active DAG recompute this projection and reject any row or hash
 mismatch. A v14 mart is historical evidence only and remains fail closed; it
 must never be relabelled or copied into a v15 manifest.
+
+The staging receipt also binds the normalized canonical observations root.
+Immediately before the catalog switch, promotion re-reads the catalog, market
+pointer and Macro-observations pointer under their ordered writer locks; any
+drift leaves the prior catalog authoritative.
 
 Bars may advance before Macro for the same session. The bars writer performs a
 bars/PIT-only postcommit readback so a stale Macro generation cannot deadlock

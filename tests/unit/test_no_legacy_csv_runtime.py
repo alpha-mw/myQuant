@@ -24,9 +24,6 @@ ALLOWLIST = {
     "scripts/backfill_cn_dashboard_benchmark.py",
     "scripts/check_cn_dashboard_export.py",
     "scripts/merge_cn_dashboard_benchmark_fills.py",
-    # Offline migration and calibration tools accept explicit CSV inputs.
-    "quant_investor/themes/membership_migration.py",
-    "scripts/run_theme_threshold_sweep.py",
     # Hash-bound offline retirement replay reads frozen evidence, never market runtime data.
     "scripts/run_v14_retirement_replay_gate.py",
     "scripts/migrate_legacy_csv_state_to_parquet.py",

@@ -107,6 +107,33 @@ def test_future_and_after_close_vintages_are_not_visible():
     assert with_future.source_lineage["cn.gdp_yoy"]["vintage_id"] == "initial"
 
 
+def test_future_period_is_not_visible_before_a_later_decision_cutoff():
+    rows = _complete_fixture()
+    baseline = build_macro_snapshot(
+        rows,
+        as_of="2024-05-10",
+        decision_cutoff_at="2024-05-11T07:00:00Z",
+    )
+    future_period = _observation(
+        "cn.gdp_yoy",
+        period_end="2024-05-11",
+        available_at="2024-05-10T06:30:00Z",
+        value=99.0,
+        vintage="future_period",
+    )
+
+    with_future_period = build_macro_snapshot(
+        [*rows, future_period],
+        as_of="2024-05-10",
+        decision_cutoff_at="2024-05-11T07:00:00Z",
+    )
+
+    assert with_future_period.to_dict() == baseline.to_dict()
+    assert with_future_period.source_lineage["cn.gdp_yoy"]["vintage_id"] == (
+        "initial"
+    )
+
+
 def test_conflicting_vintage_fails_closed():
     rows = _complete_fixture()
     left = _observation(

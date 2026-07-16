@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import re
+import logging
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Optional
 
 from quant_investor.automation import daily_runner as _runner
 
-RUN_DIR_PATTERN = _runner.RUN_DIR_PATTERN
+RUN_DIR_PATTERN: re.Pattern[str] = _runner.RUN_DIR_PATTERN  # type: ignore[has-type]
 _dedupe_text = _runner._dedupe_text
 _strategy_records_market_root = _runner._strategy_records_market_root
-log = _runner.log
+log: logging.Logger = _runner.log  # type: ignore[has-type]
 
 
 class HistoryLoader:

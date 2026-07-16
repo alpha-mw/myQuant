@@ -1193,7 +1193,7 @@ def assess_replacement_readiness(
         OUTCOME_BLOCKED: 4,
     }
     overall_outcome = (
-        max((row["outcome"] for row in decisions), key=severity.get)
+        max((row["outcome"] for row in decisions), key=lambda item: severity[item])
         if decisions
         else OUTCOME_BLOCKED
     )

@@ -157,14 +157,14 @@ def _control_chain_replay(*, variant: str, value: float) -> dict[str, object]:
     }
 
 
-def test_control_chain_replay_requires_exact_v14_branches_and_rejects_retired_keys():
+def test_control_chain_replay_requires_exact_v15_branches_and_rejects_retired_keys():
     valid = _control_chain_replay(variant="with_dossier", value=0.1)
     validate_control_chain_replay(valid)
 
     missing_macro = json.loads(json.dumps(valid))
     del missing_macro["branch_summaries"]["macro"]
     del missing_macro["branch_verdicts_by_symbol"]["600000.SH"]["macro"]
-    with pytest.raises(ValueError, match="exact v14 canonical branch"):
+    with pytest.raises(ValueError, match="exact v15 canonical branch"):
         validate_control_chain_replay(missing_macro)
 
     retired = json.loads(json.dumps(valid))

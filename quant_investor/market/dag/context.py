@@ -68,6 +68,7 @@ from quant_investor.macro.v15_controls import (
 from quant_investor.reporting.run_artifacts import build_model_role_metadata
 from quant_investor.regime.engine import MarkovRegimeEngine
 from quant_investor.regime.scope import (
+    REGIME_SCOPE_FULL_MARKET,
     REGIME_SCOPE_INSUFFICIENT,
     REGIME_SCOPE_MARKET_REFERENCE,
     RegimeScope,
@@ -1190,6 +1191,38 @@ def _resolve_markov_reference_input(
     )
 
 
+def _markov_production_application_blockers(
+    *,
+    signal: Any,
+    scope: RegimeScope,
+    expected_as_of: str,
+) -> list[str]:
+    blockers: list[str] = []
+    expected_date = _compact_runtime_date(expected_as_of)
+    signal_date = _compact_runtime_date(getattr(signal, "as_of", ""))
+    if not expected_date or signal_date != expected_date:
+        blockers.append("markov_record_not_same_day")
+    if not bool(getattr(signal, "production_eligible", False)):
+        blockers.append("markov_record_not_production_eligible")
+    if str(getattr(signal, "regime_scope", "")) != REGIME_SCOPE_FULL_MARKET:
+        blockers.append("markov_record_not_full_market")
+    if bool(getattr(signal, "sampled", False)):
+        blockers.append("markov_record_sampled")
+    signal_source_count = int(getattr(signal, "source_symbol_count", 0) or 0)
+    signal_unsampled_count = int(getattr(signal, "unsampled_symbol_count", 0) or 0)
+    if signal_source_count <= 0 or signal_source_count != signal_unsampled_count:
+        blockers.append("markov_record_incomplete_market_coverage")
+    if not scope.production_eligible:
+        blockers.append("markov_runtime_scope_not_production_eligible")
+    if scope.regime_scope != REGIME_SCOPE_FULL_MARKET:
+        blockers.append("markov_runtime_scope_not_full_market")
+    if scope.sampled:
+        blockers.append("markov_runtime_scope_sampled")
+    if scope.source_symbol_count <= 0 or scope.source_symbol_count != scope.unsampled_symbol_count:
+        blockers.append("markov_runtime_scope_incomplete_market_coverage")
+    return list(dict.fromkeys(blockers))
+
+
 
 
 def _holding_single_review_active(
@@ -1846,7 +1879,26 @@ def _prepare_market_context(
         markov_payload["enabled"] = True
         markov_payload["baseline_target_exposure"] = baseline_target_exposure
         markov_payload["baseline_max_single_weight"] = baseline_max_single_weight
-        if regime_signal.production_eligible:
+        markov_application_blockers = _markov_production_application_blockers(
+            signal=regime_signal,
+            scope=markov_reference_input.scope,
+            expected_as_of=effective_latest_trade_date,
+        )
+        markov_applied = not markov_application_blockers
+        markov_payload["production_eligible"] = markov_applied
+        markov_payload["production_application_blockers"] = list(
+            markov_application_blockers
+        )
+        if markov_application_blockers:
+            markov_payload["diagnostic_notes"] = list(
+                dict.fromkeys(
+                    [
+                        *list(markov_payload.get("diagnostic_notes", []) or []),
+                        *markov_application_blockers,
+                    ]
+                )
+            )
+        if markov_applied:
             markov_payload["status"] = "applied"
             effective_macro_regime = regime_signal.dominant_regime
             target_exposure = min(
@@ -1861,6 +1913,8 @@ def _prepare_market_context(
         else:
             markov_payload["status"] = (
                 regime_signal.status or "not_applied_insufficient_market_scope"
+                if markov_reference_input.scope.regime_scope == REGIME_SCOPE_INSUFFICIENT
+                else "not_applied_noncanonical_market_scope"
             )
             target_exposure = baseline_target_exposure
             max_single_weight = baseline_max_single_weight
@@ -1876,7 +1930,7 @@ def _prepare_market_context(
                 "markov_enabled": True,
                 "markov_regime_enabled": True,
                 "markov_execution_mode": "production",
-                "markov_production_eligible": bool(regime_signal.production_eligible),
+                "markov_production_eligible": markov_applied,
                 "markov_status": str(markov_payload.get("status") or ""),
                 "markov_regime_scope": regime_signal.regime_scope,
                 "markov_scope_key": regime_signal.scope_key,
@@ -1895,7 +1949,9 @@ def _prepare_market_context(
                 "markov_turnover_cap": applied_turnover_cap,
                 "markov_history_record_count": regime_signal.history_record_count,
                 "markov_transition_matrix_source": regime_signal.transition_matrix_source,
-                "markov_diagnostic_notes": list(regime_signal.diagnostic_notes),
+                "markov_diagnostic_notes": list(
+                    markov_payload.get("diagnostic_notes", []) or []
+                ),
             }
         )
         if applied_turnover_cap is not None:

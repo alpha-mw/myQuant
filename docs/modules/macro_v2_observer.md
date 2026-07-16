@@ -133,8 +133,8 @@ scope artifact mtime 和实际 part mtime 的最大值并向上舍入；任何�
    分区、输出 frame 和 Parquet 的 SHA-256，并使用
    `cn-macro-controls-projection.v15.v1`；该快照只供 capture 后的下一次决策，固定
    `historical_replay_eligible=false`；
-10. catalog 发布必须持有全局 writer lock，同时对 catalog 与 market pointer
-    执行 exact-byte/文件身份 CAS。事务 journal 只允许
+10. catalog 发布必须持有有序 writer locks，同时对 catalog、market pointer
+    与 Macro-observations pointer 执行 exact-byte/文件身份 CAS。事务 journal 只允许
     `prepared -> switched -> committed`，并绑定 expected market-pointer SHA；
     崩溃恢复只能在该 SHA、完整 required-table 闭包和 generation 全量 readback
     仍一致时完成，否则原字节回滚。无 journal 的 orphan transaction 与已落盘但
@@ -302,8 +302,8 @@ raw rows，也不保留调用方自报的 provider provenance。它不会调用
 
 Date-only `--as-of` values use the Asia/Shanghai 15:00 close as the published
 cutoff. An observation is usable only when its timezone-aware `available_at`
-is at or before that cutoff. `period_end` and `release_at` are not substitutes
-for availability.
+is at or before that cutoff and its `period_end` is not later than the logical
+`as_of`. `release_at` is not a substitute for availability.
 
 Generated, ignored artifacts are written atomically with mode `0600` under:
 

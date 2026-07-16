@@ -19,7 +19,6 @@ Out-of-scope silent catch sites left unchanged in Phase 8:
 - `quant_investor/agents/master_agent.py`: 135, 146
 - `quant_investor/agents/fundamental_agent.py`: 30
 - `quant_investor/global_context/builder.py`: 61
-- `quant_investor/themes/scanner.py`: 759, 846, 881, 1088
 - `quant_investor/bayesian/calibration.py`: 106
 - `quant_investor/monitoring/cn_aggressive_market_metrics.py`: 87, 94
 - `quant_investor/monitoring/cn_aggressive_portfolio_tracker.py`: 216, 223
@@ -28,7 +27,6 @@ Out-of-scope silent catch sites left unchanged in Phase 8:
 - `quant_investor/market/market_data_reader.py`: 256
 - `quant_investor/market/download.py`: 482, 484
 - `quant_investor/market/name_map.py`: 53
-- `quant_investor/market/dag/theme_context.py`: 1026, 1072
 - `web/services/data_service.py`: 455, 519, 803
 - `web/services/research_runner.py`: 89, 120, 174, 203
 - `scripts/factor_health_automation.py`: 467, 739

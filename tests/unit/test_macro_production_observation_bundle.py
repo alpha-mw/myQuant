@@ -10,7 +10,7 @@ from typing import Any, Callable
 import pytest
 
 import quant_investor.macro.production_observation_bundle as production_bundle
-from quant_investor.macro.contracts import MacroObservation
+from quant_investor.macro.contracts import MacroObservation, canonical_hash
 from quant_investor.macro.local_market_observations import (
     LocalMarketObservationError,
 )
@@ -22,6 +22,7 @@ from quant_investor.macro.production_observation_bundle import (
     ProductionObservationBundleError,
     publish_local_market_breadth_update,
     publish_macro_production_observation_bundle,
+    validate_production_observation_chain,
 )
 from quant_investor.macro.store import (
     MacroObservationStoreError,
@@ -178,6 +179,29 @@ def _next_daily_fixture(tmp_path: Path) -> _Fixture:
     )
 
 
+def _same_date_correction_fixture(tmp_path: Path) -> _Fixture:
+    def correct_one_decliner(frame):
+        target = frame.index[
+            (frame["trade_date"] == "20260714")
+            & frame["pct_chg"].lt(0.0)
+        ][0]
+        frame.loc[target, "pct_chg"] = 1.0
+        return frame
+
+    return _write_local_fixture(
+        tmp_path,
+        target_trade_date="20260714",
+        data_latest_complete="20260714",
+        data_snapshot_id="20260715T060000Z",
+        coverage_snapshot_id="20260715T055900Z",
+        frame_mutator=correct_one_decliner,
+        part_mtime="2026-07-15T05:55:00Z",
+        snapshot_manifest_mtime="2026-07-15T06:00:01Z",
+        coverage_manifest_mtime="2026-07-15T05:59:01Z",
+        scope_mtime="2026-07-15T05:54:00Z",
+    )
+
+
 def _tree_hashes(root: Path) -> dict[str, str]:
     return {
         path.relative_to(root).as_posix(): hashlib.sha256(
@@ -301,6 +325,11 @@ def test_atomic_39_row_publication_and_one_date_local_append_round_trip(
     assert update["decision_cutoff_at"] == (
         "2026-07-16T04:30:00+00:00"
     )
+    assert update["parent_as_of"] == "20260714"
+    assert update["parent_decision_cutoff_at"] == (
+        "2026-07-15T07:00:00+00:00"
+    )
+    assert update["update_mode"] == "next_date_append"
     assert update["local_snapshot_manifest_sha256"] == (
         daily.snapshot_manifest_sha256
     )
@@ -325,8 +354,61 @@ def test_atomic_39_row_publication_and_one_date_local_append_round_trip(
     assert len(
         updated_pointer["generation_manifest"]["observation_evidence"]
     ) == 40
+    update_metadata = updated_pointer["generation_manifest"]["metadata"]
+    assert update_metadata["parent_as_of"] == "20260714"
+    assert update_metadata["parent_decision_cutoff_at"] == (
+        "2026-07-15T07:00:00+00:00"
+    )
+    assert update_metadata["update_mode"] == "next_date_append"
     assert pointer_sha256(root) == update["pointer_sha256"]
     json.dumps(update, allow_nan=False)
+
+
+def test_public_validator_rejects_allowed_schema_single_blob_spoof(
+    tmp_path: Path,
+) -> None:
+    inputs = _inputs(tmp_path)
+    _publish(tmp_path, inputs)
+    rows, pointer = load_observations(tmp_path / "observations")
+    manifest = pointer["generation_manifest"]
+
+    validated = validate_production_observation_chain(
+        rows,
+        generation_manifest=manifest,
+        pointer_metadata=pointer["metadata"],
+    )
+    assert set(validated) == {row["content_hash"] for row in rows}
+
+    spoofed = deepcopy(manifest)
+    single_file = next(
+        item
+        for item in manifest["evidence_files"]
+        if item["metadata"].get("evidence_kind")
+        == "official_web_response_entity"
+        and item["metadata"].get("support_only") is False
+    )
+    digest = single_file["sha256"]
+    spoofed["evidence_files"] = [single_file]
+    spoofed["evidence_file_count"] = 1
+    spoofed["evidence_set_sha256"] = canonical_hash(
+        {"evidence_files": [single_file]}
+    )
+    spoofed["observation_evidence"] = {
+        row["content_hash"]: [digest] for row in rows
+    }
+
+    assert spoofed["metadata"]["schema_version"] == (
+        production_bundle.PRODUCTION_OBSERVATION_BUNDLE_SCHEMA
+    )
+    with pytest.raises(
+        ProductionObservationBundleError,
+        match="production_observation_chain_official_evidence_scope_invalid",
+    ):
+        validate_production_observation_chain(
+            rows,
+            generation_manifest=spoofed,
+            pointer_metadata=pointer["metadata"],
+        )
 
 
 @pytest.mark.parametrize(
@@ -409,6 +491,124 @@ def test_future_decision_cutoff_does_not_publish(tmp_path: Path) -> None:
         )
 
     assert pointer_sha256(tmp_path / "observations") == ""
+
+
+def test_local_update_rejects_target_date_rollback_before_source_compile(
+    tmp_path: Path,
+) -> None:
+    inputs = _inputs(tmp_path)
+    receipt = _publish(tmp_path, inputs)
+    root = tmp_path / "observations"
+    before = (root / "_latest.json").read_bytes()
+    older = _write_local_fixture(
+        tmp_path / "local-rollback",
+        target_trade_date="20260713",
+        data_latest_complete="20260713",
+    )
+
+    with pytest.raises(
+        ProductionObservationBundleError,
+        match="local_market_observation_target_trade_date_rollback",
+    ):
+        publish_local_market_breadth_update(
+            **_daily_kwargs(older),
+            as_of="2026-07-15T07:00:00+00:00",
+            canonical_observations_root=root,
+            run_id="target-rollback",
+            expected_pointer_sha256=receipt["pointer_sha256"],
+        )
+
+    assert (root / "_latest.json").read_bytes() == before
+    assert not (root / "_generations" / "target-rollback").exists()
+
+
+def test_local_update_rejects_decision_cutoff_rollback_before_source_compile(
+    tmp_path: Path,
+) -> None:
+    inputs = _inputs(tmp_path)
+    receipt = _publish(tmp_path, inputs)
+    root = tmp_path / "observations"
+    before = (root / "_latest.json").read_bytes()
+    next_date = _next_daily_fixture(tmp_path / "local-cutoff-rollback")
+
+    with pytest.raises(
+        ProductionObservationBundleError,
+        match="local_market_observation_decision_cutoff_rollback",
+    ):
+        publish_local_market_breadth_update(
+            **_daily_kwargs(next_date),
+            as_of="2026-07-15T06:59:59+00:00",
+            canonical_observations_root=root,
+            run_id="cutoff-rollback",
+            expected_pointer_sha256=receipt["pointer_sha256"],
+        )
+
+    assert (root / "_latest.json").read_bytes() == before
+    assert not (root / "_generations" / "cutoff-rollback").exists()
+
+
+def test_same_date_correction_then_identical_retry_is_immutable(
+    tmp_path: Path,
+) -> None:
+    inputs = _inputs(tmp_path)
+    bootstrap = _publish(tmp_path, inputs)
+    root = tmp_path / "observations"
+    correction = _same_date_correction_fixture(tmp_path / "same-date")
+
+    with pytest.raises(
+        ProductionObservationBundleError,
+        match="local_market_observation_same_date_run_id_reuse",
+    ):
+        publish_local_market_breadth_update(
+            **_daily_kwargs(correction),
+            as_of="2026-07-15T07:30:00+00:00",
+            canonical_observations_root=root,
+            run_id=bootstrap["generation_id"],
+            expected_pointer_sha256=bootstrap["pointer_sha256"],
+        )
+
+    corrected = publish_local_market_breadth_update(
+        **_daily_kwargs(correction),
+        as_of="2026-07-15T07:30:00+00:00",
+        canonical_observations_root=root,
+        run_id="same-date-correction",
+        expected_pointer_sha256=bootstrap["pointer_sha256"],
+    )
+    corrected_rows, corrected_pointer = load_observations(root)
+    corrected_pointer_bytes = (root / "_latest.json").read_bytes()
+
+    assert corrected["promoted"] is True
+    assert corrected["update_mode"] == "same_date_correction"
+    assert corrected["parent_as_of"] == "20260714"
+    assert corrected["parent_decision_cutoff_at"] == (
+        "2026-07-15T07:00:00+00:00"
+    )
+    same_date_rows = [
+        row
+        for row in corrected_rows
+        if row["indicator_id"] == "market.breadth"
+        and row["period_end"] == "2026-07-14"
+    ]
+    assert len(same_date_rows) == 2
+    assert corrected_pointer["generation_manifest"]["metadata"][
+        "update_mode"
+    ] == "same_date_correction"
+
+    retried = publish_local_market_breadth_update(
+        **_daily_kwargs(correction),
+        as_of="2026-07-15T07:30:00+00:00",
+        canonical_observations_root=root,
+        run_id="same-date-idempotent-retry",
+        expected_pointer_sha256=corrected["pointer_sha256"],
+    )
+
+    assert retried["promoted"] is False
+    assert retried["update_mode"] == "same_date_idempotent_retry"
+    assert retried["pointer_sha256"] == corrected["pointer_sha256"]
+    assert (root / "_latest.json").read_bytes() == corrected_pointer_bytes
+    assert not (
+        root / "_generations" / "same-date-idempotent-retry"
+    ).exists()
 
 
 def test_partial_full_a_coverage_rejects_bootstrap(tmp_path: Path) -> None:

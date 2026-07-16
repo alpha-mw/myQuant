@@ -47,7 +47,7 @@
 - `fundamental`
 - `macro`
 
-`kline`、Kronos/Chronos 与 `llm_debate` 仍是 Web 分析的辅助配置面，但不计入 v14 canonical DAG 证据分支。现有 `branches.kline`、`branches.kronos`（归一到 `kline`）和 `branches.llm_debate` 请求继续受支持；已退役的 `intelligence` branch 与 `enable_intelligence` 字段会被严格拒绝且不会出现在响应中。
+`kline`、Kronos/Chronos 与 `llm_debate` 仅是 Web 分析的辅助配置面，不计入 v15 canonical DAG 证据分支。已退役的 `intelligence` branch 与 `enable_intelligence` 字段会被严格拒绝且不会出现在当前 artifact 中。
 
 三个 canonical 分支在 Web/API 运行中始终执行，不提供 `enable_quant`、`enable_fundamental`、`enable_macro` 或对应 `branches.*.enabled` 开关；出现这些字段时请求会失败，而不是静默忽略。
 

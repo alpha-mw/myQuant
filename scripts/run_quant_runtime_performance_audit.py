@@ -993,6 +993,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "protocol.apply_governed_transition",
                         "forward apply is forbidden during runtime audit",
                     ),
+                    create=True,
                 )
             )
             stack.enter_context(

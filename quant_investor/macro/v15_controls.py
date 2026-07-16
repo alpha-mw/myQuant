@@ -172,6 +172,7 @@ def build_v15_macro_controls(
         normalized[domain] * weight
         for domain, weight in NATIONAL_DOMAIN_WEIGHTS.items()
     )
+    rounded_macro_score = round(macro_score, 8)
     fiscal = normalized["policy_fiscal"]
     policy_signal = (
         "supportive"
@@ -180,8 +181,11 @@ def build_v15_macro_controls(
     )
     payload: dict[str, Any] = {
         "schema_version": V15_MACRO_CONTROL_SCHEMA_VERSION,
-        "macro_score": round(macro_score, 8),
-        "macro_score_100": round(50.0 * (macro_score + 1.0), 8),
+        "macro_score": rounded_macro_score,
+        "macro_score_100": round(
+            50.0 * (rounded_macro_score + 1.0),
+            8,
+        ),
         "liquidity_score": round(normalized["credit_liquidity"], 8),
         "volatility_percentile": round(volatility, 8),
         "policy_signal": policy_signal,

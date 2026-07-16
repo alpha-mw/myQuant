@@ -4,8 +4,8 @@
 The run is offline and report-only. It reads the local mined-factor registry,
 uses approved registry evidence for classification, and runs a strict Parquet
 runtime smoke check. The retired ``--apply-registry-actions`` compatibility
-flag returns blocked and cannot write; FactorGovernanceProtocol v2 is the only
-production reconciliation authority.
+flag returns blocked and cannot write; FactorGovernanceProtocol v3 is the only
+current production reconciliation authority.
 """
 
 from __future__ import annotations
@@ -83,7 +83,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=(
             "Retired compatibility flag. The run remains report-only and "
             "returns blocked; use daily_factor_mining_automation.py with the "
-            "three explicit FactorGovernanceProtocol v2 apply arguments."
+            "a separately authorized FactorGovernanceProtocol v3 transition."
         ),
     )
     parser.add_argument(
@@ -280,7 +280,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     runtime_smoke_success = not runtime_smoke_blockers
     legacy_apply_requested = bool(args.apply_registry_actions)
-    # FactorGovernanceProtocol v2 is the only production reconciliation
+    # FactorGovernanceProtocol v3 is the only production reconciliation
     # authority. Keep the legacy option observable but permanently incapable of
     # mutating records, even when its old fresh/runtime preconditions pass.
     registry_actions_eligible = False
@@ -304,7 +304,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.allow_production_promotion and int(args.max_new_production) > 0:
         promotion_blockers.append(
             "production promotion is intentionally disabled in health automation; "
-            "production changes require the explicit FactorGovernanceProtocol v2 "
+            "production changes require the explicit FactorGovernanceProtocol v3 "
             "month-end targeted transition path"
         )
 

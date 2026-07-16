@@ -403,7 +403,7 @@ def _validate_output(
     weights = payload["target_weights"]
     if not isinstance(weights, dict) or not set(weights).issubset(domain_set):
         raise CanonicalReplayV3Error("PortfolioConstructor contains an unknown symbol")
-    normalized_weights = {
+    normalized_weights: dict[str, float] = {
         symbol: _finite(value, f"weight {symbol}")
         for symbol, value in weights.items()
     }
@@ -471,8 +471,13 @@ def validate_canonical_replay_v3(value: Mapping[str, Any]) -> dict[str, Any]:
         raise CanonicalReplayV3Error("canonical replay protocol version mismatch")
     _text(payload["run_id"], "run_id")
     _text(payload["as_of"], "as_of")
-    _sha(payload["registry_file_sha256"], "registry_file_sha256")
-    _sha(payload["production_factor_set_sha256"], "production_factor_set_sha256")
+    registry_file_sha = _sha(
+        payload["registry_file_sha256"], "registry_file_sha256"
+    )
+    production_factor_set_sha = _sha(
+        payload["production_factor_set_sha256"],
+        "production_factor_set_sha256",
+    )
     context = _exact(
         payload["context"],
         {"calendar_sha256", "pit_sha256", "runtime_contract_sha256"},
@@ -481,11 +486,25 @@ def validate_canonical_replay_v3(value: Mapping[str, Any]) -> dict[str, Any]:
     for key in ("calendar_sha256", "pit_sha256", "runtime_contract_sha256"):
         _sha(context[key], f"context {key}")
     context_sha = _sha(payload["context_sha256"], "context_sha256")
-    if context_sha != semantic_sha256(context):
-        raise CanonicalReplayV3Error("replay context SHA mismatch")
+    expected_context_sha = semantic_sha256(
+        {
+            "registry_file_sha256": registry_file_sha,
+            "production_factor_set_sha256": production_factor_set_sha,
+            **dict(context),
+        }
+    )
+    if context_sha != expected_context_sha:
+        raise CanonicalReplayV3Error("canonical replay context SHA mismatch")
     factor_set = _symbols(payload["factor_set"], "factor_set")
-    if payload["production_factor_set_sha256"] != semantic_sha256(factor_set):
-        raise CanonicalReplayV3Error("production factor set SHA mismatch")
+    # Local import avoids a module-load cycle while using the single runtime
+    # authority for factor-set normalization and hashing.
+    from quant_investor.factors.runtime import production_factor_set_sha256
+
+    recomputed_factor_set_sha = production_factor_set_sha256(factor_set)
+    if production_factor_set_sha != recomputed_factor_set_sha:
+        raise CanonicalReplayV3Error(
+            "canonical replay production factor-set SHA mismatch"
+        )
     comparison = _exact(
         payload["comparison"], {"incumbent", "challenger", "slot"}, "comparison"
     )
@@ -626,6 +645,7 @@ def validate_v3_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
             "calendar_sha256",
             "pit_sha256",
             "runtime_contract_sha256",
+            "replay",
         },
         "v3 evidence",
     )
@@ -646,6 +666,27 @@ def validate_v3_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
         "runtime_contract_sha256",
     ):
         _sha(payload[key], key)
+    replay_value = payload["replay"]
+    if not isinstance(replay_value, Mapping):
+        raise CanonicalReplayV3Error("v3 evidence replay must be an object")
+    replay = validate_canonical_replay_v3(replay_value)
+    if payload["replay_semantic_sha256"] != replay["replay_semantic_sha256"]:
+        raise CanonicalReplayV3Error("v3 evidence replay semantic SHA mismatch")
+    if payload["registry_file_sha256"] != replay["registry_file_sha256"]:
+        raise CanonicalReplayV3Error("v3 evidence replay registry SHA mismatch")
+    replay_context = replay["context"]
+    if payload["calendar_sha256"] != replay_context["calendar_sha256"]:
+        raise CanonicalReplayV3Error("v3 evidence replay calendar SHA mismatch")
+    if payload["pit_sha256"] != replay_context["pit_sha256"]:
+        raise CanonicalReplayV3Error("v3 evidence replay PIT SHA mismatch")
+    if payload["runtime_contract_sha256"] != replay_context[
+        "runtime_contract_sha256"
+    ]:
+        raise CanonicalReplayV3Error(
+            "v3 evidence replay runtime contract SHA mismatch"
+        )
+    if payload["factor_name"] != replay["comparison"]["challenger"]:
+        raise CanonicalReplayV3Error("v3 evidence replay factor identity mismatch")
     return payload
 
 

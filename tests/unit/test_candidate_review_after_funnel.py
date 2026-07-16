@@ -827,7 +827,7 @@ def test_holding_single_review_runs_branches_when_funnel_excludes_symbol(monkeyp
 
     reviewed: dict[str, list[str]] = {"fundamental": []}
 
-    class _EmptyRequiredThemeFunnel:
+    class _EmptyHardGateFunnel:
         def __init__(self, *_args, **_kwargs):
             pass
 
@@ -835,15 +835,11 @@ def test_holding_single_review_runs_branches_when_funnel_excludes_symbol(monkeyp
             return _FakeFunnelOutput(
                 candidates=[],
                 candidate_scores={},
-                excluded_symbols={"A": "theme_pool_not_core"},
+                excluded_symbols={"A": "data_quality_hard_gate"},
                 funnel_metadata={
                     "after_gates": 1,
                     "final_candidates": 0,
-                    "theme_pool": {
-                        "enabled": True,
-                        "required": True,
-                        "status": "applied",
-                    },
+                    "data_quality_gate": {"status": "blocked"},
                 },
             )
 
@@ -924,7 +920,7 @@ def test_holding_single_review_runs_branches_when_funnel_excludes_symbol(monkeyp
         )
 
     monkeypatch.setattr(dag_module, "MarketDataReader", _FakeReader)
-    monkeypatch.setattr(dag_module, "DeterministicFunnel", _EmptyRequiredThemeFunnel)
+    monkeypatch.setattr(dag_module, "DeterministicFunnel", _EmptyHardGateFunnel)
     monkeypatch.setattr(dag_module.FundamentalAgent, "run", _fake_fundamental_run)
     monkeypatch.setattr(dag_module.MacroAgent, "run", _fake_macro_run)
     monkeypatch.setattr(dag_module.HierarchicalPriorBuilder, "build_prior", _fake_prior)

@@ -639,8 +639,8 @@ def test_retired_v2_rollback_cli_rejects_without_registry_change(
 
     assert rollback_main(common_rollback_args) == 2
     captured = capsys.readouterr()
-    assert "v2 rollback is retired" in captured.err
-    with pytest.raises(ValueError, match="v2 rollback is retired"):
+    assert "Legacy governance rollback is retired" in captured.err
+    with pytest.raises(ValueError, match="Legacy governance rollback is retired"):
         run_rollback(parse_rollback_args(common_rollback_args))
     assert load_registry_snapshot_strict(registry_path).registry_sha256 == (
         after_apply.registry_sha256

@@ -5,12 +5,13 @@ from __future__ import annotations
 import statistics
 from collections import defaultdict
 from dataclasses import replace
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Iterable, Mapping
 
 from quant_investor.macro.contracts import (
     MacroObservation,
     MacroSnapshot,
+    SHANGHAI,
     canonical_hash,
     is_official_source,
     is_tushare_source,
@@ -72,6 +73,7 @@ def _select_vintages(
     observations: Iterable[Mapping[str, Any] | MacroObservation],
     *,
     cutoff: datetime,
+    logical_as_of: date,
 ) -> tuple[list[MacroObservation], list[str]]:
     parsed: list[MacroObservation] = []
     blockers: list[str] = []
@@ -85,7 +87,14 @@ def _select_vintages(
         if observation.quality_status != "pass":
             blockers.append(f"quality_not_pass:{observation.indicator_id}")
             continue
-        if parse_timestamp(observation.available_at, field_name="available_at") <= cutoff:
+        if (
+            date.fromisoformat(observation.period_end) <= logical_as_of
+            and parse_timestamp(
+                observation.available_at,
+                field_name="available_at",
+            )
+            <= cutoff
+        ):
             parsed.append(observation)
 
     grouped: dict[tuple[str, str], list[MacroObservation]] = defaultdict(list)
@@ -118,7 +127,12 @@ def build_macro_snapshot(
     cutoff = published_cutoff(
         as_of if decision_cutoff_at is None else decision_cutoff_at
     )
-    selected_period_vintages, blockers = _select_vintages(observations, cutoff=cutoff)
+    logical_as_of = published_cutoff(as_of).astimezone(SHANGHAI).date()
+    selected_period_vintages, blockers = _select_vintages(
+        observations,
+        cutoff=cutoff,
+        logical_as_of=logical_as_of,
+    )
     histories: dict[str, list[MacroObservation]] = defaultdict(list)
     for item in selected_period_vintages:
         histories[item.indicator_id].append(item)

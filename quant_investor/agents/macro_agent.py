@@ -91,7 +91,6 @@ class MacroAgent(BaseAgent):
         return BranchVerdict(
             agent_name=self.agent_name,
             thesis=thesis,
-            symbol=None,
             status=status,
             direction=self.score_to_direction(score),
             action=self.score_to_action(score),

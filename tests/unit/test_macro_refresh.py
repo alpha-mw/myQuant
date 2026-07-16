@@ -336,6 +336,64 @@ def test_refresh_promotes_hash_bound_strict_generation(
     )
 
 
+def test_observation_pointer_change_during_provider_fetch_blocks_catalog_switch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    macro_root, catalog_path, pointer_path, _bars = _workspace(tmp_path)
+    catalog_before = catalog_path.read_bytes()
+    observations_root = macro_root.parent / "macro_observations"
+    observation_pointer_path = observations_root / "_latest.json"
+    clock_calls = iter(
+        CAPTURED_AT + timedelta(seconds=index) for index in range(100)
+    )
+    monkeypatch.setattr(macro_mart, "_utc_now", lambda: next(clock_calls))
+    monkeypatch.setattr(
+        macro_mart,
+        "_build_tushare_client",
+        lambda: _FakeTushare(),
+    )
+    _patch_official_fetch(monkeypatch)
+    original_fetch = macro_mart._fetch_provider_bundle
+
+    def _fetch_then_advance_pointer(**kwargs: object):
+        result = original_fetch(**kwargs)
+        advanced_pointer = json.loads(
+            observation_pointer_path.read_text(encoding="utf-8")
+        )
+        advanced_pointer["generation_id"] = (
+            "macro-observations-provider-race-g2"
+        )
+        observation_pointer_path.write_text(
+            json.dumps(
+                advanced_pointer,
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        return result
+
+    monkeypatch.setattr(
+        macro_mart,
+        "_fetch_provider_bundle",
+        _fetch_then_advance_pointer,
+    )
+
+    with pytest.raises(
+        macro_mart.MacroMartPromotionError,
+        match="macro_observation_pointer_cas_mismatch",
+    ):
+        _refresh(
+            macro_root,
+            catalog_path,
+            pointer_path,
+            run_id="macro-provider-pointer-race",
+        )
+
+    assert catalog_path.read_bytes() == catalog_before
+
+
 def test_v15_stage_promote_reader_and_dag_controls_are_one_hash_chain(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -372,12 +430,61 @@ def test_v15_stage_promote_reader_and_dag_controls_are_one_hash_chain(
     assert stage["status"] == "staged"
     assert stage["promoted"] is False
     assert catalog_path.read_bytes() == before_catalog
+    receipt_path = Path(str(stage["staging_receipt"]))
+    receipt_bytes = receipt_path.read_bytes()
+    receipt = json.loads(receipt_bytes.decode("utf-8"))
+    assert receipt["macro_observations_root"] == str(
+        observations_root.resolve(strict=True)
+    )
     controls_path = Path(
         str(stage["manifest"]["resolved_v15_controls"])
     )
     assert _sha(controls_path) == stage["manifest"]["v15_controls_sha256"]
     assert stage["row"]["macro_score"] == pytest.approx(0.0)
     assert stage["row"]["liquidity_score"] == pytest.approx(0.0)
+
+    untrusted_receipt = dict(receipt)
+    untrusted_receipt["macro_observations_root"] = str(tmp_path)
+    receipt_path.write_text(
+        json.dumps(untrusted_receipt, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        macro_mart.MacroMartPromotionError,
+        match="macro_observations_root_untrusted",
+    ):
+        macro_mart.promote_staged_macro_generation(
+            staging_root=stage["staging_root"],
+            canonical_root=macro_root,
+            expected_catalog_sha256=_sha(catalog_path),
+        )
+    assert catalog_path.read_bytes() == before_catalog
+    receipt_path.write_bytes(receipt_bytes)
+
+    observation_pointer_path = observations_root / "_latest.json"
+    observation_pointer_before = observation_pointer_path.read_bytes()
+    advanced_pointer = json.loads(
+        observation_pointer_before.decode("utf-8")
+    )
+    advanced_pointer["generation_id"] = "macro-observations-race-g2"
+    observation_pointer_path.write_text(
+        json.dumps(advanced_pointer, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        macro_mart.MacroMartPromotionError,
+        match="macro_observation_pointer_cas_mismatch",
+    ):
+        macro_mart.promote_staged_macro_generation(
+            staging_root=stage["staging_root"],
+            canonical_root=macro_root,
+            expected_catalog_sha256=_sha(catalog_path),
+        )
+    assert catalog_path.read_bytes() == before_catalog
+    assert not (
+        macro_root / "_generations" / "v15-stage-promote"
+    ).exists()
+    observation_pointer_path.write_bytes(observation_pointer_before)
 
     original_publish = macro_mart._publish_catalog_generation
     monkeypatch.setattr(

@@ -64,7 +64,7 @@ def _base_metrics(**overrides):
         "turnover_delta": 0.05,
         "execution_cost_delta": 0.002,
         "signal_corr": 0.20,
-        "gate8_evidence_schema": "factor-governance-replay-evidence.v2",
+        "gate8_evidence_schema": "factor-governance-replay-evidence.v3",
         "gate8_evidence_hash": "2" * 64,
         "full_control_chain_evaluated": True,
         "gate8_arm_hashes": {

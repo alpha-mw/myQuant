@@ -41,6 +41,8 @@ from quant_investor.macro.contracts import parse_timestamp
 from quant_investor.macro.production_observation_bundle import (
     LOCAL_MARKET_OBSERVATION_PUBLICATION_SCHEMA,
     PRODUCTION_OBSERVATION_BUNDLE_SCHEMA,
+    ProductionObservationBundleError,
+    validate_production_observation_chain,
 )
 from quant_investor.macro.store import (
     MacroObservationStoreError,
@@ -62,12 +64,11 @@ from quant_investor.macro.nbs_pmi import (
     parse_nbs_cn_pmi_html,
     validate_nbs_pmi_url,
 )
-
-
 DEFAULT_MACRO_ROOT = Path("data/parquet/cn/macro_daily")
 DEFAULT_RAW_SNAPSHOT_ROOT = Path("data/cn_market_full/_snapshots/macro")
 MACRO_FIELDS = (
     "macro_score",
+    "macro_score_100",
     "liquidity_score",
     "volatility_percentile",
     "policy_signal",
@@ -351,6 +352,51 @@ def _strict_read_root(value: str | Path) -> Path:
     return cursor.resolve(strict=True)
 
 
+def _trusted_macro_observations_root(
+    value: str | Path,
+    *,
+    market_root: Path,
+) -> Path:
+    """Resolve the one canonical observation root accepted for cutovers."""
+
+    root = _strict_read_root(value)
+    expected = _strict_read_root(market_root / "macro_observations")
+    if root != expected:
+        raise MacroMartPromotionError(
+            "macro_observations_root_untrusted"
+        )
+    return root
+
+
+def _assert_macro_observation_pointer_cas(
+    root: Path,
+    *,
+    expected_pointer_sha256: str,
+) -> str:
+    """Stable-read and CAS-check the canonical observation pointer."""
+
+    expected_sha = _assert_sha256(
+        expected_pointer_sha256,
+        blocker="macro_expected_observation_pointer_hash_invalid",
+    )
+    pointer_bytes, _ = _read_verified_bytes_and_json(
+        root / "_latest.json",
+        trust_root=root,
+        expected_sha256=expected_sha,
+        hash_blocker="macro_observation_pointer_cas_mismatch",
+        changed_blocker="macro_observation_pointer_changed_during_cas",
+        unreadable_blocker=(
+            "macro_observation_pointer_invalid_before_catalog_switch"
+        ),
+    )
+    actual_sha = hashlib.sha256(pointer_bytes).hexdigest()
+    if actual_sha != expected_sha:  # defensive; verified read checks this too
+        raise MacroMartPromotionError(
+            "macro_observation_pointer_cas_mismatch"
+        )
+    return actual_sha
+
+
 def _safe_run_id(run_id: str) -> str:
     value = str(run_id or "").strip()
     if not value or not _SAFE_RUN_ID.fullmatch(value) or value in {".", ".."}:
@@ -431,6 +477,48 @@ def _catalog_writer_lock(market_root: Path) -> Iterator[None]:
             os.close(descriptor)
         raise MacroMartPromotionError(
             "macro_catalog_lock_unavailable"
+        ) from exc
+    try:
+        yield
+    finally:
+        if descriptor is not None:
+            if locked:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+
+
+@contextmanager
+def _macro_observation_writer_lock(root: Path) -> Iterator[None]:
+    """Serialize a catalog cutover with observation pointer publishers."""
+
+    lock_path = root / ".promotion.lock"
+    if lock_path.exists() and lock_path.is_symlink():
+        raise MacroMartPromotionError(
+            "macro_observation_lock_symlink_rejected"
+        )
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor: int | None = None
+    locked = False
+    try:
+        descriptor = os.open(lock_path, flags, 0o600)
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise MacroMartPromotionError(
+                "macro_observation_lock_invalid"
+            )
+        os.fchmod(descriptor, 0o600)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        locked = True
+    except MacroMartPromotionError:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise
+    except OSError as exc:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise MacroMartPromotionError(
+            "macro_observation_lock_unavailable"
         ) from exc
     try:
         yield
@@ -1393,6 +1481,7 @@ def _validate_market_formula_universe(
     raw: Mapping[str, Any],
     *,
     trade_date: str,
+    require_control_binding: bool = False,
 ) -> dict[str, Any]:
     expected_fields = {
         "schema_version",
@@ -1410,6 +1499,13 @@ def _validate_market_formula_universe(
         "stale_symbol_set_sha256",
         "scored_symbol_set_sha256",
     }
+    if require_control_binding:
+        expected_fields.update(
+            {
+                "macro_snapshot_sha256",
+                "macro_control_semantic_sha256",
+            }
+        )
     if not isinstance(raw, Mapping) or set(raw) != expected_fields:
         raise MacroMartPromotionError(
             "macro_market_formula_universe_contract_invalid"
@@ -1462,12 +1558,17 @@ def _validate_market_formula_universe(
         raise MacroMartPromotionError(
             "macro_market_formula_universe_count_mismatch"
         )
-    for field in (
+    hash_fields = [
         "input_symbol_set_sha256",
         "target_terminal_symbol_set_sha256",
         "stale_symbol_set_sha256",
         "scored_symbol_set_sha256",
-    ):
+    ]
+    if require_control_binding:
+        hash_fields.extend(
+            ["macro_snapshot_sha256", "macro_control_semantic_sha256"]
+        )
+    for field in hash_fields:
         _assert_sha256(
             raw.get(field),
             blocker="macro_market_formula_universe_hash_invalid",
@@ -1635,30 +1736,16 @@ def _load_v15_macro_snapshot(
             raise MacroMartPromotionError(
                 "macro_v15_observation_after_fixed_cutoff"
             )
-        mapping = manifest.get("observation_evidence")
-        files = manifest.get("evidence_files")
-        row_hashes = {
-            str(item.get("content_hash") or "") for item in observations
-        }
-        evidence_hashes = {
-            str(item.get("sha256") or "")
-            for item in files
-            if isinstance(item, Mapping)
-        } if isinstance(files, list) else set()
-        if (
-            not isinstance(mapping, Mapping)
-            or set(mapping) != row_hashes
-            or not evidence_hashes
-            or any(
-                not isinstance(mapping.get(content_hash), list)
-                or not mapping[content_hash]
-                or not set(mapping[content_hash]).issubset(evidence_hashes)
-                for content_hash in row_hashes
+        try:
+            validate_production_observation_chain(
+                observations,
+                generation_manifest=manifest,
+                pointer_metadata=metadata,
             )
-        ):
+        except ProductionObservationBundleError as exc:
             raise MacroMartPromotionError(
-                "macro_v15_observation_evidence_mapping_incomplete"
-            )
+                str(exc) or "macro_v15_observation_production_chain_invalid"
+            ) from exc
     elif require_production_chain:
         raise MacroMartPromotionError(
             "macro_v15_observation_production_chain_required"
@@ -1734,10 +1821,6 @@ def _market_formula_metrics(
     universe_evidence["scored_symbol_set_sha256"] = _formula_symbol_set_sha256(
         scored_symbols
     )
-    universe_evidence = _validate_market_formula_universe(
-        universe_evidence,
-        trade_date=trade_date,
-    )
     market_daily = returns.groupby("trade_date", sort=True)["return"].mean()
     rolling_vol = (
         market_daily.rolling(
@@ -1804,6 +1887,7 @@ def _derive_macro_frame(
     row = {
         "trade_date": _date_text(trade_date),
         "macro_score": macro_score,
+        "macro_score_100": 50.0 * (macro_score + 1.0),
         "liquidity_score": breadth,
         "volatility_percentile": volatility_percentile,
         "policy_signal": policy_signal,
@@ -1813,7 +1897,10 @@ def _derive_macro_frame(
         "fetched_at": str(provider_bundle.get("fetched_at") or ""),
     }
     frame = pd.DataFrame([row], columns=sorted(_ALLOWED_INPUT_FIELDS))
-    return frame, universe_evidence
+    return frame, _validate_market_formula_universe(
+        universe_evidence,
+        trade_date=trade_date,
+    )
 
 
 def _derive_v15_macro_frame(
@@ -1846,6 +1933,7 @@ def _derive_v15_macro_frame(
     row = {
         "trade_date": _date_text(trade_date),
         "macro_score": controls["macro_score"],
+        "macro_score_100": controls["macro_score_100"],
         "liquidity_score": controls["liquidity_score"],
         "volatility_percentile": controls["volatility_percentile"],
         "policy_signal": controls["policy_signal"],
@@ -1854,6 +1942,17 @@ def _derive_v15_macro_frame(
         "pit_status": "market_point_in_time",
         "fetched_at": str(provider_bundle.get("fetched_at") or ""),
     }
+    universe_evidence["macro_snapshot_sha256"] = str(
+        controls["snapshot_hash"]
+    )
+    universe_evidence["macro_control_semantic_sha256"] = str(
+        controls["semantic_sha256"]
+    )
+    universe_evidence = _validate_market_formula_universe(
+        universe_evidence,
+        trade_date=trade_date,
+        require_control_binding=True,
+    )
     frame = pd.DataFrame([row], columns=sorted(_ALLOWED_INPUT_FIELDS))
     return frame, universe_evidence, controls
 
@@ -1973,6 +2072,7 @@ def _write_primary_generation(
     formula_universe = _validate_market_formula_universe(
         market_formula_universe,
         trade_date=str(frame.iloc[0]["trade_date"]),
+        require_control_binding=True,
     )
     formula_universe_sha = _canonical_json_sha256(formula_universe)
     generations_root = _safe_directory(
@@ -2252,6 +2352,7 @@ def _load_primary_generation_for_retry(
     validated_formula_universe = _validate_market_formula_universe(
         formula_universe,
         trade_date=trade_date,
+        require_control_binding=True,
     )
     formula_universe_sha = _assert_sha256(
         manifest.get("market_formula_universe_sha256"),
@@ -3204,6 +3305,7 @@ def _current_macro_is_equivalent(
         validated_formula_universe = _validate_market_formula_universe(
             formula_universe,
             trade_date=trade_date,
+            require_control_binding=True,
         )
     except MacroMartPromotionError:
         return None
@@ -3315,8 +3417,16 @@ def refresh_cn_macro_mart(
         expected_market_pointer_sha256,
         blocker="macro_expected_market_pointer_hash_invalid",
     )
+    expected_observation_pointer_sha = _assert_sha256(
+        expected_macro_observations_pointer_sha256,
+        blocker="macro_expected_observation_pointer_hash_invalid",
+    )
     root = _strict_read_root(Path(data_root).expanduser())
     market_root = root.parent
+    observations_root = _trusted_macro_observations_root(
+        macro_observations_root,
+        market_root=market_root,
+    )
     catalog_path = market_root / "_catalog.json"
     pointer_path = market_root / "_latest.json"
     if not catalog_path.exists() or not pointer_path.exists():
@@ -3351,10 +3461,8 @@ def refresh_cn_macro_mart(
         enforce_capture_window=False,
     )
     macro_snapshot, observation_generation = _load_v15_macro_snapshot(
-        observations_root=macro_observations_root,
-        expected_pointer_sha256=(
-            expected_macro_observations_pointer_sha256
-        ),
+        observations_root=observations_root,
+        expected_pointer_sha256=expected_observation_pointer_sha,
         as_of=trade_date,
         decision_cutoff_at=captured_at,
         require_production_chain=True,
@@ -3458,31 +3566,47 @@ def refresh_cn_macro_mart(
     )
     with _catalog_writer_lock(market_root):
         _recover_catalog_transactions(root=root, catalog_path=catalog_path)
-        switch_at = _utc_now()
-        _validate_live_target(
-            pointer,
-            requested_as_of=as_of,
-            captured_at=switch_at,
-            enforce_capture_window=True,
-        )
-        _validate_provider_bundle_current_freshness(
-            provider_bundle,
-            current_at=switch_at,
-        )
-        published = _publish_catalog_generation(
-            root=root,
-            run_id=generation_id,
-            old_catalog_bytes=catalog_bytes,
-            new_catalog=new_catalog,
-            market_pointer_path=pointer_path,
-            market_pointer_bytes=pointer_bytes,
-            market_pointer_signature=pointer_signature,
-            catalog_signature=catalog_signature,
-            bar_root=bar_root,
-            market_input_evidence=market_evidence,
-            generation_manifest=generation_manifest,
-            attestation=attestation,
-        )
+        with _macro_observation_writer_lock(observations_root):
+            _assert_macro_observation_pointer_cas(
+                observations_root,
+                expected_pointer_sha256=str(
+                    observation_generation["pointer_sha256"]
+                ),
+            )
+            switch_at = _utc_now()
+            _validate_live_target(
+                pointer,
+                requested_as_of=as_of,
+                captured_at=switch_at,
+                enforce_capture_window=True,
+            )
+            _validate_provider_bundle_current_freshness(
+                provider_bundle,
+                current_at=switch_at,
+            )
+            if (
+                not isinstance(persisted_binding, Mapping)
+                or dict(persisted_binding) != observation_generation
+                or persisted_binding.get("pointer_sha256")
+                != expected_observation_pointer_sha
+            ):
+                raise MacroMartPromotionError(
+                    "macro_generation_observation_binding_mismatch"
+                )
+            published = _publish_catalog_generation(
+                root=root,
+                run_id=generation_id,
+                old_catalog_bytes=catalog_bytes,
+                new_catalog=new_catalog,
+                market_pointer_path=pointer_path,
+                market_pointer_bytes=pointer_bytes,
+                market_pointer_signature=pointer_signature,
+                catalog_signature=catalog_signature,
+                bar_root=bar_root,
+                market_input_evidence=market_evidence,
+                generation_manifest=generation_manifest,
+                attestation=attestation,
+            )
     return {
         "status": "promoted",
         "promoted": True,
@@ -3533,8 +3657,16 @@ def stage_cn_macro_authoritative_refresh(
         expected_market_pointer_sha256,
         blocker="macro_expected_market_pointer_hash_invalid",
     )
+    expected_observation_pointer_sha = _assert_sha256(
+        expected_macro_observations_pointer_sha256,
+        blocker="macro_expected_observation_pointer_hash_invalid",
+    )
     canonical = _strict_read_root(canonical_root)
     market_root = canonical.parent
+    observations_root = _trusted_macro_observations_root(
+        macro_observations_root,
+        market_root=market_root,
+    )
     catalog_path = market_root / "_catalog.json"
     pointer_path = market_root / "_latest.json"
     catalog_bytes, _ = _read_verified_bytes_and_json(
@@ -3561,10 +3693,8 @@ def stage_cn_macro_authoritative_refresh(
         enforce_capture_window=True,
     )
     macro_snapshot, observation_generation = _load_v15_macro_snapshot(
-        observations_root=macro_observations_root,
-        expected_pointer_sha256=(
-            expected_macro_observations_pointer_sha256
-        ),
+        observations_root=observations_root,
+        expected_pointer_sha256=expected_observation_pointer_sha,
         as_of=trade_date,
         decision_cutoff_at=captured_at,
         require_production_chain=True,
@@ -3648,6 +3778,7 @@ def stage_cn_macro_authoritative_refresh(
         "canonical_root": str(canonical),
         "expected_catalog_sha256": hashlib.sha256(catalog_bytes).hexdigest(),
         "expected_market_pointer_sha256": hashlib.sha256(pointer_bytes).hexdigest(),
+        "macro_observations_root": str(observations_root),
         "expected_macro_observations_pointer_sha256": str(
             observation_generation["pointer_sha256"]
         ),
@@ -3803,10 +3934,29 @@ def promote_staged_macro_generation(
     market_root = canonical.parent
     if str(receipt.get("canonical_root") or "") != str(canonical):
         raise MacroMartPromotionError("macro_staging_canonical_root_mismatch")
+    receipt_observations_root = receipt.get("macro_observations_root")
+    if (
+        not isinstance(receipt_observations_root, str)
+        or not receipt_observations_root
+        or receipt_observations_root.strip() != receipt_observations_root
+    ):
+        raise MacroMartPromotionError(
+            "macro_staging_observations_root_binding_invalid"
+        )
+    observations_root = _trusted_macro_observations_root(
+        receipt_observations_root,
+        market_root=market_root,
+    )
+    if receipt_observations_root != str(observations_root):
+        raise MacroMartPromotionError(
+            "macro_staging_observations_root_binding_invalid"
+        )
     catalog_path = market_root / "_catalog.json"
     pointer_path = market_root / "_latest.json"
 
-    with _catalog_writer_lock(market_root):
+    with _catalog_writer_lock(market_root), _macro_observation_writer_lock(
+        observations_root
+    ):
         _recover_catalog_transactions(root=canonical, catalog_path=catalog_path)
         catalog_bytes, catalog = _read_verified_bytes_and_json(
             catalog_path,
@@ -3826,6 +3976,10 @@ def promote_staged_macro_generation(
         )
         catalog_signature = _stat_signature(os.lstat(catalog_path))
         pointer_signature = _stat_signature(os.lstat(pointer_path))
+        _assert_macro_observation_pointer_cas(
+            observations_root,
+            expected_pointer_sha256=expected_observation_pointer_sha,
+        )
         trade_date = _validate_live_target(
             pointer,
             requested_as_of=str(receipt.get("as_of") or ""),
@@ -3927,6 +4081,11 @@ def _validated_offline_frame(
         )
     if not row:
         raise MacroMartPromotionError("macro_empty_candidate")
+    if "macro_score_100" not in row and "macro_score" in row:
+        try:
+            row["macro_score_100"] = 50.0 * (float(row["macro_score"]) + 1.0)
+        except (TypeError, ValueError) as exc:
+            raise MacroMartPromotionError("macro_score_invalid") from exc
     missing = [
         field for field in MACRO_FIELDS if field not in row or pd.isna(row[field])
     ]
@@ -3945,7 +4104,12 @@ def _validated_offline_frame(
     row["pit_status"] = "manual_offline_snapshot"
     row["fetched_at"] = _now_utc()
     frame = pd.DataFrame([row])
-    for field in ("macro_score", "liquidity_score", "volatility_percentile"):
+    for field in (
+        "macro_score",
+        "macro_score_100",
+        "liquidity_score",
+        "volatility_percentile",
+    ):
         frame[field] = pd.to_numeric(frame[field], errors="coerce")
     if frame[list(MACRO_FIELDS)].isna().any().any():
         raise MacroMartPromotionError("macro_required_fields_invalid")
@@ -3955,6 +4119,15 @@ def _validated_offline_frame(
     frame.loc[:, "policy_signal"] = policy_signal
     if not frame["macro_score"].between(-1.0, 1.0).all():
         raise MacroMartPromotionError("macro_score_out_of_range")
+    if not frame["macro_score_100"].between(0.0, 100.0).all():
+        raise MacroMartPromotionError("macro_score_100_out_of_range")
+    if not np.allclose(
+        frame["macro_score_100"],
+        50.0 * (frame["macro_score"] + 1.0),
+        rtol=0.0,
+        atol=1e-8,
+    ):
+        raise MacroMartPromotionError("macro_score_100_mismatch")
     if not frame["liquidity_score"].between(-1.0, 1.0).all():
         raise MacroMartPromotionError("macro_liquidity_score_out_of_range")
     if not frame["volatility_percentile"].between(0.0, 100.0).all():
@@ -4704,6 +4877,7 @@ def _validate_primary_provenance(
     validated_formula_universe = _validate_market_formula_universe(
         formula_universe,
         trade_date=str(manifest.get("as_of") or ""),
+        require_control_binding=True,
     )
     formula_universe_sha = _assert_sha256(
         formula_universe_sha_raw,
@@ -4775,6 +4949,7 @@ def _validate_canonical_frame(
         field: pd.to_numeric(frame[field], errors="coerce")
         for field in (
             "macro_score",
+            "macro_score_100",
             "liquidity_score",
             "volatility_percentile",
         )
@@ -4783,6 +4958,15 @@ def _validate_canonical_frame(
         raise MacroMartPromotionError("macro_required_fields_invalid")
     if not numeric["macro_score"].between(-1.0, 1.0).all():
         raise MacroMartPromotionError("macro_score_out_of_range")
+    if not numeric["macro_score_100"].between(0.0, 100.0).all():
+        raise MacroMartPromotionError("macro_score_100_out_of_range")
+    if not np.allclose(
+        numeric["macro_score_100"],
+        50.0 * (numeric["macro_score"] + 1.0),
+        rtol=0.0,
+        atol=1e-8,
+    ):
+        raise MacroMartPromotionError("macro_score_100_mismatch")
     if not numeric["liquidity_score"].between(-1.0, 1.0).all():
         raise MacroMartPromotionError(
             "macro_liquidity_score_out_of_range"

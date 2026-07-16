@@ -65,7 +65,7 @@ def _base_metrics(**overrides):
         "turnover_delta": 0.05,
         "execution_cost_delta": 0.002,
         "signal_corr": 0.20,
-        "gate8_evidence_schema": "factor-governance-replay-evidence.v2",
+        "gate8_evidence_schema": "factor-governance-replay-evidence.v3",
         "gate8_evidence_hash": "2" * 64,
         "full_control_chain_evaluated": True,
         "gate8_arm_hashes": {
@@ -96,6 +96,18 @@ def test_all_gates_passed_becomes_production_candidate_not_production_factor():
     )
     assert review.decision.value == "production_candidate"
     assert review.target_state == FactorLifecycleState.PRODUCTION_CANDIDATE
+
+
+def test_gate8_rejects_retired_v2_replay_evidence() -> None:
+    review = FactorGateEvaluator().evaluate(
+        factor_name="retired_v2_evidence",
+        metrics=_base_metrics(
+            gate8_evidence_schema="factor-governance-replay-evidence.v2"
+        ),
+    )
+
+    assert review.gate_results[7].passed is False
+    assert review.decision.value != "production_candidate"
 
 
 @pytest.mark.parametrize(

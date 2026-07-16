@@ -14,7 +14,19 @@ from quant_investor.macro.contracts import (
     parse_timestamp,
     published_cutoff,
 )
-from quant_investor.macro.registry import NATIONAL_INDICATORS
+from quant_investor.macro.local_market_observations import (
+    LOCAL_MARKET_BREADTH_EVIDENCE_SCHEMA,
+)
+from quant_investor.macro.official_web_compiler import (
+    NBS_NATIONAL_ECONOMY_PARSER,
+    NBS_OFFICIAL_PMI_PARSER,
+    NBS_QUARTERLY_GDP_PARSER,
+    PARSER_CONTRACT_SHA256,
+    PBC_MONEY_STOCK_PARSER,
+)
+from quant_investor.macro.production_observation_bundle import (
+    PRODUCTION_OBSERVATION_BUNDLE_SCHEMA,
+)
 from quant_investor.macro.snapshot import build_macro_snapshot
 from quant_investor.macro.store import pointer_sha256, publish_observations
 from quant_investor.macro.v15_controls import (
@@ -64,9 +76,9 @@ def write_ready_macro_observations(
     run_id: str = "macro-observations-ready",
     decision_cutoff_at: str | None = None,
 ) -> str:
-    """Publish a production-like v2, 81.25%-coverage snapshot fixture."""
+    """Publish a strict synthetic instance of the production v2 chain."""
 
-    target = pd.Timestamp(str(as_of))
+    target = pd.Timestamp(str(as_of)).normalize()
     logical_as_of = target.date().isoformat()
     decision_cutoff = (
         published_cutoff(logical_as_of)
@@ -76,104 +88,347 @@ def write_ready_macro_observations(
             field_name="decision_cutoff_at",
         )
     )
-    selected = [
-        item
-        for item in NATIONAL_INDICATORS
-        if item.indicator_id
-        not in {
-            "cn.gdp_yoy",
-            "market.breadth",
-            "market.volatility_percentile",
-        }
-    ]
-    observations: list[dict[str, Any]] = []
-    for definition in selected:
-        for offset in (3, 2, 1):
-            period_end = target - pd.offsets.MonthEnd(offset)
-            available = period_end + pd.Timedelta(days=1)
-            timestamp = available.tz_localize("UTC").isoformat()
-            observations.append(
-                {
-                    "indicator_id": definition.indicator_id,
-                    "dimension_type": "national",
-                    "industry_chain": "",
-                    "period_end": period_end.date().isoformat(),
-                    "release_at": timestamp,
-                    "available_at": timestamp,
-                    "vintage_id": "initial",
-                    "value": 1.0,
-                    "unit": definition.unit,
-                    "frequency": definition.frequency,
-                    "source_system": "nbs_official",
-                    "source_record_id": (
-                        f"fixture:{definition.indicator_id}:"
-                        f"{period_end:%Y%m%d}"
-                    ),
-                    "source_url": "https://www.stats.gov.cn/fixture",
-                    "fetched_at": timestamp,
-                    "quality_status": "pass",
-                }
-            )
-    normalized = [MacroObservation.from_mapping(item) for item in observations]
-    snapshot = build_macro_snapshot(
-        normalized,
-        market="CN",
-        as_of=logical_as_of,
-        decision_cutoff_at=decision_cutoff,
-    ).to_dict()
-    content_hashes = sorted(item.content_hash for item in normalized)
-    evidence_body = (
-        json.dumps(
-            {
-                "schema_version": "macro-test-fixture-evidence.v1",
-                "market": "CN",
-                "as_of": logical_as_of,
-                "decision_cutoff_at": decision_cutoff.isoformat(),
-                "observation_content_hashes": content_hashes,
-            },
-            ensure_ascii=False,
+    official_manifest_sha256 = "1" * 64
+    evidence_bytes: dict[str, bytes] = {}
+    evidence_metadata: dict[str, dict[str, Any]] = {}
+    observation_evidence: dict[str, list[str]] = {}
+    observations: list[MacroObservation] = []
+
+    def add_evidence(
+        label: str,
+        metadata: Mapping[str, Any],
+    ) -> str:
+        body = json.dumps(
+            {"fixture_evidence_role": label},
             sort_keys=True,
             separators=(",", ":"),
-            allow_nan=False,
         ).encode("utf-8")
+        digest = hashlib.sha256(body).hexdigest()
+        item_metadata = {**dict(metadata), "size_bytes": len(body)}
+        previous = evidence_bytes.get(digest)
+        if previous is not None and (
+            previous != body or evidence_metadata[digest] != item_metadata
+        ):
+            raise AssertionError("fixture_evidence_digest_collision")
+        evidence_bytes[digest] = body
+        evidence_metadata[digest] = item_metadata
+        return digest
+
+    def official_page(
+        *,
+        page_id: str,
+        parser_id: str,
+        source_system: str,
+        period: str,
+        release_at: str,
+        source_record_id: str,
+        source_url: str,
+        support_only: bool = False,
+    ) -> tuple[str, dict[str, Any]]:
+        metadata = {
+            "extension": ".html",
+            "evidence_kind": "official_web_response_entity",
+            "page_id": page_id,
+            "parser_id": parser_id,
+            "parser_contract_sha256": PARSER_CONTRACT_SHA256[parser_id],
+            "source_system": source_system,
+            "source_url": source_url,
+            "source_record_id": source_record_id,
+            "period": period,
+            "release_at": release_at,
+            "official_bundle_manifest_sha256": official_manifest_sha256,
+            "support_only": support_only,
+        }
+        return add_evidence(f"official:{page_id}", metadata), metadata
+
+    def add_observation(
+        *,
+        indicator_id: str,
+        period_end: pd.Timestamp,
+        release_at: str,
+        source_system: str,
+        source_record_id: str,
+        source_url: str,
+        evidence_digests: list[str],
+        frequency: str = "monthly",
+        unit: str = "%",
+        dimension_type: str = "national",
+        value: float = 1.0,
+    ) -> MacroObservation:
+        observation = MacroObservation.from_mapping(
+            {
+                "indicator_id": indicator_id,
+                "dimension_type": dimension_type,
+                "industry_chain": "",
+                "period_end": period_end.date().isoformat(),
+                "release_at": release_at,
+                "available_at": release_at,
+                "vintage_id": "initial",
+                "value": value,
+                "unit": unit,
+                "frequency": frequency,
+                "source_system": source_system,
+                "source_record_id": source_record_id,
+                "source_url": source_url,
+                "fetched_at": decision_cutoff.isoformat(),
+                "quality_status": "pass",
+            }
+        )
+        observations.append(observation)
+        observation_evidence[observation.content_hash] = sorted(
+            set(evidence_digests)
+        )
+        return observation
+
+    latest_month = pd.offsets.MonthEnd().rollback(target)
+    monthly_periods = [
+        latest_month - pd.offsets.MonthEnd(offset) for offset in (2, 1, 0)
+    ]
+    economy_ids = (
+        "cn.industrial_value_added_yoy",
+        "cn.retail_sales_yoy",
+        "cn.fixed_asset_investment_yoy",
+        "cn.property_investment_yoy",
+        "cn.exports_yoy",
+        "cn.imports_yoy",
+        "cn.cpi_yoy",
+        "cn.ppi_yoy",
     )
-    evidence_sha256 = hashlib.sha256(evidence_body).hexdigest()
+    economy_pages: dict[str, tuple[str, dict[str, Any]]] = {}
+    for period_end in monthly_periods:
+        period = period_end.strftime("%Y%m")
+        release = (period_end + pd.Timedelta(days=1, hours=1)).tz_localize(
+            "UTC"
+        ).isoformat()
+        record_id = f"t{period_end + pd.Timedelta(days=1):%Y%m%d}_1"
+        source_url = (
+            "https://www.stats.gov.cn/sj/zxfb/"
+            f"{period}/{record_id}.html"
+        )
+        page = official_page(
+            page_id=f"economy-{period}",
+            parser_id=NBS_NATIONAL_ECONOMY_PARSER,
+            source_system="nbs_official",
+            period=period,
+            release_at=release,
+            source_record_id=record_id,
+            source_url=source_url,
+        )
+        economy_pages[period] = page
+        for indicator_id in economy_ids:
+            add_observation(
+                indicator_id=indicator_id,
+                period_end=period_end,
+                release_at=release,
+                source_system="nbs_official",
+                source_record_id=record_id,
+                source_url=source_url,
+                evidence_digests=[page[0]],
+            )
+
+        pmi_record = f"t{period_end + pd.Timedelta(days=1):%Y%m%d}_9"
+        pmi_url = (
+            "https://www.stats.gov.cn/sj/zxfb/"
+            f"{period}/{pmi_record}.html"
+        )
+        pmi_digest, _pmi_metadata = official_page(
+            page_id=f"pmi-{period}",
+            parser_id=NBS_OFFICIAL_PMI_PARSER,
+            source_system="nbs_official",
+            period=period,
+            release_at=release,
+            source_record_id=pmi_record,
+            source_url=pmi_url,
+        )
+        add_observation(
+            indicator_id="cn.pmi_manufacturing",
+            period_end=period_end,
+            release_at=release,
+            source_system="nbs_official",
+            source_record_id=pmi_record,
+            source_url=pmi_url,
+            evidence_digests=[pmi_digest],
+            unit="index",
+        )
+
+    support_period = monthly_periods[0].strftime("%Y%m")
+    support_digest, _support_metadata = official_page(
+        page_id=f"pbc-support-{support_period}",
+        parser_id=PBC_MONEY_STOCK_PARSER,
+        source_system="pbc_official",
+        period=support_period,
+        release_at="",
+        source_record_id="",
+        source_url=(
+            "https://www.pbc.gov.cn/goutongjiaoliu/113456/113469/"
+            "fixture-support/index.html"
+        ),
+        support_only=True,
+    )
+    for period_end in monthly_periods:
+        period = period_end.strftime("%Y%m")
+        release = (period_end + pd.Timedelta(days=2, hours=1)).tz_localize(
+            "UTC"
+        ).isoformat()
+        record_id = f"fixture-pbc-{period}"
+        source_url = (
+            "https://www.pbc.gov.cn/goutongjiaoliu/113456/113469/"
+            f"{record_id}/index.html"
+        )
+        digest, _metadata = official_page(
+            page_id=f"pbc-{period}",
+            parser_id=PBC_MONEY_STOCK_PARSER,
+            source_system="pbc_official",
+            period=period,
+            release_at=release,
+            source_record_id=record_id,
+            source_url=source_url,
+        )
+        for indicator_id in ("cn.m1_yoy", "cn.m2_yoy"):
+            add_observation(
+                indicator_id=indicator_id,
+                period_end=period_end,
+                release_at=release,
+                source_system="pboc_official",
+                source_record_id=record_id,
+                source_url=source_url,
+                evidence_digests=[digest, support_digest],
+            )
+
+    latest_quarter = pd.offsets.QuarterEnd().rollback(target)
+    quarterly_periods = [
+        latest_quarter - pd.offsets.QuarterEnd(offset)
+        for offset in (2, 1, 0)
+    ]
+    for index, period_end in enumerate(quarterly_periods):
+        if period_end == latest_quarter:
+            digest, page_metadata = economy_pages[
+                period_end.strftime("%Y%m")
+            ]
+        else:
+            quarter = (period_end.month - 1) // 3 + 1
+            period = f"{period_end.year}Q{quarter}"
+            release = (
+                period_end + pd.Timedelta(days=2, hours=1)
+            ).tz_localize("UTC").isoformat()
+            record_id = f"t{period_end + pd.Timedelta(days=2):%Y%m%d}_{index + 7}"
+            source_url = (
+                "https://www.stats.gov.cn/sj/zxfb/"
+                f"{period_end:%Y%m}/{record_id}.html"
+            )
+            digest, page_metadata = official_page(
+                page_id=f"gdp-{period.lower()}",
+                parser_id=NBS_QUARTERLY_GDP_PARSER,
+                source_system="nbs_official",
+                period=period,
+                release_at=release,
+                source_record_id=record_id,
+                source_url=source_url,
+            )
+        add_observation(
+            indicator_id="cn.gdp_yoy",
+            period_end=period_end,
+            release_at=str(page_metadata["release_at"]),
+            source_system="nbs_official",
+            source_record_id=str(page_metadata["source_record_id"]),
+            source_url=str(page_metadata["source_url"]),
+            evidence_digests=[digest],
+            frequency="quarterly",
+        )
+
+    plan_digest = add_evidence(
+        "local:bootstrap-plan",
+        {"extension": ".bin", "evidence_kind": "macro_local_bound_input"},
+    )
+    local_coverage_hashes: list[str] = []
+    local_effective_values: list[str] = []
+    for index, period_end in enumerate(
+        target - pd.Timedelta(days=offset) for offset in (2, 1, 0)
+    ):
+        target_date = period_end.strftime("%Y%m%d")
+        effective = (period_end + pd.Timedelta(hours=1)).tz_localize(
+            "UTC"
+        ).isoformat()
+        coverage_hash = canonical_hash(
+            {"fixture_coverage_target": target_date}
+        )
+        local_coverage_hashes.append(coverage_hash)
+        local_effective_values.append(effective)
+        strict_digest = add_evidence(
+            f"local:strict-evidence:{target_date}",
+            {
+                "extension": ".bin",
+                "evidence_kind": (
+                    "strict_parquet_local_observation_evidence"
+                ),
+                "schema_version": LOCAL_MARKET_BREADTH_EVIDENCE_SCHEMA,
+                "target_trade_date": target_date,
+                "evidence_semantic_sha256": canonical_hash(
+                    {"fixture_evidence_target": target_date}
+                ),
+                "coverage_contract_sha256": coverage_hash,
+                "effective_available_at": effective,
+            },
+        )
+        bound_inputs = [
+            add_evidence(
+                f"local:{role}:{target_date}",
+                {
+                    "extension": ".bin",
+                    "evidence_kind": "macro_local_bound_input",
+                },
+            )
+            for role in ("snapshot", "coverage", "scope", "part")
+        ]
+        add_observation(
+            indicator_id="market.breadth",
+            period_end=period_end,
+            release_at=effective,
+            source_system="local_strict_parquet",
+            source_record_id=f"market.breadth:{target_date}:fixture",
+            source_url=(
+                "local://strict-parquet/cn/fixture/" + target_date
+            ),
+            evidence_digests=[strict_digest, plan_digest, *bound_inputs],
+            frequency="daily",
+            unit="%",
+            dimension_type="market_confirmation",
+            value=50.0,
+        )
+
+    snapshot = build_macro_snapshot(
+        observations,
+        market="CN",
+        as_of=target.strftime("%Y%m%d"),
+        decision_cutoff_at=decision_cutoff,
+    ).to_dict()
+    assert snapshot["readiness_status"] == "pass"
+    assert snapshot["coverage"]["national"] == 0.8125
     result = publish_observations(
-        normalized,
+        observations,
         root=root,
         run_id=run_id,
         metadata={
-            "schema_version": "macro-production-observation-bundle.v1",
+            "schema_version": PRODUCTION_OBSERVATION_BUNDLE_SCHEMA,
             "market": "CN",
-            "as_of": logical_as_of,
+            "as_of": target.strftime("%Y%m%d"),
             "decision_cutoff_at": decision_cutoff.isoformat(),
-            "official_bundle_manifest_sha256": "1" * 64,
+            "official_bundle_manifest_sha256": official_manifest_sha256,
             "official_plan_sha256": "2" * 64,
-            "local_bootstrap_plan_sha256": "3" * 64,
-            "local_snapshot_manifest_sha256": "4" * 64,
-            "local_coverage_contract_sha256": "5" * 64,
-            "local_effective_available_at": max(
-                item.available_at for item in normalized
+            "local_bootstrap_plan_sha256": plan_digest,
+            "local_snapshot_manifest_sha256": canonical_hash(
+                {"fixture_targets": local_effective_values}
             ),
+            "local_coverage_contract_sha256": canonical_hash(
+                {"values": local_coverage_hashes}
+            ),
+            "local_effective_available_at": max(local_effective_values),
             "validated_snapshot_hash": snapshot["snapshot_hash"],
             "atomic_combined_publication": True,
-            "authority": "test_fixture",
         },
-        evidence_bytes={evidence_sha256: evidence_body},
-        evidence_metadata={
-            evidence_sha256: {
-                "extension": ".bin",
-                "evidence_kind": "macro_test_fixture_source_bundle",
-                "schema_version": "macro-test-fixture-evidence.v1",
-                "market": "CN",
-                "as_of": logical_as_of,
-                "size_bytes": len(evidence_body),
-            }
-        },
-        observation_evidence={
-            content_hash: [evidence_sha256]
-            for content_hash in content_hashes
-        },
+        evidence_bytes=evidence_bytes,
+        evidence_metadata=evidence_metadata,
+        observation_evidence=observation_evidence,
     )
     assert result["promoted"] is True
     return pointer_sha256(root)
@@ -198,6 +453,8 @@ def _formula_universe(*, trade_date: str) -> dict[str, Any]:
         "target_terminal_symbol_set_sha256": symbol_sha,
         "stale_symbol_set_sha256": empty_sha,
         "scored_symbol_set_sha256": symbol_sha,
+        "macro_snapshot_sha256": "a" * 64,
+        "macro_control_semantic_sha256": "b" * 64,
     }
 
 
@@ -260,7 +517,12 @@ def bind_macro_generation(
 
     generation = root / "_generations" / generation_id
     generation.mkdir(parents=True, exist_ok=True)
-    frame = pd.DataFrame([dict(row)])
+    normalized_row = dict(row)
+    normalized_row.setdefault(
+        "macro_score_100",
+        50.0 * (float(normalized_row["macro_score"]) + 1.0),
+    )
+    frame = pd.DataFrame([normalized_row])
     table = generation / "part.parquet"
     frame.to_parquet(table, index=False)
     table_sha = hashlib.sha256(table.read_bytes()).hexdigest()

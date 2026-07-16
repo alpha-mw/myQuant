@@ -8,7 +8,10 @@ import pytest
 
 from quant_investor.agent_protocol import BranchVerdict
 from quant_investor.funnel.deterministic_funnel import FunnelOutput
-from quant_investor.market.dag.context import _prepare_market_context
+from quant_investor.market.dag.context import (
+    _markov_production_application_blockers,
+    _prepare_market_context,
+)
 from quant_investor.market.read_result import MarketDataReadResult
 from quant_investor.regime.scope import build_regime_scope, deterministic_symbol_sample
 from tests.helpers.macro_fixture import make_v15_controls
@@ -233,8 +236,13 @@ def test_explicit_small_stock_pool_does_not_define_global_market_regime(
     assert markov["requested_symbol_count"] == 3
     assert markov["explicit_symbol_count"] == 3
     assert markov["source_symbol_count"] == 6
-    assert markov["production_eligible"] is True
-    assert markov["status"] == "applied"
+    assert markov["sampled"] is True
+    assert markov["production_eligible"] is False
+    assert markov["status"] == "not_applied_noncanonical_market_scope"
+    assert state.global_context.risk_budget["target_exposure"] == pytest.approx(0.70)
+    assert state.global_context.risk_budget["max_single_weight"] == pytest.approx(0.50)
+    assert "turnover_cap" not in state.global_context.risk_budget
+    assert "markov_runtime_scope_sampled" in markov["production_application_blockers"]
     assert reader.batch_calls[-1]["symbols"] == ["AAPL", "AMZN", "GOOG", "META", "NVDA", "TSLA"]
 
 
@@ -320,6 +328,75 @@ def test_deterministic_broad_market_sample_is_reproducible() -> None:
     assert sampled_first is True
     assert sampled_second is True
     assert unsampled_first == unsampled_second == 3
+
+
+def test_capped_full_market_reference_is_diagnostic_only() -> None:
+    scope = build_regime_scope(
+        market="CN",
+        base_universe_key="full_a",
+        source_universe_key="full_a",
+        requested_symbol_count=5000,
+        source_symbol_count=300,
+        explicit_symbol_count=0,
+        unsampled_symbol_count=5000,
+        sampled=True,
+        min_market_sample=30,
+        source_description="capped_full_market_reference",
+    )
+
+    assert scope.regime_scope == "market_reference"
+    assert scope.production_eligible is False
+    assert "markov_sampled_market_reference_not_production_eligible" in scope.diagnostics
+
+
+def test_single_holding_scope_is_diagnostic_only() -> None:
+    scope = build_regime_scope(
+        market="CN",
+        base_universe_key="full_a",
+        source_universe_key="full_a",
+        requested_symbol_count=1,
+        source_symbol_count=1,
+        explicit_symbol_count=1,
+        unsampled_symbol_count=1,
+        sampled=False,
+        min_market_sample=1,
+        source_description="holding_single_review",
+    )
+
+    assert scope.regime_scope == "market_reference"
+    assert scope.production_eligible is False
+    assert "markov_market_reference_not_production_eligible" in scope.diagnostics
+
+
+def test_stale_full_market_record_cannot_apply_production_caps() -> None:
+    scope = build_regime_scope(
+        market="CN",
+        base_universe_key="full_a",
+        source_universe_key="full_a",
+        requested_symbol_count=5000,
+        source_symbol_count=5000,
+        explicit_symbol_count=0,
+        unsampled_symbol_count=5000,
+        sampled=False,
+        min_market_sample=30,
+        source_description="full_market",
+    )
+    signal = SimpleNamespace(
+        as_of="20260624",
+        production_eligible=True,
+        regime_scope="full_market",
+        sampled=False,
+        source_symbol_count=5000,
+        unsampled_symbol_count=5000,
+    )
+
+    blockers = _markov_production_application_blockers(
+        signal=signal,
+        scope=scope,
+        expected_as_of="20260625",
+    )
+
+    assert blockers == ["markov_record_not_same_day"]
 
 
 def test_deterministic_cn_sample_is_stratified_by_available_board_buckets() -> None:

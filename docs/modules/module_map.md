@@ -25,13 +25,13 @@
 - 角色：全市场维护、数据读取、分析、回测和报告持久化入口
 - 关键文件：`market_data_reader.py`、`market_data_store.py`、`read_result.py`、`name_map.py`、`runtime_profile.py`、`full_report.py`、`report_persistence.py`、`legacy_synthesis.py`、`legacy_batch_analysis.py`、`dag_executor.py`
 - 子模块：`dag/context.py`、`dag/research.py`、`dag/shortlist.py`、`dag/decision.py`、`dag/reporting.py`
-- 说明：`run_market_analysis()` / `execute_market_dag()` 是当前 v14 full-market 主线；生产读取以 strict Parquet canonical 和 JSON manifest 为准，CSV 只允许作为人工导出或显式一次性迁移输入；`full_report.py` 负责全市场报告渲染，`report_persistence.py` 负责报告落盘和 runtime profile 写入；`legacy_synthesis.py` 与 `legacy_batch_analysis.py` 仅承接旧 batch/sample 入口，但输入仍必须满足当前 v14 envelope，遇到退休或未知结构字段会 fail closed，不会过滤后重包装。
+- 说明：`run_market_analysis()` / `execute_market_dag()` 是当前 v15 full-market 主线；生产读取以 strict Parquet canonical 和 JSON manifest 为准，CSV 只允许作为人工导出或显式一次性迁移输入；`full_report.py` 负责全市场报告渲染，`report_persistence.py` 负责报告落盘和 runtime profile 写入；`legacy_synthesis.py` 与 `legacy_batch_analysis.py` 仅承接旧 batch/sample 入口，但输入仍必须满足当前 v15 envelope，遇到退休或未知结构字段会 fail closed，不会过滤后重包装。
 
 ### `quant_investor/macro`
 
-- 角色：v14 PIT Macro observations、离线回放和 measurement-only observer
+- 角色：v15 PIT Macro observations、离线回放和生产 control projection
 - 关键文件：`contracts.py`、`store.py`、`snapshot.py`、`observer.py`、`replay.py`
-- 说明：`macro_observations` 只从严格 `_latest.json` generation store 进入 DAG observer metadata；standalone 文件仅允许显式离线 CLI 使用。observer 固定为 `production_eligible=false`、`applied=false`，不产生 Macro likelihood，也不改变 Markov、RiskGuard 或组合权重。完整数据和运行契约见 [Macro v2 Observer Contract](macro_v2_observer.md)。
+- 说明：`macro_observations` 只从严格 `_latest.json` generation store 进入 v15 control projection；standalone 文件仅允许显式离线 CLI 使用。Macro 不作为 Bayesian likelihood，而是经 hash-bound snapshot 重算后提供 control context。当前运行契约见 [v15 Operations](../runbooks/v15_operations.md)；[Macro v2 Observer Contract](macro_v2_observer.md) 仅作历史与观测层参考。
 
 ### `quant_investor/learning`
 

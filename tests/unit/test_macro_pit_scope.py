@@ -4,6 +4,8 @@ import pandas as pd
 import pytest
 
 from quant_investor.market import macro_mart
+from quant_investor.macro.contracts import canonical_hash
+from quant_investor.macro.registry import NATIONAL_DOMAIN_WEIGHTS
 
 
 TARGET = "20240510"
@@ -35,6 +37,32 @@ def _provider_bundle() -> dict[str, object]:
     }
 
 
+def _macro_snapshot() -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema_version": "macro-snapshot.v2",
+        "market": "CN",
+        "as_of": "2024-05-10",
+        "readiness_status": "pass",
+        "national_states": {
+            domain: 0.0 for domain in NATIONAL_DOMAIN_WEIGHTS
+        },
+        "coverage": {"national": 1.0},
+    }
+    payload["snapshot_hash"] = canonical_hash(payload)
+    return payload
+
+
+def _observation_generation() -> dict[str, object]:
+    return {
+        "generation_id": "macro-observations-test",
+        "pointer_sha256": "1" * 64,
+        "parquet_sha256": "2" * 64,
+        "manifest_sha256": "3" * 64,
+        "content_set_hash": "4" * 64,
+        "row_count": 39,
+    }
+
+
 def test_stale_terminal_symbol_does_not_change_formula_cross_section() -> None:
     active_market = _market_frame()
     stale_dates = pd.bdate_range(end="2024-05-09", periods=99)
@@ -46,15 +74,19 @@ def test_stale_terminal_symbol_does_not_change_formula_cross_section() -> None:
         }
     )
 
-    baseline, baseline_universe = macro_mart._derive_macro_frame(
+    baseline, baseline_universe, _ = macro_mart._derive_v15_macro_frame(
         active_market,
         trade_date=TARGET,
         provider_bundle=_provider_bundle(),
+        macro_snapshot=_macro_snapshot(),
+        observation_generation=_observation_generation(),
     )
-    with_stale, stale_universe = macro_mart._derive_macro_frame(
+    with_stale, stale_universe, _ = macro_mart._derive_v15_macro_frame(
         pd.concat([active_market, stale], ignore_index=True),
         trade_date=TARGET,
         provider_bundle=_provider_bundle(),
+        macro_snapshot=_macro_snapshot(),
+        observation_generation=_observation_generation(),
     )
 
     assert with_stale.iloc[0]["macro_score"] == pytest.approx(
@@ -80,6 +112,7 @@ def test_stale_terminal_symbol_does_not_change_formula_cross_section() -> None:
     assert macro_mart._validate_market_formula_universe(
         stale_universe,
         trade_date=TARGET,
+        require_control_binding=True,
     ) == stale_universe
 
     tampered = dict(stale_universe)
@@ -91,4 +124,5 @@ def test_stale_terminal_symbol_does_not_change_formula_cross_section() -> None:
         macro_mart._validate_market_formula_universe(
             tampered,
             trade_date=TARGET,
+            require_control_binding=True,
         )

@@ -111,10 +111,10 @@ def test_current_market_batch_namespaces_are_versioned():
     from quant_investor.market.config import get_market_settings
 
     assert get_market_settings("CN").analysis_output_dir == (
-        "results/v14/cn_analysis_full"
+        "results/v15/cn_analysis_full"
     )
     assert get_market_settings("US").analysis_output_dir == (
-        "results/v14/us_analysis_full"
+        "results/v15/us_analysis_full"
     )
 
 

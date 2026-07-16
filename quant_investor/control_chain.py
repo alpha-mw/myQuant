@@ -129,6 +129,7 @@ class ControlChainOrchestrator:
             constraints=normalized_constraints,
             existing_portfolio=normalized_portfolio,
             tradability_snapshot=normalized_tradability,
+            ic_hints_by_symbol={},
             review_bundle=review_bundle,
             persist_dir=persist_dir,
             persist_outputs=persist_outputs,
@@ -1022,7 +1023,7 @@ class ControlChainOrchestrator:
         if is_dataclass(value):
             return {
                 key: self._serialize(item)
-                for key, item in asdict(value).items()
+                for key, item in asdict(value).items()  # type: ignore[arg-type]
             }
         if isinstance(value, Mapping):
             return {

@@ -5,7 +5,7 @@ artifacts, and audit reports before any runtime decision path changes.
 
 ## Markov Regime Operations
 
-Markov regime is production-first in the v14 DAG.
+Markov regime is production-first in the v15 three-branch DAG.
 
 - Production default: `MARKOV_REGIME_ENABLED=1`.
 - Emergency disable: `MARKOV_REGIME_ENABLED=0`.

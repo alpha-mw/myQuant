@@ -527,10 +527,10 @@ class StockReviewBundle:
                 branch_map,
                 f"StockReviewBundle.branch_overlay_verdicts_by_symbol[{symbol}]",
             )
-            for verdict in branch_map.values():
-                verdict.__post_init__()
-        for verdict in self.branch_summaries.values():
-            verdict.__post_init__()
+            for overlay_verdict in branch_map.values():
+                overlay_verdict.__post_init__()
+        for branch_verdict in self.branch_summaries.values():
+            branch_verdict.__post_init__()
         for hint in self.master_hints_by_symbol.values():
             hint.__post_init__()
         if self.macro_verdict is not None:

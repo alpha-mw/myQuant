@@ -53,8 +53,9 @@ def test_v15_controls_use_domain_score_liquidity_and_fiscal_policy() -> None:
 
     assert controls["liquidity_score"] == 0.4
     assert controls["policy_signal"] == "supportive"
-    assert controls["macro_score_100"] == pytest.approx(
-        50.0 * (controls["macro_score"] + 1.0)
+    assert controls["macro_score_100"] == round(
+        50.0 * (controls["macro_score"] + 1.0),
+        8,
     )
     assert controls["read_only_projection"] is True
     assert len(controls["semantic_sha256"]) == 64

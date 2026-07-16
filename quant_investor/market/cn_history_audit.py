@@ -94,7 +94,7 @@ def _membership_split(
     records_by_symbol: Mapping[str, Any],
     trade_date: str,
     terminal_delist_dates_by_symbol: Mapping[str, str] | None = None,
-) -> dict[str, list[str]]:
+) -> dict[str, Any]:
     active: list[str] = []
     prelisting: list[str] = []
     delisted: list[str] = []
@@ -1095,7 +1095,7 @@ def run_cn_history_audit(
     end_date: str = "auto",
     allow_online: bool = False,
     provider: Any = None,
-    suspended_loader: Callable[[str], Iterable[str]] | None = None,
+    suspended_loader: Callable[..., Iterable[str]] | None = None,
     trade_dates: Iterable[str] | None = None,
 ) -> tuple[dict[str, Any], Path]:
     """Recompute the entire audit window without reading a prior audit."""

@@ -171,7 +171,7 @@ def test_load_config_backfills_daily_defaults_without_web_runtime(tmp_path):
     assert cfg["maintenance_min_symbol_success_rate"] == 0.95
     assert cfg["maintenance_target_date"] == "auto"
     assert cfg["maintenance_daily_window"] is True
-    assert cfg["report_dir"] == "reports/v14/daily"
+    assert cfg["report_dir"] == "reports/v15/daily"
     assert "agent_model" not in cfg
     assert "agent_fallback_model" not in cfg
     assert cfg["master_model"] == "moonshot-v1-128k"
@@ -592,7 +592,7 @@ def test_run_once_builds_recall_context_and_returns_report_path(monkeypatch):
             captured["report_md"] = report_md
             captured["pipeline_result"] = pipeline_result
             captured["config"] = dict(config)
-            return "reports/v14/daily/generated.md"
+            return "reports/v15/daily/generated.md"
 
     monkeypatch.setattr(daily_runner, "HistoryLoader", FakeHistoryLoader)
     monkeypatch.setattr(daily_runner, "AnalysisRunner", lambda: FakeRunner())
@@ -616,12 +616,12 @@ def test_run_once_builds_recall_context_and_returns_report_path(monkeypatch):
         "years": 3,
         "workers": 4,
         "schedule_time": "17:30",
-        "report_dir": str(Path("reports") / "v14" / "daily"),
+        "report_dir": str(Path("reports") / "v15" / "daily"),
     }
 
     report_path = daily_runner.run_once(config)
 
-    assert report_path == "reports/v14/daily/generated.md"
+    assert report_path == "reports/v15/daily/generated.md"
     assert captured["cfg"]["review_model_priority"] == ["deepseek-reasoner", "moonshot-v1-128k", "qwen3.5-plus"]
     assert captured["cfg"]["master_reasoning_effort"] == "high"
     assert captured["cfg"]["skip_stage1"] is True
@@ -659,7 +659,7 @@ def test_daily_main_default_path_calls_run_once_without_extra_flags(monkeypatch)
             "years": 3,
             "workers": 4,
             "schedule_time": "17:30",
-            "report_dir": "reports/v14/daily",
+            "report_dir": "reports/v15/daily",
         },
     )
     monkeypatch.setattr(
@@ -701,7 +701,7 @@ def test_run_once_skip_stage1_forwards_flag(monkeypatch):
     class FakePersistenceManager:
         def save(self, report_md, pipeline_result, config):
             captured["config"] = dict(config)
-            return "reports/v14/daily/generated.md"
+            return "reports/v15/daily/generated.md"
 
     monkeypatch.setattr(daily_runner, "HistoryLoader", FakeHistoryLoader)
     monkeypatch.setattr(daily_runner, "AnalysisRunner", lambda: FakeRunner())
@@ -725,18 +725,18 @@ def test_run_once_skip_stage1_forwards_flag(monkeypatch):
             "years": 3,
             "workers": 4,
             "schedule_time": "17:30",
-            "report_dir": str(Path("reports") / "v14" / "daily"),
+            "report_dir": str(Path("reports") / "v15" / "daily"),
         },
         skip_stage1=True,
     )
 
-    assert job_id == "reports/v14/daily/generated.md"
+    assert job_id == "reports/v15/daily/generated.md"
     assert captured["cfg"]["skip_stage1"] is True
     assert captured["config"]["skip_stage1"] is True
     assert captured["recall_context"]["source"] == "strategy_records"
 
 
-def test_persistence_writes_v14_daily_and_rejects_frozen_v13_root(
+def test_persistence_writes_v15_daily_and_rejects_frozen_v13_root(
     tmp_path, monkeypatch
 ):
     from quant_investor.automation import daily_runner as automation_daily_runner
@@ -747,10 +747,10 @@ def test_persistence_writes_v14_daily_and_rejects_frozen_v13_root(
     report_path = manager.save(
         "# report\n",
         {},
-        {"report_dir": "reports/v14/daily"},
+        {"report_dir": "reports/v15/daily"},
     )
 
-    assert Path(report_path).parent == tmp_path / "reports" / "v14" / "daily"
+    assert Path(report_path).parent == tmp_path / "reports" / "v15" / "daily"
     with pytest.raises(ValueError, match="frozen v13 retirement evidence"):
         manager.save("# old\n", {}, {"report_dir": "reports/daily"})
 

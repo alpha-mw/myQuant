@@ -287,6 +287,7 @@ def governance_runtime_status(registry: Any) -> dict[str, Any]:
 
     registry_file_sha = str(metadata.get("registry_sha256") or "")
     evidence_value = metadata.get("factor_governance_v3_evidence")
+    verified_evidence: dict[str, Any] | None = None
     producer_control = canonical_replay_producer_control(
         evidence_value if isinstance(evidence_value, Mapping) else None
     )
@@ -294,9 +295,15 @@ def governance_runtime_status(registry: Any) -> dict[str, Any]:
         blockers.append("registry_v3_evidence_missing")
     else:
         try:
-            evidence = validate_v3_evidence(evidence_value)
-            if evidence["registry_file_sha256"] != registry_file_sha:
+            verified_evidence = validate_v3_evidence(evidence_value)
+            if verified_evidence["registry_file_sha256"] != registry_file_sha:
                 blockers.append("registry_v3_evidence_registry_sha_mismatch")
+            replay = dict(verified_evidence["replay"])
+            if (
+                replay.get("production_factor_set_sha256")
+                != manifest["production_factor_set_sha256"]
+            ):
+                blockers.append("registry_v3_evidence_factor_set_sha_mismatch")
         except (CanonicalReplayV3Error, TypeError, ValueError):
             blockers.append("registry_v3_evidence_invalid")
     if producer_control["local_bytes_readback_verified"]:
@@ -338,7 +345,7 @@ def governance_runtime_status(registry: Any) -> dict[str, Any]:
         total += weight
     if total <= 1e-15:
         blockers.append("production_factor_total_abs_weight_zero")
-    normalized = {
+    normalized: dict[str, float] = {
         name: value / total for name, value in numeric_weights.items()
     } if total > 1e-15 else {}
     family_weights: dict[str, float] = {}
@@ -359,6 +366,11 @@ def governance_runtime_status(registry: Any) -> dict[str, Any]:
 
     runtime_contract_status = validate_production_runtime_contracts(selectable, metadata)
     blockers.extend(runtime_contract_status.get("blockers", []))
+    if verified_evidence is not None and (
+        verified_evidence["runtime_contract_sha256"]
+        != str(runtime_contract_status.get("contracts_sha256") or "")
+    ):
+        blockers.append("registry_v3_evidence_runtime_contract_sha_mismatch")
     activation = validate_quant_production_activation(
         metadata,
         manifest,

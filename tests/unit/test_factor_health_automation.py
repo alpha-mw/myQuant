@@ -106,7 +106,7 @@ def test_factor_health_automation_writes_report_without_registry_mutation(tmp_pa
     assert payload["runtime_smoke"]["backend"] == "parquet"
     assert payload["runtime_smoke"]["factor_mode"] == "parquet_canonical_unavailable"
     assert (
-        "strict Parquet snapshot pointer missing"
+        "strict Parquet snapshot pointer unreadable"
         in payload["runtime_smoke"]["error"]
     )
 
