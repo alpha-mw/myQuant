@@ -9,12 +9,57 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from quant_investor.macro.nbs_pmi import (
+    NbsPmiCapture,
+    parse_nbs_cn_pmi_html,
+)
 from quant_investor.market import macro_mart
 
 
 TARGET = "20260714"
 LANDED_AT = datetime(2026, 7, 14, 8, 0, tzinfo=timezone.utc)
 AFTER_DEADLINE = datetime(2026, 7, 15, 8, 0, tzinfo=timezone.utc)
+NBS_CN_PMI_URL = (
+    "https://www.stats.gov.cn/test/202605/t20260531_0000001.html"
+)
+NBS_CN_PMI_BODY = """<!doctype html>
+<html><head>
+<meta name="ArticleTitle" content="2026年5月中国采购经理指数运行情况">
+<meta name="PubDate" content="2026/05/31 09:30">
+</head><body>
+<p>5月份，中国制造业采购经理指数（PMI）为49.5%</p>
+</body></html>""".encode("utf-8")
+
+
+def _official_capture() -> NbsPmiCapture:
+    parsed = parse_nbs_cn_pmi_html(
+        NBS_CN_PMI_BODY,
+        source_url=NBS_CN_PMI_URL,
+    )
+    captured_at = LANDED_AT.replace(microsecond=0).isoformat()
+    return NbsPmiCapture(
+        month=parsed.month,
+        value=parsed.value,
+        source_url=parsed.source_url,
+        source_record_id=parsed.source_record_id,
+        article_title=parsed.article_title,
+        source_release_at=parsed.source_release_at,
+        fetch_started_at=captured_at,
+        fetch_completed_at=captured_at,
+        content_type="text/html",
+        charset="utf-8",
+        body_bytes=NBS_CN_PMI_BODY,
+        body_sha256=parsed.body_sha256,
+        body_size_bytes=parsed.body_size_bytes,
+        parser_version=parsed.parser_version,
+        parser_contract_sha256=parsed.parser_contract_sha256,
+        redirect_chain=(NBS_CN_PMI_URL,),
+    )
+
+
+def _fetch_official(url: str) -> NbsPmiCapture:
+    assert url == NBS_CN_PMI_URL
+    return _official_capture()
 
 
 class _MonthlyProvider:
@@ -106,11 +151,15 @@ def _land_retry_generation(
     evidence_sha = macro_mart._canonical_json_sha256({"files": evidence})
 
     monkeypatch.setattr(macro_mart, "_utc_now", lambda: LANDED_AT)
-    provider_bundle = macro_mart._fetch_provider_bundle(
+    monkeypatch.setattr(macro_mart, "fetch_nbs_cn_pmi", _fetch_official)
+    provider_fetch = macro_mart._fetch_provider_bundle(
         client=_MonthlyProvider(),
         trade_date=TARGET,
         captured_at=LANDED_AT,
+        nbs_cn_pmi_url=NBS_CN_PMI_URL,
+        nbs_fetcher=_fetch_official,
     )
+    provider_bundle = provider_fetch.bundle
     assert provider_bundle["selected_inputs"]["cn_pmi"]["month"] == "202605"
     assert (
         provider_bundle["selected_inputs"]["cn_pmi"][
@@ -145,6 +194,7 @@ def _land_retry_generation(
         run_id="landed-before-deadline",
         frame=frame,
         provider_bundle=provider_bundle,
+        provider_captures=provider_fetch.captures,
         market_pointer_sha256=_sha(pointer_path),
         market_input_evidence=evidence,
         market_input_files_sha256=evidence_sha,
@@ -207,6 +257,7 @@ def test_retry_after_month_deadline_requires_new_run_id_and_keeps_generation(
             run_id="landed-before-deadline",
             expected_catalog_sha256=_sha(catalog_path),
             expected_market_pointer_sha256=_sha(pointer_path),
+            nbs_cn_pmi_url=NBS_CN_PMI_URL,
             allow_live=True,
         )
 
@@ -281,6 +332,7 @@ def test_stale_current_generation_is_not_already_current_after_month_deadline(
             run_id="fresh-after-deadline",
             expected_catalog_sha256=_sha(catalog_path),
             expected_market_pointer_sha256=_sha(pointer_path),
+            nbs_cn_pmi_url=NBS_CN_PMI_URL,
             allow_live=True,
         )
 
@@ -331,9 +383,10 @@ def test_catalog_switch_rechecks_current_month_deadline(
 ) -> None:
     macro_root, catalog_path, pointer_path = _minimal_workspace(tmp_path)
     catalog_before = catalog_path.read_bytes()
-    clocks = iter((LANDED_AT, LANDED_AT, LANDED_AT, AFTER_DEADLINE))
+    clocks = iter((*([LANDED_AT] * 6), AFTER_DEADLINE))
     monkeypatch.setattr(macro_mart, "_utc_now", lambda: next(clocks))
     monkeypatch.setattr(macro_mart, "_build_tushare_client", _MonthlyProvider)
+    monkeypatch.setattr(macro_mart, "fetch_nbs_cn_pmi", _fetch_official)
     monkeypatch.setattr(
         macro_mart,
         "_load_market_inputs",
@@ -377,6 +430,7 @@ def test_catalog_switch_rechecks_current_month_deadline(
             run_id="crossed-deadline",
             expected_catalog_sha256=_sha(catalog_path),
             expected_market_pointer_sha256=_sha(pointer_path),
+            nbs_cn_pmi_url=NBS_CN_PMI_URL,
             allow_live=True,
         )
 

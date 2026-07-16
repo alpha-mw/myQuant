@@ -100,20 +100,69 @@ the requested `as_of` is the latest complete session, then run:
   --run-id <new_generation_id> \
   --expected-catalog-sha256 <catalog_sha256> \
   --expected-market-pointer-sha256 <market_pointer_sha256> \
+  --nbs-cn-pmi-url <nbs_official_release_https_url> \
   --allow-live
 ```
 
-The publisher binds five raw Tushare endpoints, the exact canonical bar
-pointer and input partitions, the deterministic transform, and the generated
-Parquet. It publishes through the shared catalog-writer lock, two-object CAS,
-and a recoverable transaction journal. Endpoint I/O completion must remain in
-the 72-hour capture window, and every selected month must meet its declared
-`month_end + max_release_lag_days` lower bound. The formula cross-section uses
-only symbols whose terminal bar is the requested session. Before switch and
-during recovery, the publisher verifies the complete strict-catalog required
-table closure, the exact market-pointer SHA, and every generation/input hash;
-orphaned partial transactions may be retried only after deterministic cleanup.
-Never hand-edit a generation or replay it historically;
+`--nbs-cn-pmi-url` and `--allow-live` are both mandatory. The URL has no
+repository default: the operator must supply the issuer-bound HTTPS URL of the
+National Bureau of Statistics formal release page for the intended month.
+`cn-macro-provider-bundle.v2` applies the
+`official-first-per-endpoint.v1` policy: `cn_pmi` uses that NBS release as its
+production primary source, while `cn_cpi`, `cn_ppi`, `sf_month`, and `cn_m`
+remain Tushare primary endpoints for now. This changes neither the Quant nor
+the Fundamental source policy.
+
+`--allow-tushare-fallback` is optional and off by default. It authorizes a
+`cn_pmi` Tushare fallback only after a classified transient NBS transport
+failure. A redirect-policy violation, malformed or ambiguous page, unexpected
+title/record/month/value, parser mismatch, or any other content/semantic error
+still fails closed. A fallback generation records the failed official attempt
+and the selected fallback role explicitly; it never labels Tushare data as
+official or combines the two values.
+
+A same-`run_id` crash retry is policy-bound as well as byte-bound. Repeat the
+exact initial NBS URL and the exact `--allow-tushare-fallback` choice used to
+create the landed generation. A changed URL or changed fallback authorization
+is rejected before provider I/O or catalog promotion; use a new run id for a
+new request policy.
+
+On an official success, the generation stores the NBS HTML under
+`provider_captures/`. Its byte SHA-256 and size, parser version and parser
+contract hash, issuer URL and record ID, `source_release_at`, fetch start and
+completion times, and redirect chain are bound by `provider_bundle.json`. The
+`nbs-cn-pmi-html.v2` parser additionally rejects a stated PMI month later than
+the formal page's `PubDate` month. The
+manifest binds the exact capture-file set and aggregate hash; primary
+provenance and the strict catalog carry the same aggregate capture binding.
+Strict readback and transaction recovery re-read the sidecar, verify its
+hash/size/path, reparse it, and compare the parsed release identity, month, and
+value with the provider bundle before accepting the generation.
+
+Keep the source clock, observation clock, and commit clock separate:
+`source_release_at` is the timestamp published by NBS,
+`fetch_completed_at` is when this run actually obtained an endpoint response,
+and the transaction journal's `committed_at` is when the catalog transaction
+finished. The decision cutoff is the latest endpoint I/O completion, never the
+page publication time. Every endpoint completion must be timezone-aware and
+exactly equal its selected observation timestamp; the maximum of those times
+must equal both `decision_cutoff_at` and bundle `fetched_at`. When fallback is
+authorized, the recorded official failure must complete no later than the
+fallback response. Endpoint I/O completion must remain in the 72-hour capture
+window, and every selected month must meet its declared
+`month_end + max_release_lag_days` lower bound.
+
+The publisher also binds the exact canonical bar pointer and input partitions,
+the deterministic transform, and the generated Parquet. It publishes through
+the shared catalog-writer lock, two-object CAS, and a recoverable transaction
+journal. The formula cross-section uses only symbols whose terminal bar is the
+requested session. Before switch and during recovery, the publisher verifies
+the complete strict-catalog required table closure, the exact market-pointer
+SHA, every generation/input hash, and the v2 capture closure; orphaned partial
+transactions may be retried only after deterministic cleanup.
+`cn-macro-provider-bundle.v1` remains readable only for historical
+compatibility and can never satisfy the v2 current-equivalent check. Never
+hand-edit a generation or replay it historically;
 `historical_replay_eligible=false` is permanent. A schedule may report this
 command as a manual remediation step but must never run it.
 

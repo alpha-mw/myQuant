@@ -546,6 +546,19 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="显式允许调用 live provider；缺失时命令 fail-closed",
     )
+    market_macro_refresh.add_argument(
+        "--nbs-cn-pmi-url",
+        required=True,
+        help="国家统计局 cn_pmi 正式发布页的 issuer-bound HTTPS URL",
+    )
+    market_macro_refresh.add_argument(
+        "--allow-tushare-fallback",
+        action="store_true",
+        help=(
+            "仅在 NBS 瞬态传输失败时显式允许 cn_pmi 回退到 Tushare；"
+            "解析或语义冲突仍 fail-closed"
+        ),
+    )
 
     market_macro_maintain = market_subparsers.add_parser(
         "macro-maintain",
@@ -1103,6 +1116,10 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "market" and args.market_command == "macro-refresh":
         if not args.allow_live:
             parser.error("market macro-refresh requires explicit --allow-live")
+        if args.allow_tushare_fallback and not args.allow_live:
+            parser.error(
+                "--allow-tushare-fallback requires explicit --allow-live"
+            )
         _print_json(
             run_macro_refresh(
                 market=args.market,
@@ -1114,6 +1131,8 @@ def main(argv: list[str] | None = None) -> None:
                     args.expected_market_pointer_sha256
                 ),
                 allow_live=args.allow_live,
+                nbs_cn_pmi_url=args.nbs_cn_pmi_url,
+                allow_tushare_fallback=args.allow_tushare_fallback,
             )
         )
         return

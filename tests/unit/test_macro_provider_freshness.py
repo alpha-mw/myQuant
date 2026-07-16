@@ -8,11 +8,18 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from quant_investor.macro.nbs_pmi import (
+    NBS_PMI_PARSER_CONTRACT_SHA256,
+    NBS_PMI_PARSER_VERSION,
+    NbsPmiCapture,
+    parse_nbs_cn_pmi_html,
+)
 from quant_investor.market import macro_mart
 
 
 TARGET = "20240510"
 STARTED_AT = datetime(2024, 5, 10, 8, 0, tzinfo=timezone.utc)
+NBS_URL = "https://www.stats.gov.cn/sj/zxfb/202404/t20240430_1.html"
 
 
 class _MonthlyProvider:
@@ -52,6 +59,69 @@ class _MonthlyProvider:
 
     def cn_m(self, **_kwargs: object) -> pd.DataFrame:
         return self._frame(("m1_yoy", "m2_yoy"))
+
+
+def _nbs_capture(
+    *,
+    month: str = "202404",
+    started_at: datetime = STARTED_AT,
+    completed_at: datetime = STARTED_AT,
+) -> NbsPmiCapture:
+    period = pd.Period(month, freq="M")
+    month_number = int(period.month)
+    release_day = int(period.days_in_month)
+    source_url = (
+        "https://www.stats.gov.cn/sj/zxfb/"
+        f"{month}/t{month}{release_day:02d}_1.html"
+    )
+    body = f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="ArticleTitle" content="{period.year}年{month_number}月中国采购经理指数运行情况">
+  <meta name="PubDate" content="{period.year}/{month_number:02d}/{release_day:02d} 09:30">
+  <title>{period.year}年{month_number}月中国采购经理指数运行情况 - 国家统计局</title>
+</head>
+<body>
+  <main>
+    <p>{month_number}月份，制造业采购经理指数（PMI）为50.4%。</p>
+  </main>
+</body>
+</html>
+""".encode("utf-8")
+    parsed = parse_nbs_cn_pmi_html(body, source_url=source_url)
+    return NbsPmiCapture(
+        month=parsed.month,
+        value=parsed.value,
+        source_url=parsed.source_url,
+        source_record_id=parsed.source_record_id,
+        article_title=parsed.article_title,
+        source_release_at=parsed.source_release_at,
+        fetch_started_at=started_at.isoformat(),
+        fetch_completed_at=completed_at.isoformat(),
+        content_type="text/html",
+        charset="utf-8",
+        body_bytes=body,
+        body_sha256=hashlib.sha256(body).hexdigest(),
+        body_size_bytes=len(body),
+        parser_version=NBS_PMI_PARSER_VERSION,
+        parser_contract_sha256=NBS_PMI_PARSER_CONTRACT_SHA256,
+        redirect_chain=(source_url,),
+    )
+
+
+def _patch_nbs_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    capture: NbsPmiCapture | None = None,
+) -> None:
+    deterministic_capture = capture or _nbs_capture()
+
+    def _fetch(url: str) -> NbsPmiCapture:
+        assert url == NBS_URL
+        return deterministic_capture
+
+    monkeypatch.setattr(macro_mart, "fetch_nbs_cn_pmi", _fetch)
 
 
 def _sha(path: Path) -> str:
@@ -108,6 +178,7 @@ def _refresh(
         expected_catalog_sha256=_sha(catalog_path),
         expected_market_pointer_sha256=_sha(pointer_path),
         allow_live=True,
+        nbs_cn_pmi_url=NBS_URL,
     )
 
 
@@ -118,8 +189,13 @@ def test_provider_io_completion_crossing_capture_window_fails_closed(
     macro_root, catalog_path, pointer_path = _minimal_workspace(tmp_path)
     catalog_before = catalog_path.read_bytes()
     expired = datetime(2024, 5, 13, 7, 0, 1, tzinfo=timezone.utc)
-    clocks = iter((STARTED_AT, expired, expired))
-    monkeypatch.setattr(macro_mart, "_utc_now", lambda: next(clocks))
+    clock_calls = iter((STARTED_AT,))
+    monkeypatch.setattr(
+        macro_mart,
+        "_utc_now",
+        lambda: next(clock_calls, expired),
+    )
+    _patch_nbs_fetch(monkeypatch)
     monkeypatch.setattr(
         macro_mart,
         "_build_tushare_client",
@@ -142,11 +218,14 @@ def test_provider_bundle_uses_post_io_completion_clock(
     completed_at = datetime(2024, 5, 10, 9, 2, 3, tzinfo=timezone.utc)
     monkeypatch.setattr(macro_mart, "_utc_now", lambda: completed_at)
 
-    bundle = macro_mart._fetch_provider_bundle(
+    result = macro_mart._fetch_provider_bundle(
         client=_MonthlyProvider(latest_month="202404"),
         trade_date=TARGET,
         captured_at=STARTED_AT,
+        nbs_cn_pmi_url=NBS_URL,
+        nbs_fetcher=lambda _url: _nbs_capture(completed_at=completed_at),
     )
+    bundle = result.bundle
 
     assert bundle["fetched_at"] == completed_at.isoformat()
     assert bundle["decision_cutoff_at"] == completed_at.isoformat()
@@ -169,6 +248,8 @@ def test_provider_latest_month_from_2020_is_stale_for_2024_target(
             client=_MonthlyProvider(latest_month="202012"),
             trade_date=TARGET,
             captured_at=STARTED_AT,
+            nbs_cn_pmi_url=NBS_URL,
+            nbs_fetcher=lambda _url: _nbs_capture(month="202012"),
         )
 
 
@@ -194,6 +275,12 @@ def test_current_cutoff_requires_june_pmi_under_endpoint_lag_contract(
             client=_MonthlyProvider(latest_month="202605"),
             trade_date="20260714",
             captured_at=cutoff,
+            nbs_cn_pmi_url=NBS_URL,
+            nbs_fetcher=lambda _url: _nbs_capture(
+                month="202605",
+                started_at=cutoff,
+                completed_at=cutoff,
+            ),
         )
 
 
@@ -203,8 +290,9 @@ def test_capture_window_is_revalidated_immediately_before_catalog_switch(
 ) -> None:
     macro_root, catalog_path, pointer_path = _minimal_workspace(tmp_path)
     before_switch = datetime(2024, 5, 13, 7, 0, 1, tzinfo=timezone.utc)
-    clocks = iter((STARTED_AT, STARTED_AT, STARTED_AT, before_switch))
+    clocks = iter((*([STARTED_AT] * 6), before_switch))
     monkeypatch.setattr(macro_mart, "_utc_now", lambda: next(clocks))
+    _patch_nbs_fetch(monkeypatch)
     monkeypatch.setattr(
         macro_mart,
         "_build_tushare_client",

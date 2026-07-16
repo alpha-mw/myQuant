@@ -78,7 +78,7 @@ def _bundle(*, trade_date: str) -> dict[str, Any]:
             ),
         }
     return {
-        "schema_version": macro_mart.PROVIDER_BUNDLE_SCHEMA,
+        "schema_version": macro_mart.LEGACY_PROVIDER_BUNDLE_SCHEMA,
         "provider_id": "tushare_pro",
         "source": "tushare_primary",
         "source_priority": "tushare_primary",

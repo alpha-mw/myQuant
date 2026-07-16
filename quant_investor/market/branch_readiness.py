@@ -25,15 +25,26 @@ from quant_investor.versioning import BRANCH_SCHEMA_VERSION
 STATUS_PASS = "pass"
 STATUS_WARN = "warn"
 STATUS_BLOCK = "block"
+SOURCE_OFFICIAL = "official_primary"
+SOURCE_OFFICIAL_FIRST = "official_first_mixed"
 SOURCE_TUSHARE = "tushare_primary"
 SOURCE_PUBLIC_FALLBACK = "public_structured_fallback"
 SOURCE_OFFLINE = "manual_offline_snapshot"
-SOURCE_PRIORITY_ORDER = (SOURCE_TUSHARE, SOURCE_PUBLIC_FALLBACK, SOURCE_OFFLINE)
+SOURCE_PRIORITY_ORDER = (
+    SOURCE_OFFICIAL,
+    SOURCE_TUSHARE,
+    SOURCE_PUBLIC_FALLBACK,
+    SOURCE_OFFLINE,
+)
 _MACRO_SOURCE_PRIORITY_BY_SOURCE = {
+    SOURCE_OFFICIAL_FIRST: SOURCE_OFFICIAL,
     SOURCE_TUSHARE: SOURCE_TUSHARE,
     SOURCE_PUBLIC_FALLBACK: SOURCE_PUBLIC_FALLBACK,
     SOURCE_OFFLINE: SOURCE_OFFLINE,
 }
+_MACRO_APPROVED_PRIMARY_PRIORITIES = frozenset(
+    {SOURCE_OFFICIAL, SOURCE_TUSHARE}
+)
 
 DEFAULT_PARQUET_CN_ROOT = Path("data/parquet/cn")
 DEFAULT_FUNDAMENTAL_ROOT = DEFAULT_PARQUET_CN_ROOT / "fundamental_daily"
@@ -606,7 +617,12 @@ def assess_macro_readiness(
     source_priority_valid = (
         _MACRO_SOURCE_PRIORITY_BY_SOURCE.get(source) == declared_priority
     )
-    fallback_used = priority != SOURCE_TUSHARE or not source_priority_valid
+    provider_fallback_used = manifest.get("provider_fallback_used") is True
+    source_not_approved = (
+        priority not in _MACRO_APPROVED_PRIMARY_PRIORITIES
+        or not source_priority_valid
+    )
+    fallback_used = provider_fallback_used or source_not_approved
     blockers = []
     read_error = str(manifest.get("read_error") or "").strip()
     if read_error:
@@ -615,8 +631,8 @@ def assess_macro_readiness(
         blockers.append("macro_parquet_table_missing_or_empty")
     if missing:
         blockers.append("macro_required_fields_missing")
-    if fallback_used:
-        blockers.append("macro_not_tushare_primary")
+    if source_not_approved:
+        blockers.append("macro_source_not_approved_primary")
     if not source_priority_valid:
         blockers.append("macro_source_priority_mismatch")
     if manifest.get("production_eligible") is not True:
@@ -650,7 +666,11 @@ def assess_macro_readiness(
     blockers = list(dict.fromkeys(blockers))
     return BranchDataReadiness(
         branch="macro",
-        status=STATUS_PASS if not blockers else STATUS_BLOCK,
+        status=(
+            STATUS_BLOCK
+            if blockers
+            else STATUS_WARN if provider_fallback_used else STATUS_PASS
+        ),
         coverage_ratio=1.0 if not missing and macro_record else 0.0,
         freshness_status="fresh_or_pit_asof" if macro_record else "unknown",
         pit_status="market_point_in_time" if macro_record else "missing",
@@ -884,6 +904,8 @@ __all__ = [
     "MACRO_REQUIRED_FIELDS",
     "QUANT_REQUIRED_FIELDS",
     "SOURCE_OFFLINE",
+    "SOURCE_OFFICIAL",
+    "SOURCE_OFFICIAL_FIRST",
     "SOURCE_PRIORITY_ORDER",
     "SOURCE_PUBLIC_FALLBACK",
     "SOURCE_TUSHARE",

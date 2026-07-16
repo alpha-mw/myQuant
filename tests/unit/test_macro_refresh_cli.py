@@ -21,6 +21,11 @@ def _required_args() -> list[str]:
         "1" * 64,
         "--expected-market-pointer-sha256",
         "2" * 64,
+        "--nbs-cn-pmi-url",
+        (
+            "https://www.stats.gov.cn/xxgk/sjfb/zxfb2020/202606/"
+            "t20260630_1964032.html"
+        ),
     ]
 
 
@@ -34,6 +39,8 @@ def test_macro_refresh_help_discloses_live_and_cas_requirements(capsys):
     assert "--expected-catalog-sha256" in output
     assert "--expected-market-pointer-sha256" in output
     assert "--run-id" in output
+    assert "--nbs-cn-pmi-url" in output
+    assert "--allow-tushare-fallback" in output
 
 
 def test_macro_refresh_dispatches_all_production_inputs(monkeypatch, capsys):
@@ -48,6 +55,7 @@ def test_macro_refresh_dispatches_all_production_inputs(monkeypatch, capsys):
         [
             *_required_args(),
             "--allow-live",
+            "--allow-tushare-fallback",
         ]
     )
 
@@ -59,6 +67,11 @@ def test_macro_refresh_dispatches_all_production_inputs(monkeypatch, capsys):
         "expected_catalog_sha256": "1" * 64,
         "expected_market_pointer_sha256": "2" * 64,
         "allow_live": True,
+        "nbs_cn_pmi_url": (
+            "https://www.stats.gov.cn/xxgk/sjfb/zxfb2020/202606/"
+            "t20260630_1964032.html"
+        ),
+        "allow_tushare_fallback": True,
     }
     assert json.loads(capsys.readouterr().out) == {
         "status": "promoted",

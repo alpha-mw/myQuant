@@ -17,6 +17,7 @@ import re
 import shutil
 import stat
 import tempfile
+import time as time_module
 from dataclasses import dataclass
 from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta, timezone
@@ -30,8 +31,19 @@ import pandas as pd
 
 from quant_investor.market.branch_readiness import SOURCE_OFFLINE
 from quant_investor.market.branch_readiness import (
+    SOURCE_OFFICIAL,
+    SOURCE_OFFICIAL_FIRST,
     SOURCE_PUBLIC_FALLBACK,
     SOURCE_TUSHARE,
+)
+from quant_investor.macro.nbs_pmi import (
+    NBS_PMI_MAX_REDIRECTS,
+    NbsPmiCapture,
+    NbsPmiPermanentError,
+    NbsPmiTransientError,
+    fetch_nbs_cn_pmi,
+    parse_nbs_cn_pmi_html,
+    validate_nbs_pmi_url,
 )
 
 
@@ -46,7 +58,10 @@ MACRO_FIELDS = (
 CANDIDATE_MANIFEST_SCHEMA = "cn-macro-mart-candidate.v14"
 CANONICAL_MANIFEST_SCHEMA = "cn-macro-mart.v14"
 PRIMARY_PROVENANCE_SCHEMA = "cn-macro-primary-provenance.v1"
-PROVIDER_BUNDLE_SCHEMA = "cn-macro-provider-bundle.v1"
+LEGACY_PROVIDER_BUNDLE_SCHEMA = "cn-macro-provider-bundle.v1"
+PROVIDER_BUNDLE_SCHEMA = "cn-macro-provider-bundle.v2"
+PROVIDER_SOURCE_POLICY = "official-first-per-endpoint.v1"
+PROVIDER_CAPTURE_FILES_SCHEMA = "cn-macro-provider-captures.v1"
 TRANSFORM_VERSION = "cn-macro-market-confirmation.v1"
 MARKET_FORMULA_UNIVERSE_SCHEMA = "cn-macro-formula-universe.v1"
 MARKET_FORMULA_SELECTION_RULE = (
@@ -75,6 +90,7 @@ _ALLOWED_INPUT_FIELDS = {
 }
 _Parsed = TypeVar("_Parsed")
 _SOURCE_PRIORITY_BY_SOURCE = {
+    SOURCE_OFFICIAL_FIRST: SOURCE_OFFICIAL,
     SOURCE_TUSHARE: SOURCE_TUSHARE,
     SOURCE_PUBLIC_FALLBACK: SOURCE_PUBLIC_FALLBACK,
     SOURCE_OFFLINE: SOURCE_OFFLINE,
@@ -114,11 +130,18 @@ _ENDPOINT_SPECS: dict[str, dict[str, Any]] = {
 class _PrimaryMacroAttestation:
     capability: object
     provider_bundle_sha256: str
+    provider_capture_files_sha256: str
     canonical_market_pointer_sha256: str
     market_input_files_sha256: str
     market_formula_universe_sha256: str
     output_frame_sha256: str
     transform_version: str
+
+
+@dataclass(frozen=True)
+class _ProviderFetchResult:
+    bundle: dict[str, Any]
+    captures: dict[str, bytes]
 
 
 class MacroMartPromotionError(RuntimeError):
@@ -138,6 +161,22 @@ def _date_text(value: Any) -> str:
     if pd.isna(parsed):
         raise MacroMartPromotionError("macro_as_of_missing_or_invalid")
     return pd.Timestamp(parsed).strftime("%Y-%m-%d")
+
+
+def _aware_timestamp(value: Any, *, blocker: str) -> pd.Timestamp:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value.strip() != value
+    ):
+        raise MacroMartPromotionError(blocker)
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise MacroMartPromotionError(blocker) from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise MacroMartPromotionError(blocker)
+    return pd.Timestamp(parsed.astimezone(timezone.utc))
 
 
 def _sha256(path: Path) -> str:
@@ -516,126 +555,546 @@ def _validate_provider_bundle_current_freshness(
             )
 
 
-def _fetch_provider_bundle(
+def _provider_conservative_available_by(
+    month: str,
+    *,
+    max_release_lag_days: int,
+) -> str:
+    month_end = pd.Timestamp(month + "01") + pd.offsets.MonthEnd(0)
+    return (
+        month_end + pd.Timedelta(days=max_release_lag_days)
+    ).date().isoformat()
+
+
+def _fetch_tushare_endpoint(
     *,
     client: Any,
-    trade_date: str,
-    captured_at: datetime,
-) -> dict[str, Any]:
-    start_month, end_month = _provider_query_window(captured_at)
-    endpoints: dict[str, Any] = {}
-    selected_inputs: dict[str, Any] = {}
-    for endpoint, spec in sorted(_ENDPOINT_SPECS.items()):
-        method = getattr(client, endpoint, None)
-        if not callable(method):
-            raise MacroMartPromotionError(
-                f"macro_provider_endpoint_unavailable:{endpoint}"
-            )
+    endpoint: str,
+    spec: Mapping[str, Any],
+    start_month: str,
+    end_month: str,
+    source_system: str,
+    source_role: str,
+    max_attempts: int = 3,
+    sleeper: Callable[[float], None] = time_module.sleep,
+) -> tuple[dict[str, Any], dict[str, Any], datetime]:
+    method = getattr(client, endpoint, None)
+    if not callable(method):
+        raise MacroMartPromotionError(
+            f"macro_provider_endpoint_unavailable:{endpoint}"
+        )
+    if isinstance(max_attempts, bool) or not 1 <= max_attempts <= 3:
+        raise ValueError("max_attempts must be between 1 and 3")
+    response: Any = None
+    for attempt in range(1, max_attempts + 1):
         try:
             response = method(start_m=start_month, end_m=end_month)
         except Exception as exc:
             raise MacroMartPromotionError(
                 f"macro_provider_request_failed:{endpoint}"
             ) from exc
-        if not isinstance(response, pd.DataFrame) or response.empty:
-            raise MacroMartPromotionError(
-                f"macro_provider_response_empty:{endpoint}"
-            )
-        if len(response) < 12:
-            raise MacroMartPromotionError(
-                f"macro_provider_history_insufficient:{endpoint}"
-            )
-        column_lookup = {
-            str(column).strip().lower(): str(column)
-            for column in response.columns
-        }
-        month_field = column_lookup.get(
-            str(spec["month_field"]).lower()
+        if isinstance(response, pd.DataFrame) and not response.empty:
+            break
+        if attempt < max_attempts:
+            sleeper(min(0.25 * (2 ** (attempt - 1)), 1.0))
+    completed_at = _utc_now()
+    if completed_at.tzinfo is None or completed_at.utcoffset() is None:
+        raise MacroMartPromotionError(
+            "macro_provider_completion_clock_invalid"
         )
-        value_fields = {
-            field: column_lookup.get(str(field).lower())
-            for field in spec["value_fields"]
-        }
-        if month_field is None or any(
-            value is None for value in value_fields.values()
+    if not isinstance(response, pd.DataFrame) or response.empty:
+        raise MacroMartPromotionError(
+            f"macro_provider_response_empty:{endpoint}"
+        )
+    if len(response) < 12:
+        raise MacroMartPromotionError(
+            f"macro_provider_history_insufficient:{endpoint}"
+        )
+    column_lookup = {
+        str(column).strip().lower(): str(column)
+        for column in response.columns
+    }
+    month_field = column_lookup.get(str(spec["month_field"]).lower())
+    value_fields = {
+        field: column_lookup.get(str(field).lower())
+        for field in spec["value_fields"]
+    }
+    if month_field is None or any(
+        value is None for value in value_fields.values()
+    ):
+        raise MacroMartPromotionError(
+            f"macro_provider_schema_invalid:{endpoint}"
+        )
+    normalized = response.copy()
+    normalized["__month"] = normalized[month_field].map(
+        _normalize_provider_month
+    )
+    if normalized["__month"].duplicated().any():
+        raise MacroMartPromotionError(
+            f"macro_provider_month_duplicate:{endpoint}"
+        )
+    if normalized["__month"].gt(end_month).any():
+        raise MacroMartPromotionError(
+            f"macro_provider_future_month_rejected:{endpoint}"
+        )
+    for logical_field, actual_field in value_fields.items():
+        assert actual_field is not None
+        values = pd.to_numeric(normalized[actual_field], errors="coerce")
+        if values.isna().any() or not np.isfinite(values.to_numpy()).all():
+            raise MacroMartPromotionError(
+                f"macro_provider_value_invalid:{endpoint}:{logical_field}"
+            )
+        normalized[actual_field] = values.astype(float)
+    normalized = normalized.sort_values("__month", kind="mergesort")
+    raw_frame = normalized.drop(columns=["__month"])
+    raw_frame = raw_frame.loc[:, sorted(raw_frame.columns.astype(str))]
+    records = _json_records(raw_frame)
+    latest = normalized.iloc[-1]
+    latest_month = str(latest["__month"])
+    selected_values = {
+        logical_field: float(latest[str(actual_field)])
+        for logical_field, actual_field in value_fields.items()
+    }
+    completed_text = completed_at.astimezone(timezone.utc).isoformat()
+    entry = {
+        "endpoint": endpoint,
+        "source_system": source_system,
+        "source_role": source_role,
+        "query": {"start_m": start_month, "end_m": end_month},
+        "columns": sorted(raw_frame.columns.astype(str)),
+        "row_count": int(len(records)),
+        "records": records,
+        "records_sha256": hashlib.sha256(
+            _canonical_json_bytes({"records": records})
+        ).hexdigest(),
+        "attempt_count": attempt,
+        "fetch_completed_at": completed_text,
+    }
+    chosen = {
+        "month": latest_month,
+        "values": selected_values,
+        "source_system": source_system,
+        "source_role": source_role,
+        "observed_available_at": completed_text,
+        "official_release_timestamp_known": False,
+        "max_release_lag_days": int(spec["max_release_lag_days"]),
+        "conservative_available_by": _provider_conservative_available_by(
+            latest_month,
+            max_release_lag_days=int(spec["max_release_lag_days"]),
+        ),
+        "transform_role": (
+            "policy_signal" if endpoint == "cn_m" else "context_only"
+        ),
+    }
+    return entry, chosen, completed_at
+
+
+def _nbs_capture_relative_path(capture: NbsPmiCapture) -> str:
+    record_id = str(capture.source_record_id or "").strip()
+    if _SAFE_RUN_ID.fullmatch(record_id) is None:
+        raise MacroMartPromotionError("macro_nbs_record_id_invalid")
+    month = _normalize_provider_month(capture.month)
+    return f"provider_captures/nbs_cn_pmi_{month}_{record_id}.html"
+
+
+def _nbs_endpoint_payload(
+    capture: NbsPmiCapture,
+) -> tuple[dict[str, Any], dict[str, Any], str, bytes]:
+    month = _normalize_provider_month(capture.month)
+    value = float(capture.value)
+    if not math.isfinite(value) or not 0.0 <= value <= 100.0:
+        raise MacroMartPromotionError("macro_nbs_value_invalid")
+    relative_path = _nbs_capture_relative_path(capture)
+    raw_bytes = bytes(capture.body_bytes)
+    raw_sha = hashlib.sha256(raw_bytes).hexdigest()
+    if (
+        raw_sha != str(capture.body_sha256 or "").strip().lower()
+        or len(raw_bytes) != int(capture.body_size_bytes)
+    ):
+        raise MacroMartPromotionError("macro_nbs_capture_hash_mismatch")
+    record = {"month": month, "PMI010000": value}
+    records = [record]
+    entry = {
+        "endpoint": "cn_pmi",
+        "source_system": "nbs_official",
+        "source_role": "official_primary",
+        "query": {"source_url": str(capture.source_url)},
+        "columns": sorted(record),
+        "row_count": 1,
+        "records": records,
+        "records_sha256": hashlib.sha256(
+            _canonical_json_bytes({"records": records})
+        ).hexdigest(),
+        "fetch_completed_at": str(capture.fetch_completed_at),
+        "raw_capture": {
+            "path": relative_path,
+            "sha256": raw_sha,
+            "size_bytes": len(raw_bytes),
+            "body_representation": "http_entity_body_after_content_decoding",
+            "content_type": str(capture.content_type),
+            "charset": str(capture.charset),
+            "parser_version": str(capture.parser_version),
+            "parser_contract_sha256": str(
+                capture.parser_contract_sha256
+            ),
+            "article_title": str(capture.article_title),
+            "source_url": str(capture.source_url),
+            "source_record_id": str(capture.source_record_id),
+            "source_release_at": str(capture.source_release_at),
+            "fetch_started_at": str(capture.fetch_started_at),
+            "fetch_completed_at": str(capture.fetch_completed_at),
+            "redirect_chain": list(capture.redirect_chain),
+        },
+    }
+    chosen = {
+        "month": month,
+        "values": {"PMI010000": value},
+        "source_system": "nbs_official",
+        "source_role": "official_primary",
+        "source_url": str(capture.source_url),
+        "source_record_id": str(capture.source_record_id),
+        "source_release_at": str(capture.source_release_at),
+        "observed_available_at": str(capture.fetch_completed_at),
+        "official_release_timestamp_known": True,
+        "max_release_lag_days": int(
+            _ENDPOINT_SPECS["cn_pmi"]["max_release_lag_days"]
+        ),
+        "conservative_available_by": _provider_conservative_available_by(
+            month,
+            max_release_lag_days=int(
+                _ENDPOINT_SPECS["cn_pmi"]["max_release_lag_days"]
+            ),
+        ),
+        "transform_role": "context_only",
+    }
+    return entry, chosen, relative_path, raw_bytes
+
+
+def _provider_capture_files(
+    bundle: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    if bundle.get("schema_version") == LEGACY_PROVIDER_BUNDLE_SCHEMA:
+        return []
+    endpoints = bundle.get("endpoints")
+    if not isinstance(endpoints, Mapping):
+        raise MacroMartPromotionError(
+            "macro_provider_capture_contract_invalid"
+        )
+    files: list[dict[str, Any]] = []
+    for endpoint, entry in sorted(endpoints.items()):
+        if not isinstance(entry, Mapping):
+            raise MacroMartPromotionError(
+                "macro_provider_capture_contract_invalid"
+            )
+        raw = entry.get("raw_capture")
+        source_system = str(entry.get("source_system") or "")
+        if source_system == "nbs_official":
+            if endpoint != "cn_pmi" or not isinstance(raw, Mapping):
+                raise MacroMartPromotionError(
+                    "macro_provider_capture_contract_invalid"
+                )
+        elif raw is not None:
+            raise MacroMartPromotionError(
+                "macro_provider_capture_contract_invalid"
+            )
+        else:
+            continue
+        relative = Path(str(raw.get("path") or ""))
+        if (
+            relative.is_absolute()
+            or len(relative.parts) != 2
+            or relative.parts[0] != "provider_captures"
+            or relative.parts[1] in {"", ".", ".."}
+            or not relative.parts[1].endswith(".html")
         ):
             raise MacroMartPromotionError(
-                f"macro_provider_schema_invalid:{endpoint}"
+                "macro_provider_capture_path_invalid"
             )
-        normalized = response.copy()
-        normalized["__month"] = normalized[month_field].map(
-            _normalize_provider_month
+        sha = _assert_sha256(
+            raw.get("sha256"),
+            blocker="macro_provider_capture_hash_invalid",
         )
-        if normalized["__month"].duplicated().any():
+        try:
+            size_bytes = int(raw.get("size_bytes", -1))
+        except (TypeError, ValueError) as exc:
             raise MacroMartPromotionError(
-                f"macro_provider_month_duplicate:{endpoint}"
-            )
-        if normalized["__month"].gt(end_month).any():
+                "macro_provider_capture_size_invalid"
+            ) from exc
+        if size_bytes <= 0 or size_bytes > 2 * 1024 * 1024:
             raise MacroMartPromotionError(
-                f"macro_provider_future_month_rejected:{endpoint}"
+                "macro_provider_capture_size_invalid"
             )
-        for logical_field, actual_field in value_fields.items():
-            assert actual_field is not None
-            values = pd.to_numeric(normalized[actual_field], errors="coerce")
-            if values.isna().any() or not np.isfinite(values.to_numpy()).all():
-                raise MacroMartPromotionError(
-                    f"macro_provider_value_invalid:{endpoint}:{logical_field}"
-                )
-            normalized[actual_field] = values.astype(float)
-        normalized = normalized.sort_values("__month", kind="mergesort")
-        raw_frame = normalized.drop(columns=["__month"])
-        raw_frame = raw_frame.loc[:, sorted(raw_frame.columns.astype(str))]
-        records = _json_records(raw_frame)
-        records_hash = hashlib.sha256(
-            _canonical_json_bytes({"records": records})
-        ).hexdigest()
-        latest = normalized.iloc[-1]
-        latest_month = str(latest["__month"])
-        values = {
-            logical_field: float(latest[str(actual_field)])
-            for logical_field, actual_field in value_fields.items()
-        }
-        month_end = (
-            pd.Timestamp(latest_month + "01")
-            + pd.offsets.MonthEnd(0)
+        files.append(
+            {
+                "endpoint": str(endpoint),
+                "path": relative.as_posix(),
+                "sha256": sha,
+                "size_bytes": size_bytes,
+            }
         )
-        conservative_available_by = (
-            month_end + pd.Timedelta(
-                days=int(spec["max_release_lag_days"])
-            )
-        ).date().isoformat()
-        endpoints[endpoint] = {
-            "endpoint": endpoint,
-            "query": {
-                "start_m": start_month,
-                "end_m": end_month,
-            },
-            "columns": sorted(raw_frame.columns.astype(str)),
-            "row_count": int(len(records)),
-            "records": records,
-            "records_sha256": records_hash,
+    paths = [str(item["path"]) for item in files]
+    if paths != sorted(paths) or len(paths) != len(set(paths)):
+        raise MacroMartPromotionError(
+            "macro_provider_capture_contract_invalid"
+        )
+    expected_count = 1 if bundle.get("source") == SOURCE_OFFICIAL_FIRST else 0
+    if len(files) != expected_count:
+        raise MacroMartPromotionError(
+            "macro_provider_capture_contract_invalid"
+        )
+    return files
+
+
+def _provider_capture_files_sha256(
+    files: list[dict[str, Any]],
+) -> str:
+    return _canonical_json_sha256(
+        {
+            "schema_version": PROVIDER_CAPTURE_FILES_SCHEMA,
+            "files": files,
         }
-        selected_inputs[endpoint] = {
-            "month": latest_month,
-            "values": values,
-            "official_release_timestamp_known": False,
-            "max_release_lag_days": int(spec["max_release_lag_days"]),
-            "conservative_available_by": conservative_available_by,
-            "transform_role": (
-                "policy_signal" if endpoint == "cn_m" else "context_only"
+    )
+
+
+def _write_provider_capture_files(
+    generation_root: Path,
+    *,
+    bundle: Mapping[str, Any],
+    captures: Mapping[str, bytes],
+) -> tuple[list[dict[str, Any]], str]:
+    files = _provider_capture_files(bundle)
+    expected_paths = {str(item["path"]) for item in files}
+    if set(captures) != expected_paths:
+        raise MacroMartPromotionError(
+            "macro_provider_capture_payload_set_mismatch"
+        )
+    if files:
+        _safe_directory(
+            generation_root / "provider_captures",
+            blocker="macro_provider_capture_root_invalid",
+        )
+    for item in files:
+        payload = bytes(captures[str(item["path"])])
+        if (
+            len(payload) != int(item["size_bytes"])
+            or hashlib.sha256(payload).hexdigest() != item["sha256"]
+        ):
+            raise MacroMartPromotionError(
+                "macro_provider_capture_payload_mismatch"
+            )
+        destination = generation_root / str(item["path"])
+        _atomic_write_bytes(destination, payload)
+    return files, _provider_capture_files_sha256(files)
+
+
+def _verify_provider_capture_files(
+    generation_root: Path,
+    *,
+    bundle: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+) -> str:
+    files = _provider_capture_files(bundle)
+    if bundle.get("schema_version") == LEGACY_PROVIDER_BUNDLE_SCHEMA:
+        if manifest.get("provider_capture_files") not in (None, []):
+            raise MacroMartPromotionError(
+                "macro_legacy_provider_capture_contract_invalid"
+            )
+        return _provider_capture_files_sha256([])
+    declared = manifest.get("provider_capture_files")
+    if declared != files:
+        raise MacroMartPromotionError(
+            "macro_provider_capture_manifest_mismatch"
+        )
+    expected_set_sha = _assert_sha256(
+        manifest.get("provider_capture_files_sha256"),
+        blocker="macro_provider_capture_set_hash_invalid",
+    )
+    if expected_set_sha != _provider_capture_files_sha256(files):
+        raise MacroMartPromotionError(
+            "macro_provider_capture_set_hash_mismatch"
+        )
+    endpoints = bundle.get("endpoints")
+    assert isinstance(endpoints, Mapping)
+    for item in files:
+        entry = endpoints[str(item["endpoint"])]
+        assert isinstance(entry, Mapping)
+        raw = entry.get("raw_capture")
+        assert isinstance(raw, Mapping)
+        path = _resolve_catalog_member(
+            generation_root,
+            str(item["path"]),
+            blocker="macro_provider_capture_path_invalid",
+        )
+        payload = _read_verified_member(
+            path,
+            trust_root=generation_root,
+            expected_sha256=str(item["sha256"]),
+            hash_blocker="macro_provider_capture_hash_mismatch",
+            changed_blocker="macro_provider_capture_changed_during_read",
+            unreadable_blocker="macro_provider_capture_unreadable",
+            parser=lambda value: value,
+        )
+        if len(payload) != int(item["size_bytes"]):
+            raise MacroMartPromotionError(
+                "macro_provider_capture_size_mismatch"
+            )
+        try:
+            parsed = parse_nbs_cn_pmi_html(
+                payload,
+                source_url=str(raw.get("source_url") or ""),
+            )
+        except (NbsPmiPermanentError, ValueError) as exc:
+            raise MacroMartPromotionError(
+                "macro_provider_capture_reparse_failed"
+            ) from exc
+        comparisons = {
+            "article_title": str(parsed.article_title),
+            "source_record_id": str(parsed.source_record_id),
+            "source_release_at": str(parsed.source_release_at),
+            "source_url": str(parsed.source_url),
+            "parser_version": str(parsed.parser_version),
+            "parser_contract_sha256": str(
+                parsed.parser_contract_sha256
             ),
         }
-    completed_at = _utc_now()
-    if (
-        completed_at.tzinfo is None
-        or completed_at.utcoffset() is None
-        or captured_at.tzinfo is None
-        or captured_at.utcoffset() is None
+        if any(
+            str(raw.get(field) or "") != expected
+            for field, expected in comparisons.items()
+        ):
+            raise MacroMartPromotionError(
+                "macro_provider_capture_reparse_mismatch"
+            )
+        records = entry.get("records")
+        if (
+            not isinstance(records, list)
+            or len(records) != 1
+            or _normalize_provider_month(records[0].get("month"))
+            != _normalize_provider_month(parsed.month)
+            or float(records[0].get("PMI010000")) != float(parsed.value)
+        ):
+            raise MacroMartPromotionError(
+                "macro_provider_capture_record_mismatch"
+            )
+    return expected_set_sha
+
+
+def _fetch_provider_bundle(
+    *,
+    client: Any,
+    trade_date: str,
+    captured_at: datetime,
+    nbs_cn_pmi_url: str,
+    allow_tushare_fallback: bool = False,
+    nbs_fetcher: Callable[[str], NbsPmiCapture] | None = None,
+) -> _ProviderFetchResult:
+    if captured_at.tzinfo is None or captured_at.utcoffset() is None:
+        raise MacroMartPromotionError(
+            "macro_provider_capture_clock_invalid"
+        )
+    start_month, end_month = _provider_query_window(captured_at)
+    endpoints: dict[str, Any] = {}
+    selected_inputs: dict[str, Any] = {}
+    captures: dict[str, bytes] = {}
+    completions: list[datetime] = []
+    official_attempt: dict[str, Any]
+    fallback_used = False
+    fetch_official = nbs_fetcher or fetch_nbs_cn_pmi
+    try:
+        requested_nbs_url = validate_nbs_pmi_url(
+            str(nbs_cn_pmi_url or "").strip()
+        )
+    except NbsPmiPermanentError as exc:
+        raise MacroMartPromotionError(
+            "macro_nbs_cn_pmi_url_invalid"
+        ) from exc
+    try:
+        nbs_capture = fetch_official(requested_nbs_url)
+        entry, chosen, relative_path, raw_bytes = _nbs_endpoint_payload(
+            nbs_capture
+        )
+        endpoints["cn_pmi"] = entry
+        selected_inputs["cn_pmi"] = chosen
+        captures[relative_path] = raw_bytes
+        nbs_completed = _aware_timestamp(
+            nbs_capture.fetch_completed_at,
+            blocker="macro_nbs_completion_clock_invalid",
+        )
+        completions.append(nbs_completed.to_pydatetime())
+        official_attempt = {
+            "endpoint": "cn_pmi",
+            "status": "success",
+            "source_system": "nbs_official",
+            "requested_url": requested_nbs_url,
+            "attempt_started_at": str(nbs_capture.fetch_started_at),
+            "attempt_completed_at": str(nbs_capture.fetch_completed_at),
+            "effective_url": str(nbs_capture.source_url),
+            "source_record_id": str(nbs_capture.source_record_id),
+        }
+    except NbsPmiTransientError as exc:
+        if not allow_tushare_fallback:
+            raise MacroMartPromotionError(
+                "macro_official_provider_transient:cn_pmi"
+            ) from exc
+        fallback_used = True
+        failed_at = _now_utc()
+        official_attempt = {
+            "endpoint": "cn_pmi",
+            "status": "transient_failure",
+            "source_system": "nbs_official",
+            "requested_url": requested_nbs_url,
+            "attempt_started_at": captured_at.astimezone(
+                timezone.utc
+            ).replace(microsecond=0).isoformat(),
+            "attempt_completed_at": failed_at,
+            "trigger_category": "transport_transient",
+            "fallback_provider": "tushare_pro",
+            "reason": str(exc)[:160],
+        }
+        entry, chosen, completed = _fetch_tushare_endpoint(
+            client=client,
+            endpoint="cn_pmi",
+            spec=_ENDPOINT_SPECS["cn_pmi"],
+            start_month=start_month,
+            end_month=end_month,
+            source_system="tushare_fallback",
+            source_role="explicit_transport_fallback",
+        )
+        endpoints["cn_pmi"] = entry
+        selected_inputs["cn_pmi"] = chosen
+        completions.append(completed)
+    except NbsPmiPermanentError as exc:
+        raise MacroMartPromotionError(
+            "macro_official_provider_invalid:cn_pmi"
+        ) from exc
+
+    for endpoint, spec in sorted(_ENDPOINT_SPECS.items()):
+        if endpoint == "cn_pmi":
+            continue
+        entry, chosen, completed = _fetch_tushare_endpoint(
+            client=client,
+            endpoint=endpoint,
+            spec=spec,
+            start_month=start_month,
+            end_month=end_month,
+            source_system="tushare_primary",
+            source_role="configured_primary",
+        )
+        endpoints[endpoint] = entry
+        selected_inputs[endpoint] = chosen
+        completions.append(completed)
+    if not completions or any(
+        item.tzinfo is None or item.utcoffset() is None
+        for item in completions
     ):
-        raise MacroMartPromotionError("macro_provider_completion_clock_invalid")
-    if completed_at < captured_at:
-        raise MacroMartPromotionError("macro_provider_completion_before_start")
-    fetched_at = completed_at.replace(microsecond=0).isoformat()
+        raise MacroMartPromotionError(
+            "macro_provider_completion_clock_invalid"
+        )
+    completed_at = max(item.astimezone(timezone.utc) for item in completions)
+    if completed_at < captured_at.astimezone(timezone.utc):
+        raise MacroMartPromotionError(
+            "macro_provider_completion_before_start"
+        )
+    fetched_at = completed_at.isoformat()
     for endpoint, spec in sorted(_ENDPOINT_SPECS.items()):
         expected_latest = _expected_latest_provider_month(
             completed_at,
@@ -646,19 +1105,34 @@ def _fetch_provider_bundle(
             raise MacroMartPromotionError(
                 f"macro_provider_latest_month_stale:{endpoint}"
             )
-        chosen["observed_available_at"] = fetched_at
         chosen["expected_latest_month_lower_bound"] = expected_latest
-    return {
+    official_used = not fallback_used
+    source = SOURCE_OFFICIAL_FIRST if official_used else SOURCE_TUSHARE
+    priority = SOURCE_OFFICIAL if official_used else SOURCE_TUSHARE
+    bundle = {
         "schema_version": PROVIDER_BUNDLE_SCHEMA,
-        "provider_id": "tushare_pro",
-        "source": SOURCE_TUSHARE,
-        "source_priority": SOURCE_TUSHARE,
+        "provider_id": "official_first_macro_bundle",
+        "source_policy": PROVIDER_SOURCE_POLICY,
+        "source": source,
+        "source_priority": priority,
         "trade_date": _date_text(trade_date),
         "fetched_at": fetched_at,
         "decision_cutoff_at": fetched_at,
         "live_requested": True,
         "historical_replay_eligible": False,
-        "official_release_timestamps_claimed": False,
+        "official_release_timestamps_claimed": official_used,
+        "fallback_authorized": bool(allow_tushare_fallback),
+        "fallback_used": fallback_used,
+        "fallback_trigger": (
+            {
+                "category": "transport_transient",
+                "provider": "tushare_pro",
+                "reason": str(official_attempt.get("reason") or ""),
+            }
+            if fallback_used
+            else None
+        ),
+        "official_attempts": [official_attempt],
         "query_window": {
             "start_month": start_month,
             "end_month": end_month,
@@ -666,6 +1140,7 @@ def _fetch_provider_bundle(
         "endpoints": endpoints,
         "selected_inputs": selected_inputs,
     }
+    return _ProviderFetchResult(bundle=bundle, captures=captures)
 
 
 def _validate_live_target(
@@ -1125,14 +1600,22 @@ def _derive_macro_frame(
         if m2_yoy > 10.0
         else "restrictive" if m2_yoy <= 8.0 else "neutral"
     )
+    source = str(provider_bundle.get("source") or "").strip()
+    source_priority = str(
+        provider_bundle.get("source_priority") or ""
+    ).strip()
+    if _SOURCE_PRIORITY_BY_SOURCE.get(source) != source_priority:
+        raise MacroMartPromotionError(
+            "macro_provider_bundle_source_policy_invalid"
+        )
     row = {
         "trade_date": _date_text(trade_date),
         "macro_score": macro_score,
         "liquidity_score": breadth,
         "volatility_percentile": volatility_percentile,
         "policy_signal": policy_signal,
-        "source": SOURCE_TUSHARE,
-        "source_priority": SOURCE_TUSHARE,
+        "source": source,
+        "source_priority": source_priority,
         "pit_status": "market_point_in_time",
         "fetched_at": str(provider_bundle.get("fetched_at") or ""),
     }
@@ -1154,6 +1637,7 @@ def _write_primary_generation(
     run_id: str,
     frame: pd.DataFrame,
     provider_bundle: Mapping[str, Any],
+    provider_captures: Mapping[str, bytes],
     market_pointer_sha256: str,
     market_input_evidence: list[dict[str, Any]],
     market_input_files_sha256: str,
@@ -1176,6 +1660,11 @@ def _write_primary_generation(
     )
     os.chmod(temp_path, 0o700)
     try:
+        capture_files, capture_files_sha = _write_provider_capture_files(
+            temp_path,
+            bundle=provider_bundle,
+            captures=provider_captures,
+        )
         provider_path = temp_path / "provider_bundle.json"
         provider_bytes = _canonical_json_bytes(provider_bundle) + b"\n"
         _atomic_write_bytes(provider_path, provider_bytes)
@@ -1187,14 +1676,24 @@ def _write_primary_generation(
         _fsync_file(table_path)
         table_sha = _sha256(table_path)
         output_frame_sha = _frame_sha256(frame)
+        source = str(provider_bundle.get("source") or "").strip()
+        source_priority = str(
+            provider_bundle.get("source_priority") or ""
+        ).strip()
+        provenance_status = (
+            "verified_official_first"
+            if source == SOURCE_OFFICIAL_FIRST
+            else "verified_live_tushare"
+        )
         provenance: dict[str, Any] = {
             "schema_version": PRIMARY_PROVENANCE_SCHEMA,
-            "status": "verified_live_tushare",
-            "source": SOURCE_TUSHARE,
-            "source_priority": SOURCE_TUSHARE,
+            "status": provenance_status,
+            "source": source,
+            "source_priority": source_priority,
             "trade_date": str(frame.iloc[0]["trade_date"]),
             "fetched_at": str(frame.iloc[0]["fetched_at"]),
             "provider_bundle_sha256": provider_sha,
+            "provider_capture_files_sha256": capture_files_sha,
             "canonical_market_pointer_sha256": market_pointer_sha256,
             "market_input_files_sha256": market_input_files_sha256,
             "market_formula_universe_sha256": formula_universe_sha,
@@ -1213,11 +1712,22 @@ def _write_primary_generation(
             "parquet_sha256": table_sha,
             "provider_bundle_path": "provider_bundle.json",
             "provider_bundle_sha256": provider_sha,
+            "provider_bundle_schema_version": str(
+                provider_bundle.get("schema_version") or ""
+            ),
+            "source_policy": str(
+                provider_bundle.get("source_policy") or ""
+            ),
+            "provider_capture_files": capture_files,
+            "provider_capture_files_sha256": capture_files_sha,
             "row_count": int(len(frame)),
             "as_of": str(frame.iloc[0]["trade_date"]),
-            "source": SOURCE_TUSHARE,
-            "source_priority": SOURCE_TUSHARE,
+            "source": source,
+            "source_priority": source_priority,
             "provider_status": "verified_provider_snapshot",
+            "provider_fallback_used": (
+                provider_bundle.get("fallback_used") is True
+            ),
             "pit_status": "market_point_in_time",
             "decision_cutoff_at": str(frame.iloc[0]["fetched_at"]),
             "historical_replay_eligible": False,
@@ -1231,6 +1741,17 @@ def _write_primary_generation(
             "generated_at": _now_utc(),
         }
         _validate_provider_bundle(provider_bundle, manifest=manifest)
+        if (
+            _verify_provider_capture_files(
+                temp_path,
+                bundle=provider_bundle,
+                manifest=manifest,
+            )
+            != capture_files_sha
+        ):
+            raise MacroMartPromotionError(
+                "macro_provider_capture_write_readback_mismatch"
+            )
         _validate_canonical_frame(frame, manifest)
         _validate_primary_provenance(
             manifest,
@@ -1262,6 +1783,7 @@ def _write_primary_generation(
     attestation = _PrimaryMacroAttestation(
         capability=_PRIMARY_MACRO_CAPABILITY,
         provider_bundle_sha256=provider_sha,
+        provider_capture_files_sha256=capture_files_sha,
         canonical_market_pointer_sha256=market_pointer_sha256,
         market_input_files_sha256=market_input_files_sha256,
         market_formula_universe_sha256=formula_universe_sha,
@@ -1277,6 +1799,8 @@ def _load_primary_generation_for_retry(
     run_id: str,
     trade_date: str,
     market_pointer_sha256: str,
+    nbs_cn_pmi_url: str,
+    allow_tushare_fallback: bool,
 ) -> tuple[
     dict[str, Any],
     _PrimaryMacroAttestation,
@@ -1376,7 +1900,40 @@ def _load_primary_generation_for_retry(
         unreadable_blocker="macro_retry_generation_provider_invalid",
         parser=_parse_json_object,
     )
+    if (
+        provider_bundle.get("schema_version") != PROVIDER_BUNDLE_SCHEMA
+        or manifest.get("provider_bundle_schema_version")
+        != PROVIDER_BUNDLE_SCHEMA
+        or manifest.get("source_policy") != PROVIDER_SOURCE_POLICY
+    ):
+        raise MacroMartPromotionError(
+            "macro_retry_generation_source_policy_obsolete"
+        )
     _validate_provider_bundle(provider_bundle, manifest=manifest)
+    persisted_fallback_authorized = provider_bundle.get(
+        "fallback_authorized"
+    )
+    if persisted_fallback_authorized is not bool(allow_tushare_fallback):
+        raise MacroMartPromotionError(
+            "macro_retry_generation_fallback_authorization_mismatch"
+        )
+    official_attempts = provider_bundle.get("official_attempts")
+    persisted_requested_url = (
+        str(official_attempts[0].get("requested_url") or "").strip()
+        if isinstance(official_attempts, list)
+        and len(official_attempts) == 1
+        and isinstance(official_attempts[0], Mapping)
+        else ""
+    )
+    if persisted_requested_url != str(nbs_cn_pmi_url or "").strip():
+        raise MacroMartPromotionError(
+            "macro_retry_generation_nbs_url_mismatch"
+        )
+    capture_files_sha = _verify_provider_capture_files(
+        generation,
+        bundle=provider_bundle,
+        manifest=manifest,
+    )
     _validate_provider_bundle_current_freshness(
         provider_bundle,
         current_at=_utc_now(),
@@ -1412,6 +1969,7 @@ def _load_primary_generation_for_retry(
     attestation = _PrimaryMacroAttestation(
         capability=_PRIMARY_MACRO_CAPABILITY,
         provider_bundle_sha256=provider_sha,
+        provider_capture_files_sha256=capture_files_sha,
         canonical_market_pointer_sha256=market_pointer_sha256,
         market_input_files_sha256=market_files_sha,
         market_formula_universe_sha256=formula_universe_sha,
@@ -1726,7 +2284,7 @@ def _strict_catalog_payload(
         unreadable_blocker="macro_generation_member_unreadable",
         parser=_parse_json_object,
     )
-    _read_verified_member(
+    provider_payload = _read_verified_member(
         provider_path,
         trust_root=market_root,
         expected_sha256=expected_provider_sha,
@@ -1735,6 +2293,21 @@ def _strict_catalog_payload(
         unreadable_blocker="macro_generation_member_unreadable",
         parser=_parse_json_object,
     )
+    capture_files_sha = _verify_provider_capture_files(
+        manifest_path.parent,
+        bundle=provider_payload,
+        manifest=generation_manifest,
+    )
+    generation_source = str(
+        generation_manifest.get("source") or ""
+    ).strip()
+    generation_priority = str(
+        generation_manifest.get("source_priority") or ""
+    ).strip()
+    if _SOURCE_PRIORITY_BY_SOURCE.get(generation_source) != generation_priority:
+        raise MacroMartPromotionError(
+            "macro_generation_source_policy_invalid"
+        )
     payload["schema_version"] = STRICT_CATALOG_SCHEMA
     tables["macro_daily"] = {
         "columns": sorted(_ALLOWED_INPUT_FIELDS),
@@ -1754,11 +2327,12 @@ def _strict_catalog_payload(
         "sha256": expected_table_sha,
         "generation_manifest_sha256": expected_manifest_sha,
         "provider_bundle_sha256": expected_provider_sha,
+        "provider_capture_files_sha256": capture_files_sha,
         "row_count": int(generation_manifest.get("row_count", 0)),
         "size_bytes": int(table_size),
         "snapshot_id": generation_id,
-        "source": SOURCE_TUSHARE,
-        "source_priority": SOURCE_TUSHARE,
+        "source": generation_source,
+        "source_priority": generation_priority,
         "status": "ok",
     }
     return payload
@@ -1799,6 +2373,8 @@ def _set_journal_state(
     updated = dict(journal)
     updated["state"] = state
     updated["updated_at"] = _now_utc()
+    if state == "committed":
+        updated["committed_at"] = updated["updated_at"]
     if detail:
         updated["detail"] = detail
     _atomic_json(journal_path, updated)
@@ -2035,6 +2611,8 @@ def _publish_catalog_generation(
         or attestation.transform_version != TRANSFORM_VERSION
         or attestation.provider_bundle_sha256
         != generation_manifest.get("provider_bundle_sha256")
+        or attestation.provider_capture_files_sha256
+        != generation_manifest.get("provider_capture_files_sha256")
         or attestation.canonical_market_pointer_sha256
         != hashlib.sha256(market_pointer_bytes).hexdigest()
         or attestation.market_input_files_sha256
@@ -2200,6 +2778,18 @@ def _current_macro_is_equivalent(
             unreadable_blocker="macro_current_provider_bundle_invalid",
             parser=_parse_json_object,
         )
+        if (
+            provider_bundle.get("schema_version")
+            != PROVIDER_BUNDLE_SCHEMA
+            or provider_bundle.get("source_policy")
+            != PROVIDER_SOURCE_POLICY
+        ):
+            return None
+        _verify_provider_capture_files(
+            provider_path.parent,
+            bundle=provider_bundle,
+            manifest=manifest,
+        )
         _validate_provider_bundle_current_freshness(
             provider_bundle,
             current_at=current_at,
@@ -2230,6 +2820,8 @@ def refresh_cn_macro_mart(
     expected_catalog_sha256: str,
     expected_market_pointer_sha256: str,
     allow_live: bool = False,
+    nbs_cn_pmi_url: str = "",
+    allow_tushare_fallback: bool = False,
 ) -> dict[str, Any]:
     """Build and atomically bind the latest-session live Macro mart."""
 
@@ -2237,6 +2829,16 @@ def refresh_cn_macro_mart(
         raise MacroMartPromotionError("macro_market_unsupported")
     if not allow_live:
         raise MacroMartPromotionError("macro_live_not_authorized")
+    if not str(nbs_cn_pmi_url or "").strip():
+        raise MacroMartPromotionError("macro_nbs_cn_pmi_url_missing")
+    try:
+        requested_nbs_url = validate_nbs_pmi_url(
+            str(nbs_cn_pmi_url or "").strip()
+        )
+    except NbsPmiPermanentError as exc:
+        raise MacroMartPromotionError(
+            "macro_nbs_cn_pmi_url_invalid"
+        ) from exc
     generation_id = _safe_run_id(run_id)
     expected_catalog_sha = _assert_sha256(
         expected_catalog_sha256,
@@ -2301,6 +2903,8 @@ def refresh_cn_macro_mart(
         run_id=generation_id,
         trade_date=trade_date,
         market_pointer_sha256=expected_pointer_sha,
+        nbs_cn_pmi_url=requested_nbs_url,
+        allow_tushare_fallback=allow_tushare_fallback,
     )
     if retry_generation is not None:
         (
@@ -2313,11 +2917,14 @@ def refresh_cn_macro_mart(
         _verify_market_input_evidence(bar_root, market_evidence)
     else:
         client = _build_tushare_client()
-        provider_bundle = _fetch_provider_bundle(
+        provider_fetch = _fetch_provider_bundle(
             client=client,
             trade_date=trade_date,
             captured_at=captured_at,
+            nbs_cn_pmi_url=requested_nbs_url,
+            allow_tushare_fallback=allow_tushare_fallback,
         )
+        provider_bundle = provider_fetch.bundle
         _validate_live_target(
             pointer,
             requested_as_of=as_of,
@@ -2340,6 +2947,7 @@ def refresh_cn_macro_mart(
             run_id=generation_id,
             frame=frame,
             provider_bundle=provider_bundle,
+            provider_captures=provider_fetch.captures,
             market_pointer_sha256=expected_pointer_sha,
             market_input_evidence=market_evidence,
             market_input_files_sha256=market_files_sha,
@@ -2608,33 +3216,69 @@ def _validate_provider_bundle(
     *,
     manifest: Mapping[str, Any],
 ) -> None:
-    if (
-        bundle.get("schema_version") != PROVIDER_BUNDLE_SCHEMA
-        or bundle.get("provider_id") != "tushare_pro"
-        or bundle.get("source") != SOURCE_TUSHARE
-        or bundle.get("source_priority") != SOURCE_TUSHARE
-        or bundle.get("live_requested") is not True
+    schema = str(bundle.get("schema_version") or "")
+    legacy = schema == LEGACY_PROVIDER_BUNDLE_SCHEMA
+    current = schema == PROVIDER_BUNDLE_SCHEMA
+    source = str(bundle.get("source") or "")
+    source_priority = str(bundle.get("source_priority") or "")
+    if not (legacy or current) or (
+        bundle.get("live_requested") is not True
         or bundle.get("historical_replay_eligible") is not False
-        or bundle.get("official_release_timestamps_claimed") is not False
+        or _SOURCE_PRIORITY_BY_SOURCE.get(source) != source_priority
     ):
         raise MacroMartPromotionError(
             "macro_provider_bundle_contract_invalid"
         )
+    if legacy:
+        if (
+            bundle.get("provider_id") != "tushare_pro"
+            or source != SOURCE_TUSHARE
+            or source_priority != SOURCE_TUSHARE
+            or bundle.get("official_release_timestamps_claimed") is not False
+        ):
+            raise MacroMartPromotionError(
+                "macro_provider_bundle_contract_invalid"
+            )
+    else:
+        if (
+            bundle.get("provider_id") != "official_first_macro_bundle"
+            or bundle.get("source_policy") != PROVIDER_SOURCE_POLICY
+            or source not in {SOURCE_OFFICIAL_FIRST, SOURCE_TUSHARE}
+            or not isinstance(bundle.get("fallback_authorized"), bool)
+            or not isinstance(bundle.get("fallback_used"), bool)
+            or (
+                bundle.get("fallback_used") is True
+                and bundle.get("fallback_authorized") is not True
+            )
+        ):
+            raise MacroMartPromotionError(
+                "macro_provider_bundle_contract_invalid"
+            )
+        if (
+            manifest.get("provider_bundle_schema_version") != schema
+            or manifest.get("source_policy") != PROVIDER_SOURCE_POLICY
+            or str(manifest.get("source") or "") != source
+            or str(manifest.get("source_priority") or "")
+            != source_priority
+            or (manifest.get("provider_fallback_used") is True)
+            != (bundle.get("fallback_used") is True)
+        ):
+            raise MacroMartPromotionError(
+                "macro_provider_bundle_manifest_policy_mismatch"
+            )
     if _date_text(bundle.get("trade_date")) != _date_text(
         manifest.get("as_of")
     ):
         raise MacroMartPromotionError("macro_provider_bundle_as_of_mismatch")
-    cutoff = pd.to_datetime(
-        str(bundle.get("decision_cutoff_at") or ""),
-        errors="coerce",
-        utc=True,
+    cutoff = _aware_timestamp(
+        bundle.get("decision_cutoff_at"),
+        blocker="macro_provider_bundle_cutoff_invalid",
     )
-    fetched = pd.to_datetime(
-        str(bundle.get("fetched_at") or ""),
-        errors="coerce",
-        utc=True,
+    fetched = _aware_timestamp(
+        bundle.get("fetched_at"),
+        blocker="macro_provider_bundle_cutoff_invalid",
     )
-    if pd.isna(cutoff) or pd.isna(fetched) or cutoff != fetched:
+    if cutoff != fetched:
         raise MacroMartPromotionError(
             "macro_provider_bundle_cutoff_invalid"
         )
@@ -2653,6 +3297,7 @@ def _validate_provider_bundle(
         raise MacroMartPromotionError(
             "macro_provider_bundle_selected_inputs_invalid"
         )
+    endpoint_completion_times: list[pd.Timestamp] = []
     for endpoint in sorted(_ENDPOINT_SPECS):
         entry = endpoints[endpoint]
         chosen = selected[endpoint]
@@ -2660,6 +3305,45 @@ def _validate_provider_bundle(
             raise MacroMartPromotionError(
                 "macro_provider_bundle_endpoint_invalid"
             )
+        source_system = str(entry.get("source_system") or "")
+        source_role = str(entry.get("source_role") or "")
+        if current:
+            if endpoint == "cn_pmi" and source_system == "nbs_official":
+                if source_role != "official_primary":
+                    raise MacroMartPromotionError(
+                        "macro_provider_bundle_endpoint_source_invalid"
+                    )
+            elif endpoint == "cn_pmi" and source_system == "tushare_fallback":
+                if source_role != "explicit_transport_fallback":
+                    raise MacroMartPromotionError(
+                        "macro_provider_bundle_endpoint_source_invalid"
+                    )
+            elif endpoint != "cn_pmi" and source_system == "tushare_primary":
+                if source_role != "configured_primary":
+                    raise MacroMartPromotionError(
+                        "macro_provider_bundle_endpoint_source_invalid"
+                    )
+            else:
+                raise MacroMartPromotionError(
+                    "macro_provider_bundle_endpoint_source_invalid"
+                )
+            if (
+                str(chosen.get("source_system") or "") != source_system
+                or str(chosen.get("source_role") or "") != source_role
+            ):
+                raise MacroMartPromotionError(
+                    "macro_provider_bundle_selected_source_mismatch"
+                )
+            if source_system.startswith("tushare_"):
+                attempt_count = entry.get("attempt_count")
+                if (
+                    isinstance(attempt_count, bool)
+                    or not isinstance(attempt_count, int)
+                    or not 1 <= attempt_count <= 3
+                ):
+                    raise MacroMartPromotionError(
+                        "macro_provider_bundle_attempt_count_invalid"
+                    )
         records = entry.get("records")
         if (
             not isinstance(records, list)
@@ -2774,23 +3458,47 @@ def _validate_provider_bundle(
                 raise MacroMartPromotionError(
                     "macro_provider_bundle_selected_values_mismatch"
                 )
-        observed_at = pd.to_datetime(
-            str(chosen.get("observed_available_at") or ""),
-            errors="coerce",
-            utc=True,
+        observed_at = _aware_timestamp(
+            chosen.get("observed_available_at"),
+            blocker=(
+                "macro_provider_bundle_selected_input_after_cutoff"
+            ),
         )
-        if pd.isna(observed_at) or observed_at != cutoff:
+        if (
+            observed_at > cutoff
+            or (legacy and observed_at != cutoff)
+        ):
             raise MacroMartPromotionError(
                 "macro_provider_bundle_selected_input_after_cutoff"
             )
+        if current:
+            endpoint_completed_at = _aware_timestamp(
+                entry.get("fetch_completed_at"),
+                blocker=(
+                    "macro_provider_bundle_endpoint_completion_invalid"
+                ),
+            )
+            if (
+                endpoint_completed_at != observed_at
+            ):
+                raise MacroMartPromotionError(
+                    "macro_provider_bundle_endpoint_completion_invalid"
+                )
+            endpoint_completion_times.append(endpoint_completed_at)
         try:
             chosen_lag = int(chosen.get("max_release_lag_days", -1))
         except (TypeError, ValueError) as exc:
             raise MacroMartPromotionError(
                 "macro_provider_bundle_selected_contract_invalid"
             ) from exc
+        official_timestamp_known = chosen.get(
+            "official_release_timestamp_known"
+        )
+        expected_official_timestamp = (
+            True if current and source_system == "nbs_official" else False
+        )
         if (
-            chosen.get("official_release_timestamp_known") is not False
+            official_timestamp_known is not expected_official_timestamp
             or chosen_lag != int(spec["max_release_lag_days"])
             or str(chosen.get("transform_role") or "")
             != ("policy_signal" if endpoint == "cn_m" else "context_only")
@@ -2798,6 +3506,170 @@ def _validate_provider_bundle(
             raise MacroMartPromotionError(
                 "macro_provider_bundle_selected_contract_invalid"
             )
+        if current and source_system == "nbs_official":
+            raw_capture = entry.get("raw_capture")
+            release_at = _aware_timestamp(
+                chosen.get("source_release_at"),
+                blocker="macro_provider_bundle_official_evidence_invalid",
+            )
+            raw_started = _aware_timestamp(
+                (
+                    raw_capture.get("fetch_started_at")
+                    if isinstance(raw_capture, Mapping)
+                    else None
+                ),
+                blocker="macro_provider_bundle_official_evidence_invalid",
+            )
+            raw_completed = _aware_timestamp(
+                (
+                    raw_capture.get("fetch_completed_at")
+                    if isinstance(raw_capture, Mapping)
+                    else None
+                ),
+                blocker="macro_provider_bundle_official_evidence_invalid",
+            )
+            redirect_chain = (
+                raw_capture.get("redirect_chain")
+                if isinstance(raw_capture, Mapping)
+                else None
+            )
+            if isinstance(redirect_chain, list):
+                try:
+                    for redirect_url in redirect_chain:
+                        validate_nbs_pmi_url(redirect_url)
+                except NbsPmiPermanentError as exc:
+                    raise MacroMartPromotionError(
+                        "macro_provider_bundle_official_evidence_invalid"
+                    ) from exc
+            if (
+                not isinstance(raw_capture, Mapping)
+                or release_at > observed_at
+                or raw_started > raw_completed
+                or raw_completed != observed_at
+                or str(entry.get("fetch_completed_at") or "")
+                != str(raw_capture.get("fetch_completed_at") or "")
+                or raw_capture.get("body_representation")
+                != "http_entity_body_after_content_decoding"
+                or raw_capture.get("content_type") != "text/html"
+                or raw_capture.get("charset") != "utf-8"
+                or not isinstance(redirect_chain, list)
+                or not redirect_chain
+                or len(redirect_chain) > NBS_PMI_MAX_REDIRECTS + 1
+                or not all(
+                    isinstance(item, str) and item.strip() == item
+                    for item in redirect_chain
+                )
+                or redirect_chain[-1]
+                != str(raw_capture.get("source_url") or "")
+                or str(chosen.get("source_url") or "")
+                != str(raw_capture.get("source_url") or "")
+                or str(chosen.get("source_record_id") or "")
+                != str(raw_capture.get("source_record_id") or "")
+                or str(chosen.get("source_release_at") or "")
+                != str(raw_capture.get("source_release_at") or "")
+            ):
+                raise MacroMartPromotionError(
+                    "macro_provider_bundle_official_evidence_invalid"
+                )
+    if current:
+        if (
+            not endpoint_completion_times
+            or max(endpoint_completion_times) != cutoff
+        ):
+            raise MacroMartPromotionError(
+                "macro_provider_bundle_completion_cutoff_mismatch"
+            )
+        pmi_source = str(
+            endpoints["cn_pmi"].get("source_system") or ""
+        )
+        official_used = pmi_source == "nbs_official"
+        fallback_used = pmi_source == "tushare_fallback"
+        attempts = bundle.get("official_attempts")
+        fallback_trigger = bundle.get("fallback_trigger")
+        if (
+            not isinstance(attempts, list)
+            or len(attempts) != 1
+            or not isinstance(attempts[0], Mapping)
+            or str(attempts[0].get("endpoint") or "") != "cn_pmi"
+            or (bundle.get("fallback_used") is True) != fallback_used
+            or (bundle.get("official_release_timestamps_claimed") is True)
+            != official_used
+            or source
+            != (SOURCE_OFFICIAL_FIRST if official_used else SOURCE_TUSHARE)
+            or source_priority
+            != (SOURCE_OFFICIAL if official_used else SOURCE_TUSHARE)
+            or str(attempts[0].get("status") or "")
+            != ("success" if official_used else "transient_failure")
+        ):
+            raise MacroMartPromotionError(
+                "macro_provider_bundle_fallback_policy_invalid"
+            )
+        attempt = attempts[0]
+        try:
+            requested_url = validate_nbs_pmi_url(
+                str(attempt.get("requested_url") or "")
+            )
+        except NbsPmiPermanentError as exc:
+            raise MacroMartPromotionError(
+                "macro_provider_bundle_attempt_url_invalid"
+            ) from exc
+        attempt_started = _aware_timestamp(
+            attempt.get("attempt_started_at"),
+            blocker="macro_provider_bundle_attempt_clock_invalid",
+        )
+        attempt_completed = _aware_timestamp(
+            attempt.get("attempt_completed_at"),
+            blocker="macro_provider_bundle_attempt_clock_invalid",
+        )
+        if (
+            attempt_started > attempt_completed
+            or attempt_completed > cutoff
+        ):
+            raise MacroMartPromotionError(
+                "macro_provider_bundle_attempt_clock_invalid"
+            )
+        if official_used:
+            pmi_selected = selected["cn_pmi"]
+            pmi_raw = endpoints["cn_pmi"].get("raw_capture")
+            if (
+                not isinstance(pmi_raw, Mapping)
+                or fallback_trigger is not None
+                or requested_url
+                != str(redirect_chain[0])
+                or str(attempt.get("effective_url") or "")
+                != str(pmi_selected.get("source_url") or "")
+                or str(attempt.get("source_record_id") or "")
+                != str(pmi_selected.get("source_record_id") or "")
+                or str(attempt.get("attempt_started_at") or "")
+                != str(pmi_raw.get("fetch_started_at") or "")
+                or str(attempt.get("attempt_completed_at") or "")
+                != str(pmi_raw.get("fetch_completed_at") or "")
+            ):
+                raise MacroMartPromotionError(
+                    "macro_provider_bundle_attempt_evidence_invalid"
+                )
+        else:
+            fallback_observed_at = _aware_timestamp(
+                selected["cn_pmi"].get("observed_available_at"),
+                blocker="macro_provider_bundle_fallback_evidence_invalid",
+            )
+            if (
+                not isinstance(fallback_trigger, Mapping)
+                or fallback_trigger.get("category")
+                != "transport_transient"
+                or fallback_trigger.get("provider") != "tushare_pro"
+                or not str(fallback_trigger.get("reason") or "").strip()
+                or attempt.get("trigger_category")
+                != "transport_transient"
+                or attempt.get("fallback_provider") != "tushare_pro"
+                or str(attempt.get("reason") or "")
+                != str(fallback_trigger.get("reason") or "")
+                or attempt_completed > fallback_observed_at
+            ):
+                raise MacroMartPromotionError(
+                    "macro_provider_bundle_fallback_evidence_invalid"
+                )
+        _provider_capture_files(bundle)
 
 
 def _validate_primary_provenance(
@@ -2831,6 +3703,15 @@ def _validate_primary_provenance(
     for field_name in required_hashes:
         _assert_sha256(
             envelope.get(field_name),
+            blocker="macro_primary_provenance_contract_invalid",
+        )
+    current_provider_contract = (
+        manifest.get("provider_bundle_schema_version")
+        == PROVIDER_BUNDLE_SCHEMA
+    )
+    if current_provider_contract:
+        _assert_sha256(
+            envelope.get("provider_capture_files_sha256"),
             blocker="macro_primary_provenance_contract_invalid",
         )
     market_files = manifest.get("market_input_files")
@@ -2911,11 +3792,22 @@ def _validate_primary_provenance(
         raise MacroMartPromotionError(
             "macro_primary_formula_universe_hash_mismatch"
         )
+    manifest_source = str(manifest.get("source") or "").strip()
+    manifest_priority = str(
+        manifest.get("source_priority") or ""
+    ).strip()
+    expected_status = (
+        "verified_official_first"
+        if manifest_source == SOURCE_OFFICIAL_FIRST
+        else "verified_live_tushare"
+    )
     if (
         envelope.get("schema_version") != PRIMARY_PROVENANCE_SCHEMA
-        or envelope.get("status") != "verified_live_tushare"
-        or envelope.get("source") != SOURCE_TUSHARE
-        or envelope.get("source_priority") != SOURCE_TUSHARE
+        or envelope.get("status") != expected_status
+        or envelope.get("source") != manifest_source
+        or envelope.get("source_priority") != manifest_priority
+        or _SOURCE_PRIORITY_BY_SOURCE.get(manifest_source)
+        != manifest_priority
         or envelope.get("transform_version") != TRANSFORM_VERSION
         or envelope.get("historical_replay_eligible") is not False
         or envelope.get("provider_bundle_sha256")
@@ -2928,6 +3820,11 @@ def _validate_primary_provenance(
         != _date_text(manifest.get("as_of"))
         or str(envelope.get("fetched_at") or "")
         != str(manifest.get("decision_cutoff_at") or "")
+        or (
+            current_provider_contract
+            and envelope.get("provider_capture_files_sha256")
+            != manifest.get("provider_capture_files_sha256")
+        )
     ):
         raise MacroMartPromotionError(
             "macro_primary_provenance_contract_invalid"
@@ -3175,6 +4072,20 @@ def read_macro_mart(
     )
     _validate_canonical_frame(frame, generation_manifest)
     _validate_provider_bundle(provider_bundle, manifest=generation_manifest)
+    capture_files_sha = _verify_provider_capture_files(
+        expected_generation_root,
+        bundle=provider_bundle,
+        manifest=generation_manifest,
+    )
+    if provider_bundle.get("schema_version") == PROVIDER_BUNDLE_SCHEMA:
+        catalog_capture_sha = _assert_sha256(
+            entry.get("provider_capture_files_sha256"),
+            blocker="macro_catalog_provider_capture_hash_invalid",
+        )
+        if catalog_capture_sha != capture_files_sha:
+            raise MacroMartPromotionError(
+                "macro_catalog_provider_capture_hash_mismatch"
+            )
     _validate_primary_provenance(
         generation_manifest,
         provider_bundle_sha256=provider_bundle_sha,

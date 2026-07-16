@@ -12,6 +12,8 @@ from quant_investor.market import macro_mart as macro_mart_module
 
 from quant_investor.market.branch_readiness import (
     STATUS_BLOCK,
+    STATUS_PASS,
+    STATUS_WARN,
     assess_macro_readiness,
     load_macro_record,
 )
@@ -517,8 +519,53 @@ def test_macro_readiness_does_not_trust_row_reported_source_priority() -> None:
     )
 
     assert readiness.status == STATUS_BLOCK
-    assert "macro_not_tushare_primary" in readiness.blockers
+    assert "macro_source_not_approved_primary" in readiness.blockers
     assert "macro_generation_not_production_eligible" in readiness.blockers
+
+
+def test_macro_readiness_accepts_official_first_primary_source() -> None:
+    record = {
+        **_row(source="official_first_mixed"),
+        "source_priority": "official_primary",
+    }
+    readiness = assess_macro_readiness(
+        macro_record=record,
+        manifest={
+            "source": "official_first_mixed",
+            "source_priority": "official_primary",
+            "provider_status": "verified_provider_snapshot",
+            "provider_fallback_used": False,
+            "production_eligible": True,
+            "generation_id": "g-official",
+        },
+        as_of="2024-05-10",
+    )
+
+    assert readiness.status == STATUS_PASS
+    assert readiness.blockers == []
+    assert readiness.source_priority == "official_primary"
+    assert readiness.fallback_used is False
+
+
+def test_macro_readiness_warns_for_explicit_provider_fallback() -> None:
+    record = _row()
+    readiness = assess_macro_readiness(
+        macro_record=record,
+        manifest={
+            "source": "tushare_primary",
+            "source_priority": "tushare_primary",
+            "provider_status": "verified_provider_snapshot",
+            "provider_fallback_used": True,
+            "production_eligible": True,
+            "generation_id": "g-fallback",
+        },
+        as_of="2024-05-10",
+    )
+
+    assert readiness.status == STATUS_WARN
+    assert readiness.blockers == []
+    assert readiness.source_priority == "tushare_primary"
+    assert readiness.fallback_used is True
 
 
 @pytest.mark.parametrize(

@@ -9,11 +9,54 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from quant_investor.macro.nbs_pmi import (
+    NBS_PMI_PARSER_CONTRACT_SHA256,
+    NBS_PMI_PARSER_VERSION,
+    NbsPmiCapture,
+    NbsPmiTransientError,
+    parse_nbs_cn_pmi_html,
+)
 from quant_investor.market import macro_mart
 
 
 TARGET = "20240510"
 CAPTURED_AT = datetime(2024, 5, 10, 8, 30, tzinfo=timezone.utc)
+NBS_URL = "https://www.stats.gov.cn/sj/zxfb/202404/t20240430_1.html"
+
+
+def _nbs_capture() -> NbsPmiCapture:
+    body = """<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="ArticleTitle" content="2024年4月中国采购经理指数运行情况">
+  <meta name="PubDate" content="2024/04/30 09:30">
+  <title>2024年4月中国采购经理指数运行情况 - 国家统计局</title>
+</head>
+<body>
+  <main><p>4月份，制造业采购经理指数（PMI）为50.4%。</p></main>
+</body>
+</html>
+""".encode("utf-8")
+    parsed = parse_nbs_cn_pmi_html(body, source_url=NBS_URL)
+    return NbsPmiCapture(
+        month=parsed.month,
+        value=parsed.value,
+        source_url=parsed.source_url,
+        source_record_id=parsed.source_record_id,
+        article_title=parsed.article_title,
+        source_release_at=parsed.source_release_at,
+        fetch_started_at=CAPTURED_AT.isoformat(),
+        fetch_completed_at=CAPTURED_AT.isoformat(),
+        content_type="text/html",
+        charset="utf-8",
+        body_bytes=body,
+        body_sha256=hashlib.sha256(body).hexdigest(),
+        body_size_bytes=len(body),
+        parser_version=NBS_PMI_PARSER_VERSION,
+        parser_contract_sha256=NBS_PMI_PARSER_CONTRACT_SHA256,
+        redirect_chain=(NBS_URL,),
+    )
 
 
 def _sha(path: Path) -> str:
@@ -382,8 +425,15 @@ def test_same_run_retry_resumes_generation_without_second_provider_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     macro_root, catalog_path, pointer_path = _refresh_workspace(tmp_path)
+    nbs_capture = _nbs_capture()
+
+    def _fetch_official(url: str) -> NbsPmiCapture:
+        assert url == NBS_URL
+        return nbs_capture
+
     monkeypatch.setattr(macro_mart, "_utc_now", lambda: CAPTURED_AT)
     monkeypatch.setattr(macro_mart, "_build_tushare_client", _FakeTushare)
+    monkeypatch.setattr(macro_mart, "fetch_nbs_cn_pmi", _fetch_official)
     original_write = macro_mart._write_primary_generation
 
     def _write_then_crash(**kwargs: object):
@@ -403,13 +453,23 @@ def test_same_run_retry_resumes_generation_without_second_provider_call(
         "expected_catalog_sha256": _sha(catalog_path),
         "expected_market_pointer_sha256": _sha(pointer_path),
         "allow_live": True,
+        "nbs_cn_pmi_url": NBS_URL,
     }
     with pytest.raises(RuntimeError, match="simulated crash"):
         macro_mart.refresh_cn_macro_mart(**call)
 
+    landed_capture = (
+        macro_root
+        / "_generations"
+        / "same-run-retry"
+        / macro_mart._nbs_capture_relative_path(nbs_capture)
+    )
+    assert landed_capture.read_bytes() == nbs_capture.body_bytes
+    assert _sha(landed_capture) == nbs_capture.body_sha256
+
     monkeypatch.setattr(macro_mart, "_write_primary_generation", original_write)
 
-    def _provider_must_not_run() -> object:
+    def _provider_must_not_run(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("valid landed generation must be resumed")
 
     monkeypatch.setattr(
@@ -417,8 +477,86 @@ def test_same_run_retry_resumes_generation_without_second_provider_call(
         "_build_tushare_client",
         _provider_must_not_run,
     )
+    monkeypatch.setattr(
+        macro_mart,
+        "fetch_nbs_cn_pmi",
+        _provider_must_not_run,
+    )
+
+    mismatched_url_call = {
+        **call,
+        "nbs_cn_pmi_url": NBS_URL.replace("_1.html", "_2.html"),
+    }
+    with pytest.raises(
+        macro_mart.MacroMartPromotionError,
+        match="macro_retry_generation_nbs_url_mismatch",
+    ):
+        macro_mart.refresh_cn_macro_mart(**mismatched_url_call)
+
     result = macro_mart.refresh_cn_macro_mart(**call)
 
     assert result["status"] == "promoted"
     assert result["run_id"] == "same-run-retry"
     assert Path(str(result["transaction_journal"])).exists()
+
+
+def test_same_run_retry_cannot_reuse_fallback_without_matching_authorization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    macro_root, catalog_path, pointer_path = _refresh_workspace(tmp_path)
+    before_catalog = catalog_path.read_bytes()
+    monkeypatch.setattr(macro_mart, "_utc_now", lambda: CAPTURED_AT)
+    monkeypatch.setattr(macro_mart, "_build_tushare_client", _FakeTushare)
+
+    def _official_transient(_url: str) -> NbsPmiCapture:
+        raise NbsPmiTransientError("nbs_pmi_network_unavailable")
+
+    monkeypatch.setattr(macro_mart, "fetch_nbs_cn_pmi", _official_transient)
+    original_write = macro_mart._write_primary_generation
+
+    def _write_then_crash(**kwargs: object):
+        original_write(**kwargs)
+        raise RuntimeError("simulated crash after fallback generation rename")
+
+    monkeypatch.setattr(
+        macro_mart,
+        "_write_primary_generation",
+        _write_then_crash,
+    )
+    authorized_call = {
+        "market": "CN",
+        "as_of": TARGET,
+        "data_root": macro_root,
+        "run_id": "fallback-retry-authorization",
+        "expected_catalog_sha256": _sha(catalog_path),
+        "expected_market_pointer_sha256": _sha(pointer_path),
+        "allow_live": True,
+        "nbs_cn_pmi_url": NBS_URL,
+        "allow_tushare_fallback": True,
+    }
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        macro_mart.refresh_cn_macro_mart(**authorized_call)
+
+    monkeypatch.setattr(macro_mart, "_write_primary_generation", original_write)
+
+    def _provider_must_not_run(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("retry policy mismatch must fail before provider I/O")
+
+    monkeypatch.setattr(
+        macro_mart,
+        "_build_tushare_client",
+        _provider_must_not_run,
+    )
+    with pytest.raises(
+        macro_mart.MacroMartPromotionError,
+        match="macro_retry_generation_fallback_authorization_mismatch",
+    ):
+        macro_mart.refresh_cn_macro_mart(
+            **{
+                **authorized_call,
+                "allow_tushare_fallback": False,
+            }
+        )
+
+    assert catalog_path.read_bytes() == before_catalog

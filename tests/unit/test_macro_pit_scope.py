@@ -29,6 +29,8 @@ def _market_frame() -> pd.DataFrame:
 def _provider_bundle() -> dict[str, object]:
     return {
         "fetched_at": "2024-05-10T08:30:00+00:00",
+        "source": macro_mart.SOURCE_TUSHARE,
+        "source_priority": macro_mart.SOURCE_TUSHARE,
         "selected_inputs": {"cn_m": {"values": {"m2_yoy": 9.0}}},
     }
 

@@ -45,9 +45,11 @@ JSON 或 JSONL 也不是生产真相。
    bytes；读取期间发生 replace 或原地改写时立即阻断；
 7. canonical frame 只含声明字段，数值范围、日期、`fetched_at`、PIT 状态以及
    manifest/row source lineage 全部一致。
-8. generation 同目录必须包含 hash-bound `provider_bundle.json`，完整保留
-   `cn_pmi`、`cn_cpi`、`cn_ppi`、`sf_month`、`cn_m` 五个 Tushare 响应和
-   selected-input 证据；不能自报 official release timestamp；
+8. generation 同目录必须包含 hash-bound `provider_bundle.json`。
+   `cn-macro-provider-bundle.v2` 按 endpoint 执行
+   `official-first-per-endpoint.v1`：`cn_pmi` 的生产主源是国家统计局正式发布页，
+   `cn_cpi`、`cn_ppi`、`sf_month`、`cn_m` 暂仍以 Tushare 为主源，并保留每个
+   endpoint 的 selected-input、source-role 和 attempt 证据；
 9. `primary_provenance` 必须绑定 provider bundle、canonical market pointer、
    逐个行情分区、输出 frame 和 Parquet 的 SHA-256，并使用
    `cn-macro-market-confirmation.v1`；该快照只供 capture 后的下一次决策，固定
@@ -64,6 +66,21 @@ JSON 或 JSONL 也不是生产真相。
 12. 市场公式横截面只包含 terminal bar 等于目标 session 的证券；历史已终止证券
     不得进入当前 `macro_score`、breadth 或 volatility 计算，且该公式 universe
     必须进入 hash-bound provenance。
+13. NBS 成功响应的原始 HTML 必须作为 generation 内的 `provider_captures/`
+    sidecar 保存。`provider_bundle.json` 绑定原始字节的 SHA-256/size、parser
+    version/contract hash、issuer URL、record ID、`source_release_at`、fetch
+    start/completion 与 redirect chain；generation manifest 绑定精确 capture-file
+    集合及其聚合 hash，primary provenance 与 catalog 绑定同一聚合 hash。reader
+    与 transaction recovery 必须复核路径、hash、size 并重新解析，确认 release
+    identity、月份和值均与 bundle 一致。当前 `nbs-cn-pmi-html.v2` 还必须拒绝
+    晚于正式页面 `PubDate` 月份的未来统计月。
+14. `source_release_at`、endpoint `fetch_completed_at` 与 transaction journal
+    `committed_at` 是三种不同时间：分别表示发布方发布时间、本次实际取得响应的
+    时间和 catalog 事务完成时间。decision cutoff 只能取最后一次 endpoint I/O
+    completion，不能用发布页时间回填或伪造历史可得性。每个 endpoint
+    completion 必须显式带时区且精确等于其 selected observation time；所有
+    endpoint completion 的最大值必须同时精确等于 `decision_cutoff_at` 和 bundle
+    `fetched_at`。fallback 证据还必须证明 official attempt 已先完成。
 
 任何一个条件缺失或不一致都必须 fail closed。读取器不接受目录内“看起来最新”的
 文件，也不根据 mtime、文件名或局部 pointer 猜测 canonical generation。
@@ -97,22 +114,40 @@ quant-investor market macro-refresh \
   --run-id <new_generation_id> \
   --expected-catalog-sha256 <current_catalog_sha256> \
   --expected-market-pointer-sha256 <current_market_pointer_sha256> \
+  --nbs-cn-pmi-url <nbs_official_release_https_url> \
   --allow-live
 ```
 
 该命令只接受当前 `_latest.json` 的 latest-complete session，且 capture 必须在
-上海收盘后 72 小时内。`--allow-live`、两个 expected SHA 或新 run id 缺一即
-fail closed；任一 provider 月份晚于 capture 或早于声明的最晚可用月份也会阻断。
+上海收盘后 72 小时内。`--allow-live`、显式
+`--nbs-cn-pmi-url`、两个 expected SHA 或新 run id 缺一即 fail closed。命令不提供
+NBS 默认 URL；operator 必须传入目标月份的国家统计局 issuer-bound HTTPS 正式
+发布页。任一 provider 月份晚于 capture 或早于声明的最晚可用月份也会阻断。
 它从 exact bar files 中 terminal date 等于目标 session 的证券计算：逐证券最近
 20 日收益的等权市场确认
 分数、正收益 breadth、20 日等权市场年化波动率的 trailing-252 weak-rank；
 `policy_signal` 只使用已保留的 M2 阈值（`>10` supportive、`<=8` restrictive、
 其余 neutral），其余四个端点只作 provenance/context。
 
+生产 provider policy 是 per-endpoint official-first：`cn_pmi` 使用国家统计局正式
+发布页；`cn_cpi`、`cn_ppi`、`sf_month`、`cn_m` 暂仍从 Tushare 获取。
+`--allow-tushare-fallback` 默认关闭，只在 NBS 请求发生已分类的瞬态传输失败时
+显式授权 `cn_pmi` 使用 Tushare。redirect policy、parser、title/record、月份、
+数值或其他语义校验失败都必须 fail closed，不能触发 fallback；fallback 的官方
+失败 attempt 和实际 source role 必须原样留痕，不能伪装为 official，也不能与
+official 值平均或拼接。
+
+同一 `run_id` 的 crash retry 只能复用与本次请求策略完全相同的已落盘
+generation：本次显式 NBS 初始 URL 必须等于 `official_attempts.requested_url`，且
+`--allow-tushare-fallback` 必须与 generation 的 `fallback_authorized` 完全一致。
+任一不一致都 fail closed；新的 URL 或 fallback 决策必须使用新的 run id。
+
 若同一 market pointer 已有有效同版本 generation，命令只返回
 `already_current`，不再次调用 provider，也不创建 generation。readiness schedule
 只能核对该入口的 `--help` 并给出人工补数建议，不得添加 `--allow-live`、不得
-推进 catalog。
+推进 catalog。`cn-macro-provider-bundle.v1` 只保留历史兼容读取资格，不能被
+认定为 v2 current-equivalent；必须以 v2 official-first 证据重新发布后才可跳过
+provider I/O。以上变更不改变 Quant 与 Fundamental 的 source policy。
 
 ### `macro_observations`：严格 `_latest.json`
 
@@ -200,11 +235,14 @@ market catalog or exposes the candidate to production reads. Empty input,
 unimplemented live access, older snapshots, invalid schema, and interrupted
 writes leave the catalog unchanged.
 
-For observation maintenance, `--allow-live` remains blocked unless a reviewed
-provider transport is injected by the caller. `--allow-tushare-fallback` is a
-second explicit permission and applies only to indicators missing from the
-official result. Official and fallback values are never averaged; official
-provenance wins for the same indicator and period.
+For observation maintenance (not production `market macro-refresh`),
+`--allow-live` remains blocked unless a reviewed provider transport is injected
+by the caller. Its `--allow-tushare-fallback` option is a second explicit
+permission and applies only to indicators missing from the official result.
+Official and fallback values are never averaged; official provenance wins for
+the same indicator and period. The production refresh option with the same
+spelling is governed exclusively by the transient NBS transport-failure rule
+defined above.
 
 ## PIT replay
 
