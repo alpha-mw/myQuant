@@ -107,7 +107,7 @@ def _fake_empty_candidate_dag_status() -> dict[str, object]:
         "candidate_generation_status": "blocked",
         "blocker": "candidate_dag_incomplete",
         "required_branches": list(tracker.REQUIRED_DAG_BRANCHES),
-        "candidate_source": "v14_full_market_dag",
+        "candidate_source": "v15_full_market_dag",
         "dag_pipeline": {
             "universe": "full_a",
             "deterministic_funnel": True,
@@ -174,10 +174,10 @@ def _patch_parquet_completeness(
 
 
 @pytest.fixture(autouse=True)
-def _stub_candidate_level_v14_dag(monkeypatch):
+def _stub_candidate_level_v15_dag(monkeypatch):
     monkeypatch.setattr(
         tracker,
-        "_run_candidate_level_v14_dag",
+        "_run_candidate_level_v15_dag",
         lambda **_kwargs: (pd.DataFrame(dtype=object), _fake_empty_candidate_dag_status(), {}),
     )
 
@@ -1308,7 +1308,7 @@ def test_switch_plan_blocks_hold_negative_alpha_and_requires_manual_override():
         "symbol": "600988.SH",
         "name": "赤峰黄金",
         "theme_label": "黄金",
-        "candidate_source": "v14_full_market_dag",
+        "candidate_source": "v15_full_market_dag",
         "candidate_dag_branch_contract_complete": True,
         "portfolio_target_weight": 0.05,
         "posterior_action_score": 0.4,
@@ -1511,7 +1511,7 @@ def test_candidate_pool_from_v14_dag_requires_candidate_level_three_branches():
 
     assert candidate_pool["symbol"].tolist() == ["688301.SH"]
     row = candidate_pool.iloc[0]
-    assert row["candidate_source"] == "v14_full_market_dag"
+    assert row["candidate_source"] == "v15_full_market_dag"
     assert row["candidate_dag_branch_contract_complete"] is True
     assert row["candidate_dag_branch_support_count"] == 3
     assert row["candidate_dag_branch_support_total"] == 3
@@ -1525,20 +1525,7 @@ def test_candidate_pool_from_v14_dag_requires_candidate_level_three_branches():
     assert status["candidate_dag_branch_contract_compliance"]["missing_branch_by_symbol"] == {
         "002409.SZ": ["fundamental"]
     }
-    theme_pool = status["theme_candidate_pool"]
-    assert theme_pool["status"] == "applied"
-    assert theme_pool["policy_regime"] == "趋势下跌"
-    assert theme_pool["admitted_theme_count"] == 1
-    assert theme_pool["rejected_theme_count"] == 1
-    assert theme_pool["core_symbol_count"] == 1
-    assert theme_pool["residual_symbol_count"] == 1
-    assert theme_pool["excluded_symbol_count"] == 1
-    assert theme_pool["excluded_reason_counts"] == {"theme_pool_theme_not_admitted": 1}
-    assert theme_pool["admitted_symbols_by_source_sample"]["core"] == ["688301.SH"]
-    assert theme_pool["admitted_symbols_by_source_sample"]["residual"] == ["002409.SZ"]
-    assert theme_pool["excluded_symbols_by_reason_sample"][
-        "theme_pool_theme_not_admitted"
-    ] == ["600519.SH"]
+    assert "theme_candidate_pool" not in status
 
     for incomplete_evidence in ([], ["quant"]):
         incomplete_artifacts = deepcopy(dag_artifacts)
@@ -1785,163 +1772,6 @@ def test_candidate_pool_rejects_malformed_mapping_branch_payloads(
     assert compliance["missing_branch_by_symbol"][symbol] == ["macro"]
 
 
-def test_write_outputs_persists_theme_pool_audit(tmp_path: Path) -> None:
-    run_dir = tmp_path / "strategy_records" / "20260630_theme_pool"
-    manifest = {
-        "timestamp": "20260630_theme_pool",
-        "files": {"analysis_report": "analysis_report.md"},
-        "raw_exports": {},
-    }
-    market_snapshot = {"analysis_trade_date": "20260629"}
-    theme_pool_audit = {
-        "schema_version": tracker.THEME_POOL_AUDIT_SCHEMA_VERSION,
-        "summary": {
-            "status": "applied",
-            "admitted_theme_count": 1,
-            "rejected_theme_count": 1,
-            "core_symbol_count": 1,
-            "residual_symbol_count": 0,
-            "excluded_symbol_count": 1,
-            "excluded_reason_counts": {"theme_pool_theme_not_admitted": 1},
-        },
-        "symbols": {
-            "688301.SH": {"admitted": True, "source": "core"},
-            "600519.SH": {
-                "admitted": False,
-                "source": "none",
-                "theme_pool_reason": "theme_pool_theme_not_admitted",
-            },
-        },
-    }
-
-    tracker._write_outputs(
-        base_dir=tmp_path / "strategy_records",
-        run_dir=run_dir,
-        report_text="# report\n",
-        holdings_review=pd.DataFrame([{"symbol": "688301.SH"}]),
-        candidate_pool=pd.DataFrame([{"symbol": "688301.SH"}]),
-        switch_plan_df=pd.DataFrame([{"buy_symbol": "688301.SH"}]),
-        ledger=pd.DataFrame([{"symbol": "688301.SH"}]),
-        orders_df=pd.DataFrame([{"symbol": "688301.SH"}]),
-        pnl_summary_df=pd.DataFrame([{"total_value_after": 1.0}]),
-        manifest=manifest,
-        market_snapshot=market_snapshot,
-        theme_pool_audit=theme_pool_audit,
-    )
-
-    written_manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-    written_snapshot = json.loads((run_dir / "market_snapshot.json").read_text(encoding="utf-8"))
-    written_audit = json.loads((run_dir / "theme_pool_audit.json").read_text(encoding="utf-8"))
-
-    assert written_manifest["files"]["theme_pool_audit"] == "theme_pool_audit.json"
-    assert written_manifest["raw_exports"]["theme_pool_audit"] == (
-        "raw_exports/aggressive_portfolio_20260630_theme_pool_formal_theme_pool_audit.json"
-    )
-    assert written_manifest["theme_pool_audit"]["file"] == "theme_pool_audit.json"
-    assert written_snapshot["theme_pool_audit"]["file"] == "theme_pool_audit.json"
-    assert written_audit["summary"]["excluded_reason_counts"] == {
-        "theme_pool_theme_not_admitted": 1
-    }
-    assert (
-        run_dir
-        / "raw_exports"
-        / "aggressive_portfolio_20260630_theme_pool_formal_theme_pool_audit.json"
-    ).exists()
-
-
-def test_theme_pool_report_lines_expose_forced_core_candidates() -> None:
-    theme_pool_summary = {
-        "status": "applied",
-        "policy_regime": "震荡高波",
-        "admitted_theme_count": 2,
-        "natural_admitted_theme_count": 0,
-        "forced_theme_count": 2,
-        "min_admitted_themes": 2,
-        "rejected_theme_count": 18,
-        "core_symbol_count": 274,
-        "residual_symbol_count": 0,
-        "excluded_symbol_count": 5267,
-        "excluded_reason_counts": {
-            "theme_pool_missing_theme_membership": 5241,
-            "theme_pool_theme_not_admitted": 26,
-        },
-        "admitted_symbols_by_source_sample": {
-            "core": ["603078.SH", "688046.SH"],
-        },
-        "admitted_themes": [
-            {
-                "theme_id": "industry::半导体",
-                "theme_name": "半导体",
-                "theme_score": 0.4718297977,
-                "theme_rank_score": 0.4639796609,
-                "phase": "accumulation",
-                "forced": True,
-                "force_reason": "forced_top_theme_min_admitted_themes",
-                "original_rejection_reason": "theme_pool_theme_quality_gate_failed",
-                "quality_flags": ["theme_score_below_threshold", "phase_not_allowed"],
-            },
-            {
-                "theme_id": "industry::生物制药",
-                "theme_name": "生物制药",
-                "theme_score": 0.4320757745,
-                "phase": "accumulation",
-                "forced": True,
-                "force_reason": "forced_top_theme_min_admitted_themes",
-                "original_rejection_reason": "theme_pool_theme_quality_gate_failed",
-                "quality_flags": ["theme_score_below_threshold", "phase_not_allowed"],
-            },
-        ],
-        "rejected_themes": [
-            {
-                "theme_name": "证券",
-                "reason": "theme_pool_theme_quality_gate_failed",
-                "score": 0.357023681,
-                "phase": "unclassified",
-            }
-        ],
-    }
-    candidate_pool = pd.DataFrame(
-        [
-            {
-                "symbol": "603078.SH",
-                "name": "江化微",
-                "codex_recommendation_score": 68,
-            }
-        ]
-    )
-    theme_symbols = {
-        "603078.SH": {
-            "admitted": True,
-            "source": "core",
-            "primary_theme_id": "industry::半导体",
-            "theme_pool_score": 0.395369,
-            "theme_pool_reason": "admitted",
-        }
-    }
-
-    lines = tracker._format_theme_pool_report_lines(
-        theme_pool_summary,
-        candidate_pool=candidate_pool,
-        theme_symbols=theme_symbols,
-    )
-    text = "\n".join(lines)
-
-    assert "Theme 强制准入说明" in text
-    assert "未自然通过 ThemeGatePolicy" in text
-    assert "不等同于自然合格主题" in text
-    assert "自然通过=false" in text
-    assert "强制准入=true" in text
-    assert "硬加入=true" in text
-    assert "半导体" in text
-    assert "生物制药" in text
-    assert "original_rejection=theme_pool_theme_quality_gate_failed" in text
-    assert "core样本=`603078.SH, 688046.SH`" in text
-    assert "603078.SH 江化微" in text
-    assert "theme=`industry::半导体`" in text
-    assert "source=`core`" in text
-    assert "证券" in text
-
-
 def test_candidate_pool_from_v14_dag_falls_back_to_report_bundle_shortlist():
     complete_branches = {
         branch: {"branch_name": branch, "final_score": 0.8, "final_confidence": 0.7}
@@ -2075,12 +1905,11 @@ def test_candidate_pool_from_v14_dag_empty_when_no_shortlist_or_positive_targets
     waterfall = status["candidate_decay_waterfall"]
     assert waterfall["schema_version"] == tracker.CANDIDATE_DECAY_WATERFALL_SCHEMA_VERSION
     stages = {row["stage"]: row for row in waterfall["stages"]}
-    assert stages["bayesian_shortlist"]["input_count"] == 1
-    assert stages["bayesian_shortlist"]["output_count"] == 0
-    assert waterfall["classification"]["classification"] == "single_reason_requires_constraint_review"
+    assert stages["branch_and_bayesian"]["output_count"] == 0
+    assert stages["portfolio_constructor"]["output_count"] == 0
+    assert "classification" not in waterfall
     lines = tracker._format_candidate_decay_waterfall_report_lines(status)
-    assert any("空 shortlist 衰减瀑布" in line for line in lines)
-    assert any("Bayesian records -> shortlist" in line for line in lines)
+    assert lines == []
 
 
 def test_candidate_pool_does_not_substitute_shortlist_weight_for_constructor_target():
@@ -2126,7 +1955,7 @@ def test_candidate_pool_does_not_substitute_shortlist_weight_for_constructor_tar
     assert status["dag_pipeline"]["portfolio_target_count"] == 0
 
 
-def test_candidate_pool_reports_theme_gate_empty_before_bayesian_or_constructor(
+def test_candidate_pool_reports_empty_portfolio_constructor_result(
     tmp_path,
 ):
     dag_artifacts = {
@@ -2158,9 +1987,8 @@ def test_candidate_pool_reports_theme_gate_empty_before_bayesian_or_constructor(
     assert candidate_pool.empty
     assert list(candidate_pool.columns) == list(tracker.CANDIDATE_POOL_COLUMNS)
     assert status["candidate_generation_status"] == "empty"
-    assert status["blocker"] == "no_candidate_admitted_by_theme_pool"
-    assert status["theme_candidate_pool"]["forced_theme_count"] == 0
-    assert status["theme_candidate_pool"]["residual_symbol_count"] == 0
+    assert status["blocker"] == "no_candidate_selected_by_portfolio_constructor"
+    assert "theme_candidate_pool" not in status
 
     candidate_path = tmp_path / "candidate_pool.csv"
     switch_path = tmp_path / "switch_plan.csv"
@@ -2291,7 +2119,8 @@ def test_factor_runtime_summary_rejects_nominal_ready_with_incomplete_evidence()
     assert summary["production_eligible"] is False
     assert summary["confidence"] == 0.0
     assert "holding_factor_runtime_confidence_non_positive" in summary["blockers"]
-    assert "holding_factor_registry_sha256_invalid" in summary["blockers"]
+    assert "holding_factor_set_sha256_invalid" in summary["blockers"]
+    assert len(summary["registry_file_sha256"]) == 64
     assert "holding_factor_canonical_control_not_ready" in summary["blockers"]
 
 
@@ -3734,7 +3563,7 @@ def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypa
     assert "Codex 评分 `" in report_text
     assert "#### 5.4.3 证据质量与工程诊断" in report_text
     assert "provider 与 snapshot 诊断" in report_text
-    assert "### 5.7 FactorGovernanceProtocol v2 生产运行时" in report_text
+    assert "### 5.7 FactorGovernanceProtocol v3 生产运行时" in report_text
     assert "### 5.8 Legacy Factor Library（只读影子观察）" in report_text
     assert "This factor library status is read-only" in report_text
     assert "does not alter stock selection, portfolio construction, RiskGuard" in report_text

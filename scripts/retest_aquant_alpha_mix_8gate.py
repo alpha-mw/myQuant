@@ -800,7 +800,7 @@ def candidate_metrics(
             not year_ic.empty and float((year_ic > 0.0).mean()) >= 0.55
         ),
         # The linear sleeve overlay is retained as a diagnostic only. Gate 8
-        # requires a real A/B/C/D replay through Quant -> Theme -> Bayesian ->
+        # requires a real A/B/C/D replay through Quant -> Bayesian ->
         # RiskGuard -> PortfolioConstructor and therefore fails closed here.
         "master_return_delta": None,
         "sharpe_delta": None,

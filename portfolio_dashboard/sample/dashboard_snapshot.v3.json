@@ -1,0 +1,39 @@
+{
+  "schema_version": "dashboard_contract.v3",
+  "schema_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "protocol_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "run_id": "synthetic-sample-v3",
+  "generated_at": "2026-07-16T00:00:00+08:00",
+  "status": "sample",
+  "blockers": [],
+  "v15_run_readiness": {
+    "schema_version": "v15_run_readiness.v1",
+    "path": "v15_run_readiness.json",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "as_of_matrix": {
+    "strategy_record_date": null,
+    "strategy_record_at": null,
+    "analysis_trading_date": null,
+    "quote_at": null,
+    "benchmark_value_dates": {},
+    "factor_registry_sha": null
+  },
+  "trading_calendar": {},
+  "nav_return_provenance": {},
+  "sources": {},
+  "nav": [],
+  "positions": [],
+  "trades": [],
+  "industries": [],
+  "factors": [],
+  "factor_protocol": {
+    "schema_version": "factor-governance-protocol.v3",
+    "protocol_version": "v3",
+    "status": "blocked",
+    "blockers": ["sample"],
+    "readback_verified": false
+  },
+  "reconciliation": {},
+  "metric_policy": {}
+}

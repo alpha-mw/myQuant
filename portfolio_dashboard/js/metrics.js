@@ -622,7 +622,7 @@
     });
     var top = tickerRows.slice().sort(function (a, b) { return b.value - a.value; }).slice(0, 10);
     var bottom = tickerRows.slice().sort(function (a, b) { return a.value - b.value; }).slice(0, 10);
-    var themeContribution = groupSum(rowsWithContribution, "theme", "contribution")
+    var industryContribution = groupSum(rowsWithContribution, "industry", "contribution")
       .sort(function (a, b) { return b.value - a.value; });
     var sectorRows = rowsWithContribution.filter(function (row) { return row.sector; });
     var sectorContribution = groupSum(sectorRows, "sector", "contribution")
@@ -630,7 +630,7 @@
     return {
       top: top,
       bottom: bottom,
-      themeContribution: themeContribution,
+      industryContribution: industryContribution,
       sectorContribution: sectorContribution,
       scatter: tickerRows.filter(function (row) { return finite(row.avg_weight) && finite(row.value); })
     };
@@ -650,7 +650,7 @@
     var latestRows = latestDateRows(positions, "date").sort(function (a, b) {
       return b.weight - a.weight;
     });
-    var currentThemeWeight = groupSum(latestRows, "theme", "weight").sort(function (a, b) { return b.value - a.value; });
+    var currentIndustryWeight = groupSum(latestRows, "industry", "weight").sort(function (a, b) { return b.value - a.value; });
     var equitySleeveTotal = latestRows.reduce(function (total, row) {
       return total + (finite(row.equity_sleeve_weight) ? row.equity_sleeve_weight : 0);
     }, 0);
@@ -659,7 +659,7 @@
     }, 0);
     var currentSectorWeight = groupSum(latestRows.filter(function (row) { return row.sector; }), "sector", "weight")
       .sort(function (a, b) { return b.value - a.value; });
-    var marketValueTheme = groupSum(latestRows.filter(function (row) { return finite(row.market_value); }), "theme", "market_value")
+    var marketValueIndustry = groupSum(latestRows.filter(function (row) { return finite(row.market_value); }), "industry", "market_value")
       .sort(function (a, b) { return b.value - a.value; });
     var concentrationTrend = [];
     var byDate = {};
@@ -682,10 +682,10 @@
       allCurrent: latestRows,
       top20: latestRows.slice(0, 20),
       top10: latestRows.slice(0, 10),
-      currentThemeWeight: currentThemeWeight,
+      currentIndustryWeight: currentIndustryWeight,
       currentSectorWeight: currentSectorWeight,
-      marketValueTheme: marketValueTheme,
-      themeWeightTrend: trendByGroup(positions, "theme", "weight"),
+      marketValueIndustry: marketValueIndustry,
+      industryWeightTrend: trendByGroup(positions, "industry", "weight"),
       sectorWeightTrend: trendByGroup(positions.filter(function (row) { return row.sector; }), "sector", "weight"),
       concentrationTrend: concentrationTrend,
       top5Weight: concentrationTrend.length ? concentrationTrend[concentrationTrend.length - 1].top5 : null,
@@ -758,7 +758,7 @@
       opening_matched_quantity: aggregate.openingMatchedQuantity,
       uses_opening_lot: aggregate.openingMatchedQuantity > 0,
       reason: sell.reason,
-      theme: sell.theme,
+      industry: sell.industry,
       warning: unmatchedQuantity > 0 ? "卖出数量超过 FIFO 可用持仓，未匹配 " + unmatchedQuantity + " 股。" : ""
     };
   }
@@ -872,7 +872,7 @@
           message: ""
         },
         bySide: [],
-        byTheme: [],
+        byIndustry: [],
         byReason: [],
         totals: {}
       };
@@ -1016,7 +1016,7 @@
         { label: "buy", value: buyCount },
         { label: "sell", value: sellCount }
       ],
-      byTheme: groupSum(trades, "theme", "trade_amount").sort(function (a, b) { return b.value - a.value; }),
+      byIndustry: groupSum(trades, "industry", "trade_amount").sort(function (a, b) { return b.value - a.value; }),
       byReason: groupSum(trades.filter(function (row) { return row.reason; }), "reason", "trade_amount")
         .sort(function (a, b) { return b.value - a.value; }),
       totals: {

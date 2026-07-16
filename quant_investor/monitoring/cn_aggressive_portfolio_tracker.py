@@ -34,6 +34,10 @@ from quant_investor.market.dag_executor import execute_market_dag
 from quant_investor.market.download_cn import CNFullMarketDownloader
 from quant_investor.market.market_data_reader import MarketDataReader
 from quant_investor.monitoring import cn_aggressive_market_metrics as _market_metrics
+from quant_investor.monitoring.v15_run_readiness import (
+    build_v15_run_readiness,
+    write_v15_run_readiness,
+)
 from quant_investor.llm_policy import llm_handoff_reason
 from quant_investor.llm_provider_priority import coerce_review_model_priority
 from quant_investor.pipeline import QuantInvestor
@@ -109,7 +113,8 @@ CANDIDATE_POOL_COLUMNS = (
     "symbol",
     "name",
     "category",
-    "theme_label",
+    "industry",
+    "industry_source",
     "candidate_source",
     "candidate_rank",
     "candidate_dag_branch_contract_complete",
@@ -159,7 +164,7 @@ SWITCH_PLAN_COLUMNS = (
     "sell_recommended_action",
     "buy_symbol",
     "buy_name",
-    "buy_theme",
+    "buy_industry",
     "buy_bayesian_rank",
     "buy_posterior_action_score",
     "buy_posterior_confidence",
@@ -205,26 +210,11 @@ INDEX_QUOTES = {
     "sh000688": "科创50",
     "sz399673": "创业板50",
 }
-THEME_BASKETS = {
-    "先进材料": ["688519.SH", "688295.SH"],
-    "AI存储": ["688525.SH"],
-    "电子制造": ["002384.SZ", "002008.SZ"],
-    "电力设备": ["601179.SH", "600487.SH"],
-    "光通信": ["601869.SH"],
-}
-CATEGORY_THEME_LABELS = {
-    "hs300": "大盘核心资产",
-    "zz500": "中盘制造主线",
-    "zz1000": "小盘成长弹性",
-    "full_a": "全市场 v14 DAG",
-}
 REQUIRED_DAG_BRANCHES = ("quant", "fundamental", "macro")
 BAYESIAN_EVIDENCE_SOURCES = ("quant", "fundamental")
 CANDIDATE_DAG_TOP_K = 12
 CANDIDATE_DECAY_WATERFALL_SCHEMA_VERSION = "cn_aggressive_candidate_decay_waterfall.v1"
 CANDIDATE_DECAY_SINGLE_REASON_THRESHOLD = 0.95
-THEME_POOL_AUDIT_SCHEMA_VERSION = "cn_aggressive_theme_pool_audit.v1"
-THEME_POOL_AUDIT_SYMBOL_SAMPLE_LIMIT = 50
 MARKET_METRICS_CACHE_SCHEMA_VERSION = _market_metrics.MARKET_METRICS_CACHE_SCHEMA_VERSION
 MARKET_METRICS_COMPONENT_KEYS = _market_metrics.MARKET_METRICS_COMPONENT_KEYS
 MARKET_METRICS_CATEGORIES = _market_metrics.MARKET_METRICS_CATEGORIES
@@ -751,6 +741,12 @@ def _render_dag_compliance_markdown(compliance: dict[str, Any]) -> list[str]:
 def _summarize_factor_governance_runtime(
     branch_signals_by_symbol: Mapping[str, Any],
 ) -> dict[str, Any]:
+    registry_path = PROJECT_ROOT / "quant_investor" / "factor_registry" / "mined_factors.json"
+    registry_file_sha256 = (
+        hashlib.sha256(registry_path.read_bytes()).hexdigest()
+        if registry_path.is_file() and not registry_path.is_symlink()
+        else ""
+    )
     symbol_rows: dict[str, dict[str, Any]] = {}
     for raw_symbol, raw_payload in branch_signals_by_symbol.items():
         payload = _mapping_payload(raw_payload)
@@ -804,11 +800,12 @@ def _summarize_factor_governance_runtime(
                 or registry.get("production_factor_names")
                 or []
             ),
-            "registry_sha256": str(
+            "production_factor_set_sha256": str(
                 governance.get("production_factor_set_sha256")
                 or registry.get("production_factor_set_sha256")
                 or ""
             ),
+            "registry_file_sha256": registry_file_sha256,
             "protocol_version": str(governance.get("protocol_version") or "v2"),
             "protocol_hash": str(governance.get("protocol_hash") or ""),
             "factors_used": list(runtime.get("factors_used") or []),
@@ -852,7 +849,8 @@ def _summarize_factor_governance_runtime(
             "production_eligible": False,
             "registry_selectable_factor_count": 0,
             "registry_selectable_factor_names": [],
-            "registry_sha256": "",
+            "registry_file_sha256": registry_file_sha256,
+            "production_factor_set_sha256": "",
             "protocol_version": "v2",
             "protocol_hash": "",
             "factors_used": [],
@@ -882,7 +880,8 @@ def _summarize_factor_governance_runtime(
         blockers.append("holding_factor_governance_runtime_inconsistent")
     runtime_fingerprints = {
         (
-            row.get("registry_sha256"),
+            row.get("registry_file_sha256"),
+            row.get("production_factor_set_sha256"),
             row.get("protocol_hash"),
             row.get("registry_selectable_factor_count"),
             tuple(row.get("registry_selectable_factor_names") or []),
@@ -904,7 +903,8 @@ def _summarize_factor_governance_runtime(
         ):
             blockers.append("holding_factor_registry_selectable_set_invalid")
         for field, blocker in (
-            ("registry_sha256", "holding_factor_registry_sha256_invalid"),
+            ("registry_file_sha256", "holding_factor_registry_file_sha256_invalid"),
+            ("production_factor_set_sha256", "holding_factor_set_sha256_invalid"),
             ("protocol_hash", "holding_factor_protocol_hash_invalid"),
         ):
             value = str(row.get(field) or "").lower()
@@ -951,7 +951,8 @@ def _summarize_factor_governance_runtime(
         "production_eligible": ready,
         "registry_selectable_factor_count": int(first["registry_selectable_factor_count"]),
         "registry_selectable_factor_names": list(first["registry_selectable_factor_names"]),
-        "registry_sha256": str(first["registry_sha256"]),
+        "registry_file_sha256": str(first["registry_file_sha256"]),
+        "production_factor_set_sha256": str(first["production_factor_set_sha256"]),
         "protocol_version": str(first["protocol_version"]),
         "protocol_hash": str(first["protocol_hash"]),
         "factors_used": factors_used if ready else [],
@@ -1021,7 +1022,7 @@ def _format_factor_governance_runtime_lines(summary: Mapping[str, Any]) -> list[
     return [
         f"- governance_status：`{summary.get('governance_status', 'governance_blocked')}`",
         f"- factor_mode：`{summary.get('factor_mode', 'governance_blocked')}`；confidence=`{_safe_float(summary.get('confidence')):.3f}`；production_eligible=`{str(bool(summary.get('production_eligible'))).lower()}`",
-        f"- registry selectable：count=`{int(_safe_float(summary.get('registry_selectable_factor_count')))}`；names=`{names}`；SHA=`{summary.get('registry_sha256') or 'missing'}`",
+        f"- registry selectable：count=`{int(_safe_float(summary.get('registry_selectable_factor_count')))}`；names=`{names}`；registry_file_sha256=`{summary.get('registry_file_sha256') or 'missing'}`；production_factor_set_sha256=`{summary.get('production_factor_set_sha256') or 'missing'}`",
         f"- protocol：version=`{summary.get('protocol_version') or 'v2'}`；hash=`{summary.get('protocol_hash') or 'missing'}`",
         f"- factors_used：`{used}`；legacy_proxy_fallback=`{str(bool(summary.get('legacy_fallback_allowed'))).lower()}`",
         f"- slot incumbents：`{json.dumps(summary.get('slot_incumbents') or {}, ensure_ascii=False, sort_keys=True)}`",
@@ -1899,35 +1900,6 @@ def _fetch_tencent_quotes(quote_codes: list[str]) -> dict[str, dict[str, Any]]:
 
 # Full-market metrics/cache helpers live in cn_aggressive_market_metrics.py.
 
-def _summarize_theme_strength(review: pd.DataFrame) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for theme, symbols in THEME_BASKETS.items():
-        subset = review[review["symbol"].isin(symbols)].copy()
-        if subset.empty:
-            continue
-        rows.append(
-            {
-                "theme": theme,
-                "symbols": subset["symbol"].tolist(),
-                "avg_today_change_pct": float(subset["today_change_pct"].mean()),
-                "avg_score": float(subset["score_full_market"].mean()),
-                "avg_rank": float(subset["rank_full_market"].mean()),
-                "avg_ret20": float(subset["ret20"].mean()),
-            }
-        )
-    rows.sort(
-        key=lambda item: (
-            item["avg_score"],
-            item["avg_today_change_pct"],
-            item["avg_ret20"],
-            -item["avg_rank"],
-            item["theme"],
-        ),
-        reverse=True,
-    )
-    return rows
-
-
 def _market_style_conclusion(indices: dict[str, dict[str, Any]], breadth: dict[str, dict[str, Any]]) -> str:
     hs300 = breadth.get("hs300", {})
     zz1000 = breadth.get("zz1000", {})
@@ -1948,23 +1920,6 @@ def _market_style_conclusion(indices: dict[str, dict[str, Any]], breadth: dict[s
     if kc50.get("change_pct", 0.0) > 0 and cyb.get("change_pct", 0.0) < 0:
         return "市场处于结构性修复，科创强于泛成长，资金更偏向有景气验证的硬科技。"
     return "市场仍是结构性分化，未回到全面进攻。"
-
-
-def _tech_mainline_conclusion(theme_strength: list[dict[str, Any]]) -> tuple[str, str]:
-    if not theme_strength:
-        return "暂无足够主题样本。", "暂无足够主题样本。"
-
-    strongest = theme_strength[0]
-    weakest = theme_strength[-1]
-    strong_text = (
-        f"{strongest['theme']} 的完整日线强度最强，平均全市场评分 {strongest['avg_score']:.3f}，"
-        f"盘中涨跌 {strongest['avg_today_change_pct']:+.2f}%。"
-    )
-    weak_text = (
-        f"{weakest['theme']} 的完整日线强度最弱，平均全市场评分 {weakest['avg_score']:.3f}，"
-        f"盘中涨跌 {weakest['avg_today_change_pct']:+.2f}%。"
-    )
-    return strong_text, weak_text
 
 
 def _position_role(row: pd.Series) -> str:
@@ -2027,7 +1982,7 @@ def _position_reason(row: pd.Series) -> str:
     if rank <= 20:
         return (
             f"完整日线仍处第一梯队，全市场排名第 {rank} 位，"
-            f"盘中 {today:+.2f}% 说明主线承接仍在。"
+            f"盘中 {today:+.2f}% 说明行业承接仍在。"
         )
     if price < stop_price:
         return (
@@ -2036,7 +1991,7 @@ def _position_reason(row: pd.Series) -> str:
         )
     return (
         f"完整日线评分 {score:.3f}，全市场排名第 {rank} 位，"
-        f"盘中 {today:+.2f}% ，继续按主线内部分化而非失效处理。"
+        f"盘中 {today:+.2f}% ，继续按行业内部分化而非失效处理。"
     )
 
 
@@ -2068,7 +2023,7 @@ def _build_rebalance_plan(review: pd.DataFrame) -> list[ProposedOrder]:
                 realized_pnl=realized,
                 reason=(
                     f"{row.symbol} 仍低于阶段止损位 {float(row.stage_stop_price):.2f}，"
-                    "且完整日线已明显落后于组合主线，执行温和减仓。"
+                    "且完整日线已明显落后于组合结构，执行温和减仓。"
                 ),
             )
         )
@@ -2147,13 +2102,6 @@ def _risk_reduction_sell_gate(
     return True, "risk_reduction_sell_eligible_pending_realtime_quote"
 
 
-def _theme_label_for_symbol(symbol: str, category: str) -> str:
-    for theme, symbols in THEME_BASKETS.items():
-        if symbol in symbols:
-            return theme
-    return CATEGORY_THEME_LABELS.get(category, "正式筛选候选")
-
-
 def _mapping_payload(value: Any) -> dict[str, Any]:
     payload = _jsonable(value)
     return dict(payload) if isinstance(payload, dict) else {}
@@ -2186,250 +2134,6 @@ def _int_payload(value: Any, default: int = 0) -> int:
         return int(float(value))
     except (TypeError, ValueError):
         return default
-
-
-def _theme_pool_metadata_from_dag_artifacts(
-    dag_artifacts: dict[str, Any],
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    funnel_summary = _mapping_payload(dag_artifacts.get("funnel_summary"))
-    funnel_metadata = _mapping_payload(funnel_summary.get("funnel_metadata"))
-    pool_metadata = _mapping_payload(funnel_metadata.get("theme_pool"))
-    if pool_metadata:
-        return pool_metadata, funnel_metadata
-
-    funnel_output = dag_artifacts.get("funnel_output")
-    funnel_metadata = _mapping_payload(_artifact_member(funnel_output, "funnel_metadata"))
-    pool_metadata = _mapping_payload(funnel_metadata.get("theme_pool"))
-    return pool_metadata, funnel_metadata
-
-
-def _sample_symbol_map(symbols_by_bucket: dict[str, list[str]]) -> dict[str, list[str]]:
-    return {
-        bucket: list(symbols[:THEME_POOL_AUDIT_SYMBOL_SAMPLE_LIMIT])
-        for bucket, symbols in sorted(symbols_by_bucket.items())
-    }
-
-
-def _theme_pool_audit_from_dag_artifacts(dag_artifacts: dict[str, Any]) -> dict[str, Any]:
-    if not dag_artifacts:
-        return {}
-    pool_metadata, funnel_metadata = _theme_pool_metadata_from_dag_artifacts(dag_artifacts)
-    if not pool_metadata:
-        return {}
-
-    policy = _mapping_payload(pool_metadata.get("policy"))
-    symbol_payloads = _mapping_payload(pool_metadata.get("symbols"))
-    symbols: dict[str, dict[str, Any]] = {}
-    admitted_symbols_by_source: dict[str, list[str]] = {}
-    excluded_symbols_by_reason: dict[str, list[str]] = {}
-    excluded_reason_counts: Counter[str] = Counter()
-
-    for raw_symbol, raw_metadata in sorted(symbol_payloads.items()):
-        symbol = _symbol_key(raw_symbol)
-        if not symbol:
-            continue
-        metadata = _mapping_payload(raw_metadata)
-        admitted = _bool_payload(metadata.get("admitted"))
-        source = str(metadata.get("source") or ("admitted" if admitted else "none")).strip()
-        reason = str(
-            metadata.get("theme_pool_reason")
-            or metadata.get("reason")
-            or ("admitted" if admitted else "excluded")
-        ).strip()
-        record = {
-            "admitted": admitted,
-            "source": source,
-            "primary_theme_id": str(metadata.get("primary_theme_id") or ""),
-            "theme_pool_score": round(_safe_float(metadata.get("theme_pool_score")), 6),
-            "theme_policy_regime": str(metadata.get("theme_policy_regime") or ""),
-            "theme_pool_reason": reason,
-        }
-        symbols[symbol] = record
-        if admitted:
-            admitted_symbols_by_source.setdefault(source or "admitted", []).append(symbol)
-        else:
-            reason_key = reason or "excluded"
-            excluded_reason_counts[reason_key] += 1
-            excluded_symbols_by_reason.setdefault(reason_key, []).append(symbol)
-
-    admitted_themes = _jsonable(pool_metadata.get("admitted_themes") or [])
-    rejected_themes = _jsonable(pool_metadata.get("rejected_themes") or [])
-    status = str(pool_metadata.get("status") or funnel_metadata.get("theme_pool_status") or "")
-    theme_pool_status = str(funnel_metadata.get("theme_pool_status") or status)
-    policy_regime = str(policy.get("regime") or policy.get("policy_regime") or "")
-    if not policy_regime and symbols:
-        policy_regime = str(next(iter(symbols.values())).get("theme_policy_regime") or "")
-
-    summary = {
-        "schema_version": THEME_POOL_AUDIT_SCHEMA_VERSION,
-        "enabled": _bool_payload(pool_metadata.get("enabled")),
-        "required": _bool_payload(pool_metadata.get("required")),
-        "status": status,
-        "theme_pool_status": theme_pool_status,
-        "score_source": str(pool_metadata.get("score_source") or ""),
-        "fallback_to_raw_score": _bool_payload(pool_metadata.get("fallback_to_raw_score")),
-        "policy": _jsonable(policy),
-        "policy_regime": policy_regime,
-        "admitted_theme_count": _int_payload(
-            pool_metadata.get("admitted_theme_count"),
-            len(admitted_themes) if isinstance(admitted_themes, list) else 0,
-        ),
-        "natural_admitted_theme_count": _int_payload(pool_metadata.get("natural_admitted_theme_count")),
-        "forced_theme_count": _int_payload(pool_metadata.get("forced_theme_count")),
-        "min_admitted_themes": _int_payload(pool_metadata.get("min_admitted_themes")),
-        "rejected_theme_count": _int_payload(
-            pool_metadata.get("rejected_theme_count"),
-            len(rejected_themes) if isinstance(rejected_themes, list) else 0,
-        ),
-        "core_symbol_count": _int_payload(pool_metadata.get("core_symbol_count")),
-        "residual_symbol_count": _int_payload(pool_metadata.get("residual_symbol_count")),
-        "excluded_symbol_count": _int_payload(
-            pool_metadata.get("excluded_symbol_count"),
-            sum(excluded_reason_counts.values()),
-        ),
-        "symbol_count": len(symbols),
-        "admitted_symbol_count": sum(1 for item in symbols.values() if item.get("admitted")),
-        "excluded_reason_counts": dict(sorted(excluded_reason_counts.items())),
-        "admitted_symbols_by_source_sample": _sample_symbol_map(admitted_symbols_by_source),
-        "excluded_symbols_by_reason_sample": _sample_symbol_map(excluded_symbols_by_reason),
-        "admitted_themes": admitted_themes,
-        "rejected_themes": rejected_themes,
-    }
-    return {
-        "schema_version": THEME_POOL_AUDIT_SCHEMA_VERSION,
-        "summary": _jsonable(summary),
-        "admitted_themes": admitted_themes,
-        "rejected_themes": rejected_themes,
-        "symbols": _jsonable(symbols),
-        "admitted_symbols_by_source": _jsonable(admitted_symbols_by_source),
-        "excluded_symbols_by_reason": _jsonable(excluded_symbols_by_reason),
-    }
-
-
-def _theme_label_from_theme_record(theme: dict[str, Any]) -> str:
-    return str(
-        theme.get("theme_name")
-        or theme.get("name")
-        or theme.get("theme_id")
-        or "unknown_theme"
-    )
-
-
-def _format_theme_pool_report_lines(
-    theme_pool_summary: dict[str, Any],
-    *,
-    candidate_pool: pd.DataFrame,
-    theme_symbols: dict[str, Any] | None = None,
-) -> list[str]:
-    theme_summary = _mapping_payload(theme_pool_summary)
-    if not theme_summary:
-        return ["- Theme Candidate Pool：正式 DAG artifacts 未发现可审计 metadata，需视为可观测性缺口。"]
-
-    theme_symbols = _mapping_payload(theme_symbols)
-    reason_counts = _mapping_payload(theme_summary.get("excluded_reason_counts"))
-    reason_text = (
-        "；".join(f"{reason}={count}" for reason, count in reason_counts.items())
-        if reason_counts
-        else "无"
-    )
-    lines = [
-        (
-            f"- Theme Candidate Pool：status=`{theme_summary.get('status') or 'unknown'}`，"
-            f"policy_regime=`{theme_summary.get('policy_regime') or 'unknown'}`，"
-            f"admitted_themes=`{theme_summary.get('admitted_theme_count', 0)}`，"
-            f"natural=`{theme_summary.get('natural_admitted_theme_count', 0)}`，"
-            f"forced=`{theme_summary.get('forced_theme_count', 0)}`，"
-            f"min_themes=`{theme_summary.get('min_admitted_themes', 0)}`，"
-            f"rejected_themes=`{theme_summary.get('rejected_theme_count', 0)}`，"
-            f"core=`{theme_summary.get('core_symbol_count', 0)}`，"
-            f"residual=`{theme_summary.get('residual_symbol_count', 0)}`，"
-            f"excluded=`{theme_summary.get('excluded_symbol_count', 0)}`，"
-            f"excluded_reasons=`{reason_text}`。"
-        )
-    ]
-    forced_theme_count = _int_payload(theme_summary.get("forced_theme_count"))
-    if forced_theme_count > 0:
-        lines.append(
-            "- Theme 强制准入说明："
-            f"forced=`{forced_theme_count}` 表示这些主题未自然通过 ThemeGatePolicy，"
-            "只是因 `min_admitted_themes` 硬约束进入 Theme core 候选池；"
-            "应按“硬加入/强制准入”解读，不等同于自然合格主题。"
-        )
-
-    admitted_themes = _list_payloads(theme_summary.get("admitted_themes"))
-    if admitted_themes:
-        admitted_parts = []
-        for theme in admitted_themes[:5]:
-            forced = _bool_payload(theme.get("forced"))
-            admitted_parts.append(
-                f"{_theme_label_from_theme_record(theme)} "
-                f"自然通过={str(not forced).lower()} "
-                f"强制准入={str(forced).lower()} "
-                f"硬加入={str(forced).lower()} "
-                f"score={_safe_float(theme.get('theme_score')):.3f} "
-                f"rank_score={_safe_float(theme.get('theme_rank_score')):.3f} "
-                f"phase={theme.get('phase') or 'unknown'} "
-                f"force_reason={theme.get('force_reason') or 'none'} "
-                f"original_rejection={theme.get('original_rejection_reason') or 'none'} "
-                f"quality_flags={','.join(str(flag) for flag in (theme.get('quality_flags') or [])) or 'none'}"
-            )
-        admitted_text = "；".join(admitted_parts)
-        lines.append(f"- Theme admitted 明细：{admitted_text}。")
-
-    admitted_sample = _mapping_payload(theme_summary.get("admitted_symbols_by_source_sample"))
-    candidate_core_symbols: list[str] = []
-    if not candidate_pool.empty:
-        for row in candidate_pool.head(12).itertuples():
-            symbol = str(getattr(row, "symbol", "") or "").strip().upper()
-            metadata = _mapping_payload(theme_symbols.get(symbol))
-            if symbol and str(metadata.get("source") or "") == "core":
-                candidate_core_symbols.append(symbol)
-    core_sample = []
-    for symbol in [
-        *candidate_core_symbols,
-        *[str(symbol).strip().upper() for symbol in admitted_sample.get("core", [])],
-    ]:
-        if symbol and symbol not in core_sample:
-            core_sample.append(symbol)
-    if core_sample:
-        lines.append(
-            "- Theme core候选样本："
-            f"core样本=`{', '.join(core_sample[:20])}`。"
-        )
-
-    if not candidate_pool.empty:
-        candidate_parts: list[str] = []
-        for row in candidate_pool.head(5).itertuples():
-            symbol = str(getattr(row, "symbol", "") or "").strip().upper()
-            if not symbol:
-                continue
-            metadata = _mapping_payload(theme_symbols.get(symbol))
-            if not metadata:
-                continue
-            name = str(getattr(row, "name", "") or "UNKNOWN_NAME")
-            candidate_parts.append(
-                f"{symbol} {name}: source=`{metadata.get('source') or 'none'}`，"
-                f"theme=`{metadata.get('primary_theme_id') or ''}`，"
-                f"score=`{_safe_float(metadata.get('theme_pool_score')):.6f}`，"
-                f"reason=`{metadata.get('theme_pool_reason') or ''}`"
-            )
-        if candidate_parts:
-            lines.append("- 正式候选 Theme Pool 归属：" + "；".join(candidate_parts) + "。")
-
-    rejected_themes = _list_payloads(theme_summary.get("rejected_themes"))
-    if rejected_themes:
-        rejected_text = "；".join(
-            (
-                f"{_theme_label_from_theme_record(theme)} "
-                f"reason={theme.get('reason') or 'unknown'} "
-                f"score={_safe_float(theme.get('score')):.3f} "
-                f"phase={theme.get('phase') or 'unknown'}"
-            )
-            for theme in rejected_themes[:5]
-        )
-        lines.append(f"- Theme rejected 前列：{rejected_text}。")
-
-    return lines
 
 
 def _shortlist_payloads_from_dag_artifacts(
@@ -2559,94 +2263,6 @@ def _candidate_decay_stage(
     }
 
 
-def _candidate_decay_constraint_snapshot(
-    *,
-    theme_pool_summary: dict[str, Any],
-    dag_artifacts: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    dag_artifacts = dag_artifacts or {}
-    policy = _mapping_payload(theme_pool_summary.get("policy"))
-    funnel_summary = _mapping_payload(dag_artifacts.get("funnel_summary"))
-    funnel_metadata = _mapping_payload(funnel_summary.get("funnel_metadata"))
-    portfolio_payload = _mapping_payload(dag_artifacts.get("portfolio_decision"))
-    risk_constraints = _mapping_payload(portfolio_payload.get("risk_constraints"))
-    risk_decision = _mapping_payload(risk_constraints.get("risk_decision"))
-    portfolio_metadata = _mapping_payload(portfolio_payload.get("metadata"))
-    market_settings = get_market_settings("CN")
-    gross_cap_value = risk_decision.get("gross_exposure_cap")
-    if gross_cap_value is None:
-        gross_cap_value = portfolio_payload.get("target_gross_exposure")
-    portfolio_max_weight = risk_decision.get("max_weight")
-    candidate_symbols = portfolio_metadata.get("candidate_symbols")
-    return {
-        "min_weight": "not_applied_in_candidate_dag_weight_path",
-        "whole_lot": int(getattr(market_settings, "lot_size", 100) or 100),
-        "gross_cap": (
-            _safe_float(gross_cap_value)
-            if gross_cap_value is not None
-            else "not_recorded"
-        ),
-        "single_name_cap_env": round(risk_guard_single_name_weight_cap(), 6),
-        "portfolio_max_weight": (
-            _safe_float(portfolio_max_weight)
-            if portfolio_max_weight is not None
-            else "not_recorded"
-        ),
-        "theme_policy_regime": str(
-            theme_pool_summary.get("policy_regime") or policy.get("regime") or ""
-        ),
-        "theme_min_symbol_score": _safe_float(policy.get("min_symbol_score"), 0.0),
-        "theme_min_theme_score": _safe_float(policy.get("min_theme_score"), 0.0),
-        "theme_effective_max_candidates": _int_payload(
-            theme_pool_summary.get("effective_max_candidates")
-        ),
-        "theme_requested_max_candidates": _int_payload(
-            theme_pool_summary.get("requested_max_candidates")
-        ),
-        "funnel_max_candidates": _int_payload(funnel_metadata.get("max_candidates")),
-        "funnel_min_composite_score": funnel_metadata.get("min_composite_score", "not_recorded"),
-        "portfolio_candidate_symbols": len(candidate_symbols) if isinstance(candidate_symbols, list) else 0,
-    }
-
-
-def _candidate_decay_classification(stages: list[dict[str, Any]]) -> dict[str, Any]:
-    post_theme_reasons: Counter[str] = Counter()
-    for stage in stages:
-        if stage.get("stage") == "theme_pool":
-            continue
-        for reason, count in _positive_reason_counts(stage.get("rejection_reasons")).items():
-            if reason == "unattributed_remainder":
-                continue
-            post_theme_reasons[reason] += count
-    total = sum(post_theme_reasons.values())
-    if total <= 0:
-        return {
-            "classification": "no_post_theme_decay",
-            "dominant_reason": "",
-            "dominant_reason_share": 0.0,
-            "decision": "no candidate decay after Theme Pool was observed.",
-        }
-    dominant_reason, dominant_count = sorted(
-        post_theme_reasons.items(),
-        key=lambda item: (-item[1], item[0]),
-    )[0]
-    share = dominant_count / total if total else 0.0
-    artifact_limited = dominant_reason.startswith("artifact_only_")
-    if share >= CANDIDATE_DECAY_SINGLE_REASON_THRESHOLD and not artifact_limited:
-        return {
-            "classification": "single_reason_requires_constraint_review",
-            "dominant_reason": dominant_reason,
-            "dominant_reason_share": round(share, 6),
-            "decision": "single reason >=95%; print constraint snapshot and review under current governance before behavior changes.",
-        }
-    return {
-        "classification": "by_design_or_artifact_limited",
-        "dominant_reason": dominant_reason,
-        "dominant_reason_share": round(share, 6),
-        "decision": "causes are dispersed or historical artifacts lack per-row detail; treat empty shortlist as reportable by-design unless future waterfall isolates one mechanical cause.",
-    }
-
-
 def _build_candidate_decay_waterfall(
     *,
     candidate_status: dict[str, Any],
@@ -2655,178 +2271,47 @@ def _build_candidate_decay_waterfall(
     missing_by_symbol: dict[str, list[str]] | None = None,
     zero_target_symbols: list[str] | None = None,
 ) -> dict[str, Any]:
-    status = _mapping_payload(candidate_status)
-    pipeline = _mapping_payload(status.get("dag_pipeline"))
-    theme_summary = _mapping_payload(status.get("theme_candidate_pool"))
-    dag_artifacts = dag_artifacts or {}
-    funnel_summary = _mapping_payload(dag_artifacts.get("funnel_summary"))
-    funnel_metadata = _mapping_payload(funnel_summary.get("funnel_metadata"))
-    portfolio_payload = _mapping_payload(dag_artifacts.get("portfolio_decision"))
-    portfolio_metadata = _mapping_payload(portfolio_payload.get("metadata"))
-    candidate_symbols = [
-        str(symbol).strip().upper()
-        for symbol in list(portfolio_metadata.get("candidate_symbols") or [])
-        if str(symbol).strip()
-    ]
-
-    symbol_count = _int_payload(theme_summary.get("symbol_count"))
-    theme_output = _int_payload(
-        theme_summary.get("admitted_symbol_count"),
-        _int_payload(theme_summary.get("core_symbol_count")),
-    )
+    pipeline = _mapping_payload(candidate_status.get("dag_pipeline"))
+    funnel_summary = _mapping_payload((dag_artifacts or {}).get("funnel_summary"))
+    funnel_input = _int_payload(funnel_summary.get("researchable_count"))
+    funnel_output = _int_payload(funnel_summary.get("candidate_count"))
     bayesian_count = _int_payload(pipeline.get("bayesian_record_count"))
     shortlist_count = _int_payload(pipeline.get("shortlist_count"))
-    portfolio_target_count = _int_payload(pipeline.get("portfolio_target_count"))
-    accepted_count = max(_int_payload(accepted_count), 0)
-    stages: list[dict[str, Any]] = []
-
-    if symbol_count or theme_output:
-        stages.append(
-            _candidate_decay_stage(
-                name="theme_pool",
-                label="full universe -> Theme Pool admitted core",
-                input_count=symbol_count,
-                output_count=theme_output,
-                rejection_reasons=_positive_reason_counts(theme_summary.get("excluded_reason_counts")),
-                note="Theme Pool hard filter; this includes non-hard-tech/non-admitted-theme exclusions.",
-            )
-        )
-
-    after_theme_pool = _int_payload(funnel_metadata.get("after_theme_pool"), theme_output)
-    after_score_gates = _int_payload(funnel_metadata.get("after_gates"))
-    final_funnel_candidates = _int_payload(
-        funnel_metadata.get("final_candidates"),
-        _int_payload(funnel_summary.get("candidates_count"), len(candidate_symbols)),
-    )
-    if after_score_gates > 0:
-        stages.append(
-            _candidate_decay_stage(
-                name="deterministic_score_gate",
-                label="Theme Pool admitted core -> score/risk gates",
-                input_count=after_theme_pool,
-                output_count=after_score_gates,
-                rejection_reasons={
-                    "deterministic_funnel_below_min_score_or_theme_penalty": max(
-                        after_theme_pool - after_score_gates,
-                        0,
-                    )
-                },
-                note="Deterministic composite score, theme penalty, and local market-state gates.",
-            )
-        )
-    if final_funnel_candidates > 0 and after_score_gates > 0:
-        stages.append(
-            _candidate_decay_stage(
-                name="deterministic_rank_cutoff",
-                label="score/risk gate survivors -> ranked funnel candidates",
-                input_count=after_score_gates,
-                output_count=final_funnel_candidates,
-                rejection_reasons={
-                    "deterministic_funnel_rank_cutoff_or_sector_bucket_limit": max(
-                        after_score_gates - final_funnel_candidates,
-                        0,
-                    )
-                },
-                note="Top-N rank cutoff and optional sector bucket limit.",
-            )
-        )
-    elif theme_output and bayesian_count < theme_output:
-        stages.append(
-            _candidate_decay_stage(
-                name="core_to_bayesian_record",
-                label="Theme Pool admitted core -> Bayesian records",
-                input_count=theme_output,
-                output_count=bayesian_count,
-                rejection_reasons={
-                    "artifact_only_not_materialized_as_bayesian_record": max(
-                        theme_output - bayesian_count,
-                        0,
-                    )
-                },
-                note="Historical record lacks in-memory DAG per-symbol reasons for deterministic score/rank/readiness decay.",
-            )
-        )
-
-    if final_funnel_candidates > 0 and bayesian_count < final_funnel_candidates:
-        stages.append(
-            _candidate_decay_stage(
-                name="branch_readiness",
-                label="ranked funnel candidates -> Bayesian records",
-                input_count=final_funnel_candidates,
-                output_count=bayesian_count,
-                rejection_reasons={
-                    "branch_or_macro_readiness_block": max(final_funnel_candidates - bayesian_count, 0)
-                },
-                note="Branch readiness or macro readiness can remove candidates before Bayesian posterior.",
-            )
-        )
-
-    bayesian_kill_switch_count = 0
-    for row in _list_payloads(dag_artifacts.get("bayesian_records")):
-        metadata = _mapping_payload(row.get("metadata"))
-        if bool(metadata.get("kill_switch")):
-            bayesian_kill_switch_count += 1
-    bayesian_rejected = max(bayesian_count - shortlist_count, 0)
-    bayesian_reasons = (
-        {"bayesian_kill_switch": bayesian_kill_switch_count}
-        if bayesian_kill_switch_count == bayesian_rejected and bayesian_rejected > 0
-        else {"bayesian_shortlist_not_selected_or_kill_switch": bayesian_rejected}
-    )
-    stages.append(
-        _candidate_decay_stage(
-            name="bayesian_shortlist",
-            label="Bayesian records -> shortlist",
-            input_count=bayesian_count,
-            output_count=shortlist_count,
-            rejection_reasons=bayesian_reasons,
-            note="Bayesian posterior shortlist; historical rows may only expose aggregate counts.",
-        )
-    )
-
-    zero_target_symbols = list(zero_target_symbols or [])
-    portfolio_rejected = max(shortlist_count - portfolio_target_count, 0)
-    stages.append(
-        _candidate_decay_stage(
-            name="portfolio_constructor",
-            label="shortlist -> positive target weights",
-            input_count=shortlist_count,
-            output_count=portfolio_target_count,
-            rejection_reasons={
-                "portfolio_constructor_zero_target_weight_or_reject": portfolio_rejected,
-                "portfolio_constructor_zero_target_symbols": len(zero_target_symbols),
-            },
-            note="RiskGuard/ICCoordinator/PortfolioConstructor deterministic control chain.",
-        )
-    )
-
-    missing_by_symbol = missing_by_symbol or {}
-    missing_counter: Counter[str] = Counter()
-    for branches in missing_by_symbol.values():
-        for branch in branches:
-            missing_counter[f"candidate_pool_missing_{branch}"] += 1
-    if portfolio_target_count or accepted_count:
-        stages.append(
-            _candidate_decay_stage(
-                name="candidate_pool_materialization",
-                label="positive target weights -> report candidate rows",
-                input_count=portfolio_target_count,
-                output_count=accepted_count,
-                rejection_reasons=dict(missing_counter),
-                note="Final report materialization excludes incomplete branch/Bayesian rows and existing holdings.",
-            )
-        )
-
-    classification = _candidate_decay_classification(stages)
+    portfolio_count = _int_payload(pipeline.get("portfolio_target_count"))
     return {
         "schema_version": CANDIDATE_DECAY_WATERFALL_SCHEMA_VERSION,
-        "record_scope": "candidate_level_dag",
-        "single_reason_threshold": CANDIDATE_DECAY_SINGLE_REASON_THRESHOLD,
-        "stages": stages,
-        "classification": classification,
-        "constraint_snapshot": _candidate_decay_constraint_snapshot(
-            theme_pool_summary=theme_summary,
-            dag_artifacts=dag_artifacts,
-        ),
+        "status": str(candidate_status.get("candidate_generation_status") or "blocked"),
+        "stages": [
+            _candidate_decay_stage(
+                name="deterministic_funnel",
+                label="researchable universe -> deterministic funnel",
+                input_count=funnel_input,
+                output_count=funnel_output,
+                rejection_reasons={},
+                note="data quality, tradability, liquidity, base score and rank only",
+            ),
+            _candidate_decay_stage(
+                name="branch_and_bayesian",
+                label="funnel -> Bayesian shortlist",
+                input_count=funnel_output,
+                output_count=min(bayesian_count, shortlist_count),
+                rejection_reasons={
+                    "branch_or_bayesian_incomplete": len(missing_by_symbol or {})
+                },
+                note="three-branch readiness and Bayesian evidence",
+            ),
+            _candidate_decay_stage(
+                name="portfolio_constructor",
+                label="shortlist -> positive target weights",
+                input_count=shortlist_count,
+                output_count=max(portfolio_count, int(accepted_count)),
+                rejection_reasons={
+                    "zero_target_weight": len(zero_target_symbols or [])
+                },
+                note="RiskGuard, IC and PortfolioConstructor",
+            ),
+        ],
+        "blocker": str(candidate_status.get("blocker") or ""),
     }
 
 
@@ -2879,8 +2364,7 @@ def _format_candidate_decay_waterfall_report_lines(
                 f"整手=`{constraints.get('whole_lot', 'N/A')}`，"
                 f"gross_cap=`{constraints.get('gross_cap', 'N/A')}`，"
                 f"single_name_cap_env=`{constraints.get('single_name_cap_env', 'N/A')}`，"
-                f"portfolio_max_weight=`{constraints.get('portfolio_max_weight', 'N/A')}`，"
-                f"theme_min_symbol_score=`{constraints.get('theme_min_symbol_score', 'N/A')}`。"
+                f"portfolio_max_weight=`{constraints.get('portfolio_max_weight', 'N/A')}`。"
             ),
         ]
     )
@@ -2901,23 +2385,17 @@ def _candidate_dag_status(
     shortlist_source: str = "",
     shortlist_fallback_used: bool = False,
     shortlist_artifact_missing: bool = False,
-    theme_pool_summary: dict[str, Any] | None = None,
     error: str = "",
     dag_executed: bool = True,
 ) -> dict[str, Any]:
-    theme_summary = _mapping_payload(theme_pool_summary)
     return {
         "candidate_generation_status": candidate_generation_status,
         "blocker": blocker,
         "required_branches": list(REQUIRED_DAG_BRANCHES),
-        "candidate_source": "v14_full_market_dag",
-        "theme_candidate_pool": _jsonable(theme_summary),
+        "candidate_source": "v15_full_market_dag",
         "dag_pipeline": {
             "universe": "full_a",
             "deterministic_funnel": bool(dag_executed),
-            "theme_candidate_pool_status": str(
-                theme_summary.get("status") or theme_summary.get("theme_pool_status") or ""
-            ),
             "candidate_level_branch_contract": bool(dag_executed),
             "bayesian_shortlist": bool(dag_executed),
             "riskguard_ic_portfolio_constructor": bool(dag_executed),
@@ -2962,9 +2440,8 @@ def _build_candidate_pool_from_v14_dag(
         )
         return pd.DataFrame(columns=CANDIDATE_POOL_COLUMNS, dtype=object), status
 
-    theme_pool_audit = _theme_pool_audit_from_dag_artifacts(dag_artifacts)
-    theme_pool_summary = _mapping_payload(theme_pool_audit.get("summary"))
     held_set = {_symbol_key(symbol) for symbol in held_symbols if _symbol_key(symbol)}
+    tradability = _mapping_payload(dag_artifacts.get("tradability_snapshot"))
     packets = {
         _symbol_key(symbol): _mapping_payload(packet)
         for symbol, packet in _mapping_payload(dag_artifacts.get("symbol_research_packets")).items()
@@ -3036,6 +2513,9 @@ def _build_candidate_pool_from_v14_dag(
             zero_target_symbols.append(symbol)
             continue
         category = str(packet.get("category") or shortlist.get("category") or "full_a")
+        strict_industry = str(
+            _mapping_payload(tradability.get(symbol)).get("industry") or ""
+        ).strip()
         branch_evidence_complete = not limited
         rows.append(
             {
@@ -3045,8 +2525,11 @@ def _build_candidate_pool_from_v14_dag(
                     or symbol
                 ),
                 "category": category,
-                "theme_label": _theme_label_for_symbol(symbol, category),
-                "candidate_source": "v14_full_market_dag",
+                "industry": strict_industry or None,
+                "industry_source": (
+                    "strict_parquet.stock_basic.industry" if strict_industry else None
+                ),
+                "candidate_source": "v15_full_market_dag",
                 "candidate_rank": 0,
                 "candidate_dag_branch_contract_complete": True,
                 "candidate_dag_branch_evidence_complete": branch_evidence_complete,
@@ -3116,15 +2599,6 @@ def _build_candidate_pool_from_v14_dag(
     elif shortlist_artifact_missing:
         status_name = "blocked"
         blocker = "candidate_artifact_shortlist_missing"
-    elif (
-        bool(theme_pool_summary)
-        and _int_payload(theme_pool_summary.get("admitted_theme_count")) == 0
-        and not bayesian_rows
-        and not shortlist_rows
-        and positive_target_count == 0
-    ):
-        status_name = "empty"
-        blocker = "no_candidate_admitted_by_theme_pool"
     else:
         status_name = "empty"
         blocker = "no_candidate_selected_by_portfolio_constructor"
@@ -3141,7 +2615,6 @@ def _build_candidate_pool_from_v14_dag(
         shortlist_source=shortlist_source,
         shortlist_fallback_used=shortlist_fallback_used,
         shortlist_artifact_missing=shortlist_artifact_missing,
-        theme_pool_summary=theme_pool_summary,
         error=(
             "shortlist artifact missing while Bayesian records or PortfolioConstructor "
             "target weights are present"
@@ -3226,7 +2699,7 @@ def _attach_candidate_quote_gate(
     return result
 
 
-def _run_candidate_level_v14_dag(
+def _run_candidate_level_v15_dag(
     *,
     held_symbols: list[str],
     analysis_trade_date: str,
@@ -3239,7 +2712,7 @@ def _run_candidate_level_v14_dag(
     data_snapshot = {
         "local_latest_trade_date": analysis_trade_date,
         "analysis_trade_date": analysis_trade_date,
-        "summary_text": "CN aggressive formal candidate generation uses strict v14 DAG.",
+        "summary_text": "CN aggressive formal candidate generation uses strict v15 DAG.",
         "completeness": _jsonable(completeness_report),
     }
     try:
@@ -3285,8 +2758,44 @@ def _run_candidate_level_v14_dag(
         dag_artifacts=dag_artifacts,
         held_symbols=held_symbols,
     )
-    theme_pool_audit = _theme_pool_audit_from_dag_artifacts(dag_artifacts)
-    return candidate_pool, status, theme_pool_audit
+    return candidate_pool, status, dag_artifacts
+
+
+def _v15_branch_readiness_from_dag(
+    dag_artifacts: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, bool]]:
+    global_context = dag_artifacts.get("global_context")
+    if hasattr(global_context, "to_dict"):
+        global_payload = _mapping_payload(global_context.to_dict())
+    else:
+        global_payload = _mapping_payload(global_context)
+    metadata = _mapping_payload(global_payload.get("metadata"))
+    report = _mapping_payload(metadata.get("branch_data_readiness"))
+    readiness = _mapping_payload(report.get("readiness"))
+    verdicts = _mapping_payload(dag_artifacts.get("branch_verdicts_by_symbol"))
+    objects = {
+        branch: bool(
+            readiness.get(branch)
+            and (
+                branch == "macro"
+                or any(
+                    _mapping_payload(symbol_payload).get(branch) is not None
+                    for symbol_payload in verdicts.values()
+                )
+            )
+        )
+        for branch in REQUIRED_DAG_BRANCHES
+    }
+    return readiness, objects
+
+
+def _v15_portfolio_payload(dag_artifacts: Mapping[str, Any]) -> dict[str, Any]:
+    payload = dag_artifacts.get("portfolio_decision") or dag_artifacts.get("portfolio_plan")
+    if hasattr(payload, "to_dict"):
+        return _mapping_payload(payload.to_dict())
+    if hasattr(payload, "model_dump"):
+        return _mapping_payload(payload.model_dump())
+    return _mapping_payload(_jsonable(payload))
 
 
 def _build_switch_plan(
@@ -3309,7 +2818,7 @@ def _build_switch_plan(
     if not required_candidate_columns.issubset(set(candidate_pool.columns)):
         return pd.DataFrame(columns=SWITCH_PLAN_COLUMNS)
     dag_candidates = candidate_pool[
-        (candidate_pool["candidate_source"].astype(str) == "v14_full_market_dag")
+        (candidate_pool["candidate_source"].astype(str) == "v15_full_market_dag")
         & (candidate_pool["candidate_dag_branch_contract_complete"].astype(bool))
         & (candidate_pool["portfolio_target_weight"].map(lambda value: _safe_float(value) > 0))
     ].copy()
@@ -3372,7 +2881,7 @@ def _build_switch_plan(
                 "sell_recommended_action": getattr(weak_row, "recommended_action", ""),
                 "buy_symbol": candidate_row.symbol,
                 "buy_name": candidate_row.name,
-                "buy_theme": candidate_row.theme_label,
+                "buy_industry": getattr(candidate_row, "industry", None),
                 "buy_bayesian_rank": int(_safe_float(getattr(candidate_row, "bayesian_rank", 999999))),
                 "buy_posterior_action_score": round(posterior_score, 6),
                 "buy_posterior_confidence": round(posterior_confidence, 6),
@@ -3388,9 +2897,9 @@ def _build_switch_plan(
                 "action": "pending_manual_override" if actionable else ("prepare_switch" if superior else "watch_only"),
                 "switch_ratio_hint": "等待 Maxwell 人工 override" if actionable else "先观察，不执行",
                 "trigger_threshold": (
-                    "候选保持 candidate-level v14 DAG 三分支完整，且 PortfolioConstructor 维持正目标权重；现持仓仍未解除降级/减仓信号"
+                    "候选保持 candidate-level v15 DAG 三分支完整，且 PortfolioConstructor 维持正目标权重；现持仓仍未解除降级/减仓信号"
                     if not actionable
-                    else "按20%试探性换仓；后续只在 candidate-level v14 DAG 仍完整且目标权重提升时递增"
+                    else "按20%试探性换仓；后续只在 candidate-level v15 DAG 仍完整且目标权重提升时递增"
                 ),
                 "no_switch_condition": (
                     "当前前日线+实时行情口径仍未满足决策数据要求，先不把结构优势直接转成实单"
@@ -4363,7 +3872,7 @@ def _format_holding_advice_line(row: Any) -> str:
 
 
 def _format_candidate_advice_line(row: Any, switch_row: dict[str, Any] | None) -> str:
-    source_label = "全市场 v14 DAG"
+    source_label = "全市场 v15 DAG"
     relative_advantage = (
         f"相对 `{switch_row['sell_symbol']}`，候选由 PortfolioConstructor 给出目标权重 "
         f"`{float(switch_row['buy_portfolio_target_weight']):.2%}`，"
@@ -4384,12 +3893,12 @@ def _format_candidate_advice_line(row: Any, switch_row: dict[str, Any] | None) -
     trigger = (
         str(switch_row["trigger_threshold"])
         if switch_row
-        else "若下一轮仍保持 candidate-level v14 DAG 完整且 PortfolioConstructor 正目标权重，可继续观察或准备换仓"
+        else "若下一轮仍保持 candidate-level v15 DAG 完整且 PortfolioConstructor 正目标权重，可继续观察或准备换仓"
     )
     codex_score = int(_safe_float(getattr(row, "codex_recommendation_score", 0), 0.0))
     codex_rating = str(getattr(row, "codex_recommendation_rating", "") or _codex_rating_from_score(codex_score))
     return (
-        f"- `{row.symbol}`（{row.name}）：主线 `{row.theme_label}`，来源 `{source_label}`；"
+        f"- `{row.symbol}`（{row.name}）：行业 `{row.industry}`，来源 `{source_label}`；"
         f"Codex 评分 `{codex_score}/100`（`{codex_rating}`）；"
         f"分支支持 `{int(getattr(row, 'candidate_dag_branch_support_count', 0))}/"
         f"{int(getattr(row, 'candidate_dag_branch_support_total', len(REQUIRED_DAG_BRANCHES)))}`；"
@@ -4848,7 +4357,7 @@ def _build_data_snapshot_lines(
         ),
         (
             f"- 指数/持仓盘中快照：`{quote_snapshot}`；指数与持仓现价使用盘中行情，"
-            "广度、主题与全市场强弱仍以本地最新日线快照为准。"
+            "广度、行业与全市场强弱仍以本地最新日线快照为准。"
             if quote_snapshot
             else "- 指数/持仓盘中快照：`N/A`，本轮全部结论基于本地日线快照。"
         ),
@@ -4931,7 +4440,6 @@ def _write_outputs(
     pnl_summary_df: pd.DataFrame,
     manifest: dict[str, Any],
     market_snapshot: dict[str, Any],
-    theme_pool_audit: dict[str, Any] | None = None,
 ) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     raw_dir = run_dir / "raw_exports"
@@ -4948,7 +4456,6 @@ def _write_outputs(
     snapshot_path = run_dir / "market_snapshot.json"
     manifest_path = run_dir / "manifest.json"
     runtime_profile_path = run_dir / "runtime_profile.json"
-    theme_pool_audit_path = run_dir / "theme_pool_audit.json"
 
     report_path.write_text(report_text, encoding="utf-8")
     holdings_review.to_csv(holdings_path, index=False, encoding="utf-8-sig")
@@ -4964,29 +4471,6 @@ def _write_outputs(
             json.dumps(runtime_profile, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-    if theme_pool_audit:
-        files = manifest.setdefault("files", {})
-        if isinstance(files, dict):
-            files["theme_pool_audit"] = "theme_pool_audit.json"
-        raw_name = f"{prefix}_theme_pool_audit.json"
-        raw_exports = manifest.setdefault("raw_exports", {})
-        if isinstance(raw_exports, dict):
-            raw_exports["theme_pool_audit"] = f"raw_exports/{raw_name}"
-        theme_pool_audit_path.write_text(
-            json.dumps(_jsonable(theme_pool_audit), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        audit_reference = {
-            "schema_version": THEME_POOL_AUDIT_SCHEMA_VERSION,
-            "file": "theme_pool_audit.json",
-            "raw_export": f"raw_exports/{raw_name}",
-        }
-        manifest["theme_pool_audit"] = dict(audit_reference)
-        market_snapshot["theme_pool_audit"] = dict(audit_reference)
-        snapshot_path.write_text(
-            json.dumps(market_snapshot, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
     shutil.copy2(report_path, raw_dir / f"{prefix}_report.md")
@@ -4997,8 +4481,6 @@ def _write_outputs(
     shutil.copy2(pnl_path, raw_dir / f"{prefix}_pnl_summary.csv")
     if runtime_profile_path.exists():
         shutil.copy2(runtime_profile_path, raw_dir / "runtime_profile.json")
-    if theme_pool_audit and theme_pool_audit_path.exists():
-        shutil.copy2(theme_pool_audit_path, raw_dir / f"{prefix}_theme_pool_audit.json")
 
 
 def _holdings_review_ledger_invariant(
@@ -5322,8 +4804,6 @@ def _build_notes_payload(
     switch_plan_df: pd.DataFrame,
     candidate_pool: pd.DataFrame,
     tomorrow_focus: list[str],
-    theme_pool_summary: dict[str, Any] | None = None,
-    theme_symbols: dict[str, Any] | None = None,
 ) -> str:
     if orders:
         order_text = "；".join(
@@ -5356,7 +4836,7 @@ def _build_notes_payload(
     else:
         top_rows = candidate_pool.head(3)
         candidate_text = "；".join(
-            f"{row.symbol}({row.name})/{row.theme_label}/评分{int(getattr(row, 'codex_recommendation_score', 0))}"
+        f"{row.symbol}({row.name})/{getattr(row, 'industry', None) or 'industry_unavailable'}/评分{int(getattr(row, 'codex_recommendation_score', 0))}"
             f"/分支{int(getattr(row, 'candidate_dag_branch_support_count', 0))}/"
             f"{int(getattr(row, 'candidate_dag_branch_support_total', len(REQUIRED_DAG_BRANCHES)))}"
             f"/Bayesian证据{int(getattr(row, 'bayesian_evidence_count', 0))}/"
@@ -5364,17 +4844,6 @@ def _build_notes_payload(
             f"/证据质量{row.evidence_quality}"
             for row in top_rows.itertuples()
         )
-    theme_exposure_text = ""
-    if theme_pool_summary:
-        theme_lines = _format_theme_pool_report_lines(
-            theme_pool_summary,
-            candidate_pool=candidate_pool,
-            theme_symbols=theme_symbols or {},
-        )
-        theme_exposure_text = "；".join(
-            line.removeprefix("- ").rstrip("。") for line in theme_lines[:4]
-        )
-
     notes_lines = [
         f"# A股日度复盘 {trade_date}",
         "",
@@ -5394,8 +4863,6 @@ def _build_notes_payload(
         f"- 换仓内容：{switch_detail_text}",
         f"- 明日观察重点：{'；'.join(tomorrow_focus)}",
     ]
-    if theme_exposure_text:
-        notes_lines.insert(6, f"- Theme 候选暴露：{theme_exposure_text}")
     return "\n".join(notes_lines)
 
 
@@ -5768,13 +5235,12 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         ascending=[False, False, True],
     ).reset_index(drop=True)
     trailing_take_profit_summary = _summarize_trailing_take_profit(holdings_review)
-    candidate_pool, candidate_level_dag_status, theme_pool_audit = _run_candidate_level_v14_dag(
+    candidate_pool, candidate_level_dag_status, candidate_dag_artifacts = _run_candidate_level_v15_dag(
         held_symbols=holdings_review["symbol"].tolist(),
         analysis_trade_date=analysis_trade_date,
         completeness_report=completeness_after,
         total_capital=initial_capital,
     )
-    theme_pool_summary = _mapping_payload(theme_pool_audit.get("summary"))
     if not candidate_pool.empty:
         candidate_quote_codes = [
             _map_symbol_to_quote_code(str(symbol))
@@ -5811,13 +5277,49 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         switch_plan_df["buy_codex_recommendation_score"] = switch_plan_df["buy_symbol"].map(score_map)
         switch_plan_df["buy_codex_recommendation_rating"] = switch_plan_df["buy_symbol"].map(rating_map)
 
-    theme_strength = _summarize_theme_strength(holdings_review)
+    factor_governance_runtime = _summarize_factor_governance_runtime(
+        branch_signals_by_symbol
+    )
+    branch_readiness, branch_objects = _v15_branch_readiness_from_dag(
+        candidate_dag_artifacts
+    )
+    portfolio_constructor_payload = _v15_portfolio_payload(candidate_dag_artifacts)
+    v15_run_readiness = build_v15_run_readiness(
+        run_id=timestamp,
+        generated_at=now.isoformat(),
+        analysis_trade_date=analysis_trade_date,
+        market_data_ready=bool(completeness_passed),
+        market_data_blockers=list(completeness_after.get("blockers") or []),
+        branch_readiness=branch_readiness,
+        branch_objects=branch_objects,
+        factor_governance=factor_governance_runtime,
+        candidate_decision={
+            "candidate_decision_status": candidate_level_dag_status.get(
+                "candidate_generation_status", "blocked"
+            ),
+            "blocker": candidate_level_dag_status.get("blocker", ""),
+        },
+        portfolio_constructor=portfolio_constructor_payload,
+        human_authorization=None,
+        risk_reduction_quote_gate={
+            "authorized": False,
+            "blockers": ["same_day_human_action_and_fresh_quote_not_evaluated"],
+        },
+        material_warnings=[
+            *list(factor_governance_runtime.get("blockers") or []),
+            *[
+                str(item)
+                for payload in branch_readiness.values()
+                for item in list(_mapping_payload(payload).get("blockers") or [])
+            ],
+        ],
+    )
+    v15_run_readiness_reference = write_v15_run_readiness(
+        run_dir / "v15_run_readiness.json", v15_run_readiness
+    )
+
     style_text = _market_style_conclusion(indices=indices, breadth=breadth)
-    strongest_theme_text, weakest_theme_text = _tech_mainline_conclusion(theme_strength)
     proposed_orders = _build_rebalance_plan(holdings_review)
-    # 当前策略仍以主线内部修复为主，只在出现明确弱化共振时执行减仓。
-    if len(proposed_orders) == 1 and theme_strength and theme_strength[0]["avg_score"] >= 0.8:
-        proposed_orders = []
     quote_by_symbol = {
         str(row.symbol).strip().upper(): quote_payload.get(_map_symbol_to_quote_code(str(row.symbol)), {})
         for row in source_ledger.itertuples()
@@ -5826,7 +5328,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     validated_orders: list[ProposedOrder] = []
     order_gate_decisions: list[dict[str, Any]] = []
     decision_log_authorizations: list[dict[str, Any]] = []
-    data_gate_allows_new_risk = completeness_passed or decision_data_sufficient
+    data_gate_allows_new_risk = bool(v15_run_readiness["new_risk_authorized"])
     execution_gate_now = _now_local()
     for order in proposed_orders:
         risk_sell_allowed, risk_sell_reason = _risk_reduction_sell_gate(
@@ -6035,7 +5537,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     float_losers = holdings_review.sort_values("unrealized_pnl", ascending=True)
 
     rebalance_reason = (
-        "执行温和调仓，削减已明显落后于主线的弱支线仓位。"
+        "执行温和调仓，削减已明显落后于组合结构的弱仓位。"
         if orders
         else "今天不执行调仓，继续把强修复与弱滞涨的分化再观察一个交易日。"
     )
@@ -6044,10 +5546,29 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         analysis_trade_date=analysis_trade_date,
         decision_data_sufficient=decision_data_sufficient,
     )
+    weak_watch = " / ".join(
+        f"{row.symbol} {row.name}"
+        for row in float_losers.head(2).itertuples(index=False)
+    )
+    candidate_industries = sorted(
+        {
+            str(value).strip()
+            for value in candidate_pool.get("industry", pd.Series(dtype=str)).tolist()
+            if str(value).strip()
+        }
+    )
     tomorrow_focus = [
-        "确认先进材料与光通信的修复能否延续，不让单日反弹误判为全面重启",
-        "继续观察 `大族激光 / 中国西电` 是否能重新站回阶段止损位",
-        "跟踪科创50 相对沪深300 的强弱差，判断资金是否继续偏向硬科技",
+        (
+            "复核当前候选行业的连续性：`" + " / ".join(candidate_industries[:3]) + "`"
+            if candidate_industries
+            else "等待 strict stock_basic.industry 可用后再生成行业观察结论"
+        ),
+        (
+            f"继续观察 `{weak_watch}` 是否能重新站回阶段止损位"
+            if weak_watch
+            else "当前无持仓标的需要阶段止损位复核"
+        ),
+        "跟踪当前结构化指数记录的相对强弱，复核市场风格是否延续",
     ]
     trailing_watch_symbols = list(trailing_take_profit_summary.get("watch_symbols", []) or [])
     trailing_unconfirmed_symbols = list(trailing_take_profit_summary.get("unconfirmed_symbols", []) or [])
@@ -6254,9 +5775,6 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         _format_candidate_advice_line(row, switch_rows_by_buy_symbol.get(str(row.symbol)))
         for row in candidate_pool.head(5).itertuples()
     ]
-    factor_governance_runtime = _summarize_factor_governance_runtime(
-        branch_signals_by_symbol
-    )
     factor_governance_lines = _format_factor_governance_runtime_lines(
         factor_governance_runtime
     )
@@ -6270,11 +5788,6 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     top_switch_action = str(switch_plan_df.iloc[0]["action"]) if not switch_plan_df.empty else ""
     switch_now = top_switch_action == "switch_now"
     switch_prepare = top_switch_action == "prepare_switch"
-    theme_pool_report_lines = _format_theme_pool_report_lines(
-        theme_pool_summary,
-        candidate_pool=candidate_pool,
-        theme_symbols=_mapping_payload(theme_pool_audit.get("symbols")),
-    )
     candidate_waterfall_lines = _format_candidate_decay_waterfall_report_lines(
         candidate_level_dag_status
     )
@@ -6301,11 +5814,16 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         f"- 执行基线 manifest：`{source_manifest.get('effective_manual_manifest_path') or 'UNCONFIRMED'}`",
         f"- 执行基线 ledger：`{source_manifest.get('effective_manual_ledger_path') or 'UNCONFIRMED'}`；SHA256=`{source_manifest.get('effective_manual_ledger_sha256') or 'legacy_unsealed'}`",
         f"- 本次正式记录时间：{timestamp_long}",
+        (
+            "- v15 readiness：`v15_run_readiness.json`；"
+            f"SHA256=`{v15_run_readiness_reference['sha256']}`；"
+            f"new_risk_authorized=`{str(bool(v15_run_readiness['new_risk_authorized'])).lower()}`"
+        ),
         f"- 盘中快照：{quote_snapshot or 'N/A'}",
         f"- 完整性校验：**{'已通过' if completeness_passed else '未通过'}**",
         f"- 决策数据口径：**{'盘中前日线+实时行情可用' if decision_data_sufficient else 'strict 日线完整性优先'}**",
         "- 分析口径：**直接基于本地已有数据，不自动补数，不把完整性校验作为正式结论前置阻断。**",
-        "- 分析链路：**统一 DAG / review-layer（逐持仓主线复核）**",
+        "- 分析链路：**统一 DAG / review-layer（逐持仓结构复核）**",
         (
             f"- DAG 三分支执行状态：**{dag_branch_contract_compliance['status']}**；"
             f"`complete={str(bool(dag_branch_contract_compliance['complete'])).lower()}`"
@@ -6380,7 +5898,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         (
             "- 备选投资建议："
             + "；".join(
-                f"{row.symbol}({row.name})/{row.theme_label}"
+                f"{row.symbol}({row.name})/{row.industry}"
                 for row in candidate_pool.head(3).itertuples()
             )
             if not candidate_pool.empty
@@ -6440,16 +5958,6 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
                 f"- ZZ1000：1日上涨占比 {breadth['zz1000']['ret1_positive_ratio']:.1%}，"
                 f"20日上涨占比 {breadth['zz1000']['ret20_positive_ratio']:.1%}，"
                 f"`MA20 > MA60` 占比 {breadth['zz1000']['ma20_gt_ma60_ratio']:.1%}"
-            ),
-            "",
-            "### 4.3 科技 / 高端制造主线强弱",
-            "",
-            f"- {strongest_theme_text}",
-            f"- {weakest_theme_text}",
-            (
-                f"- 主题强弱排序：{', '.join(item['theme'] for item in theme_strength)}"
-                if theme_strength
-                else "- 主题强弱排序：暂无"
             ),
             "",
             "## 5. 当前策略持仓复盘",
@@ -6589,7 +6097,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "",
             f"- 正式建议：**{'执行温和调仓' if orders else '本次不执行调仓'}**",
             (
-                "- 原因：主线最强分支重新走强，今天更像内部修复而不是主线失效；弱支线虽然没有完全修复，但还不足以在单日里推翻长期主线。"
+                "- 原因：最强分支重新走强，今天更像内部修复而不是结构失效；弱仓位虽然没有完全修复，但还不足以在单日里推翻长期判断。"
                 if not orders
                 else "- 原因：弱支线在完整日线与盘中都继续落后，已满足温和减仓条件。"
             ),
@@ -6628,7 +6136,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "### 5.5 备选投资建议",
             "",
             (
-                "- 本轮备选池来自全市场 v14 DAG：DeterministicFunnel → candidate-level 三分支 → Bayesian → RiskGuard/IC/PortfolioConstructor。"
+                "- 本轮备选池来自全市场 v15 DAG：DeterministicFunnel → candidate-level 三分支 → Bayesian → RiskGuard/IC/PortfolioConstructor。"
                 if not candidate_pool.empty
                 else (
                     "- 本轮未提取到有效备选池；"
@@ -6638,7 +6146,6 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             ),
             *candidate_lines,
             *candidate_waterfall_lines,
-            *theme_pool_report_lines,
             "",
             "### 5.6 现持仓与备选标的换仓比较",
             "",
@@ -6665,7 +6172,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         for row in switch_plan_df.itertuples(index=False):
             report_lines.append(
                 f"- `{row.sell_symbol}`（{row.sell_name}） vs `{row.buy_symbol}`（{row.buy_name}）："
-                f"候选主线 `{row.buy_theme}`，Bayesian rank `{int(row.buy_bayesian_rank)}`，"
+                f"候选行业 `{row.buy_industry}`，Bayesian rank `{int(row.buy_bayesian_rank)}`，"
                 f"posterior action score `{float(row.buy_posterior_action_score):.3f}`，"
                 f"PortfolioConstructor 目标权重 `{float(row.buy_portfolio_target_weight):.2%}`；建议 `{row.action}`，"
                 f"优先级 `{row.priority}`，比例提示 `{row.switch_ratio_hint}`；"
@@ -6675,7 +6182,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     report_lines.extend(
         [
             "",
-            "### 5.7 FactorGovernanceProtocol v2 生产运行时",
+            "### 5.7 FactorGovernanceProtocol v3 生产运行时",
             "",
             *factor_governance_lines,
             "",
@@ -6738,14 +6245,12 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     notes_text = _build_notes_payload(
         trade_date=now.strftime("%Y-%m-%d"),
         data_status=data_status,
-        market_core_view=f"{style_text}{strongest_theme_text}{weakest_theme_text}",
+        market_core_view=style_text,
         pnl_summary=pnl_summary,
         orders=orders,
         switch_plan_df=switch_plan_df,
         candidate_pool=candidate_pool,
         tomorrow_focus=tomorrow_focus,
-        theme_pool_summary=theme_pool_summary,
-        theme_symbols=_mapping_payload(theme_pool_audit.get("symbols")),
     )
     (base_dir / "latest_notes_payload.md").write_text(
         notes_text,
@@ -6759,7 +6264,6 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "branch_diagnostics_by_symbol": _jsonable(branch_signals_by_symbol),
         "dag_branch_contract_compliance": _jsonable(dag_branch_contract_compliance),
         "candidate_level_dag_status": _jsonable(candidate_level_dag_status),
-        "theme_candidate_pool": _jsonable(theme_pool_summary),
         "factor_governance_runtime": _jsonable(factor_governance_runtime),
         "trailing_take_profit": _jsonable(trailing_take_profit_summary),
         "holdings_review_ledger_invariant": _jsonable(holdings_review_invariant),
@@ -6809,6 +6313,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             else "local_snapshot_no_backfill_no_gate"
         ),
         "files": {
+            "v15_run_readiness": "v15_run_readiness.json",
             "analysis_report": "analysis_report.md",
             "holdings_review": "holdings_review.csv",
             "candidate_pool": "candidate_pool.csv",
@@ -6871,7 +6376,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "candidate_level_dag_status": _jsonable(candidate_level_dag_status),
         "candidate_generation_status": candidate_level_dag_status.get("candidate_generation_status"),
         "blocker": candidate_level_dag_status.get("blocker"),
-        "theme_candidate_pool": _jsonable(theme_pool_summary),
+        "v15_run_readiness": dict(v15_run_readiness_reference),
         "factor_governance_runtime": _jsonable(factor_governance_runtime),
         "holding_dag_assessments": _jsonable(holding_dag_assessments),
         "trailing_take_profit": _jsonable(trailing_take_profit_summary),
@@ -6887,6 +6392,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "generated_at": now.strftime("%Y-%m-%d %H:%M:%S"),
         "quote_snapshot": quote_snapshot,
         "analysis_trade_date": analysis_trade_date,
+        "v15_run_readiness": dict(v15_run_readiness_reference),
         "indices": indices,
         "breadth": breadth,
         "market_metrics_prewarm": _jsonable(market_metrics_cache_meta),
@@ -6906,7 +6412,6 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "portfolio_pnl_pct": round(_safe_pct(portfolio_pnl_after, initial_capital), 6),
             "delta_vs_source_record": round(total_value_after - source_total_value, 2),
         },
-        "theme_strength": theme_strength,
         "candidate_pool": candidate_pool.to_dict(orient="records"),
         "switch_plan": switch_plan_df.to_dict(orient="records"),
         "review_layer": {
@@ -6926,7 +6431,6 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "candidate_level_dag_status": _jsonable(candidate_level_dag_status),
         "candidate_generation_status": candidate_level_dag_status.get("candidate_generation_status"),
         "blocker": candidate_level_dag_status.get("blocker"),
-        "theme_candidate_pool": _jsonable(theme_pool_summary),
         "factor_governance_runtime": _jsonable(factor_governance_runtime),
         "holding_dag_assessments": _jsonable(holding_dag_assessments),
         "trailing_take_profit": _jsonable(trailing_take_profit_summary),
@@ -6949,7 +6453,6 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         pnl_summary_df=pnl_summary_df,
         manifest=manifest,
         market_snapshot=market_snapshot,
-        theme_pool_audit=theme_pool_audit,
     )
 
     return {
@@ -6971,20 +6474,16 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "local_llm_disabled": bool(review_layer.get("local_llm_disabled", False)),
         "candidate_pool_top": candidate_pool.head(3).to_dict(orient="records"),
         "switch_plan": switch_plan_df.to_dict(orient="records"),
-        "tech_mainline": {
-            "strongest": strongest_theme_text,
-            "weakest": weakest_theme_text,
-        },
         "dag_branch_contract_compliance": _jsonable(dag_branch_contract_compliance),
         "candidate_level_dag_status": _jsonable(candidate_level_dag_status),
         "candidate_generation_status": candidate_level_dag_status.get("candidate_generation_status"),
         "blocker": candidate_level_dag_status.get("blocker"),
-        "theme_candidate_pool": _jsonable(theme_pool_summary),
         "formal_diagnostics": formal_diagnostics_payload,
         "holdings_review_ledger_invariant": _jsonable(holdings_review_invariant),
         "market_metrics_prewarm": _jsonable(market_metrics_cache_meta),
         "full_market_metrics_cache": _jsonable(market_metrics_cache_meta),
         "manual_execution": _jsonable(manual_execution_manifest),
+        "v15_run_readiness": dict(v15_run_readiness_reference),
         "pnl_summary": pnl_summary,
         "elapsed_sec": round(time.time() - started, 2),
     }

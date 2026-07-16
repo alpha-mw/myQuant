@@ -51,7 +51,7 @@
     var raw = String(window.location.hash || "").replace(/^#/, "");
     var parts = raw.split("?");
     var workspace = parts[0] || "overview";
-    if (["overview", "holdings", "trades", "theme", "factor", "audit"].indexOf(workspace) < 0) {
+    if (["overview", "holdings", "trades", "factor", "audit"].indexOf(workspace) < 0) {
       workspace = "overview";
     }
     var params = new URLSearchParams(parts[1] || "");
@@ -285,7 +285,7 @@
     options = options || {};
     state.dataset = Data.parseDataset(
       state.csvBundle,
-      window.DashboardSnapshotV2 || Generated.contract || null
+      window.DashboardSnapshotV3 || Generated.contract || null
     );
     if (options.resetDateRange) {
       state.filters.startDate = "";
@@ -310,21 +310,20 @@
       }
       warnings = warnings.concat(Generated.warnings || []);
       infos = infos.concat(Generated.infos || []);
-      var contract = window.DashboardSnapshotV2 || Generated.contract || {};
+      var contract = window.DashboardSnapshotV3 || Generated.contract || {};
       if ((contract.blockers || []).length) {
         warnings.unshift(
-          "Dashboard Contract v2：" + contract.blockers.length +
+          "Dashboard Contract v3：" + contract.blockers.length +
           " 个 blocker，当前状态 " + (contract.status || "blocked") +
           "；展开查看完整明细，交易前先看归因与数据审计。"
         );
-        warnings.push("Dashboard Contract v2 blocker detail: " + contract.blockers.join(", "));
+        warnings.push("Dashboard Contract v3 blocker detail: " + contract.blockers.join(", "));
       }
       if (contract.as_of_matrix) {
         infos.unshift(
           "as-of：策略 " + (contract.as_of_matrix.strategy_record_date || "-") +
           "；分析 " + (contract.as_of_matrix.analysis_trading_date || "-") +
-          "；quote " + (contract.as_of_matrix.quote_at || "-") +
-          "；Theme " + (contract.as_of_matrix.theme_date || "-") + "。"
+          "；quote " + (contract.as_of_matrix.quote_at || "-") + "。"
         );
       }
     } else if (usingUser) {

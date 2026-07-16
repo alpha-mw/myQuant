@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://myquant.local/schema/dashboard_contract.v3.schema.json",
+  "title": "myQuant Dashboard Contract v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "schema_sha256", "protocol_hash", "run_id",
+    "generated_at", "status", "blockers", "v15_run_readiness",
+    "as_of_matrix", "trading_calendar", "nav_return_provenance", "sources",
+    "nav", "positions", "trades", "industries", "factors",
+    "factor_protocol", "reconciliation", "metric_policy"
+  ],
+  "properties": {
+    "schema_version": { "const": "dashboard_contract.v3" },
+    "schema_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "protocol_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "generated_at": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["fresh", "stale", "partial", "blocked", "sample"] },
+    "blockers": { "type": "array", "items": { "type": "string" } },
+    "v15_run_readiness": { "$ref": "#/$defs/readinessReference" },
+    "as_of_matrix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "strategy_record_date", "strategy_record_at", "analysis_trading_date",
+        "quote_at", "benchmark_value_dates", "factor_registry_sha"
+      ],
+      "properties": {
+        "strategy_record_date": { "type": ["string", "null"] },
+        "strategy_record_at": { "type": ["string", "null"] },
+        "analysis_trading_date": { "type": ["string", "null"] },
+        "quote_at": { "type": ["string", "null"] },
+        "benchmark_value_dates": { "type": "object" },
+        "factor_registry_sha": { "type": ["string", "null"] }
+      }
+    },
+    "trading_calendar": { "type": "object" },
+    "nav_return_provenance": { "type": "object" },
+    "sources": { "type": "object" },
+    "nav": { "type": "array", "items": { "$ref": "#/$defs/nav" } },
+    "positions": { "type": "array", "items": { "$ref": "#/$defs/position" } },
+    "trades": { "type": "array", "items": { "$ref": "#/$defs/trade" } },
+    "industries": { "type": "array", "items": { "$ref": "#/$defs/industry" } },
+    "factors": { "type": "array", "items": { "type": "object" } },
+    "factor_protocol": {
+      "type": "object",
+      "required": ["schema_version", "protocol_version", "status", "blockers", "readback_verified"],
+      "properties": {
+        "schema_version": { "const": "factor-governance-protocol.v3" },
+        "protocol_version": { "const": "v3" },
+        "status": { "type": "string" },
+        "blockers": { "type": "array", "items": { "type": "string" } },
+        "readback_verified": { "type": "boolean" },
+        "registry_file_sha256": { "type": ["string", "null"] },
+        "production_factor_set_sha256": { "type": ["string", "null"] }
+      }
+    },
+    "reconciliation": { "type": "object" },
+    "metric_policy": { "type": "object" }
+  },
+  "$defs": {
+    "nullableNumber": { "type": ["number", "null"] },
+    "readinessReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "path", "sha256"],
+      "properties": {
+        "schema_version": { "const": "v15_run_readiness.v1" },
+        "path": { "const": "v15_run_readiness.json" },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "nav": {
+      "type": "object",
+      "required": ["date", "portfolio_nav"],
+      "properties": {
+        "date": { "type": "string" },
+        "portfolio_nav": { "$ref": "#/$defs/nullableNumber" }
+      },
+      "patternProperties": { "^.*_nav$": { "$ref": "#/$defs/nullableNumber" } }
+    },
+    "position": {
+      "type": "object",
+      "required": ["date", "ticker", "nav_weight", "equity_sleeve_weight", "daily_return", "contribution"],
+      "properties": {
+        "date": { "type": "string" },
+        "ticker": { "type": "string" },
+        "nav_weight": { "$ref": "#/$defs/nullableNumber" },
+        "equity_sleeve_weight": { "$ref": "#/$defs/nullableNumber" },
+        "daily_return": { "$ref": "#/$defs/nullableNumber" },
+        "contribution": { "$ref": "#/$defs/nullableNumber" }
+      }
+    },
+    "trade": {
+      "type": "object",
+      "required": ["trade_date", "ticker", "side", "price", "quantity", "fee"],
+      "properties": {
+        "trade_date": { "type": "string" },
+        "ticker": { "type": "string" },
+        "side": { "type": "string" },
+        "price": { "$ref": "#/$defs/nullableNumber" },
+        "quantity": { "$ref": "#/$defs/nullableNumber" },
+        "fee": { "$ref": "#/$defs/nullableNumber" }
+      }
+    },
+    "industry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "date", "ticker", "industry", "industry_source", "industry_as_of",
+        "industry_generation_sha256", "nav_weight"
+      ],
+      "properties": {
+        "date": { "type": "string" },
+        "ticker": { "type": "string" },
+        "industry": { "type": ["string", "null"] },
+        "industry_source": { "type": ["string", "null"] },
+        "industry_as_of": { "type": ["string", "null"] },
+        "industry_generation_sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+        "nav_weight": { "$ref": "#/$defs/nullableNumber" }
+      }
+    }
+  }
+}

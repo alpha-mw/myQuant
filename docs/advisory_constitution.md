@@ -19,7 +19,7 @@
    - 已产出 `print_pipeline_state` 快照；
    - advisory 已进入决策日志；
    - 人工动作单独进入 `human_action` 事件；
-   - 未绕过正式管线、RiskGuard、Markov/Theme gate 和当前治理协议。
+   - 未绕过正式管线、RiskGuard、Markov gate 和当前治理协议。
 
 4. **默认只建议**：A 股日度正式复盘默认 `advisory_only=true`。即使风险减仓建议和
    fresh quote 均通过，也只能记录为 `pending_authorization` 并原样结转 ledger；只有
