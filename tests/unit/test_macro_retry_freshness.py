@@ -14,6 +14,7 @@ from quant_investor.macro.nbs_pmi import (
     parse_nbs_cn_pmi_html,
 )
 from quant_investor.market import macro_mart
+from quant_investor.macro.registry import NATIONAL_DOMAIN_WEIGHTS
 
 
 TARGET = "20260714"
@@ -29,6 +30,18 @@ NBS_CN_PMI_BODY = """<!doctype html>
 </head><body>
 <p>5月份，中国制造业采购经理指数（PMI）为49.5%</p>
 </body></html>""".encode("utf-8")
+
+
+def _macro_snapshot() -> dict[str, object]:
+    states = {domain: 0.0 for domain in NATIONAL_DOMAIN_WEIGHTS}
+    states["credit_liquidity"] = 0.4
+    states["policy_fiscal"] = 0.25
+    return {
+        "readiness_status": "pass",
+        "national_states": states,
+        "coverage": {"national": 1.0},
+        "snapshot_hash": "a" * 64,
+    }
 
 
 def _official_capture() -> NbsPmiCapture:
@@ -152,6 +165,11 @@ def _land_retry_generation(
 
     monkeypatch.setattr(macro_mart, "_utc_now", lambda: LANDED_AT)
     monkeypatch.setattr(macro_mart, "fetch_nbs_cn_pmi", _fetch_official)
+    monkeypatch.setattr(
+        macro_mart,
+        "_load_authoritative_macro_snapshot",
+        lambda **_kwargs: _macro_snapshot(),
+    )
     provider_fetch = macro_mart._fetch_provider_bundle(
         client=_MonthlyProvider(),
         trade_date=TARGET,
@@ -171,6 +189,7 @@ def _land_retry_generation(
         market,
         trade_date=TARGET,
         provider_bundle=provider_bundle,
+        macro_snapshot=_macro_snapshot(),
     )
 
     pointer_path = market_root / "_latest.json"
@@ -387,6 +406,11 @@ def test_catalog_switch_rechecks_current_month_deadline(
     monkeypatch.setattr(macro_mart, "_utc_now", lambda: next(clocks))
     monkeypatch.setattr(macro_mart, "_build_tushare_client", _MonthlyProvider)
     monkeypatch.setattr(macro_mart, "fetch_nbs_cn_pmi", _fetch_official)
+    monkeypatch.setattr(
+        macro_mart,
+        "_load_authoritative_macro_snapshot",
+        lambda **_kwargs: _macro_snapshot(),
+    )
     monkeypatch.setattr(
         macro_mart,
         "_load_market_inputs",

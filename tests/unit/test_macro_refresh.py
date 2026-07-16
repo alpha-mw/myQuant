@@ -20,6 +20,7 @@ from quant_investor.macro.nbs_pmi import (
     parse_nbs_cn_pmi_html,
 )
 from quant_investor.market import macro_mart
+from quant_investor.macro.registry import NATIONAL_DOMAIN_WEIGHTS
 from tests.helpers.macro_fixture import bind_macro_generation
 
 
@@ -80,6 +81,19 @@ def _patch_official_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
         macro_mart,
         "fetch_nbs_cn_pmi",
         _fetch,
+    )
+    states = {domain: 0.0 for domain in NATIONAL_DOMAIN_WEIGHTS}
+    states["credit_liquidity"] = 0.4
+    states["policy_fiscal"] = 0.25
+    monkeypatch.setattr(
+        macro_mart,
+        "_load_authoritative_macro_snapshot",
+        lambda **_kwargs: {
+            "readiness_status": "pass",
+            "national_states": states,
+            "coverage": {"national": 1.0},
+            "snapshot_hash": "a" * 64,
+        },
     )
 
 
@@ -257,7 +271,7 @@ def test_refresh_promotes_hash_bound_strict_generation(
     assert manifest["source"] == macro_mart.SOURCE_OFFICIAL_FIRST
     assert manifest["source_priority"] == macro_mart.SOURCE_OFFICIAL
     assert manifest["provider_fallback_used"] is False
-    assert frame.iloc[0]["policy_signal"] == "neutral"
+    assert frame.iloc[0]["policy_signal"] == "supportive"
 
     provider_path = Path(str(manifest["resolved_provider_bundle"]))
     provider = json.loads(provider_path.read_text(encoding="utf-8"))
@@ -287,17 +301,9 @@ def test_refresh_promotes_hash_bound_strict_generation(
         "provider_capture_files_sha256"
     ] == manifest["provider_capture_files_sha256"]
 
-    ordered = bars.sort_values(["ts_code", "trade_date"]).copy()
-    ordered["return"] = ordered.groupby("ts_code")["close"].pct_change(
-        fill_method=None
-    )
-    returns = ordered.dropna(subset=["return"])
-    recent = returns.groupby("ts_code")["return"].tail(20)
-    expected_symbol_mean = recent.groupby(returns.loc[recent.index, "ts_code"]).mean()
-    expected_macro = float(np.clip(expected_symbol_mean.mean() * 20.0, -1.0, 1.0))
-    expected_breadth = float(expected_symbol_mean.gt(0.0).mean())
-    assert frame.iloc[0]["macro_score"] == pytest.approx(expected_macro)
-    assert frame.iloc[0]["liquidity_score"] == pytest.approx(expected_breadth)
+    assert frame.iloc[0]["macro_score"] == pytest.approx(0.1175)
+    assert frame.iloc[0]["macro_score_100"] == pytest.approx(55.875)
+    assert frame.iloc[0]["liquidity_score"] == pytest.approx(0.4)
     journal = json.loads(
         Path(str(result["transaction_journal"])).read_text(encoding="utf-8")
     )

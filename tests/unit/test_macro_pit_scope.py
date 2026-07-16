@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 from quant_investor.market import macro_mart
+from quant_investor.macro.registry import NATIONAL_DOMAIN_WEIGHTS
 
 
 TARGET = "20240510"
@@ -35,6 +36,17 @@ def _provider_bundle() -> dict[str, object]:
     }
 
 
+def _macro_snapshot() -> dict[str, object]:
+    return {
+        "readiness_status": "pass",
+        "national_states": {
+            domain: 0.0 for domain in NATIONAL_DOMAIN_WEIGHTS
+        },
+        "coverage": {"national": 1.0},
+        "snapshot_hash": "a" * 64,
+    }
+
+
 def test_stale_terminal_symbol_does_not_change_formula_cross_section() -> None:
     active_market = _market_frame()
     stale_dates = pd.bdate_range(end="2024-05-09", periods=99)
@@ -50,11 +62,13 @@ def test_stale_terminal_symbol_does_not_change_formula_cross_section() -> None:
         active_market,
         trade_date=TARGET,
         provider_bundle=_provider_bundle(),
+        macro_snapshot=_macro_snapshot(),
     )
     with_stale, stale_universe = macro_mart._derive_macro_frame(
         pd.concat([active_market, stale], ignore_index=True),
         trade_date=TARGET,
         provider_bundle=_provider_bundle(),
+        macro_snapshot=_macro_snapshot(),
     )
 
     assert with_stale.iloc[0]["macro_score"] == pytest.approx(

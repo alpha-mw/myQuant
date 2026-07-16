@@ -1153,6 +1153,7 @@ def main(argv: list[str] | None = None) -> None:
                     allow_live=args.allow_live,
                     nbs_cn_pmi_url=args.nbs_cn_pmi_url,
                     allow_tushare_fallback=args.allow_tushare_fallback,
+                    observations_root=args.observations_root,
                 )
             )
             return

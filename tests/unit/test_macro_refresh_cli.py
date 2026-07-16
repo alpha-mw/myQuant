@@ -79,8 +79,9 @@ def test_macro_maintain_stages_all_production_inputs(monkeypatch, capsys):
             "https://www.stats.gov.cn/xxgk/sjfb/zxfb2020/202606/"
             "t20260630_1964032.html"
         ),
-        "allow_tushare_fallback": True,
-    }
+            "allow_tushare_fallback": True,
+            "observations_root": "data/parquet/cn/macro_observations",
+        }
     assert json.loads(capsys.readouterr().out) == {
         "status": "staged",
         "promoted": False,

@@ -562,7 +562,7 @@ def _forward_apply_blocked_payload() -> dict[str, Any]:
         "blocker": FORWARD_PRODUCTION_APPLY_BLOCKER,
     }
     manifest = {
-        "schema_version": "factor-governance-protocol.v2",
+        "schema_version": "factor-governance-protocol.v3",
         "protocol_version": PROTOCOL_VERSION,
         "protocol_hash": PROTOCOL_HASH,
         "apply_requested": True,

@@ -45,12 +45,16 @@ from quant_investor.macro.nbs_pmi import (
     parse_nbs_cn_pmi_html,
     validate_nbs_pmi_url,
 )
+from quant_investor.macro.snapshot import build_macro_snapshot
+from quant_investor.macro.store import DEFAULT_OBSERVATIONS_ROOT, load_observations
+from quant_investor.macro.v15_controls import build_v15_macro_controls
 
 
 DEFAULT_MACRO_ROOT = Path("data/parquet/cn/macro_daily")
 DEFAULT_RAW_SNAPSHOT_ROOT = Path("data/cn_market_full/_snapshots/macro")
 MACRO_FIELDS = (
     "macro_score",
+    "macro_score_100",
     "liquidity_score",
     "volatility_percentile",
     "policy_signal",
@@ -1388,6 +1392,8 @@ def _validate_market_formula_universe(
         "target_terminal_symbol_set_sha256",
         "stale_symbol_set_sha256",
         "scored_symbol_set_sha256",
+        "macro_snapshot_sha256",
+        "macro_control_semantic_sha256",
     }
     if not isinstance(raw, Mapping) or set(raw) != expected_fields:
         raise MacroMartPromotionError(
@@ -1446,6 +1452,8 @@ def _validate_market_formula_universe(
         "target_terminal_symbol_set_sha256",
         "stale_symbol_set_sha256",
         "scored_symbol_set_sha256",
+        "macro_snapshot_sha256",
+        "macro_control_semantic_sha256",
     ):
         _assert_sha256(
             raw.get(field),
@@ -1525,6 +1533,7 @@ def _derive_macro_frame(
     *,
     trade_date: str,
     provider_bundle: Mapping[str, Any],
+    macro_snapshot: Mapping[str, Any],
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     ordered, universe_evidence = _select_target_terminal_formula_universe(
         market,
@@ -1554,15 +1563,6 @@ def _derive_macro_frame(
     universe_evidence["scored_symbol_set_sha256"] = _formula_symbol_set_sha256(
         scored_symbols
     )
-    universe_evidence = _validate_market_formula_universe(
-        universe_evidence,
-        trade_date=trade_date,
-    )
-    macro_score = max(
-        -1.0,
-        min(1.0, float(fmean(symbol_recent.tolist())) * 20.0),
-    )
-    breadth = float(symbol_recent.gt(0.0).mean())
     market_daily = returns.groupby("trade_date", sort=True)["return"].mean()
     rolling_vol = (
         market_daily.rolling(
@@ -1585,22 +1585,13 @@ def _derive_macro_frame(
     if not math.isfinite(current_vol):
         raise MacroMartPromotionError("macro_market_volatility_invalid")
     volatility_percentile = float(trailing.le(current_vol).mean() * 100.0)
-    selected = provider_bundle.get("selected_inputs")
-    if not isinstance(selected, Mapping):
-        raise MacroMartPromotionError("macro_provider_selected_inputs_missing")
-    cn_m = selected.get("cn_m")
-    values = cn_m.get("values") if isinstance(cn_m, Mapping) else None
     try:
-        m2_yoy = float(values["m2_yoy"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise MacroMartPromotionError("macro_provider_m2_invalid") from exc
-    if not math.isfinite(m2_yoy):
-        raise MacroMartPromotionError("macro_provider_m2_invalid")
-    policy_signal = (
-        "supportive"
-        if m2_yoy > 10.0
-        else "restrictive" if m2_yoy <= 8.0 else "neutral"
-    )
+        controls = build_v15_macro_controls(
+            macro_snapshot,
+            volatility_percentile=volatility_percentile,
+        )
+    except ValueError as exc:
+        raise MacroMartPromotionError(str(exc)) from exc
     source = str(provider_bundle.get("source") or "").strip()
     source_priority = str(
         provider_bundle.get("source_priority") or ""
@@ -1611,17 +1602,45 @@ def _derive_macro_frame(
         )
     row = {
         "trade_date": _date_text(trade_date),
-        "macro_score": macro_score,
-        "liquidity_score": breadth,
-        "volatility_percentile": volatility_percentile,
-        "policy_signal": policy_signal,
+        "macro_score": controls["macro_score"],
+        "macro_score_100": controls["macro_score_100"],
+        "liquidity_score": controls["liquidity_score"],
+        "volatility_percentile": controls["volatility_percentile"],
+        "policy_signal": controls["policy_signal"],
         "source": source,
         "source_priority": source_priority,
         "pit_status": "market_point_in_time",
         "fetched_at": str(provider_bundle.get("fetched_at") or ""),
     }
+    universe_evidence["macro_snapshot_sha256"] = str(
+        controls["snapshot_hash"]
+    )
+    universe_evidence["macro_control_semantic_sha256"] = str(
+        controls["semantic_sha256"]
+    )
+    universe_evidence = _validate_market_formula_universe(
+        universe_evidence,
+        trade_date=trade_date,
+    )
     frame = pd.DataFrame([row], columns=sorted(_ALLOWED_INPUT_FIELDS))
     return frame, universe_evidence
+
+
+def _load_authoritative_macro_snapshot(
+    *, observations_root: str | Path, trade_date: str
+) -> dict[str, Any]:
+    try:
+        observations, _ = load_observations(observations_root)
+        snapshot = build_macro_snapshot(
+            observations,
+            market="CN",
+            as_of=_date_text(trade_date),
+        )
+    except Exception as exc:
+        raise MacroMartPromotionError(
+            "macro_v15_authoritative_snapshot_invalid"
+        ) from exc
+    return snapshot.to_dict()
 
 
 def _fsync_file(path: Path) -> None:
@@ -2823,6 +2842,7 @@ def refresh_cn_macro_mart(
     allow_live: bool = False,
     nbs_cn_pmi_url: str = "",
     allow_tushare_fallback: bool = False,
+    observations_root: str | Path = DEFAULT_OBSERVATIONS_ROOT,
 ) -> dict[str, Any]:
     """Build and atomically bind the latest-session live Macro mart."""
 
@@ -2884,6 +2904,10 @@ def refresh_cn_macro_mart(
         captured_at=captured_at,
         enforce_capture_window=False,
     )
+    macro_snapshot = _load_authoritative_macro_snapshot(
+        observations_root=observations_root,
+        trade_date=trade_date,
+    )
     equivalent = _current_macro_is_equivalent(
         root=root,
         trade_date=trade_date,
@@ -2942,6 +2966,7 @@ def refresh_cn_macro_mart(
             market_frame,
             trade_date=trade_date,
             provider_bundle=provider_bundle,
+            macro_snapshot=macro_snapshot,
         )
         generation_manifest, attestation = _write_primary_generation(
             root=root,
@@ -3011,6 +3036,7 @@ def stage_cn_macro_authoritative_refresh(
     allow_live: bool = False,
     nbs_cn_pmi_url: str = "",
     allow_tushare_fallback: bool = False,
+    observations_root: str | Path = DEFAULT_OBSERVATIONS_ROOT,
 ) -> dict[str, Any]:
     """Capture and validate a live Macro generation without canonical writes."""
 
@@ -3061,6 +3087,10 @@ def stage_cn_macro_authoritative_refresh(
         captured_at=captured_at,
         enforce_capture_window=True,
     )
+    macro_snapshot = _load_authoritative_macro_snapshot(
+        observations_root=observations_root,
+        trade_date=trade_date,
+    )
     stage_base = _assert_safe_write_root(Path(staging_root).expanduser())
     stage = _assert_safe_write_root(stage_base / generation_id)
     receipt_path = stage / "staging_receipt.json"
@@ -3093,6 +3123,7 @@ def stage_cn_macro_authoritative_refresh(
             market_frame,
             trade_date=trade_date,
             provider_bundle=provider_fetch.bundle,
+            macro_snapshot=macro_snapshot,
         )
         generation_manifest, _ = _write_primary_generation(
             root=stage,
@@ -3306,6 +3337,11 @@ def _validated_offline_frame(
         )
     if not row:
         raise MacroMartPromotionError("macro_empty_candidate")
+    if "macro_score_100" not in row and "macro_score" in row:
+        try:
+            row["macro_score_100"] = 50.0 * (float(row["macro_score"]) + 1.0)
+        except (TypeError, ValueError) as exc:
+            raise MacroMartPromotionError("macro_score_invalid") from exc
     missing = [
         field for field in MACRO_FIELDS if field not in row or pd.isna(row[field])
     ]
@@ -3324,7 +3360,12 @@ def _validated_offline_frame(
     row["pit_status"] = "manual_offline_snapshot"
     row["fetched_at"] = _now_utc()
     frame = pd.DataFrame([row])
-    for field in ("macro_score", "liquidity_score", "volatility_percentile"):
+    for field in (
+        "macro_score",
+        "macro_score_100",
+        "liquidity_score",
+        "volatility_percentile",
+    ):
         frame[field] = pd.to_numeric(frame[field], errors="coerce")
     if frame[list(MACRO_FIELDS)].isna().any().any():
         raise MacroMartPromotionError("macro_required_fields_invalid")
@@ -3334,6 +3375,15 @@ def _validated_offline_frame(
     frame.loc[:, "policy_signal"] = policy_signal
     if not frame["macro_score"].between(-1.0, 1.0).all():
         raise MacroMartPromotionError("macro_score_out_of_range")
+    if not frame["macro_score_100"].between(0.0, 100.0).all():
+        raise MacroMartPromotionError("macro_score_100_out_of_range")
+    if not np.allclose(
+        frame["macro_score_100"],
+        50.0 * (frame["macro_score"] + 1.0),
+        rtol=0.0,
+        atol=1e-8,
+    ):
+        raise MacroMartPromotionError("macro_score_100_mismatch")
     if not frame["liquidity_score"].between(-1.0, 1.0).all():
         raise MacroMartPromotionError("macro_liquidity_score_out_of_range")
     if not frame["volatility_percentile"].between(0.0, 100.0).all():
@@ -4137,6 +4187,7 @@ def _validate_canonical_frame(
         field: pd.to_numeric(frame[field], errors="coerce")
         for field in (
             "macro_score",
+            "macro_score_100",
             "liquidity_score",
             "volatility_percentile",
         )
@@ -4145,6 +4196,15 @@ def _validate_canonical_frame(
         raise MacroMartPromotionError("macro_required_fields_invalid")
     if not numeric["macro_score"].between(-1.0, 1.0).all():
         raise MacroMartPromotionError("macro_score_out_of_range")
+    if not numeric["macro_score_100"].between(0.0, 100.0).all():
+        raise MacroMartPromotionError("macro_score_100_out_of_range")
+    if not np.allclose(
+        numeric["macro_score_100"],
+        50.0 * (numeric["macro_score"] + 1.0),
+        rtol=0.0,
+        atol=1e-8,
+    ):
+        raise MacroMartPromotionError("macro_score_100_mismatch")
     if not numeric["liquidity_score"].between(-1.0, 1.0).all():
         raise MacroMartPromotionError(
             "macro_liquidity_score_out_of_range"

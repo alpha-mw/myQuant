@@ -42,6 +42,8 @@ def _formula_universe(*, trade_date: str) -> dict[str, Any]:
         "target_terminal_symbol_set_sha256": symbol_sha,
         "stale_symbol_set_sha256": empty_sha,
         "scored_symbol_set_sha256": symbol_sha,
+        "macro_snapshot_sha256": "a" * 64,
+        "macro_control_semantic_sha256": "b" * 64,
     }
 
 
@@ -104,7 +106,12 @@ def bind_macro_generation(
 
     generation = root / "_generations" / generation_id
     generation.mkdir(parents=True, exist_ok=True)
-    frame = pd.DataFrame([dict(row)])
+    normalized_row = dict(row)
+    normalized_row.setdefault(
+        "macro_score_100",
+        50.0 * (float(normalized_row["macro_score"]) + 1.0),
+    )
+    frame = pd.DataFrame([normalized_row])
     table = generation / "part.parquet"
     frame.to_parquet(table, index=False)
     table_sha = hashlib.sha256(table.read_bytes()).hexdigest()
