@@ -297,14 +297,14 @@ def test_empty_report_has_no_summaries() -> None:
     assert report.metric_summaries == []
 
 
-def test_calibration_v2_rejects_old_schema_and_uses_v14_namespace() -> None:
+def test_calibration_v2_rejects_old_schema_and_uses_v15_namespace() -> None:
     model = train_calibration_model([], trained_at="2026-04-26T00:00:00Z")
     payload = dict(model.to_dict(), schema_version="old-calibration")
 
     with pytest.raises(ValueError, match="schema mismatch"):
         type(model).from_dict(payload)
 
-    assert CalibrationV2Store().root_dir.as_posix().endswith("bayesian_calibration_v2/v14")
+    assert CalibrationV2Store().root_dir.as_posix().endswith("bayesian_calibration_v2/v15")
 
 
 def test_calibration_v2_rejects_retired_or_unknown_targets(tmp_path: Path) -> None:

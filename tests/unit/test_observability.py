@@ -194,7 +194,7 @@ def test_artifact_discovery_includes_expected_names_and_missing_refs(tmp_path) -
     assert any(ref.name == "outcome_ledger_outcomes" and ref.exists is False for ref in refs)
 
 
-def test_artifact_discovery_defaults_to_v14_bayesian_namespaces(tmp_path) -> None:
+def test_artifact_discovery_defaults_to_v15_bayesian_namespaces(tmp_path) -> None:
     refs = discover_phase_artifacts(
         data_quality_dir=tmp_path / "quality",
         risk_tensor_dir=tmp_path / "risk",
@@ -205,8 +205,8 @@ def test_artifact_discovery_defaults_to_v14_bayesian_namespaces(tmp_path) -> Non
     )
     paths = {ref.name: ref.path for ref in refs}
 
-    assert "/bayesian_outcome_ledger/v14/" in f"/{paths['outcome_ledger_predictions']}"
-    assert "/bayesian_calibration_v2/v14/" in f"/{paths['calibration_v2_model']}"
+    assert "/bayesian_outcome_ledger/v15/" in f"/{paths['outcome_ledger_predictions']}"
+    assert "/bayesian_calibration_v2/v15/" in f"/{paths['calibration_v2_model']}"
 
 
 def test_module_summaries_count_records_and_warn_or_fail(tmp_path) -> None:

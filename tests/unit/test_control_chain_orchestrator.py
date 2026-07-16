@@ -32,23 +32,23 @@ def test_structured_research_rejects_retired_branch_keys():
         final_confidence=0.0,
     )
 
-    with pytest.raises(ValueError, match="非 v14 canonical branch: intelligence"):
+    with pytest.raises(ValueError, match="非 v15 canonical branch: intelligence"):
         ControlChainOrchestrator._normalize_research_by_symbol(
             {"000001.SZ": {"intelligence": verdict}}
         )
 
 
 def test_precomputed_research_rejects_retired_branch_keys():
-    with pytest.raises(ValueError, match="not a v14 branch"):
+    with pytest.raises(ValueError, match="not a v15 branch"):
         BranchResult(branch_name="intelligence")
-    with pytest.raises(ValueError, match="非 v14 canonical branch: intelligence"):
+    with pytest.raises(ValueError, match="非 v15 canonical branch: intelligence"):
         ControlChainOrchestrator._validate_branch_names(
             {"intelligence": object()},
             context="branch_results",
         )
 
 
-def test_structured_research_accepts_exact_v14_three_branch_map():
+def test_structured_research_accepts_exact_v15_three_branch_map():
     branch_map = {
         branch_name: BranchVerdict(
             agent_name=branch_name,

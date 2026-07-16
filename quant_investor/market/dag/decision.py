@@ -21,6 +21,7 @@ from quant_investor.market.dag.common import _dedupe_texts
 from quant_investor.market.dag.assembly import _aggregate_branch_summaries
 from quant_investor.market.dag.evidence import _build_master_evidence_pack
 from quant_investor.market.dag.shortlist import _build_shortlist_from_bayesian_records
+from quant_investor.reporting.run_artifacts import build_funnel_summary
 
 
 @dataclass

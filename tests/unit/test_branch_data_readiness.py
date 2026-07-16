@@ -518,10 +518,10 @@ def test_branch_readiness_writes_standard_artifacts(tmp_path):
     assert payload["readiness"]["quant"]["status"] == STATUS_PASS
 
 
-def test_branch_readiness_default_is_v14_and_frozen_v13_root_is_rejected(
+def test_branch_readiness_default_is_v15_and_frozen_v13_root_is_rejected(
     tmp_path: Path,
 ):
-    assert DEFAULT_READINESS_ROOT == Path("reports/v14/branch_readiness")
+    assert DEFAULT_READINESS_ROOT == Path("reports/v15/branch_readiness")
 
     report = assess_branch_data_readiness(
         frames={},
