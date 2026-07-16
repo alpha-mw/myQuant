@@ -184,6 +184,7 @@ def _complete_coverage_blockers(
     if coverage_schema_version in {
         "cn-full-a-coverage.v2",
         "cn-full-a-coverage.v3",
+        "cn-full-a-coverage.v4",
     }:
         def _symbol_set(key: str) -> set[str]:
             raw = coverage.get(key, []) or []
@@ -206,7 +207,10 @@ def _complete_coverage_blockers(
         )
         verified_nontrading = (
             _symbol_set("verified_nontrading_bak_daily_zero_symbols")
-            if coverage_schema_version == "cn-full-a-coverage.v3"
+            if coverage_schema_version in {
+                "cn-full-a-coverage.v3",
+                "cn-full-a-coverage.v4",
+            }
             else set()
         )
         allowed = _symbol_set("allowed_stale_symbols")
@@ -243,7 +247,10 @@ def _complete_coverage_blockers(
             != coverage_complete_count
         ):
             blockers.append("coverage_classification_union_count_mismatch")
-        if coverage_schema_version == "cn-full-a-coverage.v3" and verified_nontrading:
+        if coverage_schema_version in {
+            "cn-full-a-coverage.v3",
+            "cn-full-a-coverage.v4",
+        } and verified_nontrading:
             evidence_path = str(
                 coverage.get("verified_nontrading_evidence_path") or ""
             ).strip()
@@ -307,6 +314,42 @@ def _complete_coverage_blockers(
                 blockers.append(
                     "coverage_terminal_delisting_inferred_dates_mismatch"
                 )
+        if coverage_schema_version == "cn-full-a-coverage.v4":
+            generation_id = str(
+                coverage.get("pit_generation_id") or ""
+            ).strip()
+            generation_manifest_path = str(
+                coverage.get("pit_generation_manifest_path") or ""
+            ).strip()
+            generation_manifest_sha256 = str(
+                coverage.get("pit_generation_manifest_sha256") or ""
+            ).strip().lower()
+            pit_path = str(
+                coverage.get("pit_membership_path") or ""
+            ).strip()
+            pit_sha256 = str(
+                coverage.get("pit_membership_sha256") or ""
+            ).strip().lower()
+            if not generation_id:
+                blockers.append("coverage_pit_generation_id_missing")
+            if not generation_manifest_path:
+                blockers.append(
+                    "coverage_pit_generation_manifest_path_missing"
+                )
+            if len(generation_manifest_sha256) != 64 or any(
+                character not in "0123456789abcdef"
+                for character in generation_manifest_sha256
+            ):
+                blockers.append(
+                    "coverage_pit_generation_manifest_sha256_invalid"
+                )
+            if not pit_path:
+                blockers.append("coverage_pit_membership_path_missing")
+            if len(pit_sha256) != 64 or any(
+                character not in "0123456789abcdef"
+                for character in pit_sha256
+            ):
+                blockers.append("coverage_pit_membership_sha256_invalid")
     return blockers
 
 
@@ -733,7 +776,10 @@ class MarketDataReader:
                     "coverage_scope_hash_backfilled_from_historical_target"
                 )
 
-        if str(coverage.get("coverage_schema_version") or "") == "cn-full-a-coverage.v3":
+        if str(coverage.get("coverage_schema_version") or "") in {
+            "cn-full-a-coverage.v3",
+            "cn-full-a-coverage.v4",
+        }:
             verified_nontrading = list(
                 coverage.get(
                     "verified_nontrading_bak_daily_zero_symbols", []
@@ -949,6 +995,16 @@ class MarketDataReader:
                                 "coverage_terminal_delisting_inferred_dates_mismatch"
                             )
 
+        if str(coverage.get("coverage_schema_version") or "") == (
+            "cn-full-a-coverage.v4"
+        ):
+            pit_binding = self.coverage_bound_pit(refresh=False)
+            blockers.extend(
+                str(item)
+                for item in list(pit_binding.get("blockers", []) or [])
+                if str(item).strip()
+            )
+
         gate_payload = {
             "status": "ok" if not blockers else "blocked",
             "healthy": not blockers,
@@ -1024,6 +1080,232 @@ class MarketDataReader:
         self._components_payload = {}
         return {}
 
+    def coverage_bound_pit(
+        self,
+        *,
+        refresh: bool = False,
+    ) -> dict[str, Any]:
+        """Resolve the immutable PIT generation bound by market coverage.
+
+        The PIT discovery pointer is intentionally not consulted here. Runtime,
+        audit, and repair consumers must follow the active market snapshot.
+        """
+
+        blockers: list[str] = []
+        try:
+            latest_payload = self._load_latest_payload(refresh=refresh)
+        except MarketDataUnavailableError as exc:
+            return {"status": "blocked", "blockers": [str(exc)], "records": {}}
+        raw_coverage = latest_payload.get("coverage", {})
+        coverage = dict(raw_coverage) if isinstance(raw_coverage, Mapping) else {}
+        raw_pit_path = str(coverage.get("pit_membership_path") or "").strip()
+        expected_pit_sha256 = str(
+            coverage.get("pit_membership_sha256") or ""
+        ).strip().lower()
+        if not raw_pit_path:
+            blockers.append("coverage_bound_pit_path_missing")
+            pit_path = Path()
+        else:
+            pit_path = self._resolve_data_path(raw_pit_path, Path(raw_pit_path))
+        if len(expected_pit_sha256) != 64 or any(
+            character not in "0123456789abcdef"
+            for character in expected_pit_sha256
+        ):
+            blockers.append("coverage_bound_pit_sha256_invalid")
+        if raw_pit_path:
+            if pit_path.is_symlink():
+                blockers.append("coverage_bound_pit_symlink_rejected")
+            elif not pit_path.exists() or not pit_path.is_file():
+                blockers.append(f"coverage_bound_pit_missing:{pit_path}")
+            elif hashlib.sha256(pit_path.read_bytes()).hexdigest() != (
+                expected_pit_sha256
+            ):
+                blockers.append("coverage_bound_pit_sha256_mismatch")
+
+        generation_manifest: dict[str, Any] = {}
+        generation_manifest_path: Path | None = None
+        expected_manifest_sha256 = str(
+            coverage.get("pit_generation_manifest_sha256") or ""
+        ).strip().lower()
+        generation_id = str(
+            coverage.get("pit_generation_id") or ""
+        ).strip()
+        raw_manifest_path = str(
+            coverage.get("pit_generation_manifest_path") or ""
+        ).strip()
+        coverage_schema = str(
+            coverage.get("coverage_schema_version") or ""
+        ).strip()
+        if coverage_schema == "cn-full-a-coverage.v4":
+            if not raw_manifest_path:
+                blockers.append("coverage_bound_pit_manifest_path_missing")
+            else:
+                generation_manifest_path = self._resolve_data_path(
+                    raw_manifest_path,
+                    Path(raw_manifest_path),
+                )
+                if generation_manifest_path.is_symlink():
+                    blockers.append(
+                        "coverage_bound_pit_manifest_symlink_rejected"
+                    )
+                elif (
+                    not generation_manifest_path.exists()
+                    or not generation_manifest_path.is_file()
+                ):
+                    blockers.append(
+                        "coverage_bound_pit_manifest_missing:"
+                        f"{generation_manifest_path}"
+                    )
+                else:
+                    manifest_bytes = generation_manifest_path.read_bytes()
+                    actual_manifest_sha256 = hashlib.sha256(
+                        manifest_bytes
+                    ).hexdigest()
+                    if actual_manifest_sha256 != expected_manifest_sha256:
+                        blockers.append(
+                            "coverage_bound_pit_manifest_sha256_mismatch"
+                        )
+                    try:
+                        decoded_manifest = json.loads(
+                            manifest_bytes.decode("utf-8")
+                        )
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        blockers.append(
+                            "coverage_bound_pit_manifest_unreadable"
+                        )
+                    else:
+                        if isinstance(decoded_manifest, dict):
+                            generation_manifest = decoded_manifest
+                        else:
+                            blockers.append(
+                                "coverage_bound_pit_manifest_invalid"
+                            )
+            if not generation_id:
+                blockers.append("coverage_bound_pit_generation_id_missing")
+            if generation_manifest:
+                if str(
+                    generation_manifest.get("generation_id") or ""
+                ) != generation_id:
+                    blockers.append(
+                        "coverage_bound_pit_generation_id_mismatch"
+                    )
+                declared_path = self._resolve_data_path(
+                    generation_manifest.get("canonical_path"),
+                    Path(
+                        str(
+                            generation_manifest.get("canonical_path") or ""
+                        )
+                    ),
+                )
+                declared_sha256 = str(
+                    generation_manifest.get("canonical_sha256")
+                    or generation_manifest.get("canonical_file_sha256")
+                    or ""
+                ).strip().lower()
+                try:
+                    same_path = declared_path.resolve() == pit_path.resolve()
+                except OSError:
+                    same_path = False
+                if not same_path:
+                    blockers.append(
+                        "coverage_bound_pit_manifest_path_mismatch"
+                    )
+                if declared_sha256 != expected_pit_sha256:
+                    blockers.append(
+                        "coverage_bound_pit_manifest_canonical_sha256_mismatch"
+                    )
+
+        validated_generation: dict[str, Any] | None = None
+        if (
+            coverage_schema == "cn-full-a-coverage.v4"
+            and generation_manifest_path is not None
+            and generation_manifest_path.exists()
+            and len(expected_manifest_sha256) == 64
+            and not any(
+                character not in "0123456789abcdef"
+                for character in expected_manifest_sha256
+            )
+        ):
+            try:
+                from quant_investor.market.pit_universe import (
+                    PITUniverseStore,
+                )
+
+                pit_store = PITUniverseStore(
+                    root_dir=(
+                        self.data_root
+                        / "parquet"
+                        / "cn"
+                        / "reference"
+                    )
+                )
+                validated_generation = pit_store.load_generation_binding(
+                    manifest_path=generation_manifest_path,
+                    expected_manifest_sha256=expected_manifest_sha256,
+                )
+            except Exception as exc:
+                blockers.append(
+                    "coverage_bound_pit_generation_invalid:"
+                    f"{type(exc).__name__}:{exc}"
+                )
+            else:
+                if (
+                    str(validated_generation.get("generation_id") or "")
+                    != generation_id
+                    or str(
+                        validated_generation.get("canonical_path") or ""
+                    )
+                    != str(pit_path.resolve())
+                    or str(
+                        validated_generation.get("canonical_sha256") or ""
+                    )
+                    != expected_pit_sha256
+                ):
+                    blockers.append(
+                        "coverage_bound_pit_generation_binding_mismatch"
+                    )
+
+        records: dict[str, Any] = {}
+        if not blockers:
+            try:
+                from quant_investor.market.pit_universe import (
+                    PITUniverseRecord,
+                    records_by_symbol,
+                )
+
+                if validated_generation is not None:
+                    parsed = list(validated_generation["records"])
+                else:
+                    frame = pd.read_parquet(pit_path)
+                    parsed = [
+                        PITUniverseRecord.from_dict(row)
+                        for row in frame.to_dict(orient="records")
+                    ]
+                records = records_by_symbol(parsed)
+            except Exception as exc:
+                blockers.append(
+                    "coverage_bound_pit_parquet_unreadable:"
+                    f"{type(exc).__name__}:{exc}"
+                )
+            if not records:
+                blockers.append("coverage_bound_pit_records_empty")
+        return {
+            "status": "passed" if not blockers else "blocked",
+            "blockers": list(dict.fromkeys(blockers)),
+            "coverage_schema_version": coverage_schema,
+            "generation_id": generation_id,
+            "generation_manifest_path": (
+                str(generation_manifest_path)
+                if generation_manifest_path is not None
+                else ""
+            ),
+            "generation_manifest_sha256": expected_manifest_sha256,
+            "canonical_path": str(pit_path) if raw_pit_path else "",
+            "canonical_sha256": expected_pit_sha256,
+            "manifest": generation_manifest,
+            "records": records,
+        }
+
     def list_symbols(
         self,
         universe_key: str = "full_a",
@@ -1036,13 +1318,28 @@ class MarketDataReader:
         if key in {"", "all", "full", "full_a", "all_a", "full_market"}:
             if self.market == "CN" and as_of:
                 from quant_investor.config import config
-                from quant_investor.market.pit_universe import PITUniverseStore
+                from quant_investor.market.pit_universe import (
+                    filter_symbols_by_pit_status,
+                )
 
                 if bool(getattr(config, "PIT_UNIVERSE_ENABLED", False)):
-                    pit_symbols = PITUniverseStore.from_config().listed_symbols(as_of)
-                    if pit_symbols:
+                    binding = self.coverage_bound_pit()
+                    records = binding.get("records", {})
+                    if binding.get("status") == "passed" and records:
+                        filtered = filter_symbols_by_pit_status(
+                            serving_symbols,
+                            as_of=as_of,
+                            records=records,
+                            required=bool(
+                                getattr(config, "PIT_UNIVERSE_REQUIRED", False)
+                            ),
+                        )
                         serving_set = set(serving_symbols)
-                        return [symbol for symbol in pit_symbols if symbol in serving_set]
+                        return [
+                            symbol
+                            for symbol in filtered.symbols
+                            if symbol in serving_set
+                        ]
                     if bool(getattr(config, "PIT_UNIVERSE_REQUIRED", False)):
                         return []
             return serving_symbols
@@ -1058,10 +1355,21 @@ class MarketDataReader:
             symbols = [symbol for symbol in _dedupe(component_symbols) if symbol in serving_set]
             if self.market == "CN" and as_of:
                 from quant_investor.config import config
-                from quant_investor.market.pit_universe import filter_symbols_by_pit_status, PITUniverseStore
+                from quant_investor.market.pit_universe import (
+                    filter_symbols_by_pit_status,
+                )
 
                 if bool(getattr(config, "PIT_UNIVERSE_ENABLED", False)):
-                    records = PITUniverseStore.from_config().records_by_symbol()
+                    binding = self.coverage_bound_pit()
+                    records = binding.get("records", {})
+                    if binding.get("status") != "passed":
+                        return (
+                            []
+                            if bool(
+                                getattr(config, "PIT_UNIVERSE_REQUIRED", False)
+                            )
+                            else symbols
+                        )
                     filtered = filter_symbols_by_pit_status(
                         symbols,
                         as_of=as_of,

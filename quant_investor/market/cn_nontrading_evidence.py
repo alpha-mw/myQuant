@@ -52,6 +52,15 @@ def _normalize_symbols(values: Iterable[Any]) -> list[str]:
     )
 
 
+def _validated_sha256(value: Any, *, field_name: str) -> str:
+    digest = str(value or "").strip().lower()
+    if len(digest) != 64 or any(
+        character not in "0123456789abcdef" for character in digest
+    ):
+        raise ValueError(f"{field_name} must be a complete 64-character SHA-256")
+    return digest
+
+
 def _json_scalar(value: Any) -> Any:
     if value is None:
         return None
@@ -390,16 +399,18 @@ def evidence_cache_path(
     *,
     trade_date: str,
     primary_missing_symbols: Iterable[Any],
+    pit_membership_sha256: str | None = None,
 ) -> Path:
     target_date = _compact_trade_date(trade_date)
     digest = symbol_set_sha256(primary_missing_symbols)[:16]
-    return (
-        Path(root)
-        / ".cache"
-        / "nontrading_bak_daily"
-        / target_date
-        / f"primary_missing_{digest}.json"
-    )
+    cache_root = Path(root) / ".cache" / "nontrading_bak_daily" / target_date
+    if pit_membership_sha256 is not None:
+        pit_digest = _validated_sha256(
+            pit_membership_sha256,
+            field_name="pit_membership_sha256",
+        )
+        cache_root = cache_root / f"pit_{pit_digest}"
+    return cache_root / f"primary_missing_{digest}.json"
 
 
 def read_evidence_cache(

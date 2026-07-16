@@ -163,6 +163,39 @@ def test_cleanup_gate_blocks_retired_intelligence_evidence(tmp_path):
     assert "candidate_is_protected_retirement_evidence" in result["blockers"]
 
 
+def test_cleanup_gate_blocks_immutable_market_and_pit_generations(tmp_path):
+    protected_paths = [
+        "data/parquet/cn/_snapshots/snapshot-a/table/bars/part.parquet",
+        (
+            "data/parquet/cn/reference/_generations/"
+            "pit-a/stock_basic_membership.parquet"
+        ),
+    ]
+    retained = tmp_path / "retained"
+    retained.mkdir()
+    for relative_path in protected_paths:
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"active immutable generation")
+    plan = {
+        "candidates": [
+            {
+                "group_id": "active-generations",
+                "candidate_paths": protected_paths,
+                "retained_paths": ["retained"],
+            }
+        ]
+    }
+
+    result = build_data_cleanup_gate_report(
+        plan,
+        repo_root=tmp_path,
+    )["candidates"][0]
+
+    assert result["gate_status"] == "blocked"
+    assert "active_runtime_path_check" in result["failed_checks"]
+
+
 def test_cleanup_gate_blocks_parent_containing_retirement_evidence(tmp_path):
     candidate = tmp_path / "data" / "parquet" / "cn"
     candidate.mkdir(parents=True)

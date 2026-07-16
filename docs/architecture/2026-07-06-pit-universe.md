@@ -62,6 +62,13 @@ Phase 9b implements the PIT membership layer and default-off integration points:
 - `scripts/refresh_pit_universe.py` is the explicit online refresh entrypoint.
   It is dry-run by default, requires `--allow-online`, and writes only when
   `--execute` is combined with `PIT_UNIVERSE_BACKFILL_ENABLED=1`.
+- Since the 2026-07-16 lifecycle hardening, an executed refresh writes an
+  immutable `_generations/<generation-id>/manifest.json` plus Parquet pair and
+  advances only the discovery manifest. The legacy fixed Parquet bytes remain
+  frozen for snapshots that already bind them.
+- Production authority is the PIT generation recorded in active market
+  coverage (`cn-full-a-coverage.v4`). Runtime, history audit, and repair never
+  select production PIT from the discovery manifest.
 - `MarketDataReader.list_symbols(..., as_of=date)` can filter by PIT membership
   when `PIT_UNIVERSE_ENABLED=1`; flags off preserve existing serving-inventory
   behavior.
@@ -111,9 +118,12 @@ Landing artifacts:
 
 - Raw immutable snapshot:
   `data/cn_universe/raw/stock_basic_pit_snapshot_<observed_at>.jsonl`
-- Canonical derived table:
+- Frozen legacy derived table (read compatibility only):
   `data/parquet/cn/reference/stock_basic_membership.parquet`
-- Latest pointer / manifest:
+- Immutable generation pair:
+  `data/parquet/cn/reference/_generations/<generation-id>/manifest.json` and
+  `stock_basic_membership.parquet`
+- Latest discovery pointer / manifest (not production authority):
   `data/parquet/cn/reference/stock_basic_membership_latest.json`
 - Compatibility export for inspection:
   `data/cn_universe/stock_basic_membership_latest.json`

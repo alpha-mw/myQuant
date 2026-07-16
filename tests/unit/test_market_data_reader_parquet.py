@@ -110,6 +110,50 @@ def _write_parquet_fixture(root: Path, *, status: str = "OK") -> dict[str, Path]
     return {"latest": latest_path, "canonical": canonical, "serving": root / "parquet_serving" / "cn" / "bars"}
 
 
+def _bind_fixture_to_pit_generation(
+    root: Path,
+    published: dict[str, object],
+) -> None:
+    coverage = {
+        "coverage_schema_version": "cn-full-a-coverage.v4",
+        "complete": True,
+        "coverage_ratio": 1.0,
+        "coverage_complete_count": 2,
+        "expected_scope_count": 2,
+        "observed_bar_count": 2,
+        "blocking_incomplete_count": 0,
+        "latest_available_trade_date": "20260103",
+        "latest_complete_trade_date": "20260103",
+        "coverage_trade_date": "20260103",
+        "expected_scope_sha256": "a" * 64,
+        "suspended_symbols": [],
+        "inactive_symbols": [],
+        "verified_nontrading_bak_daily_zero_symbols": [],
+        "verified_terminal_delisting_symbols": [],
+        "allowed_stale_symbols": [],
+        "non_blocking_absent_symbols": [],
+        "true_missing_symbols": [],
+        "classification_sets_disjoint": True,
+        "pit_membership_path": str(published["canonical_path"]),
+        "pit_membership_sha256": str(published["canonical_sha256"]),
+        "pit_generation_id": str(published["generation_id"]),
+        "pit_generation_manifest_path": str(
+            published["generation_manifest_path"]
+        ),
+        "pit_generation_manifest_sha256": str(
+            published["generation_manifest_sha256"]
+        ),
+    }
+    latest_path = root / "parquet" / "cn" / "_latest.json"
+    latest = json.loads(latest_path.read_text(encoding="utf-8"))
+    latest["coverage"] = coverage
+    latest_path.write_text(json.dumps(latest), encoding="utf-8")
+    manifest_path = Path(latest["manifest_path"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["coverage"] = coverage
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
 def test_strict_parquet_reader_reads_symbol_batch_cross_section_and_catalog_table(tmp_path: Path) -> None:
     _write_parquet_fixture(tmp_path)
     reader = MarketDataReader(market="CN", data_root=tmp_path)
@@ -369,7 +413,7 @@ def test_reader_list_symbols_filters_by_pit_universe_only_when_enabled(
         raw_root=tmp_path / "pit_raw",
         compatibility_path=tmp_path / "pit_compat.json",
     )
-    pit_store.write_snapshot(
+    published_a = pit_store.write_snapshot(
         raw_records=[
             PITUniverseRecord(
                 symbol="000001.SZ",
@@ -390,6 +434,27 @@ def test_reader_list_symbols_filters_by_pit_universe_only_when_enabled(
         observed_at="2026-07-06T00:00:00Z",
         source_run_id="unit-test",
     )
+    _bind_fixture_to_pit_generation(tmp_path, published_a)
+    pit_store.write_snapshot(
+        raw_records=[
+            PITUniverseRecord(
+                symbol="000001.SZ",
+                source_list_status=LIST_STATUS_LISTED,
+                list_date="20200101",
+                observed_at="2026-07-07T00:00:00Z",
+                source_run_id="unit-test-new-discovery",
+            ),
+            PITUniverseRecord(
+                symbol="000002.SZ",
+                source_list_status=LIST_STATUS_LISTED,
+                list_date="20200101",
+                observed_at="2026-07-07T00:00:00Z",
+                source_run_id="unit-test-new-discovery",
+            ),
+        ],
+        observed_at="2026-07-07T00:00:00Z",
+        source_run_id="unit-test-new-discovery",
+    )
     reader = MarketDataReader(market="CN", data_root=tmp_path)
 
     from quant_investor.config import config as runtime_config
@@ -407,6 +472,9 @@ def test_reader_list_symbols_filters_by_pit_universe_only_when_enabled(
     monkeypatch.setattr(runtime_config, "PIT_UNIVERSE_REQUIRED", False, raising=False)
     assert reader.list_symbols("full_a", as_of="20260103") == ["000001.SZ"]
     assert reader.list_symbols("zz500", as_of="20260103") == []
+    assert reader.coverage_bound_pit()["generation_id"] == published_a[
+        "generation_id"
+    ]
 
 
 def test_reader_reuses_snapshot_and_symbol_inventory_for_repeated_runtime_reads(

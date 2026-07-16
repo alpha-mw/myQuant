@@ -28,7 +28,6 @@ from quant_investor.market.market_data_reader import (
     coverage_fingerprint,
 )
 from quant_investor.market.market_data_store import MarketDataStore
-from quant_investor.market.pit_universe import PITUniverseStore
 from quant_investor.market.pit_universe import (
     REASON_DELISTED,
     REASON_LISTED,
@@ -604,13 +603,22 @@ def _suspension_continuity_cache_path(
     *,
     trade_date: str,
     symbols: Iterable[str],
+    pit_membership_sha256: str,
 ) -> Path:
     digest = symbol_set_sha256(symbols)[:16]
+    pit_digest = str(pit_membership_sha256 or "").strip().lower()
+    if len(pit_digest) != 64 or any(
+        character not in "0123456789abcdef" for character in pit_digest
+    ):
+        raise ValueError(
+            "pit_membership_sha256 must be a complete 64-character SHA-256"
+        )
     return (
         output_root
         / ".cache"
         / "suspension_continuity"
         / trade_date
+        / f"pit_{pit_digest}"
         / f"symbols_{digest}.json"
     )
 
@@ -934,6 +942,7 @@ def _resolve_bak_daily_evidence(
         output_root,
         trade_date=trade_date,
         primary_missing_symbols=candidates,
+        pit_membership_sha256=pit_sha256,
     )
     if not candidates:
         return {
@@ -1103,7 +1112,13 @@ def run_cn_history_audit(
             + "; ".join(validation.get("blockers", []) or [])
         )
     latest_path = root / "parquet" / "cn" / "_latest.json"
-    latest_payload = json.loads(latest_path.read_text(encoding="utf-8"))
+    reader = MarketDataReader(
+        market="CN",
+        data_root=root,
+        mode_policy="strict",
+    )
+    latest_payload = reader._load_latest_payload(refresh=True)
+    active_latest_sha256 = file_sha256(latest_path)
     effective_end = (
         _compact_trade_date(latest_payload.get("latest_complete_trade_date"))
         if str(end_date).strip().lower() == "auto"
@@ -1160,18 +1175,26 @@ def run_cn_history_audit(
     if not latest_component_symbols:
         raise RuntimeError("full_a component scope is empty")
 
-    pit_store = PITUniverseStore(
-        root_dir=root / "parquet" / "cn" / "reference",
-        raw_root=root / "cn_universe" / "raw",
-        compatibility_path=(
-            root / "cn_universe" / "stock_basic_membership_latest.json"
-        ),
-    )
-    pit_path = pit_store.canonical_path
-    if not pit_path.exists():
-        raise RuntimeError(f"PIT membership is missing: {pit_path}")
-    pit_sha256 = file_sha256(pit_path)
-    pit_records = pit_store.records_by_symbol()
+    coverage = latest_payload.get("coverage", {}) or {}
+    if not isinstance(coverage, Mapping):
+        coverage = {}
+    pit_binding = reader.coverage_bound_pit()
+    if pit_binding.get("status") != "passed":
+        raise RuntimeError(
+            "active market coverage PIT binding is invalid: "
+            + ",".join(pit_binding.get("blockers", []) or [])
+        )
+    raw_pit_path = str(coverage.get("pit_membership_path") or "").strip()
+    pit_path = Path(raw_pit_path)
+    pit_sha256 = str(coverage.get("pit_membership_sha256") or "").lower()
+    if (
+        str(pit_binding.get("canonical_sha256") or "").lower()
+        != pit_sha256
+    ):
+        raise RuntimeError(
+            "active market coverage PIT SHA binding is inconsistent"
+        )
+    pit_records = dict(pit_binding.get("records", {}) or {})
     audit_symbols = _normalize_symbols(pit_records)
     if not audit_symbols:
         raise RuntimeError("PIT full-A membership scope is empty")
@@ -1186,9 +1209,6 @@ def run_cn_history_audit(
             f"symbols={pit_missing_current_components[:20]}"
         )
 
-    coverage = latest_payload.get("coverage", {}) or {}
-    if not isinstance(coverage, Mapping):
-        coverage = {}
     terminal_symbols = _normalize_symbols(
         coverage.get("verified_terminal_delisting_symbols", []) or []
     )
@@ -1225,9 +1245,7 @@ def run_cn_history_audit(
                 terminal_evidence_path,
                 target_trade_date=effective_end,
                 candidate_symbols=terminal_symbols,
-                pit_membership_path=str(
-                    coverage.get("pit_membership_path") or ""
-                ),
+                pit_membership_path=str(pit_path),
                 pit_membership_sha256=pit_sha256,
             )
         )
@@ -1257,7 +1275,6 @@ def run_cn_history_audit(
                 "terminal delisting inferred-date binding is stale"
             )
 
-    reader = MarketDataReader(market="CN", data_root=root, mode_policy="strict")
     snapshot = reader._require_snapshot()
     bars, canonical_window_evidence = _read_canonical_window(
         reader,
@@ -1547,6 +1564,7 @@ def run_cn_history_audit(
                         output,
                         trade_date=current_date,
                         symbols=candidates,
+                        pit_membership_sha256=pit_sha256,
                     )
                     continuity_payload = (
                         _build_suspension_continuity_evidence(
@@ -1654,7 +1672,13 @@ def run_cn_history_audit(
         audit.get("audited_trade_dates_count") != days
         or audit.get("per_date_count") != days
     ):
-        raise RuntimeError("history audit did not recompute the requested full window")
+        raise RuntimeError(
+            "history audit did not recompute the requested full window"
+        )
+    if file_sha256(latest_path) != active_latest_sha256:
+        raise RuntimeError(
+            "active market pointer changed during history audit"
+        )
     report: dict[str, Any] = {
         "schema_version": CN_HISTORY_AUDIT_SCHEMA_VERSION,
         "generated_at": _utc_now_iso(),
@@ -1680,7 +1704,7 @@ def run_cn_history_audit(
         "canonical": {
             "snapshot_id": str(latest_payload.get("snapshot_id") or ""),
             "latest_path": str(latest_path),
-            "latest_sha256": file_sha256(latest_path),
+            "latest_sha256": active_latest_sha256,
             "manifest_path": str(manifest_path),
             "manifest_sha256": file_sha256(manifest_path),
             "coverage_fingerprint_sha256": coverage_fingerprint(
@@ -1704,6 +1728,17 @@ def run_cn_history_audit(
             "path": str(pit_path),
             "sha256": pit_sha256,
             "record_count": len(pit_records),
+            "coverage_schema_version": str(
+                coverage.get("coverage_schema_version") or ""
+            ),
+            "generation_id": str(coverage.get("pit_generation_id") or ""),
+            "generation_manifest_path": str(
+                coverage.get("pit_generation_manifest_path") or ""
+            ),
+            "generation_manifest_sha256": str(
+                coverage.get("pit_generation_manifest_sha256") or ""
+            ),
+            "binding_source": "active_market_coverage",
         },
         "terminal_delisting_evidence": {
             "path": (

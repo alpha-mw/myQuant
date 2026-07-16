@@ -429,6 +429,21 @@ def _build_parser() -> argparse.ArgumentParser:
     market_maintain.add_argument("--target-date", default="auto")
     market_maintain.add_argument("--daily-window", action="store_true")
     market_maintain.add_argument(
+        "--pit-generation-manifest",
+        default="",
+        help="parquet-direct 必需：显式选择 immutable PIT generation manifest",
+    )
+    market_maintain.add_argument(
+        "--expected-pit-generation-manifest-sha256",
+        default="",
+        help="parquet-direct 必需：所选 PIT generation manifest 的 SHA-256",
+    )
+    market_maintain.add_argument(
+        "--expected-market-pointer-sha256",
+        default="",
+        help="parquet-direct 必需：维护开始前 CN _latest.json 的 SHA-256 CAS",
+    )
+    market_maintain.add_argument(
         "--storage-mode",
         choices=["auto", "legacy", "parquet-direct"],
         default="auto",
@@ -458,6 +473,15 @@ def _build_parser() -> argparse.ArgumentParser:
     market_download.add_argument("--max-rounds", type=int, default=1)
     market_download.add_argument("--fail-on-incomplete", action="store_true")
     market_download.add_argument("--allowed-stale-symbols", nargs="*")
+    market_download.add_argument("--pit-generation-manifest", default="")
+    market_download.add_argument(
+        "--expected-pit-generation-manifest-sha256",
+        default="",
+    )
+    market_download.add_argument(
+        "--expected-market-pointer-sha256",
+        default="",
+    )
 
     market_fundamental = market_subparsers.add_parser(
         "fundamental-maintain",
@@ -1043,6 +1067,13 @@ def main(argv: list[str] | None = None) -> None:
             min_symbol_success_rate=args.min_symbol_success_rate,
             target_date=args.target_date,
             daily_window=args.daily_window,
+            pit_generation_manifest=args.pit_generation_manifest,
+            expected_pit_generation_manifest_sha256=(
+                args.expected_pit_generation_manifest_sha256
+            ),
+            expected_market_pointer_sha256=(
+                args.expected_market_pointer_sha256
+            ),
         )
         return
 
@@ -1058,6 +1089,13 @@ def main(argv: list[str] | None = None) -> None:
             max_rounds=args.max_rounds,
             fail_on_incomplete=args.fail_on_incomplete,
             allowed_stale_symbols=args.allowed_stale_symbols,
+            pit_generation_manifest=args.pit_generation_manifest,
+            expected_pit_generation_manifest_sha256=(
+                args.expected_pit_generation_manifest_sha256
+            ),
+            expected_market_pointer_sha256=(
+                args.expected_market_pointer_sha256
+            ),
         )
         return
 

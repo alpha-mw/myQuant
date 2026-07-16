@@ -68,6 +68,62 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _validated_sha256(value: Any, *, blocker: str) -> str:
+    digest = str(value or "").strip().lower()
+    if len(digest) != 64 or any(
+        character not in "0123456789abcdef" for character in digest
+    ):
+        raise ValueError(blocker)
+    return digest
+
+
+def _explicit_pit_generation_binding(
+    *,
+    data_root: str | Path,
+    manifest_path: str | Path,
+    expected_manifest_sha256: str,
+) -> dict[str, Any]:
+    """Validate an explicitly selected immutable PIT generation."""
+
+    raw_manifest_path = str(manifest_path or "").strip()
+    if not raw_manifest_path:
+        raise ValueError("pit_generation_manifest_required")
+    manifest = Path(raw_manifest_path).expanduser()
+    if not manifest.is_absolute():
+        manifest = Path.cwd() / manifest
+    local_root = Path(data_root) / "parquet" / "cn" / "reference"
+    configured_root = Path(
+        getattr(config, "PIT_UNIVERSE_SOURCE_ROOT", local_root)
+    ).expanduser()
+    if not configured_root.is_absolute():
+        configured_root = Path.cwd() / configured_root
+    lexical_manifest = Path(manifest.absolute())
+    lexical_local_generations = Path((local_root / "_generations").absolute())
+    try:
+        lexical_manifest.relative_to(lexical_local_generations)
+        selected_root = local_root
+    except ValueError:
+        selected_root = configured_root
+    pit_store = PITUniverseStore(
+        root_dir=selected_root,
+        raw_root=Path(data_root) / "cn_universe" / "raw",
+        compatibility_path=(
+            Path(data_root)
+            / "cn_universe"
+            / "stock_basic_membership_latest.json"
+        ),
+    )
+    binding = pit_store.load_generation_binding(
+        manifest_path=manifest,
+        expected_manifest_sha256=_validated_sha256(
+            expected_manifest_sha256,
+            blocker="pit_generation_manifest_sha256_invalid",
+        ),
+    )
+    binding["pit_store_root"] = str(pit_store.root_dir)
+    return binding
+
+
 def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.tmp")
@@ -238,7 +294,16 @@ class CNParquetBatchMaintainer:
         fail_on_incomplete: bool = False,
         allowed_stale_symbols: list[str] | None = None,
         target_date: str = "auto",
+        pit_generation_binding: dict[str, Any] | None = None,
+        expected_market_pointer_sha256: str = "",
     ) -> dict[str, Any]:
+        pit_binding = self._load_pit_membership_binding(
+            pit_generation_binding
+        )
+        if pit_binding.get("blockers"):
+            raise RuntimeError(
+                ";".join(str(item) for item in pit_binding["blockers"])
+            )
         components = self.downloader.load_components()
         target_categories = self.downloader._resolve_target_categories(components, categories)
         explicit_target_date = _compact_trade_date(target_date)
@@ -291,7 +356,6 @@ class CNParquetBatchMaintainer:
         allowed = self.downloader._normalize_allowed_symbols(allowed_stale_symbols)
         suspended_symbols = self.downloader._load_latest_suspended_symbols(target_trade_date)
         inactive_symbols = self._load_inactive_symbols(target_trade_date, target_symbols)
-        pit_binding = self._load_pit_membership_binding()
         pit_records = pit_binding.get("records", {})
         if isinstance(pit_records, dict):
             for symbol in target_symbols:
@@ -414,6 +478,8 @@ class CNParquetBatchMaintainer:
                     pit_binding=pit_binding,
                 )
             )
+        blockers.extend(self._pit_generation_binding_blockers(pit_binding))
+        blockers = list(dict.fromkeys(blockers))
         expected_count = len(target_symbols)
         coverage_complete_count = len(observed_target_symbols | non_blocking_absent)
         coverage_ratio = coverage_complete_count / expected_count if expected_count else 1.0
@@ -485,7 +551,7 @@ class CNParquetBatchMaintainer:
                     "latest_available_trade_date": commit_latest_available,
                     "latest_complete_trade_date": commit_latest_complete,
                     "coverage": {
-                        "coverage_schema_version": "cn-full-a-coverage.v3",
+                        "coverage_schema_version": "cn-full-a-coverage.v4",
                         "complete": True,
                         "coverage_ratio": coverage_ratio,
                         "coverage_complete_count": coverage_complete_count,
@@ -546,6 +612,15 @@ class CNParquetBatchMaintainer:
                         "pit_membership_sha256": str(
                             pit_binding.get("sha256") or ""
                         ),
+                        "pit_generation_id": str(
+                            pit_binding.get("generation_id") or ""
+                        ),
+                        "pit_generation_manifest_path": str(
+                            pit_binding.get("generation_manifest_path") or ""
+                        ),
+                        "pit_generation_manifest_sha256": str(
+                            pit_binding.get("generation_manifest_sha256") or ""
+                        ),
                         "daily_basic_coverage": daily_basic_coverage,
                         "adj_factor_coverage": adj_factor_coverage,
                     },
@@ -553,6 +628,7 @@ class CNParquetBatchMaintainer:
                     "daily_basic_coverage": daily_basic_coverage,
                     "adj_factor_coverage": adj_factor_coverage,
                 },
+                expected_latest_pointer_sha256=expected_market_pointer_sha256,
             )
         else:
             validation = self.store.validate_latest()
@@ -565,7 +641,7 @@ class CNParquetBatchMaintainer:
                 "latest_trade_date": latest_complete,
                 "quarantined_tail_dates": [target_trade_date] if target_trade_date and target_trade_date != latest_complete else [],
                 "coverage": {
-                    "coverage_schema_version": "cn-full-a-coverage.v3",
+                    "coverage_schema_version": "cn-full-a-coverage.v4",
                     "complete": False,
                     "coverage_ratio": coverage_ratio,
                     "coverage_complete_count": coverage_complete_count,
@@ -617,6 +693,15 @@ class CNParquetBatchMaintainer:
                     "pit_membership_path": str(pit_binding.get("path") or ""),
                     "pit_membership_sha256": str(
                         pit_binding.get("sha256") or ""
+                    ),
+                    "pit_generation_id": str(
+                        pit_binding.get("generation_id") or ""
+                    ),
+                    "pit_generation_manifest_path": str(
+                        pit_binding.get("generation_manifest_path") or ""
+                    ),
+                    "pit_generation_manifest_sha256": str(
+                        pit_binding.get("generation_manifest_sha256") or ""
                     ),
                     "daily_basic_coverage": daily_basic_coverage,
                     "adj_factor_coverage": adj_factor_coverage,
@@ -718,45 +803,98 @@ class CNParquetBatchMaintainer:
                 inactive.update(work.loc[delisted_by_target, "ts_code"].astype(str))
         return inactive & target_symbols
 
-    def _load_pit_membership_binding(self) -> dict[str, Any]:
-        local_root = self.store.data_root / "parquet" / "cn" / "reference"
-        configured_root = Path(
-            getattr(config, "PIT_UNIVERSE_SOURCE_ROOT", local_root)
-        )
-        root = local_root if (local_root / "stock_basic_membership.parquet").exists() else configured_root
-        store = PITUniverseStore(
-            root_dir=root,
-            raw_root=self.store.data_root / "cn_universe" / "raw",
-            compatibility_path=(
-                self.store.data_root
-                / "cn_universe"
-                / "stock_basic_membership_latest.json"
-            ),
-        )
-        path = store.canonical_path
-        if not path.exists():
+    def _load_pit_membership_binding(
+        self,
+        explicit_binding: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if not isinstance(explicit_binding, dict):
             return {
-                "path": str(path),
+                "path": "",
                 "sha256": "",
                 "records": {},
-                "blockers": ["pit_membership_missing"],
+                "blockers": ["pit_generation_binding_required"],
             }
         try:
-            records = store.records_by_symbol()
-            digest = file_sha256(path)
+            manifest_path = str(
+                explicit_binding.get("generation_manifest_path") or ""
+            )
+            manifest_sha256 = str(
+                explicit_binding.get("generation_manifest_sha256") or ""
+            )
+            root = str(explicit_binding.get("pit_store_root") or "")
+            if not root:
+                raise RuntimeError("pit_generation_store_root_missing")
+            store = PITUniverseStore(
+                root_dir=root,
+                raw_root=self.store.data_root / "cn_universe" / "raw",
+                compatibility_path=(
+                    self.store.data_root
+                    / "cn_universe"
+                    / "stock_basic_membership_latest.json"
+                ),
+            )
+            binding = store.load_generation_binding(
+                manifest_path=manifest_path,
+                expected_manifest_sha256=manifest_sha256,
+            )
+            records = {
+                record.symbol: record
+                for record in list(binding.get("records", []) or [])
+                if record.symbol
+            }
         except Exception as exc:
             return {
-                "path": str(path),
+                "path": "",
                 "sha256": "",
                 "records": {},
-                "blockers": [f"pit_membership_unreadable:{exc}"],
+                "blockers": [f"pit_generation_binding_invalid:{exc}"],
             }
         return {
-            "path": str(path),
-            "sha256": digest,
+            "path": str(binding["canonical_path"]),
+            "sha256": str(binding["canonical_sha256"]),
             "records": records,
+            "generation_id": str(binding["generation_id"]),
+            "generation_manifest_path": str(
+                binding["generation_manifest_path"]
+            ),
+            "generation_manifest_sha256": str(
+                binding["generation_manifest_sha256"]
+            ),
+            "pit_store_root": str(root),
             "blockers": [],
         }
+
+    @staticmethod
+    def _pit_generation_binding_blockers(
+        pit_binding: dict[str, Any],
+    ) -> list[str]:
+        existing = list(pit_binding.get("blockers") or [])
+        if existing:
+            return existing
+        try:
+            store = PITUniverseStore(
+                root_dir=str(pit_binding.get("pit_store_root") or "")
+            )
+            binding = store.load_generation_binding(
+                manifest_path=str(
+                    pit_binding.get("generation_manifest_path") or ""
+                ),
+                expected_manifest_sha256=str(
+                    pit_binding.get("generation_manifest_sha256") or ""
+                ),
+            )
+            if (
+                str(binding.get("canonical_path") or "")
+                != str(pit_binding.get("path") or "")
+                or str(binding.get("canonical_sha256") or "")
+                != str(pit_binding.get("sha256") or "")
+                or str(binding.get("generation_id") or "")
+                != str(pit_binding.get("generation_id") or "")
+            ):
+                return ["pit_generation_precommit_binding_changed"]
+        except Exception as exc:
+            return [f"pit_generation_precommit_binding_invalid:{exc}"]
+        return []
 
     def _load_verified_nontrading_bak_daily_zero(
         self,
@@ -807,6 +945,7 @@ class CNParquetBatchMaintainer:
             self.data_dir,
             trade_date=target_trade_date,
             primary_missing_symbols=pit_active_candidates,
+            pit_membership_sha256=pit_sha256,
         )
         cached, cache_blockers = read_evidence_cache(
             cache_path,
@@ -1211,6 +1350,9 @@ def run_market_maintenance(
     min_symbol_success_rate: float = 0.95,
     target_date: str = "auto",
     daily_window: bool = False,
+    pit_generation_manifest: str | Path = "",
+    expected_pit_generation_manifest_sha256: str = "",
+    expected_market_pointer_sha256: str = "",
     **kwargs: Any,
 ) -> Any:
     settings = get_market_settings(market)
@@ -1252,9 +1394,34 @@ def run_market_maintenance(
     if resolved_storage_mode == "parquet-direct":
         if settings.market != "CN":
             raise ValueError("parquet-direct storage mode is only supported for CN")
+        data_root = Path(
+            getattr(config, "MARKET_DATA_BASE_DIR", "data")
+        )
+        expected_pointer_sha256 = _validated_sha256(
+            expected_market_pointer_sha256,
+            blocker="expected_market_pointer_sha256_invalid",
+        )
+        latest_pointer_path = (
+            data_root / "parquet" / "cn" / "_latest.json"
+        )
+        if not latest_pointer_path.exists():
+            raise ValueError("market_latest_pointer_missing")
+        actual_pointer_sha256 = file_sha256(latest_pointer_path)
+        if actual_pointer_sha256 != expected_pointer_sha256:
+            raise ValueError(
+                "market_pointer_cas_mismatch:"
+                f"{actual_pointer_sha256}!={expected_pointer_sha256}"
+            )
+        pit_generation_binding = _explicit_pit_generation_binding(
+            data_root=data_root,
+            manifest_path=pit_generation_manifest,
+            expected_manifest_sha256=(
+                expected_pit_generation_manifest_sha256
+            ),
+        )
         maintainer = CNParquetBatchMaintainer(
             data_dir=kwargs.pop("data_dir", settings.data_dir),
-            data_root=getattr(config, "MARKET_DATA_BASE_DIR", "data"),
+            data_root=data_root,
             years=int(kwargs.pop("years", 3)),
             max_workers=int(kwargs.pop("max_workers", 4)),
             batch_size=int(kwargs.pop("batch_size", 50)),
@@ -1264,6 +1431,8 @@ def run_market_maintenance(
             fail_on_incomplete=fail_on_incomplete,
             allowed_stale_symbols=allowed_stale_symbols,
             target_date=target_date,
+            pit_generation_binding=pit_generation_binding,
+            expected_market_pointer_sha256=expected_pointer_sha256,
         )
 
     if settings.market == "CN":

@@ -10,6 +10,7 @@ import pytest
 
 from quant_investor.market.data_governance import run_data_governance
 from quant_investor.market.macro_mart import write_macro_mart
+from quant_investor.market.pit_universe import PITUniverseRecord, PITUniverseStore
 
 
 def _daily_frame(symbol: str = "000001.SZ") -> pd.DataFrame:
@@ -406,6 +407,66 @@ def test_full_a_governance_accepts_v2_without_nonblocking_absence(tmp_path):
     report = result["reports"][0]
     assert report["metadata"]["quant_scope"]["status"] == "passed"
     assert report["readiness"]["quant"]["status"] == "pass"
+
+
+def test_full_a_governance_accepts_coverage_bound_v4_pit_generation(
+    tmp_path,
+):
+    data_root = _write_parquet_market_data(tmp_path)
+    pit_store = PITUniverseStore(
+        root_dir=data_root / "parquet" / "cn" / "reference",
+        raw_root=data_root / "cn_universe" / "raw",
+        compatibility_path=(
+            data_root
+            / "cn_universe"
+            / "stock_basic_membership_latest.json"
+        ),
+    )
+    generation = pit_store.write_snapshot(
+        raw_records=[
+            PITUniverseRecord(
+                symbol="000001.SZ",
+                name="One",
+                list_date="20200101",
+                source_list_status="L",
+                observed_at="2024-05-10T00:00:00Z",
+                source_run_id="governance-v4",
+            )
+        ],
+        observed_at="2024-05-10T00:00:00Z",
+        source_run_id="governance-v4",
+    )
+
+    def _upgrade(coverage):
+        coverage.update(
+            {
+                "coverage_schema_version": "cn-full-a-coverage.v4",
+                "pit_membership_path": generation["canonical_path"],
+                "pit_membership_sha256": generation["canonical_sha256"],
+                "pit_generation_id": generation["generation_id"],
+                "pit_generation_manifest_path": generation[
+                    "generation_manifest_path"
+                ],
+                "pit_generation_manifest_sha256": generation[
+                    "generation_manifest_sha256"
+                ],
+            }
+        )
+
+    _mutate_bound_coverage(data_root, _upgrade)
+    result = run_data_governance(
+        market="CN",
+        categories=["full_a"],
+        as_of="20240510",
+        data_dir=data_root,
+        fundamental_root=tmp_path / "fundamental",
+        macro_root=tmp_path / "macro",
+        output_dir=tmp_path / "reports",
+    )
+
+    scope = result["reports"][0]["metadata"]["quant_scope"]
+    assert scope["status"] == "passed"
+    assert scope["pit_generation_id"] == generation["generation_id"]
 
 
 def test_non_full_a_unhealthy_snapshot_returns_structured_block(tmp_path):

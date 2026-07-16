@@ -15,6 +15,7 @@ from quant_investor.market.cn_terminal_delisting_evidence import (
     read_terminal_delisting_evidence,
     resolve_terminal_delisting_evidence,
     select_terminal_delisting_candidates,
+    terminal_delisting_cache_path,
     validate_terminal_delisting_evidence,
 )
 from quant_investor.market.pit_universe import PITUniverseRecord
@@ -230,6 +231,61 @@ def test_resolver_reuses_only_valid_positive_cache_and_rejects_tamper(
     assert refreshed["status"] == "passed"
     assert refreshed["cache_reused"] is False
     assert len(provider.calls) > call_count
+
+
+def test_terminal_cache_isolated_by_full_pit_sha_without_overwriting_old_bytes(
+    tmp_path: Path,
+) -> None:
+    candidates = ["000004.SZ", "002808.SZ"]
+    legacy_path = terminal_delisting_cache_path(
+        tmp_path,
+        target_trade_date="20260714",
+        candidate_symbols=candidates,
+    )
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_bytes = b"legacy-unversioned-cache\n"
+    legacy_path.write_bytes(legacy_bytes)
+
+    common = {
+        "cache_root": tmp_path,
+        "target_trade_date": "20260714",
+        "candidate_symbols": candidates,
+        "pit_records_by_symbol": _records(),
+        "pit_membership_path": "pit.parquet",
+    }
+    first = resolve_terminal_delisting_evidence(
+        _Provider(),
+        **common,
+        pit_membership_sha256="a" * 64,
+    )
+    first_path = Path(first["evidence_path"])
+    first_bytes = first_path.read_bytes()
+
+    second = resolve_terminal_delisting_evidence(
+        _Provider(),
+        **common,
+        pit_membership_sha256="b" * 64,
+    )
+    second_path = Path(second["evidence_path"])
+
+    assert first["status"] == second["status"] == "passed"
+    assert first_path != second_path
+    assert f"pit_{'a' * 64}" in first_path.parts
+    assert f"pit_{'b' * 64}" in second_path.parts
+    assert legacy_path.read_bytes() == legacy_bytes
+    assert first_path.read_bytes() == first_bytes
+
+
+def test_terminal_cache_path_rejects_incomplete_explicit_pit_sha(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="complete 64-character SHA-256"):
+        terminal_delisting_cache_path(
+            tmp_path,
+            target_trade_date="20260714",
+            candidate_symbols=["000004.SZ"],
+            pit_membership_sha256="a" * 63,
+        )
 
 
 def test_validator_rejects_resigned_raw_semantic_tamper() -> None:

@@ -7,7 +7,7 @@ import argparse
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
 import pandas as pd
 
@@ -26,7 +26,6 @@ from quant_investor.market.market_data_reader import (
     MarketDataReader,
     coverage_fingerprint,
 )
-from quant_investor.market.pit_universe import PITUniverseStore
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -85,6 +84,61 @@ def _stale_target_keys(
     )
 
 
+def _validate_active_coverage_pit_binding(
+    *,
+    binding: Mapping[str, Any],
+    coverage: Mapping[str, Any],
+    audit_pit: Mapping[str, Any],
+) -> None:
+    if binding.get("status") != "passed":
+        raise SystemExit(
+            "Active market coverage PIT binding is invalid: "
+            + ",".join(binding.get("blockers", []) or [])
+        )
+    expected_path = str(coverage.get("pit_membership_path") or "").strip()
+    expected_sha256 = str(
+        coverage.get("pit_membership_sha256") or ""
+    ).strip().lower()
+    if (
+        str(audit_pit.get("path") or "").strip() != expected_path
+        or str(audit_pit.get("sha256") or "").strip().lower()
+        != expected_sha256
+        or str(binding.get("canonical_sha256") or "").strip().lower()
+        != expected_sha256
+    ):
+        raise SystemExit("Source audit PIT binding is stale.")
+
+    coverage_schema = str(
+        coverage.get("coverage_schema_version") or ""
+    ).strip()
+    if coverage_schema != "cn-full-a-coverage.v4":
+        return
+    expected_generation = {
+        "coverage_schema_version": coverage_schema,
+        "generation_id": str(coverage.get("pit_generation_id") or "").strip(),
+        "generation_manifest_path": str(
+            coverage.get("pit_generation_manifest_path") or ""
+        ).strip(),
+        "generation_manifest_sha256": str(
+            coverage.get("pit_generation_manifest_sha256") or ""
+        ).strip().lower(),
+    }
+    observed_generation = {
+        "coverage_schema_version": str(
+            audit_pit.get("coverage_schema_version") or ""
+        ).strip(),
+        "generation_id": str(audit_pit.get("generation_id") or "").strip(),
+        "generation_manifest_path": str(
+            audit_pit.get("generation_manifest_path") or ""
+        ).strip(),
+        "generation_manifest_sha256": str(
+            audit_pit.get("generation_manifest_sha256") or ""
+        ).strip().lower(),
+    }
+    if observed_generation != expected_generation:
+        raise SystemExit("Source audit PIT generation binding is stale.")
+
+
 def main(argv: Sequence[str] | None = None) -> dict:
     args = _parse_args(argv)
     if not args.allow_online:
@@ -128,12 +182,13 @@ def main(argv: Sequence[str] | None = None) -> dict:
         raise SystemExit("Latest canonical is not healthy; historical repair refused.")
     latest_path = Path(args.data_root) / "parquet" / "cn" / "_latest.json"
     before_latest = json.loads(latest_path.read_text(encoding="utf-8"))
+    before_latest_sha256 = file_sha256(latest_path)
     audit_canonical = audit.get("canonical", {}) or {}
     if before_latest.get("snapshot_id") != audit_canonical.get("snapshot_id"):
         raise SystemExit(
             "Source audit snapshot is stale; rerun the full history audit."
         )
-    if file_sha256(latest_path) != audit_canonical.get("latest_sha256"):
+    if before_latest_sha256 != audit_canonical.get("latest_sha256"):
         raise SystemExit("Source audit latest-pointer binding is stale.")
     manifest_path = Path(str(before_latest.get("manifest_path") or ""))
     if not manifest_path.is_absolute():
@@ -144,21 +199,26 @@ def main(argv: Sequence[str] | None = None) -> dict:
         != audit_canonical.get("manifest_sha256")
     ):
         raise SystemExit("Source audit manifest binding is stale.")
-    pit_store = PITUniverseStore(
-        root_dir=Path(args.data_root) / "parquet" / "cn" / "reference",
-        raw_root=Path(args.data_root) / "cn_universe" / "raw",
-        compatibility_path=(
-            Path(args.data_root)
-            / "cn_universe"
-            / "stock_basic_membership_latest.json"
-        ),
+    reader = MarketDataReader(
+        market="CN",
+        data_root=Path(args.data_root),
+        mode_policy="strict",
     )
-    audit_pit = audit.get("pit_membership_evidence", {}) or {}
+    pit_binding = reader.coverage_bound_pit(refresh=True)
     if (
-        str(pit_store.canonical_path) != str(audit_pit.get("path") or "")
-        or file_sha256(pit_store.canonical_path) != audit_pit.get("sha256")
+        reader._load_latest_payload() != before_latest
+        or file_sha256(latest_path) != before_latest_sha256
     ):
-        raise SystemExit("Source audit PIT binding is stale.")
+        raise SystemExit("Active market pointer changed during repair preflight.")
+    audit_pit = audit.get("pit_membership_evidence", {}) or {}
+    active_coverage = before_latest.get("coverage", {}) or {}
+    if not isinstance(active_coverage, Mapping):
+        raise SystemExit("Active market coverage is invalid.")
+    _validate_active_coverage_pit_binding(
+        binding=pit_binding,
+        coverage=active_coverage,
+        audit_pit=audit_pit,
+    )
     audit_terminal = audit.get("terminal_delisting_evidence", {}) or {}
     terminal_symbols = sorted(
         {
@@ -222,11 +282,6 @@ def main(argv: Sequence[str] | None = None) -> dict:
         for value in audit.get("audited_trade_dates", []) or []
         if _compact_date(value)
     ]
-    reader = MarketDataReader(
-        market="CN",
-        data_root=Path(args.data_root),
-        mode_policy="strict",
-    )
     snapshot = reader._require_snapshot()
     canonical_bars, current_window = _read_canonical_window(
         reader,
@@ -320,6 +375,7 @@ def main(argv: Sequence[str] | None = None) -> dict:
             "historical_repair_source_audit": str(audit_path),
             "blockers": [],
         },
+        expected_latest_pointer_sha256=before_latest_sha256,
     )
     after_validation = store.validate_latest()
     after_latest = json.loads(latest_path.read_text(encoding="utf-8"))

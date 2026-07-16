@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -17,7 +18,7 @@ from quant_investor.market.cn_nontrading_evidence import (
 )
 from quant_investor.market.market_data_store import MarketDataStore
 from quant_investor.market.market_data_reader import coverage_fingerprint
-from quant_investor.market.pit_universe import PITUniverseRecord
+from quant_investor.market.pit_universe import PITUniverseRecord, PITUniverseStore
 
 
 def test_cn_legacy_maintenance_is_disabled_outside_staged():
@@ -29,7 +30,62 @@ def test_cn_legacy_maintenance_is_disabled_outside_staged():
         )
 
 
-def test_cn_auto_maintenance_uses_parquet_direct(monkeypatch):
+def _write_pit_generation(
+    root: Path,
+    *,
+    records: list[PITUniverseRecord] | None = None,
+) -> dict[str, object]:
+    selected_records = records or [
+        PITUniverseRecord(
+            symbol="000001.SZ",
+            name="One",
+            list_date="20200101",
+            source_list_status="L",
+            observed_at="2026-03-16T00:00:00Z",
+            source_run_id="unit-pit",
+        ),
+        PITUniverseRecord(
+            symbol="000002.SZ",
+            name="Two",
+            list_date="20200101",
+            source_list_status="L",
+            observed_at="2026-03-16T00:00:00Z",
+            source_run_id="unit-pit",
+        ),
+    ]
+    store = PITUniverseStore(
+        root_dir=root / "parquet" / "cn" / "reference",
+        raw_root=root / "cn_universe" / "raw",
+        compatibility_path=(
+            root / "cn_universe" / "stock_basic_membership_latest.json"
+        ),
+    )
+    return store.write_snapshot(
+        raw_records=selected_records,
+        latest_records=selected_records,
+        observed_at="2026-03-16T00:00:00Z",
+        source_run_id="unit-pit",
+    )
+
+
+def _production_binding_args(
+    root: Path,
+    generation: dict[str, object],
+) -> dict[str, str]:
+    return {
+        "pit_generation_manifest": str(
+            generation["generation_manifest_path"]
+        ),
+        "expected_pit_generation_manifest_sha256": str(
+            generation["generation_manifest_sha256"]
+        ),
+        "expected_market_pointer_sha256": file_sha256(
+            root / "parquet" / "cn" / "_latest.json"
+        ),
+    }
+
+
+def test_cn_auto_maintenance_uses_parquet_direct(monkeypatch, tmp_path):
     captured: dict[str, object] = {}
 
     class FakeMaintainer:
@@ -41,16 +97,50 @@ def test_cn_auto_maintenance_uses_parquet_direct(monkeypatch):
             return {"storage_mode": "parquet-direct"}
 
     monkeypatch.setattr(download_module, "CNParquetBatchMaintainer", FakeMaintainer)
+    _write_seed_snapshot(tmp_path)
+    generation = _write_pit_generation(tmp_path)
+    monkeypatch.setattr(
+        download_module.config,
+        "MARKET_DATA_BASE_DIR",
+        str(tmp_path),
+        raising=False,
+    )
 
     result = download_module.run_market_maintenance(
         market="CN",
         categories=["full_a"],
         target_date="20260316",
+        **_production_binding_args(tmp_path, generation),
     )
 
     assert result["storage_mode"] == "parquet-direct"
     assert captured["maintain"]["categories"] == ["full_a"]
     assert captured["maintain"]["target_date"] == "20260316"
+    assert captured["maintain"]["pit_generation_binding"][
+        "generation_id"
+    ] == generation["generation_id"]
+
+
+def test_cn_parquet_direct_requires_publish_bindings_before_provider_init(
+    monkeypatch,
+):
+    def _unexpected_init(**_kwargs):
+        raise AssertionError("provider-backed maintainer must not initialize")
+
+    monkeypatch.setattr(
+        download_module,
+        "CNParquetBatchMaintainer",
+        _unexpected_init,
+    )
+    with pytest.raises(
+        ValueError,
+        match="expected_market_pointer_sha256_invalid",
+    ):
+        download_module.run_market_maintenance(
+            market="CN",
+            categories=["full_a"],
+            storage_mode="parquet-direct",
+        )
 
 
 def _write_seed_snapshot(root: Path) -> None:
@@ -131,6 +221,18 @@ def _write_seed_snapshot(root: Path) -> None:
 def test_upsert_bars_merges_target_day_without_replacing_history(tmp_path):
     _write_seed_snapshot(tmp_path)
     store = MarketDataStore(market="CN", data_root=tmp_path)
+    latest_path = tmp_path / "parquet" / "cn" / "_latest.json"
+    previous_pointer_sha256 = hashlib.sha256(latest_path.read_bytes()).hexdigest()
+    legacy_table_path = (
+        tmp_path
+        / "parquet"
+        / "cn"
+        / "bars"
+        / "year=2026"
+        / "month=03"
+        / "part.parquet"
+    )
+    legacy_table_bytes = legacy_table_path.read_bytes()
 
     manifest = store.upsert_bars(
         pd.DataFrame(
@@ -162,6 +264,7 @@ def test_upsert_bars_merges_target_day_without_replacing_history(tmp_path):
         target_trade_date="20260316",
         source="unit-test",
         snapshot_id="upserted",
+        expected_latest_pointer_sha256=previous_pointer_sha256,
         metadata={
             "status": "OK",
             "latest_available_trade_date": "20260316",
@@ -169,12 +272,36 @@ def test_upsert_bars_merges_target_day_without_replacing_history(tmp_path):
         },
     )
 
-    table = pd.read_parquet(tmp_path / "parquet" / "cn" / "bars" / "year=2026" / "month=03" / "part.parquet")
+    latest = json.loads(latest_path.read_text(encoding="utf-8"))
+    table_root = Path(latest["table_root"])
+    serving_root = Path(latest["derived_serving_root"])
+    table = pd.read_parquet(
+        table_root / "year=2026" / "month=03" / "part.parquet"
+    )
     assert manifest["snapshot_id"] == "upserted"
     assert manifest["row_count"] == 4
+    assert table_root == (
+        tmp_path
+        / "parquet"
+        / "cn"
+        / "_snapshots"
+        / "upserted"
+        / "table"
+        / "bars"
+    )
+    assert serving_root == (
+        tmp_path
+        / "parquet"
+        / "cn"
+        / "_snapshots"
+        / "upserted"
+        / "serving"
+        / "bars"
+    )
+    assert legacy_table_path.read_bytes() == legacy_table_bytes
     assert set(table["ts_code"]) == {"000001.SZ", "000002.SZ", "000003.SZ"}
     assert set(table["trade_date"]) == {"20260315", "20260316"}
-    assert json.loads((tmp_path / "parquet" / "cn" / "_latest.json").read_text())["snapshot_id"] == "upserted"
+    assert latest["snapshot_id"] == "upserted"
     assert store.validate_latest()["status"] == "passed"
     assert store.reader.snapshot()["coverage"]["coverage_trade_date"] == "20260316"
 
@@ -246,15 +373,47 @@ def test_historical_multi_date_upsert_preserves_latest_coverage(tmp_path):
     assert after["latest_complete_trade_date"] == "20260315"
     assert coverage_fingerprint(after["coverage"]) == before_fingerprint
     table = pd.read_parquet(
-        tmp_path
-        / "parquet"
-        / "cn"
-        / "bars"
+        Path(after["table_root"])
         / "year=2026"
         / "month=03"
         / "part.parquet"
     )
     assert {"20260313", "20260314"}.issubset(set(table["trade_date"]))
+
+
+def test_upsert_rejects_market_pointer_cas_drift_without_publishing(tmp_path):
+    _write_seed_snapshot(tmp_path)
+    latest_path = tmp_path / "parquet" / "cn" / "_latest.json"
+    before = latest_path.read_bytes()
+    store = MarketDataStore(market="CN", data_root=tmp_path)
+
+    with pytest.raises(ValueError, match="market_pointer_cas_mismatch"):
+        store.upsert_bars(
+            pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000001.SZ",
+                        "trade_date": "20260316",
+                        "open": 10.0,
+                        "high": 10.6,
+                        "low": 9.9,
+                        "close": 10.4,
+                        "vol": 1000,
+                        "amount": 12000.0,
+                        "adj_factor": 1.1,
+                    }
+                ]
+            ),
+            target_trade_date="20260316",
+            source="unit-test-cas",
+            snapshot_id="cas-rejected",
+            expected_latest_pointer_sha256="0" * 64,
+        )
+
+    assert latest_path.read_bytes() == before
+    assert not (
+        tmp_path / "parquet" / "cn" / "_snapshots" / "cas-rejected"
+    ).exists()
 
 
 def test_storage_validate_fails_closed_for_unbound_complete_coverage(tmp_path):
@@ -905,12 +1064,14 @@ def test_run_market_maintenance_parquet_direct_upserts_and_writes_audit_artifact
     monkeypatch.setattr(download_module.config, "MARKET_DATA_BASE_DIR", str(tmp_path), raising=False)
     monkeypatch.setattr(download_module.config, "CN_FRESHNESS_MODE", "strict")
     monkeypatch.setattr(download_cn_module, "create_tushare_pro", lambda *_args, **_kwargs: FakePro())
+    generation = _write_pit_generation(tmp_path)
 
     result = download_module.run_market_maintenance(
         market="CN",
         categories=["full_a"],
         storage_mode="parquet-direct",
         data_dir=str(audit_root),
+        **_production_binding_args(tmp_path, generation),
     )
 
     assert result["storage_mode"] == "parquet-direct"
@@ -930,6 +1091,7 @@ def test_run_market_maintenance_parquet_direct_upserts_and_writes_audit_artifact
         storage_mode="parquet-direct",
         data_dir=str(audit_root),
         allowed_stale_symbols=["000001.SZ"],
+        **_production_binding_args(tmp_path, generation),
     )
 
     assert blocked["parquet_commit"]["status"] == "BLOCKED"
@@ -1060,6 +1222,7 @@ def test_parquet_direct_explicit_historical_target_preserves_latest_pointer(monk
     monkeypatch.setattr(download_module.config, "MARKET_DATA_BASE_DIR", str(tmp_path), raising=False)
     monkeypatch.setattr(download_module.config, "CN_FRESHNESS_MODE", "strict")
     monkeypatch.setattr(download_cn_module, "create_tushare_pro", lambda *_args, **_kwargs: FakePro())
+    generation = _write_pit_generation(tmp_path)
 
     result = download_module.run_market_maintenance(
         market="CN",
@@ -1067,6 +1230,7 @@ def test_parquet_direct_explicit_historical_target_preserves_latest_pointer(monk
         storage_mode="parquet-direct",
         target_date="20260314",
         data_dir=str(audit_root),
+        **_production_binding_args(tmp_path, generation),
     )
 
     assert result["completeness"]["effective_target_trade_date"] == "20260314"
@@ -1212,6 +1376,35 @@ def test_parquet_direct_historical_target_excludes_prelisting_symbols(monkeypatc
     monkeypatch.setattr(download_module.config, "MARKET_DATA_BASE_DIR", str(tmp_path), raising=False)
     monkeypatch.setattr(download_module.config, "CN_FRESHNESS_MODE", "strict")
     monkeypatch.setattr(download_cn_module, "create_tushare_pro", lambda *_args, **_kwargs: FakePro())
+    generation = _write_pit_generation(
+        tmp_path,
+        records=[
+            PITUniverseRecord(
+                symbol="000001.SZ",
+                name="One",
+                list_date="20200101",
+                source_list_status="L",
+                observed_at="2026-03-16T00:00:00Z",
+                source_run_id="unit-pit",
+            ),
+            PITUniverseRecord(
+                symbol="000002.SZ",
+                name="Two",
+                list_date="20200101",
+                source_list_status="L",
+                observed_at="2026-03-16T00:00:00Z",
+                source_run_id="unit-pit",
+            ),
+            PITUniverseRecord(
+                symbol="000003.SZ",
+                name="Future",
+                list_date="20260316",
+                source_list_status="L",
+                observed_at="2026-03-16T00:00:00Z",
+                source_run_id="unit-pit",
+            ),
+        ],
+    )
 
     result = download_module.run_market_maintenance(
         market="CN",
@@ -1219,6 +1412,7 @@ def test_parquet_direct_historical_target_excludes_prelisting_symbols(monkeypatc
         storage_mode="parquet-direct",
         target_date="20260314",
         data_dir=str(audit_root),
+        **_production_binding_args(tmp_path, generation),
     )
 
     assert result["parquet_commit"]["status"] == "OK"
@@ -1231,5 +1425,10 @@ def test_parquet_direct_historical_target_excludes_prelisting_symbols(monkeypatc
     assert latest["coverage"]["expected_scope_sha256"] == "b" * 64
     validation = MarketDataStore(market="CN", data_root=tmp_path).validate_latest()
     assert validation["status"] == "passed"
-    table = pd.read_parquet(tmp_path / "parquet" / "cn" / "bars" / "year=2026" / "month=03" / "part.parquet")
+    table = pd.read_parquet(
+        Path(latest["table_root"])
+        / "year=2026"
+        / "month=03"
+        / "part.parquet"
+    )
     assert set(table.loc[table["trade_date"].eq("20260314"), "ts_code"]) == {"000001.SZ", "000002.SZ"}

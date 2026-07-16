@@ -9,6 +9,7 @@ defines full-market forward-return labels, and writes validation artifacts.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 from dataclasses import asdict, dataclass
@@ -19,15 +20,20 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from quant_investor.market.market_data_reader import MarketDataReader
+
 
 DEFAULT_OUTPUT = Path(
     "results/strategy_records/CN/aggressive_tech_manufacturing/"
     "20260618_broad_factor_validation"
 )
-BARS_ROOT = Path("data/parquet/cn/bars")
 LATEST_PATH = Path("data/parquet/cn/_latest.json")
 STOCK_BASIC_PATH = Path("data/parquet/cn/dag_core_raw/table=stock_basic/part.parquet")
 DAILY_BASIC_PATH = Path("data/parquet/cn/fundamental_raw/table=daily_basic/part.parquet")
+
+
+class ActiveMarketSnapshotError(RuntimeError):
+    """Raised when the active strict-Parquet market pointer is unsafe."""
 
 
 @dataclass(frozen=True)
@@ -64,10 +70,137 @@ FACTOR_COLUMNS = [
 ]
 
 
-def _read_json(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+def _pointer_identity(value: Any) -> tuple[int, ...]:
+    return (
+        int(value.st_dev),
+        int(value.st_ino),
+        int(value.st_mode),
+        int(value.st_size),
+        int(value.st_mtime_ns),
+        int(value.st_ctime_ns),
+    )
+
+
+def _read_active_pointer(path: Path) -> tuple[dict[str, Any], str]:
+    """Read the active pointer as one stable, regular, non-symlink file."""
+
+    if path.is_symlink():
+        raise ActiveMarketSnapshotError(
+            f"strict Parquet snapshot pointer must not be a symlink: {path}"
+        )
+    try:
+        before = path.stat()
+        if not path.is_file():
+            raise ActiveMarketSnapshotError(
+                f"strict Parquet snapshot pointer must be a regular file: {path}"
+            )
+        raw = path.read_bytes()
+        after = path.stat()
+    except OSError as exc:
+        raise ActiveMarketSnapshotError(
+            f"strict Parquet snapshot pointer missing or unreadable: {path}"
+        ) from exc
+    if path.is_symlink() or _pointer_identity(before) != _pointer_identity(after):
+        raise ActiveMarketSnapshotError(
+            "strict Parquet snapshot pointer changed during read"
+        )
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ActiveMarketSnapshotError(
+            f"strict Parquet snapshot pointer is invalid JSON: {path}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise ActiveMarketSnapshotError(
+            f"strict Parquet snapshot pointer must contain an object: {path}"
+        )
+    return payload, hashlib.sha256(raw).hexdigest()
+
+
+def _resolve_active_bars_root(
+    latest_path: Path = LATEST_PATH,
+) -> tuple[Path, dict[str, Any], str]:
+    """Resolve bars only from the healthy active market pointer."""
+
+    latest_path = Path(latest_path)
+    payload, pointer_sha256 = _read_active_pointer(latest_path)
+    raw_table_root = payload.get("table_root")
+    if not isinstance(raw_table_root, str) or not raw_table_root.strip():
+        raise ActiveMarketSnapshotError(
+            "active strict Parquet snapshot pointer table_root is missing"
+        )
+    if ".." in Path(raw_table_root.strip()).parts:
+        raise ActiveMarketSnapshotError(
+            "active strict Parquet snapshot pointer table_root contains parent traversal"
+        )
+
+    market_root = latest_path.parent.absolute()
+    data_root = market_root.parent.parent
+    for canonical_root in (data_root, data_root / "parquet", market_root):
+        if canonical_root.is_symlink():
+            raise ActiveMarketSnapshotError(
+                f"CN canonical path component must not be a symlink: {canonical_root}"
+            )
+    gate = MarketDataReader(
+        market="CN",
+        data_root=data_root,
+        mode_policy="strict",
+    ).clean_snapshot_gate(refresh=True)
+    payload_after, pointer_sha256_after = _read_active_pointer(latest_path)
+    if pointer_sha256_after != pointer_sha256 or payload_after != payload:
+        raise ActiveMarketSnapshotError(
+            "active strict Parquet snapshot pointer changed during validation"
+        )
+    if gate.get("healthy") is not True:
+        blockers = "; ".join(
+            str(item)
+            for item in list(gate.get("blockers", []) or [])
+            if str(item).strip()
+        )
+        raise ActiveMarketSnapshotError(
+            "active strict Parquet snapshot is blocked"
+            + (f": {blockers}" if blockers else "")
+        )
+    if str(gate.get("snapshot_id") or "") != str(payload.get("snapshot_id") or ""):
+        raise ActiveMarketSnapshotError(
+            "active strict Parquet snapshot id changed during validation"
+        )
+
+    bars_root = Path(str(gate.get("table_root") or ""))
+    if not bars_root.is_absolute():
+        bars_root = Path.cwd() / bars_root
+    bars_root = bars_root.absolute()
+    try:
+        relative_parts = bars_root.relative_to(market_root).parts
+    except ValueError as exc:
+        raise ActiveMarketSnapshotError(
+            f"active strict Parquet table_root escapes CN canonical root: {bars_root}"
+        ) from exc
+
+    current = market_root
+    if current.is_symlink():
+        raise ActiveMarketSnapshotError(
+            f"CN canonical market root must not be a symlink: {current}"
+        )
+    for part in relative_parts:
+        current = current / part
+        if current.is_symlink():
+            raise ActiveMarketSnapshotError(
+                f"active strict Parquet table_root contains a symlink: {current}"
+            )
+    try:
+        resolved_market_root = market_root.resolve(strict=True)
+        resolved_bars_root = bars_root.resolve(strict=True)
+        resolved_bars_root.relative_to(resolved_market_root)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ActiveMarketSnapshotError(
+            f"active strict Parquet table_root is missing, unreadable, or unsafe: {bars_root}"
+        ) from exc
+    if not resolved_bars_root.is_dir():
+        raise ActiveMarketSnapshotError(
+            f"active strict Parquet table_root is not a directory: {resolved_bars_root}"
+        )
+    return resolved_bars_root, payload, pointer_sha256
 
 
 def _metric_payload(frame: pd.DataFrame) -> dict[str, Any]:
@@ -133,7 +266,9 @@ def _safe_qcut_bucket(values: pd.Series, labels: list[str]) -> pd.Series:
 
 
 def _load_base_frame(config: ValidationConfig) -> tuple[pd.DataFrame, dict[str, Any]]:
-    latest = _read_json(LATEST_PATH)
+    bars_root, latest, latest_pointer_sha256 = _resolve_active_bars_root(
+        LATEST_PATH
+    )
     columns = [
         "ts_code",
         "trade_date",
@@ -146,7 +281,7 @@ def _load_base_frame(config: ValidationConfig) -> tuple[pd.DataFrame, dict[str, 
         "vol",
     ]
     bars = pd.read_parquet(
-        BARS_ROOT,
+        bars_root,
         columns=columns,
         filters=[("trade_date", ">=", config.warmup_date)],
     ).rename(columns={"ts_code": "symbol"})
@@ -201,7 +336,9 @@ def _load_base_frame(config: ValidationConfig) -> tuple[pd.DataFrame, dict[str, 
 
     lineage = {
         "latest_snapshot": latest,
-        "bars_root": str(BARS_ROOT),
+        "latest_pointer_path": str(LATEST_PATH),
+        "latest_pointer_sha256": latest_pointer_sha256,
+        "bars_root": str(bars_root),
         "stock_basic_path": str(STOCK_BASIC_PATH),
         "daily_basic_path": str(DAILY_BASIC_PATH),
         "rows_after_filters": int(len(bars)),
@@ -730,7 +867,11 @@ def _write_report(
     lines.append("## 数据边界")
     lines.append("")
     latest = lineage.get("latest_snapshot", {})
-    lines.append("- 数据源：本地 strict Parquet canonical `data/parquet/cn/bars`。")
+    lines.append(
+        "- 数据源：由当前 strict Parquet active pointer "
+        f"`{lineage.get('latest_pointer_path')}` 绑定的 table root "
+        f"`{lineage.get('bars_root')}`。"
+    )
     lines.append("- 行业映射：`data/parquet/cn/dag_core_raw/table=stock_basic/part.parquet`。")
     lines.append("- 市值分层：`fundamental_raw/table=daily_basic` 去重后的 `circ_mv`。")
     lines.append(f"- Snapshot：`{latest.get('snapshot_id', 'UNKNOWN')}`；latest_trade_date=`{latest.get('latest_trade_date', 'UNKNOWN')}`。")

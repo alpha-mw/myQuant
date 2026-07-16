@@ -71,6 +71,15 @@ def _normalize_reason(value: Any) -> str:
     return unicodedata.normalize("NFKC", str(value or "")).strip()
 
 
+def _validated_sha256(value: Any, *, field_name: str) -> str:
+    digest = str(value or "").strip().lower()
+    if len(digest) != 64 or any(
+        character not in "0123456789abcdef" for character in digest
+    ):
+        raise ValueError(f"{field_name} must be a complete 64-character SHA-256")
+    return digest
+
+
 def _json_scalar(value: Any) -> Any:
     if value is None:
         return None
@@ -139,10 +148,18 @@ def terminal_delisting_cache_path(
     *,
     target_trade_date: str,
     candidate_symbols: Iterable[Any],
+    pit_membership_sha256: str | None = None,
 ) -> Path:
     target = _compact_date(target_trade_date)
     digest = symbol_set_sha256(candidate_symbols)[:16]
-    return Path(root) / ".cache" / "terminal_delisting" / target / f"candidates_{digest}.json"
+    cache_root = Path(root) / ".cache" / "terminal_delisting" / target
+    if pit_membership_sha256 is not None:
+        pit_digest = _validated_sha256(
+            pit_membership_sha256,
+            field_name="pit_membership_sha256",
+        )
+        cache_root = cache_root / f"pit_{pit_digest}"
+    return cache_root / f"candidates_{digest}.json"
 
 
 def select_terminal_delisting_candidates(
@@ -795,6 +812,7 @@ def resolve_terminal_delisting_evidence(
         cache_root,
         target_trade_date=target_trade_date,
         candidate_symbols=candidates,
+        pit_membership_sha256=pit_membership_sha256,
     )
     cached, cache_blockers = read_terminal_delisting_evidence(
         path,

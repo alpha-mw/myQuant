@@ -57,3 +57,73 @@ def test_repair_refuses_symbol_date_already_present_in_canonical() -> None:
             "20260703": ["000004.SZ"],
         },
     ) == [("20260701", "000001.SZ")]
+
+
+def test_repair_accepts_v3_pit_binding_from_active_market_coverage() -> None:
+    sha256 = "a" * 64
+    MODULE._validate_active_coverage_pit_binding(
+        binding={
+            "status": "passed",
+            "canonical_sha256": sha256,
+            "blockers": [],
+        },
+        coverage={
+            "coverage_schema_version": "cn-full-a-coverage.v3",
+            "pit_membership_path": "data/parquet/cn/reference/pit.parquet",
+            "pit_membership_sha256": sha256,
+        },
+        audit_pit={
+            "path": "data/parquet/cn/reference/pit.parquet",
+            "sha256": sha256,
+        },
+    )
+
+
+def test_repair_requires_exact_v4_pit_generation_binding() -> None:
+    sha256 = "a" * 64
+    manifest_sha256 = "b" * 64
+    coverage = {
+        "coverage_schema_version": "cn-full-a-coverage.v4",
+        "pit_membership_path": (
+            "data/parquet/cn/reference/_generations/pit/pit.parquet"
+        ),
+        "pit_membership_sha256": sha256,
+        "pit_generation_id": "pit-generation",
+        "pit_generation_manifest_path": (
+            "data/parquet/cn/reference/_generations/pit/manifest.json"
+        ),
+        "pit_generation_manifest_sha256": manifest_sha256,
+    }
+    audit_pit = {
+        "path": coverage["pit_membership_path"],
+        "sha256": sha256,
+        "coverage_schema_version": "cn-full-a-coverage.v4",
+        "generation_id": "pit-generation",
+        "generation_manifest_path": coverage["pit_generation_manifest_path"],
+        "generation_manifest_sha256": manifest_sha256,
+    }
+    binding = {
+        "status": "passed",
+        "canonical_sha256": sha256,
+        "generation_id": "pit-generation",
+        "generation_manifest_path": coverage[
+            "pit_generation_manifest_path"
+        ],
+        "generation_manifest_sha256": manifest_sha256,
+        "blockers": [],
+    }
+
+    MODULE._validate_active_coverage_pit_binding(
+        binding=binding,
+        coverage=coverage,
+        audit_pit=audit_pit,
+    )
+
+    stale_audit = dict(audit_pit)
+    stale_audit["generation_manifest_sha256"] = "c" * 64
+    with pytest.raises(SystemExit, match="generation binding is stale"):
+        MODULE._validate_active_coverage_pit_binding(
+            binding=binding,
+            coverage=coverage,
+            audit_pit=stale_audit,
+        )

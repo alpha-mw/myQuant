@@ -94,7 +94,7 @@ from quant_investor.market.branch_readiness import (
 from quant_investor.market.name_map import (
     load_company_name_map as _load_cached_company_name_map,
 )
-from quant_investor.market.pit_universe import PITUniverseStore, filter_symbols_by_pit_status
+from quant_investor.market.pit_universe import filter_symbols_by_pit_status
 from quant_investor.market.provider_health import detect_provider_health
 from quant_investor.market.runtime_profile import profile_stage
 from quant_investor.market.us_market_cap_filter import USMarketCapFilter
@@ -536,8 +536,8 @@ async def _execute_market_dag_async(
             or scoped_data_snapshot.get("latest_trade_date")
             or ""
         )
-        pit_store = PITUniverseStore.from_config()
-        pit_records = pit_store.records_by_symbol()
+        pit_binding = shared_reader.coverage_bound_pit()
+        pit_records = pit_binding.get("records", {})
         pit_filter = filter_symbols_by_pit_status(
             symbols,
             as_of=pit_as_of,
@@ -546,11 +546,31 @@ async def _execute_market_dag_async(
         )
         symbols = pit_filter.symbols
         pit_universe_metadata = dict(pit_filter.metadata)
-        pit_universe_metadata["status"] = "applied" if pit_records else "missing_store"
-        pit_manifest = pit_store.load_manifest()
-        pit_universe_metadata["snapshot_id"] = str(pit_manifest.get("source_run_id", ""))
-        pit_universe_metadata["manifest_path"] = str(pit_store.manifest_path.resolve())
-        pit_universe_metadata["canonical_path"] = str(pit_store.canonical_path.resolve())
+        pit_universe_metadata["status"] = (
+            "applied"
+            if pit_binding.get("status") == "passed" and pit_records
+            else "missing_store"
+        )
+        pit_manifest = dict(pit_binding.get("manifest", {}) or {})
+        pit_universe_metadata["snapshot_id"] = str(
+            pit_manifest.get("source_run_id") or ""
+        )
+        pit_universe_metadata["generation_id"] = str(
+            pit_binding.get("generation_id") or ""
+        )
+        pit_universe_metadata["manifest_path"] = str(
+            pit_binding.get("generation_manifest_path") or ""
+        )
+        pit_universe_metadata["canonical_path"] = str(
+            pit_binding.get("canonical_path") or ""
+        )
+        pit_universe_metadata["canonical_sha256"] = str(
+            pit_binding.get("canonical_sha256") or ""
+        )
+        pit_universe_metadata["binding_source"] = "market_coverage"
+        pit_universe_metadata["binding_blockers"] = list(
+            pit_binding.get("blockers", []) or []
+        )
         pit_universe_metadata["quarantine_symbols"] = list(pit_filter.quarantine_symbols)
         pit_universe_metadata["untradable_symbols"] = list(pit_filter.untradable_symbols)
     # The current run's local PIT filter is authoritative.  Never accept a

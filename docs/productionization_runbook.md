@@ -439,7 +439,18 @@ Refresh the PIT stock-basic snapshot before publishing the current canonical
 date so target-day delist boundaries are evaluated from current source facts.
 The refresh must have a nonempty listed frame, cover every current full-A
 component, and retain every symbol already present in canonical PIT; otherwise
-it fails before replacing the PIT files.
+it fails before preparing a generation. A refresh writes an immutable PIT
+generation and advances only the non-production discovery pointer. It never
+overwrites the frozen legacy PIT file. Runtime, history audit, and repair read
+the PIT generation bound by the active market coverage, not PIT discovery.
+
+Before the refresh, record the exact SHA-256 of
+`data/parquet/cn/_latest.json`. Parse the refresh JSON for
+`generation_manifest_path` and `generation_manifest_sha256`, then pass all
+three values explicitly to `market maintain`. The bars writer publishes table
+and serving files under an immutable snapshot root and changes the market
+pointer only if its SHA is still the recorded value. A failed CAS leaves the
+prepared generation unpublished and preserves the prior production snapshot.
 
 ```bash
 PIT_UNIVERSE_BACKFILL_ENABLED=1 \
@@ -448,6 +459,20 @@ uv run python scripts/refresh_pit_universe.py \
   --allow-online \
   --execute \
   --output data/cn_market_full/pit_universe_refresh_YYYYMMDD.json
+```
+
+```bash
+uv run quant-investor market maintain \
+  --market CN \
+  --category full_a \
+  --storage-mode parquet-direct \
+  --target-date YYYYMMDD \
+  --fail-on-incomplete \
+  --pit-generation-manifest <generation_manifest_path_from_refresh_report> \
+  --expected-pit-generation-manifest-sha256 \
+    <generation_manifest_sha256_from_refresh_report> \
+  --expected-market-pointer-sha256 \
+    <sha256_captured_before_pit_refresh>
 ```
 
 ```bash

@@ -29,6 +29,8 @@ PROTECTED_RUNTIME_PREFIXES = (
     "data/parquet/cn/_latest.json",
     "data/parquet/cn/_catalog.json",
     "data/parquet/cn/bars/",
+    "data/parquet/cn/_snapshots/",
+    "data/parquet/cn/reference/_generations/",
     "data/parquet_serving/cn/bars/",
 )
 
@@ -199,7 +201,7 @@ def _strategy_record_files(repo_root: Path) -> list[Path]:
 
 def _is_protected_runtime_path(path: str) -> bool:
     return any(
-        path == prefix or path.startswith(prefix)
+        path == prefix.rstrip("/") or path.startswith(prefix)
         for prefix in PROTECTED_RUNTIME_PREFIXES
     )
 

@@ -69,11 +69,22 @@ def test_market_maintain_cli_accepts_parquet_direct_storage_mode(monkeypatch):
             "CN",
             "--storage-mode",
             "parquet-direct",
+            "--pit-generation-manifest",
+            "/tmp/pit-generation/manifest.json",
+            "--expected-pit-generation-manifest-sha256",
+            "a" * 64,
+            "--expected-market-pointer-sha256",
+            "b" * 64,
         ]
     )
 
     assert captured["market"] == "CN"
     assert captured["storage_mode"] == "parquet-direct"
+    assert captured["pit_generation_manifest"] == (
+        "/tmp/pit-generation/manifest.json"
+    )
+    assert captured["expected_pit_generation_manifest_sha256"] == "a" * 64
+    assert captured["expected_market_pointer_sha256"] == "b" * 64
 
 
 def test_market_maintain_cli_dispatches_staged_options(monkeypatch):
@@ -389,6 +400,36 @@ def test_market_download_alias_requires_category():
                 "CN",
             ]
         )
+
+
+def test_market_download_alias_forwards_cn_publish_bindings(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def _run_download(**kwargs):
+        captured.update(kwargs)
+        return {"status": "ok"}
+
+    monkeypatch.setattr(cli_main, "run_download", _run_download)
+    cli_main.main(
+        [
+            "market",
+            "download",
+            "--market",
+            "CN",
+            "--category",
+            "full_a",
+            "--pit-generation-manifest",
+            "/tmp/pit/manifest.json",
+            "--expected-pit-generation-manifest-sha256",
+            "a" * 64,
+            "--expected-market-pointer-sha256",
+            "b" * 64,
+        ]
+    )
+
+    assert captured["pit_generation_manifest"] == "/tmp/pit/manifest.json"
+    assert captured["expected_pit_generation_manifest_sha256"] == "a" * 64
+    assert captured["expected_market_pointer_sha256"] == "b" * 64
 
 
 def test_unified_pipeline_stage1_builds_advisory_snapshot(monkeypatch):

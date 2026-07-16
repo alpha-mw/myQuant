@@ -10,6 +10,7 @@ from quant_investor.market.cn_history_audit import (
     _query_open_trade_dates,
     _read_suspend_evidence_cache,
     _select_suspension_continuity_symbols,
+    _suspension_continuity_cache_path,
     build_cn_history_audit,
 )
 from quant_investor.market.cn_nontrading_evidence import (
@@ -333,6 +334,35 @@ def test_continuity_selector_rejects_current_resume_or_nonzero_bak():
         **base,
         current_event_symbols=["000001.SZ"],
     ) == []
+
+
+def test_suspension_continuity_cache_isolated_by_full_pit_sha(tmp_path):
+    first = _suspension_continuity_cache_path(
+        tmp_path,
+        trade_date="20260707",
+        symbols=["000001.SZ"],
+        pit_membership_sha256="a" * 64,
+    )
+    second = _suspension_continuity_cache_path(
+        tmp_path,
+        trade_date="20260707",
+        symbols=["000001.SZ"],
+        pit_membership_sha256="b" * 64,
+    )
+
+    assert first != second
+    assert f"pit_{'a' * 64}" in first.parts
+    assert f"pit_{'b' * 64}" in second.parts
+
+    import pytest
+
+    with pytest.raises(ValueError, match="complete 64-character"):
+        _suspension_continuity_cache_path(
+            tmp_path,
+            trade_date="20260707",
+            symbols=["000001.SZ"],
+            pit_membership_sha256="short",
+        )
 
 
 def test_suspend_v5_readback_replays_all_exact_event_types(tmp_path):

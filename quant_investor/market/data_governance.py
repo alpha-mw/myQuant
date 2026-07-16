@@ -89,6 +89,7 @@ def _resolve_current_full_a_scope(
     if coverage_schema_version not in {
         "cn-full-a-coverage.v2",
         "cn-full-a-coverage.v3",
+        "cn-full-a-coverage.v4",
     }:
         blockers.append(
             f"coverage_schema_version_unsupported:{coverage_schema_version or 'missing'}"
@@ -226,7 +227,24 @@ def _resolve_current_full_a_scope(
 
     pit_path: Path | None = None
     pit_sha256 = ""
-    if non_blocking_symbols:
+    pit_generation_id = ""
+    if coverage_schema_version == "cn-full-a-coverage.v4":
+        pit_binding = reader.coverage_bound_pit()
+        if pit_binding.get("status") != "passed":
+            blockers.extend(
+                str(item)
+                for item in list(pit_binding.get("blockers", []) or [])
+                if str(item).strip()
+            )
+        else:
+            pit_path = Path(str(pit_binding.get("canonical_path") or ""))
+            pit_sha256 = str(
+                pit_binding.get("canonical_sha256") or ""
+            )
+            pit_generation_id = str(
+                pit_binding.get("generation_id") or ""
+            )
+    elif non_blocking_symbols:
         pit_path = _resolve_bound_path(reader, coverage.get("pit_membership_path"))
         expected_pit_sha256 = str(coverage.get("pit_membership_sha256") or "").strip().lower()
         if pit_path is None:
@@ -289,6 +307,7 @@ def _resolve_current_full_a_scope(
         "inactive_evidence_count": len(inactive_evidence),
         "pit_membership_path": str(pit_path or ""),
         "pit_membership_sha256": pit_sha256,
+        "pit_generation_id": pit_generation_id,
         "serving_inventory_count": len(serving_symbols),
     }
     return ([] if unique_blockers else readiness_symbols), metadata

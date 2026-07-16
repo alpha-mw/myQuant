@@ -2,7 +2,9 @@
 """Refresh CN point-in-time listing membership from Tushare.
 
 Default mode is dry-run: it fetches the three stock_basic statuses and prints
-counts, but does not write local artifacts unless --execute is supplied.
+counts, but does not write local artifacts unless --execute is supplied.  An
+executed refresh publishes an immutable generation and atomically advances the
+latest discovery manifest; it never overwrites the frozen legacy Parquet.
 """
 
 from __future__ import annotations
@@ -111,6 +113,21 @@ def main(argv: Sequence[str] | None = None) -> dict:
         execute=bool(args.execute),
         required_symbols=required_symbols,
     )
+    if args.execute:
+        required_generation_evidence = (
+            "generation_manifest_path",
+            "generation_manifest_sha256",
+            "canonical_path",
+            "canonical_sha256",
+        )
+        missing_generation_evidence = [
+            key for key in required_generation_evidence if not report.get(key)
+        ]
+        if missing_generation_evidence:
+            raise RuntimeError(
+                "PIT generation publish omitted binding evidence: "
+                + ",".join(missing_generation_evidence)
+            )
     report["market"] = args.market
     report["components_evidence"] = {
         "path": str(components_path),

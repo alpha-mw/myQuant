@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import json
 import os
 import shutil
+from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 import pandas as pd
 
@@ -143,13 +146,55 @@ class MarketDataStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}")
         frame.to_parquet(tmp_path, index=False)
+        with tmp_path.open("rb") as handle:
+            os.fsync(handle.fileno())
         os.replace(tmp_path, path)
+        self._fsync_directory(path.parent)
 
     def _atomic_write_json(self, payload: dict[str, Any], path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}")
-        tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        ).encode("utf-8")
+        with tmp_path.open("wb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(tmp_path, path)
+        self._fsync_directory(path.parent)
+
+    @staticmethod
+    def _fsync_directory(path: Path) -> None:
+        descriptor = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    @staticmethod
+    def _file_sha256(path: Path) -> str:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    @contextmanager
+    def _market_writer_lock(self) -> Iterator[None]:
+        lock_path = (
+            self.data_root
+            / "parquet"
+            / self.market.lower()
+            / ".market_writer.lock"
+        )
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
 
     @staticmethod
     def _normalize_trade_date(value: Any) -> str:
@@ -342,6 +387,31 @@ class MarketDataStore:
         source: str,
         snapshot_id: str | None = None,
         metadata: Mapping[str, Any] | None = None,
+        expected_latest_pointer_sha256: str = "",
+    ) -> dict[str, Any]:
+        """Publish one immutable bars snapshot behind a locked pointer CAS."""
+
+        with self._market_writer_lock():
+            return self._upsert_bars_locked(
+                frame,
+                target_trade_date=target_trade_date,
+                target_trade_dates=target_trade_dates,
+                source=source,
+                snapshot_id=snapshot_id,
+                metadata=metadata,
+                expected_latest_pointer_sha256=expected_latest_pointer_sha256,
+            )
+
+    def _upsert_bars_locked(
+        self,
+        frame: pd.DataFrame,
+        *,
+        target_trade_date: str,
+        target_trade_dates: Iterable[str] | None = None,
+        source: str,
+        snapshot_id: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        expected_latest_pointer_sha256: str = "",
     ) -> dict[str, Any]:
         target_date = self._normalize_trade_date(target_trade_date)
         if not target_date:
@@ -363,6 +433,27 @@ class MarketDataStore:
                 f"{sorted(incoming_dates)} != {sorted(declared_target_dates)}"
             )
         self._validate_adj_factor(incoming)
+
+        expected_pointer_sha256 = str(
+            expected_latest_pointer_sha256 or ""
+        ).strip().lower()
+        if expected_pointer_sha256 and (
+            len(expected_pointer_sha256) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in expected_pointer_sha256
+            )
+        ):
+            raise ValueError("expected_latest_pointer_sha256_invalid")
+        if expected_pointer_sha256:
+            actual_pointer_sha256 = self._file_sha256(
+                self.reader.latest_pointer_path
+            )
+            if actual_pointer_sha256 != expected_pointer_sha256:
+                raise ValueError(
+                    "market_pointer_cas_mismatch:"
+                    f"{actual_pointer_sha256}!={expected_pointer_sha256}"
+                )
 
         gate = self.reader.clean_snapshot_gate(refresh=True)
         if not gate.get("healthy"):
@@ -460,6 +551,13 @@ class MarketDataStore:
             snapshot_manifest_dir = self.data_root / "parquet" / self.market.lower() / "_snapshots"
             snapshot_manifest_path = snapshot_manifest_dir / f"{resolved_snapshot_id}.json"
             snapshot_payload_dir = snapshot_manifest_dir / resolved_snapshot_id
+            published_table_root = snapshot_payload_dir / "table" / "bars"
+            published_serving_root = snapshot_payload_dir / "serving" / "bars"
+            if snapshot_manifest_path.exists() or snapshot_payload_dir.exists():
+                raise ValueError(
+                    "immutable_snapshot_generation_already_exists:"
+                    f"{resolved_snapshot_id}"
+                )
             parquet_size = sum(path.stat().st_size for path in table_files)
             latest_available = self._normalize_trade_date(
                 (metadata or {}).get("latest_available_trade_date") or target_date
@@ -508,8 +606,8 @@ class MarketDataStore:
                 "latest_trade_date": latest_complete,
                 "latest_available_trade_date": latest_available,
                 "latest_complete_trade_date": latest_complete,
-                "table_root": str(snapshot.table_root),
-                "derived_serving_root": str(snapshot.serving_root),
+                "table_root": str(published_table_root),
+                "derived_serving_root": str(published_serving_root),
                 "manifest_path": str(snapshot_manifest_path),
                 "readback_validated": True,
                 "parquet_size_bytes": int(parquet_size),
@@ -526,6 +624,9 @@ class MarketDataStore:
                 "metadata": {
                     **dict(metadata or {}),
                     "previous_snapshot_id": snapshot.snapshot_id,
+                    "expected_previous_latest_pointer_sha256": (
+                        expected_pointer_sha256
+                    ),
                     "upsert_target_trade_date": target_date,
                     "upsert_target_trade_dates": sorted(declared_target_dates),
                     "upsert_affected_symbols": sorted(set(incoming["ts_code"].astype(str))),
@@ -535,8 +636,8 @@ class MarketDataStore:
                 "snapshot_id": resolved_snapshot_id,
                 "status": "OK",
                 "manifest_path": str(snapshot_manifest_path),
-                "table_root": str(snapshot.table_root),
-                "derived_serving_root": str(snapshot.serving_root),
+                "table_root": str(published_table_root),
+                "derived_serving_root": str(published_serving_root),
                 "latest_available_trade_date": latest_available,
                 "latest_complete_trade_date": latest_complete,
                 "latest_trade_date": latest_complete,
@@ -545,15 +646,26 @@ class MarketDataStore:
                 "blockers": [],
                 "updated_at": self._utc_now(),
             }
-            if snapshot_payload_dir.exists():
-                shutil.rmtree(snapshot_payload_dir)
-            self._copytree_hardlink_or_copy(staged_table, snapshot_payload_dir / "table" / "bars")
-            self._copytree_hardlink_or_copy(staged_serving, snapshot_payload_dir / "serving" / "bars")
+            self._copytree_hardlink_or_copy(staged_table, published_table_root)
+            self._copytree_hardlink_or_copy(
+                staged_serving,
+                published_serving_root,
+            )
             self._atomic_write_json(manifest, snapshot_manifest_path)
 
             def _write_pointer_and_validate() -> None:
                 pointer_written = False
                 try:
+                    if expected_pointer_sha256:
+                        actual_pointer_sha256 = self._file_sha256(
+                            self.reader.latest_pointer_path
+                        )
+                        if actual_pointer_sha256 != expected_pointer_sha256:
+                            raise ValueError(
+                                "market_pointer_cas_mismatch:"
+                                f"{actual_pointer_sha256}!="
+                                f"{expected_pointer_sha256}"
+                            )
                     self._atomic_write_json(
                         latest_payload,
                         self.reader.latest_pointer_path,
@@ -583,13 +695,7 @@ class MarketDataStore:
                     self.reader._serving_symbols_cache = None
                     raise
 
-            self._replace_directories(
-                [
-                    (staged_table, snapshot.table_root),
-                    (staged_serving, snapshot.serving_root),
-                ],
-                after_replace=_write_pointer_and_validate,
-            )
+            _write_pointer_and_validate()
             self.reader._latest_payload = None
             self.reader._snapshot_gate_cache = None
             self.reader._serving_symbols_cache = None
