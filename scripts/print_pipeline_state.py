@@ -134,15 +134,13 @@ def _exposure_components(
 
 def _shortlist_diagnosis(
     candidate_rows: list[dict[str, str]],
-    theme_audit: dict[str, Any],
     market_snapshot: dict[str, Any],
 ) -> dict[str, Any]:
     if candidate_rows:
         return {"status": "available", "conclusion": "shortlist present"}
-    summary = theme_audit.get("summary") if isinstance(theme_audit.get("summary"), dict) else {}
     blocker = market_snapshot.get("blocker") or market_snapshot.get("candidate_generation_status")
-    if blocker == "theme_pool_hard_filter_regression" or _safe_int(summary.get("residual_symbol_count")) > 0:
-        conclusion = "shortlist=N/A is a guardrail/blocker outcome, not a normal regime-gate empty pool."
+    if market_snapshot.get("candidate_generation_status") == "blocked":
+        conclusion = "shortlist=N/A is a disclosed upstream readiness blocker."
         status = "guardrail_blocked"
     elif market_snapshot.get("candidate_generation_status") == "empty":
         conclusion = "shortlist=N/A is a normal empty candidate set from the production pipeline."
@@ -154,10 +152,6 @@ def _shortlist_diagnosis(
         "status": status,
         "candidate_generation_status": market_snapshot.get("candidate_generation_status"),
         "blocker": market_snapshot.get("blocker"),
-        "theme_pool_status": summary.get("status") or summary.get("theme_pool_status"),
-        "core_symbol_count": summary.get("core_symbol_count"),
-        "residual_symbol_count": summary.get("residual_symbol_count"),
-        "policy_regime": summary.get("policy_regime"),
         "conclusion": conclusion,
     }
 
@@ -176,8 +170,7 @@ def build_state(
     review_by_symbol = {row.get("symbol"): row for row in _read_csv(record_dir / "holdings_review.csv") if row.get("symbol")}
     candidates = _read_csv(record_dir / "candidate_pool.csv")
     market_snapshot = _read_json(record_dir / "market_snapshot.json")
-    theme_audit = _read_json(record_dir / "theme_pool_audit.json")
-    theme_snapshot = _read_json(record_dir / "theme_snapshot.json")
+    readiness = _read_json(record_dir / "v15_run_readiness.json")
     regime = _latest_regime(regime_history)
     total_value = _safe_float(pnl.get("total_value_after"))
     market_value = sum(_safe_float(row.get("current_value")) for row in effective_holdings)
@@ -200,11 +193,9 @@ def build_state(
                 "weight": _safe_float(row.get("market_weight")),
                 "stage_stop_price": _safe_float(row.get("stage_stop_price") or review_by_symbol.get(row.get("symbol"), {}).get("stage_stop_price")),
                 "recommended_action": review_by_symbol.get(row.get("symbol"), {}).get("recommended_action") or row.get("recommended_action"),
-                "theme_phase": (
-                    review_by_symbol.get(row.get("symbol"), {}).get("theme_phase")
-                    or review_by_symbol.get(row.get("symbol"), {}).get("primary_theme_phase")
-                    or row.get("theme_phase")
-                    or row.get("primary_theme_phase")
+                "industry": (
+                    review_by_symbol.get(row.get("symbol"), {}).get("industry")
+                    or row.get("industry")
                     or ""
                 ),
                 "crowding_flags": (
@@ -228,8 +219,8 @@ def build_state(
             }
             for row in candidates[:5]
         ],
-        "theme_snapshot_status": theme_snapshot.get("status") or theme_snapshot.get("metadata", {}).get("status"),
-        "shortlist_diagnosis": _shortlist_diagnosis(candidates, theme_audit, market_snapshot),
+        "v15_run_readiness": readiness,
+        "shortlist_diagnosis": _shortlist_diagnosis(candidates, market_snapshot),
     }
 
 
@@ -256,7 +247,7 @@ def render_state(state: dict[str, Any]) -> str:
             "  - "
             f"{row.get('symbol')} {row.get('name')} "
             f"weight={row.get('weight')} stop={row.get('stage_stop_price')} "
-            f"action={row.get('recommended_action')} theme_phase={row.get('theme_phase') or 'N/A'} "
+            f"action={row.get('recommended_action')} industry={row.get('industry') or 'N/A'} "
             f"crowding={row.get('crowding_flags') or 'N/A'}"
         )
     lines.append("shortlist_head:")

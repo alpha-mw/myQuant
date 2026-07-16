@@ -27,11 +27,6 @@ from quant_investor.agents.base import BaseAgent
 from quant_investor.reporting.conclusion_renderer import ConclusionRenderer
 from quant_investor.reporting.diagnostics_bucketizer import DiagnosticsBucketizer
 from quant_investor.reporting.executive_summary import ExecutiveSummaryBuilder
-from quant_investor.reporting.theme_governance_renderer import (
-    append_theme_governance_section_once,
-)
-from quant_investor.reporting.theme_renderer import render_theme_rotation_markdown
-from quant_investor.reporting.theme_shadow_renderer import append_theme_shadow_section_once
 
 
 class NarratorAgent(BaseAgent):
@@ -80,17 +75,6 @@ class NarratorAgent(BaseAgent):
         portfolio_decision = self.copy_value(envelope.get("portfolio_decision"))
         bayesian_records = self.copy_value(envelope.get("bayesian_records") or [])
         funnel_summary = self.copy_value(envelope.get("funnel_summary") or {})
-        theme_rotation = self.copy_value(envelope.get("theme_rotation") or {})
-        theme_governance = self.copy_value(envelope.get("theme_governance") or {})
-        theme_shadow_monitor = self.copy_value(envelope.get("theme_shadow_monitor") or {})
-        if not theme_rotation and global_context is not None:
-            context_metadata = getattr(global_context, "metadata", {}) or {}
-            if isinstance(context_metadata, Mapping):
-                theme_rotation = self.copy_value(context_metadata.get("theme_rotation") or {})
-        if not theme_governance and global_context is not None:
-            context_metadata = getattr(global_context, "metadata", {}) or {}
-            if isinstance(context_metadata, Mapping):
-                theme_governance = self.copy_value(context_metadata.get("theme_governance") or {})
 
         bucketed = DiagnosticsBucketizer(
             branch_summaries=branch_verdicts,
@@ -126,7 +110,6 @@ class NarratorAgent(BaseAgent):
             funnel_summary=funnel_summary,
             symbol_name_map=getattr(global_context, "symbol_name_map", {}) if global_context is not None else {},
         )
-        theme_section = render_theme_rotation_markdown(theme_rotation)
         regime_section = ConclusionRenderer.render_regime_section(global_context)
         run_context = ConclusionRenderer.render_run_context(
             model_role_metadata=model_role_metadata,
@@ -135,16 +118,6 @@ class NarratorAgent(BaseAgent):
         )
         if review_sections:
             markdown_report = markdown_report.rstrip() + "\n\n" + "\n".join(review_sections).strip() + "\n"
-        if theme_section:
-            markdown_report = markdown_report.rstrip() + "\n\n" + theme_section.strip() + "\n"
-        markdown_report = append_theme_governance_section_once(
-            markdown_report,
-            theme_governance,
-        )
-        markdown_report = append_theme_shadow_section_once(
-            markdown_report,
-            theme_shadow_monitor,
-        )
         if regime_section:
             markdown_report = markdown_report.rstrip() + "\n\n" + "\n".join(regime_section).strip() + "\n"
         if bayesian_section:
@@ -197,16 +170,6 @@ class NarratorAgent(BaseAgent):
                 "bayesian_record_count": len(bayesian_records),
                 "shortlist_count": len(shortlist),
                 "final_selected_count": len(getattr(portfolio_decision, "target_weights", {}) or {}),
-                "theme_shadow_monitor_status": (
-                    str(theme_shadow_monitor.get("status", ""))
-                    if isinstance(theme_shadow_monitor, Mapping)
-                    else ""
-                ),
-                "theme_governance_status": (
-                    str(theme_governance.get("status", ""))
-                    if isinstance(theme_governance, Mapping)
-                    else ""
-                ),
             },
         )
 

@@ -35,11 +35,11 @@ from quant_investor.llm_provider_priority import (
 # ── 项目根目录 ─────────────────────────────────────────────────────────────────
 ROOT = Path(__file__).resolve().parents[2]
 RUN_DIR_PATTERN = re.compile(r"^\d{8}_\d{3,6}$")
-DEFAULT_DAILY_REPORT_DIR = "reports/v14/daily"
+DEFAULT_DAILY_REPORT_DIR = "reports/v15/daily"
 
 
 def resolve_daily_report_dir(value: Any) -> Path:
-    """Resolve a v14 daily output and reject the frozen v13 evidence tree."""
+    """Resolve a v15 daily output and reject the frozen v13 evidence tree."""
 
     raw = str(value or DEFAULT_DAILY_REPORT_DIR).strip()
     report_dir = Path(raw)
@@ -52,7 +52,7 @@ def resolve_daily_report_dir(value: Any) -> Path:
     if resolved == frozen or frozen in resolved.parents:
         raise ValueError(
             "reports/daily is frozen v13 retirement evidence; "
-            "set report_dir to reports/v14/daily"
+            "set report_dir to reports/v15/daily"
         )
     return resolved
 

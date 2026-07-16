@@ -41,7 +41,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import quant_investor.factors.governance_protocol_v2 as protocol_module  # noqa: E402
+import quant_investor.factors.governance_protocol_v3 as protocol_module  # noqa: E402
 import quant_investor.factors.runtime as runtime_module  # noqa: E402
 import quant_investor.market.dag.packets as packets_module  # noqa: E402
 from quant_investor.factors.governance import (  # noqa: E402

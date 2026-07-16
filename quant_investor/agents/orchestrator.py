@@ -1,7 +1,7 @@
 """
-V14 Agent 编排器。
+V15 Agent 编排器。
 
-Review layer 只读取 v14 三分支研究结果和风控/回顾材料；最终约束仍由
+Review layer 只读取 v15 三分支研究结果和风控/回顾材料；最终约束仍由
 deterministic control chain 决定。
 """
 

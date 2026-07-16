@@ -82,11 +82,11 @@ class MarketDataStore:
                 and catalog_schema_version == "myquant-cn-clean-catalog.v1"
             ):
                 macro_generation = {
-                    "status": "legacy_catalog_entry_not_v14_generation",
+                    "status": "legacy_catalog_entry_not_v15_generation",
                     "catalog_schema_version": catalog_schema_version,
                     "production_eligible": False,
                     "branch_readiness": "blocked",
-                    "blockers": ["macro_v14_generation_unavailable"],
+                    "blockers": ["macro_v15_generation_unavailable"],
                 }
             elif macro_declared:
                 blockers.append("macro_catalog_schema_invalid")

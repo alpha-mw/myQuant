@@ -5,7 +5,7 @@
 固定执行顺序：
 1. 加载 UnifiedDataBundle
 2. 运行一次 MacroAgent
-3. 对每个 symbol 运行 v14 canonical research agents
+3. 对每个 symbol 运行 v15 canonical research agents
 4. 对每个 symbol 运行 RiskGuard
 5. 对每个 symbol 运行 ICCoordinator
 6. 运行一次 PortfolioConstructor
@@ -595,7 +595,7 @@ class ControlChainOrchestrator:
         )
         if unknown:
             raise ValueError(
-                f"{context} 包含非 v14 canonical branch: {', '.join(unknown)}"
+                f"{context} 包含非 v15 canonical branch: {', '.join(unknown)}"
             )
 
     @staticmethod

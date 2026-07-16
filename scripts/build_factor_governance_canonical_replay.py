@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Build or verify one explicit local factor-governance canonical replay."""
+"""Retired v1 canonical-replay CLI; Factor v3 rejects legacy replay graphs."""
 
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -12,13 +11,6 @@ from typing import Sequence
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-
-from quant_investor.factors.governance_canonical_replay import (  # noqa: E402
-    CanonicalReplayError,
-    produce_canonical_replay,
-    verify_canonical_replay,
-)
-
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parse explicit canonical replay inputs without search or fallback."""
@@ -37,32 +29,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run local-only canonical production or verification."""
 
     args = parse_args(argv)
-    try:
-        if args.draft_path is None:
-            result = verify_canonical_replay(
-                private_root=args.private_root,
-                registry_path=args.registry_path,
-            )
-        else:
-            result = produce_canonical_replay(
-                private_root=args.private_root,
-                registry_path=args.registry_path,
-                draft_path=args.draft_path,
-            )
-    except (CanonicalReplayError, OSError, ValueError):
-        print("factor_governance_canonical_replay_status=blocked", file=sys.stderr)
-        print("blocker=canonical_local_byte_readback_failed", file=sys.stderr)
-        return 2
-    print(
-        json.dumps(
-            result,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        )
-    )
-    return 0
+    del args
+    print("factor_governance_canonical_replay_status=blocked", file=sys.stderr)
+    print("blocker=legacy_canonical_replay_v1_retired", file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":

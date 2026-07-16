@@ -2191,7 +2191,7 @@ def test_bundle_recomputed_boolean_cannot_equal_numeric_value(
         )
 
 
-def test_cli_outputs_only_logical_control_fields(
+def test_retired_v1_cli_rejects_without_logical_control_output(
     replay_fixture: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert replay_main(
@@ -2203,9 +2203,8 @@ def test_cli_outputs_only_logical_control_fields(
             "--draft-path",
             str(replay_fixture["draft"]),
         ]
-    ) == 0
-    output = capsys.readouterr().out
-    control = json.loads(output)
-    assert control["local_bytes_readback_verified"] is True
-    assert str(replay_fixture["private"]) not in output
-    assert str(replay_fixture["registry"]) not in output
+    ) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "legacy_canonical_replay_v1_retired" in captured.err
+    assert str(replay_fixture["registry"]) not in captured.err

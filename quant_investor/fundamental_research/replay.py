@@ -93,7 +93,7 @@ def validate_control_chain_replay(replay: Mapping[str, Any]) -> None:
     if set(summaries) != set(CANONICAL_BRANCH_ORDER):
         raise ValueError(
             "fundamental control-chain replay branch_summaries must use the exact "
-            "v14 canonical branch order"
+            "v15 canonical branch order"
         )
     branches = _mapping(replay.get("branch_verdicts_by_symbol"), "branch_verdicts_by_symbol")
     bayesian_records = _records(replay.get("bayesian_records"), "bayesian_records")
@@ -122,7 +122,7 @@ def validate_control_chain_replay(replay: Mapping[str, Any]) -> None:
         if set(branch_map) != set(CANONICAL_BRANCH_ORDER):
             raise ValueError(
                 "fundamental control-chain replay symbol branches must use the exact "
-                "v14 canonical branch order"
+                "v15 canonical branch order"
             )
         for branch_name, verdict in branch_map.items():
             verdict = _mapping(verdict, "branch verdict")

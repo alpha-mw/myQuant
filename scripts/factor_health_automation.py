@@ -42,7 +42,7 @@ from quant_investor.factors.health import (  # noqa: E402
 from quant_investor.factors.registry_store import (  # noqa: E402
     load_registry_snapshot_strict,
 )
-from quant_investor.factors.governance_protocol_v2 import (  # noqa: E402
+from quant_investor.factors.governance_protocol_v3 import (  # noqa: E402
     FORWARD_PRODUCTION_APPLY_BLOCKER,
 )
 from quant_investor.factors.runtime import MinedFactorRegistry  # noqa: E402
@@ -359,7 +359,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "registry_blockers": (
             [
                 "legacy_apply_registry_actions_retired_use_"
-                "factor_governance_protocol_v2"
+                "factor_governance_protocol_v3"
             ]
             if legacy_apply_requested
             else []

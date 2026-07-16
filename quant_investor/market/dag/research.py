@@ -573,7 +573,7 @@ async def _run_candidate_research_phase(
                 risk_flags=list(fundamental.investment_risks),
                 telemetry=runtime_telemetry,
                 metadata={
-                    "source": "fundamental_research_v14",
+                    "source": "fundamental_research_v15",
                     "generic_overlay_suppressed": True,
                     "runtime_audit": runtime_audit,
                 },

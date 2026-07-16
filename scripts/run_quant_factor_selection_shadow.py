@@ -35,7 +35,7 @@ from quant_investor.factors.governance import (  # noqa: E402
     FactorLifecycleState,
     FactorRecord,
 )
-from quant_investor.factors.governance_protocol_v2 import (  # noqa: E402
+from quant_investor.factors.governance_protocol_v3 import (  # noqa: E402
     FORWARD_PRODUCTION_APPLY_BLOCKER,
 )
 from quant_investor.factors.historical_shadow import (  # noqa: E402
@@ -1048,7 +1048,7 @@ def _render_markdown(payload: Mapping[str, Any]) -> str:
             "",
             "## Interpretation boundary",
             "",
-            "This is a point-in-time Quant ranking/selection measurement. It does not prove future return improvement, and it does not include downstream Theme, liquidity, sector-bucket, Bayesian, RiskGuard, PortfolioConstructor, portfolio, order, or execution decisions.",
+            "This is a point-in-time Quant ranking/selection measurement. It does not prove future return improvement, and it does not include downstream liquidity, sector-bucket, Bayesian, RiskGuard, PortfolioConstructor, portfolio, order, or execution decisions.",
             "",
             SHADOW_SCORING_NON_RUNTIME_IMPACT_NOTE,
             "",
@@ -1591,12 +1591,11 @@ def run_shadow(args: argparse.Namespace) -> tuple[dict[str, Any], Path]:
             "what_is_not_recomputed": [
                 "DataQualityGate/TradabilityGate beyond exact-as-of-bar proxy",
                 "LiquidityGate",
-                "Theme Candidate Pool",
                 "momentum-leader profile context",
                 "sector bucket limits",
                 "Fundamental branch scores and conditional incremental correlation",
                 "Bayesian posterior",
-                "RiskGuard/ICCoordinator/PortfolioConstructor",
+                "RiskGuard/PortfolioConstructor",
             ],
             "complete_production_screening_effect_claimed": False,
             "full_v13_dag_evidence_claimed": False,
@@ -1606,10 +1605,6 @@ def run_shadow(args: argparse.Namespace) -> tuple[dict[str, Any], Path]:
             {
                 "code": "downstream_deterministic_funnel_not_reproduced",
                 "impact": "Top20/Top50 are Quant-score rankings, not the final production candidate pool",
-            },
-            {
-                "code": "theme_pool_conditional_effect_not_evaluated",
-                "impact": "candidate impact after Theme Candidate Pool filtering is unavailable",
             },
             {
                 "code": "quant_fundamental_conditional_increment_not_evaluated",

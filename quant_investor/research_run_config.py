@@ -15,7 +15,7 @@ def _reject_retired_intelligence_keys(value: Any, path: str = "config") -> None:
     if isinstance(value, Mapping):
         for key, item in value.items():
             if "intelligence" in str(key).casefold():
-                raise TypeError(f"v14 已删除 Intelligence 分支参数: {path}.{key}")
+                raise TypeError(f"v15 已删除 Intelligence 分支参数: {path}.{key}")
             _reject_retired_intelligence_keys(item, f"{path}.{key}")
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):

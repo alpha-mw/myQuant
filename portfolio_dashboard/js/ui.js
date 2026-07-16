@@ -505,7 +505,7 @@
   }
 
   function dashboardContract() {
-    return window.DashboardSnapshotV2 ||
+    return window.DashboardSnapshotV3 ||
       (window.DashboardGeneratedRecords && window.DashboardGeneratedRecords.contract) || null;
   }
 
@@ -521,7 +521,6 @@
       { field: "strategy record", value: asOf.strategy_record_at || asOf.strategy_record_date, detail: contract.run_id },
       { field: "analysis trading day", value: asOf.analysis_trading_date, detail: "NAV/analysis date" },
       { field: "quote", value: asOf.quote_at, detail: "position quote timestamp" },
-      { field: "theme", value: asOf.theme_date, detail: "theme state date" },
       { field: "factor registry", value: asOf.factor_registry_sha, detail: contract.protocol_hash },
       {
         field: "formal trading calendar",
@@ -548,7 +547,7 @@
       { label: "as-of layer", value: "field" },
       { label: "value", value: "value" },
       { label: "status / hash", value: "detail" }
-    ], "未加载 Dashboard Contract v2");
+    ], "未加载 Dashboard Contract v3");
     var sources = contract.sources || {};
     var sourceRows = Object.keys(sources).map(function (name) {
       var row = sources[name] || {};
@@ -614,76 +613,9 @@
         return row.within_1bp === true ? "-" : "residual_above_1bp";
       } }
     ], reconciliationDaily.length ? "所有有效 NAV return 日均已覆盖并在 1bp 内勾稽" : "归因记录不足，状态保持 partial");
-    var themeProtocol = contract.theme_protocol || {
-      status: "blocked",
-      blockers: ["theme_protocol_v2_missing"],
-      formal_pool: [],
-      formal_pool_count: 0,
-      readback_verified: false
-    };
-    renderTable("themeProtocolSummary", [themeProtocol], [
-      { label: "status", value: "status" },
-      { label: "observer", value: function (row) { return row.observer_enabled === true ? "enabled" : row.observer_enabled === false ? "disabled" : "unknown"; } },
-      { label: "formal", value: function (row) { return row.formal_enabled === true ? "enabled" : row.formal_enabled === false ? "observer-only" : "unknown"; } },
-      { label: "kill switch", value: function (row) { return row.formal_kill_switch === true ? "active" : row.formal_kill_switch === false ? "inactive" : "unknown"; } },
-      { label: "formal pool", value: function (row) { return Number.isFinite(row.formal_pool_count) ? row.formal_pool_count : (row.formal_pool || []).length; }, numeric: true },
-      { label: "producer", value: function (row) { return row.formal_producer || "unknown"; } },
-      { label: "rollback", value: function (row) { return [row.rollback_status, row.rollback_reason].filter(Boolean).join(": ") || "unknown"; } },
-      { label: "readback", value: function (row) { return row.readback_verified === true ? "verified" : "blocked"; } },
-      { label: "blockers", value: function (row) { return (row.blockers || []).join(", ") || "none"; } }
-    ], "Theme protocol v2 blocked or unavailable");
-    var themes = contract.themes || [];
-    Charts.scatter("themeAttentionMatrix", themes.map(function (row) {
-      return {
-        label: row.theme_name || row.theme_id,
-        x: row.attention,
-        y: row.industrial_validation,
-        radius: Number.isFinite(row.nav_weight) ? Math.max(4, Math.min(12, 4 + row.nav_weight * 30)) : 5
-      };
-    }), {
-      xLabel: "attention",
-      yLabel: "industrial validation",
-      xFormatter: Charts.formatPercent,
-      yFormatter: Charts.formatPercent,
-      height: 300
-    });
-    renderTable("themeStateTable", themes, [
-      { label: "theme", value: function (row) { return row.theme_name || row.theme_id; } },
-      { label: "lane", value: "lane" },
-      { label: "lifecycle", value: "lifecycle" },
-      { label: "attention", value: "attention", format: Charts.formatPercent, numeric: true },
-      { label: "5/20/60/120D trajectory", value: function (row) {
-        var trajectory = row.attention_trajectory_120d || {};
-        var values = [
-          ["5D", trajectory["5d"]],
-          ["20D", trajectory["20d"]],
-          ["60D", trajectory["60d"]],
-          ["120D", trajectory["120d"]]
-        ].filter(function (item) { return Number.isFinite(item[1]); });
-        return values.length ? values.map(function (item) { return item[0] + " " + Charts.formatPercent(item[1]); }).join(" / ") : "unknown";
-      } },
-      { label: "industrial", value: "industrial_validation", format: Charts.formatPercent, numeric: true },
-      { label: "market", value: "market_confirmation", format: Charts.formatPercent, numeric: true },
-      { label: "crowding", value: "crowding", format: Charts.formatPercent, numeric: true },
-      { label: "valuation risk", value: "valuation_risk", format: Charts.formatPercent, numeric: true },
-      { label: "PE/VC prior", value: "pevc_prior", format: Charts.formatPercent, numeric: true },
-      { label: "PE/VC thesis", value: "pevc_thesis_id" },
-      { label: "thesis version", value: "pevc_thesis_version" },
-      { label: "supply chain", value: function (row) { return Array.isArray(row.supply_chain_roles) && row.supply_chain_roles.length ? row.supply_chain_roles.join(", ") : "unknown"; } },
-      { label: "thesis review", value: function (row) {
-        var review = row.thesis_review;
-        if (!review || typeof review !== "object") return "unknown";
-        return [review.status, review.review_by].filter(Boolean).join(" / ") || "unknown";
-      } },
-      { label: "members", value: "member_count", numeric: true },
-      { label: "risk / blockers", value: function (row) {
-        return (row.risk_flags || []).concat(row.prequalification_blockers || []).join(", ") || "none";
-      } },
-      { label: "NAV weight", value: "nav_weight", format: Charts.formatPercent, numeric: true }
-    ], "Theme v2 observer 尚无可展示状态");
     var factorProtocol = contract.factor_protocol || {
       status: "blocked",
-      blockers: ["factor_protocol_v2_missing"],
+      blockers: ["factor_protocol_v3_missing"],
       readback_verified: false
     };
     renderTable("factorProtocolSummary", [factorProtocol], [
@@ -695,7 +627,7 @@
       { label: "canonical producer", value: function (row) { return row.canonical_producer_available === true && row.canonical_production_apply_eligible === true ? "available" : "blocked"; } },
       { label: "readback", value: function (row) { return row.readback_verified === true ? "verified" : "blocked"; } },
       { label: "blockers", value: function (row) { return (row.blockers || []).join(", ") || "none"; } }
-    ], "Factor protocol v2 blocked");
+    ], "Factor protocol v3 blocked");
     renderTable("factorStateTable", contract.factors || [], [
       { label: "factor", value: "factor_id" },
       { label: "slot", value: "slot" },
@@ -757,7 +689,7 @@
       return;
     }
 
-    if (workspace === "theme" || workspace === "factor") return;
+    if (workspace === "factor") return;
 
     if (workspace === "audit") {
       Charts.lineChart("benchmarkNavComparisonChart", selectedBenchmarkSeries(comparison, {
@@ -781,7 +713,7 @@
     if (workspace === "holdings") {
       Charts.lineChart("rollingVolChart", [{ name: "rolling_20d_volatility", color: "#1e5b99", points: performance.rolling20Vol }], { yFormatter: Charts.formatPercent, empty: "NAV 日收益不足 20 个交易日" });
       Charts.lineChart("rollingBetaChart", [{ name: "rolling_60d_beta", color: "#7a5cbd", points: performance.rolling60Beta }], { yFormatter: function (v) { return Number.isFinite(v) ? v.toFixed(2) : "-"; }, empty: "NAV/benchmark 日收益不足 60 个交易日" });
-      Charts.barChart("currentThemeWeightChart", holdings.currentThemeWeight, { valueFormatter: Charts.formatPercent, empty: "无当前 theme weight" });
+      Charts.barChart("currentIndustryWeightChart", holdings.currentIndustryWeight, { valueFormatter: Charts.formatPercent, empty: "无当前 industry weight" });
       Charts.barChart("topHoldingsWeightChart", holdings.top10.map(function (row) { return { label: row.ticker + " " + row.name, value: row.nav_weight }; }), { valueFormatter: Charts.formatPercent, empty: "无当前持仓" });
       Charts.lineChart("concentrationChart", [
         { name: "top5_nav_weight", color: "#1e5b99", points: holdings.concentrationTrend.map(function (row) { return { date: row.date, dateObj: row.dateObj, value: row.top5 }; }) },
@@ -810,7 +742,7 @@
       { label: "fill", value: "fill_id" },
       { label: "ledger_delta", value: "ledger_delta", format: Charts.formatMoney, numeric: true },
       { label: "reason", value: "reason" },
-      { label: "theme", value: "theme" }
+      { label: "industry", value: "industry" }
     ], "未上传交易数据");
     renderToggleButton("toggleTradesRows", Boolean(tableView.trades), (trades.all || []).length, 20);
     var closedTradeRows = tableView.closedTrades ? trades.closed : trades.closedRecent;
@@ -834,7 +766,7 @@
     ], "暂无 FIFO 已平仓交易；需要至少一笔买入和后续卖出。");
     renderToggleButton("toggleClosedTradesRows", Boolean(tableView.closedTrades), (trades.closed || []).length, 20);
     Charts.barChart("sideChart", trades.bySide, { valueFormatter: function (v) { return String(v); }, empty: "未上传交易数据" });
-    Charts.barChart("tradeThemeChart", trades.byTheme, { valueFormatter: Charts.formatMoney, empty: "未上传交易数据" });
+    Charts.barChart("tradeIndustryChart", trades.byIndustry, { valueFormatter: Charts.formatMoney, empty: "未上传交易数据" });
     Charts.barChart("reasonChart", trades.byReason, { valueFormatter: Charts.formatMoney, empty: "未上传交易数据或 reason 字段" });
   }
 

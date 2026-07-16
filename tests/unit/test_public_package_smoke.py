@@ -633,8 +633,8 @@ def test_single_mainline_one_symbol_mock_run_includes_version_fields(monkeypatch
         verbose=False,
     ).run()
 
-    assert result.architecture_version == "14.0.0-stable"
-    assert result.branch_schema_version == "branch-schema.v14.three-branch"
+    assert result.architecture_version == "15.0.0-stable"
+    assert result.branch_schema_version == "branch-schema.v15.three-branch"
     assert result.calibration_schema_version
     assert result.debate_template_version
     assert result.final_strategy.architecture_version == result.architecture_version

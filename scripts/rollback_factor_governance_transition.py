@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Safely dry-run or apply one FactorGovernanceProtocol v2 inverse WAL."""
+"""Retired v2 rollback CLI; v3 has no authorized registry mutation yet."""
 
 from __future__ import annotations
 
@@ -14,9 +14,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from quant_investor.factors.governance_protocol_v2 import (  # noqa: E402
+from quant_investor.factors.governance_protocol_v3 import (  # noqa: E402
+    FORWARD_PRODUCTION_APPLY_BLOCKER,
     PROTOCOL_VERSION,
-    load_mutation_budget_ledger,
     protocol_hash,
 )
 from quant_investor.factors.registry_store import (  # noqa: E402
@@ -69,10 +69,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Apply the inverse patch. The default is a read-only dry run.",
     )
     args = parser.parse_args(argv)
-    if args.protocol_version != PROTOCOL_VERSION:
-        parser.error(f"--protocol-version must be {PROTOCOL_VERSION}")
-    if args.expected_protocol_hash != protocol_hash():
-        parser.error("--expected-protocol-hash does not match local policy")
     for field in (
         "expected_current_registry_sha256",
         "expected_inverse_wal_sha256",
@@ -90,6 +86,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def run_rollback(args: argparse.Namespace) -> dict[str, Any]:
+    del args
+    raise ValueError(
+        "FactorGovernanceProtocol v2 rollback is retired; "
+        + FORWARD_PRODUCTION_APPLY_BLOCKER
+    )
+
+    # Historical implementation below is intentionally unreachable and kept
+    # only for source-level audit of old WAL semantics.
     registry_path = Path(args.registry_path).expanduser()
     inverse_wal_path = Path(args.inverse_wal).expanduser()
     ledger_path = Path(args.mutation_budget_ledger).expanduser()

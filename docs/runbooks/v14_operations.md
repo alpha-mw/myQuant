@@ -1,6 +1,8 @@
-# myQuant v14 Operations
+# myQuant v14 Operations (Historical)
 
-This is the current local operating contract for the v14 DAG on `main`.
+This is the historical operating contract for the retired v14 DAG. Current
+operations use `docs/runbooks/v15_operations.md`; this file is retained only
+for immutable artifact interpretation and must not be used by current runs.
 The repository runs offline by default and keeps deterministic data, risk, and
 production-authorization gates authoritative.
 

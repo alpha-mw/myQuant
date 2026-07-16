@@ -774,7 +774,7 @@ def test_build_positions_rows_exports_fifo_opening_cost_fields(tmp_path):
     assert rows[0]["current_price"] == "14.2000"
 
 
-def test_positions_carry_forward_prior_explicit_theme_without_lookahead(tmp_path):
+def test_positions_use_strict_industry_without_historical_theme_fallback(tmp_path):
     exporter = _load_exporter()
     early_dir = tmp_path / "20260102_1000"
     source_dir = tmp_path / "20260105_1000"
@@ -795,18 +795,22 @@ def test_positions_carry_forward_prior_explicit_theme_without_lookahead(tmp_path
         exporter.RecordRun("20260106_1000", "2026-01-06", later_dir, "", 100.0, 110.0, {}),
     ]
 
-    historical = exporter.build_historical_theme_maps(runs)
     rows, warnings = exporter.build_positions_rows(
         [runs[-1]],
-        {"000002.SZ": {"sector": "测试行业", "sub_sector": ""}},
-        historical_theme_by_date=historical,
+        {
+            "000002.SZ": {
+                "industry": "测试行业",
+                "industry_source": "strict_parquet.stock_basic.industry",
+                "industry_as_of": None,
+                "industry_generation_sha256": "a" * 64,
+            }
+        },
     )
 
-    assert "000002.SZ" not in historical["2026-01-02"]
-    assert historical["2026-01-05"]["000002.SZ"] == ("先进材料", "20260105_1000")
-    assert rows[0]["theme"] == "先进材料"
-    assert rows[0]["theme_source"] == "prior_strategy_record:20260105_1000"
-    assert not any("stock_basic industry" in warning for warning in warnings)
+    assert rows[0]["industry"] == "测试行业"
+    assert rows[0]["industry_source"] == "strict_parquet.stock_basic.industry"
+    assert rows[0]["industry_generation_sha256"] == "a" * 64
+    assert not warnings
 
 
 def test_export_summary_reports_effective_manual_ledger_status(tmp_path, monkeypatch):
@@ -936,7 +940,7 @@ def test_export_preserves_full_pnl_nav_history_separate_from_manual_position_bas
     )
     nav_rows = exporter.read_csv_rows(dashboard_root / "generated" / "nav_records.csv")
     positions_rows = exporter.read_csv_rows(dashboard_root / "generated" / "positions_records.csv")
-    generated_js = (dashboard_root / "private" / "dashboard_snapshot.v2.js").read_text(encoding="utf-8")
+    generated_js = (dashboard_root / "private" / "dashboard_snapshot.v3.js").read_text(encoding="utf-8")
 
     assert [row["date"] for row in nav_rows] == ["2026-03-18", "2026-05-26"]
     assert nav_rows[0]["portfolio_nav"] == "1.02309700"
@@ -1080,9 +1084,9 @@ def test_dashboard_display_warnings_aggregate_skipped_legacy_records():
     ]
 
 
-def test_dashboard_display_infos_carry_nonblocking_theme_fallback():
+def test_dashboard_display_infos_carry_nonblocking_industry_warning():
     exporter = _load_exporter()
-    theme_warning = "133 条持仓记录缺少显式 theme，已使用 stock_basic industry 生成 '行业: <sector>' 回退标签。"
+    theme_warning = "133 条持仓记录缺少strict industry，已使用 stock_basic industry 生成 '行业: <sector>' 回退标签。"
     benchmark_warning = (
         "benchmark_source_status=production_source_partial_latest_unavailable；"
         "source_system=local；Dashboard benchmark 仅供临时展示，不是正式投委会口径。"

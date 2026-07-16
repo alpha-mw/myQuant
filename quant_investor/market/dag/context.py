@@ -41,13 +41,6 @@ from quant_investor.market.dag.packets import (
     _build_quant_branch_result_with_validation,
     _build_symbol_tradability,
 )
-from quant_investor.market.dag.theme_context import (
-    build_disabled_theme_rotation_metadata,
-    build_theme_governance_metadata,
-    build_theme_rotation_metadata,
-    persist_theme_governance_artifact,
-    persist_theme_rotation_snapshot,
-)
 from quant_investor.market.data_quality import build_data_quality_diagnostics
 from quant_investor.market.pit_universe import (
     PIT_UNIVERSE_MANIFEST_SCHEMA_VERSION,
@@ -1168,49 +1161,6 @@ def _resolve_markov_reference_input(
     )
 
 
-def _theme_snapshot_scope_metadata(
-    *,
-    universe_key: str,
-    symbol_count: int,
-    explicit_symbol_count: int = 0,
-    unsampled_symbol_count: int = 0,
-    sampled: bool = False,
-    recall_context: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    base_universe = str(universe_key or "").strip() or "unknown_universe"
-    symbol_total = max(int(symbol_count or 0), 0)
-    explicit_total = max(int(explicit_symbol_count or 0), 0)
-    unsampled_total = max(int(unsampled_symbol_count or symbol_total), 0)
-    context = recall_context if isinstance(recall_context, Mapping) else {}
-
-    if explicit_total <= 0 and not sampled and symbol_total >= unsampled_total:
-        input_scope = "full_market"
-        snapshot_universe = base_universe
-    else:
-        if symbol_total == 1:
-            if str(context.get("holding_symbol") or "").strip():
-                input_scope = "holding_single"
-            elif str(context.get("candidate_symbol") or "").strip():
-                input_scope = "candidate_single"
-            else:
-                input_scope = "symbol_single"
-        elif explicit_total > 0:
-            input_scope = "explicit_subset"
-        elif sampled:
-            input_scope = "sampled_subset"
-        else:
-            input_scope = "subset"
-        snapshot_universe = f"{base_universe}_{input_scope}"
-
-    return {
-        "base_universe_key": base_universe,
-        "snapshot_universe_key": snapshot_universe,
-        "input_scope": input_scope,
-        "input_symbol_count": symbol_total,
-        "explicit_symbol_count": explicit_total,
-        "unsampled_symbol_count": unsampled_total,
-        "sampled": bool(sampled),
-    }
 
 
 def _holding_single_review_active(
@@ -1299,22 +1249,6 @@ def _resolve_effective_data_state(
     )
 
 
-def _annotate_theme_rotation_scope(
-    theme_rotation: dict[str, Any],
-    *,
-    scope_metadata: Mapping[str, Any],
-) -> dict[str, Any]:
-    payload = dict(theme_rotation or {})
-    metadata = dict(payload.get("metadata", {}) or {})
-    metadata.update(dict(scope_metadata or {}))
-    payload["metadata"] = metadata
-    payload["universe_key"] = str(
-        metadata.get("snapshot_universe_key")
-        or payload.get("universe_key")
-        or ""
-    )
-    payload["base_universe_key"] = str(metadata.get("base_universe_key") or "")
-    return payload
 
 
 def _prepare_market_context(
@@ -1915,99 +1849,6 @@ def _prepare_market_context(
         if applied_turnover_cap is not None:
             risk_budget["turnover_cap"] = applied_turnover_cap
 
-    theme_scope_metadata = _theme_snapshot_scope_metadata(
-        universe_key=universe_key,
-        symbol_count=len(all_symbols),
-        explicit_symbol_count=explicit_symbol_count,
-        unsampled_symbol_count=unsampled_symbol_count,
-        sampled=sampled,
-        recall_context=recall_context,
-    )
-    theme_snapshot_universe_key = str(
-        theme_scope_metadata.get("snapshot_universe_key") or universe_key
-    )
-    if bool(getattr(config, "THEME_SCANNER_ENABLED", False)):
-        theme_rotation_metadata = build_theme_rotation_metadata(
-            frames=frames,
-            industry_map=industry_map,
-            symbol_market_state=symbol_market_state,
-            market=settings.market,
-            universe_key=theme_snapshot_universe_key,
-            as_of=effective_latest_trade_date,
-            min_member_count=int(getattr(config, "THEME_MIN_MEMBER_COUNT", 5)),
-            top_n=int(getattr(config, "THEME_TOP_N", 20)),
-            symbol_limit=int(getattr(config, "THEME_METADATA_SYMBOL_LIMIT", 300)),
-            smoothing_window=int(getattr(config, "THEME_SMOOTHING_WINDOW", 10)),
-            smoothing_min_observations=int(getattr(config, "THEME_SMOOTHING_MIN_OBSERVATIONS", 5)),
-            membership_v2_enabled=bool(
-                getattr(config, "THEME_MEMBERSHIP_V2_ENABLED", True)
-            ),
-            membership_v2_path=str(
-                getattr(
-                    config,
-                    "THEME_MEMBERSHIP_V2_PATH",
-                    "private/theme_knowledge/theme_membership.v2.jsonl",
-                )
-            ),
-            membership_v2_required=bool(
-                getattr(config, "THEME_MEMBERSHIP_V2_REQUIRED", False)
-            ),
-            membership_v2_expected_sha256=str(
-                getattr(
-                    config,
-                    "THEME_MEMBERSHIP_V2_EXPECTED_SHA256",
-                    "",
-                )
-                or ""
-            ),
-            protocol_v2_enabled=bool(getattr(config, "THEME_PROTOCOL_V2_ENABLED", True)),
-            taxonomy_v2_path=str(
-                getattr(
-                    config,
-                    "THEME_TAXONOMY_V2_PATH",
-                    "quant_investor/themes/data/theme_taxonomy.v2.json",
-                )
-            ),
-            evidence_event_v1_path=str(
-                getattr(
-                    config,
-                    "THEME_EVIDENCE_EVENT_V1_PATH",
-                    "private/theme_knowledge/theme_evidence_events.jsonl",
-                )
-            ),
-            pevc_canonical_path=str(
-                getattr(
-                    config,
-                    "THEME_PEVC_CANONICAL_PATH",
-                    "private/theme_knowledge/pevc_theses.jsonl",
-                )
-            ),
-            markov_regime=str(markov_payload.get("dominant_regime") or ""),
-            formal_v2_enabled=bool(getattr(config, "THEME_V2_FORMAL_ENABLED", False)),
-            formal_v2_kill_switch=bool(
-                getattr(config, "THEME_V2_FORMAL_KILL_SWITCH", True)
-            ),
-        )
-    else:
-        theme_rotation_metadata = build_disabled_theme_rotation_metadata(
-            market=settings.market,
-            universe_key=theme_snapshot_universe_key,
-            as_of=effective_latest_trade_date,
-        )
-    theme_rotation_metadata = _annotate_theme_rotation_scope(
-        theme_rotation_metadata,
-        scope_metadata=theme_scope_metadata,
-    )
-    theme_governance_metadata = build_theme_governance_metadata(
-        theme_rotation=theme_rotation_metadata,
-        enabled=bool(getattr(config, "THEME_GOVERNANCE_ENABLED", False)),
-        registry_path=str(getattr(config, "THEME_GOVERNANCE_REGISTRY_PATH", "") or ""),
-        snapshot_dir=str(getattr(config, "THEME_SNAPSHOT_DIR", "results/theme_snapshots")),
-        history_limit=int(getattr(config, "THEME_SMOOTHING_WINDOW", 10)),
-        market=settings.market,
-        universe_key=theme_snapshot_universe_key,
-        as_of=effective_latest_trade_date,
-    )
 
     provider_health = provider_health_detector(
         agent_model=branch_model_resolution.primary_model,
@@ -2090,14 +1931,6 @@ def _prepare_market_context(
             "provider_health": {},
             "data_snapshot": dict(scoped_data_snapshot),
             "symbol_market_state": symbol_market_state,
-            "theme_rotation": theme_rotation_metadata,
-            "theme_governance": theme_governance_metadata,
-            "theme_scores": dict(theme_rotation_metadata.get("theme_scores", {}) or {}),
-            "symbol_theme_score": dict(theme_rotation_metadata.get("symbol_scores", {}) or {}),
-            "symbol_theme_smoothed_score": dict(theme_rotation_metadata.get("symbol_smoothed_scores", {}) or {}),
-            "symbol_primary_theme": dict(theme_rotation_metadata.get("symbol_primary_theme", {}) or {}),
-            "symbol_theme_phase": dict(theme_rotation_metadata.get("symbol_phase", {}) or {}),
-            "theme_alerts": list(theme_rotation_metadata.get("diagnostic_notes", []) or []),
             "markov_regime": markov_payload,
             "markov_regime_diagnostic_notes": list(markov_payload.get("diagnostic_notes", []) or []),
             "macro_agent_regime": macro_agent_regime,
@@ -2126,45 +1959,6 @@ def _prepare_market_context(
         import hashlib
 
         global_context.universe_hash = hashlib.sha256(",".join(sorted(symbols)).encode("utf-8")).hexdigest()[:16]
-    theme_rotation_payload = global_context.metadata.get("theme_rotation", {})
-    snapshot_status = persist_theme_rotation_snapshot(
-        theme_rotation=theme_rotation_payload if isinstance(theme_rotation_payload, Mapping) else {},
-        enabled=bool(getattr(config, "THEME_SNAPSHOT_ENABLED", False)),
-        root_dir=str(getattr(config, "THEME_SNAPSHOT_DIR", "results/theme_snapshots")),
-        market=settings.market,
-        universe_key=theme_snapshot_universe_key,
-        as_of=effective_latest_trade_date,
-        run_id=global_context.universe_hash
-        or str(scoped_data_snapshot.get("local_latest_trade_date") or ""),
-        save_disabled=bool(getattr(config, "THEME_SNAPSHOT_SAVE_DISABLED", False)),
-    )
-    global_context.metadata["theme_snapshot"] = snapshot_status
-    if isinstance(theme_rotation_payload, dict):
-        theme_rotation_payload["snapshot_status"] = str(snapshot_status.get("status") or "")
-        theme_rotation_payload["snapshot_path"] = (
-            str(snapshot_status.get("path") or "")
-            if str(snapshot_status.get("status") or "") == "success"
-            else ""
-        )
-    theme_governance_payload = global_context.metadata.get("theme_governance", {})
-    governance_artifact_status = persist_theme_governance_artifact(
-        theme_governance=theme_governance_payload if isinstance(theme_governance_payload, Mapping) else {},
-        enabled=bool(getattr(config, "THEME_GOVERNANCE_ARTIFACT_ENABLED", False)),
-        root_dir=str(getattr(config, "THEME_GOVERNANCE_OUTPUT_DIR", "results/theme_governance")),
-        market=settings.market,
-        universe_key=theme_snapshot_universe_key,
-        as_of=effective_latest_trade_date,
-        run_id=global_context.universe_hash
-        or str(scoped_data_snapshot.get("local_latest_trade_date") or ""),
-    )
-    global_context.metadata["theme_governance_artifact"] = governance_artifact_status
-    if isinstance(theme_governance_payload, dict):
-        theme_governance_payload["artifact_status"] = str(governance_artifact_status.get("status") or "")
-        theme_governance_payload["artifact_path"] = (
-            str(governance_artifact_status.get("path") or "")
-            if str(governance_artifact_status.get("status") or "") == "success"
-            else ""
-        )
 
     role_metadata = {
         "resolver": resolver_snapshot,
@@ -2217,29 +2011,6 @@ def _prepare_market_context(
             volume_spike_threshold=float(volume_spike_threshold),
             breakout_distance_pct=float(breakout_distance_pct),
             sector_bucket_limit=int(sector_bucket_limit if str(funnel_profile or "").strip().lower() == "momentum_leader" else 0),
-            theme_pool_enabled=bool(getattr(config, "THEME_POOL_ENABLED", False)),
-            theme_pool_required=bool(getattr(config, "THEME_POOL_REQUIRED", True)),
-            theme_pool_use_markov_policy=bool(getattr(config, "THEME_POOL_USE_MARKOV_POLICY", True)),
-            theme_pool_score_source=str(getattr(config, "THEME_POOL_SCORE_SOURCE", "smoothed") or "smoothed"),
-            theme_pool_fallback_to_raw_score=bool(getattr(config, "THEME_POOL_FALLBACK_TO_RAW_SCORE", True)),
-            theme_pool_min_theme_score=float(getattr(config, "THEME_POOL_MIN_THEME_SCORE", 0.58)),
-            theme_pool_min_symbol_score=float(getattr(config, "THEME_POOL_MIN_SYMBOL_SCORE", 0.55)),
-            theme_pool_top_themes=int(getattr(config, "THEME_POOL_TOP_THEMES", 8)),
-            theme_pool_max_symbols_per_theme=int(getattr(config, "THEME_POOL_MAX_SYMBOLS_PER_THEME", 30)),
-            theme_pool_residual_ratio=float(getattr(config, "THEME_POOL_RESIDUAL_RATIO", 0.25)),
-            theme_pool_min_residual_symbols=int(getattr(config, "THEME_POOL_MIN_RESIDUAL_SYMBOLS", 20)),
-            theme_pool_min_admitted_themes=int(getattr(config, "THEME_POOL_MIN_ADMITTED_THEMES", 0)),
-            theme_pool_allow_unthemed_residual=bool(getattr(config, "THEME_POOL_ALLOW_UNTHEMED_RESIDUAL", False)),
-            theme_pool_include_risk_watch=bool(getattr(config, "THEME_POOL_INCLUDE_RISK_WATCH", True)),
-            theme_pool_risk_watch_max_ratio=float(getattr(config, "THEME_POOL_RISK_WATCH_MAX_RATIO", 0.20)),
-            theme_pool_symbol_gate_mode=str(getattr(config, "THEME_POOL_SYMBOL_GATE_MODE", "classify") or "classify"),
-            theme_pool_min_member_count=int(getattr(config, "THEME_MIN_MEMBER_COUNT", 0)),
-            theme_pool_protocol_v2_formal_enabled=bool(
-                getattr(config, "THEME_V2_FORMAL_ENABLED", False)
-            ),
-            theme_boost_enabled=bool(getattr(config, "THEME_FUNNEL_BOOST_ENABLED", False)),
-            theme_boost_cap=float(getattr(config, "THEME_SYMBOL_BOOST_CAP", 0.10)),
-            theme_boost_score_source=str(getattr(config, "THEME_FUNNEL_BOOST_SCORE_SOURCE", "raw") or "raw"),
         )
     )
     with profile_stage(
@@ -2254,24 +2025,11 @@ def _prepare_market_context(
         stage_metadata["candidate_count"] = len(getattr(funnel_output, "candidates", []) or [])
         stage_metadata["excluded_count"] = len(getattr(funnel_output, "excluded_symbols", {}) or {})
     candidate_symbols = [symbol for symbol in funnel_output.candidates if symbol in researchable_symbols]
-    theme_pool_metadata = (
-        funnel_output.funnel_metadata.get("theme_pool", {})
-        if isinstance(getattr(funnel_output, "funnel_metadata", {}), Mapping)
-        else {}
-    )
-    theme_pool_required_applied = (
-        isinstance(theme_pool_metadata, Mapping)
-        and bool(theme_pool_metadata.get("enabled"))
-        and bool(theme_pool_metadata.get("required"))
-        and str(theme_pool_metadata.get("status") or "") == "applied"
-    )
     holding_review_funnel_override = _holding_single_review_active(
         recall_context=recall_context,
         symbols=researchable_symbols,
     )
     if holding_review_funnel_override:
-        candidate_symbols = list(researchable_symbols)
-    elif not candidate_symbols and not theme_pool_required_applied:
         candidate_symbols = list(researchable_symbols)
     with profile_stage(
         runtime_profiler,

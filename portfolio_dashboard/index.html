@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>myQuant Dashboard 2.0</title>
+    <title>myQuant Dashboard v3</title>
     <link rel="stylesheet" href="styles.css?v=20260623" />
   </head>
   <body>
@@ -18,9 +18,9 @@
                 <rect x="17" y="3" width="4" height="17" rx="1"></rect>
               </svg>
             </span>
-            <h1>myQuant Dashboard 2.0</h1>
+            <h1>myQuant Dashboard v3</h1>
           </div>
-          <p>本地静态组合、纪律、Theme、Factor 与数据审计 <span id="dataModeLabel">（示例数据）</span></p>
+          <p>本地静态组合、纪律、行业、Factor 与数据审计 <span id="dataModeLabel">（示例数据）</span></p>
         </div>
         <div class="header-status">
           <span id="dataStatus" class="status-pill sample">当前使用 sample data</span>
@@ -121,7 +121,6 @@
         <a class="section-tab active" href="#overviewSection" data-workspace-tab="overview">今日总览</a>
         <a class="section-tab" href="#holdingsSection" data-workspace-tab="holdings">持仓与纪律</a>
         <a class="section-tab" href="#tradesSection" data-workspace-tab="trades">交易与决策</a>
-        <a class="section-tab" href="#themeSection" data-workspace-tab="theme">Theme</a>
         <a class="section-tab" href="#factorSection" data-workspace-tab="factor">Factor</a>
         <a class="section-tab" href="#benchmarkSection" data-workspace-tab="audit">归因与数据审计</a>
       </nav>
@@ -289,8 +288,8 @@
               <div id="bottomContributionChart" class="chart"></div>
             </article>
             <article class="panel chart-panel">
-              <h3>Theme contribution</h3>
-              <div id="themeContributionChart" class="chart"></div>
+              <h3>Industry contribution</h3>
+              <div id="industryContributionChart" class="chart"></div>
             </article>
             <article class="panel chart-panel">
               <h3>Sector contribution</h3>
@@ -307,7 +306,7 @@
           <div class="section-heading">
             <div>
               <h2>5. 风险与暴露</h2>
-              <p>滚动波动、beta、主题暴露与集中度。</p>
+              <p>滚动波动、beta、行业暴露与集中度。</p>
             </div>
           </div>
           <div class="chart-grid two">
@@ -320,8 +319,8 @@
               <div id="rollingBetaChart" class="chart"></div>
             </article>
             <article class="panel chart-panel">
-              <h3>当前 theme weight</h3>
-              <div id="currentThemeWeightChart" class="chart"></div>
+              <h3>当前 industry weight</h3>
+              <div id="currentIndustryWeightChart" class="chart"></div>
             </article>
             <article class="panel chart-panel">
               <h3>Top holdings weight</h3>
@@ -346,7 +345,7 @@
               <h3>当前持仓 Top 20</h3>
               <label class="table-search">
                 <span>搜索</span>
-                <input id="holdingsSearch" type="search" placeholder="ticker / name / theme / sector" data-filter-table="holdingsTable" />
+                <input id="holdingsSearch" type="search" placeholder="ticker / name / industry / sector" data-filter-table="holdingsTable" />
               </label>
             </div>
             <div id="holdingsTable" class="table-wrap"></div>
@@ -354,43 +353,22 @@
           </article>
           <div class="chart-grid two hidden" aria-hidden="true">
             <article class="panel chart-panel">
-              <h3>Theme weight trend</h3>
-              <div id="themeWeightTrendChart" class="chart"></div>
+              <h3>Industry weight trend</h3>
+              <div id="industryWeightTrendChart" class="chart"></div>
             </article>
             <article class="panel chart-panel">
               <h3>Sector weight trend</h3>
               <div id="sectorWeightTrendChart" class="chart"></div>
             </article>
             <article class="panel chart-panel">
-              <h3>Market value by theme</h3>
-              <div id="marketValueThemeChart" class="chart"></div>
+              <h3>Market value by industry</h3>
+              <div id="marketValueIndustryChart" class="chart"></div>
             </article>
             <article class="panel chart-panel">
-              <h3>当前 theme weight 明细</h3>
-              <div id="themeWeightTable" class="table-wrap compact"></div>
+              <h3>当前 industry weight 明细</h3>
+              <div id="industryWeightTable" class="table-wrap compact"></div>
             </article>
           </div>
-        </section>
-
-        <section class="dashboard-section" id="themeSection" data-workspace="theme" hidden>
-          <div class="section-heading">
-            <div>
-              <h2>4. Theme</h2>
-              <p>市场观察、科技 thesis watch 与 formal investable 三条 lane 独立展示。</p>
-            </div>
-          </div>
-          <article class="panel table-panel">
-            <h3>Theme Protocol v2 / formal / rollback</h3>
-            <div id="themeProtocolSummary" class="table-wrap"></div>
-          </article>
-          <article class="panel chart-panel">
-            <h3>热门度 × 产业兑现</h3>
-            <div id="themeAttentionMatrix" class="chart"></div>
-          </article>
-          <article class="panel table-panel">
-            <h3>Theme 状态、风险与 PE/VC thesis</h3>
-            <div id="themeStateTable" class="table-wrap"></div>
-          </article>
         </section>
 
         <section class="dashboard-section" id="factorSection" data-workspace="factor" hidden>
@@ -401,7 +379,7 @@
             </div>
           </div>
           <article class="panel table-panel">
-            <h3>Factor Governance Protocol v2</h3>
+            <h3>Factor Governance Protocol v3</h3>
             <div id="factorProtocolSummary" class="table-wrap"></div>
             <div id="factorStateTable" class="table-wrap"></div>
           </article>
@@ -421,7 +399,7 @@
               <h3>最近 20 笔交易</h3>
               <label class="table-search">
                 <span>搜索</span>
-                <input id="tradesSearch" type="search" placeholder="ticker / reason / theme" data-filter-table="tradesTable" />
+                <input id="tradesSearch" type="search" placeholder="ticker / reason / industry" data-filter-table="tradesTable" />
               </label>
             </div>
             <div id="tradesTable" class="table-wrap"></div>
@@ -444,8 +422,8 @@
               <div id="sideChart" class="chart"></div>
             </article>
             <article class="panel chart-panel">
-              <h3>交易金额 by theme</h3>
-              <div id="tradeThemeChart" class="chart"></div>
+              <h3>交易金额 by industry</h3>
+              <div id="tradeIndustryChart" class="chart"></div>
             </article>
             <article class="panel chart-panel">
               <h3>交易原因 reason 分布</h3>
@@ -458,7 +436,7 @@
 
     <div id="chartTooltip" class="chart-tooltip" role="status"></div>
 
-    <script src="private/dashboard_snapshot.v2.js"></script>
+    <script src="private/dashboard_snapshot.v3.js"></script>
     <script src="js/generated_records.js?v=20260712"></script>
     <script src="js/data.js"></script>
     <script src="js/metrics.js"></script>

@@ -23,7 +23,7 @@ _DEFAULT_RELIABILITY: dict[str, float] = {
 
 # Preserve the surviving v13 effective coefficients exactly.  These values are
 # already normalized against the former three-source mean; the posterior must
-# not re-normalize them after the v14 source-count reduction.
+# not re-normalize them after the v15 source-count reduction.
 _MOMENTUM_EFFECTIVE_WEIGHTS: dict[str, dict[str, float]] = {
     "strong": {"quant": 1.0161290322580645, "fundamental": 0.7258064516129031},
     "weak": {"quant": 1.0714285714285716, "fundamental": 0.8035714285714286},
@@ -298,7 +298,7 @@ class SignalLikelihoodMapper:
         )
         if unexpected_branches:
             raise ValueError(
-                "Unexpected branch results for v14 likelihood mapping: "
+                "Unexpected branch results for v15 likelihood mapping: "
                 + ", ".join(unexpected_branches)
             )
         for branch_name, result in branch_results.items():

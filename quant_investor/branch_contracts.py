@@ -37,7 +37,7 @@ _ALLOWED_BRANCH_RESULT_NAMES = frozenset((*CANONICAL_BRANCH_ORDER, "kline"))
 def _require_branch_name(branch_name: str, field_name: str) -> str:
     resolved = str(branch_name).strip()
     if resolved not in _ALLOWED_BRANCH_RESULT_NAMES:
-        raise ValueError(f"{field_name} is not a v14 branch: {branch_name!r}.")
+        raise ValueError(f"{field_name} is not a v15 branch: {branch_name!r}.")
     return resolved
 
 

@@ -50,7 +50,7 @@ class ActivationManifestV1(StrictModel):
     schema_version: Literal["fundamental-research-activation.v1"] = (
         "fundamental-research-activation.v1"
     )
-    strategy_version: Literal["v14-fundamental-research"] = "v14-fundamental-research"
+    strategy_version: Literal["v15-fundamental-research"] = "v15-fundamental-research"
     mode: Literal["limited", "production"]
     phase: Literal["limited_phase_1", "limited_phase_2", "production"]
     effective_from: datetime

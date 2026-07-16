@@ -15,7 +15,7 @@ class PersistenceManager:
         pipeline_result: dict[str, Any],
         config: dict[str, Any],
     ) -> str:
-        """保存报告到 v14 输出目录，返回报告路径。"""
+        """保存报告到 v15 输出目录，返回报告路径。"""
         report_dir = _runner.resolve_daily_report_dir(config.get("report_dir"))
         report_dir.mkdir(parents=True, exist_ok=True)
         filename = f"{datetime.now().strftime('%Y-%m-%d_%H%M')}_analysis.md"

@@ -49,7 +49,7 @@ _MACRO_APPROVED_PRIMARY_PRIORITIES = frozenset(
 DEFAULT_PARQUET_CN_ROOT = Path("data/parquet/cn")
 DEFAULT_FUNDAMENTAL_ROOT = DEFAULT_PARQUET_CN_ROOT / "fundamental_daily"
 DEFAULT_MACRO_ROOT = DEFAULT_PARQUET_CN_ROOT / "macro_daily"
-DEFAULT_READINESS_ROOT = Path("reports/v14/branch_readiness")
+DEFAULT_READINESS_ROOT = Path("reports/v15/branch_readiness")
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 _FROZEN_READINESS_ROOT = (_REPOSITORY_ROOT / "reports/branch_readiness").resolve()
 
@@ -854,7 +854,7 @@ def write_branch_readiness_report(
     ):
         raise ValueError(
             "reports/branch_readiness is frozen v13 retirement evidence; "
-            "write current artifacts under reports/v14/branch_readiness"
+            "write current artifacts under reports/v15/branch_readiness"
         )
     out.mkdir(parents=True, exist_ok=True)
     json_path = out / f"{report.run_id}.json"

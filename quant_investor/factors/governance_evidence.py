@@ -1,6 +1,8 @@
-"""Report-only normalizer for FactorGovernanceProtocol v2 replay evidence.
+"""Historical-only normalizer for FactorGovernanceProtocol v2 evidence.
 
-This module makes caller-supplied replay data deterministic and
+Active runtime and automation must not import this module.  It is retained
+only for immutable historical v2 evidence tests.  This module makes
+caller-supplied replay data deterministic and
 content-addressed.  It is not yet a canonical production producer because it
 does not read back and hash the actual bytes of every v13 DAG stage artifact.
 """

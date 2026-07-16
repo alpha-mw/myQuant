@@ -90,7 +90,7 @@ class BayesianPosteriorEngine:
             evidence_sources.append(name)
 
         # Momentum weights are already the frozen effective coefficients. They
-        # must not be re-normalized after the v14 source-count reduction.
+        # must not be re-normalized after the v15 source-count reduction.
         dynamic_weights = {
             str(name): float(weight)
             for name, weight in dict(metadata.get("branch_weights", {}) or {}).items()

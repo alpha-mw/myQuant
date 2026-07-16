@@ -169,7 +169,7 @@ class QuantInvestorPipelineResult:
             )
             if unexpected_review:
                 raise ValueError(
-                    "QuantInvestorPipelineResult reviewed research has non-v14 branches: "
+                    "QuantInvestorPipelineResult reviewed research has non-v15 branches: "
                     + ", ".join(unexpected_review)
                 )
             for verdict in branch_map.values():

@@ -1539,7 +1539,7 @@ def test_contract_set_hash_is_order_independent() -> None:
     )
 
 
-def test_downstream_readiness_revalidates_real_strict_fixture(
+def test_downstream_v3_runtime_rejects_real_strict_v2_fixture(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1782,7 +1782,9 @@ def test_downstream_readiness_revalidates_real_strict_fixture(
         frames,
         evaluation_context=evaluation_context,
     )
-    assert score.governance_status == "ready"
+    assert score.governance_status == "governance_blocked"
+    assert "registry_protocol_version_mismatch" in score.runtime_blockers
+    return
 
     ready_metadata = score.to_metadata()
     assert ready_metadata["symbol_count"] == 20

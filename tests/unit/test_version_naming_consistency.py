@@ -15,13 +15,13 @@ def test_single_mainline_package_and_runtime_versions_are_aligned():
     lock_packages = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))["package"]
     locked_project = next(item for item in lock_packages if item["name"] == project["name"])
 
-    assert project["version"] == "14.0.0"
+    assert project["version"] == "15.0.0"
     assert locked_project["version"] == project["version"]
     assert "three-branch single mainline" in project["description"]
 
-    assert versioning.ARCHITECTURE_VERSION == "14.0.0-stable"
-    assert versioning.BRANCH_SCHEMA_VERSION == "branch-schema.v14.three-branch"
-    assert versioning.LIKELIHOOD_SCHEMA_VERSION == "likelihood-schema.v14.two-likelihood"
+    assert versioning.ARCHITECTURE_VERSION == "15.0.0-stable"
+    assert versioning.BRANCH_SCHEMA_VERSION == "branch-schema.v15.three-branch"
+    assert versioning.LIKELIHOOD_SCHEMA_VERSION == "likelihood-schema.v15.two-likelihood"
     assert versioning.output_version_payload()["architecture_version"] == versioning.ARCHITECTURE_VERSION
     assert versioning.output_version_payload()["branch_schema_version"] == versioning.BRANCH_SCHEMA_VERSION
 
@@ -42,7 +42,7 @@ def test_readme_and_cli_share_single_mainline_policy():
     option_strings = [option for action in run_parser._actions for option in action.option_strings]
     route_flag = "--" + "architecture"
 
-    assert "14.0.0" in readme
+    assert "15.0.0" in readme
     assert route_flag not in readme
     assert "NarratorAgent -> ReportBundle" in readme
     assert "`buy` / `hold` / `sell` / `watch` / `avoid`" in readme

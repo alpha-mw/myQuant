@@ -88,7 +88,7 @@ provenance 校验，并把父 generation ID 与 envelope hash 绑定到新 gener
 - 显式小股票池、抽样过小的 universe、或缺失 broad reference 数据时，Markov 状态为 production-ineligible；DAG 保留 MacroAgent regime、baseline target exposure、baseline max single weight 和原控制链。
 - 当当前 DAG 输入不是 full-market 时，Markov 使用本地 strict/canonical market reference universe（CN 默认 `full_a`，US 默认 `full_us`），按稳定排序进行 deterministic sample，最多 `MARKOV_REGIME_MAX_REFERENCE_SYMBOLS`。
 - Markov 应用时只允许降低风险：target exposure 与 max single weight 都取 baseline 与 Markov 建议的 `min()`；turnover cap 只能新增或收紧，不直接写目标权重。
-- DAG/Markov baseline max single weight 为 50%，以匹配集中持仓目标；RiskGuard、Theme overlay、流动性与可交易性约束仍可给出更低的 symbol-level cap。
+- DAG/Markov baseline max single weight 为 50%，以匹配集中持仓目标；RiskGuard、流动性与可交易性约束仍可给出更低的 symbol-level cap。
 - Regime features 必须按 `as_of` 截断 dated frames 后再计算 returns、volatility、breadth、momentum、drawdown、breakout 和 liquidity。
 - Regime history persistence 按 `market + scope_key + source_universe_key + as_of` 隔离；future records 不参与 posterior、transition estimation 或 duplicate-write decisions；无 scope 的 legacy records 不用于 production scoped history。
 

@@ -19,7 +19,7 @@ from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
 from quant_investor.versioning import CALIBRATION_V2_SCHEMA_VERSION
 
 
-DEFAULT_CALIBRATION_V2_DIR = Path("data/bayesian_calibration_v2/v14")
+DEFAULT_CALIBRATION_V2_DIR = Path("data/bayesian_calibration_v2/v15")
 DEFAULT_CALIBRATION_MODEL_FILENAME = "calibration_model_v2.json"
 DEFAULT_CALIBRATION_REPORT_FILENAME = "calibration_report_v2.json"
 TARGET_POSTERIOR_WIN_RATE = "posterior_win_rate"

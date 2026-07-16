@@ -19,8 +19,8 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DASHBOARD_ROOT = PROJECT_ROOT / "portfolio_dashboard"
 DEFAULT_SUMMARY_FILE = DEFAULT_DASHBOARD_ROOT / "generated" / "export_summary.json"
-DEFAULT_GENERATED_JS = DEFAULT_DASHBOARD_ROOT / "private" / "dashboard_snapshot.v2.js"
-DASHBOARD_SCHEMA_VERSION = "dashboard_contract.v2"
+DEFAULT_GENERATED_JS = DEFAULT_DASHBOARD_ROOT / "private" / "dashboard_snapshot.v3.js"
+DASHBOARD_SCHEMA_VERSION = "dashboard_contract.v3"
 REQUIRED_BENCHMARK_FIELDS = {
     "benchmark_main_nav",
     "benchmark_nav",
@@ -101,7 +101,7 @@ def _json_array_property(text: str, name: str) -> list[Any]:
 
 
 def _dashboard_contract(text: str) -> dict[str, Any] | None:
-    match = re.search(r"window\.DashboardSnapshotV2\s*=\s*\{", text)
+    match = re.search(r"window\.DashboardSnapshotV3\s*=\s*\{", text)
     if not match:
         return None
     start = match.end() - 1
@@ -198,7 +198,7 @@ def _is_iso_timestamp(value: Any) -> bool:
     return parsed.tzinfo is not None
 
 
-def validate_dashboard_contract_v2(
+def validate_dashboard_contract_v3(
     contract: dict[str, Any],
     *,
     schema_file: Path | None = None,
@@ -215,6 +215,7 @@ def validate_dashboard_contract_v2(
         "generated_at",
         "status",
         "blockers",
+        "v15_run_readiness",
         "as_of_matrix",
         "sources",
         "trading_calendar",
@@ -222,8 +223,7 @@ def validate_dashboard_contract_v2(
         "nav",
         "positions",
         "trades",
-        "themes",
-        "theme_protocol",
+        "industries",
         "factors",
         "factor_protocol",
         "reconciliation",
@@ -231,7 +231,7 @@ def validate_dashboard_contract_v2(
     }
     missing = sorted(required - set(contract))
     if missing:
-        errors.append(f"dashboard contract v2 missing required fields: {missing}")
+        errors.append(f"dashboard contract v3 missing required fields: {missing}")
     if contract.get("schema_version") != DASHBOARD_SCHEMA_VERSION:
         errors.append(
             f"dashboard schema_version must be {DASHBOARD_SCHEMA_VERSION!r}."
@@ -252,16 +252,16 @@ def validate_dashboard_contract_v2(
     protocol_payload = {
         "schema_version": DASHBOARD_SCHEMA_VERSION,
         "metric_policy": policy,
-        "required_tables": ["nav", "positions", "trades", "themes", "factors"],
+        "required_tables": ["nav", "positions", "trades", "industries", "factors"],
     }
     protocol_hash = str(contract.get("protocol_hash") or "")
     if not re.fullmatch(r"[0-9a-f]{64}", protocol_hash):
         errors.append("dashboard protocol_hash must be a lowercase SHA-256 hex digest.")
     elif protocol_hash != _canonical_json_sha256(protocol_payload):
-        errors.append("dashboard protocol_hash does not match the canonical v2 metric policy.")
+        errors.append("dashboard protocol_hash does not match the canonical v3 metric policy.")
 
     schema_path = schema_file or (
-        DEFAULT_DASHBOARD_ROOT / "schema" / "dashboard_contract.v2.schema.json"
+        DEFAULT_DASHBOARD_ROOT / "schema" / "dashboard_contract.v3.schema.json"
     )
     schema_sha = contract.get("schema_sha256")
     if status != "sample":
@@ -270,7 +270,7 @@ def validate_dashboard_contract_v2(
         elif schema_path.is_file():
             actual_schema_sha = hashlib.sha256(schema_path.read_bytes()).hexdigest()
             if schema_sha != actual_schema_sha:
-                errors.append("dashboard schema_sha256 does not match the tracked v2 schema.")
+                errors.append("dashboard schema_sha256 does not match the tracked v3 schema.")
 
     serialized_sources = json.dumps(
         {
@@ -284,45 +284,17 @@ def validate_dashboard_contract_v2(
     if re.search(r"(?:/Users/|file://|[A-Za-z]:\\\\)", serialized_sources):
         errors.append("dashboard sources contain a private absolute path.")
 
-    for table in ("nav", "positions", "trades", "themes", "factors"):
+    for table in ("nav", "positions", "trades", "industries", "factors"):
         if not isinstance(contract.get(table), list):
             errors.append(f"dashboard contract {table} must be an array.")
 
-    theme_protocol = contract.get("theme_protocol")
-    if not isinstance(theme_protocol, dict):
-        errors.append("dashboard theme_protocol must be an object.")
-    else:
-        if theme_protocol.get("schema_version") != "theme_protocol.v2":
-            errors.append("dashboard theme_protocol schema_version must be v2.")
-        if theme_protocol.get("status") == "blocked" and not theme_protocol.get(
-            "blockers"
-        ):
-            errors.append("blocked theme_protocol must disclose blockers.")
-        if (
-            theme_protocol.get("status") != "blocked"
-            and theme_protocol.get("readback_verified") is not True
-        ):
-            errors.append("non-blocked theme_protocol requires verified readback.")
-        formal_pool = theme_protocol.get("formal_pool")
-        if not isinstance(formal_pool, list):
-            errors.append("dashboard theme_protocol.formal_pool must be an array.")
-            formal_pool = []
-        if (
-            theme_protocol.get("formal_enabled") is False
-            or theme_protocol.get("formal_kill_switch") is True
-        ) and formal_pool:
-            errors.append(
-                "observer-only or killed theme_protocol cannot expose a formal pool."
-            )
-        if theme_protocol.get("formal_pool_count") != len(formal_pool):
-            errors.append("dashboard theme_protocol formal_pool_count mismatch.")
 
     factor_protocol = contract.get("factor_protocol")
     if not isinstance(factor_protocol, dict):
         errors.append("dashboard factor_protocol must be an object.")
     else:
-        if factor_protocol.get("schema_version") != "factor-governance-protocol.v2":
-            errors.append("dashboard factor_protocol schema_version must be v2.")
+        if factor_protocol.get("schema_version") != "factor-governance-protocol.v3":
+            errors.append("dashboard factor_protocol schema_version must be v3.")
         if factor_protocol.get("status") == "blocked" and not factor_protocol.get("blockers"):
             errors.append("blocked factor_protocol must disclose blockers.")
         if factor_protocol.get("status") != "blocked" and factor_protocol.get("readback_verified") is not True:
@@ -446,13 +418,12 @@ def validate_dashboard_contract_v2(
         "analysis_trading_date",
         "quote_at",
         "benchmark_value_dates",
-        "theme_date",
         "factor_registry_sha",
     }
     missing_as_of_fields = sorted(required_as_of_fields - set(as_of))
     if missing_as_of_fields:
         errors.append(f"dashboard as_of_matrix missing required fields: {missing_as_of_fields}.")
-    for field in ("strategy_record_date", "analysis_trading_date", "theme_date"):
+    for field in ("strategy_record_date", "analysis_trading_date"):
         value = as_of.get(field)
         if value is not None and not _is_iso_date(value):
             errors.append(f"dashboard as_of_matrix.{field} must be an explicit ISO date or null.")
@@ -478,7 +449,6 @@ def validate_dashboard_contract_v2(
     analysis_date = as_of.get("analysis_trading_date")
     if _is_iso_date(analysis_date):
         future_as_of_checks = {
-            "as_of_theme_after_analysis_date": as_of.get("theme_date"),
             "as_of_quote_after_analysis_date": (
                 quote_at[:10] if _is_iso_timestamp(quote_at) else None
             ),
@@ -503,7 +473,6 @@ def validate_dashboard_contract_v2(
             "strategy_record_date": "as_of_strategy_record_missing",
             "analysis_trading_date": "as_of_analysis_trade_date_missing",
             "quote_at": "as_of_quote_missing",
-            "theme_date": "as_of_theme_missing",
         }
         for field, blocker in missing_as_of.items():
             if as_of.get(field) is None and blocker not in (blockers or []):
@@ -938,7 +907,7 @@ def check_dashboard_export(
     if generated_js.parent.name == "private":
         for private_path in (
             generated_js,
-            generated_js.with_name("dashboard_snapshot.v2.json"),
+            generated_js.with_name("dashboard_snapshot.v3.json"),
         ):
             if not private_path.exists():
                 errors.append(f"private dashboard snapshot missing: {private_path.name}")
@@ -954,7 +923,7 @@ def check_dashboard_export(
                     "private dashboard snapshot permissions must be 0600: "
                     f"{private_path.name} mode={permissions:04o}"
                 )
-        private_json_path = generated_js.with_name("dashboard_snapshot.v2.json")
+        private_json_path = generated_js.with_name("dashboard_snapshot.v3.json")
         if private_json_path.is_file():
             try:
                 loaded_private_json = json.loads(
@@ -1004,9 +973,9 @@ def check_dashboard_export(
         contract = generated.contract if generated is not None else None
         summary_is_v2 = summary.get("schema_version") == DASHBOARD_SCHEMA_VERSION
         if summary_is_v2 and contract is None:
-            errors.append("export_summary.json declares dashboard_contract.v2 but snapshot JS has no contract.")
+            errors.append("export_summary.json declares dashboard_contract.v3 but snapshot JS has no contract.")
         if contract is not None:
-            contract_errors, contract_warnings = validate_dashboard_contract_v2(contract)
+            contract_errors, contract_warnings = validate_dashboard_contract_v3(contract)
             errors.extend(contract_errors)
             warnings.extend(contract_warnings)
             for field in (
@@ -1020,12 +989,12 @@ def check_dashboard_export(
                 "trading_calendar",
                 "nav_return_provenance",
                 "reconciliation",
-                "theme_protocol",
+                "v15_run_readiness",
                 "factor_protocol",
             ):
                 if field in summary and summary.get(field) != contract.get(field):
                     errors.append(
-                        f"{field} mismatch between export_summary.json and dashboard contract v2."
+                        f"{field} mismatch between export_summary.json and dashboard contract v3."
                     )
         if generated is not None:
             generated_pairs = [
@@ -1241,7 +1210,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     summary_file = args.summary_file or args.dashboard_root / "generated" / "export_summary.json"
-    generated_js = args.generated_js or args.dashboard_root / "private" / "dashboard_snapshot.v2.js"
+    generated_js = args.generated_js or args.dashboard_root / "private" / "dashboard_snapshot.v3.js"
     if args.generated_js is None and not generated_js.exists():
         legacy_generated_js = args.dashboard_root / "js" / "generated_records.js"
         if legacy_generated_js.exists():

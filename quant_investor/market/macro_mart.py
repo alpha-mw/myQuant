@@ -55,8 +55,8 @@ MACRO_FIELDS = (
     "volatility_percentile",
     "policy_signal",
 )
-CANDIDATE_MANIFEST_SCHEMA = "cn-macro-mart-candidate.v14"
-CANONICAL_MANIFEST_SCHEMA = "cn-macro-mart.v14"
+CANDIDATE_MANIFEST_SCHEMA = "cn-macro-mart-candidate.v15"
+CANONICAL_MANIFEST_SCHEMA = "cn-macro-mart.v15"
 PRIMARY_PROVENANCE_SCHEMA = "cn-macro-primary-provenance.v1"
 LEGACY_PROVIDER_BUNDLE_SCHEMA = "cn-macro-provider-bundle.v1"
 PROVIDER_BUNDLE_SCHEMA = "cn-macro-provider-bundle.v2"
@@ -73,6 +73,7 @@ CATALOG_WRITER_LOCK_FILENAME = (
     "._catalog.json.intelligence-retirement.lock"
 )
 TRANSACTION_JOURNAL_SCHEMA = "cn-macro-catalog-transaction.v1"
+STAGING_RECEIPT_SCHEMA = "cn-macro-authoritative-staging.v1"
 CAPTURE_WINDOW_HOURS = 72
 MARKET_LOOKBACK_CALENDAR_DAYS = 450
 VOLATILITY_WINDOW_SESSIONS = 20
@@ -2998,6 +2999,300 @@ def refresh_cn_macro_mart(
     }
 
 
+def stage_cn_macro_authoritative_refresh(
+    *,
+    market: str = "CN",
+    as_of: str = "",
+    canonical_root: str | Path = DEFAULT_MACRO_ROOT,
+    staging_root: str | Path,
+    run_id: str,
+    expected_catalog_sha256: str,
+    expected_market_pointer_sha256: str,
+    allow_live: bool = False,
+    nbs_cn_pmi_url: str = "",
+    allow_tushare_fallback: bool = False,
+) -> dict[str, Any]:
+    """Capture and validate a live Macro generation without canonical writes."""
+
+    if str(market).upper() != "CN":
+        raise MacroMartPromotionError("macro_market_unsupported")
+    if not allow_live:
+        raise MacroMartPromotionError("macro_live_not_authorized")
+    if not str(nbs_cn_pmi_url or "").strip():
+        raise MacroMartPromotionError("macro_nbs_cn_pmi_url_missing")
+    try:
+        requested_nbs_url = validate_nbs_pmi_url(str(nbs_cn_pmi_url).strip())
+    except NbsPmiPermanentError as exc:
+        raise MacroMartPromotionError("macro_nbs_cn_pmi_url_invalid") from exc
+
+    generation_id = _safe_run_id(run_id)
+    expected_catalog_sha = _assert_sha256(
+        expected_catalog_sha256,
+        blocker="macro_expected_catalog_hash_invalid",
+    )
+    expected_pointer_sha = _assert_sha256(
+        expected_market_pointer_sha256,
+        blocker="macro_expected_market_pointer_hash_invalid",
+    )
+    canonical = _strict_read_root(canonical_root)
+    market_root = canonical.parent
+    catalog_path = market_root / "_catalog.json"
+    pointer_path = market_root / "_latest.json"
+    catalog_bytes, _ = _read_verified_bytes_and_json(
+        catalog_path,
+        trust_root=market_root,
+        expected_sha256=expected_catalog_sha,
+        hash_blocker="macro_expected_catalog_hash_mismatch",
+        changed_blocker="macro_catalog_changed_during_read",
+        unreadable_blocker="macro_catalog_invalid",
+    )
+    pointer_bytes, pointer = _read_verified_bytes_and_json(
+        pointer_path,
+        trust_root=market_root,
+        expected_sha256=expected_pointer_sha,
+        hash_blocker="macro_expected_market_pointer_hash_mismatch",
+        changed_blocker="macro_market_pointer_changed_during_read",
+        unreadable_blocker="macro_market_pointer_invalid",
+    )
+    captured_at = _utc_now()
+    trade_date = _validate_live_target(
+        pointer,
+        requested_as_of=as_of,
+        captured_at=captured_at,
+        enforce_capture_window=True,
+    )
+    stage_base = _assert_safe_write_root(Path(staging_root).expanduser())
+    stage = _assert_safe_write_root(stage_base / generation_id)
+    receipt_path = stage / "staging_receipt.json"
+    if receipt_path.exists() or receipt_path.is_symlink():
+        raise MacroMartPromotionError("macro_staging_receipt_exists")
+
+    retry_generation = _load_primary_generation_for_retry(
+        root=stage,
+        run_id=generation_id,
+        trade_date=trade_date,
+        market_pointer_sha256=expected_pointer_sha,
+        nbs_cn_pmi_url=requested_nbs_url,
+        allow_tushare_fallback=allow_tushare_fallback,
+    )
+    if retry_generation is None:
+        client = _build_tushare_client()
+        provider_fetch = _fetch_provider_bundle(
+            client=client,
+            trade_date=trade_date,
+            captured_at=captured_at,
+            nbs_cn_pmi_url=requested_nbs_url,
+            allow_tushare_fallback=allow_tushare_fallback,
+        )
+        bar_root = _resolve_bar_root(market_root, pointer)
+        market_frame, market_evidence, market_files_sha = _load_market_inputs(
+            bar_root,
+            trade_date=trade_date,
+        )
+        frame, market_formula_universe = _derive_macro_frame(
+            market_frame,
+            trade_date=trade_date,
+            provider_bundle=provider_fetch.bundle,
+        )
+        generation_manifest, _ = _write_primary_generation(
+            root=stage,
+            run_id=generation_id,
+            frame=frame,
+            provider_bundle=provider_fetch.bundle,
+            provider_captures=provider_fetch.captures,
+            market_pointer_sha256=expected_pointer_sha,
+            market_input_evidence=market_evidence,
+            market_input_files_sha256=market_files_sha,
+            market_formula_universe=market_formula_universe,
+        )
+    else:
+        generation_manifest, _, frame, _, _ = retry_generation
+
+    receipt = {
+        "schema_version": STAGING_RECEIPT_SCHEMA,
+        "run_id": generation_id,
+        "staging_root": str(stage),
+        "canonical_root": str(canonical),
+        "expected_catalog_sha256": hashlib.sha256(catalog_bytes).hexdigest(),
+        "expected_market_pointer_sha256": hashlib.sha256(pointer_bytes).hexdigest(),
+        "generation_manifest_sha256": generation_manifest[
+            "generation_manifest_sha256"
+        ],
+        "nbs_cn_pmi_url": requested_nbs_url,
+        "allow_tushare_fallback": bool(allow_tushare_fallback),
+        "as_of": trade_date,
+        "production_eligible": False,
+        "promoted": False,
+        "staged_at": _now_utc(),
+    }
+    _atomic_json(receipt_path, receipt)
+    receipt_sha = _sha256(receipt_path)
+    return {
+        "status": "staged",
+        "promoted": False,
+        "run_id": generation_id,
+        "staging_root": str(stage),
+        "staging_receipt": str(receipt_path),
+        "staging_receipt_sha256": receipt_sha,
+        "manifest": generation_manifest,
+        "row": frame.iloc[0].to_dict(),
+    }
+
+
+def _copy_staged_generation(*, source: Path, destination: Path) -> None:
+    if destination.exists() or destination.is_symlink():
+        raise MacroMartPromotionError("macro_generation_exists")
+    for candidate in (source, *source.rglob("*")):
+        metadata = os.lstat(candidate)
+        if stat.S_ISLNK(metadata.st_mode):
+            raise MacroMartPromotionError("macro_staging_symlink_rejected")
+        if candidate != source and not (
+            stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode)
+        ):
+            raise MacroMartPromotionError("macro_staging_member_invalid")
+    temp = destination.parent / f".{destination.name}.promoting"
+    if temp.exists() or temp.is_symlink():
+        raise MacroMartPromotionError("macro_promotion_temp_exists")
+    try:
+        shutil.copytree(source, temp, symlinks=True)
+        for member in (temp, *temp.rglob("*")):
+            if stat.S_ISLNK(os.lstat(member).st_mode):
+                raise MacroMartPromotionError("macro_staging_symlink_rejected")
+        _fsync_directory(temp)
+        os.replace(temp, destination)
+        _fsync_directory(destination.parent)
+    finally:
+        if temp.exists() and not temp.is_symlink():
+            shutil.rmtree(temp)
+
+
+def promote_staged_macro_generation(
+    *,
+    staging_root: str | Path,
+    canonical_root: str | Path = DEFAULT_MACRO_ROOT,
+    expected_catalog_sha256: str,
+) -> dict[str, Any]:
+    """Revalidate a staged generation and CAS-switch strict catalog v1."""
+
+    stage = _strict_read_root(staging_root)
+    receipt_path = stage / "staging_receipt.json"
+    receipt_bytes, receipt = _read_verified_bytes_and_json(
+        receipt_path,
+        trust_root=stage,
+        expected_sha256=None,
+        hash_blocker="macro_staging_receipt_hash_mismatch",
+        changed_blocker="macro_staging_receipt_changed",
+        unreadable_blocker="macro_staging_receipt_invalid",
+    )
+    if (
+        receipt.get("schema_version") != STAGING_RECEIPT_SCHEMA
+        or receipt.get("production_eligible") is not False
+        or receipt.get("promoted") is not False
+    ):
+        raise MacroMartPromotionError("macro_staging_receipt_contract_invalid")
+    run_id = _safe_run_id(str(receipt.get("run_id") or ""))
+    expected_catalog_sha = _assert_sha256(
+        expected_catalog_sha256,
+        blocker="macro_expected_catalog_hash_invalid",
+    )
+    if receipt.get("expected_catalog_sha256") != expected_catalog_sha:
+        raise MacroMartPromotionError("macro_staging_catalog_hash_mismatch")
+    expected_pointer_sha = _assert_sha256(
+        receipt.get("expected_market_pointer_sha256"),
+        blocker="macro_expected_market_pointer_hash_invalid",
+    )
+    canonical = _strict_read_root(canonical_root)
+    market_root = canonical.parent
+    if str(receipt.get("canonical_root") or "") != str(canonical):
+        raise MacroMartPromotionError("macro_staging_canonical_root_mismatch")
+    catalog_path = market_root / "_catalog.json"
+    pointer_path = market_root / "_latest.json"
+
+    with _catalog_writer_lock(market_root):
+        _recover_catalog_transactions(root=canonical, catalog_path=catalog_path)
+        catalog_bytes, catalog = _read_verified_bytes_and_json(
+            catalog_path,
+            trust_root=market_root,
+            expected_sha256=expected_catalog_sha,
+            hash_blocker="macro_expected_catalog_hash_mismatch",
+            changed_blocker="macro_catalog_changed_during_read",
+            unreadable_blocker="macro_catalog_invalid",
+        )
+        pointer_bytes, pointer = _read_verified_bytes_and_json(
+            pointer_path,
+            trust_root=market_root,
+            expected_sha256=expected_pointer_sha,
+            hash_blocker="macro_expected_market_pointer_hash_mismatch",
+            changed_blocker="macro_market_pointer_changed_during_read",
+            unreadable_blocker="macro_market_pointer_invalid",
+        )
+        catalog_signature = _stat_signature(os.lstat(catalog_path))
+        pointer_signature = _stat_signature(os.lstat(pointer_path))
+        trade_date = _validate_live_target(
+            pointer,
+            requested_as_of=str(receipt.get("as_of") or ""),
+            captured_at=_utc_now(),
+            enforce_capture_window=False,
+        )
+        loaded = _load_primary_generation_for_retry(
+            root=stage,
+            run_id=run_id,
+            trade_date=trade_date,
+            market_pointer_sha256=expected_pointer_sha,
+            nbs_cn_pmi_url=str(receipt.get("nbs_cn_pmi_url") or ""),
+            allow_tushare_fallback=receipt.get("allow_tushare_fallback") is True,
+        )
+        if loaded is None:
+            raise MacroMartPromotionError("macro_staging_generation_missing")
+        generation_manifest, attestation, frame, market_evidence, _ = loaded
+        if (
+            generation_manifest.get("generation_manifest_sha256")
+            != receipt.get("generation_manifest_sha256")
+        ):
+            raise MacroMartPromotionError("macro_staging_manifest_hash_mismatch")
+        source_generation = stage / "_generations" / run_id
+        destination = canonical / "_generations" / run_id
+        _copy_staged_generation(source=source_generation, destination=destination)
+        promoted_manifest = dict(generation_manifest)
+        promoted_manifest["generation_manifest"] = str(destination / "manifest.json")
+        promoted_manifest["resolved_table_path"] = str(destination / "part.parquet")
+        promoted_manifest["resolved_provider_bundle"] = str(
+            destination / "provider_bundle.json"
+        )
+        new_catalog = _strict_catalog_payload(
+            old_catalog=catalog,
+            market_root=market_root,
+            generation_manifest=promoted_manifest,
+        )
+        bar_root = _resolve_bar_root(market_root, pointer)
+        published = _publish_catalog_generation(
+            root=canonical,
+            run_id=run_id,
+            old_catalog_bytes=catalog_bytes,
+            new_catalog=new_catalog,
+            market_pointer_path=pointer_path,
+            market_pointer_bytes=pointer_bytes,
+            market_pointer_signature=pointer_signature,
+            catalog_signature=catalog_signature,
+            bar_root=bar_root,
+            market_input_evidence=market_evidence,
+            generation_manifest=promoted_manifest,
+            attestation=attestation,
+        )
+    return {
+        "status": "promoted",
+        "promoted": True,
+        "run_id": run_id,
+        "catalog_sha256": published["catalog_sha256"],
+        "previous_catalog_sha256": expected_catalog_sha,
+        "market_pointer_sha256": expected_pointer_sha,
+        "staging_receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
+        "manifest": published["generation_manifest"],
+        "transaction_journal": published["transaction_journal"],
+        "row": frame.iloc[0].to_dict(),
+    }
+
+
 def _validated_offline_frame(
     indicators: Mapping[str, Any],
     *,
@@ -4230,7 +4525,9 @@ __all__ = [
     "MACRO_FIELDS",
     "MacroMartPromotionError",
     "read_macro_mart",
+    "promote_staged_macro_generation",
     "refresh_cn_macro_mart",
     "run_cn_macro_maintenance",
+    "stage_cn_macro_authoritative_refresh",
     "write_macro_mart",
 ]

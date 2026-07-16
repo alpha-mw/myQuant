@@ -1,4 +1,4 @@
-"""CLI contract tests for the production CN Macro refresh command."""
+"""CLI contract tests for the v15 staged CN Macro publisher."""
 
 from __future__ import annotations
 
@@ -12,9 +12,12 @@ import quant_investor.cli.main as cli_main
 def _required_args() -> list[str]:
     return [
         "market",
-        "macro-refresh",
+        "macro-maintain",
         "--market",
         "CN",
+        "--as-of",
+        "2026-07-14",
+        "--authoritative-refresh",
         "--run-id",
         "cn_macro_primary_20260714",
         "--expected-catalog-sha256",
@@ -29,9 +32,9 @@ def _required_args() -> list[str]:
     ]
 
 
-def test_macro_refresh_help_discloses_live_and_cas_requirements(capsys):
+def test_macro_maintain_help_discloses_live_and_cas_requirements(capsys):
     with pytest.raises(SystemExit) as exc_info:
-        cli_main.main(["market", "macro-refresh", "--help"])
+        cli_main.main(["market", "macro-maintain", "--help"])
 
     assert exc_info.value.code == 0
     output = capsys.readouterr().out
@@ -43,14 +46,18 @@ def test_macro_refresh_help_discloses_live_and_cas_requirements(capsys):
     assert "--allow-tushare-fallback" in output
 
 
-def test_macro_refresh_dispatches_all_production_inputs(monkeypatch, capsys):
+def test_macro_maintain_stages_all_production_inputs(monkeypatch, capsys):
     captured: dict[str, object] = {}
 
-    def _fake_run_macro_refresh(**kwargs):
+    def _fake_run_macro_maintenance(**kwargs):
         captured.update(kwargs)
-        return {"status": "promoted", "run_id": kwargs["run_id"]}
+        return {"status": "staged", "promoted": False, "run_id": kwargs["run_id"]}
 
-    monkeypatch.setattr(cli_main, "run_macro_refresh", _fake_run_macro_refresh)
+    monkeypatch.setattr(
+        cli_main,
+        "run_macro_authoritative_maintenance",
+        _fake_run_macro_maintenance,
+    )
     cli_main.main(
         [
             *_required_args(),
@@ -61,8 +68,9 @@ def test_macro_refresh_dispatches_all_production_inputs(monkeypatch, capsys):
 
     assert captured == {
         "market": "CN",
-        "as_of": "",
-        "data_root": "data/parquet/cn/macro_daily",
+        "as_of": "2026-07-14",
+        "canonical_root": "data/parquet/cn/macro_daily",
+        "staging_root": "results/v15/macro_observation_staging",
         "run_id": "cn_macro_primary_20260714",
         "expected_catalog_sha256": "1" * 64,
         "expected_market_pointer_sha256": "2" * 64,
@@ -74,25 +82,26 @@ def test_macro_refresh_dispatches_all_production_inputs(monkeypatch, capsys):
         "allow_tushare_fallback": True,
     }
     assert json.loads(capsys.readouterr().out) == {
-        "status": "promoted",
+        "status": "staged",
+        "promoted": False,
         "run_id": "cn_macro_primary_20260714",
     }
 
 
-def test_macro_refresh_without_live_authorization_fails_before_dispatch(
+def test_macro_maintain_without_live_authorization_fails_before_dispatch(
     monkeypatch,
     capsys,
 ):
     called = False
 
-    def _unexpected_run_macro_refresh(**_kwargs):
+    def _unexpected_run_macro_maintenance(**_kwargs):
         nonlocal called
         called = True
 
     monkeypatch.setattr(
         cli_main,
-        "run_macro_refresh",
-        _unexpected_run_macro_refresh,
+        "run_macro_authoritative_maintenance",
+        _unexpected_run_macro_maintenance,
     )
 
     with pytest.raises(SystemExit) as exc_info:
@@ -100,4 +109,29 @@ def test_macro_refresh_without_live_authorization_fails_before_dispatch(
 
     assert exc_info.value.code == 2
     assert called is False
-    assert "requires explicit --allow-live" in capsys.readouterr().err
+    assert "--authoritative-refresh requires --allow-live" in capsys.readouterr().err
+
+
+def test_macro_promote_dispatches_only_staging_and_catalog_cas(monkeypatch, capsys):
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        cli_main,
+        "run_macro_promotion",
+        lambda **kwargs: captured.update(kwargs) or {"status": "promoted"},
+    )
+    cli_main.main(
+        [
+            "market",
+            "macro-promote",
+            "--staging-root",
+            "/tmp/macro-stage/run-1",
+            "--expected-catalog-sha256",
+            "a" * 64,
+        ]
+    )
+    assert captured == {
+        "staging_root": "/tmp/macro-stage/run-1",
+        "canonical_root": "data/parquet/cn/macro_daily",
+        "expected_catalog_sha256": "a" * 64,
+    }
+    assert json.loads(capsys.readouterr().out) == {"status": "promoted"}

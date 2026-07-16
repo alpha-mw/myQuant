@@ -27,7 +27,7 @@ DEFAULT_RECORD_ROOT = (
 )
 DEFAULT_DASHBOARD_ROOT = PROJECT_ROOT / "portfolio_dashboard"
 DEFAULT_PRIVATE_DASHBOARD_DIRNAME = "private"
-DASHBOARD_SCHEMA_VERSION = "dashboard_contract.v2"
+DASHBOARD_SCHEMA_VERSION = "dashboard_contract.v3"
 DEFAULT_BENCHMARK_SOURCE = "local"
 DEFAULT_INITIAL_BENCHMARK = 1.0
 DEFAULT_STOCK_BASIC_ROOT = PROJECT_ROOT / "data" / "parquet" / "cn" / "dag_core_raw" / "table=stock_basic"
@@ -1268,49 +1268,7 @@ def discover_record_runs(
     return daily_runs, warnings
 
 
-def build_theme_map(run: RecordRun) -> dict[str, str]:
-    theme_map: dict[str, str] = {}
-    snapshot = load_json(run.path / "market_snapshot.json")
-    for row in snapshot.get("theme_strength", []) if isinstance(snapshot.get("theme_strength"), list) else []:
-        theme = str(row.get("theme") or "").strip()
-        symbols = row.get("symbols")
-        if not theme or not isinstance(symbols, list):
-            continue
-        for symbol_value in symbols:
-            symbol = str(symbol_value or "").strip()
-            if symbol:
-                theme_map[symbol] = theme
-    for row in snapshot.get("candidate_pool", []) if isinstance(snapshot.get("candidate_pool"), list) else []:
-        symbol = str(row.get("symbol") or "").strip()
-        theme = str(row.get("theme_label") or row.get("candidate_source") or "").strip()
-        if symbol and theme:
-            theme_map.setdefault(symbol, theme)
-    for row in snapshot.get("switch_plan", []) if isinstance(snapshot.get("switch_plan"), list) else []:
-        buy_symbol = str(row.get("buy_symbol") or "").strip()
-        buy_theme = str(row.get("buy_theme") or "").strip()
-        if buy_symbol and buy_theme:
-            theme_map.setdefault(buy_symbol, buy_theme)
-    return theme_map
-
-
-def build_historical_theme_maps(
-    runs: list[RecordRun],
-) -> dict[str, dict[str, tuple[str, str]]]:
-    current: dict[str, tuple[str, str]] = {}
-    by_date: dict[str, dict[str, tuple[str, str]]] = {}
-    for run in sorted(runs, key=lambda item: (item.date, item.run_id)):
-        for symbol, theme in build_theme_map(run).items():
-            normalized = str(theme or "").strip()
-            if not normalized or normalized in {"UNSPECIFIED_RECORD_THEME", "UNCLASSIFIED"}:
-                continue
-            if normalized.startswith("行业:"):
-                continue
-            current[symbol] = (normalized, run.run_id)
-        by_date[run.date] = dict(current)
-    return by_date
-
-
-def load_sector_map(stock_basic_root: Path) -> tuple[dict[str, dict[str, str]], list[str]]:
+def load_sector_map(stock_basic_root: Path) -> tuple[dict[str, dict[str, str | None]], list[str]]:
     if not stock_basic_root.exists():
         return {}, [f"未找到 stock_basic 行业映射目录：{stock_basic_root}，sector 留空。"]
     try:
@@ -1326,12 +1284,25 @@ def load_sector_map(stock_basic_root: Path) -> tuple[dict[str, dict[str, str]], 
     except Exception as exc:  # pragma: no cover - defensive local artifact guard.
         return {}, [f"读取 stock_basic 行业映射失败：{exc}，sector 留空。"]
 
-    mapping: dict[str, dict[str, str]] = {}
+    parquet_files = sorted(stock_basic_root.rglob("*.parquet"))
+    generation_sha256 = (
+        canonical_json_sha256(
+            {str(path.relative_to(stock_basic_root)): sha256_file(path) for path in parquet_files}
+        )
+        if parquet_files
+        else None
+    )
+    mapping: dict[str, dict[str, str | None]] = {}
     for row in table.to_pylist():
         symbol = str(row.get("ts_code") or "").strip()
         industry = str(row.get("industry") or "").strip()
         if symbol and industry:
-            mapping[symbol] = {"sector": industry, "sub_sector": ""}
+            mapping[symbol] = {
+                "industry": industry,
+                "industry_source": "strict_parquet.stock_basic.industry",
+                "industry_as_of": None,
+                "industry_generation_sha256": generation_sha256,
+            }
     return mapping, []
 
 
@@ -2119,8 +2090,7 @@ def _position_contribution_date(
 
 def build_positions_rows(
     runs: list[RecordRun],
-    sector_map: dict[str, dict[str, str]],
-    historical_theme_by_date: dict[str, dict[str, tuple[str, str]]] | None = None,
+    sector_map: dict[str, dict[str, str | None]],
 ) -> tuple[list[dict[str, Any]], list[str]]:
     rows: list[dict[str, Any]] = []
     warnings: list[str] = []
@@ -2147,7 +2117,6 @@ def build_positions_rows(
             if row.get("symbol")
         }
         market_snapshot = load_json(run.path / "market_snapshot.json")
-        theme_map = build_theme_map(run)
         equity_sleeve_value = sum(
             value
             for value in (parse_float(item.get("current_value")) for item in ledger_rows)
@@ -2181,24 +2150,7 @@ def build_positions_rows(
                 if nav_weight is not None and daily_return is not None
                 else None
             )
-            sector_info = sector_map.get(symbol, {})
-            explicit_theme = theme_map.get(symbol, "")
-            theme = explicit_theme
-            theme_source = f"strategy_record:{run.run_id}" if explicit_theme else ""
-            if not theme:
-                historical_theme, source_run = (historical_theme_by_date or {}).get(run.date, {}).get(
-                    symbol,
-                    ("", ""),
-                )
-                if historical_theme:
-                    theme = historical_theme
-                    theme_source = f"prior_strategy_record:{source_run}"
-            if not theme and sector_info.get("sector"):
-                theme = f"行业: {sector_info['sector']}"
-                theme_source = "stock_basic.industry"
-            if not theme:
-                theme = "UNSPECIFIED_RECORD_THEME"
-                theme_source = "unavailable"
+            industry_info = sector_map.get(symbol, {})
             rows.append(
                 {
                     "date": run.date,
@@ -2213,11 +2165,12 @@ def build_positions_rows(
                         if equity_sleeve_weight is not None
                         else ""
                     ),
-                    "theme": theme,
-                    "theme_source": theme_source,
-                    "theme_memberships": theme,
-                    "sector": sector_info.get("sector", ""),
-                    "sub_sector": sector_info.get("sub_sector", ""),
+                    "industry": industry_info.get("industry"),
+                    "industry_source": industry_info.get("industry_source"),
+                    "industry_as_of": industry_info.get("industry_as_of"),
+                    "industry_generation_sha256": industry_info.get(
+                        "industry_generation_sha256"
+                    ),
                     "daily_return": f"{daily_return:.8f}" if daily_return is not None else "",
                     "contribution": f"{contribution:.8f}" if contribution is not None else "",
                     "contribution_effective_date": contribution_effective_date or "",
@@ -2241,18 +2194,32 @@ def build_positions_rows(
                     "risk_status": review.get("risk_status") or review.get("status") or "",
                 }
             )
-    unspecified_count = sum(1 for row in rows if row["theme"] == "UNSPECIFIED_RECORD_THEME")
-    if unspecified_count:
-        warnings.append(f"{unspecified_count} 条持仓记录未找到逐股票 theme，positions.csv 使用 UNSPECIFIED_RECORD_THEME。")
-    sector_theme_count = sum(1 for row in rows if row["theme"].startswith("行业: "))
-    if sector_theme_count:
-        warnings.append(f"{sector_theme_count} 条持仓记录缺少显式 theme，已使用 stock_basic industry 生成 '行业: <sector>' 回退标签。")
+    missing_industry_count = sum(1 for row in rows if not row.get("industry"))
+    if missing_industry_count:
+        warnings.append(
+            f"{missing_industry_count} 条持仓缺少 strict stock_basic.industry；保留 ticker 且 industry=null。"
+        )
     return rows, warnings
+
+
+def build_industry_rows(position_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "date": row.get("date"),
+            "ticker": row.get("ticker"),
+            "industry": row.get("industry") or None,
+            "industry_source": row.get("industry_source") or None,
+            "industry_as_of": row.get("industry_as_of") or None,
+            "industry_generation_sha256": row.get("industry_generation_sha256") or None,
+            "nav_weight": parse_float(row.get("nav_weight")),
+        }
+        for row in position_rows
+    ]
 
 
 def build_trade_rows(
     runs: list[RecordRun],
-    sector_map: dict[str, dict[str, str]],
+    sector_map: dict[str, dict[str, str | None]],
     *,
     warnings: list[str] | None = None,
     completeness: dict[str, Any] | None = None,
@@ -2263,7 +2230,6 @@ def build_trade_rows(
     skipped_incomplete = 0
     executed_seen = 0
     for run in runs:
-        theme_map = build_theme_map(run)
         source_rows = [
             (False, _trade_row_candidates(run, legacy_orders=False)),
             (True, _trade_row_candidates(run, legacy_orders=True)),
@@ -2309,8 +2275,7 @@ def build_trade_rows(
                 if key in seen:
                     continue
                 seen.add(key)
-                sector = sector_map.get(symbol, {}).get("sector", "")
-                theme = theme_map.get(symbol) or (f"行业: {sector}" if sector else "UNSPECIFIED_RECORD_THEME")
+                industry = sector_map.get(symbol, {}).get("industry")
                 fee = parse_float(
                     row.get("fee")
                     or row.get("commission")
@@ -2340,7 +2305,7 @@ def build_trade_rows(
                         "slippage": row.get("slippage") or "",
                         "ledger_delta": row.get("ledger_delta") or "",
                         "reason": row.get("reason") or "",
-                        "theme": theme,
+                        "industry": industry,
                     }
                 )
     candidates.sort(key=lambda item: (item["trade_date"], item["ticker"], item["side"], item["quantity"]))
@@ -2390,323 +2355,6 @@ def _numeric_record(row: dict[str, Any], numeric_fields: set[str]) -> dict[str, 
     return record
 
 
-def _theme_rows_from_positions(position_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    latest_date = max((str(row.get("date") or "") for row in position_rows), default="")
-    latest_rows = [row for row in position_rows if str(row.get("date") or "") == latest_date]
-    weights: dict[str, float] = defaultdict(float)
-    symbols: dict[str, set[str]] = defaultdict(set)
-    for row in latest_rows:
-        theme = str(row.get("theme") or "UNCLASSIFIED")
-        weights[theme] += nullable_float(row.get("nav_weight") or row.get("weight")) or 0.0
-        if row.get("ticker"):
-            symbols[theme].add(str(row["ticker"]))
-    return [
-        {
-            "theme_id": theme,
-            "theme_name": theme,
-            "lane": "market_observation",
-            "lifecycle": None,
-            "attention": None,
-            "attention_5d": None,
-            "attention_20d": None,
-            "attention_60d": None,
-            "attention_120d": None,
-            "attention_trajectory_120d": None,
-            "industrial_validation": None,
-            "market_confirmation": None,
-            "crowding": None,
-            "valuation_risk": None,
-            "evidence_confidence": None,
-            "nav_weight": weights[theme],
-            "member_count": len(symbols[theme]),
-            "pevc_thesis_id": None,
-            "pevc_thesis_version": None,
-            "supply_chain_roles": None,
-            "thesis_review": None,
-        }
-        for theme in sorted(weights, key=weights.get, reverse=True)
-    ]
-
-
-def _load_theme_state_rows(
-    latest_run: RecordRun,
-    *,
-    protocol_file: Path | None = None,
-    expected_sha256: str = "",
-) -> tuple[
-    list[dict[str, Any]],
-    Path | None,
-    str | None,
-    list[str],
-    dict[str, Any],
-]:
-    blockers: list[str] = []
-    if protocol_file is not None:
-        candidates = [protocol_file]
-        actual_sha = sha256_file(protocol_file)
-        if not expected_sha256:
-            blocker = "theme_protocol_expected_sha256_missing"
-            return [], None, None, [blocker], _missing_theme_protocol(blocker)
-        if actual_sha != expected_sha256:
-            blocker = "theme_protocol_artifact_sha256_mismatch"
-            return [], None, None, [blocker], _missing_theme_protocol(blocker)
-    else:
-        candidates = [
-        latest_run.path / "theme_state.v2.json",
-        latest_run.path / "theme_state_v2.json",
-        latest_run.path / "theme_protocol_v2.json",
-        ]
-    for path in candidates:
-        payload = load_json(path)
-        if not payload:
-            continue
-        if protocol_file is not None:
-            if str(payload.get("schema_version") or "") != "theme_protocol.v2":
-                blocker = "theme_protocol_schema_mismatch"
-                return [], None, None, [blocker], _missing_theme_protocol(blocker)
-            try:
-                from quant_investor.themes.protocol_v2 import (
-                    ThemeProtocolConfig,
-                    build_theme_protocol_hash,
-                    theme_protocol_code_hash,
-                )
-                from quant_investor.themes.taxonomy import ThemeTaxonomy
-
-                config_payload = payload.get("config")
-                if not isinstance(config_payload, dict):
-                    raise ValueError("config missing")
-                expected_protocol_hash = build_theme_protocol_hash(
-                    taxonomy=ThemeTaxonomy.load(),
-                    config=ThemeProtocolConfig(**config_payload),
-                )
-                if payload.get("protocol_hash") != expected_protocol_hash:
-                    raise ValueError("self hash mismatch")
-                unsigned = dict(payload)
-                supplied_artifact_hash = str(unsigned.pop("artifact_hash", ""))
-                if (
-                    not supplied_artifact_hash
-                    or supplied_artifact_hash != canonical_json_sha256(unsigned)
-                ):
-                    raise ValueError("artifact hash mismatch")
-                if payload.get("implementation_code_sha256") != (
-                    theme_protocol_code_hash()
-                ):
-                    raise ValueError("implementation hash mismatch")
-            except (TypeError, ValueError):
-                blocker = "theme_protocol_self_hash_mismatch"
-                return [], None, None, [blocker], _missing_theme_protocol(blocker)
-        raw_rows = payload.get("themes") or payload.get("states") or payload.get("theme_states")
-        keyed_rows: list[tuple[str, dict[str, Any]]] = []
-        if isinstance(raw_rows, dict):
-            keyed_rows = [
-                (str(theme_id), dict(row))
-                for theme_id, row in raw_rows.items()
-                if isinstance(row, dict)
-            ]
-        elif isinstance(raw_rows, list):
-            keyed_rows = [
-                (str(row.get("theme_id") or ""), dict(row))
-                for row in raw_rows
-                if isinstance(row, dict)
-            ]
-        else:
-            continue
-        rows = [
-            _normalize_theme_state_row(theme_id, row)
-            for theme_id, row in keyed_rows
-        ]
-        rows = [row for row in rows if row.get("theme_id")]
-        payload_as_of = explicit_iso_date(payload.get("as_of"))
-        if protocol_file is not None and any(
-            row.get("schema_version") != "theme_state.v2"
-            or explicit_iso_date(row.get("as_of")) != payload_as_of
-            or not isinstance(row.get("prequalification_blockers"), list)
-            for row in rows
-        ):
-            blocker = "theme_protocol_state_contract_invalid"
-            return [], None, None, [blocker], _missing_theme_protocol(blocker)
-        rows.sort(
-            key=lambda row: (
-                -(nullable_float(row.get("adjusted_percentile_rank")) or 0.0),
-                str(row.get("theme_id") or ""),
-            )
-        )
-        if rows:
-            explicit_as_of = explicit_iso_date(
-                payload.get("as_of")
-                or payload.get("as_of_date")
-                or payload.get("available_at")
-            )
-            if protocol_file is not None:
-                protocol_summary = _theme_protocol_summary(payload, path)
-            else:
-                blockers.append("theme_protocol_v2_unverified_observer_state")
-                protocol_summary = _missing_theme_protocol(
-                    "theme_protocol_v2_unverified_observer_state"
-                )
-            return rows, path, explicit_as_of, blockers, protocol_summary
-    if protocol_file is not None:
-        blockers.append("theme_protocol_artifact_unreadable")
-    elif not blockers:
-        blockers.append("theme_protocol_v2_missing")
-    missing_blocker = (
-        blockers[0] if blockers else "theme_protocol_v2_missing"
-    )
-    return [], None, None, blockers, _missing_theme_protocol(missing_blocker)
-
-
-def _missing_theme_protocol(blocker: str) -> dict[str, Any]:
-    return {
-        "schema_version": "theme_protocol.v2",
-        "protocol_hash": None,
-        "status": "blocked",
-        "blockers": [blocker],
-        "observer_enabled": None,
-        "formal_enabled": None,
-        "formal_kill_switch": None,
-        "formal_pool": [],
-        "formal_pool_count": 0,
-        "formal_producer": None,
-        "rollback_status": None,
-        "rollback_reason": None,
-        "lane_counts": None,
-        "readback_verified": False,
-        "artifact_sha256": None,
-    }
-
-
-def _theme_protocol_summary(
-    payload: dict[str, Any],
-    path: Path,
-) -> dict[str, Any]:
-    lanes = payload.get("lanes") if isinstance(payload.get("lanes"), dict) else {}
-    formal_pool = [
-        str(value) for value in list(payload.get("formal_pool") or []) if str(value)
-    ]
-    reported_status = str(payload.get("status") or "blocked")
-    blockers: list[str] = []
-    if reported_status == "blocked":
-        for state in dict(payload.get("states") or {}).values():
-            if not isinstance(state, dict):
-                continue
-            blockers.extend(
-                str(value)
-                for value in list(state.get("prequalification_blockers") or [])
-                if str(value)
-            )
-        if not blockers:
-            blockers.append("theme_protocol_reported_blocked")
-    return {
-        "schema_version": "theme_protocol.v2",
-        "protocol_hash": str(payload.get("protocol_hash") or "") or None,
-        "status": reported_status,
-        "blockers": list(dict.fromkeys(blockers)),
-        "observer_enabled": payload.get("observer_enabled")
-        if isinstance(payload.get("observer_enabled"), bool)
-        else None,
-        "formal_enabled": payload.get("formal_enabled")
-        if isinstance(payload.get("formal_enabled"), bool)
-        else None,
-        "formal_kill_switch": payload.get("formal_kill_switch")
-        if isinstance(payload.get("formal_kill_switch"), bool)
-        else None,
-        "formal_pool": formal_pool,
-        "formal_pool_count": len(formal_pool),
-        "formal_producer": str(payload.get("formal_producer") or "") or None,
-        "rollback_status": str(payload.get("rollback_status") or "") or None,
-        "rollback_reason": str(payload.get("rollback_reason") or "") or None,
-        "lane_counts": {
-            str(lane): len(values) if isinstance(values, list) else 0
-            for lane, values in lanes.items()
-        },
-        "readback_verified": True,
-        "artifact_sha256": sha256_file(path),
-    }
-
-
-def _normalize_theme_state_row(
-    theme_id: str,
-    raw: dict[str, Any],
-) -> dict[str, Any]:
-    row = dict(raw)
-    row["theme_id"] = str(row.get("theme_id") or theme_id)
-    row["theme_name"] = str(row.get("theme_name") or row["theme_id"])
-    row["pevc_thesis_id"] = (
-        str(row.get("pevc_thesis_id") or row.get("thesis_id") or "") or None
-    )
-    row["pevc_thesis_version"] = (
-        str(
-            row.get("pevc_thesis_version")
-            or row.get("thesis_version")
-            or ""
-        )
-        or None
-    )
-    numeric_fields = {
-        "attention",
-        "attention_5d",
-        "attention_20d",
-        "attention_60d",
-        "attention_120d",
-        "attention_history_coverage",
-        "industrial_validation",
-        "market_confirmation",
-        "crowding",
-        "valuation_risk",
-        "evidence_confidence",
-        "base_rank_score",
-        "base_percentile_rank",
-        "pevc_prior",
-        "pevc_rank_adjustment",
-        "adjusted_percentile_rank",
-        "nav_weight",
-    }
-    for field in numeric_fields:
-        row[field] = nullable_float(row.get(field))
-    row["attention_trajectory_120d"] = {
-        "5d": row.get("attention_5d"),
-        "20d": row.get("attention_20d"),
-        "60d": row.get("attention_60d"),
-        "120d": row.get("attention_120d"),
-        "history_coverage": row.get("attention_history_coverage"),
-    }
-    raw_supply_roles = row.get("supply_chain_roles")
-    if isinstance(raw_supply_roles, list):
-        row["supply_chain_roles"] = [
-            str(value) for value in raw_supply_roles if str(value)
-        ]
-    elif row.get("supply_chain_role"):
-        row["supply_chain_roles"] = [str(row["supply_chain_role"])]
-    else:
-        row["supply_chain_roles"] = None
-    raw_thesis_review = row.get("thesis_review")
-    if isinstance(raw_thesis_review, dict):
-        row["thesis_review"] = dict(raw_thesis_review)
-    elif row.get("thesis_review_status") or row.get("thesis_review_by"):
-        row["thesis_review"] = {
-            "status": str(row.get("thesis_review_status") or "") or None,
-            "review_by": str(row.get("thesis_review_by") or "") or None,
-        }
-    else:
-        row["thesis_review"] = None
-    member_count = nullable_float(row.get("member_count"))
-    row["member_count"] = int(member_count) if member_count is not None else None
-    for field in (
-        "risk_flags",
-        "eligibility_blockers",
-        "prequalification_blockers",
-        "downstream_blockers",
-        "pending_confirmation_dates",
-    ):
-        values = row.get(field)
-        row[field] = (
-            [str(value) for value in values if str(value)]
-            if isinstance(values, list)
-            else []
-        )
-    return row
-
-
 def _factor_rows_from_registry(registry_path: Path | None) -> list[dict[str, Any]]:
     if registry_path is None or not registry_path.is_file():
         return []
@@ -2719,11 +2367,7 @@ def _factor_rows_from_registry(registry_path: Path | None) -> list[dict[str, Any
         if not isinstance(item, dict):
             continue
         metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-        health = (
-            metadata.get("health_monitor")
-            if isinstance(metadata.get("health_monitor"), dict)
-            else {}
-        )
+        health = metadata.get("health_monitor") if isinstance(metadata.get("health_monitor"), dict) else {}
         rows.append(
             {
                 "factor_id": item.get("factor_id") or item.get("name") or item.get("id"),
@@ -2731,17 +2375,8 @@ def _factor_rows_from_registry(registry_path: Path | None) -> list[dict[str, Any
                 "family": item.get("family") or item.get("category"),
                 "status": item.get("status") or item.get("state"),
                 "weight": nullable_float(item.get("weight")),
-                "health_window": (
-                    health.get("last_evaluation_id")
-                    or health.get("latest_reviewed_at")
-                    or item.get("health_window")
-                    or item.get("last_health_window")
-                ),
+                "health_window": health.get("last_evaluation_id") or health.get("latest_reviewed_at"),
                 "health_status": health.get("status"),
-                "health_action": health.get("action"),
-                "health_failure_streak": nullable_float(
-                    health.get("consecutive_failures")
-                ),
                 "challenger": item.get("challenger"),
                 "last_transition": item.get("last_transition"),
             }
@@ -2751,7 +2386,7 @@ def _factor_rows_from_registry(registry_path: Path | None) -> list[dict[str, Any
 
 def _factor_canonical_producer_control() -> dict[str, Any]:
     try:
-        from quant_investor.factors.governance_protocol_v2 import (
+        from quant_investor.factors.governance_protocol_v3 import (
             canonical_replay_producer_control,
         )
 
@@ -2769,7 +2404,7 @@ def _factor_canonical_producer_control() -> dict[str, Any]:
     }
 
 
-def _load_factor_protocol_v2_readback(
+def _load_factor_protocol_v3_readback(
     latest_run: RecordRun,
     *,
     registry_sha: str | None,
@@ -2777,13 +2412,13 @@ def _load_factor_protocol_v2_readback(
     expected_sha256: str = "",
 ) -> tuple[dict[str, Any], Path | None]:
     try:
-        from quant_investor.factors.governance_protocol_v2 import (
+        from quant_investor.factors.governance_protocol_v3 import (
             PROTOCOL_HASH,
             PROTOCOL_SCHEMA_VERSION,
         )
     except ImportError:
         PROTOCOL_HASH = ""
-        PROTOCOL_SCHEMA_VERSION = "factor-governance-protocol.v2"
+        PROTOCOL_SCHEMA_VERSION = "factor-governance-protocol.v3"
     producer_control = _factor_canonical_producer_control()
     if protocol_file is not None:
         candidates = [protocol_file]
@@ -2800,9 +2435,9 @@ def _load_factor_protocol_v2_readback(
             ), None
     else:
         candidates = [
-            latest_run.path / "factor_governance_protocol_v2.json",
-            latest_run.path / "factor_protocol_v2.json",
-            latest_run.path / "factor_governance_readback.v2.json",
+            latest_run.path / "factor_governance_protocol_v3.json",
+            latest_run.path / "factor_protocol_v3.json",
+            latest_run.path / "factor_governance_readback.v3.json",
         ]
     for path in candidates:
         payload = load_json(path)
@@ -2822,7 +2457,7 @@ def _load_factor_protocol_v2_readback(
             validation_blockers.append("factor_protocol_schema_mismatch")
         if not PROTOCOL_HASH or actual_hash != PROTOCOL_HASH:
             validation_blockers.append("factor_protocol_hash_mismatch")
-        if str(raw.get("protocol_version") or "") != "v2":
+        if str(raw.get("protocol_version") or "") != "v3":
             validation_blockers.append("factor_protocol_version_mismatch")
         after_registry_sha = str(raw.get("after_registry_sha256") or "")
         if after_registry_sha and registry_sha and after_registry_sha != registry_sha:
@@ -2898,7 +2533,7 @@ def _load_factor_protocol_v2_readback(
         readback_verified = not validation_blockers and bool(sha256_file(path))
         normalized = {
             "schema_version": PROTOCOL_SCHEMA_VERSION,
-            "protocol_version": str(raw.get("protocol_version") or "v2"),
+            "protocol_version": str(raw.get("protocol_version") or "v3"),
             "expected_protocol_hash": PROTOCOL_HASH or None,
             "protocol_hash": actual_hash or None,
             "protocol_hash_match": bool(PROTOCOL_HASH and actual_hash == PROTOCOL_HASH),
@@ -2944,7 +2579,7 @@ def _load_factor_protocol_v2_readback(
         return normalized, path
     return _missing_factor_protocol(
         PROTOCOL_HASH,
-        "factor_protocol_v2_missing",
+        "factor_protocol_v3_missing",
     ), None
 
 
@@ -2954,8 +2589,8 @@ def _missing_factor_protocol(
 ) -> dict[str, Any]:
     producer_control = _factor_canonical_producer_control()
     return {
-        "schema_version": "factor-governance-protocol.v2",
-        "protocol_version": "v2",
+        "schema_version": "factor-governance-protocol.v3",
+        "protocol_version": "v3",
         "expected_protocol_hash": expected_protocol_hash or None,
         "protocol_hash": None,
         "protocol_hash_match": False,
@@ -3179,7 +2814,6 @@ def build_canonical_as_of_matrix(
     latest_run: RecordRun,
     benchmark_summary: dict[str, Any],
     *,
-    theme_as_of: str | None,
     factor_registry_sha: str | None,
 ) -> dict[str, Any]:
     snapshot = load_json(latest_run.path / "market_snapshot.json")
@@ -3202,12 +2836,11 @@ def build_canonical_as_of_matrix(
         "analysis_trading_date": analysis_trading_date,
         "quote_at": quote_at,
         "benchmark_value_dates": _latest_explicit_benchmark_value_dates(benchmark_summary),
-        "theme_date": explicit_iso_date(theme_as_of),
         "factor_registry_sha": factor_registry_sha,
     }
 
 
-def build_dashboard_contract_v2(
+def build_dashboard_contract_v3(
     *,
     run_id: str,
     generated_at: str,
@@ -3222,8 +2855,6 @@ def build_dashboard_contract_v2(
     warnings: list[str],
     registry_path: Path | None = None,
     trading_calendar: dict[str, Any] | None = None,
-    theme_protocol_file: Path | None = None,
-    expected_theme_sha256: str = "",
     factor_protocol_file: Path | None = None,
     expected_factor_sha256: str = "",
     manual_ledger_sha_declared: bool | None = None,
@@ -3278,27 +2909,26 @@ def build_dashboard_contract_v2(
     }
     factor_registry_path = registry_path or PROJECT_ROOT / "quant_investor" / "factor_registry" / "mined_factors.json"
     factor_sha = sha256_file(factor_registry_path)
-    factor_protocol, factor_protocol_path = _load_factor_protocol_v2_readback(
+    factor_protocol, factor_protocol_path = _load_factor_protocol_v3_readback(
         latest_run,
         registry_sha=factor_sha,
         protocol_file=factor_protocol_file,
         expected_sha256=expected_factor_sha256,
     )
-    (
-        theme_rows,
-        theme_state_path,
-        theme_as_of,
-        theme_protocol_blockers,
-        theme_protocol,
-    ) = (
-        _load_theme_state_rows(
-            latest_run,
-            protocol_file=theme_protocol_file,
-            expected_sha256=expected_theme_sha256,
-        )
+    manifest = load_json(latest_run.path / "manifest.json")
+    readiness_reference = manifest.get("v15_run_readiness")
+    if not isinstance(readiness_reference, dict):
+        readiness_reference = {}
+    readiness_path = latest_run.path / str(
+        readiness_reference.get("path") or "v15_run_readiness.json"
     )
-    if not theme_rows and theme_protocol_file is None:
-        theme_rows = _theme_rows_from_positions(position_rows)
+    readiness_sha = sha256_file(readiness_path)
+    readiness_valid = bool(
+        readiness_reference.get("schema_version") == "v15_run_readiness.v1"
+        and readiness_reference.get("path") == "v15_run_readiness.json"
+        and readiness_sha == readiness_reference.get("sha256")
+    )
+    industry_rows = build_industry_rows(position_rows)
     calendar = dict(trading_calendar or {})
     if not calendar:
         calendar = {
@@ -3319,7 +2949,6 @@ def build_dashboard_contract_v2(
     as_of_matrix = build_canonical_as_of_matrix(
         latest_run,
         benchmark_summary,
-        theme_as_of=theme_as_of,
         factor_registry_sha=factor_sha,
     )
     blockers: list[str] = []
@@ -3336,16 +2965,8 @@ def build_dashboard_contract_v2(
         blockers.append("manual_ledger_sha_not_declared")
     if calendar.get("status") != "available":
         blockers.append("formal_trading_calendar_missing")
-    if theme_state_path is None:
-        blockers.append("theme_state_v2_missing_observer_only")
-    blockers.extend(theme_protocol_blockers)
-    if (
-        theme_protocol_file is not None
-        and as_of_matrix.get("analysis_trading_date")
-        and as_of_matrix.get("theme_date")
-        != as_of_matrix.get("analysis_trading_date")
-    ):
-        blockers.append("theme_protocol_as_of_mismatch")
+    if not readiness_valid:
+        blockers.append("v15_run_readiness_missing_or_hash_mismatch")
     if factor_sha is None:
         blockers.append("factor_registry_missing")
     if factor_protocol.get("status") == "blocked":
@@ -3361,16 +2982,12 @@ def build_dashboard_contract_v2(
         ("strategy_record_date", "as_of_strategy_record_missing"),
         ("analysis_trading_date", "as_of_analysis_trade_date_missing"),
         ("quote_at", "as_of_quote_missing"),
-        ("theme_date", "as_of_theme_missing"),
     ):
         if as_of_matrix.get(field) is None:
             blockers.append(blocker)
     analysis_date = explicit_iso_date(as_of_matrix.get("analysis_trading_date"))
     if analysis_date:
-        theme_date = explicit_iso_date(as_of_matrix.get("theme_date"))
         quote_date = explicit_iso_date(as_of_matrix.get("quote_at"))
-        if theme_date and theme_date > analysis_date:
-            blockers.append("as_of_theme_after_analysis_date")
         if quote_date and quote_date > analysis_date:
             blockers.append("as_of_quote_after_analysis_date")
         if any(
@@ -3404,11 +3021,11 @@ def build_dashboard_contract_v2(
         "monthly_return": "previous_month_end_anchor",
         "unknown_numeric": None,
     }
-    schema_path = DEFAULT_DASHBOARD_ROOT / "schema" / "dashboard_contract.v2.schema.json"
+    schema_path = DEFAULT_DASHBOARD_ROOT / "schema" / "dashboard_contract.v3.schema.json"
     protocol_payload = {
         "schema_version": DASHBOARD_SCHEMA_VERSION,
         "metric_policy": metric_policy,
-        "required_tables": ["nav", "positions", "trades", "themes", "factors"],
+        "required_tables": ["nav", "positions", "trades", "industries", "factors"],
     }
     return {
         "schema_version": DASHBOARD_SCHEMA_VERSION,
@@ -3418,6 +3035,7 @@ def build_dashboard_contract_v2(
         "generated_at": generated_at,
         "status": status,
         "blockers": list(dict.fromkeys(blockers)),
+        "v15_run_readiness": dict(readiness_reference),
         "as_of_matrix": as_of_matrix,
         "trading_calendar": calendar,
         "nav_return_provenance": nav_return_provenance,
@@ -3435,10 +3053,10 @@ def build_dashboard_contract_v2(
                 "path_summary": path_summary(manifest_path),
                 "sha256": sha256_file(manifest_path),
             },
-            "theme": {
-                "path_summary": path_summary(theme_state_path),
-                "sha256": sha256_file(theme_state_path),
-                "status": "theme_state_v2" if theme_state_path else "observer_from_positions",
+            "v15_run_readiness": {
+                "path_summary": path_summary(readiness_path),
+                "sha256": readiness_sha,
+                "status": "verified" if readiness_valid else "blocked",
             },
             "factor_registry": {
                 "path_summary": path_summary(factor_registry_path),
@@ -3454,8 +3072,7 @@ def build_dashboard_contract_v2(
         "nav": [_numeric_record(row, nav_numeric) for row in nav_rows],
         "positions": [_numeric_record(row, position_numeric) for row in position_rows],
         "trades": [_numeric_record(row, trade_numeric) for row in trade_rows],
-        "themes": theme_rows,
-        "theme_protocol": theme_protocol,
+        "industries": industry_rows,
         "factors": _factor_rows_from_registry(factor_registry_path),
         "factor_protocol": factor_protocol,
         "reconciliation": reconciliation,
@@ -3463,7 +3080,7 @@ def build_dashboard_contract_v2(
     }
 
 
-def write_dashboard_snapshot_v2(
+def write_dashboard_snapshot_v3(
     json_path: Path,
     js_path: Path,
     contract: dict[str, Any],
@@ -3476,7 +3093,7 @@ def write_dashboard_snapshot_v2(
     )
     _write_private_text_atomic(
         js_path,
-        "window.DashboardSnapshotV2 = "
+        "window.DashboardSnapshotV3 = "
         + json.dumps(contract, ensure_ascii=False, allow_nan=False)
         + ";\n"
         + generated_records_js,
@@ -3519,7 +3136,7 @@ def dashboard_display_warnings(warnings: list[str]) -> list[str]:
             manifest_skips += 1
         elif text.startswith("trade_record_incomplete:"):
             incomplete_trade_rows += 1
-        elif "条持仓记录缺少显式 theme" in text and "回退标签" in text:
+        elif "条持仓记录缺少strict industry" in text and "回退标签" in text:
             continue
         else:
             visible.append(text)
@@ -3543,7 +3160,7 @@ def dashboard_display_infos(warnings: list[str], infos: list[str] | None = None)
     visible = list(infos or [])
     for warning in warnings:
         text = str(warning)
-        if "条持仓记录缺少显式 theme" in text and "回退标签" in text:
+        if "条持仓记录缺少strict industry" in text and "回退标签" in text:
             visible.append(text)
     return visible
 
@@ -3603,7 +3220,7 @@ def generated_records_js_text(
         f"  recordCount: {record_count},\n"
         f"  warnings: {json.dumps(dashboard_display_warnings(warnings), ensure_ascii=False, indent=2)},\n"
         f"  infos: {json.dumps(dashboard_display_infos(warnings, infos), ensure_ascii=False, indent=2)},\n"
-        f"  contract: {'window.DashboardSnapshotV2' if contract is not None else 'null'},\n"
+        f"  contract: {'window.DashboardSnapshotV3' if contract is not None else 'null'},\n"
         "  csv: {\n"
         f"    nav: {js_string(nav_csv)},\n"
         f"    positions: {js_string(positions_csv)},\n"
@@ -3672,8 +3289,6 @@ def export(
     benchmark_gap_fill: str = "snapshot",
     benchmark_file: Path | None = None,
     trading_calendar_root: Path | None = None,
-    theme_protocol_file: Path | None = None,
-    expected_theme_sha256: str = "",
     factor_protocol_file: Path | None = None,
     expected_factor_sha256: str = "",
 ) -> dict[str, Any]:
@@ -3732,13 +3347,8 @@ def export(
     positions_rows, position_warnings = build_positions_rows(
         manual_runs,
         sector_map,
-        historical_theme_by_date=build_historical_theme_maps(nav_runs),
     )
     apply_position_exposures(nav_rows, positions_rows)
-    position_theme_provenance: dict[str, int] = {}
-    for row in positions_rows:
-        source = str(row.get("theme_source") or "unavailable")
-        position_theme_provenance[source] = position_theme_provenance.get(source, 0) + 1
     trade_warnings: list[str] = []
     trade_record_completeness: dict[str, Any] = {}
     trade_rows = build_trade_rows(
@@ -3778,11 +3388,10 @@ def export(
             "weight",
             "nav_weight",
             "equity_sleeve_weight",
-            "theme",
-            "theme_source",
-            "theme_memberships",
-            "sector",
-            "sub_sector",
+            "industry",
+            "industry_source",
+            "industry_as_of",
+            "industry_generation_sha256",
             "daily_return",
             "contribution",
             "contribution_effective_date",
@@ -3822,7 +3431,7 @@ def export(
             "slippage",
             "ledger_delta",
             "reason",
-            "theme",
+            "industry",
         ],
         trade_rows,
     )
@@ -3845,16 +3454,6 @@ def export(
             "portfolio_nav 使用现金流调整后的单位净值；"
             f"{funding_text} 已从收益计算中剔除，账户总资产与资金基准保留在 NAV 审计字段。"
         )
-    carried_theme_count = sum(
-        count
-        for source, count in position_theme_provenance.items()
-        if source.startswith("prior_strategy_record:")
-    )
-    if carried_theme_count:
-        dashboard_infos.append(
-            f"{carried_theme_count} 条历史持仓使用截至当日最近正式 strategy record 的显式 theme，"
-            "仅前向继承，不使用未来记录。"
-        )
     effective_manual_run = manual_runs[-1]
     effective_ledger_path = effective_manual_run.manual_ledger_path or (
         effective_manual_run.path / "ledger_after_manual_switch.csv"
@@ -3872,7 +3471,7 @@ def export(
         )
     ):
         raise RuntimeError("manual manifest changed after baseline selection")
-    contract = build_dashboard_contract_v2(
+    contract = build_dashboard_contract_v3(
         run_id=f"dashboard_{manual_runs[-1].run_id}",
         generated_at=generated_at,
         record_root=record_root,
@@ -3885,8 +3484,6 @@ def export(
         manifest_path=effective_manifest_path,
         warnings=warnings,
         trading_calendar=trading_calendar,
-        theme_protocol_file=theme_protocol_file,
-        expected_theme_sha256=expected_theme_sha256,
         factor_protocol_file=factor_protocol_file,
         expected_factor_sha256=expected_factor_sha256,
         manual_ledger_sha_declared=(
@@ -3906,9 +3503,9 @@ def export(
         contract=contract,
     )
     private_dir = dashboard_root / DEFAULT_PRIVATE_DASHBOARD_DIRNAME
-    private_json_path = private_dir / "dashboard_snapshot.v2.json"
-    private_js_path = private_dir / "dashboard_snapshot.v2.js"
-    write_dashboard_snapshot_v2(
+    private_json_path = private_dir / "dashboard_snapshot.v3.json"
+    private_js_path = private_dir / "dashboard_snapshot.v3.js"
+    write_dashboard_snapshot_v3(
         private_json_path,
         private_js_path,
         contract,
@@ -3925,7 +3522,7 @@ def export(
         "trading_calendar": contract["trading_calendar"],
         "nav_return_provenance": contract["nav_return_provenance"],
         "reconciliation": contract["reconciliation"],
-        "theme_protocol": contract["theme_protocol"],
+        "v15_run_readiness": contract["v15_run_readiness"],
         "factor_protocol": contract["factor_protocol"],
         "generated_at": generated_at,
         "source_root": path_summary(record_root),
@@ -3939,12 +3536,7 @@ def export(
         "positions_rows": len(positions_rows),
         "trade_rows": len(trade_rows),
         "portfolio_nav_source": nav_source_summary,
-        "position_theme_provenance": position_theme_provenance,
         "protocol_artifacts": {
-            "theme": {
-                "path_summary": path_summary(theme_protocol_file),
-                "sha256": sha256_file(theme_protocol_file),
-            },
             "factor": {
                 "path_summary": path_summary(factor_protocol_file),
                 "sha256": sha256_file(factor_protocol_file),
@@ -4037,21 +3629,10 @@ def main() -> None:
         help="Strict Parquet CN bars root used only to build the formal trade_date mask.",
     )
     parser.add_argument(
-        "--theme-protocol-file",
-        type=Path,
-        default=None,
-        help="Explicit Theme Protocol v2 JSON artifact (never copied into strategy records).",
-    )
-    parser.add_argument(
-        "--expected-theme-sha256",
-        default="",
-        help="Required byte SHA-256 when --theme-protocol-file is provided.",
-    )
-    parser.add_argument(
         "--factor-protocol-file",
         type=Path,
         default=None,
-        help="Explicit Factor Governance Protocol v2 readback JSON artifact.",
+        help="Explicit Factor Governance Protocol v3 readback JSON artifact.",
     )
     parser.add_argument(
         "--expected-factor-sha256",
@@ -4066,8 +3647,6 @@ def main() -> None:
         benchmark_gap_fill=args.benchmark_gap_fill,
         benchmark_file=args.benchmark_file,
         trading_calendar_root=args.trading_calendar_root,
-        theme_protocol_file=args.theme_protocol_file,
-        expected_theme_sha256=args.expected_theme_sha256,
         factor_protocol_file=args.factor_protocol_file,
         expected_factor_sha256=args.expected_factor_sha256,
     )

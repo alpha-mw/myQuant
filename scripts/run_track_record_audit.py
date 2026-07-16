@@ -31,11 +31,11 @@ Learned record schema, based on
   and, from 2026-06-23 onward, ``realtime_execution_price`` plus
   ``realtime_execution_price_field``.
 * ``market_snapshot.json`` stores portfolio, index snapshots, breadth,
-  ``theme_strength``, Markov/theme metadata, ``execution_price_gate`` and
-  ``manual_execution`` mirrors.
-* ``theme_pool_audit.json`` stores the production Theme Candidate Pool audit:
-  ``summary``, ``admitted_themes``, ``rejected_themes``,
-  ``excluded_symbols_by_reason``, and symbol-level theme metadata.
+  structured industry provenance, Markov metadata, ``execution_price_gate``
+  and ``manual_execution`` mirrors.
+* Current v15 records may include ``v15_run_readiness.json``. Historical mixed
+  records remain readable, but their retired Theme fields are never consumed
+  as current authorization evidence.
 
 This script is deterministic, offline, and read-only for strategy records. It
 only writes audit outputs under ``results/track_record_audit/<YYYYMMDD>/`` (or a

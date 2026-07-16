@@ -2,16 +2,6 @@
   "use strict";
 
   var MS_PER_DAY = 24 * 60 * 60 * 1000;
-  var THEMES = [
-    "Semiconductor Equipment",
-    "Robotics",
-    "Industrial Automation",
-    "Aerospace Manufacturing",
-    "Advanced Materials",
-    "New Energy Equipment",
-    "Defense Electronics"
-  ];
-
   var STOCKS = [
     ["688001.SH", "华芯精密", "Semiconductor Equipment", "Technology", "Etch Equipment"],
     ["688002.SH", "中微装备", "Semiconductor Equipment", "Technology", "Deposition Tools"],
@@ -45,7 +35,7 @@
     "Valuation reset",
     "Stop loss",
     "Position sizing",
-    "Theme rotation",
+    "Industry rotation",
     "Risk control"
   ];
 
@@ -187,7 +177,7 @@
 
 	  function buildPositionsSampleCSV() {
 	    var lines = [
-	      "date,ticker,name,weight,nav_weight,equity_sleeve_weight,theme,sector,sub_sector,daily_return,contribution,market_value,quantity,avg_cost,cost_basis,current_price"
+	      "date,ticker,name,weight,nav_weight,equity_sleeve_weight,industry,sector,sub_sector,daily_return,contribution,market_value,quantity,avg_cost,cost_basis,current_price"
 	    ];
     var dates = monthEndWorkdays(new Date(2024, 0, 1), new Date(2025, 11, 31));
     dates.forEach(function (date, dateIndex) {
@@ -240,7 +230,7 @@
 
   function buildTradesSampleCSV() {
     var lines = [
-      "trade_date,ticker,name,side,price,quantity,trade_amount,fee,reason,theme"
+      "trade_date,ticker,name,side,price,quantity,trade_amount,fee,reason,industry"
     ];
     var tradeDays = [];
     for (var date = new Date(2024, 0, 9); date <= new Date(2025, 11, 23); date.setDate(date.getDate() + 7)) {
@@ -510,7 +500,7 @@
   }
 
   function normalizePositionsRows(rows) {
-    var errors = validateRequired(rows, ["date", "ticker", "name", "theme"], "positions.csv");
+    var errors = validateRequired(rows, ["date", "ticker", "name"], "positions.csv");
     var warnings = [];
     var weightWarningLedger = {};
     var normalized = [];
@@ -550,9 +540,8 @@
 	        weight: navWeight,
 	        nav_weight: navWeight,
 	        equity_sleeve_weight: sleeveWeight,
-	        theme: String(row.theme || "").trim() || "UNCLASSIFIED",
-	        theme_source: String(row.theme_source || "").trim(),
-	        theme_memberships: String(row.theme_memberships || row.theme || "").trim(),
+	        industry: String(row.industry || "").trim() || null,
+	        industry_source: String(row.industry_source || "").trim() || null,
 	        sector: String(row.sector || "").trim(),
 	        sub_sector: String(row.sub_sector || "").trim(),
 	        daily_return: dailyReturn,
@@ -585,7 +574,7 @@
     if (!rows.length) return { rows: [], errors: [], warnings: ["未上传交易数据。"] };
     var errors = validateRequired(
       rows,
-      ["trade_date", "ticker", "name", "side", "price", "quantity", "trade_amount", "fee", "reason", "theme"],
+      ["trade_date", "ticker", "name", "side", "price", "quantity", "trade_amount", "fee", "reason"],
       "trades.csv"
     );
     var warnings = [];
@@ -618,7 +607,7 @@
         order_id: String(row.order_id || "").trim(),
         fill_id: String(row.fill_id || "").trim(),
         reason: String(row.reason || "").trim(),
-        theme: String(row.theme || "").trim() || "UNCLASSIFIED",
+        industry: String(row.industry || "").trim() || null,
         raw: row
       });
     });
@@ -668,7 +657,6 @@
   window.DashboardData = {
     SAMPLE_CSV: SAMPLE_CSV,
     BENCHMARK_LABELS: BENCHMARK_LABELS,
-    THEMES: THEMES,
     STOCKS: STOCKS,
     buildNavSampleCSV: buildNavSampleCSV,
     buildPositionsSampleCSV: buildPositionsSampleCSV,
