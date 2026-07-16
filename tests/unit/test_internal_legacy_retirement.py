@@ -97,9 +97,9 @@ def test_sourceless_loader_blocks_retired_modules(module_name, tmp_path):
     fake_pyc = tmp_path / "retired.pyc"
     fake_pyc.write_bytes(b"not a real pyc")
 
-    with pytest.raises(ModuleNotFoundError, match="retired in v15"):
+    with pytest.raises(ModuleNotFoundError, match="retired in v14"):
         _QuantInvestorSourcelessFinder().find_spec(module_name)
-    with pytest.raises(ModuleNotFoundError, match="retired in v15"):
+    with pytest.raises(ModuleNotFoundError, match="retired in v14"):
         load_shadowed_module(module_name, fake_pyc)
 
 
