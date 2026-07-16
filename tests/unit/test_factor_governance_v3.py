@@ -23,7 +23,10 @@ from quant_investor.factors.governance_canonical_replay_v3 import (
 )
 from quant_investor.factors.governance_protocol_v3 import governance_runtime_status
 import quant_investor.factors.governance_protocol_v3 as protocol_v3
-from quant_investor.factors.runtime import MinedFactorRegistry
+from quant_investor.factors.runtime import (
+    MinedFactorRegistry,
+    production_factor_set_sha256,
+)
 
 
 def _digest(value: str) -> str:
@@ -46,7 +49,7 @@ def _replay(
     registry_file_sha256: str | None = None,
 ) -> dict:
     registry_sha = registry_file_sha256 or _digest("registry")
-    production_factor_set_sha = _digest("factor-set")
+    production_factor_set_sha = production_factor_set_sha256(["incumbent"])
     calendar_sha = _digest("calendar")
     pit_sha = _digest("pit")
     context_sha = semantic_sha256(
@@ -165,6 +168,27 @@ def test_v3_replay_validates_exact_five_stage_graph_and_rejects_v2() -> None:
         validate_v3_evidence({"schema_version": "factor-governance-replay-evidence.v2"})
 
 
+def test_v3_replay_recomputes_factor_set_sha_from_a_arm_set() -> None:
+    replay = _replay()
+    replay["production_factor_set_sha256"] = production_factor_set_sha256(
+        ["different-incumbent"]
+    )
+    replay["context_sha256"] = semantic_sha256(
+        {
+            "registry_file_sha256": replay["registry_file_sha256"],
+            "production_factor_set_sha256": replay[
+                "production_factor_set_sha256"
+            ],
+            "calendar_sha256": replay["calendar_sha256"],
+            "pit_sha256": replay["pit_sha256"],
+        }
+    )
+    for stage in replay["stages"]:
+        stage["context_sha256"] = replay["context_sha256"]
+    with pytest.raises(CanonicalReplayV3Error, match="factor-set SHA mismatch"):
+        validate_canonical_replay_v3(replay)
+
+
 def _verified_evidence(
     factor_name: str = "challenger",
     *,
@@ -218,7 +242,9 @@ def test_runtime_rejects_evidence_bound_to_different_runtime_contract(
     manifest = {
         "production_factor_count": 6,
         "production_factor_names": [record.name for record in records],
-        "production_factor_set_sha256": _digest("factor-set"),
+        "production_factor_set_sha256": production_factor_set_sha256(
+            ["incumbent"]
+        ),
     }
     registry = SimpleNamespace(
         metadata={

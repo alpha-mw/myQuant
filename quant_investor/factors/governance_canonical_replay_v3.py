@@ -304,6 +304,15 @@ def validate_canonical_replay_v3(value: Mapping[str, Any]) -> dict[str, Any]:
     if context_sha != expected_context_sha:
         raise CanonicalReplayV3Error("canonical replay context SHA mismatch")
     factor_set = _symbols(payload["factor_set"], "factor_set")
+    # Local import avoids a module-load cycle while using the single runtime
+    # authority for factor-set normalization and hashing.
+    from quant_investor.factors.runtime import production_factor_set_sha256
+
+    recomputed_factor_set_sha = production_factor_set_sha256(factor_set)
+    if production_factor_set_sha != recomputed_factor_set_sha:
+        raise CanonicalReplayV3Error(
+            "canonical replay production factor-set SHA mismatch"
+        )
     comparison = _exact(
         payload["comparison"], {"incumbent", "challenger", "slot"}, "comparison"
     )
