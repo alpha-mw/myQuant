@@ -35,7 +35,7 @@ from quant_investor.factors.governance import (  # noqa: E402
     FactorLifecycleState,
     FactorRecord,
 )
-from quant_investor.factors.governance_protocol_v2 import (  # noqa: E402
+from quant_investor.factors.governance_protocol_v3 import (  # noqa: E402
     FORWARD_PRODUCTION_APPLY_BLOCKER,
 )
 from quant_investor.factors.historical_shadow import (  # noqa: E402

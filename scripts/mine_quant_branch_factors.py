@@ -35,7 +35,7 @@ from quant_investor.factors.governance import (  # noqa: E402
 from quant_investor.factors.registry_store import (  # noqa: E402
     load_registry_snapshot_strict,
 )
-from quant_investor.factors.governance_protocol_v2 import (  # noqa: E402
+from quant_investor.factors.governance_protocol_v3 import (  # noqa: E402
     FDR_Q,
     FORWARD_PRODUCTION_APPLY_BLOCKER,
     benjamini_hochberg_by_family,
@@ -1844,7 +1844,7 @@ def apply_production_candidate_registry_updates(
         "status": "blocked" if requested else "report_only",
         "fail_closed_reason": (
             "direct_candidate_registry_write_retired_use_"
-            "factor_governance_protocol_v2"
+            "factor_governance_protocol_v3"
             if requested
             else ""
         ),
@@ -1994,7 +1994,7 @@ def apply_production_family_governance(
         "status": "blocked" if write else "report_only_retired",
         "fail_closed_reason": (
             "bulk_family_reconciliation_retired_use_"
-            "factor_governance_protocol_v2"
+            "factor_governance_protocol_v3"
         ),
         "before_registry_sha256": snapshot.registry_sha256,
         "after_registry_sha256": snapshot.registry_sha256,

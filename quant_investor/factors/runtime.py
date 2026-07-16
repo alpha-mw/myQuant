@@ -1360,9 +1360,9 @@ class MinedFactorScorer:
                 "blockers": blockers,
             }
 
-        # Local import avoids the module-load cycle: protocol v2 owns the
+        # Local import avoids the module-load cycle: protocol v3 owns the
         # complete production readiness contract and imports this registry type.
-        from quant_investor.factors.governance_protocol_v2 import (
+        from quant_investor.factors.governance_protocol_v3 import (
             governance_runtime_status,
         )
 
@@ -2573,7 +2573,7 @@ def production_runtime_metadata_is_ready(
     # Recompute all executable identities instead of accepting well-shaped
     # nested claims.  Imports stay local to avoid the protocol/runtime cycle.
     try:
-        from quant_investor.factors.governance_protocol_v2 import (
+        from quant_investor.factors.governance_protocol_v3 import (
             governance_runtime_status,
         )
         from quant_investor.factors.runtime_contract import (

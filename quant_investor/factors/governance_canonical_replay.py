@@ -1,6 +1,8 @@
-"""Fail-closed local byte readback for factor-governance replay evidence.
+"""Historical-only byte readback for the retired v1/v2 replay graph.
 
-This module proves only that one explicitly selected local evidence graph was
+Active runtime and automation must not import this module.  It is retained
+only to verify immutable historical evidence.  This module proves only that
+one explicitly selected local evidence graph was
 read from stable bytes and recomputed consistently.  It does not authenticate
 the producer, authorize a production mutation, or make the graph eligible for
 production apply.

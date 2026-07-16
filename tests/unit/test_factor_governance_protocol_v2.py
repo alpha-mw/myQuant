@@ -455,7 +455,7 @@ def test_only_canonical_producer_artifact_can_build_apply_plan(tmp_path) -> None
         load_governance_replay_evidence(handwritten)
 
 
-def test_canonical_evidence_producer_cli_writes_verified_private_artifact(
+def test_retired_v2_evidence_cli_rejects_without_writing(
     tmp_path,
     capsys,
 ) -> None:
@@ -475,14 +475,11 @@ def test_canonical_evidence_producer_cli_writes_verified_private_artifact(
         ]
     )
 
-    assert exit_code == 0
-    normalized = load_governance_replay_evidence(evidence_path)
-    assert normalized["evidence_hash"]
-    assert normalized["producer"]["production_apply_eligible"] is False
-    output = capsys.readouterr().out
-    assert "production_apply_eligible=false" in output
-    assert CANONICAL_FULL_CHAIN_PRODUCER_BLOCKER in output
-    assert evidence_path.stat().st_mode & 0o777 == 0o600
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "v2_is_retired" in captured.err
+    assert not evidence_path.exists()
 
 
 def test_slot_risk_budget_retains_previous_when_evidence_is_insufficient() -> None:
@@ -602,7 +599,7 @@ def _historical_inverse_wal_fixture(tmp_path: Path) -> dict[str, object]:
     }
 
 
-def test_swap_rollback_same_month_second_swap_is_blocked_without_budget_refund(
+def test_retired_v2_rollback_cli_rejects_without_registry_change(
     tmp_path,
     capsys,
 ) -> None:
@@ -610,7 +607,6 @@ def test_swap_rollback_same_month_second_swap_is_blocked_without_budget_refund(
     registry_path = fixture["registry_path"]
     ledger_path = fixture["ledger_path"]
     wal_path = fixture["wal_path"]
-    before = fixture["before"]
     after_apply = fixture["after"]
     applied = fixture["applied"]
     assert isinstance(registry_path, Path)
@@ -641,43 +637,21 @@ def test_swap_rollback_same_month_second_swap_is_blocked_without_budget_refund(
         applied["evidence_hash"],
     ]
 
-    assert rollback_main(common_rollback_args) == 0
-    cli_dry_run = json.loads(capsys.readouterr().out)
-    assert cli_dry_run["status"] == "dry_run_ready"
-    assert cli_dry_run["apply_requested"] is False
-
-    dry_run = run_rollback(parse_rollback_args(common_rollback_args))
-    assert dry_run["status"] == "dry_run_ready"
+    assert rollback_main(common_rollback_args) == 2
+    captured = capsys.readouterr()
+    assert "v2 rollback is retired" in captured.err
+    with pytest.raises(ValueError, match="v2 rollback is retired"):
+        run_rollback(parse_rollback_args(common_rollback_args))
     assert load_registry_snapshot_strict(registry_path).registry_sha256 == (
         after_apply.registry_sha256
     )
-
-    rollback_wal = tmp_path / "wal" / "rollback.json"
-    rollback = run_rollback(
-        parse_rollback_args(
-            [
-                *common_rollback_args,
-                "--rollback-wal",
-                str(rollback_wal),
-                "--apply-rollback",
-            ]
-        )
-    )
-    restored = load_registry_snapshot_strict(registry_path)
-    assert rollback["status"] == "applied"
-    assert rollback["monthly_budget_refunded"] is False
-    assert rollback["mutation_budget_ledger_before_sha256"] == rollback[
-        "mutation_budget_ledger_after_sha256"
-    ]
     assert ledger_path.read_bytes() == ledger_before_rollback
-    assert restored.registry_sha256 == before.registry_sha256
-    assert rollback_wal.exists()
 
     assert monthly_mutation_budget_blockers(ledger_path, "2026-07") == [
         "monthly_transition_budget_exhausted"
     ]
     assert load_registry_snapshot_strict(registry_path).registry_sha256 == (
-        before.registry_sha256
+        after_apply.registry_sha256
     )
     assert len(load_mutation_budget_ledger(ledger_path)) == 1
 

@@ -9,8 +9,7 @@ from quant_investor.factors import evidence as _evidence
 from quant_investor.factors import execution_cost as _execution_cost
 from quant_investor.factors import expression as _expression
 from quant_investor.factors import governance as _governance
-from quant_investor.factors import governance_protocol_v2 as _governance_protocol_v2
-from quant_investor.factors import governance_evidence as _governance_evidence
+from quant_investor.factors import governance_protocol_v3 as _governance_protocol_v3
 from quant_investor.factors import health as _health
 from quant_investor.factors import library as _library
 from quant_investor.factors import matrix as _matrix
@@ -37,8 +36,7 @@ from quant_investor.factors.evidence import *  # noqa: F403
 from quant_investor.factors.expression import *  # noqa: F403
 from quant_investor.factors.execution_cost import *  # noqa: F403
 from quant_investor.factors.governance import *  # noqa: F403
-from quant_investor.factors.governance_protocol_v2 import *  # noqa: F401,F403
-from quant_investor.factors.governance_evidence import *  # noqa: F401,F403
+from quant_investor.factors.governance_protocol_v3 import *  # noqa: F401,F403
 from quant_investor.factors.health import *  # noqa: F403
 from quant_investor.factors.library import *  # noqa: F403
 from quant_investor.factors.matrix import *  # noqa: F403
@@ -74,8 +72,7 @@ __all__ = [
     *_evidence.__all__,
     *_execution_cost.__all__,
     *_governance.__all__,
-    *_governance_protocol_v2.__all__,
-    *_governance_evidence.__all__,
+    *_governance_protocol_v3.__all__,
     *_matrix.__all__,
     *_metrics.__all__,
     *_operators.__all__,

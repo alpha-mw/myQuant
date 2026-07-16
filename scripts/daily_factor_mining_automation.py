@@ -27,23 +27,38 @@ from scripts.retest_aquant_alpha_mix_8gate import _json_default  # noqa: E402
 from quant_investor.factors.pit_fundamentals import (  # noqa: E402
     DEFAULT_FUNDAMENTAL_MART_ROOT,
 )
-from quant_investor.factors.governance_protocol_v2 import (  # noqa: E402
+from quant_investor.factors.governance_protocol_v3 import (  # noqa: E402
     FORWARD_PRODUCTION_APPLY_BLOCKER,
     PROTOCOL_HASH,
     PROTOCOL_VERSION,
-    apply_governed_transition,
     canonical_replay_producer_control,
     protocol_hash,
-)
-from quant_investor.factors.governance_evidence import (  # noqa: E402
-    build_registry_mutation_plan_from_evidence,
-    load_governance_replay_evidence,
 )
 from quant_investor.factors.registry_store import (  # noqa: E402
     load_registry_snapshot_strict,
 )
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
+
+
+def load_governance_replay_evidence(*_args: Any, **_kwargs: Any) -> None:
+    """Retired v2 hook retained only so stale callers fail explicitly."""
+
+    raise ValueError("factor-governance-replay-evidence.v2 is retired")
+
+
+def build_registry_mutation_plan_from_evidence(
+    *_args: Any, **_kwargs: Any
+) -> None:
+    """Retired v2 hook retained only so stale callers fail explicitly."""
+
+    raise ValueError("FactorGovernanceProtocol v2 mutation plans are retired")
+
+
+def apply_governed_transition(*_args: Any, **_kwargs: Any) -> None:
+    """Registry mutation is unavailable until bootstrap is separately approved."""
+
+    raise ValueError(FORWARD_PRODUCTION_APPLY_BLOCKER)
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -484,12 +499,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--apply-governed-transitions",
         action="store_true",
-        help="Apply one validated FactorGovernanceProtocol v2 month-end slot swap.",
+        help="Retired compatibility flag; v3 registry mutation remains blocked.",
     )
     parser.add_argument(
         "--protocol-version",
         default="",
-        help="Required and must equal v2 when applying a governed transition.",
+        help="Legacy compatibility input; registry mutation remains blocked.",
     )
     parser.add_argument(
         "--expected-protocol-hash",
@@ -500,8 +515,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--governed-evidence-json",
         default="",
         help=(
-            "Canonical output from build_factor_governance_replay_evidence.py. "
-            "Hand-written mutation-plan envelopes are not accepted."
+            "Legacy v2 input is rejected; v3 bootstrap is plan-only."
         ),
     )
     parser.add_argument(
@@ -704,7 +718,7 @@ def run_daily_automation(args: argparse.Namespace) -> dict[str, Any]:
     if registry_write_requested and market_evidence_blocker:
         snapshot = load_registry_snapshot_strict(str(args.registry_path))
         production_governance_manifest = {
-            "schema_version": "factor-governance-protocol.v2",
+            "schema_version": "factor-governance-protocol.v3",
             "protocol_version": PROTOCOL_VERSION,
             "protocol_hash": protocol_hash(),
             "apply_requested": True,
@@ -722,32 +736,28 @@ def run_daily_automation(args: argparse.Namespace) -> dict[str, Any]:
             ),
         }
     elif registry_write_requested:
-        governed_evidence = load_governance_replay_evidence(
-            str(args.governed_evidence_json)
-        )
-        transition_plan, valid_trading_days = (
-            build_registry_mutation_plan_from_evidence(
-                registry_path=str(args.registry_path),
-                evidence=governed_evidence,
-                wal_path=(
-                    mining_output_dir
-                    / f"protocol_v2_transition_{timestamp_slug}.json"
-                ),
-                budget_ledger_path=str(args.mutation_budget_ledger),
-            )
-        )
-        production_governance_manifest = apply_governed_transition(
-            str(args.registry_path),
-            transition_plan,
-            expected_protocol_hash=str(args.expected_protocol_hash),
-            valid_trading_days=valid_trading_days,
-            write=True,
-        )
+        snapshot = load_registry_snapshot_strict(str(args.registry_path))
+        production_governance_manifest = {
+            "schema_version": "factor-governance-protocol.v3",
+            "protocol_version": PROTOCOL_VERSION,
+            "protocol_hash": protocol_hash(),
+            "apply_requested": True,
+            "registry_path": str(args.registry_path),
+            "run_id": run_id,
+            "source_report": str(report_json_path),
+            "status": "blocked",
+            "blockers": [FORWARD_PRODUCTION_APPLY_BLOCKER],
+            "before_registry_sha256": snapshot.registry_sha256,
+            "after_registry_sha256": snapshot.registry_sha256,
+            "inverse_wal_path": "",
+            "changed_record_names": [],
+            "canonical_replay_producer_control": canonical_replay_producer_control(),
+        }
     else:
         snapshot = load_registry_snapshot_strict(str(args.registry_path))
         producer_control = canonical_replay_producer_control()
         production_governance_manifest = {
-            "schema_version": "factor-governance-protocol.v2",
+            "schema_version": "factor-governance-protocol.v3",
             "protocol_version": PROTOCOL_VERSION,
             "protocol_hash": protocol_hash(),
             "apply_requested": False,

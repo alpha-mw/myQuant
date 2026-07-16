@@ -1,6 +1,8 @@
-"""FactorGovernanceProtocol v2 contracts and fail-closed transition engine.
+"""Historical-only FactorGovernanceProtocol v2 replay contracts.
 
-The module is deliberately deterministic and offline.  It does not mine a
+Active runtime and automation must not import this module.  It is retained
+only to read and test immutable historical v2 evidence.  The module is
+deliberately deterministic and offline.  It does not mine a
 factor or manufacture portfolio evidence.  It validates evidence produced by
 the existing health, selection-shadow and full v13 control-chain replays, then
 builds one record-scoped CAS/WAL mutation for one factor slot.
