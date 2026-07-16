@@ -135,7 +135,7 @@ def test_macro_observation_maintenance_preserves_run_id(
 
     assert captured["run_id"] == "observation-run"
     assert captured["local_observations"] == []
-    assert captured["staging_root"] == "results/v14/macro_observation_staging"
+    assert captured["staging_root"] == "results/v15/macro_observation_staging"
     assert '"promoted": false' in capsys.readouterr().out
 
 

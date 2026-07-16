@@ -20,9 +20,9 @@ from quant_investor.macro.contracts import (
 from quant_investor.macro.snapshot import build_macro_snapshot
 
 
-STANDALONE_STAGING_SCHEMA = "macro-standalone-staging.v14"
+STANDALONE_STAGING_SCHEMA = "macro-standalone-staging.v15"
 DEFAULT_STANDALONE_STAGING_ROOT = Path(
-    "results/v14/macro_observation_staging"
+    "results/v15/macro_observation_staging"
 )
 _SAFE_SLUG = re.compile(r"^[A-Za-z0-9_.-]+$")
 

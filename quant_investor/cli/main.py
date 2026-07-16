@@ -76,12 +76,18 @@ def run_macro_maintenance(**kwargs):
     return _run_cn_macro_maintenance(**kwargs)
 
 
-def run_macro_refresh(**kwargs):
+def run_macro_authoritative_maintenance(**kwargs):
     from quant_investor.market.macro_mart import (
-        refresh_cn_macro_mart as _refresh_cn_macro_mart,
+        stage_cn_macro_authoritative_refresh,
     )
 
-    return _refresh_cn_macro_mart(**kwargs)
+    return stage_cn_macro_authoritative_refresh(**kwargs)
+
+
+def run_macro_promotion(**kwargs):
+    from quant_investor.market.macro_mart import promote_staged_macro_generation
+
+    return promote_staged_macro_generation(**kwargs)
 
 
 def run_macro_analysis(**kwargs):
@@ -518,51 +524,9 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
     )
 
-    market_macro_refresh = market_subparsers.add_parser(
-        "macro-refresh",
-        help="以显式 live 授权和双 SHA CAS 刷新 CN Macro canonical mart",
-    )
-    market_macro_refresh.add_argument(
-        "--market",
-        required=True,
-        choices=["CN"],
-    )
-    market_macro_refresh.add_argument("--as-of", default="")
-    market_macro_refresh.add_argument(
-        "--data-root",
-        default="data/parquet/cn/macro_daily",
-    )
-    market_macro_refresh.add_argument("--run-id", required=True)
-    market_macro_refresh.add_argument(
-        "--expected-catalog-sha256",
-        required=True,
-    )
-    market_macro_refresh.add_argument(
-        "--expected-market-pointer-sha256",
-        required=True,
-    )
-    market_macro_refresh.add_argument(
-        "--allow-live",
-        action="store_true",
-        help="显式允许调用 live provider；缺失时命令 fail-closed",
-    )
-    market_macro_refresh.add_argument(
-        "--nbs-cn-pmi-url",
-        required=True,
-        help="国家统计局 cn_pmi 正式发布页的 issuer-bound HTTPS URL",
-    )
-    market_macro_refresh.add_argument(
-        "--allow-tushare-fallback",
-        action="store_true",
-        help=(
-            "仅在 NBS 瞬态传输失败时显式允许 cn_pmi 回退到 Tushare；"
-            "解析或语义冲突仍 fail-closed"
-        ),
-    )
-
     market_macro_maintain = market_subparsers.add_parser(
         "macro-maintain",
-        help="暂存 CN Macro 兼容数据或维护 hash-bound observations",
+        help="暂存 CN Macro 数据；权威刷新也只写隔离 staging",
     )
     market_macro_maintain.add_argument("--market", required=True, choices=["CN"])
     market_macro_maintain.add_argument("--as-of", required=True)
@@ -607,6 +571,33 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
     )
     market_macro_maintain.add_argument("--allow-live", action="store_true")
+    market_macro_maintain.add_argument(
+        "--authoritative-refresh",
+        action="store_true",
+        help="捕获权威 provider 与市场证据并只写隔离 staging",
+    )
+    market_macro_maintain.add_argument(
+        "--canonical-root",
+        default="data/parquet/cn/macro_daily",
+    )
+    market_macro_maintain.add_argument("--expected-catalog-sha256", default="")
+    market_macro_maintain.add_argument(
+        "--expected-market-pointer-sha256", default=""
+    )
+    market_macro_maintain.add_argument("--nbs-cn-pmi-url", default="")
+
+    market_macro_promote = market_subparsers.add_parser(
+        "macro-promote",
+        help="独立重验 staging generation 并 CAS 更新 strict catalog",
+    )
+    market_macro_promote.add_argument("--staging-root", required=True)
+    market_macro_promote.add_argument(
+        "--canonical-root",
+        default="data/parquet/cn/macro_daily",
+    )
+    market_macro_promote.add_argument(
+        "--expected-catalog-sha256", required=True
+    )
 
     market_macro_analyze = market_subparsers.add_parser(
         "macro-analyze",
@@ -1113,30 +1104,6 @@ def main(argv: list[str] | None = None) -> None:
         )
         return
 
-    if args.command == "market" and args.market_command == "macro-refresh":
-        if not args.allow_live:
-            parser.error("market macro-refresh requires explicit --allow-live")
-        if args.allow_tushare_fallback and not args.allow_live:
-            parser.error(
-                "--allow-tushare-fallback requires explicit --allow-live"
-            )
-        _print_json(
-            run_macro_refresh(
-                market=args.market,
-                as_of=args.as_of,
-                data_root=args.data_root,
-                run_id=args.run_id,
-                expected_catalog_sha256=args.expected_catalog_sha256,
-                expected_market_pointer_sha256=(
-                    args.expected_market_pointer_sha256
-                ),
-                allow_live=args.allow_live,
-                nbs_cn_pmi_url=args.nbs_cn_pmi_url,
-                allow_tushare_fallback=args.allow_tushare_fallback,
-            )
-        )
-        return
-
     if args.command == "market" and args.market_command == "macro-maintain":
         if args.allow_tushare_fallback and not args.allow_live:
             parser.error(
@@ -1155,6 +1122,40 @@ def main(argv: list[str] | None = None) -> None:
             parser.error(
                 "compatibility --input-json cannot be combined with live provider flags"
             )
+        if args.authoritative_refresh:
+            if (
+                not args.allow_live
+                or not args.run_id
+                or not args.expected_catalog_sha256
+                or not args.expected_market_pointer_sha256
+                or not args.nbs_cn_pmi_url
+            ):
+                parser.error(
+                    "--authoritative-refresh requires --allow-live, --run-id, "
+                    "--expected-catalog-sha256, --expected-market-pointer-sha256 "
+                    "and --nbs-cn-pmi-url"
+                )
+            if args.input_json or args.input_observations:
+                parser.error(
+                    "--authoritative-refresh cannot be combined with local input"
+                )
+            _print_json(
+                run_macro_authoritative_maintenance(
+                    market=args.market,
+                    as_of=args.as_of,
+                    canonical_root=args.canonical_root,
+                    staging_root=args.staging_root,
+                    run_id=args.run_id,
+                    expected_catalog_sha256=args.expected_catalog_sha256,
+                    expected_market_pointer_sha256=(
+                        args.expected_market_pointer_sha256
+                    ),
+                    allow_live=args.allow_live,
+                    nbs_cn_pmi_url=args.nbs_cn_pmi_url,
+                    allow_tushare_fallback=args.allow_tushare_fallback,
+                )
+            )
+            return
         if args.input_observations or args.allow_live:
             from quant_investor.macro.observer import load_macro_observations
 
@@ -1209,6 +1210,16 @@ def main(argv: list[str] | None = None) -> None:
                 allow_live=False,
                 allow_public_fallback=False,
                 run_id=args.run_id,
+            )
+        )
+        return
+
+    if args.command == "market" and args.market_command == "macro-promote":
+        _print_json(
+            run_macro_promotion(
+                staging_root=args.staging_root,
+                canonical_root=args.canonical_root,
+                expected_catalog_sha256=args.expected_catalog_sha256,
             )
         )
         return

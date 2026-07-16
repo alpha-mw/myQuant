@@ -488,7 +488,7 @@ def test_storage_validate_keeps_legacy_macro_catalog_as_nonblocking_diagnostic(
         macro_mart_module,
         "read_macro_mart",
         lambda **kwargs: (_ for _ in ()).throw(
-            AssertionError("legacy catalog must not be claimed as a v14 generation")
+            AssertionError("legacy catalog must not be claimed as a v15 generation")
         ),
     )
 
@@ -497,11 +497,11 @@ def test_storage_validate_keeps_legacy_macro_catalog_as_nonblocking_diagnostic(
     assert result["status"] == "passed"
     assert result["blockers"] == []
     assert result["macro_generation"] == {
-        "status": "legacy_catalog_entry_not_v14_generation",
+        "status": "legacy_catalog_entry_not_v15_generation",
         "catalog_schema_version": "myquant-cn-clean-catalog.v1",
         "production_eligible": False,
         "branch_readiness": "blocked",
-        "blockers": ["macro_v14_generation_unavailable"],
+        "blockers": ["macro_v15_generation_unavailable"],
     }
 
 
