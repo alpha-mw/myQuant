@@ -807,6 +807,11 @@ def test_markov_context_forwards_turnover_cap_when_signal_sets_it(monkeypatch: p
                 turnover_cap=0.30,
                 feature_snapshot={},
                 diagnostic_notes=[],
+                regime_scope="full_market",
+                source_symbol_count=2,
+                unsampled_symbol_count=2,
+                sampled=False,
+                production_eligible=True,
             )
 
     monkeypatch.setattr("quant_investor.market.dag.context.MarkovRegimeEngine", FakeEngine)
@@ -859,6 +864,11 @@ def test_markov_context_never_increases_baseline_risk_budget(monkeypatch: pytest
                 turnover_cap=None,
                 feature_snapshot={},
                 diagnostic_notes=[],
+                regime_scope="full_market",
+                source_symbol_count=2,
+                unsampled_symbol_count=2,
+                sampled=False,
+                production_eligible=True,
             )
 
     monkeypatch.setattr("quant_investor.market.dag.context.MarkovRegimeEngine", PermissiveEngine)

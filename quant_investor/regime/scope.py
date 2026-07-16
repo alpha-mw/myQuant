@@ -170,10 +170,12 @@ def build_regime_scope(
     else:
         regime_scope = REGIME_SCOPE_SUBSET
 
-    production_eligible = regime_scope in {
-        REGIME_SCOPE_FULL_MARKET,
-        REGIME_SCOPE_MARKET_REFERENCE,
-    } and source_count >= min_sample
+    production_eligible = (
+        regime_scope == REGIME_SCOPE_FULL_MARKET
+        and not sampled
+        and source_count >= min_sample
+        and source_count == unsampled_count
+    )
     if not production_eligible:
         if regime_scope == REGIME_SCOPE_INSUFFICIENT:
             diag.append(
@@ -181,6 +183,12 @@ def build_regime_scope(
             )
         elif regime_scope == REGIME_SCOPE_SUBSET:
             diag.append("markov_market_scope_subset_not_production_eligible")
+        elif sampled:
+            diag.append("markov_sampled_market_reference_not_production_eligible")
+        elif regime_scope == REGIME_SCOPE_MARKET_REFERENCE:
+            diag.append("markov_market_reference_not_production_eligible")
+        elif source_count != unsampled_count:
+            diag.append("markov_incomplete_full_market_not_production_eligible")
 
     return RegimeScope(
         regime_scope=regime_scope,
