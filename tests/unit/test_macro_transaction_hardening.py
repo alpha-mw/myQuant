@@ -17,11 +17,23 @@ from quant_investor.macro.nbs_pmi import (
     parse_nbs_cn_pmi_html,
 )
 from quant_investor.market import macro_mart
+from quant_investor.macro.registry import NATIONAL_DOMAIN_WEIGHTS
 
 
 TARGET = "20240510"
 CAPTURED_AT = datetime(2024, 5, 10, 8, 30, tzinfo=timezone.utc)
 NBS_URL = "https://www.stats.gov.cn/sj/zxfb/202404/t20240430_1.html"
+
+
+def _macro_snapshot() -> dict[str, object]:
+    return {
+        "readiness_status": "pass",
+        "national_states": {
+            domain: 0.0 for domain in NATIONAL_DOMAIN_WEIGHTS
+        },
+        "coverage": {"national": 1.0},
+        "snapshot_hash": "a" * 64,
+    }
 
 
 def _nbs_capture() -> NbsPmiCapture:
@@ -434,6 +446,11 @@ def test_same_run_retry_resumes_generation_without_second_provider_call(
     monkeypatch.setattr(macro_mart, "_utc_now", lambda: CAPTURED_AT)
     monkeypatch.setattr(macro_mart, "_build_tushare_client", _FakeTushare)
     monkeypatch.setattr(macro_mart, "fetch_nbs_cn_pmi", _fetch_official)
+    monkeypatch.setattr(
+        macro_mart,
+        "_load_authoritative_macro_snapshot",
+        lambda **_kwargs: _macro_snapshot(),
+    )
     original_write = macro_mart._write_primary_generation
 
     def _write_then_crash(**kwargs: object):
@@ -508,6 +525,11 @@ def test_same_run_retry_cannot_reuse_fallback_without_matching_authorization(
     before_catalog = catalog_path.read_bytes()
     monkeypatch.setattr(macro_mart, "_utc_now", lambda: CAPTURED_AT)
     monkeypatch.setattr(macro_mart, "_build_tushare_client", _FakeTushare)
+    monkeypatch.setattr(
+        macro_mart,
+        "_load_authoritative_macro_snapshot",
+        lambda **_kwargs: _macro_snapshot(),
+    )
 
     def _official_transient(_url: str) -> NbsPmiCapture:
         raise NbsPmiTransientError("nbs_pmi_network_unavailable")

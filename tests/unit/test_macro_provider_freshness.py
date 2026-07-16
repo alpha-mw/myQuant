@@ -15,6 +15,7 @@ from quant_investor.macro.nbs_pmi import (
     parse_nbs_cn_pmi_html,
 )
 from quant_investor.market import macro_mart
+from quant_investor.macro.registry import NATIONAL_DOMAIN_WEIGHTS
 
 
 TARGET = "20240510"
@@ -122,6 +123,18 @@ def _patch_nbs_fetch(
         return deterministic_capture
 
     monkeypatch.setattr(macro_mart, "fetch_nbs_cn_pmi", _fetch)
+    monkeypatch.setattr(
+        macro_mart,
+        "_load_authoritative_macro_snapshot",
+        lambda **_kwargs: {
+            "readiness_status": "pass",
+            "national_states": {
+                domain: 0.0 for domain in NATIONAL_DOMAIN_WEIGHTS
+            },
+            "coverage": {"national": 1.0},
+            "snapshot_hash": "a" * 64,
+        },
+    )
 
 
 def _sha(path: Path) -> str:
