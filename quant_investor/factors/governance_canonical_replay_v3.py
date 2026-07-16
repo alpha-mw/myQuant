@@ -1,9 +1,9 @@
 """Strict, offline FactorGovernanceProtocol v3 replay validation.
 
 The v3 replay is deliberately a new wire contract.  It never coerces or
-upgrades v2 evidence and it binds the complete five-stage decision chain for
-each A/B/C/D arm.  The validator is pure: it authenticates structure and
-semantic/predecessor hashes but grants no production or mutation authority.
+upgrades v2 evidence and it binds the complete six-stage runtime decision
+chain for each A/B/C/D arm.  Structural validation and local byte readback are
+separate operations; neither grants production mutation authority.
 """
 
 from __future__ import annotations
@@ -11,7 +11,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from collections.abc import Mapping, Sequence
+import os
+import stat
+from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 
@@ -21,13 +24,15 @@ EVIDENCE_SCHEMA_VERSION = "factor-governance-replay-evidence.v3"
 STAGE_SCHEMA_VERSION = "factor-governance-canonical-stage.v3"
 ARM_NAMES = ("A", "B", "C", "D")
 CONTROL_CHAIN_STAGES = (
-    "deterministic_funnel",
     "quant",
+    "deterministic_funnel",
     "bayesian",
     "risk_guard",
+    "ic_coordinator",
     "portfolio_constructor",
 )
 GENESIS_SHA256 = "0" * 64
+MAX_REPLAY_FILE_BYTES = 16 * 1024 * 1024
 
 
 class CanonicalReplayV3Error(ValueError):
@@ -49,6 +54,40 @@ def canonical_json_bytes(value: Any) -> bytes:
 
 def semantic_sha256(value: Any) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+
+
+def canonical_file_bytes(value: Any) -> bytes:
+    """Return the only accepted on-disk encoding for a v3 replay."""
+
+    return canonical_json_bytes(value) + b"\n"
+
+
+def byte_sha256(value: Any) -> str:
+    """Hash the exact canonical newline-terminated stage bytes."""
+
+    return hashlib.sha256(canonical_file_bytes(value)).hexdigest()
+
+
+def stage_byte_sha256(
+    *,
+    arm: str,
+    stage: str,
+    context_sha256: str,
+    predecessor: Mapping[str, Any],
+    output: Any,
+) -> str:
+    """Hash one canonical stage artifact without self-referential fields."""
+
+    return byte_sha256(
+        {
+            "schema_version": STAGE_SCHEMA_VERSION,
+            "arm": arm,
+            "stage": stage,
+            "context_sha256": context_sha256,
+            "predecessor": dict(predecessor),
+            "output": output,
+        }
+    )
 
 
 def _exact(value: Any, fields: set[str], label: str) -> dict[str, Any]:
@@ -133,34 +172,28 @@ def _validate_factor_records(
     return selected, records
 
 
+def _hash_map(value: Any, *, domain: list[str], label: str) -> dict[str, str]:
+    if not isinstance(value, dict) or set(value) != set(domain):
+        raise CanonicalReplayV3Error(f"{label} symbol domain mismatch")
+    return {
+        symbol: _sha(value[symbol], f"{label} {symbol}")
+        for symbol in domain
+    }
+
+
 def _validate_output(
     stage: str,
     output: Any,
     *,
     arm: str,
-    domain: list[str] | None,
-    risk_decisions: Mapping[str, str] | None,
+    prior: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
-    if stage == "deterministic_funnel":
-        payload = _exact(
-            output,
-            {"schema_version", "eligible_symbols"},
-            "deterministic funnel output",
-        )
-        if payload["schema_version"] != "factor-governance-funnel-output.v3":
-            raise CanonicalReplayV3Error("unsupported funnel output schema")
-        return {"domain": _symbols(payload["eligible_symbols"], "eligible symbols")}
-
-    if domain is None:
-        raise CanonicalReplayV3Error("eligible domain is unavailable")
-    domain_set = set(domain)
-
     if stage == "quant":
         payload = _exact(
             output,
             {
                 "schema_version",
-                "eligible_symbols",
+                "scored_symbols",
                 "selected_factors",
                 "factor_records",
                 "branches",
@@ -170,9 +203,12 @@ def _validate_output(
         )
         if payload["schema_version"] != "factor-governance-quant-output.v3":
             raise CanonicalReplayV3Error("unsupported quant output schema")
-        if _symbols(payload["eligible_symbols"], "quant eligible symbols") != domain:
-            raise CanonicalReplayV3Error("quant symbol domain mismatch")
-        branches = _exact(payload["branches"], {"quant", "fundamental", "macro"}, "branches")
+        scored_symbols = _symbols(payload["scored_symbols"], "quant scored symbols")
+        branches = _exact(
+            payload["branches"],
+            {"quant", "fundamental", "macro"},
+            "branches",
+        )
         branch_fields = {"ready", "object_sha256", "semantic_sha256"}
         normalized_branches: dict[str, Any] = {}
         for name in ("quant", "fundamental", "macro"):
@@ -181,7 +217,9 @@ def _validate_output(
                 raise CanonicalReplayV3Error(f"branch {name}.ready must be boolean")
             normalized_branches[name] = {
                 "ready": row["ready"],
-                "object_sha256": _sha(row["object_sha256"], f"branch {name} object SHA"),
+                "object_sha256": _sha(
+                    row["object_sha256"], f"branch {name} object SHA"
+                ),
                 "semantic_sha256": _sha(
                     row["semantic_sha256"], f"branch {name} semantic SHA"
                 ),
@@ -192,11 +230,32 @@ def _validate_output(
             )
         selected, records = _validate_factor_records(payload, arm)
         return {
-            "domain": domain,
+            "domain": scored_symbols,
             "selected_factors": selected,
             "factor_records": records,
             "branches": normalized_branches,
         }
+
+    quant_domain = list((prior.get("quant") or {}).get("domain") or [])
+    if stage == "deterministic_funnel":
+        payload = _exact(
+            output,
+            {"schema_version", "eligible_symbols"},
+            "deterministic funnel output",
+        )
+        if payload["schema_version"] != "factor-governance-funnel-output.v3":
+            raise CanonicalReplayV3Error("unsupported funnel output schema")
+        eligible = _symbols(payload["eligible_symbols"], "eligible symbols")
+        if not set(eligible).issubset(quant_domain):
+            raise CanonicalReplayV3Error(
+                "deterministic funnel contains a symbol not scored by Quant"
+            )
+        return {"domain": eligible}
+
+    domain = list((prior.get("deterministic_funnel") or {}).get("domain") or [])
+    if "deterministic_funnel" not in prior:
+        raise CanonicalReplayV3Error("eligible domain is unavailable")
+    domain_set = set(domain)
 
     if stage == "bayesian":
         payload = _exact(
@@ -214,7 +273,16 @@ def _validate_output(
     if stage == "risk_guard":
         label = "RiskGuard"
         expected_schema = "factor-governance-risk-output.v3"
-        payload = _exact(output, {"schema_version", "decisions"}, f"{label} output")
+        payload = _exact(
+            output,
+            {
+                "schema_version",
+                "decisions",
+                "risk_decision",
+                "risk_decision_sha256",
+            },
+            f"{label} output",
+        )
         if payload["schema_version"] != expected_schema:
             raise CanonicalReplayV3Error(f"unsupported {label} output schema")
         decisions = payload["decisions"]
@@ -226,11 +294,108 @@ def _validate_output(
             if decision not in {"approved", "rejected"}:
                 raise CanonicalReplayV3Error(f"{label} decision is invalid")
             normalized[symbol] = decision
-        return {"domain": domain, "decisions": normalized}
+        risk_decision = payload["risk_decision"]
+        if not isinstance(risk_decision, dict) or not risk_decision:
+            raise CanonicalReplayV3Error("RiskGuard decision payload must be an object")
+        risk_decision_sha = _sha(
+            payload["risk_decision_sha256"], "RiskGuard decision SHA"
+        )
+        if risk_decision_sha != semantic_sha256(risk_decision):
+            raise CanonicalReplayV3Error("RiskGuard decision SHA mismatch")
+        return {
+            "domain": domain,
+            "decisions": normalized,
+            "risk_decision": risk_decision,
+            "risk_decision_sha256": risk_decision_sha,
+        }
+
+    if stage == "ic_coordinator":
+        payload = _exact(
+            output,
+            {
+                "schema_version",
+                "inputs",
+                "input_sha256s",
+                "decisions",
+                "output_sha256s",
+            },
+            "ICCoordinator output",
+        )
+        if payload["schema_version"] != "factor-governance-ic-output.v3":
+            raise CanonicalReplayV3Error("unsupported ICCoordinator output schema")
+        inputs = payload["inputs"]
+        decisions = payload["decisions"]
+        if not isinstance(inputs, dict) or set(inputs) != domain_set:
+            raise CanonicalReplayV3Error("ICCoordinator input symbol domain mismatch")
+        if not isinstance(decisions, dict) or set(decisions) != domain_set:
+            raise CanonicalReplayV3Error("ICCoordinator output symbol domain mismatch")
+        input_hashes = _hash_map(
+            payload["input_sha256s"], domain=domain, label="ICCoordinator input SHA"
+        )
+        output_hashes = _hash_map(
+            payload["output_sha256s"], domain=domain, label="ICCoordinator output SHA"
+        )
+        risk_result = prior.get("risk_guard") or {}
+        risk_sha = str(risk_result.get("risk_decision_sha256") or "")
+        normalized_actions: dict[str, str] = {}
+        for symbol in domain:
+            ic_input = _exact(
+                inputs[symbol],
+                {"branch_verdicts", "risk_decision", "ic_hints"},
+                f"ICCoordinator input {symbol}",
+            )
+            branches = ic_input["branch_verdicts"]
+            if not isinstance(branches, dict) or set(branches) != {
+                "quant",
+                "fundamental",
+                "macro",
+            }:
+                raise CanonicalReplayV3Error(
+                    "ICCoordinator branch verdicts must be exactly quant/fundamental/macro"
+                )
+            if not all(isinstance(value, dict) for value in branches.values()):
+                raise CanonicalReplayV3Error(
+                    "ICCoordinator branch verdicts must be objects"
+                )
+            if not isinstance(ic_input["risk_decision"], dict):
+                raise CanonicalReplayV3Error(
+                    "ICCoordinator risk decision must be an object"
+                )
+            if semantic_sha256(ic_input["risk_decision"]) != risk_sha:
+                raise CanonicalReplayV3Error(
+                    "ICCoordinator input is not bound to RiskGuard output"
+                )
+            if ic_input["ic_hints"] != {}:
+                raise CanonicalReplayV3Error(
+                    "ICCoordinator deterministic runtime input must use empty ic_hints"
+                )
+            if input_hashes[symbol] != semantic_sha256(ic_input):
+                raise CanonicalReplayV3Error("ICCoordinator input SHA mismatch")
+
+            decision = decisions[symbol]
+            if not isinstance(decision, dict):
+                raise CanonicalReplayV3Error(
+                    "ICCoordinator decision payload must be an object"
+                )
+            action = _text(decision.get("action"), f"ICCoordinator action {symbol}")
+            if action not in {"buy", "hold", "sell", "watch", "avoid"}:
+                raise CanonicalReplayV3Error("ICCoordinator action is invalid")
+            decision_symbol = decision.get("symbol")
+            if decision_symbol is not None and decision_symbol != symbol:
+                raise CanonicalReplayV3Error("ICCoordinator decision symbol mismatch")
+            if output_hashes[symbol] != semantic_sha256(decision):
+                raise CanonicalReplayV3Error("ICCoordinator output SHA mismatch")
+            normalized_actions[symbol] = action
+        return {
+            "domain": domain,
+            "input_sha256s": input_hashes,
+            "output_sha256s": output_hashes,
+            "actions": normalized_actions,
+        }
 
     payload = _exact(
         output,
-        {"schema_version", "target_weights"},
+        {"schema_version", "target_weights", "ic_decision_sha256s"},
         "PortfolioConstructor output",
     )
     if payload["schema_version"] != "factor-governance-portfolio-output.v3":
@@ -238,19 +403,46 @@ def _validate_output(
     weights = payload["target_weights"]
     if not isinstance(weights, dict) or not set(weights).issubset(domain_set):
         raise CanonicalReplayV3Error("PortfolioConstructor contains an unknown symbol")
-    normalized = {symbol: _finite(value, f"weight {symbol}") for symbol, value in weights.items()}
-    if any(value < 0.0 or value > 1.0 for value in normalized.values()):
+    normalized_weights = {
+        symbol: _finite(value, f"weight {symbol}")
+        for symbol, value in weights.items()
+    }
+    if any(value < 0.0 or value > 1.0 for value in normalized_weights.values()):
         raise CanonicalReplayV3Error("portfolio weights must be in [0,1]")
-    if sum(normalized.values()) > 1.0 + 1e-12:
+    if sum(normalized_weights.values()) > 1.0 + 1e-12:
         raise CanonicalReplayV3Error("portfolio weights exceed one")
+    risk_decisions = dict((prior.get("risk_guard") or {}).get("decisions") or {})
     approved = {
         symbol
-        for symbol, decision in dict(risk_decisions or {}).items()
+        for symbol, decision in risk_decisions.items()
         if decision == "approved"
     }
-    if any(value > 0.0 and symbol not in approved for symbol, value in normalized.items()):
+    if any(
+        value > 0.0 and symbol not in approved
+        for symbol, value in normalized_weights.items()
+    ):
         raise CanonicalReplayV3Error("positive portfolio weight lacks RiskGuard approval")
-    return {"domain": domain, "target_weights": normalized}
+    ic_result = prior.get("ic_coordinator") or {}
+    ic_hashes = _hash_map(
+        payload["ic_decision_sha256s"],
+        domain=domain,
+        label="PortfolioConstructor IC decision SHA",
+    )
+    if ic_hashes != dict(ic_result.get("output_sha256s") or {}):
+        raise CanonicalReplayV3Error(
+            "PortfolioConstructor is not bound to ICCoordinator output"
+        )
+    actions = dict(ic_result.get("actions") or {})
+    if any(
+        value > 0.0 and actions.get(symbol) != "buy"
+        for symbol, value in normalized_weights.items()
+    ):
+        raise CanonicalReplayV3Error("positive portfolio weight lacks ICCoordinator BUY")
+    return {
+        "domain": domain,
+        "target_weights": normalized_weights,
+        "ic_decision_sha256s": ic_hashes,
+    }
 
 
 def validate_canonical_replay_v3(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -265,6 +457,7 @@ def validate_canonical_replay_v3(value: Mapping[str, Any]) -> dict[str, Any]:
             "as_of",
             "registry_file_sha256",
             "production_factor_set_sha256",
+            "context",
             "context_sha256",
             "factor_set",
             "comparison",
@@ -280,8 +473,19 @@ def validate_canonical_replay_v3(value: Mapping[str, Any]) -> dict[str, Any]:
     _text(payload["as_of"], "as_of")
     _sha(payload["registry_file_sha256"], "registry_file_sha256")
     _sha(payload["production_factor_set_sha256"], "production_factor_set_sha256")
+    context = _exact(
+        payload["context"],
+        {"calendar_sha256", "pit_sha256", "runtime_contract_sha256"},
+        "replay context",
+    )
+    for key in ("calendar_sha256", "pit_sha256", "runtime_contract_sha256"):
+        _sha(context[key], f"context {key}")
     context_sha = _sha(payload["context_sha256"], "context_sha256")
+    if context_sha != semantic_sha256(context):
+        raise CanonicalReplayV3Error("replay context SHA mismatch")
     factor_set = _symbols(payload["factor_set"], "factor_set")
+    if payload["production_factor_set_sha256"] != semantic_sha256(factor_set):
+        raise CanonicalReplayV3Error("production factor set SHA mismatch")
     comparison = _exact(
         payload["comparison"], {"incumbent", "challenger", "slot"}, "comparison"
     )
@@ -294,7 +498,7 @@ def validate_canonical_replay_v3(value: Mapping[str, Any]) -> dict[str, Any]:
     stages = payload["stages"]
     expected_order = [(arm, stage) for arm in ARM_NAMES for stage in CONTROL_CHAIN_STAGES]
     if not isinstance(stages, list) or len(stages) != len(expected_order):
-        raise CanonicalReplayV3Error("canonical replay must contain exactly 20 stages")
+        raise CanonicalReplayV3Error("canonical replay must contain exactly 24 stages")
     stage_fields = {
         "schema_version",
         "arm",
@@ -317,6 +521,14 @@ def validate_canonical_replay_v3(value: Mapping[str, Any]) -> dict[str, Any]:
         if item["context_sha256"] != context_sha:
             raise CanonicalReplayV3Error("stage context SHA mismatch")
         byte_sha = _sha(item["byte_sha256"], "stage byte SHA")
+        if byte_sha != stage_byte_sha256(
+            arm=arm,
+            stage=stage,
+            context_sha256=context_sha,
+            predecessor=item["predecessor"],
+            output=item["output"],
+        ):
+            raise CanonicalReplayV3Error("stage byte SHA mismatch")
         if byte_sha in seen_byte_hashes:
             raise CanonicalReplayV3Error("stage byte identities must be globally unique")
         seen_byte_hashes.add(byte_sha)
@@ -348,8 +560,7 @@ def validate_canonical_replay_v3(value: Mapping[str, Any]) -> dict[str, Any]:
             stage,
             item["output"],
             arm=arm,
-            domain=(prior.get("deterministic_funnel") or {}).get("domain"),
-            risk_decisions=(prior.get("risk_guard") or {}).get("decisions"),
+            prior=prior,
         )
         arm_results[arm][stage] = {
             **result,
@@ -389,6 +600,9 @@ def validate_canonical_replay_v3(value: Mapping[str, Any]) -> dict[str, Any]:
         "as_of": payload["as_of"],
         "registry_file_sha256": payload["registry_file_sha256"],
         "production_factor_set_sha256": payload["production_factor_set_sha256"],
+        "context": dict(context),
+        "factor_set": factor_set,
+        "comparison": dict(comparison),
         "replay_semantic_sha256": semantic_sha256(payload),
         "arms": arm_results,
     }
@@ -406,6 +620,8 @@ def validate_v3_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
             "status",
             "factor_name",
             "registry_file_sha256",
+            "replay_path",
+            "replay_file_sha256",
             "replay_semantic_sha256",
             "calendar_sha256",
             "pit_sha256",
@@ -416,8 +632,14 @@ def validate_v3_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
     if payload["status"] != "verified":
         raise CanonicalReplayV3Error("factor governance evidence is not verified")
     _text(payload["factor_name"], "factor_name")
+    replay_path = _text(payload["replay_path"], "replay_path")
+    if "\x00" in replay_path:
+        raise CanonicalReplayV3Error("replay_path contains a null byte")
+    if not Path(replay_path).is_absolute():
+        raise CanonicalReplayV3Error("replay_path must be absolute")
     for key in (
         "registry_file_sha256",
+        "replay_file_sha256",
         "replay_semantic_sha256",
         "calendar_sha256",
         "pit_sha256",
@@ -425,6 +647,140 @@ def validate_v3_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
     ):
         _sha(payload[key], key)
     return payload
+
+
+def _strict_json_loads(raw: bytes) -> dict[str, Any]:
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise CanonicalReplayV3Error(f"duplicate JSON key: {key}")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicates)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CanonicalReplayV3Error(f"replay bytes are not strict JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise CanonicalReplayV3Error("replay file must contain an object")
+    return value
+
+
+def readback_v3_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Read one explicit replay path and revalidate its complete byte graph.
+
+    There is no scan, glob, latest selection or fallback.  A successful return
+    authenticates only the local bytes and their v3 semantic graph; it does not
+    authenticate a producer identity or authorize a registry mutation.
+    """
+
+    evidence = validate_v3_evidence(value)
+    path = Path(evidence["replay_path"])
+    try:
+        before = path.lstat()
+    except OSError as exc:
+        raise CanonicalReplayV3Error(f"replay path is unavailable: {exc}") from exc
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        raise CanonicalReplayV3Error("replay path must be a regular non-symlink file")
+    if before.st_uid != os.getuid():
+        raise CanonicalReplayV3Error("replay file owner mismatch")
+    if stat.S_IMODE(before.st_mode) != 0o600:
+        raise CanonicalReplayV3Error("replay file mode must be 0600")
+    if before.st_nlink != 1:
+        raise CanonicalReplayV3Error("replay file link count must be one")
+    if before.st_size <= 0 or before.st_size > MAX_REPLAY_FILE_BYTES:
+        raise CanonicalReplayV3Error("replay file size is invalid")
+
+    def identity(item: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
+        return (
+            item.st_dev,
+            item.st_ino,
+            item.st_size,
+            item.st_mtime_ns,
+            item.st_ctime_ns,
+            item.st_mode,
+            item.st_nlink,
+        )
+
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise CanonicalReplayV3Error(f"replay open failed: {exc}") from exc
+    try:
+        opened = os.fstat(fd)
+        if identity(before) != identity(opened):
+            raise CanonicalReplayV3Error("replay path changed before readback")
+        chunks: list[bytes] = []
+        remaining = MAX_REPLAY_FILE_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(fd, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        opened_after = os.fstat(fd)
+    except OSError as exc:
+        raise CanonicalReplayV3Error(f"replay readback failed: {exc}") from exc
+    finally:
+        os.close(fd)
+    try:
+        after = path.lstat()
+    except OSError as exc:
+        raise CanonicalReplayV3Error(
+            f"replay path disappeared after readback: {exc}"
+        ) from exc
+    if len(raw) > MAX_REPLAY_FILE_BYTES:
+        raise CanonicalReplayV3Error("replay file exceeds byte limit")
+    if identity(before) != identity(after):
+        raise CanonicalReplayV3Error("replay file identity changed during readback")
+    if identity(opened) != identity(opened_after):
+        raise CanonicalReplayV3Error("replay file identity changed while open")
+    file_sha = hashlib.sha256(raw).hexdigest()
+    if file_sha != evidence["replay_file_sha256"]:
+        raise CanonicalReplayV3Error("replay file SHA mismatch")
+    replay = _strict_json_loads(raw)
+    if raw != canonical_file_bytes(replay):
+        raise CanonicalReplayV3Error(
+            "replay bytes must be compact sorted canonical JSON with one newline"
+        )
+    normalized = validate_canonical_replay_v3(replay)
+    if normalized["replay_semantic_sha256"] != evidence["replay_semantic_sha256"]:
+        raise CanonicalReplayV3Error("evidence replay semantic SHA mismatch")
+    if normalized["registry_file_sha256"] != evidence["registry_file_sha256"]:
+        raise CanonicalReplayV3Error("evidence replay registry SHA mismatch")
+    context = normalized["context"]
+    for key in ("calendar_sha256", "pit_sha256", "runtime_contract_sha256"):
+        if context[key] != evidence[key]:
+            raise CanonicalReplayV3Error(f"evidence replay {key} mismatch")
+    comparison = normalized["comparison"]
+    known_factors = set(normalized["factor_set"])
+    known_factors.update((comparison["incumbent"], comparison["challenger"]))
+    if evidence["factor_name"] not in known_factors:
+        raise CanonicalReplayV3Error("evidence factor is absent from the replay")
+    ic_readback = {
+        arm: {
+            "input_sha256s": dict(normalized["arms"][arm]["ic_coordinator"]["input_sha256s"]),
+            "output_sha256s": dict(normalized["arms"][arm]["ic_coordinator"]["output_sha256s"]),
+        }
+        for arm in ARM_NAMES
+    }
+    return {
+        "evidence": evidence,
+        "replay": normalized,
+        "replay_file_sha256": file_sha,
+        "replay_file_size": len(raw),
+        "ic_readback": ic_readback,
+        "ic_input_output_hash_binding_verified": True,
+        "local_bytes_readback_verified": True,
+    }
 
 
 __all__ = [
@@ -435,8 +791,12 @@ __all__ = [
     "PROTOCOL_VERSION",
     "REPLAY_SCHEMA_VERSION",
     "STAGE_SCHEMA_VERSION",
+    "byte_sha256",
+    "canonical_file_bytes",
     "canonical_json_bytes",
+    "readback_v3_evidence",
     "semantic_sha256",
+    "stage_byte_sha256",
     "validate_canonical_replay_v3",
     "validate_v3_evidence",
 ]

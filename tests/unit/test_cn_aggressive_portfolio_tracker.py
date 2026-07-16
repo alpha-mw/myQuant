@@ -1372,7 +1372,7 @@ def test_candidate_quote_gate_is_per_symbol_and_fail_closed():
     assert bool(fresh.iloc[0]["new_position_eligible"]) is True
 
 
-def test_candidate_pool_from_v14_dag_requires_candidate_level_three_branches():
+def test_candidate_pool_from_v15_dag_requires_candidate_level_three_branches():
     complete_branches = {
         branch: {"branch_name": branch, "final_score": 0.8, "final_confidence": 0.7}
         for branch in tracker.REQUIRED_DAG_BRANCHES
@@ -1504,7 +1504,7 @@ def test_candidate_pool_from_v14_dag_requires_candidate_level_three_branches():
         },
     }
 
-    candidate_pool, status = tracker._build_candidate_pool_from_v14_dag(
+    candidate_pool, status = tracker._build_candidate_pool_from_v15_dag(
         dag_artifacts=dag_artifacts,
         held_symbols=[],
     )
@@ -1532,7 +1532,7 @@ def test_candidate_pool_from_v14_dag_requires_candidate_level_three_branches():
         incomplete_artifacts["bayesian_records"][0][
             "evidence_sources"
         ] = incomplete_evidence
-        incomplete_pool, incomplete_status = tracker._build_candidate_pool_from_v14_dag(
+        incomplete_pool, incomplete_status = tracker._build_candidate_pool_from_v15_dag(
             dag_artifacts=incomplete_artifacts,
             held_symbols=[],
         )
@@ -1608,7 +1608,7 @@ def test_candidate_pool_keeps_positive_target_with_limited_quant_evidence():
         },
     }
 
-    candidate_pool, status = tracker._build_candidate_pool_from_v14_dag(
+    candidate_pool, status = tracker._build_candidate_pool_from_v15_dag(
         dag_artifacts=dag_artifacts,
         held_symbols=[],
     )
@@ -1670,7 +1670,7 @@ def test_candidate_pool_rejects_non_mapping_branch_payloads():
         },
     }
 
-    candidate_pool, status = tracker._build_candidate_pool_from_v14_dag(
+    candidate_pool, status = tracker._build_candidate_pool_from_v15_dag(
         dag_artifacts=dag_artifacts,
         held_symbols=[],
     )
@@ -1755,7 +1755,7 @@ def test_candidate_pool_rejects_malformed_mapping_branch_payloads(
         },
     }
 
-    candidate_pool, status = tracker._build_candidate_pool_from_v14_dag(
+    candidate_pool, status = tracker._build_candidate_pool_from_v15_dag(
         dag_artifacts=dag_artifacts,
         held_symbols=[],
     )
@@ -1772,7 +1772,7 @@ def test_candidate_pool_rejects_malformed_mapping_branch_payloads(
     assert compliance["missing_branch_by_symbol"][symbol] == ["macro"]
 
 
-def test_candidate_pool_from_v14_dag_falls_back_to_report_bundle_shortlist():
+def test_candidate_pool_from_v15_dag_falls_back_to_report_bundle_shortlist():
     complete_branches = {
         branch: {"branch_name": branch, "final_score": 0.8, "final_confidence": 0.7}
         for branch in tracker.REQUIRED_DAG_BRANCHES
@@ -1817,7 +1817,7 @@ def test_candidate_pool_from_v14_dag_falls_back_to_report_bundle_shortlist():
         },
     }
 
-    candidate_pool, status = tracker._build_candidate_pool_from_v14_dag(
+    candidate_pool, status = tracker._build_candidate_pool_from_v15_dag(
         dag_artifacts=dag_artifacts,
         held_symbols=[],
     )
@@ -1830,7 +1830,7 @@ def test_candidate_pool_from_v14_dag_falls_back_to_report_bundle_shortlist():
     assert status["dag_pipeline"]["shortlist_artifact_missing"] is False
 
 
-def test_candidate_pool_from_v14_dag_blocks_when_shortlist_artifact_missing():
+def test_candidate_pool_from_v15_dag_blocks_when_shortlist_artifact_missing():
     dag_artifacts = {
         "symbol_research_packets": {},
         "bayesian_records": [
@@ -1848,7 +1848,7 @@ def test_candidate_pool_from_v14_dag_blocks_when_shortlist_artifact_missing():
         },
     }
 
-    candidate_pool, status = tracker._build_candidate_pool_from_v14_dag(
+    candidate_pool, status = tracker._build_candidate_pool_from_v15_dag(
         dag_artifacts=dag_artifacts,
         held_symbols=[],
     )
@@ -1861,7 +1861,7 @@ def test_candidate_pool_from_v14_dag_blocks_when_shortlist_artifact_missing():
     assert "shortlist artifact missing" in status["error"]
 
 
-def test_candidate_pool_from_v14_dag_empty_when_no_shortlist_or_positive_targets():
+def test_candidate_pool_from_v15_dag_empty_when_no_shortlist_or_positive_targets():
     complete_branches = {
         branch: {"branch_name": branch, "final_score": 0.5, "final_confidence": 0.6}
         for branch in tracker.REQUIRED_DAG_BRANCHES
@@ -1890,7 +1890,7 @@ def test_candidate_pool_from_v14_dag_empty_when_no_shortlist_or_positive_targets
         },
     }
 
-    candidate_pool, status = tracker._build_candidate_pool_from_v14_dag(
+    candidate_pool, status = tracker._build_candidate_pool_from_v15_dag(
         dag_artifacts=dag_artifacts,
         held_symbols=[],
     )
@@ -1944,7 +1944,7 @@ def test_candidate_pool_does_not_substitute_shortlist_weight_for_constructor_tar
         "portfolio_decision": {"target_weights": {}},
     }
 
-    candidate_pool, status = tracker._build_candidate_pool_from_v14_dag(
+    candidate_pool, status = tracker._build_candidate_pool_from_v15_dag(
         dag_artifacts=dag_artifacts,
         held_symbols=[],
     )
@@ -1979,7 +1979,7 @@ def test_candidate_pool_reports_empty_portfolio_constructor_result(
         },
     }
 
-    candidate_pool, status = tracker._build_candidate_pool_from_v14_dag(
+    candidate_pool, status = tracker._build_candidate_pool_from_v15_dag(
         dag_artifacts=dag_artifacts,
         held_symbols=[],
     )

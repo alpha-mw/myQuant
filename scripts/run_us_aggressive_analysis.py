@@ -112,12 +112,12 @@ batch_module.get_all_local_symbols = _kronos_get_all_local_symbols
 print("✅ get_all_local_symbols 已补丁，读取 Kronos 股票列表")
 
 # ──────────────────────────────────────────────
-# Step 4: 包装 current v14 analyze_batch() → risk_level='激进'
+# Step 4: 包装 current v15 analyze_batch() → risk_level='激进'
 # ──────────────────────────────────────────────
 _original_analyze_batch = batch_module.analyze_batch
 
 def _aggressive_analyze_batch(symbols, category, batch_id, **kwargs):
-    """Run the current v14 producer with aggressive US settings."""
+    """Run the current v15 producer with aggressive US settings."""
 
     for key in (
         "market",
@@ -149,7 +149,7 @@ print("✅ analyze_batch 已补丁，使用激进风格 + capital=100,000")
 # ──────────────────────────────────────────────
 # Step 5: 确保结果目录存在
 # ──────────────────────────────────────────────
-results_dir = PROJECT_ROOT / "results" / "v14" / "us_analysis_full"
+results_dir = PROJECT_ROOT / "results" / "v15" / "us_analysis_full"
 results_dir.mkdir(parents=True, exist_ok=True)
 
 # ──────────────────────────────────────────────
@@ -183,6 +183,6 @@ if __name__ == "__main__":
             total_capital=100_000,
             top_k=8,
         )
-        print("\n✅ 全量分析完成！结果保存在 results/v14/us_analysis_full/")
+        print("\n✅ 全量分析完成！结果保存在 results/v15/us_analysis_full/")
     else:
         print("\n⚠️ 所有类别均无结果，请检查数据路径。")

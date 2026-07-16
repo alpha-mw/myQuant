@@ -9,8 +9,119 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from quant_investor.market.pit_universe import (
+    LIST_STATUS_LISTED,
+    PITUniverseRecord,
+    PITUniverseStore,
+)
+
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _formal_trading_calendar(open_dates: list[str]) -> dict[str, object]:
+    return {
+        "status": "available",
+        "source_system": "strict_parquet.cn_bars.trade_date",
+        "expected_open_dates": open_dates,
+        "prior_open_date": None,
+        "market_snapshot": {
+            "latest_pointer_path_summary": "<data_root>/parquet/cn/_latest.json",
+            "latest_pointer_sha256": "a" * 64,
+            "snapshot_id": "unit-test",
+            "table_root_path_summary": (
+                "<data_root>/parquet/cn/_snapshots/unit-test/table/bars"
+            ),
+            "fallback_used": False,
+        },
+    }
+
+
+def _write_active_cn_market(
+    data_root: Path,
+    rows: list[dict[str, object]],
+    *,
+    snapshot_id: str = "dashboard-snapshot-v4",
+) -> dict[str, Path]:
+    """Create a minimal healthy v4 pointer plus deliberately stale legacy bars."""
+
+    pit_store = PITUniverseStore(
+        root_dir=data_root / "parquet" / "cn" / "reference",
+        raw_root=data_root / "pit_raw",
+        compatibility_path=data_root / "pit_compat.json",
+    )
+    symbols = sorted({str(row["ts_code"]) for row in rows})
+    observed_at = (
+        "2026-07-16T00:00:"
+        f"{int(hashlib.sha256(snapshot_id.encode()).hexdigest()[:2], 16) % 60:02d}Z"
+    )
+    published = pit_store.write_snapshot(
+        raw_records=[
+            PITUniverseRecord(
+                symbol=symbol,
+                source_list_status=LIST_STATUS_LISTED,
+                list_date="20200101",
+                observed_at=observed_at,
+                source_run_id=snapshot_id,
+            )
+            for symbol in symbols
+        ],
+        observed_at=observed_at,
+        source_run_id=snapshot_id,
+    )
+    snapshot_root = data_root / "parquet" / "cn" / "_snapshots" / snapshot_id
+    table_root = snapshot_root / "table" / "bars"
+    serving_root = snapshot_root / "serving" / "bars"
+    table_root.mkdir(parents=True)
+    frame = pd.DataFrame(rows)
+    frame.to_parquet(table_root / "part.parquet", index=False)
+    for symbol in symbols:
+        symbol_root = serving_root / f"symbol={symbol}"
+        symbol_root.mkdir(parents=True)
+        frame[frame["ts_code"].eq(symbol)].to_parquet(
+            symbol_root / "bars.parquet",
+            index=False,
+        )
+    legacy_root = data_root / "parquet" / "cn" / "bars"
+    legacy_root.mkdir(parents=True, exist_ok=True)
+    legacy_frame = frame.copy()
+    legacy_frame["trade_date"] = "19990101"
+    legacy_frame.to_parquet(legacy_root / "stale.parquet", index=False)
+
+    coverage = {
+        "coverage_schema_version": "cn-full-a-coverage.v4",
+        "complete": False,
+        "pit_membership_path": str(published["canonical_path"]),
+        "pit_membership_sha256": str(published["canonical_sha256"]),
+        "pit_generation_id": str(published["generation_id"]),
+        "pit_generation_manifest_path": str(
+            published["generation_manifest_path"]
+        ),
+        "pit_generation_manifest_sha256": str(
+            published["generation_manifest_sha256"]
+        ),
+    }
+    manifest_path = data_root / "parquet" / "cn" / "_snapshots" / f"{snapshot_id}.json"
+    pointer = {
+        "status": "OK",
+        "snapshot_id": snapshot_id,
+        "latest_complete_trade_date": max(str(row["trade_date"]) for row in rows),
+        "latest_trade_date": max(str(row["trade_date"]) for row in rows),
+        "manifest_path": str(manifest_path),
+        "table_root": str(table_root),
+        "derived_serving_root": str(serving_root),
+        "coverage": coverage,
+        "blockers": [],
+    }
+    manifest_path.write_text(json.dumps(pointer), encoding="utf-8")
+    latest_path = data_root / "parquet" / "cn" / "_latest.json"
+    latest_path.write_text(json.dumps(pointer), encoding="utf-8")
+    return {
+        "data_root": data_root,
+        "latest": latest_path,
+        "table_root": table_root,
+        "legacy_root": legacy_root,
+    }
 
 
 def _write_valid_manual_manifest(
@@ -72,13 +183,7 @@ class _FakeTusharePro:
 
     def trade_cal(self, exchange: str, start_date: str, end_date: str) -> pd.DataFrame:
         del exchange, start_date, end_date
-        return pd.DataFrame(
-            [
-                {"cal_date": "20260318", "is_open": 1, "pretrade_date": "20260317"},
-                {"cal_date": "20260320", "is_open": 1, "pretrade_date": "20260319"},
-                {"cal_date": "20260323", "is_open": 1, "pretrade_date": "20260320"},
-            ]
-        )
+        raise AssertionError("Dashboard benchmark must not call Tushare trade_cal")
 
 
 class _FakeTushareProWithWeekendFill(_FakeTusharePro):
@@ -101,13 +206,7 @@ class _FakeTushareProWithWeekendFill(_FakeTusharePro):
 
     def trade_cal(self, exchange: str, start_date: str, end_date: str) -> pd.DataFrame:
         del exchange, start_date, end_date
-        return pd.DataFrame(
-            [
-                {"cal_date": "20260318", "is_open": 1, "pretrade_date": "20260317"},
-                {"cal_date": "20260321", "is_open": 0, "pretrade_date": "20260320"},
-                {"cal_date": "20260323", "is_open": 1, "pretrade_date": "20260320"},
-            ]
-        )
+        raise AssertionError("Dashboard benchmark must not call Tushare trade_cal")
 
 
 def test_tushare_benchmark_partial_missing_dates_are_not_production_grade():
@@ -118,7 +217,13 @@ def test_tushare_benchmark_partial_missing_dates_are_not_production_grade():
         exporter.RecordRun("20260323_0930", "2026-03-23", Path("r3"), "", 100.0, 102.0, {}),
     ]
 
-    benchmark_export, warnings = exporter.build_tushare_benchmark_export(runs, _FakeTusharePro())
+    benchmark_export, warnings = exporter.build_tushare_benchmark_export(
+        runs,
+        _FakeTusharePro(),
+        formal_trading_calendar=_formal_trading_calendar(
+            ["2026-03-18", "2026-03-20", "2026-03-23"]
+        ),
+    )
     assert warnings == []
     assert benchmark_export is not None
     assert len(benchmark_export.raw_rows) == 10
@@ -133,7 +238,7 @@ def test_tushare_benchmark_partial_missing_dates_are_not_production_grade():
     assert summary["display_continuity_grade"] is False
     assert summary["missing_dates"] == ["2026-03-20"]
     assert summary["previous_trading_day_ffill_dates"] == []
-    assert summary["normalization"] == "tushare_index_daily_close_divided_by_first_valid_close_with_trade_cal_previous_trading_day_ffill"
+    assert summary["normalization"] == "tushare_index_daily_close_divided_by_first_valid_close_with_strict_parquet_calendar_ffill"
     assert nav_rows[0]["csi300_nav"] == "1.00000000"
     assert nav_rows[2]["csi300_nav"] == "1.10000000"
 
@@ -146,7 +251,13 @@ def test_tushare_benchmark_non_trading_record_uses_previous_trading_day_ffill():
         exporter.RecordRun("20260323_0930", "2026-03-23", Path("r3"), "", 100.0, 102.0, {}),
     ]
 
-    benchmark_export, warnings = exporter.build_tushare_benchmark_export(runs, _FakeTushareProWithWeekendFill())
+    benchmark_export, warnings = exporter.build_tushare_benchmark_export(
+        runs,
+        _FakeTushareProWithWeekendFill(),
+        formal_trading_calendar=_formal_trading_calendar(
+            ["2026-03-18", "2026-03-20", "2026-03-23"]
+        ),
+    )
     assert all("UNSPECIFIED_RECORD_THEME" not in warning for warning in warnings)
     assert benchmark_export is not None
 
@@ -217,6 +328,9 @@ def test_tushare_benchmark_snapshot_gap_fill_is_not_production_grade():
     benchmark_export, warnings = exporter.build_tushare_benchmark_export(
         runs,
         _FakeTusharePro(),
+        formal_trading_calendar=_formal_trading_calendar(
+            ["2026-03-18", "2026-03-20", "2026-03-23"]
+        ),
         snapshot_gap_fill=True,
     )
     assert warnings == []
@@ -853,15 +967,40 @@ def test_export_summary_reports_effective_manual_ledger_status(tmp_path, monkeyp
     )
     dashboard_root = tmp_path / "dashboard"
     monkeypatch.setattr(exporter, "DEFAULT_STOCK_BASIC_ROOT", tmp_path / "missing_stock_basic")
+    market = _write_active_cn_market(
+        tmp_path / "market_data",
+        [
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": "20260708",
+                "close": 11.0,
+                "adj_close": 11.0,
+            }
+        ],
+    )
 
     summary = exporter.export(
         record_root,
         dashboard_root,
         benchmark_source="local",
         benchmark_file=benchmark_path,
+        data_root=market["data_root"],
     )
     written_summary = json.loads(
         (dashboard_root / "generated" / "export_summary.json").read_text(encoding="utf-8")
+    )
+    contract = json.loads(
+        (dashboard_root / "private" / "dashboard_snapshot.v3.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    snapshot_evidence = contract["trading_calendar"]["market_snapshot"]
+    assert contract["sources"]["cn_market_snapshot"] == snapshot_evidence
+    assert snapshot_evidence["latest_pointer_sha256"] == hashlib.sha256(
+        market["latest"].read_bytes()
+    ).hexdigest()
+    assert snapshot_evidence["table_root_path_summary"].endswith(
+        "/parquet/cn/_snapshots/dashboard-snapshot-v4/table/bars"
     )
 
     status = summary["effective_manual_ledger_status"]
@@ -931,12 +1070,28 @@ def test_export_preserves_full_pnl_nav_history_separate_from_manual_position_bas
     benchmark_path.write_text("\n".join(benchmark_lines) + "\n", encoding="utf-8")
     dashboard_root = tmp_path / "dashboard"
     monkeypatch.setattr(exporter, "DEFAULT_STOCK_BASIC_ROOT", tmp_path / "missing_stock_basic")
+    market = _write_active_cn_market(
+        tmp_path / "market_data",
+        [
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": trade_date,
+                "close": close,
+                "adj_close": close,
+            }
+            for trade_date, close in [
+                ("20260318", 10.0),
+                ("20260526", 11.0),
+            ]
+        ],
+    )
 
     summary = exporter.export(
         record_root,
         dashboard_root,
         benchmark_source="local",
         benchmark_file=benchmark_path,
+        data_root=market["data_root"],
     )
     nav_rows = exporter.read_csv_rows(dashboard_root / "generated" / "nav_records.csv")
     positions_rows = exporter.read_csv_rows(dashboard_root / "generated" / "positions_records.csv")
@@ -1129,10 +1284,7 @@ def test_industry_equal_weight_nav_is_built_from_local_parquet(tmp_path):
             {"ts_code": "000003.SZ", "industry": "银行"},
         ]
     ).to_parquet(stock_basic_root / "part.parquet", index=False)
-    bars_root = tmp_path / "bars"
-    bars_root.mkdir()
-    pd.DataFrame(
-        [
+    market_rows = [
             {"ts_code": "000001.SZ", "trade_date": "20260318", "close": 100.0, "adj_close": 100.0},
             {"ts_code": "000001.SZ", "trade_date": "20260319", "close": 110.0, "adj_close": 110.0},
             {"ts_code": "000001.SZ", "trade_date": "20260320", "close": 121.0, "adj_close": 121.0},
@@ -1143,7 +1295,8 @@ def test_industry_equal_weight_nav_is_built_from_local_parquet(tmp_path):
             {"ts_code": "000003.SZ", "trade_date": "20260319", "close": 20.0, "adj_close": 20.0},
             {"ts_code": "000003.SZ", "trade_date": "20260320", "close": 30.0, "adj_close": 30.0},
         ]
-    ).to_parquet(bars_root / "part.parquet", index=False)
+    market = _write_active_cn_market(tmp_path / "data", market_rows)
+    market_binding = exporter.resolve_strict_cn_market_binding(market["data_root"])
 
     benchmark_export, warnings = exporter.load_local_benchmark_export(runs, benchmark_path)
     assert warnings == []
@@ -1152,7 +1305,7 @@ def test_industry_equal_weight_nav_is_built_from_local_parquet(tmp_path):
     enhanced_export, industry_warnings = exporter.attach_industry_equal_weight_nav(
         runs,
         benchmark_export,
-        bars_root=bars_root,
+        market_binding=market_binding,
         stock_basic_root=stock_basic_root,
         industries=("IT设备", "半导体"),
     )
@@ -1170,4 +1323,139 @@ def test_industry_equal_weight_nav_is_built_from_local_parquet(tmp_path):
     assert summary["production_grade"] is True
     assert summary["industry_equal_weight"]["member_count"] == 2
     assert summary["industry_equal_weight"]["industry_list"] == ["IT设备", "半导体"]
+    snapshot_evidence = summary["industry_equal_weight"]["market_snapshot"]
+    assert snapshot_evidence["snapshot_id"] == "dashboard-snapshot-v4"
+    assert snapshot_evidence["latest_pointer_path_summary"].endswith(
+        "/parquet/cn/_latest.json"
+    )
+    assert snapshot_evidence["table_root_path_summary"].endswith(
+        "/parquet/cn/_snapshots/dashboard-snapshot-v4/table/bars"
+    )
+    assert snapshot_evidence["fallback_used"] is False
     assert any(row["field"] == "industry_ew_nav" for row in enhanced_export.raw_rows)
+
+
+def test_dashboard_calendar_reads_pointer_bound_immutable_root_not_stale_legacy(tmp_path):
+    exporter = _load_exporter()
+    first = _write_active_cn_market(
+        tmp_path / "data",
+        [
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": "20260714",
+                "close": 10.0,
+                "adj_close": 10.0,
+            }
+        ],
+        snapshot_id="dashboard-snapshot-v4-a",
+    )
+    assert json.loads(first["latest"].read_text(encoding="utf-8"))[
+        "snapshot_id"
+    ] == "dashboard-snapshot-v4-a"
+    market = _write_active_cn_market(
+        tmp_path / "data",
+        [
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": "20260715",
+                "close": 11.0,
+                "adj_close": 11.0,
+            }
+        ],
+        snapshot_id="dashboard-snapshot-v4-b",
+    )
+    binding = exporter.resolve_strict_cn_market_binding(market["data_root"])
+
+    calendar, warnings = exporter.load_strict_parquet_trading_calendar(
+        binding,
+        "2026-07-15",
+        "2026-07-15",
+    )
+
+    assert warnings == []
+    assert calendar["expected_open_dates"] == ["2026-07-15"]
+    assert calendar["market_snapshot"] == binding.audit_metadata()
+    assert binding.snapshot_id == "dashboard-snapshot-v4-b"
+    assert "1999-01-01" not in calendar["expected_open_dates"]
+
+
+def test_dashboard_calendar_rejects_active_pointer_drift(tmp_path):
+    exporter = _load_exporter()
+    market = _write_active_cn_market(
+        tmp_path / "data",
+        [
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": "20260715",
+                "close": 11.0,
+                "adj_close": 11.0,
+            }
+        ],
+    )
+    binding = exporter.resolve_strict_cn_market_binding(market["data_root"])
+    pointer = json.loads(market["latest"].read_text(encoding="utf-8"))
+    pointer["published_after_binding"] = True
+    market["latest"].write_text(json.dumps(pointer), encoding="utf-8")
+
+    with pytest.raises(
+        exporter.MarketDataUnavailableError,
+        match="pointer changed after Dashboard source binding",
+    ):
+        exporter.load_strict_parquet_trading_calendar(
+            binding,
+            "2026-07-15",
+            "2026-07-15",
+        )
+
+
+def test_dashboard_calendar_rejects_immutable_root_symlink_drift(tmp_path):
+    exporter = _load_exporter()
+    market = _write_active_cn_market(
+        tmp_path / "data",
+        [
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": "20260715",
+                "close": 11.0,
+                "adj_close": 11.0,
+            }
+        ],
+    )
+    binding = exporter.resolve_strict_cn_market_binding(market["data_root"])
+    original_root = market["table_root"].with_name("bars-original")
+    market["table_root"].rename(original_root)
+    market["table_root"].symlink_to(market["legacy_root"], target_is_directory=True)
+
+    with pytest.raises(
+        exporter.MarketDataUnavailableError,
+        match="symlink rejected",
+    ):
+        exporter.load_strict_parquet_trading_calendar(
+            binding,
+            "2026-07-15",
+            "2026-07-15",
+        )
+
+
+def test_dashboard_binding_rejects_pointer_declared_fixed_bars_root(tmp_path):
+    exporter = _load_exporter()
+    market = _write_active_cn_market(
+        tmp_path / "data",
+        [
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": "20260715",
+                "close": 11.0,
+                "adj_close": 11.0,
+            }
+        ],
+    )
+    pointer = json.loads(market["latest"].read_text(encoding="utf-8"))
+    pointer["table_root"] = str(market["legacy_root"])
+    market["latest"].write_text(json.dumps(pointer), encoding="utf-8")
+
+    with pytest.raises(
+        exporter.MarketDataUnavailableError,
+        match="v4 snapshot table_root invalid",
+    ):
+        exporter.resolve_strict_cn_market_binding(market["data_root"])

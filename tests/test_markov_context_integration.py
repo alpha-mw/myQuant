@@ -16,6 +16,7 @@ from quant_investor.market.dag.context import _prepare_market_context
 from quant_investor.market.read_result import MarketDataReadResult
 from quant_investor.market.runtime_profile import MarketRuntimeProfiler
 from quant_investor.regime.types import REGIME_RANGE_HIGH_VOL, REGIME_TREND_DOWN
+from tests.helpers.macro_fixture import make_v15_controls
 
 
 class FakeReader:
@@ -109,6 +110,7 @@ def _patch_branch_readiness(monkeypatch: pytest.MonkeyPatch) -> None:
         "source_priority": "tushare_primary",
         "provider_status": "verified_provider_snapshot",
         "production_eligible": True,
+        "v15_controls": make_v15_controls(),
     }
     monkeypatch.setattr(
         "quant_investor.market.dag.context.load_macro_record",
@@ -219,6 +221,14 @@ def test_canonical_macro_is_loaded_once_and_drives_macro_verdict(
             "source_priority": "tushare_primary",
             "provider_status": "verified_provider_snapshot",
             "production_eligible": True,
+            "v15_controls": make_v15_controls(
+                macro_score=float(records[index - 1]["macro_score"]),
+                liquidity_score=float(records[index - 1]["liquidity_score"]),
+                volatility_percentile=float(
+                    records[index - 1]["volatility_percentile"]
+                ),
+                policy_signal=str(records[index - 1]["policy_signal"]),
+            ),
         }
         for index in (1, 2)
     ]

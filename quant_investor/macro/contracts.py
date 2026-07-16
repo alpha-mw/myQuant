@@ -33,7 +33,10 @@ OFFICIAL_SOURCE_SYSTEMS = frozenset(
     }
 )
 TUSHARE_SOURCE_SYSTEMS = frozenset({"tushare", "tushare_fallback", "tushare_primary"})
-SUPPORTED_SOURCE_SYSTEMS = OFFICIAL_SOURCE_SYSTEMS | TUSHARE_SOURCE_SYSTEMS
+LOCAL_SOURCE_SYSTEMS = frozenset({"local_strict_parquet"})
+SUPPORTED_SOURCE_SYSTEMS = (
+    OFFICIAL_SOURCE_SYSTEMS | TUSHARE_SOURCE_SYSTEMS | LOCAL_SOURCE_SYSTEMS
+)
 _SOURCE_HOSTS = {
     "nbs_official": ("stats.gov.cn",),
     "stats.gov.cn": ("stats.gov.cn",),
@@ -72,6 +75,10 @@ def is_tushare_source(value: Any) -> bool:
     return str(value or "").strip().lower() in TUSHARE_SOURCE_SYSTEMS
 
 
+def is_local_source(value: Any) -> bool:
+    return str(value or "").strip().lower() in LOCAL_SOURCE_SYSTEMS
+
+
 def normalize_source_url(value: Any, *, source_system: str) -> str:
     text = str(value or "").strip()
     if not text:
@@ -81,16 +88,36 @@ def normalize_source_url(value: Any, *, source_system: str) -> str:
         port = parsed.port
     except ValueError as exc:
         raise ValueError("source_url_invalid") from exc
-    if parsed.scheme.lower() != "https":
-        raise ValueError("source_url_https_required")
+    system = str(source_system or "").strip().lower()
     if parsed.username is not None or parsed.password is not None:
         raise ValueError("source_url_userinfo_rejected")
+    if system in LOCAL_SOURCE_SYSTEMS:
+        if parsed.scheme.lower() != "local":
+            raise ValueError("source_url_local_scheme_required")
+        if port is not None:
+            raise ValueError("source_url_port_rejected")
+        hostname = str(parsed.hostname or "").lower().rstrip(".")
+        if hostname != "strict-parquet":
+            raise ValueError("source_url_issuer_mismatch")
+        path = parsed.path or ""
+        if (
+            not path.startswith("/cn/")
+            or ".." in path.split("/")
+            or any(ord(character) < 32 for character in path)
+        ):
+            raise ValueError("source_url_local_path_invalid")
+        if parsed.query:
+            raise ValueError("source_url_local_query_rejected")
+        if parsed.fragment:
+            raise ValueError("source_url_fragment_rejected")
+        return urlunsplit(("local", hostname, path, "", ""))
+    if parsed.scheme.lower() != "https":
+        raise ValueError("source_url_https_required")
     if port not in {None, 443}:
         raise ValueError("source_url_port_rejected")
     hostname = str(parsed.hostname or "").lower().rstrip(".")
     if not hostname:
         raise ValueError("source_url_host_missing")
-    system = str(source_system or "").strip().lower()
     allowed_hosts = _SOURCE_HOSTS.get(system, ())
     if not any(
         hostname == allowed or hostname.endswith(f".{allowed}")

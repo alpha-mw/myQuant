@@ -505,6 +505,47 @@ def test_storage_validate_keeps_legacy_macro_catalog_as_nonblocking_diagnostic(
     }
 
 
+def test_storage_validate_blocks_strict_catalog_bound_to_v14_macro_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "data"
+    market_root = data_root / "parquet" / "cn"
+    _bind_catalog_generation(market_root)
+    _rewrite_generation_manifest(
+        market_root,
+        schema_version="cn-macro-mart.v14",
+    )
+    store = MarketDataStore(market="CN", data_root=data_root)
+    monkeypatch.setattr(
+        store.reader,
+        "clean_snapshot_gate",
+        lambda refresh=True: {
+            "healthy": True,
+            "blockers": [],
+            "snapshot_id": "fixture",
+            "latest_complete_trade_date": "20240510",
+            "latest_trade_date": "20240510",
+            "latest_pointer_path": "fixture",
+            "table_root": "fixture",
+            "serving_root": "fixture",
+            "manifest_path": "fixture",
+            "mode_policy": "strict",
+        },
+    )
+    monkeypatch.setattr(
+        store.reader,
+        "_load_latest_payload",
+        lambda refresh=True: {},
+    )
+
+    result = store.validate_latest()
+
+    assert result["status"] == "failed"
+    assert "macro_v15_generation_unavailable" in result["blockers"]
+    assert "macro_generation_manifest_schema_invalid" in result["blockers"]
+
+
 def test_macro_readiness_does_not_trust_row_reported_source_priority() -> None:
     record = _row(source="offline_input")
     readiness = assess_macro_readiness(

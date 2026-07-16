@@ -62,6 +62,9 @@ from quant_investor.market.read_result import MarketDataReadResult
 from quant_investor.market.runtime_profile import profile_stage
 from quant_investor.llm_gateway import detect_provider
 from quant_investor.model_roles import ModelRoleResolution
+from quant_investor.macro.v15_controls import (
+    V15_MACRO_CONTROL_SCHEMA_VERSION,
+)
 from quant_investor.reporting.run_artifacts import build_model_role_metadata
 from quant_investor.regime.engine import MarkovRegimeEngine
 from quant_investor.regime.scope import (
@@ -88,6 +91,32 @@ DAG_RUNTIME_PRICE_VOLUME_COLUMNS: tuple[str, ...] = (
 DAG_RUNTIME_LOOKBACK_CALENDAR_DAYS = 420
 DAG_SINGLE_NAME_WEIGHT_CAP = 0.50
 DAG_NEUTRAL_TARGET_EXPOSURE = 0.55
+
+
+def _validated_pinned_macro_controls(
+    manifest: Mapping[str, Any],
+) -> dict[str, Any]:
+    raw = manifest.get("v15_controls")
+    if not isinstance(raw, Mapping):
+        raise ValueError("macro_v15_controls_missing_or_invalid")
+    controls = dict(raw)
+    if (
+        controls.get("schema_version")
+        != V15_MACRO_CONTROL_SCHEMA_VERSION
+        or controls.get("production_control_projection") is not True
+        or any(
+            field_name not in controls
+            for field_name in (
+                "macro_score",
+                "liquidity_score",
+                "volatility_percentile",
+                "policy_signal",
+                "semantic_sha256",
+            )
+        )
+    ):
+        raise ValueError("macro_v15_controls_missing_or_invalid")
+    return controls
 
 
 @dataclass
@@ -918,7 +947,7 @@ def _macro_v2_observer_metadata(*, market: str, as_of: str) -> dict[str, Any]:
                 getattr(
                     config,
                     "MACRO_V2_OBSERVER_OUTPUT_DIR",
-                    "results/v14/macro_observer",
+                    "results/v15/macro_observer",
                 )
             ),
             production_enabled=production_enabled,
@@ -1525,6 +1554,21 @@ def _prepare_market_context(
             manifest=pinned_macro_manifest,
             as_of=effective_latest_trade_date,
         )
+        try:
+            pinned_macro_controls = _validated_pinned_macro_controls(
+                pinned_macro_manifest
+            )
+        except ValueError:
+            pinned_macro_controls = {}
+            pinned_macro_readiness.status = STATUS_BLOCK
+            pinned_macro_readiness.blockers = list(
+                dict.fromkeys(
+                    [
+                        *pinned_macro_readiness.blockers,
+                        "macro_v15_controls_missing_or_invalid",
+                    ]
+                )
+            )
         pinned_macro_blocked = pinned_macro_readiness.status == STATUS_BLOCK
         pinned_macro_identity = macro_generation_identity(pinned_macro_manifest)
         if pinned_macro_blocked:
@@ -1538,14 +1582,16 @@ def _prepare_market_context(
         else:
             macro_overview = {
                 "regime": "neutral",
-                "macro_score": float(pinned_macro_record["macro_score"]),
+                "macro_score": float(pinned_macro_controls["macro_score"]),
                 "liquidity_score": float(
-                    pinned_macro_record["liquidity_score"]
+                    pinned_macro_controls["liquidity_score"]
                 ),
                 "volatility_percentile": float(
-                    pinned_macro_record["volatility_percentile"]
+                    pinned_macro_controls["volatility_percentile"]
                 ),
-                "policy_signal": str(pinned_macro_record["policy_signal"]),
+                "policy_signal": str(
+                    pinned_macro_controls["policy_signal"]
+                ),
             }
         with profile_stage(
             runtime_profiler,
@@ -1569,6 +1615,9 @@ def _prepare_market_context(
                 {
                     "macro_data_readiness_status": pinned_macro_readiness.status,
                     "canonical_macro_generation": dict(pinned_macro_identity),
+                    "v15_controls_semantic_sha256": str(
+                        pinned_macro_controls.get("semantic_sha256") or ""
+                    ),
                     "decision_authorized": not pinned_macro_blocked,
                 }
             )
@@ -1597,6 +1646,9 @@ def _prepare_market_context(
                         ),
                         "canonical_macro_generation": dict(
                             pinned_macro_identity
+                        ),
+                        "v15_controls_semantic_sha256": str(
+                            pinned_macro_controls.get("semantic_sha256") or ""
                         ),
                     }
                 )
@@ -1896,7 +1948,7 @@ def _prepare_market_context(
         ),
         regime_params={"markov": markov_payload},
         macro_data=(
-            dict(pinned_macro_record) if not pinned_macro_blocked else {}
+            dict(pinned_macro_controls) if not pinned_macro_blocked else {}
         ),
         universe_tiers={
             "total": list(all_symbols),

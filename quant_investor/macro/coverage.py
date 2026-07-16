@@ -50,8 +50,8 @@ _AUTHORITY_BY_INDICATOR = {
     "cn.ppi_yoy": "nbs_official",
     "cn.fiscal_expenditure_yoy": "mof_official",
     "cn.property_investment_yoy": "nbs_official",
-    "cn.exports_yoy": "customs_official",
-    "cn.imports_yoy": "customs_official",
+    "cn.exports_yoy": "nbs_official",
+    "cn.imports_yoy": "nbs_official",
     "market.breadth": "local_strict_parquet",
     "market.volatility_percentile": "local_strict_parquet",
 }

@@ -499,6 +499,48 @@ def validate_dashboard_contract_v3(
     if calendar_status == "available":
         if calendar.get("source_system") != "strict_parquet.cn_bars.trade_date":
             errors.append("dashboard trading calendar must come from strict Parquet trade_date.")
+        market_snapshot = calendar.get("market_snapshot") or {}
+        if not isinstance(market_snapshot, dict):
+            errors.append("dashboard trading calendar market_snapshot must be an object.")
+            market_snapshot = {}
+        pointer_path = str(
+            market_snapshot.get("latest_pointer_path_summary") or ""
+        )
+        pointer_sha256 = str(
+            market_snapshot.get("latest_pointer_sha256") or ""
+        )
+        snapshot_id = str(market_snapshot.get("snapshot_id") or "")
+        table_root = str(market_snapshot.get("table_root_path_summary") or "")
+        if not pointer_path.endswith("/parquet/cn/_latest.json"):
+            errors.append("dashboard CN market pointer must be parquet/cn/_latest.json.")
+        if not re.fullmatch(r"[0-9a-f]{64}", pointer_sha256):
+            errors.append("dashboard CN market latest_pointer_sha256 must be a lowercase SHA-256 digest.")
+        if not snapshot_id or Path(snapshot_id).name != snapshot_id or snapshot_id in {".", ".."}:
+            errors.append("dashboard CN market snapshot_id must be one safe path segment.")
+        expected_table_suffix = f"/parquet/cn/_snapshots/{snapshot_id}/table/bars"
+        if not table_root.endswith(expected_table_suffix):
+            errors.append("dashboard CN table_root must be the pointer-bound immutable snapshot root.")
+        if not str(calendar.get("path_summary") or "").endswith(
+            expected_table_suffix
+        ):
+            errors.append("dashboard trading calendar path must match the immutable CN table_root.")
+        if market_snapshot.get("fallback_used") is not False:
+            errors.append("dashboard CN market source must explicitly prohibit fallback.")
+        forbidden_roots = (
+            "/parquet/cn/bars",
+            "/parquet_serving/cn/bars",
+            ".csv",
+        )
+        if any(token in table_root for token in forbidden_roots):
+            errors.append("dashboard CN market source contains a forbidden fixed/serving/CSV root.")
+        sources = contract.get("sources") or {}
+        source_snapshot = (
+            sources.get("cn_market_snapshot")
+            if isinstance(sources, dict)
+            else None
+        )
+        if source_snapshot != market_snapshot:
+            errors.append("dashboard CN market source evidence does not match trading_calendar.")
         try:
             declared_open_count = int(calendar.get("expected_open_date_count") or 0)
         except (TypeError, ValueError):

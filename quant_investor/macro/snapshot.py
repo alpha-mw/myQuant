@@ -113,8 +113,11 @@ def build_macro_snapshot(
     *,
     market: str = "CN",
     as_of: str,
+    decision_cutoff_at: Any | None = None,
 ) -> MacroSnapshot:
-    cutoff = published_cutoff(as_of)
+    cutoff = published_cutoff(
+        as_of if decision_cutoff_at is None else decision_cutoff_at
+    )
     selected_period_vintages, blockers = _select_vintages(observations, cutoff=cutoff)
     histories: dict[str, list[MacroObservation]] = defaultdict(list)
     for item in selected_period_vintages:

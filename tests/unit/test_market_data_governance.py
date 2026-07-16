@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import shutil
 from pathlib import Path
 
 import pandas as pd
@@ -413,6 +414,22 @@ def test_full_a_governance_accepts_coverage_bound_v4_pit_generation(
     tmp_path,
 ):
     data_root = _write_parquet_market_data(tmp_path)
+    pointer_path = data_root / "parquet" / "cn" / "_latest.json"
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    immutable_root = (
+        data_root
+        / "parquet"
+        / "cn"
+        / "_snapshots"
+        / str(pointer["snapshot_id"])
+    )
+    immutable_table = immutable_root / "table" / "bars"
+    immutable_serving = immutable_root / "serving" / "bars"
+    shutil.copytree(Path(pointer["table_root"]), immutable_table)
+    shutil.copytree(Path(pointer["derived_serving_root"]), immutable_serving)
+    pointer["table_root"] = str(immutable_table)
+    pointer["derived_serving_root"] = str(immutable_serving)
+    pointer_path.write_text(json.dumps(pointer), encoding="utf-8")
     pit_store = PITUniverseStore(
         root_dir=data_root / "parquet" / "cn" / "reference",
         raw_root=data_root / "cn_universe" / "raw",

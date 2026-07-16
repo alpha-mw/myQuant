@@ -20,18 +20,23 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from quant_investor.market.market_data_reader import (
+    MarketDataReader,
+    MarketDataUnavailableError,
+)
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RECORD_ROOT = (
     PROJECT_ROOT / "results" / "strategy_records" / "CN" / "aggressive_tech_manufacturing"
 )
 DEFAULT_DASHBOARD_ROOT = PROJECT_ROOT / "portfolio_dashboard"
+DEFAULT_DATA_ROOT = PROJECT_ROOT / "data"
 DEFAULT_PRIVATE_DASHBOARD_DIRNAME = "private"
 DASHBOARD_SCHEMA_VERSION = "dashboard_contract.v3"
 DEFAULT_BENCHMARK_SOURCE = "local"
 DEFAULT_INITIAL_BENCHMARK = 1.0
 DEFAULT_STOCK_BASIC_ROOT = PROJECT_ROOT / "data" / "parquet" / "cn" / "dag_core_raw" / "table=stock_basic"
-DEFAULT_CN_BARS_ROOT = PROJECT_ROOT / "data" / "parquet" / "cn" / "bars"
 SNAPSHOT_BENCHMARK_STATUS = "not_production_grade"
 SNAPSHOT_BENCHMARK_SOURCE_SYSTEM = "strategy_record.market_snapshot.indices"
 SNAPSHOT_GAP_FILL_COVERAGE = "strategy_record_snapshot_gap_fill"
@@ -150,6 +155,39 @@ class TradeCalendarDay:
     pretrade_date: str
 
 
+@dataclass(frozen=True)
+class StrictCNMarketBinding:
+    """One verified immutable CN snapshot selected by the active pointer."""
+
+    reader: MarketDataReader
+    latest_pointer_path: Path
+    latest_pointer_sha256: str
+    snapshot_id: str
+    table_root: Path
+    latest_complete_trade_date: str
+
+    def audit_metadata(self) -> dict[str, Any]:
+        def _data_path_summary(path: Path) -> str:
+            absolute = Path(os.path.abspath(os.fspath(path)))
+            data_root = Path(os.path.abspath(os.fspath(self.reader.data_root)))
+            try:
+                relative = absolute.relative_to(data_root)
+            except ValueError:
+                return str(path_summary(path) or "")
+            return f"<data_root>/{relative.as_posix()}"
+
+        return {
+            "latest_pointer_path_summary": _data_path_summary(
+                self.latest_pointer_path
+            ),
+            "latest_pointer_sha256": self.latest_pointer_sha256,
+            "snapshot_id": self.snapshot_id,
+            "table_root_path_summary": _data_path_summary(self.table_root),
+            "latest_complete_trade_date": self.latest_complete_trade_date,
+            "fallback_used": False,
+        }
+
+
 def read_csv_rows(path: Path) -> list[dict[str, str]]:
     if not path.exists():
         return []
@@ -247,6 +285,121 @@ def path_summary(path: Path | None) -> str | None:
         return f"<external>/{parent + '/' if parent else ''}{path.name}"
 
 
+def _required_sha256(path: Path, *, label: str) -> str:
+    digest = sha256_file(path)
+    if digest is None:
+        raise MarketDataUnavailableError(f"{label} missing or not a regular file: {path}")
+    return digest
+
+
+def resolve_strict_cn_market_binding(
+    data_root: Path = DEFAULT_DATA_ROOT,
+) -> StrictCNMarketBinding:
+    """Resolve the active immutable CN table root through MarketDataReader.
+
+    Dashboard exports must never infer a bars directory.  They bind to the
+    exact v4 market pointer and fail closed when the pointer, clean gate, or
+    immutable layout cannot be verified.
+    """
+
+    reader = MarketDataReader(market="CN", data_root=data_root, mode_policy="strict")
+    pointer_path = reader.latest_pointer_path
+    pointer_sha_before = _required_sha256(
+        pointer_path,
+        label="CN active market pointer",
+    )
+    gate = reader.clean_snapshot_gate(refresh=True)
+    pointer_sha_after = _required_sha256(
+        pointer_path,
+        label="CN active market pointer",
+    )
+    if pointer_sha_before != pointer_sha_after:
+        raise MarketDataUnavailableError(
+            "CN active market pointer changed while resolving Dashboard source"
+        )
+    if not gate.get("healthy"):
+        blockers = "; ".join(
+            str(item)
+            for item in list(gate.get("blockers") or [])
+            if str(item).strip()
+        )
+        raise MarketDataUnavailableError(
+            blockers or "CN strict Parquet clean snapshot gate is blocked"
+        )
+    coverage = gate.get("coverage") or {}
+    if not isinstance(coverage, dict) or coverage.get("coverage_schema_version") != (
+        "cn-full-a-coverage.v4"
+    ):
+        raise MarketDataUnavailableError(
+            "Dashboard CN bars require immutable cn-full-a-coverage.v4"
+        )
+    snapshot_id = str(gate.get("snapshot_id") or "").strip()
+    table_root = Path(str(gate.get("table_root") or ""))
+    expected_table_root = (
+        Path(data_root)
+        / "parquet"
+        / "cn"
+        / "_snapshots"
+        / snapshot_id
+        / "table"
+        / "bars"
+    )
+    if table_root != expected_table_root.absolute():
+        raise MarketDataUnavailableError(
+            "Dashboard CN bars table_root must be the active immutable snapshot root"
+        )
+    return StrictCNMarketBinding(
+        reader=reader,
+        latest_pointer_path=pointer_path,
+        latest_pointer_sha256=pointer_sha_after,
+        snapshot_id=snapshot_id,
+        table_root=table_root,
+        latest_complete_trade_date=str(
+            gate.get("latest_complete_trade_date") or ""
+        ),
+    )
+
+
+def assert_strict_cn_market_binding_current(
+    binding: StrictCNMarketBinding,
+) -> None:
+    """Reject pointer advancement or immutable-root drift around a read."""
+
+    pointer_sha_before = _required_sha256(
+        binding.latest_pointer_path,
+        label="CN active market pointer",
+    )
+    if pointer_sha_before != binding.latest_pointer_sha256:
+        raise MarketDataUnavailableError(
+            "CN active market pointer changed after Dashboard source binding"
+        )
+    gate = binding.reader.clean_snapshot_gate(refresh=True)
+    pointer_sha_after = _required_sha256(
+        binding.latest_pointer_path,
+        label="CN active market pointer",
+    )
+    if pointer_sha_after != pointer_sha_before:
+        raise MarketDataUnavailableError(
+            "CN active market pointer changed during Dashboard source verification"
+        )
+    if not gate.get("healthy"):
+        blockers = "; ".join(
+            str(item)
+            for item in list(gate.get("blockers") or [])
+            if str(item).strip()
+        )
+        raise MarketDataUnavailableError(
+            blockers or "CN strict Parquet clean snapshot gate became blocked"
+        )
+    if (
+        str(gate.get("snapshot_id") or "") != binding.snapshot_id
+        or Path(str(gate.get("table_root") or "")) != binding.table_root
+    ):
+        raise MarketDataUnavailableError(
+            "CN active market snapshot identity changed after Dashboard source binding"
+        )
+
+
 def nullable_float(value: Any) -> float | None:
     parsed = parse_float(value)
     if parsed is None or not math.isfinite(parsed):
@@ -309,25 +462,31 @@ def explicit_iso_timestamp(value: Any) -> str | None:
 
 
 def load_strict_parquet_trading_calendar(
-    bars_root: Path,
+    market_binding: StrictCNMarketBinding,
     start_date: str,
     end_date: str,
 ) -> tuple[dict[str, Any], list[str]]:
     """Build the expected open-day mask only from canonical strict Parquet bars."""
 
+    assert_strict_cn_market_binding_current(market_binding)
+    bars_root = market_binding.table_root
+    market_snapshot = market_binding.audit_metadata()
     missing = {
         "status": "missing",
         "source_system": "strict_parquet.cn_bars.trade_date",
-        "path_summary": path_summary(bars_root),
+        "path_summary": market_snapshot["table_root_path_summary"],
+        "market_snapshot": market_snapshot,
         "start_date": start_date,
         "end_date": end_date,
         "expected_open_dates": [],
         "expected_open_date_count": 0,
         "first_open_date": None,
         "last_open_date": None,
+        "prior_open_date": None,
         "mask_sha256": None,
     }
     if not bars_root.exists():
+        assert_strict_cn_market_binding_current(market_binding)
         return missing, [f"trading_calendar_missing: strict Parquet bars not found: {bars_root}"]
     try:
         with suppress_native_stderr():
@@ -336,15 +495,21 @@ def load_strict_parquet_trading_calendar(
             dataset = ds.dataset(str(bars_root), format="parquet", partitioning="hive")
             table = dataset.to_table(columns=["trade_date"])
     except Exception as exc:
+        assert_strict_cn_market_binding_current(market_binding)
         return missing, [f"trading_calendar_missing: cannot read strict Parquet trade_date: {exc}"]
-    expected = sorted(
+    assert_strict_cn_market_binding_current(market_binding)
+    all_open_dates = sorted(
         {
             normalized
             for value in table.column("trade_date").to_pylist()
             if (normalized := explicit_iso_date(value)) is not None
-            and start_date <= normalized <= end_date
         }
     )
+    expected = [
+        value for value in all_open_dates if start_date <= value <= end_date
+    ]
+    previous = [value for value in all_open_dates if value < start_date]
+    prior_open_date = previous[-1] if previous else None
     if not expected:
         return missing, ["trading_calendar_missing: no canonical trade_date in dashboard range"]
     mask_payload = {
@@ -356,13 +521,15 @@ def load_strict_parquet_trading_calendar(
     return {
         "status": "available",
         "source_system": "strict_parquet.cn_bars.trade_date",
-        "path_summary": path_summary(bars_root),
+        "path_summary": market_snapshot["table_root_path_summary"],
+        "market_snapshot": market_snapshot,
         "start_date": start_date,
         "end_date": end_date,
         "expected_open_dates": expected,
         "expected_open_date_count": len(expected),
         "first_open_date": expected[0],
         "last_open_date": expected[-1],
+        "prior_open_date": prior_open_date,
         "mask_sha256": canonical_json_sha256(mask_payload),
     }, []
 
@@ -415,42 +582,50 @@ def benchmarks_from_snapshot(run_dir: Path) -> dict[str, float]:
     return values
 
 
-def load_tushare_trade_calendar(
-    pro: Any,
-    start_date: str,
-    end_date: str,
-) -> tuple[dict[str, TradeCalendarDay], list[str]]:
-    warnings: list[str] = []
-    try:
-        frame = pro.trade_cal(exchange="", start_date=start_date, end_date=end_date)
-    except TypeError:
-        try:
-            frame = pro.trade_cal(start_date=start_date, end_date=end_date)
-        except Exception as exc:  # pragma: no cover - live provider defensive guard.
-            return {}, [f"Tushare trade_cal 调用失败：{exc}"]
-    except Exception as exc:  # pragma: no cover - live provider defensive guard.
-        return {}, [f"Tushare trade_cal 调用失败：{exc}"]
-    if frame is None or getattr(frame, "empty", True):
-        return {}, ["Tushare trade_cal 未返回数据，非交易日 benchmark 不做前向填充。"]
-    if "cal_date" not in frame.columns or "is_open" not in frame.columns:
-        return {}, ["Tushare trade_cal 缺少 cal_date 或 is_open 字段，非交易日 benchmark 不做前向填充。"]
-    calendar: dict[str, TradeCalendarDay] = {}
-    for _, row in frame.iterrows():
-        iso_date = tushare_to_iso_date(row.get("cal_date"))
-        if not iso_date:
-            continue
-        is_open = str(row.get("is_open") or "").strip() in {"1", "1.0", "True", "true"}
-        pretrade_date = tushare_to_iso_date(row.get("pretrade_date"))
-        calendar[iso_date] = TradeCalendarDay(is_open=is_open, pretrade_date=pretrade_date)
-    if not calendar:
-        warnings.append("Tushare trade_cal 未返回有效交易日历，非交易日 benchmark 不做前向填充。")
-    return calendar, warnings
+def _strict_trade_calendar_days(
+    runs: list[RecordRun],
+    formal_trading_calendar: dict[str, Any],
+) -> dict[str, TradeCalendarDay]:
+    if (
+        formal_trading_calendar.get("status") != "available"
+        or formal_trading_calendar.get("source_system")
+        != "strict_parquet.cn_bars.trade_date"
+        or not isinstance(formal_trading_calendar.get("market_snapshot"), dict)
+    ):
+        raise MarketDataUnavailableError(
+            "Tushare benchmark ffill requires the pointer-bound strict Parquet calendar"
+        )
+    open_dates = sorted(
+        {
+            str(value)
+            for value in list(
+                formal_trading_calendar.get("expected_open_dates") or []
+            )
+            if explicit_iso_date(value) is not None
+        }
+    )
+    prior_open_date = explicit_iso_date(
+        formal_trading_calendar.get("prior_open_date")
+    )
+    available_dates = sorted(
+        set(open_dates) | ({prior_open_date} if prior_open_date else set())
+    )
+    result: dict[str, TradeCalendarDay] = {}
+    open_date_set = set(open_dates)
+    for run in runs:
+        previous = [value for value in available_dates if value < run.date]
+        result[run.date] = TradeCalendarDay(
+            is_open=run.date in open_date_set,
+            pretrade_date=previous[-1] if previous else "",
+        )
+    return result
 
 
 def build_tushare_benchmark_export(
     runs: list[RecordRun],
     pro: Any,
     *,
+    formal_trading_calendar: dict[str, Any],
     snapshot_gap_fill: bool = False,
 ) -> tuple[BenchmarkExport | None, list[str]]:
     warnings: list[str] = []
@@ -458,8 +633,7 @@ def build_tushare_benchmark_export(
         return None, ["没有可用策略记录，无法拉取 Tushare benchmark。"]
     start_date = iso_to_tushare_date(runs[0].date)
     end_date = iso_to_tushare_date(runs[-1].date)
-    trade_calendar, calendar_warnings = load_tushare_trade_calendar(pro, start_date, end_date)
-    warnings.extend(calendar_warnings)
+    trade_calendar = _strict_trade_calendar_days(runs, formal_trading_calendar)
     closes_by_field: dict[str, dict[str, float]] = {}
     raw_rows: list[dict[str, Any]] = []
     for ts_code, field in TUSHARE_INDEX_BENCHMARKS.items():
@@ -626,17 +800,22 @@ def build_tushare_benchmark_export(
         values_by_date=values_by_date,
         raw_rows=raw_rows,
         source_system=TUSHARE_BENCHMARK_SOURCE_SYSTEM,
-        normalization="tushare_index_daily_close_divided_by_first_valid_close_with_trade_cal_previous_trading_day_ffill",
+        normalization="tushare_index_daily_close_divided_by_first_valid_close_with_strict_parquet_calendar_ffill",
         status_hint="production_source",
         notes=[
             "benchmark 来自 Tushare index_daily 连续指数 close，并按 close/first_valid_close 归一化。",
-            "非交易日 strategy record 使用 Tushare trade_cal 的 pretrade_date 做 previous_trading_day_ffill，并在 coverage 中显式标记。",
+            "非交易日 strategy record 仅使用 active CN market pointer 绑定的 strict Parquet 日历做 previous_trading_day_ffill。",
             "若交易日或 latest strategy record 日期尚无 Tushare index_daily close，则该日期 benchmark 留空并降级为 partial。",
         ],
         coverage_by_date=coverage_by_date,
         value_date_by_date=value_date_by_date,
         snapshot_gap_fill_by_date=snapshot_gap_fill_by_date,
-        calendar_source_system="tushare.trade_cal",
+        calendar_source_system="strict_parquet.cn_bars.trade_date",
+        metadata={
+            "market_snapshot": dict(
+                formal_trading_calendar.get("market_snapshot") or {}
+            )
+        },
     ), warnings
 
 
@@ -837,6 +1016,7 @@ def load_local_benchmark_export(
 def load_tushare_benchmark_export(
     runs: list[RecordRun],
     *,
+    formal_trading_calendar: dict[str, Any],
     snapshot_gap_fill: bool = False,
 ) -> tuple[BenchmarkExport | None, list[str]]:
     try:
@@ -850,7 +1030,12 @@ def load_tushare_benchmark_export(
     pro = create_tushare_pro(ts, Config.TUSHARE_TOKEN, Config.TUSHARE_URL)
     if pro is None:
         return None, ["TUSHARE_TOKEN 未设置，无法拉取生产 benchmark。"]
-    return build_tushare_benchmark_export(runs, pro, snapshot_gap_fill=snapshot_gap_fill)
+    return build_tushare_benchmark_export(
+        runs,
+        pro,
+        formal_trading_calendar=formal_trading_calendar,
+        snapshot_gap_fill=snapshot_gap_fill,
+    )
 
 
 @contextmanager
@@ -1337,13 +1522,16 @@ def _load_industry_member_symbols(
 
 
 def _read_industry_bar_frame(
-    bars_root: Path,
+    market_binding: StrictCNMarketBinding,
     symbols: set[str],
     start_date: str,
     end_date: str,
 ) -> tuple[Any | None, list[str]]:
     warnings: list[str] = []
+    assert_strict_cn_market_binding_current(market_binding)
+    bars_root = market_binding.table_root
     if not bars_root.exists():
+        assert_strict_cn_market_binding_current(market_binding)
         return None, [f"未找到本地 bars Parquet 目录：{bars_root}，无法构建 industry_ew_nav。"]
     try:
         with suppress_native_stderr():
@@ -1370,8 +1558,10 @@ def _read_industry_bar_frame(
                     filters=[("trade_date", ">=", start_key), ("trade_date", "<=", end_key)],
                 )
         except Exception as exc:
+            assert_strict_cn_market_binding_current(market_binding)
             return None, [f"读取本地 bars Parquet 失败：{exc}，无法构建 industry_ew_nav。"]
         warnings.append("bars Parquet 不支持 symbol 下推过滤，已在内存中过滤 industry_ew_nav 成分。")
+    assert_strict_cn_market_binding_current(market_binding)
     if frame.empty:
         return frame, warnings
     frame["ts_code"] = frame["ts_code"].astype(str).str.strip()
@@ -1423,7 +1613,7 @@ def attach_industry_equal_weight_nav(
     runs: list[RecordRun],
     benchmark_export: BenchmarkExport | None,
     *,
-    bars_root: Path = DEFAULT_CN_BARS_ROOT,
+    market_binding: StrictCNMarketBinding,
     stock_basic_root: Path = DEFAULT_STOCK_BASIC_ROOT,
     industries: tuple[str, ...] = DEFAULT_TECH_MANUFACTURING_INDUSTRIES,
 ) -> tuple[BenchmarkExport | None, list[str]]:
@@ -1436,7 +1626,12 @@ def attach_industry_equal_weight_nav(
     warnings.extend(symbol_warnings)
     if not symbols:
         return benchmark_export, warnings + ["industry_ew_nav 成分为空，已跳过。"]
-    bars_frame, bar_warnings = _read_industry_bar_frame(bars_root, symbols, runs[0].date, runs[-1].date)
+    bars_frame, bar_warnings = _read_industry_bar_frame(
+        market_binding,
+        symbols,
+        runs[0].date,
+        runs[-1].date,
+    )
     warnings.extend(bar_warnings)
     nav_by_date, daily_member_count = _industry_equal_weight_nav_from_bars(bars_frame)
     if not nav_by_date:
@@ -1502,6 +1697,7 @@ def attach_industry_equal_weight_nav(
         "end_date": max(nav_dates),
         "min_daily_member_count": min(daily_member_count.values()) if daily_member_count else 0,
         "max_daily_member_count": max(daily_member_count.values()) if daily_member_count else 0,
+        "market_snapshot": market_binding.audit_metadata(),
     }
     source_systems = [benchmark_export.source_system]
     if INDUSTRY_EW_SOURCE_SYSTEM not in benchmark_export.source_system.split("+"):
@@ -2393,8 +2589,11 @@ def _factor_canonical_producer_control() -> dict[str, Any]:
         control = canonical_replay_producer_control()
     except (ImportError, TypeError, ValueError):
         control = {}
+    producer_available = control.get("producer_available")
+    if not isinstance(producer_available, bool):
+        producer_available = control.get("producer_implemented") is True
     return {
-        "producer_available": control.get("producer_available") is True,
+        "producer_available": producer_available is True,
         "production_apply_eligible": control.get("production_apply_eligible")
         is True,
         "blocker": str(
@@ -2853,6 +3052,7 @@ def build_dashboard_contract_v3(
     ledger_path: Path,
     manifest_path: Path,
     warnings: list[str],
+    market_binding: StrictCNMarketBinding,
     registry_path: Path | None = None,
     trading_calendar: dict[str, Any] | None = None,
     factor_protocol_file: Path | None = None,
@@ -2934,11 +3134,15 @@ def build_dashboard_contract_v3(
         calendar = {
             "status": "missing",
             "source_system": "strict_parquet.cn_bars.trade_date",
-            "path_summary": path_summary(DEFAULT_CN_BARS_ROOT),
+            "path_summary": market_binding.audit_metadata()[
+                "table_root_path_summary"
+            ],
+            "market_snapshot": market_binding.audit_metadata(),
             "expected_open_dates": [],
             "expected_open_date_count": 0,
             "first_open_date": None,
             "last_open_date": None,
+            "prior_open_date": None,
             "mask_sha256": None,
         }
     reconciliation = build_attribution_reconciliation(
@@ -3068,6 +3272,7 @@ def build_dashboard_contract_v3(
                 "sha256": sha256_file(factor_protocol_path),
                 "status": str(factor_protocol.get("status") or "blocked"),
             },
+            "cn_market_snapshot": market_binding.audit_metadata(),
         },
         "nav": [_numeric_record(row, nav_numeric) for row in nav_rows],
         "positions": [_numeric_record(row, position_numeric) for row in position_rows],
@@ -3289,6 +3494,7 @@ def export(
     benchmark_gap_fill: str = "snapshot",
     benchmark_file: Path | None = None,
     trading_calendar_root: Path | None = None,
+    data_root: Path = DEFAULT_DATA_ROOT,
     factor_protocol_file: Path | None = None,
     expected_factor_sha256: str = "",
 ) -> dict[str, Any]:
@@ -3310,6 +3516,20 @@ def export(
         manual_runs[-1],
     )
     warnings.extend(manual_warning_summary)
+    market_binding = resolve_strict_cn_market_binding(data_root)
+    if trading_calendar_root is not None and Path(
+        os.path.abspath(os.fspath(trading_calendar_root))
+    ) != market_binding.table_root:
+        raise MarketDataUnavailableError(
+            "--trading-calendar-root must equal the active immutable table_root; "
+            "fixed CN bars roots and alternate fallbacks are forbidden"
+        )
+    trading_calendar, calendar_warnings = load_strict_parquet_trading_calendar(
+        market_binding,
+        nav_runs[0].date,
+        nav_runs[-1].date,
+    )
+    warnings.extend(calendar_warnings)
     benchmark_export: BenchmarkExport | None = None
     local_benchmark_file = resolve_local_benchmark_file(dashboard_root, benchmark_file)
     if benchmark_source in {"auto", "local"} and (benchmark_source == "local" or local_benchmark_file.exists()):
@@ -3323,6 +3543,7 @@ def export(
         if benchmark_export is None:
             benchmark_export, tushare_warnings = load_tushare_benchmark_export(
                 nav_runs,
+                formal_trading_calendar=trading_calendar,
                 snapshot_gap_fill=benchmark_gap_fill == "snapshot",
             )
             warnings.extend(tushare_warnings)
@@ -3331,16 +3552,13 @@ def export(
     if benchmark_source == "snapshot":
         warnings.append("benchmark_source=snapshot：按显式参数使用 strategy_record.market_snapshot.indices，非生产级。")
     if benchmark_export is not None:
-        benchmark_export, industry_warnings = attach_industry_equal_weight_nav(nav_runs, benchmark_export)
+        benchmark_export, industry_warnings = attach_industry_equal_weight_nav(
+            nav_runs,
+            benchmark_export,
+            market_binding=market_binding,
+        )
         warnings.extend(industry_warnings)
     nav_rows, nav_warnings, nav_fieldnames = build_nav_rows(nav_runs, benchmark_export)
-    calendar_root = trading_calendar_root or DEFAULT_CN_BARS_ROOT
-    trading_calendar, calendar_warnings = load_strict_parquet_trading_calendar(
-        calendar_root,
-        nav_runs[0].date,
-        nav_runs[-1].date,
-    )
-    warnings.extend(calendar_warnings)
     nav_source_summary = portfolio_nav_source_summary(nav_runs, nav_rows)
     benchmark_summary = benchmark_source_summary(nav_rows, nav_fieldnames, benchmark_export)
     sector_map, sector_warnings = load_sector_map(DEFAULT_STOCK_BASIC_ROOT)
@@ -3471,6 +3689,7 @@ def export(
         )
     ):
         raise RuntimeError("manual manifest changed after baseline selection")
+    assert_strict_cn_market_binding_current(market_binding)
     contract = build_dashboard_contract_v3(
         run_id=f"dashboard_{manual_runs[-1].run_id}",
         generated_at=generated_at,
@@ -3483,6 +3702,7 @@ def export(
         ledger_path=effective_ledger_path,
         manifest_path=effective_manifest_path,
         warnings=warnings,
+        market_binding=market_binding,
         trading_calendar=trading_calendar,
         factor_protocol_file=factor_protocol_file,
         expected_factor_sha256=expected_factor_sha256,
@@ -3520,6 +3740,7 @@ def export(
         "blockers": contract["blockers"],
         "as_of_matrix": contract["as_of_matrix"],
         "trading_calendar": contract["trading_calendar"],
+        "cn_market_snapshot": market_binding.audit_metadata(),
         "nav_return_provenance": contract["nav_return_provenance"],
         "reconciliation": contract["reconciliation"],
         "v15_run_readiness": contract["v15_run_readiness"],
@@ -3626,7 +3847,16 @@ def main() -> None:
         "--trading-calendar-root",
         type=Path,
         default=None,
-        help="Strict Parquet CN bars root used only to build the formal trade_date mask.",
+        help=(
+            "Compatibility assertion only: when supplied it must equal the active "
+            "immutable CN table_root selected by _latest.json."
+        ),
+    )
+    parser.add_argument(
+        "--data-root",
+        type=Path,
+        default=DEFAULT_DATA_ROOT,
+        help="Data root containing parquet/cn/_latest.json (default: project data).",
     )
     parser.add_argument(
         "--factor-protocol-file",
@@ -3647,6 +3877,7 @@ def main() -> None:
         benchmark_gap_fill=args.benchmark_gap_fill,
         benchmark_file=args.benchmark_file,
         trading_calendar_root=args.trading_calendar_root,
+        data_root=args.data_root,
         factor_protocol_file=args.factor_protocol_file,
         expected_factor_sha256=args.expected_factor_sha256,
     )

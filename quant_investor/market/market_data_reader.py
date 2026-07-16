@@ -411,6 +411,199 @@ class MarketDataReader:
                 return candidate
         return candidates[0]
 
+    @staticmethod
+    def _lexical_absolute(path: Path) -> Path:
+        """Return an absolute, normalized path without resolving symlinks."""
+
+        return Path(os.path.abspath(os.fspath(path)))
+
+    def _assert_path_has_no_symlink(
+        self,
+        path: Path,
+        *,
+        boundary: Path,
+        label: str,
+        require_exists: bool = False,
+    ) -> None:
+        target = self._lexical_absolute(path)
+        root = self._lexical_absolute(boundary)
+        try:
+            relative = target.relative_to(root)
+        except ValueError as exc:
+            raise MarketDataUnavailableError(
+                f"{label}: path escape rejected"
+            ) from exc
+
+        current = root
+        chain = [current]
+        for part in relative.parts:
+            current = current / part
+            chain.append(current)
+        for component in chain:
+            try:
+                metadata = os.lstat(component)
+            except FileNotFoundError as exc:
+                if require_exists:
+                    raise MarketDataUnavailableError(
+                        f"{label}: path missing or unreadable"
+                    ) from exc
+                return
+            except OSError as exc:
+                raise MarketDataUnavailableError(
+                    f"{label}: path missing or unreadable"
+                ) from exc
+            if stat.S_ISLNK(metadata.st_mode):
+                raise MarketDataUnavailableError(
+                    f"{label}: symlink rejected"
+                )
+
+    def _read_stable_json_object(
+        self,
+        path: Path,
+        *,
+        label: str,
+    ) -> dict[str, Any]:
+        """Read a governed JSON file through one non-symlink file descriptor."""
+
+        self._assert_path_has_no_symlink(
+            path,
+            boundary=self.data_root,
+            label=label,
+            require_exists=True,
+        )
+        descriptor: int | None = None
+        try:
+            before = os.lstat(path)
+            if not stat.S_ISREG(before.st_mode):
+                raise MarketDataUnavailableError(
+                    f"{label}: regular file required"
+                )
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(path, flags)
+            opened = os.fstat(descriptor)
+            opened_signature = _file_signature(opened)
+            if _file_signature(before) != opened_signature:
+                raise MarketDataUnavailableError(
+                    f"{label}: file identity changed before read"
+                )
+            with os.fdopen(descriptor, "rb", closefd=False) as handle:
+                encoded = handle.read()
+            after_opened = os.fstat(descriptor)
+            try:
+                after_path = os.lstat(path)
+            except OSError as exc:
+                raise MarketDataUnavailableError(
+                    f"{label}: path replaced during read"
+                ) from exc
+            if (
+                _file_signature(after_opened) != opened_signature
+                or _file_signature(after_path) != opened_signature
+            ):
+                raise MarketDataUnavailableError(
+                    f"{label}: file changed or replaced during read"
+                )
+            try:
+                payload = json.loads(encoded.decode("utf-8"))
+            except Exception as exc:
+                raise MarketDataUnavailableError(
+                    f"{label}: JSON unreadable: {exc}"
+                ) from exc
+            if not isinstance(payload, dict):
+                raise MarketDataUnavailableError(
+                    f"{label}: JSON object required"
+                )
+            return dict(payload)
+        except MarketDataUnavailableError:
+            raise
+        except OSError as exc:
+            raise MarketDataUnavailableError(
+                f"{label}: file open failed"
+            ) from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    def _resolve_v4_snapshot_path(
+        self,
+        raw_path: Any,
+        *,
+        expected: Path,
+        label: str,
+    ) -> Path:
+        text = str(raw_path or "").strip()
+        if not text:
+            raise MarketDataUnavailableError(f"{label}: path missing")
+        declared = Path(text)
+        if ".." in declared.parts:
+            raise MarketDataUnavailableError(
+                f"{label}: parent traversal rejected"
+            )
+
+        expected_absolute = self._lexical_absolute(expected)
+        if declared.is_absolute():
+            candidates = [declared]
+        else:
+            candidates = [Path.cwd() / declared, self.data_root / declared]
+            if self.data_root.name == "data":
+                candidates.append(self.data_root.parent / declared)
+        matches = [
+            candidate
+            for candidate in candidates
+            if self._lexical_absolute(candidate) == expected_absolute
+        ]
+        if not matches:
+            if declared.is_absolute():
+                raise MarketDataUnavailableError(
+                    f"{label}: absolute path escape rejected"
+                )
+            raise MarketDataUnavailableError(
+                f"{label}: exact snapshot path required"
+            )
+
+        self._assert_path_has_no_symlink(
+            expected_absolute,
+            boundary=self.data_root,
+            label=label,
+        )
+        return expected_absolute
+
+    def _v4_parquet_inventory(
+        self,
+        root: Path,
+        *,
+        label: str,
+    ) -> list[Path]:
+        self._assert_path_has_no_symlink(
+            root,
+            boundary=self.data_root,
+            label=label,
+        )
+        if not root.exists() or not root.is_dir():
+            return []
+
+        parquet_files: list[Path] = []
+        for directory, directory_names, file_names in os.walk(
+            root,
+            followlinks=False,
+        ):
+            current = Path(directory)
+            for name in directory_names:
+                child = current / name
+                if child.is_symlink():
+                    raise MarketDataUnavailableError(
+                        f"{label}: nested symlink rejected"
+                    )
+            for name in file_names:
+                child = current / name
+                if child.is_symlink():
+                    raise MarketDataUnavailableError(
+                        f"{label}: nested symlink rejected"
+                    )
+                if child.suffix.lower() == ".parquet":
+                    parquet_files.append(child)
+        return sorted(parquet_files)
+
     def _resolve_catalog_table_path(
         self,
         *,
@@ -645,38 +838,66 @@ class MarketDataReader:
     def _load_latest_payload(self, *, refresh: bool = False) -> dict[str, Any]:
         if self._latest_payload is not None and not refresh:
             return dict(self._latest_payload)
-        if not self.latest_pointer_path.exists():
-            raise MarketDataUnavailableError(
-                f"strict Parquet snapshot pointer missing: {self.latest_pointer_path}"
-            )
         try:
-            payload = json.loads(self.latest_pointer_path.read_text(encoding="utf-8"))
-        except Exception as exc:
+            payload = self._read_stable_json_object(
+                self.latest_pointer_path,
+                label="strict Parquet snapshot pointer unreadable",
+            )
+        except MarketDataUnavailableError as exc:
             raise MarketDataUnavailableError(
                 f"strict Parquet snapshot pointer unreadable: {self.latest_pointer_path}: {exc}"
             ) from exc
-        if not isinstance(payload, dict):
-            raise MarketDataUnavailableError(
-                f"strict Parquet snapshot pointer invalid: {self.latest_pointer_path}"
-            )
         self._latest_payload = dict(payload)
         return dict(payload)
 
     def _snapshot_from_payload(self, payload: Mapping[str, Any]) -> ParquetSnapshot:
-        table_root = self._resolve_data_path(
-            payload.get("table_root"),
-            self.parquet_market_root / "bars",
+        snapshot_id = str(payload.get("snapshot_id") or "").strip()
+        coverage = payload.get("coverage")
+        coverage_schema_version = (
+            str(coverage.get("coverage_schema_version") or "").strip()
+            if isinstance(coverage, Mapping)
+            else ""
         )
-        serving_root = self._resolve_data_path(
-            payload.get("derived_serving_root"),
-            self.data_root / "parquet_serving" / self.market.lower() / "bars",
-        )
-        manifest_path = self._resolve_data_path(
-            payload.get("manifest_path") or payload.get("clean_manifest_path"),
-            self.parquet_market_root / "_snapshots" / f"{payload.get('snapshot_id', '')}.json",
-        )
+        if coverage_schema_version == "cn-full-a-coverage.v4":
+            if (
+                not snapshot_id
+                or snapshot_id in {".", ".."}
+                or Path(snapshot_id).name != snapshot_id
+            ):
+                raise MarketDataUnavailableError(
+                    "v4 snapshot layout invalid: snapshot_id must be one path segment"
+                )
+            snapshot_root = self.parquet_market_root / "_snapshots"
+            manifest_path = self._resolve_v4_snapshot_path(
+                payload.get("manifest_path"),
+                expected=snapshot_root / f"{snapshot_id}.json",
+                label="v4 snapshot manifest_path invalid",
+            )
+            table_root = self._resolve_v4_snapshot_path(
+                payload.get("table_root"),
+                expected=snapshot_root / snapshot_id / "table" / "bars",
+                label="v4 snapshot table_root invalid",
+            )
+            serving_root = self._resolve_v4_snapshot_path(
+                payload.get("derived_serving_root"),
+                expected=snapshot_root / snapshot_id / "serving" / "bars",
+                label="v4 snapshot serving_root invalid",
+            )
+        else:
+            table_root = self._resolve_data_path(
+                payload.get("table_root"),
+                self.parquet_market_root / "bars",
+            )
+            serving_root = self._resolve_data_path(
+                payload.get("derived_serving_root"),
+                self.data_root / "parquet_serving" / self.market.lower() / "bars",
+            )
+            manifest_path = self._resolve_data_path(
+                payload.get("manifest_path") or payload.get("clean_manifest_path"),
+                self.parquet_market_root / "_snapshots" / f"{snapshot_id}.json",
+            )
         return ParquetSnapshot(
-            snapshot_id=str(payload.get("snapshot_id") or ""),
+            snapshot_id=snapshot_id,
             latest_complete_trade_date=_normalize_trade_date(
                 payload.get("latest_complete_trade_date") or payload.get("latest_trade_date")
             ),
@@ -703,8 +924,22 @@ class MarketDataReader:
                 "mode_policy": self.mode_policy,
             }
 
-        snapshot = self._snapshot_from_payload(payload)
+        try:
+            snapshot = self._snapshot_from_payload(payload)
+        except MarketDataUnavailableError as exc:
+            gate_payload = {
+                "status": "blocked",
+                "healthy": False,
+                "blockers": [str(exc)],
+                "latest_pointer_path": str(self.latest_pointer_path),
+                "mode_policy": self.mode_policy,
+            }
+            self._snapshot_gate_cache = dict(gate_payload)
+            return dict(gate_payload)
         blockers: list[str] = []
+        coverage_schema_version = str(
+            (payload.get("coverage") or {}).get("coverage_schema_version") or ""
+        ).strip() if isinstance(payload.get("coverage"), dict) else ""
         if str(payload.get("status") or "").upper() != "OK":
             blockers.append(f"latest pointer status is {payload.get('status')!r}")
         blockers.extend(str(item) for item in list(payload.get("blockers", []) or []) if str(item).strip())
@@ -712,14 +947,58 @@ class MarketDataReader:
             blockers.append("snapshot_id missing")
         if not snapshot.latest_complete_trade_date:
             blockers.append("latest_complete_trade_date missing")
-        if not snapshot.table_root.exists():
-            blockers.append(f"canonical bars table_root missing: {snapshot.table_root}")
-        elif not any(snapshot.table_root.rglob("*.parquet")):
-            blockers.append(f"canonical bars table_root has no parquet files: {snapshot.table_root}")
-        if not snapshot.serving_root.exists():
-            blockers.append(f"serving bars root missing: {snapshot.serving_root}")
-        elif not any(snapshot.serving_root.glob("symbol=*/bars.parquet")):
-            blockers.append(f"serving bars root has no symbol parquet files: {snapshot.serving_root}")
+        if coverage_schema_version == "cn-full-a-coverage.v4":
+            try:
+                table_files = self._v4_parquet_inventory(
+                    snapshot.table_root,
+                    label="v4 snapshot table_root invalid",
+                )
+            except MarketDataUnavailableError as exc:
+                blockers.append(str(exc))
+                table_files = []
+            if not snapshot.table_root.exists():
+                blockers.append(
+                    f"canonical bars table_root missing: {snapshot.table_root}"
+                )
+            elif not table_files:
+                blockers.append(
+                    "canonical bars table_root has no parquet files: "
+                    f"{snapshot.table_root}"
+                )
+
+            try:
+                serving_files = self._v4_parquet_inventory(
+                    snapshot.serving_root,
+                    label="v4 snapshot serving_root invalid",
+                )
+            except MarketDataUnavailableError as exc:
+                blockers.append(str(exc))
+                serving_files = []
+            symbol_serving_files = [
+                path
+                for path in serving_files
+                if len(path.relative_to(snapshot.serving_root).parts) == 2
+                and path.name == "bars.parquet"
+                and path.parent.name.startswith("symbol=")
+            ]
+            if not snapshot.serving_root.exists():
+                blockers.append(
+                    f"serving bars root missing: {snapshot.serving_root}"
+                )
+            elif not symbol_serving_files:
+                blockers.append(
+                    "serving bars root has no symbol parquet files: "
+                    f"{snapshot.serving_root}"
+                )
+        else:
+            if not snapshot.table_root.exists():
+                blockers.append(f"canonical bars table_root missing: {snapshot.table_root}")
+            elif not any(snapshot.table_root.rglob("*.parquet")):
+                blockers.append(f"canonical bars table_root has no parquet files: {snapshot.table_root}")
+            if not snapshot.serving_root.exists():
+                blockers.append(f"serving bars root missing: {snapshot.serving_root}")
+            elif not any(snapshot.serving_root.glob("symbol=*/bars.parquet")):
+                blockers.append(f"serving bars root has no symbol parquet files: {snapshot.serving_root}")
         if not snapshot.manifest_path.exists():
             blockers.append(f"manifest missing: {snapshot.manifest_path}")
 
@@ -732,9 +1011,15 @@ class MarketDataReader:
         snapshot_manifest: dict[str, Any] | None = None
         if snapshot.manifest_path.exists():
             try:
-                raw_snapshot_manifest = json.loads(
-                    snapshot.manifest_path.read_text(encoding="utf-8")
-                )
+                if coverage_schema_version == "cn-full-a-coverage.v4":
+                    raw_snapshot_manifest = self._read_stable_json_object(
+                        snapshot.manifest_path,
+                        label="v4 snapshot manifest unreadable",
+                    )
+                else:
+                    raw_snapshot_manifest = json.loads(
+                        snapshot.manifest_path.read_text(encoding="utf-8")
+                    )
             except Exception as exc:
                 blockers.append(
                     f"manifest unreadable: {snapshot.manifest_path}: {exc}"
@@ -1227,17 +1512,43 @@ class MarketDataReader:
             )
         ):
             try:
+                from quant_investor.config import config
                 from quant_investor.market.pit_universe import (
                     PITUniverseStore,
                 )
 
-                pit_store = PITUniverseStore(
-                    root_dir=(
-                        self.data_root
-                        / "parquet"
-                        / "cn"
-                        / "reference"
+                local_pit_root = (
+                    self.data_root
+                    / "parquet"
+                    / "cn"
+                    / "reference"
+                )
+                configured_pit_root = Path(
+                    getattr(
+                        config,
+                        "PIT_UNIVERSE_SOURCE_ROOT",
+                        local_pit_root,
                     )
+                ).expanduser()
+                if not configured_pit_root.is_absolute():
+                    configured_pit_root = Path.cwd() / configured_pit_root
+                generation_store_root = (
+                    generation_manifest_path.parent.parent.parent
+                )
+                allowed_pit_roots = {
+                    self._lexical_absolute(local_pit_root),
+                    self._lexical_absolute(configured_pit_root),
+                }
+                if (
+                    self._lexical_absolute(generation_store_root)
+                    not in allowed_pit_roots
+                    or generation_store_root.is_symlink()
+                ):
+                    raise ValueError(
+                        "pit_generation_store_root_not_allowed"
+                    )
+                pit_store = PITUniverseStore(
+                    root_dir=generation_store_root,
                 )
                 validated_generation = pit_store.load_generation_binding(
                     manifest_path=generation_manifest_path,

@@ -2418,7 +2418,7 @@ def _candidate_dag_status(
     }
 
 
-def _build_candidate_pool_from_v14_dag(
+def _build_candidate_pool_from_v15_dag(
     *,
     dag_artifacts: dict[str, Any],
     held_symbols: list[str],
@@ -2754,7 +2754,7 @@ def _run_candidate_level_v15_dag(
             status,
             {},
         )
-    candidate_pool, status = _build_candidate_pool_from_v14_dag(
+    candidate_pool, status = _build_candidate_pool_from_v15_dag(
         dag_artifacts=dag_artifacts,
         held_symbols=held_symbols,
     )

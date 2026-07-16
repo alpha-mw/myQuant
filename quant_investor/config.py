@@ -29,7 +29,7 @@ MAINLINE_ENV_DEFAULTS: dict[str, str] = {
     "MACRO_V2_PRODUCTION_ENABLED": "0",
     "MACRO_V2_PRODUCTION_KILL_SWITCH": "1",
     "MACRO_V2_OBSERVATIONS_PATH": "data/parquet/cn/macro_observations",
-    "MACRO_V2_OBSERVER_OUTPUT_DIR": "results/v14/macro_observer",
+    "MACRO_V2_OBSERVER_OUTPUT_DIR": "results/v15/macro_observer",
     "MYQUANT_LLM_HANDOFF": "codex",
     "MYQUANT_DISABLE_LOCAL_LLM": "true",
     "QUANT_PRODUCTION_KILL_SWITCH": "true",

@@ -7,13 +7,22 @@ factor identity or production write by itself.
 
 The chain is fixed and exact:
 
-`deterministic_funnel -> quant -> bayesian -> risk_guard -> portfolio_constructor`
+`quant -> deterministic_funnel -> bayesian -> risk_guard -> ic_coordinator -> portfolio_constructor`
 
-For every A/B/C/D arm, the replay binds Funnel-eligible symbols, stage output
-symbols, predecessor byte SHA, predecessor semantic SHA, and current semantic
-SHA. The Quant stage also binds the `quant/fundamental/macro` readiness and
-object/semantic hashes. Portfolio positive weights must be a subset of
-RiskGuard-approved symbols.
+For every A/B/C/D arm, the replay binds the Quant-scored universe,
+Funnel-eligible subset, stage output symbols, predecessor byte SHA,
+predecessor semantic SHA, and current semantic SHA. The Quant stage also binds
+the `quant/fundamental/macro` readiness and object/semantic hashes. The IC stage
+readbacks exact `branch_verdicts/risk_decision/ic_hints` inputs and exact
+decision outputs by per-symbol semantic SHA; PortfolioConstructor must bind
+those IC output hashes. Positive weights require both RiskGuard approval and an
+IC `buy` action.
+
+The evidence envelope names one explicit absolute replay path and its exact
+canonical-file SHA. Readback rejects symlinks, unsafe modes/link counts,
+noncanonical JSON bytes, identity drift, context drift, and any IC input/output
+hash mismatch. A successful local readback does not by itself authenticate the
+producer or authorize an apply.
 
 Runtime accepts only v3 metadata and evidence. Historical v2 payloads are
 rejected and are never automatically upgraded.

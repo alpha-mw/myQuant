@@ -27,8 +27,8 @@ def _coverage() -> dict[str, object]:
         "cn.m2_yoy": "pboc_official",
         "cn.social_financing_flow": "pboc_official",
         "cn.fiscal_expenditure_yoy": "mof_official",
-        "cn.exports_yoy": "customs_official",
-        "cn.imports_yoy": "customs_official",
+        "cn.exports_yoy": "nbs_official",
+        "cn.imports_yoy": "nbs_official",
         "market.breadth": "local_strict_parquet",
         "market.volatility_percentile": "local_strict_parquet",
     }

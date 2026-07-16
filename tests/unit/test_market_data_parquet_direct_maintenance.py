@@ -416,6 +416,38 @@ def test_upsert_rejects_market_pointer_cas_drift_without_publishing(tmp_path):
     ).exists()
 
 
+@pytest.mark.parametrize("snapshot_id", ["..", "../escape", "nested/name"])
+def test_upsert_rejects_unsafe_snapshot_id(tmp_path, snapshot_id):
+    _write_seed_snapshot(tmp_path)
+    latest_path = tmp_path / "parquet" / "cn" / "_latest.json"
+    before = latest_path.read_bytes()
+    store = MarketDataStore(market="CN", data_root=tmp_path)
+
+    with pytest.raises(ValueError, match="snapshot_id_invalid"):
+        store.upsert_bars(
+            pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000001.SZ",
+                        "trade_date": "20260316",
+                        "open": 10.0,
+                        "high": 10.6,
+                        "low": 9.9,
+                        "close": 10.4,
+                        "vol": 1000,
+                        "amount": 12000.0,
+                        "adj_factor": 1.1,
+                    }
+                ]
+            ),
+            target_trade_date="20260316",
+            source="unit-test-invalid-snapshot-id",
+            snapshot_id=snapshot_id,
+        )
+
+    assert latest_path.read_bytes() == before
+
+
 def test_storage_validate_fails_closed_for_unbound_complete_coverage(tmp_path):
     _write_seed_snapshot(tmp_path)
     latest_path = tmp_path / "parquet" / "cn" / "_latest.json"
@@ -746,8 +778,20 @@ def test_upsert_rolls_back_pointer_and_roots_when_post_validation_fails(
     tmp_path,
 ):
     _write_seed_snapshot(tmp_path)
-    store = MarketDataStore(market="CN", data_root=tmp_path)
     latest_path = tmp_path / "parquet" / "cn" / "_latest.json"
+    pointer_payload = json.loads(latest_path.read_text(encoding="utf-8"))
+    before_pointer = (
+        json.dumps(
+            pointer_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(", ", " : "),
+        )
+        + "\n\n"
+    ).encode("utf-8")
+    latest_path.write_bytes(before_pointer)
+    before_pointer_sha256 = hashlib.sha256(before_pointer).hexdigest()
+    store = MarketDataStore(market="CN", data_root=tmp_path)
     table_path = (
         tmp_path
         / "parquet"
@@ -757,15 +801,29 @@ def test_upsert_rolls_back_pointer_and_roots_when_post_validation_fails(
         / "month=03"
         / "part.parquet"
     )
-    before_pointer = latest_path.read_text(encoding="utf-8")
     before_table = pd.read_parquet(table_path)
+    original_gate = store.reader.clean_snapshot_gate
+    gate_calls = 0
+
+    def _fail_postcommit_gate(*, refresh=False):
+        nonlocal gate_calls
+        gate_calls += 1
+        if gate_calls == 1:
+            return original_gate(refresh=refresh)
+        return {
+            "healthy": False,
+            "blockers": ["forced-post-check"],
+            "snapshot_id": "post-check-rejected",
+            "latest_complete_trade_date": "20260316",
+        }
+
     monkeypatch.setattr(
-        store,
-        "validate_latest",
-        lambda: {"status": "failed", "blockers": ["forced-post-check"]},
+        store.reader,
+        "clean_snapshot_gate",
+        _fail_postcommit_gate,
     )
 
-    with pytest.raises(ValueError, match="post_commit_storage_validation_failed"):
+    with pytest.raises(ValueError, match="post_commit_bars_validation_failed"):
         store.upsert_bars(
             pd.DataFrame(
                 [
@@ -785,12 +843,107 @@ def test_upsert_rolls_back_pointer_and_roots_when_post_validation_fails(
             target_trade_date="20260316",
             source="unit-test",
             snapshot_id="post-check-rejected",
+            expected_latest_pointer_sha256=before_pointer_sha256,
         )
 
-    assert json.loads(latest_path.read_text(encoding="utf-8")) == json.loads(
-        before_pointer
+    assert latest_path.read_bytes() == before_pointer
+    assert hashlib.sha256(latest_path.read_bytes()).hexdigest() == (
+        before_pointer_sha256
     )
     pd.testing.assert_frame_equal(pd.read_parquet(table_path), before_table)
+
+
+def test_upsert_bars_postcommit_does_not_depend_on_stale_macro_generation(
+    monkeypatch,
+    tmp_path,
+):
+    _write_seed_snapshot(tmp_path)
+    latest_path = tmp_path / "parquet" / "cn" / "_latest.json"
+    pointer_sha256 = hashlib.sha256(latest_path.read_bytes()).hexdigest()
+    store = MarketDataStore(market="CN", data_root=tmp_path)
+
+    def _full_validation_must_not_run():
+        raise AssertionError(
+            "bars postcommit must not depend on cross-table Macro readiness"
+        )
+
+    monkeypatch.setattr(store, "validate_latest", _full_validation_must_not_run)
+    result = store.upsert_bars(
+        pd.DataFrame(
+            [
+                {
+                    "ts_code": "000001.SZ",
+                    "trade_date": "20260316",
+                    "open": 10.0,
+                    "high": 10.6,
+                    "low": 9.9,
+                    "close": 10.4,
+                    "vol": 1000,
+                    "amount": 12000.0,
+                    "adj_factor": 1.1,
+                }
+            ]
+        ),
+        target_trade_date="20260316",
+        source="unit-test-macro-cutover",
+        snapshot_id="bars-before-macro-v15",
+        expected_latest_pointer_sha256=pointer_sha256,
+    )
+
+    assert result["snapshot_id"] == "bars-before-macro-v15"
+    pointer = json.loads(latest_path.read_text(encoding="utf-8"))
+    assert pointer["latest_complete_trade_date"] == "20260316"
+
+
+def test_upsert_does_not_overwrite_external_pointer_on_precommit_cas_race(
+    monkeypatch,
+    tmp_path,
+):
+    _write_seed_snapshot(tmp_path)
+    latest_path = tmp_path / "parquet" / "cn" / "_latest.json"
+    expected_sha256 = hashlib.sha256(latest_path.read_bytes()).hexdigest()
+    external_payload = json.loads(latest_path.read_text(encoding="utf-8"))
+    external_payload["external_writer_marker"] = "preserve-me"
+    external_pointer = (
+        json.dumps(external_payload, ensure_ascii=False, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    store = MarketDataStore(market="CN", data_root=tmp_path)
+    real_copy = store._copytree_hardlink_or_copy
+    copy_count = 0
+
+    def racing_copy(source, target):
+        nonlocal copy_count
+        real_copy(source, target)
+        copy_count += 1
+        if copy_count == 1:
+            latest_path.write_bytes(external_pointer)
+
+    monkeypatch.setattr(store, "_copytree_hardlink_or_copy", racing_copy)
+
+    with pytest.raises(ValueError, match="market_pointer_cas_mismatch"):
+        store.upsert_bars(
+            pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000001.SZ",
+                        "trade_date": "20260316",
+                        "open": 10.0,
+                        "high": 10.6,
+                        "low": 9.9,
+                        "close": 10.4,
+                        "vol": 1000,
+                        "amount": 12000.0,
+                        "adj_factor": 1.1,
+                    }
+                ]
+            ),
+            target_trade_date="20260316",
+            source="unit-test-cas-race",
+            snapshot_id="cas-race-rejected",
+            expected_latest_pointer_sha256=expected_sha256,
+        )
+
+    assert latest_path.read_bytes() == external_pointer
 
 
 def test_snapshot_gate_fails_closed_when_manifest_json_is_unreadable(tmp_path):

@@ -158,6 +158,9 @@ def test_daily_direct_apply_run_blocks_before_mining_reports_or_registry(
     result = daily.run_daily_automation(args)
 
     assert result["factor_protocol"]["status"] == "blocked"
+    assert result["factor_protocol"]["schema_version"] == (
+        "factor-governance-protocol.v3"
+    )
     assert result["factor_protocol"]["blockers"] == [BLOCKER]
     assert result["registry_write"] is False
 

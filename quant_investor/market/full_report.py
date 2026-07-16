@@ -44,7 +44,7 @@ CURRENT_MARKET_REPORT_SCHEMA_ENVELOPE = {
 
 
 class MarketArtifactContractError(ValueError):
-    """Raised when a market report input is not a current v14 artifact."""
+    """Raised when a market report input is not a current v15 artifact."""
 
 
 def _dedupe_text(items: list[str]) -> list[str]:
@@ -187,7 +187,7 @@ def _require_current_full_market_artifacts(
 
     if batch_count == 0:
         raise MarketArtifactContractError(
-            "full market report input must contain at least one current v14 batch"
+            "full market report input must contain at least one current v15 batch"
         )
 
 
@@ -341,7 +341,7 @@ def _derive_stock_conclusion(payload: dict[str, Any]) -> str:
         return (
             f"{payload['symbol']} 当前获得 {support_count}/"
             f"{BRANCH_SUPPORT_DENOMINATOR} "
-            f"个 v14 分支支持，预期空间约 {expected_upside:.1%}。"
+            f"个 v15 分支支持，预期空间约 {expected_upside:.1%}。"
         )
     if support_count >= BRANCH_SUPPORT_DENOMINATOR and confidence >= 0.40:
         return f"{payload['symbol']} 当前结论偏正，但更适合分批跟踪。"
@@ -749,7 +749,7 @@ class ActionConsistencyGuard:
         reasons = list(payload.get("weight_cap_reasons", []))
         if weak_support:
             reasons.append(
-                f"v14 三分支支持仅 {positive_count}/"
+                f"v15 三分支支持仅 {positive_count}/"
                 f"{BRANCH_SUPPORT_DENOMINATOR}，不宜激进。"
             )
         if low_confidence:
@@ -1115,7 +1115,7 @@ class ConclusionRenderer:
                 f"{item['symbol']} {stock_name} 当前获得 "
                 f"{int(item.get('branch_positive_count', 0))}/"
                 f"{BRANCH_SUPPORT_DENOMINATOR} "
-                "个 v14 分支支持，可按计划分批执行。"
+                "个 v15 分支支持，可按计划分批执行。"
             )
         elif action == "轻仓试错":
             conclusion = (
@@ -1293,7 +1293,7 @@ def generate_full_report(
             f"{settings.market_name}全市场组合级交易建议报告\n"
         ),
         f"**生成时间**: {summary['generated_at']}\n",
-        "**分析架构**: Quant-Investor V14 三分支研究契约\n",
+        "**分析架构**: Quant-Investor V15 三分支研究契约\n",
         (
             f"**分析覆盖**: {summary['total_stocks']} 只股票，"
             f"{summary['total_batches']} 个批次\n"
@@ -1400,7 +1400,7 @@ def generate_full_report(
                 (
                     "| 排名 | 代码 | 名称 | 类别 | 现价 | 推荐买入价 | "
                     "目标卖出价 | 止损价 | 推荐仓位 | 金额 | "
-                    "预期空间 | v14分支支持 |\n"
+                    "预期空间 | v15分支支持 |\n"
                 ),
                 (
                     "|:---:|:---|:---|:---|---:|---:|---:|---:|"
@@ -1484,7 +1484,7 @@ def generate_full_report(
             "- 当前没有满足条件的最终候选，建议继续以现金和观察仓位为主。\n"
         )
 
-    report_lines.append("\n## v14 三分支结论\n")
+    report_lines.append("\n## v15 三分支结论\n")
     for branch_name in CANONICAL_BRANCH_ORDER:
         if branch_name in branch_summary:
             report_lines.extend(

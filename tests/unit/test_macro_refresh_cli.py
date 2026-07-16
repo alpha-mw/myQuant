@@ -24,6 +24,8 @@ def _required_args() -> list[str]:
         "1" * 64,
         "--expected-market-pointer-sha256",
         "2" * 64,
+        "--expected-macro-observations-pointer-sha256",
+        "3" * 64,
         "--nbs-cn-pmi-url",
         (
             "https://www.stats.gov.cn/xxgk/sjfb/zxfb2020/202606/"
@@ -41,6 +43,7 @@ def test_macro_maintain_help_discloses_live_and_cas_requirements(capsys):
     assert "--allow-live" in output
     assert "--expected-catalog-sha256" in output
     assert "--expected-market-pointer-sha256" in output
+    assert "--expected-macro-observations-pointer-sha256" in output
     assert "--run-id" in output
     assert "--nbs-cn-pmi-url" in output
     assert "--allow-tushare-fallback" in output
@@ -74,6 +77,8 @@ def test_macro_maintain_stages_all_production_inputs(monkeypatch, capsys):
         "run_id": "cn_macro_primary_20260714",
         "expected_catalog_sha256": "1" * 64,
         "expected_market_pointer_sha256": "2" * 64,
+        "macro_observations_root": "data/parquet/cn/macro_observations",
+        "expected_macro_observations_pointer_sha256": "3" * 64,
         "allow_live": True,
         "nbs_cn_pmi_url": (
             "https://www.stats.gov.cn/xxgk/sjfb/zxfb2020/202606/"
@@ -135,3 +140,180 @@ def test_macro_promote_dispatches_only_staging_and_catalog_cas(monkeypatch, caps
         "expected_catalog_sha256": "a" * 64,
     }
     assert json.loads(capsys.readouterr().out) == {"status": "promoted"}
+
+
+def test_macro_official_compile_dispatches_offline_bundle(monkeypatch, capsys):
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        cli_main,
+        "run_macro_official_web_compilation",
+        lambda **kwargs: captured.update(kwargs) or {"status": "OK"},
+    )
+
+    cli_main.main(
+        [
+            "market",
+            "macro-official-compile",
+            "--plan",
+            "/tmp/plan.json",
+            "--capture-manifest",
+            "/tmp/capture.json",
+            "--raw-root",
+            "/tmp/raw",
+            "--run-id",
+            "official-1",
+        ]
+    )
+
+    assert captured == {
+        "plan_path": "/tmp/plan.json",
+        "capture_manifest_path": "/tmp/capture.json",
+        "raw_root": "/tmp/raw",
+        "output_root": "results/v15/macro_official_web",
+        "run_id": "official-1",
+    }
+    assert json.loads(capsys.readouterr().out) == {"status": "OK"}
+
+
+def test_macro_observation_bootstrap_dispatches_all_hash_bindings(
+    monkeypatch,
+    capsys,
+):
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        cli_main,
+        "run_macro_production_observation_bundle",
+        lambda **kwargs: captured.update(kwargs) or {"status": "OK"},
+    )
+
+    cli_main.main(
+        [
+            "market",
+            "macro-observation-bootstrap",
+            "--official-manifest",
+            "/tmp/official/manifest.json",
+            "--expected-official-manifest-sha256",
+            "1" * 64,
+            "--expected-official-plan-sha256",
+            "2" * 64,
+            "--local-binding-plan",
+            "/tmp/local-binding-plan.json",
+            "--expected-local-binding-plan-sha256",
+            "3" * 64,
+            "--as-of",
+            "20260715",
+            "--run-id",
+            "observations-1",
+            "--expected-pointer-sha256",
+            "EMPTY",
+        ]
+    )
+
+    assert captured == {
+        "official_bundle_manifest_path": "/tmp/official/manifest.json",
+        "expected_official_bundle_manifest_sha256": "1" * 64,
+        "expected_official_plan_sha256": "2" * 64,
+        "local_bootstrap_plan_path": "/tmp/local-binding-plan.json",
+        "expected_local_bootstrap_plan_sha256": "3" * 64,
+        "as_of": "20260715",
+        "canonical_observations_root": (
+            "data/parquet/cn/macro_observations"
+        ),
+        "run_id": "observations-1",
+        "expected_pointer_sha256": "",
+    }
+    assert json.loads(capsys.readouterr().out) == {"status": "OK"}
+
+
+def test_macro_local_observation_publish_dispatches_pointer_cas(
+    monkeypatch,
+    capsys,
+):
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        cli_main,
+        "run_macro_local_breadth_publish",
+        lambda **kwargs: captured.update(kwargs) or {"status": "OK"},
+    )
+
+    cli_main.main(
+        [
+            "market",
+            "macro-local-observation-publish",
+            "--snapshot-manifest",
+            "/tmp/snapshot.json",
+            "--expected-snapshot-manifest-sha256",
+            "4" * 64,
+            "--coverage-manifest",
+            "/tmp/coverage.json",
+            "--expected-coverage-manifest-sha256",
+            "6" * 64,
+            "--target-trade-date",
+            "20260715",
+            "--scope-artifact",
+            "/tmp/full-a-scope.json",
+            "--expected-scope-artifact-sha256",
+            "7" * 64,
+            "--as-of",
+            "20260715",
+            "--run-id",
+            "local-1",
+            "--expected-pointer-sha256",
+            "5" * 64,
+        ]
+    )
+
+    assert captured == {
+        "snapshot_manifest_path": "/tmp/snapshot.json",
+        "expected_snapshot_manifest_sha256": "4" * 64,
+        "coverage_manifest_path": "/tmp/coverage.json",
+        "expected_coverage_manifest_sha256": "6" * 64,
+        "target_trade_date": "20260715",
+        "scope_artifact_path": "/tmp/full-a-scope.json",
+        "expected_scope_artifact_sha256": "7" * 64,
+        "as_of": "20260715",
+        "canonical_observations_root": (
+            "data/parquet/cn/macro_observations"
+        ),
+        "run_id": "local-1",
+        "expected_pointer_sha256": "5" * 64,
+    }
+    assert json.loads(capsys.readouterr().out) == {"status": "OK"}
+
+
+@pytest.mark.parametrize(
+    ("command", "required_flags"),
+    [
+        (
+            "macro-observation-bootstrap",
+            (
+                "--local-binding-plan",
+                "--expected-local-binding-plan-sha256",
+            ),
+        ),
+        (
+            "macro-local-observation-publish",
+            (
+                "--snapshot-manifest",
+                "--expected-snapshot-manifest-sha256",
+                "--coverage-manifest",
+                "--expected-coverage-manifest-sha256",
+                "--target-trade-date",
+                "--scope-artifact",
+                "--expected-scope-artifact-sha256",
+            ),
+        ),
+    ],
+)
+def test_macro_observation_publication_help_discloses_exact_bindings(
+    command,
+    required_flags,
+    capsys,
+):
+    with pytest.raises(SystemExit) as exc_info:
+        cli_main.main(["market", command, "--help"])
+
+    assert exc_info.value.code == 0
+    output = capsys.readouterr().out
+    for flag in required_flags:
+        assert flag in output

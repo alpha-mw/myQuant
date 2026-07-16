@@ -11,6 +11,7 @@ from quant_investor.funnel.deterministic_funnel import FunnelOutput
 from quant_investor.market.dag.context import _prepare_market_context
 from quant_investor.market.read_result import MarketDataReadResult
 from quant_investor.regime.scope import build_regime_scope, deterministic_symbol_sample
+from tests.helpers.macro_fixture import make_v15_controls
 
 
 def _frame(symbol: str, *, direction: float = 1.0) -> pd.DataFrame:
@@ -119,6 +120,7 @@ def _patch_branch_readiness(monkeypatch: pytest.MonkeyPatch) -> None:
                 "source_priority": "tushare_primary",
                 "provider_status": "verified_provider_snapshot",
                 "production_eligible": True,
+                "v15_controls": make_v15_controls(),
             },
         ),
     )

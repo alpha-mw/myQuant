@@ -15,6 +15,8 @@ from quant_investor.macro.nbs_pmi import (
     parse_nbs_cn_pmi_html,
 )
 from quant_investor.market import macro_mart
+from quant_investor.macro.store import pointer_sha256
+from tests.helpers.macro_fixture import write_ready_macro_observations
 
 
 TARGET = "20240510"
@@ -162,6 +164,10 @@ def _minimal_workspace(tmp_path: Path) -> tuple[Path, Path, Path]:
         ),
         encoding="utf-8",
     )
+    write_ready_macro_observations(
+        market_root / "macro_observations",
+        as_of="2024-05-10",
+    )
     return macro_root, catalog_path, pointer_path
 
 
@@ -177,6 +183,10 @@ def _refresh(
         run_id="freshness-fixture",
         expected_catalog_sha256=_sha(catalog_path),
         expected_market_pointer_sha256=_sha(pointer_path),
+        macro_observations_root=macro_root.parent / "macro_observations",
+        expected_macro_observations_pointer_sha256=pointer_sha256(
+            macro_root.parent / "macro_observations"
+        ),
         allow_live=True,
         nbs_cn_pmi_url=NBS_URL,
     )
@@ -305,10 +315,11 @@ def test_capture_window_is_revalidated_immediately_before_catalog_switch(
     )
     monkeypatch.setattr(
         macro_mart,
-        "_derive_macro_frame",
+        "_derive_v15_macro_frame",
         lambda *_args, **_kwargs: (
             pd.DataFrame([{"trade_date": TARGET}]),
             {"symbol_count": 1},
+            {"schema_version": "cn-macro-controls.v15.v1"},
         ),
     )
     monkeypatch.setattr(

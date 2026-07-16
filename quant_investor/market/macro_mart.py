@@ -36,6 +36,23 @@ from quant_investor.market.branch_readiness import (
     SOURCE_PUBLIC_FALLBACK,
     SOURCE_TUSHARE,
 )
+from quant_investor.macro.snapshot import build_macro_snapshot
+from quant_investor.macro.contracts import parse_timestamp
+from quant_investor.macro.production_observation_bundle import (
+    LOCAL_MARKET_OBSERVATION_PUBLICATION_SCHEMA,
+    PRODUCTION_OBSERVATION_BUNDLE_SCHEMA,
+)
+from quant_investor.macro.store import (
+    MacroObservationStoreError,
+    load_observations,
+    pointer_sha256 as macro_observation_pointer_sha256,
+)
+from quant_investor.macro.v15_controls import (
+    V15_MACRO_CONTROL_SCHEMA_VERSION,
+    V15MacroControlError,
+    build_v15_macro_controls,
+    validate_v15_macro_controls,
+)
 from quant_investor.macro.nbs_pmi import (
     NBS_PMI_MAX_REDIRECTS,
     NbsPmiCapture,
@@ -57,12 +74,13 @@ MACRO_FIELDS = (
 )
 CANDIDATE_MANIFEST_SCHEMA = "cn-macro-mart-candidate.v15"
 CANONICAL_MANIFEST_SCHEMA = "cn-macro-mart.v15"
-PRIMARY_PROVENANCE_SCHEMA = "cn-macro-primary-provenance.v1"
+PRIMARY_PROVENANCE_SCHEMA = "cn-macro-primary-provenance.v15.v1"
 LEGACY_PROVIDER_BUNDLE_SCHEMA = "cn-macro-provider-bundle.v1"
 PROVIDER_BUNDLE_SCHEMA = "cn-macro-provider-bundle.v2"
 PROVIDER_SOURCE_POLICY = "official-first-per-endpoint.v1"
 PROVIDER_CAPTURE_FILES_SCHEMA = "cn-macro-provider-captures.v1"
-TRANSFORM_VERSION = "cn-macro-market-confirmation.v1"
+LEGACY_TRANSFORM_VERSION = "cn-macro-market-confirmation.v1"
+V15_TRANSFORM_VERSION = "cn-macro-controls-projection.v15.v1"
 MARKET_FORMULA_UNIVERSE_SCHEMA = "cn-macro-formula-universe.v1"
 MARKET_FORMULA_SELECTION_RULE = (
     "symbol_terminal_trade_date_equals_target_trade_date"
@@ -73,7 +91,7 @@ CATALOG_WRITER_LOCK_FILENAME = (
     "._catalog.json.intelligence-retirement.lock"
 )
 TRANSACTION_JOURNAL_SCHEMA = "cn-macro-catalog-transaction.v1"
-STAGING_RECEIPT_SCHEMA = "cn-macro-authoritative-staging.v1"
+STAGING_RECEIPT_SCHEMA = "cn-macro-authoritative-staging.v15.v1"
 CAPTURE_WINDOW_HOURS = 72
 MARKET_LOOKBACK_CALENDAR_DAYS = 450
 VOLATILITY_WINDOW_SESSIONS = 20
@@ -137,6 +155,9 @@ class _PrimaryMacroAttestation:
     market_formula_universe_sha256: str
     output_frame_sha256: str
     transform_version: str
+    macro_snapshot_sha256: str = ""
+    v15_controls_sha256: str = ""
+    macro_observation_pointer_sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -1520,12 +1541,171 @@ def _select_target_terminal_formula_universe(
     return selected, evidence
 
 
-def _derive_macro_frame(
+def _load_v15_macro_snapshot(
+    *,
+    observations_root: str | Path,
+    expected_pointer_sha256: str,
+    as_of: str,
+    decision_cutoff_at: datetime | None = None,
+    require_production_chain: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    expected_sha = _assert_sha256(
+        expected_pointer_sha256,
+        blocker="macro_expected_observation_pointer_hash_invalid",
+    )
+    root = Path(observations_root).expanduser()
+    try:
+        pointer_before = macro_observation_pointer_sha256(root)
+        if pointer_before != expected_sha:
+            raise MacroMartPromotionError(
+                "macro_expected_observation_pointer_hash_mismatch"
+            )
+        observations, generation = load_observations(root)
+        pointer_after = macro_observation_pointer_sha256(root)
+    except MacroMartPromotionError:
+        raise
+    except (MacroObservationStoreError, OSError, ValueError) as exc:
+        raise MacroMartPromotionError(
+            str(exc) or "macro_observation_generation_invalid"
+        ) from exc
+    if pointer_after != expected_sha:
+        raise MacroMartPromotionError(
+            "macro_observation_pointer_changed_during_snapshot"
+        )
+    snapshot_as_of = str(as_of)
+    snapshot_cutoff: datetime | None = None
+    manifest = generation.get("generation_manifest")
+    metadata = generation.get("metadata")
+    chain_schema = (
+        str(metadata.get("schema_version") or "")
+        if isinstance(metadata, Mapping)
+        else ""
+    )
+    production_schemas = {
+        PRODUCTION_OBSERVATION_BUNDLE_SCHEMA,
+        LOCAL_MARKET_OBSERVATION_PUBLICATION_SCHEMA,
+    }
+    if chain_schema in production_schemas:
+        if (
+            not isinstance(manifest, Mapping)
+            or manifest.get("schema_version")
+            != "macro-observation-generation.v2"
+            or not isinstance(metadata, Mapping)
+            or not isinstance(manifest.get("metadata"), Mapping)
+            or dict(manifest["metadata"]) != dict(metadata)
+        ):
+            raise MacroMartPromotionError(
+                "macro_v15_observation_generation_v2_required"
+            )
+        snapshot_as_of = str(metadata.get("as_of") or "")
+        if _date_text(snapshot_as_of) != _date_text(as_of):
+            raise MacroMartPromotionError(
+                "macro_v15_observation_trade_date_mismatch"
+            )
+        try:
+            snapshot_cutoff = parse_timestamp(
+                metadata.get("decision_cutoff_at"),
+                field_name="decision_cutoff_at",
+            )
+        except ValueError as exc:
+            raise MacroMartPromotionError(
+                "macro_v15_observation_cutoff_invalid"
+            ) from exc
+        if (
+            decision_cutoff_at is not None
+            and snapshot_cutoff
+            > decision_cutoff_at.astimezone(timezone.utc)
+        ):
+            raise MacroMartPromotionError(
+                "macro_v15_observation_cutoff_in_future"
+            )
+        try:
+            available_times = [
+                parse_timestamp(
+                    item.get("available_at"),
+                    field_name="available_at",
+                )
+                for item in observations
+            ]
+        except (AttributeError, ValueError) as exc:
+            raise MacroMartPromotionError(
+                "macro_v15_observation_available_at_invalid"
+            ) from exc
+        if not available_times or max(available_times) > snapshot_cutoff:
+            raise MacroMartPromotionError(
+                "macro_v15_observation_after_fixed_cutoff"
+            )
+        mapping = manifest.get("observation_evidence")
+        files = manifest.get("evidence_files")
+        row_hashes = {
+            str(item.get("content_hash") or "") for item in observations
+        }
+        evidence_hashes = {
+            str(item.get("sha256") or "")
+            for item in files
+            if isinstance(item, Mapping)
+        } if isinstance(files, list) else set()
+        if (
+            not isinstance(mapping, Mapping)
+            or set(mapping) != row_hashes
+            or not evidence_hashes
+            or any(
+                not isinstance(mapping.get(content_hash), list)
+                or not mapping[content_hash]
+                or not set(mapping[content_hash]).issubset(evidence_hashes)
+                for content_hash in row_hashes
+            )
+        ):
+            raise MacroMartPromotionError(
+                "macro_v15_observation_evidence_mapping_incomplete"
+            )
+    elif require_production_chain:
+        raise MacroMartPromotionError(
+            "macro_v15_observation_production_chain_required"
+        )
+    try:
+        snapshot = build_macro_snapshot(
+            observations,
+            market="CN",
+            as_of=snapshot_as_of,
+            decision_cutoff_at=snapshot_cutoff,
+        ).to_dict()
+    except (TypeError, ValueError) as exc:
+        raise MacroMartPromotionError(
+            str(exc) or "macro_v15_snapshot_build_failed"
+        ) from exc
+    if chain_schema in production_schemas and (
+        str(metadata.get("validated_snapshot_hash") or "")
+        != str(snapshot.get("snapshot_hash") or "")
+    ):
+        raise MacroMartPromotionError(
+            "macro_v15_observation_snapshot_hash_mismatch"
+        )
+    binding = {
+        "generation_id": str(generation.get("generation_id") or ""),
+        "pointer_sha256": expected_sha,
+        "parquet_sha256": str(generation.get("parquet_sha256") or ""),
+        "manifest_sha256": str(generation.get("manifest_sha256") or ""),
+        "content_set_hash": str(generation.get("content_set_hash") or ""),
+        "row_count": int(generation.get("row_count", -1)),
+    }
+    try:
+        # Volatility is supplied after the exact market generation is read.
+        build_v15_macro_controls(
+            snapshot,
+            volatility_percentile=50.0,
+            observation_generation=binding,
+        )
+    except (TypeError, ValueError, V15MacroControlError) as exc:
+        raise MacroMartPromotionError(str(exc)) from exc
+    return snapshot, binding
+
+
+def _market_formula_metrics(
     market: pd.DataFrame,
     *,
     trade_date: str,
-    provider_bundle: Mapping[str, Any],
-) -> tuple[pd.DataFrame, dict[str, Any]]:
+) -> tuple[pd.Series, float, dict[str, Any]]:
     ordered, universe_evidence = _select_target_terminal_formula_universe(
         market,
         trade_date=trade_date,
@@ -1558,11 +1738,6 @@ def _derive_macro_frame(
         universe_evidence,
         trade_date=trade_date,
     )
-    macro_score = max(
-        -1.0,
-        min(1.0, float(fmean(symbol_recent.tolist())) * 20.0),
-    )
-    breadth = float(symbol_recent.gt(0.0).mean())
     market_daily = returns.groupby("trade_date", sort=True)["return"].mean()
     rolling_vol = (
         market_daily.rolling(
@@ -1585,6 +1760,23 @@ def _derive_macro_frame(
     if not math.isfinite(current_vol):
         raise MacroMartPromotionError("macro_market_volatility_invalid")
     volatility_percentile = float(trailing.le(current_vol).mean() * 100.0)
+    return symbol_recent, volatility_percentile, universe_evidence
+
+
+def _derive_macro_frame(
+    market: pd.DataFrame,
+    *,
+    trade_date: str,
+    provider_bundle: Mapping[str, Any],
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    symbol_recent, volatility_percentile, universe_evidence = (
+        _market_formula_metrics(market, trade_date=trade_date)
+    )
+    macro_score = max(
+        -1.0,
+        min(1.0, float(fmean(symbol_recent.tolist())) * 20.0),
+    )
+    breadth = float(symbol_recent.gt(0.0).mean())
     selected = provider_bundle.get("selected_inputs")
     if not isinstance(selected, Mapping):
         raise MacroMartPromotionError("macro_provider_selected_inputs_missing")
@@ -1624,6 +1816,137 @@ def _derive_macro_frame(
     return frame, universe_evidence
 
 
+def _derive_v15_macro_frame(
+    market: pd.DataFrame,
+    *,
+    trade_date: str,
+    provider_bundle: Mapping[str, Any],
+    macro_snapshot: Mapping[str, Any],
+    observation_generation: Mapping[str, Any],
+) -> tuple[pd.DataFrame, dict[str, Any], dict[str, Any]]:
+    _symbol_recent, volatility_percentile, universe_evidence = (
+        _market_formula_metrics(market, trade_date=trade_date)
+    )
+    try:
+        controls = build_v15_macro_controls(
+            macro_snapshot,
+            volatility_percentile=volatility_percentile,
+            observation_generation=observation_generation,
+        )
+    except (TypeError, ValueError, V15MacroControlError) as exc:
+        raise MacroMartPromotionError(str(exc)) from exc
+    source = str(provider_bundle.get("source") or "").strip()
+    source_priority = str(
+        provider_bundle.get("source_priority") or ""
+    ).strip()
+    if _SOURCE_PRIORITY_BY_SOURCE.get(source) != source_priority:
+        raise MacroMartPromotionError(
+            "macro_provider_bundle_source_policy_invalid"
+        )
+    row = {
+        "trade_date": _date_text(trade_date),
+        "macro_score": controls["macro_score"],
+        "liquidity_score": controls["liquidity_score"],
+        "volatility_percentile": controls["volatility_percentile"],
+        "policy_signal": controls["policy_signal"],
+        "source": source,
+        "source_priority": source_priority,
+        "pit_status": "market_point_in_time",
+        "fetched_at": str(provider_bundle.get("fetched_at") or ""),
+    }
+    frame = pd.DataFrame([row], columns=sorted(_ALLOWED_INPUT_FIELDS))
+    return frame, universe_evidence, controls
+
+
+def _validate_v15_generation_controls(
+    *,
+    generation_root: Path,
+    manifest: Mapping[str, Any],
+    frame: pd.DataFrame,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if (
+        manifest.get("schema_version") != CANONICAL_MANIFEST_SCHEMA
+        or manifest.get("transform_version") != V15_TRANSFORM_VERSION
+        or manifest.get("v15_controls_schema_version")
+        != V15_MACRO_CONTROL_SCHEMA_VERSION
+    ):
+        raise MacroMartPromotionError("macro_v15_generation_contract_invalid")
+    if (
+        str(manifest.get("macro_snapshot_path") or "")
+        != "macro_snapshot.json"
+        or str(manifest.get("v15_controls_path") or "")
+        != "v15_controls.json"
+    ):
+        raise MacroMartPromotionError("macro_v15_control_path_invalid")
+    snapshot_sha = _assert_sha256(
+        manifest.get("macro_snapshot_sha256"),
+        blocker="macro_v15_snapshot_file_hash_invalid",
+    )
+    controls_sha = _assert_sha256(
+        manifest.get("v15_controls_sha256"),
+        blocker="macro_v15_controls_file_hash_invalid",
+    )
+    snapshot = _read_verified_member(
+        generation_root / "macro_snapshot.json",
+        trust_root=generation_root,
+        expected_sha256=snapshot_sha,
+        hash_blocker="macro_v15_snapshot_file_hash_mismatch",
+        changed_blocker="macro_v15_snapshot_file_changed",
+        unreadable_blocker="macro_v15_snapshot_file_invalid",
+        parser=_parse_json_object,
+    )
+    controls = _read_verified_member(
+        generation_root / "v15_controls.json",
+        trust_root=generation_root,
+        expected_sha256=controls_sha,
+        hash_blocker="macro_v15_controls_file_hash_mismatch",
+        changed_blocker="macro_v15_controls_file_changed",
+        unreadable_blocker="macro_v15_controls_file_invalid",
+        parser=_parse_json_object,
+    )
+    observation_generation = manifest.get("macro_observation_generation")
+    if not isinstance(observation_generation, Mapping):
+        raise MacroMartPromotionError(
+            "macro_v15_observation_generation_binding_missing"
+        )
+    try:
+        validated = validate_v15_macro_controls(
+            controls,
+            snapshot=snapshot,
+            observation_generation=observation_generation,
+        )
+    except (TypeError, ValueError, V15MacroControlError) as exc:
+        raise MacroMartPromotionError(str(exc)) from exc
+    if (
+        str(manifest.get("v15_controls_semantic_sha256") or "")
+        != str(validated.get("semantic_sha256") or "")
+        or dict(observation_generation)
+        != dict(validated.get("observation_generation") or {})
+    ):
+        raise MacroMartPromotionError("macro_v15_control_binding_mismatch")
+    if len(frame) != 1:
+        raise MacroMartPromotionError("macro_v15_control_row_count_invalid")
+    row = frame.iloc[0]
+    for field_name in (
+        "macro_score",
+        "liquidity_score",
+        "volatility_percentile",
+    ):
+        if float(row[field_name]) != float(validated[field_name]):
+            raise MacroMartPromotionError(
+                f"macro_v15_control_row_mismatch:{field_name}"
+            )
+    if str(row["policy_signal"]) != str(validated["policy_signal"]):
+        raise MacroMartPromotionError(
+            "macro_v15_control_row_mismatch:policy_signal"
+        )
+    if _date_text(row["trade_date"]) != _date_text(
+        validated.get("snapshot_as_of")
+    ):
+        raise MacroMartPromotionError("macro_v15_snapshot_as_of_mismatch")
+    return snapshot, validated
+
+
 def _fsync_file(path: Path) -> None:
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     try:
@@ -1643,6 +1966,9 @@ def _write_primary_generation(
     market_input_evidence: list[dict[str, Any]],
     market_input_files_sha256: str,
     market_formula_universe: Mapping[str, Any],
+    macro_snapshot: Mapping[str, Any],
+    v15_controls: Mapping[str, Any],
+    observation_generation: Mapping[str, Any],
 ) -> tuple[dict[str, Any], _PrimaryMacroAttestation]:
     formula_universe = _validate_market_formula_universe(
         market_formula_universe,
@@ -1661,6 +1987,30 @@ def _write_primary_generation(
     )
     os.chmod(temp_path, 0o700)
     try:
+        try:
+            validated_controls = validate_v15_macro_controls(
+                v15_controls,
+                snapshot=macro_snapshot,
+                observation_generation=observation_generation,
+            )
+        except (TypeError, ValueError, V15MacroControlError) as exc:
+            raise MacroMartPromotionError(str(exc)) from exc
+        if _date_text(validated_controls.get("snapshot_as_of")) != _date_text(
+            frame.iloc[0]["trade_date"]
+        ):
+            raise MacroMartPromotionError("macro_v15_snapshot_as_of_mismatch")
+        snapshot_path = temp_path / "macro_snapshot.json"
+        _atomic_write_bytes(
+            snapshot_path,
+            _canonical_json_bytes(macro_snapshot) + b"\n",
+        )
+        snapshot_sha = _sha256(snapshot_path)
+        controls_path = temp_path / "v15_controls.json"
+        _atomic_write_bytes(
+            controls_path,
+            _canonical_json_bytes(validated_controls) + b"\n",
+        )
+        controls_sha = _sha256(controls_path)
         capture_files, capture_files_sha = _write_provider_capture_files(
             temp_path,
             bundle=provider_bundle,
@@ -1700,7 +2050,17 @@ def _write_primary_generation(
             "market_formula_universe_sha256": formula_universe_sha,
             "output_frame_sha256": output_frame_sha,
             "output_parquet_sha256": table_sha,
-            "transform_version": TRANSFORM_VERSION,
+            "macro_snapshot_sha256": snapshot_sha,
+            "v15_controls_sha256": controls_sha,
+            "macro_observation_pointer_sha256": str(
+                validated_controls["observation_generation"][
+                    "pointer_sha256"
+                ]
+            ),
+            "v15_controls_semantic_sha256": str(
+                validated_controls["semantic_sha256"]
+            ),
+            "transform_version": V15_TRANSFORM_VERSION,
             "historical_replay_eligible": False,
         }
         provenance["envelope_sha256"] = _canonical_json_sha256(provenance)
@@ -1732,11 +2092,24 @@ def _write_primary_generation(
             "pit_status": "market_point_in_time",
             "decision_cutoff_at": str(frame.iloc[0]["fetched_at"]),
             "historical_replay_eligible": False,
-            "transform_version": TRANSFORM_VERSION,
+            "transform_version": V15_TRANSFORM_VERSION,
             "market_input_files": market_input_evidence,
             "market_input_files_sha256": market_input_files_sha256,
             "market_formula_universe": formula_universe,
             "market_formula_universe_sha256": formula_universe_sha,
+            "macro_snapshot_path": "macro_snapshot.json",
+            "macro_snapshot_sha256": snapshot_sha,
+            "v15_controls_path": "v15_controls.json",
+            "v15_controls_sha256": controls_sha,
+            "v15_controls_schema_version": str(
+                validated_controls.get("schema_version") or ""
+            ),
+            "v15_controls_semantic_sha256": str(
+                validated_controls["semantic_sha256"]
+            ),
+            "macro_observation_generation": dict(
+                validated_controls["observation_generation"]
+            ),
             "primary_provenance": provenance,
             "production_eligible": True,
             "generated_at": _now_utc(),
@@ -1754,6 +2127,11 @@ def _write_primary_generation(
                 "macro_provider_capture_write_readback_mismatch"
             )
         _validate_canonical_frame(frame, manifest)
+        _validate_v15_generation_controls(
+            generation_root=temp_path,
+            manifest=manifest,
+            frame=frame,
+        )
         _validate_primary_provenance(
             manifest,
             provider_bundle_sha256=provider_sha,
@@ -1781,6 +2159,12 @@ def _write_primary_generation(
     manifest["resolved_provider_bundle"] = str(
         destination / "provider_bundle.json"
     )
+    manifest["resolved_macro_snapshot"] = str(
+        destination / "macro_snapshot.json"
+    )
+    manifest["resolved_v15_controls"] = str(
+        destination / "v15_controls.json"
+    )
     attestation = _PrimaryMacroAttestation(
         capability=_PRIMARY_MACRO_CAPABILITY,
         provider_bundle_sha256=provider_sha,
@@ -1789,7 +2173,12 @@ def _write_primary_generation(
         market_input_files_sha256=market_input_files_sha256,
         market_formula_universe_sha256=formula_universe_sha,
         output_frame_sha256=output_frame_sha,
-        transform_version=TRANSFORM_VERSION,
+        transform_version=V15_TRANSFORM_VERSION,
+        macro_snapshot_sha256=snapshot_sha,
+        v15_controls_sha256=controls_sha,
+        macro_observation_pointer_sha256=str(
+            validated_controls["observation_generation"]["pointer_sha256"]
+        ),
     )
     return manifest, attestation
 
@@ -1831,7 +2220,8 @@ def _load_primary_generation_for_retry(
         or str(manifest.get("generation_id") or "") != run_id
         or str(manifest.get("run_id") or "") != run_id
         or manifest.get("production_eligible") is not True
-        or str(manifest.get("transform_version") or "") != TRANSFORM_VERSION
+        or str(manifest.get("transform_version") or "")
+        != V15_TRANSFORM_VERSION
         or _compact_trade_date(
             manifest.get("as_of"),
             blocker="macro_retry_generation_as_of_invalid",
@@ -1940,6 +2330,11 @@ def _load_primary_generation_for_retry(
         current_at=_utc_now(),
     )
     _validate_canonical_frame(frame, manifest)
+    macro_snapshot, v15_controls = _validate_v15_generation_controls(
+        generation_root=generation,
+        manifest=manifest,
+        frame=frame,
+    )
     output_frame_sha = _frame_sha256(frame)
     _validate_primary_provenance(
         manifest,
@@ -1967,6 +2362,14 @@ def _load_primary_generation_for_retry(
     ).hexdigest()
     manifest["resolved_table_path"] = str(table_path)
     manifest["resolved_provider_bundle"] = str(provider_path)
+    manifest["resolved_macro_snapshot"] = str(
+        generation / "macro_snapshot.json"
+    )
+    manifest["resolved_v15_controls"] = str(
+        generation / "v15_controls.json"
+    )
+    manifest["macro_snapshot"] = macro_snapshot
+    manifest["v15_controls"] = v15_controls
     attestation = _PrimaryMacroAttestation(
         capability=_PRIMARY_MACRO_CAPABILITY,
         provider_bundle_sha256=provider_sha,
@@ -1975,7 +2378,14 @@ def _load_primary_generation_for_retry(
         market_input_files_sha256=market_files_sha,
         market_formula_universe_sha256=formula_universe_sha,
         output_frame_sha256=output_frame_sha,
-        transform_version=TRANSFORM_VERSION,
+        transform_version=V15_TRANSFORM_VERSION,
+        macro_snapshot_sha256=str(manifest["macro_snapshot_sha256"]),
+        v15_controls_sha256=str(manifest["v15_controls_sha256"]),
+        macro_observation_pointer_sha256=str(
+            dict(manifest["macro_observation_generation"])[
+                "pointer_sha256"
+            ]
+        ),
     )
     return (
         manifest,
@@ -2243,7 +2653,15 @@ def _strict_catalog_payload(
     table_relative = generation_relative / "part.parquet"
     manifest_relative = generation_relative / "manifest.json"
     provider_relative = generation_relative / "provider_bundle.json"
-    for member in (table_relative, manifest_relative, provider_relative):
+    snapshot_relative = generation_relative / "macro_snapshot.json"
+    controls_relative = generation_relative / "v15_controls.json"
+    for member in (
+        table_relative,
+        manifest_relative,
+        provider_relative,
+        snapshot_relative,
+        controls_relative,
+    ):
         _resolve_catalog_member(
             market_root,
             member.as_posix(),
@@ -2263,6 +2681,14 @@ def _strict_catalog_payload(
     expected_provider_sha = _assert_sha256(
         generation_manifest.get("provider_bundle_sha256"),
         blocker="macro_generation_provider_hash_invalid",
+    )
+    expected_snapshot_sha = _assert_sha256(
+        generation_manifest.get("macro_snapshot_sha256"),
+        blocker="macro_v15_snapshot_file_hash_invalid",
+    )
+    expected_controls_sha = _assert_sha256(
+        generation_manifest.get("v15_controls_sha256"),
+        blocker="macro_v15_controls_file_hash_invalid",
     )
     table_size = _read_verified_member(
         table_path,
@@ -2299,6 +2725,20 @@ def _strict_catalog_payload(
         bundle=provider_payload,
         manifest=generation_manifest,
     )
+    frame = _read_verified_member(
+        table_path,
+        trust_root=market_root,
+        expected_sha256=expected_table_sha,
+        hash_blocker="macro_generation_member_hash_mismatch",
+        changed_blocker="macro_generation_member_changed",
+        unreadable_blocker="macro_generation_member_unreadable",
+        parser=lambda payload: pd.read_parquet(io.BytesIO(payload)),
+    )
+    _validate_v15_generation_controls(
+        generation_root=manifest_path.parent,
+        manifest=generation_manifest,
+        frame=frame,
+    )
     generation_source = str(
         generation_manifest.get("source") or ""
     ).strip()
@@ -2323,11 +2763,21 @@ def _strict_catalog_payload(
         "table_root": generation_relative.as_posix(),
         "generation_manifest": manifest_relative.as_posix(),
         "provider_bundle": provider_relative.as_posix(),
+        "macro_snapshot": snapshot_relative.as_posix(),
+        "v15_controls": controls_relative.as_posix(),
         "generation_id": generation_id,
         "parquet_sha256": expected_table_sha,
         "sha256": expected_table_sha,
         "generation_manifest_sha256": expected_manifest_sha,
         "provider_bundle_sha256": expected_provider_sha,
+        "macro_snapshot_sha256": expected_snapshot_sha,
+        "v15_controls_sha256": expected_controls_sha,
+        "v15_controls_semantic_sha256": str(
+            generation_manifest.get("v15_controls_semantic_sha256") or ""
+        ),
+        "macro_observation_generation": dict(
+            generation_manifest.get("macro_observation_generation") or {}
+        ),
         "provider_capture_files_sha256": capture_files_sha,
         "row_count": int(generation_manifest.get("row_count", 0)),
         "size_bytes": int(table_size),
@@ -2607,9 +3057,14 @@ def _publish_catalog_generation(
     generation_manifest: Mapping[str, Any],
     attestation: _PrimaryMacroAttestation,
 ) -> dict[str, Any]:
+    observation_generation = generation_manifest.get(
+        "macro_observation_generation"
+    )
+    if not isinstance(observation_generation, Mapping):
+        raise MacroMartPromotionError("macro_primary_attestation_invalid")
     if (
         attestation.capability is not _PRIMARY_MACRO_CAPABILITY
-        or attestation.transform_version != TRANSFORM_VERSION
+        or attestation.transform_version != V15_TRANSFORM_VERSION
         or attestation.provider_bundle_sha256
         != generation_manifest.get("provider_bundle_sha256")
         or attestation.provider_capture_files_sha256
@@ -2624,6 +3079,12 @@ def _publish_catalog_generation(
         != generation_manifest.get("primary_provenance", {}).get(
             "output_frame_sha256"
         )
+        or attestation.macro_snapshot_sha256
+        != generation_manifest.get("macro_snapshot_sha256")
+        or attestation.v15_controls_sha256
+        != generation_manifest.get("v15_controls_sha256")
+        or attestation.macro_observation_pointer_sha256
+        != observation_generation.get("pointer_sha256")
     ):
         raise MacroMartPromotionError("macro_primary_attestation_invalid")
     catalog_path = root.parent / "_catalog.json"
@@ -2726,6 +3187,7 @@ def _current_macro_is_equivalent(
     root: Path,
     trade_date: str,
     market_pointer_sha256: str,
+    macro_observation_pointer_sha256: str,
     current_at: datetime,
 ) -> dict[str, Any] | None:
     try:
@@ -2756,7 +3218,9 @@ def _current_macro_is_equivalent(
         != trade_date
         or provenance.get("canonical_market_pointer_sha256")
         != market_pointer_sha256
-        or provenance.get("transform_version") != TRANSFORM_VERSION
+        or provenance.get("macro_observation_pointer_sha256")
+        != macro_observation_pointer_sha256
+        or provenance.get("transform_version") != V15_TRANSFORM_VERSION
         or manifest.get("market_formula_universe_sha256")
         != formula_universe_sha
         or provenance.get("market_formula_universe_sha256")
@@ -2820,6 +3284,8 @@ def refresh_cn_macro_mart(
     run_id: str,
     expected_catalog_sha256: str,
     expected_market_pointer_sha256: str,
+    macro_observations_root: str | Path,
+    expected_macro_observations_pointer_sha256: str,
     allow_live: bool = False,
     nbs_cn_pmi_url: str = "",
     allow_tushare_fallback: bool = False,
@@ -2884,10 +3350,22 @@ def refresh_cn_macro_mart(
         captured_at=captured_at,
         enforce_capture_window=False,
     )
+    macro_snapshot, observation_generation = _load_v15_macro_snapshot(
+        observations_root=macro_observations_root,
+        expected_pointer_sha256=(
+            expected_macro_observations_pointer_sha256
+        ),
+        as_of=trade_date,
+        decision_cutoff_at=captured_at,
+        require_production_chain=True,
+    )
     equivalent = _current_macro_is_equivalent(
         root=root,
         trade_date=trade_date,
         market_pointer_sha256=expected_pointer_sha,
+        macro_observation_pointer_sha256=str(
+            observation_generation["pointer_sha256"]
+        ),
         current_at=captured_at,
     )
     if equivalent is not None:
@@ -2938,10 +3416,14 @@ def refresh_cn_macro_mart(
                 trade_date=trade_date,
             )
         )
-        frame, market_formula_universe = _derive_macro_frame(
-            market_frame,
-            trade_date=trade_date,
-            provider_bundle=provider_bundle,
+        frame, market_formula_universe, v15_controls = (
+            _derive_v15_macro_frame(
+                market_frame,
+                trade_date=trade_date,
+                provider_bundle=provider_bundle,
+                macro_snapshot=macro_snapshot,
+                observation_generation=observation_generation,
+            )
         )
         generation_manifest, attestation = _write_primary_generation(
             root=root,
@@ -2953,6 +3435,21 @@ def refresh_cn_macro_mart(
             market_input_evidence=market_evidence,
             market_input_files_sha256=market_files_sha,
             market_formula_universe=market_formula_universe,
+            macro_snapshot=macro_snapshot,
+            v15_controls=v15_controls,
+            observation_generation=observation_generation,
+        )
+    persisted_binding = generation_manifest.get("macro_observation_generation")
+    persisted_snapshot = generation_manifest.get("macro_snapshot")
+    if retry_generation is not None and (
+        not isinstance(persisted_binding, Mapping)
+        or dict(persisted_binding) != observation_generation
+        or not isinstance(persisted_snapshot, Mapping)
+        or str(persisted_snapshot.get("snapshot_hash") or "")
+        != str(macro_snapshot.get("snapshot_hash") or "")
+    ):
+        raise MacroMartPromotionError(
+            "macro_retry_generation_observation_binding_mismatch"
         )
     new_catalog = _strict_catalog_payload(
         old_catalog=catalog,
@@ -3008,6 +3505,8 @@ def stage_cn_macro_authoritative_refresh(
     run_id: str,
     expected_catalog_sha256: str,
     expected_market_pointer_sha256: str,
+    macro_observations_root: str | Path,
+    expected_macro_observations_pointer_sha256: str,
     allow_live: bool = False,
     nbs_cn_pmi_url: str = "",
     allow_tushare_fallback: bool = False,
@@ -3061,6 +3560,15 @@ def stage_cn_macro_authoritative_refresh(
         captured_at=captured_at,
         enforce_capture_window=True,
     )
+    macro_snapshot, observation_generation = _load_v15_macro_snapshot(
+        observations_root=macro_observations_root,
+        expected_pointer_sha256=(
+            expected_macro_observations_pointer_sha256
+        ),
+        as_of=trade_date,
+        decision_cutoff_at=captured_at,
+        require_production_chain=True,
+    )
     stage_base = _assert_safe_write_root(Path(staging_root).expanduser())
     stage = _assert_safe_write_root(stage_base / generation_id)
     receipt_path = stage / "staging_receipt.json"
@@ -3089,10 +3597,14 @@ def stage_cn_macro_authoritative_refresh(
             bar_root,
             trade_date=trade_date,
         )
-        frame, market_formula_universe = _derive_macro_frame(
-            market_frame,
-            trade_date=trade_date,
-            provider_bundle=provider_fetch.bundle,
+        frame, market_formula_universe, v15_controls = (
+            _derive_v15_macro_frame(
+                market_frame,
+                trade_date=trade_date,
+                provider_bundle=provider_fetch.bundle,
+                macro_snapshot=macro_snapshot,
+                observation_generation=observation_generation,
+            )
         )
         generation_manifest, _ = _write_primary_generation(
             root=stage,
@@ -3104,9 +3616,30 @@ def stage_cn_macro_authoritative_refresh(
             market_input_evidence=market_evidence,
             market_input_files_sha256=market_files_sha,
             market_formula_universe=market_formula_universe,
+            macro_snapshot=macro_snapshot,
+            v15_controls=v15_controls,
+            observation_generation=observation_generation,
         )
+        selected_controls = dict(v15_controls)
     else:
         generation_manifest, _, frame, _, _ = retry_generation
+        persisted_binding = generation_manifest.get(
+            "macro_observation_generation"
+        )
+        persisted_snapshot = generation_manifest.get("macro_snapshot")
+        if (
+            not isinstance(persisted_binding, Mapping)
+            or dict(persisted_binding) != observation_generation
+            or not isinstance(persisted_snapshot, Mapping)
+            or str(persisted_snapshot.get("snapshot_hash") or "")
+            != str(macro_snapshot.get("snapshot_hash") or "")
+        ):
+            raise MacroMartPromotionError(
+                "macro_retry_generation_observation_binding_mismatch"
+            )
+        selected_controls = dict(
+            generation_manifest.get("v15_controls") or {}
+        )
 
     receipt = {
         "schema_version": STAGING_RECEIPT_SCHEMA,
@@ -3115,6 +3648,14 @@ def stage_cn_macro_authoritative_refresh(
         "canonical_root": str(canonical),
         "expected_catalog_sha256": hashlib.sha256(catalog_bytes).hexdigest(),
         "expected_market_pointer_sha256": hashlib.sha256(pointer_bytes).hexdigest(),
+        "expected_macro_observations_pointer_sha256": str(
+            observation_generation["pointer_sha256"]
+        ),
+        "macro_observation_generation": observation_generation,
+        "macro_snapshot_hash": str(macro_snapshot["snapshot_hash"]),
+        "macro_snapshot_published_cutoff": str(
+            macro_snapshot["published_cutoff"]
+        ),
         "generation_manifest_sha256": generation_manifest[
             "generation_manifest_sha256"
         ],
@@ -3135,6 +3676,7 @@ def stage_cn_macro_authoritative_refresh(
         "staging_receipt": str(receipt_path),
         "staging_receipt_sha256": receipt_sha,
         "manifest": generation_manifest,
+        "v15_controls": selected_controls,
         "row": frame.iloc[0].to_dict(),
     }
 
@@ -3164,6 +3706,47 @@ def _copy_staged_generation(*, source: Path, destination: Path) -> None:
     finally:
         if temp.exists() and not temp.is_symlink():
             shutil.rmtree(temp)
+
+
+def _generation_tree_fingerprint(root: Path) -> dict[str, tuple[str, int, str]]:
+    if root.is_symlink() or not root.is_dir():
+        raise MacroMartPromotionError("macro_staging_generation_invalid")
+    fingerprint: dict[str, tuple[str, int, str]] = {}
+    for member in sorted(root.rglob("*")):
+        relative = member.relative_to(root).as_posix()
+        metadata = os.lstat(member)
+        if stat.S_ISLNK(metadata.st_mode):
+            raise MacroMartPromotionError("macro_staging_symlink_rejected")
+        if stat.S_ISDIR(metadata.st_mode):
+            fingerprint[relative] = ("directory", 0, "")
+        elif stat.S_ISREG(metadata.st_mode):
+            fingerprint[relative] = (
+                "file",
+                int(metadata.st_size),
+                _sha256(member),
+            )
+        else:
+            raise MacroMartPromotionError("macro_staging_member_invalid")
+    return fingerprint
+
+
+def _copy_or_reuse_staged_generation(
+    *,
+    source: Path,
+    destination: Path,
+) -> bool:
+    """Copy a stage or reuse an exact orphan from a failed catalog switch."""
+
+    source_fingerprint = _generation_tree_fingerprint(source)
+    if not destination.exists() and not destination.is_symlink():
+        _copy_staged_generation(source=source, destination=destination)
+        return False
+    if destination.is_symlink() or not destination.is_dir():
+        raise MacroMartPromotionError("macro_orphan_generation_invalid")
+    destination_fingerprint = _generation_tree_fingerprint(destination)
+    if destination_fingerprint != source_fingerprint:
+        raise MacroMartPromotionError("macro_orphan_generation_mismatch")
+    return True
 
 
 def promote_staged_macro_generation(
@@ -3201,6 +3784,21 @@ def promote_staged_macro_generation(
         receipt.get("expected_market_pointer_sha256"),
         blocker="macro_expected_market_pointer_hash_invalid",
     )
+    expected_observation_pointer_sha = _assert_sha256(
+        receipt.get("expected_macro_observations_pointer_sha256"),
+        blocker="macro_expected_observation_pointer_hash_invalid",
+    )
+    receipt_observation_generation = receipt.get(
+        "macro_observation_generation"
+    )
+    if (
+        not isinstance(receipt_observation_generation, Mapping)
+        or receipt_observation_generation.get("pointer_sha256")
+        != expected_observation_pointer_sha
+    ):
+        raise MacroMartPromotionError(
+            "macro_staging_observation_binding_invalid"
+        )
     canonical = _strict_read_root(canonical_root)
     market_root = canonical.parent
     if str(receipt.get("canonical_root") or "") != str(canonical):
@@ -3248,11 +3846,30 @@ def promote_staged_macro_generation(
         if (
             generation_manifest.get("generation_manifest_sha256")
             != receipt.get("generation_manifest_sha256")
+            or generation_manifest.get("macro_observation_generation")
+            != receipt_observation_generation
+            or str(
+                dict(generation_manifest.get("macro_snapshot") or {}).get(
+                    "snapshot_hash"
+                )
+                or ""
+            )
+            != str(receipt.get("macro_snapshot_hash") or "")
+            or str(
+                dict(generation_manifest.get("macro_snapshot") or {}).get(
+                    "published_cutoff"
+                )
+                or ""
+            )
+            != str(receipt.get("macro_snapshot_published_cutoff") or "")
         ):
             raise MacroMartPromotionError("macro_staging_manifest_hash_mismatch")
         source_generation = stage / "_generations" / run_id
         destination = canonical / "_generations" / run_id
-        _copy_staged_generation(source=source_generation, destination=destination)
+        orphan_reused = _copy_or_reuse_staged_generation(
+            source=source_generation,
+            destination=destination,
+        )
         promoted_manifest = dict(generation_manifest)
         promoted_manifest["generation_manifest"] = str(destination / "manifest.json")
         promoted_manifest["resolved_table_path"] = str(destination / "part.parquet")
@@ -3289,6 +3906,10 @@ def promote_staged_macro_generation(
         "staging_receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
         "manifest": published["generation_manifest"],
         "transaction_journal": published["transaction_journal"],
+        "orphan_generation_reused": orphan_reused,
+        "v15_controls": dict(
+            published["generation_manifest"].get("v15_controls") or {}
+        ),
         "row": frame.iloc[0].to_dict(),
     }
 
@@ -3980,6 +4601,11 @@ def _validate_primary_provenance(
             "macro_primary_provenance_missing"
         )
     envelope = dict(raw)
+    observation_generation = manifest.get("macro_observation_generation")
+    if not isinstance(observation_generation, Mapping):
+        raise MacroMartPromotionError(
+            "macro_primary_provenance_contract_invalid"
+        )
     declared = _assert_sha256(
         envelope.pop("envelope_sha256", ""),
         blocker="macro_primary_provenance_hash_invalid",
@@ -3994,6 +4620,10 @@ def _validate_primary_provenance(
         "market_input_files_sha256",
         "output_frame_sha256",
         "output_parquet_sha256",
+        "macro_snapshot_sha256",
+        "v15_controls_sha256",
+        "macro_observation_pointer_sha256",
+        "v15_controls_semantic_sha256",
     )
     for field_name in required_hashes:
         _assert_sha256(
@@ -4103,7 +4733,7 @@ def _validate_primary_provenance(
         or envelope.get("source_priority") != manifest_priority
         or _SOURCE_PRIORITY_BY_SOURCE.get(manifest_source)
         != manifest_priority
-        or envelope.get("transform_version") != TRANSFORM_VERSION
+        or envelope.get("transform_version") != V15_TRANSFORM_VERSION
         or envelope.get("historical_replay_eligible") is not False
         or envelope.get("provider_bundle_sha256")
         != provider_bundle_sha256
@@ -4111,6 +4741,14 @@ def _validate_primary_provenance(
         or envelope.get("output_frame_sha256") != output_frame_sha256
         or envelope.get("market_input_files_sha256")
         != manifest.get("market_input_files_sha256")
+        or envelope.get("macro_snapshot_sha256")
+        != manifest.get("macro_snapshot_sha256")
+        or envelope.get("v15_controls_sha256")
+        != manifest.get("v15_controls_sha256")
+        or envelope.get("v15_controls_semantic_sha256")
+        != manifest.get("v15_controls_semantic_sha256")
+        or envelope.get("macro_observation_pointer_sha256")
+        != observation_generation.get("pointer_sha256")
         or _date_text(envelope.get("trade_date"))
         != _date_text(manifest.get("as_of"))
         or str(envelope.get("fetched_at") or "")
@@ -4306,6 +4944,14 @@ def read_macro_mart(
     )
     if generation_manifest.get("schema_version") != CANONICAL_MANIFEST_SCHEMA:
         raise MacroMartPromotionError("macro_generation_manifest_schema_invalid")
+    catalog_snapshot_sha = _assert_sha256(
+        entry.get("macro_snapshot_sha256"),
+        blocker="macro_catalog_snapshot_hash_invalid",
+    )
+    catalog_controls_sha = _assert_sha256(
+        entry.get("v15_controls_sha256"),
+        blocker="macro_catalog_controls_hash_invalid",
+    )
     if str(generation_manifest.get("generation_id") or "") != generation_id:
         raise MacroMartPromotionError("macro_generation_manifest_id_mismatch")
     if generation_manifest.get("production_eligible") is not True:
@@ -4347,6 +4993,19 @@ def read_macro_mart(
         raise MacroMartPromotionError(
             "macro_catalog_provider_bundle_hash_mismatch"
         )
+    if (
+        str(generation_manifest.get("macro_snapshot_sha256") or "")
+        != catalog_snapshot_sha
+        or str(generation_manifest.get("v15_controls_sha256") or "")
+        != catalog_controls_sha
+        or str(
+            generation_manifest.get("v15_controls_semantic_sha256") or ""
+        )
+        != str(entry.get("v15_controls_semantic_sha256") or "")
+        or generation_manifest.get("macro_observation_generation")
+        != entry.get("macro_observation_generation")
+    ):
+        raise MacroMartPromotionError("macro_catalog_v15_control_binding_mismatch")
     provider_bundle = _read_verified_member(
         provider_bundle_path,
         trust_root=market_root,
@@ -4366,6 +5025,11 @@ def read_macro_mart(
         parser=lambda payload: pd.read_parquet(io.BytesIO(payload)),
     )
     _validate_canonical_frame(frame, generation_manifest)
+    macro_snapshot, v15_controls = _validate_v15_generation_controls(
+        generation_root=expected_generation_root,
+        manifest=generation_manifest,
+        frame=frame,
+    )
     _validate_provider_bundle(provider_bundle, manifest=generation_manifest)
     capture_files_sha = _verify_provider_capture_files(
         expected_generation_root,
@@ -4394,6 +5058,14 @@ def read_macro_mart(
         "resolved_table_path": str(table_path),
         "resolved_generation_manifest": str(generation_manifest_path),
         "resolved_provider_bundle": str(provider_bundle_path),
+        "resolved_macro_snapshot": str(
+            expected_generation_root / "macro_snapshot.json"
+        ),
+        "resolved_v15_controls": str(
+            expected_generation_root / "v15_controls.json"
+        ),
+        "macro_snapshot": macro_snapshot,
+        "v15_controls": v15_controls,
         "generation_manifest_sha256": manifest_sha,
     }
     return frame, manifest

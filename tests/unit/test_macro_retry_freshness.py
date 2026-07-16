@@ -14,6 +14,8 @@ from quant_investor.macro.nbs_pmi import (
     parse_nbs_cn_pmi_html,
 )
 from quant_investor.market import macro_mart
+from quant_investor.macro.store import pointer_sha256
+from tests.helpers.macro_fixture import write_ready_macro_observations
 
 
 TARGET = "20260714"
@@ -129,6 +131,14 @@ def _tree_hashes(root: Path) -> dict[str, str]:
     }
 
 
+def _observation_args(macro_root: Path) -> dict[str, object]:
+    root = macro_root.parent / "macro_observations"
+    return {
+        "macro_observations_root": root,
+        "expected_macro_observations_pointer_sha256": pointer_sha256(root),
+    }
+
+
 def _land_retry_generation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -149,6 +159,18 @@ def _land_retry_generation(
         }
     ]
     evidence_sha = macro_mart._canonical_json_sha256({"files": evidence})
+    observation_root = market_root / "macro_observations"
+    observation_pointer_sha = write_ready_macro_observations(
+        observation_root,
+        as_of="2026-07-14",
+    )
+    macro_snapshot, observation_generation = (
+        macro_mart._load_v15_macro_snapshot(
+            observations_root=observation_root,
+            expected_pointer_sha256=observation_pointer_sha,
+            as_of=TARGET,
+        )
+    )
 
     monkeypatch.setattr(macro_mart, "_utc_now", lambda: LANDED_AT)
     monkeypatch.setattr(macro_mart, "fetch_nbs_cn_pmi", _fetch_official)
@@ -167,10 +189,14 @@ def _land_retry_generation(
         ]
         == "202605"
     )
-    frame, formula_universe = macro_mart._derive_macro_frame(
-        market,
-        trade_date=TARGET,
-        provider_bundle=provider_bundle,
+    frame, formula_universe, v15_controls = (
+        macro_mart._derive_v15_macro_frame(
+            market,
+            trade_date=TARGET,
+            provider_bundle=provider_bundle,
+            macro_snapshot=macro_snapshot,
+            observation_generation=observation_generation,
+        )
     )
 
     pointer_path = market_root / "_latest.json"
@@ -199,6 +225,9 @@ def _land_retry_generation(
         market_input_evidence=evidence,
         market_input_files_sha256=evidence_sha,
         market_formula_universe=formula_universe,
+        macro_snapshot=macro_snapshot,
+        v15_controls=v15_controls,
+        observation_generation=observation_generation,
     )
 
     legacy_table = macro_root / "part.parquet"
@@ -259,6 +288,7 @@ def test_retry_after_month_deadline_requires_new_run_id_and_keeps_generation(
             expected_market_pointer_sha256=_sha(pointer_path),
             nbs_cn_pmi_url=NBS_CN_PMI_URL,
             allow_live=True,
+            **_observation_args(macro_root),
         )
 
     assert catalog_path.read_bytes() == catalog_before
@@ -334,6 +364,7 @@ def test_stale_current_generation_is_not_already_current_after_month_deadline(
             expected_market_pointer_sha256=_sha(pointer_path),
             nbs_cn_pmi_url=NBS_CN_PMI_URL,
             allow_live=True,
+            **_observation_args(macro_root),
         )
 
     assert provider_called is True
@@ -374,6 +405,10 @@ def _minimal_workspace(tmp_path: Path) -> tuple[Path, Path, Path]:
         ),
         encoding="utf-8",
     )
+    write_ready_macro_observations(
+        market_root / "macro_observations",
+        as_of="2026-07-14",
+    )
     return macro_root, catalog_path, pointer_path
 
 
@@ -394,10 +429,11 @@ def test_catalog_switch_rechecks_current_month_deadline(
     )
     monkeypatch.setattr(
         macro_mart,
-        "_derive_macro_frame",
+        "_derive_v15_macro_frame",
         lambda *_args, **_kwargs: (
             pd.DataFrame([{"trade_date": TARGET}]),
             {"placeholder": True},
+            {"schema_version": "cn-macro-controls.v15.v1"},
         ),
     )
     monkeypatch.setattr(
@@ -432,6 +468,7 @@ def test_catalog_switch_rechecks_current_month_deadline(
             expected_market_pointer_sha256=_sha(pointer_path),
             nbs_cn_pmi_url=NBS_CN_PMI_URL,
             allow_live=True,
+            **_observation_args(macro_root),
         )
 
     assert catalog_path.read_bytes() == catalog_before

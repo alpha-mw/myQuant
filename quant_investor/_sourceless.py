@@ -19,20 +19,34 @@ from types import ModuleType
 
 _CACHE_TAG = sys.implementation.cache_tag or "cpython-313"
 _PACKAGE_ROOT = Path(__file__).resolve().parent
-_RETIRED_V14_MODULES = frozenset(
+_RETIRED_MODULES = frozenset(
     {
         "quant_investor.agents.intelligence_agent",
         "quant_investor.agents.subagents.intelligence_agent",
+        "quant_investor.agents.theme_agent",
         "quant_investor.ensemble_judge",
+        "quant_investor.funnel.theme_boost_diagnostics",
+        "quant_investor.funnel.theme_candidate_pool",
+        "quant_investor.governance.replay_v13_1",
         "quant_investor.market.intelligence_mart",
+        "quant_investor.market.dag.theme_context",
         "quant_investor.monitoring.intelligence_monitor",
+        "quant_investor.monitoring.theme_holding_guard",
+        "quant_investor.monitoring.us_simulated_portfolio_tracker",
+        "quant_investor.reporting.theme_governance_renderer",
+        "quant_investor.reporting.theme_renderer",
+        "quant_investor.reporting.theme_shadow_renderer",
     }
 )
+_RETIRED_MODULE_PREFIXES = ("quant_investor.themes",)
 
 
 def _reject_retired_module(fullname: str) -> None:
-    if fullname in _RETIRED_V14_MODULES:
-        raise ModuleNotFoundError(f"{fullname} was retired in v14")
+    if fullname in _RETIRED_MODULES or any(
+        fullname == prefix or fullname.startswith(f"{prefix}.")
+        for prefix in _RETIRED_MODULE_PREFIXES
+    ):
+        raise ModuleNotFoundError(f"{fullname} is retired from the current runtime")
 
 
 class _QuantInvestorSourcelessFinder(MetaPathFinder):

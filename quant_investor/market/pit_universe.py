@@ -8,16 +8,18 @@ function so scripts can gate it behind the approved maintenance window.
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import io
 import json
 import os
 import shutil
 import stat
 import uuid
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 import pandas as pd
 
@@ -862,6 +864,23 @@ class PITUniverseStore:
             expected_manifest_sha256=expected_manifest_sha256,
         )
 
+    @contextmanager
+    def _writer_lock(self) -> Iterator[None]:
+        if self.root_dir.is_symlink():
+            raise RuntimeError("pit_store_root_symlink_invalid")
+        self.root_dir.mkdir(parents=True, exist_ok=True)
+        lock_path = self.root_dir / ".pit_writer.lock"
+        if lock_path.is_symlink():
+            raise RuntimeError("pit_writer_lock_symlink_invalid")
+        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(lock_path, flags, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+
     def write_snapshot(
         self,
         *,
@@ -870,9 +889,31 @@ class PITUniverseStore:
         observed_at: str,
         source_run_id: str,
     ) -> dict[str, Any]:
+        with self._writer_lock():
+            return self._write_snapshot_locked(
+                raw_records=raw_records,
+                latest_records=latest_records,
+                observed_at=observed_at,
+                source_run_id=source_run_id,
+            )
+
+    def _write_snapshot_locked(
+        self,
+        *,
+        raw_records: Sequence[PITUniverseRecord],
+        latest_records: Sequence[PITUniverseRecord] | None = None,
+        observed_at: str,
+        source_run_id: str,
+    ) -> dict[str, Any]:
         latest = list(latest_records or dedupe_latest_records(raw_records))
+        if self.root_dir.is_symlink():
+            raise RuntimeError("pit_store_root_symlink_invalid")
+        if self.generations_root.is_symlink():
+            raise RuntimeError("pit_generations_root_symlink_invalid")
         self.root_dir.mkdir(parents=True, exist_ok=True)
         self.generations_root.mkdir(parents=True, exist_ok=True)
+        if self.generations_root.is_symlink():
+            raise RuntimeError("pit_generations_root_symlink_invalid")
         self.raw_root.mkdir(parents=True, exist_ok=True)
         self.compatibility_path.parent.mkdir(parents=True, exist_ok=True)
 

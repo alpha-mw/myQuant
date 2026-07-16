@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 
 import pandas as pd
@@ -114,6 +115,25 @@ def _bind_fixture_to_pit_generation(
     root: Path,
     published: dict[str, object],
 ) -> None:
+    latest_path = root / "parquet" / "cn" / "_latest.json"
+    latest = json.loads(latest_path.read_text(encoding="utf-8"))
+    snapshot_id = str(latest["snapshot_id"])
+    immutable_root = root / "parquet" / "cn" / "_snapshots" / snapshot_id
+    immutable_table_root = immutable_root / "table" / "bars"
+    immutable_serving_root = immutable_root / "serving" / "bars"
+    shutil.copytree(
+        root / "parquet" / "cn" / "bars",
+        immutable_table_root,
+    )
+    shutil.copytree(
+        root / "parquet_serving" / "cn" / "bars",
+        immutable_serving_root,
+    )
+    latest["manifest_path"] = str(
+        root / "parquet" / "cn" / "_snapshots" / f"{snapshot_id}.json"
+    )
+    latest["table_root"] = str(immutable_table_root)
+    latest["derived_serving_root"] = str(immutable_serving_root)
     coverage = {
         "coverage_schema_version": "cn-full-a-coverage.v4",
         "complete": True,
@@ -144,14 +164,49 @@ def _bind_fixture_to_pit_generation(
             published["generation_manifest_sha256"]
         ),
     }
-    latest_path = root / "parquet" / "cn" / "_latest.json"
-    latest = json.loads(latest_path.read_text(encoding="utf-8"))
     latest["coverage"] = coverage
     latest_path.write_text(json.dumps(latest), encoding="utf-8")
     manifest_path = Path(latest["manifest_path"])
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["manifest_path"] = str(manifest_path)
+    manifest["table_root"] = str(immutable_table_root)
+    manifest["derived_serving_root"] = str(immutable_serving_root)
     manifest["coverage"] = coverage
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
+def _write_v4_parquet_fixture(root: Path) -> dict[str, Path]:
+    paths = _write_parquet_fixture(root)
+    pit_store = PITUniverseStore(
+        root_dir=root / "parquet" / "cn" / "reference",
+        raw_root=root / "pit_raw",
+        compatibility_path=root / "pit_compat.json",
+    )
+    published = pit_store.write_snapshot(
+        raw_records=[
+            PITUniverseRecord(
+                symbol="000001.SZ",
+                source_list_status=LIST_STATUS_LISTED,
+                list_date="20200101",
+                observed_at="2026-07-06T00:00:00Z",
+                source_run_id="unit-test-v4",
+            ),
+            PITUniverseRecord(
+                symbol="000002.SZ",
+                source_list_status=LIST_STATUS_LISTED,
+                list_date="20200101",
+                observed_at="2026-07-06T00:00:00Z",
+                source_run_id="unit-test-v4",
+            ),
+        ],
+        observed_at="2026-07-06T00:00:00Z",
+        source_run_id="unit-test-v4",
+    )
+    _bind_fixture_to_pit_generation(root, published)
+    latest = json.loads(paths["latest"].read_text(encoding="utf-8"))
+    paths["canonical"] = Path(latest["table_root"])
+    paths["serving"] = Path(latest["derived_serving_root"])
+    return paths
 
 
 def test_strict_parquet_reader_reads_symbol_batch_cross_section_and_catalog_table(tmp_path: Path) -> None:
@@ -475,6 +530,173 @@ def test_reader_list_symbols_filters_by_pit_universe_only_when_enabled(
     assert reader.coverage_bound_pit()["generation_id"] == published_a[
         "generation_id"
     ]
+
+
+def test_coverage_bound_pit_accepts_explicit_configured_generation_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_parquet_fixture(tmp_path)
+    external_root = tmp_path / "configured-pit-reference"
+    pit_store = PITUniverseStore(
+        root_dir=external_root,
+        raw_root=tmp_path / "configured-pit-raw",
+        compatibility_path=tmp_path / "configured-pit-compat.json",
+    )
+    published = pit_store.write_snapshot(
+        raw_records=[
+            PITUniverseRecord(
+                symbol=symbol,
+                source_list_status=LIST_STATUS_LISTED,
+                list_date="20200101",
+                observed_at="2026-07-06T00:00:00Z",
+                source_run_id="configured-root",
+            )
+            for symbol in ("000001.SZ", "000002.SZ")
+        ],
+        observed_at="2026-07-06T00:00:00Z",
+        source_run_id="configured-root",
+    )
+    _bind_fixture_to_pit_generation(tmp_path, published)
+    from quant_investor.config import config as runtime_config
+
+    monkeypatch.setattr(
+        runtime_config,
+        "PIT_UNIVERSE_SOURCE_ROOT",
+        str(external_root),
+        raising=False,
+    )
+
+    binding = MarketDataReader(
+        market="CN",
+        data_root=tmp_path,
+    ).coverage_bound_pit(refresh=True)
+
+    assert binding["status"] == "passed"
+    assert binding["generation_id"] == published["generation_id"]
+
+
+def test_v4_reader_requires_and_accepts_exact_immutable_snapshot_layout(
+    tmp_path: Path,
+) -> None:
+    paths = _write_v4_parquet_fixture(tmp_path)
+
+    snapshot = MarketDataReader(market="CN", data_root=tmp_path).snapshot()
+
+    assert snapshot["healthy"] is True
+    assert Path(snapshot["manifest_path"]) == (
+        tmp_path / "parquet" / "cn" / "_snapshots" / "snap-001.json"
+    )
+    assert Path(snapshot["table_root"]) == paths["canonical"]
+    assert Path(snapshot["serving_root"]) == paths["serving"]
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement", "message"),
+    [
+        (
+            "manifest_path",
+            "parquet/cn/_snapshots/nested/../snap-001.json",
+            "parent traversal rejected",
+        ),
+        (
+            "table_root",
+            "/outside/snap-001/table/bars",
+            "absolute path escape rejected",
+        ),
+        (
+            "derived_serving_root",
+            "parquet/cn/_snapshots/other/serving/bars",
+            "exact snapshot path required",
+        ),
+    ],
+)
+def test_v4_reader_rejects_non_exact_or_escaping_snapshot_paths(
+    tmp_path: Path,
+    field: str,
+    replacement: str,
+    message: str,
+) -> None:
+    paths = _write_v4_parquet_fixture(tmp_path)
+    latest = json.loads(paths["latest"].read_text(encoding="utf-8"))
+    latest[field] = replacement
+    paths["latest"].write_text(json.dumps(latest), encoding="utf-8")
+
+    gate = MarketDataReader(market="CN", data_root=tmp_path).snapshot()
+
+    assert gate["healthy"] is False
+    assert any(message in blocker for blocker in gate["blockers"])
+
+
+def test_v4_reader_rejects_symlink_latest_pointer(tmp_path: Path) -> None:
+    paths = _write_v4_parquet_fixture(tmp_path)
+    outside = tmp_path / "outside-latest.json"
+    outside.write_bytes(paths["latest"].read_bytes())
+    paths["latest"].unlink()
+    paths["latest"].symlink_to(outside)
+
+    gate = MarketDataReader(market="CN", data_root=tmp_path).snapshot()
+
+    assert gate["healthy"] is False
+    assert any("symlink rejected" in blocker for blocker in gate["blockers"])
+
+
+def test_v4_reader_rejects_latest_pointer_replacement_during_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _write_v4_parquet_fixture(tmp_path)
+    replacement = tmp_path / "replacement-latest.json"
+    replacement.write_bytes(paths["latest"].read_bytes())
+    original_fdopen = os.fdopen
+    replaced = False
+
+    def _replace_after_open(*args, **kwargs):
+        nonlocal replaced
+        if not replaced:
+            os.replace(replacement, paths["latest"])
+            replaced = True
+        return original_fdopen(*args, **kwargs)
+
+    monkeypatch.setattr(os, "fdopen", _replace_after_open)
+
+    gate = MarketDataReader(market="CN", data_root=tmp_path).snapshot()
+
+    assert gate["healthy"] is False
+    assert any("replaced during read" in blocker for blocker in gate["blockers"])
+
+
+@pytest.mark.parametrize("root_key", ["canonical", "serving"])
+def test_v4_reader_rejects_nested_parquet_symlink(
+    tmp_path: Path,
+    root_key: str,
+) -> None:
+    paths = _write_v4_parquet_fixture(tmp_path)
+    parquet_path = next(paths[root_key].rglob("*.parquet"))
+    outside = tmp_path / f"outside-{root_key}.parquet"
+    outside.write_bytes(parquet_path.read_bytes())
+    parquet_path.unlink()
+    parquet_path.symlink_to(outside)
+
+    gate = MarketDataReader(market="CN", data_root=tmp_path).snapshot()
+
+    assert gate["healthy"] is False
+    assert any("nested symlink rejected" in blocker for blocker in gate["blockers"])
+
+
+def test_v4_reader_rejects_symlink_snapshot_path_component(
+    tmp_path: Path,
+) -> None:
+    paths = _write_v4_parquet_fixture(tmp_path)
+    table_component = paths["canonical"].parent
+    real_table_component = table_component.with_name("real-table")
+    table_component.rename(real_table_component)
+    table_component.symlink_to(real_table_component, target_is_directory=True)
+
+    gate = MarketDataReader(market="CN", data_root=tmp_path).snapshot()
+
+    assert gate["healthy"] is False
+    assert any("symlink rejected" in blocker for blocker in gate["blockers"])
 
 
 def test_reader_reuses_snapshot_and_symbol_inventory_for_repeated_runtime_reads(

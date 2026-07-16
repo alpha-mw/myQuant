@@ -53,8 +53,10 @@ _EXPECTED_AUTHORITY_BY_NATIONAL = {
     "cn.ppi_yoy": "nbs_official",
     "cn.fiscal_expenditure_yoy": "mof_official",
     "cn.property_investment_yoy": "nbs_official",
-    "cn.exports_yoy": "customs_official",
-    "cn.imports_yoy": "customs_official",
+    # The reviewed NBS national-economy release republishes these exact CNY
+    # monthly rates and identifies Customs as the upstream data authority.
+    "cn.exports_yoy": "nbs_official",
+    "cn.imports_yoy": "nbs_official",
     "market.breadth": "local_strict_parquet",
     "market.volatility_percentile": "local_strict_parquet",
 }

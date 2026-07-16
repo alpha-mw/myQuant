@@ -516,13 +516,21 @@ def load_macro_record(
 def macro_generation_identity(manifest: Mapping[str, Any]) -> dict[str, str]:
     """Return the immutable canonical Macro identity used by DAG consumers."""
 
-    return {
+    identity = {
         "generation_id": str(manifest.get("generation_id") or "").strip(),
         "parquet_sha256": str(manifest.get("parquet_sha256") or "").strip(),
         "generation_manifest_sha256": str(
             manifest.get("generation_manifest_sha256") or ""
         ).strip(),
     }
+    for field_name in (
+        "v15_controls_sha256",
+        "v15_controls_semantic_sha256",
+    ):
+        field_value = str(manifest.get(field_name) or "").strip()
+        if field_value:
+            identity[field_name] = field_value
+    return identity
 
 
 def _assess_symbol_records(

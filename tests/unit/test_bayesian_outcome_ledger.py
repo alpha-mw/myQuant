@@ -302,12 +302,12 @@ def test_calibration_store_writes_schema_bound_outcome_file(tmp_path: Path) -> N
     assert payload["bucket"] == "positive"
 
 
-def test_default_ledger_namespace_is_v14() -> None:
-    assert OutcomeLedgerStore().root_dir.as_posix().endswith("bayesian_outcome_ledger/v14")
+def test_default_ledger_namespace_is_v15() -> None:
+    assert OutcomeLedgerStore().root_dir.as_posix().endswith("bayesian_outcome_ledger/v15")
     assert LikelihoodSet().schema_version == LIKELIHOOD_SCHEMA_VERSION
     calibration = CalibrationStore()
     assert calibration._store_path.as_posix().endswith(  # noqa: SLF001
-        "bayesian_calibration/v14/calibration.json"
+        "bayesian_calibration/v15/calibration.json"
     )
 
 

@@ -20,7 +20,15 @@ from quant_investor.macro.nbs_pmi import (
     parse_nbs_cn_pmi_html,
 )
 from quant_investor.market import macro_mart
-from tests.helpers.macro_fixture import bind_macro_generation
+from quant_investor.market.branch_readiness import load_macro_record
+from quant_investor.market.dag.context import (
+    _validated_pinned_macro_controls,
+)
+from quant_investor.macro.store import pointer_sha256
+from tests.helpers.macro_fixture import (
+    bind_macro_generation,
+    write_ready_macro_observations,
+)
 
 
 TARGET = "20240510"
@@ -205,6 +213,10 @@ def _workspace(tmp_path: Path) -> tuple[Path, Path, Path, pd.DataFrame]:
     }
     pointer_path = market_root / "_latest.json"
     pointer_path.write_text(json.dumps(pointer, sort_keys=True), encoding="utf-8")
+    write_ready_macro_observations(
+        market_root / "macro_observations",
+        as_of="2024-05-10",
+    )
     return macro_root, catalog_path, pointer_path, bars
 
 
@@ -222,6 +234,10 @@ def _refresh(
         run_id=run_id,
         expected_catalog_sha256=_sha(catalog_path),
         expected_market_pointer_sha256=_sha(pointer_path),
+        macro_observations_root=macro_root.parent / "macro_observations",
+        expected_macro_observations_pointer_sha256=pointer_sha256(
+            macro_root.parent / "macro_observations"
+        ),
         allow_live=True,
         nbs_cn_pmi_url=NBS_URL,
     )
@@ -252,7 +268,7 @@ def test_refresh_promotes_hash_bound_strict_generation(
         "daily_basic/part.parquet"
     )
     frame, manifest = macro_mart.read_macro_mart(data_root=macro_root)
-    assert manifest["transform_version"] == macro_mart.TRANSFORM_VERSION
+    assert manifest["transform_version"] == macro_mart.V15_TRANSFORM_VERSION
     assert manifest["historical_replay_eligible"] is False
     assert manifest["source"] == macro_mart.SOURCE_OFFICIAL_FIRST
     assert manifest["source_priority"] == macro_mart.SOURCE_OFFICIAL
@@ -296,8 +312,10 @@ def test_refresh_promotes_hash_bound_strict_generation(
     expected_symbol_mean = recent.groupby(returns.loc[recent.index, "ts_code"]).mean()
     expected_macro = float(np.clip(expected_symbol_mean.mean() * 20.0, -1.0, 1.0))
     expected_breadth = float(expected_symbol_mean.gt(0.0).mean())
-    assert frame.iloc[0]["macro_score"] == pytest.approx(expected_macro)
-    assert frame.iloc[0]["liquidity_score"] == pytest.approx(expected_breadth)
+    assert frame.iloc[0]["macro_score"] == pytest.approx(0.0)
+    assert frame.iloc[0]["liquidity_score"] == pytest.approx(0.0)
+    assert frame.iloc[0]["macro_score"] != pytest.approx(expected_macro)
+    assert frame.iloc[0]["liquidity_score"] != pytest.approx(expected_breadth)
     journal = json.loads(
         Path(str(result["transaction_journal"])).read_text(encoding="utf-8")
     )
@@ -318,6 +336,92 @@ def test_refresh_promotes_hash_bound_strict_generation(
     )
 
 
+def test_v15_stage_promote_reader_and_dag_controls_are_one_hash_chain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    macro_root, catalog_path, pointer_path, _bars = _workspace(tmp_path)
+    before_catalog = catalog_path.read_bytes()
+    clock_calls = iter(
+        CAPTURED_AT + timedelta(seconds=index) for index in range(200)
+    )
+    monkeypatch.setattr(macro_mart, "_utc_now", lambda: next(clock_calls))
+    monkeypatch.setattr(
+        macro_mart,
+        "_build_tushare_client",
+        lambda: _FakeTushare(),
+    )
+    _patch_official_fetch(monkeypatch)
+    observations_root = macro_root.parent / "macro_observations"
+    stage = macro_mart.stage_cn_macro_authoritative_refresh(
+        market="CN",
+        as_of=TARGET,
+        canonical_root=macro_root,
+        staging_root=tmp_path / "macro-stage",
+        run_id="v15-stage-promote",
+        expected_catalog_sha256=_sha(catalog_path),
+        expected_market_pointer_sha256=_sha(pointer_path),
+        macro_observations_root=observations_root,
+        expected_macro_observations_pointer_sha256=pointer_sha256(
+            observations_root
+        ),
+        allow_live=True,
+        nbs_cn_pmi_url=NBS_URL,
+    )
+
+    assert stage["status"] == "staged"
+    assert stage["promoted"] is False
+    assert catalog_path.read_bytes() == before_catalog
+    controls_path = Path(
+        str(stage["manifest"]["resolved_v15_controls"])
+    )
+    assert _sha(controls_path) == stage["manifest"]["v15_controls_sha256"]
+    assert stage["row"]["macro_score"] == pytest.approx(0.0)
+    assert stage["row"]["liquidity_score"] == pytest.approx(0.0)
+
+    original_publish = macro_mart._publish_catalog_generation
+    monkeypatch.setattr(
+        macro_mart,
+        "_publish_catalog_generation",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("simulated catalog publish failure")
+        ),
+    )
+    with pytest.raises(RuntimeError, match="simulated catalog publish failure"):
+        macro_mart.promote_staged_macro_generation(
+            staging_root=stage["staging_root"],
+            canonical_root=macro_root,
+            expected_catalog_sha256=_sha(catalog_path),
+        )
+    monkeypatch.setattr(
+        macro_mart,
+        "_publish_catalog_generation",
+        original_publish,
+    )
+    promoted = macro_mart.promote_staged_macro_generation(
+        staging_root=stage["staging_root"],
+        canonical_root=macro_root,
+        expected_catalog_sha256=_sha(catalog_path),
+    )
+
+    assert promoted["status"] == "promoted"
+    assert promoted["orphan_generation_reused"] is True
+    frame, manifest = macro_mart.read_macro_mart(data_root=macro_root)
+    record, loaded_manifest = load_macro_record(
+        as_of=TARGET,
+        root=macro_root,
+    )
+    dag_controls = _validated_pinned_macro_controls(loaded_manifest)
+    assert frame.iloc[0]["macro_score"] == dag_controls["macro_score"]
+    assert record["liquidity_score"] == dag_controls["liquidity_score"]
+    assert manifest["v15_controls_sha256"] == _sha(
+        Path(str(manifest["resolved_v15_controls"]))
+    )
+    assert dag_controls["observation_generation"]["pointer_sha256"] == (
+        pointer_sha256(observations_root)
+    )
+
+
 def test_refresh_requires_explicit_live_without_writes(tmp_path: Path) -> None:
     macro_root, catalog_path, pointer_path, _ = _workspace(tmp_path)
     before = catalog_path.read_bytes()
@@ -328,6 +432,10 @@ def test_refresh_requires_explicit_live_without_writes(tmp_path: Path) -> None:
             run_id="no-live",
             expected_catalog_sha256=_sha(catalog_path),
             expected_market_pointer_sha256=_sha(pointer_path),
+            macro_observations_root=macro_root.parent / "macro_observations",
+            expected_macro_observations_pointer_sha256=pointer_sha256(
+                macro_root.parent / "macro_observations"
+            ),
             allow_live=False,
             nbs_cn_pmi_url=NBS_URL,
         )
@@ -833,6 +941,7 @@ def test_legacy_v1_generation_is_not_current_equivalent(tmp_path: Path) -> None:
         root=root,
         trade_date=TARGET,
         market_pointer_sha256="1" * 64,
+        macro_observation_pointer_sha256="2" * 64,
         current_at=CAPTURED_AT,
     )
 

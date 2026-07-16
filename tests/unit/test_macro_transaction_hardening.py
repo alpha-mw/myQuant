@@ -17,6 +17,8 @@ from quant_investor.macro.nbs_pmi import (
     parse_nbs_cn_pmi_html,
 )
 from quant_investor.market import macro_mart
+from quant_investor.macro.store import pointer_sha256
+from tests.helpers.macro_fixture import write_ready_macro_observations
 
 
 TARGET = "20240510"
@@ -417,6 +419,10 @@ def _refresh_workspace(tmp_path: Path) -> tuple[Path, Path, Path]:
         ),
         encoding="utf-8",
     )
+    write_ready_macro_observations(
+        market_root / "macro_observations",
+        as_of="2024-05-10",
+    )
     return macro_root, catalog_path, pointer_path
 
 
@@ -452,6 +458,10 @@ def test_same_run_retry_resumes_generation_without_second_provider_call(
         "run_id": "same-run-retry",
         "expected_catalog_sha256": _sha(catalog_path),
         "expected_market_pointer_sha256": _sha(pointer_path),
+        "macro_observations_root": macro_root.parent / "macro_observations",
+        "expected_macro_observations_pointer_sha256": pointer_sha256(
+            macro_root.parent / "macro_observations"
+        ),
         "allow_live": True,
         "nbs_cn_pmi_url": NBS_URL,
     }
@@ -531,6 +541,10 @@ def test_same_run_retry_cannot_reuse_fallback_without_matching_authorization(
         "run_id": "fallback-retry-authorization",
         "expected_catalog_sha256": _sha(catalog_path),
         "expected_market_pointer_sha256": _sha(pointer_path),
+        "macro_observations_root": macro_root.parent / "macro_observations",
+        "expected_macro_observations_pointer_sha256": pointer_sha256(
+            macro_root.parent / "macro_observations"
+        ),
         "allow_live": True,
         "nbs_cn_pmi_url": NBS_URL,
         "allow_tushare_fallback": True,

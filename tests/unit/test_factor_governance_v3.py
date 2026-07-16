@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import hashlib
 import inspect
 from pathlib import Path
@@ -16,11 +15,19 @@ from quant_investor.factors.governance_canonical_replay_v3 import (
     ARM_NAMES,
     CONTROL_CHAIN_STAGES,
     CanonicalReplayV3Error,
+    canonical_file_bytes,
+    readback_v3_evidence,
     semantic_sha256,
+    stage_byte_sha256,
     validate_canonical_replay_v3,
     validate_v3_evidence,
 )
-from quant_investor.factors.governance_protocol_v3 import governance_runtime_status
+from quant_investor.factors.governance_protocol_v3 import (
+    CANONICAL_PRODUCER_AUTHENTICATION_BLOCKER,
+    canonical_replay_producer_control,
+    governance_runtime_status,
+    protocol_policy,
+)
 from quant_investor.factors.runtime import MinedFactorRegistry
 
 
@@ -39,7 +46,12 @@ def _factor(name: str, state: str) -> dict[str, str]:
 
 
 def _replay() -> dict:
-    context_sha = _digest("context")
+    context = {
+        "calendar_sha256": _digest("calendar"),
+        "pit_sha256": _digest("pit"),
+        "runtime_contract_sha256": _digest("runtime-contract"),
+    }
+    context_sha = semantic_sha256(context)
     factor_sets = {
         "A": ["incumbent"],
         "B": [],
@@ -54,16 +66,11 @@ def _replay() -> dict:
             "semantic_sha256": "0" * 64,
         }
         for stage in CONTROL_CHAIN_STAGES:
-            if stage == "deterministic_funnel":
-                output = {
-                    "schema_version": "factor-governance-funnel-output.v3",
-                    "eligible_symbols": ["AAA"],
-                }
-            elif stage == "quant":
+            if stage == "quant":
                 selected = factor_sets[arm]
                 output = {
                     "schema_version": "factor-governance-quant-output.v3",
-                    "eligible_symbols": ["AAA"],
+                    "scored_symbols": ["AAA", "BBB"],
                     "selected_factors": selected,
                     "factor_records": [
                         _factor(
@@ -82,22 +89,69 @@ def _replay() -> dict:
                     },
                     "likelihood_branches": ["fundamental", "quant"],
                 }
+            elif stage == "deterministic_funnel":
+                output = {
+                    "schema_version": "factor-governance-funnel-output.v3",
+                    "eligible_symbols": ["AAA"],
+                }
             elif stage == "bayesian":
                 output = {
                     "schema_version": "factor-governance-bayesian-output.v3",
                     "posterior_scores": {"AAA": 0.7},
                 }
             elif stage == "risk_guard":
+                risk_decision = {
+                    "schema_version": "risk-decision.v15",
+                    "action_cap": "buy",
+                    "blocked_symbols": [],
+                }
                 output = {
                     "schema_version": "factor-governance-risk-output.v3",
                     "decisions": {"AAA": "approved"},
+                    "risk_decision": risk_decision,
+                    "risk_decision_sha256": semantic_sha256(risk_decision),
+                }
+            elif stage == "ic_coordinator":
+                risk_output = stages[-1]["output"]
+                ic_input = {
+                    "branch_verdicts": {
+                        name: {
+                            "schema_version": "branch-verdict.v15",
+                            "branch": name,
+                            "score": 0.5,
+                        }
+                        for name in ("quant", "fundamental", "macro")
+                    },
+                    "risk_decision": risk_output["risk_decision"],
+                    "ic_hints": {},
+                }
+                ic_decision = {
+                    "schema_version": "ic-decision.v15",
+                    "symbol": "AAA",
+                    "action": "buy",
+                    "status": "success",
+                }
+                output = {
+                    "schema_version": "factor-governance-ic-output.v3",
+                    "inputs": {"AAA": ic_input},
+                    "input_sha256s": {"AAA": semantic_sha256(ic_input)},
+                    "decisions": {"AAA": ic_decision},
+                    "output_sha256s": {"AAA": semantic_sha256(ic_decision)},
                 }
             else:
+                ic_output = stages[-1]["output"]
                 output = {
                     "schema_version": "factor-governance-portfolio-output.v3",
                     "target_weights": {"AAA": 0.5},
+                    "ic_decision_sha256s": dict(ic_output["output_sha256s"]),
                 }
-            byte_sha = _digest(f"{arm}:{stage}:bytes")
+            byte_sha = stage_byte_sha256(
+                arm=arm,
+                stage=stage,
+                context_sha256=context_sha,
+                predecessor=predecessor,
+                output=output,
+            )
             semantic_sha = semantic_sha256(output)
             stages.append(
                 {
@@ -122,7 +176,8 @@ def _replay() -> dict:
         "run_id": "v3-test",
         "as_of": "2026-07-16",
         "registry_file_sha256": _digest("registry"),
-        "production_factor_set_sha256": _digest("factor-set"),
+        "production_factor_set_sha256": semantic_sha256(["incumbent"]),
+        "context": context,
         "context_sha256": context_sha,
         "factor_set": ["incumbent"],
         "comparison": {
@@ -134,9 +189,40 @@ def _replay() -> dict:
     }
 
 
-def test_v3_replay_validates_exact_five_stage_graph_and_rejects_v2() -> None:
+def _rehash_arm_from(replay: dict, start_index: int) -> None:
+    arm = replay["stages"][start_index]["arm"]
+    for index in range(start_index, len(replay["stages"])):
+        item = replay["stages"][index]
+        if item["arm"] != arm:
+            break
+        if index > start_index:
+            previous = replay["stages"][index - 1]
+            item["predecessor"] = {
+                "kind": "stage",
+                "byte_sha256": previous["byte_sha256"],
+                "semantic_sha256": previous["semantic_sha256"],
+            }
+        item["semantic_sha256"] = semantic_sha256(item["output"])
+        item["byte_sha256"] = stage_byte_sha256(
+            arm=item["arm"],
+            stage=item["stage"],
+            context_sha256=item["context_sha256"],
+            predecessor=item["predecessor"],
+            output=item["output"],
+        )
+
+
+def test_v3_replay_validates_exact_runtime_graph_and_rejects_v2() -> None:
     result = validate_canonical_replay_v3(_replay())
-    assert len(CONTROL_CHAIN_STAGES) == 5
+    assert CONTROL_CHAIN_STAGES == (
+        "quant",
+        "deterministic_funnel",
+        "bayesian",
+        "risk_guard",
+        "ic_coordinator",
+        "portfolio_constructor",
+    )
+    assert protocol_policy()["canonical_chain"] == list(CONTROL_CHAIN_STAGES)
     assert set(result["arms"]) == set(ARM_NAMES)
     legacy = _replay()
     legacy["schema_version"] = "factor-governance-canonical-replay-bundle.v1"
@@ -153,16 +239,80 @@ def test_v3_replay_enforces_symbol_domain_risk_and_portfolio_subset() -> None:
         for index, row in enumerate(replay["stages"])
         if row["arm"] == "A" and row["stage"] == "risk_guard"
     )
-    portfolio_index = risk_index + 1
     replay["stages"][risk_index]["output"]["decisions"]["AAA"] = "rejected"
-    replay["stages"][risk_index]["semantic_sha256"] = semantic_sha256(
-        replay["stages"][risk_index]["output"]
-    )
-    replay["stages"][portfolio_index]["predecessor"]["semantic_sha256"] = replay["stages"][
-        risk_index
-    ]["semantic_sha256"]
+    _rehash_arm_from(replay, risk_index)
     with pytest.raises(CanonicalReplayV3Error, match="RiskGuard approval"):
         validate_canonical_replay_v3(replay)
+
+
+def test_v3_replay_binds_ic_inputs_outputs_and_portfolio_consumption() -> None:
+    replay = _replay()
+    ic_index = next(
+        index
+        for index, row in enumerate(replay["stages"])
+        if row["arm"] == "A" and row["stage"] == "ic_coordinator"
+    )
+    replay["stages"][ic_index]["output"]["inputs"]["AAA"]["branch_verdicts"][
+        "quant"
+    ]["score"] = 0.9
+    _rehash_arm_from(replay, ic_index)
+    with pytest.raises(CanonicalReplayV3Error, match="input SHA mismatch"):
+        validate_canonical_replay_v3(replay)
+
+    replay = _replay()
+    ic_index = next(
+        index
+        for index, row in enumerate(replay["stages"])
+        if row["arm"] == "A" and row["stage"] == "ic_coordinator"
+    )
+    decision = replay["stages"][ic_index]["output"]["decisions"]["AAA"]
+    decision["action"] = "hold"
+    decision_sha = semantic_sha256(decision)
+    replay["stages"][ic_index]["output"]["output_sha256s"]["AAA"] = decision_sha
+    replay["stages"][ic_index + 1]["output"]["ic_decision_sha256s"][
+        "AAA"
+    ] = decision_sha
+    _rehash_arm_from(replay, ic_index)
+    with pytest.raises(CanonicalReplayV3Error, match="ICCoordinator BUY"):
+        validate_canonical_replay_v3(replay)
+
+
+def test_v3_evidence_requires_real_canonical_readback_without_auth_claim(
+    tmp_path: Path,
+) -> None:
+    replay = _replay()
+    path = (tmp_path / "canonical-replay.v3.json").resolve()
+    raw = canonical_file_bytes(replay)
+    path.write_bytes(raw)
+    path.chmod(0o600)
+    evidence = {
+        "schema_version": "factor-governance-replay-evidence.v3",
+        "status": "verified",
+        "factor_name": "incumbent",
+        "registry_file_sha256": replay["registry_file_sha256"],
+        "replay_path": str(path),
+        "replay_file_sha256": hashlib.sha256(raw).hexdigest(),
+        "replay_semantic_sha256": semantic_sha256(replay),
+        **replay["context"],
+    }
+
+    readback = readback_v3_evidence(evidence)
+    control = canonical_replay_producer_control(evidence)
+
+    assert readback["local_bytes_readback_verified"] is True
+    assert readback["ic_input_output_hash_binding_verified"] is True
+    assert control["producer_implemented"] is True
+    assert control["producer_available"] is True
+    assert control["local_bytes_readback_verified"] is True
+    assert control["ic_input_output_hash_binding_verified"] is True
+    assert control["canonical_producer_authenticated"] is False
+    assert control["blocker"] == CANONICAL_PRODUCER_AUTHENTICATION_BLOCKER
+
+    path.write_bytes(raw + b" ")
+    path.chmod(0o600)
+    failed_control = canonical_replay_producer_control(evidence)
+    assert failed_control["local_bytes_readback_verified"] is False
+    assert failed_control["canonical_producer_authenticated"] is False
 
 
 def _candidate(index: int) -> dict:
@@ -185,6 +335,8 @@ def _candidate(index: int) -> dict:
             "status": "verified",
             "factor_name": name,
             "registry_file_sha256": _digest("registry"),
+            "replay_path": "/private/tmp/unavailable-factor-governance-replay.json",
+            "replay_file_sha256": _digest(f"replay-file:{name}"),
             "replay_semantic_sha256": _digest(f"replay:{name}"),
             "calendar_sha256": _digest("calendar"),
             "pit_sha256": _digest("pit"),

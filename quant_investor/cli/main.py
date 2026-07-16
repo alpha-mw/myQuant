@@ -130,6 +130,30 @@ def run_macro_tushare_normalization(**kwargs):
     return normalize_tushare_bundle_file(**kwargs)
 
 
+def run_macro_official_web_compilation(**kwargs):
+    from quant_investor.macro.official_web_compiler import (
+        compile_official_web_bundle_file,
+    )
+
+    return compile_official_web_bundle_file(**kwargs)
+
+
+def run_macro_production_observation_bundle(**kwargs):
+    from quant_investor.macro.production_observation_bundle import (
+        publish_macro_production_observation_bundle,
+    )
+
+    return publish_macro_production_observation_bundle(**kwargs)
+
+
+def run_macro_local_breadth_publish(**kwargs):
+    from quant_investor.macro.production_observation_bundle import (
+        publish_local_market_breadth_update,
+    )
+
+    return publish_local_market_breadth_update(**kwargs)
+
+
 def run_macro_backfill_publish(**kwargs):
     from quant_investor.macro.tushare_normalizer import (
         publish_tushare_normalization,
@@ -581,6 +605,14 @@ def _build_parser() -> argparse.ArgumentParser:
         default="data/parquet/cn/macro_observations",
     )
     market_macro_maintain.add_argument(
+        "--expected-macro-observations-pointer-sha256",
+        default="",
+        help=(
+            "authoritative refresh 所固定的 canonical Macro observations "
+            "_latest.json SHA-256"
+        ),
+    )
+    market_macro_maintain.add_argument(
         "--staging-root",
         default="results/v15/macro_observation_staging",
     )
@@ -666,6 +698,94 @@ def _build_parser() -> argparse.ArgumentParser:
         default="results/v15/macro_normalization",
     )
     market_macro_normalize.add_argument("--run-id", required=True)
+
+    market_macro_official_compile = market_subparsers.add_parser(
+        "macro-official-compile",
+        help=(
+            "离线编译 hash-bound NBS/PBC 官方网页捕获；"
+            "只写私有 bundle，不推进 canonical pointer"
+        ),
+    )
+    market_macro_official_compile.add_argument("--plan", required=True)
+    market_macro_official_compile.add_argument(
+        "--capture-manifest", required=True
+    )
+    market_macro_official_compile.add_argument("--raw-root", required=True)
+    market_macro_official_compile.add_argument(
+        "--output-dir",
+        default="results/v15/macro_official_web",
+    )
+    market_macro_official_compile.add_argument("--run-id", required=True)
+
+    market_macro_observation_bootstrap = market_subparsers.add_parser(
+        "macro-observation-bootstrap",
+        help=(
+            "重编译官方网页与 strict-local breadth evidence，"
+            "并以一个 CAS 原子发布 39 条 canonical observations"
+        ),
+    )
+    market_macro_observation_bootstrap.add_argument(
+        "--official-manifest", required=True
+    )
+    market_macro_observation_bootstrap.add_argument(
+        "--expected-official-manifest-sha256", required=True
+    )
+    market_macro_observation_bootstrap.add_argument(
+        "--expected-official-plan-sha256", required=True
+    )
+    market_macro_observation_bootstrap.add_argument(
+        "--local-binding-plan", required=True
+    )
+    market_macro_observation_bootstrap.add_argument(
+        "--expected-local-binding-plan-sha256", required=True
+    )
+    market_macro_observation_bootstrap.add_argument("--as-of", required=True)
+    market_macro_observation_bootstrap.add_argument(
+        "--observations-root",
+        default="data/parquet/cn/macro_observations",
+    )
+    market_macro_observation_bootstrap.add_argument(
+        "--run-id", required=True
+    )
+    market_macro_observation_bootstrap.add_argument(
+        "--expected-pointer-sha256", required=True
+    )
+
+    market_macro_local_publish = market_subparsers.add_parser(
+        "macro-local-observation-publish",
+        help=(
+            "从显式 cutoff 前 strict-Parquet snapshot 编译并 CAS 追加"
+            "一条 target-date market.breadth observation"
+        ),
+    )
+    market_macro_local_publish.add_argument(
+        "--snapshot-manifest", required=True
+    )
+    market_macro_local_publish.add_argument(
+        "--expected-snapshot-manifest-sha256", required=True
+    )
+    market_macro_local_publish.add_argument(
+        "--coverage-manifest", required=True
+    )
+    market_macro_local_publish.add_argument(
+        "--expected-coverage-manifest-sha256", required=True
+    )
+    market_macro_local_publish.add_argument(
+        "--target-trade-date", required=True
+    )
+    market_macro_local_publish.add_argument("--scope-artifact", required=True)
+    market_macro_local_publish.add_argument(
+        "--expected-scope-artifact-sha256", required=True
+    )
+    market_macro_local_publish.add_argument("--as-of", required=True)
+    market_macro_local_publish.add_argument(
+        "--observations-root",
+        default="data/parquet/cn/macro_observations",
+    )
+    market_macro_local_publish.add_argument("--run-id", required=True)
+    market_macro_local_publish.add_argument(
+        "--expected-pointer-sha256", required=True
+    )
 
     market_macro_publish = market_subparsers.add_parser(
         "macro-backfill-publish",
@@ -1166,12 +1286,14 @@ def main(argv: list[str] | None = None) -> None:
                 or not args.run_id
                 or not args.expected_catalog_sha256
                 or not args.expected_market_pointer_sha256
+                or not args.expected_macro_observations_pointer_sha256
                 or not args.nbs_cn_pmi_url
             ):
                 parser.error(
                     "--authoritative-refresh requires --allow-live, --run-id, "
-                    "--expected-catalog-sha256, --expected-market-pointer-sha256 "
-                    "and --nbs-cn-pmi-url"
+                    "--expected-catalog-sha256, --expected-market-pointer-sha256, "
+                    "--expected-macro-observations-pointer-sha256 and "
+                    "--nbs-cn-pmi-url"
                 )
             if args.input_json or args.input_observations:
                 parser.error(
@@ -1187,6 +1309,10 @@ def main(argv: list[str] | None = None) -> None:
                     expected_catalog_sha256=args.expected_catalog_sha256,
                     expected_market_pointer_sha256=(
                         args.expected_market_pointer_sha256
+                    ),
+                    macro_observations_root=args.observations_root,
+                    expected_macro_observations_pointer_sha256=(
+                        args.expected_macro_observations_pointer_sha256
                     ),
                     allow_live=args.allow_live,
                     nbs_cn_pmi_url=args.nbs_cn_pmi_url,
@@ -1300,6 +1426,81 @@ def main(argv: list[str] | None = None) -> None:
                 evidence_path=args.evidence_json,
                 output_root=args.output_dir,
                 run_id=args.run_id,
+            )
+        )
+        return
+
+    if (
+        args.command == "market"
+        and args.market_command == "macro-official-compile"
+    ):
+        _print_json(
+            run_macro_official_web_compilation(
+                plan_path=args.plan,
+                capture_manifest_path=args.capture_manifest,
+                raw_root=args.raw_root,
+                output_root=args.output_dir,
+                run_id=args.run_id,
+            )
+        )
+        return
+
+    if (
+        args.command == "market"
+        and args.market_command == "macro-observation-bootstrap"
+    ):
+        _print_json(
+            run_macro_production_observation_bundle(
+                official_bundle_manifest_path=args.official_manifest,
+                expected_official_bundle_manifest_sha256=(
+                    args.expected_official_manifest_sha256
+                ),
+                expected_official_plan_sha256=(
+                    args.expected_official_plan_sha256
+                ),
+                local_bootstrap_plan_path=args.local_binding_plan,
+                expected_local_bootstrap_plan_sha256=(
+                    args.expected_local_binding_plan_sha256
+                ),
+                as_of=args.as_of,
+                canonical_observations_root=args.observations_root,
+                run_id=args.run_id,
+                expected_pointer_sha256=(
+                    ""
+                    if args.expected_pointer_sha256 == "EMPTY"
+                    else args.expected_pointer_sha256
+                ),
+            )
+        )
+        return
+
+    if (
+        args.command == "market"
+        and args.market_command == "macro-local-observation-publish"
+    ):
+        _print_json(
+            run_macro_local_breadth_publish(
+                snapshot_manifest_path=args.snapshot_manifest,
+                expected_snapshot_manifest_sha256=(
+                    args.expected_snapshot_manifest_sha256
+                ),
+                coverage_manifest_path=args.coverage_manifest,
+                expected_coverage_manifest_sha256=(
+                    args.expected_coverage_manifest_sha256
+                ),
+                target_trade_date=args.target_trade_date,
+                scope_artifact_path=args.scope_artifact,
+                expected_scope_artifact_sha256=(
+                    args.expected_scope_artifact_sha256
+                ),
+                as_of=args.as_of,
+                canonical_observations_root=args.observations_root,
+                run_id=args.run_id,
+                expected_pointer_sha256=(
+                    ""
+                    if args.expected_pointer_sha256 == "EMPTY"
+                    else args.expected_pointer_sha256
+                ),
             )
         )
         return

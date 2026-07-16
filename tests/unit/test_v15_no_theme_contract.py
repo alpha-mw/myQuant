@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from quant_investor.cli import main as cli_main
+from quant_investor._sourceless import _reject_retired_module
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -36,6 +37,15 @@ ACTIVE_FILES = (
     "portfolio_dashboard/js/ui.js",
     "portfolio_dashboard/js/generated_records.js",
 )
+ACTIVE_VERSION_SURFACES = (
+    ".env.example",
+    "quant_investor/config.py",
+    "quant_investor/market/full_report.py",
+    "quant_investor/market/dag/context.py",
+    "quant_investor/market/dag/decision.py",
+    "quant_investor/monitoring/cn_aggressive_portfolio_tracker.py",
+    "scripts/run_us_aggressive_analysis.py",
+)
 
 
 @pytest.mark.parametrize("module_name", RETIRED_IMPORTS)
@@ -44,11 +54,25 @@ def test_retired_theme_modules_are_not_importable(module_name: str) -> None:
         importlib.import_module(module_name)
 
 
+def test_sourceless_fallback_rejects_retired_theme_prefix() -> None:
+    with pytest.raises(ModuleNotFoundError):
+        _reject_retired_module("quant_investor.themes.synthetic_stale_cache")
+
+
 def test_active_v15_surfaces_have_no_theme_contract_tokens() -> None:
     violations: list[str] = []
     for relative in ACTIVE_FILES:
         text = (ROOT / relative).read_text(encoding="utf-8")
         if "theme" in text.casefold():
+            violations.append(relative)
+    assert violations == []
+
+
+def test_active_v15_surfaces_do_not_emit_v14_contracts_or_paths() -> None:
+    violations: list[str] = []
+    for relative in ACTIVE_VERSION_SURFACES:
+        text = (ROOT / relative).read_text(encoding="utf-8").casefold()
+        if "v14" in text:
             violations.append(relative)
     assert violations == []
 

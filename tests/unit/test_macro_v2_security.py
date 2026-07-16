@@ -131,6 +131,60 @@ def test_normalized_source_url_is_content_hash_bound() -> None:
         )
 
 
+def test_local_strict_parquet_source_is_logical_and_hash_bound() -> None:
+    row = _row(
+        indicator_id="market.breadth",
+        period_end="2024-04-30",
+        release_at="2024-04-30T15:00:00+08:00",
+        available_at="2024-04-30T15:00:00+08:00",
+        value=52.0,
+        unit="%",
+        frequency="daily",
+        source_system="local_strict_parquet",
+        source_record_id="cn:snapshot-1:20240430:market-breadth",
+        source_url="local://strict-parquet/cn/snapshots/snapshot-1/bars",
+        fetched_at="2024-05-01T00:00:00+08:00",
+    )
+
+    observation = MacroObservation.from_mapping(row)
+
+    assert observation.source_url == (
+        "local://strict-parquet/cn/snapshots/snapshot-1/bars"
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_url", "error"),
+    [
+        ("https://localhost/cn/snapshot", "source_url_local_scheme_required"),
+        ("local://other/cn/snapshot", "source_url_issuer_mismatch"),
+        ("local://strict-parquet/us/snapshot", "source_url_local_path_invalid"),
+        ("local://strict-parquet/cn/../secret", "source_url_local_path_invalid"),
+        ("local://strict-parquet/cn/snapshot?token=x", "source_url_local_query_rejected"),
+    ],
+)
+def test_local_strict_parquet_source_rejects_unsafe_lineage(
+    source_url: str,
+    error: str,
+) -> None:
+    with pytest.raises(ValueError, match=error):
+        MacroObservation.from_mapping(
+            _row(
+                indicator_id="market.breadth",
+                period_end="2024-04-30",
+                release_at="2024-04-30T15:00:00+08:00",
+                available_at="2024-04-30T15:00:00+08:00",
+                value=52.0,
+                unit="%",
+                frequency="daily",
+                source_system="local_strict_parquet",
+                source_record_id="cn:snapshot-1:20240430:market-breadth",
+                source_url=source_url,
+                fetched_at="2024-05-01T00:00:00+08:00",
+            )
+        )
+
+
 def test_every_persisted_observer_artifact_is_non_production(
     tmp_path: Path,
 ) -> None:

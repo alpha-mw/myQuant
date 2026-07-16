@@ -31,6 +31,7 @@ from quant_investor.market.dag_executor import (
 from quant_investor.market.read_result import MarketDataReadResult
 from quant_investor.market.runtime_profile import MarketRuntimeProfiler
 from quant_investor.model_roles import ModelRoleResolution
+from tests.helpers.macro_fixture import make_v15_controls
 
 
 def _frame(symbol: str, seed: float) -> pd.DataFrame:
@@ -134,6 +135,7 @@ def _patch_canonical_macro(monkeypatch) -> None:
                 "source_priority": "tushare_primary",
                 "provider_status": "verified_provider_snapshot",
                 "production_eligible": True,
+                "v15_controls": make_v15_controls(),
             },
         ),
     )
@@ -1306,6 +1308,12 @@ def test_empty_universe_valid_macro_pin_drives_agent_and_trace(monkeypatch):
         "source_priority": "tushare_primary",
         "provider_status": "verified_provider_snapshot",
         "production_eligible": True,
+        "v15_controls": make_v15_controls(
+            macro_score=0.7,
+            liquidity_score=0.4,
+            volatility_percentile=35.0,
+            policy_signal="supportive",
+        ),
     }
     load_calls = 0
     observed_snapshot = {}
@@ -1412,6 +1420,12 @@ def test_empty_universe_missing_as_of_blocks_valid_macro_without_agent(
         "source_priority": "tushare_primary",
         "provider_status": "verified_provider_snapshot",
         "production_eligible": True,
+        "v15_controls": make_v15_controls(
+            macro_score=0.7,
+            liquidity_score=0.4,
+            volatility_percentile=35.0,
+            policy_signal="supportive",
+        ),
     }
     load_calls = 0
 

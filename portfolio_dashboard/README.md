@@ -28,7 +28,13 @@
 
 Snapshot 同时绑定 schema/hash、run/status/blockers、as-of matrix、正式交易
 日历、NAV/fee/TWR provenance、manual manifest/ledger SHA、Factor v3、每日
-reconciliation 和 v15 readiness 引用。
+reconciliation 和 v15 readiness 引用。CN 交易日历与行业等权 bars 只通过
+`MarketDataReader` 校验 active `data/parquet/cn/_latest.json` 和 clean gate 后
+读取 pointer 指向的 immutable
+`_snapshots/<snapshot_id>/table/bars`；snapshot 同时记录 pointer path/SHA、
+snapshot id 和 table root。固定 `data/parquet/cn/bars`、serving root 与 CSV
+fallback 均禁止；`--benchmark-source tushare` 也只读取指数 close，不再调用
+Tushare `trade_cal` 绕过 canonical 日历。
 
 ## 生成与校验
 
@@ -36,7 +42,7 @@ reconciliation 和 v15 readiness 引用。
 PYTHONPATH=. ./.venv/bin/python scripts/export_cn_aggressive_dashboard_data.py \
   --benchmark-source local \
   --benchmark-file portfolio_dashboard/inputs/cn_index_benchmark.csv \
-  --trading-calendar-root data/parquet/cn/bars
+  --data-root data
 
 node portfolio_dashboard/tests/dashboard_contract_v3.test.js
 PYTHONPATH=. ./.venv/bin/python scripts/check_cn_dashboard_export.py \

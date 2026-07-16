@@ -30,6 +30,7 @@ from quant_investor.factors.pit_fundamentals import (  # noqa: E402
 from quant_investor.factors.governance_protocol_v3 import (  # noqa: E402
     FORWARD_PRODUCTION_APPLY_BLOCKER,
     PROTOCOL_HASH,
+    PROTOCOL_SCHEMA_VERSION,
     PROTOCOL_VERSION,
     canonical_replay_producer_control,
     protocol_hash,
@@ -403,7 +404,7 @@ def render_summary_markdown(payload: Mapping[str, Any]) -> str:
         f"- Fail-closed reason: {payload.get('fail_closed_reason') or '-'}",
         f"- Run mode: {payload.get('run_mode')}",
         f"- Registry update status: {registry.get('status')}",
-        "- Factor protocol v2 transition status: "
+        "- Factor protocol v3 transition status: "
         f"{production_governance.get('status')}",
         "- Production transition applied: "
         f"{payload.get('factor_protocol', {}).get('transition_applied')}",
@@ -412,8 +413,8 @@ def render_summary_markdown(payload: Mapping[str, Any]) -> str:
         f"{', '.join(production_governance.get('blockers', [])) or '-'}",
         "",
         (
-            "Weekly mining is report-only. Registry mutation is available only "
-            "for one protocol-v2 month-end targeted transition."
+            "Weekly mining is report-only. FactorGovernanceProtocol v3 "
+            "registry mutation remains separately authorized and blocked."
         ),
         (
             "No portfolio run, broker action, live provider call, or strategy "
@@ -553,16 +554,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def _forward_apply_blocked_payload() -> dict[str, Any]:
-    producer_control = {
-        "producer_implemented": True,
-        "local_bytes_readback_verified": False,
-        "canonical_producer_authenticated": False,
-        "production_apply_authorized": False,
-        "production_apply_eligible": False,
-        "blocker": FORWARD_PRODUCTION_APPLY_BLOCKER,
-    }
+    producer_control = canonical_replay_producer_control()
     manifest = {
-        "schema_version": "factor-governance-protocol.v2",
+        "schema_version": PROTOCOL_SCHEMA_VERSION,
         "protocol_version": PROTOCOL_VERSION,
         "protocol_hash": PROTOCOL_HASH,
         "apply_requested": True,
@@ -593,6 +587,7 @@ def _forward_apply_blocked_payload() -> dict[str, Any]:
         "registry_update_manifest": manifest,
         "production_family_governance_manifest": manifest,
         "factor_protocol": {
+            "schema_version": PROTOCOL_SCHEMA_VERSION,
             "protocol_version": PROTOCOL_VERSION,
             "protocol_hash": PROTOCOL_HASH,
             "apply_requested": True,
@@ -787,6 +782,7 @@ def run_daily_automation(args: argparse.Namespace) -> dict[str, Any]:
         production_governance_manifest
     )
     factor_protocol_summary = {
+        "schema_version": PROTOCOL_SCHEMA_VERSION,
         "protocol_version": PROTOCOL_VERSION,
         "protocol_hash": protocol_hash(),
         "apply_requested": registry_write_requested,

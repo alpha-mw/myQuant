@@ -7,7 +7,7 @@ system remains offline by default and fail closed for new risk.
 
 - Canonical branches: `quant`, `fundamental`, `macro`.
 - Bayesian likelihoods: `quant`, `fundamental`; Macro is control context.
-- Deterministic path: `DeterministicFunnel -> branch context -> Bayesian ->
+- Factor-attested runtime path: `Quant -> DeterministicFunnel -> Bayesian ->
   RiskGuard -> ICCoordinator -> PortfolioConstructor`.
 - Theme packages, agents, environment variables, overlays, reports and current
   artifacts are retired.  Historical mixed strategy records remain immutable.
@@ -33,16 +33,165 @@ authorizes a BUY, broker call or real order.
 - Fundamental authoritative rebuild remains the existing two-stage
   `fundamental-maintain --allow-live --authoritative-full-rebuild` followed by
   `fundamental-promote --expected-pointer-sha256` workflow.
-- Macro authoritative publication remains `market macro-refresh` with
-  `--allow-live`, issuer-bound NBS URL, exact catalog SHA and exact market
-  pointer SHA.  `macro-maintain` is observer/staging only; there is no
-  `macro-promote` command.
+- Macro authoritative publication has two independently CAS-bound layers.
+  First compile and atomically publish a reviewed canonical
+  `macro_observations` generation with `macro-official-compile` and
+  `macro-observation-bootstrap` (or append a local window with
+  `macro-local-observation-publish`), record its exact `_latest.json` SHA,
+  then run `market macro-maintain
+  --authoritative-refresh` with that SHA, the exact market pointer SHA and
+  catalog SHA. The stage writes an immutable MacroSnapshot and v15 control
+  projection; `market macro-promote --expected-catalog-sha256` revalidates the
+  stage and performs the catalog/market-pointer CAS. Local `--input-json` and
+  `--input-observations` modes remain non-production and unchanged.
 - Factor bootstrap generation is plan-only.  It cannot write the registry,
   release a kill switch or create an activation receipt.
 
-Live Fundamental rebuild/promotion, live Macro refresh, Factor bootstrap
+Live Fundamental rebuild/promotion, live Macro staging/promotion, Factor bootstrap
 apply, Macro activation and private Theme evidence purge each require a
 separate explicit authorization.
+
+## Macro v15 cutover
+
+The observation generation is an upstream evidence source, not a control by
+itself. It must come from a replayable official NBS/PBC web bundle plus an
+explicit cutoff-safe strict-Parquet market observation, or from another
+reviewed hash/CAS-bound publisher. Standalone observation files and sanitized
+observer staging are ineligible.
+
+The current bootstrap compiles 36 observations for 12 official indicators
+(three periods each) directly from fixed National Bureau of Statistics and
+People's Bank of China response entities. It adds three independently bound
+`market.breadth` observations for three ascending trade dates, giving 39 rows
+and 13/16 national indicators (`81.25%`). Rounded cumulative social-financing
+values are never differenced into a monthly flow; fiscal expenditure and
+market volatility observations remain absent rather than inferred. Raw HTML,
+each exact market-snapshot manifest, the matching closing-coverage manifest,
+the hash-bound full-A scope artifact and the exact Parquet part bytes are
+copied into the immutable observation generation and mapped to every
+observation.
+
+The local binding plan is strict JSON using
+`cn-local-breadth-bootstrap-plan.v1`. Its root contains exactly
+`schema_version`, `market` (`CN`) and `targets`. `targets` contains exactly
+three entries in ascending `target_trade_date` order; every entry contains
+exactly these seven fields:
+
+```json
+{
+  "target_trade_date": "YYYYMMDD",
+  "snapshot_manifest_path": "<immutable_snapshot_manifest>",
+  "expected_snapshot_manifest_sha256": "<sha256>",
+  "coverage_manifest_path": "<closing_coverage_manifest>",
+  "expected_coverage_manifest_sha256": "<sha256>",
+  "scope_artifact_path": "<full_a_scope_artifact>",
+  "expected_scope_artifact_sha256": "<sha256>"
+}
+```
+
+Each target has its own exact closing-coverage proof. A later snapshot or one
+coverage manifest reused as evidence for an earlier sparse date is rejected.
+The final target date must equal the Asia/Shanghai calendar date represented
+by bootstrap `--as-of`; the daily target date must likewise equal daily
+`--as-of`.
+
+Compile the reviewed official capture without a canonical write, then publish
+the complete bootstrap with one expected-pointer CAS:
+
+```bash
+./.venv/bin/quant-investor market macro-official-compile \
+  --plan <official_plan.json> \
+  --capture-manifest <capture_manifest.json> \
+  --raw-root <immutable_raw_capture_root> \
+  --output-dir results/v15/macro_official_web \
+  --run-id <official_bundle_id>
+
+./.venv/bin/quant-investor market macro-observation-bootstrap \
+  --official-manifest <official_bundle>/normalization_manifest.json \
+  --expected-official-manifest-sha256 <official_manifest_sha256> \
+  --expected-official-plan-sha256 <official_plan_sha256> \
+  --local-binding-plan <cn_local_breadth_bootstrap_plan.json> \
+  --expected-local-binding-plan-sha256 <binding_plan_sha256> \
+  --as-of <latest_target_trade_date> \
+  --observations-root data/parquet/cn/macro_observations \
+  --run-id <observation_generation_id> \
+  --expected-pointer-sha256 EMPTY
+```
+
+Later daily maintenance may append one fully bound local breadth observation
+without republishing the official response entities:
+
+```bash
+./.venv/bin/quant-investor market macro-local-observation-publish \
+  --snapshot-manifest <pre_refresh_snapshot_manifest> \
+  --expected-snapshot-manifest-sha256 <snapshot_manifest_sha256> \
+  --coverage-manifest <target_date_closing_coverage_manifest> \
+  --expected-coverage-manifest-sha256 <coverage_manifest_sha256> \
+  --target-trade-date <maintenance_trade_date> \
+  --scope-artifact <target_date_full_a_scope_artifact> \
+  --expected-scope-artifact-sha256 <scope_artifact_sha256> \
+  --as-of <maintenance_trade_date> \
+  --observations-root data/parquet/cn/macro_observations \
+  --run-id <local_observation_generation_id> \
+  --expected-pointer-sha256 <current_observation_pointer_sha256>
+```
+
+Local `available_at` is the maximum of the market and coverage snapshot times,
+both stable manifest mtimes, the full-A scope artifact mtime and the selected
+Parquet part mtime, rounded upward to microseconds. It must remain at or before
+the Shanghai 15:00 cutoff. The bootstrap receipt includes
+`local_bootstrap_plan_sha256`, `local_target_trade_dates`,
+`local_snapshot_manifest_sha256s`, `local_coverage_manifest_sha256s`,
+`local_scope_artifact_sha256s`, `local_coverage_contract_sha256s` and
+`local_effective_available_at_values`. The daily receipt exposes the same
+binding as scalar `local_target_trade_date`,
+`local_snapshot_manifest_sha256`, `local_coverage_manifest_sha256`,
+`local_scope_artifact_sha256`, `local_coverage_contract_sha256` and
+`local_effective_available_at`. Capture these three hashes before Macro
+staging:
+
+```bash
+catalog_sha256=<sha256 data/parquet/cn/_catalog.json>
+market_pointer_sha256=<sha256 data/parquet/cn/_latest.json>
+macro_observations_pointer_sha256=<sha256 data/parquet/cn/macro_observations/_latest.json>
+```
+
+Then stage and promote with separate commands:
+
+```bash
+./.venv/bin/quant-investor market macro-maintain \
+  --market CN \
+  --as-of <latest_complete_trade_date> \
+  --authoritative-refresh \
+  --canonical-root data/parquet/cn/macro_daily \
+  --observations-root data/parquet/cn/macro_observations \
+  --staging-root results/v15/macro_observation_staging \
+  --run-id <new_generation_id> \
+  --expected-catalog-sha256 "$catalog_sha256" \
+  --expected-market-pointer-sha256 "$market_pointer_sha256" \
+  --expected-macro-observations-pointer-sha256 "$macro_observations_pointer_sha256" \
+  --nbs-cn-pmi-url <issuer_bound_nbs_release_https_url> \
+  --allow-live
+
+./.venv/bin/quant-investor market macro-promote \
+  --staging-root results/v15/macro_observation_staging/<new_generation_id> \
+  --canonical-root data/parquet/cn/macro_daily \
+  --expected-catalog-sha256 "$catalog_sha256"
+```
+
+The projection takes `macro_score`, `liquidity_score` and `policy_signal` from
+the ready, at-least-80%-covered MacroSnapshot domains. Only market volatility
+percentile remains derived from the exact bound bars generation. The stage
+persists and hash-binds `macro_snapshot.json` and `v15_controls.json` through
+the generation manifest, primary provenance and strict catalog. Production
+readers and the active DAG recompute this projection and reject any row or hash
+mismatch. A v14 mart is historical evidence only and remains fail closed; it
+must never be relabelled or copied into a v15 manifest.
+
+Bars may advance before Macro for the same session. The bars writer performs a
+bars/PIT-only postcommit readback so a stale Macro generation cannot deadlock
+the cutover. Full `storage-validate` remains blocked until the matching v15
+Macro generation is promoted, and must pass after promotion before analysis.
 
 ## Local gates
 

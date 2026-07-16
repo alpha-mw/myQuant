@@ -4,7 +4,7 @@
 The runner is offline and deterministic for the same inputs. It writes only to
 ``results/incubation_tracking/`` and reads strategy/audit artifacts without
 modifying them. It is retained for historical replay and must not be routed by
-current v14 schedules.
+current v15 schedules.
 """
 
 from __future__ import annotations

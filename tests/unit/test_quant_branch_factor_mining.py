@@ -1071,6 +1071,9 @@ def test_weekly_wrapper_defaults_to_report_only_and_keeps_registry_sha(
     assert payload["registry_write_requested"] is False
     assert payload["run_mode"] == "report_only"
     assert payload["factor_protocol"]["apply_requested"] is False
+    assert payload["factor_protocol"]["schema_version"] == (
+        "factor-governance-protocol.v3"
+    )
     assert payload["factor_protocol"]["transition_applied"] is False
     report_only_mining = json.loads(
         (Path(payload["mining_output_dir"]) / "quant_branch_factor_mining_results.json")

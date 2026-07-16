@@ -63,6 +63,28 @@ def test_pit_universe_defaults_are_default_off() -> None:
         assert Config.PIT_UNIVERSE_BACKFILL_ENABLED is False
 
 
+def test_write_snapshot_rejects_symlinked_generations_root(tmp_path: Path) -> None:
+    root = tmp_path / "reference"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    (root / "_generations").symlink_to(outside, target_is_directory=True)
+    store = PITUniverseStore(
+        root_dir=root,
+        raw_root=tmp_path / "raw",
+        compatibility_path=tmp_path / "compatibility.json",
+    )
+
+    with pytest.raises(RuntimeError, match="pit_generations_root_symlink_invalid"):
+        store.write_snapshot(
+            raw_records=[_record("000001.SZ")],
+            observed_at="2026-07-16T00:00:00Z",
+            source_run_id="symlink-rejected",
+        )
+
+    assert list(outside.iterdir()) == []
+
+
 def test_listing_status_handles_active_prelisting_delisted_pending_and_missing() -> None:
     active = _record("000001.SZ")
     prelisting = evaluate_listing_status(active, symbol="000001.SZ", as_of="20191231")

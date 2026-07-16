@@ -76,7 +76,10 @@ class MarketDataStore:
                         data_root=self.reader.parquet_market_root / "macro_daily"
                     )
                 except (MacroMartPromotionError, OSError, ValueError) as exc:
-                    blockers.append(str(exc) or "macro_catalog_generation_invalid")
+                    detail = str(exc) or "macro_catalog_generation_invalid"
+                    if detail == "macro_generation_manifest_schema_invalid":
+                        blockers.append("macro_v15_generation_unavailable")
+                    blockers.append(detail)
             elif (
                 macro_declared
                 and catalog_schema_version == "myquant-cn-clean-catalog.v1"
@@ -152,14 +155,20 @@ class MarketDataStore:
         self._fsync_directory(path.parent)
 
     def _atomic_write_json(self, payload: dict[str, Any], path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}")
-        encoded = json.dumps(
-            payload,
+        self._atomic_write_bytes(self._json_bytes(payload), path)
+
+    @staticmethod
+    def _json_bytes(payload: Mapping[str, Any]) -> bytes:
+        return json.dumps(
+            dict(payload),
             ensure_ascii=False,
             indent=2,
             default=str,
         ).encode("utf-8")
+
+    def _atomic_write_bytes(self, encoded: bytes, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}")
         with tmp_path.open("wb") as handle:
             handle.write(encoded)
             handle.flush()
@@ -445,20 +454,31 @@ class MarketDataStore:
             )
         ):
             raise ValueError("expected_latest_pointer_sha256_invalid")
-        if expected_pointer_sha256:
-            actual_pointer_sha256 = self._file_sha256(
-                self.reader.latest_pointer_path
+        previous_pointer_bytes = self.reader.latest_pointer_path.read_bytes()
+        previous_pointer_sha256 = hashlib.sha256(
+            previous_pointer_bytes
+        ).hexdigest()
+        if (
+            expected_pointer_sha256
+            and previous_pointer_sha256 != expected_pointer_sha256
+        ):
+            raise ValueError(
+                "market_pointer_cas_mismatch:"
+                f"{previous_pointer_sha256}!={expected_pointer_sha256}"
             )
-            if actual_pointer_sha256 != expected_pointer_sha256:
-                raise ValueError(
-                    "market_pointer_cas_mismatch:"
-                    f"{actual_pointer_sha256}!={expected_pointer_sha256}"
-                )
 
         gate = self.reader.clean_snapshot_gate(refresh=True)
         if not gate.get("healthy"):
             blockers = "; ".join(str(item) for item in gate.get("blockers", []) if str(item).strip())
             raise ValueError(blockers or "cannot upsert without a healthy latest Parquet snapshot")
+        preflight_pointer_sha256 = self._file_sha256(
+            self.reader.latest_pointer_path
+        )
+        if preflight_pointer_sha256 != previous_pointer_sha256:
+            raise ValueError(
+                "market_pointer_cas_mismatch:"
+                f"{preflight_pointer_sha256}!={previous_pointer_sha256}"
+            )
         previous_latest_payload = self.reader._load_latest_payload(refresh=True)
         snapshot = self.reader._snapshot_from_payload(previous_latest_payload)
         previous_coverage = previous_latest_payload.get("coverage", {})
@@ -516,6 +536,14 @@ class MarketDataStore:
                 )
 
         resolved_snapshot_id = snapshot_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        if (
+            not resolved_snapshot_id
+            or any(
+                character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+                for character in resolved_snapshot_id
+            )
+        ):
+            raise ValueError("snapshot_id_invalid")
         staging_base = self.data_root / "parquet_staging" / self.market.lower() / resolved_snapshot_id
         staged_table = staging_base / "table" / "bars"
         staged_serving = staging_base / "serving" / "bars"
@@ -654,40 +682,91 @@ class MarketDataStore:
             self._atomic_write_json(manifest, snapshot_manifest_path)
 
             def _write_pointer_and_validate() -> None:
-                pointer_written = False
+                latest_pointer_bytes = self._json_bytes(latest_payload)
+                latest_pointer_sha256 = hashlib.sha256(
+                    latest_pointer_bytes
+                ).hexdigest()
                 try:
-                    if expected_pointer_sha256:
-                        actual_pointer_sha256 = self._file_sha256(
-                            self.reader.latest_pointer_path
+                    actual_pointer_sha256 = self._file_sha256(
+                        self.reader.latest_pointer_path
+                    )
+                    if actual_pointer_sha256 != previous_pointer_sha256:
+                        raise ValueError(
+                            "market_pointer_cas_mismatch:"
+                            f"{actual_pointer_sha256}!="
+                            f"{previous_pointer_sha256}"
                         )
-                        if actual_pointer_sha256 != expected_pointer_sha256:
-                            raise ValueError(
-                                "market_pointer_cas_mismatch:"
-                                f"{actual_pointer_sha256}!="
-                                f"{expected_pointer_sha256}"
-                            )
                     self._atomic_write_json(
                         latest_payload,
                         self.reader.latest_pointer_path,
                     )
-                    pointer_written = True
                     self.reader._latest_payload = None
                     self.reader._snapshot_gate_cache = None
                     self.reader._serving_symbols_cache = None
-                    validation = self.validate_latest()
-                    if validation.get("status") != "passed":
-                        raise ValueError(
-                            "post_commit_storage_validation_failed:"
-                            + ",".join(
-                                str(item)
-                                for item in list(validation.get("blockers", []) or [])
-                                if str(item).strip()
+                    validation = self.reader.clean_snapshot_gate(refresh=True)
+                    bars_blockers = [
+                        str(item)
+                        for item in list(validation.get("blockers", []) or [])
+                        if str(item).strip()
+                    ]
+                    if str(validation.get("snapshot_id") or "") != (
+                        resolved_snapshot_id
+                    ):
+                        bars_blockers.append(
+                            "post_commit_snapshot_id_mismatch"
+                        )
+                    if self._normalize_trade_date(
+                        validation.get("latest_complete_trade_date")
+                    ) != latest_complete:
+                        bars_blockers.append(
+                            "post_commit_latest_complete_trade_date_mismatch"
+                        )
+                    for field_name, actual, expected in (
+                        (
+                            "table_root",
+                            validation.get("table_root"),
+                            published_table_root,
+                        ),
+                        (
+                            "serving_root",
+                            validation.get("serving_root"),
+                            published_serving_root,
+                        ),
+                        (
+                            "manifest_path",
+                            validation.get("manifest_path"),
+                            snapshot_manifest_path,
+                        ),
+                    ):
+                        try:
+                            same_path = Path(str(actual or "")).resolve(
+                                strict=True
+                            ) == expected.resolve(strict=True)
+                        except (OSError, RuntimeError):
+                            same_path = False
+                        if not same_path:
+                            bars_blockers.append(
+                                f"post_commit_{field_name}_mismatch"
                             )
+                    if not validation.get("healthy") or bars_blockers:
+                        raise ValueError(
+                            "post_commit_bars_validation_failed:"
+                            + ",".join(dict.fromkeys(bars_blockers))
                         )
                 except Exception:
-                    if pointer_written:
-                        self._atomic_write_json(
-                            dict(previous_latest_payload),
+                    try:
+                        current_pointer_bytes = (
+                            self.reader.latest_pointer_path.read_bytes()
+                        )
+                    except OSError:
+                        current_pointer_bytes = b""
+                    if (
+                        current_pointer_bytes == latest_pointer_bytes
+                        and hashlib.sha256(current_pointer_bytes).hexdigest()
+                        == latest_pointer_sha256
+                    ):
+                        self._atomic_write_bytes(
+                            previous_pointer_bytes,
                             self.reader.latest_pointer_path,
                         )
                     self.reader._latest_payload = None
@@ -1004,7 +1083,7 @@ def run_storage_validate_clean(
             "roots": {},
         }
     scoped_root = Path(data_root or "data")
-    roots_to_check = {
+    roots_to_check: dict[str, dict[str, Any]] = {
         "clean": {
             "path": scoped_root / "clean",
             "json_required": False,

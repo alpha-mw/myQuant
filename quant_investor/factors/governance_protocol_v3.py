@@ -17,6 +17,7 @@ from typing import Any
 from quant_investor.factors.governance_canonical_replay_v3 import (
     EVIDENCE_SCHEMA_VERSION,
     CanonicalReplayV3Error,
+    readback_v3_evidence,
     validate_v3_evidence,
 )
 from quant_investor.factors.runtime_contract import (
@@ -37,6 +38,9 @@ MAX_FAMILY_ABS_WEIGHT = 0.35
 FORWARD_PRODUCTION_APPLY_ENABLED = False
 FORWARD_PRODUCTION_APPLY_BLOCKER = "forward_factor_apply_not_authorized_pr4"
 CANONICAL_FULL_CHAIN_PRODUCER_BLOCKER = "factor_v3_canonical_evidence_not_verified"
+CANONICAL_PRODUCER_AUTHENTICATION_BLOCKER = (
+    "factor_v3_canonical_producer_not_authenticated"
+)
 
 
 def _canonical_json(value: Any) -> bytes:
@@ -58,10 +62,11 @@ def protocol_policy() -> dict[str, Any]:
         "schema_version": PROTOCOL_SCHEMA_VERSION,
         "protocol_version": PROTOCOL_VERSION,
         "canonical_chain": [
-            "deterministic_funnel",
             "quant",
+            "deterministic_funnel",
             "bayesian",
             "risk_guard",
+            "ic_coordinator",
             "portfolio_constructor",
         ],
         "likelihood_branches": ["fundamental", "quant"],
@@ -97,7 +102,9 @@ def canonical_replay_producer_control(
 ) -> dict[str, Any]:
     control = {
         "producer_implemented": True,
+        "producer_available": True,
         "local_bytes_readback_verified": False,
+        "ic_input_output_hash_binding_verified": False,
         "canonical_producer_authenticated": False,
         "production_apply_authorized": False,
         "production_apply_eligible": False,
@@ -106,14 +113,27 @@ def canonical_replay_producer_control(
     if evidence is None:
         return control
     try:
-        validate_v3_evidence(evidence)
-    except (CanonicalReplayV3Error, TypeError, ValueError):
+        readback = readback_v3_evidence(evidence)
+    except (CanonicalReplayV3Error, OSError, TypeError, ValueError):
         return control
     return {
         **control,
         "local_bytes_readback_verified": True,
-        "canonical_producer_authenticated": True,
-        "blocker": FORWARD_PRODUCTION_APPLY_BLOCKER,
+        "ic_input_output_hash_binding_verified": bool(
+            readback["ic_input_output_hash_binding_verified"]
+        ),
+        "replay_file_sha256": str(readback["replay_file_sha256"]),
+        "replay_semantic_sha256": str(
+            readback["replay"]["replay_semantic_sha256"]
+        ),
+        "replay_registry_file_sha256": str(
+            readback["replay"]["registry_file_sha256"]
+        ),
+        "replay_production_factor_set_sha256": str(
+            readback["replay"]["production_factor_set_sha256"]
+        ),
+        "canonical_producer_authenticated": False,
+        "blocker": CANONICAL_PRODUCER_AUTHENTICATION_BLOCKER,
     }
 
 
@@ -132,12 +152,12 @@ def assess_candidate_maturity(
         if month_key not in {item[:7] for item in month_ends}:
             month_ends.append(observed)
     valid_cohorts: list[tuple[date, date, str]] = []
-    for raw in forward_cohorts:
+    for cohort in forward_cohorts:
         try:
-            start = date.fromisoformat(str(raw.get("start")))
-            end = date.fromisoformat(str(raw.get("end")))
-            cohort_id = str(raw.get("cohort_id") or "").strip()
-            horizon = int(raw.get("horizon_days", 0))
+            start = date.fromisoformat(str(cohort.get("start")))
+            end = date.fromisoformat(str(cohort.get("end")))
+            cohort_id = str(cohort.get("cohort_id") or "").strip()
+            horizon = int(cohort.get("horizon_days", 0))
         except (TypeError, ValueError):
             continue
         if cohort_id and horizon == 30 and end > start:
@@ -181,10 +201,12 @@ def benjamini_hochberg_by_family(
         item = dict(raw)
         name = str(item.get("name") or "").strip()
         family = str(item.get("family") or "").strip()
-        try:
-            p_value = float(item.get("p_value"))
-        except (TypeError, ValueError) as exc:
-            raise ValueError("p_value must be numeric") from exc
+        p_value_raw = item.get("p_value")
+        if isinstance(p_value_raw, bool) or not isinstance(
+            p_value_raw, (int, float)
+        ):
+            raise ValueError("p_value must be numeric")
+        p_value = float(p_value_raw)
         if not name or not family or not math.isfinite(p_value) or not 0.0 <= p_value <= 1.0:
             raise ValueError("name/family/p_value are invalid")
         item.update(
@@ -277,6 +299,18 @@ def governance_runtime_status(registry: Any) -> dict[str, Any]:
                 blockers.append("registry_v3_evidence_registry_sha_mismatch")
         except (CanonicalReplayV3Error, TypeError, ValueError):
             blockers.append("registry_v3_evidence_invalid")
+    if producer_control["local_bytes_readback_verified"]:
+        if producer_control.get("replay_registry_file_sha256") != registry_file_sha:
+            blockers.append("registry_v3_replay_registry_sha_mismatch")
+        if (
+            producer_control.get("replay_production_factor_set_sha256")
+            != manifest["production_factor_set_sha256"]
+        ):
+            blockers.append("registry_v3_replay_factor_set_sha_mismatch")
+    else:
+        blockers.append("canonical_evidence_not_readback_bound")
+    if not producer_control["ic_input_output_hash_binding_verified"]:
+        blockers.append("canonical_ic_input_output_not_readback_bound")
     if not producer_control["canonical_producer_authenticated"]:
         blockers.append("canonical_producer_not_authenticated")
     if not producer_control["production_apply_authorized"]:
@@ -311,9 +345,11 @@ def governance_runtime_status(registry: Any) -> dict[str, Any]:
     for name, weight in normalized.items():
         if weight > MAX_FACTOR_ABS_WEIGHT + 1e-12:
             blockers.append(f"factor_abs_weight_above_0.20:{name}")
-        family = families.get(name)
-        if family:
-            family_weights[family] = family_weights.get(family, 0.0) + weight
+        factor_family = families.get(name)
+        if factor_family:
+            family_weights[factor_family] = (
+                family_weights.get(factor_family, 0.0) + weight
+            )
     for slot, names in slots.items():
         if len(names) != 1:
             blockers.append(f"factor_slot_multiple_incumbents:{slot}")
@@ -366,6 +402,7 @@ def governance_runtime_status(registry: Any) -> dict[str, Any]:
 
 __all__ = [
     "CANONICAL_FULL_CHAIN_PRODUCER_BLOCKER",
+    "CANONICAL_PRODUCER_AUTHENTICATION_BLOCKER",
     "FDR_Q",
     "FORWARD_PRODUCTION_APPLY_BLOCKER",
     "MAX_FACTOR_ABS_WEIGHT",

@@ -702,7 +702,7 @@ def test_v2_shadow_round_trip_and_provenance_invariants() -> None:
 
     assert overlay is not None
     assert overlay.schema_version == (
-        "2026-07-15.posterior-overlay.v14.two-likelihood.v2"
+        "2026-07-16.posterior-overlay.v15.two-likelihood.v3"
     )
     assert overlay.overlay_mode == "shadow"
     assert overlay.report_only is True
@@ -1094,21 +1094,21 @@ def test_optimizer_bridge_rejects_legal_v2_shadow_overlay() -> None:
         build_candidate_from_overlay(overlay, current_weight=0.25)
 
 
-def test_overlay_schema_bump_preserves_v14_mainline_version_payload() -> None:
+def test_overlay_schema_bump_preserves_v15_mainline_version_payload() -> None:
     assert versioning.POSTERIOR_OVERLAY_SCHEMA_VERSION == (
-        "2026-07-15.posterior-overlay.v14.two-likelihood.v2"
+        "2026-07-16.posterior-overlay.v15.two-likelihood.v3"
     )
     assert versioning.PORTFOLIO_OPTIMIZER_SCHEMA_VERSION == (
-        "2026-07-15.portfolio-optimizer.v14.v2"
+        "2026-07-16.portfolio-optimizer.v15.v3"
     )
-    assert versioning.ARCHITECTURE_VERSION == "14.0.0-stable"
+    assert versioning.ARCHITECTURE_VERSION == "15.0.0-stable"
     assert versioning.output_version_payload() == {
-        "architecture_version": "14.0.0-stable",
-        "branch_schema_version": "branch-schema.v14.three-branch",
-        "likelihood_schema_version": "likelihood-schema.v14.two-likelihood",
-        "calibration_schema_version": "2026-07-14.calibration.v14.three-branch",
-        "ic_protocol_version": "ic-protocol.v14.three-branch",
-        "report_protocol_version": "report-protocol.v14.three-branch",
+        "architecture_version": "15.0.0-stable",
+        "branch_schema_version": "branch-schema.v15.three-branch",
+        "likelihood_schema_version": "likelihood-schema.v15.two-likelihood",
+        "calibration_schema_version": "2026-07-16.calibration.v15.three-branch",
+        "ic_protocol_version": "ic-protocol.v15.three-branch",
+        "report_protocol_version": "report-protocol.v15.three-branch",
     }
 
 
