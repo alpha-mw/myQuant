@@ -189,7 +189,10 @@ def load_historical_shadow_baseline(
         ):
             raise ValueError(f"historical factor source_version mismatch:{name}")
         try:
-            shadow_weight = float(raw_entry.get("shadow_weight"))
+            raw_shadow_weight = raw_entry.get("shadow_weight")
+            if raw_shadow_weight is None:
+                raise ValueError("shadow_weight is missing")
+            shadow_weight = float(raw_shadow_weight)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"historical factor shadow_weight invalid:{name}") from exc
         if not math.isfinite(shadow_weight) or abs(shadow_weight) <= 1e-12:

@@ -898,7 +898,7 @@ def run_storage_validate_clean(
             "roots": {},
         }
     scoped_root = Path(data_root or "data")
-    roots_to_check = {
+    roots_to_check: dict[str, dict[str, Any]] = {
         "clean": {
             "path": scoped_root / "clean",
             "json_required": False,

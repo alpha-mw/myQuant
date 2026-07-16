@@ -409,6 +409,12 @@ class FactorGateEvaluator:
                 "缺少 coverage/nan/monthly/sector/size/extreme 完整证据。"
             )
             return self._result(2, False, reasons, dict(m), "error")
+        assert coverage is not None
+        assert nan_rate is not None
+        assert monthly_min is not None
+        assert sector_share is not None
+        assert size_share is not None
+        assert extreme_ratio is not None
         min_cov = p.thematic_min_coverage_rate if thematic else p.min_coverage_rate
         max_nan = p.thematic_max_nan_rate if thematic else p.max_nan_rate
         for label, value in (

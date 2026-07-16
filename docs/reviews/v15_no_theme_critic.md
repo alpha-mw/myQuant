@@ -19,4 +19,3 @@ Status: approved after the following corrections were incorporated.
 - Theme private evidence purge is intentionally outside this implementation
   run.  It is irreversible and requires a separate authorization after the
   zero-consumer gate and protected-tree hash comparison pass.
-

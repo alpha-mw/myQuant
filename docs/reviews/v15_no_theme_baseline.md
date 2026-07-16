@@ -22,4 +22,3 @@ history, provider pointers, and Factor registry are protected throughout the
 code migration.  The integration worktree does not contain the ignored private
 data roots.  Any purge, live provider operation, production activation, or
 registry mutation requires a later independent authorization.
-

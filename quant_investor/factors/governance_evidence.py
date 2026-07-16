@@ -176,8 +176,12 @@ def _normalize_limit(raw: Any, label: str) -> dict[str, Any]:
     if not isinstance(raw, Mapping):
         raise ValueError(f"{label} limit evidence must be an object")
     try:
-        measured = float(raw.get("measured"))
-        limit = float(raw.get("limit"))
+        raw_measured = raw.get("measured")
+        raw_limit = raw.get("limit")
+        if raw_measured is None or raw_limit is None:
+            raise ValueError("limit value is missing")
+        measured = float(raw_measured)
+        limit = float(raw_limit)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{label} limit evidence must be numeric") from exc
     artifact_hash = _sha256_hex(
@@ -284,7 +288,10 @@ def produce_governance_replay_evidence(
         "selection_evidence.artifact_hash",
     )
     try:
-        family_fdr_q_value = float(selection.get("family_fdr_q_value"))
+        raw_family_fdr_q_value = selection.get("family_fdr_q_value")
+        if raw_family_fdr_q_value is None:
+            raise ValueError("family_fdr_q_value is missing")
+        family_fdr_q_value = float(raw_family_fdr_q_value)
     except (TypeError, ValueError) as exc:
         raise ValueError("selection family_fdr_q_value is missing") from exc
     if not math.isfinite(family_fdr_q_value):

@@ -132,12 +132,12 @@ def assess_candidate_maturity(
         if month_key not in {item[:7] for item in month_ends}:
             month_ends.append(observed)
     valid_cohorts: list[tuple[date, date, str]] = []
-    for raw in forward_cohorts:
+    for cohort in forward_cohorts:
         try:
-            start = date.fromisoformat(str(raw.get("start")))
-            end = date.fromisoformat(str(raw.get("end")))
-            cohort_id = str(raw.get("cohort_id") or "").strip()
-            horizon = int(raw.get("horizon_days", 0))
+            start = date.fromisoformat(str(cohort.get("start")))
+            end = date.fromisoformat(str(cohort.get("end")))
+            cohort_id = str(cohort.get("cohort_id") or "").strip()
+            horizon = int(cohort.get("horizon_days", 0))
         except (TypeError, ValueError):
             continue
         if cohort_id and horizon == 30 and end > start:
@@ -182,7 +182,10 @@ def benjamini_hochberg_by_family(
         name = str(item.get("name") or "").strip()
         family = str(item.get("family") or "").strip()
         try:
-            p_value = float(item.get("p_value"))
+            raw_p_value = item.get("p_value")
+            if raw_p_value is None:
+                raise ValueError("p_value is missing")
+            p_value = float(raw_p_value)
         except (TypeError, ValueError) as exc:
             raise ValueError("p_value must be numeric") from exc
         if not name or not family or not math.isfinite(p_value) or not 0.0 <= p_value <= 1.0:
@@ -304,16 +307,18 @@ def governance_runtime_status(registry: Any) -> dict[str, Any]:
         total += weight
     if total <= 1e-15:
         blockers.append("production_factor_total_abs_weight_zero")
-    normalized = {
+    normalized: dict[str, float] = {
         name: value / total for name, value in numeric_weights.items()
     } if total > 1e-15 else {}
     family_weights: dict[str, float] = {}
     for name, weight in normalized.items():
         if weight > MAX_FACTOR_ABS_WEIGHT + 1e-12:
             blockers.append(f"factor_abs_weight_above_0.20:{name}")
-        family = families.get(name)
-        if family:
-            family_weights[family] = family_weights.get(family, 0.0) + weight
+        normalized_family = families.get(name)
+        if normalized_family:
+            family_weights[normalized_family] = (
+                family_weights.get(normalized_family, 0.0) + weight
+            )
     for slot, names in slots.items():
         if len(names) != 1:
             blockers.append(f"factor_slot_multiple_incumbents:{slot}")

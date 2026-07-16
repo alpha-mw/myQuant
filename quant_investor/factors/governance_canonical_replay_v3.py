@@ -238,19 +238,25 @@ def _validate_output(
     weights = payload["target_weights"]
     if not isinstance(weights, dict) or not set(weights).issubset(domain_set):
         raise CanonicalReplayV3Error("PortfolioConstructor contains an unknown symbol")
-    normalized = {symbol: _finite(value, f"weight {symbol}") for symbol, value in weights.items()}
-    if any(value < 0.0 or value > 1.0 for value in normalized.values()):
+    normalized_weights: dict[str, float] = {
+        str(symbol): _finite(value, f"weight {symbol}")
+        for symbol, value in weights.items()
+    }
+    if any(value < 0.0 or value > 1.0 for value in normalized_weights.values()):
         raise CanonicalReplayV3Error("portfolio weights must be in [0,1]")
-    if sum(normalized.values()) > 1.0 + 1e-12:
+    if sum(normalized_weights.values()) > 1.0 + 1e-12:
         raise CanonicalReplayV3Error("portfolio weights exceed one")
     approved = {
         symbol
         for symbol, decision in dict(risk_decisions or {}).items()
         if decision == "approved"
     }
-    if any(value > 0.0 and symbol not in approved for symbol, value in normalized.items()):
+    if any(
+        value > 0.0 and symbol not in approved
+        for symbol, value in normalized_weights.items()
+    ):
         raise CanonicalReplayV3Error("positive portfolio weight lacks RiskGuard approval")
-    return {"domain": domain, "target_weights": normalized}
+    return {"domain": domain, "target_weights": normalized_weights}
 
 
 def validate_canonical_replay_v3(value: Mapping[str, Any]) -> dict[str, Any]:

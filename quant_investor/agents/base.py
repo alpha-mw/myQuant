@@ -290,7 +290,6 @@ class BaseAgent(ABC):
         return BranchVerdict(
             agent_name=self.agent_name,
             thesis=thesis_text,
-            symbol=None,
             status=status,
             direction=self.score_to_direction(final_score),
             action=self.score_to_action(final_score),

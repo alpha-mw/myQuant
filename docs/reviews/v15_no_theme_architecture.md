@@ -19,4 +19,3 @@ Status: approved for isolated implementation with the constraints below.
   current imports, configuration, schemas, schedules and artifacts may not.
 - Do not mutate the Factor registry, data pointers, private strategy records or
   contained ledger hashes during implementation or provider-hard-off checks.
-
