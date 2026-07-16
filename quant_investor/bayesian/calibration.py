@@ -67,7 +67,7 @@ class CalibrationStore:
     """
 
     def __init__(self, store_path: str | None = None) -> None:
-        self._store_path = Path(store_path or "data/bayesian_calibration/v14/calibration.json")
+        self._store_path = Path(store_path or "data/bayesian_calibration/v15/calibration.json")
         self._curves = dict(_PRESET_CALIBRATION)
         self._outcome_stats: dict[str, dict[str, dict[str, float]]] = defaultdict(dict)
         self._load()

@@ -52,7 +52,7 @@ class _AgentContractModel(BaseModel):
             unexpected = sorted(set(value) - _ALLOWED_REVIEW_BRANCHES)
             if unexpected:
                 raise ValueError(
-                    f"{field_name} contains non-v14 branch keys: "
+                    f"{field_name} contains non-v15 branch keys: "
                     + ", ".join(unexpected)
                 )
         _reject_retired_intelligence_keys(self.model_dump())
@@ -257,7 +257,7 @@ class MasterAgentInput(_AgentContractModel):
 
     branch_results: dict[str, Any] = Field(
         default_factory=dict,
-        description="v14 三分支的序列化 BranchResult（量化分数、signals、evidence）",
+        description="v15 三分支的序列化 BranchResult（量化分数、signals、evidence）",
     )
     branch_reports: dict[str, Any] = Field(
         default_factory=dict,

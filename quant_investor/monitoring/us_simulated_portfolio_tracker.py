@@ -48,7 +48,7 @@ DEFAULT_CAPS = {
 }
 NO_DATA_SAMPLE_LIMIT = 4
 BRANCH_SUPPORT_DENOMINATOR = len(CANONICAL_BRANCH_ORDER)
-# Add-on buys and core-hold labels require unanimous support from the v14 core.
+# Add-on buys and core-hold labels require unanimous support from the v15 core.
 REQUIRED_BUY_BRANCH_SUPPORT = BRANCH_SUPPORT_DENOMINATOR
 THEME_BASKETS = {
     "software": ["MSFT", "NOW", "CRM", "ORCL", "SNOW", "PANW"],
@@ -130,7 +130,7 @@ def _load_latest_batch_recommendations() -> dict[str, dict[str, Any]]:
         match = pattern.search(path.name)
         if not match:
             raise MarketArtifactContractError(
-                "US recommendation batch filename is not canonical v14: "
+                "US recommendation batch filename is not canonical v15: "
                 f"{path.name}"
             )
         batch_ts = match.group(1)
@@ -143,7 +143,7 @@ def _load_latest_batch_recommendations() -> dict[str, dict[str, Any]]:
             )
         except MarketArtifactContractError as exc:
             raise MarketArtifactContractError(
-                "US recommendation source is not a current v14 batch: "
+                "US recommendation source is not a current v15 batch: "
                 f"{path.name}: {exc}"
             ) from exc
         for rec in payload.get("recommendations", []):

@@ -104,13 +104,6 @@ def _build_shortlist_from_bayesian_records(
         )
         if bool(metadata.get("kill_switch", False)):
             continue
-        theme_pool = metadata.get("theme_pool", {})
-        if isinstance(theme_pool, Mapping) and (
-            bool(theme_pool.get("theme_forced_admission", False))
-            or str(theme_pool.get("candidate_intent") or "").strip()
-            == "research_candidate_not_buy_signal"
-        ):
-            continue
         action = _score_to_action(action_score)
         edge_after_costs = float(metadata.get("posterior_edge_after_costs", expected_alpha) or 0.0)
         if action is not ActionLabel.BUY or expected_alpha <= 0.0 or edge_after_costs <= 0.0:

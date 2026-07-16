@@ -82,7 +82,7 @@ def _require_allowed_branch_keys(value: Mapping[str, Any], field_name: str) -> N
     unexpected = sorted(set(value) - _ALLOWED_REVIEW_BRANCHES)
     if unexpected:
         raise ValueError(
-            f"{field_name} contains non-v14 branch keys: {', '.join(unexpected)}."
+            f"{field_name} contains non-v15 branch keys: {', '.join(unexpected)}."
         )
 
 
@@ -437,7 +437,7 @@ class BranchOverlayVerdict:
         _require_current_version(self.branch_schema_version, BRANCH_SCHEMA_VERSION, "BranchOverlayVerdict branch_schema_version")
         _require_current_version(self.ic_protocol_version, IC_PROTOCOL_VERSION, "BranchOverlayVerdict ic_protocol_version")
         if self.branch_name and self.branch_name not in _ALLOWED_REVIEW_BRANCHES:
-            raise ValueError(f"Non-v14 branch overlay: {self.branch_name!r}.")
+            raise ValueError(f"Non-v15 branch overlay: {self.branch_name!r}.")
         reject_retired_intelligence_keys(
             self.metadata,
             path="BranchOverlayVerdict.metadata",
@@ -819,7 +819,7 @@ class BayesianDecisionRecord:
         actual_keys = set(self.likelihoods)
         if actual_keys != expected_keys:
             raise ValueError(
-                "BayesianDecisionRecord likelihood fields must match v14; "
+                "BayesianDecisionRecord likelihood fields must match v15; "
                 f"unexpected={sorted(actual_keys - expected_keys)}, "
                 f"missing={sorted(expected_keys - actual_keys)}."
             )

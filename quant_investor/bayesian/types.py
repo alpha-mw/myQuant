@@ -72,7 +72,7 @@ def _require_finite_metadata(metadata: dict[str, Any]) -> None:
 def _require_empty_correlation_matrix(value: dict[str, float]) -> None:
     if value:
         raise ValueError(
-            "v14 likelihood correlation_matrix must be empty; "
+            "v15 likelihood correlation_matrix must be empty; "
             "cross-likelihood correlation is not enabled."
         )
 

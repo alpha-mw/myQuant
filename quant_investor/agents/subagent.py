@@ -35,7 +35,7 @@ def _clamp(value: float, lower: float, upper: float) -> float:
 
 
 class BaseSubAgent:
-    """Base class for specialized v14 review subagents.
+    """Base class for specialized v15 review subagents.
 
     These agents are advisory-only. They parse and bound LLM output, but never
     bypass the deterministic RiskGuard / IC / portfolio control chain.

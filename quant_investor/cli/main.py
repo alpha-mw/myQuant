@@ -315,10 +315,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--kline-backend",
         default="v13-retired",
         choices=["v13-retired", "heuristic", "kronos", "chronos", "hybrid"],
-        help="兼容保留参数；v14 三分支主线不再执行 kline 分支。",
+        help="兼容保留参数；v15 三分支主线不再执行 kline 分支。",
     )
     research_run.add_argument("--no-macro", action="store_true")
-    research_run.add_argument("--no-kline", "--no-kronos", action="store_true", help="兼容保留参数；v14 默认不执行 kline 分支。")
+    research_run.add_argument("--no-kline", "--no-kronos", action="store_true", help="兼容保留参数；v15 默认不执行 kline 分支。")
     research_run.add_argument("--no-quant", action="store_true")
     research_run.add_argument("--no-fundamental", action="store_true")
     research_run.add_argument(
@@ -594,7 +594,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     market_macro_maintain.add_argument(
         "--staging-root",
-        default="results/v14/macro_observation_staging",
+        default="results/v15/macro_observation_staging",
     )
     market_macro_maintain.add_argument("--run-id", default="")
     market_macro_maintain.add_argument(
@@ -610,14 +610,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
     market_macro_analyze = market_subparsers.add_parser(
         "macro-analyze",
-        help="显式读取本地 observations，生成 observer-only v14 报告",
+        help="显式读取本地 observations，生成 observer-only v15 报告",
     )
     market_macro_analyze.add_argument("--market", required=True, choices=["CN"])
     market_macro_analyze.add_argument("--as-of", required=True)
     market_macro_analyze.add_argument("--observations", required=True)
     market_macro_analyze.add_argument(
         "--output-dir",
-        default="results/v14/macro_observer",
+        default="results/v15/macro_observer",
     )
 
     market_macro_replay = market_subparsers.add_parser(
@@ -634,7 +634,7 @@ def _build_parser() -> argparse.ArgumentParser:
     market_macro_replay.add_argument("--calendar", required=True)
     market_macro_replay.add_argument(
         "--output-dir",
-        default="results/v14/macro_replay",
+        default="results/v15/macro_replay",
     )
     market_macro_replay.add_argument("--run-id", default="")
 
@@ -648,7 +648,7 @@ def _build_parser() -> argparse.ArgumentParser:
     market_macro_normalize.add_argument("--evidence-json", required=True)
     market_macro_normalize.add_argument(
         "--output-dir",
-        default="results/v14/macro_normalization",
+        default="results/v15/macro_normalization",
     )
     market_macro_normalize.add_argument("--run-id", required=True)
 
@@ -679,7 +679,7 @@ def _build_parser() -> argparse.ArgumentParser:
     market_macro_forward.add_argument("--calendar", required=True)
     market_macro_forward.add_argument(
         "--state-root",
-        default="results/v14/macro_forward_observation",
+        default="results/v15/macro_forward_observation",
     )
     market_macro_forward.add_argument("--expected-pointer-sha256", required=True)
 
@@ -699,7 +699,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     market_macro_coverage.add_argument(
         "--output-dir",
-        default="results/v14/macro_coverage_audit",
+        default="results/v15/macro_coverage_audit",
     )
 
     market_macro_acquisition = market_subparsers.add_parser(
@@ -713,7 +713,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--coverage-audit", required=True
     )
     market_macro_acquisition.add_argument(
-        "--output-dir", default="results/v14/macro_acquisition_plan"
+        "--output-dir", default="results/v15/macro_acquisition_plan"
     )
 
     market_data_governance = market_subparsers.add_parser(
@@ -730,7 +730,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     market_data_governance.add_argument("--as-of", default="")
     market_data_governance.add_argument(
-        "--output-dir", default="reports/v14/branch_readiness"
+        "--output-dir", default="reports/v15/branch_readiness"
     )
     market_data_governance.add_argument(
         "--allow-live",
@@ -793,7 +793,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--prompt-version", default="fundamental-dossier-v1"
     )
     market_fundamental_prepare.add_argument(
-        "--policy-version", default="v14-fundamental-research"
+        "--policy-version", default="v15-fundamental-research"
     )
 
     market_fundamental_import = market_subparsers.add_parser(

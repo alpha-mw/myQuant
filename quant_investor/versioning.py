@@ -9,21 +9,21 @@ from typing import Any
 
 from quant_investor.branch_config import get_default_branch_weights
 
-ARCHITECTURE_VERSION = "14.0.0-stable"
+ARCHITECTURE_VERSION = "15.0.0-stable"
 
-AGENT_SCHEMA_VERSION = "2026-07-14.agent.v14.three-branch"
+AGENT_SCHEMA_VERSION = "2026-07-16.agent.v15.three-branch"
 
-BRANCH_SCHEMA_VERSION = "branch-schema.v14.three-branch"
-LIKELIHOOD_SCHEMA_VERSION = "likelihood-schema.v14.two-likelihood"
-CALIBRATION_SCHEMA_VERSION = "2026-07-14.calibration.v14.three-branch"
-OUTCOME_LEDGER_SCHEMA_VERSION = "2026-07-14.outcome-ledger.v14.three-branch"
-CALIBRATION_V2_SCHEMA_VERSION = "2026-07-14.calibration-v2.v14.two-likelihood"
+BRANCH_SCHEMA_VERSION = "branch-schema.v15.three-branch"
+LIKELIHOOD_SCHEMA_VERSION = "likelihood-schema.v15.two-likelihood"
+CALIBRATION_SCHEMA_VERSION = "2026-07-16.calibration.v15.three-branch"
+OUTCOME_LEDGER_SCHEMA_VERSION = "2026-07-16.outcome-ledger.v15.three-branch"
+CALIBRATION_V2_SCHEMA_VERSION = "2026-07-16.calibration-v2.v15.two-likelihood"
 POSTERIOR_OVERLAY_SCHEMA_VERSION = (
-    "2026-07-15.posterior-overlay.v14.two-likelihood.v2"
+    "2026-07-16.posterior-overlay.v15.two-likelihood.v3"
 )
 DATA_QUALITY_CONTRACT_SCHEMA_VERSION = "2026-04-26.data-quality-contract.v1"
 RISK_TENSOR_SCHEMA_VERSION = "2026-04-26.risk-tensor.v1"
-PORTFOLIO_OPTIMIZER_SCHEMA_VERSION = "2026-07-15.portfolio-optimizer.v14.v2"
+PORTFOLIO_OPTIMIZER_SCHEMA_VERSION = "2026-07-16.portfolio-optimizer.v15.v3"
 OBSERVABILITY_SCHEMA_VERSION = "2026-04-26.observability.v1"
 AUDIT_BUNDLE_SCHEMA_VERSION = "2026-04-26.audit-bundle.v1"
 FACTOR_GOVERNANCE_SCHEMA_VERSION = "2026-04-27.factor-governance.v1"
@@ -60,10 +60,10 @@ FACTOR_EXECUTION_COST_SIMULATION_SCHEMA_VERSION = (
     "2026-04-27.factor-execution-cost-simulation.v1"
 )
 FACTOR_EXECUTION_PENALTY_SCHEMA_VERSION = "2026-04-27.factor-execution-penalty.v1"
-BRANCH_TRACKER_SCHEMA_VERSION = "2026-07-14.branch-tracker.v14.three-branch"
-DEBATE_TEMPLATE_VERSION = "2026-07-14.branch-debate.v14.three-branch"
-IC_PROTOCOL_VERSION = "ic-protocol.v14.three-branch"
-REPORT_PROTOCOL_VERSION = "report-protocol.v14.three-branch"
+BRANCH_TRACKER_SCHEMA_VERSION = "2026-07-16.branch-tracker.v15.three-branch"
+DEBATE_TEMPLATE_VERSION = "2026-07-16.branch-debate.v15.three-branch"
+IC_PROTOCOL_VERSION = "ic-protocol.v15.three-branch"
+REPORT_PROTOCOL_VERSION = "report-protocol.v15.three-branch"
 
 PROMOTION_CANDIDATE_SCHEMA_VERSION = "learning.promotion_candidate.v1"
 PROMOTION_DECISION_SCHEMA_VERSION = "learning.promotion_decision.v1"

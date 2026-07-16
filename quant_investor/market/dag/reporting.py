@@ -3,14 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
-from quant_investor.config import config
 from quant_investor.market.dag.evidence import (
     MASTER_EVIDENCE_PACK_FIELD_LIMIT,
     MASTER_EVIDENCE_PACK_SHORTLIST_LIMIT,
-)
-from quant_investor.themes.shadow import (
-    build_theme_production_overlay_diagnostics,
-    build_theme_shadow_monitor,
 )
 
 
@@ -165,20 +160,6 @@ def _build_reporting_artifacts(
     )
     portfolio_decision.what_if_plan = what_if_plan
     portfolio_decision.execution_trace = execution_trace
-    global_metadata = getattr(global_context, "metadata", {}) or {}
-    if not isinstance(global_metadata, Mapping):
-        global_metadata = {}
-    theme_rotation = dict(global_metadata.get("theme_rotation", {}) or {})
-    theme_governance = dict(global_metadata.get("theme_governance", {}) or {})
-    theme_scores = dict(global_metadata.get("theme_scores", {}) or {})
-    symbol_theme_score = dict(global_metadata.get("symbol_theme_score", {}) or {})
-    theme_production_overlay = build_theme_production_overlay_diagnostics(
-        funnel_boost_enabled=bool(getattr(config, "THEME_FUNNEL_BOOST_ENABLED", False)),
-        risk_guard_enabled=bool(getattr(config, "THEME_RISK_GUARD_ENABLED", False)),
-        portfolio_cap_enabled=bool(getattr(config, "THEME_PORTFOLIO_CAP_ENABLED", False)),
-    )
-    if isinstance(getattr(global_context, "metadata", None), dict):
-        global_context.metadata["theme_production_overlay"] = theme_production_overlay
 
     review_bundle.branch_summaries = branch_summaries
     review_bundle.risk_decision = risk_decision
@@ -187,7 +168,6 @@ def _build_reporting_artifacts(
             "portfolio_master_output": portfolio_master_output.model_dump() if portfolio_master_output is not None and hasattr(portfolio_master_output, "model_dump") else dict(portfolio_master_meta),
             "data_quality_summary": data_quality_summary,
             "evidence_pack_token_count": review_bundle.metadata.get("evidence_pack_token_count", 0),
-            "theme_production_overlay": theme_production_overlay,
         }
     )
 
@@ -220,31 +200,7 @@ def _build_reporting_artifacts(
         "provider_health": provider_health,
         "resolver": shared_reader.snapshot(),
         "data_snapshot": dict(scoped_data_snapshot),
-        "theme_rotation": theme_rotation,
-        "theme_governance": theme_governance,
-        "theme_scores": theme_scores,
-        "symbol_theme_score": symbol_theme_score,
-        "theme_production_overlay": theme_production_overlay,
     }
-    if config.THEME_SHADOW_MODE_ENABLED:
-        monitor = build_theme_shadow_monitor(
-            dag_artifacts=dag_artifacts,
-            enabled=config.THEME_SHADOW_MODE_ENABLED,
-            execution_target=config.THEME_SHADOW_EXECUTION_TARGET,
-            funnel_boost_enabled=config.THEME_SHADOW_FUNNEL_BOOST_ENABLED,
-            risk_guard_enabled=config.THEME_SHADOW_RISK_GUARD_ENABLED,
-            portfolio_cap_enabled=config.THEME_SHADOW_PORTFOLIO_CAP_ENABLED,
-            production_funnel_boost_enabled=config.THEME_FUNNEL_BOOST_ENABLED,
-            production_risk_guard_enabled=config.THEME_RISK_GUARD_ENABLED,
-            production_portfolio_cap_enabled=config.THEME_PORTFOLIO_CAP_ENABLED,
-            artifact_enabled=config.THEME_SHADOW_ARTIFACT_ENABLED,
-            artifact_dir=config.THEME_SHADOW_ARTIFACT_DIR,
-            max_rows=config.THEME_SHADOW_MAX_ROWS,
-        )
-        monitor_payload = monitor.to_dict()
-        dag_artifacts["theme_shadow_monitor"] = monitor_payload
-        if isinstance(getattr(global_context, "metadata", None), dict):
-            global_context.metadata["theme_shadow_monitor"] = monitor_payload
 
     narrator_agent = narrator_agent_cls()
     report_bundle = narrator_agent.run(
@@ -264,10 +220,6 @@ def _build_reporting_artifacts(
             "portfolio_decision": portfolio_decision,
             "bayesian_records": bayesian_records,
             "funnel_summary": funnel_summary,
-            "theme_rotation": theme_rotation,
-            "theme_governance": theme_governance,
-            "theme_production_overlay": theme_production_overlay,
-            "theme_shadow_monitor": dag_artifacts.get("theme_shadow_monitor"),
             "run_diagnostics": {
                 **data_quality_summary,
                 "coverage_notes": data_quality_summary["coverage_notes"]

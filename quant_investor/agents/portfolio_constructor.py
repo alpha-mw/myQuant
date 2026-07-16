@@ -147,21 +147,12 @@ class PortfolioConstructor(BaseAgent):
                 turnover_cap=turnover_cap,
             )
 
-        theme_cap_metadata: dict[str, Any] = {}
-        theme_cap_notes: list[str] = []
-        if risk_limits.get("theme_portfolio_cap_enabled"):
-            target_weights, theme_cap_metadata, theme_cap_notes = self._apply_theme_caps(
-                target_weights,
-                risk_limits,
-            )
 
         target_weights = self._cleanup_weights(target_weights)
         target_gross = round(sum(target_weights.values()), 6)
         target_net = target_gross
         turnover_estimate = self._estimate_turnover(baseline_weights, target_weights)
         concentration_metrics = self._build_concentration_metrics(target_weights, tradability)
-        if theme_cap_metadata:
-            concentration_metrics.update(theme_cap_metadata)
 
         construction_notes = [
             (
@@ -181,8 +172,6 @@ class PortfolioConstructor(BaseAgent):
                 )
         if risk_limits["sector_caps"]:
             construction_notes.append("行业权重按 sector_caps 做线性约束。")
-        if theme_cap_notes:
-            construction_notes.extend(theme_cap_notes)
         construction_notes.append("NarratorAgent 与 IC thesis 不可直接改写 target_weight。")
 
         metadata = {
@@ -194,8 +183,6 @@ class PortfolioConstructor(BaseAgent):
             "rule_based": True,
             "deterministic": True,
         }
-        if theme_cap_metadata:
-            metadata.update(theme_cap_metadata)
 
         return PortfolioPlan(
             status=AgentStatus.SUCCESS if target_weights else AgentStatus.DEGRADED,
@@ -245,22 +232,6 @@ class PortfolioConstructor(BaseAgent):
                 "blocked_symbols": list(payload.blocked_symbols),
                 "sector_caps": {},
                 "turnover_cap": None,
-                "theme_portfolio_cap_enabled": False,
-                "theme_exposure_map": {},
-                "theme_caps": {},
-                "theme_names": {},
-                "theme_phases": {},
-                "theme_tactical_lane": {
-                    "enabled": False,
-                    "status": "disabled",
-                    "regime": "",
-                    "non_tech_symbols": [],
-                    "nav_cap": 0.0,
-                    "max_positions": 0,
-                    "protocol_hash": "",
-                    "formal_kill_switch": True,
-                },
-                "theme_portfolio_diagnostic_notes": [],
             }
         if not isinstance(payload, Mapping):
             raise TypeError("risk_limits 必须是 Mapping 或 RiskDecision")
@@ -290,37 +261,6 @@ class PortfolioConstructor(BaseAgent):
             }
         )
         turnover_cap = payload.get("turnover_cap")
-        theme_enabled = self._truthy(payload.get("theme_portfolio_cap_enabled", False))
-        theme_exposure_map: dict[str, dict[str, Any]] = {}
-        theme_caps: dict[str, float] = {}
-        theme_names: dict[str, str] = {}
-        theme_phases: dict[str, str] = {}
-        theme_tactical_lane: dict[str, Any] = {
-            "enabled": False,
-            "status": "disabled",
-            "regime": "",
-            "non_tech_symbols": [],
-            "nav_cap": 0.0,
-            "max_positions": 0,
-            "protocol_hash": "",
-            "formal_kill_switch": True,
-        }
-        theme_notes: list[str] = []
-        if theme_enabled:
-            theme_exposure_map, exposure_notes = self._normalize_theme_exposure_map(
-                payload.get("theme_exposure_map", {})
-            )
-            theme_caps, cap_notes = self._normalize_theme_caps(payload.get("theme_caps", {}))
-            theme_names = self._normalize_text_mapping(payload.get("theme_names", {}))
-            theme_phases = self._normalize_text_mapping(payload.get("theme_phases", {}))
-            theme_tactical_lane, tactical_notes = (
-                self._normalize_theme_tactical_lane(
-                    payload.get("theme_tactical_lane", {})
-                )
-            )
-            theme_notes.extend(exposure_notes)
-            theme_notes.extend(cap_notes)
-            theme_notes.extend(tactical_notes)
         return {
             "gross_exposure_cap": self.clamp(float(payload.get("gross_exposure_cap", 1.0)), 0.0, 1.0),
             "max_weight": self.clamp(float(payload.get("max_weight", 1.0)), 0.0, 1.0),
@@ -328,148 +268,8 @@ class PortfolioConstructor(BaseAgent):
             "blocked_symbols": blocked_symbols,
             "sector_caps": sector_caps,
             "turnover_cap": None if turnover_cap is None else float(turnover_cap),
-            "theme_portfolio_cap_enabled": theme_enabled,
-            "theme_exposure_map": theme_exposure_map,
-            "theme_caps": theme_caps,
-            "theme_names": theme_names,
-            "theme_phases": theme_phases,
-            "theme_tactical_lane": theme_tactical_lane,
-            "theme_portfolio_diagnostic_notes": theme_notes,
         }
 
-    @staticmethod
-    def _truthy(value: Any) -> bool:
-        if isinstance(value, bool):
-            return value
-        if value is None:
-            return False
-        return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-    @classmethod
-    def _normalize_theme_exposure_map(cls, payload: Any) -> tuple[dict[str, dict[str, Any]], list[str]]:
-        if not isinstance(payload, Mapping):
-            return {}, ["theme_portfolio_cap_malformed_exposure_map"]
-
-        normalized: dict[str, dict[str, Any]] = {}
-        for symbol, metadata in payload.items():
-            symbol_text = str(symbol or "").strip()
-            if not symbol_text or not isinstance(metadata, Mapping):
-                continue
-            theme_id = str(metadata.get("primary_theme_id") or "").strip()
-            if not theme_id:
-                continue
-            normalized[symbol_text] = {
-                "primary_theme_id": theme_id,
-                "primary_theme_name": str(metadata.get("primary_theme_name") or ""),
-                "phase": str(metadata.get("phase") or ""),
-                "symbol_score": cls.clamp(
-                    cls._finite_float(metadata.get("symbol_score", 0.0)),
-                    0.0,
-                    1.0,
-                ),
-                "risk_flags": cls._normalize_text_list(metadata.get("risk_flags", [])),
-            }
-        return normalized, []
-
-    @classmethod
-    def _normalize_theme_caps(cls, payload: Any) -> tuple[dict[str, float], list[str]]:
-        if not isinstance(payload, Mapping):
-            return {}, ["theme_portfolio_cap_malformed_caps"]
-
-        normalized: dict[str, float] = {}
-        invalid_count = 0
-        for theme_id, raw_cap in payload.items():
-            theme_text = str(theme_id or "").strip()
-            cap = cls._optional_finite_float(raw_cap)
-            if not theme_text or cap is None:
-                invalid_count += 1
-                continue
-            normalized[theme_text] = cls.clamp(cap, 0.0, 1.0)
-
-        notes = ["theme_portfolio_cap_malformed_caps"] if invalid_count and not normalized else []
-        return normalized, notes
-
-    @classmethod
-    def _normalize_theme_tactical_lane(
-        cls,
-        payload: Any,
-    ) -> tuple[dict[str, Any], list[str]]:
-        disabled = {
-            "enabled": False,
-            "status": "disabled",
-            "regime": "",
-            "non_tech_symbols": [],
-            "nav_cap": 0.0,
-            "max_positions": 0,
-            "protocol_hash": "",
-            "formal_kill_switch": True,
-        }
-        if not payload:
-            return disabled, []
-        if not isinstance(payload, Mapping):
-            return disabled, ["theme_tactical_lane_malformed"]
-        status = str(payload.get("status") or "disabled").strip()
-        symbols = cls._normalize_text_list(
-            payload.get("non_tech_symbols", [])
-        )
-        nav_cap = cls._optional_finite_float(payload.get("nav_cap"))
-        try:
-            max_positions = int(payload.get("max_positions", 0) or 0)
-        except (TypeError, ValueError):
-            max_positions = -1
-        protocol_hash = str(payload.get("protocol_hash") or "").strip()
-        formal_kill_switch = cls._truthy(
-            payload.get("formal_kill_switch", True)
-        )
-        enforceable = status in {"active", "closed_by_markov"}
-        invalid = (
-            nav_cap is None
-            or not 0.0 <= nav_cap <= 1.0
-            or max_positions < 0
-            or (enforceable and not protocol_hash)
-            or (status == "active" and payload.get("enabled") is not True)
-            or (status == "closed_by_markov" and (nav_cap != 0.0 or max_positions != 0))
-        )
-        if invalid:
-            return disabled, ["theme_tactical_lane_malformed"]
-        return {
-            "enabled": payload.get("enabled") is True,
-            "status": status,
-            "regime": str(payload.get("regime") or ""),
-            "non_tech_symbols": symbols,
-            "nav_cap": cls.clamp(float(nav_cap), 0.0, 1.0),
-            "max_positions": max_positions,
-            "protocol_hash": protocol_hash,
-            "formal_kill_switch": formal_kill_switch,
-        }, []
-
-    @staticmethod
-    def _normalize_text_mapping(payload: Any) -> dict[str, str]:
-        if not isinstance(payload, Mapping):
-            return {}
-        return {
-            str(key): str(value or "")
-            for key, value in payload.items()
-            if str(key or "").strip()
-        }
-
-    @staticmethod
-    def _normalize_text_list(payload: Any) -> list[str]:
-        if isinstance(payload, (str, bytes)):
-            return []
-        try:
-            items = list(payload or [])
-        except TypeError:
-            return []
-        result: list[str] = []
-        seen: set[str] = set()
-        for item in items:
-            text = str(item or "").strip()
-            if not text or text in seen:
-                continue
-            seen.add(text)
-            result.append(text)
-        return result
 
     @staticmethod
     def _finite_float(value: Any, default: float = 0.0) -> float:
@@ -904,227 +704,6 @@ class PortfolioConstructor(BaseAgent):
                 adjusted[symbol] = round(adjusted[symbol] * scale, 6)
         return adjusted
 
-    def _apply_theme_caps(
-        self,
-        weights: Mapping[str, float],
-        risk_limits: Mapping[str, Any],
-    ) -> tuple[dict[str, float], dict[str, Any], list[str]]:
-        adjusted = {
-            str(symbol): float(weight)
-            for symbol, weight in weights.items()
-            if float(weight) > 0.0
-        }
-        exposure_map = risk_limits.get("theme_exposure_map", {})
-        theme_caps = risk_limits.get("theme_caps", {})
-        theme_names = risk_limits.get("theme_names", {})
-        theme_phases = risk_limits.get("theme_phases", {})
-        tactical_lane = risk_limits.get("theme_tactical_lane", {})
-        diagnostic_notes = [
-            str(note)
-            for note in risk_limits.get("theme_portfolio_diagnostic_notes", [])
-            if str(note).strip()
-        ]
-        notes = list(diagnostic_notes)
-
-        if "theme_tactical_lane_malformed" in notes:
-            dropped = sorted(adjusted)
-            notes.append(
-                "theme_tactical_lane_fail_closed: malformed active contract cleared "
-                "all Theme-governed target weights"
-            )
-            metadata = {
-                "theme_portfolio_cap_enabled": True,
-                "theme_exposures_before": self._theme_exposures(
-                    adjusted,
-                    exposure_map,
-                ),
-                "theme_exposures_after": {},
-                "theme_caps": dict(theme_caps)
-                if isinstance(theme_caps, Mapping)
-                else {},
-                "theme_names": dict(theme_names)
-                if isinstance(theme_names, Mapping)
-                else {},
-                "theme_phases": dict(theme_phases)
-                if isinstance(theme_phases, Mapping)
-                else {},
-                "theme_exposure_map": dict(exposure_map)
-                if isinstance(exposure_map, Mapping)
-                else {},
-                "theme_cap_applied_count": 0,
-                "theme_portfolio_diagnostic_notes": diagnostic_notes,
-                "theme_tactical_lane": {
-                    "status": "blocked_malformed",
-                    "applied": True,
-                    "dropped_symbols": dropped,
-                    "non_tech_symbols": [],
-                    "exposure_before": round(sum(adjusted.values()), 6),
-                    "exposure_after": 0.0,
-                    "position_count_before": len(dropped),
-                    "position_count_after": 0,
-                },
-            }
-            return {}, metadata, notes
-
-        exposures_before = self._theme_exposures(adjusted, exposure_map)
-        applied_count = 0
-
-        grouped: dict[str, list[str]] = {}
-        if isinstance(exposure_map, Mapping) and isinstance(theme_caps, Mapping):
-            for symbol in sorted(adjusted):
-                metadata = exposure_map.get(symbol)
-                if not isinstance(metadata, Mapping):
-                    continue
-                theme_id = str(metadata.get("primary_theme_id") or "").strip()
-                if theme_id and theme_id in theme_caps:
-                    grouped.setdefault(theme_id, []).append(symbol)
-
-        for theme_id in sorted(grouped):
-            cap = self._optional_finite_float(theme_caps.get(theme_id))
-            if cap is None:
-                continue
-            cap = self.clamp(cap, 0.0, 1.0)
-            total = sum(adjusted[symbol] for symbol in grouped[theme_id])
-            if total <= cap + 1e-8 or total <= 0.0:
-                continue
-            scale = cap / total
-            for symbol in grouped[theme_id]:
-                adjusted[symbol] = round(adjusted[symbol] * scale, 6)
-            applied_count += 1
-            after = sum(adjusted[symbol] for symbol in grouped[theme_id])
-            if after > cap + 1e-8:
-                overflow = after - cap
-                trim_symbol = sorted(
-                    grouped[theme_id],
-                    key=lambda symbol: (-adjusted[symbol], symbol),
-                )[0]
-                adjusted[trim_symbol] = round(max(0.0, adjusted[trim_symbol] - overflow), 6)
-                after = sum(adjusted[symbol] for symbol in grouped[theme_id])
-            notes.append(
-                f"theme_portfolio_cap_applied: {theme_id} "
-                f"cap={cap:.2f} before={total:.2f} after={after:.2f}"
-            )
-
-        tactical_metadata, tactical_notes = self._apply_theme_tactical_lane(
-            adjusted,
-            tactical_lane,
-        )
-        adjusted = tactical_metadata.pop("adjusted_weights")
-        notes.extend(tactical_notes)
-
-        exposures_after = self._theme_exposures(adjusted, exposure_map)
-        metadata = {
-            "theme_portfolio_cap_enabled": True,
-            "theme_exposures_before": exposures_before,
-            "theme_exposures_after": exposures_after,
-            "theme_caps": dict(theme_caps) if isinstance(theme_caps, Mapping) else {},
-            "theme_names": dict(theme_names) if isinstance(theme_names, Mapping) else {},
-            "theme_phases": dict(theme_phases) if isinstance(theme_phases, Mapping) else {},
-            "theme_exposure_map": dict(exposure_map) if isinstance(exposure_map, Mapping) else {},
-            "theme_cap_applied_count": applied_count,
-            "theme_portfolio_diagnostic_notes": diagnostic_notes,
-            "theme_tactical_lane": tactical_metadata,
-        }
-        return adjusted, metadata, notes
-
-    def _apply_theme_tactical_lane(
-        self,
-        weights: Mapping[str, float],
-        payload: Any,
-    ) -> tuple[dict[str, Any], list[str]]:
-        adjusted = {
-            str(symbol): float(weight)
-            for symbol, weight in weights.items()
-            if float(weight) > 0.0
-        }
-        lane = dict(payload or {}) if isinstance(payload, Mapping) else {}
-        status = str(lane.get("status") or "disabled")
-        formal_kill_switch = bool(lane.get("formal_kill_switch", True))
-        enforce = (
-            status in {"active", "closed_by_markov"}
-            and not formal_kill_switch
-            and bool(str(lane.get("protocol_hash") or ""))
-        )
-        tactical_symbols = sorted(
-            {
-                str(symbol)
-                for symbol in lane.get("non_tech_symbols", []) or []
-                if str(symbol) in adjusted
-            }
-        )
-        before_weight = sum(adjusted[symbol] for symbol in tactical_symbols)
-        before_count = sum(
-            1 for symbol in tactical_symbols if adjusted[symbol] > 1e-8
-        )
-        notes: list[str] = []
-        dropped_symbols: list[str] = []
-        if enforce:
-            nav_cap = self.clamp(float(lane.get("nav_cap", 0.0)), 0.0, 1.0)
-            max_positions = max(int(lane.get("max_positions", 0) or 0), 0)
-            ranked = sorted(
-                tactical_symbols,
-                key=lambda symbol: (-adjusted[symbol], symbol),
-            )
-            keep = set(ranked[:max_positions])
-            dropped_symbols = [symbol for symbol in ranked if symbol not in keep]
-            for symbol in dropped_symbols:
-                adjusted[symbol] = 0.0
-            kept_total = sum(adjusted[symbol] for symbol in keep)
-            if kept_total > nav_cap + 1e-8 and kept_total > 0.0:
-                scale = nav_cap / kept_total
-                for symbol in keep:
-                    adjusted[symbol] = round(adjusted[symbol] * scale, 6)
-            notes.append(
-                "theme_tactical_lane_applied: "
-                f"regime={lane.get('regime') or 'unknown'} "
-                f"nav_cap={nav_cap:.2f} max_positions={max_positions}"
-            )
-        after_weight = sum(
-            adjusted.get(symbol, 0.0) for symbol in tactical_symbols
-        )
-        after_count = sum(
-            1
-            for symbol in tactical_symbols
-            if adjusted.get(symbol, 0.0) > 1e-8
-        )
-        return {
-            "adjusted_weights": adjusted,
-            "status": status,
-            "applied": enforce,
-            "regime": str(lane.get("regime") or ""),
-            "nav_cap": float(lane.get("nav_cap", 0.0) or 0.0),
-            "max_positions": int(lane.get("max_positions", 0) or 0),
-            "protocol_hash": str(lane.get("protocol_hash") or ""),
-            "non_tech_symbols": tactical_symbols,
-            "dropped_symbols": dropped_symbols,
-            "exposure_before": round(before_weight, 6),
-            "exposure_after": round(after_weight, 6),
-            "position_count_before": before_count,
-            "position_count_after": after_count,
-        }, notes
-
-    @staticmethod
-    def _theme_exposures(
-        weights: Mapping[str, float],
-        exposure_map: Any,
-    ) -> dict[str, float]:
-        if not isinstance(exposure_map, Mapping):
-            return {}
-
-        totals: dict[str, float] = {}
-        for symbol, weight in weights.items():
-            metadata = exposure_map.get(symbol)
-            if not isinstance(metadata, Mapping):
-                continue
-            theme_id = str(metadata.get("primary_theme_id") or "").strip()
-            if not theme_id:
-                continue
-            totals[theme_id] = totals.get(theme_id, 0.0) + float(weight)
-        return {
-            theme_id: round(total, 6)
-            for theme_id, total in sorted(totals.items())
-            if total > 1e-8
-        }
 
     def _apply_turnover_cap(
         self,

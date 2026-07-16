@@ -27,7 +27,7 @@ from quant_investor.versioning import (
 )
 
 
-DEFAULT_OUTCOME_LEDGER_DIR = Path("data/bayesian_outcome_ledger/v14")
+DEFAULT_OUTCOME_LEDGER_DIR = Path("data/bayesian_outcome_ledger/v15")
 DEFAULT_PREDICTIONS_FILENAME = "predictions.jsonl"
 DEFAULT_OUTCOMES_FILENAME = "outcomes.jsonl"
 
@@ -309,7 +309,7 @@ class PredictionRecord:
             for key in ("quant_likelihood", "fundamental_likelihood"):
                 _require_probability(self.likelihoods.get(key), f"likelihoods.{key}")
             if self.likelihoods.get("correlation_matrix") != {}:
-                raise ValueError("Prediction likelihood correlation_matrix must be empty for v14.")
+                raise ValueError("Prediction likelihood correlation_matrix must be empty for v15.")
         for key, value in self.prior.items():
             if isinstance(value, (int, float)):
                 _require_probability(value, f"prior.{key}")
@@ -354,7 +354,7 @@ class PredictionRecord:
             missing_likelihoods = sorted(_LIKELIHOOD_KEYS - actual_likelihoods)
             unexpected_likelihoods = sorted(actual_likelihoods - _LIKELIHOOD_KEYS)
             raise ValueError(
-                "Prediction likelihood fields must match the v14 schema; "
+                "Prediction likelihood fields must match the v15 schema; "
                 f"missing={missing_likelihoods}, unexpected={unexpected_likelihoods}."
             )
         likelihood_schema = str(likelihoods.get("schema_version", ""))
@@ -366,7 +366,7 @@ class PredictionRecord:
         correlation_matrix = likelihoods.get("correlation_matrix")
         if not isinstance(correlation_matrix, Mapping) or correlation_matrix:
             raise ValueError(
-                "Prediction likelihood correlation_matrix must be empty for v14."
+                "Prediction likelihood correlation_matrix must be empty for v15."
             )
         branch_scores = dict(data.get("branch_scores", {}) or {})
         branch_confidences = dict(data.get("branch_confidences", {}) or {})

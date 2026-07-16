@@ -1,8 +1,8 @@
 """
-V14 review-layer agent surface.
+V15 review-layer agent surface.
 
 This package exposes advisory review-layer contracts and helpers. The runtime
-research surface is the v14 three-branch set; deterministic control-chain gates
+research surface is the v15 three-branch set; deterministic control-chain gates
 remain authoritative.
 """
 

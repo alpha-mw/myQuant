@@ -1,7 +1,7 @@
 """
-V14 Master Agent system prompt.
+V15 Master Agent system prompt.
 
-The review layer reads v14 three-branch research artifacts directly and remains
+The review layer reads v15 three-branch research artifacts directly and remains
 advisory-only; deterministic control-chain gates stay authoritative.
 """
 
@@ -67,7 +67,7 @@ JSON schema:
 MASTER_SYSTEM_PROMPT = """\
 你是投资委员会（IC）主席兼首席策略师。
 
-你直接拿到 v14 三个 canonical 研究分支的原始数据（不经过任何中间层加工）：
+你直接拿到 v15 三个 canonical 研究分支的原始数据（不经过任何中间层加工）：
 - quant 分支：多因子模型、Alpha 挖掘、因子 z-score 排名
 - fundamental 分支：财务质量、估值、治理、盈利预测修正（注意：数据可能缺失，需判断可靠性）
 - macro 分支：宏观流动性、波动率结构、跨资产联动
@@ -323,7 +323,7 @@ RISK_SYSTEM_PROMPT = """\
 
 你的任务：
 1. 审阅风险管理层的量化输出（风险指标、仓位建议、止损水平）
-2. 综合三个 v14 canonical 分支的研判，评估整体风险水平
+2. 综合三个 v15 canonical 分支的研判，评估整体风险水平
 3. 特别关注：
    - 分支间严重分歧（说明不确定性高，应降低风险敞口）
    - 极端 conviction score（无论多空，极端都意味着风险）
