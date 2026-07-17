@@ -32,6 +32,35 @@ REQUIRED_BENCHMARK_FIELDS = {
 }
 FORBIDDEN_SOURCE_TOKENS = ("sample", "mock", "demo")
 SNAPSHOT_SOURCE_SYSTEM = "strategy_record.market_snapshot.indices"
+GENERATED_V3_TABLE_FILES = {
+    "nav": "nav_records.csv",
+    "positions": "positions_records.csv",
+    "trades": "trades_records.csv",
+    "industries": "industries_records.csv",
+    "factors": "factors_records.csv",
+}
+GENERATED_V3_TABLE_FIELDNAMES = {
+    "industries": [
+        "date",
+        "ticker",
+        "industry",
+        "industry_source",
+        "industry_as_of",
+        "industry_generation_sha256",
+        "nav_weight",
+    ],
+    "factors": [
+        "factor_id",
+        "slot",
+        "family",
+        "status",
+        "weight",
+        "health_window",
+        "health_status",
+        "challenger",
+        "last_transition",
+    ],
+}
 
 
 class DashboardExportCheckError(ValueError):
@@ -81,6 +110,11 @@ def _json_string_property(text: str, name: str) -> str:
     return str(json.loads(match.group(1)))
 
 
+def _optional_json_string_property(text: str, name: str) -> str:
+    match = re.search(rf"\b{name}\s*:\s*(\"(?:\\.|[^\"\\])*\")", text, flags=re.S)
+    return str(json.loads(match.group(1))) if match else ""
+
+
 def _int_property(text: str, name: str) -> int:
     match = re.search(rf"\b{name}\s*:\s*(\d+)", text)
     if not match:
@@ -123,6 +157,8 @@ def parse_generated_records(path: Path) -> ParsedGeneratedRecords:
         "nav": _json_string_property(text, "nav"),
         "positions": _json_string_property(text, "positions"),
         "trades": _json_string_property(text, "trades"),
+        "industries": _optional_json_string_property(text, "industries"),
+        "factors": _optional_json_string_property(text, "factors"),
     }
     return ParsedGeneratedRecords(
         generated_at=_json_string_property(text, "generatedAt"),
@@ -152,6 +188,28 @@ def _csv_header(csv_text: str) -> list[str]:
         return next(reader)
     except StopIteration:
         return []
+
+
+def _csv_scalar(value: Any) -> str:
+    return "" if value is None else str(value)
+
+
+def _contract_rows_match_csv(
+    rows: list[dict[str, str]],
+    contract_rows: list[dict[str, Any]],
+    fieldnames: list[str],
+) -> bool:
+    if len(rows) != len(contract_rows):
+        return False
+    for csv_row, contract_row in zip(rows, contract_rows):
+        if not isinstance(contract_row, dict):
+            return False
+        if any(
+            csv_row.get(field, "") != _csv_scalar(contract_row.get(field))
+            for field in fieldnames
+        ):
+            return False
+    return True
 
 
 def _has_forbidden_source(source_system: str) -> bool:
@@ -915,12 +973,14 @@ def check_dashboard_export(
     real_private_bundle = (
         summary_is_v2 and summary.get("status") != "sample"
     ) or generated_js.parent.name == "private"
+    generated_table_paths = {
+        table: summary_file.with_name(filename)
+        for table, filename in GENERATED_V3_TABLE_FILES.items()
+    }
     if real_private_bundle:
         generated_private_paths = [
             summary_file,
-            summary_file.with_name("nav_records.csv"),
-            summary_file.with_name("positions_records.csv"),
-            summary_file.with_name("trades_records.csv"),
+            *generated_table_paths.values(),
             summary_file.with_name("benchmark_records.csv"),
         ]
         for artifact_path in generated_private_paths:
@@ -993,6 +1053,8 @@ def check_dashboard_export(
     nav_rows: list[dict[str, str]] = []
     positions_rows: list[dict[str, str]] = []
     trades_rows: list[dict[str, str]] = []
+    industry_rows: list[dict[str, str]] = []
+    factor_rows: list[dict[str, str]] = []
     nav_header: list[str] = []
     fallback_to_sample = True
     if generated is not None:
@@ -1011,8 +1073,48 @@ def check_dashboard_export(
         if not positions_rows:
             errors.append("generated_records.js positions CSV has no data rows.")
 
+    contract = generated.contract if generated is not None else None
+    if real_private_bundle:
+        table_hashes = summary.get("generated_table_hashes")
+        if not isinstance(table_hashes, dict):
+            errors.append("export_summary.json missing generated_table_hashes for Contract v3 tables.")
+        for table, artifact_path in generated_table_paths.items():
+            if not artifact_path.is_file() or artifact_path.is_symlink():
+                continue
+            csv_payload = artifact_path.read_text(encoding="utf-8")
+            expected_hash = str(table_hashes.get(table) or "") if isinstance(table_hashes, dict) else ""
+            actual_hash = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+            if expected_hash != actual_hash:
+                errors.append(
+                    f"export_summary.json generated table SHA mismatch for {table}."
+                )
+            generated_csv = generated.csv_bundle.get(table, "") if generated is not None else ""
+            if generated_csv != csv_payload.rstrip("\n"):
+                errors.append(
+                    f"generated_records.js {table} CSV mismatch with {artifact_path.name}."
+                )
+            if table in GENERATED_V3_TABLE_FIELDNAMES:
+                expected_fields = GENERATED_V3_TABLE_FIELDNAMES[table]
+                if _csv_header(csv_payload) != expected_fields:
+                    errors.append(
+                        f"{artifact_path.name} has an invalid Contract v3 header."
+                    )
+                parsed_rows = parse_csv_rows(csv_payload)
+                if table == "industries":
+                    industry_rows = parsed_rows
+                else:
+                    factor_rows = parsed_rows
+                contract_rows = (contract or {}).get(table)
+                if isinstance(contract_rows, list) and not _contract_rows_match_csv(
+                    parsed_rows,
+                    contract_rows,
+                    expected_fields,
+                ):
+                    errors.append(
+                        f"{artifact_path.name} does not match the Dashboard Contract v3 {table} table."
+                    )
+
     if summary:
-        contract = generated.contract if generated is not None else None
         summary_is_v2 = summary.get("schema_version") == DASHBOARD_SCHEMA_VERSION
         if summary_is_v2 and contract is None:
             errors.append("export_summary.json declares dashboard_contract.v3 but snapshot JS has no contract.")
@@ -1053,6 +1155,13 @@ def check_dashboard_export(
                 ("positions_rows", summary.get("positions_rows"), len(positions_rows)),
                 ("trade_rows", summary.get("trade_rows"), len(trades_rows)),
             ]
+            if real_private_bundle:
+                row_pairs.extend(
+                    [
+                        ("industry_rows", summary.get("industry_rows"), len(industry_rows)),
+                        ("factor_rows", summary.get("factor_rows"), len(factor_rows)),
+                    ]
+                )
             for label, expected, actual in row_pairs:
                 if expected != actual:
                     errors.append(f"{label} mismatch between export_summary.json and generated_records.js CSV: {expected!r} != {actual!r}")
@@ -1230,6 +1339,8 @@ def check_dashboard_export(
         "nav_rows": len(nav_rows),
         "positions_rows": len(positions_rows),
         "trade_rows": len(trades_rows),
+        "industry_rows": len(industry_rows),
+        "factor_rows": len(factor_rows),
         "fallback_to_sample": fallback_to_sample,
         "benchmark_source": benchmark_source,
         "dashboard_contract": generated.contract if generated is not None else None,

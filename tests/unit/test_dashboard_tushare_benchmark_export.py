@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import importlib.util
 import hashlib
 import json
@@ -1028,6 +1029,26 @@ def test_export_summary_reports_effective_manual_ledger_status(tmp_path, monkeyp
     ]
     assert len(undeclared_warnings) == 1
     assert "count=1" in undeclared_warnings[0]
+
+    for table, summary_key, fieldnames in (
+        ("industries", "industry_rows", exporter.INDUSTRY_RECORD_FIELDNAMES),
+        ("factors", "factor_rows", exporter.FACTOR_RECORD_FIELDNAMES),
+    ):
+        path = dashboard_root / "generated" / f"{table}_records.csv"
+        with path.open(encoding="utf-8", newline="") as handle:
+            written_rows = list(csv.DictReader(handle))
+        assert path.stat().st_mode & 0o777 == 0o600
+        assert written_rows == [
+            {
+                field: "" if row.get(field) is None else str(row.get(field))
+                for field in fieldnames
+            }
+            for row in contract[table]
+        ]
+        assert summary[summary_key] == len(contract[table])
+        assert summary["generated_table_hashes"][table] == hashlib.sha256(
+            path.read_bytes()
+        ).hexdigest()
 
 
 def test_export_preserves_full_pnl_nav_history_separate_from_manual_position_baseline(tmp_path, monkeypatch):

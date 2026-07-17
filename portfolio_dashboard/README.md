@@ -49,6 +49,9 @@ PYTHONPATH=. ./.venv/bin/python scripts/check_cn_dashboard_export.py \
   --dashboard-root portfolio_dashboard
 ```
 
-导出后必须 readback 私有 JSON/JS、五张 generated CSV 与
-`export_summary.json`，并确认 tracked loader/sample 未变化。缺日期、价格、
-费用、provenance 或 reconciliation 时保持 `null/partial/blocked`。
+导出后必须 readback 私有 JSON/JS、五张 Contract CSV
+`generated/nav_records.csv`、`positions_records.csv`、`trades_records.csv`、
+`industries_records.csv`、`factors_records.csv`，以及 `export_summary.json`。
+`benchmark_records.csv` 是附加 benchmark audit 表。确认 tracked loader/sample
+未变化；缺日期、价格、费用、provenance 或 reconciliation 时保持
+`null/partial/blocked`。

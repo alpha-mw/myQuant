@@ -112,6 +112,26 @@ EXECUTED_TRADE_STATUSES = {
 PARTIAL_EXECUTED_TRADE_STATUSES = {"partial_fill", "partially_filled"}
 EXECUTED_TRADE_STATUSES.update(PARTIAL_EXECUTED_TRADE_STATUSES)
 TRADE_RECORD_REQUIRED_FIELDS = ["timestamp", "symbol", "side/action", "shares", "price", "trade_value"]
+INDUSTRY_RECORD_FIELDNAMES = [
+    "date",
+    "ticker",
+    "industry",
+    "industry_source",
+    "industry_as_of",
+    "industry_generation_sha256",
+    "nav_weight",
+]
+FACTOR_RECORD_FIELDNAMES = [
+    "factor_id",
+    "slot",
+    "family",
+    "status",
+    "weight",
+    "health_window",
+    "health_status",
+    "challenger",
+    "last_transition",
+]
 os.environ.setdefault("ARROW_USER_SIMD_LEVEL", "NONE")
 
 
@@ -3386,6 +3406,8 @@ def write_generated_js(
     nav_csv: str,
     positions_csv: str,
     trades_csv: str,
+    industries_csv: str = "",
+    factors_csv: str = "",
     contract: dict[str, Any] | None = None,
 ) -> None:
     payload = generated_records_js_text(
@@ -3398,6 +3420,8 @@ def write_generated_js(
         nav_csv=nav_csv,
         positions_csv=positions_csv,
         trades_csv=trades_csv,
+        industries_csv=industries_csv,
+        factors_csv=factors_csv,
         contract=contract,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -3415,6 +3439,8 @@ def generated_records_js_text(
     nav_csv: str,
     positions_csv: str,
     trades_csv: str,
+    industries_csv: str = "",
+    factors_csv: str = "",
     contract: dict[str, Any] | None = None,
 ) -> str:
     return (
@@ -3429,7 +3455,9 @@ def generated_records_js_text(
         "  csv: {\n"
         f"    nav: {js_string(nav_csv)},\n"
         f"    positions: {js_string(positions_csv)},\n"
-        f"    trades: {js_string(trades_csv)}\n"
+        f"    trades: {js_string(trades_csv)},\n"
+        f"    industries: {js_string(industries_csv)},\n"
+        f"    factors: {js_string(factors_csv)}\n"
         "  }\n"
         "};\n"
     )
@@ -3591,6 +3619,8 @@ def export(
     nav_path = generated_dir / "nav_records.csv"
     positions_path = generated_dir / "positions_records.csv"
     trades_path = generated_dir / "trades_records.csv"
+    industries_path = generated_dir / "industries_records.csv"
+    factors_path = generated_dir / "factors_records.csv"
     benchmark_path = generated_dir / "benchmark_records.csv"
     write_csv(
         nav_path,
@@ -3710,6 +3740,16 @@ def export(
             effective_manual_run.manual_ledger_sha_declared
         ),
     )
+    write_csv(
+        industries_path,
+        INDUSTRY_RECORD_FIELDNAMES,
+        list(contract["industries"]),
+    )
+    write_csv(
+        factors_path,
+        FACTOR_RECORD_FIELDNAMES,
+        list(contract["factors"]),
+    )
     generated_text = generated_records_js_text(
         generated_at=generated_at,
         source_root=record_root,
@@ -3720,6 +3760,8 @@ def export(
         nav_csv=csv_text(nav_path),
         positions_csv=csv_text(positions_path),
         trades_csv=csv_text(trades_path),
+        industries_csv=csv_text(industries_path),
+        factors_csv=csv_text(factors_path),
         contract=contract,
     )
     private_dir = dashboard_root / DEFAULT_PRIVATE_DASHBOARD_DIRNAME
@@ -3756,6 +3798,15 @@ def export(
         "nav_rows": len(nav_rows),
         "positions_rows": len(positions_rows),
         "trade_rows": len(trade_rows),
+        "industry_rows": len(contract["industries"]),
+        "factor_rows": len(contract["factors"]),
+        "generated_table_hashes": {
+            "nav": sha256_file(nav_path),
+            "positions": sha256_file(positions_path),
+            "trades": sha256_file(trades_path),
+            "industries": sha256_file(industries_path),
+            "factors": sha256_file(factors_path),
+        },
         "portfolio_nav_source": nav_source_summary,
         "protocol_artifacts": {
             "factor": {
@@ -3802,6 +3853,8 @@ def export(
             "nav": path_summary(nav_path),
             "positions": path_summary(positions_path),
             "trades": path_summary(trades_path),
+            "industries": path_summary(industries_path),
+            "factors": path_summary(factors_path),
             "benchmark": path_summary(benchmark_path),
             "snapshot_json": path_summary(private_json_path),
             "generated_js": path_summary(private_js_path),

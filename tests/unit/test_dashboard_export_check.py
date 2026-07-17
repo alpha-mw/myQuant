@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import importlib.util
 import json
 import sys
@@ -37,6 +38,8 @@ def _write_generated_js(
     nav_csv: str,
     positions_csv: str,
     trades_csv: str,
+    industries_csv: str = "",
+    factors_csv: str = "",
     latest_record: str = "20260701_1032",
     record_count: int = 1,
     generated_at: str = "2026-07-01 16:48:50",
@@ -54,7 +57,9 @@ def _write_generated_js(
                 "  csv: {",
                 f"    nav: {json.dumps(nav_csv)},",
                 f"    positions: {json.dumps(positions_csv)},",
-                f"    trades: {json.dumps(trades_csv)}",
+                f"    trades: {json.dumps(trades_csv)},",
+                f"    industries: {json.dumps(industries_csv)},",
+                f"    factors: {json.dumps(factors_csv)}",
                 "  }",
                 "};",
                 "",
@@ -290,6 +295,145 @@ def test_dashboard_export_check_fails_when_generated_records_are_empty(tmp_path)
     assert result["ok"] is False
     assert result["fallback_to_sample"] is True
     assert any("fall back to sample" in error for error in result["errors"])
+
+
+def test_dashboard_export_check_requires_all_five_v3_generated_tables(tmp_path):
+    checker = _load_checker()
+    dashboard_root = tmp_path / "portfolio_dashboard"
+    summary_file = dashboard_root / "generated" / "export_summary.json"
+    generated_js = dashboard_root / "private" / "dashboard_snapshot.v3.js"
+    nav_csv, positions_csv, trades_csv = _valid_csvs()
+    _write_summary(summary_file)
+    summary = json.loads(summary_file.read_text(encoding="utf-8"))
+    summary.update(
+        {
+            "schema_version": checker.DASHBOARD_SCHEMA_VERSION,
+            "status": "partial",
+            "industry_rows": 0,
+            "factor_rows": 0,
+        }
+    )
+    summary_file.write_text(json.dumps(summary), encoding="utf-8")
+    _write_generated_js(
+        generated_js,
+        nav_csv=nav_csv,
+        positions_csv=positions_csv,
+        trades_csv=trades_csv,
+    )
+    for filename in (
+        "nav_records.csv",
+        "positions_records.csv",
+        "trades_records.csv",
+        "benchmark_records.csv",
+    ):
+        path = summary_file.with_name(filename)
+        path.write_text("header\n", encoding="utf-8")
+        path.chmod(0o600)
+    snapshot_json = generated_js.with_name("dashboard_snapshot.v3.json")
+    snapshot_json.write_text("{}\n", encoding="utf-8")
+    snapshot_json.chmod(0o600)
+    generated_js.chmod(0o600)
+    summary_file.chmod(0o600)
+
+    result = checker.check_dashboard_export(summary_file, generated_js)
+
+    assert result["ok"] is False
+    assert any("industries_records.csv" in error for error in result["errors"])
+    assert any("factors_records.csv" in error for error in result["errors"])
+
+
+def test_dashboard_export_check_rejects_v3_generated_table_tampering(tmp_path):
+    checker = _load_checker()
+    nav_csv, positions_csv, trades_csv = _valid_csvs()
+    industry_csv = "date,ticker,industry,industry_source,industry_as_of,industry_generation_sha256,nav_weight\n"
+    factor_csv = "factor_id,slot,family,status,weight,health_window,health_status,challenger,last_transition\n"
+    table_payloads = {
+        "nav": nav_csv,
+        "positions": positions_csv,
+        "trades": trades_csv,
+        "industries": industry_csv,
+        "factors": factor_csv,
+    }
+    mutations = (
+        ("factor_hash", "export_summary.json generated table SHA mismatch for factors."),
+        ("industry_header", "industries_records.csv has an invalid Contract v3 header."),
+        ("factor_js", "generated_records.js factors CSV mismatch with factors_records.csv."),
+        ("industry_contract", "industries_records.csv does not match the Dashboard Contract v3 industries table."),
+    )
+    for label, expected_error in mutations:
+        dashboard_root = tmp_path / label / "portfolio_dashboard"
+        summary_file = dashboard_root / "generated" / "export_summary.json"
+        generated_js = dashboard_root / "private" / "dashboard_snapshot.v3.js"
+        _write_summary(
+            summary_file,
+            nav_rows=1,
+            positions_rows=1,
+            trade_rows=0,
+        )
+        contract = {"industries": [], "factors": []}
+        if label == "industry_contract":
+            contract["industries"] = [
+                {
+                    "date": "2026-03-18",
+                    "ticker": "000001.SZ",
+                    "industry": None,
+                    "industry_source": None,
+                    "industry_as_of": None,
+                    "industry_generation_sha256": None,
+                    "nav_weight": 0.1,
+                }
+            ]
+        _write_generated_js(
+            generated_js,
+            nav_csv=nav_csv,
+            positions_csv=positions_csv,
+            trades_csv=trades_csv,
+            industries_csv=industry_csv.rstrip("\n"),
+            factors_csv=("tampered" if label == "factor_js" else factor_csv.rstrip("\n")),
+        )
+        generated_js.write_text(
+            "window.DashboardSnapshotV3 = "
+            + json.dumps(contract)
+            + ";\n"
+            + generated_js.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        snapshot_json = generated_js.with_name("dashboard_snapshot.v3.json")
+        snapshot_json.write_text(json.dumps(contract), encoding="utf-8")
+        table_hashes = {}
+        for table, payload in table_payloads.items():
+            path = summary_file.with_name(f"{table}_records.csv")
+            path.write_text(payload, encoding="utf-8")
+            path.chmod(0o600)
+            table_hashes[table] = hashlib.sha256(path.read_bytes()).hexdigest()
+        (summary_file.with_name("benchmark_records.csv")).write_text(
+            "date,ts_code,field,close,nav,source_system,value_date,coverage\n",
+            encoding="utf-8",
+        )
+        summary_file.with_name("benchmark_records.csv").chmod(0o600)
+        if label == "factor_hash":
+            table_hashes["factors"] = "0" * 64
+        if label == "industry_header":
+            industry_path = summary_file.with_name("industries_records.csv")
+            industry_path.write_text("bad_header\n", encoding="utf-8")
+        summary = json.loads(summary_file.read_text(encoding="utf-8"))
+        summary.update(
+            {
+                "schema_version": checker.DASHBOARD_SCHEMA_VERSION,
+                "status": "partial",
+                "industry_rows": 0,
+                "factor_rows": 0,
+                "generated_table_hashes": table_hashes,
+            }
+        )
+        summary_file.write_text(json.dumps(summary), encoding="utf-8")
+        for path in (summary_file, generated_js, snapshot_json):
+            path.chmod(0o600)
+
+        result = checker.check_dashboard_export(summary_file, generated_js)
+
+        assert result["ok"] is False
+        assert expected_error in result["errors"]
 
 
 def test_dashboard_export_check_rejects_sample_source_system(tmp_path):
