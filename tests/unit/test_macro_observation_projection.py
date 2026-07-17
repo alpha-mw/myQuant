@@ -236,6 +236,7 @@ def test_projection_selectively_keeps_local_row_and_exact_evidence(
         [_content_hash(new_a), _content_hash(new_b)]
     )
     assert manifest["removed_content_hashes"] == sorted(removed_hashes)
+    assert manifest["replaced_content_hashes"] == []
     assert len(manifest["evidence_files"]) == 2
     assert _generation_snapshot(parent_generation) == parent_snapshot
 
@@ -407,13 +408,50 @@ def test_projection_rejects_parent_evidence_tamper_and_symlink(
     assert not (root / "_generations" / "child").exists()
 
 
-def test_projection_rejects_digest_metadata_conflict_with_removed_parent(
+def test_projection_replaces_removed_only_digest_metadata(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "observations"
+    parent = _row("parent", "2026-01-31", value=49.8)
+    incoming = {
+        **parent,
+        "fetched_at": "2026-07-16T15:00:00+00:00",
+    }
+    shared_body = b"<html>same-digest</html>"
+    _publish_parent(
+        root,
+        [parent],
+        body_by_hash={_content_hash(parent): shared_body},
+    )
+    parent_sha = pointer_sha256(root)
+
+    result = _project(
+        root,
+        [incoming],
+        expected_pointer_sha256=parent_sha,
+        retained=[],
+        removed=[_content_hash(parent)],
+        body_by_hash={_content_hash(incoming): shared_body},
+        parser_id="replacement-parser.v2",
+    )
+    rows, loaded = load_observations(root)
+    manifest = loaded["generation_manifest"]
+
+    assert result["promoted"] is True
+    assert rows[0]["fetched_at"] == "2026-07-16T15:00:00+00:00"
+    assert manifest["replaced_content_hashes"] == [_content_hash(parent)]
+    assert manifest["evidence_files"][0]["metadata"]["parser_id"] == (
+        "replacement-parser.v2"
+    )
+
+
+def test_projection_rejects_digest_metadata_conflict_with_retained_parent(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "observations"
     parent = _row("parent", "2026-01-31", value=49.8)
     incoming = _row("incoming", "2026-02-28", value=50.1)
-    shared_body = b"<html>same-digest</html>"
+    shared_body = b"<html>same-retained-digest</html>"
     _publish_parent(
         root,
         [parent],
@@ -429,13 +467,196 @@ def test_projection_rejects_digest_metadata_conflict_with_removed_parent(
             root,
             [incoming],
             expected_pointer_sha256=pointer_sha256(root),
-            retained=[],
-            removed=[_content_hash(parent)],
+            retained=[_content_hash(parent)],
+            removed=[],
             body_by_hash={_content_hash(incoming): shared_body},
             parser_id="conflicting-parser.v2",
         )
 
     assert (root / "_latest.json").read_bytes() == before
+    assert not (root / "_generations" / "child").exists()
+
+
+def test_projection_rebinds_thirty_unchanged_official_hashes(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "observations"
+    official_periods = [
+        *(f"2024-{month:02d}-15" for month in range(1, 13)),
+        *(f"2025-{month:02d}-15" for month in range(1, 13)),
+        *(f"2026-{month:02d}-15" for month in range(1, 7)),
+    ]
+    official = [
+        _row(
+            f"official-{index:02d}",
+            period,
+            value=48.0 + index / 10,
+        )
+        for index, period in enumerate(official_periods)
+    ]
+    local = [
+        _row(
+            f"local-{day}",
+            f"2026-07-{day:02d}",
+            value=0.5 + day / 100,
+            local=True,
+        )
+        for day in (13, 14, 15)
+    ]
+    _publish_parent(root, [*official, *local])
+    parent_sha = pointer_sha256(root)
+    parent_pointer, parent_manifest = _pointer_and_manifest(root)
+    parent_generation = (
+        root / "_generations" / parent_pointer["generation_id"]
+    )
+    parent_snapshot = _generation_snapshot(parent_generation)
+    official_hashes = {_content_hash(row) for row in official}
+    local_hashes = {_content_hash(row) for row in local}
+    local_mappings = {
+        content_hash: parent_manifest["observation_evidence"][content_hash]
+        for content_hash in local_hashes
+    }
+    local_digests = {
+        digest
+        for digests in local_mappings.values()
+        for digest in digests
+    }
+    incoming = [
+        {
+            **row,
+            "fetched_at": "2026-07-16T15:00:00+00:00",
+        }
+        for row in official
+    ]
+    refreshed_body = b"<html>complete-official-refresh-bundle</html>"
+    refreshed_digest = hashlib.sha256(refreshed_body).hexdigest()
+    refreshed_bodies = {
+        _content_hash(row): refreshed_body for row in incoming
+    }
+    call = {
+        "expected_pointer_sha256": parent_sha,
+        "retained": local_hashes,
+        "removed": official_hashes,
+        "run_id": "official-refresh",
+        "metadata": {"stage": "official-refresh"},
+        "body_by_hash": refreshed_bodies,
+        "parser_id": "complete-official-refresh.v2",
+    }
+
+    result = _project(root, incoming, **call)
+    rows, loaded = load_observations(root)
+    manifest = loaded["generation_manifest"]
+    rows_by_hash = {row["content_hash"]: row for row in rows}
+    child_file_map = {
+        item["sha256"]: item for item in manifest["evidence_files"]
+    }
+
+    assert result["promoted"] is True
+    assert len(official_hashes) == 30
+    assert set(rows_by_hash) == official_hashes | local_hashes
+    assert all(
+        rows_by_hash[content_hash]["fetched_at"]
+        == "2026-07-16T15:00:00+00:00"
+        for content_hash in official_hashes
+    )
+    assert manifest["added_content_hashes"] == sorted(official_hashes)
+    assert manifest["removed_content_hashes"] == sorted(official_hashes)
+    assert manifest["replaced_content_hashes"] == sorted(official_hashes)
+    assert set(child_file_map) == local_digests | {refreshed_digest}
+    assert child_file_map[refreshed_digest]["metadata"]["parser_id"] == (
+        "complete-official-refresh.v2"
+    )
+    assert all(
+        manifest["observation_evidence"][content_hash]
+        == [refreshed_digest]
+        for content_hash in official_hashes
+    )
+    assert all(
+        manifest["observation_evidence"][content_hash]
+        == local_mappings[content_hash]
+        for content_hash in local_hashes
+    )
+    assert _generation_snapshot(parent_generation) == parent_snapshot
+
+    pointer_after_publish = (root / "_latest.json").read_bytes()
+    retry = _project(root, incoming, **call)
+    assert retry["promoted"] is False
+    assert retry["reason"] == "exact_projection_exists"
+    assert (root / "_latest.json").read_bytes() == pointer_after_publish
+
+
+def test_projection_rejects_incomplete_replacement_mapping(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "observations"
+    parent = [
+        _row("parent-a", "2026-01-31", value=49.8),
+        _row("parent-b", "2026-02-28", value=50.0),
+    ]
+    _publish_parent(root, parent)
+    parent_sha = pointer_sha256(root)
+    incoming = [
+        {
+            **row,
+            "fetched_at": "2026-07-16T15:00:00+00:00",
+        }
+        for row in parent
+    ]
+    bodies, metadata, mapping = _evidence_bundle(incoming)
+    mapping.pop(_content_hash(incoming[1]))
+
+    with pytest.raises(
+        MacroObservationStoreError,
+        match="evidence_observation_set_mismatch",
+    ):
+        publish_observation_projection(
+            incoming,
+            root=root,
+            run_id="incomplete-replacement",
+            expected_pointer_sha256=parent_sha,
+            retained_parent_content_hashes=[],
+            removed_parent_content_hashes=[
+                _content_hash(row) for row in parent
+            ],
+            evidence_bytes=bodies,
+            evidence_metadata=metadata,
+            observation_evidence=mapping,
+        )
+
+    assert pointer_sha256(root) == parent_sha
+    assert not (
+        root / "_generations" / "incomplete-replacement"
+    ).exists()
+
+
+def test_projection_rejects_incoming_overlap_with_retained_hash(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "observations"
+    retained = _row("retained", "2026-01-31", value=49.8)
+    removed = _row("removed", "2026-02-28", value=50.0)
+    _publish_parent(root, [retained, removed])
+    parent_sha = pointer_sha256(root)
+    incoming = {
+        **retained,
+        "fetched_at": "2026-07-16T15:00:00+00:00",
+    }
+
+    with pytest.raises(
+        MacroObservationStoreError,
+        match="incoming_retained_overlap",
+    ):
+        _project(
+            root,
+            [incoming],
+            expected_pointer_sha256=parent_sha,
+            retained=[_content_hash(retained)],
+            removed=[_content_hash(removed)],
+            run_id="retained-overlap",
+        )
+
+    assert pointer_sha256(root) == parent_sha
+    assert not (root / "_generations" / "retained-overlap").exists()
 
 
 def test_projection_rejects_source_record_evidence_drift(
@@ -466,8 +687,8 @@ def test_projection_rejects_source_record_evidence_drift(
             root,
             [incoming],
             expected_pointer_sha256=before,
-            retained=[],
-            removed=[_content_hash(parent)],
+            retained=[_content_hash(parent)],
+            removed=[],
         )
 
     assert pointer_sha256(root) == before
@@ -571,6 +792,7 @@ def test_projection_metadata_change_creates_a_new_exact_child(
     assert loaded["metadata"] == {"stage": "metadata-only-child"}
     assert loaded["generation_manifest"]["added_content_hashes"] == []
     assert loaded["generation_manifest"]["removed_content_hashes"] == []
+    assert loaded["generation_manifest"]["replaced_content_hashes"] == []
 
 
 def test_projection_rejects_duplicate_rows_and_inexact_parent_partition(

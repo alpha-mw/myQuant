@@ -13,7 +13,6 @@ from quant_investor.macro.nbs_pmi import (
     NBS_PMI_PARSER_CONTRACT_SHA256,
     NBS_PMI_PARSER_VERSION,
     NbsPmiCapture,
-    NbsPmiTransientError,
     parse_nbs_cn_pmi_html,
 )
 from quant_investor.market import macro_mart
@@ -426,30 +425,20 @@ def _refresh_workspace(tmp_path: Path) -> tuple[Path, Path, Path]:
     return macro_root, catalog_path, pointer_path
 
 
-def test_same_run_retry_resumes_generation_without_second_provider_call(
+def test_legacy_live_refresh_is_retired_before_provider_or_generation_write(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     macro_root, catalog_path, pointer_path = _refresh_workspace(tmp_path)
-    nbs_capture = _nbs_capture()
+    catalog_before = catalog_path.read_bytes()
 
-    def _fetch_official(url: str) -> NbsPmiCapture:
-        assert url == NBS_URL
-        return nbs_capture
-
-    monkeypatch.setattr(macro_mart, "_utc_now", lambda: CAPTURED_AT)
-    monkeypatch.setattr(macro_mart, "_build_tushare_client", _FakeTushare)
-    monkeypatch.setattr(macro_mart, "fetch_nbs_cn_pmi", _fetch_official)
-    original_write = macro_mart._write_primary_generation
-
-    def _write_then_crash(**kwargs: object):
-        original_write(**kwargs)
-        raise RuntimeError("simulated crash after generation rename")
+    def _provider_must_not_run(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("retired writer must fail before provider I/O")
 
     monkeypatch.setattr(
         macro_mart,
-        "_write_primary_generation",
-        _write_then_crash,
+        "_build_tushare_client",
+        _provider_must_not_run,
     )
     call = {
         "market": "CN",
@@ -465,74 +454,29 @@ def test_same_run_retry_resumes_generation_without_second_provider_call(
         "allow_live": True,
         "nbs_cn_pmi_url": NBS_URL,
     }
-    with pytest.raises(RuntimeError, match="simulated crash"):
-        macro_mart.refresh_cn_macro_mart(**call)
-
-    landed_capture = (
-        macro_root
-        / "_generations"
-        / "same-run-retry"
-        / macro_mart._nbs_capture_relative_path(nbs_capture)
-    )
-    assert landed_capture.read_bytes() == nbs_capture.body_bytes
-    assert _sha(landed_capture) == nbs_capture.body_sha256
-
-    monkeypatch.setattr(macro_mart, "_write_primary_generation", original_write)
-
-    def _provider_must_not_run(*_args: object, **_kwargs: object) -> object:
-        raise AssertionError("valid landed generation must be resumed")
-
-    monkeypatch.setattr(
-        macro_mart,
-        "_build_tushare_client",
-        _provider_must_not_run,
-    )
-    monkeypatch.setattr(
-        macro_mart,
-        "fetch_nbs_cn_pmi",
-        _provider_must_not_run,
-    )
-
-    mismatched_url_call = {
-        **call,
-        "nbs_cn_pmi_url": NBS_URL.replace("_1.html", "_2.html"),
-    }
     with pytest.raises(
         macro_mart.MacroMartPromotionError,
-        match="macro_retry_generation_nbs_url_mismatch",
+        match="macro_authoritative_stage_promotion_required",
     ):
-        macro_mart.refresh_cn_macro_mart(**mismatched_url_call)
+        macro_mart.refresh_cn_macro_mart(**call)
 
-    result = macro_mart.refresh_cn_macro_mart(**call)
-
-    assert result["status"] == "promoted"
-    assert result["run_id"] == "same-run-retry"
-    assert Path(str(result["transaction_journal"])).exists()
+    assert catalog_path.read_bytes() == catalog_before
+    assert not (macro_root / "_generations").exists()
+    assert not (macro_root / "_transactions").exists()
 
 
-def test_same_run_retry_cannot_reuse_fallback_without_matching_authorization(
+def test_retired_live_writer_cannot_use_fallback_authorization_as_bypass(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     macro_root, catalog_path, pointer_path = _refresh_workspace(tmp_path)
     before_catalog = catalog_path.read_bytes()
-    monkeypatch.setattr(macro_mart, "_utc_now", lambda: CAPTURED_AT)
-    monkeypatch.setattr(macro_mart, "_build_tushare_client", _FakeTushare)
-
-    def _official_transient(_url: str) -> NbsPmiCapture:
-        raise NbsPmiTransientError("nbs_pmi_network_unavailable")
-
-    monkeypatch.setattr(macro_mart, "fetch_nbs_cn_pmi", _official_transient)
-    original_write = macro_mart._write_primary_generation
-
-    def _write_then_crash(**kwargs: object):
-        original_write(**kwargs)
-        raise RuntimeError("simulated crash after fallback generation rename")
-
     monkeypatch.setattr(
         macro_mart,
-        "_write_primary_generation",
-        _write_then_crash,
+        "_build_tushare_client",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("retired writer must fail before provider I/O")
+        ),
     )
     authorized_call = {
         "market": "CN",
@@ -549,28 +493,11 @@ def test_same_run_retry_cannot_reuse_fallback_without_matching_authorization(
         "nbs_cn_pmi_url": NBS_URL,
         "allow_tushare_fallback": True,
     }
-    with pytest.raises(RuntimeError, match="simulated crash"):
-        macro_mart.refresh_cn_macro_mart(**authorized_call)
-
-    monkeypatch.setattr(macro_mart, "_write_primary_generation", original_write)
-
-    def _provider_must_not_run(*_args: object, **_kwargs: object) -> object:
-        raise AssertionError("retry policy mismatch must fail before provider I/O")
-
-    monkeypatch.setattr(
-        macro_mart,
-        "_build_tushare_client",
-        _provider_must_not_run,
-    )
     with pytest.raises(
         macro_mart.MacroMartPromotionError,
-        match="macro_retry_generation_fallback_authorization_mismatch",
+        match="macro_authoritative_stage_promotion_required",
     ):
-        macro_mart.refresh_cn_macro_mart(
-            **{
-                **authorized_call,
-                "allow_tushare_fallback": False,
-            }
-        )
+        macro_mart.refresh_cn_macro_mart(**authorized_call)
 
     assert catalog_path.read_bytes() == before_catalog
+    assert not (macro_root / "_generations").exists()

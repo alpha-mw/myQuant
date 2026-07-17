@@ -91,6 +91,10 @@ from quant_investor.market.branch_readiness import (
     load_macro_record,
     macro_generation_identity,
 )
+from quant_investor.market.macro_readiness_runtime import (
+    FrozenMacroReadinessRuntime,
+    freeze_macro_readiness_runtime,
+)
 from quant_investor.market.name_map import (
     load_company_name_map as _load_cached_company_name_map,
 )
@@ -152,12 +156,24 @@ def _counterfactual_replay_ready(selection_state: Any) -> tuple[bool, set[str]]:
 def _empty_universe_macro_contract(
     *,
     as_of: str,
-) -> tuple[dict[str, Any], Any, dict[str, str], BranchVerdict]:
+) -> tuple[
+    dict[str, Any],
+    Any,
+    dict[str, str],
+    BranchVerdict,
+    FrozenMacroReadinessRuntime,
+]:
     record, manifest = load_macro_record(as_of=as_of)
+    runtime = freeze_macro_readiness_runtime(
+        macro_logical_date=str(record.get("trade_date") or ""),
+        target_session_date=as_of,
+    )
     readiness = assess_macro_readiness(
         macro_record=record,
         manifest=manifest,
         as_of=as_of,
+        decision_cutoff_at=runtime.decision_cutoff_at or None,
+        macro_readiness_evidence=runtime.evidence,
     )
     identity = macro_generation_identity(manifest)
     if readiness.status == STATUS_BLOCK:
@@ -165,7 +181,7 @@ def _empty_universe_macro_contract(
             blockers=list(readiness.blockers),
             generation_identity=identity,
         )
-        return record, readiness, identity, verdict
+        return record, readiness, identity, verdict, runtime
 
     market_snapshot = {
         "regime": "neutral",
@@ -186,7 +202,7 @@ def _empty_universe_macro_contract(
             "canonical_macro_generation": dict(identity),
         }
     )
-    return record, readiness, identity, verdict
+    return record, readiness, identity, verdict, runtime
 
 
 def _blocked_macro_control_state(
@@ -591,6 +607,7 @@ async def _execute_market_dag_async(
             pinned_macro_readiness,
             pinned_macro_identity,
             empty_macro_verdict,
+            pinned_macro_runtime,
         ) = _empty_universe_macro_contract(as_of=empty_as_of)
         macro_blocked = pinned_macro_readiness.status == STATUS_BLOCK
         baseline_target_exposure = float(
@@ -662,6 +679,9 @@ async def _execute_market_dag_async(
                 "canonical_macro_generation": dict(pinned_macro_identity),
                 "canonical_macro_readiness": (
                     pinned_macro_readiness.to_dict()
+                ),
+                "macro_readiness_runtime": (
+                    pinned_macro_runtime.metadata()
                 ),
                 "branch_fusion_blocked": macro_blocked,
                 "decision_authorized": False,

@@ -16,11 +16,18 @@ from quant_investor.macro.local_market_observations import (
 )
 from quant_investor.macro.official_web_compiler import (
     OfficialWebCompilerError,
+    PARSER_CONTRACT_SHA256,
+    PBC_MONEY_STOCK_PARSER,
+    PBC_MONEY_STOCK_PARSER_V2,
     compile_official_web_bundle_file,
 )
 from quant_investor.macro.production_observation_bundle import (
+    LOCAL_MARKET_OBSERVATION_ROLL_SCHEMA,
+    OFFICIAL_OBSERVATION_REFRESH_SCHEMA,
     ProductionObservationBundleError,
+    publish_local_market_breadth_roll,
     publish_local_market_breadth_update,
+    publish_macro_official_observation_refresh,
     publish_macro_production_observation_bundle,
     validate_production_observation_chain,
 )
@@ -36,6 +43,11 @@ from tests.unit.test_local_market_observations import (
 )
 from tests.unit.test_macro_official_web_compiler import (
     _bundle as _write_official_fixture,
+    _fixture_pages,
+    _page,
+    _pbc_html,
+    _requested_scope,
+    _seal_inputs,
 )
 
 
@@ -212,6 +224,148 @@ def _tree_hashes(root: Path) -> dict[str, str]:
     }
 
 
+def _open_days(
+    path: Path,
+    dates: list[str] | None = None,
+) -> tuple[Path, str, list[str]]:
+    selected = dates or [
+        "20260710",
+        "20260713",
+        "20260714",
+        "20260715",
+        "20260716",
+        "20260717",
+    ]
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "market-open-days.v1",
+                "market": "CN",
+                "open_dates": selected,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    os.chmod(path, 0o600)
+    return path, _sha256(path), selected
+
+
+def _v2_official_inputs(tmp_path: Path) -> dict[str, Any]:
+    pages = [
+        item
+        for item in _fixture_pages()
+        if item[0]["page_id"] != "pbc-202602"
+    ]
+    for index, (page, relative, body) in enumerate(pages):
+        if page["parser_id"] != PBC_MONEY_STOCK_PARSER:
+            continue
+        updated = dict(page)
+        updated["parser_id"] = PBC_MONEY_STOCK_PARSER_V2
+        updated["parser_contract_sha256"] = PARSER_CONTRACT_SHA256[
+            PBC_MONEY_STOCK_PARSER_V2
+        ]
+        pages[index] = (updated, relative, body)
+    june = _page(
+        "pbc-202606",
+        PBC_MONEY_STOCK_PARSER_V2,
+        "pbc_official",
+        (
+            "https://www.pbc.gov.cn/diaochatongjisi/116219/116225/"
+            "2026071515025183948/index.html"
+        ),
+        "202606",
+    )
+    pages.append(
+        (
+            june,
+            "pbc/pbc-202606.html",
+            _pbc_html(
+                "202606",
+                "2026-07-15 15:00:09",
+                "4.0",
+                "8.0",
+                "22.83",
+                half_year_title=True,
+            ),
+        )
+    )
+    scope = [
+        row
+        for row in _requested_scope()
+        if not (
+            row["indicator_id"] in {"cn.m1_yoy", "cn.m2_yoy"}
+            and row["period_end"] == "2026-03-31"
+        )
+    ]
+    scope.extend(
+        {"indicator_id": indicator_id, "period_end": "2026-06-30"}
+        for indicator_id in ("cn.m1_yoy", "cn.m2_yoy")
+    )
+    plan, capture, raw_root, _plan, _capture = _seal_inputs(
+        tmp_path / "official-refresh-source",
+        {
+            "schema_version": "macro-official-web-plan.v1",
+            "market": "CN",
+            "requested_scope": scope,
+            "pages": [item[0] for item in pages],
+        },
+        pages,
+    )
+    result = compile_official_web_bundle_file(
+        plan,
+        capture_manifest_path=capture,
+        raw_root=raw_root,
+        output_root=tmp_path / "official-refresh-bundle",
+        run_id="official-v2-20260716",
+    )
+    return {
+        "official_bundle_manifest_path": result["artifacts"]["manifest"],
+        "expected_official_bundle_manifest_sha256": result[
+            "normalization_manifest_sha256"
+        ],
+        "expected_official_plan_sha256": result["plan_file_sha256"],
+    }
+
+
+def _roll_fixture(tmp_path: Path) -> _Fixture:
+    return _write_local_fixture(
+        tmp_path,
+        target_trade_date="20260716",
+        data_latest_complete="20260716",
+        data_snapshot_id="20260716T072500Z",
+        coverage_snapshot_id="20260716T072400Z",
+        rows_by_date={
+            "20260714": 100,
+            "20260715": 100,
+            "20260716": 100,
+        },
+        part_mtime="2026-07-16T07:20:00Z",
+        snapshot_manifest_mtime="2026-07-16T07:25:01Z",
+        coverage_manifest_mtime="2026-07-16T07:24:01Z",
+        scope_mtime="2026-07-16T07:18:00Z",
+    )
+
+
+def _next_roll_fixture(tmp_path: Path) -> _Fixture:
+    return _write_local_fixture(
+        tmp_path,
+        target_trade_date="20260717",
+        data_latest_complete="20260717",
+        data_snapshot_id="20260717T072500Z",
+        coverage_snapshot_id="20260717T072400Z",
+        rows_by_date={
+            "20260715": 100,
+            "20260716": 100,
+            "20260717": 100,
+        },
+        part_mtime="2026-07-17T07:20:00Z",
+        snapshot_manifest_mtime="2026-07-17T07:25:01Z",
+        coverage_manifest_mtime="2026-07-17T07:24:01Z",
+        scope_mtime="2026-07-17T07:18:00Z",
+    )
+
+
 def test_atomic_39_row_publication_and_one_date_local_append_round_trip(
     tmp_path: Path,
 ) -> None:
@@ -364,6 +518,228 @@ def test_atomic_39_row_publication_and_one_date_local_append_round_trip(
     json.dumps(update, allow_nan=False)
 
 
+def test_legacy_append_v2_official_refresh_and_local_catchup_projection(
+    tmp_path: Path,
+) -> None:
+    inputs = _inputs(tmp_path)
+    root = tmp_path / "observations"
+    bootstrap = _publish(tmp_path, inputs)
+    daily = _next_daily_fixture(tmp_path / "local-next")
+    appended = publish_local_market_breadth_update(
+        **_daily_kwargs(daily),
+        as_of="2026-07-16T04:30:00+00:00",
+        canonical_observations_root=root,
+        run_id="legacy-local-append-20260715",
+        expected_pointer_sha256=bootstrap["pointer_sha256"],
+    )
+    open_path, open_sha, open_dates = _open_days(
+        tmp_path / "market-open-days.json"
+    )
+    refreshed = publish_macro_official_observation_refresh(
+        **_v2_official_inputs(tmp_path),
+        target_as_of="20260716",
+        decision_cutoff_at="2026-07-16T07:00:00+00:00",
+        pinned_open_dates=open_dates,
+        market_open_days_path=open_path,
+        expected_market_open_days_sha256=open_sha,
+        canonical_observations_root=root,
+        run_id="official-refresh-20260716",
+        expected_pointer_sha256=appended["pointer_sha256"],
+    )
+    refreshed_rows, refreshed_pointer = load_observations(root)
+    refreshed_manifest = refreshed_pointer["generation_manifest"]
+
+    assert refreshed["schema_version"] == OFFICIAL_OBSERVATION_REFRESH_SCHEMA
+    assert refreshed["promoted"] is True
+    assert refreshed["observation_count"] == 39
+    assert refreshed["latest_local_trade_date"] == "20260715"
+    assert refreshed["local_open_session_lag"] == 1
+    assert refreshed["retained_local_trade_dates"] == [
+        "20260713",
+        "20260714",
+        "20260715",
+    ]
+    assert refreshed_manifest["metadata"]["schema_version"] == (
+        OFFICIAL_OBSERVATION_REFRESH_SCHEMA
+    )
+    assert len(refreshed_manifest["added_content_hashes"]) == 36
+    assert len(refreshed_manifest["removed_content_hashes"]) == 37
+    assert len(refreshed_manifest["replaced_content_hashes"]) == 30
+    assert len(refreshed_rows) == 39
+    assert [
+        row["period_end"].replace("-", "")
+        for row in sorted(
+            (
+                row
+                for row in refreshed_rows
+                if row["indicator_id"] == "market.breadth"
+            ),
+            key=lambda row: row["period_end"],
+        )
+    ] == ["20260713", "20260714", "20260715"]
+    pbc_parsers = {
+        item["metadata"]["parser_id"]
+        for item in refreshed_manifest["evidence_files"]
+        if item["metadata"].get("source_system") == "pbc_official"
+    }
+    assert pbc_parsers == {PBC_MONEY_STOCK_PARSER_V2}
+    validated = validate_production_observation_chain(
+        refreshed_rows,
+        generation_manifest=refreshed_manifest,
+        pointer_metadata=refreshed_pointer["metadata"],
+        canonical_root=root,
+    )
+    assert set(validated) == {
+        row["content_hash"] for row in refreshed_rows
+    }
+    lag_tamper = deepcopy(refreshed_manifest)
+    lag_tamper["metadata"]["local_open_session_lag"] = 2
+    with pytest.raises(
+        ProductionObservationBundleError,
+        match="local_lag_binding_invalid",
+    ):
+        validate_production_observation_chain(
+            refreshed_rows,
+            generation_manifest=lag_tamper,
+            pointer_metadata=lag_tamper["metadata"],
+            canonical_root=root,
+        )
+    parser_tamper = deepcopy(refreshed_manifest)
+    tampered_pbc = next(
+        item
+        for item in parser_tamper["evidence_files"]
+        if item["metadata"].get("source_system") == "pbc_official"
+        and item["metadata"].get("support_only") is False
+    )
+    tampered_pbc["metadata"]["parser_id"] = PBC_MONEY_STOCK_PARSER
+    tampered_pbc["metadata"]["parser_contract_sha256"] = (
+        PARSER_CONTRACT_SHA256[PBC_MONEY_STOCK_PARSER]
+    )
+    tampered_pbc["metadata_sha256"] = canonical_hash(
+        tampered_pbc["metadata"]
+    )
+    parser_tamper["evidence_set_sha256"] = canonical_hash(
+        {"evidence_files": parser_tamper["evidence_files"]}
+    )
+    with pytest.raises(
+        ProductionObservationBundleError,
+        match="pbc_parser_set_invalid",
+    ):
+        validate_production_observation_chain(
+            refreshed_rows,
+            generation_manifest=parser_tamper,
+            pointer_metadata=parser_tamper["metadata"],
+            canonical_root=root,
+        )
+
+    missing_parent_tamper = deepcopy(refreshed_manifest)
+    missing_parent_tamper["parent_generation_id"] = "missing-parent"
+    with pytest.raises(
+        ProductionObservationBundleError,
+        match="parent_readback_invalid",
+    ):
+        validate_production_observation_chain(
+            refreshed_rows,
+            generation_manifest=missing_parent_tamper,
+            pointer_metadata=missing_parent_tamper["metadata"],
+            canonical_root=root,
+        )
+
+    pointer_tamper = deepcopy(refreshed_manifest)
+    pointer_tamper["parent_pointer_sha256"] = "0" * 64
+    with pytest.raises(
+        ProductionObservationBundleError,
+        match="parent_pointer_mismatch",
+    ):
+        validate_production_observation_chain(
+            refreshed_rows,
+            generation_manifest=pointer_tamper,
+            pointer_metadata=pointer_tamper["metadata"],
+            canonical_root=root,
+        )
+
+    content_set_tamper = deepcopy(refreshed_manifest)
+    content_set_tamper["metadata"]["parent_content_set_hash"] = "0" * 64
+    with pytest.raises(
+        ProductionObservationBundleError,
+        match="parent_binding_mismatch",
+    ):
+        validate_production_observation_chain(
+            refreshed_rows,
+            generation_manifest=content_set_tamper,
+            pointer_metadata=content_set_tamper["metadata"],
+            canonical_root=root,
+        )
+
+    roll_fixture = _roll_fixture(tmp_path / "local-roll")
+    rolled = publish_local_market_breadth_roll(
+        **_daily_kwargs(roll_fixture),
+        target_as_of="20260716",
+        decision_cutoff_at="2026-07-16T07:30:00+00:00",
+        pinned_open_dates=open_dates,
+        market_open_days_path=open_path,
+        expected_market_open_days_sha256=open_sha,
+        canonical_observations_root=root,
+        run_id="local-catchup-20260716",
+        expected_pointer_sha256=refreshed["pointer_sha256"],
+    )
+    rolled_rows, rolled_pointer = load_observations(root)
+    rolled_manifest = rolled_pointer["generation_manifest"]
+
+    assert rolled["schema_version"] == LOCAL_MARKET_OBSERVATION_ROLL_SCHEMA
+    assert rolled["promoted"] is True
+    assert rolled["update_mode"] == "local_catchup"
+    assert rolled["latest_local_trade_date"] == "20260716"
+    assert rolled["local_open_session_lag"] == 0
+    assert rolled["local_target_trade_dates"] == [
+        "20260714",
+        "20260715",
+        "20260716",
+    ]
+    assert len(rolled_rows) == 39
+    assert len(rolled_manifest["added_content_hashes"]) == 1
+    assert len(rolled_manifest["removed_content_hashes"]) == 1
+    assert rolled_manifest["replaced_content_hashes"] == []
+    validated_roll = validate_production_observation_chain(
+        rolled_rows,
+        generation_manifest=rolled_manifest,
+        pointer_metadata=rolled_pointer["metadata"],
+        canonical_root=root,
+    )
+    assert set(validated_roll) == {
+        row["content_hash"] for row in rolled_rows
+    }
+    json.dumps(rolled, allow_nan=False)
+
+    next_fixture = _next_roll_fixture(tmp_path / "local-next-roll")
+    next_roll = publish_local_market_breadth_roll(
+        **_daily_kwargs(next_fixture),
+        target_as_of="20260717",
+        decision_cutoff_at="2026-07-17T08:00:00+00:00",
+        pinned_open_dates=open_dates,
+        market_open_days_path=open_path,
+        expected_market_open_days_sha256=open_sha,
+        canonical_observations_root=root,
+        run_id="local-next-roll-20260717",
+        expected_pointer_sha256=rolled["pointer_sha256"],
+    )
+    next_rows, next_pointer = load_observations(root)
+
+    assert next_roll["update_mode"] == "next_date_roll"
+    assert next_roll["local_target_trade_dates"] == [
+        "20260715",
+        "20260716",
+        "20260717",
+    ]
+    assert len(next_rows) == 39
+    validate_production_observation_chain(
+        next_rows,
+        generation_manifest=next_pointer["generation_manifest"],
+        pointer_metadata=next_pointer["metadata"],
+        canonical_root=root,
+    )
+
+
 def test_local_append_accepts_snapshot_and_coverage_same_manifest(
     tmp_path: Path,
 ) -> None:
@@ -421,6 +797,89 @@ def test_local_append_accepts_snapshot_and_coverage_same_manifest(
     assert update["promoted"] is True
     assert update["incoming_evidence_file_count"] == 4
     assert update["strict_readback_validated"] is True
+
+
+def test_official_refresh_rejects_three_open_session_local_lag(
+    tmp_path: Path,
+) -> None:
+    inputs = _inputs(tmp_path)
+    root = tmp_path / "observations"
+    bootstrap = _publish(tmp_path, inputs)
+    before = (root / "_latest.json").read_bytes()
+    open_path, open_sha, open_dates = _open_days(
+        tmp_path / "market-open-days.json"
+    )
+
+    with pytest.raises(
+        ProductionObservationBundleError,
+        match="local_history_lag_exceeds_two_sessions",
+    ):
+        publish_macro_official_observation_refresh(
+            official_bundle_manifest_path=inputs[
+                "official_bundle_manifest_path"
+            ],
+            expected_official_bundle_manifest_sha256=inputs[
+                "expected_official_bundle_manifest_sha256"
+            ],
+            expected_official_plan_sha256=inputs[
+                "expected_official_plan_sha256"
+            ],
+            target_as_of="20260717",
+            decision_cutoff_at="2026-07-17T07:00:00+00:00",
+            pinned_open_dates=open_dates,
+            market_open_days_path=open_path,
+            expected_market_open_days_sha256=open_sha,
+            canonical_observations_root=root,
+            run_id="lag-three-must-not-publish",
+            expected_pointer_sha256=bootstrap["pointer_sha256"],
+        )
+
+    assert (root / "_latest.json").read_bytes() == before
+    assert not (
+        root / "_generations" / "lag-three-must-not-publish"
+    ).exists()
+
+
+def test_official_refresh_accepts_two_open_session_local_lag(
+    tmp_path: Path,
+) -> None:
+    inputs = _inputs(tmp_path)
+    root = tmp_path / "observations"
+    bootstrap = _publish(tmp_path, inputs)
+    open_path, open_sha, open_dates = _open_days(
+        tmp_path / "market-open-days.json"
+    )
+
+    refreshed = publish_macro_official_observation_refresh(
+        official_bundle_manifest_path=inputs[
+            "official_bundle_manifest_path"
+        ],
+        expected_official_bundle_manifest_sha256=inputs[
+            "expected_official_bundle_manifest_sha256"
+        ],
+        expected_official_plan_sha256=inputs[
+            "expected_official_plan_sha256"
+        ],
+        target_as_of="20260716",
+        decision_cutoff_at="2026-07-16T07:00:00+00:00",
+        pinned_open_dates=open_dates,
+        market_open_days_path=open_path,
+        expected_market_open_days_sha256=open_sha,
+        canonical_observations_root=root,
+        run_id="lag-two-accepted",
+        expected_pointer_sha256=bootstrap["pointer_sha256"],
+    )
+
+    assert refreshed["promoted"] is True
+    assert refreshed["local_open_session_lag"] == 2
+    assert refreshed["latest_local_trade_date"] == "20260714"
+    rows, pointer = load_observations(root)
+    validate_production_observation_chain(
+        rows,
+        generation_manifest=pointer["generation_manifest"],
+        pointer_metadata=pointer["metadata"],
+        canonical_root=root,
+    )
 
 
 def test_public_validator_rejects_allowed_schema_single_blob_spoof(
@@ -679,7 +1138,10 @@ def test_partial_full_a_coverage_rejects_bootstrap(tmp_path: Path) -> None:
     coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
     coverage["coverage"]["coverage_ratio"] = 0.5
     coverage["metadata"]["coverage"]["coverage_ratio"] = 0.5
-    coverage_path.write_text(json.dumps(coverage, sort_keys=True), encoding="utf-8")
+    coverage_path.write_text(
+        json.dumps(coverage, sort_keys=True),
+        encoding="utf-8",
+    )
     target["expected_coverage_manifest_sha256"] = _sha256(coverage_path)
     plan_path.write_text(
         json.dumps(plan_payload, sort_keys=True),
@@ -746,7 +1208,9 @@ def test_strict_readback_rejects_one_missing_mapping_atomically(
     receipt = _publish(tmp_path, inputs)
     before_pointer = (root / "_latest.json").read_bytes()
     before_rows, before_loaded = load_observations(root)
-    previous_generation = root / "_generations" / before_loaded["generation_id"]
+    previous_generation = (
+        root / "_generations" / before_loaded["generation_id"]
+    )
     before_generation = _tree_hashes(previous_generation)
     real_validator = production_bundle._strict_publication_readback
     daily = _next_daily_fixture(tmp_path / "local-next-failure")

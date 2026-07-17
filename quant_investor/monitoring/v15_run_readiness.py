@@ -11,13 +11,28 @@ import json
 import os
 import tempfile
 from collections.abc import Mapping, Sequence
+from datetime import date
 from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = "v15_run_readiness.v1"
+SCHEMA_VERSION = "v15_run_readiness.v2"
 REQUIRED_BRANCHES = ("quant", "fundamental", "macro")
 VALID_CANDIDATE_STATUSES = frozenset({"blocked", "empty", "complete"})
+MACRO_READINESS_EVIDENCE_SCHEMA = "macro-readiness-evidence.v1"
+MACRO_RELEASE_CALENDAR_GENERATION_FIELD = (
+    "macro_release_calendar_generation_id"
+)
+MACRO_RELEASE_CALENDAR_SHA_FIELDS = (
+    "macro_release_calendar_pointer_sha256",
+    "macro_release_calendar_manifest_sha256",
+    "macro_release_calendar_semantic_sha256",
+    "macro_release_calendar_registry_sha256",
+    "macro_release_calendar_plan_sha256",
+    "macro_release_calendar_capture_manifest_sha256",
+    "macro_release_calendar_market_open_days_sha256",
+    "macro_release_calendar_critical_policy_sha256",
+)
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -46,33 +61,255 @@ def readiness_reference(path: Path, payload: Mapping[str, Any]) -> dict[str, str
     }
 
 
+def _is_sha256(value: Any) -> bool:
+    return bool(
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _strict_string_list(value: Any) -> tuple[list[str], bool]:
+    if value is None:
+        return [], True
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        return [], False
+    normalized: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            return [], False
+        normalized.append(item.strip())
+    return sorted(set(normalized)), True
+
+
+def _normalized_date(value: Any) -> str:
+    text = str(value or "").strip()
+    if len(text) == 8 and text.isdigit():
+        text = f"{text[:4]}-{text[4:6]}-{text[6:8]}"
+    try:
+        return date.fromisoformat(text).isoformat()
+    except ValueError:
+        return ""
+
+
+def _empty_macro_readiness_summary() -> dict[str, Any]:
+    return {
+        "macro_readiness_evidence_semantic_sha256": "",
+        "macro_release_calendar_generation_id": "",
+        "macro_release_calendar_semantic_sha256": "",
+        "macro_release_calendar_market_open_days_sha256": "",
+        "macro_release_calendar_critical_policy_sha256": "",
+        "macro_logical_date": "",
+        "target_session_date": "",
+        "target_decision_cutoff_at": "",
+        "session_lag": None,
+        "key_event_blocker_ids": [],
+    }
+
+
+def _macro_readiness_contract(
+    branch_payload: Mapping[str, Any],
+    *,
+    analysis_trade_date: str,
+) -> tuple[dict[str, Any], list[str]]:
+    metadata = _mapping(branch_payload.get("metadata"))
+    evidence = _mapping(metadata.get("macro_readiness_evidence"))
+    if not evidence:
+        return (
+            _empty_macro_readiness_summary(),
+            ["macro_release_readiness_evidence_missing"],
+        )
+
+    evaluation = _mapping(evidence.get("evaluation"))
+    session_lag_payload = _mapping(evaluation.get("session_lag"))
+    critical_event_gap = _mapping(
+        evaluation.get("critical_event_gap")
+    )
+    key_event_blocker_ids, key_event_ids_valid = _strict_string_list(
+        critical_event_gap.get("blocking_event_ids")
+    )
+    raw_session_lag = session_lag_payload.get("session_lag")
+    session_lag = (
+        raw_session_lag
+        if type(raw_session_lag) is int
+        and 0 <= raw_session_lag <= 2
+        else None
+    )
+    evidence_sha256 = str(evidence.get("semantic_sha256") or "")
+    summary = {
+        "macro_readiness_evidence_semantic_sha256": evidence_sha256,
+        "macro_release_calendar_generation_id": str(
+            evidence.get(MACRO_RELEASE_CALENDAR_GENERATION_FIELD) or ""
+        ),
+        "macro_release_calendar_semantic_sha256": str(
+            evidence.get("macro_release_calendar_semantic_sha256") or ""
+        ),
+        "macro_release_calendar_market_open_days_sha256": str(
+            evidence.get(
+                "macro_release_calendar_market_open_days_sha256"
+            )
+            or ""
+        ),
+        "macro_release_calendar_critical_policy_sha256": str(
+            evidence.get(
+                "macro_release_calendar_critical_policy_sha256"
+            )
+            or ""
+        ),
+        "macro_logical_date": str(
+            evidence.get("macro_logical_date") or ""
+        ),
+        "target_session_date": str(
+            evidence.get("target_session_date") or ""
+        ),
+        "target_decision_cutoff_at": str(
+            evidence.get("target_decision_cutoff_at") or ""
+        ),
+        "session_lag": session_lag,
+        "key_event_blocker_ids": key_event_blocker_ids,
+    }
+
+    blockers: list[str] = []
+    if evidence.get("schema_version") != MACRO_READINESS_EVIDENCE_SCHEMA:
+        blockers.append(
+            "macro_release_readiness_evidence_contract_invalid"
+        )
+
+    semantic_payload = dict(evidence)
+    semantic_payload.pop("semantic_sha256", None)
+    try:
+        computed_semantic_sha256 = canonical_sha256(semantic_payload)
+    except (TypeError, ValueError):
+        computed_semantic_sha256 = ""
+    if (
+        not _is_sha256(evidence_sha256)
+        or computed_semantic_sha256 != evidence_sha256
+    ):
+        blockers.append("macro_release_readiness_evidence_tampered")
+
+    canonical_identity = _mapping(metadata.get("canonical_identity"))
+    raw_bindings = [
+        metadata.get("macro_readiness_evidence_semantic_sha256"),
+        canonical_identity.get(
+            "macro_readiness_evidence_semantic_sha256"
+        ),
+    ]
+    bindings = [
+        str(value).strip()
+        for value in raw_bindings
+        if value not in (None, "")
+    ]
+    if not bindings:
+        blockers.append(
+            "macro_release_readiness_evidence_binding_missing"
+        )
+    elif any(not _is_sha256(value) for value in bindings):
+        blockers.append(
+            "macro_release_readiness_evidence_binding_invalid"
+        )
+    elif len(set(bindings)) != 1 or bindings[0] != evidence_sha256:
+        blockers.append(
+            "macro_release_readiness_evidence_binding_mismatch"
+        )
+
+    generation_id = evidence.get(MACRO_RELEASE_CALENDAR_GENERATION_FIELD)
+    source_sha_values = [
+        evidence.get(field_name)
+        for field_name in MACRO_RELEASE_CALENDAR_SHA_FIELDS
+    ]
+    if not isinstance(generation_id, str) or not generation_id.strip() or any(
+        value in (None, "") for value in source_sha_values
+    ):
+        blockers.append("macro_release_calendar_binding_missing")
+    elif any(not _is_sha256(value) for value in source_sha_values):
+        blockers.append(
+            "macro_release_readiness_evidence_identity_invalid"
+        )
+
+    target_session_date = _normalized_date(
+        evidence.get("target_session_date")
+    )
+    target_analysis_date = _normalized_date(analysis_trade_date)
+    if (
+        not target_session_date
+        or not target_analysis_date
+        or target_session_date != target_analysis_date
+    ):
+        blockers.append(
+            "macro_release_readiness_evidence_target_mismatch"
+        )
+
+    if not evaluation or not session_lag_payload:
+        blockers.append("macro_release_readiness_evaluation_type_invalid")
+    else:
+        if evaluation.get("ready") is not True:
+            blockers.append("macro_release_readiness_blocked")
+        if session_lag is None:
+            blockers.append("macro_release_session_lag_invalid")
+        evaluation_blockers, evaluation_blockers_valid = (
+            _strict_string_list(evaluation.get("blockers"))
+        )
+        if (
+            not evaluation_blockers_valid
+            or not key_event_ids_valid
+            or (
+                evaluation.get("ready") is True
+                and (evaluation_blockers or key_event_blocker_ids)
+            )
+        ):
+            blockers.append(
+                "macro_release_readiness_evaluation_inconsistent"
+            )
+    return summary, list(dict.fromkeys(blockers))
+
+
 def _branch_contract(
     branch_readiness: Mapping[str, Any] | None,
     branch_objects: Mapping[str, Any] | None,
-) -> tuple[dict[str, bool], dict[str, bool], list[str]]:
+    *,
+    analysis_trade_date: str,
+) -> tuple[dict[str, bool], dict[str, bool], list[str], dict[str, Any]]:
     readiness = _mapping(branch_readiness)
     objects = _mapping(branch_objects)
     materialized: dict[str, bool] = {}
     ready: dict[str, bool] = {}
     blockers: list[str] = []
+    macro_summary = _empty_macro_readiness_summary()
     for branch in REQUIRED_BRANCHES:
         branch_payload = _mapping(readiness.get(branch))
         materialized[branch] = bool(objects.get(branch, bool(branch_payload)))
+        declared_blockers = _stable_strings(
+            branch_payload.get("blockers") or []
+        )
+        macro_blockers: list[str] = []
+        if branch == "macro":
+            macro_summary, macro_blockers = _macro_readiness_contract(
+                branch_payload,
+                analysis_trade_date=analysis_trade_date,
+            )
         ready[branch] = bool(
             materialized[branch]
             and str(branch_payload.get("status") or "").lower() in {"pass", "ready"}
-            and not list(branch_payload.get("blockers") or [])
+            and not declared_blockers
+            and not macro_blockers
         )
         if not materialized[branch]:
             blockers.append(f"branch_object_missing:{branch}")
+            if branch == "macro":
+                blockers.extend(
+                    f"branch_data_not_ready:macro:{item}"
+                    for item in macro_blockers
+                )
         elif not ready[branch]:
-            branch_blockers = _stable_strings(branch_payload.get("blockers") or [])
+            branch_blockers = _stable_strings(
+                [*declared_blockers, *macro_blockers]
+            )
             blockers.extend(
                 f"branch_data_not_ready:{branch}:{item}" for item in branch_blockers
             )
             if not branch_blockers:
                 blockers.append(f"branch_data_not_ready:{branch}")
-    return materialized, ready, blockers
+    return materialized, ready, blockers, macro_summary
 
 
 def build_v15_run_readiness(
@@ -93,8 +330,15 @@ def build_v15_run_readiness(
 ) -> dict[str, Any]:
     """Build the deterministic, fail-closed v15 readiness payload."""
 
-    objects, branches_ready, branch_blockers = _branch_contract(
-        branch_readiness, branch_objects
+    (
+        objects,
+        branches_ready,
+        branch_blockers,
+        macro_readiness,
+    ) = _branch_contract(
+        branch_readiness,
+        branch_objects,
+        analysis_trade_date=analysis_trade_date,
     )
     factor = _mapping(factor_governance)
     factor_ready = bool(
@@ -170,6 +414,7 @@ def build_v15_run_readiness(
         "market_data_ready": bool(market_data_ready),
         "branch_objects_materialized": objects,
         "branch_data_ready": branches_ready,
+        "macro_readiness": macro_readiness,
         "factor_governance_ready": factor_ready,
         "factor_governance": {
             "registry_file_sha256": str(

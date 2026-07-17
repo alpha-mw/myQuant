@@ -25,6 +25,10 @@ from quant_investor.market.fundamental_generation import (
     publish_fundamental_generation,
 )
 from tests.helpers.macro_fixture import bind_macro_generation
+from tests.helpers.macro_readiness_fixture import (
+    macro_release_binding,
+    make_macro_readiness_runtime,
+)
 
 
 def _price_frame(symbol: str = "000001.SZ") -> pd.DataFrame:
@@ -94,6 +98,24 @@ def _write_macro(root):
     )
 
 
+def _pinned_macro_kwargs(root):
+    runtime = make_macro_readiness_runtime(
+        macro_logical_date="2024-05-10",
+        target_session_date="2024-05-10",
+    )
+    record, manifest = branch_readiness.load_macro_record(
+        as_of="20240510",
+        root=root,
+    )
+    manifest.update(macro_release_binding(runtime))
+    return {
+        "pinned_macro_record": record,
+        "pinned_macro_manifest": manifest,
+        "pinned_macro_readiness_evidence": runtime.evidence,
+        "decision_cutoff_at": runtime.decision_cutoff_at,
+    }
+
+
 def test_quant_missing_required_amount_hard_blocks():
     frame = _price_frame().drop(columns=["amount"])
 
@@ -143,7 +165,7 @@ def test_three_branch_readiness_blocks_only_missing_surviving_branch_data(tmp_pa
         candidate_symbols=["000001.SZ", "000002.SZ"],
         as_of="20240510",
         fundamental_root=fundamental_root,
-        macro_root=macro_root,
+        **_pinned_macro_kwargs(macro_root),
         run_id="fixture",
     )
 
@@ -223,7 +245,7 @@ def test_branch_readiness_quant_scope_uses_after_funnel_candidates(tmp_path):
         candidate_symbols=["000001.SZ"],
         as_of="20240510",
         fundamental_root=fundamental_root,
-        macro_root=macro_root,
+        **_pinned_macro_kwargs(macro_root),
         run_id="fixture",
     )
 
@@ -250,7 +272,7 @@ def test_branch_readiness_loads_default_canonical_parquet(tmp_path, monkeypatch)
         candidate_symbols=["000001.SZ"],
         as_of="20240510",
         fundamental_root=parquet_root / "fundamental_daily",
-        macro_root=parquet_root / "macro_daily",
+        **_pinned_macro_kwargs(parquet_root / "macro_daily"),
         run_id="fixture",
     )
 
@@ -286,6 +308,11 @@ def test_branch_readiness_reuses_pinned_macro_without_second_canonical_read(
         "provider_status": "verified_provider_snapshot",
         "production_eligible": True,
     }
+    macro_runtime = make_macro_readiness_runtime(
+        macro_logical_date="2024-05-10",
+        target_session_date="2024-05-10",
+    )
+    macro_manifest.update(macro_release_binding(macro_runtime))
 
     monkeypatch.setattr(
         branch_readiness,
@@ -302,6 +329,8 @@ def test_branch_readiness_reuses_pinned_macro_without_second_canonical_read(
         fundamental_root=fundamental_root,
         pinned_macro_record=macro_record,
         pinned_macro_manifest=macro_manifest,
+        pinned_macro_readiness_evidence=macro_runtime.evidence,
+        decision_cutoff_at=macro_runtime.decision_cutoff_at,
         run_id="pinned-macro",
     )
 
@@ -312,6 +341,10 @@ def test_branch_readiness_reuses_pinned_macro_without_second_canonical_read(
         "generation_id": "pinned-generation",
         "parquet_sha256": "a" * 64,
         "generation_manifest_sha256": "b" * 64,
+        **macro_release_binding(macro_runtime),
+        "macro_readiness_evidence_semantic_sha256": (
+            macro_runtime.evidence.semantic_sha256
+        ),
     }
 
 
@@ -472,7 +505,7 @@ def test_fundamental_partial_record_warns_without_blocking(tmp_path):
         candidate_symbols=["000001.SZ"],
         as_of="20240510",
         fundamental_root=fundamental_root,
-        macro_root=macro_root,
+        **_pinned_macro_kwargs(macro_root),
         run_id="fixture",
     )
 

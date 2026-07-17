@@ -15,6 +15,10 @@ from quant_investor.market.dag.context import (
 from quant_investor.market.read_result import MarketDataReadResult
 from quant_investor.regime.scope import build_regime_scope, deterministic_symbol_sample
 from tests.helpers.macro_fixture import make_v15_controls
+from tests.helpers.macro_readiness_fixture import (
+    macro_release_binding,
+    make_macro_readiness_runtime,
+)
 
 
 def _frame(symbol: str, *, direction: float = 1.0) -> pd.DataFrame:
@@ -101,6 +105,21 @@ class ScopeFunnel:
 
 
 def _patch_branch_readiness(monkeypatch: pytest.MonkeyPatch) -> None:
+    macro_runtime = make_macro_readiness_runtime(
+        macro_logical_date="2026-05-29",
+        target_session_date="2026-05-29",
+    )
+    macro_manifest = {
+        "generation_id": "fixture-macro-generation",
+        "parquet_sha256": "a" * 64,
+        "generation_manifest_sha256": "b" * 64,
+        "source": "tushare_primary",
+        "source_priority": "tushare_primary",
+        "provider_status": "verified_provider_snapshot",
+        "production_eligible": True,
+        "v15_controls": make_v15_controls(),
+    }
+    macro_manifest.update(macro_release_binding(macro_runtime))
     monkeypatch.setattr(
         "quant_investor.market.dag.context.load_macro_record",
         lambda **kwargs: (
@@ -115,17 +134,12 @@ def _patch_branch_readiness(monkeypatch: pytest.MonkeyPatch) -> None:
                 "pit_status": "market_point_in_time",
                 "fetched_at": "2026-05-29T08:00:00+00:00",
             },
-            {
-                "generation_id": "fixture-macro-generation",
-                "parquet_sha256": "a" * 64,
-                "generation_manifest_sha256": "b" * 64,
-                "source": "tushare_primary",
-                "source_priority": "tushare_primary",
-                "provider_status": "verified_provider_snapshot",
-                "production_eligible": True,
-                "v15_controls": make_v15_controls(),
-            },
+            dict(macro_manifest),
         ),
+    )
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.freeze_macro_readiness_runtime",
+        lambda **kwargs: macro_runtime,
     )
     readiness = SimpleNamespace(status="ok")
 

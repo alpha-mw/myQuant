@@ -14,10 +14,16 @@ from quant_investor.market.branch_readiness import (
     DEFAULT_FUNDAMENTAL_ROOT,
     DEFAULT_MACRO_ROOT,
     assess_branch_data_readiness,
+    load_macro_record,
     make_run_id,
     write_branch_readiness_report,
 )
 from quant_investor.market.market_data_reader import MarketDataReader
+from quant_investor.market.macro_readiness_runtime import (
+    DEFAULT_MACRO_RELEASE_CALENDAR_ROOT,
+    FrozenMacroReadinessRuntime,
+    freeze_macro_readiness_runtime,
+)
 
 _FULL_A_KEYS = {"full_a", "full_market", "all_a", "all", "full"}
 
@@ -411,6 +417,9 @@ def run_data_governance(
     data_dir: str | Path | None = None,
     fundamental_root: str | Path = DEFAULT_FUNDAMENTAL_ROOT,
     macro_root: str | Path = DEFAULT_MACRO_ROOT,
+    macro_release_calendar_root: str | Path = (
+        DEFAULT_MACRO_RELEASE_CALENDAR_ROOT
+    ),
 ) -> dict[str, Any]:
     """Audit branch data readiness and optionally refresh local marts.
 
@@ -446,6 +455,9 @@ def run_data_governance(
 
     reports: list[dict[str, Any]] = []
     artifacts_by_category: dict[str, dict[str, str]] = {}
+    pinned_macro_record: dict[str, Any] | None = None
+    pinned_macro_manifest: dict[str, Any] | None = None
+    pinned_macro_runtime: FrozenMacroReadinessRuntime | None = None
     for selected_category in selected_categories:
         (
             frames,
@@ -459,6 +471,18 @@ def run_data_governance(
             as_of=as_of,
             data_dir=data_dir,
         )
+        if pinned_macro_runtime is None:
+            pinned_macro_record, pinned_macro_manifest = load_macro_record(
+                as_of=effective_as_of,
+                root=macro_root,
+            )
+            pinned_macro_runtime = freeze_macro_readiness_runtime(
+                macro_logical_date=str(
+                    pinned_macro_record.get("trade_date") or ""
+                ),
+                target_session_date=effective_as_of,
+                calendar_root=macro_release_calendar_root,
+            )
         report = assess_branch_data_readiness(
             frames=frames,
             read_results=read_results,
@@ -468,6 +492,14 @@ def run_data_governance(
             as_of=effective_as_of,
             fundamental_root=fundamental_root,
             macro_root=macro_root,
+            pinned_macro_record=pinned_macro_record,
+            pinned_macro_manifest=pinned_macro_manifest,
+            pinned_macro_readiness_evidence=(
+                pinned_macro_runtime.evidence
+            ),
+            decision_cutoff_at=(
+                pinned_macro_runtime.decision_cutoff_at or None
+            ),
             run_id=run_id if len(selected_categories) == 1 else f"{run_id}_{selected_category}",
         )
         report.metadata.update(
@@ -476,6 +508,9 @@ def run_data_governance(
                 "allow_public_fallback": bool(allow_public_fallback),
                 "local_read_only": not bool(allow_live or allow_public_fallback),
                 "quant_scope": scope_metadata,
+                "macro_readiness_runtime": (
+                    pinned_macro_runtime.metadata()
+                ),
             }
         )
         if scope_metadata.get("status") == "blocked":
@@ -527,6 +562,11 @@ def run_data_governance(
         "local_read_only": not bool(allow_live or allow_public_fallback),
         "reports": reports,
         "artifacts": artifacts_by_category,
+        "macro_readiness_runtime": (
+            pinned_macro_runtime.metadata()
+            if pinned_macro_runtime is not None
+            else {}
+        ),
     }
 
 

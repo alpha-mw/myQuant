@@ -45,11 +45,13 @@ from quant_investor.macro.official_web_compiler import (
     OfficialWebCompilationResult,
     PARSER_CONTRACT_SHA256,
     PBC_MONEY_STOCK_PARSER,
+    PBC_MONEY_STOCK_PARSER_V2,
     recompile_official_web_bundle,
 )
 from quant_investor.macro.snapshot import build_macro_snapshot
 from quant_investor.macro.store import (
     load_observations,
+    publish_observation_projection,
     pointer_sha256,
     publish_observations,
 )
@@ -61,9 +63,16 @@ PRODUCTION_OBSERVATION_BUNDLE_SCHEMA = (
 LOCAL_MARKET_OBSERVATION_PUBLICATION_SCHEMA = (
     "macro-local-market-observation-publication.v1"
 )
+OFFICIAL_OBSERVATION_REFRESH_SCHEMA = (
+    "macro-production-observation-official-refresh.v1"
+)
+LOCAL_MARKET_OBSERVATION_ROLL_SCHEMA = (
+    "macro-production-observation-local-roll.v1"
+)
 LOCAL_BREADTH_BOOTSTRAP_PLAN_SCHEMA = (
     "cn-local-breadth-bootstrap-plan.v1"
 )
+MARKET_OPEN_DAYS_SCHEMA = "market-open-days.v1"
 _OFFICIAL_INDICATOR_COUNT = 12
 _PRODUCTION_INDICATOR_COUNT = 13
 _HISTORY_LENGTH = 3
@@ -81,6 +90,8 @@ _PRODUCTION_CHAIN_SCHEMAS = frozenset(
     {
         PRODUCTION_OBSERVATION_BUNDLE_SCHEMA,
         LOCAL_MARKET_OBSERVATION_PUBLICATION_SCHEMA,
+        OFFICIAL_OBSERVATION_REFRESH_SCHEMA,
+        LOCAL_MARKET_OBSERVATION_ROLL_SCHEMA,
     }
 )
 _GENERATION_V2_KEYS = frozenset(
@@ -107,6 +118,10 @@ _GENERATION_V2_KEYS = frozenset(
         "observation_evidence",
     }
 )
+_PROJECTION_GENERATION_V2_KEYS = _GENERATION_V2_KEYS | {
+    "removed_content_hashes",
+    "replaced_content_hashes",
+}
 _BOOTSTRAP_METADATA_KEYS = frozenset(
     {
         "schema_version",
@@ -139,6 +154,58 @@ _UPDATE_METADATA_KEYS = frozenset(
         "local_coverage_contract_sha256",
         "local_effective_available_at",
         "validated_snapshot_hash",
+    }
+)
+_OFFICIAL_REFRESH_METADATA_KEYS = frozenset(
+    {
+        "schema_version",
+        "market",
+        "as_of",
+        "decision_cutoff_at",
+        "parent_as_of",
+        "parent_decision_cutoff_at",
+        "parent_content_set_hash",
+        "official_bundle_manifest_sha256",
+        "official_plan_sha256",
+        "market_open_days_path",
+        "market_open_days_sha256",
+        "pinned_open_dates",
+        "latest_local_trade_date",
+        "retained_local_trade_dates",
+        "retained_local_content_hashes",
+        "local_open_session_lag",
+        "retained_local_evidence_sha256",
+        "local_coverage_contract_sha256",
+        "local_effective_available_at",
+        "validated_snapshot_hash",
+        "exact_parent_projection",
+    }
+)
+_LOCAL_ROLL_METADATA_KEYS = frozenset(
+    {
+        "schema_version",
+        "market",
+        "as_of",
+        "decision_cutoff_at",
+        "parent_as_of",
+        "parent_decision_cutoff_at",
+        "parent_content_set_hash",
+        "update_mode",
+        "local_snapshot_manifest_sha256",
+        "local_coverage_manifest_sha256",
+        "local_scope_artifact_sha256",
+        "local_target_trade_date",
+        "local_coverage_contract_sha256",
+        "local_effective_available_at",
+        "market_open_days_path",
+        "market_open_days_sha256",
+        "pinned_open_dates",
+        "latest_local_trade_date",
+        "local_open_session_lag",
+        "retained_local_trade_dates",
+        "retained_local_content_hashes",
+        "validated_snapshot_hash",
+        "exact_parent_projection",
     }
 )
 _EVIDENCE_FILE_KEYS = frozenset(
@@ -176,6 +243,18 @@ _LOCAL_OBSERVATION_EVIDENCE_METADATA_KEYS = frozenset(
         "size_bytes",
     }
 )
+_OPEN_DAYS_EVIDENCE_METADATA_KEYS = frozenset(
+    {
+        "extension",
+        "evidence_kind",
+        "schema_version",
+        "market",
+        "open_date_count",
+        "first_open_date",
+        "last_open_date",
+        "size_bytes",
+    }
+)
 _OFFICIAL_SOURCE_BY_INDICATOR = {
     "cn.cpi_yoy": "nbs_official",
     "cn.exports_yoy": "nbs_official",
@@ -199,7 +278,11 @@ _PARSER_SOURCE_SYSTEM = {
     NBS_OFFICIAL_PMI_PARSER: "nbs_official",
     NBS_QUARTERLY_GDP_PARSER: "nbs_official",
     PBC_MONEY_STOCK_PARSER: "pbc_official",
+    PBC_MONEY_STOCK_PARSER_V2: "pbc_official",
 }
+_PBC_MONEY_STOCK_PARSERS = frozenset(
+    {PBC_MONEY_STOCK_PARSER, PBC_MONEY_STOCK_PARSER_V2}
+)
 _EVIDENCE_SOURCE_BY_OBSERVATION_SOURCE = {
     "nbs_official": "nbs_official",
     "pboc_official": "pbc_official",
@@ -238,6 +321,14 @@ class _ExistingProductionChain:
     generation_id: str
 
 
+@dataclass(frozen=True)
+class _PinnedOpenDays:
+    path: Path
+    sha256: str
+    raw: bytes
+    open_dates: tuple[str, ...]
+
+
 def _sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
@@ -254,6 +345,24 @@ def _canonical_json_bytes(value: Mapping[str, Any]) -> bytes:
     except (TypeError, ValueError) as exc:
         raise ProductionObservationBundleError(
             "production_local_evidence_not_json_safe"
+        ) from exc
+
+
+def _store_json_document_bytes(value: Mapping[str, Any]) -> bytes:
+    try:
+        return (
+            json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                indent=2,
+                allow_nan=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ProductionObservationBundleError(
+            "production_observation_parent_pointer_not_json_safe"
         ) from exc
 
 
@@ -435,6 +544,134 @@ def _add_evidence(
     return digest
 
 
+def _normalized_open_dates(
+    values: Sequence[str],
+    *,
+    blocker: str,
+) -> tuple[str, ...]:
+    if isinstance(values, (str, bytes)):
+        raise ProductionObservationBundleError(blocker)
+    try:
+        raw_dates = list(values)
+    except TypeError as exc:
+        raise ProductionObservationBundleError(blocker) from exc
+    normalized: list[str] = []
+    for value in raw_dates:
+        if not isinstance(value, str) or not _COMPACT_DATE_RE.fullmatch(
+            value
+        ):
+            raise ProductionObservationBundleError(blocker)
+        try:
+            parsed = datetime.strptime(value, "%Y%m%d")
+        except ValueError as exc:
+            raise ProductionObservationBundleError(blocker) from exc
+        if parsed.weekday() >= 5:
+            raise ProductionObservationBundleError(blocker)
+        normalized.append(value)
+    if (
+        not normalized
+        or normalized != sorted(normalized)
+        or len(set(normalized)) != len(normalized)
+    ):
+        raise ProductionObservationBundleError(blocker)
+    return tuple(normalized)
+
+
+def _load_pinned_open_days(
+    *,
+    market_open_days_path: str | Path,
+    expected_market_open_days_sha256: str,
+    pinned_open_dates: Sequence[str],
+) -> _PinnedOpenDays:
+    path = _absolute_path(
+        market_open_days_path,
+        blocker="production_market_open_days_path_unsafe",
+    )
+    expected_sha = _required_sha256(
+        expected_market_open_days_sha256,
+        blocker="production_market_open_days_sha256_invalid",
+    )
+    raw, _signature = _stable_file_bytes(
+        path,
+        blocker="production_market_open_days_unsafe",
+        changed_blocker="production_market_open_days_changed_during_read",
+        max_bytes=_MAX_JSON_BYTES,
+        exact_mode=0o600,
+    )
+    if _sha256(raw) != expected_sha:
+        raise ProductionObservationBundleError(
+            "production_market_open_days_sha256_mismatch"
+        )
+    payload = _json_object(
+        raw,
+        blocker="production_market_open_days_json_invalid",
+    )
+    if set(payload) != {"schema_version", "market", "open_dates"}:
+        raise ProductionObservationBundleError(
+            "production_market_open_days_contract_invalid"
+        )
+    if (
+        payload.get("schema_version") != MARKET_OPEN_DAYS_SCHEMA
+        or payload.get("market") != "CN"
+        or not isinstance(payload.get("open_dates"), list)
+    ):
+        raise ProductionObservationBundleError(
+            "production_market_open_days_contract_invalid"
+        )
+    artifact_dates = _normalized_open_dates(
+        payload["open_dates"],
+        blocker="production_market_open_dates_invalid",
+    )
+    declared_dates = _normalized_open_dates(
+        pinned_open_dates,
+        blocker="production_pinned_open_dates_invalid",
+    )
+    if artifact_dates != declared_dates:
+        raise ProductionObservationBundleError(
+            "production_pinned_open_dates_artifact_mismatch"
+        )
+    return _PinnedOpenDays(
+        path=path,
+        sha256=expected_sha,
+        raw=raw,
+        open_dates=artifact_dates,
+    )
+
+
+def _with_open_days_evidence(
+    evidence: _EvidenceInputs,
+    pinned: _PinnedOpenDays,
+) -> _EvidenceInputs:
+    bodies = dict(evidence.bodies)
+    metadata = dict(evidence.metadata)
+    digest = _add_evidence(
+        bodies,
+        metadata,
+        body=pinned.raw,
+        item_metadata={
+            "extension": ".bin",
+            "evidence_kind": "macro_market_open_days",
+            "schema_version": MARKET_OPEN_DAYS_SCHEMA,
+            "market": "CN",
+            "open_date_count": len(pinned.open_dates),
+            "first_open_date": pinned.open_dates[0],
+            "last_open_date": pinned.open_dates[-1],
+            "size_bytes": len(pinned.raw),
+        },
+    )
+    mapping = {
+        content_hash: sorted({*digests, digest})
+        for content_hash, digests in evidence.observation_mapping.items()
+    }
+    return _EvidenceInputs(
+        bodies=bodies,
+        metadata=metadata,
+        observation_mapping=mapping,
+        official_file_count=evidence.official_file_count,
+        local_file_count=evidence.local_file_count,
+    )
+
+
 def _same_official_result(
     left: OfficialWebCompilationResult,
     right: OfficialWebCompilationResult,
@@ -553,6 +790,23 @@ def _official_evidence_inputs(
         raise ProductionObservationBundleError(
             "production_official_plan_raw_page_set_mismatch"
         )
+    pbc_plan_pages = [
+        page
+        for page in plan_pages.values()
+        if str(page.get("source_system") or "") == "pbc_official"
+    ]
+    pbc_plan_parsers = {
+        str(page.get("parser_id") or "") for page in pbc_plan_pages
+    }
+    if (
+        len(pbc_plan_pages) != 4
+        or len(pbc_plan_parsers) != 1
+        or not pbc_plan_parsers.issubset(_PBC_MONEY_STOCK_PARSERS)
+    ):
+        raise ProductionObservationBundleError(
+            "production_official_pbc_parser_set_invalid"
+        )
+    pbc_parser = next(iter(pbc_plan_parsers))
 
     receipts_by_hash: dict[str, Mapping[str, Any]] = {}
     page_receipts: dict[str, list[Mapping[str, Any]]] = {}
@@ -597,9 +851,7 @@ def _official_evidence_inputs(
             "production_official_support_page_set_invalid"
         )
     support_page_id = next(iter(support_pages))
-    if str(plan_pages[support_page_id].get("parser_id") or "") != (
-        "pbc-financial-statistics-html.v1"
-    ):
+    if str(plan_pages[support_page_id].get("parser_id") or "") != pbc_parser:
         raise ProductionObservationBundleError(
             "production_official_support_page_role_invalid"
         )
@@ -912,7 +1164,9 @@ def _load_local_bootstrap_plan(
                 ),
                 expected_snapshot_manifest_sha256=_required_sha256(
                     raw_target["expected_snapshot_manifest_sha256"],
-                    blocker="production_local_snapshot_manifest_sha256_invalid",
+                    blocker=(
+                        "production_local_snapshot_manifest_sha256_invalid"
+                    ),
                 ),
                 coverage_manifest_path=_absolute_path(
                     str(raw_target["coverage_manifest_path"]),
@@ -920,7 +1174,9 @@ def _load_local_bootstrap_plan(
                 ),
                 expected_coverage_manifest_sha256=_required_sha256(
                     raw_target["expected_coverage_manifest_sha256"],
-                    blocker="production_local_coverage_manifest_sha256_invalid",
+                    blocker=(
+                        "production_local_coverage_manifest_sha256_invalid"
+                    ),
                 ),
                 scope_artifact_path=_absolute_path(
                     str(raw_target["scope_artifact_path"]),
@@ -1278,7 +1534,9 @@ def _bootstrap_local_evidence_inputs(
     readback, readback_signature = _stable_file_bytes(
         path,
         blocker="production_local_bootstrap_plan_unsafe",
-        changed_blocker="production_local_bootstrap_plan_changed_during_compile",
+        changed_blocker=(
+            "production_local_bootstrap_plan_changed_during_compile"
+        ),
         max_bytes=_MAX_JSON_BYTES,
         exact_mode=0o600,
     )
@@ -1426,6 +1684,148 @@ def _normalized_rows(
         for item in observations
     ]
     return sorted(rows, key=lambda item: str(item["content_hash"]))
+
+
+def _select_latest_local_history(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    target_as_of: str,
+    decision_cutoff: datetime,
+    pinned_open_dates: Sequence[str],
+) -> tuple[list[dict[str, Any]], int]:
+    positions = {
+        value: index for index, value in enumerate(pinned_open_dates)
+    }
+    if target_as_of not in positions:
+        raise ProductionObservationBundleError(
+            "production_observation_target_not_open_session"
+        )
+    candidates = [
+        dict(row)
+        for row in _normalized_rows(rows)
+        if row["indicator_id"] == "market.breadth"
+        and row["source_system"] == "local_strict_parquet"
+    ]
+    if not candidates:
+        raise ProductionObservationBundleError(
+            "production_observation_local_history_missing"
+        )
+    by_date: dict[str, list[dict[str, Any]]] = {}
+    for row in candidates:
+        trade_date = str(row["period_end"]).replace("-", "")
+        if trade_date not in positions:
+            raise ProductionObservationBundleError(
+                "production_observation_local_history_open_date_missing"
+            )
+        try:
+            available_at = parse_timestamp(
+                row["available_at"], field_name="available_at"
+            )
+        except ValueError as exc:  # pragma: no cover - normalized above
+            raise ProductionObservationBundleError(
+                "production_observation_local_history_time_invalid"
+            ) from exc
+        if trade_date > target_as_of or available_at > decision_cutoff:
+            raise ProductionObservationBundleError(
+                "production_observation_local_history_after_target"
+            )
+        by_date.setdefault(trade_date, []).append(row)
+    ordered_dates = sorted(by_date)
+    if len(ordered_dates) < _HISTORY_LENGTH:
+        raise ProductionObservationBundleError(
+            "production_observation_local_history_too_short"
+        )
+    selected_dates = ordered_dates[-_HISTORY_LENGTH:]
+    selected_positions = [positions[value] for value in selected_dates]
+    if any(
+        right != left + 1
+        for left, right in zip(selected_positions, selected_positions[1:])
+    ):
+        raise ProductionObservationBundleError(
+            "production_observation_local_history_not_consecutive"
+        )
+    selected = [
+        max(
+            by_date[trade_date],
+            key=lambda row: (
+                parse_timestamp(
+                    row["available_at"], field_name="available_at"
+                ),
+                str(row["content_hash"]),
+            ),
+        )
+        for trade_date in selected_dates
+    ]
+    lag = positions[target_as_of] - selected_positions[-1]
+    if lag not in {0, 1, 2}:
+        raise ProductionObservationBundleError(
+            "production_observation_local_history_lag_exceeds_two_sessions"
+        )
+    return selected, lag
+
+
+def _local_history_binding_summary(
+    selected_rows: Sequence[Mapping[str, Any]],
+    *,
+    generation_manifest: Mapping[str, Any],
+    observation_mapping: Mapping[str, Sequence[str]],
+) -> tuple[str, str, str]:
+    files_by_digest, _mapping = _strict_chain_evidence(
+        generation_manifest,
+        row_hashes=set(observation_mapping),
+    )
+    del _mapping
+    metadata_by_digest = {
+        digest: item["metadata"] for digest, item in files_by_digest.items()
+    }
+    ordered = sorted(
+        _normalized_rows(selected_rows),
+        key=lambda row: str(row["period_end"]),
+    )
+    strict_digests: list[str] = []
+    coverage_hashes: list[str] = []
+    effective_values: list[str] = []
+    for row in ordered:
+        mapped = observation_mapping.get(str(row["content_hash"]))
+        if not isinstance(mapped, Sequence) or isinstance(
+            mapped, (str, bytes)
+        ):
+            raise ProductionObservationBundleError(
+                "production_observation_local_history_mapping_invalid"
+            )
+        strict = [
+            digest
+            for digest in mapped
+            if metadata_by_digest.get(digest, {}).get("evidence_kind")
+            == "strict_parquet_local_observation_evidence"
+        ]
+        if len(strict) != 1:
+            raise ProductionObservationBundleError(
+                "production_observation_local_history_mapping_invalid"
+            )
+        strict_digest = strict[0]
+        strict_metadata = metadata_by_digest[strict_digest]
+        strict_digests.append(strict_digest)
+        coverage_hashes.append(
+            _required_sha256(
+                strict_metadata.get("coverage_contract_sha256"),
+                blocker=(
+                    "production_observation_local_history_coverage_hash_"
+                    "invalid"
+                ),
+            )
+        )
+        effective_values.append(str(strict_metadata["effective_available_at"]))
+    return (
+        canonical_hash({"values": coverage_hashes}),
+        canonical_hash({"values": strict_digests}),
+        max(
+            effective_values,
+            key=lambda value: parse_timestamp(
+                value, field_name="effective_available_at"
+            ),
+        ),
+    )
 
 
 def _load_current(
@@ -1578,13 +1978,14 @@ def _strict_chain_evidence(
             _required_sha256(
                 metadata.get("official_bundle_manifest_sha256"),
                 blocker=(
-                    "production_observation_chain_official_manifest_hash_invalid"
+                    "production_observation_chain_official_manifest_hash_"
+                    "invalid"
                 ),
             )
             if support_only:
                 if (
                     source_system != "pbc_official"
-                    or parser_id != PBC_MONEY_STOCK_PARSER
+                    or parser_id not in _PBC_MONEY_STOCK_PARSERS
                     or metadata.get("source_record_id") not in {"", None}
                     or metadata.get("release_at") not in {"", None}
                 ):
@@ -1633,7 +2034,8 @@ def _strict_chain_evidence(
                 _required_sha256(
                     metadata.get(field_name),
                     blocker=(
-                        "production_observation_chain_local_evidence_hash_invalid:"
+                        "production_observation_chain_local_evidence_hash_"
+                        "invalid:"
                         + field_name
                     ),
                 )
@@ -1646,6 +2048,27 @@ def _strict_chain_evidence(
                 raise ProductionObservationBundleError(
                     "production_observation_chain_local_evidence_time_invalid"
                 ) from exc
+        elif kind == "macro_market_open_days":
+            if (
+                set(metadata) != _OPEN_DAYS_EVIDENCE_METADATA_KEYS
+                or extension != ".bin"
+                or metadata.get("schema_version") != MARKET_OPEN_DAYS_SCHEMA
+                or metadata.get("market") != "CN"
+                or isinstance(metadata.get("open_date_count"), bool)
+                or not isinstance(metadata.get("open_date_count"), int)
+                or metadata.get("open_date_count", 0) <= 0
+                or not _COMPACT_DATE_RE.fullmatch(
+                    str(metadata.get("first_open_date") or "")
+                )
+                or not _COMPACT_DATE_RE.fullmatch(
+                    str(metadata.get("last_open_date") or "")
+                )
+                or str(metadata.get("first_open_date"))
+                > str(metadata.get("last_open_date"))
+            ):
+                raise ProductionObservationBundleError(
+                    "production_observation_chain_open_days_role_invalid"
+                )
         else:
             raise ProductionObservationBundleError(
                 "production_observation_chain_evidence_kind_invalid"
@@ -1690,11 +2113,680 @@ def _strict_chain_evidence(
     return files_by_digest, mapping
 
 
+def _strict_hash_list(
+    value: Any,
+    *,
+    blocker: str,
+) -> list[str]:
+    if (
+        not isinstance(value, list)
+        or value != sorted(set(value))
+        or any(
+            not isinstance(item, str) or not _SHA256_RE.fullmatch(item)
+            for item in value
+        )
+    ):
+        raise ProductionObservationBundleError(blocker)
+    return list(value)
+
+
+def _validate_projection_production_chain(
+    observations: Sequence[Mapping[str, Any] | MacroObservation],
+    *,
+    generation_manifest: Mapping[str, Any],
+    pointer_metadata: Mapping[str, Any] | None,
+    chain_schema: str,
+) -> dict[str, list[str]]:
+    """Validate exact 39-row refresh and local-roll projections."""
+
+    manifest = dict(generation_manifest)
+    if (
+        manifest.get("schema_version")
+        != "macro-observation-generation.v2"
+        or set(manifest) != _PROJECTION_GENERATION_V2_KEYS
+    ):
+        raise ProductionObservationBundleError(
+            "production_observation_projection_generation_contract_invalid"
+        )
+    try:
+        rows = _normalized_rows(observations)
+    except (TypeError, ValueError) as exc:
+        raise ProductionObservationBundleError(
+            "production_observation_projection_rows_invalid"
+        ) from exc
+    if len(rows) != _PRODUCTION_OBSERVATION_COUNT:
+        raise ProductionObservationBundleError(
+            "production_observation_projection_row_count_invalid"
+        )
+    row_hashes = {str(row["content_hash"]) for row in rows}
+    if len(row_hashes) != len(rows):
+        raise ProductionObservationBundleError(
+            "production_observation_projection_content_hash_duplicate"
+        )
+    generation_id = str(manifest.get("generation_id") or "")
+    row_count = manifest.get("row_count")
+    if (
+        manifest.get("status") != "OK"
+        or isinstance(row_count, bool)
+        or row_count != len(rows)
+        or not _GENERATION_ID_RE.fullmatch(generation_id)
+        or manifest.get("observer_only") is not True
+        or manifest.get("production_eligible") is not False
+        or manifest.get("applied") is not False
+    ):
+        raise ProductionObservationBundleError(
+            "production_observation_projection_generation_contract_invalid"
+        )
+    for field_name in (
+        "parquet_sha256",
+        "content_set_hash",
+        "parent_pointer_sha256",
+    ):
+        _required_sha256(
+            manifest.get(field_name),
+            blocker=(
+                "production_observation_projection_generation_hash_invalid:"
+                + field_name
+            ),
+        )
+    if manifest.get("content_set_hash") != canonical_hash(
+        {"hashes": sorted(row_hashes)}
+    ):
+        raise ProductionObservationBundleError(
+            "production_observation_projection_content_set_hash_mismatch"
+        )
+    parent_generation_id = str(
+        manifest.get("parent_generation_id") or ""
+    )
+    if (
+        not _GENERATION_ID_RE.fullmatch(parent_generation_id)
+        or parent_generation_id == generation_id
+    ):
+        raise ProductionObservationBundleError(
+            "production_observation_projection_parent_invalid"
+        )
+    try:
+        parse_timestamp(manifest.get("created_at"), field_name="created_at")
+    except ValueError as exc:
+        raise ProductionObservationBundleError(
+            "production_observation_projection_created_at_invalid"
+        ) from exc
+    if (
+        manifest.get("min_available_at")
+        != min(str(row["available_at"]) for row in rows)
+        or manifest.get("max_available_at")
+        != max(str(row["available_at"]) for row in rows)
+    ):
+        raise ProductionObservationBundleError(
+            "production_observation_projection_available_range_invalid"
+        )
+    added_hashes = _strict_hash_list(
+        manifest.get("added_content_hashes"),
+        blocker="production_observation_projection_added_hashes_invalid",
+    )
+    removed_hashes = _strict_hash_list(
+        manifest.get("removed_content_hashes"),
+        blocker="production_observation_projection_removed_hashes_invalid",
+    )
+    replaced_hashes = _strict_hash_list(
+        manifest.get("replaced_content_hashes"),
+        blocker="production_observation_projection_replaced_hashes_invalid",
+    )
+    if (
+        not set(replaced_hashes).issubset(added_hashes)
+        or not set(replaced_hashes).issubset(removed_hashes)
+    ):
+        raise ProductionObservationBundleError(
+            "production_observation_projection_replacement_lineage_invalid"
+        )
+
+    raw_metadata = manifest.get("metadata")
+    if not isinstance(raw_metadata, Mapping):
+        raise ProductionObservationBundleError(
+            "production_observation_projection_metadata_missing"
+        )
+    metadata = dict(raw_metadata)
+    if pointer_metadata is not None and (
+        not isinstance(pointer_metadata, Mapping)
+        or dict(pointer_metadata) != metadata
+    ):
+        raise ProductionObservationBundleError(
+            "production_observation_projection_metadata_mismatch"
+        )
+    expected_metadata_keys = (
+        _OFFICIAL_REFRESH_METADATA_KEYS
+        if chain_schema == OFFICIAL_OBSERVATION_REFRESH_SCHEMA
+        else _LOCAL_ROLL_METADATA_KEYS
+        if chain_schema == LOCAL_MARKET_OBSERVATION_ROLL_SCHEMA
+        else frozenset()
+    )
+    if set(metadata) != expected_metadata_keys:
+        raise ProductionObservationBundleError(
+            "production_observation_projection_metadata_contract_invalid"
+        )
+    logical_as_of = str(metadata.get("as_of") or "")
+    if (
+        metadata.get("schema_version") != chain_schema
+        or metadata.get("market") != "CN"
+        or not _COMPACT_DATE_RE.fullmatch(logical_as_of)
+        or metadata.get("exact_parent_projection") is not True
+    ):
+        raise ProductionObservationBundleError(
+            "production_observation_projection_target_invalid"
+        )
+    try:
+        decision_cutoff = parse_timestamp(
+            metadata.get("decision_cutoff_at"),
+            field_name="decision_cutoff_at",
+        )
+        parent_cutoff = parse_timestamp(
+            metadata.get("parent_decision_cutoff_at"),
+            field_name="parent_decision_cutoff_at",
+        )
+        available_times = [
+            parse_timestamp(row["available_at"], field_name="available_at")
+            for row in rows
+        ]
+    except ValueError as exc:
+        raise ProductionObservationBundleError(
+            "production_observation_projection_time_invalid"
+        ) from exc
+    parent_as_of = str(metadata.get("parent_as_of") or "")
+    if (
+        not _COMPACT_DATE_RE.fullmatch(parent_as_of)
+        or parent_as_of > logical_as_of
+        or parent_cutoff > decision_cutoff
+        or published_cutoff(logical_as_of) > decision_cutoff
+        or max(available_times) > decision_cutoff
+    ):
+        raise ProductionObservationBundleError(
+            "production_observation_projection_time_regression"
+        )
+    _required_sha256(
+        metadata.get("parent_content_set_hash"),
+        blocker="production_observation_projection_parent_set_hash_invalid",
+    )
+
+    official_rows = [
+        row
+        for row in rows
+        if row["indicator_id"] in _OFFICIAL_SOURCE_BY_INDICATOR
+    ]
+    local_rows = sorted(
+        [row for row in rows if row["indicator_id"] == "market.breadth"],
+        key=lambda row: (
+            str(row["period_end"]),
+            str(row["available_at"]),
+            str(row["content_hash"]),
+        ),
+    )
+    official_counts = Counter(row["indicator_id"] for row in official_rows)
+    if (
+        len(official_rows) != 36
+        or len(local_rows) != 3
+        or set(official_counts) != set(_OFFICIAL_SOURCE_BY_INDICATOR)
+        or set(official_counts.values()) != {_HISTORY_LENGTH}
+    ):
+        raise ProductionObservationBundleError(
+            "production_observation_projection_row_scope_invalid"
+        )
+    if any(
+        row["source_system"]
+        != _OFFICIAL_SOURCE_BY_INDICATOR[row["indicator_id"]]
+        or row["dimension_type"] != "national"
+        or row["quality_status"] != "pass"
+        for row in official_rows
+    ):
+        raise ProductionObservationBundleError(
+            "production_observation_projection_official_policy_invalid"
+        )
+    if any(
+        row["source_system"] != "local_strict_parquet"
+        or row["dimension_type"] != "market_confirmation"
+        or row["frequency"] != "daily"
+        or row["unit"] != "%"
+        or row["quality_status"] != "pass"
+        for row in local_rows
+    ):
+        raise ProductionObservationBundleError(
+            "production_observation_projection_local_policy_invalid"
+        )
+    local_dates = [
+        str(row["period_end"]).replace("-", "") for row in local_rows
+    ]
+    if local_dates != sorted(set(local_dates)):
+        raise ProductionObservationBundleError(
+            "production_observation_projection_local_dates_invalid"
+        )
+
+    pinned_dates_value = metadata.get("pinned_open_dates")
+    if not isinstance(pinned_dates_value, list):
+        raise ProductionObservationBundleError(
+            "production_observation_projection_open_dates_invalid"
+        )
+    pinned_dates = _normalized_open_dates(
+        pinned_dates_value,
+        blocker="production_observation_projection_open_dates_invalid",
+    )
+    positions = {value: index for index, value in enumerate(pinned_dates)}
+    if logical_as_of not in positions or any(
+        value not in positions for value in local_dates
+    ):
+        raise ProductionObservationBundleError(
+            "production_observation_projection_open_date_missing"
+        )
+    local_positions = [positions[value] for value in local_dates]
+    if (
+        local_positions[1] != local_positions[0] + 1
+        or local_positions[2] != local_positions[1] + 1
+    ):
+        raise ProductionObservationBundleError(
+            "production_observation_projection_local_sessions_not_consecutive"
+        )
+    latest_local = local_dates[-1]
+    lag = positions[logical_as_of] - positions[latest_local]
+    if lag not in {0, 1, 2}:
+        raise ProductionObservationBundleError(
+            "production_observation_projection_local_lag_invalid"
+        )
+    raw_lag = metadata.get("local_open_session_lag")
+    if (
+        isinstance(raw_lag, bool)
+        or raw_lag != lag
+        or metadata.get("latest_local_trade_date") != latest_local
+    ):
+        raise ProductionObservationBundleError(
+            "production_observation_projection_local_lag_binding_invalid"
+        )
+    market_open_days_path = str(metadata.get("market_open_days_path") or "")
+    normalized_open_days_path = _absolute_path(
+        market_open_days_path,
+        blocker="production_observation_projection_open_days_path_invalid",
+    )
+    if str(normalized_open_days_path) != market_open_days_path:
+        raise ProductionObservationBundleError(
+            "production_observation_projection_open_days_path_invalid"
+        )
+    open_days_sha = _required_sha256(
+        metadata.get("market_open_days_sha256"),
+        blocker="production_observation_projection_open_days_hash_invalid",
+    )
+
+    try:
+        snapshot = build_macro_snapshot(
+            rows,
+            market="CN",
+            as_of=logical_as_of,
+            decision_cutoff_at=decision_cutoff,
+        ).to_dict()
+    except (TypeError, ValueError) as exc:
+        raise ProductionObservationBundleError(
+            "production_observation_projection_snapshot_invalid"
+        ) from exc
+    if (
+        snapshot.get("readiness_status") != "pass"
+        or snapshot.get("blockers") not in ([], ())
+        or float(snapshot.get("coverage", {}).get("national", -1.0))
+        != _EXPECTED_NATIONAL_COVERAGE
+        or metadata.get("validated_snapshot_hash")
+        != snapshot.get("snapshot_hash")
+    ):
+        raise ProductionObservationBundleError(
+            "production_observation_projection_snapshot_binding_invalid"
+        )
+
+    files_by_digest, mapping = _strict_chain_evidence(
+        manifest,
+        row_hashes=row_hashes,
+    )
+    metadata_by_digest = {
+        digest: item["metadata"] for digest, item in files_by_digest.items()
+    }
+    official_evidence = {
+        digest
+        for digest, item in metadata_by_digest.items()
+        if item["evidence_kind"] == "official_web_response_entity"
+    }
+    support_evidence = {
+        digest
+        for digest in official_evidence
+        if metadata_by_digest[digest]["support_only"] is True
+    }
+    strict_local_evidence = {
+        digest
+        for digest, item in metadata_by_digest.items()
+        if item["evidence_kind"]
+        == "strict_parquet_local_observation_evidence"
+    }
+    generic_local_evidence = {
+        digest
+        for digest, item in metadata_by_digest.items()
+        if item["evidence_kind"] == "macro_local_bound_input"
+    }
+    open_days_evidence = {
+        digest
+        for digest, item in metadata_by_digest.items()
+        if item["evidence_kind"] == "macro_market_open_days"
+    }
+    if (
+        len(official_evidence) != 12
+        or len(support_evidence) != 1
+        or len(strict_local_evidence) != 3
+        or open_days_sha not in open_days_evidence
+    ):
+        raise ProductionObservationBundleError(
+            "production_observation_projection_evidence_scope_invalid"
+        )
+    open_days_metadata = metadata_by_digest[open_days_sha]
+    if (
+        open_days_metadata["open_date_count"] != len(pinned_dates)
+        or open_days_metadata["first_open_date"] != pinned_dates[0]
+        or open_days_metadata["last_open_date"] != pinned_dates[-1]
+    ):
+        raise ProductionObservationBundleError(
+            "production_observation_projection_open_days_binding_invalid"
+        )
+    official_bundle_hashes = {
+        str(metadata_by_digest[digest]["official_bundle_manifest_sha256"])
+        for digest in official_evidence
+    }
+    if len(official_bundle_hashes) != 1:
+        raise ProductionObservationBundleError(
+            "production_observation_projection_official_bundle_invalid"
+        )
+    support_digest = next(iter(support_evidence))
+    pbc_evidence = {
+        digest
+        for digest in official_evidence
+        if metadata_by_digest[digest]["source_system"] == "pbc_official"
+    }
+    pbc_parsers = {
+        str(metadata_by_digest[digest]["parser_id"])
+        for digest in pbc_evidence
+    }
+    if (
+        len(pbc_evidence) != 4
+        or len(pbc_parsers) != 1
+        or not pbc_parsers.issubset(_PBC_MONEY_STOCK_PARSERS)
+        or support_digest not in pbc_evidence
+    ):
+        raise ProductionObservationBundleError(
+            "production_observation_projection_pbc_parser_set_invalid"
+        )
+    pbc_parser = next(iter(pbc_parsers))
+
+    for row in official_rows:
+        content_hash = str(row["content_hash"])
+        mapped = set(mapping[content_hash])
+        if not mapped.issubset(official_evidence | open_days_evidence):
+            raise ProductionObservationBundleError(
+                "production_observation_projection_official_mapping_invalid"
+            )
+        mapped_official = mapped & official_evidence
+        primary = [
+            digest
+            for digest in mapped_official
+            if metadata_by_digest[digest]["support_only"] is False
+        ]
+        expected_support = (
+            {support_digest}
+            if row["source_system"] == "pboc_official"
+            else set()
+        )
+        if (
+            len(primary) != 1
+            or mapped_official & support_evidence != expected_support
+        ):
+            raise ProductionObservationBundleError(
+                "production_observation_projection_official_mapping_invalid"
+            )
+        primary_metadata = metadata_by_digest[primary[0]]
+        parser_id = str(primary_metadata["parser_id"])
+        allowed_parsers = (
+            {pbc_parser}
+            if row["source_system"] == "pboc_official"
+            else {NBS_OFFICIAL_PMI_PARSER}
+            if row["indicator_id"] == "cn.pmi_manufacturing"
+            else {
+                NBS_NATIONAL_ECONOMY_PARSER,
+                NBS_QUARTERLY_GDP_PARSER,
+            }
+            if row["indicator_id"] == "cn.gdp_yoy"
+            else {NBS_NATIONAL_ECONOMY_PARSER}
+        )
+        try:
+            primary_release = parse_timestamp(
+                primary_metadata["release_at"], field_name="release_at"
+            )
+            row_release = parse_timestamp(
+                row["release_at"], field_name="release_at"
+            )
+        except ValueError as exc:
+            raise ProductionObservationBundleError(
+                "production_observation_projection_official_mapping_invalid"
+            ) from exc
+        if (
+            parser_id not in allowed_parsers
+            or primary_metadata["source_system"]
+            != _EVIDENCE_SOURCE_BY_OBSERVATION_SOURCE[row["source_system"]]
+            or primary_metadata["source_record_id"]
+            != row["source_record_id"]
+            or primary_metadata["source_url"] != row["source_url"]
+            or primary_release != row_release
+            or not _official_period_matches_row(
+                str(primary_metadata["period"]), str(row["period_end"])
+            )
+        ):
+            raise ProductionObservationBundleError(
+                "production_observation_projection_official_mapping_invalid"
+            )
+
+    local_binding_by_hash: dict[str, dict[str, Any]] = {}
+    for row in local_rows:
+        content_hash = str(row["content_hash"])
+        mapped = set(mapping[content_hash])
+        allowed = (
+            strict_local_evidence
+            | generic_local_evidence
+            | open_days_evidence
+        )
+        if not mapped.issubset(allowed):
+            raise ProductionObservationBundleError(
+                "production_observation_projection_local_mapping_invalid"
+            )
+        mapped_strict = mapped & strict_local_evidence
+        mapped_generic = mapped & generic_local_evidence
+        if len(mapped_strict) != 1 or len(mapped_generic) not in {3, 4, 5}:
+            raise ProductionObservationBundleError(
+                "production_observation_projection_local_mapping_invalid"
+            )
+        strict_digest = next(iter(mapped_strict))
+        strict_metadata = metadata_by_digest[strict_digest]
+        target = str(row["period_end"]).replace("-", "")
+        try:
+            strict_effective = parse_timestamp(
+                strict_metadata["effective_available_at"],
+                field_name="effective_available_at",
+            )
+            row_available = parse_timestamp(
+                row["available_at"], field_name="available_at"
+            )
+        except ValueError as exc:
+            raise ProductionObservationBundleError(
+                "production_observation_projection_local_mapping_invalid"
+            ) from exc
+        if (
+            strict_metadata["target_trade_date"] != target
+            or strict_effective != row_available
+        ):
+            raise ProductionObservationBundleError(
+                "production_observation_projection_local_mapping_invalid"
+            )
+        local_binding_by_hash[content_hash] = {
+            "target": target,
+            "strict_digest": strict_digest,
+            "strict_metadata": strict_metadata,
+        }
+
+    ordered_local_hashes = sorted(
+        local_binding_by_hash,
+        key=lambda value: local_binding_by_hash[value]["target"],
+    )
+    expected_coverage_hash = canonical_hash(
+        {
+            "values": [
+                local_binding_by_hash[value]["strict_metadata"][
+                    "coverage_contract_sha256"
+                ]
+                for value in ordered_local_hashes
+            ]
+        }
+    )
+    expected_local_evidence_hash = canonical_hash(
+        {
+            "values": [
+                local_binding_by_hash[value]["strict_digest"]
+                for value in ordered_local_hashes
+            ]
+        }
+    )
+    expected_local_effective = max(
+        (
+            str(
+                local_binding_by_hash[value]["strict_metadata"][
+                    "effective_available_at"
+                ]
+            )
+            for value in ordered_local_hashes
+        ),
+        key=lambda value: parse_timestamp(
+            value, field_name="effective_available_at"
+        ),
+    )
+    if chain_schema == OFFICIAL_OBSERVATION_REFRESH_SCHEMA and (
+        metadata.get("local_coverage_contract_sha256")
+        != expected_coverage_hash
+        or metadata.get("local_effective_available_at")
+        != expected_local_effective
+    ):
+        raise ProductionObservationBundleError(
+            "production_observation_projection_local_binding_invalid"
+        )
+
+    official_hashes = {str(row["content_hash"]) for row in official_rows}
+    local_hashes = {str(row["content_hash"]) for row in local_rows}
+    if chain_schema == OFFICIAL_OBSERVATION_REFRESH_SCHEMA:
+        for field_name in (
+            "official_bundle_manifest_sha256",
+            "official_plan_sha256",
+            "retained_local_evidence_sha256",
+        ):
+            _required_sha256(
+                metadata.get(field_name),
+                blocker=(
+                    "production_observation_projection_metadata_hash_invalid:"
+                    + field_name
+                ),
+            )
+        if (
+            set(added_hashes) != official_hashes
+            or not removed_hashes
+            or set(replaced_hashes) != official_hashes.intersection(
+                removed_hashes
+            )
+            or official_bundle_hashes
+            != {str(metadata["official_bundle_manifest_sha256"])}
+            or metadata["retained_local_trade_dates"] != local_dates
+            or metadata["retained_local_content_hashes"]
+            != sorted(local_hashes)
+            or metadata["retained_local_evidence_sha256"]
+            != expected_local_evidence_hash
+            or any(
+                open_days_sha not in mapping[content_hash]
+                for content_hash in official_hashes
+            )
+        ):
+            raise ProductionObservationBundleError(
+                "production_observation_projection_refresh_lineage_invalid"
+            )
+    else:
+        if (
+            replaced_hashes
+            or len(added_hashes) != 1
+            or added_hashes[0] not in local_hashes
+            or not removed_hashes
+            or any(value in row_hashes for value in removed_hashes)
+            or metadata.get("update_mode")
+            not in {"local_catchup", "next_date_roll", "same_date_correction"}
+            or metadata.get("local_target_trade_date") != logical_as_of
+            or latest_local != logical_as_of
+            or lag != 0
+            or metadata.get("retained_local_trade_dates")
+            != [
+                local_binding_by_hash[value]["target"]
+                for value in ordered_local_hashes
+                if value != added_hashes[0]
+            ]
+            or metadata.get("retained_local_content_hashes")
+            != sorted(local_hashes - {added_hashes[0]})
+            or open_days_sha not in mapping[added_hashes[0]]
+        ):
+            raise ProductionObservationBundleError(
+                "production_observation_projection_local_roll_lineage_invalid"
+            )
+        for field_name in (
+            "local_snapshot_manifest_sha256",
+            "local_coverage_manifest_sha256",
+            "local_scope_artifact_sha256",
+        ):
+            _required_sha256(
+                metadata.get(field_name),
+                blocker=(
+                    "production_observation_projection_metadata_hash_invalid:"
+                    + field_name
+                ),
+            )
+        added_binding = local_binding_by_hash[added_hashes[0]]
+        declared_source_digests = {
+            _required_sha256(
+                metadata.get(field_name),
+                blocker=(
+                    "production_observation_projection_metadata_hash_invalid:"
+                    + field_name
+                ),
+            )
+            for field_name in (
+                "local_snapshot_manifest_sha256",
+                "local_coverage_manifest_sha256",
+                "local_scope_artifact_sha256",
+            )
+        }
+        added_generic_digests = (
+            set(mapping[added_hashes[0]]) & generic_local_evidence
+        )
+        if (
+            len(declared_source_digests) not in {2, 3}
+            or not declared_source_digests.issubset(
+                added_generic_digests
+            )
+            or
+            metadata["local_coverage_contract_sha256"]
+            != added_binding["strict_metadata"]["coverage_contract_sha256"]
+            or metadata["local_effective_available_at"]
+            != added_binding["strict_metadata"]["effective_available_at"]
+        ):
+            raise ProductionObservationBundleError(
+                "production_observation_projection_local_roll_binding_invalid"
+            )
+    return mapping
+
+
 def validate_production_observation_chain(
     observations: Sequence[Mapping[str, Any] | MacroObservation],
     *,
     generation_manifest: Mapping[str, Any],
     pointer_metadata: Mapping[str, Any] | None = None,
+    canonical_root: str | Path | None = None,
 ) -> dict[str, list[str]]:
     """Validate the complete production bootstrap/update evidence chain.
 
@@ -1702,6 +2794,8 @@ def validate_production_observation_chain(
     pointer's ``generation_manifest`` and its pointer-level ``metadata``.  A
     normalized observation-to-evidence mapping is returned only after the
     metadata, lineage, target, row-source policy and evidence roles all pass.
+    Projection schemas additionally require ``canonical_root`` so every
+    declared parent can be read back and its pointer binding replayed.
     """
 
     if (
@@ -1713,6 +2807,32 @@ def validate_production_observation_chain(
             "local_market_observation_existing_generation_v2_required"
         )
     manifest = dict(generation_manifest)
+    raw_metadata = manifest.get("metadata")
+    projection_schema = (
+        str(raw_metadata.get("schema_version") or "")
+        if isinstance(raw_metadata, Mapping)
+        else ""
+    )
+    if projection_schema in {
+        OFFICIAL_OBSERVATION_REFRESH_SCHEMA,
+        LOCAL_MARKET_OBSERVATION_ROLL_SCHEMA,
+    }:
+        mapping = _validate_projection_production_chain(
+            observations,
+            generation_manifest=manifest,
+            pointer_metadata=pointer_metadata,
+            chain_schema=projection_schema,
+        )
+        if canonical_root is None:
+            raise ProductionObservationBundleError(
+                "production_observation_projection_parent_readback_required"
+            )
+        _validate_projection_parent_lineage(
+            observations,
+            generation_manifest=manifest,
+            canonical_root=canonical_root,
+        )
+        return mapping
     if set(manifest) != _GENERATION_V2_KEYS:
         raise ProductionObservationBundleError(
             "production_observation_chain_generation_contract_invalid"
@@ -1973,11 +3093,29 @@ def validate_production_observation_chain(
     support_metadata = metadata_by_digest[support_digest]
     if (
         support_metadata["source_system"] != "pbc_official"
-        or support_metadata["parser_id"] != PBC_MONEY_STOCK_PARSER
+        or support_metadata["parser_id"] not in _PBC_MONEY_STOCK_PARSERS
     ):
         raise ProductionObservationBundleError(
             "production_observation_chain_support_role_invalid"
         )
+    pbc_evidence = {
+        digest
+        for digest in official_evidence
+        if metadata_by_digest[digest]["source_system"] == "pbc_official"
+    }
+    pbc_parser_ids = {
+        str(metadata_by_digest[digest]["parser_id"])
+        for digest in pbc_evidence
+    }
+    if (
+        len(pbc_evidence) != 4
+        or len(pbc_parser_ids) != 1
+        or not pbc_parser_ids.issubset(_PBC_MONEY_STOCK_PARSERS)
+    ):
+        raise ProductionObservationBundleError(
+            "production_observation_chain_pbc_parser_set_invalid"
+        )
+    pbc_parser = next(iter(pbc_parser_ids))
     official_bundle_hashes = {
         str(metadata_by_digest[digest]["official_bundle_manifest_sha256"])
         for digest in official_evidence
@@ -2003,14 +3141,17 @@ def validate_production_observation_chain(
             if row["source_system"] == "pboc_official"
             else set()
         )
-        if len(primary) != 1 or (mapped & support_evidence) != expected_support:
+        if (
+            len(primary) != 1
+            or (mapped & support_evidence) != expected_support
+        ):
             raise ProductionObservationBundleError(
                 "production_observation_chain_official_mapping_role_invalid"
             )
         primary_metadata = metadata_by_digest[primary[0]]
         parser_id = str(primary_metadata["parser_id"])
         allowed_parsers = (
-            {PBC_MONEY_STOCK_PARSER}
+            {pbc_parser}
             if row["source_system"] == "pboc_official"
             else {NBS_OFFICIAL_PMI_PARSER}
             if row["indicator_id"] == "cn.pmi_manufacturing"
@@ -2257,6 +3398,192 @@ def validate_production_observation_chain(
     return mapping
 
 
+def _validate_projection_parent_lineage(
+    observations: Sequence[Mapping[str, Any] | MacroObservation],
+    *,
+    generation_manifest: Mapping[str, Any],
+    canonical_root: str | Path,
+) -> None:
+    """Read back every projection parent and replay the exact set lineage."""
+
+    current_rows = _normalized_rows(observations)
+    current_manifest = dict(generation_manifest)
+    seen: set[str] = set()
+    while True:
+        current_generation_id = str(
+            current_manifest.get("generation_id") or ""
+        )
+        if (
+            not _GENERATION_ID_RE.fullmatch(current_generation_id)
+            or current_generation_id in seen
+        ):
+            raise ProductionObservationBundleError(
+                "production_observation_projection_parent_cycle_invalid"
+            )
+        seen.add(current_generation_id)
+        current_metadata = current_manifest.get("metadata")
+        if not isinstance(current_metadata, Mapping):
+            raise ProductionObservationBundleError(
+                "production_observation_projection_metadata_missing"
+            )
+        current_schema = str(
+            current_metadata.get("schema_version") or ""
+        )
+        if current_schema not in {
+            OFFICIAL_OBSERVATION_REFRESH_SCHEMA,
+            LOCAL_MARKET_OBSERVATION_ROLL_SCHEMA,
+        }:
+            return
+        parent_generation_id = str(
+            current_manifest.get("parent_generation_id") or ""
+        )
+        if (
+            not _GENERATION_ID_RE.fullmatch(parent_generation_id)
+            or parent_generation_id in seen
+        ):
+            raise ProductionObservationBundleError(
+                "production_observation_projection_parent_cycle_invalid"
+            )
+        try:
+            parent_rows, parent_pointer = load_observations(
+                canonical_root,
+                generation_id=parent_generation_id,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise ProductionObservationBundleError(
+                "production_observation_projection_parent_readback_invalid"
+            ) from exc
+        parent_manifest = parent_pointer.get("generation_manifest")
+        if not isinstance(parent_manifest, Mapping):
+            raise ProductionObservationBundleError(
+                "production_observation_projection_parent_manifest_invalid"
+            )
+        parent_metadata = parent_manifest.get("metadata")
+        if not isinstance(parent_metadata, Mapping):
+            raise ProductionObservationBundleError(
+                "production_observation_projection_parent_metadata_invalid"
+            )
+        parent_pointer_document = {
+            "schema_version": "macro-observation-pointer.v1",
+            "status": "OK",
+            "generation_id": parent_generation_id,
+            "table_path": (
+                f"_generations/{parent_generation_id}/observations.parquet"
+            ),
+            "manifest_path": (
+                f"_generations/{parent_generation_id}/manifest.json"
+            ),
+            "parquet_sha256": parent_manifest.get("parquet_sha256"),
+            "manifest_sha256": parent_pointer.get("manifest_sha256"),
+            "content_set_hash": parent_manifest.get("content_set_hash"),
+            "row_count": parent_manifest.get("row_count"),
+            "previous_generation_id": str(
+                parent_manifest.get("parent_generation_id") or ""
+            ),
+            "observer_only": True,
+            "production_eligible": False,
+            "applied": False,
+            "metadata": dict(parent_metadata),
+        }
+        reconstructed_parent_pointer_sha = _sha256(
+            _store_json_document_bytes(parent_pointer_document)
+        )
+        if reconstructed_parent_pointer_sha != str(
+            current_manifest.get("parent_pointer_sha256") or ""
+        ):
+            raise ProductionObservationBundleError(
+                "production_observation_projection_parent_pointer_mismatch"
+            )
+        parent_content_set_hash = str(
+            parent_manifest.get("content_set_hash") or ""
+        )
+        if (
+            parent_content_set_hash
+            != str(current_metadata.get("parent_content_set_hash") or "")
+            or str(parent_metadata.get("as_of") or "")
+            != str(current_metadata.get("parent_as_of") or "")
+        ):
+            raise ProductionObservationBundleError(
+                "production_observation_projection_parent_binding_mismatch"
+            )
+        try:
+            parent_cutoff = parse_timestamp(
+                parent_metadata.get("decision_cutoff_at"),
+                field_name="decision_cutoff_at",
+            )
+            declared_parent_cutoff = parse_timestamp(
+                current_metadata.get("parent_decision_cutoff_at"),
+                field_name="parent_decision_cutoff_at",
+            )
+        except ValueError as exc:
+            raise ProductionObservationBundleError(
+                "production_observation_projection_parent_binding_mismatch"
+            ) from exc
+        if parent_cutoff != declared_parent_cutoff:
+            raise ProductionObservationBundleError(
+                "production_observation_projection_parent_binding_mismatch"
+            )
+        parent_hashes = {
+            str(row["content_hash"]) for row in _normalized_rows(parent_rows)
+        }
+        child_hashes = {
+            str(row["content_hash"]) for row in current_rows
+        }
+        removed_hashes = set(
+            _strict_hash_list(
+                current_manifest.get("removed_content_hashes"),
+                blocker=(
+                    "production_observation_projection_removed_hashes_"
+                    "invalid"
+                ),
+            )
+        )
+        added_hashes = set(
+            _strict_hash_list(
+                current_manifest.get("added_content_hashes"),
+                blocker=(
+                    "production_observation_projection_added_hashes_invalid"
+                ),
+            )
+        )
+        replaced_hashes = set(
+            _strict_hash_list(
+                current_manifest.get("replaced_content_hashes"),
+                blocker=(
+                    "production_observation_projection_replaced_hashes_"
+                    "invalid"
+                ),
+            )
+        )
+        if (
+            not removed_hashes.issubset(parent_hashes)
+            or child_hashes != (parent_hashes - removed_hashes) | added_hashes
+            or replaced_hashes != parent_hashes & added_hashes
+        ):
+            raise ProductionObservationBundleError(
+                "production_observation_projection_parent_partition_mismatch"
+            )
+        parent_schema = str(parent_metadata.get("schema_version") or "")
+        if parent_schema in {
+            OFFICIAL_OBSERVATION_REFRESH_SCHEMA,
+            LOCAL_MARKET_OBSERVATION_ROLL_SCHEMA,
+        }:
+            _validate_projection_production_chain(
+                parent_rows,
+                generation_manifest=parent_manifest,
+                pointer_metadata=parent_metadata,
+                chain_schema=parent_schema,
+            )
+        else:
+            validate_production_observation_chain(
+                parent_rows,
+                generation_manifest=parent_manifest,
+                pointer_metadata=parent_metadata,
+            )
+        current_rows = _normalized_rows(parent_rows)
+        current_manifest = dict(parent_manifest)
+
+
 def _validated_existing_production_chain(
     rows: Sequence[Mapping[str, Any]],
     pointer: Mapping[str, Any],
@@ -2286,6 +3613,7 @@ def _validated_existing_production_chain(
         rows,
         generation_manifest=manifest,
         pointer_metadata=pointer_metadata,
+        canonical_root=canonical_root,
     )
     chain_schema = str(metadata.get("schema_version") or "")
     if chain_schema not in _PRODUCTION_CHAIN_SCHEMAS:
@@ -2325,9 +3653,28 @@ def _validated_existing_production_chain(
         if str(row.get("indicator_id") or "") == "market.breadth"
         and str(row.get("source_system") or "") == "local_strict_parquet"
     )
-    if not local_periods or local_periods[-1] != logical_as_of:
+    expected_latest_local = (
+        str(metadata.get("latest_local_trade_date") or "")
+        if chain_schema
+        in {
+            OFFICIAL_OBSERVATION_REFRESH_SCHEMA,
+            LOCAL_MARKET_OBSERVATION_ROLL_SCHEMA,
+        }
+        else logical_as_of
+    )
+    if not local_periods or local_periods[-1] != expected_latest_local:
         raise ProductionObservationBundleError(
             "local_market_observation_production_chain_as_of_row_mismatch"
+        )
+    if chain_schema in {
+        OFFICIAL_OBSERVATION_REFRESH_SCHEMA,
+        LOCAL_MARKET_OBSERVATION_ROLL_SCHEMA,
+    }:
+        return _ExistingProductionChain(
+            observation_mapping=strict_mapping,
+            logical_as_of=logical_as_of,
+            decision_cutoff_at=decision_cutoff,
+            generation_id=str(pointer.get("generation_id") or ""),
         )
     for field_name in (
         "local_snapshot_manifest_sha256",
@@ -2494,6 +3841,7 @@ def _strict_publication_readback(
     decision_cutoff_at: Any | None,
     expected_incoming_evidence_hashes: set[str],
     expected_final_evidence_mapping: Mapping[str, Sequence[str]],
+    canonical_root: str | Path | None = None,
 ) -> None:
     normalized = _normalized_rows(final_rows)
     if normalized != list(expected_rows):
@@ -2554,6 +3902,7 @@ def _strict_publication_readback(
         normalized,
         generation_manifest=generation_manifest,
         pointer_metadata=metadata if isinstance(metadata, Mapping) else None,
+        canonical_root=canonical_root,
     )
 
 
@@ -2633,6 +3982,7 @@ def publish_macro_production_observation_bundle(
             decision_cutoff_at=decision_cutoff,
             expected_incoming_evidence_hashes=set(evidence.bodies),
             expected_final_evidence_mapping=evidence.observation_mapping,
+            canonical_root=canonical_observations_root,
         )
 
     publication = publish_observations(
@@ -2731,6 +4081,606 @@ def publish_macro_production_observation_bundle(
         "snapshot_national_coverage": float(snapshot["coverage"]["national"]),
         "snapshot_blockers": list(snapshot["blockers"]),
         "atomic_combined_publication": True,
+        "strict_readback_validated": True,
+    }
+
+
+def publish_macro_official_observation_refresh(
+    *,
+    official_bundle_manifest_path: str | Path,
+    expected_official_bundle_manifest_sha256: str,
+    expected_official_plan_sha256: str,
+    target_as_of: str,
+    decision_cutoff_at: Any,
+    pinned_open_dates: Sequence[str],
+    market_open_days_path: str | Path,
+    expected_market_open_days_sha256: str,
+    canonical_observations_root: str | Path,
+    run_id: str,
+    expected_pointer_sha256: str,
+) -> dict[str, Any]:
+    """Replace the complete official scope and retain exactly three locals."""
+
+    target = str(target_as_of or "").strip()
+    if not _COMPACT_DATE_RE.fullmatch(target):
+        raise ProductionObservationBundleError(
+            "production_official_refresh_target_as_of_invalid"
+        )
+    try:
+        decision_cutoff = parse_timestamp(
+            decision_cutoff_at,
+            field_name="decision_cutoff_at",
+        )
+    except ValueError as exc:
+        raise ProductionObservationBundleError(
+            "production_official_refresh_decision_cutoff_invalid"
+        ) from exc
+    if (
+        decision_cutoff < published_cutoff(target)
+        or decision_cutoff > datetime.now(UTC)
+    ):
+        raise ProductionObservationBundleError(
+            "production_official_refresh_decision_cutoff_invalid"
+        )
+    official_manifest_sha = _required_sha256(
+        expected_official_bundle_manifest_sha256,
+        blocker="production_official_refresh_manifest_sha256_invalid",
+    )
+    official_plan_sha = _required_sha256(
+        expected_official_plan_sha256,
+        blocker="production_official_refresh_plan_sha256_invalid",
+    )
+    pinned = _load_pinned_open_days(
+        market_open_days_path=market_open_days_path,
+        expected_market_open_days_sha256=(
+            expected_market_open_days_sha256
+        ),
+        pinned_open_dates=pinned_open_dates,
+    )
+    existing, current_pointer_sha, current_pointer = _load_current(
+        canonical_observations_root,
+        expected_pointer_sha256=expected_pointer_sha256,
+    )
+    if not existing:
+        raise ProductionObservationBundleError(
+            "production_official_refresh_parent_required"
+        )
+    parent_chain = _validated_existing_production_chain(
+        existing,
+        current_pointer,
+        canonical_root=canonical_observations_root,
+    )
+    if (
+        parent_chain.logical_as_of > target
+        or parent_chain.decision_cutoff_at > decision_cutoff
+    ):
+        raise ProductionObservationBundleError(
+            "production_official_refresh_parent_time_regression"
+        )
+    selected_local, local_lag = _select_latest_local_history(
+        existing,
+        target_as_of=target,
+        decision_cutoff=decision_cutoff,
+        pinned_open_dates=pinned.open_dates,
+    )
+    selected_local_rows = _normalized_rows(selected_local)
+    selected_local_hashes = {
+        str(row["content_hash"]) for row in selected_local_rows
+    }
+    local_dates = sorted(
+        str(row["period_end"]).replace("-", "")
+        for row in selected_local_rows
+    )
+
+    official, official_evidence = _official_evidence_inputs(
+        manifest_path=official_bundle_manifest_path,
+        expected_manifest_sha256=official_manifest_sha,
+        expected_plan_sha256=official_plan_sha,
+    )
+    incoming_evidence = _with_open_days_evidence(
+        official_evidence,
+        pinned,
+    )
+    observations = tuple(official.observations) + tuple(
+        MacroObservation.from_mapping(row) for row in selected_local_rows
+    )
+    expected_rows = _normalized_rows(observations)
+    snapshot = _validated_production_snapshot(
+        observations,
+        as_of=target,
+        decision_cutoff_at=decision_cutoff,
+    )
+    official_hashes = {
+        item.content_hash for item in official.observations
+    }
+    if (
+        len(official_hashes) != 36
+        or official_hashes & selected_local_hashes
+    ):
+        raise ProductionObservationBundleError(
+            "production_official_refresh_incoming_scope_invalid"
+        )
+    parent_hashes = {
+        str(row["content_hash"]) for row in _normalized_rows(existing)
+    }
+    removed_parent_hashes = parent_hashes - selected_local_hashes
+    if selected_local_hashes | removed_parent_hashes != parent_hashes:
+        raise ProductionObservationBundleError(
+            "production_official_refresh_parent_partition_invalid"
+        )
+    expected_final_mapping = {
+        content_hash: list(parent_chain.observation_mapping[content_hash])
+        for content_hash in sorted(selected_local_hashes)
+    }
+    expected_final_mapping.update(
+        {
+            content_hash: sorted(set(digests))
+            for content_hash, digests in (
+                incoming_evidence.observation_mapping.items()
+            )
+        }
+    )
+    if set(expected_final_mapping) != {
+        str(row["content_hash"]) for row in expected_rows
+    }:
+        raise ProductionObservationBundleError(
+            "production_official_refresh_evidence_mapping_invalid"
+        )
+    parent_manifest = current_pointer.get("generation_manifest")
+    if not isinstance(parent_manifest, Mapping):
+        raise ProductionObservationBundleError(
+            "production_official_refresh_parent_manifest_missing"
+        )
+    parent_content_set_hash = _required_sha256(
+        parent_manifest.get("content_set_hash"),
+        blocker="production_official_refresh_parent_set_hash_invalid",
+    )
+    (
+        local_coverage_hash,
+        local_evidence_hash,
+        local_effective,
+    ) = _local_history_binding_summary(
+        selected_local_rows,
+        generation_manifest=parent_manifest,
+        observation_mapping=parent_chain.observation_mapping,
+    )
+    metadata = {
+        "schema_version": OFFICIAL_OBSERVATION_REFRESH_SCHEMA,
+        "market": "CN",
+        "as_of": target,
+        "decision_cutoff_at": decision_cutoff.isoformat(),
+        "parent_as_of": parent_chain.logical_as_of,
+        "parent_decision_cutoff_at": (
+            parent_chain.decision_cutoff_at.isoformat()
+        ),
+        "parent_content_set_hash": parent_content_set_hash,
+        "official_bundle_manifest_sha256": (
+            official_manifest_sha
+        ),
+        "official_plan_sha256": official_plan_sha,
+        "market_open_days_path": str(pinned.path),
+        "market_open_days_sha256": pinned.sha256,
+        "pinned_open_dates": list(pinned.open_dates),
+        "latest_local_trade_date": local_dates[-1],
+        "retained_local_trade_dates": local_dates,
+        "retained_local_content_hashes": sorted(selected_local_hashes),
+        "local_open_session_lag": local_lag,
+        "retained_local_evidence_sha256": local_evidence_hash,
+        "local_coverage_contract_sha256": local_coverage_hash,
+        "local_effective_available_at": local_effective,
+        "validated_snapshot_hash": snapshot["snapshot_hash"],
+        "exact_parent_projection": True,
+    }
+
+    def _validate_before_pointer_switch(
+        final_rows: Sequence[Mapping[str, Any]],
+        generation_manifest: Mapping[str, Any],
+    ) -> None:
+        _strict_publication_readback(
+            final_rows=final_rows,
+            generation_manifest=generation_manifest,
+            expected_rows=expected_rows,
+            expected_snapshot=snapshot,
+            as_of=target,
+            decision_cutoff_at=decision_cutoff,
+            expected_incoming_evidence_hashes=set(incoming_evidence.bodies),
+            expected_final_evidence_mapping=expected_final_mapping,
+            canonical_root=canonical_observations_root,
+        )
+
+    publication = publish_observation_projection(
+        official.observations,
+        root=canonical_observations_root,
+        run_id=run_id,
+        expected_pointer_sha256=current_pointer_sha,
+        retained_parent_content_hashes=selected_local_hashes,
+        removed_parent_content_hashes=removed_parent_hashes,
+        metadata=metadata,
+        evidence_bytes=incoming_evidence.bodies,
+        evidence_metadata=incoming_evidence.metadata,
+        observation_evidence=incoming_evidence.observation_mapping,
+        precommit_validator=_validate_before_pointer_switch,
+    )
+    generation_manifest = publication.get("generation_manifest")
+    generation_evidence_count = (
+        generation_manifest.get("evidence_file_count")
+        if isinstance(generation_manifest, Mapping)
+        and isinstance(
+            generation_manifest.get("evidence_file_count"), int
+        )
+        else 0
+    )
+    return {
+        "schema_version": OFFICIAL_OBSERVATION_REFRESH_SCHEMA,
+        "status": "OK",
+        "market": "CN",
+        "as_of": target,
+        "decision_cutoff_at": decision_cutoff.isoformat(),
+        "parent_as_of": parent_chain.logical_as_of,
+        "parent_decision_cutoff_at": (
+            parent_chain.decision_cutoff_at.isoformat()
+        ),
+        "run_id": run_id,
+        "promoted": bool(publication.get("promoted")),
+        "observation_count": len(expected_rows),
+        "indicator_count": _PRODUCTION_INDICATOR_COUNT,
+        "history_length_per_indicator": _HISTORY_LENGTH,
+        "official_observation_count": len(official.observations),
+        "local_observation_count": len(selected_local_rows),
+        "official_bundle_manifest_sha256": (
+            official_manifest_sha
+        ),
+        "official_plan_sha256": official_plan_sha,
+        "market_open_days_path": str(pinned.path),
+        "market_open_days_sha256": pinned.sha256,
+        "pinned_open_dates": list(pinned.open_dates),
+        "latest_local_trade_date": local_dates[-1],
+        "retained_local_trade_dates": local_dates,
+        "retained_local_content_hashes": sorted(selected_local_hashes),
+        "local_open_session_lag": local_lag,
+        "incoming_evidence_file_count": len(incoming_evidence.bodies),
+        "generation_evidence_file_count": generation_evidence_count,
+        "generation_id": str(publication.get("generation_id") or ""),
+        "manifest_sha256": str(publication.get("manifest_sha256") or ""),
+        "content_set_hash": str(publication.get("content_set_hash") or ""),
+        "previous_pointer_sha256": current_pointer_sha,
+        "pointer_sha256": str(publication.get("pointer_sha256") or ""),
+        "snapshot_hash": str(snapshot["snapshot_hash"]),
+        "snapshot_readiness_status": str(snapshot["readiness_status"]),
+        "snapshot_national_coverage": float(snapshot["coverage"]["national"]),
+        "snapshot_blockers": list(snapshot["blockers"]),
+        "exact_parent_projection": True,
+        "strict_readback_validated": True,
+    }
+
+
+def publish_local_market_breadth_roll(
+    *,
+    snapshot_manifest_path: str | Path,
+    expected_snapshot_manifest_sha256: str,
+    coverage_manifest_path: str | Path,
+    expected_coverage_manifest_sha256: str,
+    target_trade_date: str,
+    scope_artifact_path: str | Path,
+    expected_scope_artifact_sha256: str,
+    target_as_of: str,
+    decision_cutoff_at: Any,
+    pinned_open_dates: Sequence[str],
+    market_open_days_path: str | Path,
+    expected_market_open_days_sha256: str,
+    canonical_observations_root: str | Path,
+    run_id: str,
+    expected_pointer_sha256: str,
+) -> dict[str, Any]:
+    """Catch up or roll the local breadth window to an exact 39-row child."""
+
+    target = str(target_as_of or "").strip()
+    trade_date = str(target_trade_date or "").strip()
+    if (
+        not _COMPACT_DATE_RE.fullmatch(target)
+        or trade_date != target
+    ):
+        raise ProductionObservationBundleError(
+            "production_local_roll_target_invalid"
+        )
+    try:
+        decision_cutoff = parse_timestamp(
+            decision_cutoff_at,
+            field_name="decision_cutoff_at",
+        )
+    except ValueError as exc:
+        raise ProductionObservationBundleError(
+            "production_local_roll_decision_cutoff_invalid"
+        ) from exc
+    if (
+        decision_cutoff < published_cutoff(target)
+        or decision_cutoff > datetime.now(UTC)
+    ):
+        raise ProductionObservationBundleError(
+            "production_local_roll_decision_cutoff_invalid"
+        )
+    pinned = _load_pinned_open_days(
+        market_open_days_path=market_open_days_path,
+        expected_market_open_days_sha256=(
+            expected_market_open_days_sha256
+        ),
+        pinned_open_dates=pinned_open_dates,
+    )
+    binding = _LocalTargetBinding(
+        target_trade_date=trade_date,
+        snapshot_manifest_path=_absolute_path(
+            snapshot_manifest_path,
+            blocker="production_local_snapshot_manifest_path_unsafe",
+        ),
+        expected_snapshot_manifest_sha256=_required_sha256(
+            expected_snapshot_manifest_sha256,
+            blocker="production_local_snapshot_manifest_sha256_invalid",
+        ),
+        coverage_manifest_path=_absolute_path(
+            coverage_manifest_path,
+            blocker="production_local_coverage_manifest_path_unsafe",
+        ),
+        expected_coverage_manifest_sha256=_required_sha256(
+            expected_coverage_manifest_sha256,
+            blocker="production_local_coverage_manifest_sha256_invalid",
+        ),
+        scope_artifact_path=_absolute_path(
+            scope_artifact_path,
+            blocker="production_local_scope_artifact_path_unsafe",
+        ),
+        expected_scope_artifact_sha256=_required_sha256(
+            expected_scope_artifact_sha256,
+            blocker="production_local_scope_artifact_sha256_invalid",
+        ),
+    )
+    existing, current_pointer_sha, current_pointer = _load_current(
+        canonical_observations_root,
+        expected_pointer_sha256=expected_pointer_sha256,
+    )
+    if not existing:
+        raise ProductionObservationBundleError(
+            "production_local_roll_parent_required"
+        )
+    parent_chain = _validated_existing_production_chain(
+        existing,
+        current_pointer,
+        canonical_root=canonical_observations_root,
+    )
+    if (
+        parent_chain.logical_as_of > target
+        or parent_chain.decision_cutoff_at > decision_cutoff
+    ):
+        raise ProductionObservationBundleError(
+            "production_local_roll_parent_time_regression"
+        )
+    local, local_manifest, local_evidence = _single_local_evidence_inputs(
+        binding=binding,
+        as_of=decision_cutoff,
+    )
+    incoming_evidence = _with_open_days_evidence(local_evidence, pinned)
+    incoming_rows = _normalized_rows(local)
+    incoming_hash = str(incoming_rows[0]["content_hash"])
+    parent_rows = _normalized_rows(existing)
+    parent_hashes = {str(row["content_hash"]) for row in parent_rows}
+    if incoming_hash in parent_hashes:
+        raise ProductionObservationBundleError(
+            "production_local_roll_observation_already_present"
+        )
+    selected_local, final_lag = _select_latest_local_history(
+        [*parent_rows, *incoming_rows],
+        target_as_of=target,
+        decision_cutoff=decision_cutoff,
+        pinned_open_dates=pinned.open_dates,
+    )
+    selected_local_rows = _normalized_rows(selected_local)
+    selected_local_hashes = {
+        str(row["content_hash"]) for row in selected_local_rows
+    }
+    if incoming_hash not in selected_local_hashes or final_lag != 0:
+        raise ProductionObservationBundleError(
+            "production_local_roll_incoming_not_latest"
+        )
+    official_parent_rows = [
+        row
+        for row in parent_rows
+        if row["indicator_id"] in _OFFICIAL_SOURCE_BY_INDICATOR
+    ]
+    official_parent_hashes = {
+        str(row["content_hash"]) for row in official_parent_rows
+    }
+    if len(official_parent_rows) != 36:
+        raise ProductionObservationBundleError(
+            "production_local_roll_official_scope_invalid"
+        )
+    retained_local_hashes = selected_local_hashes - {incoming_hash}
+    retained_parent_hashes = official_parent_hashes | retained_local_hashes
+    removed_parent_hashes = parent_hashes - retained_parent_hashes
+    if (
+        retained_parent_hashes | removed_parent_hashes != parent_hashes
+        or retained_parent_hashes & removed_parent_hashes
+        or not removed_parent_hashes
+    ):
+        raise ProductionObservationBundleError(
+            "production_local_roll_parent_partition_invalid"
+        )
+    expected_rows = _normalized_rows(
+        [*official_parent_rows, *selected_local_rows]
+    )
+    snapshot = _validated_production_snapshot(
+        [MacroObservation.from_mapping(row) for row in expected_rows],
+        as_of=target,
+        decision_cutoff_at=decision_cutoff,
+    )
+    expected_final_mapping = {
+        content_hash: list(parent_chain.observation_mapping[content_hash])
+        for content_hash in sorted(retained_parent_hashes)
+    }
+    expected_final_mapping[incoming_hash] = sorted(
+        set(incoming_evidence.observation_mapping[incoming_hash])
+    )
+    if set(expected_final_mapping) != {
+        str(row["content_hash"]) for row in expected_rows
+    }:
+        raise ProductionObservationBundleError(
+            "production_local_roll_evidence_mapping_invalid"
+        )
+    parent_manifest = current_pointer.get("generation_manifest")
+    if not isinstance(parent_manifest, Mapping):
+        raise ProductionObservationBundleError(
+            "production_local_roll_parent_manifest_missing"
+        )
+    parent_content_set_hash = _required_sha256(
+        parent_manifest.get("content_set_hash"),
+        blocker="production_local_roll_parent_set_hash_invalid",
+    )
+    parent_local_dates = sorted(
+        str(row["period_end"]).replace("-", "")
+        for row in parent_rows
+        if row["indicator_id"] == "market.breadth"
+    )
+    latest_parent_local = parent_local_dates[-1]
+    if latest_parent_local == target:
+        parent_same_date = [
+            row
+            for row in parent_rows
+            if row["indicator_id"] == "market.breadth"
+            and str(row["period_end"]).replace("-", "") == target
+        ]
+        incoming_available = parse_timestamp(
+            incoming_rows[0]["available_at"],
+            field_name="available_at",
+        )
+        latest_parent_available = max(
+            parse_timestamp(row["available_at"], field_name="available_at")
+            for row in parent_same_date
+        )
+        if incoming_available <= latest_parent_available:
+            raise ProductionObservationBundleError(
+                "production_local_roll_correction_available_at_not_increasing"
+            )
+    update_mode = (
+        "local_catchup"
+        if parent_chain.logical_as_of == target
+        and latest_parent_local < target
+        else "next_date_roll"
+        if latest_parent_local < target
+        else "same_date_correction"
+    )
+    retained_local_dates = sorted(
+        str(row["period_end"]).replace("-", "")
+        for row in selected_local_rows
+        if str(row["content_hash"]) != incoming_hash
+    )
+    metadata = {
+        "schema_version": LOCAL_MARKET_OBSERVATION_ROLL_SCHEMA,
+        "market": "CN",
+        "as_of": target,
+        "decision_cutoff_at": decision_cutoff.isoformat(),
+        "parent_as_of": parent_chain.logical_as_of,
+        "parent_decision_cutoff_at": (
+            parent_chain.decision_cutoff_at.isoformat()
+        ),
+        "parent_content_set_hash": parent_content_set_hash,
+        "update_mode": update_mode,
+        "local_snapshot_manifest_sha256": (
+            binding.expected_snapshot_manifest_sha256
+        ),
+        "local_coverage_manifest_sha256": (
+            binding.expected_coverage_manifest_sha256
+        ),
+        "local_scope_artifact_sha256": (
+            binding.expected_scope_artifact_sha256
+        ),
+        "local_target_trade_date": target,
+        "local_coverage_contract_sha256": str(
+            local_manifest.get("coverage_contract_sha256") or ""
+        ),
+        "local_effective_available_at": str(
+            local_manifest.get("effective_available_at") or ""
+        ),
+        "market_open_days_path": str(pinned.path),
+        "market_open_days_sha256": pinned.sha256,
+        "pinned_open_dates": list(pinned.open_dates),
+        "latest_local_trade_date": target,
+        "local_open_session_lag": 0,
+        "retained_local_trade_dates": retained_local_dates,
+        "retained_local_content_hashes": sorted(retained_local_hashes),
+        "validated_snapshot_hash": snapshot["snapshot_hash"],
+        "exact_parent_projection": True,
+    }
+
+    def _validate_before_pointer_switch(
+        final_rows: Sequence[Mapping[str, Any]],
+        generation_manifest: Mapping[str, Any],
+    ) -> None:
+        _strict_publication_readback(
+            final_rows=final_rows,
+            generation_manifest=generation_manifest,
+            expected_rows=expected_rows,
+            expected_snapshot=snapshot,
+            as_of=target,
+            decision_cutoff_at=decision_cutoff,
+            expected_incoming_evidence_hashes=set(incoming_evidence.bodies),
+            expected_final_evidence_mapping=expected_final_mapping,
+            canonical_root=canonical_observations_root,
+        )
+
+    publication = publish_observation_projection(
+        local,
+        root=canonical_observations_root,
+        run_id=run_id,
+        expected_pointer_sha256=current_pointer_sha,
+        retained_parent_content_hashes=retained_parent_hashes,
+        removed_parent_content_hashes=removed_parent_hashes,
+        metadata=metadata,
+        evidence_bytes=incoming_evidence.bodies,
+        evidence_metadata=incoming_evidence.metadata,
+        observation_evidence=incoming_evidence.observation_mapping,
+        precommit_validator=_validate_before_pointer_switch,
+    )
+    return {
+        "schema_version": LOCAL_MARKET_OBSERVATION_ROLL_SCHEMA,
+        "status": "OK",
+        "market": "CN",
+        "as_of": target,
+        "decision_cutoff_at": decision_cutoff.isoformat(),
+        "parent_as_of": parent_chain.logical_as_of,
+        "parent_decision_cutoff_at": (
+            parent_chain.decision_cutoff_at.isoformat()
+        ),
+        "update_mode": update_mode,
+        "run_id": run_id,
+        "promoted": bool(publication.get("promoted")),
+        "observation_count": len(expected_rows),
+        "indicator_count": _PRODUCTION_INDICATOR_COUNT,
+        "history_length_per_indicator": _HISTORY_LENGTH,
+        "official_observation_count": len(official_parent_rows),
+        "local_observation_count": len(selected_local_rows),
+        "local_target_trade_dates": [
+            str(row["period_end"]).replace("-", "")
+            for row in sorted(
+                selected_local_rows,
+                key=lambda row: str(row["period_end"]),
+            )
+        ],
+        "market_open_days_path": str(pinned.path),
+        "market_open_days_sha256": pinned.sha256,
+        "pinned_open_dates": list(pinned.open_dates),
+        "latest_local_trade_date": target,
+        "local_open_session_lag": 0,
+        "retained_local_trade_dates": retained_local_dates,
+        "retained_local_content_hashes": sorted(retained_local_hashes),
+        "incoming_evidence_file_count": len(incoming_evidence.bodies),
+        "generation_id": str(publication.get("generation_id") or ""),
+        "manifest_sha256": str(publication.get("manifest_sha256") or ""),
+        "content_set_hash": str(publication.get("content_set_hash") or ""),
+        "previous_pointer_sha256": current_pointer_sha,
+        "pointer_sha256": str(publication.get("pointer_sha256") or ""),
+        "snapshot_hash": str(snapshot["snapshot_hash"]),
+        "snapshot_readiness_status": str(snapshot["readiness_status"]),
+        "snapshot_national_coverage": float(snapshot["coverage"]["national"]),
+        "snapshot_blockers": list(snapshot["blockers"]),
+        "exact_parent_projection": True,
         "strict_readback_validated": True,
     }
 
@@ -2910,6 +4860,7 @@ def publish_local_market_breadth_update(
             decision_cutoff_at=decision_cutoff,
             expected_incoming_evidence_hashes=set(evidence.bodies),
             expected_final_evidence_mapping=expected_final_mapping,
+            canonical_root=canonical_observations_root,
         )
 
     publication = publish_observations(
@@ -3002,9 +4953,14 @@ def publish_local_market_breadth_update(
 __all__ = [
     "LOCAL_BREADTH_BOOTSTRAP_PLAN_SCHEMA",
     "LOCAL_MARKET_OBSERVATION_PUBLICATION_SCHEMA",
+    "LOCAL_MARKET_OBSERVATION_ROLL_SCHEMA",
+    "MARKET_OPEN_DAYS_SCHEMA",
+    "OFFICIAL_OBSERVATION_REFRESH_SCHEMA",
     "PRODUCTION_OBSERVATION_BUNDLE_SCHEMA",
     "ProductionObservationBundleError",
+    "publish_local_market_breadth_roll",
     "publish_local_market_breadth_update",
+    "publish_macro_official_observation_refresh",
     "publish_macro_production_observation_bundle",
     "validate_production_observation_chain",
 ]

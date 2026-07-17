@@ -32,6 +32,11 @@ from quant_investor.market.read_result import MarketDataReadResult
 from quant_investor.market.runtime_profile import MarketRuntimeProfiler
 from quant_investor.model_roles import ModelRoleResolution
 from tests.helpers.macro_fixture import make_v15_controls
+from tests.helpers.macro_readiness_fixture import (
+    macro_release_binding,
+    make_blocked_macro_readiness_runtime,
+    make_macro_readiness_runtime,
+)
 
 
 def _frame(symbol: str, seed: float) -> pd.DataFrame:
@@ -112,7 +117,17 @@ class _FakeReader:
         }
 
 
-def _patch_canonical_macro(monkeypatch) -> None:
+def _patch_canonical_macro(monkeypatch):
+    macro_runtime = make_macro_readiness_runtime(
+        macro_logical_date="2026-03-01",
+        target_session_date="2026-03-01",
+    )
+    calls = {"freeze": 0}
+
+    def _freeze(**kwargs):
+        calls["freeze"] += 1
+        return macro_runtime
+
     monkeypatch.setattr(
         "quant_investor.market.dag.context.load_macro_record",
         lambda **kwargs: (
@@ -136,9 +151,15 @@ def _patch_canonical_macro(monkeypatch) -> None:
                 "provider_status": "verified_provider_snapshot",
                 "production_eligible": True,
                 "v15_controls": make_v15_controls(),
+                **macro_release_binding(macro_runtime),
             },
         ),
     )
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.freeze_macro_readiness_runtime",
+        _freeze,
+    )
+    return macro_runtime, calls
 
 
 def test_empty_counterfactual_shortlist_still_requires_control_chain_replay():
@@ -158,11 +179,34 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
     import quant_investor.market.dag.context as dag_context
     import quant_investor.market.dag.packets as dag_packets
 
-    _patch_canonical_macro(monkeypatch)
+    macro_runtime, macro_runtime_calls = _patch_canonical_macro(monkeypatch)
 
     reviewed: dict[str, list[str]] = {"fundamental": []}
+    branch_readiness_calls = []
     frame_summary_calls = {"count": 0}
     provider_health_calls = {"count": 0}
+
+    def _branch_readiness(**kwargs):
+        branch_readiness_calls.append(kwargs)
+        return BranchGovernanceReport(
+            run_id="fixture",
+            market="CN",
+            category="full_a",
+            as_of="2026-03-01",
+            readiness={
+                branch: BranchDataReadiness(
+                    branch=branch,
+                    status=STATUS_PASS,
+                    coverage_ratio=1.0,
+                    source_priority=SOURCE_TUSHARE,
+                )
+                for branch in ("quant", "fundamental", "macro")
+            },
+            blocked_symbols=[],
+            quantifiable_universe=["A", "B", "C", "D"],
+            investable_universe=["A", "B"],
+            branch_data={},
+        )
     macro_observer_payload = {
         "enabled": False,
         "status": "disabled",
@@ -324,25 +368,7 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
     monkeypatch.setattr(
         dag_context,
         "assess_branch_data_readiness",
-        lambda **kwargs: BranchGovernanceReport(
-            run_id="fixture",
-            market="CN",
-            category="full_a",
-            as_of="2026-03-01",
-            readiness={
-                branch: BranchDataReadiness(
-                    branch=branch,
-                    status=STATUS_PASS,
-                    coverage_ratio=1.0,
-                    source_priority=SOURCE_TUSHARE,
-                )
-                for branch in ("quant", "fundamental", "macro")
-            },
-            blocked_symbols=[],
-            quantifiable_universe=["A", "B", "C", "D"],
-            investable_universe=["A", "B"],
-            branch_data={},
-        ),
+        _branch_readiness,
     )
     monkeypatch.setattr(
         dag_context,
@@ -382,6 +408,19 @@ def test_candidate_review_only_runs_after_funnel(monkeypatch):
     )
 
     assert reviewed["fundamental"] == ["A", "B"]
+    assert macro_runtime_calls == {"freeze": 1}
+    assert len(branch_readiness_calls) == 1
+    assert (
+        branch_readiness_calls[0]["pinned_macro_readiness_evidence"]
+        is macro_runtime.evidence
+    )
+    assert (
+        branch_readiness_calls[0]["decision_cutoff_at"]
+        == macro_runtime.decision_cutoff_at
+    )
+    assert result["global_context"].metadata[
+        "macro_readiness_runtime"
+    ] == macro_runtime.metadata()
     assert not hasattr(dag_module, "IntelligenceAgent")
     assert result["global_context"].universe_tiers["shortlistable"] == ["A", "B"]
     assert list(result["portfolio_decision"].target_weights) == ["A", "B"]
@@ -1066,6 +1105,13 @@ def test_blocked_canonical_macro_holding_review_produces_no_decision_or_targets(
     )
     monkeypatch.setattr(
         dag_context,
+        "freeze_macro_readiness_runtime",
+        lambda **kwargs: make_blocked_macro_readiness_runtime(
+            target_session_date="20260301",
+        ),
+    )
+    monkeypatch.setattr(
+        dag_context,
         "assess_branch_data_readiness",
         lambda **kwargs: BranchGovernanceReport(
             run_id="macro-blocked",
@@ -1204,6 +1250,13 @@ def test_empty_universe_still_pins_canonical_macro_once_and_fails_closed(
 
     monkeypatch.setattr(dag_module, "MarketDataReader", _EmptyReader)
     monkeypatch.setattr(dag_module, "load_macro_record", _blocked_macro_load)
+    monkeypatch.setattr(
+        dag_module,
+        "freeze_macro_readiness_runtime",
+        lambda **kwargs: make_blocked_macro_readiness_runtime(
+            target_session_date="20260301",
+        ),
+    )
     monkeypatch.setattr(dag_module.MacroAgent, "run", _unexpected_macro_run)
     monkeypatch.setattr(dag_module.config, "PIT_UNIVERSE_ENABLED", False)
 
@@ -1296,6 +1349,10 @@ def test_empty_universe_valid_macro_pin_drives_agent_and_trace(monkeypatch):
         "pit_status": "market_point_in_time",
         "fetched_at": "2026-03-01T08:00:00+00:00",
     }
+    macro_runtime = make_macro_readiness_runtime(
+        macro_logical_date="2026-03-01",
+        target_session_date="2026-03-01",
+    )
     manifest = {
         "generation_id": "empty-valid-generation",
         "parquet_sha256": "a" * 64,
@@ -1310,8 +1367,10 @@ def test_empty_universe_valid_macro_pin_drives_agent_and_trace(monkeypatch):
             volatility_percentile=35.0,
             policy_signal="supportive",
         ),
+        **macro_release_binding(macro_runtime),
     }
     load_calls = 0
+    runtime_calls = 0
     observed_snapshot = {}
 
     def _valid_macro_load(**kwargs):
@@ -1319,6 +1378,15 @@ def test_empty_universe_valid_macro_pin_drives_agent_and_trace(monkeypatch):
         load_calls += 1
         assert kwargs["as_of"] == "20260301"
         return record, manifest
+
+    def _freeze_macro(**kwargs):
+        nonlocal runtime_calls
+        runtime_calls += 1
+        assert kwargs == {
+            "macro_logical_date": "2026-03-01",
+            "target_session_date": "20260301",
+        }
+        return macro_runtime
 
     def _capture_macro_run(self, payload):
         observed_snapshot.update(payload["market_snapshot"])
@@ -1334,6 +1402,11 @@ def test_empty_universe_valid_macro_pin_drives_agent_and_trace(monkeypatch):
 
     monkeypatch.setattr(dag_module, "MarketDataReader", _EmptyReader)
     monkeypatch.setattr(dag_module, "load_macro_record", _valid_macro_load)
+    monkeypatch.setattr(
+        dag_module,
+        "freeze_macro_readiness_runtime",
+        _freeze_macro,
+    )
     monkeypatch.setattr(dag_module.MacroAgent, "run", _capture_macro_run)
     monkeypatch.setattr(dag_module.config, "PIT_UNIVERSE_ENABLED", False)
 
@@ -1357,8 +1430,10 @@ def test_empty_universe_valid_macro_pin_drives_agent_and_trace(monkeypatch):
         "generation_id": "empty-valid-generation",
         "parquet_sha256": "a" * 64,
         "generation_manifest_sha256": "b" * 64,
+        **macro_release_binding(macro_runtime),
     }
     assert load_calls == 1
+    assert runtime_calls == 1
     assert observed_snapshot["macro_score"] == 0.7
     assert observed_snapshot["liquidity_score"] == 0.4
     assert observed_snapshot["volatility_percentile"] == 35.0
@@ -1373,6 +1448,17 @@ def test_empty_universe_valid_macro_pin_drives_agent_and_trace(monkeypatch):
     assert result["global_context"].macro_data == record
     assert result["global_context"].metadata["branch_fusion_blocked"] is False
     assert result["global_context"].metadata["decision_authorized"] is False
+    runtime_metadata = result["global_context"].metadata[
+        "macro_readiness_runtime"
+    ]
+    assert (
+        runtime_metadata["macro_readiness_evidence"]
+        == macro_runtime.evidence.to_dict()
+    )
+    assert (
+        runtime_metadata["macro_readiness_evidence_semantic_sha256"]
+        == macro_runtime.evidence.semantic_sha256
+    )
     assert result["shortlist"] == []
     assert result["portfolio_decision"].target_weights == {}
     trace_outcome = result["execution_trace"].final_deterministic_outcome
@@ -1436,6 +1522,13 @@ def test_empty_universe_missing_as_of_blocks_valid_macro_without_agent(
 
     monkeypatch.setattr(dag_module, "MarketDataReader", _EmptyReader)
     monkeypatch.setattr(dag_module, "load_macro_record", _valid_macro_load)
+    monkeypatch.setattr(
+        dag_module,
+        "freeze_macro_readiness_runtime",
+        lambda **kwargs: make_blocked_macro_readiness_runtime(
+            macro_logical_date="2026-03-01",
+        ),
+    )
     monkeypatch.setattr(dag_module.MacroAgent, "run", _unexpected_macro_run)
     monkeypatch.setattr(dag_module.config, "PIT_UNIVERSE_ENABLED", False)
 

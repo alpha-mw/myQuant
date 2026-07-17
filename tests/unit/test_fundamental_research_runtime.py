@@ -350,7 +350,16 @@ def _gate_evidence() -> ActivationGateEvidenceV2:
     )
 
 
-def _write_gate_holdings_snapshot(root: Path, repo_root: Path) -> tuple[str, str]:
+def _write_gate_holdings_snapshot(
+    root: Path,
+    repo_root: Path,
+    *,
+    snapshot_generated_at: datetime | None = None,
+) -> tuple[str, str]:
+    snapshot_at = snapshot_generated_at or datetime(
+        2026, 7, 10, 11, tzinfo=UTC
+    )
+    recorded_at = snapshot_at - timedelta(hours=1)
     manual = repo_root / "manual"
     manual.mkdir(parents=True, exist_ok=True)
     ledger = manual / "ledger_after_manual_switch.parquet"
@@ -362,7 +371,7 @@ def _write_gate_holdings_snapshot(root: Path, repo_root: Path) -> tuple[str, str
             {
                 "schema_version": "cn_aggressive_manual_execution.v2",
                 "status": "no_action_carry_forward",
-                "recorded_at": "2026-07-10T10:00:00+00:00",
+                "recorded_at": recorded_at.isoformat(),
                 "ledger_after_manual_switch_parquet": ledger.name,
                 "ledger_after_manual_switch_parquet_sha256": ledger_sha,
             }
@@ -372,7 +381,7 @@ def _write_gate_holdings_snapshot(root: Path, repo_root: Path) -> tuple[str, str
         root,
         root / "state" / "holdings-scope.v1.json",
         HoldingsScopeSnapshotV1(
-            generated_at=datetime(2026, 7, 10, 11, tzinfo=UTC),
+            generated_at=snapshot_at,
             symbols=["600000.SH"],
             manual_manifest_repo_path="manual/manual_execution_manifest.json",
             manual_ledger_repo_path="manual/ledger_after_manual_switch.parquet",
@@ -1115,11 +1124,16 @@ def test_real_control_chain_and_strict_parquet_producers_feed_longitudinal_gate(
     finally:
         longitudinal_ledger.write_bytes(longitudinal_ledger_bytes)
         longitudinal_ledger.chmod(0o600)
-    _write_gate_holdings_snapshot(root, tmp_path)
+    gate_generated_at = produced_at + timedelta(seconds=2)
+    _write_gate_holdings_snapshot(
+        root,
+        tmp_path,
+        snapshot_generated_at=gate_generated_at - timedelta(seconds=1),
+    )
     evidence = build_activation_gate_evidence(
         root=root,
         holdings_snapshot_path=root / "state" / "holdings-scope.v1.json",
-        generated_at=produced_at + timedelta(seconds=2),
+        generated_at=gate_generated_at,
     )
     assert evidence.target_weight_counterfactual_dates == [date(2026, 7, 11)]
     assert evidence.nav_attribution_dates == [date(2026, 7, 12)]

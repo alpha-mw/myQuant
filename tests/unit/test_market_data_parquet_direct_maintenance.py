@@ -12,6 +12,7 @@ import quant_investor.market.download_cn as download_cn_module
 from quant_investor.market.cn_nontrading_evidence import (
     build_bak_daily_nontrading_evidence,
     canonical_json_sha256,
+    evidence_cache_path,
     file_sha256,
     symbol_set_sha256,
     write_evidence_cache,
@@ -667,6 +668,79 @@ def test_parquet_maintainer_uses_bak_daily_zero_as_evidence_only(tmp_path):
     assert payload["writes_synthetic_bars"] is False
     assert payload["regulatory_suspension_claimed"] is False
     assert not list(tmp_path.rglob("bars.parquet"))
+
+
+def test_parquet_maintainer_requeries_cached_empty_bak_daily_page(tmp_path):
+    class _Provider:
+        calls = 0
+
+        def bak_daily(self, **kwargs):
+            self.calls += 1
+            assert kwargs == {"trade_date": "20260707"}
+            return pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000001.SZ",
+                        "trade_date": "20260707",
+                        "open": 0.0,
+                        "high": 0.0,
+                        "low": 0.0,
+                        "close": 10.0,
+                        "pre_close": 10.0,
+                        "change": 0.0,
+                        "pct_chg": 0.0,
+                        "vol": 0.0,
+                        "amount": 0.0,
+                    }
+                ]
+            )
+
+    pit_path = tmp_path / "stock_basic_membership.parquet"
+    pit_path.write_bytes(b"pit")
+    pit_sha256 = file_sha256(pit_path)
+    data_dir = tmp_path / "audit"
+    cache_path = evidence_cache_path(
+        data_dir,
+        trade_date="20260707",
+        primary_missing_symbols=["000001.SZ"],
+        pit_membership_sha256=pit_sha256,
+    )
+    empty_payload = build_bak_daily_nontrading_evidence(
+        pd.DataFrame(),
+        trade_date="20260707",
+        primary_missing_symbols=["000001.SZ"],
+        query_params={"trade_date": "20260707"},
+        pit_membership_path=str(pit_path),
+        pit_membership_sha256=pit_sha256,
+    )
+    write_evidence_cache(cache_path, empty_payload)
+
+    provider = _Provider()
+    maintainer = download_module.CNParquetBatchMaintainer.__new__(
+        download_module.CNParquetBatchMaintainer
+    )
+    maintainer.downloader = type("_Downloader", (), {"pro": provider})()
+    maintainer.data_dir = data_dir
+    payload = maintainer._load_verified_nontrading_bak_daily_zero(
+        "20260707",
+        {"000001.SZ"},
+        pit_binding={
+            "path": str(pit_path),
+            "sha256": pit_sha256,
+            "records": {
+                "000001.SZ": PITUniverseRecord(
+                    symbol="000001.SZ",
+                    list_date="20200101",
+                    source_list_status="L",
+                )
+            },
+            "blockers": [],
+        },
+    )
+
+    assert provider.calls == 1
+    assert payload["status"] == "queried"
+    assert payload["verified_symbols"] == ["000001.SZ"]
 
 
 def test_historical_upsert_requires_verified_latest_coverage(tmp_path):

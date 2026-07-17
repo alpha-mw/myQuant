@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import math
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -25,6 +26,16 @@ from quant_investor.market.fundamental_provider_contract import (
     FUNDAMENTAL_PROVIDER_MANIFEST_SCHEMA,
 )
 from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
+from quant_investor.macro.contracts import parse_timestamp
+from quant_investor.macro.release_calendar import (
+    CriticalEventGapEvaluation,
+    ReleaseCalendarEvidence,
+    ReleaseCalendarGenerationProof,
+    ReleaseReadinessEvaluation,
+    SessionLagEvaluation,
+    evaluate_release_readiness,
+    is_validated_release_calendar_generation,
+)
 from quant_investor.versioning import BRANCH_SCHEMA_VERSION
 
 
@@ -99,6 +110,20 @@ MACRO_REQUIRED_FIELDS = (
     "volatility_percentile",
     "policy_signal",
 )
+MACRO_READINESS_EVIDENCE_SCHEMA = "macro-readiness-evidence.v1"
+MACRO_MAX_SESSION_LAG = 2
+MACRO_RELEASE_IDENTITY_FIELDS = (
+    "macro_release_calendar_generation_id",
+    "macro_release_calendar_pointer_sha256",
+    "macro_release_calendar_manifest_sha256",
+    "macro_release_calendar_semantic_sha256",
+    "macro_release_calendar_registry_sha256",
+    "macro_release_calendar_plan_sha256",
+    "macro_release_calendar_capture_manifest_sha256",
+    "macro_release_calendar_market_open_days_sha256",
+    "macro_release_calendar_critical_policy_sha256",
+    "macro_readiness_evidence_semantic_sha256",
+)
 
 
 def _now_utc() -> str:
@@ -126,6 +151,33 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
+def _canonical_json_sha256(value: Any) -> str:
+    payload = json.dumps(
+        _json_safe(value),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _is_sha256(value: Any) -> bool:
+    return (
+        type(value) is str
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _normalized_utc_timestamp(value: Any) -> str:
+    try:
+        parsed = parse_timestamp(value, field_name="decision_cutoff_at")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("macro_decision_cutoff_invalid") from exc
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
 def _date_text(value: Any) -> str:
     text = str(value or "").strip()
     if not text or text.lower() in {"nan", "nat", "none"}:
@@ -144,6 +196,193 @@ def _date_text(value: Any) -> str:
 def _compact_date(value: Any) -> str:
     date = _date_text(value)
     return date.replace("-", "") if date else ""
+
+
+@dataclass(frozen=True)
+class MacroReadinessEvidence:
+    """One immutable release-calendar evaluation pinned for a DAG decision."""
+
+    schema_version: str
+    market: str
+    macro_logical_date: str
+    target_session_date: str
+    target_decision_cutoff_at: str
+    max_session_lag: int
+    macro_release_calendar_generation_id: str
+    macro_release_calendar_pointer_sha256: str
+    macro_release_calendar_manifest_sha256: str
+    macro_release_calendar_semantic_sha256: str
+    macro_release_calendar_registry_sha256: str
+    macro_release_calendar_plan_sha256: str
+    macro_release_calendar_capture_manifest_sha256: str
+    macro_release_calendar_market_open_days_sha256: str
+    macro_release_calendar_critical_policy_sha256: str
+    validated_release_calendar_ancestry: tuple[
+        ReleaseCalendarGenerationProof, ...
+    ]
+    evaluation: ReleaseReadinessEvaluation
+    semantic_sha256: str
+
+    def semantic_payload(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "market": self.market,
+            "macro_logical_date": self.macro_logical_date,
+            "target_session_date": self.target_session_date,
+            "target_decision_cutoff_at": self.target_decision_cutoff_at,
+            "max_session_lag": self.max_session_lag,
+            "macro_release_calendar_generation_id": (
+                self.macro_release_calendar_generation_id
+            ),
+            "macro_release_calendar_pointer_sha256": (
+                self.macro_release_calendar_pointer_sha256
+            ),
+            "macro_release_calendar_manifest_sha256": (
+                self.macro_release_calendar_manifest_sha256
+            ),
+            "macro_release_calendar_semantic_sha256": (
+                self.macro_release_calendar_semantic_sha256
+            ),
+            "macro_release_calendar_registry_sha256": (
+                self.macro_release_calendar_registry_sha256
+            ),
+            "macro_release_calendar_plan_sha256": (
+                self.macro_release_calendar_plan_sha256
+            ),
+            "macro_release_calendar_capture_manifest_sha256": (
+                self.macro_release_calendar_capture_manifest_sha256
+            ),
+            "macro_release_calendar_market_open_days_sha256": (
+                self.macro_release_calendar_market_open_days_sha256
+            ),
+            "macro_release_calendar_critical_policy_sha256": (
+                self.macro_release_calendar_critical_policy_sha256
+            ),
+            "validated_release_calendar_ancestry": [
+                asdict(item)
+                for item in self.validated_release_calendar_ancestry
+            ],
+            "evaluation": asdict(self.evaluation),
+        }
+
+    def identity_binding(self) -> dict[str, str]:
+        return {
+            "macro_release_calendar_generation_id": (
+                self.macro_release_calendar_generation_id
+            ),
+            "macro_release_calendar_pointer_sha256": (
+                self.macro_release_calendar_pointer_sha256
+            ),
+            "macro_release_calendar_manifest_sha256": (
+                self.macro_release_calendar_manifest_sha256
+            ),
+            "macro_release_calendar_semantic_sha256": (
+                self.macro_release_calendar_semantic_sha256
+            ),
+            "macro_release_calendar_registry_sha256": (
+                self.macro_release_calendar_registry_sha256
+            ),
+            "macro_release_calendar_plan_sha256": (
+                self.macro_release_calendar_plan_sha256
+            ),
+            "macro_release_calendar_capture_manifest_sha256": (
+                self.macro_release_calendar_capture_manifest_sha256
+            ),
+            "macro_release_calendar_market_open_days_sha256": (
+                self.macro_release_calendar_market_open_days_sha256
+            ),
+            "macro_release_calendar_critical_policy_sha256": (
+                self.macro_release_calendar_critical_policy_sha256
+            ),
+            "macro_readiness_evidence_semantic_sha256": self.semantic_sha256,
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            **self.semantic_payload(),
+            "semantic_sha256": self.semantic_sha256,
+        }
+
+
+def build_macro_readiness_evidence(
+    *,
+    release_calendar_evidence: ReleaseCalendarEvidence,
+    macro_logical_date: str,
+    target_session_date: str,
+    target_decision_cutoff_at: str | datetime,
+) -> MacroReadinessEvidence:
+    """Pin one pure release-calendar decision without loading mutable state."""
+
+    if type(release_calendar_evidence) is not ReleaseCalendarEvidence:
+        raise TypeError("release_calendar_evidence_exact_type_required")
+    logical_date = _date_text(macro_logical_date)
+    target_date = _date_text(target_session_date)
+    if not logical_date:
+        raise ValueError("macro_logical_date_invalid")
+    if not target_date:
+        raise ValueError("macro_target_session_date_invalid")
+    cutoff = _normalized_utc_timestamp(target_decision_cutoff_at)
+    evaluation = evaluate_release_readiness(
+        release_calendar_evidence,
+        macro_logical_date=logical_date,
+        target_session_date=target_date,
+        decision_cutoff_at=cutoff,
+        max_session_lag=MACRO_MAX_SESSION_LAG,
+    )
+    identity = release_calendar_evidence.identity
+    if not is_validated_release_calendar_generation(
+        release_calendar_evidence,
+        generation_id=identity.generation_id,
+        pointer_sha256=identity.pointer_sha256,
+        manifest_sha256=identity.manifest_sha256,
+        semantic_sha256=identity.semantic_sha256,
+        plan_sha256=release_calendar_evidence.plan_sha256,
+        capture_manifest_sha256=(
+            release_calendar_evidence.capture_manifest_sha256
+        ),
+        market_open_days_sha256=(
+            release_calendar_evidence.market_open_days_sha256
+        ),
+        registry_sha256=release_calendar_evidence.registry_sha256,
+        critical_policy_sha256=(
+            release_calendar_evidence.critical_policy_sha256
+        ),
+    ):
+        raise ValueError("release_calendar_evidence_ancestry_invalid")
+    candidate = MacroReadinessEvidence(
+        schema_version=MACRO_READINESS_EVIDENCE_SCHEMA,
+        market="CN",
+        macro_logical_date=logical_date,
+        target_session_date=target_date,
+        target_decision_cutoff_at=cutoff,
+        max_session_lag=MACRO_MAX_SESSION_LAG,
+        macro_release_calendar_generation_id=identity.generation_id,
+        macro_release_calendar_pointer_sha256=identity.pointer_sha256,
+        macro_release_calendar_manifest_sha256=identity.manifest_sha256,
+        macro_release_calendar_semantic_sha256=identity.semantic_sha256,
+        macro_release_calendar_registry_sha256=(
+            release_calendar_evidence.registry_sha256
+        ),
+        macro_release_calendar_plan_sha256=release_calendar_evidence.plan_sha256,
+        macro_release_calendar_capture_manifest_sha256=(
+            release_calendar_evidence.capture_manifest_sha256
+        ),
+        macro_release_calendar_market_open_days_sha256=(
+            release_calendar_evidence.market_open_days_sha256
+        ),
+        macro_release_calendar_critical_policy_sha256=(
+            release_calendar_evidence.critical_policy_sha256
+        ),
+        validated_release_calendar_ancestry=(
+            release_calendar_evidence.validated_ancestry
+        ),
+        evaluation=evaluation,
+        semantic_sha256="",
+    )
+    return replace(
+        candidate,
+        semantic_sha256=_canonical_json_sha256(candidate.semantic_payload()),
+    )
 
 
 def _normalize_symbol(symbol: Any) -> str:
@@ -762,11 +1001,206 @@ def macro_generation_identity(manifest: Mapping[str, Any]) -> dict[str, str]:
     for field_name in (
         "v15_controls_sha256",
         "v15_controls_semantic_sha256",
+        *MACRO_RELEASE_IDENTITY_FIELDS,
     ):
         field_value = str(manifest.get(field_name) or "").strip()
         if field_value:
             identity[field_name] = field_value
     return identity
+
+
+def _macro_release_binding_from_manifest(
+    manifest: Mapping[str, Any],
+) -> dict[str, str]:
+    return {
+        field_name: str(manifest.get(field_name) or "").strip()
+        for field_name in MACRO_RELEASE_IDENTITY_FIELDS
+        if field_name != "macro_readiness_evidence_semantic_sha256"
+    }
+
+
+def _macro_release_binding_from_proof(
+    proof: ReleaseCalendarGenerationProof,
+) -> dict[str, str]:
+    return {
+        "macro_release_calendar_generation_id": proof.generation_id,
+        "macro_release_calendar_pointer_sha256": proof.pointer_sha256,
+        "macro_release_calendar_manifest_sha256": proof.manifest_sha256,
+        "macro_release_calendar_semantic_sha256": proof.semantic_sha256,
+        "macro_release_calendar_registry_sha256": proof.registry_sha256,
+        "macro_release_calendar_plan_sha256": proof.plan_sha256,
+        "macro_release_calendar_capture_manifest_sha256": (
+            proof.capture_manifest_sha256
+        ),
+        "macro_release_calendar_market_open_days_sha256": (
+            proof.market_open_days_sha256
+        ),
+        "macro_release_calendar_critical_policy_sha256": (
+            proof.critical_policy_sha256
+        ),
+    }
+
+
+def _macro_readiness_evidence_blockers(
+    *,
+    evidence: MacroReadinessEvidence | None,
+    manifest: Mapping[str, Any],
+    macro_logical_date: str,
+    target_session_date: str,
+    decision_cutoff_at: str | datetime | None,
+) -> tuple[list[str], bool]:
+    """Validate pinned release evidence without filesystem I/O."""
+
+    if evidence is None:
+        return ["macro_release_readiness_evidence_missing"], False
+    if type(evidence) is not MacroReadinessEvidence:
+        return ["macro_release_readiness_evidence_type_invalid"], False
+    blockers: list[str] = []
+    if (
+        evidence.schema_version != MACRO_READINESS_EVIDENCE_SCHEMA
+        or evidence.market != "CN"
+        or evidence.max_session_lag != MACRO_MAX_SESSION_LAG
+    ):
+        blockers.append("macro_release_readiness_evidence_contract_invalid")
+    try:
+        semantic_sha256 = _canonical_json_sha256(evidence.semantic_payload())
+    except (TypeError, ValueError):
+        semantic_sha256 = ""
+    if not semantic_sha256 or evidence.semantic_sha256 != semantic_sha256:
+        blockers.append("macro_release_readiness_evidence_tampered")
+    logical_date = _date_text(macro_logical_date)
+    target_date = _date_text(target_session_date)
+    if (
+        evidence.macro_logical_date != logical_date
+        or evidence.target_session_date != target_date
+    ):
+        blockers.append("macro_release_readiness_evidence_target_mismatch")
+    if decision_cutoff_at in (None, ""):
+        blockers.append("macro_decision_cutoff_missing")
+    else:
+        try:
+            expected_cutoff = _normalized_utc_timestamp(decision_cutoff_at)
+        except ValueError:
+            blockers.append("macro_decision_cutoff_invalid")
+        else:
+            if evidence.target_decision_cutoff_at != expected_cutoff:
+                blockers.append(
+                    "macro_release_readiness_evidence_cutoff_mismatch"
+                )
+
+    raw_ancestry = evidence.validated_release_calendar_ancestry
+    ancestry = raw_ancestry if type(raw_ancestry) is tuple else ()
+    binding = _macro_release_binding_from_manifest(manifest)
+    if any(not value for value in binding.values()):
+        blockers.append("macro_release_calendar_binding_missing")
+    elif tuple(sorted(binding.items())) not in {
+        tuple(sorted(_macro_release_binding_from_proof(proof).items()))
+        for proof in ancestry
+        if type(proof) is ReleaseCalendarGenerationProof
+    }:
+        # Compare exact complete source identities; never infer lineage from
+        # generation names or a single parent pointer.
+        blockers.append("macro_release_calendar_identity_mismatch")
+
+    sha_fields = {
+        field_name: value
+        for field_name, value in evidence.identity_binding().items()
+        if field_name != "macro_release_calendar_generation_id"
+    }
+    if (
+        not evidence.macro_release_calendar_generation_id
+        or any(not _is_sha256(value) for value in sha_fields.values())
+    ):
+        blockers.append("macro_release_readiness_evidence_identity_invalid")
+    current_binding = evidence.identity_binding()
+    current_binding.pop("macro_readiness_evidence_semantic_sha256")
+    if (
+        not ancestry
+        or any(
+            type(item) is not ReleaseCalendarGenerationProof
+            for item in ancestry
+        )
+        or any(
+            type(item.generation_id) is not str
+            or not item.generation_id
+            or any(
+                not _is_sha256(value)
+                for value in (
+                    item.pointer_sha256,
+                    item.manifest_sha256,
+                    item.semantic_sha256,
+                    item.plan_sha256,
+                    item.capture_manifest_sha256,
+                    item.market_open_days_sha256,
+                    item.registry_sha256,
+                    item.critical_policy_sha256,
+                )
+            )
+            for item in ancestry
+            if type(item) is ReleaseCalendarGenerationProof
+        )
+        or _macro_release_binding_from_proof(ancestry[-1]) != current_binding
+        or len({item.generation_id for item in ancestry}) != len(ancestry)
+    ):
+        blockers.append("macro_release_readiness_ancestry_invalid")
+
+    evaluation = evidence.evaluation
+    if type(evaluation) is not ReleaseReadinessEvaluation:
+        blockers.append("macro_release_readiness_evaluation_type_invalid")
+        return list(dict.fromkeys(blockers)), False
+    lag = evaluation.session_lag
+    gap = evaluation.critical_event_gap
+    if (
+        type(lag) is not SessionLagEvaluation
+        or type(gap) is not CriticalEventGapEvaluation
+    ):
+        blockers.append("macro_release_readiness_evaluation_type_invalid")
+        return list(dict.fromkeys(blockers)), False
+    if (
+        type(evaluation.ready) is not bool
+        or type(lag.ready) is not bool
+        or type(gap.ready) is not bool
+        or type(evaluation.blockers) is not tuple
+        or type(lag.blockers) is not tuple
+        or type(gap.blockers) is not tuple
+        or any(
+            type(item) is not str
+            for item in (
+                *evaluation.blockers,
+                *lag.blockers,
+                *gap.blockers,
+            )
+        )
+    ):
+        blockers.append("macro_release_readiness_evaluation_contract_invalid")
+        return list(dict.fromkeys(blockers)), False
+    try:
+        expected_window_start = _normalized_utc_timestamp(
+            f"{logical_date}T15:00:00+08:00"
+        )
+    except ValueError:
+        expected_window_start = ""
+    evaluation_consistent = (
+        lag.macro_logical_date == logical_date
+        and lag.target_session_date == target_date
+        and lag.session_lag is not None
+        and type(lag.session_lag) is int
+        and 0 <= lag.session_lag <= MACRO_MAX_SESSION_LAG
+        and gap.window_start_exclusive == expected_window_start
+        and gap.window_end_inclusive == evidence.target_decision_cutoff_at
+        and lag.ready == (not lag.blockers)
+        and gap.ready == (not gap.blockers)
+        and evaluation.ready
+        == (lag.ready and gap.ready and not evaluation.blockers)
+        and tuple(evaluation.blockers)
+        == tuple(dict.fromkeys((*lag.blockers, *gap.blockers)))
+    )
+    if not evaluation_consistent:
+        blockers.append("macro_release_readiness_evaluation_inconsistent")
+    if not evaluation.ready:
+        blockers.append("macro_release_readiness_blocked")
+        blockers.extend(str(item) for item in evaluation.blockers)
+    return list(dict.fromkeys(blockers)), not blockers
 
 
 def _assess_symbol_records(
@@ -921,6 +1355,9 @@ def assess_macro_readiness(
     macro_record: Mapping[str, Any],
     manifest: Mapping[str, Any],
     as_of: str = "",
+    market: str = "CN",
+    decision_cutoff_at: str | datetime | None = None,
+    macro_readiness_evidence: MacroReadinessEvidence | None = None,
 ) -> BranchDataReadiness:
     missing = [field_name for field_name in MACRO_REQUIRED_FIELDS if not _is_present(macro_record.get(field_name))]
     source = str(manifest.get("source") or "").strip()
@@ -980,7 +1417,65 @@ def assess_macro_readiness(
         blockers.append("macro_as_of_missing")
     elif record_date != target_date:
         blockers.append("macro_trade_date_as_of_mismatch")
+    evidence_ready = False
+    production_cn = (
+        str(market or "").upper() == "CN"
+        and manifest.get("production_eligible") is True
+    )
+    if production_cn:
+        evidence_blockers, evidence_ready = (
+            _macro_readiness_evidence_blockers(
+                evidence=macro_readiness_evidence,
+                manifest=manifest,
+                macro_logical_date=record_date,
+                target_session_date=target_date,
+                decision_cutoff_at=decision_cutoff_at,
+            )
+        )
+        blockers.extend(evidence_blockers)
+        if evidence_ready and record_date != target_date:
+            blockers = [
+                blocker
+                for blocker in blockers
+                if blocker != "macro_trade_date_as_of_mismatch"
+            ]
     blockers = list(dict.fromkeys(blockers))
+    canonical_identity = macro_generation_identity(manifest)
+    readiness_evidence_payload: dict[str, Any] = {}
+    if type(macro_readiness_evidence) is MacroReadinessEvidence:
+        try:
+            readiness_evidence_payload = macro_readiness_evidence.to_dict()
+            evidence_semantic_sha256 = _canonical_json_sha256(
+                macro_readiness_evidence.semantic_payload()
+            )
+        except (TypeError, ValueError):
+            readiness_evidence_payload = {
+                "schema_version": str(
+                    macro_readiness_evidence.schema_version or ""
+                ),
+                "semantic_sha256": str(
+                    macro_readiness_evidence.semantic_sha256 or ""
+                ),
+                "invalid": True,
+            }
+            evidence_semantic_sha256 = ""
+        if (
+            evidence_semantic_sha256
+            and macro_readiness_evidence.semantic_sha256
+            == evidence_semantic_sha256
+        ):
+            canonical_identity[
+                "macro_readiness_evidence_semantic_sha256"
+            ] = evidence_semantic_sha256
+    session_lag = (
+        macro_readiness_evidence.evaluation.session_lag.session_lag
+        if type(macro_readiness_evidence) is MacroReadinessEvidence
+        and type(macro_readiness_evidence.evaluation)
+        is ReleaseReadinessEvaluation
+        and type(macro_readiness_evidence.evaluation.session_lag)
+        is SessionLagEvaluation
+        else None
+    )
     return BranchDataReadiness(
         branch="macro",
         status=(
@@ -989,7 +1484,11 @@ def assess_macro_readiness(
             else STATUS_WARN if provider_fallback_used else STATUS_PASS
         ),
         coverage_ratio=1.0 if not missing and macro_record else 0.0,
-        freshness_status="fresh_or_pit_asof" if macro_record else "unknown",
+        freshness_status=(
+            "bounded_open_session_lag"
+            if evidence_ready and session_lag
+            else "fresh_or_pit_asof" if macro_record else "unknown"
+        ),
         pit_status="market_point_in_time" if macro_record else "missing",
         source_priority=priority,
         source=source,
@@ -1003,7 +1502,9 @@ def assess_macro_readiness(
         metadata={
             "manifest": dict(manifest),
             "macro_record": dict(_json_safe(macro_record)),
-            "canonical_identity": macro_generation_identity(manifest),
+            "canonical_identity": canonical_identity,
+            "macro_readiness_evidence": readiness_evidence_payload,
+            "macro_session_lag": session_lag,
         },
     )
 
@@ -1020,6 +1521,8 @@ def assess_branch_data_readiness(
     macro_root: str | Path = DEFAULT_MACRO_ROOT,
     pinned_macro_record: Mapping[str, Any] | None = None,
     pinned_macro_manifest: Mapping[str, Any] | None = None,
+    pinned_macro_readiness_evidence: MacroReadinessEvidence | None = None,
+    decision_cutoff_at: str | datetime | None = None,
     run_id: str | None = None,
 ) -> BranchGovernanceReport:
     symbols = [_normalize_symbol(symbol) for symbol in (candidate_symbols or frames.keys()) if _normalize_symbol(symbol)]
@@ -1086,7 +1589,14 @@ def assess_branch_data_readiness(
             manifest=fundamental_manifest,
             as_of=as_of,
         )
-    macro = assess_macro_readiness(macro_record=macro_record, manifest=macro_manifest, as_of=as_of)
+    macro = assess_macro_readiness(
+        macro_record=macro_record,
+        manifest=macro_manifest,
+        as_of=as_of,
+        market=market,
+        decision_cutoff_at=decision_cutoff_at,
+        macro_readiness_evidence=pinned_macro_readiness_evidence,
+    )
     blocked = sorted(
         set(quant.affected_symbols)
         | set(fundamental.affected_symbols)
@@ -1240,7 +1750,10 @@ __all__ = [
     "BranchGovernanceReport",
     "FUNDAMENTAL_REQUIRED_FIELDS",
     "FUNDAMENTAL_VALUE_AVAILABILITY_SCHEMA",
+    "MACRO_MAX_SESSION_LAG",
+    "MACRO_READINESS_EVIDENCE_SCHEMA",
     "MACRO_REQUIRED_FIELDS",
+    "MacroReadinessEvidence",
     "QUANT_REQUIRED_FIELDS",
     "SOURCE_OFFLINE",
     "SOURCE_OFFICIAL",
@@ -1254,6 +1767,7 @@ __all__ = [
     "assess_branch_data_readiness",
     "assess_macro_readiness",
     "assess_quant_readiness",
+    "build_macro_readiness_evidence",
     "load_fundamental_records",
     "load_macro_record",
     "macro_generation_identity",

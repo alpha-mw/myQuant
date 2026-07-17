@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -26,6 +27,8 @@ def _required_args() -> list[str]:
         "2" * 64,
         "--expected-macro-observations-pointer-sha256",
         "3" * 64,
+        "--expected-macro-release-calendar-pointer-sha256",
+        "4" * 64,
         "--nbs-cn-pmi-url",
         (
             "https://www.stats.gov.cn/xxgk/sjfb/zxfb2020/202606/"
@@ -44,6 +47,7 @@ def test_macro_maintain_help_discloses_live_and_cas_requirements(capsys):
     assert "--expected-catalog-sha256" in output
     assert "--expected-market-pointer-sha256" in output
     assert "--expected-macro-observations-pointer-sha256" in output
+    assert "--expected-macro-release-calendar-pointer-sha256" in output
     assert "--run-id" in output
     assert "--nbs-cn-pmi-url" in output
     assert "--allow-tushare-fallback" in output
@@ -79,6 +83,10 @@ def test_macro_maintain_stages_all_production_inputs(monkeypatch, capsys):
         "expected_market_pointer_sha256": "2" * 64,
         "macro_observations_root": "data/parquet/cn/macro_observations",
         "expected_macro_observations_pointer_sha256": "3" * 64,
+        "macro_release_calendar_root": str(
+            (Path.cwd() / "data/parquet/cn/macro_release_calendar").resolve()
+        ),
+        "expected_macro_release_calendar_pointer_sha256": "4" * 64,
         "allow_live": True,
         "nbs_cn_pmi_url": (
             "https://www.stats.gov.cn/xxgk/sjfb/zxfb2020/202606/"
@@ -172,6 +180,180 @@ def test_macro_official_compile_dispatches_offline_bundle(monkeypatch, capsys):
         "output_root": "results/v15/macro_official_web",
         "run_id": "official-1",
     }
+    assert json.loads(capsys.readouterr().out) == {"status": "OK"}
+
+
+def test_macro_release_calendar_publish_dispatches_all_hashes(
+    monkeypatch,
+    capsys,
+):
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        cli_main,
+        "run_macro_release_calendar_publish",
+        lambda **kwargs: captured.update(kwargs) or {"idempotent": False},
+    )
+
+    cli_main.main(
+        [
+            "market",
+            "macro-release-calendar-publish",
+            "--plan",
+            "/tmp/release-plan.json",
+            "--expected-plan-sha256",
+            "1" * 64,
+            "--capture-manifest",
+            "/tmp/release-capture.json",
+            "--expected-capture-manifest-sha256",
+            "2" * 64,
+            "--raw-root",
+            "/tmp/release-raw",
+            "--market-open-days",
+            "/tmp/open-days.json",
+            "--expected-market-open-days-sha256",
+            "3" * 64,
+            "--run-id",
+            "release-calendar-1",
+            "--expected-pointer-sha256",
+            "EMPTY",
+        ]
+    )
+
+    assert captured == {
+        "plan_path": "/tmp/release-plan.json",
+        "expected_plan_sha256": "1" * 64,
+        "capture_manifest_path": "/tmp/release-capture.json",
+        "expected_capture_manifest_sha256": "2" * 64,
+        "raw_root": "/tmp/release-raw",
+        "market_open_days_path": "/tmp/open-days.json",
+        "expected_market_open_days_sha256": "3" * 64,
+        "canonical_root": str(
+            (Path.cwd() / "data/parquet/cn/macro_release_calendar").resolve()
+        ),
+        "run_id": "release-calendar-1",
+        "expected_pointer_sha256": "EMPTY",
+    }
+    assert json.loads(capsys.readouterr().out) == {"idempotent": False}
+
+
+def _write_open_days(path: Path) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "market-open-days.v1",
+                "market": "CN",
+                "open_dates": ["20260714", "20260715", "20260716"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_macro_official_refresh_dispatches_projection_bindings(
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
+    open_days = tmp_path / "open-days.json"
+    _write_open_days(open_days)
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        cli_main,
+        "run_macro_official_observation_refresh",
+        lambda **kwargs: captured.update(kwargs) or {"status": "OK"},
+    )
+
+    cli_main.main(
+        [
+            "market",
+            "macro-observation-official-refresh",
+            "--official-manifest",
+            "/tmp/official/manifest.json",
+            "--expected-official-manifest-sha256",
+            "1" * 64,
+            "--expected-official-plan-sha256",
+            "2" * 64,
+            "--target-as-of",
+            "20260716",
+            "--decision-cutoff-at",
+            "2026-07-16T15:00:00+08:00",
+            "--market-open-days",
+            str(open_days),
+            "--expected-market-open-days-sha256",
+            "3" * 64,
+            "--run-id",
+            "official-refresh-1",
+            "--expected-pointer-sha256",
+            "4" * 64,
+        ]
+    )
+
+    assert captured["pinned_open_dates"] == [
+        "20260714",
+        "20260715",
+        "20260716",
+    ]
+    assert captured["target_as_of"] == "20260716"
+    assert captured["decision_cutoff_at"] == "2026-07-16T15:00:00+08:00"
+    assert captured["expected_pointer_sha256"] == "4" * 64
+    assert json.loads(capsys.readouterr().out) == {"status": "OK"}
+
+
+def test_macro_local_roll_dispatches_projection_bindings(
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
+    open_days = tmp_path / "open-days.json"
+    _write_open_days(open_days)
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        cli_main,
+        "run_macro_local_breadth_roll",
+        lambda **kwargs: captured.update(kwargs) or {"status": "OK"},
+    )
+
+    cli_main.main(
+        [
+            "market",
+            "macro-local-observation-roll",
+            "--snapshot-manifest",
+            "/tmp/snapshot.json",
+            "--expected-snapshot-manifest-sha256",
+            "1" * 64,
+            "--coverage-manifest",
+            "/tmp/coverage.json",
+            "--expected-coverage-manifest-sha256",
+            "2" * 64,
+            "--target-trade-date",
+            "20260716",
+            "--scope-artifact",
+            "/tmp/scope.json",
+            "--expected-scope-artifact-sha256",
+            "3" * 64,
+            "--target-as-of",
+            "20260716",
+            "--decision-cutoff-at",
+            "2026-07-16T15:00:00+08:00",
+            "--market-open-days",
+            str(open_days),
+            "--expected-market-open-days-sha256",
+            "4" * 64,
+            "--run-id",
+            "local-roll-1",
+            "--expected-pointer-sha256",
+            "5" * 64,
+        ]
+    )
+
+    assert captured["pinned_open_dates"] == [
+        "20260714",
+        "20260715",
+        "20260716",
+    ]
+    assert captured["target_trade_date"] == "20260716"
+    assert captured["target_as_of"] == "20260716"
+    assert captured["expected_pointer_sha256"] == "5" * 64
     assert json.loads(capsys.readouterr().out) == {"status": "OK"}
 
 
@@ -301,6 +483,39 @@ def test_macro_local_observation_publish_dispatches_pointer_cas(
                 "--target-trade-date",
                 "--scope-artifact",
                 "--expected-scope-artifact-sha256",
+            ),
+        ),
+        (
+            "macro-observation-official-refresh",
+            (
+                "--official-manifest",
+                "--expected-official-manifest-sha256",
+                "--target-as-of",
+                "--decision-cutoff-at",
+                "--market-open-days",
+                "--expected-market-open-days-sha256",
+            ),
+        ),
+        (
+            "macro-local-observation-roll",
+            (
+                "--snapshot-manifest",
+                "--coverage-manifest",
+                "--target-trade-date",
+                "--target-as-of",
+                "--decision-cutoff-at",
+                "--market-open-days",
+            ),
+        ),
+        (
+            "macro-release-calendar-publish",
+            (
+                "--plan",
+                "--expected-plan-sha256",
+                "--capture-manifest",
+                "--expected-capture-manifest-sha256",
+                "--market-open-days",
+                "--expected-market-open-days-sha256",
             ),
         ),
     ],

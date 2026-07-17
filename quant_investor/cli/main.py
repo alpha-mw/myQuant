@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -138,6 +139,22 @@ def run_macro_official_web_compilation(**kwargs):
     return compile_official_web_bundle_file(**kwargs)
 
 
+def run_macro_release_calendar_publish(**kwargs):
+    from quant_investor.macro.release_calendar import publish_release_calendar
+
+    result = publish_release_calendar(**kwargs)
+    return {
+        "schema_version": "macro-release-calendar-publication.v1",
+        "status": "OK",
+        "idempotent": result.idempotent,
+        "identity": asdict(result.identity),
+        "captured_at": result.evidence.captured_at,
+        "open_date_count": len(result.evidence.open_dates),
+        "event_count": len(result.evidence.events),
+        "resolution_count": len(result.evidence.resolutions),
+    }
+
+
 def run_macro_production_observation_bundle(**kwargs):
     from quant_investor.macro.production_observation_bundle import (
         publish_macro_production_observation_bundle,
@@ -146,12 +163,39 @@ def run_macro_production_observation_bundle(**kwargs):
     return publish_macro_production_observation_bundle(**kwargs)
 
 
+def run_macro_official_observation_refresh(**kwargs):
+    from quant_investor.macro.production_observation_bundle import (
+        publish_macro_official_observation_refresh,
+    )
+
+    return publish_macro_official_observation_refresh(**kwargs)
+
+
 def run_macro_local_breadth_publish(**kwargs):
     from quant_investor.macro.production_observation_bundle import (
         publish_local_market_breadth_update,
     )
 
     return publish_local_market_breadth_update(**kwargs)
+
+
+def run_macro_local_breadth_roll(**kwargs):
+    from quant_investor.macro.production_observation_bundle import (
+        publish_local_market_breadth_roll,
+    )
+
+    return publish_local_market_breadth_roll(**kwargs)
+
+
+def _market_open_dates_for_dispatch(path_value: str) -> list[str]:
+    path = Path(path_value).expanduser()
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("market open-days file must be a regular file")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    values = payload.get("open_dates") if isinstance(payload, dict) else None
+    if not isinstance(values, list) or not values:
+        raise ValueError("market open-days file must contain open_dates")
+    return [str(value) for value in values]
 
 
 def run_macro_backfill_publish(**kwargs):
@@ -613,6 +657,16 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     market_macro_maintain.add_argument(
+        "--macro-release-calendar-root",
+        default="data/parquet/cn/macro_release_calendar",
+        help="authoritative refresh 所固定的 immutable Macro release calendar",
+    )
+    market_macro_maintain.add_argument(
+        "--expected-macro-release-calendar-pointer-sha256",
+        default="",
+        help="所固定 release calendar _latest.json 的 SHA-256",
+    )
+    market_macro_maintain.add_argument(
         "--staging-root",
         default="results/v15/macro_observation_staging",
     )
@@ -717,6 +771,36 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     market_macro_official_compile.add_argument("--run-id", required=True)
 
+    market_macro_release_calendar = market_subparsers.add_parser(
+        "macro-release-calendar-publish",
+        help="校验官方发布事件与交易日证据，并以 CAS 发布 immutable 日历",
+    )
+    market_macro_release_calendar.add_argument("--plan", required=True)
+    market_macro_release_calendar.add_argument(
+        "--expected-plan-sha256", required=True
+    )
+    market_macro_release_calendar.add_argument(
+        "--capture-manifest", required=True
+    )
+    market_macro_release_calendar.add_argument(
+        "--expected-capture-manifest-sha256", required=True
+    )
+    market_macro_release_calendar.add_argument("--raw-root", required=True)
+    market_macro_release_calendar.add_argument(
+        "--market-open-days", required=True
+    )
+    market_macro_release_calendar.add_argument(
+        "--expected-market-open-days-sha256", required=True
+    )
+    market_macro_release_calendar.add_argument(
+        "--canonical-root",
+        default="data/parquet/cn/macro_release_calendar",
+    )
+    market_macro_release_calendar.add_argument("--run-id", required=True)
+    market_macro_release_calendar.add_argument(
+        "--expected-pointer-sha256", required=True
+    )
+
     market_macro_observation_bootstrap = market_subparsers.add_parser(
         "macro-observation-bootstrap",
         help=(
@@ -748,6 +832,43 @@ def _build_parser() -> argparse.ArgumentParser:
         "--run-id", required=True
     )
     market_macro_observation_bootstrap.add_argument(
+        "--expected-pointer-sha256", required=True
+    )
+
+    market_macro_official_refresh = market_subparsers.add_parser(
+        "macro-observation-official-refresh",
+        help=(
+            "以完整新官方 bundle 替换 official scope，并保留最新三条"
+            " strict-local 历史"
+        ),
+    )
+    market_macro_official_refresh.add_argument(
+        "--official-manifest", required=True
+    )
+    market_macro_official_refresh.add_argument(
+        "--expected-official-manifest-sha256", required=True
+    )
+    market_macro_official_refresh.add_argument(
+        "--expected-official-plan-sha256", required=True
+    )
+    market_macro_official_refresh.add_argument(
+        "--target-as-of", required=True
+    )
+    market_macro_official_refresh.add_argument(
+        "--decision-cutoff-at", required=True
+    )
+    market_macro_official_refresh.add_argument(
+        "--market-open-days", required=True
+    )
+    market_macro_official_refresh.add_argument(
+        "--expected-market-open-days-sha256", required=True
+    )
+    market_macro_official_refresh.add_argument(
+        "--observations-root",
+        default="data/parquet/cn/macro_observations",
+    )
+    market_macro_official_refresh.add_argument("--run-id", required=True)
+    market_macro_official_refresh.add_argument(
         "--expected-pointer-sha256", required=True
     )
 
@@ -784,6 +905,48 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     market_macro_local_publish.add_argument("--run-id", required=True)
     market_macro_local_publish.add_argument(
+        "--expected-pointer-sha256", required=True
+    )
+
+    market_macro_local_roll = market_subparsers.add_parser(
+        "macro-local-observation-roll",
+        help="在 exact-projection 生产链上 catch up/滚动三条 local breadth 历史",
+    )
+    market_macro_local_roll.add_argument(
+        "--snapshot-manifest", required=True
+    )
+    market_macro_local_roll.add_argument(
+        "--expected-snapshot-manifest-sha256", required=True
+    )
+    market_macro_local_roll.add_argument(
+        "--coverage-manifest", required=True
+    )
+    market_macro_local_roll.add_argument(
+        "--expected-coverage-manifest-sha256", required=True
+    )
+    market_macro_local_roll.add_argument(
+        "--target-trade-date", required=True
+    )
+    market_macro_local_roll.add_argument(
+        "--scope-artifact", required=True
+    )
+    market_macro_local_roll.add_argument(
+        "--expected-scope-artifact-sha256", required=True
+    )
+    market_macro_local_roll.add_argument("--target-as-of", required=True)
+    market_macro_local_roll.add_argument(
+        "--decision-cutoff-at", required=True
+    )
+    market_macro_local_roll.add_argument("--market-open-days", required=True)
+    market_macro_local_roll.add_argument(
+        "--expected-market-open-days-sha256", required=True
+    )
+    market_macro_local_roll.add_argument(
+        "--observations-root",
+        default="data/parquet/cn/macro_observations",
+    )
+    market_macro_local_roll.add_argument("--run-id", required=True)
+    market_macro_local_roll.add_argument(
         "--expected-pointer-sha256", required=True
     )
 
@@ -1287,12 +1450,14 @@ def main(argv: list[str] | None = None) -> None:
                 or not args.expected_catalog_sha256
                 or not args.expected_market_pointer_sha256
                 or not args.expected_macro_observations_pointer_sha256
+                or not args.expected_macro_release_calendar_pointer_sha256
                 or not args.nbs_cn_pmi_url
             ):
                 parser.error(
                     "--authoritative-refresh requires --allow-live, --run-id, "
                     "--expected-catalog-sha256, --expected-market-pointer-sha256, "
-                    "--expected-macro-observations-pointer-sha256 and "
+                    "--expected-macro-observations-pointer-sha256, "
+                    "--expected-macro-release-calendar-pointer-sha256 and "
                     "--nbs-cn-pmi-url"
                 )
             if args.input_json or args.input_observations:
@@ -1313,6 +1478,16 @@ def main(argv: list[str] | None = None) -> None:
                     macro_observations_root=args.observations_root,
                     expected_macro_observations_pointer_sha256=(
                         args.expected_macro_observations_pointer_sha256
+                    ),
+                    macro_release_calendar_root=(
+                        str(
+                            Path(args.macro_release_calendar_root)
+                            .expanduser()
+                            .resolve()
+                        )
+                    ),
+                    expected_macro_release_calendar_pointer_sha256=(
+                        args.expected_macro_release_calendar_pointer_sha256
                     ),
                     allow_live=args.allow_live,
                     nbs_cn_pmi_url=args.nbs_cn_pmi_url,
@@ -1447,6 +1622,32 @@ def main(argv: list[str] | None = None) -> None:
 
     if (
         args.command == "market"
+        and args.market_command == "macro-release-calendar-publish"
+    ):
+        _print_json(
+            run_macro_release_calendar_publish(
+                plan_path=args.plan,
+                expected_plan_sha256=args.expected_plan_sha256,
+                capture_manifest_path=args.capture_manifest,
+                expected_capture_manifest_sha256=(
+                    args.expected_capture_manifest_sha256
+                ),
+                raw_root=args.raw_root,
+                market_open_days_path=args.market_open_days,
+                expected_market_open_days_sha256=(
+                    args.expected_market_open_days_sha256
+                ),
+                canonical_root=str(
+                    Path(args.canonical_root).expanduser().resolve()
+                ),
+                run_id=args.run_id,
+                expected_pointer_sha256=args.expected_pointer_sha256,
+            )
+        )
+        return
+
+    if (
+        args.command == "market"
         and args.market_command == "macro-observation-bootstrap"
     ):
         _print_json(
@@ -1463,6 +1664,43 @@ def main(argv: list[str] | None = None) -> None:
                     args.expected_local_binding_plan_sha256
                 ),
                 as_of=args.as_of,
+                canonical_observations_root=args.observations_root,
+                run_id=args.run_id,
+                expected_pointer_sha256=(
+                    ""
+                    if args.expected_pointer_sha256 == "EMPTY"
+                    else args.expected_pointer_sha256
+                ),
+            )
+        )
+        return
+
+    if (
+        args.command == "market"
+        and args.market_command == "macro-observation-official-refresh"
+    ):
+        try:
+            pinned_open_dates = _market_open_dates_for_dispatch(
+                args.market_open_days
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            parser.error(str(exc))
+        _print_json(
+            run_macro_official_observation_refresh(
+                official_bundle_manifest_path=args.official_manifest,
+                expected_official_bundle_manifest_sha256=(
+                    args.expected_official_manifest_sha256
+                ),
+                expected_official_plan_sha256=(
+                    args.expected_official_plan_sha256
+                ),
+                target_as_of=args.target_as_of,
+                decision_cutoff_at=args.decision_cutoff_at,
+                pinned_open_dates=pinned_open_dates,
+                market_open_days_path=args.market_open_days,
+                expected_market_open_days_sha256=(
+                    args.expected_market_open_days_sha256
+                ),
                 canonical_observations_root=args.observations_root,
                 run_id=args.run_id,
                 expected_pointer_sha256=(
@@ -1494,6 +1732,49 @@ def main(argv: list[str] | None = None) -> None:
                     args.expected_scope_artifact_sha256
                 ),
                 as_of=args.as_of,
+                canonical_observations_root=args.observations_root,
+                run_id=args.run_id,
+                expected_pointer_sha256=(
+                    ""
+                    if args.expected_pointer_sha256 == "EMPTY"
+                    else args.expected_pointer_sha256
+                ),
+            )
+        )
+        return
+
+    if (
+        args.command == "market"
+        and args.market_command == "macro-local-observation-roll"
+    ):
+        try:
+            pinned_open_dates = _market_open_dates_for_dispatch(
+                args.market_open_days
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            parser.error(str(exc))
+        _print_json(
+            run_macro_local_breadth_roll(
+                snapshot_manifest_path=args.snapshot_manifest,
+                expected_snapshot_manifest_sha256=(
+                    args.expected_snapshot_manifest_sha256
+                ),
+                coverage_manifest_path=args.coverage_manifest,
+                expected_coverage_manifest_sha256=(
+                    args.expected_coverage_manifest_sha256
+                ),
+                target_trade_date=args.target_trade_date,
+                scope_artifact_path=args.scope_artifact,
+                expected_scope_artifact_sha256=(
+                    args.expected_scope_artifact_sha256
+                ),
+                target_as_of=args.target_as_of,
+                decision_cutoff_at=args.decision_cutoff_at,
+                pinned_open_dates=pinned_open_dates,
+                market_open_days_path=args.market_open_days,
+                expected_market_open_days_sha256=(
+                    args.expected_market_open_days_sha256
+                ),
                 canonical_observations_root=args.observations_root,
                 run_id=args.run_id,
                 expected_pointer_sha256=(

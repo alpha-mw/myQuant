@@ -5,6 +5,7 @@ import json
 import math
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -131,7 +132,7 @@ def _tree_hashes(root: Path) -> dict[str, str]:
     }
 
 
-def _observation_args(macro_root: Path) -> dict[str, object]:
+def _observation_args(macro_root: Path) -> dict[str, Any]:
     root = macro_root.parent / "macro_observations"
     return {
         "macro_observations_root": root,
@@ -256,7 +257,7 @@ def _land_retry_generation(
     return macro_root, catalog_path, pointer_path, generation
 
 
-def test_retry_after_month_deadline_requires_new_run_id_and_keeps_generation(
+def test_retired_live_writer_keeps_landed_generation_unchanged(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -277,7 +278,7 @@ def test_retry_after_month_deadline_requires_new_run_id_and_keeps_generation(
     )
     with pytest.raises(
         macro_mart.MacroMartPromotionError,
-        match="macro_provider_stale_new_run_id_required:cn_pmi",
+        match="macro_authoritative_stage_promotion_required",
     ):
         macro_mart.refresh_cn_macro_mart(
             market="CN",
@@ -296,7 +297,7 @@ def test_retry_after_month_deadline_requires_new_run_id_and_keeps_generation(
     assert not (macro_root / "_transactions").exists()
 
 
-def test_stale_current_generation_is_not_already_current_after_month_deadline(
+def test_retired_live_writer_fails_before_requesting_new_provider_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -354,7 +355,10 @@ def test_stale_current_generation_is_not_already_current_after_month_deadline(
         "_build_tushare_client",
         _new_provider_required,
     )
-    with pytest.raises(RuntimeError, match="new provider snapshot required"):
+    with pytest.raises(
+        macro_mart.MacroMartPromotionError,
+        match="macro_authoritative_stage_promotion_required",
+    ):
         macro_mart.refresh_cn_macro_mart(
             market="CN",
             as_of=TARGET,
@@ -367,7 +371,7 @@ def test_stale_current_generation_is_not_already_current_after_month_deadline(
             **_observation_args(macro_root),
         )
 
-    assert provider_called is True
+    assert provider_called is False
     assert catalog_path.read_bytes() == catalog_before
 
 
@@ -412,7 +416,7 @@ def _minimal_workspace(tmp_path: Path) -> tuple[Path, Path, Path]:
     return macro_root, catalog_path, pointer_path
 
 
-def test_catalog_switch_rechecks_current_month_deadline(
+def test_retired_live_writer_cannot_reach_catalog_switch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -457,7 +461,7 @@ def test_catalog_switch_rechecks_current_month_deadline(
     )
     with pytest.raises(
         macro_mart.MacroMartPromotionError,
-        match="macro_provider_stale_new_run_id_required:cn_pmi",
+        match="macro_authoritative_stage_promotion_required",
     ):
         macro_mart.refresh_cn_macro_mart(
             market="CN",

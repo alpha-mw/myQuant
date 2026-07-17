@@ -18,7 +18,7 @@ import shutil
 import stat
 import tempfile
 import time as time_module
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -36,10 +36,23 @@ from quant_investor.market.branch_readiness import (
     SOURCE_PUBLIC_FALLBACK,
     SOURCE_TUSHARE,
 )
+from quant_investor.macro.release_calendar import (
+    CriticalEventGapEvaluation,
+    MacroReleaseCalendarError,
+    ReleaseCalendarEvidence,
+    ReleaseReadinessEvaluation,
+    SessionLagEvaluation,
+    evaluate_release_readiness,
+    is_validated_release_calendar_generation,
+    load_release_calendar,
+    release_calendar_writer_lock,
+)
 from quant_investor.macro.snapshot import build_macro_snapshot
 from quant_investor.macro.contracts import parse_timestamp
 from quant_investor.macro.production_observation_bundle import (
     LOCAL_MARKET_OBSERVATION_PUBLICATION_SCHEMA,
+    LOCAL_MARKET_OBSERVATION_ROLL_SCHEMA,
+    OFFICIAL_OBSERVATION_REFRESH_SCHEMA,
     PRODUCTION_OBSERVATION_BUNDLE_SCHEMA,
     ProductionObservationBundleError,
     validate_production_observation_chain,
@@ -99,6 +112,9 @@ VOLATILITY_WINDOW_SESSIONS = 20
 VOLATILITY_PERCENTILE_LOOKBACK = 252
 VOLATILITY_MIN_OBSERVATIONS = 60
 _SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9_.-]+$")
+_SAFE_RELEASE_EVENT_ID = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$"
+)
 _HEX_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _ALLOWED_INPUT_FIELDS = {
     "trade_date",
@@ -117,6 +133,39 @@ _SOURCE_PRIORITY_BY_SOURCE = {
 }
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _PRIMARY_MACRO_CAPABILITY = object()
+_MACRO_RELEASE_CALENDAR_GENERATION_FIELDS = frozenset(
+    {
+        "macro_release_calendar_generation_id",
+        "pointer_sha256",
+        "manifest_sha256",
+        "semantic_sha256",
+        "registry_sha256",
+        "plan_sha256",
+        "capture_manifest_sha256",
+        "market_open_days_sha256",
+        "critical_policy_sha256",
+    }
+)
+_MACRO_RELEASE_CALENDAR_FLAT_FIELD_MAP = {
+    "macro_release_calendar_generation_id": (
+        "macro_release_calendar_generation_id"
+    ),
+    "pointer_sha256": "macro_release_calendar_pointer_sha256",
+    "manifest_sha256": "macro_release_calendar_manifest_sha256",
+    "semantic_sha256": "macro_release_calendar_semantic_sha256",
+    "registry_sha256": "macro_release_calendar_registry_sha256",
+    "plan_sha256": "macro_release_calendar_plan_sha256",
+    "capture_manifest_sha256": (
+        "macro_release_calendar_capture_manifest_sha256"
+    ),
+    "market_open_days_sha256": (
+        "macro_release_calendar_market_open_days_sha256"
+    ),
+    "critical_policy_sha256": (
+        "macro_release_calendar_critical_policy_sha256"
+    ),
+}
+_MACRO_RELEASE_READINESS_SCHEMA = "macro-release-readiness-evaluation.v1"
 _ENDPOINT_SPECS: dict[str, dict[str, Any]] = {
     "cn_pmi": {
         "month_field": "month",
@@ -159,6 +208,8 @@ class _PrimaryMacroAttestation:
     macro_snapshot_sha256: str = ""
     v15_controls_sha256: str = ""
     macro_observation_pointer_sha256: str = ""
+    macro_release_calendar_generation_sha256: str = ""
+    macro_release_readiness_evidence_sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -397,6 +448,433 @@ def _assert_macro_observation_pointer_cas(
     return actual_sha
 
 
+def _production_observation_schemas() -> set[str]:
+    return {
+        PRODUCTION_OBSERVATION_BUNDLE_SCHEMA,
+        LOCAL_MARKET_OBSERVATION_PUBLICATION_SCHEMA,
+        OFFICIAL_OBSERVATION_REFRESH_SCHEMA,
+        LOCAL_MARKET_OBSERVATION_ROLL_SCHEMA,
+    }
+
+
+def _validate_macro_release_calendar_generation(
+    raw: Mapping[str, Any] | Any,
+) -> dict[str, str]:
+    if not isinstance(raw, Mapping) or set(raw) != (
+        _MACRO_RELEASE_CALENDAR_GENERATION_FIELDS
+    ):
+        raise MacroMartPromotionError(
+            "macro_release_calendar_generation_binding_invalid"
+        )
+    generation_id = _safe_run_id(
+        str(raw.get("macro_release_calendar_generation_id") or "")
+    )
+    binding = {
+        "macro_release_calendar_generation_id": generation_id,
+    }
+    for field_name in sorted(
+        _MACRO_RELEASE_CALENDAR_GENERATION_FIELDS
+        - {"macro_release_calendar_generation_id"}
+    ):
+        binding[field_name] = _assert_sha256(
+            raw.get(field_name),
+            blocker="macro_release_calendar_generation_binding_invalid",
+        )
+    return binding
+
+
+def _macro_release_calendar_generation_binding(
+    evidence: ReleaseCalendarEvidence,
+) -> dict[str, str]:
+    identity = evidence.identity
+    return _validate_macro_release_calendar_generation(
+        {
+            "macro_release_calendar_generation_id": identity.generation_id,
+            "pointer_sha256": identity.pointer_sha256,
+            "manifest_sha256": identity.manifest_sha256,
+            "semantic_sha256": identity.semantic_sha256,
+            "registry_sha256": evidence.registry_sha256,
+            "plan_sha256": evidence.plan_sha256,
+            "capture_manifest_sha256": evidence.capture_manifest_sha256,
+            "market_open_days_sha256": evidence.market_open_days_sha256,
+            "critical_policy_sha256": evidence.critical_policy_sha256,
+        }
+    )
+
+
+def _macro_release_calendar_flat_binding(
+    binding: Mapping[str, Any],
+) -> dict[str, str]:
+    validated = _validate_macro_release_calendar_generation(binding)
+    return {
+        flat_field: validated[source_field]
+        for source_field, flat_field in _MACRO_RELEASE_CALENDAR_FLAT_FIELD_MAP.items()
+    }
+
+
+def _validate_macro_release_calendar_flat_binding(
+    raw: Mapping[str, Any],
+    *,
+    binding: Mapping[str, Any] | None,
+    blocker: str,
+) -> None:
+    flat_fields = set(_MACRO_RELEASE_CALENDAR_FLAT_FIELD_MAP.values())
+    present = flat_fields & set(raw)
+    if binding is None:
+        if present:
+            raise MacroMartPromotionError(blocker)
+        return
+    expected = _macro_release_calendar_flat_binding(binding)
+    if present != flat_fields or any(
+        raw.get(field_name) != value
+        for field_name, value in expected.items()
+    ):
+        raise MacroMartPromotionError(blocker)
+
+
+def _load_macro_release_calendar_source(
+    *,
+    canonical_root: str | Path,
+    expected_pointer_sha256: str,
+) -> tuple[Path, ReleaseCalendarEvidence, dict[str, str]]:
+    root = _strict_read_root(canonical_root)
+    expected_sha = _assert_sha256(
+        expected_pointer_sha256,
+        blocker="macro_expected_release_calendar_pointer_hash_invalid",
+    )
+    try:
+        evidence = load_release_calendar(
+            canonical_root=root,
+            expected_pointer_sha256=expected_sha,
+        )
+    except MacroReleaseCalendarError as exc:
+        raise MacroMartPromotionError(
+            str(exc) or "macro_release_calendar_generation_invalid"
+        ) from exc
+    binding = _macro_release_calendar_generation_binding(evidence)
+    if (
+        binding["pointer_sha256"] != expected_sha
+        or Path(evidence.identity.pointer_path) != root / "_latest.json"
+        or not is_validated_release_calendar_generation(
+            evidence,
+            generation_id=binding[
+                "macro_release_calendar_generation_id"
+            ],
+            pointer_sha256=binding["pointer_sha256"],
+            manifest_sha256=binding["manifest_sha256"],
+            semantic_sha256=binding["semantic_sha256"],
+            plan_sha256=binding["plan_sha256"],
+            capture_manifest_sha256=binding[
+                "capture_manifest_sha256"
+            ],
+            market_open_days_sha256=binding[
+                "market_open_days_sha256"
+            ],
+            registry_sha256=binding["registry_sha256"],
+            critical_policy_sha256=binding[
+                "critical_policy_sha256"
+            ],
+        )
+    ):
+        raise MacroMartPromotionError(
+            "macro_release_calendar_generation_binding_invalid"
+        )
+    return root, evidence, binding
+
+
+def _macro_release_decision_cutoff(
+    evidence: ReleaseCalendarEvidence,
+    *,
+    target_session_date: str,
+    provider_capture_cutoff_at: str,
+) -> str:
+    target_text = _compact_trade_date(
+        target_session_date,
+        blocker="macro_release_calendar_target_date_invalid",
+    )
+    target_date = datetime.strptime(target_text, "%Y%m%d").date()
+    target_close = datetime.combine(
+        target_date,
+        time(15, 0),
+        tzinfo=_SHANGHAI,
+    ).astimezone(timezone.utc)
+    if not evidence.issuer_coverage:
+        raise MacroMartPromotionError(
+            "macro_release_calendar_issuer_coverage_missing"
+        )
+    try:
+        coverage_through = min(
+            parse_timestamp(item.through_at, field_name="through_at")
+            for item in evidence.issuer_coverage
+        )
+        provider_cutoff = parse_timestamp(
+            provider_capture_cutoff_at,
+            field_name="provider_capture_cutoff_at",
+        )
+    except (TypeError, ValueError) as exc:
+        raise MacroMartPromotionError(
+            "macro_release_calendar_issuer_coverage_missing"
+        ) from exc
+    coverage_local_date = coverage_through.astimezone(_SHANGHAI).date()
+    if coverage_local_date < target_date:
+        raise MacroMartPromotionError(
+            "macro_release_calendar_coverage_before_target"
+        )
+    if coverage_local_date == target_date:
+        if coverage_through < target_close:
+            raise MacroMartPromotionError(
+                "macro_release_calendar_coverage_before_market_close"
+            )
+        release_cutoff = coverage_through
+    else:
+        release_cutoff = target_close
+    if release_cutoff > provider_cutoff:
+        raise MacroMartPromotionError(
+            "macro_release_calendar_coverage_in_future"
+        )
+    return release_cutoff.astimezone(timezone.utc).isoformat()
+
+
+def _validate_macro_release_readiness_evidence(
+    raw: Mapping[str, Any] | Any,
+) -> dict[str, Any]:
+    if not isinstance(raw, Mapping) or set(raw) != {
+        "schema_version",
+        "macro_logical_date",
+        "target_session_date",
+        "decision_cutoff_at",
+        "evaluation",
+    }:
+        raise MacroMartPromotionError(
+            "macro_release_readiness_evidence_invalid"
+        )
+    macro_logical_date = _compact_trade_date(
+        raw.get("macro_logical_date"),
+        blocker="macro_release_readiness_evidence_invalid",
+    )
+    target_session_date = _compact_trade_date(
+        raw.get("target_session_date"),
+        blocker="macro_release_readiness_evidence_invalid",
+    )
+    cutoff = _aware_timestamp(
+        raw.get("decision_cutoff_at"),
+        blocker="macro_release_readiness_evidence_invalid",
+    )
+    evaluation = raw.get("evaluation")
+    if not isinstance(evaluation, Mapping):
+        raise MacroMartPromotionError(
+            "macro_release_readiness_evidence_invalid"
+        )
+    lag_raw = evaluation.get("session_lag")
+    gap_raw = evaluation.get("critical_event_gap")
+    if not isinstance(lag_raw, Mapping) or not isinstance(gap_raw, Mapping):
+        raise MacroMartPromotionError(
+            "macro_release_readiness_evidence_invalid"
+        )
+    expected_evaluation_keys = {
+        "ready",
+        "session_lag",
+        "critical_event_gap",
+        "blockers",
+    }
+    expected_lag_keys = {
+        "ready",
+        "session_lag",
+        "macro_logical_date",
+        "target_session_date",
+        "blockers",
+    }
+    expected_gap_keys = {
+        "ready",
+        "window_start_exclusive",
+        "window_end_inclusive",
+        "relevant_event_ids",
+        "resolved_event_ids",
+        "blocking_event_ids",
+        "blockers",
+    }
+    lag_value = lag_raw.get("session_lag")
+    string_sequence_fields = (
+        "relevant_event_ids",
+        "resolved_event_ids",
+        "blocking_event_ids",
+    )
+    if (
+        raw.get("schema_version") != _MACRO_RELEASE_READINESS_SCHEMA
+        or raw.get("macro_logical_date") != macro_logical_date
+        or raw.get("target_session_date") != target_session_date
+        or raw.get("decision_cutoff_at") != cutoff.isoformat()
+        or cutoff.tz_convert(_SHANGHAI).strftime("%Y%m%d")
+        != target_session_date
+        or set(evaluation) != expected_evaluation_keys
+        or set(lag_raw) != expected_lag_keys
+        or set(gap_raw) != expected_gap_keys
+        or evaluation.get("ready") is not True
+        or evaluation.get("blockers") != []
+        or lag_raw.get("ready") is not True
+        or not isinstance(lag_value, int)
+        or isinstance(lag_value, bool)
+        or lag_value not in {0, 1, 2}
+        or lag_raw.get("blockers") != []
+        or gap_raw.get("ready") is not True
+        or gap_raw.get("blockers") != []
+        or gap_raw.get("blocking_event_ids") != []
+        or any(
+            not isinstance(gap_raw.get(field_name), list)
+            or any(
+                not isinstance(item, str) or not item
+                or item.strip() != item
+                or _SAFE_RELEASE_EVENT_ID.fullmatch(item) is None
+                for item in gap_raw.get(field_name, [])
+            )
+            or len(gap_raw.get(field_name, []))
+            != len(set(gap_raw.get(field_name, [])))
+            for field_name in string_sequence_fields
+        )
+    ):
+        raise MacroMartPromotionError(
+            "macro_release_readiness_evidence_invalid"
+        )
+    macro_date = datetime.strptime(macro_logical_date, "%Y%m%d").date()
+    target_date = datetime.strptime(target_session_date, "%Y%m%d").date()
+    macro_iso = macro_date.isoformat()
+    target_iso = target_date.isoformat()
+    target_close = pd.Timestamp(
+        datetime.combine(
+            target_date,
+            time(15, 0),
+            tzinfo=_SHANGHAI,
+        ).astimezone(timezone.utc)
+    )
+    window_start = _aware_timestamp(
+        gap_raw.get("window_start_exclusive"),
+        blocker="macro_release_readiness_evidence_invalid",
+    )
+    window_end = _aware_timestamp(
+        gap_raw.get("window_end_inclusive"),
+        blocker="macro_release_readiness_evidence_invalid",
+    )
+    expected_window_start = pd.Timestamp(
+        datetime.combine(
+            macro_date,
+            time(15, 0),
+            tzinfo=_SHANGHAI,
+        ).astimezone(timezone.utc)
+    )
+    relevant_ids = list(gap_raw["relevant_event_ids"])
+    resolved_ids = list(gap_raw["resolved_event_ids"])
+    blocking_ids = list(gap_raw["blocking_event_ids"])
+    if (
+        lag_raw.get("macro_logical_date") != macro_iso
+        or lag_raw.get("target_session_date") != target_iso
+        or (lag_value == 0 and macro_date != target_date)
+        or (lag_value > 0 and macro_date >= target_date)
+        or cutoff < target_close
+        or window_start != expected_window_start
+        or window_end != cutoff
+        or window_end < window_start
+        or resolved_ids != relevant_ids
+        or relevant_ids
+        or not set(blocking_ids).issubset(relevant_ids)
+    ):
+        raise MacroMartPromotionError(
+            "macro_release_readiness_evidence_invalid"
+        )
+    lag = SessionLagEvaluation(
+        ready=True,
+        session_lag=lag_value,
+        macro_logical_date=macro_iso,
+        target_session_date=target_iso,
+        blockers=(),
+    )
+    gap = CriticalEventGapEvaluation(
+        ready=True,
+        window_start_exclusive=window_start.isoformat(),
+        window_end_inclusive=window_end.isoformat(),
+        relevant_event_ids=tuple(relevant_ids),
+        resolved_event_ids=tuple(resolved_ids),
+        blocking_event_ids=(),
+        blockers=(),
+    )
+    reconstructed = ReleaseReadinessEvaluation(
+        ready=True,
+        session_lag=lag,
+        critical_event_gap=gap,
+        blockers=(),
+    )
+    reconstructed_payload = json.loads(
+        json.dumps(
+            asdict(reconstructed),
+            ensure_ascii=False,
+            sort_keys=True,
+            allow_nan=False,
+        )
+    )
+    if reconstructed_payload != dict(evaluation):
+        raise MacroMartPromotionError(
+            "macro_release_readiness_evidence_invalid"
+        )
+    return {
+        "schema_version": _MACRO_RELEASE_READINESS_SCHEMA,
+        "macro_logical_date": macro_logical_date,
+        "target_session_date": target_session_date,
+        "decision_cutoff_at": cutoff.isoformat(),
+        "evaluation": reconstructed_payload,
+    }
+
+
+def _build_macro_release_readiness_evidence(
+    evidence: ReleaseCalendarEvidence,
+    *,
+    macro_logical_date: str,
+    target_session_date: str,
+    provider_capture_cutoff_at: str,
+) -> dict[str, Any]:
+    release_decision_cutoff = _macro_release_decision_cutoff(
+        evidence,
+        target_session_date=target_session_date,
+        provider_capture_cutoff_at=provider_capture_cutoff_at,
+    )
+    try:
+        readiness = evaluate_release_readiness(
+            evidence,
+            macro_logical_date=_compact_trade_date(
+                macro_logical_date,
+                blocker="macro_release_calendar_logical_date_invalid",
+            ),
+            target_session_date=_compact_trade_date(
+                target_session_date,
+                blocker="macro_release_calendar_target_date_invalid",
+            ),
+            decision_cutoff_at=release_decision_cutoff,
+        )
+    except (MacroReleaseCalendarError, ValueError) as exc:
+        raise MacroMartPromotionError(
+            str(exc) or "macro_release_calendar_readiness_invalid"
+        ) from exc
+    if not readiness.ready:
+        raise MacroMartPromotionError(
+            "macro_release_calendar_not_ready:"
+            + ",".join(readiness.blockers)
+        )
+    return _validate_macro_release_readiness_evidence(
+        {
+            "schema_version": _MACRO_RELEASE_READINESS_SCHEMA,
+            "macro_logical_date": macro_logical_date,
+            "target_session_date": target_session_date,
+            "decision_cutoff_at": release_decision_cutoff,
+            "evaluation": json.loads(
+                json.dumps(
+                    asdict(readiness),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    allow_nan=False,
+                )
+            ),
+        }
+    )
+
+
 def _safe_run_id(run_id: str) -> str:
     value = str(run_id or "").strip()
     if not value or not _SAFE_RUN_ID.fullmatch(value) or value in {".", ".."}:
@@ -447,6 +925,39 @@ def _staging_lock(root: Path) -> Iterator[None]:
     finally:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
+
+
+@contextmanager
+def _market_writer_lock(market_root: Path) -> Iterator[None]:
+    """Serialize all canonical market-pointer consumers before catalog locks."""
+
+    lock_path = market_root / ".market_writer.lock"
+    if lock_path.exists() and lock_path.is_symlink():
+        raise MacroMartPromotionError("macro_market_writer_lock_symlink_rejected")
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor: int | None = None
+    locked = False
+    try:
+        descriptor = os.open(lock_path, flags, 0o600)
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise MacroMartPromotionError("macro_market_writer_lock_invalid")
+        os.fchmod(descriptor, 0o600)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        locked = True
+        yield
+    except MacroMartPromotionError:
+        raise
+    except OSError as exc:
+        raise MacroMartPromotionError(
+            "macro_market_writer_lock_unavailable"
+        ) from exc
+    finally:
+        if descriptor is not None:
+            if locked:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
 
 
 @contextmanager
@@ -527,6 +1038,21 @@ def _macro_observation_writer_lock(root: Path) -> Iterator[None]:
             if locked:
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
             os.close(descriptor)
+
+
+@contextmanager
+def _macro_release_calendar_writer_lock(root: Path) -> Iterator[None]:
+    """Hold the canonical release-calendar lock last in promotion order."""
+
+    try:
+        with release_calendar_writer_lock(canonical_root=root):
+            yield
+    except MacroMartPromotionError:
+        raise
+    except MacroReleaseCalendarError as exc:
+        raise MacroMartPromotionError(
+            str(exc) or "macro_release_calendar_lock_unavailable"
+        ) from exc
 
 
 def _safe_directory(path: Path, *, blocker: str) -> Path:
@@ -1682,10 +2208,7 @@ def _load_v15_macro_snapshot(
         if isinstance(metadata, Mapping)
         else ""
     )
-    production_schemas = {
-        PRODUCTION_OBSERVATION_BUNDLE_SCHEMA,
-        LOCAL_MARKET_OBSERVATION_PUBLICATION_SCHEMA,
-    }
+    production_schemas = _production_observation_schemas()
     if chain_schema in production_schemas:
         if (
             not isinstance(manifest, Mapping)
@@ -1741,6 +2264,7 @@ def _load_v15_macro_snapshot(
                 observations,
                 generation_manifest=manifest,
                 pointer_metadata=metadata,
+                canonical_root=root,
             )
         except ProductionObservationBundleError as exc:
             raise MacroMartPromotionError(
@@ -2068,6 +2592,8 @@ def _write_primary_generation(
     macro_snapshot: Mapping[str, Any],
     v15_controls: Mapping[str, Any],
     observation_generation: Mapping[str, Any],
+    macro_release_calendar_generation: Mapping[str, Any] | None = None,
+    macro_release_readiness_evidence: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], _PrimaryMacroAttestation]:
     formula_universe = _validate_market_formula_universe(
         market_formula_universe,
@@ -2075,6 +2601,26 @@ def _write_primary_generation(
         require_control_binding=True,
     )
     formula_universe_sha = _canonical_json_sha256(formula_universe)
+    release_calendar_generation = (
+        _validate_macro_release_calendar_generation(
+            macro_release_calendar_generation
+        )
+        if macro_release_calendar_generation is not None
+        else None
+    )
+    if (release_calendar_generation is None) != (
+        macro_release_readiness_evidence is None
+    ):
+        raise MacroMartPromotionError(
+            "macro_release_readiness_evidence_invalid"
+        )
+    release_readiness_evidence = (
+        _validate_macro_release_readiness_evidence(
+            macro_release_readiness_evidence
+        )
+        if macro_release_readiness_evidence is not None
+        else None
+    )
     generations_root = _safe_directory(
         root / "_generations",
         blocker="macro_generations_root_invalid",
@@ -2163,6 +2709,22 @@ def _write_primary_generation(
             "transform_version": V15_TRANSFORM_VERSION,
             "historical_replay_eligible": False,
         }
+        if release_calendar_generation is not None:
+            provenance["macro_release_calendar_generation"] = dict(
+                release_calendar_generation
+            )
+            provenance.update(
+                _macro_release_calendar_flat_binding(
+                    release_calendar_generation
+                )
+            )
+            assert release_readiness_evidence is not None
+            provenance["macro_release_decision_cutoff_at"] = (
+                release_readiness_evidence["decision_cutoff_at"]
+            )
+            provenance["macro_release_readiness_evidence"] = dict(
+                release_readiness_evidence
+            )
         provenance["envelope_sha256"] = _canonical_json_sha256(provenance)
         manifest: dict[str, Any] = {
             "schema_version": CANONICAL_MANIFEST_SCHEMA,
@@ -2214,6 +2776,22 @@ def _write_primary_generation(
             "production_eligible": True,
             "generated_at": _now_utc(),
         }
+        if release_calendar_generation is not None:
+            manifest["macro_release_calendar_generation"] = dict(
+                release_calendar_generation
+            )
+            manifest.update(
+                _macro_release_calendar_flat_binding(
+                    release_calendar_generation
+                )
+            )
+            assert release_readiness_evidence is not None
+            manifest["macro_release_decision_cutoff_at"] = (
+                release_readiness_evidence["decision_cutoff_at"]
+            )
+            manifest["macro_release_readiness_evidence"] = dict(
+                release_readiness_evidence
+            )
         _validate_provider_bundle(provider_bundle, manifest=manifest)
         if (
             _verify_provider_capture_files(
@@ -2279,6 +2857,16 @@ def _write_primary_generation(
         macro_observation_pointer_sha256=str(
             validated_controls["observation_generation"]["pointer_sha256"]
         ),
+        macro_release_calendar_generation_sha256=(
+            _canonical_json_sha256(release_calendar_generation)
+            if release_calendar_generation is not None
+            else ""
+        ),
+        macro_release_readiness_evidence_sha256=(
+            _canonical_json_sha256(release_readiness_evidence)
+            if release_readiness_evidence is not None
+            else ""
+        ),
     )
     return manifest, attestation
 
@@ -2291,6 +2879,7 @@ def _load_primary_generation_for_retry(
     market_pointer_sha256: str,
     nbs_cn_pmi_url: str,
     allow_tushare_fallback: bool,
+    macro_release_calendar_generation: Mapping[str, Any] | None = None,
 ) -> tuple[
     dict[str, Any],
     _PrimaryMacroAttestation,
@@ -2332,6 +2921,64 @@ def _load_primary_generation_for_retry(
         != "provider_bundle.json"
     ):
         raise MacroMartPromotionError("macro_retry_generation_contract_invalid")
+    persisted_release_calendar = manifest.get(
+        "macro_release_calendar_generation"
+    )
+    if macro_release_calendar_generation is None:
+        if persisted_release_calendar is not None:
+            raise MacroMartPromotionError(
+                "macro_retry_generation_release_calendar_binding_mismatch"
+            )
+        release_calendar_generation = None
+    else:
+        release_calendar_generation = (
+            _validate_macro_release_calendar_generation(
+                macro_release_calendar_generation
+            )
+        )
+        if (
+            _validate_macro_release_calendar_generation(
+                persisted_release_calendar
+            )
+            != release_calendar_generation
+        ):
+            raise MacroMartPromotionError(
+                "macro_retry_generation_release_calendar_binding_mismatch"
+            )
+    _validate_macro_release_calendar_flat_binding(
+        manifest,
+        binding=release_calendar_generation,
+        blocker=(
+            "macro_retry_generation_release_calendar_binding_mismatch"
+        ),
+    )
+    persisted_release_readiness = manifest.get(
+        "macro_release_readiness_evidence"
+    )
+    persisted_release_cutoff = manifest.get(
+        "macro_release_decision_cutoff_at"
+    )
+    if release_calendar_generation is None:
+        if (
+            persisted_release_readiness is not None
+            or persisted_release_cutoff is not None
+        ):
+            raise MacroMartPromotionError(
+                "macro_retry_generation_release_readiness_mismatch"
+            )
+        release_readiness_evidence = None
+    else:
+        release_readiness_evidence = (
+            _validate_macro_release_readiness_evidence(
+                persisted_release_readiness
+            )
+        )
+        if persisted_release_cutoff != release_readiness_evidence[
+            "decision_cutoff_at"
+        ]:
+            raise MacroMartPromotionError(
+                "macro_retry_generation_release_readiness_mismatch"
+            )
     table_sha = _assert_sha256(
         manifest.get("parquet_sha256"),
         blocker="macro_retry_generation_table_hash_invalid",
@@ -2486,6 +3133,16 @@ def _load_primary_generation_for_retry(
             dict(manifest["macro_observation_generation"])[
                 "pointer_sha256"
             ]
+        ),
+        macro_release_calendar_generation_sha256=(
+            _canonical_json_sha256(release_calendar_generation)
+            if release_calendar_generation is not None
+            else ""
+        ),
+        macro_release_readiness_evidence_sha256=(
+            _canonical_json_sha256(release_readiness_evidence)
+            if release_readiness_evidence is not None
+            else ""
         ),
     )
     return (
@@ -2887,6 +3544,48 @@ def _strict_catalog_payload(
         "source_priority": generation_priority,
         "status": "ok",
     }
+    release_calendar_generation = generation_manifest.get(
+        "macro_release_calendar_generation"
+    )
+    if release_calendar_generation is not None:
+        tables["macro_daily"]["macro_release_calendar_generation"] = (
+            _validate_macro_release_calendar_generation(
+                release_calendar_generation
+            )
+        )
+        tables["macro_daily"].update(
+            _macro_release_calendar_flat_binding(
+                release_calendar_generation
+            )
+        )
+        release_readiness_evidence = (
+            _validate_macro_release_readiness_evidence(
+                generation_manifest.get(
+                    "macro_release_readiness_evidence"
+                )
+            )
+        )
+        if generation_manifest.get(
+            "macro_release_decision_cutoff_at"
+        ) != release_readiness_evidence["decision_cutoff_at"]:
+            raise MacroMartPromotionError(
+                "macro_generation_release_readiness_binding_invalid"
+            )
+        tables["macro_daily"]["macro_release_decision_cutoff_at"] = (
+            release_readiness_evidence["decision_cutoff_at"]
+        )
+        tables["macro_daily"]["macro_release_readiness_evidence"] = dict(
+            release_readiness_evidence
+        )
+    elif (
+        generation_manifest.get("macro_release_decision_cutoff_at")
+        is not None
+        or generation_manifest.get("macro_release_readiness_evidence")
+        is not None
+    ):
+        raise MacroMartPromotionError(
+            "macro_generation_release_readiness_binding_invalid"
+        )
     return payload
 
 
@@ -2937,6 +3636,8 @@ def _recover_catalog_transactions(
     *,
     root: Path,
     catalog_path: Path,
+    locked_macro_observations_root: Path | None = None,
+    locked_macro_release_calendar_root: Path | None = None,
 ) -> None:
     transactions_root = root / "_transactions"
     if not transactions_root.exists():
@@ -3053,7 +3754,173 @@ def _recover_catalog_transactions(
                 raise MacroMartPromotionError(
                     "macro_transaction_market_pointer_hash_mismatch"
                 )
+            journal_observations_root = journal.get(
+                "macro_observations_root"
+            )
+            journal_observations_pointer = journal.get(
+                "expected_macro_observations_pointer_sha256"
+            )
+            if (journal_observations_root is None) != (
+                journal_observations_pointer is None
+            ):
+                raise MacroMartPromotionError(
+                    "macro_transaction_observation_binding_invalid"
+                )
+            journal_release_root = journal.get(
+                "macro_release_calendar_root"
+            )
+            journal_release_generation = journal.get(
+                "macro_release_calendar_generation"
+            )
+            if (journal_release_root is None) != (
+                journal_release_generation is None
+            ):
+                raise MacroMartPromotionError(
+                    "macro_transaction_release_calendar_binding_invalid"
+                )
+            if (
+                journal_release_generation is not None
+                and journal_observations_pointer is None
+            ):
+                raise MacroMartPromotionError(
+                    "macro_transaction_observation_binding_invalid"
+                )
+            if journal_observations_pointer is not None:
+                if locked_macro_observations_root is None:
+                    raise MacroMartPromotionError(
+                        "macro_transaction_observation_lock_required"
+                    )
+                if journal_observations_root != str(
+                    locked_macro_observations_root
+                ):
+                    raise MacroMartPromotionError(
+                        "macro_transaction_observation_binding_mismatch"
+                    )
+                _assert_macro_observation_pointer_cas(
+                    locked_macro_observations_root,
+                    expected_pointer_sha256=_assert_sha256(
+                        journal_observations_pointer,
+                        blocker=(
+                            "macro_transaction_observation_pointer_hash_invalid"
+                        ),
+                    ),
+                )
+            validated_journal_release: dict[str, str] | None = None
+            journal_release_readiness: dict[str, Any] | None = None
+            if journal_release_generation is None:
+                _validate_macro_release_calendar_flat_binding(
+                    journal,
+                    binding=None,
+                    blocker=(
+                        "macro_transaction_release_calendar_binding_invalid"
+                    ),
+                )
+                if (
+                    journal.get("macro_release_decision_cutoff_at")
+                    is not None
+                    or journal.get("macro_release_readiness_evidence")
+                    is not None
+                ):
+                    raise MacroMartPromotionError(
+                        "macro_transaction_release_readiness_binding_invalid"
+                    )
+            else:
+                if locked_macro_release_calendar_root is None:
+                    raise MacroMartPromotionError(
+                        "macro_transaction_release_calendar_lock_required"
+                    )
+                if journal_release_root != str(
+                    locked_macro_release_calendar_root
+                ):
+                    raise MacroMartPromotionError(
+                        "macro_transaction_release_calendar_binding_mismatch"
+                    )
+                validated_journal_release = (
+                    _validate_macro_release_calendar_generation(
+                        journal_release_generation
+                    )
+                )
+                _validate_macro_release_calendar_flat_binding(
+                    journal,
+                    binding=validated_journal_release,
+                    blocker=(
+                        "macro_transaction_release_calendar_binding_invalid"
+                    ),
+                )
+                journal_release_readiness = (
+                    _validate_macro_release_readiness_evidence(
+                        journal.get("macro_release_readiness_evidence")
+                    )
+                )
+                if journal.get("macro_release_decision_cutoff_at") != (
+                    journal_release_readiness["decision_cutoff_at"]
+                ):
+                    raise MacroMartPromotionError(
+                        "macro_transaction_release_readiness_binding_invalid"
+                    )
+                (
+                    loaded_release_root,
+                    _,
+                    loaded_release_generation,
+                ) = _load_macro_release_calendar_source(
+                    canonical_root=locked_macro_release_calendar_root,
+                    expected_pointer_sha256=validated_journal_release[
+                        "pointer_sha256"
+                    ],
+                )
+                if (
+                    loaded_release_root
+                    != locked_macro_release_calendar_root
+                    or loaded_release_generation
+                    != validated_journal_release
+                ):
+                    raise MacroMartPromotionError(
+                        "macro_transaction_release_calendar_binding_mismatch"
+                    )
             recovered_catalog = _parse_json_object(new_bytes)
+            recovered_tables = recovered_catalog.get("tables")
+            recovered_macro = (
+                recovered_tables.get("macro_daily")
+                if isinstance(recovered_tables, Mapping)
+                else None
+            )
+            if journal_observations_pointer is not None:
+                recovered_observation_generation = (
+                    recovered_macro.get("macro_observation_generation")
+                    if isinstance(recovered_macro, Mapping)
+                    else None
+                )
+                if (
+                    not isinstance(
+                        recovered_observation_generation,
+                        Mapping,
+                    )
+                    or recovered_observation_generation.get(
+                        "pointer_sha256"
+                    )
+                    != journal_observations_pointer
+                ):
+                    raise MacroMartPromotionError(
+                        "macro_transaction_observation_binding_mismatch"
+                    )
+            if journal_release_generation is not None:
+                assert journal_release_readiness is not None
+                if (
+                    not isinstance(recovered_macro, Mapping)
+                    or recovered_macro.get(
+                        "macro_release_readiness_evidence"
+                    )
+                    != journal_release_readiness
+                    or recovered_macro.get(
+                        "macro_release_decision_cutoff_at"
+                    )
+                    != journal_release_readiness[
+                        "decision_cutoff_at"
+                    ]
+                ):
+                    raise MacroMartPromotionError(
+                        "macro_transaction_release_readiness_binding_mismatch"
+                    )
             _validate_strict_catalog_required_table_closure(
                 recovered_catalog,
                 market_root=catalog_path.parent,
@@ -3099,6 +3966,11 @@ def _prepare_catalog_transaction(
     new_catalog_bytes: bytes,
     generation_id: str,
     expected_market_pointer_sha256: str,
+    macro_observations_root: Path | None = None,
+    expected_macro_observations_pointer_sha256: str | None = None,
+    macro_release_calendar_root: Path | None = None,
+    macro_release_calendar_generation: Mapping[str, Any] | None = None,
+    macro_release_readiness_evidence: Mapping[str, Any] | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     transactions_root = _safe_directory(
         root / "_transactions",
@@ -3122,7 +3994,7 @@ def _prepare_catalog_transaction(
     new_path = transaction / "new_catalog.json"
     _atomic_write_bytes(old_path, old_catalog_bytes)
     _atomic_write_bytes(new_path, new_catalog_bytes)
-    journal = {
+    journal: dict[str, Any] = {
         "schema_version": TRANSACTION_JOURNAL_SCHEMA,
         "run_id": run_id,
         "generation_id": generation_id,
@@ -3136,6 +4008,60 @@ def _prepare_catalog_transaction(
         "created_at": _now_utc(),
         "updated_at": _now_utc(),
     }
+    if (macro_observations_root is None) != (
+        expected_macro_observations_pointer_sha256 is None
+    ):
+        raise MacroMartPromotionError(
+            "macro_transaction_observation_binding_invalid"
+        )
+    if macro_observations_root is not None:
+        journal["macro_observations_root"] = str(
+            macro_observations_root
+        )
+        journal["expected_macro_observations_pointer_sha256"] = (
+            _assert_sha256(
+                expected_macro_observations_pointer_sha256,
+                blocker=(
+                    "macro_transaction_observation_pointer_hash_invalid"
+                ),
+            )
+        )
+    if macro_release_calendar_generation is not None:
+        if (
+            macro_release_calendar_root is None
+            or macro_observations_root is None
+        ):
+            raise MacroMartPromotionError(
+                "macro_transaction_release_calendar_binding_invalid"
+            )
+        journal["macro_release_calendar_root"] = str(
+            macro_release_calendar_root
+        )
+        journal["macro_release_calendar_generation"] = (
+            _validate_macro_release_calendar_generation(
+                macro_release_calendar_generation
+            )
+        )
+        journal.update(
+            _macro_release_calendar_flat_binding(
+                journal["macro_release_calendar_generation"]
+            )
+        )
+        release_readiness_evidence = (
+            _validate_macro_release_readiness_evidence(
+                macro_release_readiness_evidence
+            )
+        )
+        journal["macro_release_decision_cutoff_at"] = (
+            release_readiness_evidence["decision_cutoff_at"]
+        )
+        journal["macro_release_readiness_evidence"] = dict(
+            release_readiness_evidence
+        )
+    elif macro_release_readiness_evidence is not None:
+        raise MacroMartPromotionError(
+            "macro_transaction_release_readiness_binding_invalid"
+        )
     journal_path = transaction / "journal.json"
     _atomic_json(journal_path, journal)
     _fsync_directory(transaction)
@@ -3157,12 +4083,69 @@ def _publish_catalog_generation(
     market_input_evidence: list[dict[str, Any]],
     generation_manifest: Mapping[str, Any],
     attestation: _PrimaryMacroAttestation,
+    macro_observations_root: Path,
+    macro_release_calendar_root: Path | None = None,
+    macro_release_calendar_generation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     observation_generation = generation_manifest.get(
         "macro_observation_generation"
     )
     if not isinstance(observation_generation, Mapping):
         raise MacroMartPromotionError("macro_primary_attestation_invalid")
+    expected_observation_pointer_sha = _assert_sha256(
+        observation_generation.get("pointer_sha256"),
+        blocker="macro_primary_attestation_invalid",
+    )
+    persisted_release_calendar = generation_manifest.get(
+        "macro_release_calendar_generation"
+    )
+    if macro_release_calendar_generation is None:
+        if persisted_release_calendar is not None:
+            raise MacroMartPromotionError("macro_primary_attestation_invalid")
+        release_calendar_generation = None
+    else:
+        if macro_release_calendar_root is None:
+            raise MacroMartPromotionError("macro_primary_attestation_invalid")
+        release_calendar_generation = (
+            _validate_macro_release_calendar_generation(
+                macro_release_calendar_generation
+            )
+        )
+        if (
+            _validate_macro_release_calendar_generation(
+                persisted_release_calendar
+            )
+            != release_calendar_generation
+        ):
+            raise MacroMartPromotionError("macro_primary_attestation_invalid")
+    _validate_macro_release_calendar_flat_binding(
+        generation_manifest,
+        binding=release_calendar_generation,
+        blocker="macro_primary_attestation_invalid",
+    )
+    persisted_release_readiness = generation_manifest.get(
+        "macro_release_readiness_evidence"
+    )
+    if release_calendar_generation is None:
+        if (
+            persisted_release_readiness is not None
+            or generation_manifest.get(
+                "macro_release_decision_cutoff_at"
+            )
+            is not None
+        ):
+            raise MacroMartPromotionError("macro_primary_attestation_invalid")
+        release_readiness_evidence = None
+    else:
+        release_readiness_evidence = (
+            _validate_macro_release_readiness_evidence(
+                persisted_release_readiness
+            )
+        )
+        if generation_manifest.get(
+            "macro_release_decision_cutoff_at"
+        ) != release_readiness_evidence["decision_cutoff_at"]:
+            raise MacroMartPromotionError("macro_primary_attestation_invalid")
     if (
         attestation.capability is not _PRIMARY_MACRO_CAPABILITY
         or attestation.transform_version != V15_TRANSFORM_VERSION
@@ -3186,9 +4169,27 @@ def _publish_catalog_generation(
         != generation_manifest.get("v15_controls_sha256")
         or attestation.macro_observation_pointer_sha256
         != observation_generation.get("pointer_sha256")
+        or attestation.macro_release_calendar_generation_sha256
+        != (
+            _canonical_json_sha256(release_calendar_generation)
+            if release_calendar_generation is not None
+            else ""
+        )
+        or attestation.macro_release_readiness_evidence_sha256
+        != (
+            _canonical_json_sha256(release_readiness_evidence)
+            if release_readiness_evidence is not None
+            else ""
+        )
     ):
         raise MacroMartPromotionError("macro_primary_attestation_invalid")
     catalog_path = root.parent / "_catalog.json"
+    trusted_observations_root = _trusted_macro_observations_root(
+        macro_observations_root,
+        market_root=catalog_path.parent,
+    )
+    if trusted_observations_root != macro_observations_root:
+        raise MacroMartPromotionError("macro_primary_attestation_invalid")
     current_catalog = _read_stable_bytes(
         catalog_path,
         blocker="macro_catalog_invalid_before_switch",
@@ -3208,6 +4209,41 @@ def _publish_catalog_generation(
         != market_pointer_signature
     ):
         raise MacroMartPromotionError("macro_market_pointer_cas_mismatch")
+    observation_pointer_path = trusted_observations_root / "_latest.json"
+    observation_pointer_bytes, _ = _read_verified_bytes_and_json(
+        observation_pointer_path,
+        trust_root=trusted_observations_root,
+        expected_sha256=expected_observation_pointer_sha,
+        hash_blocker="macro_observation_pointer_cas_mismatch",
+        changed_blocker="macro_observation_pointer_changed_during_cas",
+        unreadable_blocker=(
+            "macro_observation_pointer_invalid_before_catalog_switch"
+        ),
+    )
+    observation_pointer_signature = _stat_signature(
+        os.lstat(observation_pointer_path)
+    )
+    release_pointer_bytes: bytes | None = None
+    release_pointer_signature: tuple[int, ...] | None = None
+    if release_calendar_generation is not None:
+        assert macro_release_calendar_root is not None
+        release_pointer_bytes, _ = _read_verified_bytes_and_json(
+            macro_release_calendar_root / "_latest.json",
+            trust_root=macro_release_calendar_root,
+            expected_sha256=release_calendar_generation[
+                "pointer_sha256"
+            ],
+            hash_blocker="macro_release_calendar_pointer_cas_mismatch",
+            changed_blocker=(
+                "macro_release_calendar_pointer_changed_during_cas"
+            ),
+            unreadable_blocker=(
+                "macro_release_calendar_pointer_invalid_before_catalog_switch"
+            ),
+        )
+        release_pointer_signature = _stat_signature(
+            os.lstat(macro_release_calendar_root / "_latest.json")
+        )
     _validate_strict_catalog_required_table_closure(
         new_catalog,
         market_root=catalog_path.parent,
@@ -3223,6 +4259,13 @@ def _publish_catalog_generation(
         expected_market_pointer_sha256=hashlib.sha256(
             market_pointer_bytes
         ).hexdigest(),
+        macro_observations_root=trusted_observations_root,
+        expected_macro_observations_pointer_sha256=(
+            expected_observation_pointer_sha
+        ),
+        macro_release_calendar_root=macro_release_calendar_root,
+        macro_release_calendar_generation=release_calendar_generation,
+        macro_release_readiness_evidence=release_readiness_evidence,
     )
     new_sha = hashlib.sha256(new_catalog_bytes).hexdigest()
     try:
@@ -3256,6 +4299,40 @@ def _publish_catalog_generation(
             raise MacroMartPromotionError(
                 "macro_market_pointer_changed_during_switch"
             )
+        observation_pointer_after = _read_stable_bytes(
+            observation_pointer_path,
+            blocker="macro_observation_pointer_invalid_after_switch",
+        )
+        if (
+            observation_pointer_after != observation_pointer_bytes
+            or _stat_signature(os.lstat(observation_pointer_path))
+            != observation_pointer_signature
+        ):
+            raise MacroMartPromotionError(
+                "macro_observation_pointer_changed_during_switch"
+            )
+        if release_calendar_generation is not None:
+            assert macro_release_calendar_root is not None
+            assert release_pointer_bytes is not None
+            assert release_pointer_signature is not None
+            release_pointer_after = _read_stable_bytes(
+                macro_release_calendar_root / "_latest.json",
+                blocker=(
+                    "macro_release_calendar_pointer_invalid_after_switch"
+                ),
+            )
+            if (
+                release_pointer_after != release_pointer_bytes
+                or _stat_signature(
+                    os.lstat(
+                        macro_release_calendar_root / "_latest.json"
+                    )
+                )
+                != release_pointer_signature
+            ):
+                raise MacroMartPromotionError(
+                    "macro_release_calendar_pointer_changed_during_switch"
+                )
         _set_journal_state(
             journal_path,
             journal,
@@ -3392,232 +4469,20 @@ def refresh_cn_macro_mart(
     nbs_cn_pmi_url: str = "",
     allow_tushare_fallback: bool = False,
 ) -> dict[str, Any]:
-    """Build and atomically bind the latest-session live Macro mart."""
+    """Reject the retired one-step live writer.
+
+    Production refreshes must use ``stage_cn_macro_authoritative_refresh``
+    followed by ``promote_staged_macro_generation`` so all four canonical
+    pointer identities and their writer locks participate in the cutover.
+    """
 
     if str(market).upper() != "CN":
         raise MacroMartPromotionError("macro_market_unsupported")
     if not allow_live:
         raise MacroMartPromotionError("macro_live_not_authorized")
-    if not str(nbs_cn_pmi_url or "").strip():
-        raise MacroMartPromotionError("macro_nbs_cn_pmi_url_missing")
-    try:
-        requested_nbs_url = validate_nbs_pmi_url(
-            str(nbs_cn_pmi_url or "").strip()
-        )
-    except NbsPmiPermanentError as exc:
-        raise MacroMartPromotionError(
-            "macro_nbs_cn_pmi_url_invalid"
-        ) from exc
-    generation_id = _safe_run_id(run_id)
-    expected_catalog_sha = _assert_sha256(
-        expected_catalog_sha256,
-        blocker="macro_expected_catalog_hash_invalid",
+    raise MacroMartPromotionError(
+        "macro_authoritative_stage_promotion_required"
     )
-    expected_pointer_sha = _assert_sha256(
-        expected_market_pointer_sha256,
-        blocker="macro_expected_market_pointer_hash_invalid",
-    )
-    expected_observation_pointer_sha = _assert_sha256(
-        expected_macro_observations_pointer_sha256,
-        blocker="macro_expected_observation_pointer_hash_invalid",
-    )
-    root = _strict_read_root(Path(data_root).expanduser())
-    market_root = root.parent
-    observations_root = _trusted_macro_observations_root(
-        macro_observations_root,
-        market_root=market_root,
-    )
-    catalog_path = market_root / "_catalog.json"
-    pointer_path = market_root / "_latest.json"
-    if not catalog_path.exists() or not pointer_path.exists():
-        raise MacroMartPromotionError("macro_canonical_pointer_missing")
-
-    with _catalog_writer_lock(market_root):
-        _recover_catalog_transactions(root=root, catalog_path=catalog_path)
-        catalog_bytes, catalog = _read_verified_bytes_and_json(
-            catalog_path,
-            trust_root=market_root,
-            expected_sha256=expected_catalog_sha,
-            hash_blocker="macro_expected_catalog_hash_mismatch",
-            changed_blocker="macro_catalog_changed_during_read",
-            unreadable_blocker="macro_catalog_invalid",
-        )
-        pointer_bytes, pointer = _read_verified_bytes_and_json(
-            pointer_path,
-            trust_root=market_root,
-            expected_sha256=expected_pointer_sha,
-            hash_blocker="macro_expected_market_pointer_hash_mismatch",
-            changed_blocker="macro_market_pointer_changed_during_read",
-            unreadable_blocker="macro_market_pointer_invalid",
-        )
-        catalog_signature = _stat_signature(os.lstat(catalog_path))
-        pointer_signature = _stat_signature(os.lstat(pointer_path))
-
-    captured_at = _utc_now()
-    trade_date = _validate_live_target(
-        pointer,
-        requested_as_of=as_of,
-        captured_at=captured_at,
-        enforce_capture_window=False,
-    )
-    macro_snapshot, observation_generation = _load_v15_macro_snapshot(
-        observations_root=observations_root,
-        expected_pointer_sha256=expected_observation_pointer_sha,
-        as_of=trade_date,
-        decision_cutoff_at=captured_at,
-        require_production_chain=True,
-    )
-    equivalent = _current_macro_is_equivalent(
-        root=root,
-        trade_date=trade_date,
-        market_pointer_sha256=expected_pointer_sha,
-        macro_observation_pointer_sha256=str(
-            observation_generation["pointer_sha256"]
-        ),
-        current_at=captured_at,
-    )
-    if equivalent is not None:
-        return equivalent
-    _validate_live_target(
-        pointer,
-        requested_as_of=as_of,
-        captured_at=captured_at,
-        enforce_capture_window=True,
-    )
-    bar_root = _resolve_bar_root(market_root, pointer)
-    retry_generation = _load_primary_generation_for_retry(
-        root=root,
-        run_id=generation_id,
-        trade_date=trade_date,
-        market_pointer_sha256=expected_pointer_sha,
-        nbs_cn_pmi_url=requested_nbs_url,
-        allow_tushare_fallback=allow_tushare_fallback,
-    )
-    if retry_generation is not None:
-        (
-            generation_manifest,
-            attestation,
-            frame,
-            market_evidence,
-            provider_bundle,
-        ) = retry_generation
-        _verify_market_input_evidence(bar_root, market_evidence)
-    else:
-        client = _build_tushare_client()
-        provider_fetch = _fetch_provider_bundle(
-            client=client,
-            trade_date=trade_date,
-            captured_at=captured_at,
-            nbs_cn_pmi_url=requested_nbs_url,
-            allow_tushare_fallback=allow_tushare_fallback,
-        )
-        provider_bundle = provider_fetch.bundle
-        _validate_live_target(
-            pointer,
-            requested_as_of=as_of,
-            captured_at=_utc_now(),
-            enforce_capture_window=True,
-        )
-        market_frame, market_evidence, market_files_sha = (
-            _load_market_inputs(
-                bar_root,
-                trade_date=trade_date,
-            )
-        )
-        frame, market_formula_universe, v15_controls = (
-            _derive_v15_macro_frame(
-                market_frame,
-                trade_date=trade_date,
-                provider_bundle=provider_bundle,
-                macro_snapshot=macro_snapshot,
-                observation_generation=observation_generation,
-            )
-        )
-        generation_manifest, attestation = _write_primary_generation(
-            root=root,
-            run_id=generation_id,
-            frame=frame,
-            provider_bundle=provider_bundle,
-            provider_captures=provider_fetch.captures,
-            market_pointer_sha256=expected_pointer_sha,
-            market_input_evidence=market_evidence,
-            market_input_files_sha256=market_files_sha,
-            market_formula_universe=market_formula_universe,
-            macro_snapshot=macro_snapshot,
-            v15_controls=v15_controls,
-            observation_generation=observation_generation,
-        )
-    persisted_binding = generation_manifest.get("macro_observation_generation")
-    persisted_snapshot = generation_manifest.get("macro_snapshot")
-    if retry_generation is not None and (
-        not isinstance(persisted_binding, Mapping)
-        or dict(persisted_binding) != observation_generation
-        or not isinstance(persisted_snapshot, Mapping)
-        or str(persisted_snapshot.get("snapshot_hash") or "")
-        != str(macro_snapshot.get("snapshot_hash") or "")
-    ):
-        raise MacroMartPromotionError(
-            "macro_retry_generation_observation_binding_mismatch"
-        )
-    new_catalog = _strict_catalog_payload(
-        old_catalog=catalog,
-        market_root=market_root,
-        generation_manifest=generation_manifest,
-    )
-    with _catalog_writer_lock(market_root):
-        _recover_catalog_transactions(root=root, catalog_path=catalog_path)
-        with _macro_observation_writer_lock(observations_root):
-            _assert_macro_observation_pointer_cas(
-                observations_root,
-                expected_pointer_sha256=str(
-                    observation_generation["pointer_sha256"]
-                ),
-            )
-            switch_at = _utc_now()
-            _validate_live_target(
-                pointer,
-                requested_as_of=as_of,
-                captured_at=switch_at,
-                enforce_capture_window=True,
-            )
-            _validate_provider_bundle_current_freshness(
-                provider_bundle,
-                current_at=switch_at,
-            )
-            if (
-                not isinstance(persisted_binding, Mapping)
-                or dict(persisted_binding) != observation_generation
-                or persisted_binding.get("pointer_sha256")
-                != expected_observation_pointer_sha
-            ):
-                raise MacroMartPromotionError(
-                    "macro_generation_observation_binding_mismatch"
-                )
-            published = _publish_catalog_generation(
-                root=root,
-                run_id=generation_id,
-                old_catalog_bytes=catalog_bytes,
-                new_catalog=new_catalog,
-                market_pointer_path=pointer_path,
-                market_pointer_bytes=pointer_bytes,
-                market_pointer_signature=pointer_signature,
-                catalog_signature=catalog_signature,
-                bar_root=bar_root,
-                market_input_evidence=market_evidence,
-                generation_manifest=generation_manifest,
-                attestation=attestation,
-            )
-    return {
-        "status": "promoted",
-        "promoted": True,
-        "run_id": generation_id,
-        "catalog_sha256": published["catalog_sha256"],
-        "previous_catalog_sha256": expected_catalog_sha,
-        "market_pointer_sha256": expected_pointer_sha,
-        "manifest": published["generation_manifest"],
-        "transaction_journal": published["transaction_journal"],
-        "row": frame.iloc[0].to_dict(),
-    }
 
 
 def stage_cn_macro_authoritative_refresh(
@@ -3631,6 +4496,8 @@ def stage_cn_macro_authoritative_refresh(
     expected_market_pointer_sha256: str,
     macro_observations_root: str | Path,
     expected_macro_observations_pointer_sha256: str,
+    macro_release_calendar_root: str | Path,
+    expected_macro_release_calendar_pointer_sha256: str,
     allow_live: bool = False,
     nbs_cn_pmi_url: str = "",
     allow_tushare_fallback: bool = False,
@@ -3666,6 +4533,16 @@ def stage_cn_macro_authoritative_refresh(
     observations_root = _trusted_macro_observations_root(
         macro_observations_root,
         market_root=market_root,
+    )
+    (
+        release_calendar_root,
+        release_calendar_evidence,
+        release_calendar_generation,
+    ) = _load_macro_release_calendar_source(
+        canonical_root=macro_release_calendar_root,
+        expected_pointer_sha256=(
+            expected_macro_release_calendar_pointer_sha256
+        ),
     )
     catalog_path = market_root / "_catalog.json"
     pointer_path = market_root / "_latest.json"
@@ -3712,6 +4589,7 @@ def stage_cn_macro_authoritative_refresh(
         market_pointer_sha256=expected_pointer_sha,
         nbs_cn_pmi_url=requested_nbs_url,
         allow_tushare_fallback=allow_tushare_fallback,
+        macro_release_calendar_generation=release_calendar_generation,
     )
     if retry_generation is None:
         client = _build_tushare_client()
@@ -3736,6 +4614,18 @@ def stage_cn_macro_authoritative_refresh(
                 observation_generation=observation_generation,
             )
         )
+        release_readiness_evidence = (
+            _build_macro_release_readiness_evidence(
+                release_calendar_evidence,
+                macro_logical_date=str(
+                    macro_snapshot.get("as_of") or ""
+                ),
+                target_session_date=trade_date,
+                provider_capture_cutoff_at=str(
+                    provider_fetch.bundle.get("decision_cutoff_at") or ""
+                ),
+            )
+        )
         generation_manifest, _ = _write_primary_generation(
             root=stage,
             run_id=generation_id,
@@ -3749,10 +4639,22 @@ def stage_cn_macro_authoritative_refresh(
             macro_snapshot=macro_snapshot,
             v15_controls=v15_controls,
             observation_generation=observation_generation,
+            macro_release_calendar_generation=(
+                release_calendar_generation
+            ),
+            macro_release_readiness_evidence=(
+                release_readiness_evidence
+            ),
         )
         selected_controls = dict(v15_controls)
     else:
-        generation_manifest, _, frame, _, _ = retry_generation
+        (
+            generation_manifest,
+            _,
+            frame,
+            _,
+            persisted_provider_bundle,
+        ) = retry_generation
         persisted_binding = generation_manifest.get(
             "macro_observation_generation"
         )
@@ -3766,6 +4668,27 @@ def stage_cn_macro_authoritative_refresh(
         ):
             raise MacroMartPromotionError(
                 "macro_retry_generation_observation_binding_mismatch"
+            )
+        release_readiness_evidence = (
+            _build_macro_release_readiness_evidence(
+                release_calendar_evidence,
+                macro_logical_date=str(
+                    macro_snapshot.get("as_of") or ""
+                ),
+                target_session_date=trade_date,
+                provider_capture_cutoff_at=str(
+                    persisted_provider_bundle.get(
+                        "decision_cutoff_at"
+                    )
+                    or ""
+                ),
+            )
+        )
+        if generation_manifest.get(
+            "macro_release_readiness_evidence"
+        ) != release_readiness_evidence:
+            raise MacroMartPromotionError(
+                "macro_retry_generation_release_readiness_mismatch"
             )
         selected_controls = dict(
             generation_manifest.get("v15_controls") or {}
@@ -3783,6 +4706,19 @@ def stage_cn_macro_authoritative_refresh(
             observation_generation["pointer_sha256"]
         ),
         "macro_observation_generation": observation_generation,
+        "macro_release_calendar_root": str(release_calendar_root),
+        "expected_macro_release_calendar_pointer_sha256": str(
+            release_calendar_generation["pointer_sha256"]
+        ),
+        "macro_release_calendar_generation": dict(
+            release_calendar_generation
+        ),
+        "macro_release_decision_cutoff_at": (
+            release_readiness_evidence["decision_cutoff_at"]
+        ),
+        "macro_release_readiness_evidence": dict(
+            release_readiness_evidence
+        ),
         "macro_snapshot_hash": str(macro_snapshot["snapshot_hash"]),
         "macro_snapshot_published_cutoff": str(
             macro_snapshot["published_cutoff"]
@@ -3797,6 +4733,11 @@ def stage_cn_macro_authoritative_refresh(
         "promoted": False,
         "staged_at": _now_utc(),
     }
+    receipt.update(
+        _macro_release_calendar_flat_binding(
+            release_calendar_generation
+        )
+    )
     _atomic_json(receipt_path, receipt)
     receipt_sha = _sha256(receipt_path)
     return {
@@ -3930,6 +4871,38 @@ def promote_staged_macro_generation(
         raise MacroMartPromotionError(
             "macro_staging_observation_binding_invalid"
         )
+    expected_release_calendar_pointer_sha = _assert_sha256(
+        receipt.get("expected_macro_release_calendar_pointer_sha256"),
+        blocker="macro_expected_release_calendar_pointer_hash_invalid",
+    )
+    receipt_release_calendar_generation = (
+        _validate_macro_release_calendar_generation(
+            receipt.get("macro_release_calendar_generation")
+        )
+    )
+    _validate_macro_release_calendar_flat_binding(
+        receipt,
+        binding=receipt_release_calendar_generation,
+        blocker="macro_staging_release_calendar_binding_invalid",
+    )
+    receipt_release_readiness_evidence = (
+        _validate_macro_release_readiness_evidence(
+            receipt.get("macro_release_readiness_evidence")
+        )
+    )
+    if receipt.get("macro_release_decision_cutoff_at") != (
+        receipt_release_readiness_evidence["decision_cutoff_at"]
+    ):
+        raise MacroMartPromotionError(
+            "macro_staging_release_readiness_binding_invalid"
+        )
+    if (
+        receipt_release_calendar_generation["pointer_sha256"]
+        != expected_release_calendar_pointer_sha
+    ):
+        raise MacroMartPromotionError(
+            "macro_staging_release_calendar_binding_invalid"
+        )
     canonical = _strict_read_root(canonical_root)
     market_root = canonical.parent
     if str(receipt.get("canonical_root") or "") != str(canonical):
@@ -3951,13 +4924,58 @@ def promote_staged_macro_generation(
         raise MacroMartPromotionError(
             "macro_staging_observations_root_binding_invalid"
         )
+    receipt_release_calendar_root = receipt.get(
+        "macro_release_calendar_root"
+    )
+    if (
+        not isinstance(receipt_release_calendar_root, str)
+        or not receipt_release_calendar_root
+        or receipt_release_calendar_root.strip()
+        != receipt_release_calendar_root
+    ):
+        raise MacroMartPromotionError(
+            "macro_staging_release_calendar_root_binding_invalid"
+        )
+    release_calendar_root = _strict_read_root(
+        receipt_release_calendar_root
+    )
+    if receipt_release_calendar_root != str(release_calendar_root):
+        raise MacroMartPromotionError(
+            "macro_staging_release_calendar_root_binding_invalid"
+        )
     catalog_path = market_root / "_catalog.json"
     pointer_path = market_root / "_latest.json"
 
-    with _catalog_writer_lock(market_root), _macro_observation_writer_lock(
-        observations_root
+    with (
+        _market_writer_lock(market_root),
+        _catalog_writer_lock(market_root),
+        _macro_observation_writer_lock(observations_root),
+        _macro_release_calendar_writer_lock(release_calendar_root),
     ):
-        _recover_catalog_transactions(root=canonical, catalog_path=catalog_path)
+        _recover_catalog_transactions(
+            root=canonical,
+            catalog_path=catalog_path,
+            locked_macro_observations_root=observations_root,
+            locked_macro_release_calendar_root=release_calendar_root,
+        )
+        (
+            loaded_release_calendar_root,
+            release_calendar_evidence,
+            release_calendar_generation,
+        ) = _load_macro_release_calendar_source(
+            canonical_root=release_calendar_root,
+            expected_pointer_sha256=(
+                expected_release_calendar_pointer_sha
+            ),
+        )
+        if (
+            loaded_release_calendar_root != release_calendar_root
+            or release_calendar_generation
+            != receipt_release_calendar_generation
+        ):
+            raise MacroMartPromotionError(
+                "macro_staging_release_calendar_binding_mismatch"
+            )
         catalog_bytes, catalog = _read_verified_bytes_and_json(
             catalog_path,
             trust_root=market_root,
@@ -3993,15 +5011,49 @@ def promote_staged_macro_generation(
             market_pointer_sha256=expected_pointer_sha,
             nbs_cn_pmi_url=str(receipt.get("nbs_cn_pmi_url") or ""),
             allow_tushare_fallback=receipt.get("allow_tushare_fallback") is True,
+            macro_release_calendar_generation=(
+                release_calendar_generation
+            ),
         )
         if loaded is None:
             raise MacroMartPromotionError("macro_staging_generation_missing")
-        generation_manifest, attestation, frame, market_evidence, _ = loaded
+        (
+            generation_manifest,
+            attestation,
+            frame,
+            market_evidence,
+            provider_bundle,
+        ) = loaded
+        release_readiness_evidence = (
+            _build_macro_release_readiness_evidence(
+                release_calendar_evidence,
+                macro_logical_date=str(
+                    dict(
+                        generation_manifest.get("macro_snapshot") or {}
+                    ).get("as_of")
+                    or ""
+                ),
+                target_session_date=trade_date,
+                provider_capture_cutoff_at=str(
+                    provider_bundle.get("decision_cutoff_at") or ""
+                ),
+            )
+        )
         if (
             generation_manifest.get("generation_manifest_sha256")
             != receipt.get("generation_manifest_sha256")
             or generation_manifest.get("macro_observation_generation")
             != receipt_observation_generation
+            or generation_manifest.get(
+                "macro_release_calendar_generation"
+            )
+            != receipt_release_calendar_generation
+            or generation_manifest.get(
+                "macro_release_readiness_evidence"
+            )
+            != release_readiness_evidence
+            or release_readiness_evidence
+            != receipt_release_readiness_evidence
             or str(
                 dict(generation_manifest.get("macro_snapshot") or {}).get(
                     "snapshot_hash"
@@ -4049,6 +5101,9 @@ def promote_staged_macro_generation(
             market_input_evidence=market_evidence,
             generation_manifest=promoted_manifest,
             attestation=attestation,
+            macro_observations_root=observations_root,
+            macro_release_calendar_root=release_calendar_root,
+            macro_release_calendar_generation=release_calendar_generation,
         )
     return {
         "status": "promoted",
@@ -4057,6 +5112,8 @@ def promote_staged_macro_generation(
         "catalog_sha256": published["catalog_sha256"],
         "previous_catalog_sha256": expected_catalog_sha,
         "market_pointer_sha256": expected_pointer_sha,
+        "macro_release_calendar_root": str(release_calendar_root),
+        "macro_release_calendar_generation": release_calendar_generation,
         "staging_receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
         "manifest": published["generation_manifest"],
         "transaction_journal": published["transaction_journal"],
@@ -4779,6 +5836,84 @@ def _validate_primary_provenance(
         raise MacroMartPromotionError(
             "macro_primary_provenance_contract_invalid"
         )
+    manifest_release_calendar = manifest.get(
+        "macro_release_calendar_generation"
+    )
+    envelope_release_calendar = envelope.get(
+        "macro_release_calendar_generation"
+    )
+    if (
+        manifest_release_calendar is None
+        and envelope_release_calendar is None
+    ):
+        validated_release_calendar = None
+    elif (
+        manifest_release_calendar is None
+        or envelope_release_calendar is None
+    ):
+        raise MacroMartPromotionError(
+            "macro_primary_provenance_contract_invalid"
+        )
+    else:
+        validated_release_calendar = (
+            _validate_macro_release_calendar_generation(
+                manifest_release_calendar
+            )
+        )
+        if (
+            _validate_macro_release_calendar_generation(
+                envelope_release_calendar
+            )
+            != validated_release_calendar
+        ):
+            raise MacroMartPromotionError(
+                "macro_primary_provenance_contract_invalid"
+            )
+    _validate_macro_release_calendar_flat_binding(
+        manifest,
+        binding=validated_release_calendar,
+        blocker="macro_primary_provenance_contract_invalid",
+    )
+    _validate_macro_release_calendar_flat_binding(
+        envelope,
+        binding=validated_release_calendar,
+        blocker="macro_primary_provenance_contract_invalid",
+    )
+    manifest_release_readiness = manifest.get(
+        "macro_release_readiness_evidence"
+    )
+    envelope_release_readiness = envelope.get(
+        "macro_release_readiness_evidence"
+    )
+    if validated_release_calendar is None:
+        if (
+            manifest_release_readiness is not None
+            or envelope_release_readiness is not None
+            or manifest.get("macro_release_decision_cutoff_at") is not None
+            or envelope.get("macro_release_decision_cutoff_at") is not None
+        ):
+            raise MacroMartPromotionError(
+                "macro_primary_provenance_contract_invalid"
+            )
+    else:
+        validated_release_readiness = (
+            _validate_macro_release_readiness_evidence(
+                manifest_release_readiness
+            )
+        )
+        if (
+            _validate_macro_release_readiness_evidence(
+                envelope_release_readiness
+            )
+            != validated_release_readiness
+            or manifest.get("macro_release_decision_cutoff_at")
+            != validated_release_readiness["decision_cutoff_at"]
+            or envelope.get("macro_release_decision_cutoff_at")
+            != validated_release_readiness["decision_cutoff_at"]
+        ):
+            raise MacroMartPromotionError(
+                "macro_primary_provenance_contract_invalid"
+            )
     declared = _assert_sha256(
         envelope.pop("envelope_sha256", ""),
         blocker="macro_primary_provenance_hash_invalid",
@@ -4931,6 +6066,11 @@ def _validate_primary_provenance(
             current_provider_contract
             and envelope.get("provider_capture_files_sha256")
             != manifest.get("provider_capture_files_sha256")
+        )
+        or (
+            validated_release_calendar is not None
+            and envelope.get("macro_release_calendar_generation")
+            != validated_release_calendar
         )
     ):
         raise MacroMartPromotionError(
@@ -5177,6 +6317,85 @@ def read_macro_mart(
         raise MacroMartPromotionError(
             "macro_catalog_provider_bundle_hash_mismatch"
         )
+    catalog_release_calendar = entry.get(
+        "macro_release_calendar_generation"
+    )
+    manifest_release_calendar = generation_manifest.get(
+        "macro_release_calendar_generation"
+    )
+    if catalog_release_calendar is None and manifest_release_calendar is None:
+        validated_release_calendar = None
+    elif (
+        catalog_release_calendar is None
+        or manifest_release_calendar is None
+    ):
+        raise MacroMartPromotionError(
+            "macro_catalog_release_calendar_binding_mismatch"
+        )
+    else:
+        validated_release_calendar = (
+            _validate_macro_release_calendar_generation(
+                catalog_release_calendar
+            )
+        )
+        if validated_release_calendar != (
+            _validate_macro_release_calendar_generation(
+                manifest_release_calendar
+            )
+        ):
+            raise MacroMartPromotionError(
+                "macro_catalog_release_calendar_binding_mismatch"
+            )
+    _validate_macro_release_calendar_flat_binding(
+        entry,
+        binding=validated_release_calendar,
+        blocker="macro_catalog_release_calendar_binding_mismatch",
+    )
+    catalog_release_readiness = entry.get(
+        "macro_release_readiness_evidence"
+    )
+    manifest_release_readiness = generation_manifest.get(
+        "macro_release_readiness_evidence"
+    )
+    if validated_release_calendar is None:
+        if (
+            catalog_release_readiness is not None
+            or manifest_release_readiness is not None
+            or entry.get("macro_release_decision_cutoff_at") is not None
+            or generation_manifest.get(
+                "macro_release_decision_cutoff_at"
+            )
+            is not None
+        ):
+            raise MacroMartPromotionError(
+                "macro_catalog_release_readiness_binding_mismatch"
+            )
+    else:
+        validated_release_readiness = (
+            _validate_macro_release_readiness_evidence(
+                manifest_release_readiness
+            )
+        )
+        if (
+            _validate_macro_release_readiness_evidence(
+                catalog_release_readiness
+            )
+            != validated_release_readiness
+            or entry.get("macro_release_decision_cutoff_at")
+            != validated_release_readiness["decision_cutoff_at"]
+            or generation_manifest.get(
+                "macro_release_decision_cutoff_at"
+            )
+            != validated_release_readiness["decision_cutoff_at"]
+        ):
+            raise MacroMartPromotionError(
+                "macro_catalog_release_readiness_binding_mismatch"
+            )
+    _validate_macro_release_calendar_flat_binding(
+        generation_manifest,
+        binding=validated_release_calendar,
+        blocker="macro_catalog_release_calendar_binding_mismatch",
+    )
     if (
         str(generation_manifest.get("macro_snapshot_sha256") or "")
         != catalog_snapshot_sha

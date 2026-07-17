@@ -6,6 +6,7 @@ import math
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -18,6 +19,16 @@ from quant_investor.macro.nbs_pmi import (
     NbsPmiPermanentError,
     NbsPmiTransientError,
     parse_nbs_cn_pmi_html,
+)
+from quant_investor.macro.release_calendar import (
+    CriticalEventGapEvaluation,
+    IssuerCoverage,
+    ReleaseCalendarCASMismatch,
+    ReleaseCalendarEvidence,
+    ReleaseCalendarGenerationProof,
+    ReleaseCalendarIdentity,
+    ReleaseReadinessEvaluation,
+    SessionLagEvaluation,
 )
 from quant_investor.market import macro_mart
 from quant_investor.market.branch_readiness import load_macro_record
@@ -135,6 +146,151 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _patch_release_calendar(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    root_name: str = "macro-release-calendar",
+) -> tuple[Path, Path, str, dict[str, str]]:
+    root = tmp_path / root_name
+    root.mkdir(mode=0o700)
+    pointer_path = root / "_latest.json"
+    pointer_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "macro-release-calendar-pointer.v1",
+                "generation_id": "release-calendar-20240510",
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    pointer_sha = _sha(pointer_path)
+    proof = ReleaseCalendarGenerationProof(
+        generation_id="release-calendar-20240510",
+        pointer_sha256=pointer_sha,
+        manifest_sha256="2" * 64,
+        semantic_sha256="3" * 64,
+        registry_sha256="4" * 64,
+        critical_policy_sha256="5" * 64,
+        plan_sha256="6" * 64,
+        capture_manifest_sha256="7" * 64,
+        market_open_days_sha256="8" * 64,
+    )
+    evidence = ReleaseCalendarEvidence(
+        identity=ReleaseCalendarIdentity(
+            pointer_path=str(pointer_path),
+            pointer_sha256=pointer_sha,
+            generation_id=proof.generation_id,
+            generation_path=str(root / "_generations" / proof.generation_id),
+            manifest_sha256=proof.manifest_sha256,
+            semantic_sha256=proof.semantic_sha256,
+            parent_generation_id="",
+            parent_pointer_sha256="",
+            parent_manifest_sha256="",
+            parent_semantic_sha256="",
+        ),
+        registry_version="fixture",
+        registry_sha256=proof.registry_sha256,
+        critical_policy_version="fixture",
+        critical_policy_sha256=proof.critical_policy_sha256,
+        plan_sha256=proof.plan_sha256,
+        capture_manifest_sha256=proof.capture_manifest_sha256,
+        market_open_days_sha256=proof.market_open_days_sha256,
+        captured_at=CAPTURED_AT.isoformat(),
+        open_dates=("2024-05-08", "2024-05-09", "2024-05-10"),
+        issuer_coverage=(
+            IssuerCoverage(
+                issuer="nbs_official",
+                through_at=(CAPTURED_AT + timedelta(days=1)).isoformat(),
+                source_ids=(),
+            ),
+            IssuerCoverage(
+                issuer="pbc_official",
+                through_at=(CAPTURED_AT + timedelta(days=1)).isoformat(),
+                source_ids=(),
+            ),
+        ),
+        source_artifacts=(),
+        events=(),
+        resolutions=(),
+        validated_ancestry=(proof,),
+    )
+
+    def _load_calendar(
+        *,
+        canonical_root: str | Path,
+        expected_pointer_sha256: str,
+    ) -> ReleaseCalendarEvidence:
+        assert Path(canonical_root).resolve(strict=True) == root.resolve(
+            strict=True
+        )
+        if (
+            expected_pointer_sha256 != pointer_sha
+            or _sha(pointer_path) != pointer_sha
+        ):
+            raise ReleaseCalendarCASMismatch(
+                "release_calendar_pointer_cas_mismatch"
+            )
+        return evidence
+
+    monkeypatch.setattr(macro_mart, "load_release_calendar", _load_calendar)
+
+    def _ready_evaluation(
+        _evidence: ReleaseCalendarEvidence,
+        *,
+        macro_logical_date: str,
+        target_session_date: str,
+        decision_cutoff_at: str,
+    ) -> ReleaseReadinessEvaluation:
+        return ReleaseReadinessEvaluation(
+            ready=True,
+            session_lag=SessionLagEvaluation(
+                ready=True,
+                session_lag=0,
+                macro_logical_date=datetime.strptime(
+                    macro_logical_date,
+                    "%Y%m%d",
+                ).date().isoformat(),
+                target_session_date=datetime.strptime(
+                    target_session_date,
+                    "%Y%m%d",
+                ).date().isoformat(),
+                blockers=(),
+            ),
+            critical_event_gap=CriticalEventGapEvaluation(
+                ready=True,
+                window_start_exclusive=(
+                    "2024-05-10T07:00:00+00:00"
+                ),
+                window_end_inclusive=decision_cutoff_at,
+                relevant_event_ids=(),
+                resolved_event_ids=(),
+                blocking_event_ids=(),
+                blockers=(),
+            ),
+            blockers=(),
+        )
+
+    monkeypatch.setattr(
+        macro_mart,
+        "evaluate_release_readiness",
+        _ready_evaluation,
+    )
+    binding = {
+        "macro_release_calendar_generation_id": proof.generation_id,
+        "pointer_sha256": proof.pointer_sha256,
+        "manifest_sha256": proof.manifest_sha256,
+        "semantic_sha256": proof.semantic_sha256,
+        "registry_sha256": proof.registry_sha256,
+        "plan_sha256": proof.plan_sha256,
+        "capture_manifest_sha256": proof.capture_manifest_sha256,
+        "market_open_days_sha256": proof.market_open_days_sha256,
+        "critical_policy_sha256": proof.critical_policy_sha256,
+    }
+    return root, pointer_path, pointer_sha, binding
+
+
 def _workspace(tmp_path: Path) -> tuple[Path, Path, Path, pd.DataFrame]:
     market_root = tmp_path / "parquet" / "cn"
     macro_root = market_root / "macro_daily"
@@ -220,17 +376,199 @@ def _workspace(tmp_path: Path) -> tuple[Path, Path, Path, pd.DataFrame]:
     return macro_root, catalog_path, pointer_path, bars
 
 
+def test_release_decision_cutoff_is_session_bound_and_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, _, pointer_sha, _ = _patch_release_calendar(
+        tmp_path,
+        monkeypatch,
+    )
+    evidence = macro_mart.load_release_calendar(
+        canonical_root=root,
+        expected_pointer_sha256=pointer_sha,
+    )
+
+    assert macro_mart._macro_release_decision_cutoff(
+        evidence,
+        target_session_date=TARGET,
+        provider_capture_cutoff_at=CAPTURED_AT.isoformat(),
+    ) == "2024-05-10T07:00:00+00:00"
+
+    same_day = replace(
+        evidence,
+        issuer_coverage=tuple(
+            replace(item, through_at=CAPTURED_AT.isoformat())
+            for item in evidence.issuer_coverage
+        ),
+    )
+    assert macro_mart._macro_release_decision_cutoff(
+        same_day,
+        target_session_date=TARGET,
+        provider_capture_cutoff_at=CAPTURED_AT.isoformat(),
+    ) == CAPTURED_AT.isoformat()
+
+    before_target = replace(
+        evidence,
+        issuer_coverage=tuple(
+            replace(
+                item,
+                through_at=(CAPTURED_AT - timedelta(days=1)).isoformat(),
+            )
+            for item in evidence.issuer_coverage
+        ),
+    )
+    with pytest.raises(
+        macro_mart.MacroMartPromotionError,
+        match="macro_release_calendar_coverage_before_target",
+    ):
+        macro_mart._macro_release_decision_cutoff(
+            before_target,
+            target_session_date=TARGET,
+            provider_capture_cutoff_at=CAPTURED_AT.isoformat(),
+        )
+
+    before_close = replace(
+        evidence,
+        issuer_coverage=tuple(
+            replace(item, through_at="2024-05-10T06:59:59+00:00")
+            for item in evidence.issuer_coverage
+        ),
+    )
+    with pytest.raises(
+        macro_mart.MacroMartPromotionError,
+        match="macro_release_calendar_coverage_before_market_close",
+    ):
+        macro_mart._macro_release_decision_cutoff(
+            before_close,
+            target_session_date=TARGET,
+            provider_capture_cutoff_at=CAPTURED_AT.isoformat(),
+        )
+
+    with pytest.raises(
+        macro_mart.MacroMartPromotionError,
+        match="macro_release_calendar_coverage_in_future",
+    ):
+        macro_mart._macro_release_decision_cutoff(
+            same_day,
+            target_session_date=TARGET,
+            provider_capture_cutoff_at="2024-05-10T08:29:59+00:00",
+        )
+
+
+def _valid_release_readiness_evidence() -> dict[str, Any]:
+    return {
+        "schema_version": "macro-release-readiness-evaluation.v1",
+        "macro_logical_date": TARGET,
+        "target_session_date": TARGET,
+        "decision_cutoff_at": "2024-05-10T07:00:00+00:00",
+        "evaluation": {
+            "ready": True,
+            "session_lag": {
+                "ready": True,
+                "session_lag": 0,
+                "macro_logical_date": "2024-05-10",
+                "target_session_date": "2024-05-10",
+                "blockers": [],
+            },
+            "critical_event_gap": {
+                "ready": True,
+                "window_start_exclusive": (
+                    "2024-05-10T07:00:00+00:00"
+                ),
+                "window_end_inclusive": "2024-05-10T07:00:00+00:00",
+                "relevant_event_ids": [],
+                "resolved_event_ids": [],
+                "blocking_event_ids": [],
+                "blockers": [],
+            },
+            "blockers": [],
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "lag_out_of_range",
+        "hidden_blocking_event",
+        "nested_date_mismatch",
+        "window_mismatch",
+        "noncanonical_cutoff",
+        "unclassified_relevant_event",
+        "resolved_relevant_event",
+        "positive_lag_relevant_event",
+        "nested_semantic_sha",
+        "unsafe_event_id",
+    ],
+)
+def test_release_readiness_evidence_rejects_nested_tampering(
+    mutation: str,
+) -> None:
+    payload = _valid_release_readiness_evidence()
+    evaluation = payload["evaluation"]
+    lag = evaluation["session_lag"]
+    gap = evaluation["critical_event_gap"]
+    if mutation == "lag_out_of_range":
+        lag["session_lag"] = 999
+    elif mutation == "hidden_blocking_event":
+        gap["ready"] = False
+        gap["relevant_event_ids"] = ["event-1"]
+        gap["blocking_event_ids"] = ["event-1"]
+        gap["blockers"] = ["hidden"]
+    elif mutation == "nested_date_mismatch":
+        lag["macro_logical_date"] = "2024-05-09"
+    elif mutation == "window_mismatch":
+        gap["window_start_exclusive"] = "2024-05-09T07:00:00+00:00"
+    elif mutation == "noncanonical_cutoff":
+        payload["decision_cutoff_at"] = "2024-05-10T15:00:00+08:00"
+        gap["window_end_inclusive"] = "2024-05-10T15:00:00+08:00"
+    elif mutation == "unclassified_relevant_event":
+        gap["relevant_event_ids"] = ["event-1"]
+    elif mutation == "resolved_relevant_event":
+        gap["relevant_event_ids"] = ["event-1"]
+        gap["resolved_event_ids"] = ["event-1"]
+    elif mutation == "positive_lag_relevant_event":
+        payload["macro_logical_date"] = "20240509"
+        lag["session_lag"] = 1
+        lag["macro_logical_date"] = "2024-05-09"
+        gap["window_start_exclusive"] = "2024-05-09T07:00:00+00:00"
+        gap["relevant_event_ids"] = ["event-1"]
+        gap["resolved_event_ids"] = ["event-1"]
+    elif mutation == "nested_semantic_sha":
+        gap["semantic_sha256"] = "0" * 64
+    elif mutation == "unsafe_event_id":
+        gap["relevant_event_ids"] = [" event-1"]
+        gap["resolved_event_ids"] = [" event-1"]
+    else:  # pragma: no cover - parametrization is exhaustive
+        raise AssertionError(mutation)
+
+    with pytest.raises(
+        macro_mart.MacroMartPromotionError,
+        match="macro_release_readiness_evidence_invalid",
+    ):
+        macro_mart._validate_macro_release_readiness_evidence(payload)
+
+
 def _refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     macro_root: Path,
     catalog_path: Path,
     pointer_path: Path,
     *,
     run_id: str = "macro-refresh-fixture",
 ) -> dict[str, object]:
-    return macro_mart.refresh_cn_macro_mart(
+    release_root, _, release_pointer_sha, _ = _patch_release_calendar(
+        tmp_path,
+        monkeypatch,
+        root_name=f"macro-release-calendar-{run_id}",
+    )
+    stage = macro_mart.stage_cn_macro_authoritative_refresh(
         market="CN",
         as_of=TARGET,
-        data_root=macro_root,
+        canonical_root=macro_root,
+        staging_root=tmp_path / f"macro-stage-{run_id}",
         run_id=run_id,
         expected_catalog_sha256=_sha(catalog_path),
         expected_market_pointer_sha256=_sha(pointer_path),
@@ -238,8 +576,17 @@ def _refresh(
         expected_macro_observations_pointer_sha256=pointer_sha256(
             macro_root.parent / "macro_observations"
         ),
+        macro_release_calendar_root=release_root,
+        expected_macro_release_calendar_pointer_sha256=(
+            release_pointer_sha
+        ),
         allow_live=True,
         nbs_cn_pmi_url=NBS_URL,
+    )
+    return macro_mart.promote_staged_macro_generation(
+        staging_root=stage["staging_root"],
+        canonical_root=macro_root,
+        expected_catalog_sha256=_sha(catalog_path),
     )
 
 
@@ -259,7 +606,13 @@ def test_refresh_promotes_hash_bound_strict_generation(
     )
     _patch_official_fetch(monkeypatch)
 
-    result = _refresh(macro_root, catalog_path, pointer_path)
+    result = _refresh(
+        tmp_path,
+        monkeypatch,
+        macro_root,
+        catalog_path,
+        pointer_path,
+    )
 
     assert result["status"] == "promoted"
     catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
@@ -356,7 +709,7 @@ def test_observation_pointer_change_during_provider_fetch_blocks_catalog_switch(
     _patch_official_fetch(monkeypatch)
     original_fetch = macro_mart._fetch_provider_bundle
 
-    def _fetch_then_advance_pointer(**kwargs: object):
+    def _fetch_then_advance_pointer(**kwargs: Any):
         result = original_fetch(**kwargs)
         advanced_pointer = json.loads(
             observation_pointer_path.read_text(encoding="utf-8")
@@ -385,6 +738,8 @@ def test_observation_pointer_change_during_provider_fetch_blocks_catalog_switch(
         match="macro_observation_pointer_cas_mismatch",
     ):
         _refresh(
+            tmp_path,
+            monkeypatch,
             macro_root,
             catalog_path,
             pointer_path,
@@ -410,6 +765,12 @@ def test_v15_stage_promote_reader_and_dag_controls_are_one_hash_chain(
         lambda: _FakeTushare(),
     )
     _patch_official_fetch(monkeypatch)
+    (
+        release_calendar_root,
+        release_calendar_pointer_path,
+        release_calendar_pointer_sha,
+        release_calendar_binding,
+    ) = _patch_release_calendar(tmp_path, monkeypatch)
     observations_root = macro_root.parent / "macro_observations"
     stage = macro_mart.stage_cn_macro_authoritative_refresh(
         market="CN",
@@ -423,6 +784,10 @@ def test_v15_stage_promote_reader_and_dag_controls_are_one_hash_chain(
         expected_macro_observations_pointer_sha256=pointer_sha256(
             observations_root
         ),
+        macro_release_calendar_root=release_calendar_root,
+        expected_macro_release_calendar_pointer_sha256=(
+            release_calendar_pointer_sha
+        ),
         allow_live=True,
         nbs_cn_pmi_url=NBS_URL,
     )
@@ -435,6 +800,46 @@ def test_v15_stage_promote_reader_and_dag_controls_are_one_hash_chain(
     receipt = json.loads(receipt_bytes.decode("utf-8"))
     assert receipt["macro_observations_root"] == str(
         observations_root.resolve(strict=True)
+    )
+    assert receipt["macro_release_calendar_root"] == str(
+        release_calendar_root.resolve(strict=True)
+    )
+    assert receipt["macro_release_calendar_generation"] == (
+        release_calendar_binding
+    )
+    assert stage["manifest"]["macro_release_calendar_generation"] == (
+        release_calendar_binding
+    )
+    release_calendar_flat_binding = (
+        macro_mart._macro_release_calendar_flat_binding(
+            release_calendar_binding
+        )
+    )
+    for field_name, value in release_calendar_flat_binding.items():
+        assert receipt[field_name] == value
+        assert stage["manifest"][field_name] == value
+    assert "macro_readiness_evidence_semantic_sha256" not in (
+        stage["manifest"]
+    )
+    release_readiness_evidence = stage["manifest"][
+        "macro_release_readiness_evidence"
+    ]
+    assert release_readiness_evidence["decision_cutoff_at"] == (
+        "2024-05-10T07:00:00+00:00"
+    )
+    assert stage["manifest"]["macro_release_decision_cutoff_at"] == (
+        release_readiness_evidence["decision_cutoff_at"]
+    )
+    assert receipt["macro_release_readiness_evidence"] == (
+        release_readiness_evidence
+    )
+    provider_bundle = json.loads(
+        Path(
+            str(stage["manifest"]["resolved_provider_bundle"])
+        ).read_text(encoding="utf-8")
+    )
+    assert provider_bundle["decision_cutoff_at"] != (
+        release_readiness_evidence["decision_cutoff_at"]
     )
     controls_path = Path(
         str(stage["manifest"]["resolved_v15_controls"])
@@ -461,6 +866,56 @@ def test_v15_stage_promote_reader_and_dag_controls_are_one_hash_chain(
     assert catalog_path.read_bytes() == before_catalog
     receipt_path.write_bytes(receipt_bytes)
 
+    tampered_receipt = json.loads(receipt_bytes.decode("utf-8"))
+    tampered_receipt["macro_release_calendar_generation"][
+        "semantic_sha256"
+    ] = "9" * 64
+    receipt_path.write_text(
+        json.dumps(tampered_receipt, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        macro_mart.MacroMartPromotionError,
+        match="macro_staging_release_calendar_binding_invalid",
+    ):
+        macro_mart.promote_staged_macro_generation(
+            staging_root=stage["staging_root"],
+            canonical_root=macro_root,
+            expected_catalog_sha256=_sha(catalog_path),
+        )
+    assert catalog_path.read_bytes() == before_catalog
+    receipt_path.write_bytes(receipt_bytes)
+
+    release_calendar_pointer_before = (
+        release_calendar_pointer_path.read_bytes()
+    )
+    advanced_release_pointer = json.loads(
+        release_calendar_pointer_before.decode("utf-8")
+    )
+    advanced_release_pointer["generation_id"] = (
+        "release-calendar-20240510-race"
+    )
+    release_calendar_pointer_path.write_text(
+        json.dumps(advanced_release_pointer, sort_keys=True),
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        macro_mart.MacroMartPromotionError,
+        match="release_calendar_pointer_cas_mismatch",
+    ):
+        macro_mart.promote_staged_macro_generation(
+            staging_root=stage["staging_root"],
+            canonical_root=macro_root,
+            expected_catalog_sha256=_sha(catalog_path),
+        )
+    assert catalog_path.read_bytes() == before_catalog
+    assert release_calendar_pointer_path.read_bytes() != (
+        release_calendar_pointer_before
+    )
+    release_calendar_pointer_path.write_bytes(
+        release_calendar_pointer_before
+    )
+
     observation_pointer_path = observations_root / "_latest.json"
     observation_pointer_before = observation_pointer_path.read_bytes()
     advanced_pointer = json.loads(
@@ -486,25 +941,93 @@ def test_v15_stage_promote_reader_and_dag_controls_are_one_hash_chain(
     ).exists()
     observation_pointer_path.write_bytes(observation_pointer_before)
 
-    original_publish = macro_mart._publish_catalog_generation
+    original_atomic_write = macro_mart._atomic_write_bytes
+    concurrent_release_pointer = json.dumps(
+        {
+            "schema_version": "macro-release-calendar-pointer.v1",
+            "generation_id": "release-calendar-concurrent-advance",
+        },
+        sort_keys=True,
+    ).encode("utf-8")
+
+    def _write_catalog_then_advance_release_pointer(
+        path: Path,
+        payload: bytes,
+    ) -> None:
+        original_atomic_write(path, payload)
+        if path == catalog_path and payload != before_catalog:
+            release_calendar_pointer_path.write_bytes(
+                concurrent_release_pointer
+            )
+
     monkeypatch.setattr(
         macro_mart,
-        "_publish_catalog_generation",
-        lambda **_kwargs: (_ for _ in ()).throw(
-            RuntimeError("simulated catalog publish failure")
-        ),
+        "_atomic_write_bytes",
+        _write_catalog_then_advance_release_pointer,
     )
-    with pytest.raises(RuntimeError, match="simulated catalog publish failure"):
+    with pytest.raises(
+        macro_mart.MacroMartPromotionError,
+        match="macro_release_calendar_pointer_changed_during_switch",
+    ):
         macro_mart.promote_staged_macro_generation(
             staging_root=stage["staging_root"],
             canonical_root=macro_root,
             expected_catalog_sha256=_sha(catalog_path),
         )
+    assert catalog_path.read_bytes() == before_catalog
+    assert release_calendar_pointer_path.read_bytes() == (
+        concurrent_release_pointer
+    )
     monkeypatch.setattr(
         macro_mart,
-        "_publish_catalog_generation",
-        original_publish,
+        "_atomic_write_bytes",
+        original_atomic_write,
     )
+    release_calendar_pointer_path.write_bytes(
+        release_calendar_pointer_before
+    )
+    concurrent_observation_pointer = json.dumps(
+        {
+            "schema_version": "macro-observation-pointer.v2",
+            "generation_id": "macro-observations-concurrent-advance",
+        },
+        sort_keys=True,
+    ).encode("utf-8")
+
+    def _write_catalog_then_advance_observation_pointer(
+        path: Path,
+        payload: bytes,
+    ) -> None:
+        original_atomic_write(path, payload)
+        if path == catalog_path and payload != before_catalog:
+            observation_pointer_path.write_bytes(
+                concurrent_observation_pointer
+            )
+
+    monkeypatch.setattr(
+        macro_mart,
+        "_atomic_write_bytes",
+        _write_catalog_then_advance_observation_pointer,
+    )
+    with pytest.raises(
+        macro_mart.MacroMartPromotionError,
+        match="macro_observation_pointer_changed_during_switch",
+    ):
+        macro_mart.promote_staged_macro_generation(
+            staging_root=stage["staging_root"],
+            canonical_root=macro_root,
+            expected_catalog_sha256=_sha(catalog_path),
+        )
+    assert catalog_path.read_bytes() == before_catalog
+    assert observation_pointer_path.read_bytes() == (
+        concurrent_observation_pointer
+    )
+    monkeypatch.setattr(
+        macro_mart,
+        "_atomic_write_bytes",
+        original_atomic_write,
+    )
+    observation_pointer_path.write_bytes(observation_pointer_before)
     promoted = macro_mart.promote_staged_macro_generation(
         staging_root=stage["staging_root"],
         canonical_root=macro_root,
@@ -527,6 +1050,43 @@ def test_v15_stage_promote_reader_and_dag_controls_are_one_hash_chain(
     assert dag_controls["observation_generation"]["pointer_sha256"] == (
         pointer_sha256(observations_root)
     )
+    assert manifest["macro_release_calendar_generation"] == (
+        release_calendar_binding
+    )
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    assert catalog["tables"]["macro_daily"][
+        "macro_release_calendar_generation"
+    ] == release_calendar_binding
+    journal = json.loads(
+        Path(promoted["transaction_journal"]).read_text(encoding="utf-8")
+    )
+    assert journal["macro_release_calendar_generation"] == (
+        release_calendar_binding
+    )
+    for field_name, value in release_calendar_flat_binding.items():
+        assert catalog["tables"]["macro_daily"][field_name] == value
+        assert journal[field_name] == value
+    assert catalog["tables"]["macro_daily"][
+        "macro_release_readiness_evidence"
+    ] == release_readiness_evidence
+    assert journal["macro_release_readiness_evidence"] == (
+        release_readiness_evidence
+    )
+    promoted_catalog_bytes = catalog_path.read_bytes()
+    tampered_catalog = json.loads(promoted_catalog_bytes.decode("utf-8"))
+    tampered_catalog["tables"]["macro_daily"][
+        "macro_release_calendar_generation"
+    ]["manifest_sha256"] = "a" * 64
+    catalog_path.write_text(
+        json.dumps(tampered_catalog, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        macro_mart.MacroMartPromotionError,
+        match="macro_catalog_release_calendar_binding_mismatch",
+    ):
+        macro_mart.read_macro_mart(data_root=macro_root)
+    catalog_path.write_bytes(promoted_catalog_bytes)
 
 
 def test_refresh_requires_explicit_live_without_writes(tmp_path: Path) -> None:
@@ -567,7 +1127,13 @@ def test_provider_failure_preserves_catalog(
         macro_mart.MacroMartPromotionError,
         match="macro_provider_response_empty:cn_m",
     ):
-        _refresh(macro_root, catalog_path, pointer_path)
+        _refresh(
+            tmp_path,
+            monkeypatch,
+            macro_root,
+            catalog_path,
+            pointer_path,
+        )
     assert catalog_path.read_bytes() == before
     assert not (macro_root / "_generations").exists()
 
@@ -1069,23 +1635,33 @@ def test_market_pointer_aba_is_rejected_before_catalog_switch(
         lambda: _FakeTushare(),
     )
     _patch_official_fetch(monkeypatch)
-    original = macro_mart._write_primary_generation
+    original = macro_mart._copy_or_reuse_staged_generation
 
-    def _write_then_aba(**kwargs: object):
+    def _copy_then_aba(**kwargs: Any):
         result = original(**kwargs)
         macro_mart._atomic_write_bytes(pointer_path, pointer_bytes)
         return result
 
-    monkeypatch.setattr(macro_mart, "_write_primary_generation", _write_then_aba)
+    monkeypatch.setattr(
+        macro_mart,
+        "_copy_or_reuse_staged_generation",
+        _copy_then_aba,
+    )
     with pytest.raises(
         macro_mart.MacroMartPromotionError,
         match="macro_market_pointer_cas_mismatch",
     ):
-        _refresh(macro_root, catalog_path, pointer_path)
+        _refresh(
+            tmp_path,
+            monkeypatch,
+            macro_root,
+            catalog_path,
+            pointer_path,
+        )
     assert catalog_path.read_bytes() == before_catalog
 
 
-def test_refresh_is_idempotent_and_recovers_switched_journal(
+def test_authoritative_recovery_commits_valid_switched_journal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1097,25 +1673,152 @@ def test_refresh_is_idempotent_and_recovers_switched_journal(
         lambda: _FakeTushare(),
     )
     _patch_official_fetch(monkeypatch)
-    first = _refresh(macro_root, catalog_path, pointer_path)
+    first = _refresh(
+        tmp_path,
+        monkeypatch,
+        macro_root,
+        catalog_path,
+        pointer_path,
+    )
     journal_path = Path(str(first["transaction_journal"]))
     journal = json.loads(journal_path.read_text(encoding="utf-8"))
     journal["state"] = "switched"
     journal_path.write_text(json.dumps(journal, sort_keys=True), encoding="utf-8")
 
-    def _no_second_provider() -> object:
-        raise AssertionError("idempotent refresh must not call provider")
+    release_root = Path(str(first["macro_release_calendar_root"]))
+    observations_root = macro_root.parent / "macro_observations"
+    assert journal["macro_observations_root"] == str(observations_root)
+    assert journal[
+        "expected_macro_observations_pointer_sha256"
+    ] == pointer_sha256(observations_root)
+    with (
+        macro_mart._market_writer_lock(macro_root.parent),
+        macro_mart._catalog_writer_lock(macro_root.parent),
+        macro_mart._macro_observation_writer_lock(observations_root),
+        macro_mart._macro_release_calendar_writer_lock(release_root),
+    ):
+        macro_mart._recover_catalog_transactions(
+            root=macro_root,
+            catalog_path=catalog_path,
+            locked_macro_observations_root=observations_root,
+            locked_macro_release_calendar_root=release_root,
+        )
+    recovered = json.loads(journal_path.read_text(encoding="utf-8"))
+    assert recovered["state"] == "committed"
 
-    monkeypatch.setattr(macro_mart, "_build_tushare_client", _no_second_provider)
-    second = _refresh(
+
+def test_promotion_recovers_catalog_before_release_calendar_stage_cas(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    macro_root, catalog_path, pointer_path, _ = _workspace(tmp_path)
+    old_catalog = catalog_path.read_bytes()
+    old_catalog_sha = hashlib.sha256(old_catalog).hexdigest()
+    monkeypatch.setattr(macro_mart, "_utc_now", lambda: CAPTURED_AT)
+    monkeypatch.setattr(
+        macro_mart,
+        "_build_tushare_client",
+        lambda: _FakeTushare(),
+    )
+    _patch_official_fetch(monkeypatch)
+    run_id = "release-drift-after-switch"
+    result = _refresh(
+        tmp_path,
+        monkeypatch,
         macro_root,
         catalog_path,
         pointer_path,
-        run_id="unused-second-run",
+        run_id=run_id,
     )
-    assert second["status"] == "already_current"
+    journal_path = Path(str(result["transaction_journal"]))
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    journal["state"] = "switched"
+    macro_mart._atomic_json(journal_path, journal)
+    release_pointer = (
+        Path(str(result["macro_release_calendar_root"])) / "_latest.json"
+    )
+    advanced_release_pointer = (
+        b'{"generation_id":"advanced-release-calendar"}\n'
+    )
+    macro_mart._atomic_write_bytes(
+        release_pointer,
+        advanced_release_pointer,
+    )
+
+    with pytest.raises(
+        macro_mart.MacroMartPromotionError,
+        match="release_calendar_pointer_cas_mismatch",
+    ):
+        macro_mart.promote_staged_macro_generation(
+            staging_root=(
+                tmp_path / f"macro-stage-{run_id}" / run_id
+            ),
+            canonical_root=macro_root,
+            expected_catalog_sha256=old_catalog_sha,
+        )
+
+    assert catalog_path.read_bytes() == old_catalog
+    assert release_pointer.read_bytes() == advanced_release_pointer
     recovered = json.loads(journal_path.read_text(encoding="utf-8"))
-    assert recovered["state"] == "committed"
+    assert recovered["state"] == "rolled_back"
+
+
+def test_promotion_recovery_rolls_back_on_observation_pointer_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    macro_root, catalog_path, pointer_path, _ = _workspace(tmp_path)
+    old_catalog = catalog_path.read_bytes()
+    old_catalog_sha = hashlib.sha256(old_catalog).hexdigest()
+    monkeypatch.setattr(macro_mart, "_utc_now", lambda: CAPTURED_AT)
+    monkeypatch.setattr(
+        macro_mart,
+        "_build_tushare_client",
+        lambda: _FakeTushare(),
+    )
+    _patch_official_fetch(monkeypatch)
+    run_id = "observation-drift-after-switch"
+    result = _refresh(
+        tmp_path,
+        monkeypatch,
+        macro_root,
+        catalog_path,
+        pointer_path,
+        run_id=run_id,
+    )
+    journal_path = Path(str(result["transaction_journal"]))
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    journal["state"] = "switched"
+    macro_mart._atomic_json(journal_path, journal)
+    observations_pointer = (
+        macro_root.parent / "macro_observations" / "_latest.json"
+    )
+    advanced_observations_pointer = (
+        b'{"generation_id":"advanced-observations"}\n'
+    )
+    macro_mart._atomic_write_bytes(
+        observations_pointer,
+        advanced_observations_pointer,
+    )
+
+    with pytest.raises(
+        macro_mart.MacroMartPromotionError,
+        match="macro_observation_pointer_cas_mismatch",
+    ):
+        macro_mart.promote_staged_macro_generation(
+            staging_root=(
+                tmp_path / f"macro-stage-{run_id}" / run_id
+            ),
+            canonical_root=macro_root,
+            expected_catalog_sha256=old_catalog_sha,
+        )
+
+    assert catalog_path.read_bytes() == old_catalog
+    assert observations_pointer.read_bytes() == (
+        advanced_observations_pointer
+    )
+    recovered = json.loads(journal_path.read_text(encoding="utf-8"))
+    assert recovered["state"] == "rolled_back"
 
 
 @pytest.mark.parametrize("mutation", ["missing", "tampered"])
@@ -1132,16 +1835,22 @@ def test_sidecar_failure_is_fail_closed_and_recovery_restores_old_catalog(
         lambda: _FakeTushare(),
     )
     _patch_official_fetch(monkeypatch)
-    result = _refresh(macro_root, catalog_path, pointer_path)
+    result = _refresh(
+        tmp_path,
+        monkeypatch,
+        macro_root,
+        catalog_path,
+        pointer_path,
+    )
     journal_path = Path(str(result["transaction_journal"]))
     transaction = journal_path.parent
     expected_old = (transaction / "old_catalog.json").read_bytes()
     journal = json.loads(journal_path.read_text(encoding="utf-8"))
     journal["state"] = "switched"
     journal_path.write_text(json.dumps(journal, sort_keys=True), encoding="utf-8")
-    provider_path = Path(
-        str(result["manifest"]["resolved_provider_bundle"])
-    )
+    manifest = result["manifest"]
+    assert isinstance(manifest, dict)
+    provider_path = Path(str(manifest["resolved_provider_bundle"]))
     provider = json.loads(provider_path.read_text(encoding="utf-8"))
     capture_path = (
         provider_path.parent
@@ -1155,10 +1864,19 @@ def test_sidecar_failure_is_fail_closed_and_recovery_restores_old_catalog(
     with pytest.raises(macro_mart.MacroMartPromotionError):
         macro_mart.read_macro_mart(data_root=macro_root)
 
-    with macro_mart._catalog_writer_lock(macro_root.parent):
+    release_root = Path(str(journal["macro_release_calendar_root"]))
+    observations_root = macro_root.parent / "macro_observations"
+    with (
+        macro_mart._market_writer_lock(macro_root.parent),
+        macro_mart._catalog_writer_lock(macro_root.parent),
+        macro_mart._macro_observation_writer_lock(observations_root),
+        macro_mart._macro_release_calendar_writer_lock(release_root),
+    ):
         macro_mart._recover_catalog_transactions(
             root=macro_root,
             catalog_path=catalog_path,
+            locked_macro_observations_root=observations_root,
+            locked_macro_release_calendar_root=release_root,
         )
 
     assert catalog_path.read_bytes() == expected_old

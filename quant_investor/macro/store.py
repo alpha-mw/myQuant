@@ -1199,9 +1199,11 @@ def _prepare_observation_projection(
     dict[str, list[str]],
     dict[str, bytes],
 ]:
-    parent_hashes = {
-        str(row.get("content_hash") or "") for row in parent_rows
+    parent_rows_by_hash = {
+        str(row.get("content_hash") or ""): dict(row)
+        for row in parent_rows
     }
+    parent_hashes = set(parent_rows_by_hash)
     overlap = (
         retained_parent_content_hashes & removed_parent_content_hashes
     )
@@ -1229,28 +1231,102 @@ def _prepare_observation_projection(
     incoming_hashes = {
         str(row.get("content_hash") or "") for row in incoming_rows
     }
-    if incoming_hashes & parent_hashes:
+    incoming_retained_overlap = (
+        incoming_hashes & retained_parent_content_hashes
+    )
+    if incoming_retained_overlap:
+        raise MacroObservationStoreError(
+            "macro_observation_projection_incoming_retained_overlap"
+        )
+    replacement_hashes = incoming_hashes & parent_hashes
+    if not replacement_hashes.issubset(
+        removed_parent_content_hashes
+    ):
         raise MacroObservationStoreError(
             "macro_observation_projection_incoming_parent_overlap"
         )
 
-    # Validate conflicts against the complete parent, including evidence that
-    # will intentionally not be copied into the child. Removing a row must not
-    # provide a route around digest, metadata, or source-record drift checks.
+    incoming_rows_by_hash = {
+        str(row.get("content_hash") or ""): dict(row)
+        for row in incoming_rows
+    }
+    for content_hash in sorted(replacement_hashes):
+        parent_semantic_bytes = _canonical_json_bytes(
+            MacroObservation.semantic_payload(
+                parent_rows_by_hash[content_hash]
+            )
+        )
+        incoming_semantic_bytes = _canonical_json_bytes(
+            MacroObservation.semantic_payload(
+                incoming_rows_by_hash[content_hash]
+            )
+        )
+        if parent_semantic_bytes != incoming_semantic_bytes:
+            raise MacroObservationStoreError(
+                "macro_observation_projection_replacement_row_mismatch"
+            )
+
+    if set(parent_observation_evidence) != parent_hashes:
+        raise MacroObservationStoreError(
+            "macro_observation_projection_parent_mapping_missing"
+        )
+    if set(incoming_observation_evidence) != incoming_hashes:
+        if replacement_hashes - set(incoming_observation_evidence):
+            raise MacroObservationStoreError(
+                "macro_observation_projection_replacement_mapping_incomplete"
+            )
+        raise MacroObservationStoreError(
+            "macro_observation_projection_incoming_mapping_missing"
+        )
+
+    # Parent evidence remains immutable only while at least one retained row
+    # references it. Evidence used exclusively by removed rows is intentionally
+    # absent here, so an incoming complete bundle may reclassify metadata for
+    # the same raw digest without mutating or weakening retained evidence.
+    retained_observation_evidence = {
+        content_hash: sorted(
+            set(parent_observation_evidence[content_hash])
+        )
+        for content_hash in sorted(retained_parent_content_hashes)
+    }
+    retained_digests = {
+        digest
+        for digests in retained_observation_evidence.values()
+        for digest in digests
+    }
+    parent_file_map = _evidence_file_map(parent_evidence_files)
+    incoming_file_map = _evidence_file_map(incoming_evidence_files)
+    for digest in sorted(parent_file_map.keys() & incoming_file_map.keys()):
+        if parent_evidence_bodies.get(digest) != (
+            incoming_evidence_bodies.get(digest)
+        ):
+            raise MacroObservationStoreError(
+                "macro_observation_evidence_content_conflict"
+            )
+    if (
+        not retained_digests.issubset(parent_file_map)
+        or not retained_digests.issubset(parent_evidence_bodies)
+    ):
+        raise MacroObservationStoreError(
+            "macro_observation_projection_parent_evidence_missing"
+        )
+    retained_evidence_files = [
+        parent_file_map[digest]
+        for digest in sorted(retained_digests)
+    ]
+    retained_evidence_bodies = {
+        digest: parent_evidence_bodies[digest]
+        for digest in sorted(retained_digests)
+    }
     all_evidence_files, all_evidence_bodies = _merge_evidence_files(
-        parent_evidence_files,
-        parent_evidence_bodies,
+        retained_evidence_files,
+        retained_evidence_bodies,
         incoming_evidence_files,
         incoming_evidence_bodies,
     )
     all_observation_evidence = _merge_observation_evidence(
-        parent_observation_evidence,
+        retained_observation_evidence,
         incoming_observation_evidence,
-    )
-    _normalize_rows([*parent_rows, *incoming_rows])
-    _validate_evidence_record_drift(
-        [*parent_rows, *incoming_rows],
-        all_observation_evidence,
     )
 
     retained_rows = [
@@ -1268,11 +1344,14 @@ def _prepare_observation_projection(
             "macro_observation_projection_empty_child"
         )
     if (
-        child_hashes - parent_hashes != incoming_hashes
+        child_hashes
+        != retained_parent_content_hashes | incoming_hashes
+        or child_hashes - parent_hashes
+        != incoming_hashes - parent_hashes
         or parent_hashes - child_hashes
-        != removed_parent_content_hashes
+        != removed_parent_content_hashes - replacement_hashes
         or child_hashes & parent_hashes
-        != retained_parent_content_hashes
+        != retained_parent_content_hashes | replacement_hashes
     ):
         raise MacroObservationStoreError(
             "macro_observation_projection_unexpected_parent_child_diff"
@@ -1675,11 +1754,19 @@ def publish_observation_projection(
     ]
     | None = None,
 ) -> dict[str, Any]:
-    """Publish one exact v2 child while retaining a declared parent subset."""
+    """Publish one exact v2 child from an exact parent partition.
+
+    Incoming hashes may overlap only hashes declared removed. Those hashes are
+    semantic replacements: their final row and observation-evidence mapping
+    come exclusively from the incoming complete bundle.
+    """
 
     base = _write_root(root)
     generation_id = _safe_id(run_id)
     incoming = _normalize_projection_rows(observations)
+    incoming_hashes = {
+        str(row.get("content_hash") or "") for row in incoming
+    }
     (
         incoming_evidence_bodies,
         incoming_evidence_files,
@@ -1773,6 +1860,11 @@ def publish_observation_projection(
                 retained_parent_content_hashes=retained_hashes,
                 removed_parent_content_hashes=removed_hashes,
             )
+            parent_hashes = {
+                str(row.get("content_hash") or "")
+                for row in parent_rows
+            }
+            replaced_hashes = sorted(incoming_hashes & parent_hashes)
             (
                 current_files,
                 current_mapping,
@@ -1796,12 +1888,11 @@ def publish_observation_projection(
                 and current_manifest.get("parent_generation_id")
                 == parent_generation_id
                 and current_manifest.get("added_content_hashes")
-                == sorted(
-                    str(row.get("content_hash") or "")
-                    for row in incoming
-                )
+                == sorted(incoming_hashes)
                 and current_manifest.get("removed_content_hashes")
                 == sorted(removed_hashes)
+                and current_manifest.get("replaced_content_hashes")
+                == replaced_hashes
                 and current_manifest.get("metadata")
                 == normalized_metadata
                 and current_loaded.get("metadata")
@@ -1854,10 +1945,16 @@ def publish_observation_projection(
             retained_parent_content_hashes=retained_hashes,
             removed_parent_content_hashes=removed_hashes,
         )
+        parent_hashes = {
+            str(row.get("content_hash") or "")
+            for row in parent_rows
+        }
+        replaced_hashes = sorted(incoming_hashes & parent_hashes)
         parent_manifest = parent_pointer.get("generation_manifest")
         assert isinstance(parent_manifest, Mapping)
         if (
-            _projection_state_matches(
+            not replaced_hashes
+            and _projection_state_matches(
                 parent_rows,
                 parent_files,
                 parent_mapping,
@@ -1932,9 +2029,7 @@ def publish_observation_projection(
                     )
                 }
             )
-            added_hashes = sorted(
-                str(row.get("content_hash") or "") for row in incoming
-            )
+            added_hashes = sorted(incoming_hashes)
             manifest = {
                 "schema_version": _GENERATION_V2,
                 "status": "OK",
@@ -1949,6 +2044,7 @@ def publish_observation_projection(
                 "parent_pointer_sha256": current_sha,
                 "added_content_hashes": added_hashes,
                 "removed_content_hashes": sorted(removed_hashes),
+                "replaced_content_hashes": replaced_hashes,
                 "min_available_at": min(
                     str(row["available_at"]) for row in child_rows
                 ),

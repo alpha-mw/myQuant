@@ -58,6 +58,9 @@ from quant_investor.market.branch_readiness import (
     macro_generation_identity,
     write_branch_readiness_report,
 )
+from quant_investor.market.macro_readiness_runtime import (
+    freeze_macro_readiness_runtime,
+)
 from quant_investor.market.read_result import MarketDataReadResult
 from quant_investor.market.runtime_profile import profile_stage
 from quant_investor.llm_gateway import detect_provider
@@ -1582,10 +1585,20 @@ def _prepare_market_context(
         pinned_macro_record, pinned_macro_manifest = load_macro_record(
             as_of=effective_latest_trade_date,
         )
+        pinned_macro_runtime = freeze_macro_readiness_runtime(
+            macro_logical_date=str(
+                pinned_macro_record.get("trade_date") or ""
+            ),
+            target_session_date=effective_latest_trade_date,
+        )
         pinned_macro_readiness = assess_macro_readiness(
             macro_record=pinned_macro_record,
             manifest=pinned_macro_manifest,
             as_of=effective_latest_trade_date,
+            decision_cutoff_at=(
+                pinned_macro_runtime.decision_cutoff_at or None
+            ),
+            macro_readiness_evidence=pinned_macro_runtime.evidence,
         )
         try:
             pinned_macro_controls = _validated_pinned_macro_controls(
@@ -2044,6 +2057,7 @@ def _prepare_market_context(
             "macro_agent_regime": macro_agent_regime,
             "canonical_macro_generation": dict(pinned_macro_identity),
             "canonical_macro_readiness": pinned_macro_readiness.to_dict(),
+            "macro_readiness_runtime": pinned_macro_runtime.metadata(),
             "decision_authorized": not pinned_macro_blocked,
             "selection_profile": {
                 "funnel_profile": str(funnel_profile or "classic").strip().lower() or "classic",
@@ -2153,6 +2167,12 @@ def _prepare_market_context(
             as_of=effective_latest_trade_date,
             pinned_macro_record=pinned_macro_record,
             pinned_macro_manifest=pinned_macro_manifest,
+            pinned_macro_readiness_evidence=(
+                pinned_macro_runtime.evidence
+            ),
+            decision_cutoff_at=(
+                pinned_macro_runtime.decision_cutoff_at or None
+            ),
         )
         branch_governance_artifacts = write_branch_readiness_report(branch_governance_report)
         stage_metadata["blocked_symbol_count"] = len(branch_governance_report.blocked_symbols)

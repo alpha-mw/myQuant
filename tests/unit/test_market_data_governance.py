@@ -9,9 +9,32 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from quant_investor.market.branch_readiness import (
+    BranchDataReadiness,
+    BranchGovernanceReport,
+    STATUS_PASS,
+)
 from quant_investor.market.data_governance import run_data_governance
 from quant_investor.market.macro_mart import write_macro_mart
 from quant_investor.market.pit_universe import PITUniverseRecord, PITUniverseStore
+from tests.helpers.macro_readiness_fixture import (
+    make_blocked_macro_readiness_runtime,
+    make_macro_readiness_runtime,
+)
+
+
+@pytest.fixture(autouse=True)
+def _keep_release_calendar_fixture_off_canonical_data(monkeypatch):
+    import quant_investor.market.data_governance as governance_module
+
+    monkeypatch.setattr(
+        governance_module,
+        "freeze_macro_readiness_runtime",
+        lambda **kwargs: make_blocked_macro_readiness_runtime(
+            macro_logical_date=str(kwargs.get("macro_logical_date") or ""),
+            target_session_date=str(kwargs.get("target_session_date") or ""),
+        ),
+    )
 
 
 def _daily_frame(symbol: str = "000001.SZ") -> pd.DataFrame:
@@ -585,6 +608,98 @@ def test_data_governance_deduplicates_categories(tmp_path, monkeypatch):
 
     assert calls == ["full_a"]
     assert result["categories"] == ["full_a"]
+
+
+def test_data_governance_freezes_and_reuses_one_macro_readiness_evidence(
+    tmp_path,
+    monkeypatch,
+):
+    import quant_investor.market.data_governance as governance_module
+
+    runtime = make_macro_readiness_runtime(
+        macro_logical_date="2024-05-10",
+        target_session_date="2024-05-10",
+    )
+    calls = {"load": 0, "freeze": 0, "assess": 0}
+    observed_evidence = []
+
+    def _read_frames(*, market, category, as_of, data_dir=None):
+        return {}, {}, object(), {"status": "passed"}, "20240510"
+
+    def _load_macro(**kwargs):
+        calls["load"] += 1
+        return {"trade_date": "20240510"}, {"generation_id": "fixture"}
+
+    def _freeze(**kwargs):
+        calls["freeze"] += 1
+        assert kwargs["macro_logical_date"] == "20240510"
+        assert kwargs["target_session_date"] == "20240510"
+        assert kwargs["calendar_root"] == tmp_path / "calendar"
+        return runtime
+
+    def _assess(**kwargs):
+        calls["assess"] += 1
+        observed_evidence.append(kwargs["pinned_macro_readiness_evidence"])
+        assert kwargs["decision_cutoff_at"] == runtime.decision_cutoff_at
+        return BranchGovernanceReport(
+            run_id=str(kwargs["run_id"]),
+            market="CN",
+            category=str(kwargs["category"]),
+            as_of="2024-05-10",
+            readiness={
+                branch: BranchDataReadiness(
+                    branch=branch,
+                    status=STATUS_PASS,
+                    coverage_ratio=1.0,
+                )
+                for branch in ("quant", "fundamental", "macro")
+            },
+            blocked_symbols=[],
+            quantifiable_universe=[],
+            investable_universe=[],
+            branch_data={},
+        )
+
+    monkeypatch.setattr(governance_module, "_read_local_frames", _read_frames)
+    monkeypatch.setattr(governance_module, "load_macro_record", _load_macro)
+    monkeypatch.setattr(
+        governance_module,
+        "freeze_macro_readiness_runtime",
+        _freeze,
+    )
+    monkeypatch.setattr(
+        governance_module,
+        "assess_branch_data_readiness",
+        _assess,
+    )
+    monkeypatch.setattr(
+        governance_module,
+        "write_branch_readiness_report",
+        lambda report, output_dir: {
+            "json": f"{report.category}.json",
+            "md": f"{report.category}.md",
+            "csv": f"{report.category}.csv",
+        },
+    )
+
+    result = run_data_governance(
+        categories=["full_a", "hs300"],
+        as_of="20240510",
+        output_dir=tmp_path / "reports",
+        macro_release_calendar_root=tmp_path / "calendar",
+    )
+
+    assert calls == {"load": 1, "freeze": 1, "assess": 2}
+    assert observed_evidence == [runtime.evidence, runtime.evidence]
+    assert observed_evidence[0] is observed_evidence[1]
+    expected_payload = json.loads(json.dumps(runtime.evidence.to_dict()))
+    for report in result["reports"]:
+        metadata = report["metadata"]["macro_readiness_runtime"]
+        assert metadata["macro_readiness_evidence"] == expected_payload
+        assert (
+            metadata["macro_readiness_evidence_semantic_sha256"]
+            == runtime.evidence.semantic_sha256
+        )
 
 
 def test_retired_market_mart_module_is_physically_absent():

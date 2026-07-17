@@ -953,7 +953,12 @@ class CNParquetBatchMaintainer:
             primary_missing_symbols=pit_active_candidates,
             pit_membership_sha256=pit_sha256,
         )
-        if not cache_blockers:
+        # An empty date-wide response cannot prove that the provider has
+        # finished publishing the target session.  Re-query it on a later
+        # maintenance attempt instead of making a transient empty page a
+        # permanent negative cache.  Non-empty, hash-bound pages remain safe
+        # to reuse.
+        if not cache_blockers and int(cached.get("raw_row_count") or 0) > 0:
             cached["status"] = "cache_hit"
             cached["evidence_path"] = str(cache_path)
             cached["evidence_sha256"] = file_sha256(cache_path)

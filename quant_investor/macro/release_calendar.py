@@ -414,6 +414,21 @@ class ReleaseCalendarIdentity:
 
 
 @dataclass(frozen=True)
+class ReleaseCalendarGenerationProof:
+    """One loader-validated immutable generation in oldest-to-current order."""
+
+    generation_id: str
+    pointer_sha256: str
+    manifest_sha256: str
+    semantic_sha256: str
+    plan_sha256: str
+    capture_manifest_sha256: str
+    market_open_days_sha256: str
+    registry_sha256: str
+    critical_policy_sha256: str
+
+
+@dataclass(frozen=True)
 class ReleaseCalendarEvidence:
     """Frozen, pure canonical release-calendar evidence and its identity."""
 
@@ -431,6 +446,7 @@ class ReleaseCalendarEvidence:
     source_artifacts: tuple[SourceArtifactRef, ...]
     events: tuple[ReleaseEvent, ...]
     resolutions: tuple[ReleaseResolution, ...]
+    validated_ancestry: tuple[ReleaseCalendarGenerationProof, ...]
 
 
 @dataclass(frozen=True)
@@ -1098,33 +1114,49 @@ def _validate_capture(
                 item.get("source_ids"), "release_calendar_coverage_sources_not_list"
             )
         )
-        if len(source_ids) != 1 or len(set(source_ids)) != 1:
+        if not source_ids or len(source_ids) != len(set(source_ids)):
             raise ReleaseCalendarValidationError("release_calendar_coverage_sources_invalid")
-        ref = sources_by_id.get(source_ids[0])
-        receipt = source_payloads.get(source_ids[0])
-        if (
-            ref is None
-            or ref.issuer != issuer
-            or ref.artifact_kind != "coverage_receipt"
-            or not isinstance(receipt, Mapping)
-        ):
-            raise ReleaseCalendarValidationError("release_calendar_coverage_source_mismatch")
-        _exact_keys(
-            receipt,
-            {"schema_version", "issuer", "through"},
-            "release_calendar_coverage_receipt_shape_invalid",
-        )
-        if (
-            receipt.get("schema_version") != "macro-release-issuer-coverage.v1"
-            or receipt.get("issuer") != issuer
-            or _utc_timestamp(
-                receipt.get("through"), "release_calendar_coverage_receipt_clock_invalid"
+        receipt_clocks: list[str] = []
+        for source_id in source_ids:
+            ref = sources_by_id.get(source_id)
+            receipt = source_payloads.get(source_id)
+            if (
+                ref is None
+                or ref.issuer != issuer
+                or ref.artifact_kind != "coverage_receipt"
+                or not isinstance(receipt, Mapping)
+            ):
+                raise ReleaseCalendarValidationError(
+                    "release_calendar_coverage_source_mismatch"
+                )
+            _exact_keys(
+                receipt,
+                {"schema_version", "issuer", "through"},
+                "release_calendar_coverage_receipt_shape_invalid",
             )
-            != through
-            or parse_timestamp(ref.captured_at, field_name="captured_at")
-            < parse_timestamp(through, field_name="through")
+            receipt_clock = _utc_timestamp(
+                receipt.get("through"),
+                "release_calendar_coverage_receipt_clock_invalid",
+            )
+            if (
+                receipt.get("schema_version")
+                != "macro-release-issuer-coverage.v1"
+                or receipt.get("issuer") != issuer
+                or parse_timestamp(ref.captured_at, field_name="captured_at")
+                < parse_timestamp(receipt_clock, field_name="through")
+            ):
+                raise ReleaseCalendarValidationError(
+                    "release_calendar_coverage_receipt_mismatch"
+                )
+            receipt_clocks.append(receipt_clock)
+        if (
+            receipt_clocks != sorted(receipt_clocks)
+            or len(set(receipt_clocks)) != len(receipt_clocks)
+            or receipt_clocks[-1] != through
         ):
-            raise ReleaseCalendarValidationError("release_calendar_coverage_receipt_mismatch")
+            raise ReleaseCalendarValidationError(
+                "release_calendar_coverage_receipt_sequence_invalid"
+            )
         coverage.append(IssuerCoverage(issuer, through, source_ids))
     if [item.issuer for item in coverage] != ["nbs_official", "pbc_official"]:
         raise ReleaseCalendarValidationError("release_calendar_issuer_coverage_incomplete")
@@ -1203,7 +1235,11 @@ def _validate_capture(
         if any(
             source is None or source.issuer != plan["issuer"]
             for source in event_sources
-        ) or sum(source.artifact_kind == "release_notice" for source in event_sources if source) != 1:
+        ) or sum(
+            source.artifact_kind == "release_notice"
+            for source in event_sources
+            if source
+        ) != 1:
             raise ReleaseCalendarValidationError("release_calendar_event_source_mismatch")
         resolution_ids = tuple(
             str(value)
@@ -1378,7 +1414,9 @@ def _validate_capture(
             or by_kind["parser_contract"].content_sha256 != parser_hash
             or by_kind["observation"].content_sha256 != observation_hash
         ):
-            raise ReleaseCalendarValidationError("release_calendar_resolution_hash_binding_mismatch")
+            raise ReleaseCalendarValidationError(
+                "release_calendar_resolution_hash_binding_mismatch"
+            )
         parser_payload = source_payloads[by_kind["parser_contract"].source_id]
         observation = source_payloads[by_kind["observation"].source_id]
         if (
@@ -1462,7 +1500,11 @@ def _validate_capture(
                     "release_calendar_release_notice_parse_failed"
                 ) from exc
             if (
-                parsed_notice.get("release_at") != event.actual_at
+                _utc_timestamp(
+                    parsed_notice.get("release_at"),
+                    "release_calendar_release_notice_clock_invalid",
+                )
+                != event.actual_at
                 or parsed_notice.get("source_system") != event.issuer
                 or parsed_notice.get("parser_contract_sha256")
                 != event_resolutions[0].parser_contract_sha256  # type: ignore[union-attr]
@@ -1497,7 +1539,10 @@ def _validate_capture(
                 )
                 if str(item.get("indicator_id") or "") in event.indicator_ids
                 and str(item.get("period") or "")
-                == _parser_period(event.period, event_resolutions[0].frequency)  # type: ignore[union-attr]
+                == _parser_period(
+                    event.period,
+                    event_resolutions[0].frequency,  # type: ignore[union-attr]
+                )
             }
             if parsed_values != expected_values:
                 raise ReleaseCalendarValidationError(
@@ -1607,3 +1652,1305 @@ def _compile_inputs(
         ),
         raw_root=root,
     )
+
+
+def _content_from_evidence(evidence: ReleaseCalendarEvidence) -> _CalendarContent:
+    return _CalendarContent(
+        plan_sha256=evidence.plan_sha256,
+        capture_manifest_sha256=evidence.capture_manifest_sha256,
+        market_open_days_sha256=evidence.market_open_days_sha256,
+        captured_at=evidence.captured_at,
+        open_dates=evidence.open_dates,
+        issuer_coverage=evidence.issuer_coverage,
+        source_artifacts=evidence.source_artifacts,
+        events=evidence.events,
+        resolutions=evidence.resolutions,
+    )
+
+
+def _extension_blocker(
+    parent: ReleaseCalendarEvidence,
+    child: _CalendarContent,
+    *,
+    require_change: bool,
+) -> str | None:
+    parent_content = _content_from_evidence(parent)
+    if child.captured_at < parent_content.captured_at:
+        return "release_calendar_parent_capture_clock_regressed"
+    prefix_fields = (
+        (parent_content.open_dates, child.open_dates, "open_dates"),
+        (
+            parent_content.source_artifacts,
+            child.source_artifacts,
+            "source_artifacts",
+        ),
+        (parent_content.events, child.events, "events"),
+        (parent_content.resolutions, child.resolutions, "resolutions"),
+    )
+    appended = False
+    for previous, incoming, label in prefix_fields:
+        if len(incoming) < len(previous) or incoming[: len(previous)] != previous:
+            return f"release_calendar_parent_{label}_prefix_altered"
+        if len(incoming) > len(previous):
+            appended = True
+    parent_coverage = {item.issuer: item for item in parent_content.issuer_coverage}
+    child_coverage = {item.issuer: item for item in child.issuer_coverage}
+    if set(parent_coverage) != set(child_coverage):
+        return "release_calendar_parent_issuer_coverage_scope_altered"
+    for issuer in sorted(parent_coverage):
+        previous_coverage = parent_coverage[issuer]
+        incoming_coverage = child_coverage[issuer]
+        previous_clock = parse_timestamp(
+            previous_coverage.through_at, field_name="through"
+        )
+        incoming_clock = parse_timestamp(
+            incoming_coverage.through_at, field_name="through"
+        )
+        if incoming_clock < previous_clock:
+            return "release_calendar_parent_issuer_coverage_regressed"
+        if (
+            incoming_clock == previous_clock
+            and incoming_coverage.source_ids != previous_coverage.source_ids
+        ):
+            return "release_calendar_parent_issuer_coverage_rewritten"
+        if incoming_clock > previous_clock:
+            if (
+                incoming_coverage.source_ids[: len(previous_coverage.source_ids)]
+                != previous_coverage.source_ids
+            ):
+                return "release_calendar_parent_issuer_coverage_prefix_altered"
+            appended = True
+    if require_change and not appended:
+        return "release_calendar_child_not_prefix_extension"
+    return None
+
+
+def _parent_fields(
+    parent: ReleaseCalendarEvidence | None,
+) -> tuple[str, str, str, str]:
+    if parent is None:
+        return "", EMPTY_POINTER_SHA256, EMPTY_POINTER_SHA256, EMPTY_POINTER_SHA256
+    return (
+        parent.identity.generation_id,
+        parent.identity.pointer_sha256,
+        parent.identity.manifest_sha256,
+        parent.identity.semantic_sha256,
+    )
+
+
+def _calendar_core(
+    content: _CalendarContent,
+    *,
+    parent_generation_id: str,
+    parent_pointer_sha256: str,
+    parent_manifest_sha256: str,
+    parent_semantic_sha256: str,
+) -> dict[str, Any]:
+    payload = {
+        "schema_version": MACRO_RELEASE_CALENDAR_SCHEMA,
+        "market": "CN",
+        "registry_version": REGISTRY_VERSION,
+        "registry_sha256": MACRO_REGISTRY_SHA256,
+        "critical_policy_version": CRITICAL_POLICY_VERSION,
+        "critical_policy_sha256": CRITICAL_POLICY_SHA256,
+        "plan_sha256": content.plan_sha256,
+        "capture_manifest_sha256": content.capture_manifest_sha256,
+        "market_open_days_sha256": content.market_open_days_sha256,
+        "captured_at": content.captured_at,
+        "open_dates": list(content.open_dates),
+        "issuer_coverage": [asdict(item) for item in content.issuer_coverage],
+        "source_artifacts": [asdict(item) for item in content.source_artifacts],
+        "events": [asdict(item) for item in content.events],
+        "resolutions": [asdict(item) for item in content.resolutions],
+        "parent_generation_id": parent_generation_id,
+        "parent_pointer_sha256": parent_pointer_sha256,
+        "parent_manifest_sha256": parent_manifest_sha256,
+        "parent_semantic_sha256": parent_semantic_sha256,
+    }
+    # Dataclass tuples are serialized as JSON arrays.  Normalize here so a
+    # replayed object compares byte-semantically with the persisted JSON.
+    normalized = json.loads(_canonical_json_bytes(payload).decode("utf-8"))
+    assert isinstance(normalized, dict)
+    return normalized
+
+
+def _generation_payloads(
+    compiled: _CompiledInputs,
+    *,
+    run_id: str,
+    parent: ReleaseCalendarEvidence | None,
+) -> tuple[dict[str, bytes], bytes, str, dict[str, Any]]:
+    (
+        parent_generation_id,
+        parent_pointer_sha256,
+        parent_manifest_sha256,
+        parent_semantic_sha256,
+    ) = _parent_fields(parent)
+    core = _calendar_core(
+        compiled.content,
+        parent_generation_id=parent_generation_id,
+        parent_pointer_sha256=parent_pointer_sha256,
+        parent_manifest_sha256=parent_manifest_sha256,
+        parent_semantic_sha256=parent_semantic_sha256,
+    )
+    semantic_sha = _semantic_sha256(core)
+    calendar_payload = {
+        **core,
+        "generation_id": run_id,
+        "semantic_sha256": semantic_sha,
+    }
+    payloads: dict[str, bytes] = {
+        "plan.json": compiled.plan_raw,
+        "capture_manifest.json": compiled.capture_raw,
+        "market_open_days.json": compiled.open_days_raw,
+        "release_calendar.json": _canonical_json_bytes(calendar_payload, newline=True),
+    }
+    for relative, raw in compiled.raw_by_path:
+        payloads[f"raw/{relative}"] = raw
+    artifact_rows = [
+        {
+            "path": path,
+            "sha256": _sha256_bytes(raw),
+            "size_bytes": len(raw),
+        }
+        for path, raw in sorted(payloads.items())
+    ]
+    manifest = {
+        "schema_version": MACRO_RELEASE_CALENDAR_GENERATION_SCHEMA,
+        "generation_id": run_id,
+        "market": "CN",
+        "registry_version": REGISTRY_VERSION,
+        "registry_sha256": MACRO_REGISTRY_SHA256,
+        "critical_policy_version": CRITICAL_POLICY_VERSION,
+        "critical_policy_sha256": CRITICAL_POLICY_SHA256,
+        "captured_at": compiled.content.captured_at,
+        "parent_generation_id": parent_generation_id,
+        "parent_pointer_sha256": parent_pointer_sha256,
+        "parent_manifest_sha256": parent_manifest_sha256,
+        "parent_semantic_sha256": parent_semantic_sha256,
+        "semantic_sha256": semantic_sha,
+        "artifacts": artifact_rows,
+    }
+    manifest_raw = _canonical_json_bytes(manifest, newline=True)
+    return payloads, manifest_raw, semantic_sha, manifest
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(
+        path,
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _ensure_private_root(path_value: str | Path) -> Path:
+    root = _absolute_path(path_value, "release_calendar_canonical_root_path_unsafe")
+    if not root.exists():
+        parent = root.parent
+        if not parent.is_dir() or parent.is_symlink():
+            raise ReleaseCalendarValidationError(
+                "release_calendar_canonical_parent_unsafe"
+            )
+        try:
+            os.mkdir(root, 0o700)
+            _fsync_directory(parent)
+        except OSError as exc:
+            raise ReleaseCalendarValidationError(
+                "release_calendar_canonical_root_create_failed"
+            ) from exc
+    try:
+        root_stat = os.lstat(root)
+    except OSError as exc:
+        raise ReleaseCalendarValidationError(
+            "release_calendar_canonical_root_unsafe"
+        ) from exc
+    if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
+        raise ReleaseCalendarValidationError("release_calendar_canonical_root_unsafe")
+    os.chmod(root, 0o700)
+    generations = root / GENERATIONS_DIRNAME
+    if not generations.exists():
+        os.mkdir(generations, 0o700)
+        _fsync_directory(root)
+    generation_stat = os.lstat(generations)
+    if stat.S_ISLNK(generation_stat.st_mode) or not stat.S_ISDIR(
+        generation_stat.st_mode
+    ):
+        raise ReleaseCalendarValidationError(
+            "release_calendar_generations_root_unsafe"
+        )
+    os.chmod(generations, 0o700)
+    return root
+
+
+@contextmanager
+def _writer_lock(root: Path) -> Iterator[None]:
+    lock_path = root / LOCK_FILENAME
+    if os.path.lexists(lock_path) and stat.S_ISLNK(os.lstat(lock_path).st_mode):
+        raise ReleaseCalendarValidationError("release_calendar_lock_symlink_rejected")
+    try:
+        descriptor = os.open(
+            lock_path,
+            os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+    except OSError as exc:
+        raise ReleaseCalendarValidationError("release_calendar_lock_unsafe") from exc
+    try:
+        current = os.fstat(descriptor)
+        if not stat.S_ISREG(current.st_mode) or current.st_nlink != 1:
+            raise ReleaseCalendarValidationError("release_calendar_lock_unsafe")
+        os.fchmod(descriptor, 0o600)
+        os.fsync(descriptor)
+        _fsync_directory(root)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+
+
+def _write_private_file(path: Path, raw: bytes) -> None:
+    try:
+        descriptor = os.open(
+            path,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+    except OSError as exc:
+        raise ReleaseCalendarValidationError(
+            "release_calendar_generation_no_clobber"
+        ) from exc
+    try:
+        os.fchmod(descriptor, 0o600)
+        offset = 0
+        while offset < len(raw):
+            offset += os.write(descriptor, raw[offset:])
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _write_generation(
+    root: Path,
+    *,
+    run_id: str,
+    payloads: Mapping[str, bytes],
+    manifest_raw: bytes,
+) -> Path:
+    generations = root / GENERATIONS_DIRNAME
+    final = generations / run_id
+    if os.path.lexists(final):
+        raise ReleaseCalendarValidationError("release_calendar_generation_no_clobber")
+    staging = Path(tempfile.mkdtemp(prefix=f".{run_id}.", dir=generations))
+    os.chmod(staging, 0o700)
+    try:
+        for relative, raw in sorted(payloads.items()):
+            safe = _safe_relative(relative, "release_calendar_generation_path_unsafe")
+            destination = staging.joinpath(*PurePosixPath(safe).parts)
+            cursor = staging
+            for part in PurePosixPath(safe).parts[:-1]:
+                cursor = cursor / part
+                if not cursor.exists():
+                    os.mkdir(cursor, 0o700)
+                os.chmod(cursor, 0o700)
+            _write_private_file(destination, raw)
+        _write_private_file(staging / "manifest.json", manifest_raw)
+        directories = sorted(
+            (item for item in staging.rglob("*") if item.is_dir()),
+            key=lambda item: len(item.parts),
+            reverse=True,
+        )
+        for directory in directories:
+            _fsync_directory(directory)
+        _fsync_directory(staging)
+        os.rename(staging, final)
+        _fsync_directory(generations)
+    except Exception:
+        if staging.exists():
+            shutil.rmtree(staging)
+        raise
+    return final
+
+
+def _expected_pointer(value: Any) -> str:
+    if value in {"", EMPTY_POINTER_SHA256}:
+        return EMPTY_POINTER_SHA256
+    return _required_sha256(value, "release_calendar_expected_pointer_sha_invalid")
+
+
+def _pointer_readback(root: Path) -> tuple[bytes | None, str, tuple[int, ...] | None]:
+    pointer = root / POINTER_FILENAME
+    if not os.path.lexists(pointer):
+        return None, EMPTY_POINTER_SHA256, None
+    raw, signature = _stable_file_bytes(
+        pointer,
+        blocker="release_calendar_pointer_unsafe",
+        max_bytes=_MAX_JSON_BYTES,
+        exact_mode=0o600,
+    )
+    return raw, _sha256_bytes(raw), signature
+
+
+def _parse_pointer(raw: bytes) -> Mapping[str, Any]:
+    payload = _strict_json(raw, "release_calendar_pointer_json_invalid")
+    _exact_keys(
+        payload,
+        {
+            "schema_version",
+            "generation_id",
+            "manifest_sha256",
+            "semantic_sha256",
+            "parent_generation_id",
+            "parent_pointer_sha256",
+            "parent_manifest_sha256",
+            "parent_semantic_sha256",
+        },
+        "release_calendar_pointer_shape_invalid",
+    )
+    if payload.get("schema_version") != MACRO_RELEASE_CALENDAR_POINTER_SCHEMA:
+        raise ReleaseCalendarValidationError("release_calendar_pointer_schema_invalid")
+    _safe_id(payload.get("generation_id"), "release_calendar_pointer_generation_invalid")
+    for key in ("manifest_sha256", "semantic_sha256"):
+        _required_sha256(payload.get(key), f"release_calendar_pointer_{key}_invalid")
+    parent_generation = str(payload.get("parent_generation_id") or "")
+    parent_hashes = (
+        payload.get("parent_pointer_sha256"),
+        payload.get("parent_manifest_sha256"),
+        payload.get("parent_semantic_sha256"),
+    )
+    if parent_generation:
+        _safe_id(parent_generation, "release_calendar_pointer_parent_generation_invalid")
+        for value in parent_hashes:
+            _required_sha256(value, "release_calendar_pointer_parent_hash_invalid")
+    elif any(value != EMPTY_POINTER_SHA256 for value in parent_hashes):
+        raise ReleaseCalendarValidationError("release_calendar_pointer_parent_invalid")
+    return payload
+
+
+def _atomic_pointer_write(root: Path, raw: bytes) -> str:
+    pointer = root / POINTER_FILENAME
+    if os.path.lexists(pointer) and stat.S_ISLNK(os.lstat(pointer).st_mode):
+        raise ReleaseCalendarValidationError("release_calendar_pointer_symlink_rejected")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{POINTER_FILENAME}.", suffix=".tmp", dir=root
+    )
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, pointer)
+        os.chmod(pointer, 0o600)
+        _fsync_directory(root)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    persisted, persisted_sha, _signature = _pointer_readback(root)
+    if persisted != raw:
+        raise ReleaseCalendarValidationError("release_calendar_pointer_readback_mismatch")
+    return persisted_sha
+
+
+def _recheck_inputs(compiled: _CompiledInputs) -> None:
+    for item in compiled.readbacks:
+        raw, signature = _stable_file_bytes(
+            item.path,
+            blocker="release_calendar_input_recheck_unsafe",
+            max_bytes=item.max_bytes,
+        )
+        if raw != item.raw or signature != item.signature:
+            raise ReleaseCalendarValidationError(
+                "release_calendar_input_changed_before_commit"
+            )
+    if set(_raw_files(compiled.raw_root)) != {
+        relative for relative, _raw in compiled.raw_by_path
+    }:
+        raise ReleaseCalendarValidationError("release_calendar_raw_file_set_changed")
+
+
+def _generation_tree_files(generation: Path) -> set[str]:
+    try:
+        root_stat = os.lstat(generation)
+    except OSError as exc:
+        raise ReleaseCalendarValidationError(
+            "release_calendar_generation_missing"
+        ) from exc
+    if (
+        stat.S_ISLNK(root_stat.st_mode)
+        or not stat.S_ISDIR(root_stat.st_mode)
+        or root_stat.st_mode & 0o777 != 0o700
+    ):
+        raise ReleaseCalendarValidationError("release_calendar_generation_unsafe")
+    files: set[str] = set()
+    for directory, directory_names, file_names in os.walk(generation, followlinks=False):
+        base = Path(directory)
+        directory_stat = os.lstat(base)
+        if (
+            stat.S_ISLNK(directory_stat.st_mode)
+            or not stat.S_ISDIR(directory_stat.st_mode)
+            or directory_stat.st_mode & 0o777 != 0o700
+        ):
+            raise ReleaseCalendarValidationError(
+                "release_calendar_generation_directory_unsafe"
+            )
+        for name in directory_names:
+            child = base / name
+            if child.is_symlink():
+                raise ReleaseCalendarValidationError(
+                    "release_calendar_generation_symlink_rejected"
+                )
+        for name in file_names:
+            child = base / name
+            relative = child.relative_to(generation).as_posix()
+            _safe_relative(relative, "release_calendar_generation_path_unsafe")
+            files.add(relative)
+    return files
+
+
+def _load_generation(
+    root: Path,
+    *,
+    generation_id: str,
+    manifest_sha256: str,
+    pointer_sha256: str,
+    stack: frozenset[str] = frozenset(),
+) -> ReleaseCalendarEvidence:
+    generation_id = _safe_id(
+        generation_id, "release_calendar_generation_id_invalid"
+    )
+    if generation_id in stack:
+        raise ReleaseCalendarValidationError("release_calendar_parent_cycle")
+    expected_manifest = _required_sha256(
+        manifest_sha256, "release_calendar_manifest_expected_sha_invalid"
+    )
+    generation = root / GENERATIONS_DIRNAME / generation_id
+    files = _generation_tree_files(generation)
+    manifest_path = generation / "manifest.json"
+    manifest_raw, _manifest_signature = _stable_file_bytes(
+        manifest_path,
+        blocker="release_calendar_manifest_unsafe",
+        max_bytes=_MAX_JSON_BYTES,
+        exact_mode=0o600,
+    )
+    if _sha256_bytes(manifest_raw) != expected_manifest:
+        raise ReleaseCalendarValidationError("release_calendar_manifest_sha_mismatch")
+    manifest = _strict_json(manifest_raw, "release_calendar_manifest_json_invalid")
+    _exact_keys(
+        manifest,
+        {
+            "schema_version",
+            "generation_id",
+            "market",
+            "registry_version",
+            "registry_sha256",
+            "critical_policy_version",
+            "critical_policy_sha256",
+            "captured_at",
+            "parent_generation_id",
+            "parent_pointer_sha256",
+            "parent_manifest_sha256",
+            "parent_semantic_sha256",
+            "semantic_sha256",
+            "artifacts",
+        },
+        "release_calendar_manifest_shape_invalid",
+    )
+    if (
+        manifest.get("schema_version") != MACRO_RELEASE_CALENDAR_GENERATION_SCHEMA
+        or manifest.get("generation_id") != generation_id
+        or manifest.get("market") != "CN"
+        or manifest.get("registry_version") != REGISTRY_VERSION
+        or manifest.get("registry_sha256") != MACRO_REGISTRY_SHA256
+        or manifest.get("critical_policy_version") != CRITICAL_POLICY_VERSION
+        or manifest.get("critical_policy_sha256") != CRITICAL_POLICY_SHA256
+    ):
+        raise ReleaseCalendarValidationError("release_calendar_manifest_contract_drift")
+    artifact_rows = _list(
+        manifest.get("artifacts"), "release_calendar_manifest_artifacts_not_list"
+    )
+    artifact_by_path: dict[str, Mapping[str, Any]] = {}
+    artifact_raw: dict[str, bytes] = {}
+    for raw_row in artifact_rows:
+        row = _mapping(raw_row, "release_calendar_manifest_artifact_not_object")
+        _exact_keys(
+            row,
+            {"path", "sha256", "size_bytes"},
+            "release_calendar_manifest_artifact_shape_invalid",
+        )
+        relative = _safe_relative(
+            row.get("path"), "release_calendar_manifest_artifact_path_unsafe"
+        )
+        if relative in artifact_by_path:
+            raise ReleaseCalendarValidationError(
+                "release_calendar_manifest_artifact_duplicate"
+            )
+        expected_sha = _required_sha256(
+            row.get("sha256"), "release_calendar_manifest_artifact_sha_invalid"
+        )
+        size = row.get("size_bytes")
+        if isinstance(size, bool) or not isinstance(size, int) or not 1 <= size <= _MAX_RAW_BYTES:
+            raise ReleaseCalendarValidationError(
+                "release_calendar_manifest_artifact_size_invalid"
+            )
+        path = generation.joinpath(*PurePosixPath(relative).parts)
+        raw, _signature = _stable_file_bytes(
+            path,
+            blocker="release_calendar_generation_artifact_unsafe",
+            max_bytes=_MAX_RAW_BYTES,
+            exact_mode=0o600,
+        )
+        if len(raw) != size or _sha256_bytes(raw) != expected_sha:
+            raise ReleaseCalendarValidationError(
+                "release_calendar_generation_artifact_hash_mismatch"
+            )
+        artifact_by_path[relative] = row
+        artifact_raw[relative] = raw
+    if files != {"manifest.json", *artifact_by_path}:
+        raise ReleaseCalendarValidationError(
+            "release_calendar_generation_artifact_set_mismatch"
+        )
+    required_fixed = {
+        "plan.json",
+        "capture_manifest.json",
+        "market_open_days.json",
+        "release_calendar.json",
+    }
+    if not required_fixed.issubset(artifact_by_path):
+        raise ReleaseCalendarValidationError(
+            "release_calendar_generation_required_artifact_missing"
+        )
+    compiled = _compile_inputs(
+        plan_path=generation / "plan.json",
+        expected_plan_sha256=str(artifact_by_path["plan.json"]["sha256"]),
+        capture_manifest_path=generation / "capture_manifest.json",
+        expected_capture_manifest_sha256=str(
+            artifact_by_path["capture_manifest.json"]["sha256"]
+        ),
+        raw_root=generation / "raw",
+        market_open_days_path=generation / "market_open_days.json",
+        expected_market_open_days_sha256=str(
+            artifact_by_path["market_open_days.json"]["sha256"]
+        ),
+        exact_mode=0o600,
+    )
+    parent_generation = str(manifest.get("parent_generation_id") or "")
+    parent_pointer = str(manifest.get("parent_pointer_sha256") or "")
+    parent_manifest = str(manifest.get("parent_manifest_sha256") or "")
+    parent_semantic = str(manifest.get("parent_semantic_sha256") or "")
+    if parent_generation:
+        _safe_id(parent_generation, "release_calendar_parent_generation_invalid")
+        for value in (parent_pointer, parent_manifest, parent_semantic):
+            _required_sha256(value, "release_calendar_parent_hash_invalid")
+    elif any(
+        value != EMPTY_POINTER_SHA256
+        for value in (parent_pointer, parent_manifest, parent_semantic)
+    ):
+        raise ReleaseCalendarValidationError("release_calendar_parent_identity_invalid")
+    expected_core = _calendar_core(
+        compiled.content,
+        parent_generation_id=parent_generation,
+        parent_pointer_sha256=parent_pointer,
+        parent_manifest_sha256=parent_manifest,
+        parent_semantic_sha256=parent_semantic,
+    )
+    semantic_sha = _semantic_sha256(expected_core)
+    if manifest.get("semantic_sha256") != semantic_sha:
+        raise ReleaseCalendarValidationError("release_calendar_semantic_sha_mismatch")
+    expected_calendar = {
+        **expected_core,
+        "generation_id": generation_id,
+        "semantic_sha256": semantic_sha,
+    }
+    persisted_calendar = _strict_json(
+        artifact_raw["release_calendar.json"],
+        "release_calendar_artifact_json_invalid",
+    )
+    if persisted_calendar != expected_calendar:
+        raise ReleaseCalendarValidationError("release_calendar_artifact_recompile_mismatch")
+    expected_artifacts = [
+        {
+            "path": path,
+            "sha256": _sha256_bytes(raw),
+            "size_bytes": len(raw),
+        }
+        for path, raw in sorted(artifact_raw.items())
+    ]
+    expected_manifest_payload = {
+        "schema_version": MACRO_RELEASE_CALENDAR_GENERATION_SCHEMA,
+        "generation_id": generation_id,
+        "market": "CN",
+        "registry_version": REGISTRY_VERSION,
+        "registry_sha256": MACRO_REGISTRY_SHA256,
+        "critical_policy_version": CRITICAL_POLICY_VERSION,
+        "critical_policy_sha256": CRITICAL_POLICY_SHA256,
+        "captured_at": compiled.content.captured_at,
+        "parent_generation_id": parent_generation,
+        "parent_pointer_sha256": parent_pointer,
+        "parent_manifest_sha256": parent_manifest,
+        "parent_semantic_sha256": parent_semantic,
+        "semantic_sha256": semantic_sha,
+        "artifacts": expected_artifacts,
+    }
+    if manifest != expected_manifest_payload:
+        raise ReleaseCalendarValidationError("release_calendar_manifest_recompile_mismatch")
+    identity = ReleaseCalendarIdentity(
+        pointer_path=str(root / POINTER_FILENAME),
+        pointer_sha256=pointer_sha256,
+        generation_id=generation_id,
+        generation_path=str(generation),
+        manifest_sha256=expected_manifest,
+        semantic_sha256=semantic_sha,
+        parent_generation_id=parent_generation,
+        parent_pointer_sha256=parent_pointer,
+        parent_manifest_sha256=parent_manifest,
+        parent_semantic_sha256=parent_semantic,
+    )
+    ancestry: tuple[ReleaseCalendarGenerationProof, ...] = ()
+    if parent_generation:
+        parent_evidence = _load_generation(
+            root,
+            generation_id=parent_generation,
+            manifest_sha256=parent_manifest,
+            pointer_sha256=parent_pointer,
+            stack=stack | {generation_id},
+        )
+        if parent_evidence.identity.semantic_sha256 != parent_semantic:
+            raise ReleaseCalendarValidationError(
+                "release_calendar_parent_semantic_sha_mismatch"
+            )
+        blocker = _extension_blocker(
+            parent_evidence,
+            compiled.content,
+            require_change=True,
+        )
+        if blocker:
+            raise ReleaseCalendarValidationError(blocker)
+        ancestry = parent_evidence.validated_ancestry
+    current_proof = ReleaseCalendarGenerationProof(
+        generation_id=generation_id,
+        pointer_sha256=pointer_sha256,
+        manifest_sha256=expected_manifest,
+        semantic_sha256=semantic_sha,
+        plan_sha256=compiled.content.plan_sha256,
+        capture_manifest_sha256=compiled.content.capture_manifest_sha256,
+        market_open_days_sha256=compiled.content.market_open_days_sha256,
+        registry_sha256=MACRO_REGISTRY_SHA256,
+        critical_policy_sha256=CRITICAL_POLICY_SHA256,
+    )
+    evidence = ReleaseCalendarEvidence(
+        identity=identity,
+        registry_version=REGISTRY_VERSION,
+        registry_sha256=MACRO_REGISTRY_SHA256,
+        critical_policy_version=CRITICAL_POLICY_VERSION,
+        critical_policy_sha256=CRITICAL_POLICY_SHA256,
+        plan_sha256=compiled.content.plan_sha256,
+        capture_manifest_sha256=compiled.content.capture_manifest_sha256,
+        market_open_days_sha256=compiled.content.market_open_days_sha256,
+        captured_at=compiled.content.captured_at,
+        open_dates=compiled.content.open_dates,
+        issuer_coverage=compiled.content.issuer_coverage,
+        source_artifacts=compiled.content.source_artifacts,
+        events=compiled.content.events,
+        resolutions=compiled.content.resolutions,
+        validated_ancestry=(*ancestry, current_proof),
+    )
+    return evidence
+
+
+def load_release_calendar(
+    *,
+    canonical_root: str | Path,
+    expected_pointer_sha256: str,
+) -> ReleaseCalendarEvidence:
+    """Load one stable, frozen canonical calendar using an explicit pointer SHA."""
+
+    root = _absolute_path(
+        canonical_root, "release_calendar_canonical_root_path_unsafe"
+    )
+    if not root.is_dir() or root.is_symlink():
+        raise ReleaseCalendarValidationError("release_calendar_canonical_root_unsafe")
+    expected = _required_sha256(
+        expected_pointer_sha256, "release_calendar_expected_pointer_sha_invalid"
+    )
+    before, actual, signature = _pointer_readback(root)
+    if before is None or actual != expected or signature is None:
+        raise ReleaseCalendarCASMismatch("release_calendar_pointer_cas_mismatch")
+    pointer = _parse_pointer(before)
+    evidence = _load_generation(
+        root,
+        generation_id=str(pointer["generation_id"]),
+        manifest_sha256=str(pointer["manifest_sha256"]),
+        pointer_sha256=actual,
+    )
+    if (
+        pointer.get("semantic_sha256") != evidence.identity.semantic_sha256
+        or pointer.get("parent_generation_id")
+        != evidence.identity.parent_generation_id
+        or pointer.get("parent_pointer_sha256")
+        != evidence.identity.parent_pointer_sha256
+        or pointer.get("parent_manifest_sha256")
+        != evidence.identity.parent_manifest_sha256
+        or pointer.get("parent_semantic_sha256")
+        != evidence.identity.parent_semantic_sha256
+    ):
+        raise ReleaseCalendarValidationError("release_calendar_pointer_binding_mismatch")
+    after, after_sha, after_signature = _pointer_readback(root)
+    if after != before or after_sha != actual or after_signature != signature:
+        raise ReleaseCalendarValidationError("release_calendar_pointer_changed_during_read")
+    return evidence
+
+
+def release_calendar_pointer_sha256(*, canonical_root: str | Path) -> str:
+    """Capture and validate the current pointer byte identity without fallback."""
+
+    root = _absolute_path(
+        canonical_root, "release_calendar_canonical_root_path_unsafe"
+    )
+    if not root.is_dir() or root.is_symlink():
+        raise ReleaseCalendarValidationError("release_calendar_canonical_root_unsafe")
+    raw, digest, signature = _pointer_readback(root)
+    if raw is None or signature is None:
+        raise ReleaseCalendarValidationError("release_calendar_pointer_missing")
+    _parse_pointer(raw)
+    recheck, recheck_digest, recheck_signature = _pointer_readback(root)
+    if recheck != raw or recheck_digest != digest or recheck_signature != signature:
+        raise ReleaseCalendarValidationError("release_calendar_pointer_changed_during_read")
+    return digest
+
+
+def is_validated_release_calendar_generation(
+    evidence: ReleaseCalendarEvidence,
+    *,
+    generation_id: str,
+    pointer_sha256: str,
+    manifest_sha256: str,
+    semantic_sha256: str,
+    plan_sha256: str,
+    capture_manifest_sha256: str,
+    market_open_days_sha256: str,
+    registry_sha256: str,
+    critical_policy_sha256: str,
+) -> bool:
+    """Return whether an exact bound identity is current or a validated ancestor."""
+
+    candidate = ReleaseCalendarGenerationProof(
+        generation_id=str(generation_id),
+        pointer_sha256=str(pointer_sha256),
+        manifest_sha256=str(manifest_sha256),
+        semantic_sha256=str(semantic_sha256),
+        plan_sha256=str(plan_sha256),
+        capture_manifest_sha256=str(capture_manifest_sha256),
+        market_open_days_sha256=str(market_open_days_sha256),
+        registry_sha256=str(registry_sha256),
+        critical_policy_sha256=str(critical_policy_sha256),
+    )
+    return candidate in evidence.validated_ancestry
+
+
+@contextmanager
+def release_calendar_writer_lock(
+    *, canonical_root: str | Path
+) -> Iterator[None]:
+    """Expose the non-reentrant lock for ordered cross-store transactions.
+
+    ``publish_release_calendar`` acquires this lock itself and must not be
+    called from inside this context.
+    """
+
+    root = _ensure_private_root(canonical_root)
+    with _writer_lock(root):
+        yield
+
+
+def publish_release_calendar(
+    *,
+    plan_path: str | Path,
+    expected_plan_sha256: str,
+    capture_manifest_path: str | Path,
+    expected_capture_manifest_sha256: str,
+    raw_root: str | Path,
+    market_open_days_path: str | Path,
+    expected_market_open_days_sha256: str,
+    canonical_root: str | Path,
+    run_id: str,
+    expected_pointer_sha256: str,
+) -> ReleaseCalendarPublishResult:
+    """Validate, copy and CAS-publish one immutable release-calendar generation."""
+
+    generation_id = _safe_id(run_id, "release_calendar_run_id_invalid")
+    expected_pointer = _expected_pointer(expected_pointer_sha256)
+    compiled = _compile_inputs(
+        plan_path=plan_path,
+        expected_plan_sha256=expected_plan_sha256,
+        capture_manifest_path=capture_manifest_path,
+        expected_capture_manifest_sha256=expected_capture_manifest_sha256,
+        raw_root=raw_root,
+        market_open_days_path=market_open_days_path,
+        expected_market_open_days_sha256=expected_market_open_days_sha256,
+    )
+    root = _ensure_private_root(canonical_root)
+    with _writer_lock(root):
+        pointer_raw, current_pointer_sha, pointer_signature = _pointer_readback(root)
+        current_pointer = _parse_pointer(pointer_raw) if pointer_raw is not None else None
+        current: ReleaseCalendarEvidence | None = None
+        if current_pointer is not None:
+            current = _load_generation(
+                root,
+                generation_id=str(current_pointer["generation_id"]),
+                manifest_sha256=str(current_pointer["manifest_sha256"]),
+                pointer_sha256=current_pointer_sha,
+            )
+        if current is not None and current.identity.generation_id == generation_id:
+            allowed_expectations = {
+                current_pointer_sha,
+                current.identity.parent_pointer_sha256,
+            }
+            if expected_pointer not in allowed_expectations:
+                raise ReleaseCalendarCASMismatch(
+                    "release_calendar_pointer_cas_mismatch"
+                )
+            if _content_from_evidence(current) != compiled.content:
+                raise ReleaseCalendarValidationError(
+                    "release_calendar_generation_no_clobber"
+                )
+            _recheck_inputs(compiled)
+            return ReleaseCalendarPublishResult(
+                identity=current.identity,
+                evidence=current,
+                idempotent=True,
+            )
+        if current_pointer_sha != expected_pointer:
+            raise ReleaseCalendarCASMismatch("release_calendar_pointer_cas_mismatch")
+        if current is not None:
+            blocker = _extension_blocker(current, compiled.content, require_change=True)
+            if blocker:
+                raise ReleaseCalendarValidationError(blocker)
+        payloads, manifest_raw, semantic_sha, _manifest = _generation_payloads(
+            compiled,
+            run_id=generation_id,
+            parent=current,
+        )
+        final = _write_generation(
+            root,
+            run_id=generation_id,
+            payloads=payloads,
+            manifest_raw=manifest_raw,
+        )
+        del final
+        _recheck_inputs(compiled)
+        check_raw, check_sha, check_signature = _pointer_readback(root)
+        if (
+            check_raw != pointer_raw
+            or check_sha != current_pointer_sha
+            or check_signature != pointer_signature
+        ):
+            raise ReleaseCalendarCASMismatch("release_calendar_pointer_cas_mismatch")
+        (
+            parent_generation,
+            parent_pointer,
+            parent_manifest,
+            parent_semantic,
+        ) = _parent_fields(current)
+        manifest_sha = _sha256_bytes(manifest_raw)
+        pointer_payload = {
+            "schema_version": MACRO_RELEASE_CALENDAR_POINTER_SCHEMA,
+            "generation_id": generation_id,
+            "manifest_sha256": manifest_sha,
+            "semantic_sha256": semantic_sha,
+            "parent_generation_id": parent_generation,
+            "parent_pointer_sha256": parent_pointer,
+            "parent_manifest_sha256": parent_manifest,
+            "parent_semantic_sha256": parent_semantic,
+        }
+        new_pointer_raw = _canonical_json_bytes(pointer_payload, newline=True)
+        new_pointer_sha = _atomic_pointer_write(root, new_pointer_raw)
+        evidence = _load_generation(
+            root,
+            generation_id=generation_id,
+            manifest_sha256=manifest_sha,
+            pointer_sha256=new_pointer_sha,
+        )
+        return ReleaseCalendarPublishResult(
+            identity=evidence.identity,
+            evidence=evidence,
+            idempotent=False,
+        )
+
+
+def _session_date(value: Any, blocker: str) -> str:
+    text = str(value or "")
+    try:
+        parsed = (
+            datetime.strptime(text, "%Y%m%d").date()
+            if _COMPACT_DATE_RE.fullmatch(text)
+            else date.fromisoformat(text)
+        )
+    except ValueError as exc:
+        raise ReleaseCalendarValidationError(blocker) from exc
+    return parsed.isoformat()
+
+
+def evaluate_session_lag(
+    open_dates_or_evidence: Sequence[str] | ReleaseCalendarEvidence,
+    *,
+    macro_logical_date: str,
+    target_session_date: str,
+    decision_cutoff_at: str,
+    max_session_lag: int = 2,
+) -> SessionLagEvaluation:
+    """Evaluate the exact session index distance in one pinned calendar."""
+
+    open_dates = (
+        open_dates_or_evidence.open_dates
+        if isinstance(open_dates_or_evidence, ReleaseCalendarEvidence)
+        else tuple(open_dates_or_evidence)
+    )
+    macro_date = _session_date(
+        macro_logical_date, "release_calendar_macro_logical_date_invalid"
+    )
+    target_date = _session_date(
+        target_session_date, "release_calendar_target_session_date_invalid"
+    )
+    if isinstance(max_session_lag, bool) or max_session_lag not in {0, 1, 2}:
+        raise ReleaseCalendarValidationError(
+            "release_calendar_max_session_lag_invalid"
+        )
+    cutoff = parse_timestamp(
+        decision_cutoff_at, field_name="decision_cutoff_at"
+    )
+    blockers: list[str] = []
+    if cutoff.astimezone(_SHANGHAI).date().isoformat() != target_date:
+        blockers.append("macro_release_target_cutoff_session_mismatch")
+    index = {value: position for position, value in enumerate(open_dates)}
+    if macro_date not in index:
+        blockers.append("macro_release_macro_logical_date_missing_from_calendar")
+    if target_date not in index:
+        blockers.append("macro_release_target_session_missing_from_calendar")
+    lag: int | None = None
+    if macro_date in index and target_date in index:
+        lag = index[target_date] - index[macro_date]
+        if lag < 0:
+            blockers.append("macro_release_macro_logical_date_in_future")
+        elif lag > 2:
+            blockers.append("macro_release_session_lag_above_two")
+        elif lag > max_session_lag:
+            blockers.append("macro_release_session_lag_above_configured_max")
+    return SessionLagEvaluation(
+        ready=not blockers,
+        session_lag=lag,
+        macro_logical_date=macro_date,
+        target_session_date=target_date,
+        blockers=tuple(blockers),
+    )
+
+
+def _schedule_intersects(
+    kind: str,
+    value: str,
+    *,
+    start_exclusive: datetime,
+    end_inclusive: datetime,
+) -> bool:
+    if kind == "timestamp":
+        clock = parse_timestamp(value, field_name="scheduled_at")
+        return start_exclusive < clock <= end_inclusive
+    if kind != "date":
+        raise ReleaseCalendarValidationError(
+            "release_calendar_schedule_kind_invalid"
+        )
+    day = date.fromisoformat(value)
+    day_start = datetime.combine(day, time.min, tzinfo=_SHANGHAI).astimezone(_UTC)
+    next_day = datetime.combine(
+        date.fromordinal(day.toordinal() + 1),
+        time.min,
+        tzinfo=_SHANGHAI,
+    ).astimezone(_UTC)
+    return next_day > start_exclusive and day_start <= end_inclusive
+
+
+def _clock_in_window(
+    value: str,
+    *,
+    start_exclusive: datetime,
+    end_inclusive: datetime,
+) -> bool:
+    if not value:
+        return False
+    clock = parse_timestamp(value, field_name="event_clock")
+    return start_exclusive < clock <= end_inclusive
+
+
+def evaluate_critical_event_gap(
+    evidence: ReleaseCalendarEvidence,
+    *,
+    macro_logical_date: str,
+    decision_cutoff_at: str,
+    indicator_ids: Sequence[str] = CRITICAL_INDICATOR_IDS,
+) -> CriticalEventGapEvaluation:
+    """Evaluate exact critical releases in ``(macro close, cutoff]``.
+
+    Timestamp boundaries are exact.  A date-only local schedule is treated as
+    the whole Asia/Shanghai civil day and therefore blocks whenever that day
+    intersects the window.  A relevant critical event always blocks, even if
+    its artifacts and resolutions were captured before the cutoff and the
+    Macro logical date equals the target session.  Weekends are deliberately
+    not removed.
+    """
+
+    macro_date = date.fromisoformat(
+        _session_date(
+            macro_logical_date,
+            "release_calendar_macro_logical_date_invalid",
+        )
+    )
+    cutoff = parse_timestamp(decision_cutoff_at, field_name="decision_cutoff_at")
+    window_start = datetime.combine(
+        macro_date, time(15, 0), tzinfo=_SHANGHAI
+    ).astimezone(_UTC)
+    blockers: list[str] = []
+    if cutoff < window_start:
+        blockers.append("macro_release_decision_cutoff_before_macro_close")
+    selected = tuple(str(item) for item in indicator_ids)
+    unknown = sorted(set(selected) - set(_POLICY_BY_ID))
+    if unknown:
+        blockers.extend(
+            f"macro_release_unknown_critical_indicator:{item}" for item in unknown
+        )
+    selected_set = set(selected) & set(_POLICY_BY_ID)
+    required_issuers = {
+        _POLICY_BY_ID[item].evidence_issuer for item in selected_set
+    }
+    coverage = {item.issuer: item for item in evidence.issuer_coverage}
+    for issuer in sorted(required_issuers):
+        item = coverage.get(issuer)
+        if item is None:
+            blockers.append(f"macro_release_issuer_coverage_missing:{issuer}")
+        elif parse_timestamp(item.through_at, field_name="through") < cutoff:
+            blockers.append(f"macro_release_issuer_coverage_stale:{issuer}")
+
+    source_by_id = {item.source_id: item for item in evidence.source_artifacts}
+    resolution_by_id = {item.resolution_id: item for item in evidence.resolutions}
+    event_by_id = {item.event_id: item for item in evidence.events}
+    superseded_by: dict[str, str] = {}
+    for event in evidence.events:
+        if not event.supersedes_event_id:
+            continue
+        source_clocks = [
+            parse_timestamp(source_by_id[source_id].captured_at, field_name="captured_at")
+            for source_id in event.source_ids
+        ]
+        if source_clocks and max(source_clocks) <= cutoff:
+            superseded_by[event.supersedes_event_id] = event.event_id
+    terminals: list[ReleaseEvent] = []
+    for event in evidence.events:
+        if event.supersedes_event_id:
+            continue
+        terminal = event
+        visited = {terminal.event_id}
+        while terminal.event_id in superseded_by:
+            next_id = superseded_by[terminal.event_id]
+            if next_id in visited:
+                blockers.append("macro_release_event_supersedes_cycle")
+                break
+            visited.add(next_id)
+            terminal = event_by_id[next_id]
+        terminals.append(terminal)
+
+    relevant: list[str] = []
+    resolved: list[str] = []
+    blocking_ids: list[str] = []
+    for event in terminals:
+        if not (set(event.indicator_ids) & selected_set):
+            continue
+        schedule_kind = event.schedule_kind
+        schedule_value = event.scheduled_at
+        if event.status == "rescheduled":
+            schedule_kind = event.reschedule_kind
+            schedule_value = event.rescheduled_at
+        scheduled_in_window = _schedule_intersects(
+            schedule_kind,
+            schedule_value,
+            start_exclusive=window_start,
+            end_inclusive=cutoff,
+        )
+        actual_in_window = _clock_in_window(
+            event.actual_at,
+            start_exclusive=window_start,
+            end_inclusive=cutoff,
+        )
+        cancelled_in_window = _clock_in_window(
+            event.cancelled_at,
+            start_exclusive=window_start,
+            end_inclusive=cutoff,
+        )
+        if event.status == "released":
+            actual_clock = parse_timestamp(event.actual_at, field_name="actual_at")
+            is_relevant = actual_in_window or (
+                actual_clock > cutoff and scheduled_in_window
+            )
+        elif event.status == "cancelled":
+            cancelled_clock = parse_timestamp(
+                event.cancelled_at, field_name="cancelled_at"
+            )
+            is_relevant = cancelled_in_window or (
+                cancelled_clock > window_start and scheduled_in_window
+            )
+        else:
+            is_relevant = scheduled_in_window
+        if not is_relevant:
+            continue
+        relevant.append(event.event_id)
+        event_blockers: list[str] = [
+            f"macro_release_critical_event_in_gap:{event.event_id}"
+        ]
+        event_sources = [source_by_id[source_id] for source_id in event.source_ids]
+        if any(
+            parse_timestamp(source.captured_at, field_name="captured_at") > cutoff
+            for source in event_sources
+        ):
+            event_blockers.append(
+                f"macro_release_critical_event_artifact_after_cutoff:{event.event_id}"
+            )
+        if event.status in {"scheduled", "rescheduled"}:
+            event_blockers.append(
+                f"macro_release_critical_event_unresolved:{event.event_id}"
+            )
+        elif event.status == "released":
+            actual_clock = parse_timestamp(event.actual_at, field_name="actual_at")
+            if actual_clock > cutoff:
+                event_blockers.append(
+                    f"macro_release_critical_event_actual_after_cutoff:{event.event_id}"
+                )
+            event_resolutions = [
+                resolution_by_id.get(resolution_id)
+                for resolution_id in event.resolution_ids
+            ]
+            if any(item is None for item in event_resolutions) or tuple(
+                item.indicator_id for item in event_resolutions if item is not None
+            ) != event.indicator_ids:
+                event_blockers.append(
+                    f"macro_release_critical_event_resolution_incomplete:{event.event_id}"
+                )
+            for resolution in event_resolutions:
+                if resolution is None:
+                    continue
+                if parse_timestamp(
+                    resolution.observation_available_at,
+                    field_name="observation_available_at",
+                ) > cutoff:
+                    event_blockers.append(
+                        "macro_release_critical_event_resolution_after_cutoff:"
+                        f"{event.event_id}:{resolution.indicator_id}"
+                    )
+                if any(
+                    parse_timestamp(
+                        source_by_id[source_id].captured_at,
+                        field_name="captured_at",
+                    )
+                    > cutoff
+                    for source_id in resolution.source_ids
+                ):
+                    event_blockers.append(
+                        "macro_release_critical_event_resolution_artifact_after_cutoff:"
+                        f"{event.event_id}:{resolution.indicator_id}"
+                    )
+        if event_blockers:
+            blocking_ids.append(event.event_id)
+            blockers.extend(event_blockers)
+        else:
+            resolved.append(event.event_id)
+    unique_blockers = tuple(dict.fromkeys(blockers))
+    return CriticalEventGapEvaluation(
+        ready=not unique_blockers,
+        window_start_exclusive=window_start.isoformat(),
+        window_end_inclusive=cutoff.isoformat(),
+        relevant_event_ids=tuple(relevant),
+        resolved_event_ids=tuple(resolved),
+        blocking_event_ids=tuple(blocking_ids),
+        blockers=unique_blockers,
+    )
+
+
+def evaluate_release_readiness(
+    evidence: ReleaseCalendarEvidence,
+    *,
+    macro_logical_date: str,
+    target_session_date: str,
+    decision_cutoff_at: str,
+    max_session_lag: int = 2,
+    indicator_ids: Sequence[str] = CRITICAL_INDICATOR_IDS,
+) -> ReleaseReadinessEvaluation:
+    """Combine session-lag and exact critical-event evidence fail closed."""
+
+    lag = evaluate_session_lag(
+        evidence,
+        macro_logical_date=macro_logical_date,
+        target_session_date=target_session_date,
+        decision_cutoff_at=decision_cutoff_at,
+        max_session_lag=max_session_lag,
+    )
+    gap = evaluate_critical_event_gap(
+        evidence,
+        macro_logical_date=macro_logical_date,
+        decision_cutoff_at=decision_cutoff_at,
+        indicator_ids=indicator_ids,
+    )
+    blockers = tuple(dict.fromkeys((*lag.blockers, *gap.blockers)))
+    return ReleaseReadinessEvaluation(
+        ready=not blockers,
+        session_lag=lag,
+        critical_event_gap=gap,
+        blockers=blockers,
+    )
+
+
+__all__ = [
+    "CRITICAL_EVENT_FAMILIES",
+    "CRITICAL_INDICATOR_IDS",
+    "CRITICAL_INDICATOR_POLICY",
+    "CRITICAL_POLICY_SHA256",
+    "CRITICAL_POLICY_VERSION",
+    "EMPTY_POINTER_SHA256",
+    "MACRO_REGISTRY_SHA256",
+    "MACRO_RELEASE_CALENDAR_CAPTURE_SCHEMA",
+    "MACRO_RELEASE_CALENDAR_GENERATION_SCHEMA",
+    "MACRO_RELEASE_CALENDAR_PLAN_SCHEMA",
+    "MACRO_RELEASE_CALENDAR_POINTER_SCHEMA",
+    "MACRO_RELEASE_CALENDAR_SCHEMA",
+    "MARKET_OPEN_DAYS_SCHEMA",
+    "CriticalEventGapEvaluation",
+    "CriticalIndicatorRule",
+    "IssuerCoverage",
+    "MacroReleaseCalendarError",
+    "ReleaseCalendarCASMismatch",
+    "ReleaseCalendarEvidence",
+    "ReleaseCalendarGenerationProof",
+    "ReleaseCalendarIdentity",
+    "ReleaseCalendarPublishResult",
+    "ReleaseCalendarValidationError",
+    "ReleaseEvent",
+    "ReleaseReadinessEvaluation",
+    "ReleaseResolution",
+    "SessionLagEvaluation",
+    "SourceArtifactRef",
+    "evaluate_critical_event_gap",
+    "evaluate_release_readiness",
+    "evaluate_session_lag",
+    "is_validated_release_calendar_generation",
+    "load_release_calendar",
+    "publish_release_calendar",
+    "release_calendar_pointer_sha256",
+    "release_calendar_writer_lock",
+]

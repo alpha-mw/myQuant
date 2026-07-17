@@ -17,6 +17,10 @@ from quant_investor.market.read_result import MarketDataReadResult
 from quant_investor.market.runtime_profile import MarketRuntimeProfiler
 from quant_investor.regime.types import REGIME_RANGE_HIGH_VOL, REGIME_TREND_DOWN
 from tests.helpers.macro_fixture import make_v15_controls
+from tests.helpers.macro_readiness_fixture import (
+    macro_release_binding,
+    make_macro_readiness_runtime,
+)
 
 
 class FakeReader:
@@ -91,6 +95,10 @@ def _frame(symbol: str, closes: list[float]) -> pd.DataFrame:
 
 
 def _patch_branch_readiness(monkeypatch: pytest.MonkeyPatch) -> None:
+    macro_runtime = make_macro_readiness_runtime(
+        macro_logical_date="2026-06-25",
+        target_session_date="2026-06-25",
+    )
     macro_record = {
         "trade_date": "2026-06-25",
         "macro_score": 0.2,
@@ -112,9 +120,14 @@ def _patch_branch_readiness(monkeypatch: pytest.MonkeyPatch) -> None:
         "production_eligible": True,
         "v15_controls": make_v15_controls(),
     }
+    macro_manifest.update(macro_release_binding(macro_runtime))
     monkeypatch.setattr(
         "quant_investor.market.dag.context.load_macro_record",
         lambda **kwargs: (dict(macro_record), dict(macro_manifest)),
+    )
+    monkeypatch.setattr(
+        "quant_investor.market.dag.context.freeze_macro_readiness_runtime",
+        lambda **kwargs: macro_runtime,
     )
     readiness = SimpleNamespace(status="ok")
     report = SimpleNamespace(
@@ -232,6 +245,12 @@ def test_canonical_macro_is_loaded_once_and_drives_macro_verdict(
         }
         for index in (1, 2)
     ]
+    macro_runtime = make_macro_readiness_runtime(
+        macro_logical_date="2026-06-25",
+        target_session_date="2026-06-25",
+    )
+    for manifest in manifests:
+        manifest.update(macro_release_binding(macro_runtime))
     load_calls = 0
     pinned_inputs: list[tuple[object, object]] = []
 
@@ -257,6 +276,11 @@ def test_canonical_macro_is_loaded_once_and_drives_macro_verdict(
         )
 
     monkeypatch.setattr(context_module, "load_macro_record", load_once)
+    monkeypatch.setattr(
+        context_module,
+        "freeze_macro_readiness_runtime",
+        lambda **kwargs: macro_runtime,
+    )
     monkeypatch.setattr(
         context_module,
         "assess_branch_data_readiness",
@@ -287,11 +311,16 @@ def test_canonical_macro_is_loaded_once_and_drives_macro_verdict(
         ]
         assert state.market_snapshot["liquidity_score"] == 0.2
         assert state.macro_verdict.metadata["decision_authorized"] is True
-        assert state.macro_verdict.metadata["canonical_macro_generation"] == {
+        expected_generation = {
             "generation_id": f"macro-g{index}",
             "parquet_sha256": str(index) * 64,
             "generation_manifest_sha256": chr(96 + index) * 64,
         }
+        expected_generation.update(macro_release_binding(macro_runtime))
+        assert (
+            state.macro_verdict.metadata["canonical_macro_generation"]
+            == expected_generation
+        )
         assert state.global_context.metadata["canonical_macro_generation"] == (
             state.macro_verdict.metadata["canonical_macro_generation"]
         )

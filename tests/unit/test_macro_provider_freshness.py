@@ -192,7 +192,7 @@ def _refresh(
     )
 
 
-def test_provider_io_completion_crossing_capture_window_fails_closed(
+def test_retired_live_writer_fails_before_provider_io(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -214,7 +214,7 @@ def test_provider_io_completion_crossing_capture_window_fails_closed(
 
     with pytest.raises(
         macro_mart.MacroMartPromotionError,
-        match="macro_capture_window_expired",
+        match="macro_authoritative_stage_promotion_required",
     ):
         _refresh(macro_root, catalog_path, pointer_path)
 
@@ -294,7 +294,7 @@ def test_current_cutoff_requires_june_pmi_under_endpoint_lag_contract(
         )
 
 
-def test_capture_window_is_revalidated_immediately_before_catalog_switch(
+def test_retired_live_writer_fails_before_catalog_switch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -344,6 +344,6 @@ def test_capture_window_is_revalidated_immediately_before_catalog_switch(
 
     with pytest.raises(
         macro_mart.MacroMartPromotionError,
-        match="macro_capture_window_expired",
+        match="macro_authoritative_stage_promotion_required",
     ):
         _refresh(macro_root, catalog_path, pointer_path)

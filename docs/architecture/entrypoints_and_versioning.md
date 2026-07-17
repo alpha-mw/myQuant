@@ -13,7 +13,8 @@
 - Storage 验证入口：`quant-investor market storage-validate --market CN` 校验 Parquet canonical；`quant-investor market storage-validate-clean --market CN` 只读校验 clean/readiness lineage，不触发补数、provider 或写入。
 - CN Fundamental 隔离重建入口：`quant-investor market fundamental-maintain --market CN --allow-live --authoritative-full-rebuild ...`；该入口只在显式授权后调用 provider，并把 accepted raw、逐请求结果和派生表写入独立 staging/checkpoint。v3 权威 scope 同时绑定 canonical bar 文件集合 SHA、逐证券首末交易边界和固定审计策略；binding 变化必须使用新 checkpoint root。
 - CN Fundamental 晋升入口：`quant-investor market fundamental-promote --staging-root <path> --expected-pointer-sha256 <sha>`；该入口从 v3 checkpoint 重放 raw→derived、财务成熟资格期与 canonical-bar 日频覆盖，验证 exact-byte provenance，并以 CAS 推进 `_fundamental_latest.json`。
-- CN Macro 正式补数入口：`quant-investor market macro-maintain --authoritative-refresh ... --expected-macro-observations-pointer-sha256 <sha> --allow-live` 只写隔离 staging，并把 strict canonical observations generation、ready MacroSnapshot、v15 control projection、exact bars 与 provider evidence 逐层 hash-bind；`quant-investor market macro-promote --staging-root <path> --expected-catalog-sha256 <sha>` 独立重验后通过有序 writer locks、catalog/market-pointer/observation-pointer 三 CAS 与 journal 推进 strict catalog。production schema 自报不构成证据；必须重算 official/local row scope、parent lineage、evidence roles 和逐行 mapping，并且同时满足 `period_end <= logical as_of` 与 `available_at <= decision_cutoff_at`。旧 `macro-refresh` 不再是 CLI 入口，v14 mart 不能重标为 v15。`--allow-tushare-fallback` 默认关闭且只适用于已分类的 NBS 瞬态传输故障；schedule 只有在本身含精确数据维护授权、三 SHA CAS 且无分析/交易副作用时才可运行该链。
+- CN Macro observation/release-calendar 入口：`macro-release-calendar-publish` 以 expected-pointer CAS 发布只允许 prefix extension 的 immutable 官方日历；`macro-observation-official-refresh` 以完整官方 bundle 重建 36 条官方行并保留最新三条连续 local 行；`macro-local-observation-roll` 对同一 exact 39-row/13-indicator/three-history scope 做 local catch-up、滚动或修正。两个 observation projection 命令都绑定显式 `market-open-days.v1` 路径、bytes SHA、有序 CN 开市日与父代 lineage。
+- CN Macro 正式补数入口：`quant-investor market macro-maintain --authoritative-refresh ... --expected-macro-observations-pointer-sha256 <sha> --expected-macro-release-calendar-pointer-sha256 <sha> --allow-live` 只写隔离 staging，并把 catalog、market pointer、canonical observations、release calendar、ready MacroSnapshot、v15 control projection、exact bars 与 provider evidence 逐层 hash-bind；`quant-investor market macro-promote --staging-root <path> --expected-catalog-sha256 <sha>` 独立重验后按 market writer -> catalog writer -> Macro-observation writer -> release-calendar writer 顺序持锁，对四个 canonical identities 做 CAS/readback，再以 journal 推进 strict catalog。production schema 自报不构成证据；必须重算 official/local row scope、parent lineage、evidence roles 和逐行 mapping，并且同时满足 `period_end <= logical as_of` 与 `available_at <= decision_cutoff_at`。旧 `macro-refresh` 不再是 CLI 入口，legacy one-step live writer 固定 fail closed 为 `macro_authoritative_stage_promotion_required`，v14 mart 不能重标为 v15。`--allow-tushare-fallback` 默认关闭且只适用于已分类的 NBS 瞬态传输故障；schedule 只有在本身含精确数据维护授权、四 identity CAS 且无分析/交易副作用时才可运行该链。
 - v14 Intelligence 残留迁移入口：`scripts/retire_event_score_catalog_residual.py`；只在显式 catalog/market-pointer/source-table 三 SHA、新 run id、`--apply` 和静态确认 token 齐全时，把 `event_daily_score` 切到不含 `intelligence_score` 的不可变 generation。旧 Parquet 保持原字节，迁移使用共享 catalog lock、durable WAL、CAS、fresh strict-reader readback 与回滚；日常 schedule 不运行该入口。
 
 ## Workspace Entrypoints
@@ -33,6 +34,21 @@
 - `REPORT_PROTOCOL_VERSION = "report-protocol.v15.three-branch"`
 - `CALIBRATION_SCHEMA_VERSION = "2026-07-16.calibration.v15.three-branch"`
 - `AGENT_SCHEMA_VERSION = "2026-07-16.agent.v15.three-branch"`
+
+## Runtime Readiness Semantics
+
+每个 run 只固定一次 immutable Macro release-calendar generation，并构造一个
+hash-bound `MacroReadinessEvidence`；Macro assessment、三分支 readiness 与
+`v15_run_readiness` 复用同一证据和 cutoff。Macro logical date 可在 pinned CN
+open-day calendar 上落后目标 0–2 个 session，但任何 positive-lag gap 从
+logical-date 上海收盘到 decision cutoff 内只要出现 critical official event 就
+阻断；lag 0 仍要求 pinned evidence 与完整 resolution。超过两个 session 或任何
+calendar identity 漂移也阻断。
+
+`branch_data_ready` green 只表示 `quant`、`fundamental`、`macro` 三个 canonical
+branch 通过。Factor governance 独立评估；hash-bound human authorization receipt
+也是新风险的必要但不充分条件，不能覆盖任何 data、Factor、candidate 或 portfolio
+blocker，也不会自动令 `new_risk_authorized=true`。
 
 ## Current Web Result Envelope
 

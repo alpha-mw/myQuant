@@ -24,6 +24,10 @@ from quant_investor.market.macro_mart import (
 )
 from quant_investor.market.market_data_store import MarketDataStore
 from tests.helpers.macro_fixture import bind_macro_generation
+from tests.helpers.macro_readiness_fixture import (
+    macro_release_binding,
+    make_macro_readiness_runtime,
+)
 
 
 def _sha256(path: Path) -> str:
@@ -569,6 +573,10 @@ def test_macro_readiness_accepts_official_first_primary_source() -> None:
         **_row(source="official_first_mixed"),
         "source_priority": "official_primary",
     }
+    runtime = make_macro_readiness_runtime(
+        macro_logical_date="2024-05-10",
+        target_session_date="2024-05-10",
+    )
     readiness = assess_macro_readiness(
         macro_record=record,
         manifest={
@@ -578,8 +586,11 @@ def test_macro_readiness_accepts_official_first_primary_source() -> None:
             "provider_fallback_used": False,
             "production_eligible": True,
             "generation_id": "g-official",
+            **macro_release_binding(runtime),
         },
         as_of="2024-05-10",
+        decision_cutoff_at=runtime.decision_cutoff_at,
+        macro_readiness_evidence=runtime.evidence,
     )
 
     assert readiness.status == STATUS_PASS
@@ -590,6 +601,10 @@ def test_macro_readiness_accepts_official_first_primary_source() -> None:
 
 def test_macro_readiness_warns_for_explicit_provider_fallback() -> None:
     record = _row()
+    runtime = make_macro_readiness_runtime(
+        macro_logical_date="2024-05-10",
+        target_session_date="2024-05-10",
+    )
     readiness = assess_macro_readiness(
         macro_record=record,
         manifest={
@@ -599,8 +614,11 @@ def test_macro_readiness_warns_for_explicit_provider_fallback() -> None:
             "provider_fallback_used": True,
             "production_eligible": True,
             "generation_id": "g-fallback",
+            **macro_release_binding(runtime),
         },
         as_of="2024-05-10",
+        decision_cutoff_at=runtime.decision_cutoff_at,
+        macro_readiness_evidence=runtime.evidence,
     )
 
     assert readiness.status == STATUS_WARN

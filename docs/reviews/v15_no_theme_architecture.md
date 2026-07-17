@@ -13,9 +13,10 @@ Status: approved for isolated implementation with the constraints below.
 - Use `market macro-maintain --authoritative-refresh` as the live-explicit
   staging entry and `market macro-promote` as the sole authoritative catalog
   publisher. The stage must bind a strict canonical Macro-observations pointer,
-  a ready v15 snapshot and the exact market volatility input; promotion keeps
-  ordered catalog/observation locks, catalog/market/observation triple CAS,
-  journal, readback and recovery rules.
+  a ready v15 snapshot, the immutable Macro release calendar and the exact
+  market volatility input; promotion keeps the fixed market/catalog/
+  observation/release-calendar lock order, four-root CAS, journal, readback
+  and recovery rules.
 - Switch package/report/Factor/Dashboard contracts together.  A v14 or v2
   artifact may remain historical evidence but cannot be relabelled as v15.
 - Delete active Theme producers and consumers only after their dependencies

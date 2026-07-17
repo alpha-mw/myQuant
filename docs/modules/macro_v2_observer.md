@@ -108,6 +108,42 @@ scope artifact mtime 和实际 part mtime 的最大值并向上舍入；任何�
 `local_coverage_manifest_sha256`、`local_scope_artifact_sha256`、
 `local_coverage_contract_sha256` 和 `local_effective_available_at` 保留单日 binding。
 
+Bootstrap/legacy append 之后的 production exact-projection 链固定维持 39 条、
+13 个指标、每个指标三期。完整官方 bundle 更新使用
+`macro-observation-official-refresh`，它重建 36 条官方 observation、保留最新三个
+连续的 local session，并回读父代指针与内容集合；local catch-up、next-date roll
+或 same-date correction 使用 `macro-local-observation-roll`，只替换三条 local
+历史窗口中需要变化的行：
+
+```bash
+quant-investor market macro-observation-official-refresh \
+  --official-manifest <bundle>/normalization_manifest.json ...
+
+quant-investor market macro-local-observation-roll \
+  --snapshot-manifest <snapshot_manifest> ...
+```
+
+两个命令都要求显式 target/cutoff、input SHA、expected pointer CAS，并把
+`market-open-days.v1` 路径、bytes SHA 与完整有序 CN 开市日列表绑定进
+generation；不能用周末推断或运行时联网日历替代。旧
+`macro-local-observation-publish` 只保留原 append 链语义，不能代替 exact-scope
+roll。
+
+### Immutable release calendar 与 Macro gap
+
+`data/parquet/cn/macro_release_calendar` 是独立的不可变 generation store。
+`macro-release-calendar-publish` 必须显式绑定 plan、capture manifest、raw issuer
+bytes、`market-open-days.v1`、registry 和 code-owned critical policy，并以
+`--expected-pointer-sha256` 推进 `_latest.json`。后续 generation 只能做父代的
+prefix extension；改写既有 event、resolution、open date 或 issuer coverage
+history 一律拒绝。
+
+Macro logical date 可以比目标 session 落后 0、1 或 2 个 pinned CN 开市日，但
+positive-lag gap 只在从 logical date 上海 15:00 收盘到 decision cutoff 内没有
+critical official event 时通过。该 gap 内任何 critical event 都阻断，已发布且已
+解析完成也不例外；lag 0 仍要求 pinned evidence 和完整 resolution。超过两个
+session、日历身份不匹配或 issuer coverage 不足同样 fail closed。
+
 ### `macro_daily`：市场级 catalog 是唯一生产真相
 
 生产读取由 `quant_investor.market.macro_mart.read_macro_mart()` 执行，并且必须同时
@@ -129,14 +165,17 @@ scope artifact mtime 和实际 part mtime 的最大值并向上舍入；任何�
    `macro_score`、`liquidity_score` 与 `policy_signal` 不再从该 bundle 取值；
    三者只来自下述 canonical observation generation；
 9. `primary_provenance` 必须绑定 provider bundle、canonical market pointer、
-   canonical observations generation、MacroSnapshot、v15 controls、逐个行情
+   canonical observations generation、immutable release-calendar generation、
+   MacroSnapshot、v15 controls、逐个行情
    分区、输出 frame 和 Parquet 的 SHA-256，并使用
    `cn-macro-controls-projection.v15.v1`；该快照只供 capture 后的下一次决策，固定
    `historical_replay_eligible=false`；
-10. catalog 发布必须持有有序 writer locks，同时对 catalog、market pointer
-    与 Macro-observations pointer 执行 exact-byte/文件身份 CAS。事务 journal 只允许
-    `prepared -> switched -> committed`，并绑定 expected market-pointer SHA；
-    崩溃恢复只能在该 SHA、完整 required-table 闭包和 generation 全量 readback
+10. catalog 发布必须按 market writer -> catalog writer -> Macro-observation writer
+    -> release-calendar writer 的顺序持锁，同时对 catalog、market pointer、
+    Macro-observations pointer 与 release-calendar pointer/generation 执行
+    exact-byte/文件身份 CAS。事务 journal 只允许
+    `prepared -> switched -> committed`，并绑定四个 canonical identities；
+    崩溃恢复只能在这些身份、完整 required-table 闭包和 generation 全量 readback
     仍一致时完成，否则原字节回滚。无 journal 的 orphan transaction 与已落盘但
     未发布的同 run-id generation 只有在完整 tree fingerprint 完全一致时才可
     reuse；任何差异都以 `macro_orphan_generation_mismatch` fail closed。
@@ -199,6 +238,8 @@ quant-investor market macro-maintain \
   --expected-catalog-sha256 <current_catalog_sha256> \
   --expected-market-pointer-sha256 <current_market_pointer_sha256> \
   --expected-macro-observations-pointer-sha256 <current_observations_pointer_sha256> \
+  --macro-release-calendar-root data/parquet/cn/macro_release_calendar \
+  --expected-macro-release-calendar-pointer-sha256 <current_release_calendar_pointer_sha256> \
   --nbs-cn-pmi-url <nbs_official_release_https_url> \
   --allow-live
 
@@ -210,7 +251,7 @@ quant-investor market macro-promote \
 
 该命令只接受当前 `_latest.json` 的 latest-complete session，且 capture 必须在
 上海收盘后 72 小时内。`--allow-live`、显式
-`--nbs-cn-pmi-url`、三个 expected SHA 或新 run id 缺一即 fail closed。命令不提供
+`--nbs-cn-pmi-url`、四个 expected identity SHA 或新 run id 缺一即 fail closed。命令不提供
 NBS 默认 URL；operator 必须传入目标月份的国家统计局 issuer-bound HTTPS 正式
 发布页。任一 provider 月份晚于 capture 或早于声明的最晚可用月份也会阻断。
 它从 hash-bound canonical observations generation 构造 ready、国家指标覆盖率至少
@@ -236,10 +277,15 @@ generation：本次显式 NBS 初始 URL 必须等于 `official_attempts.request
 `--allow-tushare-fallback` 必须与 generation 的 `fallback_authorized` 完全一致。
 任一不一致都 fail closed；新的 URL 或 fallback 决策必须使用新的 run id。
 
+旧 `refresh_cn_macro_mart` one-step live writer 即使带 `allow_live` 也固定以
+`macro_authoritative_stage_promotion_required` 失败。生产写入只能先 stage，再由
+`macro-promote` 在上述固定锁序下重验并切换；不存在跳过 staging receipt 的兼容
+入口。
+
 若同一 market pointer 已有有效同版本 generation，命令只返回
 `already_current`，不再次调用 provider，也不创建 generation。已获授权的 CN
-日更 schedule 可以执行同一 stage/promote 流程，但必须固定 observation、market
-和 catalog 三个 expected SHA，stage 与 promotion 独立 readback，最终完整
+日更 schedule 可以执行同一 stage/promote 流程，但必须固定 observation、market、
+catalog 和 release calendar 四个 identity，stage 与 promotion 独立 readback，最终完整
 `storage-validate` 通过；任何其他 schedule 不得隐式推进 catalog。
 `cn-macro-provider-bundle.v1` 只保留历史兼容读取资格，不能被
 认定为 v2 current-equivalent；必须以 v2 official-first 证据重新发布后才可跳过
@@ -265,10 +311,24 @@ provider I/O。以上变更不改变 Quant 与 Fundamental 的 source policy。
 
 缺少 pointer、hash 不一致、路径越界、schema 不匹配或内容冲突都必须 fail
 closed。显式 `macro-observation-bootstrap`、
+`macro-observation-official-refresh`、`macro-local-observation-roll`、
 `macro-local-observation-publish` 或 `macro-backfill-publish` 使用 CAS 和
 expected hashes 推进
 `macro_observations/_latest.json`；这只发布 observer observations，不会推进
 `macro_daily` catalog，也不会获得生产控制权。
+
+### DAG runtime：单一 Macro readiness 证据
+
+每个 DAG run 只调用一次 `freeze_macro_readiness_runtime()`：先固定 release-calendar
+pointer，读取一个已验证的 immutable generation，再构造一个
+`MacroReadinessEvidence` 和一个 decision cutoff。Macro branch assessment、三分支
+readiness 与 `v15_run_readiness` 必须复用同一对象；run 中途不得重新读取较新的
+calendar、改 cutoff 或产生第二套 freshness 判断。缺失、漂移或篡改只产生明确
+Macro blocker，不允许 fallback 到推断交易日。
+
+三分支 readiness green 只表示 `quant`、`fundamental`、`macro` 全部通过。Factor
+governance 是独立门禁；人类新风险 receipt 也只是必要条件，不能覆盖 data、Factor、
+candidate 或 portfolio blocker，因此不会因为 receipt 存在就自动授权新风险。
 
 ## Standalone 文件规则
 
