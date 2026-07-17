@@ -183,14 +183,25 @@
       input.min = first;
       input.max = last;
     });
-    if (!state.filters.startDate) {
-      state.filters.startDate = first;
-      $("startDate").value = first;
+    var start = normalizeDateFilter(state.filters.startDate, first, last);
+    var end = normalizeDateFilter(state.filters.endDate, first, last);
+    if ((state.filters.startDate && !start) || (state.filters.endDate && !end) || (start && end && start > end)) {
+      start = first;
+      end = last;
     }
-    if (!state.filters.endDate) {
-      state.filters.endDate = last;
-      $("endDate").value = last;
-    }
+    state.filters.startDate = start || first;
+    state.filters.endDate = end || last;
+    $("startDate").value = state.filters.startDate;
+    $("endDate").value = state.filters.endDate;
+  }
+
+  function normalizeDateFilter(value, first, last) {
+    if (!value) return "";
+    var parsed = Data.parseDateOnly(value);
+    if (!parsed) return "";
+    var normalized = Data.formatDate(parsed);
+    if (normalized !== value || normalized < first || normalized > last) return "";
+    return normalized;
   }
 
   function preferredMainBenchmark(fields) {
