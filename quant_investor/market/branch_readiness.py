@@ -18,6 +18,12 @@ from quant_investor.market.fundamental_generation import (
     load_fundamental_table,
     resolve_fundamental_table_path,
 )
+from quant_investor.market.fundamental_provider_contract import (
+    FUNDAMENTAL_DERIVATION_CONTRACT,
+    FUNDAMENTAL_ENDPOINT_AUDIT_SCHEMA,
+    FUNDAMENTAL_FETCH_CHECKPOINT_SCHEMA,
+    FUNDAMENTAL_PROVIDER_MANIFEST_SCHEMA,
+)
 from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
 from quant_investor.versioning import BRANCH_SCHEMA_VERSION
 
@@ -64,6 +70,29 @@ FUNDAMENTAL_REQUIRED_FIELDS = (
     "fcf_to_price",
     "forecast_revision",
 )
+FUNDAMENTAL_VALUE_AVAILABILITY_SCHEMA = (
+    "cn-fundamental-value-availability.v1"
+)
+FUNDAMENTAL_PROVIDER_ENDPOINTS = frozenset(
+    {
+        "balancesheet",
+        "cashflow",
+        "daily_basic",
+        "fina_indicator",
+        "forecast",
+        "income",
+    }
+)
+FUNDAMENTAL_NULLABLE_VALUE_SEMANTICS = {
+    "fin_roe": "issuer_value_absent_in_verified_response",
+    "fin_roa": "issuer_value_absent_in_verified_response",
+    "fin_debt_to_assets": "issuer_value_absent_in_verified_response",
+    "fin_net_profit_yoy": "issuer_value_absent_in_verified_response",
+    "fin_ocf_to_profit": "undefined_without_positive_profit_denominator",
+    "fin_fcf_to_profit": "undefined_without_positive_profit_denominator",
+    "fcf_to_price": "undefined_without_finite_fcf_and_positive_market_value",
+    "forecast_revision": "no_qualifying_forecast_is_legitimate",
+}
 MACRO_REQUIRED_FIELDS = (
     "macro_score",
     "liquidity_score",
@@ -404,6 +433,210 @@ def _latest_records_by_symbol(
     return records
 
 
+def _fundamental_value_availability_contract(
+    pointer: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Summarize when nullable Fundamental values are verified observations.
+
+    Required field names are a structural schema contract.  Numeric values may
+    still be unavailable because a ratio is mathematically undefined or an
+    issuer returned no qualifying forecast.  That distinction is trusted only
+    for an independently validated authoritative v3 generation.
+    """
+
+    manifest = dict(pointer.get("manifest", {}) or {})
+    metadata = dict(manifest.get("metadata", {}) or {})
+    provider_manifest = dict(metadata.get("provider_manifest", {}) or {})
+    endpoint_audit = dict(provider_manifest.get("endpoint_audit", {}) or {})
+    endpoint_payloads = dict(endpoint_audit.get("endpoints", {}) or {})
+    checkpoint = dict(provider_manifest.get("checkpoint", {}) or {})
+    derivation = dict(provider_manifest.get("derivation", {}) or {})
+
+    def _nonnegative_int(value: Any) -> int | None:
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+        return value if value >= 0 else None
+
+    endpoint_summary: dict[str, dict[str, Any]] = {}
+    for endpoint_name, raw_payload in sorted(endpoint_payloads.items()):
+        payload = dict(raw_payload or {}) if isinstance(raw_payload, Mapping) else {}
+        endpoint_summary[str(endpoint_name)] = {
+            "passed": payload.get("passed") is True,
+            "request_denominator": _nonnegative_int(
+                payload.get("request_denominator")
+            ),
+            "accounted": _nonnegative_int(payload.get("accounted")),
+            "success": _nonnegative_int(payload.get("success")),
+            "empty": _nonnegative_int(payload.get("empty")),
+            "error": _nonnegative_int(payload.get("error")),
+            "malformed": _nonnegative_int(payload.get("malformed")),
+            "financial_coverage_failed": _nonnegative_int(
+                payload.get("financial_coverage_failed")
+            ),
+            "legitimate_empty_allowed": (
+                payload.get("legitimate_empty_allowed") is True
+            ),
+        }
+
+    symbol_denominator = _nonnegative_int(
+        endpoint_audit.get("symbol_denominator")
+    )
+    request_denominator = _nonnegative_int(
+        endpoint_audit.get("request_denominator")
+    )
+    requests_accounted = _nonnegative_int(
+        endpoint_audit.get("requests_accounted")
+    )
+    requests_error = _nonnegative_int(
+        endpoint_audit.get("requests_error")
+    )
+    requests_malformed = _nonnegative_int(
+        endpoint_audit.get("requests_malformed")
+    )
+    provider_requests_attempted = _nonnegative_int(
+        provider_manifest.get("requests_attempted")
+    )
+    provider_requests_failed = _nonnegative_int(
+        provider_manifest.get("requests_failed")
+    )
+    provider_requests_malformed = _nonnegative_int(
+        provider_manifest.get("requests_malformed")
+    )
+    endpoint_count_names = (
+        "request_denominator",
+        "accounted",
+        "success",
+        "empty",
+        "error",
+        "malformed",
+        "financial_coverage_failed",
+    )
+    endpoint_counts_valid = bool(endpoint_summary) and all(
+        item[count_name] is not None
+        for item in endpoint_summary.values()
+        for count_name in endpoint_count_names
+    )
+    endpoint_denominators_reconciled = bool(
+        endpoint_counts_valid
+        and symbol_denominator
+        and request_denominator
+        == symbol_denominator * len(FUNDAMENTAL_PROVIDER_ENDPOINTS)
+        and all(
+            item["request_denominator"] == symbol_denominator
+            for item in endpoint_summary.values()
+        )
+    )
+    endpoint_accounting_reconciled = bool(
+        endpoint_counts_valid
+        and requests_accounted is not None
+        and requests_error is not None
+        and requests_malformed is not None
+        and all(
+            item["accounted"]
+            == item["success"]
+            + item["empty"]
+            + item["error"]
+            + item["malformed"]
+            + item["financial_coverage_failed"]
+            == item["request_denominator"]
+            for item in endpoint_summary.values()
+        )
+        and sum(item["accounted"] for item in endpoint_summary.values())
+        == requests_accounted
+        and sum(item["error"] for item in endpoint_summary.values())
+        == requests_error
+        and sum(item["malformed"] for item in endpoint_summary.values())
+        == requests_malformed
+    )
+    provider_accounting_reconciled = bool(
+        provider_requests_attempted is not None
+        and provider_requests_failed is not None
+        and provider_requests_malformed is not None
+        and provider_requests_attempted == request_denominator
+        and provider_requests_failed == requests_error
+        and provider_requests_malformed == requests_malformed
+    )
+    checks = {
+        "primary_provenance_verified": (
+            pointer.get("primary_provenance_verified") is True
+        ),
+        "gate2_passed": (
+            dict(pointer.get("metadata", {}) or {}).get("gate2_passed")
+            is True
+        ),
+        "provider_manifest_v3": (
+            provider_manifest.get("schema_version")
+            == FUNDAMENTAL_PROVIDER_MANIFEST_SCHEMA
+        ),
+        "authoritative_full_rebuild": (
+            provider_manifest.get("authoritative_full_rebuild") is True
+        ),
+        "endpoint_audit_v3": (
+            endpoint_audit.get("schema_version")
+            == FUNDAMENTAL_ENDPOINT_AUDIT_SCHEMA
+        ),
+        "endpoint_audit_passed": endpoint_audit.get("passed") is True,
+        "endpoint_audit_blockers_empty": not list(
+            endpoint_audit.get("blockers", []) or []
+        ),
+        "endpoint_set_complete": (
+            set(endpoint_payloads) == FUNDAMENTAL_PROVIDER_ENDPOINTS
+        ),
+        "all_endpoints_passed": bool(endpoint_summary)
+        and all(item["passed"] for item in endpoint_summary.values()),
+        "endpoint_counts_valid": endpoint_counts_valid,
+        "endpoint_denominators_reconciled": (
+            endpoint_denominators_reconciled
+        ),
+        "endpoint_accounting_reconciled": (
+            endpoint_accounting_reconciled
+        ),
+        "request_accounting_complete": request_denominator is not None
+        and requests_accounted == request_denominator,
+        "provider_accounting_reconciled": provider_accounting_reconciled,
+        "provider_request_failures_zero": (
+            provider_requests_failed == 0
+            and provider_requests_malformed == 0
+            and requests_error == 0
+            and requests_malformed == 0
+        ),
+        "checkpoint_v3": (
+            checkpoint.get("schema_version")
+            == FUNDAMENTAL_FETCH_CHECKPOINT_SCHEMA
+        ),
+        "derivation_v3": (
+            derivation.get("contract_version")
+            == FUNDAMENTAL_DERIVATION_CONTRACT
+        ),
+        "forecast_empty_is_legitimate": (
+            endpoint_audit.get("forecast_empty_is_legitimate") is True
+            and endpoint_summary.get("forecast", {}).get(
+                "legitimate_empty_allowed"
+            )
+            is True
+        ),
+    }
+    blockers = sorted(name for name, passed in checks.items() if not passed)
+    verified = not blockers
+    return {
+        "schema_version": FUNDAMENTAL_VALUE_AVAILABILITY_SCHEMA,
+        "status": "verified" if verified else "unverified",
+        "nullable_values_allowed": verified,
+        "checks": checks,
+        "blockers": blockers,
+        "symbol_denominator": symbol_denominator,
+        "request_denominator": request_denominator,
+        "requests_accounted": requests_accounted,
+        "requests_error": requests_error,
+        "requests_malformed": requests_malformed,
+        "provider_requests_attempted": provider_requests_attempted,
+        "provider_requests_failed": provider_requests_failed,
+        "provider_requests_malformed": provider_requests_malformed,
+        "endpoint_summary": endpoint_summary,
+        "field_semantics": dict(FUNDAMENTAL_NULLABLE_VALUE_SEMANTICS),
+    }
+
+
 def load_fundamental_records(
     symbols: Sequence[str],
     *,
@@ -437,6 +670,9 @@ def load_fundamental_records(
                 "generation_id": pointer.get("generation_id"),
                 "pointer_path": pointer.get("pointer_path"),
                 "storage_backend": "parquet_canonical_generation",
+                "value_availability_contract": (
+                    _fundamental_value_availability_contract(pointer)
+                ),
             }
         )
     records = _latest_records_by_symbol(
@@ -545,38 +781,85 @@ def _assess_symbol_records(
     universe = [_normalize_symbol(symbol) for symbol in symbols if _normalize_symbol(symbol)]
     affected: list[str] = []
     partial_symbols: list[str] = []
-    missing_fields: set[str] = set()
-    pass_count = 0
+    structurally_missing_fields: set[str] = set()
+    unavailable_value_fields: set[str] = set()
+    schema_pass_count = 0
+    value_complete_count = 0
     record_count = 0
+    value_empty_symbols: list[str] = []
+    field_schema_counts = {field_name: 0 for field_name in required_fields}
+    field_value_counts = {field_name: 0 for field_name in required_fields}
     for symbol in universe:
         record = dict(records.get(symbol, {}) or {})
         if not record:
-            symbol_missing = list(required_fields) + ["record"]
+            symbol_structural_missing = list(required_fields) + ["record"]
+            symbol_value_unavailable = list(required_fields)
             affected.append(symbol)
         else:
             record_count += 1
-            symbol_missing = [field_name for field_name in required_fields if not _is_present(record.get(field_name))]
-            if symbol_missing:
+            symbol_structural_missing = [
+                field_name
+                for field_name in required_fields
+                if field_name not in record
+            ]
+            symbol_value_unavailable = [
+                field_name
+                for field_name in required_fields
+                if field_name in record
+                and not _is_present(record.get(field_name))
+            ]
+            for field_name in required_fields:
+                if field_name in record:
+                    field_schema_counts[field_name] += 1
+                if _is_present(record.get(field_name)):
+                    field_value_counts[field_name] += 1
+            if not symbol_structural_missing:
+                schema_pass_count += 1
+            else:
+                affected.append(symbol)
+            if symbol_value_unavailable:
                 partial_symbols.append(symbol)
             else:
-                pass_count += 1
-        if symbol_missing:
-            missing_fields.update(symbol_missing)
-    full_coverage = pass_count / max(len(universe), 1)
+                value_complete_count += 1
+            if not any(
+                _is_present(record.get(field_name))
+                for field_name in required_fields
+            ):
+                value_empty_symbols.append(symbol)
+                affected.append(symbol)
+        if symbol_structural_missing:
+            structurally_missing_fields.update(symbol_structural_missing)
+        if symbol_value_unavailable:
+            unavailable_value_fields.update(symbol_value_unavailable)
+    full_coverage = schema_pass_count / max(len(universe), 1)
     record_coverage = record_count / max(len(universe), 1)
+    full_value_observation_ratio = value_complete_count / max(
+        len(universe), 1
+    )
     source = str(manifest.get("provider_status") or manifest.get("source") or "parquet_canonical")
     priority = _source_priority(source, str(manifest.get("source_priority", "")))
     fallback_used = priority != SOURCE_TUSHARE
+    value_availability_contract = dict(
+        manifest.get("value_availability_contract", {}) or {}
+    )
+    nullable_values_accepted = (
+        value_availability_contract.get("schema_version")
+        == FUNDAMENTAL_VALUE_AVAILABILITY_SCHEMA
+        and value_availability_contract.get("status") == "verified"
+        and value_availability_contract.get("nullable_values_allowed") is True
+    )
     blockers = []
     if not records:
         blockers.append(f"{branch}_parquet_table_missing_or_empty")
-    if affected:
+    if structurally_missing_fields:
         blockers.append(f"{branch}_required_fields_missing")
+    if value_empty_symbols:
+        blockers.append(f"{branch}_required_values_unavailable")
     if fallback_used:
         blockers.append(f"{branch}_not_tushare_primary")
     if blockers:
         status = STATUS_BLOCK
-    elif partial_symbols:
+    elif partial_symbols and not nullable_values_accepted:
         status = STATUS_WARN
     else:
         status = STATUS_PASS if full_coverage >= 1.0 else STATUS_WARN
@@ -590,7 +873,7 @@ def _assess_symbol_records(
         source=source,
         as_of=_date_text(as_of),
         required_fields=list(required_fields),
-        missing_fields=sorted(missing_fields),
+        missing_fields=sorted(structurally_missing_fields),
         blockers=blockers,
         affected_symbols=sorted(set(affected)),
         fallback_used=fallback_used,
@@ -599,10 +882,36 @@ def _assess_symbol_records(
             "manifest": dict(manifest),
             "symbol_count": len(universe),
             "record_count": record_count,
-            "pass_count": pass_count,
+            "pass_count": schema_pass_count,
+            "value_complete_count": value_complete_count,
             "partial_symbols": sorted(set(partial_symbols)),
+            "value_empty_symbols": sorted(set(value_empty_symbols)),
             "record_coverage_ratio": record_coverage,
             "full_field_coverage_ratio": full_coverage,
+            "full_value_observation_ratio": (
+                full_value_observation_ratio
+            ),
+            "field_schema_coverage": {
+                field_name: {
+                    "count": field_schema_counts[field_name],
+                    "ratio": field_schema_counts[field_name]
+                    / max(len(universe), 1),
+                }
+                for field_name in required_fields
+            },
+            "field_value_coverage": {
+                field_name: {
+                    "count": field_value_counts[field_name],
+                    "ratio": field_value_counts[field_name]
+                    / max(len(universe), 1),
+                }
+                for field_name in required_fields
+            },
+            "value_unavailable_fields": sorted(
+                unavailable_value_fields
+            ),
+            "nullable_values_accepted": nullable_values_accepted,
+            "value_availability_contract": value_availability_contract,
         },
     )
 
@@ -846,6 +1155,27 @@ def render_branch_readiness_md(report: BranchGovernanceReport) -> str:
                 blockers=", ".join(readiness.blockers) or "-",
             )
         )
+    fundamental = report.readiness.get("fundamental")
+    if fundamental is not None:
+        metadata = dict(fundamental.metadata or {})
+        if "full_field_coverage_ratio" in metadata:
+            lines.extend(
+                [
+                    "",
+                    "## Fundamental value availability",
+                    "",
+                    "- Structural field coverage: "
+                    f"{float(metadata.get('full_field_coverage_ratio', 0.0)):.2%}",
+                    "- All-eight observed value ratio: "
+                    f"{float(metadata.get('full_value_observation_ratio', 0.0)):.2%}",
+                    "- Nullable values accepted by verified v3 evidence: "
+                    f"{bool(metadata.get('nullable_values_accepted', False))}",
+                    "- Structurally missing fields: "
+                    f"{', '.join(fundamental.missing_fields) or '-'}",
+                    "- Unavailable value fields: "
+                    f"{', '.join(metadata.get('value_unavailable_fields', [])) or '-'}",
+                ]
+            )
     return "\n".join(lines) + "\n"
 
 
@@ -909,6 +1239,7 @@ __all__ = [
     "BranchDataReadiness",
     "BranchGovernanceReport",
     "FUNDAMENTAL_REQUIRED_FIELDS",
+    "FUNDAMENTAL_VALUE_AVAILABILITY_SCHEMA",
     "MACRO_REQUIRED_FIELDS",
     "QUANT_REQUIRED_FIELDS",
     "SOURCE_OFFLINE",

@@ -47,6 +47,18 @@ authorizes a BUY, broker call or real order.
 - Factor bootstrap generation is plan-only.  It cannot write the registry,
   release a kill switch or create an activation receipt.
 
+Fundamental readiness separates structural field coverage from observed-value
+availability.  The eight v15 fields must exist in every canonical record, but
+their numeric values remain nullable: cash-flow/profit ratios are undefined
+without a positive profit denominator, and a verified provider may return no
+qualifying forecast.  Only a verified primary v3 generation with Gate2,
+checkpoint, derivation and endpoint-audit closure may accept those nulls.
+Readiness reports `full_field_coverage_ratio` for the structural contract and
+`full_value_observation_ratio` plus per-field counts as diagnostics.  Missing
+records, missing columns, records with no usable required value, or unverified
+generations still fail closed; never synthesize zeroes or ratios to improve a
+coverage number.
+
 Live Fundamental rebuild/promotion, live Macro staging/promotion, Factor bootstrap
 apply, Macro activation and private Theme evidence purge each require a
 separate explicit authorization.

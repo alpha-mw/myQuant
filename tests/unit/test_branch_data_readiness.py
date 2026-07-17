@@ -482,6 +482,195 @@ def test_fundamental_partial_record_warns_without_blocking(tmp_path):
     assert report.blocked_symbols == []
 
 
+def _verified_value_availability_pointer() -> dict:
+    endpoint_names = {
+        "balancesheet",
+        "cashflow",
+        "daily_basic",
+        "fina_indicator",
+        "forecast",
+        "income",
+    }
+    endpoints = {
+        name: {
+            "request_denominator": 1,
+            "accounted": 1,
+            "passed": True,
+            "success": 1,
+            "empty": 0,
+            "error": 0,
+            "malformed": 0,
+            "financial_coverage_failed": 0,
+            "legitimate_empty_allowed": name == "forecast",
+        }
+        for name in endpoint_names
+    }
+    return {
+        "primary_provenance_verified": True,
+        "metadata": {"gate2_passed": True},
+        "manifest": {
+            "metadata": {
+                "provider_manifest": {
+                    "schema_version": (
+                        branch_readiness.FUNDAMENTAL_PROVIDER_MANIFEST_SCHEMA
+                    ),
+                    "authoritative_full_rebuild": True,
+                    "requests_attempted": 6,
+                    "requests_failed": 0,
+                    "requests_malformed": 0,
+                    "checkpoint": {
+                        "schema_version": (
+                            branch_readiness.FUNDAMENTAL_FETCH_CHECKPOINT_SCHEMA
+                        )
+                    },
+                    "derivation": {
+                        "contract_version": (
+                            branch_readiness.FUNDAMENTAL_DERIVATION_CONTRACT
+                        )
+                    },
+                    "endpoint_audit": {
+                        "schema_version": (
+                            branch_readiness.FUNDAMENTAL_ENDPOINT_AUDIT_SCHEMA
+                        ),
+                        "passed": True,
+                        "blockers": [],
+                        "forecast_empty_is_legitimate": True,
+                        "symbol_denominator": 1,
+                        "request_denominator": 6,
+                        "requests_accounted": 6,
+                        "requests_error": 0,
+                        "requests_malformed": 0,
+                        "endpoints": endpoints,
+                    },
+                }
+            }
+        },
+    }
+
+
+def test_verified_v3_nullable_values_are_not_structural_field_gaps():
+    contract = branch_readiness._fundamental_value_availability_contract(
+        _verified_value_availability_pointer()
+    )
+    record = {
+        field_name: None
+        for field_name in branch_readiness.FUNDAMENTAL_REQUIRED_FIELDS
+    }
+    record["fin_roe"] = 0.12
+
+    readiness = branch_readiness._assess_symbol_records(
+        branch="fundamental",
+        symbols=["000001.SZ"],
+        records={"000001.SZ": record},
+        required_fields=branch_readiness.FUNDAMENTAL_REQUIRED_FIELDS,
+        manifest={
+            "provider_status": "live_tushare",
+            "source_priority": "tushare_primary",
+            "value_availability_contract": contract,
+        },
+        as_of="20260715",
+    )
+
+    assert contract["status"] == "verified"
+    assert readiness.status == STATUS_PASS
+    assert readiness.missing_fields == []
+    assert readiness.metadata["full_field_coverage_ratio"] == 1.0
+    assert readiness.metadata["full_value_observation_ratio"] == 0.0
+    assert readiness.metadata["nullable_values_accepted"] is True
+    assert readiness.metadata["value_unavailable_fields"] == sorted(
+        set(branch_readiness.FUNDAMENTAL_REQUIRED_FIELDS) - {"fin_roe"}
+    )
+
+
+def test_verified_nullable_contract_still_blocks_structural_field_loss():
+    contract = branch_readiness._fundamental_value_availability_contract(
+        _verified_value_availability_pointer()
+    )
+
+    readiness = branch_readiness._assess_symbol_records(
+        branch="fundamental",
+        symbols=["000001.SZ"],
+        records={"000001.SZ": {"fin_roe": 0.12}},
+        required_fields=branch_readiness.FUNDAMENTAL_REQUIRED_FIELDS,
+        manifest={
+            "provider_status": "live_tushare",
+            "source_priority": "tushare_primary",
+            "value_availability_contract": contract,
+        },
+        as_of="20260715",
+    )
+
+    assert readiness.status == STATUS_BLOCK
+    assert readiness.blockers == ["fundamental_required_fields_missing"]
+    assert "forecast_revision" in readiness.missing_fields
+    assert readiness.affected_symbols == ["000001.SZ"]
+
+
+def test_verified_nullable_contract_still_blocks_all_null_record():
+    contract = branch_readiness._fundamental_value_availability_contract(
+        _verified_value_availability_pointer()
+    )
+    record = {
+        field_name: None
+        for field_name in branch_readiness.FUNDAMENTAL_REQUIRED_FIELDS
+    }
+
+    readiness = branch_readiness._assess_symbol_records(
+        branch="fundamental",
+        symbols=["000001.SZ"],
+        records={"000001.SZ": record},
+        required_fields=branch_readiness.FUNDAMENTAL_REQUIRED_FIELDS,
+        manifest={
+            "provider_status": "live_tushare",
+            "source_priority": "tushare_primary",
+            "value_availability_contract": contract,
+        },
+        as_of="20260715",
+    )
+
+    assert readiness.status == STATUS_BLOCK
+    assert readiness.blockers == [
+        "fundamental_required_values_unavailable"
+    ]
+    assert readiness.metadata["value_empty_symbols"] == ["000001.SZ"]
+    assert readiness.affected_symbols == ["000001.SZ"]
+
+
+def test_malformed_value_availability_accounting_fails_closed():
+    pointer = _verified_value_availability_pointer()
+    endpoint_audit = pointer["manifest"]["metadata"]["provider_manifest"][
+        "endpoint_audit"
+    ]
+    endpoint_audit["request_denominator"] = "not-an-integer"
+    endpoint_audit["endpoints"]["forecast"]["empty"] = "broken"
+
+    contract = branch_readiness._fundamental_value_availability_contract(
+        pointer
+    )
+
+    assert contract["status"] == "unverified"
+    assert contract["nullable_values_allowed"] is False
+    assert "request_accounting_complete" in contract["blockers"]
+    assert "endpoint_counts_valid" in contract["blockers"]
+
+
+def test_inconsistent_endpoint_accounting_fails_closed():
+    pointer = _verified_value_availability_pointer()
+    endpoint_audit = pointer["manifest"]["metadata"]["provider_manifest"][
+        "endpoint_audit"
+    ]
+    for endpoint in endpoint_audit["endpoints"].values():
+        endpoint["success"] = 0
+
+    contract = branch_readiness._fundamental_value_availability_contract(
+        pointer
+    )
+
+    assert contract["status"] == "unverified"
+    assert contract["nullable_values_allowed"] is False
+    assert "endpoint_accounting_reconciled" in contract["blockers"]
+
+
 def test_macro_missing_blocks_three_branch_fusion(tmp_path):
     fundamental_root = tmp_path / "cn_fundamental"
     _write_fundamental_daily(fundamental_root)
