@@ -106,6 +106,13 @@ def run_unified_pipeline(
     volume_spike_threshold: float = config.FUNNEL_VOLUME_SPIKE_THRESHOLD,
     breakout_distance_pct: float = config.FUNNEL_BREAKOUT_DISTANCE_PCT,
     recall_context: dict[str, Any] | None = None,
+    decision_protocol: str = "v15",
+    v16_factor_readiness_path: str = "results/v16/factor_governance/readiness.json",
+    v16_review_root: str = "results/v16/codex_review",
+    v16_config_path: str = "",
+    v16_prompt_path: str = "",
+    v16_run_id: str = "",
+    v16_expiry_hours: float = 24.0,
 ) -> dict[str, Any]:
     enable_agent_layer = bool(enable_agent_layer)
     settings = get_market_settings(market)
@@ -169,6 +176,13 @@ def run_unified_pipeline(
         breakout_distance_pct=breakout_distance_pct,
         recall_context=recall_context,
         data_snapshot=download_stage.get("data_snapshot"),
+        decision_protocol=decision_protocol,
+        v16_factor_readiness_path=v16_factor_readiness_path,
+        v16_review_root=v16_review_root,
+        **({"v16_config_path": v16_config_path} if v16_config_path else {}),
+        **({"v16_prompt_path": v16_prompt_path} if v16_prompt_path else {}),
+        v16_run_id=v16_run_id,
+        v16_expiry_hours=v16_expiry_hours,
     )
     analysis_duration = time.time() - analysis_started
 
@@ -177,7 +191,7 @@ def run_unified_pipeline(
     print(f"分析与报告阶段: {analysis_duration:.2f}s")
     print(f"总耗时: {time.time() - total_started:.2f}s")
 
-    return {
+    output = {
         "market": settings.market,
         "categories": selected_categories,
         "universe": universe or (selected_categories[0] if len(selected_categories) == 1 else "custom"),
@@ -193,3 +207,10 @@ def run_unified_pipeline(
             "total_seconds": time.time() - total_started,
         },
     }
+    if str(decision_protocol or "v15").strip().lower() == "v16":
+        output["decision_protocol"] = "v16"
+        output["status"] = analysis_output.get("analysis_meta", {}).get(
+            "status", "pending_codex_stage1"
+        )
+        output["v16_stage1"] = analysis_output.get("v16_stage1", {})
+    return output

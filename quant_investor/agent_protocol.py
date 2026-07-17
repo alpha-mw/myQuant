@@ -26,6 +26,11 @@ from quant_investor.versioning import (
 )
 
 
+RISK_ADVISOR_SCHEMA_VERSION = "risk-advisor.v1"
+ELIGIBILITY_GATE_SCHEMA_VERSION = "eligibility-gate.v1"
+EXECUTION_GATE_SCHEMA_VERSION = "execution-gate.v1"
+
+
 class AgentStatus(str, Enum):
     SUCCESS = "success"
     DEGRADED = "degraded"
@@ -66,6 +71,108 @@ class RiskLevel(str, Enum):
     MEDIUM = "medium"
     HIGH = "high"
     EXTREME = "extreme"
+
+
+@dataclass(frozen=True)
+class RiskAdvisory:
+    """V16 advisory-only risk output.
+
+    Deliberately contains no veto, action cap, blocked-symbol, exposure-cap, or
+    position-limit surface.  The five fields below are the complete public
+    contract so the advisory cannot become an implicit control gate.
+    """
+
+    severity: RiskLevel = RiskLevel.LOW
+    flags: list[str] = field(default_factory=list)
+    scenarios: list[str] = field(default_factory=list)
+    suggestions: list[str] = field(default_factory=list)
+    rationale: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "severity": self.severity.value,
+            "flags": list(self.flags),
+            "scenarios": list(self.scenarios),
+            "suggestions": list(self.suggestions),
+            "rationale": self.rationale,
+        }
+
+
+@dataclass(frozen=True)
+class EligibilityDecision:
+    """Research eligibility decided only from PIT/data/factor readiness."""
+
+    symbol: str
+    research_eligible: bool
+    pit_ready: bool
+    data_ready: bool
+    factor_ready: bool
+    blockers: list[str] = field(default_factory=list)
+    schema_version: str = ELIGIBILITY_GATE_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        if self.schema_version != ELIGIBILITY_GATE_SCHEMA_VERSION:
+            raise ValueError("EligibilityDecision schema_version mismatch")
+        if not self.symbol.strip():
+            raise ValueError("EligibilityDecision symbol must be non-empty")
+
+    def to_dict(self) -> dict[str, Any]:
+        self.__post_init__()
+        return {
+            "schema_version": self.schema_version,
+            "symbol": self.symbol,
+            "research_eligible": self.research_eligible,
+            "pit_ready": self.pit_ready,
+            "data_ready": self.data_ready,
+            "factor_ready": self.factor_ready,
+            "blockers": list(self.blockers),
+        }
+
+
+@dataclass(frozen=True)
+class ExecutionDecision:
+    """Order eligibility without rewriting the research action or weight."""
+
+    symbol: str
+    research_action: ActionLabel
+    target_weight: float
+    order_eligible: bool
+    raw_order_shares: float = 0.0
+    executable_order_shares: float = 0.0
+    rounding_delta: float = 0.0
+    blockers: list[str] = field(default_factory=list)
+    checks: dict[str, bool] = field(default_factory=dict)
+    schema_version: str = EXECUTION_GATE_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        if self.schema_version != EXECUTION_GATE_SCHEMA_VERSION:
+            raise ValueError("ExecutionDecision schema_version mismatch")
+        if not self.symbol.strip():
+            raise ValueError("ExecutionDecision symbol must be non-empty")
+        require_finite_structure(
+            {
+                "target_weight": self.target_weight,
+                "raw_order_shares": self.raw_order_shares,
+                "executable_order_shares": self.executable_order_shares,
+                "rounding_delta": self.rounding_delta,
+            },
+            path="ExecutionDecision",
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        self.__post_init__()
+        return {
+            "schema_version": self.schema_version,
+            "symbol": self.symbol,
+            "research_action": self.research_action.value,
+            "target_weight": self.target_weight,
+            "order_eligible": self.order_eligible,
+            "raw_order_shares": self.raw_order_shares,
+            "executable_order_shares": self.executable_order_shares,
+            "rounding_delta": self.rounding_delta,
+            "blockers": list(self.blockers),
+            "checks": dict(self.checks),
+        }
 
 
 _ALLOWED_REVIEW_BRANCHES = frozenset((*CANONICAL_BRANCH_ORDER, "kline"))
@@ -870,8 +977,11 @@ class BayesianDecisionRecord:
 __all__ = [
     "ARCHITECTURE_VERSION",
     "BRANCH_SCHEMA_VERSION",
+    "ELIGIBILITY_GATE_SCHEMA_VERSION",
+    "EXECUTION_GATE_SCHEMA_VERSION",
     "IC_PROTOCOL_VERSION",
     "REPORT_PROTOCOL_VERSION",
+    "RISK_ADVISOR_SCHEMA_VERSION",
     "ActionLabel",
     "AgentStatus",
     "BayesianDecisionRecord",
@@ -881,7 +991,10 @@ __all__ = [
     "EventNote",
     "DataQualityIssue",
     "EvidenceItem",
+    "EligibilityDecision",
+    "ExecutionDecision",
     "RiskLevel",
+    "RiskAdvisory",
     "BranchVerdict",
     "BranchOverlayVerdict",
     "RiskDecision",

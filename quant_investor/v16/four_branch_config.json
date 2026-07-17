@@ -1,0 +1,14 @@
+{
+  "architecture_version": "16.0.0",
+  "branch_version": "v16.four-branch",
+  "candidate_limits": {
+    "funnel": 500,
+    "llm_supplemental": 100,
+    "union": 600,
+    "menu": 50,
+    "positive_weight": 12
+  },
+  "market": "CN",
+  "results_namespace": "results/v16",
+  "target_definition": "CN_20D_NET_EXCESS_VS_CSI300_GT_0"
+}

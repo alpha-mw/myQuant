@@ -13,6 +13,9 @@ from quant_investor.agent_protocol import (
     ICDecision,
     PortfolioDecision,
     RiskDecision,
+    EligibilityDecision,
+    ExecutionDecision,
+    RiskAdvisory,
 )
 from quant_investor.bayesian.calibration import CalibrationStore
 from quant_investor.branch_config import CANONICAL_BRANCH_ORDER
@@ -22,6 +25,11 @@ from quant_investor.market.dag.assembly import _aggregate_branch_summaries
 from quant_investor.market.dag.evidence import _build_master_evidence_pack
 from quant_investor.market.dag.shortlist import _build_shortlist_from_bayesian_records
 from quant_investor.reporting.run_artifacts import build_funnel_summary
+from quant_investor.v16.candidate_pipeline import (
+    CapitalMapping,
+    PosteriorMenuItem,
+    Stage2Decision,
+)
 
 
 @dataclass
@@ -44,6 +52,17 @@ class PortfolioConstructionState:
     ic_decisions: list[ICDecision]
     portfolio_plan: Any
     portfolio_decision: PortfolioDecision
+
+
+@dataclass
+class V16DecisionState:
+    """Independent v16 decision result; the v15 reporting path does not read it."""
+
+    risk_advisory: RiskAdvisory
+    ic_decisions: list[Stage2Decision]
+    portfolio_plan: CapitalMapping
+    eligibility_decisions: list[EligibilityDecision]
+    execution_decisions: list[ExecutionDecision]
 
 
 def _enum_text(value: Any) -> str:
@@ -809,4 +828,166 @@ def _run_portfolio_construction_phase(
         ic_decisions=ic_decisions,
         portfolio_plan=portfolio_plan,
         portfolio_decision=portfolio_decision,
+    )
+
+
+def _run_v16_eligibility_phase(
+    *,
+    symbols: list[str],
+    readiness_by_symbol: Mapping[str, Mapping[str, Any]],
+    eligibility_gate_cls: Any = None,
+) -> dict[str, EligibilityDecision]:
+    """Run PIT/data/factor eligibility before Quant or any IC response exists."""
+
+    if eligibility_gate_cls is None:
+        from quant_investor.agents.eligibility_gate import EligibilityGate
+
+        eligibility_gate_cls = EligibilityGate
+    normalized = [str(symbol).strip().upper() for symbol in symbols]
+    if any(not symbol for symbol in normalized):
+        raise ValueError("v16 eligibility symbols must be non-empty")
+    if len(normalized) != len(set(normalized)):
+        raise ValueError("v16 eligibility symbols must be unique")
+    gate = eligibility_gate_cls()
+    return {
+        symbol: gate.run(
+            {
+                "symbol": symbol,
+                "readiness": readiness_by_symbol.get(symbol, {}),
+            }
+        )
+        for symbol in normalized
+    }
+
+
+def _run_v16_decision_phase(
+    *,
+    menu: list[PosteriorMenuItem],
+    stage2_responses: list[Mapping[str, Any]],
+    branch_summaries: Mapping[str, Any],
+    macro_verdict: Any,
+    cash_ratio: float,
+    existing_weights: Mapping[str, float],
+    total_capital: float,
+    reference_price_by_symbol: Mapping[str, float],
+    existing_shares_by_symbol: Mapping[str, float],
+    eligibility_by_symbol: Mapping[str, EligibilityDecision],
+    execution_context_by_symbol: Mapping[str, Mapping[str, Any]],
+    risk_advisory_context: Mapping[str, Any] | None = None,
+    risk_advisor_cls: Any = None,
+    ic_coordinator_cls: Any = None,
+    portfolio_constructor_cls: Any = None,
+    execution_gate_cls: Any = None,
+) -> V16DecisionState:
+    """Run the additive v16 responsibility split without touching v15 output.
+
+    Stage2 schema validation occurs before the severe-risk rationale check.
+    Risk advisory output is never passed into the IC or portfolio mapper, so a
+    changed advisory cannot rewrite action, rank, or target weight.
+    """
+
+    if risk_advisor_cls is None:
+        from quant_investor.agents.risk_guard import RiskAdvisor
+
+        risk_advisor_cls = RiskAdvisor
+    if ic_coordinator_cls is None:
+        from quant_investor.agents.ic_coordinator import V16ICCoordinator
+
+        ic_coordinator_cls = V16ICCoordinator
+    if portfolio_constructor_cls is None:
+        from quant_investor.agents.portfolio_constructor import (
+            V16PortfolioConstructor,
+        )
+
+        portfolio_constructor_cls = V16PortfolioConstructor
+    if execution_gate_cls is None:
+        from quant_investor.agents.execution_gate import ExecutionGate
+
+        execution_gate_cls = ExecutionGate
+
+    risk_advisor = risk_advisor_cls()
+    risk_advisory = risk_advisor.run(
+        {
+            "branch_verdicts": branch_summaries,
+            "macro_verdict": macro_verdict,
+            "advisory_context": dict(risk_advisory_context or {}),
+        }
+    )
+    if not isinstance(risk_advisory, RiskAdvisory):
+        raise TypeError("risk advisor must return RiskAdvisory")
+
+    ic_coordinator = ic_coordinator_cls()
+    ic_decisions = [
+        ic_coordinator.run({"stage2_decision": response})
+        for response in stage2_responses
+    ]
+    if any(not isinstance(item, Stage2Decision) for item in ic_decisions):
+        raise TypeError("v16 IC coordinator must return Stage2Decision")
+
+    validate_rationale = getattr(
+        risk_advisor,
+        "validate_severe_buy_rationale",
+        None,
+    )
+    if not callable(validate_rationale):
+        raise TypeError(
+            "risk advisor must provide validate_severe_buy_rationale"
+        )
+    validate_rationale(risk_advisory, ic_decisions)
+
+    portfolio_plan = portfolio_constructor_cls().run(
+        {
+            "menu": menu,
+            "stage2_decisions": ic_decisions,
+            "cash_ratio": cash_ratio,
+            "existing_weights": existing_weights,
+            "total_capital": total_capital,
+            "reference_price_by_symbol": reference_price_by_symbol,
+            "existing_shares_by_symbol": existing_shares_by_symbol,
+        }
+    )
+    if not isinstance(portfolio_plan, CapitalMapping):
+        raise TypeError("v16 portfolio constructor must return CapitalMapping")
+
+    execution_gate = execution_gate_cls()
+    eligibility_decisions: list[EligibilityDecision] = []
+    execution_decisions: list[ExecutionDecision] = []
+    capital_target_by_symbol = {
+        target.symbol: target for target in portfolio_plan.positions
+    }
+    for decision in ic_decisions:
+        eligibility = eligibility_by_symbol.get(decision.symbol)
+        if not isinstance(eligibility, EligibilityDecision):
+            raise ValueError(
+                "precomputed eligibility missing for Stage2 symbol: "
+                + decision.symbol
+            )
+        execution_context = dict(
+            execution_context_by_symbol.get(decision.symbol, {})
+        )
+        capital_target = capital_target_by_symbol.get(decision.symbol)
+        execution_context["raw_target_shares"] = (
+            capital_target.raw_target_shares
+            if capital_target is not None
+            else 0.0
+        )
+        execution_context["existing_shares"] = existing_shares_by_symbol.get(
+            decision.symbol
+        )
+        execution = execution_gate.run(
+            {
+                "ic_decision": decision,
+                "eligibility_decision": eligibility,
+                "execution_context": execution_context,
+            }
+        )
+        eligibility_decisions.append(eligibility)
+        execution_decisions.append(execution)
+
+    return V16DecisionState(
+        risk_advisory=risk_advisory,
+        ic_decisions=ic_decisions,
+        portfolio_plan=portfolio_plan,
+        eligibility_decisions=eligibility_decisions,
+        execution_decisions=execution_decisions,
     )

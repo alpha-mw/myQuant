@@ -34,6 +34,8 @@ def run_market_analysis(**kwargs):
         run_market_analysis as _run_market_analysis,
     )
 
+    if kwargs.get("decision_protocol", "v15") == "v15":
+        kwargs.pop("decision_protocol", None)
     return _run_market_analysis(**kwargs)
 
 
@@ -42,6 +44,8 @@ def run_market_pipeline(**kwargs):
         run_unified_pipeline as _run_unified_pipeline,
     )
 
+    if kwargs.get("decision_protocol", "v15") == "v15":
+        kwargs.pop("decision_protocol", None)
     return _run_unified_pipeline(**kwargs)
 
 
@@ -322,6 +326,36 @@ def run_fundamental_research_nav_produce(**kwargs):
     return produce_nav_attribution_observation(**kwargs)
 
 
+def run_codex_review_export(**kwargs):
+    from quant_investor.codex_review import export_review_request
+
+    return export_review_request(**kwargs)
+
+
+def run_codex_review_receive(**kwargs):
+    from quant_investor.codex_review import receive_review_response
+
+    return receive_review_response(**kwargs)
+
+
+def run_codex_review_validate(**kwargs):
+    from quant_investor.codex_review import validate_review_response
+
+    return validate_review_response(**kwargs)
+
+
+def run_codex_review_resume(**kwargs):
+    from quant_investor.codex_review import resume_review
+
+    return resume_review(**kwargs)
+
+
+def run_codex_review_status(**kwargs):
+    from quant_investor.codex_review import review_status
+
+    return review_status(**kwargs)
+
+
 def _print_json(payload) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
 
@@ -475,6 +509,59 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="market_command",
         required=True,
     )
+
+    market_codex_export = market_subparsers.add_parser(
+        "codex-review-export",
+        help="导出已准备的本地 v16 Codex review request",
+    )
+    market_codex_export.add_argument(
+        "--root", default="results/v16/codex_review"
+    )
+    market_codex_export.add_argument("--run-id", required=True)
+    market_codex_export.add_argument("--expected-state-sha256", required=True)
+
+    market_codex_receive = market_subparsers.add_parser(
+        "codex-review-receive",
+        help="一次性接收严格 JSON Codex review response",
+    )
+    market_codex_receive.add_argument(
+        "--root", default="results/v16/codex_review"
+    )
+    market_codex_receive.add_argument("--run-id", required=True)
+    market_codex_receive.add_argument("--response", required=True)
+    market_codex_receive.add_argument("--expected-state-sha256", required=True)
+
+    market_codex_validate = market_subparsers.add_parser(
+        "codex-review-validate",
+        help="重验 response 的 schema、SHA、PIT、集合和前序绑定",
+    )
+    market_codex_validate.add_argument(
+        "--root", default="results/v16/codex_review"
+    )
+    market_codex_validate.add_argument("--run-id", required=True)
+    market_codex_validate.add_argument("--expected-state-sha256", required=True)
+
+    market_codex_resume = market_subparsers.add_parser(
+        "codex-review-resume",
+        help="从当前封存边界推进一个确定性本地状态",
+    )
+    market_codex_resume.add_argument(
+        "--root", default="results/v16/codex_review"
+    )
+    market_codex_resume.add_argument("--run-id", required=True)
+    market_codex_resume.add_argument("--expected-state-sha256", required=True)
+    market_codex_resume.add_argument("--menu", default="")
+    market_codex_resume.add_argument("--total-capital", type=float, default=None)
+    market_codex_resume.add_argument("--authorization", default="")
+
+    market_codex_status = market_subparsers.add_parser(
+        "codex-review-status",
+        help="只读显示 Codex review 状态、expiry 和绑定漂移",
+    )
+    market_codex_status.add_argument(
+        "--root", default="results/v16/codex_review"
+    )
+    market_codex_status.add_argument("--run-id", required=True)
 
     market_maintain = market_subparsers.add_parser(
         "maintain",
@@ -1195,6 +1282,12 @@ def _build_parser() -> argparse.ArgumentParser:
     market_analyze.add_argument("--capital", type=float, default=1_000_000)
     market_analyze.add_argument("--top-k", type=int, default=12)
     market_analyze.add_argument(
+        "--decision-protocol",
+        choices=["v15", "v16"],
+        default="v15",
+        help="候选决策协议；v15 默认保持当前权威路径，v16 仅准备本地 Codex Stage1 pending",
+    )
+    market_analyze.add_argument(
         "--shortlist-size",
         type=int,
         default=config.BAYESIAN_SHORTLIST_SIZE,
@@ -1245,6 +1338,12 @@ def _build_parser() -> argparse.ArgumentParser:
     market_run.add_argument("--batch-size", type=int, default=None)
     market_run.add_argument("--capital", type=float, default=1_000_000)
     market_run.add_argument("--top-k", type=int, default=12)
+    market_run.add_argument(
+        "--decision-protocol",
+        choices=["v15", "v16"],
+        default="v15",
+        help="候选决策协议；v15 默认保持当前权威路径，v16 仅准备本地 Codex Stage1 pending",
+    )
     market_run.add_argument(
         "--shortlist-size",
         type=int,
@@ -1311,6 +1410,62 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    codex_review_command = (
+        args.market_command
+        if args.command == "market"
+        and args.market_command.startswith("codex-review-")
+        else ""
+    )
+
+    if codex_review_command == "codex-review-export":
+        _print_json(
+            run_codex_review_export(
+                root=args.root,
+                run_id=args.run_id,
+                expected_state_sha256=args.expected_state_sha256,
+            )
+        )
+        return
+
+    if codex_review_command == "codex-review-receive":
+        _print_json(
+            run_codex_review_receive(
+                root=args.root,
+                run_id=args.run_id,
+                response_path=args.response,
+                expected_state_sha256=args.expected_state_sha256,
+            )
+        )
+        return
+
+    if codex_review_command == "codex-review-validate":
+        _print_json(
+            run_codex_review_validate(
+                root=args.root,
+                run_id=args.run_id,
+                expected_state_sha256=args.expected_state_sha256,
+            )
+        )
+        return
+
+    if codex_review_command == "codex-review-resume":
+        _print_json(
+            run_codex_review_resume(
+                root=args.root,
+                run_id=args.run_id,
+                expected_state_sha256=args.expected_state_sha256,
+                menu_path=args.menu or None,
+                total_capital=args.total_capital,
+                authorization_path=args.authorization or None,
+            )
+        )
+        return
+
+    if codex_review_command == "codex-review-status":
+        _print_json(run_codex_review_status(root=args.root, run_id=args.run_id))
+        return
+
     review_models = ResolvedReviewModels.from_mapping(vars(args))
 
     if args.command == "research" and args.research_command == "run":
@@ -1984,6 +2139,7 @@ def main(argv: list[str] | None = None) -> None:
             batch_size=args.batch_size,
             total_capital=args.capital,
             top_k=args.top_k,
+            decision_protocol=args.decision_protocol,
             shortlist_size=args.shortlist_size,
             enable_agent_layer=not args.no_agent_layer,
             funnel_profile=args.funnel_profile,
@@ -2003,6 +2159,7 @@ def main(argv: list[str] | None = None) -> None:
             batch_size=args.batch_size,
             total_capital=args.capital,
             top_k=args.top_k,
+            decision_protocol=args.decision_protocol,
             shortlist_size=args.shortlist_size,
             skip_download=args.skip_download,
             force_download=False,

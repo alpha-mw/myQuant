@@ -1,0 +1,350 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://myquant.local/schema/dashboard_contract.v16.schema.json",
+  "title": "myQuant Dashboard Contract v16",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "schema_sha256",
+    "architecture_version",
+    "branch_schema_version",
+    "results_namespace",
+    "run_id",
+    "generated_at",
+    "status",
+    "blockers",
+    "v16_run_readiness",
+    "candidate_report",
+    "candidate_decision",
+    "as_of_matrix",
+    "trading_calendar",
+    "sources",
+    "nav",
+    "positions",
+    "trades",
+    "industries",
+    "factors",
+    "reconciliation",
+    "metric_policy"
+  ],
+  "properties": {
+    "schema_version": { "const": "dashboard_contract.v16" },
+    "schema_sha256": { "$ref": "#/$defs/sha256" },
+    "architecture_version": { "const": "16.0.0" },
+    "branch_schema_version": { "const": "v16.four-branch" },
+    "results_namespace": { "const": "results/v16" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "generated_at": { "type": "string", "minLength": 1 },
+    "status": {
+      "enum": ["fresh", "stale", "partial", "blocked", "sample"]
+    },
+    "blockers": { "$ref": "#/$defs/stringSet" },
+    "v16_run_readiness": { "$ref": "#/$defs/readinessReference" },
+    "candidate_report": { "$ref": "#/$defs/candidateReportReference" },
+    "candidate_decision": { "$ref": "#/$defs/candidateDecision" },
+    "as_of_matrix": { "type": "object" },
+    "trading_calendar": { "type": "object" },
+    "sources": { "type": "object" },
+    "nav": { "type": "array", "items": { "$ref": "#/$defs/nav" } },
+    "positions": { "type": "array", "items": { "$ref": "#/$defs/position" } },
+    "trades": { "type": "array", "items": { "$ref": "#/$defs/trade" } },
+    "industries": { "type": "array", "items": { "$ref": "#/$defs/industry" } },
+    "factors": { "type": "array", "items": { "type": "object" } },
+    "reconciliation": { "type": "object" },
+    "metric_policy": { "type": "object" }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "stringSet": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "nullableNumber": {
+      "type": ["number", "null"]
+    },
+    "resultsV16Path": {
+      "type": "string",
+      "pattern": "^results/v16(?:/[A-Za-z0-9._-]+)*/[A-Za-z0-9._-]+$"
+    },
+    "readinessReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "path",
+        "sha256",
+        "new_risk_authorized",
+        "blockers",
+        "activation_candidate",
+        "activation_blockers"
+      ],
+      "properties": {
+        "schema_version": { "const": "v16_run_readiness.v1" },
+        "path": {
+          "type": "string",
+          "pattern": "^results/v16(?:/[A-Za-z0-9._-]+)*/v16_run_readiness\\.json$"
+        },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "new_risk_authorized": { "type": "boolean" },
+        "blockers": { "$ref": "#/$defs/stringSet" },
+        "activation_candidate": { "type": "boolean" },
+        "activation_blockers": { "$ref": "#/$defs/stringSet" }
+      }
+    },
+    "candidateReportReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "path", "sha256"],
+      "properties": {
+        "schema_version": { "const": "candidate_decision_report.v16" },
+        "path": {
+          "type": "string",
+          "pattern": "^results/v16(?:/[A-Za-z0-9._-]+)*/v16_candidate_decision_report\\.json$"
+        },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "branchContribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "score", "weight", "contribution", "evidence_sha256"],
+      "properties": {
+        "status": { "enum": ["ready", "blocked", "unavailable"] },
+        "score": { "type": "number", "minimum": -1, "maximum": 1 },
+        "weight": { "const": 0.25 },
+        "contribution": { "type": "number" },
+        "evidence_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "fourBranchContributions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["quant", "fundamental", "macro", "llm"],
+      "properties": {
+        "quant": { "$ref": "#/$defs/branchContribution" },
+        "fundamental": { "$ref": "#/$defs/branchContribution" },
+        "macro": { "$ref": "#/$defs/branchContribution" },
+        "llm": { "$ref": "#/$defs/branchContribution" }
+      }
+    },
+    "retrievalEvidenceItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "symbol",
+        "branch",
+        "supporting_fact_ids",
+        "contradicting_fact_ids",
+        "conflict_note"
+      ],
+      "properties": {
+        "symbol": { "type": "string", "minLength": 1 },
+        "branch": { "enum": ["quant", "fundamental", "macro"] },
+        "supporting_fact_ids": { "$ref": "#/$defs/stringSet" },
+        "contradicting_fact_ids": { "$ref": "#/$defs/stringSet" },
+        "conflict_note": { "type": ["string", "null"], "minLength": 1 }
+      }
+    },
+    "retrievalEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "items", "warnings"],
+      "properties": {
+        "status": { "enum": ["verified", "partial", "unavailable", "blocked"] },
+        "items": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/retrievalEvidenceItem" }
+        },
+        "warnings": { "$ref": "#/$defs/stringSet" }
+      }
+    },
+    "interval90": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lower", "upper"],
+      "properties": {
+        "lower": { "type": "number" },
+        "upper": { "type": "number" }
+      }
+    },
+    "posterior": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "posterior_win_rate",
+        "posterior_expected_alpha",
+        "posterior_edge_after_costs",
+        "win_rate_interval_90",
+        "expected_alpha_interval_90"
+      ],
+      "properties": {
+        "posterior_win_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "posterior_expected_alpha": { "type": "number" },
+        "posterior_edge_after_costs": { "type": ["number", "null"] },
+        "win_rate_interval_90": { "$ref": "#/$defs/interval90" },
+        "expected_alpha_interval_90": { "$ref": "#/$defs/interval90" }
+      }
+    },
+    "riskAdvisor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["advisory_only", "warnings", "recommendations"],
+      "properties": {
+        "advisory_only": { "const": true },
+        "warnings": { "$ref": "#/$defs/stringSet" },
+        "recommendations": { "$ref": "#/$defs/stringSet" }
+      }
+    },
+    "icAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "symbol",
+        "action",
+        "selected_for_portfolio",
+        "existing_weight",
+        "target_weight",
+        "rationale",
+        "risk_acceptance_rationale"
+      ],
+      "properties": {
+        "symbol": { "type": "string", "minLength": 1 },
+        "action": { "enum": ["BUY", "HOLD", "AVOID", "SELL"] },
+        "selected_for_portfolio": { "type": "boolean" },
+        "existing_weight": { "type": "number", "minimum": 0, "maximum": 1 },
+        "target_weight": { "type": "number", "minimum": 0, "maximum": 1 },
+        "rationale": { "type": "string", "minLength": 1 },
+        "risk_acceptance_rationale": { "type": ["string", "null"], "minLength": 1 }
+      }
+    },
+    "icDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["menu_symbols", "actions", "selected_symbols", "cash_ratio"],
+      "properties": {
+        "menu_symbols": { "$ref": "#/$defs/stringSet" },
+        "actions": { "type": "array", "items": { "$ref": "#/$defs/icAction" } },
+        "selected_symbols": {
+          "type": "array",
+          "maxItems": 12,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "cash_ratio": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "handoff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "artifact_path", "artifact_sha256", "blockers"],
+      "properties": {
+        "status": { "enum": ["complete", "ready", "pending", "blocked", "missing"] },
+        "artifact_path": {
+          "anyOf": [
+            { "$ref": "#/$defs/resultsV16Path" },
+            { "type": "null" }
+          ]
+        },
+        "artifact_sha256": {
+          "anyOf": [
+            { "$ref": "#/$defs/sha256" },
+            { "type": "null" }
+          ]
+        },
+        "blockers": { "$ref": "#/$defs/stringSet" }
+      }
+    },
+    "eligibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["eligible", "blockers"],
+      "properties": {
+        "eligible": { "type": "boolean" },
+        "blockers": { "$ref": "#/$defs/stringSet" }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "new_risk_authorized", "broker_side_effects", "blockers"],
+      "properties": {
+        "status": { "enum": ["authorized", "no_new_risk"] },
+        "new_risk_authorized": { "type": "boolean" },
+        "broker_side_effects": { "const": false },
+        "blockers": { "$ref": "#/$defs/stringSet" }
+      }
+    },
+    "candidateDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "branch_contributions",
+        "retrieval_evidence",
+        "posterior",
+        "risk_advisor",
+        "ic",
+        "handoff",
+        "eligibility",
+        "execution",
+        "readiness"
+      ],
+      "properties": {
+        "branch_contributions": { "$ref": "#/$defs/fourBranchContributions" },
+        "retrieval_evidence": { "$ref": "#/$defs/retrievalEvidence" },
+        "posterior": { "$ref": "#/$defs/posterior" },
+        "risk_advisor": { "$ref": "#/$defs/riskAdvisor" },
+        "ic": { "$ref": "#/$defs/icDecision" },
+        "handoff": { "$ref": "#/$defs/handoff" },
+        "eligibility": { "$ref": "#/$defs/eligibility" },
+        "execution": { "$ref": "#/$defs/execution" },
+        "readiness": { "$ref": "#/$defs/readinessReference" }
+      }
+    },
+    "nav": {
+      "type": "object",
+      "required": ["date", "portfolio_nav"],
+      "properties": {
+        "date": { "type": "string" },
+        "portfolio_nav": { "$ref": "#/$defs/nullableNumber" }
+      }
+    },
+    "position": {
+      "type": "object",
+      "required": ["date", "ticker", "nav_weight"],
+      "properties": {
+        "date": { "type": "string" },
+        "ticker": { "type": "string" },
+        "nav_weight": { "$ref": "#/$defs/nullableNumber" }
+      }
+    },
+    "trade": {
+      "type": "object",
+      "required": ["trade_date", "ticker", "side", "price", "quantity", "fee"],
+      "properties": {
+        "trade_date": { "type": "string" },
+        "ticker": { "type": "string" },
+        "side": { "type": "string" },
+        "price": { "$ref": "#/$defs/nullableNumber" },
+        "quantity": { "$ref": "#/$defs/nullableNumber" },
+        "fee": { "$ref": "#/$defs/nullableNumber" }
+      }
+    },
+    "industry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["date", "ticker", "industry", "industry_source", "nav_weight"],
+      "properties": {
+        "date": { "type": "string" },
+        "ticker": { "type": "string" },
+        "industry": { "type": ["string", "null"] },
+        "industry_source": { "type": ["string", "null"] },
+        "nav_weight": { "$ref": "#/$defs/nullableNumber" }
+      }
+    }
+  }
+}
