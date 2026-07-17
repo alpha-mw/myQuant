@@ -15,9 +15,12 @@ from quant_investor.agent_protocol import (
     CoverageScope,
     EventNote,
     RiskDecision,
+    RiskAdvisory,
     RiskLevel,
 )
 from quant_investor.agents.base import BaseAgent
+from quant_investor.v16.candidate_pipeline import Stage2Decision
+from quant_investor.v16.protocol_matrix import PROTOCOL_VERSIONS
 
 
 RISK_GUARD_SINGLE_NAME_WEIGHT_CAP_ENV = "RISK_GUARD_SINGLE_NAME_WEIGHT_CAP"
@@ -265,3 +268,101 @@ class RiskGuard(BaseAgent):
         if gross_cap <= 0.75 or risk_count >= 1:
             return RiskLevel.MEDIUM
         return RiskLevel.LOW
+
+
+class RiskAdvisor(BaseAgent):
+    """V16 risk narrative that has no authority over actions or weights."""
+
+    agent_name = "RiskAdvisor"
+    protocol_version = PROTOCOL_VERSIONS["risk_advisor_version"]
+    _SEVERE_KEYWORDS = frozenset(DEFAULT_VETO_KEYWORDS)
+
+    def run(self, payload: Mapping[str, Any]) -> RiskAdvisory:
+        envelope = self.ensure_payload(payload)
+        self.require_keys(envelope, "branch_verdicts")
+        branch_verdicts = RiskGuard._normalize_branch_verdicts(
+            envelope["branch_verdicts"]
+        )
+        macro_verdict = envelope.get("macro_verdict")
+        advisory_context = self.ensure_payload(envelope.get("advisory_context", {}))
+
+        flags = self._dedupe(
+            RiskGuard._collect_risk_texts(
+                branch_verdicts,
+                macro_verdict,
+                {"risk_flags": advisory_context.get("flags", [])},
+            )
+        )
+        severe_flag_count = sum(
+            1
+            for flag in flags
+            if any(keyword in flag.lower() for keyword in self._SEVERE_KEYWORDS)
+        )
+        if severe_flag_count:
+            severity = RiskLevel.EXTREME
+        elif len(flags) >= 3:
+            severity = RiskLevel.HIGH
+        elif flags:
+            severity = RiskLevel.MEDIUM
+        else:
+            severity = RiskLevel.LOW
+
+        scenarios = self._dedupe(advisory_context.get("scenarios", []))
+        suggestions = self._dedupe(advisory_context.get("suggestions", []))
+        if flags and not scenarios:
+            scenarios = ["监测已识别风险事件是否恶化及其二阶影响。"]
+        if flags and not suggestions:
+            suggestions = ["在下一次研究复核中逐项回应风险标记并保留证据。"]
+        rationale = str(advisory_context.get("rationale") or "").strip()
+        if not rationale:
+            rationale = (
+                f"识别到 {len(flags)} 个风险标记；该结论仅供研究解释，"
+                "不构成否决、动作上限或仓位约束。"
+            )
+
+        return RiskAdvisory(
+            severity=severity,
+            flags=flags,
+            scenarios=scenarios,
+            suggestions=suggestions,
+            rationale=rationale,
+        )
+
+    @staticmethod
+    def validate_severe_buy_rationale(
+        advisory: RiskAdvisory,
+        decisions: list[Stage2Decision],
+    ) -> None:
+        """Reject an unexplained severe-risk BUY after Stage2 schema validation.
+
+        This check never rewrites action, rank, or target weight.  A caller may
+        either accept the already-validated response or fail closed and request
+        a new response containing the missing rationale.
+        """
+
+        if advisory.severity not in {RiskLevel.HIGH, RiskLevel.EXTREME}:
+            return
+        missing = sorted(
+            decision.symbol
+            for decision in decisions
+            if decision.action == "BUY"
+            and not str(decision.risk_acceptance_rationale or "").strip()
+        )
+        if missing:
+            raise ValueError(
+                "severe-risk BUY requires risk_acceptance_rationale: "
+                + ", ".join(missing)
+            )
+
+    @staticmethod
+    def _dedupe(values: Any) -> list[str]:
+        if not isinstance(values, (list, tuple, set)):
+            return []
+        result: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            text = str(value).strip()
+            if text and text not in seen:
+                seen.add(text)
+                result.append(text)
+        return result

@@ -37,6 +37,30 @@ from quant_investor.factors.expression import *  # noqa: F403
 from quant_investor.factors.execution_cost import *  # noqa: F403
 from quant_investor.factors.governance import *  # noqa: F403
 from quant_investor.factors.governance_protocol_v3 import *  # noqa: F401,F403
+from quant_investor.factors.governance_canonical_replay_v4 import (
+    readback_v4_evidence,
+    validate_canonical_replay_v4,
+    validate_v4_evidence,
+)
+from quant_investor.factors.governance_protocol_v4 import (
+    assess_candidate_admission_v4,
+    assess_factor_governance_readiness_v4,
+    assess_factor_record_v4,
+    assess_governance_cycle_v4,
+    build_health_action_proposal_v4,
+    protocol_hash as factor_governance_v4_protocol_hash,
+    protocol_policy as factor_governance_v4_protocol_policy,
+    validate_candidate_admission_v4,
+)
+from quant_investor.factors.governance_transaction_v4 import (
+    FactorV4ShadowTransactionStore,
+    build_activation_request_v4,
+    build_factor_v4_transaction_plan,
+    validate_activation_receipt_v4,
+    validate_factor_v4_transaction_plan,
+    validate_inverse_rollback_manifest_v4,
+    validate_shadow_activation_receipt_v4,
+)
 from quant_investor.factors.health import *  # noqa: F403
 from quant_investor.factors.library import *  # noqa: F403
 from quant_investor.factors.matrix import *  # noqa: F403
@@ -99,4 +123,22 @@ __all__ = [
     "propose_admission_decision",
     "build_library_entry_from_decision",
     "build_production_factor_library",
+    "FactorV4ShadowTransactionStore",
+    "assess_candidate_admission_v4",
+    "assess_factor_governance_readiness_v4",
+    "assess_factor_record_v4",
+    "assess_governance_cycle_v4",
+    "build_activation_request_v4",
+    "build_factor_v4_transaction_plan",
+    "build_health_action_proposal_v4",
+    "factor_governance_v4_protocol_hash",
+    "factor_governance_v4_protocol_policy",
+    "readback_v4_evidence",
+    "validate_activation_receipt_v4",
+    "validate_canonical_replay_v4",
+    "validate_factor_v4_transaction_plan",
+    "validate_inverse_rollback_manifest_v4",
+    "validate_shadow_activation_receipt_v4",
+    "validate_candidate_admission_v4",
+    "validate_v4_evidence",
 ]
