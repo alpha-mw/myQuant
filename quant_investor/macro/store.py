@@ -1068,6 +1068,284 @@ def _merge_observation_evidence(
     return {key: merged[key] for key in sorted(merged)}
 
 
+def _normalize_projection_rows(
+    observations: Iterable[Mapping[str, Any] | MacroObservation],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen_hashes: set[str] = set()
+    for value in observations:
+        payload = (
+            value.to_dict()
+            if isinstance(value, MacroObservation)
+            else value
+        )
+        row = MacroObservation.from_mapping(payload).to_dict()
+        content_hash = row["content_hash"]
+        if content_hash in seen_hashes:
+            raise MacroObservationStoreError(
+                "macro_observation_projection_duplicate_row"
+            )
+        seen_hashes.add(content_hash)
+        rows.append(row)
+    return _normalize_rows(rows)
+
+
+def _normalize_projection_hashes(
+    values: Iterable[str],
+    *,
+    field_name: str,
+) -> set[str]:
+    if isinstance(values, (str, bytes)):
+        raise MacroObservationStoreError(
+            f"macro_observation_projection_{field_name}_invalid"
+        )
+    try:
+        hashes = list(values)
+    except TypeError as exc:
+        raise MacroObservationStoreError(
+            f"macro_observation_projection_{field_name}_invalid"
+        ) from exc
+    if any(
+        not isinstance(content_hash, str)
+        or not _SHA256_RE.fullmatch(content_hash)
+        for content_hash in hashes
+    ):
+        raise MacroObservationStoreError(
+            f"macro_observation_projection_{field_name}_invalid"
+        )
+    if len(set(hashes)) != len(hashes):
+        raise MacroObservationStoreError(
+            f"macro_observation_projection_{field_name}_duplicate"
+        )
+    return set(hashes)
+
+
+def _projection_v2_evidence(
+    root: Path,
+    rows: Sequence[Mapping[str, Any]],
+    pointer: Mapping[str, Any],
+) -> tuple[
+    list[dict[str, Any]],
+    dict[str, list[str]],
+    dict[str, bytes],
+]:
+    manifest = pointer.get("generation_manifest")
+    if (
+        not isinstance(manifest, Mapping)
+        or manifest.get("schema_version") != _GENERATION_V2
+    ):
+        raise MacroObservationStoreError(
+            "macro_observation_projection_parent_v2_required"
+        )
+    generation = (
+        root
+        / GENERATIONS_DIRNAME
+        / _safe_id(str(pointer.get("generation_id") or ""))
+    )
+    try:
+        generation_metadata = os.lstat(generation)
+        table_metadata = os.lstat(generation / "observations.parquet")
+        manifest_metadata = os.lstat(generation / "manifest.json")
+    except OSError as exc:
+        raise MacroObservationStoreError(
+            "macro_observation_projection_parent_unsafe"
+        ) from exc
+    if (
+        stat.S_ISLNK(generation_metadata.st_mode)
+        or not stat.S_ISDIR(generation_metadata.st_mode)
+        or stat.S_IMODE(generation_metadata.st_mode) != 0o700
+        or stat.S_ISLNK(table_metadata.st_mode)
+        or not stat.S_ISREG(table_metadata.st_mode)
+        or stat.S_IMODE(table_metadata.st_mode) != 0o600
+        or stat.S_ISLNK(manifest_metadata.st_mode)
+        or not stat.S_ISREG(manifest_metadata.st_mode)
+        or stat.S_IMODE(manifest_metadata.st_mode) != 0o600
+    ):
+        raise MacroObservationStoreError(
+            "macro_observation_projection_parent_unsafe"
+        )
+    files, mapping, bodies = _validate_generation_evidence(
+        generation,
+        manifest,
+        include_bytes=True,
+    )
+    row_hashes = {str(row.get("content_hash") or "") for row in rows}
+    if len(row_hashes) != len(rows):
+        raise MacroObservationStoreError(
+            "macro_observation_projection_parent_duplicate_row"
+        )
+    if set(mapping) != row_hashes:
+        raise MacroObservationStoreError(
+            "macro_observation_projection_parent_mapping_missing"
+        )
+    return files, mapping, bodies
+
+
+def _prepare_observation_projection(
+    parent_rows: Sequence[Mapping[str, Any]],
+    parent_evidence_files: Sequence[Mapping[str, Any]],
+    parent_observation_evidence: Mapping[str, Iterable[str]],
+    parent_evidence_bodies: Mapping[str, bytes],
+    incoming_rows: Sequence[Mapping[str, Any]],
+    incoming_evidence_files: Sequence[Mapping[str, Any]],
+    incoming_observation_evidence: Mapping[str, Iterable[str]],
+    incoming_evidence_bodies: Mapping[str, bytes],
+    *,
+    retained_parent_content_hashes: set[str],
+    removed_parent_content_hashes: set[str],
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    dict[str, list[str]],
+    dict[str, bytes],
+]:
+    parent_hashes = {
+        str(row.get("content_hash") or "") for row in parent_rows
+    }
+    overlap = (
+        retained_parent_content_hashes & removed_parent_content_hashes
+    )
+    if overlap:
+        raise MacroObservationStoreError(
+            "macro_observation_projection_parent_hash_overlap"
+        )
+    unknown_retained = retained_parent_content_hashes - parent_hashes
+    if unknown_retained:
+        raise MacroObservationStoreError(
+            "macro_observation_projection_retained_hash_unknown"
+        )
+    unknown_removed = removed_parent_content_hashes - parent_hashes
+    if unknown_removed:
+        raise MacroObservationStoreError(
+            "macro_observation_projection_removed_hash_unknown"
+        )
+    if (
+        retained_parent_content_hashes | removed_parent_content_hashes
+    ) != parent_hashes:
+        raise MacroObservationStoreError(
+            "macro_observation_projection_parent_partition_mismatch"
+        )
+
+    incoming_hashes = {
+        str(row.get("content_hash") or "") for row in incoming_rows
+    }
+    if incoming_hashes & parent_hashes:
+        raise MacroObservationStoreError(
+            "macro_observation_projection_incoming_parent_overlap"
+        )
+
+    # Validate conflicts against the complete parent, including evidence that
+    # will intentionally not be copied into the child. Removing a row must not
+    # provide a route around digest, metadata, or source-record drift checks.
+    all_evidence_files, all_evidence_bodies = _merge_evidence_files(
+        parent_evidence_files,
+        parent_evidence_bodies,
+        incoming_evidence_files,
+        incoming_evidence_bodies,
+    )
+    all_observation_evidence = _merge_observation_evidence(
+        parent_observation_evidence,
+        incoming_observation_evidence,
+    )
+    _normalize_rows([*parent_rows, *incoming_rows])
+    _validate_evidence_record_drift(
+        [*parent_rows, *incoming_rows],
+        all_observation_evidence,
+    )
+
+    retained_rows = [
+        dict(row)
+        for row in parent_rows
+        if str(row.get("content_hash") or "")
+        in retained_parent_content_hashes
+    ]
+    child_rows = _normalize_rows([*retained_rows, *incoming_rows])
+    child_hashes = {
+        str(row.get("content_hash") or "") for row in child_rows
+    }
+    if not child_rows:
+        raise MacroObservationStoreError(
+            "macro_observation_projection_empty_child"
+        )
+    if (
+        child_hashes - parent_hashes != incoming_hashes
+        or parent_hashes - child_hashes
+        != removed_parent_content_hashes
+        or child_hashes & parent_hashes
+        != retained_parent_content_hashes
+    ):
+        raise MacroObservationStoreError(
+            "macro_observation_projection_unexpected_parent_child_diff"
+        )
+    if not child_hashes.issubset(all_observation_evidence):
+        raise MacroObservationStoreError(
+            "macro_observation_projection_child_mapping_missing"
+        )
+    child_observation_evidence = {
+        content_hash: list(all_observation_evidence[content_hash])
+        for content_hash in sorted(child_hashes)
+    }
+    referenced_digests = {
+        digest
+        for digests in child_observation_evidence.values()
+        for digest in digests
+    }
+    all_file_map = _evidence_file_map(all_evidence_files)
+    if (
+        not referenced_digests
+        or not referenced_digests.issubset(all_file_map)
+        or not referenced_digests.issubset(all_evidence_bodies)
+    ):
+        raise MacroObservationStoreError(
+            "macro_observation_projection_child_evidence_missing"
+        )
+    child_evidence_files = [
+        all_file_map[digest] for digest in sorted(referenced_digests)
+    ]
+    child_evidence_bodies = {
+        digest: all_evidence_bodies[digest]
+        for digest in sorted(referenced_digests)
+    }
+    if set(child_evidence_bodies) != {
+        digest
+        for digests in child_observation_evidence.values()
+        for digest in digests
+    }:
+        raise MacroObservationStoreError(
+            "macro_observation_evidence_reference_set_mismatch"
+        )
+    _validate_evidence_record_drift(
+        child_rows,
+        child_observation_evidence,
+    )
+    return (
+        child_rows,
+        child_evidence_files,
+        child_observation_evidence,
+        child_evidence_bodies,
+    )
+
+
+def _projection_state_matches(
+    rows: Sequence[Mapping[str, Any]],
+    evidence_files: Sequence[Mapping[str, Any]],
+    observation_evidence: Mapping[str, Iterable[str]],
+    evidence_bodies: Mapping[str, bytes],
+    *,
+    expected_rows: Sequence[Mapping[str, Any]],
+    expected_evidence_files: Sequence[Mapping[str, Any]],
+    expected_observation_evidence: Mapping[str, Iterable[str]],
+    expected_evidence_bodies: Mapping[str, bytes],
+) -> bool:
+    return (
+        list(rows) == list(expected_rows)
+        and list(evidence_files) == list(expected_evidence_files)
+        and dict(observation_evidence)
+        == dict(expected_observation_evidence)
+        and dict(evidence_bodies) == dict(expected_evidence_bodies)
+    )
+
+
 def publish_observations(
     observations: Iterable[Mapping[str, Any] | MacroObservation],
     *,
@@ -1379,10 +1657,458 @@ def publish_observations(
             raise
 
 
+def publish_observation_projection(
+    observations: Iterable[Mapping[str, Any] | MacroObservation],
+    *,
+    root: str | Path = DEFAULT_OBSERVATIONS_ROOT,
+    run_id: str,
+    expected_pointer_sha256: str,
+    retained_parent_content_hashes: Iterable[str],
+    removed_parent_content_hashes: Iterable[str],
+    metadata: Mapping[str, Any] | None = None,
+    evidence_bytes: Mapping[str, bytes],
+    evidence_metadata: Mapping[str, Mapping[str, Any]],
+    observation_evidence: Mapping[str, Iterable[str]],
+    precommit_validator: Callable[
+        [Sequence[Mapping[str, Any]], Mapping[str, Any]],
+        None,
+    ]
+    | None = None,
+) -> dict[str, Any]:
+    """Publish one exact v2 child while retaining a declared parent subset."""
+
+    base = _write_root(root)
+    generation_id = _safe_id(run_id)
+    incoming = _normalize_projection_rows(observations)
+    (
+        incoming_evidence_bodies,
+        incoming_evidence_files,
+        incoming_observation_evidence,
+    ) = _normalize_evidence_inputs(
+        incoming,
+        evidence_bytes=evidence_bytes,
+        evidence_metadata=evidence_metadata,
+        observation_evidence=observation_evidence,
+    )
+    retained_hashes = _normalize_projection_hashes(
+        retained_parent_content_hashes,
+        field_name="retained_hashes",
+    )
+    removed_hashes = _normalize_projection_hashes(
+        removed_parent_content_hashes,
+        field_name="removed_hashes",
+    )
+    normalized_metadata = _canonical_metadata(
+        {} if metadata is None else metadata
+    )
+
+    with _locked(base):
+        previous_pointer_bytes = _optional_pointer_bytes(base)
+        current_sha = (
+            hashlib.sha256(previous_pointer_bytes).hexdigest()
+            if previous_pointer_bytes is not None
+            else ""
+        )
+        current_pointer = _strict_pointer(base)
+        if (
+            (current_pointer is None) != (previous_pointer_bytes is None)
+            or (
+                current_pointer is not None
+                and current_pointer.get("pointer_sha256") != current_sha
+            )
+        ):
+            raise MacroObservationStoreError(
+                "macro_observation_pointer_changed_during_publish"
+            )
+
+        if current_sha != expected_pointer_sha256:
+            if (
+                current_pointer is None
+                or current_pointer.get("generation_id") != generation_id
+            ):
+                raise MacroObservationStoreError(
+                    "macro_observation_pointer_cas_mismatch"
+                )
+            current_rows, current_loaded = load_observations(base)
+            current_manifest = current_loaded.get("generation_manifest")
+            if (
+                not isinstance(current_manifest, Mapping)
+                or current_manifest.get("schema_version") != _GENERATION_V2
+                or current_manifest.get("parent_pointer_sha256")
+                != expected_pointer_sha256
+            ):
+                raise MacroObservationStoreError(
+                    "macro_observation_pointer_cas_mismatch"
+                )
+            parent_generation_id = _safe_id(
+                str(current_manifest.get("parent_generation_id") or "")
+            )
+            parent_rows, parent_pointer = load_observations(
+                base,
+                generation_id=parent_generation_id,
+            )
+            (
+                parent_files,
+                parent_mapping,
+                parent_bodies,
+            ) = _projection_v2_evidence(
+                base,
+                parent_rows,
+                parent_pointer,
+            )
+            (
+                expected_rows,
+                expected_files,
+                expected_mapping,
+                expected_bodies,
+            ) = _prepare_observation_projection(
+                parent_rows,
+                parent_files,
+                parent_mapping,
+                parent_bodies,
+                incoming,
+                incoming_evidence_files,
+                incoming_observation_evidence,
+                incoming_evidence_bodies,
+                retained_parent_content_hashes=retained_hashes,
+                removed_parent_content_hashes=removed_hashes,
+            )
+            (
+                current_files,
+                current_mapping,
+                current_bodies,
+            ) = _projection_v2_evidence(
+                base,
+                current_rows,
+                current_loaded,
+            )
+            exact_retry = (
+                _projection_state_matches(
+                    current_rows,
+                    current_files,
+                    current_mapping,
+                    current_bodies,
+                    expected_rows=expected_rows,
+                    expected_evidence_files=expected_files,
+                    expected_observation_evidence=expected_mapping,
+                    expected_evidence_bodies=expected_bodies,
+                )
+                and current_manifest.get("parent_generation_id")
+                == parent_generation_id
+                and current_manifest.get("added_content_hashes")
+                == sorted(
+                    str(row.get("content_hash") or "")
+                    for row in incoming
+                )
+                and current_manifest.get("removed_content_hashes")
+                == sorted(removed_hashes)
+                and current_manifest.get("metadata")
+                == normalized_metadata
+                and current_loaded.get("metadata")
+                == normalized_metadata
+            )
+            if not exact_retry:
+                raise MacroObservationStoreError(
+                    "macro_observation_projection_retry_mismatch"
+                )
+            _run_precommit_validator(
+                precommit_validator,
+                current_rows,
+                current_manifest,
+            )
+            return {
+                **current_loaded,
+                "status": "no_update",
+                "promoted": False,
+                "reason": "exact_projection_exists",
+            }
+
+        if current_pointer is None:
+            raise MacroObservationStoreError(
+                "macro_observation_projection_parent_missing"
+            )
+        parent_rows, parent_pointer = load_observations(base)
+        (
+            parent_files,
+            parent_mapping,
+            parent_bodies,
+        ) = _projection_v2_evidence(
+            base,
+            parent_rows,
+            parent_pointer,
+        )
+        (
+            child_rows,
+            child_files,
+            child_mapping,
+            child_bodies,
+        ) = _prepare_observation_projection(
+            parent_rows,
+            parent_files,
+            parent_mapping,
+            parent_bodies,
+            incoming,
+            incoming_evidence_files,
+            incoming_observation_evidence,
+            incoming_evidence_bodies,
+            retained_parent_content_hashes=retained_hashes,
+            removed_parent_content_hashes=removed_hashes,
+        )
+        parent_manifest = parent_pointer.get("generation_manifest")
+        assert isinstance(parent_manifest, Mapping)
+        if (
+            _projection_state_matches(
+                parent_rows,
+                parent_files,
+                parent_mapping,
+                parent_bodies,
+                expected_rows=child_rows,
+                expected_evidence_files=child_files,
+                expected_observation_evidence=child_mapping,
+                expected_evidence_bodies=child_bodies,
+            )
+            and parent_manifest.get("metadata") == normalized_metadata
+            and parent_pointer.get("metadata") == normalized_metadata
+        ):
+            _run_precommit_validator(
+                precommit_validator,
+                parent_rows,
+                parent_manifest,
+            )
+            return {
+                **parent_pointer,
+                "status": "no_update",
+                "promoted": False,
+                "reason": "exact_projection_current",
+            }
+
+        generations = base / GENERATIONS_DIRNAME
+        if generations.exists() and (
+            generations.is_symlink() or not generations.is_dir()
+        ):
+            raise MacroObservationStoreError(
+                "macro_observation_generations_root_unsafe"
+            )
+        generations.mkdir(parents=True, exist_ok=True, mode=0o700)
+        final = generations / generation_id
+        if final.exists() or final.is_symlink():
+            raise MacroObservationStoreError(
+                "macro_observation_generation_exists"
+            )
+        staging = Path(
+            tempfile.mkdtemp(prefix=f".{generation_id}.", dir=generations)
+        )
+        try:
+            frame = pd.DataFrame(child_rows, columns=OBSERVATION_COLUMNS)
+            table = staging / "observations.parquet"
+            frame.to_parquet(table, index=False)
+            os.chmod(table, 0o600)
+            table_descriptor = os.open(
+                table,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            )
+            try:
+                os.fsync(table_descriptor)
+            finally:
+                os.close(table_descriptor)
+            readback = pd.read_parquet(table)
+            if tuple(readback.columns) != OBSERVATION_COLUMNS:
+                raise MacroObservationStoreError(
+                    "macro_observation_generation_readback_failed"
+                )
+            readback_rows = _normalize_projection_rows(
+                readback.to_dict(orient="records")
+            )
+            if readback_rows != child_rows:
+                raise MacroObservationStoreError(
+                    "macro_observation_generation_readback_failed"
+                )
+
+            parquet_hash = _sha256(table)
+            content_set_hash = canonical_hash(
+                {
+                    "hashes": sorted(
+                        str(row["content_hash"]) for row in child_rows
+                    )
+                }
+            )
+            added_hashes = sorted(
+                str(row.get("content_hash") or "") for row in incoming
+            )
+            manifest = {
+                "schema_version": _GENERATION_V2,
+                "status": "OK",
+                "generation_id": generation_id,
+                "row_count": len(frame),
+                "parquet_sha256": parquet_hash,
+                "content_set_hash": content_set_hash,
+                "created_at": _now_utc(),
+                "parent_generation_id": str(
+                    parent_pointer.get("generation_id") or ""
+                ),
+                "parent_pointer_sha256": current_sha,
+                "added_content_hashes": added_hashes,
+                "removed_content_hashes": sorted(removed_hashes),
+                "min_available_at": min(
+                    str(row["available_at"]) for row in child_rows
+                ),
+                "max_available_at": max(
+                    str(row["available_at"]) for row in child_rows
+                ),
+                **_OBSERVER_FLAGS,
+                "metadata": normalized_metadata,
+                "evidence_file_count": len(child_files),
+                "evidence_files": child_files,
+                "evidence_set_sha256": canonical_hash(
+                    {"evidence_files": child_files}
+                ),
+                "observation_evidence": child_mapping,
+            }
+            evidence_directory = staging / "evidence"
+            raw_directory = evidence_directory / "raw"
+            evidence_directory.mkdir(mode=0o700)
+            os.chmod(evidence_directory, 0o700)
+            raw_directory.mkdir(mode=0o700)
+            os.chmod(raw_directory, 0o700)
+            for item in child_files:
+                digest = str(item["sha256"])
+                _write_private_bytes(
+                    staging / str(item["path"]),
+                    child_bodies[digest],
+                )
+            _fsync_directory(raw_directory)
+            _fsync_directory(evidence_directory)
+
+            manifest_path = staging / "manifest.json"
+            _atomic_json(manifest_path, manifest)
+            (
+                readback_files,
+                readback_mapping,
+                readback_bodies,
+            ) = _validate_generation_evidence(
+                staging,
+                manifest,
+                include_bytes=True,
+            )
+            if not _projection_state_matches(
+                child_rows,
+                readback_files,
+                readback_mapping,
+                readback_bodies,
+                expected_rows=child_rows,
+                expected_evidence_files=child_files,
+                expected_observation_evidence=child_mapping,
+                expected_evidence_bodies=child_bodies,
+            ):
+                raise MacroObservationStoreError(
+                    "macro_observation_evidence_readback_mismatch"
+                )
+            manifest_hash = _sha256(manifest_path)
+            _fsync_directory(staging)
+            os.replace(staging, final)
+            final_rows, final_pointer = load_observations(
+                base,
+                generation_id=generation_id,
+            )
+            (
+                final_files,
+                final_mapping,
+                final_bodies,
+            ) = _projection_v2_evidence(
+                base,
+                final_rows,
+                final_pointer,
+            )
+            if (
+                not _projection_state_matches(
+                    final_rows,
+                    final_files,
+                    final_mapping,
+                    final_bodies,
+                    expected_rows=child_rows,
+                    expected_evidence_files=child_files,
+                    expected_observation_evidence=child_mapping,
+                    expected_evidence_bodies=child_bodies,
+                )
+                or final_pointer.get("generation_manifest") != manifest
+            ):
+                raise MacroObservationStoreError(
+                    "macro_observation_projection_final_readback_mismatch"
+                )
+            _fsync_directory(final)
+            _fsync_directory(generations)
+
+            relative = final.relative_to(base)
+            next_pointer = {
+                "schema_version": "macro-observation-pointer.v1",
+                "status": "OK",
+                "generation_id": generation_id,
+                "table_path": str(relative / "observations.parquet"),
+                "manifest_path": str(relative / "manifest.json"),
+                "parquet_sha256": parquet_hash,
+                "manifest_sha256": manifest_hash,
+                "content_set_hash": content_set_hash,
+                "row_count": len(frame),
+                "previous_generation_id": str(
+                    parent_pointer.get("generation_id") or ""
+                ),
+                **_OBSERVER_FLAGS,
+                "metadata": normalized_metadata,
+            }
+            _run_precommit_validator(
+                precommit_validator,
+                child_rows,
+                manifest,
+            )
+            _transactional_pointer_switch(
+                base,
+                next_pointer,
+                expected_previous=previous_pointer_bytes,
+            )
+            return {
+                **next_pointer,
+                "pointer_sha256": hashlib.sha256(
+                    _json_document_bytes(next_pointer)
+                ).hexdigest(),
+                "generation_manifest": manifest,
+                "promoted": True,
+            }
+        except Exception as original_error:
+            if staging.exists():
+                try:
+                    shutil.rmtree(staging)
+                except Exception as cleanup_error:
+                    _add_error_note(
+                        original_error,
+                        f"staging cleanup failed: {cleanup_error!r}",
+                    )
+            try:
+                owns_previous_pointer = (
+                    _optional_pointer_bytes(base) == previous_pointer_bytes
+                )
+            except Exception as ownership_error:
+                _add_error_note(
+                    original_error,
+                    "generation cleanup ownership check failed: "
+                    f"{ownership_error!r}",
+                )
+                owns_previous_pointer = False
+            if final.exists() and owns_previous_pointer:
+                try:
+                    shutil.rmtree(final)
+                except Exception as cleanup_error:
+                    _add_error_note(
+                        original_error,
+                        f"generation cleanup failed: {cleanup_error!r}",
+                    )
+            raise
+
+
 __all__ = [
     "DEFAULT_OBSERVATIONS_ROOT",
     "MacroObservationStoreError",
     "load_observations",
     "pointer_sha256",
+    "publish_observation_projection",
     "publish_observations",
 ]

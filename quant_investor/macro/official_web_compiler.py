@@ -52,7 +52,9 @@ OFFICIAL_WEB_EVIDENCE_SCHEMA = "macro-official-web-evidence.v1"
 NBS_NATIONAL_ECONOMY_PARSER = "nbs-national-economy-html.v1"
 NBS_OFFICIAL_PMI_PARSER = "nbs-cn-pmi-html.v3"
 NBS_QUARTERLY_GDP_PARSER = "nbs-quarterly-gdp-html.v1"
+NBS_QUARTERLY_GDP_PARSER_V2 = "nbs-quarterly-gdp-html.v2"
 PBC_MONEY_STOCK_PARSER = "pbc-financial-statistics-html.v1"
+PBC_MONEY_STOCK_PARSER_V2 = "pbc-financial-statistics-html.v2"
 PBC_FINANCIAL_STATISTICS_PARSER = PBC_MONEY_STOCK_PARSER
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -117,6 +119,16 @@ _NBS_QUARTERLY_GDP_CONTRACT = {
     "unique_value": True,
     "version": NBS_QUARTERLY_GDP_PARSER,
 }
+_NBS_QUARTERLY_GDP_V2_CONTRACT = {
+    "article_meta": ["ArticleTitle", "PubDate"],
+    "body_encoding": "utf-8-strict",
+    "issuer": "nbs_official",
+    "measurement_basis": "current-quarter real GDP YoY, never cumulative YTD",
+    "period_source": "formal half-year ArticleTitle and table 2 quarterly row",
+    "publication_source": "PubDate Asia/Shanghai with URL record-date equality",
+    "unique_value": True,
+    "version": NBS_QUARTERLY_GDP_PARSER_V2,
+}
 _NBS_OFFICIAL_PMI_CONTRACT = {
     "article_title": "exact YYYY年M月中国采购经理指数运行情况",
     "body_encoding": "utf-8-strict",
@@ -151,25 +163,46 @@ _PBC_MONEY_STOCK_CONTRACT = {
     "unique_value_per_indicator": True,
     "version": PBC_MONEY_STOCK_PARSER,
 }
+_PBC_MONEY_STOCK_V2_CONTRACT = {
+    **_PBC_MONEY_STOCK_CONTRACT,
+    "period_source": (
+        "formal ArticleTitle year and month, quarter, or 上半年 mapped to June"
+    ),
+    "version": PBC_MONEY_STOCK_PARSER_V2,
+}
 
 NBS_NATIONAL_ECONOMY_PARSER_CONTRACT_SHA256 = _contract_hash(_NBS_NATIONAL_ECONOMY_CONTRACT)
 NBS_QUARTERLY_GDP_PARSER_CONTRACT_SHA256 = _contract_hash(_NBS_QUARTERLY_GDP_CONTRACT)
+NBS_QUARTERLY_GDP_PARSER_V2_CONTRACT_SHA256 = _contract_hash(
+    _NBS_QUARTERLY_GDP_V2_CONTRACT
+)
 NBS_OFFICIAL_PMI_PARSER_CONTRACT_SHA256 = _contract_hash(_NBS_OFFICIAL_PMI_CONTRACT)
 PBC_MONEY_STOCK_PARSER_CONTRACT_SHA256 = _contract_hash(_PBC_MONEY_STOCK_CONTRACT)
+PBC_MONEY_STOCK_PARSER_V2_CONTRACT_SHA256 = _contract_hash(
+    _PBC_MONEY_STOCK_V2_CONTRACT
+)
 
 PARSER_CONTRACT_SHA256: Mapping[str, str] = {
     NBS_NATIONAL_ECONOMY_PARSER: NBS_NATIONAL_ECONOMY_PARSER_CONTRACT_SHA256,
     NBS_OFFICIAL_PMI_PARSER: NBS_OFFICIAL_PMI_PARSER_CONTRACT_SHA256,
     NBS_QUARTERLY_GDP_PARSER: NBS_QUARTERLY_GDP_PARSER_CONTRACT_SHA256,
+    NBS_QUARTERLY_GDP_PARSER_V2: NBS_QUARTERLY_GDP_PARSER_V2_CONTRACT_SHA256,
     PBC_MONEY_STOCK_PARSER: PBC_MONEY_STOCK_PARSER_CONTRACT_SHA256,
+    PBC_MONEY_STOCK_PARSER_V2: PBC_MONEY_STOCK_PARSER_V2_CONTRACT_SHA256,
 }
 
 _PARSER_SOURCE_SYSTEM: Mapping[str, str] = {
     NBS_NATIONAL_ECONOMY_PARSER: "nbs_official",
     NBS_OFFICIAL_PMI_PARSER: "nbs_official",
     NBS_QUARTERLY_GDP_PARSER: "nbs_official",
+    NBS_QUARTERLY_GDP_PARSER_V2: "nbs_official",
     PBC_MONEY_STOCK_PARSER: "pbc_official",
+    PBC_MONEY_STOCK_PARSER_V2: "pbc_official",
 }
+
+_PBC_MONEY_STOCK_PARSERS = frozenset(
+    {PBC_MONEY_STOCK_PARSER, PBC_MONEY_STOCK_PARSER_V2}
+)
 
 _NATIONAL_ECONOMY_IDS = frozenset(
     {
@@ -906,9 +939,70 @@ def _parse_nbs_quarterly_gdp(body_bytes: bytes, *, source_url: str) -> _ParsedDo
     )
 
 
+_NBS_HALF_YEAR_GDP_TITLE_RE = re.compile(
+    r"^(?P<year>20\d{2})年二季度和上半年国内生产总值(?:（GDP）|\(GDP\))?"
+    r"初步核算结果$"
+)
+
+
+def _parse_nbs_quarterly_gdp_v2(
+    body_bytes: bytes,
+    *,
+    source_url: str,
+) -> _ParsedDocument:
+    parser = _parse_html(body_bytes)
+    title, release_at, record_id = _official_metadata(
+        parser,
+        source_url=source_url,
+        source_system="nbs_official",
+    )
+    title_match = _NBS_HALF_YEAR_GDP_TITLE_RE.fullmatch(title)
+    if title_match is None:
+        raise OfficialWebCompilerError("official_web_gdp_article_title_invalid")
+    year = int(title_match.group("year"))
+    texts = tuple(_normalize_text(item) for item in parser.blocks if item.strip())
+    table_markers = [
+        index
+        for index, text in enumerate(texts)
+        if text == "表2GDP同比增长速度"
+    ]
+    if len(table_markers) != 1:
+        raise OfficialWebCompilerError("official_web_gdp_table_missing_or_ambiguous")
+    start = table_markers[0]
+    end = next(
+        (
+            index
+            for index in range(start + 1, len(texts))
+            if texts[index].startswith("注：同比增长速度")
+        ),
+        -1,
+    )
+    if end < 0:
+        raise OfficialWebCompilerError("official_web_gdp_table_note_missing")
+    year_positions = [
+        index
+        for index in range(start + 1, end)
+        if texts[index] == str(year)
+    ]
+    if len(year_positions) != 1:
+        raise OfficialWebCompilerError("official_web_gdp_year_row_missing_or_ambiguous")
+    row = texts[year_positions[0] + 1 : end]
+    if len(row) != 2 or any(re.fullmatch(_NUMBER_RE, item) is None for item in row):
+        raise OfficialWebCompilerError("official_web_gdp_year_row_invalid")
+    period = f"{year:04d}Q2"
+    _period_not_after_release(period, release_at)
+    return _ParsedDocument(
+        period,
+        release_at,
+        record_id,
+        title,
+        (_Value("cn.gdp_yoy", _decimal(row[1]), period),),
+    )
+
+
 _PBC_MONEY_TITLE_RE = re.compile(
     r"^(?P<year>20\d{2})年(?:(?P<month>1[0-2]|[1-9])月|"
-    r"(?P<quarter>[一二三四])季度)"
+    r"(?P<quarter>[一二三四])季度|(?P<half>上半年))"
     r"(?:金融统计数据报告|金融统计数据|货币金融数据)$"
 )
 _M1_RE = re.compile(rf"(?:狭义货币（M1）|M1余额)[^。；]{{0,100}}?同比{_PERCENT_RE}")
@@ -930,7 +1024,12 @@ def _unique_signed_value(
     return unique[0]
 
 
-def _parse_pbc_money_stock(body_bytes: bytes, *, source_url: str) -> _ParsedDocument:
+def _parse_pbc_money_stock(
+    body_bytes: bytes,
+    *,
+    source_url: str,
+    allow_half_year: bool = False,
+) -> _ParsedDocument:
     parser = _parse_html(body_bytes)
     title, release_at, record_id = _official_metadata(
         parser,
@@ -941,7 +1040,13 @@ def _parse_pbc_money_stock(body_bytes: bytes, *, source_url: str) -> _ParsedDocu
     if title_match is None:
         raise OfficialWebCompilerError("official_web_money_article_title_invalid")
     texts = tuple(_normalize_text(item) for item in parser.blocks if item.strip())
-    if title_match.group("month"):
+    if title_match.group("half"):
+        if not allow_half_year:
+            raise OfficialWebCompilerError(
+                "official_web_money_article_title_invalid"
+            )
+        month = 6
+    elif title_match.group("month"):
         month = int(title_match.group("month"))
     else:
         month = _QUARTER_NUMBER[title_match.group("quarter")] * 3
@@ -1002,9 +1107,56 @@ def _parse_page(
         return _parse_nbs_official_pmi(body_bytes, source_url=source_url)
     if parser_id == NBS_QUARTERLY_GDP_PARSER:
         return _parse_nbs_quarterly_gdp(body_bytes, source_url=source_url)
-    if parser_id == PBC_MONEY_STOCK_PARSER:
-        return _parse_pbc_money_stock(body_bytes, source_url=source_url)
+    if parser_id == NBS_QUARTERLY_GDP_PARSER_V2:
+        return _parse_nbs_quarterly_gdp_v2(
+            body_bytes,
+            source_url=source_url,
+        )
+    if parser_id in _PBC_MONEY_STOCK_PARSERS:
+        return _parse_pbc_money_stock(
+            body_bytes,
+            source_url=source_url,
+            allow_half_year=(parser_id == PBC_MONEY_STOCK_PARSER_V2),
+        )
     raise OfficialWebCompilerError("official_web_parser_id_unsupported")
+
+
+def parse_official_support_page(
+    parser_id: str,
+    body_bytes: bytes,
+    *,
+    source_url: str,
+) -> dict[str, Any]:
+    """Parse one official support page without publishing observations."""
+
+    parsed = _parse_page(parser_id, body_bytes, source_url=source_url)
+    values = []
+    for item in parsed.values:
+        frequency, unit = _FREQUENCY_UNIT[item.indicator_id]
+        values.append(
+            {
+                "indicator_id": item.indicator_id,
+                "period": item.period or parsed.period,
+                "frequency": frequency,
+                "unit": unit,
+                "measurement_basis": _MEASUREMENT_BASIS[item.indicator_id],
+                "value_decimal": _decimal_text(item.value),
+            }
+        )
+    return {
+        "parser_id": parser_id,
+        "parser_contract_sha256": PARSER_CONTRACT_SHA256[parser_id],
+        "source_system": _PARSER_SOURCE_SYSTEM[parser_id],
+        "source_url": normalize_source_url(
+            source_url,
+            source_system=_PARSER_SOURCE_SYSTEM[parser_id],
+        ),
+        "source_record_id": parsed.source_record_id,
+        "article_title": parsed.article_title,
+        "primary_period": parsed.period,
+        "release_at": parsed.release_at.isoformat(),
+        "values": values,
+    }
 
 
 def _period_end(period: str, frequency: str) -> str:
@@ -1190,14 +1342,24 @@ def _validate_plan_pages(plan: Mapping[str, Any]) -> dict[str, Mapping[str, Any]
         NBS_NATIONAL_ECONOMY_PARSER: 3,
         NBS_OFFICIAL_PMI_PARSER: 3,
         NBS_QUARTERLY_GDP_PARSER: 2,
-        PBC_MONEY_STOCK_PARSER: 4,
     }
-    if parser_counts != expected_counts:
+    money_parsers = set(parser_counts) & _PBC_MONEY_STOCK_PARSERS
+    if (
+        len(money_parsers) != 1
+        or parser_counts.get(next(iter(money_parsers)), 0) != 4
+        or {
+            key: value
+            for key, value in parser_counts.items()
+            if key not in _PBC_MONEY_STOCK_PARSERS
+        }
+        != expected_counts
+    ):
         raise OfficialWebCompilerError("official_web_plan_parser_counts_invalid")
     _require_consecutive(periods_by_parser[NBS_NATIONAL_ECONOMY_PARSER], quarterly=False)
     _require_consecutive(periods_by_parser[NBS_OFFICIAL_PMI_PARSER], quarterly=False)
     _require_consecutive(periods_by_parser[NBS_QUARTERLY_GDP_PARSER], quarterly=True)
-    _require_consecutive(periods_by_parser[PBC_MONEY_STOCK_PARSER], quarterly=False)
+    money_parser = next(iter(money_parsers))
+    _require_consecutive(periods_by_parser[money_parser], quarterly=False)
     return pages
 
 
@@ -1226,7 +1388,12 @@ def _validate_plan(
         raise OfficialWebCompilerError("official_web_economy_plan_scope_mismatch")
     if scope_periods["cn.pmi_manufacturing"] != set(page_periods[NBS_OFFICIAL_PMI_PARSER]):
         raise OfficialWebCompilerError("official_web_pmi_plan_scope_mismatch")
-    pbc_periods = sorted(page_periods[PBC_MONEY_STOCK_PARSER], key=_month_index)
+    money_parsers = set(page_periods) & _PBC_MONEY_STOCK_PARSERS
+    if len(money_parsers) != 1:  # pragma: no cover - guarded above
+        raise OfficialWebCompilerError("official_web_plan_parser_counts_invalid")
+    pbc_periods = sorted(
+        page_periods[next(iter(money_parsers))], key=_month_index
+    )
     latest_three = set(pbc_periods[-3:])
     if any(scope_periods[item] != latest_three for item in _MONEY_IDS):
         raise OfficialWebCompilerError("official_web_money_plan_scope_mismatch")
@@ -2083,6 +2250,8 @@ __all__ = [
     "NBS_OFFICIAL_PMI_PARSER_CONTRACT_SHA256",
     "NBS_QUARTERLY_GDP_PARSER",
     "NBS_QUARTERLY_GDP_PARSER_CONTRACT_SHA256",
+    "NBS_QUARTERLY_GDP_PARSER_V2",
+    "NBS_QUARTERLY_GDP_PARSER_V2_CONTRACT_SHA256",
     "OFFICIAL_WEB_CAPTURE_SCHEMA",
     "OFFICIAL_WEB_NORMALIZATION_SCHEMA",
     "OFFICIAL_WEB_PLAN_SCHEMA",
@@ -2092,8 +2261,11 @@ __all__ = [
     "PBC_FINANCIAL_STATISTICS_PARSER",
     "PBC_MONEY_STOCK_PARSER",
     "PBC_MONEY_STOCK_PARSER_CONTRACT_SHA256",
+    "PBC_MONEY_STOCK_PARSER_V2",
+    "PBC_MONEY_STOCK_PARSER_V2_CONTRACT_SHA256",
     "compile_official_web_bundle",
     "compile_official_web_bundle_file",
     "persist_official_web_compilation",
     "recompile_official_web_bundle",
+    "parse_official_support_page",
 ]

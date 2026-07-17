@@ -2062,7 +2062,11 @@ def validate_production_observation_chain(
             )
         mapped_strict = mapped & strict_local_evidence
         mapped_generic = mapped & generic_local_evidence
-        if len(mapped_strict) != 1 or len(mapped_generic) not in {4, 5}:
+        # The v4 market pointer may serve as both the immutable snapshot and
+        # closing-coverage manifest.  Those two roles intentionally share one
+        # byte hash, so the normalized evidence mapping has three generic
+        # inputs (snapshot/coverage, scope, and part) instead of four.
+        if len(mapped_strict) != 1 or len(mapped_generic) not in {3, 4, 5}:
             raise ProductionObservationBundleError(
                 "production_observation_chain_local_mapping_role_invalid"
             )
@@ -2235,8 +2239,10 @@ def validate_production_observation_chain(
                 "local_scope_artifact_sha256",
             )
         }
+        # Snapshot and coverage may be the same immutable manifest, so their
+        # two declared roles can collapse to one source hash.
         if (
-            len(declared_source_digests) != 3
+            len(declared_source_digests) not in {2, 3}
             or not declared_source_digests.issubset(
                 added_binding["generic_digests"]
             )

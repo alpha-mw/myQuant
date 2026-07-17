@@ -1,0 +1,319 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - heading "myQuant Dashboard v3" [level=1] [ref=e11]
+      - paragraph [ref=e12]: 本地静态组合、纪律、行业、Factor 与数据审计 （示例数据）
+    - generic [ref=e13]: 当前使用示例数据
+  - generic [ref=e15]:
+    - generic [ref=e16]: NAV gross/net 或费用嵌入口径未明确，禁止再次从 TWR 扣减交易费用。
+    - generic [ref=e17]: 示例数据和 sample benchmark 均为模拟数据，仅用于演示，不代表真实业绩或真实指数；所有计算在浏览器本地完成。
+    - group [ref=e18]:
+      - generic "展开全部数据状态（错误 0 / 告警 2 / 信息 1）" [ref=e19] [cursor=pointer]
+  - group [ref=e20]:
+    - generic "数据、Benchmark 与高级筛选" [ref=e21] [cursor=pointer]
+    - option "主基准 (benchmark_main_nav)" [selected]
+    - option "沪深300 (csi300_nav)"
+    - option "中证500 (csi500_nav)"
+    - option "中证1000 (csi1000_nav)"
+    - option "科创50 (star50_nav)"
+    - option "创业板指 (chinext_nav)"
+    - option "半导体 (semiconductor_nav)"
+    - option "机器人 (robotics_nav)"
+    - option "高端制造 (high_end_manufacturing_nav)"
+    - option "主基准 (benchmark_main_nav)" [selected]
+    - option "沪深300 (csi300_nav)" [selected]
+    - option "中证500 (csi500_nav)"
+    - option "中证1000 (csi1000_nav)"
+    - option "科创50 (star50_nav)" [selected]
+    - option "创业板指 (chinext_nav)"
+    - option "半导体 (semiconductor_nav)" [selected]
+    - option "机器人 (robotics_nav)"
+    - option "高端制造 (high_end_manufacturing_nav)"
+  - navigation "Dashboard sections" [ref=e22]:
+    - link "今日总览" [ref=e23] [cursor=pointer]:
+      - /url: "#overviewSection"
+    - link "持仓与纪律" [ref=e24] [cursor=pointer]:
+      - /url: "#holdingsSection"
+    - link "交易与决策" [ref=e25] [cursor=pointer]:
+      - /url: "#tradesSection"
+    - link "Factor" [ref=e26] [cursor=pointer]:
+      - /url: "#factorSection"
+    - link "归因与数据审计" [ref=e27] [cursor=pointer]:
+      - /url: "#benchmarkSection"
+  - main [ref=e28]:
+    - generic [ref=e29]:
+      - generic [ref=e30]:
+        - generic [ref=e31]:
+          - heading "1. 业绩总览" [level=2] [ref=e32]
+          - paragraph [ref=e33]: 核心收益、风险与相对基准表现。
+        - generic [ref=e34]: 期间：-
+      - generic [ref=e35]:
+        - article [ref=e36]:
+          - generic [ref=e37]: 累计 TWR i
+          - generic [ref=e38]: "-"
+          - generic [ref=e39]:
+            - text: 年化
+            - strong [ref=e40]: insufficient_daily_history
+        - article [ref=e41]:
+          - generic [ref=e42]: 相对财富超额 i
+          - generic [ref=e43]: "-"
+          - generic [ref=e44]:
+            - text: 主基准累计
+            - strong [ref=e45]: "-"
+        - article [ref=e46]:
+          - generic [ref=e47]: 最大回撤 i
+          - generic [ref=e48]: "-"
+          - generic [ref=e49]:
+            - text: 最长回撤持续
+            - strong [ref=e50]: "-"
+        - article [ref=e51]:
+          - generic [ref=e52]: NAV 股票暴露 i
+          - generic [ref=e53]: 4.26%
+          - generic [ref=e54]:
+            - text: 现金权重
+            - strong [ref=e55]: 95.74%
+        - article [ref=e56]:
+          - generic [ref=e57]: 股票袖套权重 i
+          - generic [ref=e58]: 100.00%
+          - generic [ref=e59]:
+            - text: 与 NAV 权重分列
+            - strong [ref=e60]: equity sleeve
+        - article [ref=e61]:
+          - generic [ref=e62]: 日净值胜率 i
+          - generic [ref=e63]: "-"
+          - generic [ref=e64]:
+            - text: 正收益日 / 有效收益日
+            - strong [ref=e65]: 0 / 0
+      - generic [ref=e66]:
+        - article [ref=e67]:
+          - generic [ref=e68]: Portfolio Lens
+          - heading "等待数据加载" [level=3] [ref=e69]
+          - paragraph [ref=e70]: 载入 NAV、持仓和交易后，这里会显示组合收益、回撤、集中度和交易数据状态。
+          - generic [ref=e71]:
+            - generic [ref=e72]:
+              - generic [ref=e73]: Top 5 weight
+              - strong [ref=e74]: 1.39%
+            - generic [ref=e75]:
+              - generic [ref=e76]: Top 10 weight
+              - strong [ref=e77]: 2.58%
+            - generic [ref=e78]:
+              - generic [ref=e79]: HHI
+              - strong [ref=e80]: "0.000"
+            - generic [ref=e81]:
+              - generic [ref=e82]: Trades
+              - strong [ref=e83]: 84 笔
+        - article [ref=e84]:
+          - generic [ref=e85]:
+            - generic [ref=e86]:
+              - heading "组合净值 vs 多 benchmark 净值" [level=3] [ref=e87]
+              - paragraph [ref=e88]: 期末组合净值 -；已选 benchmark 4 个
+            - generic "Overview chart selector" [ref=e89]:
+              - button "净值" [ref=e90] [cursor=pointer]
+              - button "超额" [ref=e91] [cursor=pointer]
+              - button "回撤" [ref=e92] [cursor=pointer]
+              - button "波动" [ref=e93] [cursor=pointer]
+          - generic [ref=e94]: NAV 数据不足或未选择 benchmark
+      - article [ref=e96]:
+        - generic [ref=e98]:
+          - heading "持仓纪律快照" [level=3] [ref=e99]
+          - paragraph [ref=e100]: NAV 权重、股票袖套权重、动作、止损止盈和 quote age 分列。
+        - table [ref=e102]:
+          - rowgroup [ref=e103]:
+            - row [ref=e104]:
+              - columnheader "ticker" [ref=e105]
+              - columnheader "name" [ref=e106]
+              - columnheader "NAV weight" [ref=e107]
+              - columnheader "sleeve weight" [ref=e108]
+              - columnheader "daily return" [ref=e109]
+              - columnheader "NAV contribution" [ref=e110]
+              - columnheader "action" [ref=e111]
+              - columnheader "stop" [ref=e112]
+              - columnheader "take profit" [ref=e113]
+              - columnheader "quote age(s)" [ref=e114]
+              - columnheader "risk" [ref=e115]
+          - rowgroup [ref=e116]:
+            - row [ref=e117]:
+              - cell "300401.SZ" [ref=e118]
+              - cell "绿能装备" [ref=e119]
+              - cell "0.30%" [ref=e120]
+              - cell "7.04%" [ref=e121]
+              - cell "0.59%" [ref=e122]
+              - cell "0.00%" [ref=e123]
+              - cell [ref=e124]
+              - cell [ref=e125]
+              - cell [ref=e126]
+              - cell [ref=e127]
+              - cell [ref=e128]
+            - row [ref=e129]:
+              - cell "688005.SH" [ref=e130]
+              - cell "硅谷测控" [ref=e131]
+              - cell "0.30%" [ref=e132]
+              - cell "6.97%" [ref=e133]
+              - cell "-1.82%" [ref=e134]
+              - cell "-0.01%" [ref=e135]
+              - cell [ref=e136]
+              - cell [ref=e137]
+              - cell [ref=e138]
+              - cell [ref=e139]
+              - cell [ref=e140]
+            - row [ref=e141]:
+              - cell "002303.SZ" [ref=e142]
+              - cell "高分子新材" [ref=e143]
+              - cell "0.28%" [ref=e144]
+              - cell "6.49%" [ref=e145]
+              - cell "-3.09%" [ref=e146]
+              - cell "-0.01%" [ref=e147]
+              - cell [ref=e148]
+              - cell [ref=e149]
+              - cell [ref=e150]
+              - cell [ref=e151]
+              - cell [ref=e152]
+            - row [ref=e153]:
+              - cell "002301.SZ" [ref=e154]
+              - cell "新材复合" [ref=e155]
+              - cell "0.27%" [ref=e156]
+              - cell "6.28%" [ref=e157]
+              - cell "-1.10%" [ref=e158]
+              - cell "-0.00%" [ref=e159]
+              - cell [ref=e160]
+              - cell [ref=e161]
+              - cell [ref=e162]
+              - cell [ref=e163]
+              - cell [ref=e164]
+            - row [ref=e165]:
+              - cell "300402.SZ" [ref=e166]
+              - cell "光伏智造" [ref=e167]
+              - cell "0.25%" [ref=e168]
+              - cell "5.94%" [ref=e169]
+              - cell "-1.05%" [ref=e170]
+              - cell "-0.00%" [ref=e171]
+              - cell [ref=e172]
+              - cell [ref=e173]
+              - cell [ref=e174]
+              - cell [ref=e175]
+              - cell [ref=e176]
+            - row [ref=e177]:
+              - cell "600203.SH" [ref=e178]
+              - cell "星航动力" [ref=e179]
+              - cell "0.25%" [ref=e180]
+              - cell "5.77%" [ref=e181]
+              - cell "-0.67%" [ref=e182]
+              - cell "-0.00%" [ref=e183]
+              - cell [ref=e184]
+              - cell [ref=e185]
+              - cell [ref=e186]
+              - cell [ref=e187]
+              - cell [ref=e188]
+            - row [ref=e189]:
+              - cell "300104.SZ" [ref=e190]
+              - cell "华工数控" [ref=e191]
+              - cell "0.24%" [ref=e192]
+              - cell "5.66%" [ref=e193]
+              - cell "-0.57%" [ref=e194]
+              - cell "-0.00%" [ref=e195]
+              - cell [ref=e196]
+              - cell [ref=e197]
+              - cell [ref=e198]
+              - cell [ref=e199]
+              - cell [ref=e200]
+            - row [ref=e201]:
+              - cell "300403.SZ" [ref=e202]
+              - cell "储能精机" [ref=e203]
+              - cell "0.24%" [ref=e204]
+              - cell "5.53%" [ref=e205]
+              - cell "-1.81%" [ref=e206]
+              - cell "-0.00%" [ref=e207]
+              - cell [ref=e208]
+              - cell [ref=e209]
+              - cell [ref=e210]
+              - cell [ref=e211]
+              - cell [ref=e212]
+      - generic [ref=e213]:
+        - article [ref=e214]:
+          - heading "组合净值 vs 多 benchmark 净值" [level=3] [ref=e215]
+          - generic [ref=e216]: NAV 数据不足或未选择 benchmark
+        - article [ref=e218]:
+          - heading "相对主基准超额收益曲线" [level=3] [ref=e219]
+          - generic [ref=e220]: 超额收益数据不足
+        - article [ref=e222]:
+          - heading "多 benchmark 回撤对比" [level=3] [ref=e223]
+          - generic [ref=e224]: 回撤数据不足
+      - article [ref=e226]:
+        - generic [ref=e228]:
+          - heading "多 benchmark 指标对比表" [level=3] [ref=e229]
+          - paragraph [ref=e230]: Name / Return / Risk / Correlation / Beta / Tracking Error / IR
+        - table [ref=e232]:
+          - rowgroup [ref=e233]:
+            - row [ref=e234]:
+              - columnheader "Name" [ref=e235]
+              - columnheader "Total Return" [ref=e236]
+              - columnheader "Annualized Return" [ref=e237]
+              - columnheader "Ann. Volatility" [ref=e238]
+              - columnheader "Max Drawdown" [ref=e239]
+              - columnheader "Sharpe Ratio" [ref=e240]
+              - columnheader "Correlation vs Portfolio" [ref=e241]
+              - columnheader "Portfolio Beta to Benchmark" [ref=e242]
+              - columnheader "Tracking Error" [ref=e243]
+              - columnheader "Information Ratio" [ref=e244]
+              - columnheader "Excess Return vs Portfolio" [ref=e245]
+          - rowgroup [ref=e246]:
+            - row [ref=e247]:
+              - cell "Portfolio" [ref=e248]
+              - cell "-" [ref=e249]
+              - cell "-" [ref=e250]
+              - cell "-" [ref=e251]
+              - cell "-" [ref=e252]
+              - cell "-" [ref=e253]
+              - cell "1.00" [ref=e254]
+              - cell "-" [ref=e255]
+              - cell "-" [ref=e256]
+              - cell "-" [ref=e257]
+              - cell "-" [ref=e258]
+            - row [ref=e259]:
+              - cell "主基准" [ref=e260]
+              - cell "-" [ref=e261]
+              - cell "-" [ref=e262]
+              - cell "-" [ref=e263]
+              - cell "-" [ref=e264]
+              - cell "-" [ref=e265]
+              - cell "-" [ref=e266]
+              - cell "-" [ref=e267]
+              - cell "-" [ref=e268]
+              - cell "-" [ref=e269]
+              - cell "-" [ref=e270]
+            - row [ref=e271]:
+              - cell "沪深300" [ref=e272]
+              - cell "-" [ref=e273]
+              - cell "-" [ref=e274]
+              - cell "-" [ref=e275]
+              - cell "-" [ref=e276]
+              - cell "-" [ref=e277]
+              - cell "-" [ref=e278]
+              - cell "-" [ref=e279]
+              - cell "-" [ref=e280]
+              - cell "-" [ref=e281]
+              - cell "-" [ref=e282]
+            - row [ref=e283]:
+              - cell "科创50" [ref=e284]
+              - cell "-" [ref=e285]
+              - cell "-" [ref=e286]
+              - cell "-" [ref=e287]
+              - cell "-" [ref=e288]
+              - cell "-" [ref=e289]
+              - cell "-" [ref=e290]
+              - cell "-" [ref=e291]
+              - cell "-" [ref=e292]
+              - cell "-" [ref=e293]
+              - cell "-" [ref=e294]
+            - row [ref=e295]:
+              - cell "半导体" [ref=e296]
+              - cell "-" [ref=e297]
+              - cell "-" [ref=e298]
+              - cell "-" [ref=e299]
+              - cell "-" [ref=e300]
+              - cell "-" [ref=e301]
+              - cell "-" [ref=e302]
+              - cell "-" [ref=e303]
+              - cell "-" [ref=e304]
+              - cell "-" [ref=e305]
+              - cell "-" [ref=e306]

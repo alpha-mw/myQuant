@@ -31,7 +31,7 @@ window.DashboardSnapshotV3 = window.DashboardSnapshotV3 || {
   reconciliation: {},
   metric_policy: {}
 };
-window.DashboardGeneratedRecords = {
+window.DashboardGeneratedRecords = window.DashboardGeneratedRecords || {
   generatedAt: null,
   sourceRoot: null,
   latestRecord: null,

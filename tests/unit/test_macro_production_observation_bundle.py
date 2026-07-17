@@ -364,6 +364,65 @@ def test_atomic_39_row_publication_and_one_date_local_append_round_trip(
     json.dumps(update, allow_nan=False)
 
 
+def test_local_append_accepts_snapshot_and_coverage_same_manifest(
+    tmp_path: Path,
+) -> None:
+    inputs = _inputs(tmp_path)
+    root = tmp_path / "observations"
+    bootstrap = _publish(tmp_path, inputs)
+    daily = _next_daily_fixture(tmp_path / "local-next")
+    daily_kwargs = _daily_kwargs(daily)
+    snapshot = json.loads(
+        daily.snapshot_manifest_path.read_text(encoding="utf-8")
+    )
+    coverage = json.loads(
+        daily.coverage_manifest_path.read_text(encoding="utf-8")
+    )
+    coverage_summary = {
+        **coverage["coverage"],
+        "coverage_schema_version": "cn-full-a-coverage.v4",
+        "pit_generation_id": "pit-test-20260716",
+        "pit_generation_manifest_path": "/tmp/pit-test/manifest.json",
+        "pit_generation_manifest_sha256": "0" * 64,
+        "pit_membership_path": "/tmp/pit-test/stock_basic_membership.parquet",
+        "pit_membership_sha256": "0" * 64,
+    }
+    snapshot["coverage"] = coverage_summary
+    snapshot["metadata"] = {
+        **dict(snapshot.get("metadata") or {}),
+        "coverage": coverage_summary,
+    }
+    snapshot["manifest_path"] = str(daily.snapshot_manifest_path)
+    snapshot_mtime_ns = daily.snapshot_manifest_path.stat().st_mtime_ns
+    daily.snapshot_manifest_path.write_text(
+        json.dumps(snapshot, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    os.chmod(daily.snapshot_manifest_path, 0o600)
+    os.utime(
+        daily.snapshot_manifest_path,
+        ns=(snapshot_mtime_ns, snapshot_mtime_ns),
+    )
+    same_manifest_sha = _sha256(daily.snapshot_manifest_path)
+    daily_kwargs.update(
+        coverage_manifest_path=daily.snapshot_manifest_path,
+        expected_snapshot_manifest_sha256=same_manifest_sha,
+        expected_coverage_manifest_sha256=same_manifest_sha,
+    )
+
+    update = publish_local_market_breadth_update(
+        **daily_kwargs,
+        as_of="2026-07-16T04:30:00+00:00",
+        canonical_observations_root=root,
+        run_id="local-breadth-same-manifest-20260716",
+        expected_pointer_sha256=bootstrap["pointer_sha256"],
+    )
+
+    assert update["promoted"] is True
+    assert update["incoming_evidence_file_count"] == 4
+    assert update["strict_readback_validated"] is True
+
+
 def test_public_validator_rejects_allowed_schema_single_blob_spoof(
     tmp_path: Path,
 ) -> None:

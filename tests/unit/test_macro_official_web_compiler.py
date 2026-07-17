@@ -16,12 +16,15 @@ from quant_investor.macro.official_web_compiler import (
     NBS_NATIONAL_ECONOMY_PARSER,
     NBS_OFFICIAL_PMI_PARSER,
     NBS_QUARTERLY_GDP_PARSER,
+    NBS_QUARTERLY_GDP_PARSER_V2,
     OFFICIAL_WEB_CAPTURE_SCHEMA,
     OFFICIAL_WEB_PLAN_SCHEMA,
     PARSER_CONTRACT_SHA256,
     PBC_MONEY_STOCK_PARSER,
+    PBC_MONEY_STOCK_PARSER_V2,
     OfficialWebCompilerError,
     compile_official_web_bundle_file,
+    parse_official_support_page,
     recompile_official_web_bundle,
 )
 
@@ -145,9 +148,23 @@ def _gdp_q1_html() -> bytes:
     )
 
 
-def _pbc_html(period: str, release: str, m1: str, m2: str, cumulative: str) -> bytes:
+def _pbc_html(
+    period: str,
+    release: str,
+    m1: str,
+    m2: str,
+    cumulative: str,
+    *,
+    half_year_title: bool = False,
+) -> bytes:
     year, month = int(period[:4]), int(period[4:])
-    title_period = "一季度" if month == 3 else f"{month}月"
+    title_period = (
+        "上半年"
+        if half_year_title
+        else "一季度"
+        if month == 3
+        else f"{month}月"
+    )
     title = f"{year}年{title_period}金融统计数据报告"
     pubdate = release.split(" ", 1)[0]
     return _html(
@@ -507,6 +524,137 @@ def test_compile_rejects_date_only_pbc_without_visible_exact_time(tmp_path: Path
             output_root=tmp_path / "output",
             run_id="rejected",
         )
+
+
+def test_compile_accepts_v2_half_year_pbc_title_for_june_window(
+    tmp_path: Path,
+) -> None:
+    pages = [
+        item for item in _fixture_pages() if item[0]["page_id"] != "pbc-202602"
+    ]
+    for index, (page, relative, body) in enumerate(pages):
+        if page["parser_id"] != PBC_MONEY_STOCK_PARSER:
+            continue
+        updated = dict(page)
+        updated["parser_id"] = PBC_MONEY_STOCK_PARSER_V2
+        updated["parser_contract_sha256"] = PARSER_CONTRACT_SHA256[
+            PBC_MONEY_STOCK_PARSER_V2
+        ]
+        pages[index] = (updated, relative, body)
+    june_page = _page(
+        "pbc-202606",
+        PBC_MONEY_STOCK_PARSER_V2,
+        "pbc_official",
+        (
+            "https://www.pbc.gov.cn/diaochatongjisi/116219/116225/"
+            "2026071515025183948/index.html"
+        ),
+        "202606",
+    )
+    pages.append(
+        (
+            june_page,
+            "pbc/pbc-202606.html",
+            _pbc_html(
+                "202606",
+                "2026-07-15 15:00:09",
+                "4.0",
+                "8.0",
+                "22.83",
+                half_year_title=True,
+            ),
+        )
+    )
+    scope = [
+        row
+        for row in _requested_scope()
+        if not (
+            row["indicator_id"] in {"cn.m1_yoy", "cn.m2_yoy"}
+            and row["period_end"] == "2026-03-31"
+        )
+    ]
+    scope.extend(
+        {"indicator_id": indicator_id, "period_end": "2026-06-30"}
+        for indicator_id in ("cn.m1_yoy", "cn.m2_yoy")
+    )
+    plan = {
+        "schema_version": OFFICIAL_WEB_PLAN_SCHEMA,
+        "market": "CN",
+        "requested_scope": scope,
+        "pages": [item[0] for item in pages],
+    }
+    plan_path, capture_path, raw_root, _plan, _capture = _seal_inputs(
+        tmp_path, plan, pages
+    )
+    result = compile_official_web_bundle_file(
+        plan_path,
+        capture_manifest_path=capture_path,
+        raw_root=raw_root,
+        output_root=tmp_path / "output",
+        run_id="half-year-june",
+    )
+    observations = [
+        json.loads(line)
+        for line in Path(result["artifacts"]["observations"])
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    june = {
+        row["indicator_id"]: row
+        for row in observations
+        if row["period_end"] == "2026-06-30"
+        and row["indicator_id"] in {"cn.m1_yoy", "cn.m2_yoy"}
+    }
+    assert {key: row["value"] for key, row in june.items()} == {
+        "cn.m1_yoy": 4.0,
+        "cn.m2_yoy": 8.0,
+    }
+    assert all(row["release_at"] == "2026-07-15T07:00:09+00:00" for row in june.values())
+
+
+def test_parse_v2_formal_half_year_gdp_support_page() -> None:
+    body = _html(
+        "2026年二季度和上半年国内生产总值初步核算结果",
+        "2026/07/16 09:30",
+        [
+            "表2 GDP同比增长速度",
+            "单位：%",
+            "年份",
+            "1季度",
+            "2季度",
+            "3季度",
+            "4季度",
+            "2025",
+            "5.4",
+            "5.2",
+            "4.8",
+            "4.5",
+            "2026",
+            "5.0",
+            "4.3",
+            "注：同比增长速度为与上年同期对比的增长速度。",
+        ],
+    )
+    parsed = parse_official_support_page(
+        NBS_QUARTERLY_GDP_PARSER_V2,
+        body,
+        source_url=(
+            "https://www.stats.gov.cn/xxgk/sjfb/zxfb2020/202607/"
+            "t20260716_1964142.html"
+        ),
+    )
+    assert parsed["primary_period"] == "2026Q2"
+    assert parsed["release_at"] == "2026-07-16T09:30:00+08:00"
+    assert parsed["values"] == [
+        {
+            "indicator_id": "cn.gdp_yoy",
+            "period": "2026Q2",
+            "frequency": "quarterly",
+            "unit": "%",
+            "measurement_basis": "current_quarter_real_yoy",
+            "value_decimal": "4.3",
+        }
+    ]
 
 
 def test_compile_rejects_raw_path_traversal(tmp_path: Path) -> None:
