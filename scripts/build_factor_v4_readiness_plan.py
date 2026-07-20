@@ -17,6 +17,9 @@ if str(ROOT) not in sys.path:
 from quant_investor.factors.governance_protocol_v4 import (  # noqa: E402
     assess_factor_governance_readiness_v4,
 )
+from quant_investor.factors.governance_quality_v1 import (  # noqa: E402
+    QUALITY_INPUT_SCHEMA_VERSION,
+)
 
 
 def _read_object(path: Path) -> dict[str, Any]:
@@ -54,16 +57,51 @@ def _write_private_json(path: Path, value: Any) -> None:
             pass
 
 
+def _read_quality_input(path: Path) -> tuple[Any, Any, str | None]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return {}, None, "quality_input_unreadable_or_invalid_json"
+    expected_fields = {
+        "schema_version",
+        "protocol_version",
+        "quality_records",
+        "expected_quality_set_sha256",
+    }
+    if not isinstance(value, dict) or set(value) != expected_fields:
+        return {}, None, "quality_input_fields_invalid"
+    if value.get("schema_version") != QUALITY_INPUT_SCHEMA_VERSION:
+        return {}, None, "quality_input_schema_invalid"
+    if value.get("protocol_version") != "v4":
+        return {}, None, "quality_input_protocol_invalid"
+    if not isinstance(value.get("quality_records"), list):
+        return {}, None, "quality_input_records_not_array"
+    expected_sha = value.get("expected_quality_set_sha256")
+    if expected_sha is not None and not isinstance(expected_sha, str):
+        return {}, None, "quality_input_expected_sha_invalid"
+    return value["quality_records"], expected_sha, None
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-json", required=True)
     parser.add_argument("--output-json", required=True)
+    parser.add_argument("--quality-records-json")
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     payload = _read_object(Path(args.input_json).resolve())
+    quality_records: Any = None
+    expected_quality_set_sha256: Any = None
+    quality_input_error: str | None = None
+    if args.quality_records_json:
+        (
+            quality_records,
+            expected_quality_set_sha256,
+            quality_input_error,
+        ) = _read_quality_input(Path(args.quality_records_json).resolve())
     report = assess_factor_governance_readiness_v4(
         list(payload.get("factor_records", []) or []),
         as_of=str(payload.get("as_of") or ""),
@@ -74,9 +112,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             if isinstance(payload.get("activation_receipt"), dict)
             else None
         ),
+        quality_records=quality_records,
+        expected_quality_set_sha256=expected_quality_set_sha256,
     )
     _write_private_json(Path(args.output_json).resolve(), report)
     print(f"factor_v4_readiness_status={report['status']}")
+    if args.quality_records_json:
+        quality = report["quality_assessment"]
+        print(f"factor_quality_status={quality['status']}")
+        print(
+            "factor_quality_qualified_count="
+            f"{quality['qualified_factor_count']}/{quality['quality_factor_count']}"
+        )
+        if quality_input_error is not None:
+            print(f"factor_quality_input_error={quality_input_error}", file=sys.stderr)
     print("production_apply_enabled=false")
     return 0 if report["factor_governance_ready"] else 2
 

@@ -297,9 +297,9 @@ def assess_candidate_maturity(
     for item in calendar_dates:
         actual_month_ends[item[:7]] = item
     month_ends: dict[str, str] = {}
-    for raw in month_end_rankic_dates:
+    for raw_month_end in month_end_rankic_dates:
         try:
-            observed = date.fromisoformat(str(raw))
+            observed = date.fromisoformat(str(raw_month_end))
         except ValueError:
             continue
         canonical = observed.isoformat()
@@ -308,9 +308,9 @@ def assess_candidate_maturity(
             month_ends.setdefault(month, canonical)
 
     candidates: list[tuple[int, int, str]] = []
-    for raw in forward_cohorts:
+    for raw_cohort in forward_cohorts:
         try:
-            raw_dates = raw.get("open_session_dates")
+            raw_dates = raw_cohort.get("open_session_dates")
             if not isinstance(raw_dates, list) or len(raw_dates) != 30:
                 continue
             dates = [date.fromisoformat(str(item)).isoformat() for item in raw_dates]
@@ -319,30 +319,31 @@ def assess_candidate_maturity(
             indexes = [calendar_index[item] for item in dates]
             if indexes != list(range(indexes[0], indexes[0] + 30)):
                 continue
-            start = date.fromisoformat(str(raw.get("start"))).isoformat()
-            end = date.fromisoformat(str(raw.get("end"))).isoformat()
-            horizon = int(raw.get("horizon_days", 0))
+            start = date.fromisoformat(str(raw_cohort.get("start"))).isoformat()
+            end = date.fromisoformat(str(raw_cohort.get("end"))).isoformat()
+            horizon = int(raw_cohort.get("horizon_days", 0))
         except (KeyError, TypeError, ValueError):
             continue
-        cohort_id = str(raw.get("cohort_id") or "").strip()
+        cohort_id = str(raw_cohort.get("cohort_id") or "").strip()
         if (
             cohort_id
             and horizon == 30
             and start == dates[0]
             and end == dates[-1]
-            and raw.get("calendar_sha256") == normalized_calendar["calendar_sha256"]
+            and raw_cohort.get("calendar_sha256")
+            == normalized_calendar["calendar_sha256"]
         ):
             candidates.append((indexes[0], indexes[-1], cohort_id))
 
     nonoverlap: list[tuple[int, int, str]] = []
     seen: set[str] = set()
     last_end: int | None = None
-    for start, end, cohort_id in sorted(candidates):
-        if cohort_id in seen or (last_end is not None and start <= last_end):
+    for start_index, end_index, cohort_id in sorted(candidates):
+        if cohort_id in seen or (last_end is not None and start_index <= last_end):
             continue
-        nonoverlap.append((start, end, cohort_id))
+        nonoverlap.append((start_index, end_index, cohort_id))
         seen.add(cohort_id)
-        last_end = end
+        last_end = end_index
 
     by_month = len(month_ends) >= MIN_MONTH_END_RANKIC_COUNT
     by_cohort = len(nonoverlap) >= MIN_NONOVERLAP_30D_COHORT_COUNT
@@ -1044,6 +1045,8 @@ def assess_factor_governance_readiness_v4(
     registry_file_sha256: str,
     production_factor_set_sha256: str,
     activation_receipt: Mapping[str, Any] | None,
+    quality_records: Any = None,
+    expected_quality_set_sha256: Any = None,
 ) -> dict[str, Any]:
     """Assess proposed v4 readiness and always leave apply authority false."""
 
@@ -1158,7 +1161,7 @@ def assess_factor_governance_readiness_v4(
         if target_ready
         else "underfilled_accelerated_mining" if underfilled else "no_new_risk"
     )
-    return {
+    readiness = {
         "schema_version": READINESS_SCHEMA_VERSION,
         "protocol_version": PROTOCOL_VERSION,
         "protocol_hash": protocol_hash(),
@@ -1186,6 +1189,16 @@ def assess_factor_governance_readiness_v4(
         "factors": assessments,
         "blockers": blockers,
     }
+    if quality_records is not None or expected_quality_set_sha256 is not None:
+        from quant_investor.factors.governance_quality_v1 import (
+            assess_factor_quality_readiness_v4,
+        )
+
+        readiness["quality_assessment"] = assess_factor_quality_readiness_v4(
+            quality_records,
+            expected_quality_set_sha256=expected_quality_set_sha256,
+        )
+    return readiness
 
 
 def assess_governance_cycle_v4(

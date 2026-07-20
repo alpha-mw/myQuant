@@ -13,6 +13,9 @@ from quant_investor.factors.governance_protocol_v4 import (
     protocol_hash,
     semantic_sha256,
 )
+from quant_investor.factors.governance_quality_v1 import (
+    factor_quality_set_identity_sha256,
+)
 from quant_investor.factors.governance_transaction_v4 import (
     activation_receipt_sha256,
 )
@@ -30,7 +33,7 @@ from quant_investor.monitoring.v16_run_readiness import (
 SYNTHETIC_SYMBOL = "SYNTH-0001"
 
 
-def _factor_governance() -> dict[str, object]:
+def _factor_governance(*, include_quality: bool = False) -> dict[str, object]:
     month_end_rankic_dates = [
         "2025-01-31",
         "2025-02-28",
@@ -56,7 +59,11 @@ def _factor_governance() -> dict[str, object]:
     records = []
     for index in range(5):
         name = f"synthetic_factor_{index}"
-        runtime_contract = {"name": name, "formula": f"primitive_{index}"}
+        runtime_contract = {
+            "schema_version": "factor-production-runtime-contract.v4",
+            "factor_name": name,
+            "formula": f"primitive_{index}",
+        }
         records.append(
             {
                 "name": name,
@@ -64,6 +71,7 @@ def _factor_governance() -> dict[str, object]:
                 "slot": f"synthetic_family_{index}::slot",
                 "state": "production_factor",
                 "weight": 1.0,
+                "calendar_sha256": semantic_sha256(calendar),
                 "gate_results": {str(gate): True for gate in range(1, 9)},
                 "maturity": {
                     "calendar": copy.deepcopy(calendar),
@@ -87,6 +95,11 @@ def _factor_governance() -> dict[str, object]:
                 },
             }
         )
+    if include_quality:
+        identity_sha256 = factor_quality_set_identity_sha256(records)
+        for record in records:
+            record["runtime_contract"]["quality_set_identity_sha256"] = identity_sha256
+            record["runtime_contract_sha256"] = semantic_sha256(record["runtime_contract"])
     registry_sha = "b" * 64
     factor_set_sha = production_factor_set_sha256(sorted(record["name"] for record in records))
     runtime_sha = semantic_sha256(sorted(record["runtime_contract_sha256"] for record in records))
@@ -122,6 +135,7 @@ def _factor_governance() -> dict[str, object]:
         registry_file_sha256=registry_sha,
         production_factor_set_sha256=factor_set_sha,
         activation_receipt=receipt,
+        quality_records=records if include_quality else None,
     )
 
 
@@ -374,6 +388,74 @@ def test_factor_v3_or_missing_activation_receipt_cannot_pass_v16() -> None:
     payload = _payload(factor_governance=missing_receipt)
     assert payload["factor_governance_ready"] is False
     assert "factor_activation_receipt_missing" in payload["blockers"]
+
+
+def test_factor_quality_projection_is_informational_only() -> None:
+    without_quality = _payload(factor_governance=_factor_governance())
+    with_quality = _payload(factor_governance=_factor_governance(include_quality=True))
+
+    assert without_quality["factor_governance"]["quality_assessment"] == {
+        "availability": "unavailable",
+        "schema_version": "missing",
+        "policy_hash": None,
+        "status": "unavailable",
+        "valid": False,
+        "report_only": True,
+        "quality_ready": False,
+        "shadow_observation_eligible": False,
+        "factor_count": 0,
+        "family_count": 0,
+        "qualified_factor_count": 0,
+        "qualified_family_count": 0,
+        "quality_set_sha256": None,
+        "assessment_sha256": None,
+        "blockers": [],
+    }
+    quality = with_quality["factor_governance"]["quality_assessment"]
+    assert quality["availability"] == "available"
+    assert quality["status"] == "ready_underfilled"
+    assert quality["quality_ready"] is True
+    for field in (
+        "factor_governance_ready",
+        "activation_candidate",
+        "activation_blockers",
+        "activation_gates",
+        "new_risk_authorized",
+        "readiness_status",
+        "blockers",
+    ):
+        assert with_quality[field] == without_quality[field]
+
+
+def test_tampered_factor_quality_normalizes_invalid_without_blocking_v16() -> None:
+    baseline_factor = _factor_governance(include_quality=True)
+    tampered_factor = copy.deepcopy(baseline_factor)
+    tampered_factor["quality_assessment"]["quality_policy_hash"] = "a" * 64
+
+    baseline = _payload(factor_governance=baseline_factor)
+    tampered = _payload(factor_governance=tampered_factor)
+    quality = tampered["factor_governance"]["quality_assessment"]
+
+    assert quality["availability"] == "invalid"
+    assert quality["valid"] is False
+    assert quality["blockers"] == ["quality_assessment_invalid"]
+    for field in (
+        "factor_governance_ready",
+        "activation_candidate",
+        "activation_blockers",
+        "activation_gates",
+        "new_risk_authorized",
+        "readiness_status",
+        "blockers",
+    ):
+        assert tampered[field] == baseline[field]
+
+
+def test_historical_v16_nested_factor_summary_without_quality_still_validates() -> None:
+    historical = _payload()
+    del historical["factor_governance"]["quality_assessment"]
+
+    validate_v16_run_readiness(historical)
 
 
 def test_summary_only_factor_receipt_cannot_unlock_v16() -> None:

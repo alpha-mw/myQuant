@@ -30,6 +30,55 @@ of those factors from sharing a family: the five-factor baseline mathematically
 requires five distinct families. For larger sets the minimum family count is
 three, subject to the same 35% cap.
 
+## Independent quality and shadow observation
+
+Factor quality is now evaluated in a separate
+`factor-quality-readiness.v1` domain. It answers whether an explicit research
+set has sufficient technical evidence for report-only shadow observation. It
+does not reinterpret `healthy`, `factor_governance_ready`,
+`new_risk_eligible`, or any activation field.
+
+The quality evaluator keeps Gates 1-8, strict-calendar maturity, family BH
+`q<=0.10`, verified v4 runtime and replay identity, fresh health, unique names,
+and unique slots. It deliberately excludes production state, positive weight,
+the 20%/35% allocation caps, and the same-day activation receipt. Therefore a
+zero-weight `production_candidate` may qualify for shadow observation while the
+same record remains ineligible for production. In particular, five qualified
+records need at least three families in the quality domain; the unchanged
+production five-factor gate still requires five families because of its weight
+caps.
+
+Quality statuses are deterministic:
+
+- `invalid`: malformed input, duplicate identity/slot, runtime-set identity
+  drift, or expected content-hash drift;
+- `blocked`: no qualified records, or at least three records with fewer than
+  three qualified families;
+- `partially_qualified`: some, but not all, records qualify;
+- `insufficient_for_shadow`: one or two qualified records;
+- `shadow_observation`: three or four qualified records in at least three
+  families;
+- `ready_underfilled`: five through nine qualified records in at least three
+  families;
+- `ready_target_10`: ten qualified records in at least three families;
+- `shadow_observation_above_target`: more than ten qualified records; the set
+  may be observed but is not quality-ready as a target set.
+
+The cycle-free `quality_set_identity_sha256` binds sorted
+`name/family/slot` identity and must be embedded in every quality record's v4
+runtime contract. The separate `quality_set_sha256` also binds calendar,
+runtime-contract, and replay hashes. Persisted quality assessments retain exact
+normalized source evidence; validation recomputes every row, count, blocker,
+status, eligibility flag, and hash. Neither hash is part of the production v4
+protocol hash or activation receipt.
+
+`assess_factor_governance_readiness_v4` accepts quality records only through an
+explicit optional sidecar. Calls that omit them retain the historical output
+shape exactly. When present, `quality_assessment` is additive and report-only.
+The v16 summary normalizes it for display but never reads it when calculating
+Factor readiness, activation gates, blockers, or authorization. Historical v16
+artifacts without the nested quality summary remain valid.
+
 ## Healthy factor contract
 
 A factor is healthy only when all of the following pass together:
@@ -535,6 +584,7 @@ paths and write only the requested research artifact as mode `0600`:
 ```bash
 ./.venv/bin/python scripts/build_factor_v4_readiness_plan.py \
   --input-json <readiness-input.json> \
+  --quality-records-json <quality-input.json> \
   --output-json <research-readiness.json>
 
 ./.venv/bin/python scripts/build_factor_v4_replay_validation.py \
@@ -549,3 +599,11 @@ paths and write only the requested research artifact as mode `0600`:
 
 These commands never accept a registry path or activation pointer and do not
 have an apply flag.
+
+`--quality-records-json` is optional. Its file is an exact JSON object with
+`schema_version="factor-quality-input.v1"`, `protocol_version="v4"`, a
+`quality_records` array, and `expected_quality_set_sha256` as a lowercase hash
+or `null`. A missing or malformed quality file produces an informational
+`invalid` quality assessment and a deterministic stderr message. The command
+still exits according to production `factor_governance_ready`, never according
+to quality status.

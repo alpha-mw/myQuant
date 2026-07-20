@@ -33,6 +33,9 @@ from quant_investor.factors.governance_transaction_v4 import (
 from quant_investor.factors.governance_protocol_v4 import (
     semantic_sha256 as factor_semantic_sha256,
 )
+from quant_investor.factors.governance_quality_v1 import (
+    validate_factor_quality_readiness_v1,
+)
 from quant_investor.factors.runtime import production_factor_set_sha256
 
 SCHEMA_VERSION = "v16_run_readiness.v1"
@@ -164,6 +167,71 @@ def _branch_contract(
             else:
                 blockers.append(f"branch_data_not_ready:{branch}")
     return materialized, ready, blockers
+
+
+def _factor_quality_summary(factor: Mapping[str, Any]) -> dict[str, Any]:
+    unavailable = {
+        "availability": "unavailable",
+        "schema_version": "missing",
+        "policy_hash": None,
+        "status": "unavailable",
+        "valid": False,
+        "report_only": True,
+        "quality_ready": False,
+        "shadow_observation_eligible": False,
+        "factor_count": 0,
+        "family_count": 0,
+        "qualified_factor_count": 0,
+        "qualified_family_count": 0,
+        "quality_set_sha256": None,
+        "assessment_sha256": None,
+        "blockers": [],
+    }
+    if "quality_assessment" not in factor:
+        return unavailable
+    quality = factor.get("quality_assessment")
+    if not isinstance(quality, Mapping):
+        return {
+            **unavailable,
+            "availability": "invalid",
+            "status": "invalid",
+            "blockers": ["quality_assessment_invalid"],
+        }
+    try:
+        validated = validate_factor_quality_readiness_v1(quality)
+    except (TypeError, ValueError):
+        return {
+            **unavailable,
+            "availability": "invalid",
+            "status": "invalid",
+            "blockers": ["quality_assessment_invalid"],
+        }
+    if validated["status"] == "invalid" or validated["input_valid"] is not True:
+        return {
+            **unavailable,
+            "availability": "invalid",
+            "schema_version": validated["schema_version"],
+            "policy_hash": validated["quality_policy_hash"],
+            "status": "invalid",
+            "blockers": ["quality_assessment_invalid"],
+        }
+    return {
+        "availability": "available",
+        "schema_version": validated["schema_version"],
+        "policy_hash": validated["quality_policy_hash"],
+        "status": validated["status"],
+        "valid": True,
+        "report_only": True,
+        "quality_ready": validated["quality_ready"],
+        "shadow_observation_eligible": validated["shadow_observation_eligible"],
+        "factor_count": validated["quality_factor_count"],
+        "family_count": validated["quality_family_count"],
+        "qualified_factor_count": validated["qualified_factor_count"],
+        "qualified_family_count": validated["qualified_family_count"],
+        "quality_set_sha256": validated["quality_set_sha256"],
+        "assessment_sha256": validated["assessment_sha256"],
+        "blockers": list(validated["blockers"]),
+    }
 
 
 def _factor_contract(
@@ -331,6 +399,7 @@ def _factor_contract(
         "family_normalized_abs_weights": {
             name: weight for name, weight in sorted(normalized_family_weights.items())
         },
+        "quality_assessment": _factor_quality_summary(factor),
         "blockers": factor_blockers,
     }
     return factor_count, family_count, ready, summary, blockers

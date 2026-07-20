@@ -356,6 +356,48 @@ def run_codex_review_status(**kwargs):
     return review_status(**kwargs)
 
 
+def run_v16_advisory_prepare(**kwargs):
+    from quant_investor.v16.operator_advisory import prepare_advisory
+
+    return prepare_advisory(**kwargs)
+
+
+def run_v16_advisory_receive(**kwargs):
+    from quant_investor.v16.operator_advisory import receive_advisory_response
+
+    return receive_advisory_response(**kwargs)
+
+
+def run_v16_advisory_finalize(**kwargs):
+    from quant_investor.v16.operator_advisory import finalize_advisory
+
+    return finalize_advisory(**kwargs)
+
+
+def run_v16_advisory_run(**kwargs):
+    from quant_investor.v16.operator_advisory import run_advisory
+
+    return run_advisory(**kwargs)
+
+
+def run_v16_advisory_provider_resume(**kwargs):
+    from quant_investor.v16.operator_advisory import resume_advisory_provider
+
+    return resume_advisory_provider(**kwargs)
+
+
+def run_v16_advisory_status(**kwargs):
+    from quant_investor.v16.operator_advisory import advisory_status
+
+    return advisory_status(**kwargs)
+
+
+def run_v16_advisory_decision(**kwargs):
+    from quant_investor.v16.operator_advisory import record_advisory_decision
+
+    return record_advisory_decision(**kwargs)
+
+
 def _print_json(payload) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
 
@@ -508,6 +550,85 @@ def _build_parser() -> argparse.ArgumentParser:
     market_subparsers = market_parser.add_subparsers(
         dest="market_command",
         required=True,
+    )
+
+    market_v16_advisory_prepare = market_subparsers.add_parser(
+        "v16-advisory-prepare",
+        help="准备隔离的 CN v16 四分支操作员研究请求",
+    )
+    market_v16_advisory_prepare.add_argument("--run-id", default="")
+    market_v16_advisory_prepare.add_argument("--max-candidates", type=int, default=30)
+    market_v16_advisory_prepare.add_argument("--top-k", type=int, default=12)
+    market_v16_advisory_prepare.add_argument(
+        "--llm-backend", choices=["openai", "codex"], default="openai"
+    )
+
+    market_v16_advisory_receive = market_subparsers.add_parser(
+        "v16-advisory-receive",
+        help="导入并校验哈希绑定的操作员研究 LLM 响应",
+    )
+    market_v16_advisory_receive.add_argument("--run-id", required=True)
+    market_v16_advisory_receive.add_argument("--response", required=True)
+    market_v16_advisory_receive.add_argument(
+        "--expected-state-sha256", required=True
+    )
+    market_v16_advisory_receive.add_argument(
+        "--response-source",
+        choices=["external_file", "codex_delegated"],
+        default="external_file",
+    )
+
+    market_v16_advisory_finalize = market_subparsers.add_parser(
+        "v16-advisory-finalize",
+        help="重算四分支并生成等待人工决定的研究排序",
+    )
+    market_v16_advisory_finalize.add_argument("--run-id", required=True)
+    market_v16_advisory_finalize.add_argument(
+        "--expected-state-sha256", required=True
+    )
+
+    market_v16_advisory_run = market_subparsers.add_parser(
+        "v16-advisory-run",
+        help="运行隔离的 CN v16 四分支操作员研究通道",
+    )
+    market_v16_advisory_run.add_argument("--run-id", default="")
+    market_v16_advisory_run.add_argument("--max-candidates", type=int, default=30)
+    market_v16_advisory_run.add_argument("--top-k", type=int, default=12)
+    market_v16_advisory_run.add_argument(
+        "--provider", choices=["none", "openai"], default="none"
+    )
+
+    market_v16_advisory_provider_resume = market_subparsers.add_parser(
+        "v16-advisory-provider-resume",
+        help="从已封存请求恢复 OpenAI 调用并完成操作员研究通道",
+    )
+    market_v16_advisory_provider_resume.add_argument("--run-id", required=True)
+    market_v16_advisory_provider_resume.add_argument(
+        "--expected-state-sha256", required=True
+    )
+
+    market_v16_advisory_status = market_subparsers.add_parser(
+        "v16-advisory-status",
+        help="查看隔离的 CN v16 操作员研究状态",
+    )
+    advisory_status_identity = market_v16_advisory_status.add_mutually_exclusive_group(
+        required=True
+    )
+    advisory_status_identity.add_argument("--run-id", default="")
+    advisory_status_identity.add_argument("--latest", action="store_true")
+
+    market_v16_advisory_decision = market_subparsers.add_parser(
+        "v16-advisory-decision-record",
+        help="记录用户对研究排序的非执行性决定",
+    )
+    market_v16_advisory_decision.add_argument("--run-id", required=True)
+    market_v16_advisory_decision.add_argument(
+        "--decision",
+        required=True,
+        choices=["ACKNOWLEDGED", "DECLINED", "DEFERRED"],
+    )
+    market_v16_advisory_decision.add_argument(
+        "--expected-state-sha256", required=True
     )
 
     market_codex_export = market_subparsers.add_parser(
@@ -1464,6 +1585,75 @@ def main(argv: list[str] | None = None) -> None:
 
     if codex_review_command == "codex-review-status":
         _print_json(run_codex_review_status(root=args.root, run_id=args.run_id))
+        return
+
+    advisory_command = (
+        args.market_command
+        if args.command == "market"
+        and args.market_command.startswith("v16-advisory-")
+        else ""
+    )
+    if advisory_command:
+        from quant_investor.v16.operator_advisory.contracts import AdvisoryError
+
+        try:
+            if advisory_command == "v16-advisory-prepare":
+                result = run_v16_advisory_prepare(
+                    run_id=args.run_id,
+                    max_candidates=args.max_candidates,
+                    top_k=args.top_k,
+                    llm_backend=args.llm_backend,
+                )
+            elif advisory_command == "v16-advisory-receive":
+                result = run_v16_advisory_receive(
+                    run_id=args.run_id,
+                    response_path=args.response,
+                    expected_state_sha256=args.expected_state_sha256,
+                    response_source=args.response_source,
+                )
+            elif advisory_command == "v16-advisory-finalize":
+                result = run_v16_advisory_finalize(
+                    run_id=args.run_id,
+                    expected_state_sha256=args.expected_state_sha256,
+                )
+            elif advisory_command == "v16-advisory-run":
+                result = run_v16_advisory_run(
+                    run_id=args.run_id,
+                    max_candidates=args.max_candidates,
+                    top_k=args.top_k,
+                    provider=args.provider,
+                )
+            elif advisory_command == "v16-advisory-provider-resume":
+                result = run_v16_advisory_provider_resume(
+                    run_id=args.run_id,
+                    expected_state_sha256=args.expected_state_sha256,
+                )
+            elif advisory_command == "v16-advisory-status":
+                result = run_v16_advisory_status(
+                    run_id=args.run_id,
+                    latest=args.latest,
+                )
+            elif advisory_command == "v16-advisory-decision-record":
+                result = run_v16_advisory_decision(
+                    run_id=args.run_id,
+                    decision=args.decision,
+                    expected_state_sha256=args.expected_state_sha256,
+                )
+            else:  # pragma: no cover - argparse owns the command set.
+                raise AdvisoryError("unknown v16 advisory command")
+        except AdvisoryError as exc:
+            _print_json(
+                {
+                    "schema_version": "v16.operator-advisory-cli-error.v1",
+                    "status": "blocked",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "production_authority": False,
+                    "new_risk_authorized": False,
+                }
+            )
+            raise SystemExit(exc.exit_code) from exc
+        _print_json(result)
         return
 
     review_models = ResolvedReviewModels.from_mapping(vars(args))

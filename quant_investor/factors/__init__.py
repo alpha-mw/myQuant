@@ -52,6 +52,13 @@ from quant_investor.factors.governance_protocol_v4 import (
     protocol_policy as factor_governance_v4_protocol_policy,
     validate_candidate_admission_v4,
 )
+from quant_investor.factors.governance_quality_v1 import (
+    assess_factor_quality_readiness_v4,
+    factor_quality_policy,
+    factor_quality_policy_hash,
+    factor_quality_set_identity_sha256,
+    validate_factor_quality_readiness_v1,
+)
 from quant_investor.factors.governance_transaction_v4 import (
     FactorV4ShadowTransactionStore,
     build_activation_request_v4,
@@ -126,6 +133,7 @@ __all__ = [
     "FactorV4ShadowTransactionStore",
     "assess_candidate_admission_v4",
     "assess_factor_governance_readiness_v4",
+    "assess_factor_quality_readiness_v4",
     "assess_factor_record_v4",
     "assess_governance_cycle_v4",
     "build_activation_request_v4",
@@ -133,10 +141,14 @@ __all__ = [
     "build_health_action_proposal_v4",
     "factor_governance_v4_protocol_hash",
     "factor_governance_v4_protocol_policy",
+    "factor_quality_policy",
+    "factor_quality_policy_hash",
+    "factor_quality_set_identity_sha256",
     "readback_v4_evidence",
     "validate_activation_receipt_v4",
     "validate_canonical_replay_v4",
     "validate_factor_v4_transaction_plan",
+    "validate_factor_quality_readiness_v1",
     "validate_inverse_rollback_manifest_v4",
     "validate_shadow_activation_receipt_v4",
     "validate_candidate_admission_v4",

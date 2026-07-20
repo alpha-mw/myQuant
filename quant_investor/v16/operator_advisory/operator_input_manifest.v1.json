@@ -1,0 +1,187 @@
+{
+  "schema_version": "v16.operator-advisory-input-manifest.v1",
+  "source_run_id": "factor_v4_pre_admission_20260718_083224",
+  "source_state": "diagnostic_nonproduction",
+  "selection_snapshot": {
+    "market_pointer_path": "data/parquet/cn/_latest.json",
+    "market_pointer_sha256": "551a16aef636630ab25f34ddd8b8a1ca343e993a529678d2222ee402f16ff285",
+    "snapshot_id": "20260717T172132Z",
+    "trade_date": "20260717",
+    "pit_generation_id": "pit-20260717-5a3853ca2dd955e3",
+    "pit_membership_path": "data/parquet/cn/reference/_generations/pit-20260717-5a3853ca2dd955e3/stock_basic_membership.parquet",
+    "pit_membership_sha256": "6a4d42edd9581c5cf8ba6a472e3b89bd1747eb1c1731f07cfd53efc949ebf4e1",
+    "pit_generation_manifest_path": "data/parquet/cn/reference/_generations/pit-20260717-5a3853ca2dd955e3/manifest.json",
+    "pit_generation_manifest_sha256": "9c9c9ee1af849e669e50d0593e524f42573ae9d9f367f185414574abc79125b1"
+  },
+  "scoring_snapshot": {
+    "market_pointer_path": "data/parquet/cn/_latest.json",
+    "market_pointer_sha256": "551a16aef636630ab25f34ddd8b8a1ca343e993a529678d2222ee402f16ff285",
+    "snapshot_id": "20260717T172132Z",
+    "trade_date": "20260717"
+  },
+  "source_artifacts": [
+    {
+      "id": "candidate_queue",
+      "path": "reports/factor_governance/private/v4_pre_admission/factor_v4_pre_admission_20260718_083224/diversified_candidate_queue.diagnostic.json",
+      "byte_sha256": "4df33958183a2d313ac5da9895ed19c9c9ad8314654539b5fd2c8d457570e2c5",
+      "semantic_sha256": ""
+    },
+    {
+      "id": "candidate_catalog",
+      "path": "reports/factor_governance/private/v4_pre_admission/factor_v4_pre_admission_20260718_083224/candidate_catalog.v4.json",
+      "byte_sha256": "24860fbaa6482ecbffccb4bc41fc842475f76e308b4b232ef5bffe427a61efa4",
+      "semantic_sha256": "e427a71fd95be62aca85bc893a809d3c54cea965976cdcff9a0a4f1500b07c99"
+    },
+    {
+      "id": "screening_evidence",
+      "path": "reports/factor_governance/private/v4_pre_admission/factor_v4_pre_admission_20260718_083224/screening_evidence.v4.json",
+      "byte_sha256": "12403ad8c67b640b5eb01449b6c8f6912c0667685854cd095cb44ef413ee56a0",
+      "semantic_sha256": "ea866408fd4e833043f053748b7d9976192e229e8906be91a911a1a7d9504e87"
+    },
+    {
+      "id": "primitive_ontology",
+      "path": "reports/factor_governance/private/v4_pre_admission/factor_v4_pre_admission_20260718_083224/primitive_ontology.v4.json",
+      "byte_sha256": "8ec6e7b4e5de7d2857b14226b2f208f025ce2f6a99a0caa024e51b7ee939ce71",
+      "semantic_sha256": "b1f803026fff12b52392265fb81d314b77c865dc105706b7a243cbe5dd6c2e0b"
+    },
+    {
+      "id": "market_data_inventory",
+      "path": "reports/factor_governance/private/v4_pre_admission/factor_v4_pre_admission_20260718_083224/market_data_input_inventory.v1.json",
+      "byte_sha256": "130402f1c9d42a811229719690a90c5828aa3a52e5f4342041cf081f6785128f",
+      "semantic_sha256": ""
+    },
+    {
+      "id": "run_config",
+      "path": "reports/factor_governance/private/v4_pre_admission/factor_v4_pre_admission_20260718_083224/run_config.v4.json",
+      "byte_sha256": "314d1632b55bba320875ea2e9cbd27891719114c6e3acaa12dac226ac3023626",
+      "semantic_sha256": ""
+    },
+    {
+      "id": "pre_admission_report",
+      "path": "reports/factor_governance/private/v4_pre_admission/factor_v4_pre_admission_20260718_083224/factor_governance_pre_admission_report.v4.json",
+      "byte_sha256": "a533d34bfbcd90acb2adde5837b4b765744efcb781fb2300502b8d2de189032a",
+      "semantic_sha256": "59e072c7d54b8bdc31d29f931acf2ec6b379b1f1f44c3f5175412d7a61e1ae8e"
+    }
+  ],
+  "source_notes": {
+    "expected_absent": true,
+    "path": "reports/factor_governance/private/v4_pre_admission/factor_v4_pre_admission_20260718_083224/source_notes.json"
+  },
+  "fundamental_source": {
+    "pointer_path": "data/parquet/cn/_fundamental_latest.json",
+    "pointer_sha256": "eeb5d2f584f5351f024f520125894843c53ff7dc9cfcdaa165c1002345e37bbd",
+    "generation_id": "cn_fundamental_primary_20260714_v3_barbound",
+    "generation_manifest_path": "data/parquet/cn/_fundamental_generations/cn_fundamental_primary_20260714_v3_barbound/manifest.json",
+    "generation_manifest_sha256": "bc67dc240be5461cb0909f1ae528feadef5e97aede3d6ef92016992c90945ec3",
+    "daily_path": "data/parquet/cn/_fundamental_generations/cn_fundamental_primary_20260714_v3_barbound/fundamental_daily.parquet",
+    "daily_sha256": "c7e54d5c0b65112da8154761de95d4282575193bc4240e0f50ff2c65979d70e1",
+    "as_of": "20260714",
+    "availability_policy": "canonical_daily_latest_not_after_scoring_date"
+  },
+  "macro_source": {
+    "schema_version": "cn-macro-controls.v15.v1",
+    "generation_id": "cn_macro_stage_20260717_release_calendar_v1",
+    "generation_manifest_path": "data/parquet/cn/macro_daily/_generations/cn_macro_stage_20260717_release_calendar_v1/manifest.json",
+    "generation_manifest_sha256": "0fd90168c252ac55a7010547b6de5a2ddd0a0b451c3f24045a35c94df340dac0",
+    "controls_path": "data/parquet/cn/macro_daily/_generations/cn_macro_stage_20260717_release_calendar_v1/v15_controls.json",
+    "controls_sha256": "171059cbd347b603634dd0c3377e8a8f636e54687a9c5e25657223a5d9f577a4",
+    "semantic_sha256": "8382a74015b984b9d3466167961bd8cde8222ef61798ad0849d47e7d9285b010",
+    "score_field": "macro_score",
+    "as_of": "20260716"
+  },
+  "factors": [
+    {
+      "name": "pv_blend_volstab19x2_mom90_amihud5_w80",
+      "family": "composite:[\"amihud_illiquidity\",\"price_momentum\",\"volume\"]",
+      "slot": "primitive:amihud_illiquidity+price_momentum+volume",
+      "implementation": "price_volume:pv_blend_volstab19x2_mom90_amihud5_w80",
+      "params": {"_runtime_family": "volstab_momentum_illiquidity_blend", "amihud_window": 5, "inner_momentum_weight": 0.6, "momentum_window": 90, "outer_volume_stability_weight": 0.8, "volume_stability_base_window": 19, "volume_stability_smooth_window": 2},
+      "expression": "",
+      "direction": 1.0,
+      "definition_sha256": "a412e07a6c5df48f250577d821209670ffce36794c61b514c8eb8b3b412a499d",
+      "source_state": "diagnostic_nonproduction",
+      "advisory_blend_share": 0.2
+    },
+    {
+      "name": "pv_short_reversal_25d",
+      "family": "close_return",
+      "slot": "primitive:close_return",
+      "implementation": "price_volume:pv_short_reversal_25d",
+      "params": {"_runtime_family": "short_reversal"},
+      "expression": "",
+      "direction": 1.0,
+      "definition_sha256": "17863a088f0bebaaf68ea137f13ab3fb7576bb24514f6c87735838b9643467df",
+      "source_state": "diagnostic_nonproduction",
+      "advisory_blend_share": 0.2
+    },
+    {
+      "name": "pv_downside_volatility_15d",
+      "family": "downside_return",
+      "slot": "primitive:downside_return",
+      "implementation": "price_volume:pv_downside_volatility_15d",
+      "params": {"_runtime_family": "downside_volatility"},
+      "expression": "",
+      "direction": 1.0,
+      "definition_sha256": "8bb6170626d59c45aa2d21171e1660ad06fdc5efc322006869bac529e79b4152",
+      "source_state": "diagnostic_nonproduction",
+      "advisory_blend_share": 0.2
+    },
+    {
+      "name": "formula_cash_growth_lowlev_w65",
+      "family": "composite:[\"fin_debt_to_assets\",\"fin_ocf_to_profit\"]",
+      "slot": "primitive:fin_debt_to_assets+fin_ocf_to_profit",
+      "implementation": "research_formula:rank_blend",
+      "params": {"_runtime_family": "fundamental_cash_growth_balance", "left": "fin_ocf_to_profit", "left_weight": 0.65, "right": "low_debt_to_assets"},
+      "expression": "",
+      "direction": 1.0,
+      "definition_sha256": "deb6be042523b3cb03833ab4a5551309000f1b8807e7fa27d4708ab896bf29d8",
+      "source_state": "diagnostic_nonproduction",
+      "advisory_blend_share": 0.2
+    },
+    {
+      "name": "fund_quality_cash_combo",
+      "family": "composite:[\"fin_ocf_to_profit\",\"fin_roe\"]",
+      "slot": "primitive:fin_ocf_to_profit+fin_roe",
+      "implementation": "aquant_expression:fund_quality_cash_combo",
+      "params": {"_runtime_family": "fundamental_combo"},
+      "expression": "cs_rank(fin_roe) + cs_rank(fin_ocf_to_profit)",
+      "direction": 1.0,
+      "definition_sha256": "6be87b8eedf05143e0228be0fe90452a81b81d00a26fba1f418ef109f2692624",
+      "source_state": "diagnostic_nonproduction",
+      "advisory_blend_share": 0.2
+    }
+  ],
+  "branch_policy": {
+    "ordered_branches": ["quant", "fundamental", "macro", "llm"],
+    "branch_shares": {"quant": 0.25, "fundamental": 0.25, "macro": 0.25, "llm": 0.25},
+    "retrieval_scoring_allowed": false,
+    "risk_authority": "advisory_only"
+  },
+  "provider_policy": {
+    "provider": "openai_responses_no_tools",
+    "endpoint": "https://api.openai.com:443/v1/responses",
+    "model": "gpt-5.4-2026-03-05",
+    "store": false,
+    "tools": []
+  },
+  "research_waivers": [
+    "factor_v4_activation_receipt_missing",
+    "factor_v4_maturity_incomplete",
+    "factor_v4_replay_missing",
+    "factor_v4_codex_s1_missing",
+    "factor_v4_codex_ic_missing",
+    "calibration_not_run",
+    "macro_same_day_alignment_not_available",
+    "factor_and_fundamental_signal_overlap"
+  ],
+  "non_waivable_gates": [
+    "canonical_storage_integrity",
+    "pit_membership_integrity",
+    "source_artifact_integrity",
+    "scoring_snapshot_binding",
+    "exact_branch_contract",
+    "llm_response_binding",
+    "side_effect_isolation",
+    "authority_remains_false"
+  ]
+}

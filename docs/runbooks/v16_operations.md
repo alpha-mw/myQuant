@@ -43,6 +43,34 @@ create an order.
 Missing evidence is a blocker. Do not set a readiness boolean by hand to bypass
 the underlying fields.
 
+Factor v4 has two explicit domains. `factor-quality-readiness.v1` may qualify
+zero-weight candidates for report-only shadow observation after Gates 1-8,
+strict-calendar maturity, family BH, v4 runtime/replay binding, and fresh health
+pass. It does not require production state, production weights, allocation
+caps, or an activation receipt. The production gate in item 2 is unchanged and
+remains the only Factor input to v16 activation.
+
+When supplied, quality appears only under the nested
+`factor_governance.quality_assessment` summary. Missing quality normalizes to
+`unavailable`; malformed or tampered quality normalizes to informational
+`invalid`. Neither state adds a v16 blocker or changes `factor_ready`,
+`activation_candidate`, `readiness_status`, or `new_risk_authorized`. Do not
+copy a quality-ready or shadow-eligible result into a production readiness
+field.
+
+The offline command accepts an optional exact quality envelope:
+
+```bash
+./.venv/bin/python scripts/build_factor_v4_readiness_plan.py \
+  --input-json <production-readiness-input.json> \
+  --quality-records-json <factor-quality-input.v1.json> \
+  --output-json <research-readiness.json>
+```
+
+The quality envelope contains exactly `schema_version`, `protocol_version`,
+`quality_records`, and `expected_quality_set_sha256`. CLI exit status continues
+to depend only on production `factor_governance_ready`.
+
 The v4.3 prior-diagnostic fifth-factor nomination and the v4.4 five-candidate
 prospective preregistration contract do not satisfy this readiness gate. All
 five v4.4 candidates start at weight zero; historical nomination statistics are
@@ -195,6 +223,95 @@ target window beyond the 2026 calendar. Epoch A binds no models; B/C bind the
 ordered `quant/fundamental/macro/llm` frozen bundles and an exact
 schedule-specific calibration universe. The full evidence bundle, not a bare
 schedule JSON, is required for RFC3161 anchor and lineage validation.
+
+## Operator-advisory runnable lane
+
+`market v16-advisory-*` is a separate, immediately runnable CN research lane.
+It exists so an operator can obtain a complete four-branch ranking while the
+formal v16 activation evidence remains incomplete. It writes only under
+`results/v16_operator_advisory/`; it must never write, copy, or relabel an
+artifact under `results/v16/`.
+
+The lane binds the active strict CN Parquet pointer and its immutable PIT
+generation, the pinned Fundamental and Macro generations, and the exact five
+ordered Factor v4 pre-admission candidates. The five candidates span five
+families and contribute `0.20` each to the advisory Quant blend. Formal Factor
+activation, maturity/replay receipts, and Calibration are explicit research
+waivers here. Canonical storage integrity, PIT/source hashes, scoring-snapshot
+identity, exact `quant/fundamental/macro/llm` shares of `0.25`, LLM response
+binding, side-effect isolation, and false production authority are never
+waived.
+
+Run the complete lane only with an explicit provider selection:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 ./.venv/bin/quant-investor market \
+  v16-advisory-run --provider openai --max-candidates 30 --top-k 12
+```
+
+`--provider none` is the default. It performs deterministic candidate
+generation, writes a sealed request, and stops at `LLM_REQUEST_READY` without a
+network call. An externally produced strict response can then be imported and
+finalized with state-hash CAS:
+
+```bash
+./.venv/bin/quant-investor market v16-advisory-receive \
+  --run-id <run-id> --response <response.json> \
+  --expected-state-sha256 <state-sha256>
+
+./.venv/bin/quant-investor market v16-advisory-finalize \
+  --run-id <run-id> --expected-state-sha256 <state-sha256>
+```
+
+For a review performed directly in the current Codex task, prepare an explicit
+Codex-bound request and import it with the matching source mode:
+
+```bash
+./.venv/bin/quant-investor market v16-advisory-prepare \
+  --llm-backend codex --max-candidates 30 --top-k 12
+
+./.venv/bin/quant-investor market v16-advisory-receive \
+  --run-id <run-id> --response <response.json> \
+  --response-source codex_delegated \
+  --expected-state-sha256 <state-sha256>
+```
+
+This path does not read `OPENAI_API_KEY` or call an external provider API. It
+writes a local Codex receipt bound to the sealed request, normalized response,
+prompt, response schema, and explicit `external_provider_api_called=false`.
+The receiver rejects a Codex source claim against an OpenAI-bound request.
+
+If the built-in provider times out or fails before a response is committed, the
+run remains at the same `LLM_REQUEST_READY` state and state SHA. Resume that
+exact sealed request without regenerating candidates:
+
+```bash
+./.venv/bin/quant-investor market v16-advisory-provider-resume \
+  --run-id <run-id> --expected-state-sha256 <state-sha256>
+```
+
+The built-in OpenAI path uses only the fixed HTTPS Responses endpoint, pinned
+model, `store=false`, strict structured JSON, a bounded request/output, and an
+empty tool set. It does not grant filesystem, shell, web, MCP, broker, or
+execution tools. Status and reports expose whether the response came from the
+built-in `openai` provider with a receipt or an unattested `external_file`.
+The separately prepared `codex_delegated` path has its own local receipt and
+does not impersonate the pinned OpenAI model.
+The final state is `ADVISORY_COMPLETE_AWAITING_HUMAN_DECISION`; research shares
+are illustrative, limited to 12 names and `20%` per name, rounded down to eight
+decimals with the exact residual left as cash. They are not production weights
+or instructions. Only the user can make the separate operational decision.
+
+Inspect the latest complete run with:
+
+```bash
+./.venv/bin/quant-investor market v16-advisory-status --latest
+```
+
+An optional `v16-advisory-decision-record` records `ACKNOWLEDGED`, `DECLINED`,
+or `DEFERRED`. It is non-executing and cannot enable new risk, activate the
+Dashboard, mutate Factor state, switch the production pointer, call a broker,
+or create an order.
 
 ## Report and Dashboard checks
 
