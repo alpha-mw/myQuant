@@ -311,6 +311,110 @@ def test_full_a_governance_uses_snapshot_scope_not_historical_serving(tmp_path):
     assert scope["serving_inventory_count"] == 4
 
 
+def test_full_a_governance_reads_canonical_market_data_in_one_batch(
+    tmp_path,
+    monkeypatch,
+):
+    import quant_investor.market.data_governance as governance_module
+
+    data_root = _write_full_a_scope_fixture(tmp_path)
+    original_batch = governance_module.MarketDataReader.read_symbol_frames
+    batch_calls: list[list[str]] = []
+
+    def record_batch(self, symbols, **kwargs):
+        normalized = [str(symbol) for symbol in symbols]
+        batch_calls.append(normalized)
+        return original_batch(self, normalized, **kwargs)
+
+    def reject_single(*_args, **_kwargs):
+        raise AssertionError("data governance must use canonical batch reads")
+
+    monkeypatch.setattr(
+        governance_module.MarketDataReader,
+        "read_symbol_frames",
+        record_batch,
+    )
+    monkeypatch.setattr(
+        governance_module.MarketDataReader,
+        "read_symbol_frame",
+        reject_single,
+    )
+
+    frames, read_results, _reader, scope, effective_as_of = (
+        governance_module._read_local_frames(
+            market="CN",
+            category="full_a",
+            as_of="20240510",
+            data_dir=data_root,
+        )
+    )
+
+    assert batch_calls == [["000001.SZ", "000002.SZ"]]
+    assert list(frames) == ["000001.SZ", "000002.SZ"]
+    assert list(read_results) == list(frames)
+    assert all(result.metadata["batch_read"] is True for result in read_results.values())
+    assert scope["status"] == "passed"
+    assert effective_as_of == "20240510"
+
+
+def test_full_a_governance_batch_read_recovers_history_for_stale_symbol(
+    tmp_path,
+    monkeypatch,
+):
+    import quant_investor.market.data_governance as governance_module
+
+    data_root = _write_full_a_scope_fixture(tmp_path)
+    stale_path = (
+        data_root
+        / "parquet_serving"
+        / "cn"
+        / "bars"
+        / "symbol=000002.SZ"
+        / "bars.parquet"
+    )
+    _daily_frame("000002.SZ").assign(
+        trade_date=["20240508", "20240509"]
+    ).to_parquet(stale_path, index=False)
+    canonical_path = data_root / "parquet" / "cn" / "bars" / "year=2024" / "part.parquet"
+    canonical_frame = pd.read_parquet(canonical_path)
+    canonical_frame.loc[
+        canonical_frame["ts_code"].eq("000002.SZ"),
+        "trade_date",
+    ] = ["20240508", "20240509"]
+    canonical_frame.to_parquet(canonical_path, index=False)
+    original_batch = governance_module.MarketDataReader.read_symbol_frames
+    batch_calls: list[list[str]] = []
+
+    def record_batch(self, symbols, **kwargs):
+        normalized = [str(symbol) for symbol in symbols]
+        batch_calls.append(normalized)
+        return original_batch(self, normalized, **kwargs)
+
+    monkeypatch.setattr(
+        governance_module.MarketDataReader,
+        "read_symbol_frames",
+        record_batch,
+    )
+
+    frames, read_results, _reader, scope, effective_as_of = (
+        governance_module._read_local_frames(
+            market="CN",
+            category="full_a",
+            as_of="20240510",
+            data_dir=data_root,
+        )
+    )
+
+    assert batch_calls == [
+        ["000001.SZ", "000002.SZ"],
+        ["000002.SZ"],
+    ]
+    assert frames["000002.SZ"]["trade_date"].tolist() == ["20240508", "20240509"]
+    assert read_results["000002.SZ"].metadata["batch_read"] is True
+    assert scope["status"] == "passed"
+    assert effective_as_of == "20240510"
+
+
 @pytest.mark.parametrize(
     ("case", "expected_blocker"),
     [

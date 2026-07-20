@@ -23,6 +23,7 @@ from typing import Any, Iterator, Mapping
 
 import pandas as pd
 import pyarrow.parquet as pq
+import pyarrow.types as patypes
 
 from .fundamental_provider_contract import (
     FUNDAMENTAL_DERIVATION_CONTRACT,
@@ -441,7 +442,8 @@ def _verify_primary_provenance(
         or output_frame_fingerprints != manifest_frame_fingerprints
     ):
         raise FundamentalGenerationError(
-            "fundamental primary output fingerprints do not bind manifest"
+            "fundamental table frame fingerprint mismatch: "
+            "primary provenance does not bind manifest"
         )
     expected_parquet_hashes = {
         table_name: str(
@@ -573,6 +575,7 @@ def _file_signature(value: os.stat_result) -> tuple[int, ...]:
         value.st_dev,
         value.st_ino,
         stat.S_IFMT(value.st_mode),
+        value.st_nlink,
         value.st_size,
         value.st_mtime_ns,
         value.st_ctime_ns,
@@ -585,6 +588,10 @@ def _stable_file_bytes(path: Path) -> tuple[bytes, tuple[int, ...]]:
         if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
             raise FundamentalGenerationError(
                 f"fundamental artifact is not a regular file: {path}"
+            )
+        if before.st_nlink != 1:
+            raise FundamentalGenerationError(
+                f"fundamental artifact is hard-linked: {path}"
             )
         descriptor = os.open(
             path,
@@ -634,6 +641,10 @@ def _stable_file_sha256(path: Path) -> tuple[str, tuple[int, ...]]:
             raise FundamentalGenerationError(
                 f"fundamental artifact is not a regular file: {path}"
             )
+        if before.st_nlink != 1:
+            raise FundamentalGenerationError(
+                f"fundamental artifact is hard-linked: {path}"
+            )
         descriptor = os.open(
             path,
             os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
@@ -671,6 +682,184 @@ def _stable_file_sha256(path: Path) -> tuple[str, tuple[int, ...]]:
         ) from exc
     finally:
         os.close(descriptor)
+
+
+def _parquet_scalar_token(data_type: Any, *, table_name: str, column: str) -> str:
+    if patypes.is_dictionary(data_type):
+        data_type = data_type.value_type
+    if patypes.is_boolean(data_type):
+        return "boolean"
+    if patypes.is_integer(data_type):
+        return "integer"
+    if patypes.is_floating(data_type):
+        return "real"
+    if patypes.is_decimal(data_type):
+        return "decimal"
+    if patypes.is_string(data_type) or patypes.is_large_string(data_type):
+        return "string"
+    if (
+        patypes.is_binary(data_type)
+        or patypes.is_large_binary(data_type)
+        or patypes.is_fixed_size_binary(data_type)
+    ):
+        return "bytes"
+    if patypes.is_timestamp(data_type):
+        return "datetime"
+    if patypes.is_date(data_type):
+        return "date"
+    if patypes.is_duration(data_type):
+        return "timedelta_ns"
+    raise FundamentalGenerationError(
+        "fundamental table metadata has unsupported scalar type: "
+        f"{table_name}.{column}:{data_type}"
+    )
+
+
+def _parquet_metadata_logical_schema(
+    parquet: pq.ParquetFile,
+    *,
+    table_name: str,
+) -> list[dict[str, Any]]:
+    row_count = int(parquet.metadata.num_rows)
+    columns = list(parquet.schema_arrow.names)
+    if int(parquet.metadata.num_columns) != len(columns):
+        raise FundamentalGenerationError(
+            f"fundamental table nested schema is unsupported: {table_name}"
+        )
+    logical_schema: list[dict[str, Any]] = []
+    for position, column in enumerate(columns):
+        null_count = 0
+        if row_count:
+            for row_group in range(parquet.num_row_groups):
+                statistics = parquet.metadata.row_group(row_group).column(
+                    position
+                ).statistics
+                if statistics is None or statistics.null_count is None:
+                    raise FundamentalGenerationError(
+                        "fundamental table null statistics missing: "
+                        f"{table_name}.{column}"
+                    )
+                null_count += int(statistics.null_count)
+        if null_count < 0 or null_count > row_count:
+            raise FundamentalGenerationError(
+                "fundamental table null statistics invalid: "
+                f"{table_name}.{column}"
+            )
+        logical_types = []
+        if row_count - null_count > 0:
+            logical_types = [
+                _parquet_scalar_token(
+                    parquet.schema_arrow.field(position).type,
+                    table_name=table_name,
+                    column=column,
+                )
+            ]
+        logical_schema.append(
+            {
+                "position": position,
+                "name": list(_scalar_token(column)),
+                "logical_scalar_types": logical_types,
+                "nullable": null_count > 0,
+            }
+        )
+    return logical_schema
+
+
+def _readback_primary_table_identity(
+    path: Path,
+    *,
+    table_name: str,
+    table_manifest: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Verify immutable primary bytes and derive logical identity from metadata."""
+
+    declared = dict(table_manifest)
+    required_fields = {
+        "rows",
+        "columns",
+        "sha256",
+        "frame_fingerprint",
+        "logical_schema",
+    }
+    if required_fields.intersection(declared) != required_fields:
+        raise FundamentalGenerationError(
+            f"fundamental table readback contract missing: {table_name}"
+        )
+    file_sha256, expected_signature = _stable_file_sha256(path)
+    if str(declared.get("sha256") or "").strip().lower() != file_sha256:
+        raise FundamentalGenerationError(
+            f"fundamental table hash mismatch: {table_name}"
+        )
+    try:
+        before = os.lstat(path)
+        if _file_signature(before) != expected_signature:
+            raise FundamentalGenerationError(
+                f"fundamental artifact changed before metadata readback: {path}"
+            )
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        )
+    except OSError as exc:
+        raise FundamentalGenerationError(
+            f"fundamental table metadata readback failed: {table_name}"
+        ) from exc
+    try:
+        opened = os.fstat(descriptor)
+        if _file_signature(opened) != expected_signature:
+            raise FundamentalGenerationError(
+                f"fundamental artifact changed during metadata open: {path}"
+            )
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            parquet = pq.ParquetFile(handle)
+            row_count = int(parquet.metadata.num_rows)
+            columns = list(parquet.schema_arrow.names)
+            logical_schema = _parquet_metadata_logical_schema(
+                parquet,
+                table_name=table_name,
+            )
+        after = os.fstat(descriptor)
+        current = os.lstat(path)
+        if (
+            _file_signature(after) != expected_signature
+            or _file_signature(current) != expected_signature
+        ):
+            raise FundamentalGenerationError(
+                f"fundamental artifact changed during metadata readback: {path}"
+            )
+    except FundamentalGenerationError:
+        raise
+    except Exception as exc:
+        raise FundamentalGenerationError(
+            f"fundamental table metadata readback failed: {table_name}"
+        ) from exc
+    finally:
+        os.close(descriptor)
+
+    if type(declared.get("rows")) is not int or declared["rows"] != row_count:
+        raise FundamentalGenerationError(
+            f"fundamental table row count mismatch: {table_name}"
+        )
+    if not isinstance(declared.get("columns"), list) or declared["columns"] != columns:
+        raise FundamentalGenerationError(
+            f"fundamental table columns mismatch: {table_name}"
+        )
+    fingerprint = str(declared.get("frame_fingerprint") or "").strip().lower()
+    if not _valid_sha256(fingerprint):
+        raise FundamentalGenerationError(
+            f"fundamental table frame fingerprint mismatch: {table_name}"
+        )
+    if declared.get("logical_schema") != logical_schema:
+        raise FundamentalGenerationError(
+            f"fundamental table logical schema mismatch: {table_name}"
+        )
+    return {
+        "rows": row_count,
+        "columns": columns,
+        "sha256": file_sha256,
+        "frame_fingerprint": fingerprint,
+        "logical_schema": logical_schema,
+    }
 
 
 def _streaming_parquet_table_evidence(
@@ -1360,6 +1549,7 @@ def _validate_fundamental_pointer_cached(
         or set(manifest_tables) != set(FUNDAMENTAL_TABLES)
     ):
         raise FundamentalGenerationError("fundamental pointer table set mismatch")
+    primary_provenance_verified = _verify_primary_provenance(payload, manifest)
     signatures_by_name = {
         str(item[0]): tuple(int(value) for value in item[1:])
         for item in table_signatures
@@ -1377,6 +1567,18 @@ def _validate_fundamental_pointer_cached(
     )
     for table_name, table_value in tables.items():
         table_path = _resolve_inside(base, str(table_value), label=table_name)
+        if primary_provenance_verified:
+            observed_signature = _file_signature(os.lstat(table_path))
+            if observed_signature != signatures_by_name.get(table_name):
+                raise FundamentalGenerationError(
+                    f"fundamental table changed before validation: {table_name}"
+                )
+            _readback_primary_table_identity(
+                table_path,
+                table_name=table_name,
+                table_manifest=dict(manifest_tables[table_name] or {}),
+            )
+            continue
         table_bytes, observed_signature = _stable_file_bytes(table_path)
         if observed_signature != signatures_by_name.get(table_name):
             raise FundamentalGenerationError(
@@ -1388,7 +1590,6 @@ def _validate_fundamental_pointer_cached(
             table_manifest=dict(manifest_tables[table_name] or {}),
             require_v2=primary_claimed,
         )
-    primary_provenance_verified = _verify_primary_provenance(payload, manifest)
     payload["primary_provenance_verified"] = primary_provenance_verified
     pointer_metadata = dict(payload.get("metadata", {}) or {})
     pointer_metadata["primary_provenance_verified"] = primary_provenance_verified
@@ -1403,7 +1604,7 @@ def load_fundamental_pointer(root: str | Path) -> dict[str, Any] | None:
     pointer_path = base / FUNDAMENTAL_POINTER_FILENAME
     if not pointer_path.exists():
         return None
-    pointer_bytes, _pointer_signature = _stable_file_bytes(pointer_path)
+    pointer_bytes, pointer_signature = _stable_file_bytes(pointer_path)
     pointer_payload = _json_object_from_bytes(
         pointer_bytes,
         label="pointer",
@@ -1413,7 +1614,7 @@ def load_fundamental_pointer(root: str | Path) -> dict[str, Any] | None:
         str(pointer_payload.get("manifest_path", "")),
         label="manifest",
     )
-    manifest_bytes, _manifest_signature = _stable_file_bytes(manifest_path)
+    manifest_bytes, manifest_signature = _stable_file_bytes(manifest_path)
     tables = dict(pointer_payload.get("tables", {}) or {})
     if set(tables) != set(FUNDAMENTAL_TABLES):
         raise FundamentalGenerationError("fundamental pointer table set mismatch")
@@ -1427,14 +1628,36 @@ def load_fundamental_pointer(root: str | Path) -> dict[str, Any] | None:
         table_signatures.append(
             (table_name, *_file_signature(os.lstat(table_path)))
         )
-    return deepcopy(
-        _validate_fundamental_pointer_cached(
-            str(base),
-            pointer_bytes,
-            manifest_bytes,
-            tuple(table_signatures),
-        )
+    validated = _validate_fundamental_pointer_cached(
+        str(base),
+        pointer_bytes,
+        manifest_bytes,
+        tuple(table_signatures),
     )
+    if _file_signature(os.lstat(pointer_path)) != pointer_signature:
+        raise FundamentalGenerationError(
+            "fundamental pointer changed during validation"
+        )
+    if _file_signature(os.lstat(manifest_path)) != manifest_signature:
+        raise FundamentalGenerationError(
+            "fundamental manifest changed during validation"
+        )
+    for table_name in FUNDAMENTAL_TABLES:
+        table_path = _resolve_inside(
+            base,
+            str(tables.get(table_name, "")),
+            label=table_name,
+        )
+        expected_signature = next(
+            tuple(int(value) for value in item[1:])
+            for item in table_signatures
+            if item[0] == table_name
+        )
+        if _file_signature(os.lstat(table_path)) != expected_signature:
+            raise FundamentalGenerationError(
+                f"fundamental table changed during validation: {table_name}"
+            )
+    return deepcopy(validated)
 
 
 def pointer_sha256(root: str | Path) -> str:
@@ -1482,6 +1705,244 @@ def load_fundamental_table(
         table_bytes,
         table_name=table_name,
         table_manifest=table_manifest,
+    )
+    return frame, pointer
+
+
+def _normalize_fundamental_symbol(symbol: Any) -> str:
+    text = str(symbol or "").strip().upper()
+    if not text:
+        return ""
+    if "." in text:
+        code, suffix = text.split(".", 1)
+        return f"{code.zfill(6)}.{suffix}"
+    digits = "".join(character for character in text if character.isdigit())
+    if len(digits) >= 6:
+        code = digits[:6]
+        suffix = "SH" if code.startswith(("6", "9")) else "SZ"
+        return f"{code}.{suffix}"
+    return text
+
+
+def _normalized_symbol_series(values: pd.Series) -> pd.Series:
+    raw = values.astype("string").fillna("").str.strip().str.upper()
+    parts = raw.str.split(".", n=1, expand=True, regex=False)
+    normalized = raw.copy()
+    has_suffix = parts.shape[1] > 1 and parts[1].notna()
+    if isinstance(has_suffix, pd.Series) and has_suffix.any():
+        normalized.loc[has_suffix] = (
+            parts.loc[has_suffix, 0].str.zfill(6)
+            + "."
+            + parts.loc[has_suffix, 1]
+        )
+    without_suffix = ~has_suffix if isinstance(has_suffix, pd.Series) else pd.Series(
+        True,
+        index=raw.index,
+    )
+    digits = raw.str.replace(r"\D+", "", regex=True)
+    inferred = without_suffix & digits.str.len().ge(6)
+    if inferred.any():
+        codes = digits.loc[inferred].str.slice(0, 6)
+        suffixes = pd.Series("SZ", index=codes.index, dtype="string")
+        suffixes.loc[codes.str.startswith(("6", "9"))] = "SH"
+        normalized.loc[inferred] = codes + "." + suffixes
+    return normalized
+
+
+def _compact_date_series(values: pd.Series) -> pd.Series:
+    digits = (
+        values.astype("string")
+        .fillna("")
+        .str.replace(r"\D+", "", regex=True)
+        .str.slice(0, 8)
+    )
+    return digits.where(digits.str.len().ge(8), "")
+
+
+def _latest_rows_from_bound_parquet(
+    path: Path,
+    *,
+    table_name: str,
+    table_manifest: Mapping[str, Any],
+    symbols: list[str],
+    as_of: str,
+) -> pd.DataFrame:
+    declared = dict(table_manifest)
+    file_sha256, expected_signature = _stable_file_sha256(path)
+    if str(declared.get("sha256") or "").strip().lower() != file_sha256:
+        raise FundamentalGenerationError(
+            f"fundamental table hash mismatch: {table_name}"
+        )
+    try:
+        before = os.lstat(path)
+        if _file_signature(before) != expected_signature:
+            raise FundamentalGenerationError(
+                f"fundamental artifact changed before projected readback: {path}"
+            )
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        )
+    except OSError as exc:
+        raise FundamentalGenerationError(
+            f"fundamental projected readback failed: {table_name}"
+        ) from exc
+    try:
+        opened = os.fstat(descriptor)
+        if _file_signature(opened) != expected_signature:
+            raise FundamentalGenerationError(
+                f"fundamental artifact changed during projected open: {path}"
+            )
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            parquet = pq.ParquetFile(handle)
+            row_count = int(parquet.metadata.num_rows)
+            columns = list(parquet.schema_arrow.names)
+            if type(declared.get("rows")) is not int or declared["rows"] != row_count:
+                raise FundamentalGenerationError(
+                    f"fundamental table row count mismatch: {table_name}"
+                )
+            if (
+                not isinstance(declared.get("columns"), list)
+                or declared["columns"] != columns
+            ):
+                raise FundamentalGenerationError(
+                    f"fundamental table columns mismatch: {table_name}"
+                )
+            if "ts_code" not in columns:
+                raise FundamentalGenerationError(
+                    f"fundamental table ts_code missing: {table_name}"
+                )
+            date_column = (
+                "trade_date"
+                if "trade_date" in columns
+                else "date" if "date" in columns else ""
+            )
+            wanted = {
+                normalized
+                for normalized in (
+                    _normalize_fundamental_symbol(symbol) for symbol in symbols
+                )
+                if normalized
+            }
+            target = "".join(
+                character for character in str(as_of or "") if character.isdigit()
+            )[:8]
+            projected: list[pd.DataFrame] = []
+            observed_rows = 0
+            for batch in parquet.iter_batches(
+                batch_size=FUNDAMENTAL_STREAMING_ROW_GROUP_SIZE
+            ):
+                frame = batch.to_pandas()
+                batch_rows = int(len(frame))
+                frame["__row_position"] = range(
+                    observed_rows,
+                    observed_rows + batch_rows,
+                )
+                observed_rows += batch_rows
+                frame["__normalized_symbol"] = _normalized_symbol_series(
+                    frame["ts_code"]
+                )
+                if wanted:
+                    frame = frame[frame["__normalized_symbol"].isin(wanted)].copy()
+                if frame.empty:
+                    continue
+                frame["__trade_date"] = (
+                    _compact_date_series(frame[date_column])
+                    if date_column
+                    else ""
+                )
+                if target:
+                    frame = frame[frame["__trade_date"] <= target].copy()
+                if frame.empty:
+                    continue
+                max_dates = frame.groupby(
+                    "__normalized_symbol",
+                    sort=False,
+                )["__trade_date"].transform("max")
+                projected.append(
+                    frame.loc[frame["__trade_date"].eq(max_dates)]
+                    .drop_duplicates("__normalized_symbol", keep="last")
+                    .copy()
+                )
+            if observed_rows != row_count:
+                raise FundamentalGenerationError(
+                    f"fundamental projected row count mismatch: {table_name}"
+                )
+            if not projected:
+                result = pd.DataFrame(columns=columns)
+            else:
+                candidates = pd.concat(projected, ignore_index=True)
+                max_dates = candidates.groupby(
+                    "__normalized_symbol",
+                    sort=False,
+                )["__trade_date"].transform("max")
+                result = (
+                    candidates.loc[candidates["__trade_date"].eq(max_dates)]
+                    .sort_values(
+                        ["__normalized_symbol", "__row_position"],
+                        kind="mergesort",
+                    )
+                    .drop_duplicates("__normalized_symbol", keep="last")
+                    .sort_values("__normalized_symbol", kind="mergesort")
+                    .drop(
+                        columns=[
+                            "__normalized_symbol",
+                            "__trade_date",
+                            "__row_position",
+                        ]
+                    )
+                    .reset_index(drop=True)
+                )
+        after = os.fstat(descriptor)
+        current = os.lstat(path)
+        if (
+            _file_signature(after) != expected_signature
+            or _file_signature(current) != expected_signature
+        ):
+            raise FundamentalGenerationError(
+                f"fundamental artifact changed during projected readback: {path}"
+            )
+        return result
+    except FundamentalGenerationError:
+        raise
+    except Exception as exc:
+        raise FundamentalGenerationError(
+            f"fundamental projected readback failed: {table_name}"
+        ) from exc
+    finally:
+        os.close(descriptor)
+
+
+def load_latest_fundamental_rows(
+    root: str | Path,
+    *,
+    symbols: list[str],
+    as_of: str = "",
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Load one latest PIT row per symbol without materializing the full mart."""
+
+    base = _read_data_root(root)
+    pointer = load_fundamental_pointer(base)
+    if pointer is None:
+        raise FundamentalGenerationError("fundamental pointer missing")
+    table_name = "fundamental_daily"
+    table_path = _resolve_inside(
+        base,
+        str(dict(pointer.get("tables", {}) or {}).get(table_name, "")),
+        label=table_name,
+    )
+    table_manifest = dict(
+        dict(pointer.get("manifest", {}) or {})
+        .get("tables", {})
+        .get(table_name, {})
+        or {}
+    )
+    frame = _latest_rows_from_bound_parquet(
+        table_path,
+        table_name=table_name,
+        table_manifest=table_manifest,
+        symbols=symbols,
+        as_of=as_of,
     )
     return frame, pointer
 
@@ -3556,6 +4017,7 @@ __all__ = [
     "FundamentalGenerationError",
     "fundamental_data_root",
     "legacy_fundamental_table_path",
+    "load_latest_fundamental_rows",
     "load_fundamental_pointer",
     "load_fundamental_table",
     "pointer_sha256",

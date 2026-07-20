@@ -14,23 +14,47 @@ import json
 import math
 import os
 import stat
+import statistics
 from collections.abc import Mapping
+from datetime import date
 from pathlib import Path
 from typing import Any
+
+from scipy.stats import t as student_t
 
 from quant_investor.factors.governance_protocol_v4 import (
     CONTROL_CHAIN_STAGES,
     FACTOR_EVIDENCE_SCHEMA_VERSION,
+    OPEN_SESSION_CALENDAR_SCHEMA_VERSION,
     PROTOCOL_VERSION,
     TARGET_PRODUCTION_FACTOR_COUNT,
+    validate_open_session_calendar_v4,
 )
 
 REPLAY_SCHEMA_VERSION = "factor-governance-canonical-replay.v4"
 STAGE_SCHEMA_VERSION = "factor-governance-canonical-stage.v4"
+CALENDAR_SCHEMA_VERSION = OPEN_SESSION_CALENDAR_SCHEMA_VERSION
 EVIDENCE_SCHEMA_VERSION = FACTOR_EVIDENCE_SCHEMA_VERSION
 ARM_NAMES = ("A", "B", "C", "D")
 GENESIS_SHA256 = "0" * 64
 MAX_REPLAY_FILE_BYTES = 24 * 1024 * 1024
+MIN_PAIRED_COHORT_COUNT = 8
+PAIRED_COHORT_OPEN_SESSION_COUNT = 30
+COMPARISON_METHOD = "student_t"
+COMPARISON_SIDEDNESS = "two_sided"
+CONTEXT_BINDING_FIELDS = (
+    "eligibility_contract_sha256",
+    "calendar_sha256",
+    "pit_sha256",
+    "runtime_contract_sha256",
+    "latest_pointer_sha256",
+    "manifest_sha256",
+    "market_data_input_sha256",
+    "candidate_catalog_sha256",
+    "screening_evidence_sha256",
+    "dedup_evidence_sha256",
+    "quantitative_evidence_sha256",
+)
 
 
 class CanonicalReplayV4Error(ValueError):
@@ -117,6 +141,44 @@ def _finite(value: Any, label: str) -> float:
     if not math.isfinite(number):
         raise CanonicalReplayV4Error(f"{label} must be finite numeric")
     return number
+
+
+def _integer(value: Any, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise CanonicalReplayV4Error(f"{label} must be an integer")
+    return value
+
+
+def _iso_date(value: Any, label: str) -> str:
+    text = _text(value, label)
+    try:
+        parsed = date.fromisoformat(text)
+    except ValueError as exc:
+        raise CanonicalReplayV4Error(f"{label} must be an ISO date") from exc
+    if parsed.isoformat() != text:
+        raise CanonicalReplayV4Error(f"{label} must be a canonical ISO date")
+    return text
+
+
+def _same_number(actual: float, expected: float) -> bool:
+    return math.isclose(actual, expected, rel_tol=1e-12, abs_tol=1e-15)
+
+
+def _validate_open_session_calendar(
+    value: Any,
+    *,
+    context: Mapping[str, str],
+) -> dict[str, Any]:
+    try:
+        normalized = validate_open_session_calendar_v4(
+            value,
+            expected_calendar_sha256=context["calendar_sha256"],
+            expected_latest_pointer_sha256=context["latest_pointer_sha256"],
+            expected_manifest_sha256=context["manifest_sha256"],
+        )
+    except (TypeError, ValueError) as exc:
+        raise CanonicalReplayV4Error(str(exc)) from exc
+    return {key: item for key, item in normalized.items() if key != "calendar_sha256"}
 
 
 def _symbols(value: Any, label: str) -> list[str]:
@@ -385,9 +447,171 @@ def _validate_stage_output(
     }
 
 
+def _validate_paired_cohorts(
+    value: Any,
+    *,
+    calendar_sha256: str,
+    pit_sha256: str,
+    calendar_open_session_dates: list[str],
+) -> tuple[list[dict[str, Any]], list[float]]:
+    if not isinstance(value, list) or len(value) < MIN_PAIRED_COHORT_COUNT:
+        raise CanonicalReplayV4Error(
+            f"comparison cohorts must contain at least {MIN_PAIRED_COHORT_COUNT} items"
+        )
+    normalized: list[dict[str, Any]] = []
+    paired_deltas: list[float] = []
+    seen_cohort_ids: set[str] = set()
+    seen_open_sessions: set[str] = set()
+    calendar_index = {
+        session: index for index, session in enumerate(calendar_open_session_dates)
+    }
+    bound_universe_sha256: str | None = None
+    cohort_fields = {
+        "cohort_id",
+        "open_session_dates",
+        "universe_sha256",
+        "calendar_sha256",
+        "pit_sha256",
+        "arms",
+    }
+    arm_fields = {
+        "gross_return",
+        "turnover",
+        "cost_rate",
+        "cost_return",
+        "net_return",
+    }
+    for cohort_index, raw in enumerate(value):
+        cohort = _exact(raw, cohort_fields, f"comparison cohorts[{cohort_index}]")
+        cohort_id = _text(cohort["cohort_id"], f"cohort[{cohort_index}].cohort_id")
+        if cohort_id in seen_cohort_ids:
+            raise CanonicalReplayV4Error("comparison cohort ids must be distinct")
+        seen_cohort_ids.add(cohort_id)
+
+        raw_dates = cohort["open_session_dates"]
+        if not isinstance(raw_dates, list) or len(raw_dates) != PAIRED_COHORT_OPEN_SESSION_COUNT:
+            raise CanonicalReplayV4Error(
+                "each comparison cohort must contain exactly 30 open_session_dates"
+            )
+        open_session_dates = [
+            _iso_date(item, f"cohort[{cohort_index}].open_session_dates[]")
+            for item in raw_dates
+        ]
+        if open_session_dates != sorted(open_session_dates) or len(
+            set(open_session_dates)
+        ) != len(open_session_dates):
+            raise CanonicalReplayV4Error(
+                "cohort open_session_dates must be sorted and distinct"
+            )
+        if any(session not in calendar_index for session in open_session_dates):
+            raise CanonicalReplayV4Error(
+                "cohort open_session_dates must exist in the bound calendar"
+            )
+        session_indexes = [calendar_index[session] for session in open_session_dates]
+        if session_indexes != list(
+            range(session_indexes[0], session_indexes[0] + PAIRED_COHORT_OPEN_SESSION_COUNT)
+        ):
+            raise CanonicalReplayV4Error(
+                "cohort open_session_dates must be 30 consecutive calendar sessions"
+            )
+        if seen_open_sessions.intersection(open_session_dates):
+            raise CanonicalReplayV4Error("comparison cohorts must not overlap")
+        seen_open_sessions.update(open_session_dates)
+
+        universe_sha256 = _sha(
+            cohort["universe_sha256"], f"cohort[{cohort_index}].universe_sha256"
+        )
+        if bound_universe_sha256 is None:
+            bound_universe_sha256 = universe_sha256
+        elif universe_sha256 != bound_universe_sha256:
+            raise CanonicalReplayV4Error("comparison cohort universe SHA binding mismatch")
+        if cohort["calendar_sha256"] != calendar_sha256:
+            raise CanonicalReplayV4Error("comparison cohort calendar SHA binding mismatch")
+        if cohort["pit_sha256"] != pit_sha256:
+            raise CanonicalReplayV4Error("comparison cohort PIT SHA binding mismatch")
+        _sha(cohort["calendar_sha256"], f"cohort[{cohort_index}].calendar_sha256")
+        _sha(cohort["pit_sha256"], f"cohort[{cohort_index}].pit_sha256")
+
+        arms = cohort["arms"]
+        if not isinstance(arms, dict) or set(arms) != set(ARM_NAMES):
+            raise CanonicalReplayV4Error("comparison cohort arms must be exactly A/B/C/D")
+        normalized_arms: dict[str, dict[str, float]] = {}
+        for arm in ARM_NAMES:
+            arm_value = _exact(
+                arms[arm], arm_fields, f"cohort[{cohort_index}].arms.{arm}"
+            )
+            gross_return = _finite(
+                arm_value["gross_return"],
+                f"cohort[{cohort_index}].arms.{arm}.gross_return",
+            )
+            turnover = _finite(
+                arm_value["turnover"], f"cohort[{cohort_index}].arms.{arm}.turnover"
+            )
+            cost_rate = _finite(
+                arm_value["cost_rate"], f"cohort[{cohort_index}].arms.{arm}.cost_rate"
+            )
+            cost_return = _finite(
+                arm_value["cost_return"],
+                f"cohort[{cohort_index}].arms.{arm}.cost_return",
+            )
+            net_return = _finite(
+                arm_value["net_return"], f"cohort[{cohort_index}].arms.{arm}.net_return"
+            )
+            if turnover < 0.0 or cost_rate < 0.0:
+                raise CanonicalReplayV4Error("turnover and cost_rate must be non-negative")
+            expected_cost_return = turnover * cost_rate
+            if not _same_number(cost_return, expected_cost_return):
+                raise CanonicalReplayV4Error("comparison arm cost_return recomputation mismatch")
+            expected_net_return = gross_return - expected_cost_return
+            if not _same_number(net_return, expected_net_return):
+                raise CanonicalReplayV4Error("comparison arm net_return recomputation mismatch")
+            normalized_arms[arm] = {
+                "gross_return": gross_return,
+                "turnover": turnover,
+                "cost_rate": cost_rate,
+                "cost_return": cost_return,
+                "net_return": net_return,
+            }
+        paired_deltas.append(
+            normalized_arms["D"]["net_return"]
+            - normalized_arms["A"]["net_return"]
+        )
+        normalized.append(
+            {
+                "cohort_id": cohort_id,
+                "open_session_dates": open_session_dates,
+                "universe_sha256": universe_sha256,
+                "calendar_sha256": calendar_sha256,
+                "pit_sha256": pit_sha256,
+                "arms": normalized_arms,
+            }
+        )
+    return normalized, paired_deltas
+
+
+def _recompute_comparison_statistics(paired_deltas: list[float]) -> dict[str, float | int]:
+    n = len(paired_deltas)
+    mean = statistics.fmean(paired_deltas)
+    stddev = statistics.stdev(paired_deltas)
+    standard_error = stddev / math.sqrt(n)
+    critical_value = float(student_t.ppf(0.975, n - 1))
+    if not math.isfinite(critical_value):
+        raise CanonicalReplayV4Error("Student-t critical value recomputation failed")
+    return {
+        "n": n,
+        "mean": mean,
+        "stddev": stddev,
+        "standard_error": standard_error,
+        "critical_value": critical_value,
+        "incremental_edge_ci95_lower": mean - critical_value * standard_error,
+    }
+
+
 def validate_canonical_replay_v4(value: Mapping[str, Any]) -> dict[str, Any]:
     """Validate one exact 32-stage A/B/C/D v4 replay."""
 
+    if not isinstance(value, Mapping) or value.get("schema_version") != REPLAY_SCHEMA_VERSION:
+        raise CanonicalReplayV4Error("unsupported canonical replay schema")
     payload = _exact(
         dict(value),
         {
@@ -399,6 +623,7 @@ def validate_canonical_replay_v4(value: Mapping[str, Any]) -> dict[str, Any]:
             "production_factor_set_sha256",
             "context",
             "context_sha256",
+            "calendar",
             "factor_set",
             "comparison",
             "stages",
@@ -415,16 +640,12 @@ def validate_canonical_replay_v4(value: Mapping[str, Any]) -> dict[str, Any]:
     factor_set_sha = _sha(payload["production_factor_set_sha256"], "production_factor_set_sha256")
     context = _exact(
         payload["context"],
-        {
-            "eligibility_contract_sha256",
-            "calendar_sha256",
-            "pit_sha256",
-            "runtime_contract_sha256",
-        },
+        set(CONTEXT_BINDING_FIELDS),
         "replay context",
     )
     for key, item in context.items():
         _sha(item, f"context {key}")
+    calendar = _validate_open_session_calendar(payload["calendar"], context=context)
     context_sha = _sha(payload["context_sha256"], "context_sha256")
     expected_context_sha = semantic_sha256(
         {
@@ -442,16 +663,86 @@ def validate_canonical_replay_v4(value: Mapping[str, Any]) -> dict[str, Any]:
         raise CanonicalReplayV4Error("canonical replay production factor-set SHA mismatch")
     comparison = _exact(
         payload["comparison"],
-        {"incumbent", "challenger", "slot", "incremental_edge_ci95_lower"},
+        {
+            "transition_mode",
+            "incumbent",
+            "challenger",
+            "slot",
+            "cohorts",
+            "n",
+            "mean",
+            "stddev",
+            "standard_error",
+            "critical_value",
+            "method",
+            "sidedness",
+            "incremental_edge_ci95_lower",
+        },
         "comparison",
     )
-    incumbent = _text(comparison["incumbent"], "incumbent")
+    transition_mode = _text(comparison["transition_mode"], "transition_mode")
+    if transition_mode not in {"add", "replace"}:
+        raise CanonicalReplayV4Error("transition_mode must be add or replace")
+    incumbent: str | None
+    if transition_mode == "add":
+        if comparison["incumbent"] is not None:
+            raise CanonicalReplayV4Error("add transition incumbent must be null")
+        incumbent = None
+        if len(factor_set) >= TARGET_PRODUCTION_FACTOR_COUNT:
+            raise CanonicalReplayV4Error("add transition requires an underfilled factor set")
+    else:
+        incumbent = _text(comparison["incumbent"], "incumbent")
+        if len(factor_set) != TARGET_PRODUCTION_FACTOR_COUNT:
+            raise CanonicalReplayV4Error("replace transition requires exactly 10 factors")
     challenger = _text(comparison["challenger"], "challenger")
     slot = _text(comparison["slot"], "slot")
-    edge_lower = _finite(comparison["incremental_edge_ci95_lower"], "incremental edge CI95 lower")
-    if incumbent == challenger or incumbent not in factor_set or challenger in factor_set:
+    if challenger in factor_set:
+        raise CanonicalReplayV4Error("challenger must not already be in the factor set")
+    if transition_mode == "replace" and (
+        incumbent == challenger or incumbent not in factor_set
+    ):
         raise CanonicalReplayV4Error("comparison does not identify one replacement")
-    if len(factor_set) >= TARGET_PRODUCTION_FACTOR_COUNT and edge_lower <= 0.0:
+
+    cohorts, paired_deltas = _validate_paired_cohorts(
+        comparison["cohorts"],
+        calendar_sha256=context["calendar_sha256"],
+        pit_sha256=context["pit_sha256"],
+        calendar_open_session_dates=calendar["open_session_dates"],
+    )
+    expected_quantitative_sha256 = semantic_sha256(
+        {
+            "transition_mode": transition_mode,
+            "incumbent": incumbent,
+            "challenger": challenger,
+            "slot": slot,
+            "cohorts": comparison["cohorts"],
+        }
+    )
+    if context["quantitative_evidence_sha256"] != expected_quantitative_sha256:
+        raise CanonicalReplayV4Error("quantitative evidence semantic SHA mismatch")
+    recomputed = _recompute_comparison_statistics(paired_deltas)
+    declared_n = _integer(comparison["n"], "comparison n")
+    if declared_n != recomputed["n"]:
+        raise CanonicalReplayV4Error("comparison n recomputation mismatch")
+    declared_statistics: dict[str, float] = {}
+    for field in (
+        "mean",
+        "stddev",
+        "standard_error",
+        "critical_value",
+        "incremental_edge_ci95_lower",
+    ):
+        declared = _finite(comparison[field], f"comparison {field}")
+        expected = float(recomputed[field])
+        if not _same_number(declared, expected):
+            raise CanonicalReplayV4Error(f"comparison {field} recomputation mismatch")
+        declared_statistics[field] = declared
+    if comparison["method"] != COMPARISON_METHOD:
+        raise CanonicalReplayV4Error("comparison method must be student_t")
+    if comparison["sidedness"] != COMPARISON_SIDEDNESS:
+        raise CanonicalReplayV4Error("comparison sidedness must be two_sided")
+    edge_lower = declared_statistics["incremental_edge_ci95_lower"]
+    if transition_mode == "replace" and edge_lower <= 0.0:
         raise CanonicalReplayV4Error(
             "target-10 replacement incremental edge CI95 lower must be positive"
         )
@@ -525,34 +816,56 @@ def validate_canonical_replay_v4(value: Mapping[str, Any]) -> dict[str, Any]:
         }
 
     selected = {arm: results[arm]["quant"]["selected_factors"] for arm in ARM_NAMES}
-    without_incumbent = sorted(name for name in factor_set if name != incumbent)
-    with_challenger = sorted([*without_incumbent, challenger])
-    expected_sets = {
-        "A": factor_set,
-        "B": without_incumbent,
-        "C": with_challenger,
-        "D": with_challenger,
-    }
+    if transition_mode == "add":
+        with_challenger = sorted([*factor_set, challenger])
+        expected_sets = {
+            "A": factor_set,
+            "B": factor_set,
+            "C": with_challenger,
+            "D": with_challenger,
+        }
+    else:
+        assert incumbent is not None
+        without_incumbent = sorted(name for name in factor_set if name != incumbent)
+        with_challenger = sorted([*without_incumbent, challenger])
+        expected_sets = {
+            "A": factor_set,
+            "B": without_incumbent,
+            "C": with_challenger,
+            "D": with_challenger,
+        }
     if selected != expected_sets:
-        raise CanonicalReplayV4Error("A/B/C/D factor sets are not one-in-one-out")
-    incumbent_record = results["A"]["quant"]["factor_records"].get(incumbent)
+        raise CanonicalReplayV4Error("A/B/C/D factor sets do not match transition_mode")
     challenger_record = results["C"]["quant"]["factor_records"].get(challenger)
-    if incumbent_record is None or challenger_record is None:
+    if challenger_record is None:
         raise CanonicalReplayV4Error("comparison factor records are missing")
-    if incumbent_record["state"] != "production_factor":
-        raise CanonicalReplayV4Error("incumbent is not a production factor")
     if challenger_record["state"] not in {
         "shadow",
         "mature_candidate",
         "production_candidate",
     }:
         raise CanonicalReplayV4Error("challenger state is not eligible")
-    if (
-        incumbent_record["slot"] != slot
-        or challenger_record["slot"] != slot
-        or incumbent_record["family"] != challenger_record["family"]
-    ):
-        raise CanonicalReplayV4Error("comparison family/slot mismatch")
+    if challenger_record["slot"] != slot:
+        raise CanonicalReplayV4Error("challenger slot mismatch")
+    incumbent_record: dict[str, str] | None = None
+    if transition_mode == "add":
+        if any(
+            record["slot"] == slot
+            for record in results["A"]["quant"]["factor_records"].values()
+        ):
+            raise CanonicalReplayV4Error("add transition requires an empty slot")
+    else:
+        assert incumbent is not None
+        incumbent_record = results["A"]["quant"]["factor_records"].get(incumbent)
+        if incumbent_record is None:
+            raise CanonicalReplayV4Error("comparison factor records are missing")
+        if incumbent_record["state"] != "production_factor":
+            raise CanonicalReplayV4Error("incumbent is not a production factor")
+        if (
+            incumbent_record["slot"] != slot
+            or incumbent_record["family"] != challenger_record["family"]
+        ):
+            raise CanonicalReplayV4Error("comparison family/slot mismatch")
     if any(
         results[arm]["eligibility"]["eligibility_contract_sha256"]
         != context["eligibility_contract_sha256"]
@@ -568,11 +881,21 @@ def validate_canonical_replay_v4(value: Mapping[str, Any]) -> dict[str, Any]:
         "production_factor_set_sha256": factor_set_sha,
         "context": dict(context),
         "context_sha256": context_sha,
+        "calendar": calendar,
         "factor_set": factor_set,
         "comparison": {
+            "transition_mode": transition_mode,
             "incumbent": incumbent,
             "challenger": challenger,
             "slot": slot,
+            "cohorts": cohorts,
+            "n": declared_n,
+            "mean": declared_statistics["mean"],
+            "stddev": declared_statistics["stddev"],
+            "standard_error": declared_statistics["standard_error"],
+            "critical_value": declared_statistics["critical_value"],
+            "method": COMPARISON_METHOD,
+            "sidedness": COMPARISON_SIDEDNESS,
             "incremental_edge_ci95_lower": edge_lower,
         },
         "replay_semantic_sha256": semantic_sha256(payload),
@@ -600,6 +923,13 @@ def validate_v4_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
             "calendar_sha256",
             "pit_sha256",
             "runtime_contract_sha256",
+            "latest_pointer_sha256",
+            "manifest_sha256",
+            "market_data_input_sha256",
+            "candidate_catalog_sha256",
+            "screening_evidence_sha256",
+            "dedup_evidence_sha256",
+            "quantitative_evidence_sha256",
             "replay",
         },
         "v4 evidence",
@@ -614,10 +944,7 @@ def validate_v4_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
         "registry_file_sha256",
         "replay_file_sha256",
         "replay_semantic_sha256",
-        "eligibility_contract_sha256",
-        "calendar_sha256",
-        "pit_sha256",
-        "runtime_contract_sha256",
+        *CONTEXT_BINDING_FIELDS,
     ):
         _sha(payload[key], key)
     if not isinstance(payload["replay"], Mapping):
@@ -627,12 +954,7 @@ def validate_v4_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
         raise CanonicalReplayV4Error("v4 evidence replay semantic SHA mismatch")
     if payload["registry_file_sha256"] != replay["registry_file_sha256"]:
         raise CanonicalReplayV4Error("v4 evidence registry SHA mismatch")
-    for key in (
-        "eligibility_contract_sha256",
-        "calendar_sha256",
-        "pit_sha256",
-        "runtime_contract_sha256",
-    ):
+    for key in CONTEXT_BINDING_FIELDS:
         if payload[key] != replay["context"][key]:
             raise CanonicalReplayV4Error(f"v4 evidence {key} mismatch")
     if payload["factor_name"] != replay["comparison"]["challenger"]:
@@ -743,12 +1065,15 @@ def readback_v4_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
         "replay_file_size": len(raw),
         "local_bytes_readback_verified": True,
         "complete_chain_hash_binding_verified": True,
+        "context_bindings_readback_verified": True,
+        "quantitative_evidence_hash_binding_verified": True,
         "positive_weight_depends_on_risk_advisor_approval": False,
     }
 
 
 __all__ = [
     "ARM_NAMES",
+    "CALENDAR_SCHEMA_VERSION",
     "CONTROL_CHAIN_STAGES",
     "CanonicalReplayV4Error",
     "EVIDENCE_SCHEMA_VERSION",

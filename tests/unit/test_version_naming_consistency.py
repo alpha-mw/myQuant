@@ -10,14 +10,15 @@ import quant_investor.versioning as versioning
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_single_mainline_package_and_runtime_versions_are_aligned():
+def test_v16_package_and_fail_closed_production_runtime_versions_are_explicit():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     lock_packages = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))["package"]
     locked_project = next(item for item in lock_packages if item["name"] == project["name"])
 
-    assert project["version"] == "15.0.0"
+    assert project["version"] == "16.0.0"
     assert locked_project["version"] == project["version"]
-    assert "three-branch single mainline" in project["description"]
+    assert "v16 four-branch research-candidate" in project["description"]
+    assert "v15 production default" in project["description"]
 
     assert versioning.ARCHITECTURE_VERSION == "15.0.0-stable"
     assert versioning.BRANCH_SCHEMA_VERSION == "branch-schema.v15.three-branch"
@@ -42,7 +43,7 @@ def test_readme_and_cli_share_single_mainline_policy():
     option_strings = [option for action in run_parser._actions for option in action.option_strings]
     route_flag = "--" + "architecture"
 
-    assert "15.0.0" in readme
+    assert "16.0.0" in readme
     assert route_flag not in readme
     assert "NarratorAgent -> ReportBundle" in readme
     assert "`buy` / `hold` / `sell` / `watch` / `avoid`" in readme

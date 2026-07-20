@@ -118,6 +118,12 @@ def registry_metadata_sha256(metadata: Mapping[str, Any]) -> str:
     return _sha256_bytes(_canonical_json_bytes(dict(metadata)))
 
 
+def registry_payload_semantic_sha256(payload: Mapping[str, Any]) -> str:
+    """Hash one registry payload with the registry domain's JSON rules."""
+
+    return _sha256_bytes(_canonical_json_bytes(dict(payload)))
+
+
 def _metadata_value_sha256(value: Any) -> str:
     return _sha256_bytes(_canonical_json_bytes({"value": value}))
 
@@ -477,6 +483,41 @@ def load_registry_snapshot_strict(
         metadata_sha256=registry_metadata_sha256(
             dict(payload.get("metadata", {}))
         ),
+    )
+
+
+def parse_registry_snapshot_bytes_strict(
+    raw: bytes,
+    *,
+    source: str = "<bound-factor-registry-bytes>",
+) -> FactorRegistrySnapshot:
+    """Parse already-bound registry bytes with the strict store contract.
+
+    This helper performs no filesystem access.  Callers remain responsible for
+    binding ``raw`` to an immutable descriptor before invoking it.
+    """
+
+    if type(raw) is not bytes or not raw:
+        raise FactorRegistryMalformedError("factor registry bytes must be non-empty bytes")
+    source_path = Path(source)
+    payload = _strict_payload_from_bytes(raw, source_path)
+    registry, record_payloads = _validate_registry_payload(
+        payload,
+        path=source_path,
+    )
+    metadata_payload = copy.deepcopy(dict(payload.get("metadata", {})))
+    return FactorRegistrySnapshot(
+        path=source_path,
+        registry=registry,
+        payload=payload,
+        registry_sha256=_sha256_bytes(raw),
+        record_payloads=copy.deepcopy(record_payloads),
+        record_sha256s={
+            name: factor_record_sha256(record)
+            for name, record in record_payloads.items()
+        },
+        metadata_payload=metadata_payload,
+        metadata_sha256=registry_metadata_sha256(metadata_payload),
     )
 
 
@@ -1144,7 +1185,9 @@ __all__ = [
     "apply_factor_record_patch",
     "factor_record_sha256",
     "load_registry_snapshot_strict",
+    "parse_registry_snapshot_bytes_strict",
     "registry_metadata_sha256",
+    "registry_payload_semantic_sha256",
     "registry_file_sha256",
     "rollback_factor_record_patch",
 ]

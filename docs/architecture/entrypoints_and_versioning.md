@@ -7,7 +7,9 @@
 - Python 入口：`quant_investor.QuantInvestor`
 - Pipeline 结果类型：`quant_investor.pipeline.QuantInvestorPipelineResult`
 - CLI 入口：`quant-investor research run`
-- 当前仓库只发布单一研究主线，不提供架构切换参数。
+- 当前包版本为 v16；`market analyze/run --decision-protocol v16` 进入隔离的四分支
+  research-candidate 状态机。省略该参数仍进入 v15 production/default 兼容路径，
+  直至独立激活审查完成。
 - CN bounded maintenance 入口：`quant-investor market maintain --market CN --staged --resume`；每次只处理配置的 batch，并在 `data/cn_market_full/_maintenance_runs/<run_id>/` 写入进度。
 - `quant-investor market download` 仅作为 `market maintain` 的兼容 alias 保留；新流程应优先使用 `market maintain`。
 - Storage 验证入口：`quant-investor market storage-validate --market CN` 校验 Parquet canonical；`quant-investor market storage-validate-clean --market CN` 只读校验 clean/readiness lineage，不触发补数、provider 或写入。
@@ -24,9 +26,17 @@
 - `web.app:app` 保留为独立 API 服务入口；workspace 与 API 入口职责分离
 - 当前工作台前端位于 `frontend/`，开发态通过 Vite 代理 `/api` 到 FastAPI
 
-## Runtime Versions
+## Package And Protocol Versions
 
-- package version：`15.0.0`
+- package version：`16.0.0`
+- v16 candidate `ARCHITECTURE_VERSION = "16.0.0"`
+- v16 branches：`quant/fundamental/macro/llm`，各 `0.25`
+- v16 Factor Governance：`v4`
+- v16 readiness/report/dashboard：`v16`
+- v16 artifacts：仅 `results/v16/`
+
+当前 production/default 兼容协议尚未激活切换，继续使用：
+
 - `ARCHITECTURE_VERSION = "15.0.0-stable"`
 - `BRANCH_SCHEMA_VERSION = "branch-schema.v15.three-branch"`
 - `LIKELIHOOD_SCHEMA_VERSION = "likelihood-schema.v15.two-likelihood"`
@@ -50,7 +60,7 @@ branch 通过。Factor governance 独立评估；hash-bound human authorization 
 也是新风险的必要但不充分条件，不能覆盖任何 data、Factor、candidate 或 portfolio
 blocker，也不会自动令 `new_risk_authorized=true`。
 
-## Current Web Result Envelope
+## Current Production Web Result Envelope
 
 `AnalysisSessionDetail` 与 Web 持久化结果必须在顶层同时携带并精确匹配：
 
@@ -61,7 +71,7 @@ blocker，也不会自动令 `new_risk_authorized=true`。
 
 当前 Web DTO 只接受按 `kline, quant, fundamental, llm_debate, macro` 排序的分支列表，其中三个 canonical 分支必须启用。缺失 schema、旧 v13 schema、Intelligence、未知分支及旧 CN/US legacy artifact 都会 fail closed，不会被补字段、过滤或包装成当前 DTO。
 
-## Current Market Report Artifact Envelope
+## Current Production Market Report Artifact Envelope
 
 `market analyze`、DAG-to-report synthesis、batch report artifact 与 full-market report builder 必须同时携带并精确匹配 Web envelope 的四项版本以及：
 

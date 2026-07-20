@@ -1405,6 +1405,85 @@ def test_primary_manifest_binds_exact_readback_after_object_string_roundtrip(
     ] == table_manifest["frame_fingerprint"]
 
 
+def test_primary_runtime_pointer_uses_sha_and_metadata_without_semantic_rescan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "primary-runtime"
+    _publish_verified_primary(root)
+    generation._validate_fundamental_pointer_cached.cache_clear()
+
+    def reject_semantic_rescan(*_args: Any, **_kwargs: Any):
+        raise AssertionError("primary runtime must not rescan every scalar")
+
+    monkeypatch.setattr(
+        generation,
+        "_readback_table_contract",
+        reject_semantic_rescan,
+    )
+
+    pointer = load_fundamental_pointer(root)
+
+    assert pointer is not None
+    assert pointer["primary_provenance_verified"] is True
+
+
+def test_primary_runtime_pointer_rejects_hardlinked_table(tmp_path: Path) -> None:
+    root = tmp_path / "primary-hardlink"
+    _publish_verified_primary(root)
+    pointer = json.loads(
+        (root / generation.FUNDAMENTAL_POINTER_FILENAME).read_text(
+            encoding="utf-8"
+        )
+    )
+    table = root / pointer["tables"]["fundamental_daily"]
+    os.link(table, root / "fundamental_daily.alias.parquet")
+    generation._validate_fundamental_pointer_cached.cache_clear()
+
+    with pytest.raises(FundamentalGenerationError, match="hard-linked"):
+        load_fundamental_pointer(root)
+
+
+def test_primary_runtime_pointer_detects_manifest_replacement_during_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "primary-manifest-race"
+    _publish_verified_primary(root)
+    pointer = json.loads(
+        (root / generation.FUNDAMENTAL_POINTER_FILENAME).read_text(
+            encoding="utf-8"
+        )
+    )
+    manifest_path = root / pointer["manifest_path"]
+    original = generation._readback_primary_table_identity
+    replaced = False
+
+    def replace_manifest_after_table(*args: Any, **kwargs: Any):
+        nonlocal replaced
+        result = original(*args, **kwargs)
+        if not replaced:
+            replaced = True
+            replacement = manifest_path.with_name("manifest.replacement.json")
+            replacement.write_bytes(manifest_path.read_bytes())
+            os.replace(replacement, manifest_path)
+        return result
+
+    generation._validate_fundamental_pointer_cached.cache_clear()
+    monkeypatch.setattr(
+        generation,
+        "_readback_primary_table_identity",
+        replace_manifest_after_table,
+    )
+
+    with pytest.raises(
+        FundamentalGenerationError,
+        match="manifest changed during validation",
+    ):
+        load_fundamental_pointer(root)
+    assert replaced is True
+
+
 def test_streaming_parquet_readback_preserves_exact_frame_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

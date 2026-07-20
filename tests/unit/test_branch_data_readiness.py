@@ -385,6 +385,76 @@ def test_branch_readiness_prefers_generation_pointer_over_stale_legacy_table(tmp
     assert manifest["storage_backend"] == "parquet_canonical_generation"
 
 
+def test_projected_fundamental_loader_preserves_older_asof_and_duplicate_tie(
+    tmp_path,
+):
+    fundamental_root = tmp_path / "cn"
+    daily = pd.DataFrame(
+        [
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": "20240509",
+                "fin_roe": 0.10,
+                "source": "offline_generation_fixture",
+            },
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": "20240510",
+                "fin_roe": 0.20,
+                "source": "offline_generation_fixture",
+            },
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": "20240510",
+                "fin_roe": 0.30,
+                "source": "offline_generation_fixture",
+            },
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": "20240511",
+                "fin_roe": 0.40,
+                "source": "offline_generation_fixture",
+            },
+            {
+                "ts_code": "000002.SZ",
+                "trade_date": "20240510",
+                "fin_roe": 0.50,
+                "source": "offline_generation_fixture",
+            },
+        ]
+    )
+    publish_fundamental_generation(
+        root=fundamental_root,
+        run_id="projected-latest",
+        tables={
+            "fundamental_period": pd.DataFrame(columns=["ts_code"]),
+            "fundamental_daily": daily,
+            "fundamental_quarantine": pd.DataFrame(columns=["ts_code"]),
+        },
+        metadata={
+            "run_id": "projected-latest",
+            "source_priority": "manual_offline_snapshot",
+            "storage_backend": "parquet_canonical_generation",
+        },
+    )
+
+    current, _manifest = load_fundamental_records(
+        ["000001.SZ", "000002.SZ", "000003.SZ"],
+        as_of="20240510",
+        root=fundamental_root,
+    )
+    older, _manifest = load_fundamental_records(
+        ["000001.SZ"],
+        as_of="20240509",
+        root=fundamental_root,
+    )
+
+    assert sorted(current) == ["000001.SZ", "000002.SZ"]
+    assert current["000001.SZ"]["fin_roe"] == 0.30
+    assert current["000002.SZ"]["fin_roe"] == 0.50
+    assert older["000001.SZ"]["fin_roe"] == 0.10
+
+
 def test_fundamental_generation_rejects_table_tamper_after_cached_pointer(
     tmp_path,
 ):

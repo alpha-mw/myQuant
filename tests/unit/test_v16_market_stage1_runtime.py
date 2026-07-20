@@ -27,6 +27,28 @@ NOW = datetime(2026, 7, 17, 8, 0, tzinfo=timezone.utc)
 
 
 def _factor_readiness() -> dict[str, object]:
+    month_end_rankic_dates = [
+        "2025-01-31",
+        "2025-02-28",
+        "2025-03-31",
+        "2025-04-30",
+        "2025-05-30",
+        "2025-06-30",
+        "2025-07-31",
+        "2025-08-29",
+        "2025-09-30",
+        "2025-10-31",
+        "2025-11-28",
+        "2025-12-31",
+    ]
+    calendar = {
+        "schema_version": "factor-governance-open-session-calendar.v4",
+        "market": "CN",
+        "source": "strict_parquet_observed_trade_dates",
+        "latest_pointer_sha256": "7" * 64,
+        "manifest_sha256": "8" * 64,
+        "open_session_dates": month_end_rankic_dates,
+    }
     records = []
     for index in range(5):
         name = f"factor_{index}"
@@ -40,7 +62,8 @@ def _factor_readiness() -> dict[str, object]:
                 "weight": 1.0,
                 "gate_results": {str(gate): True for gate in range(1, 9)},
                 "maturity": {
-                    "month_end_rankic_dates": [f"2025-{month:02d}-28" for month in range(1, 13)],
+                    "calendar": dict(calendar),
+                    "month_end_rankic_dates": list(month_end_rankic_dates),
                     "forward_cohorts": [],
                 },
                 "bh_q_value": 0.05,
@@ -108,6 +131,7 @@ def _context(pointer: Path, *, count: int = 2, funnel_count: int = 1):
         candidate_symbols=symbols[-funnel_count:],
         quant_result=SimpleNamespace(
             success=True,
+            final_confidence=0.85,
             symbol_scores=scores,
             signals={"factor_contract": "v4-receipt-bound"},
         ),

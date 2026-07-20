@@ -43,6 +43,44 @@ create an order.
 Missing evidence is a blocker. Do not set a readiness boolean by hand to bypass
 the underlying fields.
 
+The v4.3 prior-diagnostic fifth-factor nomination and the v4.4 five-candidate
+prospective preregistration contract do not satisfy this readiness gate. All
+five v4.4 candidates start at weight zero; historical nomination statistics are
+not inherited; formal measurement, family BH, maturity, Gates 1-8, dedup,
+canonical replay, fresh health, and same-day activation receipts remain absent.
+Even a successful future v4.4 private publication must remain
+`PROSPECTIVE_PREREGISTRATION_ONLY` with every production/new-risk authority
+false until those independent post-publication gates close.
+
+A classification-only v4.1 A_quant catalog cannot satisfy Factor readiness
+above. Its 267 schema-readable candidate definitions and 18 classification
+primitives are validate-only evidence, not executable signals, screening,
+statistics, qualification, an activation receipt, or new-risk authority. Its
+protected-control readback covers build and precommit identity only and does
+not lock concurrent external maintenance.
+
+The separate v4.1 pinned-operator proof is also insufficient on its own. It may
+set only `operator_runtime_equivalence_verified=true` after the exact 37
+definitions and seven adversarial primitive probes match under the hash-bound
+myQuant PIT envelope. It must keep `signal_computability_proven=false` and all
+screening, BH, qualification, admission, registry, apply, production, and
+new-risk fields false. Do not reinterpret this proof as evidence that all raw
+fundamental inputs exist or implement the pinned A_quant semantics.
+
+The follow-on exact-37 computability bundle may set
+`signal_computability_proven=true` only for claim scope
+`pinned_aquant_git_data_exact37_source_semantic_computability.v1`. The accepted
+reference bundle is
+`factor_v4_1_signal_computability_20260719T003554Z`, with proof byte SHA-256
+`1bdb61112f70f4cf31b9435d8f027ba384e4575ee81168782d64d052749e73ab`
+and independent readback byte SHA-256
+`3f379493ce5804db4d4708319d389343e650afee83abe9453d0a936a3f375c3b`.
+It keeps the known A_quant/myQuant calendar gaps as exact non-passing facts and
+sets completeness, same-snapshot, screening, BH, maturity, qualification,
+admission, registry, apply, production, portfolio, and new-risk authority
+false. It cannot satisfy Factor readiness or be relabeled as current-snapshot
+screening evidence.
+
 ## CLI state machine
 
 `market analyze` and `market run` keep v15 as the default. An explicit
@@ -65,9 +103,12 @@ diagnostic report and cannot create a shortlist, target weights, or new risk.
 
 1. Seal the deterministic funnel and Codex Stage 1 union.
 2. Seal one `quant/fundamental/macro/llm` evidence record per symbol.
-3. Generate calibrated posterior menu fields and include exact ordered
-   Q/F/M/LLM formal evidence for Stage 2. Preserve
-   `posterior_edge_after_costs=null` when cost evidence is missing.
+3. Reconstruct the disconnected posterior runtime only from bound canonical
+   model/training artifacts, then generate the full-union posterior menu with
+   exact ordered Q/F/M/LLM evidence. The evidence-v2 producer requires the
+   canonical eight-component cost model and fails closed if any cost artifact
+   is missing. Existing non-evidence-v2 report surfaces continue to preserve
+   `posterior_edge_after_costs=null` when cost evidence is unavailable.
 4. Record RiskAdvisor `warnings` and `recommendations` without changing formal
    scores or allocation.
 5. Validate Codex IC `BUY/HOLD/AVOID/SELL` actions, existing/target weights,
@@ -81,6 +122,14 @@ diagnostic report and cannot create a shortlist, target weights, or new risk.
 
 Both JSON writers use canonical serialization, atomic replacement, owner-only
 mode `0600`, and SHA-256 readback.
+
+Evidence producers and recomputers must enter through the secure intake
+factories and retain the returned bound artifact through parsing. Private and
+trust-material plus governed-data roots use the built-in Darwin descriptor ACL
+verifier; ancestors with any allow ACL are rejected. Do not import a private
+low-level reader, inject an ACL assertion, decode an unbound path read, or
+substitute a discovered file. ACL verification unsupported or inconclusive is
+a blocker.
 
 ## Fail-closed outcomes
 
@@ -100,10 +149,52 @@ blockers include:
 - `new_risk_human_authorization_missing_or_invalid`
 - `activation_codex_gate_not_ready`
 - `activation_dashboard_gate_not_ready`
+- `global_attempt_registry_authority_not_integrated`
+- `evidence_v2_disconnected_from_authorizing_consumers`
 
 `activation_candidate=false` must include non-empty
 `activation_blockers`. Passing candidate activation does not itself move the
 v15 production/default pointer.
+
+The current readiness builder also preserves
+`global_attempt_registry_authority_not_integrated` and
+`evidence_v2_disconnected_from_authorizing_consumers` unconditionally. Legacy
+calibration summaries or caller-supplied Codex/Dashboard booleans therefore
+cannot produce `activation_candidate=true` or `new_risk_authorized=true` while
+the reviewed evidence-v2 authority migration is absent.
+
+The optional evidence-v2 provisional attempt journal is not that migration. It
+has no default path and must not be initialized by an audit run. Its local hash
+chain coordinates one process-visible A/B/C attempt but cannot prove deletion
+or rollback by the same OS user. Do not use its state as Calibration, Factor,
+Codex, Dashboard, human-authorization, or production-pointer evidence.
+
+## Calendar, clock, and schedule-v3 preflight
+
+The disconnected source compiler accepts only the fixed private inventory at
+`private/v16/evidence_v2/calendar_sources`: 22 consumed files and two explicit
+exclusions. It does not fetch or refresh sources. The combined acceptance
+opens each consumed physical file once, validates all 28 semantic bindings,
+recomputes the 242-session 2026 calendar and listed-equity auction clock, and
+performs the nine-source local recheck. It writes nothing:
+
+```bash
+/Users/maxwell/mySpace/myQuant/.venv/bin/python -c \
+  'from quant_investor.v16.evidence_v2.calendar_recheck import validate_private_calendar_recheck_acceptance; p = validate_private_calendar_recheck_acceptance("/Users/maxwell/mySpace/myQuant/private/v16/evidence_v2/calendar_sources"); print(p["semantic_sha256"], p["blockers"])'
+```
+
+Success is local semantic correspondence only. It must still report
+`transport_freshness_status=not_independently_attested`, all three false
+authority flags, and the exact capture-time, transport-freshness, and
+disconnected-consumer blockers. Do not use it as a source refresh, activation
+receipt, human authorization, Dashboard gate, or production/default switch.
+
+Schedule v3 rejects any `s0` before `2026-07-06`, any weekend or closure,
+skipped target session, overlapping slot, non-exact UTC clock boundary, or
+target window beyond the 2026 calendar. Epoch A binds no models; B/C bind the
+ordered `quant/fundamental/macro/llm` frozen bundles and an exact
+schedule-specific calibration universe. The full evidence bundle, not a bare
+schedule JSON, is required for RFC3161 anchor and lineage validation.
 
 ## Report and Dashboard checks
 
@@ -127,6 +218,18 @@ Run the focused offline checks from the repository root:
 
 ```bash
 /Users/maxwell/mySpace/myQuant/.venv/bin/python -m pytest \
+  tests/unit/test_factor_governance_operator_runtime_equivalence_v4_1.py \
+  tests/unit/test_build_factor_v4_1_operator_runtime_equivalence.py \
+  tests/unit/test_factor_governance_signal_computability_v4_1.py \
+  tests/unit/test_build_factor_v4_1_signal_computability.py \
+  tests/unit/test_v16_evidence_v2_contracts.py \
+  tests/unit/test_v16_evidence_v2_schedule_target.py \
+  tests/unit/test_v16_evidence_v2_metrics_runtime_timestamp.py \
+  tests/unit/test_v16_evidence_v2_posterior.py \
+  tests/unit/test_v16_evidence_v2_calendar.py \
+  tests/unit/test_v16_evidence_v2_session_clock.py \
+  tests/unit/test_v16_evidence_v2_calendar_recheck.py \
+  tests/unit/test_v16_evidence_v2_schedule_v3.py \
   tests/unit/test_v16_run_readiness.py \
   tests/unit/test_v16_candidate_decision_report.py -q
 

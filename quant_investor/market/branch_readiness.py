@@ -15,8 +15,8 @@ import pandas as pd
 
 from quant_investor.market.fundamental_generation import (
     FundamentalGenerationError,
+    load_latest_fundamental_rows,
     load_fundamental_pointer,
-    load_fundamental_table,
     resolve_fundamental_table_path,
 )
 from quant_investor.market.fundamental_provider_contract import (
@@ -884,9 +884,10 @@ def load_fundamental_records(
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     pointer = load_fundamental_pointer(root)
     if pointer is not None:
-        frame, pointer = load_fundamental_table(
+        frame, pointer = load_latest_fundamental_rows(
             root,
-            "fundamental_daily",
+            symbols=list(symbols),
+            as_of=as_of,
         )
         table_path = Path(
             str(

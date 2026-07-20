@@ -31,6 +31,28 @@ SYNTHETIC_SYMBOL = "SYNTH-0001"
 
 
 def _factor_governance() -> dict[str, object]:
+    month_end_rankic_dates = [
+        "2025-01-31",
+        "2025-02-28",
+        "2025-03-31",
+        "2025-04-30",
+        "2025-05-30",
+        "2025-06-30",
+        "2025-07-31",
+        "2025-08-29",
+        "2025-09-30",
+        "2025-10-31",
+        "2025-11-28",
+        "2025-12-31",
+    ]
+    calendar = {
+        "schema_version": "factor-governance-open-session-calendar.v4",
+        "market": "CN",
+        "source": "strict_parquet_observed_trade_dates",
+        "latest_pointer_sha256": "7" * 64,
+        "manifest_sha256": "8" * 64,
+        "open_session_dates": month_end_rankic_dates,
+    }
     records = []
     for index in range(5):
         name = f"synthetic_factor_{index}"
@@ -44,7 +66,8 @@ def _factor_governance() -> dict[str, object]:
                 "weight": 1.0,
                 "gate_results": {str(gate): True for gate in range(1, 9)},
                 "maturity": {
-                    "month_end_rankic_dates": [f"2025-{month:02d}-28" for month in range(1, 13)],
+                    "calendar": copy.deepcopy(calendar),
+                    "month_end_rankic_dates": list(month_end_rankic_dates),
                     "forward_cohorts": [],
                 },
                 "bh_q_value": 0.05,
@@ -212,7 +235,7 @@ def _payload(**overrides: object) -> dict[str, object]:
     return build_v16_run_readiness(**values)  # type: ignore[arg-type]
 
 
-def test_all_v16_gates_can_form_activation_candidate() -> None:
+def test_legacy_v16_inputs_cannot_bypass_evidence_v2_migration_gates() -> None:
     payload = _payload()
 
     assert payload["branch_data_ready"] == {
@@ -221,10 +244,28 @@ def test_all_v16_gates_can_form_activation_candidate() -> None:
         "macro": True,
         "llm": True,
     }
-    assert payload["activation_candidate"] is True
-    assert payload["new_risk_authorized"] is True
+    assert payload["activation_candidate"] is False
+    assert payload["new_risk_authorized"] is False
+    assert payload["readiness_status"] == "no_new_risk"
+    assert payload["activation_blockers"] == [
+        "evidence_v2_disconnected_from_authorizing_consumers",
+        "global_attempt_registry_authority_not_integrated",
+    ]
     assert payload["execution"]["broker_side_effects"] is False
     validate_v16_run_readiness(payload)
+
+
+def test_validator_rejects_removed_evidence_v2_migration_blocker() -> None:
+    payload = _payload()
+    blocker = "global_attempt_registry_authority_not_integrated"
+    payload["activation_blockers"].remove(blocker)
+    payload["blockers"].remove(blocker)
+
+    with pytest.raises(
+        V16ReadinessError,
+        match="must preserve disconnected evidence-v2 migration gates",
+    ):
+        validate_v16_run_readiness(payload)
 
 
 @pytest.mark.parametrize(
@@ -291,7 +332,23 @@ def test_missing_codex_and_dashboard_activation_stays_research_only() -> None:
     assert payload["activation_blockers"] == [
         "activation_codex_gate_not_ready",
         "activation_dashboard_gate_not_ready",
+        "evidence_v2_disconnected_from_authorizing_consumers",
+        "global_attempt_registry_authority_not_integrated",
     ]
+
+
+def test_missing_calibration_writes_canonical_fail_closed_readiness(tmp_path: Path) -> None:
+    payload = _payload(calibration=None)
+
+    validate_v16_run_readiness(payload)
+    path = tmp_path / "results/v16/missing-calibration/v16_run_readiness.json"
+    reference = write_v16_run_readiness(path, payload)
+    loaded = load_v16_run_readiness(path, expected_sha256=reference["sha256"])
+
+    assert loaded["calibration_ready"] is False
+    assert loaded["calibration"]["checks"]["shape"] is False
+    assert "calibration_gate_failed:shape" in loaded["blockers"]
+    assert loaded["new_risk_authorized"] is False
 
 
 def test_llm_is_required_fourth_branch() -> None:

@@ -255,6 +255,12 @@ const v15 = deepClone(snapshot);
 v15.schema_version = "dashboard_contract.v15";
 assert.throws(() => validateV16Snapshot(v15));
 
+const readinessV2 = deepClone(snapshot);
+readinessV2.v16_run_readiness.schema_version = "v16_run_readiness.v2";
+readinessV2.v16_run_readiness.path =
+  "results/v16/synthetic-run/v16_run_readiness_v2.json";
+assert.throws(() => validateV16Snapshot(readinessV2));
+
 const tooMany = deepClone(snapshot);
 tooMany.candidate_decision.ic.menu_symbols = Array.from(
   { length: 13 },

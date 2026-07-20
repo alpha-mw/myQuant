@@ -391,17 +391,35 @@ def _read_local_frames(
             "coverage_trade_date": _compact_date(effective_as_of),
             "readiness_symbol_count": len(symbols),
         }
-    frames: dict[str, pd.DataFrame] = {}
-    read_results: dict[str, Any] = {}
-    for symbol in symbols:
-        result = reader.read_symbol_frame(
-            symbol,
+    read_results = (
+        reader.read_symbol_frames(
+            symbols,
             universe_key=category,
             category=None if category == "full_a" else category,
+            start_date=effective_as_of,
             end_date=effective_as_of,
         )
-        frames[str(symbol)] = result.frame
-        read_results[str(symbol)] = result
+        if symbols
+        else {}
+    )
+    history_fallback_symbols = [
+        symbol
+        for symbol, result in read_results.items()
+        if result.frame.empty
+    ]
+    if history_fallback_symbols:
+        read_results.update(
+            reader.read_symbol_frames(
+                history_fallback_symbols,
+                universe_key=category,
+                category=None if category == "full_a" else category,
+                end_date=effective_as_of,
+            )
+        )
+    frames = {
+        str(symbol): result.frame
+        for symbol, result in read_results.items()
+    }
     return frames, read_results, reader, scope_metadata, _compact_date(effective_as_of)
 
 

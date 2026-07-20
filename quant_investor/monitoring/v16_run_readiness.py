@@ -55,6 +55,10 @@ MAX_CALIBRATION_ECE = 0.05
 MIN_INTERVAL_COVERAGE = 0.85
 MAX_INTERVAL_COVERAGE = 0.95
 MAX_LAMBDA_FOLD_RANGE = 0.20
+EVIDENCE_V2_MIGRATION_BLOCKERS = (
+    "global_attempt_registry_authority_not_integrated",
+    "evidence_v2_disconnected_from_authorizing_consumers",
+)
 
 _HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _CANDIDATE_STATUSES = frozenset({"blocked", "empty", "complete"})
@@ -581,6 +585,7 @@ def build_v16_run_readiness(
         activation_blockers.append("activation_codex_gate_not_ready")
     if not dashboard_activation_ready:
         activation_blockers.append("activation_dashboard_gate_not_ready")
+    activation_blockers.extend(EVIDENCE_V2_MIGRATION_BLOCKERS)
     activation_blockers = sorted(set(activation_blockers))
     activation_candidate = bool(
         factor_ready
@@ -849,6 +854,10 @@ def validate_v16_run_readiness(payload: Mapping[str, Any]) -> None:
         set(activation_blockers)
     ):
         raise V16ReadinessError("activation_blockers must be a sorted unique array")
+    if not set(EVIDENCE_V2_MIGRATION_BLOCKERS).issubset(activation_blockers):
+        raise V16ReadinessError(
+            "activation_blockers must preserve disconnected evidence-v2 migration gates"
+        )
     activation_gates = _mapping(readiness.get("activation_gates"))
     if set(activation_gates) != {
         "factor_ready",
@@ -867,6 +876,10 @@ def validate_v16_run_readiness(payload: Mapping[str, Any]) -> None:
     if not activation_candidate and not activation_blockers:
         raise V16ReadinessError("non-candidate activation must include activation blockers")
     calibration_summary = _mapping(readiness.get("calibration"))
+    calibration_checks = _mapping(calibration_summary.get("checks"))
+    input_shape_valid = calibration_checks.get("shape")
+    if not isinstance(input_shape_valid, bool):
+        raise V16ReadinessError("calibration shape check must be boolean")
     recomputed_calibration_ready, recomputed_calibration_summary, _ = _calibration_contract(
         {
             "schema_version": calibration_summary.get("schema_version"),
@@ -875,6 +888,13 @@ def validate_v16_run_readiness(payload: Mapping[str, Any]) -> None:
             "artifact_sha256": calibration_summary.get("artifact_sha256"),
             "blockers": calibration_summary.get("blockers"),
         }
+    )
+    # The summary is intentionally normalized even when the source mapping was
+    # missing or malformed. Preserve the builder's source-shape result while
+    # recomputing every semantic field from that normalized summary.
+    recomputed_calibration_summary["checks"]["shape"] = input_shape_valid
+    recomputed_calibration_ready = bool(
+        recomputed_calibration_ready and input_shape_valid
     )
     if calibration_summary != recomputed_calibration_summary:
         raise V16ReadinessError("calibration summary is not canonical v16 data")
@@ -893,6 +913,10 @@ def validate_v16_run_readiness(payload: Mapping[str, Any]) -> None:
     blockers = readiness.get("blockers")
     if not isinstance(blockers, list) or blockers != sorted(set(blockers)):
         raise V16ReadinessError("blockers must be a sorted unique array")
+    if not set(EVIDENCE_V2_MIGRATION_BLOCKERS).issubset(blockers):
+        raise V16ReadinessError(
+            "blockers must preserve disconnected evidence-v2 migration gates"
+        )
     execution = _mapping(readiness.get("execution"))
     if execution.get("new_risk_authorized") is not new_risk:
         raise V16ReadinessError("execution authorization mismatch")

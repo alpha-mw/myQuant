@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "quant-investor"
-version = "15.0.0"
-description = "three-branch single mainline 智能量化投资平台，围绕 QuantInvestor 单一主线执行结构化研究与风控"
+version = "16.0.0"
+description = "v16 four-branch research-candidate platform with a fail-closed v15 production default"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [

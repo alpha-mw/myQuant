@@ -267,6 +267,17 @@ def build_stage1_package_from_market_context(
     quant_result = context_state.quant_result
     if getattr(quant_result, "success", False) is not True:
         raise V16Stage1RuntimeError("formal Quant result is not successful")
+    raw_quant_confidence = getattr(
+        quant_result,
+        "final_confidence",
+        getattr(quant_result, "confidence", None),
+    )
+    try:
+        quant_confidence = float(raw_quant_confidence)
+    except (TypeError, ValueError) as exc:
+        raise V16Stage1RuntimeError("formal Quant confidence is missing") from exc
+    if not isfinite(quant_confidence) or not 0.0 <= quant_confidence <= 1.0:
+        raise V16Stage1RuntimeError("formal Quant confidence is invalid")
     raw_scores = dict(getattr(quant_result, "symbol_scores", {}) or {})
     if set(raw_scores) != set(symbols):
         missing = sorted(set(symbols) - set(raw_scores))
@@ -326,6 +337,7 @@ def build_stage1_package_from_market_context(
                 formal_quant_score=scores[symbol],
                 quant_facts={
                     "formal_score": scores[symbol],
+                    "formal_confidence": quant_confidence,
                     "market_state": dict(market_states.get(symbol) or {}),
                     "factor_activation_receipt_sha256": factor_receipt_sha,
                 },

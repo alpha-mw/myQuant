@@ -260,6 +260,22 @@ def test_v15_payload_cannot_masquerade_as_v16() -> None:
         validate_v16_candidate_decision_report(wrong_architecture)
 
 
+def test_existing_candidate_report_rejects_readiness_v2_reference() -> None:
+    readiness = dict(_inputs()["readiness"])  # type: ignore[arg-type]
+    readiness.update(
+        {
+            "schema_version": "v16_run_readiness.v2",
+            "path": "results/v16/synthetic-run/v16_run_readiness_v2.json",
+        }
+    )
+
+    with pytest.raises(
+        V16CandidateReportError,
+        match="must reference v16_run_readiness.v1",
+    ):
+        _report(readiness=readiness)
+
+
 def test_no_new_risk_report_requires_activation_blocker_reason() -> None:
     readiness = {
         "schema_version": "v16_run_readiness.v1",

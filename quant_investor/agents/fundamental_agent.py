@@ -371,7 +371,7 @@ def _symbol_pit_lineage(
     )
 
 
-class _BundleFundamentalDataLayer:
+class BundleFundamentalDataLayer:
     """PIT mart-backed data layer used only when bundle fundamentals exist."""
 
     def __init__(self, records: Mapping[str, Mapping[str, Any]]) -> None:
@@ -604,6 +604,11 @@ class _BundleFundamentalDataLayer:
         )
 
 
+# Transitional private alias for existing callers; new governed replay code uses
+# the explicit public name above.
+_BundleFundamentalDataLayer = BundleFundamentalDataLayer
+
+
 class FundamentalAgent(BaseAgent):
     """基本面 research agent。"""
 
@@ -624,7 +629,7 @@ class FundamentalAgent(BaseAgent):
                 if isinstance(payload, Mapping) and payload
             }
             if mart_records:
-                data_layer = _BundleFundamentalDataLayer(mart_records)
+                data_layer = BundleFundamentalDataLayer(mart_records)
             else:
                 data_layer = EnhancedDataLayer(
                     market=str(envelope.get("market", data_bundle.market or "CN")),

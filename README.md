@@ -14,7 +14,7 @@
 <br/>
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org)
-[![Version](https://img.shields.io/badge/Version-v15.0.0-FF6B35?style=flat-square)](https://github.com/alpha-mw/myQuant/releases)
+[![Version](https://img.shields.io/badge/Version-v16.0.0-FF6B35?style=flat-square)](https://github.com/alpha-mw/myQuant/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-22C55E?style=flat-square)](LICENSE)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black)](https://react.dev)
@@ -40,10 +40,12 @@ Quant-Investor 的解法是严格分层：
         ↑
 LLM 审阅层（advisory-only，提供观点，不做决策）
         ↑
-数据快照 + DeterministicFunnel + v15 三分支 DAG
+数据快照 + Eligibility/Funnel + v16 四分支候选决策
 ```
 
-**RiskGuard 具有一票否决权。** LLM 的任何输出只能作为参考信号进入 ICCoordinator，永远无法绕过风控硬约束。
+v16 的正式证据分支为 Quant、Fundamental、Macro、LLM，各占 25%。RiskAdvisor
+只提供建议；Eligibility、Codex IC、执行计划、readiness 和 hash-bound 人工授权仍是
+确定性硬门。v15 暂时保留为生产/default 协议，直至独立激活审查通过。
 
 ---
 
@@ -52,8 +54,10 @@ LLM 审阅层（advisory-only，提供观点，不做决策）
 | 能力 | 说明 |
 |------|------|
 | 🏗 **三层数据协议** | `GlobalContext` → `SymbolResearchPacket` → `PortfolioDecision`，全程 Pydantic 结构化，可追溯 |
-| 🔬 **v15 三分支研究 DAG** | 本地快照 → quant-only `DeterministicFunnel` → 量化 · 基本面 · 宏观 → Bayesian selection |
-| 🛡 **确定性风控** | RiskGuard 硬否决 → ICCoordinator 一致性校验 → PortfolioConstructor 权重分配 |
+| 🔬 **v16 四分支候选决策** | Eligibility → Quant/Fundamental/Macro/LLM 等权证据 → Bayesian → Codex IC |
+| 🛡 **确定性执行门** | RiskAdvisor 仅建议；Eligibility、Execution、Readiness 与人工 receipt 决定是否可进入下一状态 |
+| 🧾 **Factor Governance v4** | 5–10 个健康因子、family/slot/weight/maturity/FDR/hash/receipt 全量 fail-closed |
+| 📊 **Dashboard Contract v16** | 展示四分支、posterior、IC allocation、handoff、activation/readiness；未激活不覆盖 Dashboard v3 |
 | 🧭 **生产 Markov 市场状态** | 生产默认启用，必须使用 full-market 或 broad reference 数据；小股票池不会定义全局市场状态 |
 | 🤖 **可选 LLM 审阅层** | 支持 OpenAI / Claude / DeepSeek / Gemini / 通义 / Kimi，无 API Key 自动降级 |
 | 📈 **Parquet 全市场运行面** | strict canonical Parquet、canonical batch symbol 读取和含 exclusive/wall timing 的 stage runtime profile |
@@ -76,21 +80,19 @@ LLM 审阅层（advisory-only，提供观点，不做决策）
 └────────────────────────────┬────────────────────────────────┘
                              │
 ┌────────────────────────────▼────────────────────────────────┐
-│                  Stage 2: v15 Research DAG                   │
+│             Stage 2: v16 Four-Branch Evidence                │
 │                                                             │
-│          QuantAgent · FundamentalAgent · MacroAgent         │
+│       Quant · Fundamental · Macro · LLM (25% each)          │
 │        │                                                    │
 │        ▼                                                    │
-│   SymbolResearchPacket ──► Bayesian selection               │
-│        │                                                    │
-│        └── optional LLM review hints (advisory-only)         │
+│   Sealed evidence ──► Bayesian posterior ──► RiskAdvisor    │
 └────────────────────────────┬────────────────────────────────┘
                              │
 ┌─────────────────────────────────────────────────────────────┐
 │                 Stage 3: Unified Control Chain               │
 │                                                             │
-│   RiskGuard → ICCoordinator → PortfolioConstructor          │
-│   (硬否决)     (一致性校验)    (确定性权重)                   │
+│   Codex IC → Eligibility → Execution → v16 Readiness        │
+│   (逐票动作)    (硬门)         (无券商副作用)   (receipt/CAS)  │
 │                                    │                        │
 │                                    ▼                        │
 │                              NarratorAgent                  │
@@ -98,7 +100,7 @@ LLM 审阅层（advisory-only，提供观点，不做决策）
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### 分支权重
+### 生产/default 分支权重（v15）
 
 **分支权重**
 
@@ -113,6 +115,16 @@ Macro           ███████████████████       
 ```
 
 Bayesian 证据源为 Quant 与 Fundamental（`x/2`）；Macro 只作为 prior/context，不占用 likelihood 槽位。
+
+### v16 研究候选分支权重
+
+**v16 候选分支权重**
+
+| 分支 | Quant | Fundamental | Macro | LLM |
+|------|:-----:|:-----------:|:-----:|:---:|
+| 权重 | 25% | 25% | 25% | 25% |
+
+Retrieval 只能为 Quant、Fundamental、Macro 添加不带 score/weight 的审计注释，不能形成第五分支。
 
 ### 数据协议
 
