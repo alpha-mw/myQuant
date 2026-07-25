@@ -16,7 +16,7 @@ from typing import Any, Final, Mapping
 from .canonical import CanonicalContractError, load_canonical_resource
 
 PACKAGE_MANIFEST_PATH: Final = "resources/package_manifest.v1.json"
-PACKAGE_MANIFEST_SHA256: Final = "479a373b95986fda7c60c7f0a08a4a51ba187bdd4c2203226659c43db8e329db"
+PACKAGE_MANIFEST_SHA256: Final = "6ca4956bd12a8d0908a3351182e0d97e1240032cc082f38005d80380c76e2ffe"
 LEDGER_IMPLEMENTATION_MODULES: Final[Mapping[str, str]] = MappingProxyType(
     {
         "quant_investor.v17_v2_contract.__init__": "__init__.py",

@@ -44,7 +44,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 LEGACY_ROOT = REPO_ROOT / "quant_investor" / "v17"
 PACKAGE_ROOT = REPO_ROOT / "quant_investor" / "v17_v2_contract"
 EXPECTED_PACKAGE_MANIFEST_SHA256 = (
-    "479a373b95986fda7c60c7f0a08a4a51ba187bdd4c2203226659c43db8e329db"
+    "6ca4956bd12a8d0908a3351182e0d97e1240032cc082f38005d80380c76e2ffe"
 )
 
 LEGACY_FROZEN_SHA256S = {
@@ -55,7 +55,7 @@ LEGACY_FROZEN_SHA256S = {
         "670d18dd8f164f3390ee9838b626a7fd893f699042e58ab71d303c022eb47c56"
     ),
     "resources/retirement_scan_allowlist.json": (
-        "165827016d53e0e486d7bda50cac1ad0b0b6dc841a2bd0e019f788b03d2eca1f"
+        "54931a0a345f91da763fa1306953d9b8ad4a92bdfdfea5195cfef5b27d2f209d"
     ),
     "resources/shadow_policy.v1.json": (
         "c55331e1d7e67e1a958491a616ccd6e2413ba3413fb90d53ea93d61d5e979137"
