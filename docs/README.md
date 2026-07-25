@@ -17,11 +17,17 @@ is `./run_web.sh`; the Python CLI entrypoint is `quant-investor`.
 
 ## Runtime Notes
 
+- [v17 Shadow Offline Operations](runbooks/v17_shadow_operations.md) covers the
+  seven hash/CAS-bound, research-only commands. v17 is the latest shadow lane;
+  v15 remains production/default.
 - [v15 Operations](runbooks/v15_operations.md) is the current no-Theme DAG and
   schedule contract. The v14 and v13 runbooks are retained only as historical
   evidence.
 
 - `quant-investor research run` executes the current single mainline.
+- `quant-investor market v17-*` operates only on sealed local inputs and never
+  grants provider, broker, order, trade, production, or risk authority. The
+  retired four-branch advisory tail is not part of `market analyze/run`.
 - `quant-investor market maintain --staged` runs bounded CN staged maintenance:
   it validates Parquet canonical health, fills only target-date gaps in limited
   batches, and writes progress artifacts without blocking formal review.

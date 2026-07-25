@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-
+from tests.fixtures.strict_cn_snapshot import coverage_v4, v4_snapshot_paths
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -31,9 +31,7 @@ def _write_snapshot(
 ) -> tuple[Path, Path]:
     data_root = tmp_path / "data"
     market_root = data_root / "parquet" / "cn"
-    active_root = market_root / "_snapshots" / "active" / "table" / "bars"
-    serving_root = market_root / "_snapshots" / "active" / "serving" / "bars"
-    manifest_path = market_root / "_snapshots" / "active.json"
+    active_root, serving_root, manifest_path = v4_snapshot_paths(data_root, "active")
     latest_path = market_root / "_latest.json"
     selected_table_root = table_root or active_root
 
@@ -56,8 +54,9 @@ def _write_snapshot(
     frame.to_parquet(selected_table_root / "part.parquet", index=False)
     frame.to_parquet(serving_symbol_root / "bars.parquet", index=False)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    coverage = coverage_v4(data_root, ["000001.SZ"], trade_date="20260715")
     manifest_path.write_text(
-        json.dumps({"snapshot_id": "active"}),
+        json.dumps({"snapshot_id": "active", "coverage": coverage}),
         encoding="utf-8",
     )
     latest_path.write_text(
@@ -70,6 +69,8 @@ def _write_snapshot(
                 "table_root": str(selected_table_root.resolve()),
                 "derived_serving_root": str(serving_root.resolve()),
                 "manifest_path": str(manifest_path.resolve()),
+                "coverage": coverage,
+                "blockers": [],
             }
         ),
         encoding="utf-8",
@@ -84,9 +85,7 @@ def test_resolves_table_root_from_active_pointer_not_legacy_fixed_root(tmp_path)
     legacy_root.mkdir()
     (legacy_root / "legacy-only.txt").write_text("stale", encoding="utf-8")
 
-    bars_root, payload, pointer_sha256 = module._resolve_active_bars_root(
-        latest_path
-    )
+    bars_root, payload, pointer_sha256 = module._resolve_active_bars_root(latest_path)
 
     assert bars_root == active_root.resolve()
     assert payload["snapshot_id"] == "active"
@@ -112,9 +111,7 @@ def test_base_frame_reads_pointer_bound_table_root(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "STOCK_BASIC_PATH", stock_basic_path)
     monkeypatch.setattr(module, "DAILY_BASIC_PATH", daily_basic_path)
 
-    frame, lineage = module._load_base_frame(
-        module.ValidationConfig(warmup_date="20260701")
-    )
+    frame, lineage = module._load_base_frame(module.ValidationConfig(warmup_date="20260701"))
 
     assert frame["symbol"].tolist() == ["000001.SZ"]
     assert lineage["bars_root"] == str(active_root.resolve())
@@ -144,7 +141,10 @@ def test_rejects_active_table_root_outside_cn_canonical_root(tmp_path):
     outside_root = tmp_path / "outside-bars"
     latest_path, _ = _write_snapshot(tmp_path, table_root=outside_root)
 
-    with pytest.raises(module.ActiveMarketSnapshotError, match="escapes CN canonical root"):
+    with pytest.raises(
+        module.ActiveMarketSnapshotError,
+        match="absolute path escape rejected|escapes CN canonical root",
+    ):
         module._resolve_active_bars_root(latest_path)
 
 

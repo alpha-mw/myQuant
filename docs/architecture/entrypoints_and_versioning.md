@@ -7,9 +7,13 @@
 - Python 入口：`quant_investor.QuantInvestor`
 - Pipeline 结果类型：`quant_investor.pipeline.QuantInvestorPipelineResult`
 - CLI 入口：`quant-investor research run`
-- 当前包版本为 v16；`market analyze/run --decision-protocol v16` 进入隔离的四分支
-  research-candidate 状态机。省略该参数仍进入 v15 production/default 兼容路径，
-  直至独立激活审查完成。
+- 当前包版本为 v17；`market analyze/run` 始终进入 v15 production/default 路径。
+  v17 只通过下列独立 `market v17-*` 命令运行 shadow 状态机，不能从
+  `market analyze/run` 隐式启用，也没有生产、交易或风控授权。
+- v17 shadow 入口：`v17-source-maintain`、`v17-risk-policy-seal`、
+  `v17-shadow-prepare`、`v17-shadow-receive`、`v17-shadow-finalize`、
+  `v17-shadow-status`、`v17-shadow-latest-repair`。除只读 status 外，所有状态推进
+  都要求显式 SHA/CAS 参数。
 - CN bounded maintenance 入口：`quant-investor market maintain --market CN --staged --resume`；每次只处理配置的 batch，并在 `data/cn_market_full/_maintenance_runs/<run_id>/` 写入进度。
 - `quant-investor market download` 仅作为 `market maintain` 的兼容 alias 保留；新流程应优先使用 `market maintain`。
 - Storage 验证入口：`quant-investor market storage-validate --market CN` 校验 Parquet canonical；`quant-investor market storage-validate-clean --market CN` 只读校验 clean/readiness lineage，不触发补数、provider 或写入。
@@ -28,12 +32,15 @@
 
 ## Package And Protocol Versions
 
-- package version：`16.0.0`
-- v16 candidate `ARCHITECTURE_VERSION = "16.0.0"`
-- v16 branches：`quant/fundamental/macro/llm`，各 `0.25`
-- v16 Factor Governance：`v4`
-- v16 readiness/report/dashboard：`v16`
-- v16 artifacts：仅 `results/v16/`
+- package version：`17.0.0`
+- v17 mode：`fundamental-first research shadow`
+- v17 pipeline：`Fundamental → Codex deep research → Quant timing →
+  RegimePortfolioOverlay → PreTrade/optimizer → shadow terminal`
+- v17 results：仅 `results/v17_shadow/{runs,models,outcomes,_latest}`
+- v17 private sources：仅 `data/private/v17_sources/{objects,manifests}`
+- v17 production/broker/order/trade authority：`false`
+- Factor Governance v4 是独立、版本中立的 research contract，不属于 v17
+  状态机，也不能自行授权生产变更。
 
 当前 production/default 兼容协议尚未激活切换，继续使用：
 

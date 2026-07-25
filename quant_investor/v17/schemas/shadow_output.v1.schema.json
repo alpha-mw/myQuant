@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://myquant.local/schemas/v17/shadow_output.v1.schema.json",
+  "title": "myQuant v17 terminal shadow output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "run_id",
+    "strategy_id",
+    "market",
+    "cutoff",
+    "terminal_state",
+    "rank_output",
+    "portfolio_output",
+    "blockers",
+    "source_manifest_sha256",
+    "ledger_predecessor_sha256",
+    "generated_at",
+    "authority",
+    "semantic_sha256"
+  ],
+  "properties": {
+    "version": {"const": "myquant.v17.shadow-output.v1"},
+    "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "strategy_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "market": {"const": "CN"},
+    "cutoff": {"type": "string", "minLength": 10},
+    "terminal_state": {
+      "enum": [
+        "SHADOW_COMPLETE_AWAITING_HUMAN_DECISION",
+        "SHADOW_RANK_COMPLETE_NO_PORTFOLIO",
+        "SHADOW_PORTFOLIO_INFEASIBLE",
+        "HARD_STOP_SNAPSHOT_DRIFT",
+        "HARD_STOP_INVALID_EVIDENCE"
+      ]
+    },
+    "rank_output": {"type": ["object", "null"]},
+    "portfolio_output": {"type": ["object", "null"]},
+    "blockers": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "source_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "ledger_predecessor_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "generated_at": {"type": "string", "minLength": 20},
+    "authority": {"const": false},
+    "semantic_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

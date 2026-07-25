@@ -4,6 +4,19 @@
 
 ## Core Runtime Files
 
+### v17 shadow roots
+
+- `data/private/v17_sources/objects/`：0600 content-addressed sealed source bytes
+- `data/private/v17_sources/manifests/`：hash-bound source manifests
+- `results/v17_shadow/runs/`：逐 run CAS ledger、events、artifacts 与 receipts
+- `results/v17_shadow/models/`：shadow model/calibration artifacts
+- `results/v17_shadow/outcomes/`：immutable terminal outcomes
+- `results/v17_shadow/_latest/shadow.json`：唯一 terminal latest pointer
+
+v17 是 latest shadow，但不拥有 production/default、风险、券商、订单或交易授权；
+production/default 仍是 v15。缺少或无效 authority 时不要从其他 results 根、sample
+或 synthetic fixture 回填。
+
 ### `.env`
 
 - 位置：repo root `.env`
@@ -100,8 +113,10 @@ Primary owners:
 
 ### Deterministic path vs review layer
 
-- 主线可在无 LLM key 时安全降级
+- v15 主线可在无 LLM key 时安全降级
 - 缺少 `KIMI_API_KEY` 或 `DEEPSEEK_API_KEY` 不等于整个后端不可用
+- v17 不在线调用 LLM；它只导入 hash-bound、sealed-evidence-only deep response，
+  因此不能套用 v15 review-layer 降级或生成替代 response
 - 先区分是：
   - 主线执行失败
   - review layer 降级

@@ -16,12 +16,13 @@ from pathlib import Path
 import sys
 from types import ModuleType
 
-
 _CACHE_TAG = sys.implementation.cache_tag or "cpython-313"
 _PACKAGE_ROOT = Path(__file__).resolve().parent
 _RETIRED_MODULES = frozenset(
     {
         "quant_investor.agents.intelligence_agent",
+        "quant_investor.agents.eligibility_gate",
+        "quant_investor.agents.execution_gate",
         "quant_investor.agents.subagents.intelligence_agent",
         "quant_investor.agents.theme_agent",
         "quant_investor.ensemble_judge",
@@ -36,9 +37,17 @@ _RETIRED_MODULES = frozenset(
         "quant_investor.reporting.theme_governance_renderer",
         "quant_investor.reporting.theme_renderer",
         "quant_investor.reporting.theme_shadow_renderer",
+        "quant_investor.codex_review.models",
+        "quant_investor.codex_review.workflow",
+        "quant_investor.monitoring.v16_run_readiness",
+        "quant_investor.reporting.v16_candidate_decision",
     }
 )
-_RETIRED_MODULE_PREFIXES = ("quant_investor.themes",)
+_RETIRED_MODULE_PREFIXES = (
+    "quant_investor.themes",
+    "quant_investor.v16",
+    "quant_investor.bayesian.v16",
+)
 
 
 def _reject_retired_module(fullname: str) -> None:
@@ -102,7 +111,13 @@ def install_sourceless_finder() -> None:
     for finder in sys.meta_path:
         if isinstance(finder, _QuantInvestorSourcelessFinder):
             return
-    sys.meta_path.insert(0, _QuantInvestorSourcelessFinder())
+    insertion_index = (
+        1
+        if sys.meta_path
+        and getattr(sys.meta_path[0], "_myquant_phase0_candidate_guard", False) is True
+        else 0
+    )
+    sys.meta_path.insert(insertion_index, _QuantInvestorSourcelessFinder())
 
 
 @lru_cache(maxsize=None)

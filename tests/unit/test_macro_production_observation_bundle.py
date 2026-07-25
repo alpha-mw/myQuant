@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from copy import deepcopy
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
@@ -50,7 +51,6 @@ from tests.unit.test_macro_official_web_compiler import (
     _seal_inputs,
 )
 
-
 _BOOTSTRAP_DATES = ("20260710", "20260713", "20260714")
 
 
@@ -62,13 +62,9 @@ def _target(fixture: _Fixture) -> dict[str, str]:
     return {
         "target_trade_date": fixture.target_trade_date,
         "snapshot_manifest_path": str(fixture.snapshot_manifest_path),
-        "expected_snapshot_manifest_sha256": (
-            fixture.snapshot_manifest_sha256
-        ),
+        "expected_snapshot_manifest_sha256": (fixture.snapshot_manifest_sha256),
         "coverage_manifest_path": str(fixture.coverage_manifest_path),
-        "expected_coverage_manifest_sha256": (
-            fixture.coverage_manifest_sha256
-        ),
+        "expected_coverage_manifest_sha256": (fixture.coverage_manifest_sha256),
         "scope_artifact_path": str(fixture.scope_artifact_path),
         "expected_scope_artifact_sha256": fixture.scope_artifact_sha256,
     }
@@ -114,9 +110,7 @@ def _bootstrap_local_fixtures(tmp_path: Path) -> list[_Fixture]:
 
 
 def _inputs(tmp_path: Path) -> dict[str, Any]:
-    plan, capture, raw_root, _plan, _capture = _write_official_fixture(
-        tmp_path / "official-source"
-    )
+    plan, capture, raw_root, _plan, _capture = _write_official_fixture(tmp_path / "official-source")
     official = compile_official_web_bundle_file(
         plan,
         capture_manifest_path=capture,
@@ -130,9 +124,7 @@ def _inputs(tmp_path: Path) -> dict[str, Any]:
     )
     return {
         "official_bundle_manifest_path": official["artifacts"]["manifest"],
-        "expected_official_bundle_manifest_sha256": official[
-            "normalization_manifest_sha256"
-        ],
+        "expected_official_bundle_manifest_sha256": official["normalization_manifest_sha256"],
         "expected_official_plan_sha256": official["plan_file_sha256"],
         "local_bootstrap_plan_path": local_plan,
         "expected_local_bootstrap_plan_sha256": local_plan_sha,
@@ -159,13 +151,9 @@ def _publish(
 def _daily_kwargs(fixture: _Fixture) -> dict[str, Any]:
     return {
         "snapshot_manifest_path": fixture.snapshot_manifest_path,
-        "expected_snapshot_manifest_sha256": (
-            fixture.snapshot_manifest_sha256
-        ),
+        "expected_snapshot_manifest_sha256": (fixture.snapshot_manifest_sha256),
         "coverage_manifest_path": fixture.coverage_manifest_path,
-        "expected_coverage_manifest_sha256": (
-            fixture.coverage_manifest_sha256
-        ),
+        "expected_coverage_manifest_sha256": (fixture.coverage_manifest_sha256),
         "target_trade_date": fixture.target_trade_date,
         "scope_artifact_path": fixture.scope_artifact_path,
         "expected_scope_artifact_sha256": fixture.scope_artifact_sha256,
@@ -193,10 +181,7 @@ def _next_daily_fixture(tmp_path: Path) -> _Fixture:
 
 def _same_date_correction_fixture(tmp_path: Path) -> _Fixture:
     def correct_one_decliner(frame):
-        target = frame.index[
-            (frame["trade_date"] == "20260714")
-            & frame["pct_chg"].lt(0.0)
-        ][0]
+        target = frame.index[(frame["trade_date"] == "20260714") & frame["pct_chg"].lt(0.0)][0]
         frame.loc[target, "pct_chg"] = 1.0
         return frame
 
@@ -216,9 +201,7 @@ def _same_date_correction_fixture(tmp_path: Path) -> _Fixture:
 
 def _tree_hashes(root: Path) -> dict[str, str]:
     return {
-        path.relative_to(root).as_posix(): hashlib.sha256(
-            path.read_bytes()
-        ).hexdigest()
+        path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in root.rglob("*")
         if path.is_file()
     }
@@ -252,28 +235,19 @@ def _open_days(
 
 
 def _v2_official_inputs(tmp_path: Path) -> dict[str, Any]:
-    pages = [
-        item
-        for item in _fixture_pages()
-        if item[0]["page_id"] != "pbc-202602"
-    ]
+    pages = [item for item in _fixture_pages() if item[0]["page_id"] != "pbc-202602"]
     for index, (page, relative, body) in enumerate(pages):
         if page["parser_id"] != PBC_MONEY_STOCK_PARSER:
             continue
         updated = dict(page)
         updated["parser_id"] = PBC_MONEY_STOCK_PARSER_V2
-        updated["parser_contract_sha256"] = PARSER_CONTRACT_SHA256[
-            PBC_MONEY_STOCK_PARSER_V2
-        ]
+        updated["parser_contract_sha256"] = PARSER_CONTRACT_SHA256[PBC_MONEY_STOCK_PARSER_V2]
         pages[index] = (updated, relative, body)
     june = _page(
         "pbc-202606",
         PBC_MONEY_STOCK_PARSER_V2,
         "pbc_official",
-        (
-            "https://www.pbc.gov.cn/diaochatongjisi/116219/116225/"
-            "2026071515025183948/index.html"
-        ),
+        ("https://www.pbc.gov.cn/diaochatongjisi/116219/116225/" "2026071515025183948/index.html"),
         "202606",
     )
     pages.append(
@@ -294,8 +268,7 @@ def _v2_official_inputs(tmp_path: Path) -> dict[str, Any]:
         row
         for row in _requested_scope()
         if not (
-            row["indicator_id"] in {"cn.m1_yoy", "cn.m2_yoy"}
-            and row["period_end"] == "2026-03-31"
+            row["indicator_id"] in {"cn.m1_yoy", "cn.m2_yoy"} and row["period_end"] == "2026-03-31"
         )
     ]
     scope.extend(
@@ -321,9 +294,7 @@ def _v2_official_inputs(tmp_path: Path) -> dict[str, Any]:
     )
     return {
         "official_bundle_manifest_path": result["artifacts"]["manifest"],
-        "expected_official_bundle_manifest_sha256": result[
-            "normalization_manifest_sha256"
-        ],
+        "expected_official_bundle_manifest_sha256": result["normalization_manifest_sha256"],
         "expected_official_plan_sha256": result["plan_file_sha256"],
     }
 
@@ -375,9 +346,7 @@ def test_atomic_39_row_publication_and_one_date_local_append_round_trip(
     plan_payload = json.loads(plan_path.read_text(encoding="utf-8"))
 
     assert set(plan_payload) == {"schema_version", "market", "targets"}
-    assert plan_payload["schema_version"] == (
-        "cn-local-breadth-bootstrap-plan.v1"
-    )
+    assert plan_payload["schema_version"] == ("cn-local-breadth-bootstrap-plan.v1")
     assert plan_payload["market"] == "CN"
     assert [item["target_trade_date"] for item in plan_payload["targets"]] == (
         list(_BOOTSTRAP_DATES)
@@ -397,22 +366,15 @@ def test_atomic_39_row_publication_and_one_date_local_append_round_trip(
     assert receipt["local_observation_count"] == 3
     assert receipt["local_target_trade_dates"] == list(_BOOTSTRAP_DATES)
     assert receipt["as_of"] == "20260714"
-    assert receipt["decision_cutoff_at"] == (
-        "2026-07-15T07:00:00+00:00"
-    )
+    assert receipt["decision_cutoff_at"] == ("2026-07-15T07:00:00+00:00")
     assert receipt["local_bootstrap_plan_sha256"] == _sha256(plan_path)
     assert receipt["official_evidence_file_count"] == 12
     assert receipt["incoming_evidence_file_count"] == (
-        receipt["official_evidence_file_count"]
-        + receipt["local_evidence_file_count"]
+        receipt["official_evidence_file_count"] + receipt["local_evidence_file_count"]
     )
-    assert receipt["generation_evidence_file_count"] == receipt[
-        "incoming_evidence_file_count"
-    ]
+    assert receipt["generation_evidence_file_count"] == receipt["incoming_evidence_file_count"]
     assert len(receipt["local_coverage_contract_sha256"]) == 64
-    assert receipt["local_effective_available_at"] == (
-        "2026-07-15T04:21:14+00:00"
-    )
+    assert receipt["local_effective_available_at"] == ("2026-07-15T04:21:14+00:00")
     assert receipt["snapshot_readiness_status"] == "pass"
     assert receipt["snapshot_national_coverage"] == 0.8125
     assert receipt["snapshot_blockers"] == []
@@ -420,46 +382,31 @@ def test_atomic_39_row_publication_and_one_date_local_append_round_trip(
     assert receipt["strict_readback_validated"] is True
     assert len(rows) == 39
     assert manifest["schema_version"] == "macro-observation-generation.v2"
-    assert manifest["evidence_file_count"] == receipt[
-        "generation_evidence_file_count"
-    ]
+    assert manifest["evidence_file_count"] == receipt["generation_evidence_file_count"]
     assert len(manifest["observation_evidence"]) == 39
     assert {
-        digest
-        for digests in manifest["observation_evidence"].values()
-        for digest in digests
+        digest for digests in manifest["observation_evidence"].values() for digest in digests
     } == {item["sha256"] for item in manifest["evidence_files"]}
     generation = root / "_generations" / pointer["generation_id"]
     for item in manifest["evidence_files"]:
         evidence_path = generation / item["path"]
         assert os.stat(evidence_path).st_mode & 0o777 == 0o600
-        assert hashlib.sha256(evidence_path.read_bytes()).hexdigest() == (
-            item["sha256"]
-        )
+        assert hashlib.sha256(evidence_path.read_bytes()).hexdigest() == (item["sha256"])
     local_evidence_items = {
         item["metadata"]["target_trade_date"]: item
         for item in manifest["evidence_files"]
-        if item["metadata"].get("evidence_kind")
-        == "strict_parquet_local_observation_evidence"
+        if item["metadata"].get("evidence_kind") == "strict_parquet_local_observation_evidence"
     }
     assert set(local_evidence_items) == set(_BOOTSTRAP_DATES)
-    local_rows = [
-        row for row in rows if row["source_system"] == "local_strict_parquet"
-    ]
+    local_rows = [row for row in rows if row["source_system"] == "local_strict_parquet"]
     local_rows.sort(key=lambda row: row["period_end"])
-    assert [row["period_end"].replace("-", "") for row in local_rows] == list(
-        _BOOTSTRAP_DATES
-    )
+    assert [row["period_end"].replace("-", "") for row in local_rows] == list(_BOOTSTRAP_DATES)
     for row in local_rows:
         compact_period_end = row["period_end"].replace("-", "")
         evidence_item = local_evidence_items[compact_period_end]
-        local_evidence = json.loads(
-            (generation / evidence_item["path"]).read_bytes()
-        )
+        local_evidence = json.loads((generation / evidence_item["path"]).read_bytes())
         assert local_evidence["target_trade_date"] == compact_period_end
-        assert evidence_item["sha256"] in manifest[
-            "observation_evidence"
-        ][row["content_hash"]]
+        assert evidence_item["sha256"] in manifest["observation_evidence"][row["content_hash"]]
     json.dumps(receipt, allow_nan=False)
 
     daily = _next_daily_fixture(tmp_path / "local-next")
@@ -476,43 +423,25 @@ def test_atomic_39_row_publication_and_one_date_local_append_round_trip(
     assert update["local_observation_count"] == 1
     assert update["local_target_trade_dates"] == ["20260715"]
     assert update["as_of"] == "20260715"
-    assert update["decision_cutoff_at"] == (
-        "2026-07-16T04:30:00+00:00"
-    )
+    assert update["decision_cutoff_at"] == ("2026-07-16T04:30:00+00:00")
     assert update["parent_as_of"] == "20260714"
-    assert update["parent_decision_cutoff_at"] == (
-        "2026-07-15T07:00:00+00:00"
-    )
+    assert update["parent_decision_cutoff_at"] == ("2026-07-15T07:00:00+00:00")
     assert update["update_mode"] == "next_date_append"
-    assert update["local_snapshot_manifest_sha256"] == (
-        daily.snapshot_manifest_sha256
-    )
-    assert update["local_coverage_manifest_sha256"] == (
-        daily.coverage_manifest_sha256
-    )
-    assert update["local_scope_artifact_sha256"] == (
-        daily.scope_artifact_sha256
-    )
+    assert update["local_snapshot_manifest_sha256"] == (daily.snapshot_manifest_sha256)
+    assert update["local_coverage_manifest_sha256"] == (daily.coverage_manifest_sha256)
+    assert update["local_scope_artifact_sha256"] == (daily.scope_artifact_sha256)
     assert update["incoming_evidence_file_count"] == 5
     assert len(update["local_coverage_contract_sha256"]) == 64
-    assert update["local_effective_available_at"] == (
-        "2026-07-16T04:21:14+00:00"
-    )
+    assert update["local_effective_available_at"] == ("2026-07-16T04:21:14+00:00")
     assert update["snapshot_readiness_status"] == "pass"
     assert update["snapshot_national_coverage"] == 0.8125
     assert update["strict_readback_validated"] is True
     assert len(updated_rows) == 40
-    assert sum(
-        row["indicator_id"] == "market.breadth" for row in updated_rows
-    ) == 4
-    assert len(
-        updated_pointer["generation_manifest"]["observation_evidence"]
-    ) == 40
+    assert sum(row["indicator_id"] == "market.breadth" for row in updated_rows) == 4
+    assert len(updated_pointer["generation_manifest"]["observation_evidence"]) == 40
     update_metadata = updated_pointer["generation_manifest"]["metadata"]
     assert update_metadata["parent_as_of"] == "20260714"
-    assert update_metadata["parent_decision_cutoff_at"] == (
-        "2026-07-15T07:00:00+00:00"
-    )
+    assert update_metadata["parent_decision_cutoff_at"] == ("2026-07-15T07:00:00+00:00")
     assert update_metadata["update_mode"] == "next_date_append"
     assert pointer_sha256(root) == update["pointer_sha256"]
     json.dumps(update, allow_nan=False)
@@ -532,9 +461,7 @@ def test_legacy_append_v2_official_refresh_and_local_catchup_projection(
         run_id="legacy-local-append-20260715",
         expected_pointer_sha256=bootstrap["pointer_sha256"],
     )
-    open_path, open_sha, open_dates = _open_days(
-        tmp_path / "market-open-days.json"
-    )
+    open_path, open_sha, open_dates = _open_days(tmp_path / "market-open-days.json")
     refreshed = publish_macro_official_observation_refresh(
         **_v2_official_inputs(tmp_path),
         target_as_of="20260716",
@@ -559,9 +486,7 @@ def test_legacy_append_v2_official_refresh_and_local_catchup_projection(
         "20260714",
         "20260715",
     ]
-    assert refreshed_manifest["metadata"]["schema_version"] == (
-        OFFICIAL_OBSERVATION_REFRESH_SCHEMA
-    )
+    assert refreshed_manifest["metadata"]["schema_version"] == (OFFICIAL_OBSERVATION_REFRESH_SCHEMA)
     assert len(refreshed_manifest["added_content_hashes"]) == 36
     assert len(refreshed_manifest["removed_content_hashes"]) == 37
     assert len(refreshed_manifest["replaced_content_hashes"]) == 30
@@ -569,11 +494,7 @@ def test_legacy_append_v2_official_refresh_and_local_catchup_projection(
     assert [
         row["period_end"].replace("-", "")
         for row in sorted(
-            (
-                row
-                for row in refreshed_rows
-                if row["indicator_id"] == "market.breadth"
-            ),
+            (row for row in refreshed_rows if row["indicator_id"] == "market.breadth"),
             key=lambda row: row["period_end"],
         )
     ] == ["20260713", "20260714", "20260715"]
@@ -589,9 +510,7 @@ def test_legacy_append_v2_official_refresh_and_local_catchup_projection(
         pointer_metadata=refreshed_pointer["metadata"],
         canonical_root=root,
     )
-    assert set(validated) == {
-        row["content_hash"] for row in refreshed_rows
-    }
+    assert set(validated) == {row["content_hash"] for row in refreshed_rows}
     lag_tamper = deepcopy(refreshed_manifest)
     lag_tamper["metadata"]["local_open_session_lag"] = 2
     with pytest.raises(
@@ -612,12 +531,10 @@ def test_legacy_append_v2_official_refresh_and_local_catchup_projection(
         and item["metadata"].get("support_only") is False
     )
     tampered_pbc["metadata"]["parser_id"] = PBC_MONEY_STOCK_PARSER
-    tampered_pbc["metadata"]["parser_contract_sha256"] = (
-        PARSER_CONTRACT_SHA256[PBC_MONEY_STOCK_PARSER]
-    )
-    tampered_pbc["metadata_sha256"] = canonical_hash(
-        tampered_pbc["metadata"]
-    )
+    tampered_pbc["metadata"]["parser_contract_sha256"] = PARSER_CONTRACT_SHA256[
+        PBC_MONEY_STOCK_PARSER
+    ]
+    tampered_pbc["metadata_sha256"] = canonical_hash(tampered_pbc["metadata"])
     parser_tamper["evidence_set_sha256"] = canonical_hash(
         {"evidence_files": parser_tamper["evidence_files"]}
     )
@@ -706,9 +623,7 @@ def test_legacy_append_v2_official_refresh_and_local_catchup_projection(
         pointer_metadata=rolled_pointer["metadata"],
         canonical_root=root,
     )
-    assert set(validated_roll) == {
-        row["content_hash"] for row in rolled_rows
-    }
+    assert set(validated_roll) == {row["content_hash"] for row in rolled_rows}
     json.dumps(rolled, allow_nan=False)
 
     next_fixture = _next_roll_fixture(tmp_path / "local-next-roll")
@@ -748,12 +663,8 @@ def test_local_append_accepts_snapshot_and_coverage_same_manifest(
     bootstrap = _publish(tmp_path, inputs)
     daily = _next_daily_fixture(tmp_path / "local-next")
     daily_kwargs = _daily_kwargs(daily)
-    snapshot = json.loads(
-        daily.snapshot_manifest_path.read_text(encoding="utf-8")
-    )
-    coverage = json.loads(
-        daily.coverage_manifest_path.read_text(encoding="utf-8")
-    )
+    snapshot = json.loads(daily.snapshot_manifest_path.read_text(encoding="utf-8"))
+    coverage = json.loads(daily.coverage_manifest_path.read_text(encoding="utf-8"))
     coverage_summary = {
         **coverage["coverage"],
         "coverage_schema_version": "cn-full-a-coverage.v4",
@@ -806,24 +717,18 @@ def test_official_refresh_rejects_three_open_session_local_lag(
     root = tmp_path / "observations"
     bootstrap = _publish(tmp_path, inputs)
     before = (root / "_latest.json").read_bytes()
-    open_path, open_sha, open_dates = _open_days(
-        tmp_path / "market-open-days.json"
-    )
+    open_path, open_sha, open_dates = _open_days(tmp_path / "market-open-days.json")
 
     with pytest.raises(
         ProductionObservationBundleError,
         match="local_history_lag_exceeds_two_sessions",
     ):
         publish_macro_official_observation_refresh(
-            official_bundle_manifest_path=inputs[
-                "official_bundle_manifest_path"
-            ],
+            official_bundle_manifest_path=inputs["official_bundle_manifest_path"],
             expected_official_bundle_manifest_sha256=inputs[
                 "expected_official_bundle_manifest_sha256"
             ],
-            expected_official_plan_sha256=inputs[
-                "expected_official_plan_sha256"
-            ],
+            expected_official_plan_sha256=inputs["expected_official_plan_sha256"],
             target_as_of="20260717",
             decision_cutoff_at="2026-07-17T07:00:00+00:00",
             pinned_open_dates=open_dates,
@@ -835,9 +740,7 @@ def test_official_refresh_rejects_three_open_session_local_lag(
         )
 
     assert (root / "_latest.json").read_bytes() == before
-    assert not (
-        root / "_generations" / "lag-three-must-not-publish"
-    ).exists()
+    assert not (root / "_generations" / "lag-three-must-not-publish").exists()
 
 
 def test_official_refresh_accepts_two_open_session_local_lag(
@@ -846,20 +749,12 @@ def test_official_refresh_accepts_two_open_session_local_lag(
     inputs = _inputs(tmp_path)
     root = tmp_path / "observations"
     bootstrap = _publish(tmp_path, inputs)
-    open_path, open_sha, open_dates = _open_days(
-        tmp_path / "market-open-days.json"
-    )
+    open_path, open_sha, open_dates = _open_days(tmp_path / "market-open-days.json")
 
     refreshed = publish_macro_official_observation_refresh(
-        official_bundle_manifest_path=inputs[
-            "official_bundle_manifest_path"
-        ],
-        expected_official_bundle_manifest_sha256=inputs[
-            "expected_official_bundle_manifest_sha256"
-        ],
-        expected_official_plan_sha256=inputs[
-            "expected_official_plan_sha256"
-        ],
+        official_bundle_manifest_path=inputs["official_bundle_manifest_path"],
+        expected_official_bundle_manifest_sha256=inputs["expected_official_bundle_manifest_sha256"],
+        expected_official_plan_sha256=inputs["expected_official_plan_sha256"],
         target_as_of="20260716",
         decision_cutoff_at="2026-07-16T07:00:00+00:00",
         pinned_open_dates=open_dates,
@@ -901,19 +796,14 @@ def test_public_validator_rejects_allowed_schema_single_blob_spoof(
     single_file = next(
         item
         for item in manifest["evidence_files"]
-        if item["metadata"].get("evidence_kind")
-        == "official_web_response_entity"
+        if item["metadata"].get("evidence_kind") == "official_web_response_entity"
         and item["metadata"].get("support_only") is False
     )
     digest = single_file["sha256"]
     spoofed["evidence_files"] = [single_file]
     spoofed["evidence_file_count"] = 1
-    spoofed["evidence_set_sha256"] = canonical_hash(
-        {"evidence_files": [single_file]}
-    )
-    spoofed["observation_evidence"] = {
-        row["content_hash"]: [digest] for row in rows
-    }
+    spoofed["evidence_set_sha256"] = canonical_hash({"evidence_files": [single_file]})
+    spoofed["observation_evidence"] = {row["content_hash"]: [digest] for row in rows}
 
     assert spoofed["metadata"]["schema_version"] == (
         production_bundle.PRODUCTION_OBSERVATION_BUNDLE_SCHEMA
@@ -996,6 +886,7 @@ def test_official_reader_rejects_permission_tamper(tmp_path: Path) -> None:
 
 def test_future_decision_cutoff_does_not_publish(tmp_path: Path) -> None:
     inputs = _inputs(tmp_path)
+    future_as_of = (date.today() + timedelta(days=14)).strftime("%Y%m%d")
 
     with pytest.raises(
         ProductionObservationBundleError,
@@ -1004,7 +895,7 @@ def test_future_decision_cutoff_does_not_publish(tmp_path: Path) -> None:
         _publish(
             tmp_path,
             inputs,
-            as_of="20260720",
+            as_of=future_as_of,
             run_id="stale-readiness",
         )
 
@@ -1098,19 +989,17 @@ def test_same_date_correction_then_identical_retry_is_immutable(
     assert corrected["promoted"] is True
     assert corrected["update_mode"] == "same_date_correction"
     assert corrected["parent_as_of"] == "20260714"
-    assert corrected["parent_decision_cutoff_at"] == (
-        "2026-07-15T07:00:00+00:00"
-    )
+    assert corrected["parent_decision_cutoff_at"] == ("2026-07-15T07:00:00+00:00")
     same_date_rows = [
         row
         for row in corrected_rows
-        if row["indicator_id"] == "market.breadth"
-        and row["period_end"] == "2026-07-14"
+        if row["indicator_id"] == "market.breadth" and row["period_end"] == "2026-07-14"
     ]
     assert len(same_date_rows) == 2
-    assert corrected_pointer["generation_manifest"]["metadata"][
-        "update_mode"
-    ] == "same_date_correction"
+    assert (
+        corrected_pointer["generation_manifest"]["metadata"]["update_mode"]
+        == "same_date_correction"
+    )
 
     retried = publish_local_market_breadth_update(
         **_daily_kwargs(correction),
@@ -1124,9 +1013,7 @@ def test_same_date_correction_then_identical_retry_is_immutable(
     assert retried["update_mode"] == "same_date_idempotent_retry"
     assert retried["pointer_sha256"] == corrected["pointer_sha256"]
     assert (root / "_latest.json").read_bytes() == corrected_pointer_bytes
-    assert not (
-        root / "_generations" / "same-date-idempotent-retry"
-    ).exists()
+    assert not (root / "_generations" / "same-date-idempotent-retry").exists()
 
 
 def test_partial_full_a_coverage_rejects_bootstrap(tmp_path: Path) -> None:
@@ -1208,9 +1095,7 @@ def test_strict_readback_rejects_one_missing_mapping_atomically(
     receipt = _publish(tmp_path, inputs)
     before_pointer = (root / "_latest.json").read_bytes()
     before_rows, before_loaded = load_observations(root)
-    previous_generation = (
-        root / "_generations" / before_loaded["generation_id"]
-    )
+    previous_generation = root / "_generations" / before_loaded["generation_id"]
     before_generation = _tree_hashes(previous_generation)
     real_validator = production_bundle._strict_publication_readback
     daily = _next_daily_fixture(tmp_path / "local-next-failure")
@@ -1271,9 +1156,7 @@ def test_bootstrap_validator_failure_keeps_canonical_empty(
 
     assert not (root / "_latest.json").exists()
     assert pointer_sha256(root) == ""
-    assert not (
-        root / "_generations" / "bootstrap-validation-failure"
-    ).exists()
+    assert not (root / "_generations" / "bootstrap-validation-failure").exists()
     with pytest.raises(
         MacroObservationStoreError,
         match="macro_observation_pointer_missing",

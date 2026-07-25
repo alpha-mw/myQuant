@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://myquant.local/schema/dashboard_contract.v17-shadow.schema.json",
+  "title": "myQuant Dashboard Contract v17 Shadow",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "schema_sha256",
+    "availability",
+    "generated_at",
+    "reason",
+    "source",
+    "latest_pointer",
+    "terminal_output",
+    "authority"
+  ],
+  "properties": {
+    "schema_version": {"const": "dashboard_contract.v17-shadow.v1"},
+    "schema_sha256": {"$ref": "#/$defs/sha256"},
+    "availability": {"enum": ["AVAILABLE", "UNAVAILABLE"]},
+    "generated_at": {"type": "string", "minLength": 20},
+    "reason": {"type": ["string", "null"]},
+    "source": {"$ref": "#/$defs/source"},
+    "latest_pointer": {
+      "oneOf": [
+        {"$ref": "#/$defs/latestPointer"},
+        {"type": "null"}
+      ]
+    },
+    "terminal_output": {
+      "oneOf": [
+        {"$ref": "#/$defs/terminalOutput"},
+        {"type": "null"}
+      ]
+    },
+    "authority": {"const": false}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"availability": {"const": "AVAILABLE"}}},
+      "then": {
+        "properties": {
+          "reason": {"type": "null"},
+          "source": {
+            "properties": {
+              "latest_pointer_sha256": {"$ref": "#/$defs/sha256"},
+              "ledger_sha256": {"$ref": "#/$defs/sha256"},
+              "output_sha256": {"$ref": "#/$defs/sha256"},
+              "readback_verified": {"const": true}
+            }
+          },
+          "latest_pointer": {"$ref": "#/$defs/latestPointer"},
+          "terminal_output": {"$ref": "#/$defs/terminalOutput"}
+        }
+      },
+      "else": {
+        "properties": {
+          "reason": {"type": "string", "minLength": 1},
+          "source": {
+            "properties": {
+              "latest_pointer_sha256": {"type": "null"},
+              "ledger_sha256": {"type": "null"},
+              "output_sha256": {"type": "null"},
+              "readback_verified": {"const": false}
+            }
+          },
+          "latest_pointer": {"type": "null"},
+          "terminal_output": {"type": "null"}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "terminalState": {
+      "enum": [
+        "SHADOW_COMPLETE_AWAITING_HUMAN_DECISION",
+        "SHADOW_RANK_COMPLETE_NO_PORTFOLIO",
+        "SHADOW_PORTFOLIO_INFEASIBLE",
+        "HARD_STOP_SNAPSHOT_DRIFT",
+        "HARD_STOP_INVALID_EVIDENCE"
+      ]
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "latest_pointer_sha256",
+        "ledger_sha256",
+        "output_sha256",
+        "readback_verified",
+        "fallback_used"
+      ],
+      "properties": {
+        "path": {"const": "results/v17_shadow/_latest/shadow.json"},
+        "latest_pointer_sha256": {
+          "oneOf": [
+            {"$ref": "#/$defs/sha256"},
+            {"type": "null"}
+          ]
+        },
+        "ledger_sha256": {
+          "oneOf": [
+            {"$ref": "#/$defs/sha256"},
+            {"type": "null"}
+          ]
+        },
+        "output_sha256": {
+          "oneOf": [
+            {"$ref": "#/$defs/sha256"},
+            {"type": "null"}
+          ]
+        },
+        "readback_verified": {"type": "boolean"},
+        "fallback_used": {"const": false}
+      }
+    },
+    "latestPointer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "run_id",
+        "terminal_state",
+        "ledger_path",
+        "ledger_sha256",
+        "output_path",
+        "output_sha256",
+        "published_at",
+        "publication_mode",
+        "authority",
+        "semantic_sha256"
+      ],
+      "properties": {
+        "version": {"const": "myquant.v17.shadow-latest-pointer.v1"},
+        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "terminal_state": {"$ref": "#/$defs/terminalState"},
+        "ledger_path": {
+          "type": "string",
+          "pattern": "^results/v17_shadow/runs/[^/]+/ledger\\.json$"
+        },
+        "ledger_sha256": {"$ref": "#/$defs/sha256"},
+        "output_path": {
+          "type": "string",
+          "pattern": "^results/v17_shadow/outcomes/[^/]+\\.json$"
+        },
+        "output_sha256": {"$ref": "#/$defs/sha256"},
+        "published_at": {"type": "string", "minLength": 20},
+        "publication_mode": {"enum": ["NORMAL", "REPAIR"]},
+        "authority": {"const": false},
+        "semantic_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "terminalOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "run_id",
+        "strategy_id",
+        "market",
+        "cutoff",
+        "terminal_state",
+        "rank_output",
+        "portfolio_output",
+        "blockers",
+        "source_manifest_sha256",
+        "ledger_predecessor_sha256",
+        "generated_at",
+        "authority",
+        "semantic_sha256"
+      ],
+      "properties": {
+        "version": {"const": "myquant.v17.shadow-output.v1"},
+        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "strategy_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "market": {"const": "CN"},
+        "cutoff": {"type": "string", "minLength": 20},
+        "terminal_state": {"$ref": "#/$defs/terminalState"},
+        "rank_output": {"type": ["object", "null"]},
+        "portfolio_output": {"type": ["object", "null"]},
+        "blockers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "source_manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "ledger_predecessor_sha256": {"$ref": "#/$defs/sha256"},
+        "generated_at": {"type": "string", "minLength": 20},
+        "authority": {"const": false},
+        "semantic_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

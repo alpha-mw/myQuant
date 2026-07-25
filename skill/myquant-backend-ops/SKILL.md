@@ -62,7 +62,9 @@ description: Use when Codex is working on the myQuant or QuantInvestor backend a
 
 优先使用这些公开入口：
 - `quant-investor research run`：单一主线研究
-- `quant-investor market download|analyze|run|backtest`：全市场工作流
+- `quant-investor market analyze|run`：v15 production/default 全市场工作流
+- `quant-investor market v17-*`：latest shadow 的 sealed-input 离线状态机
+- `quant-investor market maintain|download|backtest`：数据维护、兼容下载与回测
 - `quant-investor web`：workspace 运行时
 
 不要默认从内部模块直接启动，除非是在定位 legacy 路由或调试框架装配。
@@ -98,10 +100,20 @@ description: Use when Codex is working on the myQuant or QuantInvestor backend a
 
 ## myQuant 特定规则
 
+- 当前包版本为 `17.0.0`；v17 是 latest shadow，v15 始终是
+  production/default。`market analyze/run` 不会隐式进入 v17。
+- v17 主链固定为 Fundamental 候选 → Codex Fundamental 深研 → Quant 择时 →
+  RegimePortfolioOverlay → PreTrade/optimizer → shadow terminal；旧四分支 advisory
+  tail 已移除。
+- v17 只接受本地 sealed evidence、显式 SHA 与 CAS；不得在线调用 provider/LLM，
+  不得接券商、生成订单或触发交易。authority 缺失时 fail closed，不得回退 v3、
+  sample 或 synthetic 数据。
+- v17 风险快照只能从 owner mandate 封存；Codex 只属于 Fundamental 深研，且不能
+  覆盖确定性资格、风险上限、交易权限或最终权重。
 - `quant-investor web` 的真实入口是 `web.main:app`，它导向 `web.workspace_app`
 - 当前 workspace 公共 API 面主要在 `web/routers/*.py`，并额外挂了 `web/api/data.py`
 - `web/app.py` 与 `web/api/analysis.py`、`web/api/portfolio.py`、`web/api/settings.py` 更像 legacy `/api/v1` 或旧分析面；只有在用户明确提到这些接口时再深挖
-- LLM review layer 是 advisory-only。缺少 `KIMI_API_KEY`、`DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY` 等 key 时，优先说明会安全降级，不要误判为整个主线不可运行
+- v15 LLM review layer 是 advisory-only。缺少 `KIMI_API_KEY`、`DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY` 等 key 时，优先说明会安全降级，不要误判为整个 v15 主线不可运行；这条降级语义不适用于 v17 sealed deep-response 导入
 
 ## References
 

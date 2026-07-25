@@ -1,6 +1,28 @@
-# myQuant Dashboard v3
+# myQuant Dashboards
 
-本目录是浏览器本地静态组合看板，不包含后端、交易接口或自动执行。
+本目录包含两个彼此隔离的本地静态只读页面，不包含后端、交易接口或自动执行：
+
+- `index.html`：v15 production/default 对应的 Dashboard Contract v3。
+- `v17_shadow.html`：v17 shadow 专用页面，只消费经校验的 v17 latest。
+
+## v17 Shadow 独立数据源
+
+v17 页面只读取 ignored 的 `generated/v17_shadow_latest.js`。该文件只能由
+`scripts/export_v17_shadow_dashboard.py` 从
+`results/v17_shadow/_latest/shadow.json` 生成；导出过程会校验 latest pointer、
+ledger、terminal output、三者 SHA/CAS 绑定及 `authority=false`。来源缺失或
+校验失败时写入 `UNAVAILABLE`，并以 exit 2 结束；不会回退到 Dashboard v3、
+样例、合成数据或其他结果目录。
+
+```bash
+PYTHONPATH=. ./.venv/bin/python scripts/export_v17_shadow_dashboard.py
+node portfolio_dashboard/tests/dashboard_contract_v17_shadow.test.js
+```
+
+页面仅展示 shadow terminal、候选、组合提案、阻断项和证据 SHA。它没有
+production、风控、券商、订单或交易权限。
+
+## Dashboard v3
 
 ## 数据边界
 

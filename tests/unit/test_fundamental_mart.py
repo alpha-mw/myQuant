@@ -34,6 +34,7 @@ from quant_investor.market.dag.assembly import (
     _aggregate_branch_summaries,
     _build_branch_results,
 )
+from tests.fixtures.strict_cn_snapshot import coverage_v4, v4_snapshot_paths
 
 
 def _raw_tables() -> dict[str, pd.DataFrame]:
@@ -144,9 +145,7 @@ def _raw_tables() -> dict[str, pd.DataFrame]:
 def _write_parquet_market_data(root, symbols):
     data_root = root / "data"
     parquet_root = data_root / "parquet" / "cn"
-    bars_root = parquet_root / "bars"
-    serving_root = data_root / "parquet_serving" / "cn" / "bars"
-    manifest_path = parquet_root / "_snapshots" / "fixture.json"
+    bars_root, serving_root, manifest_path = v4_snapshot_paths(data_root, "fixture")
     rows = []
     for symbol in symbols:
         rows.append(
@@ -166,8 +165,18 @@ def _write_parquet_market_data(root, symbols):
         pd.DataFrame([rows[-1]]).to_parquet(serving_dir / "bars.parquet", index=False)
     (bars_root / "year=2024").mkdir(parents=True)
     pd.DataFrame(rows).to_parquet(bars_root / "year=2024" / "part.parquet", index=False)
-    manifest_path.parent.mkdir(parents=True)
-    manifest_path.write_text(json.dumps({"snapshot_id": "fixture"}), encoding="utf-8")
+    legacy_bars_root = parquet_root / "bars"
+    (legacy_bars_root / "year=2024").mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_parquet(
+        legacy_bars_root / "year=2024" / "part.parquet",
+        index=False,
+    )
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    coverage = coverage_v4(data_root, symbols, trade_date="20240510")
+    manifest_path.write_text(
+        json.dumps({"snapshot_id": "fixture", "coverage": coverage}),
+        encoding="utf-8",
+    )
     (parquet_root / "_latest.json").write_text(
         json.dumps(
             {
@@ -178,6 +187,8 @@ def _write_parquet_market_data(root, symbols):
                 "table_root": str(bars_root),
                 "derived_serving_root": str(serving_root),
                 "manifest_path": str(manifest_path),
+                "coverage": coverage,
+                "blockers": [],
             }
         ),
         encoding="utf-8",
@@ -299,9 +310,7 @@ def test_vectorized_daily_pit_join_matches_per_symbol_reference() -> None:
         joined["ts_code"] = symbol
         outputs.append(joined)
     reference = pd.concat(outputs, ignore_index=True)
-    reference["fcf_to_price"] = pd.to_numeric(
-        reference.get("free_cashflow"), errors="coerce"
-    ).div(
+    reference["fcf_to_price"] = pd.to_numeric(reference.get("free_cashflow"), errors="coerce").div(
         pd.to_numeric(reference.get("total_mv_rmb"), errors="coerce").where(
             pd.to_numeric(reference.get("total_mv_rmb"), errors="coerce") > 0
         )
@@ -328,9 +337,11 @@ def test_vectorized_daily_pit_join_matches_per_symbol_reference() -> None:
         "forecast_fetched_at",
         "forecast_ingest_run_id",
     ]
-    reference = reference[
-        [column for column in keep if column in reference.columns]
-    ].sort_values(["ts_code", "trade_date"]).reset_index(drop=True)
+    reference = (
+        reference[[column for column in keep if column in reference.columns]]
+        .sort_values(["ts_code", "trade_date"])
+        .reset_index(drop=True)
+    )
 
     actual = fundamental_mart.build_fundamental_daily(
         period,
@@ -389,12 +400,8 @@ def test_default_local_mart_is_offline_and_likelihood_neutral(tmp_path):
             }
         },
     )
-    verdict = FundamentalAgent().run(
-        {"data_bundle": bundle, "stock_pool": ["000001.SZ"]}
-    )
-    summaries = _aggregate_branch_summaries(
-        {"000001.SZ": {"fundamental": verdict}}
-    )
+    verdict = FundamentalAgent().run({"data_bundle": bundle, "stock_pool": ["000001.SZ"]})
+    summaries = _aggregate_branch_summaries({"000001.SZ": {"fundamental": verdict}})
     branch_results = _build_branch_results(
         {"000001.SZ": {"fundamental": verdict}},
         summaries,
@@ -508,9 +515,7 @@ def _live_provider_manifest(
             for table in fundamental_mart.SOURCE_TABLES
         },
         "raw_table_fingerprints": {
-            table: fundamental_mart.frame_fingerprint(
-                tables.get(table, pd.DataFrame())
-            )
+            table: fundamental_mart.frame_fingerprint(tables.get(table, pd.DataFrame()))
             for table in fundamental_mart.SOURCE_TABLES
         },
         "requests_attempted": len(outcomes),
@@ -518,9 +523,7 @@ def _live_provider_manifest(
         "requests_empty": empty,
         "requests_failed": 0,
         "symbol_table_outcomes": outcomes,
-        "request_outcome_accounting_sha256": (
-            fundamental_mart.canonical_json_sha256(outcomes)
-        ),
+        "request_outcome_accounting_sha256": (fundamental_mart.canonical_json_sha256(outcomes)),
         "endpoint_audit": {
             "schema_version": fundamental_mart.FUNDAMENTAL_ENDPOINT_AUDIT_SCHEMA,
         },
@@ -691,9 +694,7 @@ def test_public_generation_publisher_allows_explicit_offline_generation(
 def test_primary_generation_capability_is_bound_to_exact_tables(tmp_path):
     tables = {
         "fundamental_period": pd.DataFrame(columns=["ts_code"]),
-        "fundamental_daily": pd.DataFrame(
-            [{"ts_code": "000001.SZ", "trade_date": "20240510"}]
-        ),
+        "fundamental_daily": pd.DataFrame([{"ts_code": "000001.SZ", "trade_date": "20240510"}]),
         "fundamental_quarantine": pd.DataFrame(columns=["ts_code"]),
     }
     provider_manifest = {"provider": "tushare", "run_id": "bound-primary"}
@@ -706,18 +707,12 @@ def test_primary_generation_capability_is_bound_to_exact_tables(tmp_path):
         "provider_manifest": provider_manifest,
         "gate2_passed": True,
     }
-    capability = (
-        fundamental_generation._issue_primary_generation_attestation(
-            tables=tables,
-            metadata=metadata,
-            source="live_tushare",
-            provider_manifest_sha256=(
-                fundamental_mart._canonical_mapping_sha256(provider_manifest)
-            ),
-            raw_table_fingerprints=(
-                fundamental_mart._raw_table_fingerprints(raw_tables)
-            ),
-        )
+    capability = fundamental_generation._issue_primary_generation_attestation(
+        tables=tables,
+        metadata=metadata,
+        source="live_tushare",
+        provider_manifest_sha256=(fundamental_mart._canonical_mapping_sha256(provider_manifest)),
+        raw_table_fingerprints=(fundamental_mart._raw_table_fingerprints(raw_tables)),
     )
     tampered = {name: frame.copy(deep=True) for name, frame in tables.items()}
     tampered["fundamental_daily"].loc[0, "ts_code"] = "000002.SZ"
@@ -795,9 +790,7 @@ def _only_symbol(
 ) -> dict[str, pd.DataFrame]:
     return {
         name: (
-            frame[frame["ts_code"] == symbol].copy()
-            if "ts_code" in frame.columns
-            else frame.copy()
+            frame[frame["ts_code"] == symbol].copy() if "ts_code" in frame.columns else frame.copy()
         )
         for name, frame in tables.items()
     }
@@ -832,9 +825,7 @@ def test_partial_refresh_preserves_prior_symbols_in_new_generation(tmp_path):
     assert pointer is not None
     assert pointer["generation_id"] == "generation-two"
     assert first.fundamental_daily_path.exists()
-    assert readiness["merge"]["fundamental_daily"][
-        "retained_existing_rows"
-    ] > 0
+    assert readiness["merge"]["fundamental_daily"]["retained_existing_rows"] > 0
 
 
 def test_primary_refresh_cannot_upgrade_retained_offline_parent_rows(
@@ -926,9 +917,7 @@ def test_primary_refresh_can_retain_rows_from_verified_primary_parent(
     assert pointer is not None
     assert pointer["generation_id"] == "live-child"
     assert pointer["primary_provenance_verified"] is True
-    assert pointer["manifest"]["metadata"]["parent_generation_id"] == (
-        "live-parent"
-    )
+    assert pointer["manifest"]["metadata"]["parent_generation_id"] == ("live-parent")
 
 
 def test_partial_exact_key_does_not_replace_more_complete_pit_row(tmp_path):
@@ -959,10 +948,7 @@ def test_partial_exact_key_does_not_replace_more_complete_pit_row(tmp_path):
     row = period[
         (period["ts_code"] == "000001.SZ")
         & (period["end_date"] == "20231231")
-        & (
-            pd.to_datetime(period["availability_date"])
-            == pd.Timestamp("2024-04-30")
-        )
+        & (pd.to_datetime(period["availability_date"]) == pd.Timestamp("2024-04-30"))
     ].iloc[-1]
     assert row["fin_roa"] == 0.06
     assert row["fin_debt_to_assets"] > 0.0
@@ -980,9 +966,8 @@ def test_complete_exact_key_refresh_wins_on_quality_tie(tmp_path):
         source="old_source",
     )
     refreshed = _only_symbol(_raw_tables(), "000001.SZ")
-    target = (
-        (refreshed["fina_indicator"]["end_date"] == "20231231")
-        & (refreshed["fina_indicator"]["ann_date"] == "20240430")
+    target = (refreshed["fina_indicator"]["end_date"] == "20231231") & (
+        refreshed["fina_indicator"]["ann_date"] == "20240430"
     )
     refreshed["fina_indicator"].loc[target, "roe_dt"] = 18.0
     artifacts, _ = write_fundamental_mart(
@@ -998,10 +983,7 @@ def test_complete_exact_key_refresh_wins_on_quality_tie(tmp_path):
     row = period[
         (period["ts_code"] == "000001.SZ")
         & (period["end_date"] == "20231231")
-        & (
-            pd.to_datetime(period["availability_date"])
-            == pd.Timestamp("2024-04-30")
-        )
+        & (pd.to_datetime(period["availability_date"]) == pd.Timestamp("2024-04-30"))
     ].iloc[-1]
     assert row["fin_roe"] == 0.18
     assert row["source"] == "new_source"
@@ -1014,9 +996,7 @@ def test_generation_pointer_failure_cleans_final_directory_for_retry(
     root = tmp_path / "cn"
     tables = {
         "fundamental_period": pd.DataFrame(columns=["ts_code"]),
-        "fundamental_daily": pd.DataFrame(
-            [{"ts_code": "000001.SZ", "trade_date": "20240510"}]
-        ),
+        "fundamental_daily": pd.DataFrame([{"ts_code": "000001.SZ", "trade_date": "20240510"}]),
         "fundamental_quarantine": pd.DataFrame(columns=["ts_code"]),
     }
     original_write = fundamental_generation._atomic_write_json
@@ -1024,10 +1004,7 @@ def test_generation_pointer_failure_cleans_final_directory_for_retry(
 
     def fail_pointer_once(path, payload):
         nonlocal pointer_failed
-        if (
-            path.name == fundamental_generation.FUNDAMENTAL_POINTER_FILENAME
-            and not pointer_failed
-        ):
+        if path.name == fundamental_generation.FUNDAMENTAL_POINTER_FILENAME and not pointer_failed:
             pointer_failed = True
             raise OSError("simulated pointer write failure")
         return original_write(path, payload)
@@ -1045,9 +1022,7 @@ def test_generation_pointer_failure_cleans_final_directory_for_retry(
             metadata={"run_id": "retryable-generation"},
         )
     assert not (
-        root
-        / fundamental_generation.FUNDAMENTAL_GENERATIONS_DIRNAME
-        / "retryable-generation"
+        root / fundamental_generation.FUNDAMENTAL_GENERATIONS_DIRNAME / "retryable-generation"
     ).exists()
 
     monkeypatch.setattr(
@@ -1073,9 +1048,7 @@ def test_generation_pointer_semantic_readback_rejects_disk_forgery(
     root = tmp_path / "cn"
     tables = {
         "fundamental_period": pd.DataFrame(columns=["ts_code"]),
-        "fundamental_daily": pd.DataFrame(
-            [{"ts_code": "000001.SZ", "trade_date": "20240510"}]
-        ),
+        "fundamental_daily": pd.DataFrame([{"ts_code": "000001.SZ", "trade_date": "20240510"}]),
         "fundamental_quarantine": pd.DataFrame(columns=["ts_code"]),
     }
     original_write = fundamental_generation._atomic_write_json
@@ -1101,13 +1074,9 @@ def test_generation_pointer_semantic_readback_rejects_disk_forgery(
             metadata={"run_id": "expected-generation"},
         )
 
+    assert not (root / fundamental_generation.FUNDAMENTAL_POINTER_FILENAME).exists()
     assert not (
-        root / fundamental_generation.FUNDAMENTAL_POINTER_FILENAME
-    ).exists()
-    assert not (
-        root
-        / fundamental_generation.FUNDAMENTAL_GENERATIONS_DIRNAME
-        / "expected-generation"
+        root / fundamental_generation.FUNDAMENTAL_GENERATIONS_DIRNAME / "expected-generation"
     ).exists()
 
 
@@ -1118,9 +1087,7 @@ def test_generation_pointer_readback_failure_restores_predecessor(
     root = tmp_path / "cn"
     tables = {
         "fundamental_period": pd.DataFrame(columns=["ts_code"]),
-        "fundamental_daily": pd.DataFrame(
-            [{"ts_code": "000001.SZ", "trade_date": "20240510"}]
-        ),
+        "fundamental_daily": pd.DataFrame([{"ts_code": "000001.SZ", "trade_date": "20240510"}]),
         "fundamental_quarantine": pd.DataFrame(columns=["ts_code"]),
     }
     publish_fundamental_generation(
@@ -1159,9 +1126,7 @@ def test_generation_pointer_readback_failure_restores_predecessor(
     assert pointer_path.read_bytes() == predecessor_bytes
     assert load_fundamental_pointer(root)["generation_id"] == "predecessor"
     assert not (
-        root
-        / fundamental_generation.FUNDAMENTAL_GENERATIONS_DIRNAME
-        / "replacement"
+        root / fundamental_generation.FUNDAMENTAL_GENERATIONS_DIRNAME / "replacement"
     ).exists()
 
 
@@ -1172,9 +1137,7 @@ def test_primary_metadata_mutation_during_streaming_publish_fails_closed(
     root = tmp_path / "cn"
     tables = {
         "fundamental_period": pd.DataFrame(columns=["ts_code"]),
-        "fundamental_daily": pd.DataFrame(
-            [{"ts_code": "000001.SZ", "trade_date": "20240510"}]
-        ),
+        "fundamental_daily": pd.DataFrame([{"ts_code": "000001.SZ", "trade_date": "20240510"}]),
         "fundamental_quarantine": pd.DataFrame(columns=["ts_code"]),
     }
     provider_manifest = {"provider": "tushare", "run_id": "metadata-race"}
@@ -1191,12 +1154,8 @@ def test_primary_metadata_mutation_during_streaming_publish_fails_closed(
         tables=tables,
         metadata=metadata,
         source="live_tushare",
-        provider_manifest_sha256=(
-            fundamental_mart._canonical_mapping_sha256(provider_manifest)
-        ),
-        raw_table_fingerprints=(
-            fundamental_mart._raw_table_fingerprints(raw_tables)
-        ),
+        provider_manifest_sha256=(fundamental_mart._canonical_mapping_sha256(provider_manifest)),
+        raw_table_fingerprints=(fundamental_mart._raw_table_fingerprints(raw_tables)),
     )
     monkeypatch.setattr(
         fundamental_generation,
@@ -1232,9 +1191,7 @@ def test_primary_metadata_mutation_during_streaming_publish_fails_closed(
         )
 
     assert mutated is True
-    assert not (
-        root / fundamental_generation.FUNDAMENTAL_POINTER_FILENAME
-    ).exists()
+    assert not (root / fundamental_generation.FUNDAMENTAL_POINTER_FILENAME).exists()
 
 
 def test_offline_canonical_rebuild_can_skip_duplicate_raw_csv_snapshots(
@@ -1334,12 +1291,8 @@ def test_empty_refresh_retains_existing_without_rowwise_key_normalization(
 
 
 def test_quarantine_merge_aligns_existing_canonical_schema():
-    existing = pd.DataFrame(
-        [{"ts_code": "000001.SZ", "end_date": 20231231, "reason": "old"}]
-    )
-    incoming = pd.DataFrame(
-        [{"ts_code": "000002.SZ", "end_date": "20240331", "reason": "new"}]
-    )
+    existing = pd.DataFrame([{"ts_code": "000001.SZ", "end_date": 20231231, "reason": "old"}])
+    incoming = pd.DataFrame([{"ts_code": "000002.SZ", "end_date": "20240331", "reason": "new"}])
 
     merged, _stats = fundamental_mart._merge_quarantine_table(
         existing,
@@ -1350,9 +1303,7 @@ def test_quarantine_merge_aligns_existing_canonical_schema():
 
 
 def test_quarantine_merge_counts_retained_rows_with_duplicate_incoming():
-    existing = pd.DataFrame(
-        [{"ts_code": "000001.SZ", "reason": "offline-parent"}]
-    )
+    existing = pd.DataFrame([{"ts_code": "000001.SZ", "reason": "offline-parent"}])
     incoming = pd.DataFrame(
         [
             {"ts_code": "000002.SZ", "reason": "live-child"},
@@ -1538,7 +1489,9 @@ def test_fundamental_maintenance_offline_input_writes_expected_artifacts(
     assert result["readiness"]["expected_symbol_count"] == 3
     assert result["readiness"]["raw_row_counts"]["fina_indicator"] > 0
     assert (tmp_path / "clean" / "cn_fundamental" / "latest_manifest.json").exists()
-    manifest = json.loads((tmp_path / "clean" / "cn_fundamental" / "latest_manifest.json").read_text())
+    manifest = json.loads(
+        (tmp_path / "clean" / "cn_fundamental" / "latest_manifest.json").read_text()
+    )
     assert manifest["raw_row_counts"]["daily_basic"] > 0
 
 
@@ -1609,13 +1562,11 @@ def test_authoritative_full_rebuild_writes_verified_isolated_generation(
     market_pointer = tmp_path / "market_latest.json"
     market_pointer.write_text(
         json.dumps(
-                {
-                    "snapshot_id": "fixture-20240510",
-                    "latest_complete_trade_date": "20240510",
-                    "table_root": str(
-                        (market_data_root / "parquet" / "cn" / "bars").resolve()
-                    ),
-                    "coverage": {
+            {
+                "snapshot_id": "fixture-20240510",
+                "latest_complete_trade_date": "20240510",
+                "table_root": str((market_data_root / "parquet" / "cn" / "bars").resolve()),
+                "coverage": {
                     "expected_scope_count": len(symbols),
                     "expected_scope_sha256": scope_sha,
                     "pit_membership_path": str(membership_path.resolve()),
@@ -1716,9 +1667,9 @@ def test_authoritative_full_rebuild_writes_verified_isolated_generation(
         for stats in result["readiness"]["merge"].values()
         if isinstance(stats, dict)
     } == {"authoritative_isolated_replace"}
-    assert pointer["manifest"]["metadata"]["provider_manifest"][
-        "authoritative_full_rebuild"
-    ] is True
+    assert (
+        pointer["manifest"]["metadata"]["provider_manifest"]["authoritative_full_rebuild"] is True
+    )
     before_generation = pointer["generation_id"]
     with pytest.raises(
         ValueError,
@@ -1806,9 +1757,7 @@ def test_v3_rederive_uses_exact_membership_sector_map_and_fixed_timestamp(
         "bound-sector-2",
     }
     assert evidence["sector_map_sha256"] == second_evidence["sector_map_sha256"]
-    assert evidence["output_frame_fingerprints"] == second_evidence[
-        "output_frame_fingerprints"
-    ]
+    assert evidence["output_frame_fingerprints"] == second_evidence["output_frame_fingerprints"]
     for table in fundamental_mart.FUNDAMENTAL_TABLES:
         fundamental_mart.assert_frame_semantics_equal(
             first[table],
@@ -1908,7 +1857,7 @@ def test_full_a_universe_intersects_canonical_components_with_serving(tmp_path):
         ["000001.SZ", "000002.SZ", "000003.SZ", "000004.SZ"],
     )
     components_path = data_root / "cn_universe" / "cn_index_components.json"
-    components_path.parent.mkdir(parents=True)
+    components_path.parent.mkdir(parents=True, exist_ok=True)
     components_path.write_text(
         json.dumps(
             {
@@ -1951,23 +1900,53 @@ def test_live_fetch_records_partial_provider_errors(monkeypatch):
             )
 
         def income(self, **kwargs):
-            self.calls.append(("income", kwargs.get("ts_code"), kwargs.get("start_date"), kwargs.get("end_date")))
+            self.calls.append(
+                ("income", kwargs.get("ts_code"), kwargs.get("start_date"), kwargs.get("end_date"))
+            )
             return pd.DataFrame()
 
         def balancesheet(self, **kwargs):
-            self.calls.append(("balancesheet", kwargs.get("ts_code"), kwargs.get("start_date"), kwargs.get("end_date")))
+            self.calls.append(
+                (
+                    "balancesheet",
+                    kwargs.get("ts_code"),
+                    kwargs.get("start_date"),
+                    kwargs.get("end_date"),
+                )
+            )
             return pd.DataFrame()
 
         def cashflow(self, **kwargs):
-            self.calls.append(("cashflow", kwargs.get("ts_code"), kwargs.get("start_date"), kwargs.get("end_date")))
+            self.calls.append(
+                (
+                    "cashflow",
+                    kwargs.get("ts_code"),
+                    kwargs.get("start_date"),
+                    kwargs.get("end_date"),
+                )
+            )
             return pd.DataFrame()
 
         def daily_basic(self, **kwargs):
-            self.calls.append(("daily_basic", kwargs.get("ts_code"), kwargs.get("start_date"), kwargs.get("end_date")))
+            self.calls.append(
+                (
+                    "daily_basic",
+                    kwargs.get("ts_code"),
+                    kwargs.get("start_date"),
+                    kwargs.get("end_date"),
+                )
+            )
             return pd.DataFrame()
 
         def forecast(self, **kwargs):
-            self.calls.append(("forecast", kwargs.get("ts_code"), kwargs.get("start_date"), kwargs.get("end_date")))
+            self.calls.append(
+                (
+                    "forecast",
+                    kwargs.get("ts_code"),
+                    kwargs.get("start_date"),
+                    kwargs.get("end_date"),
+                )
+            )
             return pd.DataFrame()
 
     monkeypatch.setattr("quant_investor.market.fundamental_mart.time.sleep", lambda _seconds: None)

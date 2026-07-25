@@ -22,6 +22,7 @@ from quant_investor.factors.health import (
 )
 from quant_investor.factors.runtime import MinedFactorRegistry
 from scripts import factor_health_automation
+from tests.fixtures.strict_cn_snapshot import coverage_v4, v4_snapshot_paths
 
 
 def _production_record() -> FactorRecord:
@@ -105,10 +106,7 @@ def test_factor_health_automation_writes_report_without_registry_mutation(tmp_pa
     assert payload["registry_update_status"] == "not_requested"
     assert payload["runtime_smoke"]["backend"] == "parquet"
     assert payload["runtime_smoke"]["factor_mode"] == "parquet_canonical_unavailable"
-    assert (
-        "strict Parquet snapshot pointer unreadable"
-        in payload["runtime_smoke"]["error"]
-    )
+    assert "strict Parquet snapshot pointer unreadable" in payload["runtime_smoke"]["error"]
 
 
 def test_runtime_smoke_reads_parquet_serving_without_csv_dependency(
@@ -210,10 +208,7 @@ def test_fresh_evaluation_uses_parquet_context_not_legacy_csv(tmp_path):
     evaluation = result["evaluations"]["pv_short_reversal_5d"]
     assert evaluation["diagnostics"]["data_source"] == "parquet_canonical"
     assert evaluation["diagnostics"]["snapshot_id"] == "snap-fresh"
-    assert (
-        evaluation["diagnostics"]["existing_composite_mode"]
-        == "leave_one_out"
-    )
+    assert evaluation["diagnostics"]["existing_composite_mode"] == "leave_one_out"
     assert evaluation["diagnostics"]["implementation_hash"]
     assert evaluation["diagnostics"]["maturity_window_id"]
     assert evaluation["diagnostics"]["evaluation_hash"].startswith("sha256:")
@@ -315,9 +310,7 @@ def test_strict_fresh_requires_fresh_and_apply_bypasses_old_semantic_checks():
     with pytest.raises(SystemExit, match="2"):
         factor_health_automation.parse_args(["--strict-fresh-evaluation"])
 
-    apply_args = factor_health_automation.parse_args(
-        ["--apply-registry-actions"]
-    )
+    apply_args = factor_health_automation.parse_args(["--apply-registry-actions"])
     assert apply_args.apply_registry_actions is True
 
     args = factor_health_automation.parse_args(
@@ -412,9 +405,7 @@ def test_strict_fresh_incomplete_batch_blocks_without_registry_fallback(
     assert payload["fresh_evaluation"]["atomic_success"] is False
     assert payload["fresh_evaluation"]["missing_factors"] == [record.name]
     assert payload["fresh_evaluation"]["data_blocked_factors"] == [record.name]
-    assert payload["evaluation_source_counts"] == {
-        "fresh_evaluation_missing": 1
-    }
+    assert payload["evaluation_source_counts"] == {"fresh_evaluation_missing": 1}
     decision = payload["decisions"][0]
     assert decision["status"] == "data_blocked"
     assert decision["action"] == "observe"
@@ -616,9 +607,7 @@ def test_alternating_failure_windows_are_counted_only_once(
     current_window = {"value": "w1"}
 
     def fresh_evaluations(_args, factors):
-        evaluation = factor_health_automation._evaluation_from_record(
-            factors[0]
-        )
+        evaluation = factor_health_automation._evaluation_from_record(factors[0])
         assert evaluation is not None
         evaluation["metrics"]["icir"] = 0.10
         window = current_window["value"]
@@ -669,13 +658,9 @@ def test_alternating_failure_windows_are_counted_only_once(
         )
         assert exit_code == 0
         payload = json.loads(
-            next(output_dir.glob("factor_health_*.json")).read_text(
-                encoding="utf-8"
-            )
+            next(output_dir.glob("factor_health_*.json")).read_text(encoding="utf-8")
         )
-        observed_counts.append(
-            payload["decisions"][0]["consecutive_failures"]
-        )
+        observed_counts.append(payload["decisions"][0]["consecutive_failures"])
         observed_actions.append(payload["decisions"][0]["action"])
 
     written = json.loads(registry_path.read_text(encoding="utf-8"))
@@ -754,20 +739,13 @@ def test_old_healthy_evidence_cannot_reset_newer_failure_streak(
 
     assert exit_code == 2
     assert registry_path.read_text(encoding="utf-8") == before_text
-    payload = json.loads(
-        next(output_dir.glob("factor_health_*.json")).read_text(
-            encoding="utf-8"
-        )
-    )
+    payload = json.loads(next(output_dir.glob("factor_health_*.json")).read_text(encoding="utf-8"))
     decision = payload["decisions"][0]
     assert decision["status"] == "healthy"
     assert decision["action"] == "observe"
     assert decision["consecutive_failures"] == 1
     assert decision["evidence_chronology_status"] == "blocked"
-    assert any(
-        blocker.endswith("regressed")
-        for blocker in payload["fresh_evaluation"]["blockers"]
-    )
+    assert any(blocker.endswith("regressed") for blocker in payload["fresh_evaluation"]["blockers"])
 
 
 def test_strict_fresh_incomplete_gate_set_blocks_registry_write(
@@ -826,15 +804,10 @@ def test_strict_fresh_incomplete_gate_set_blocks_registry_write(
 
     assert exit_code == 2
     assert registry_path.read_text(encoding="utf-8") == before_text
-    payload = json.loads(
-        next(output_dir.glob("factor_health_*.json")).read_text(
-            encoding="utf-8"
-        )
-    )
+    payload = json.loads(next(output_dir.glob("factor_health_*.json")).read_text(encoding="utf-8"))
     assert payload["registry_update_status"] == "not_requested"
     assert any(
-        "gate_ids_expected_1_to_8" in blocker
-        for blocker in payload["fresh_evaluation"]["blockers"]
+        "gate_ids_expected_1_to_8" in blocker for blocker in payload["fresh_evaluation"]["blockers"]
     )
 
 
@@ -860,25 +833,21 @@ def test_leave_one_out_composite_removes_candidate_self_inclusion():
             return candidate_signal
         return other_signal
 
-    existing, blocker = (
-        factor_health_automation._compute_existing_price_volume_composite(
-            registry,
-            candidate_signal,
-            candidate_signal,
-            candidate_signal,
-            candidate_type=SimpleNamespace,
-            signal_builder=signal_builder,
-        )
+    existing, blocker = factor_health_automation._compute_existing_price_volume_composite(
+        registry,
+        candidate_signal,
+        candidate_signal,
+        candidate_signal,
+        candidate_type=SimpleNamespace,
+        signal_builder=signal_builder,
     )
     assert blocker == ""
 
-    leave_one_out, blocker = (
-        factor_health_automation._leave_one_out_existing_composite(
-            existing,
-            candidate_signal,
-            first,
-            registry,
-        )
+    leave_one_out, blocker = factor_health_automation._leave_one_out_existing_composite(
+        existing,
+        candidate_signal,
+        first,
+        registry,
     )
 
     assert blocker == ""
@@ -1081,27 +1050,21 @@ def test_strict_runtime_smoke_failure_blocks_apply_and_report_only(
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["registry_update_status"] == "not_requested"
     assert payload["run_status"] == "blocked"
-    assert "runtime_smoke_snapshot_unhealthy" in payload[
-        "runtime_smoke_blockers"
-    ]
+    assert "runtime_smoke_snapshot_unhealthy" in payload["runtime_smoke_blockers"]
     assert "runtime_smoke_backend:csv" in payload["runtime_smoke_blockers"]
-    assert "runtime_smoke_mode_policy:permissive" in payload[
-        "runtime_smoke_blockers"
-    ]
-    assert "runtime_smoke_fallback_used" in payload[
-        "runtime_smoke_blockers"
-    ]
+    assert "runtime_smoke_mode_policy:permissive" in payload["runtime_smoke_blockers"]
+    assert "runtime_smoke_fallback_used" in payload["runtime_smoke_blockers"]
     assert any(
-        item.startswith("runtime_smoke_error:")
-        for item in payload["runtime_smoke_blockers"]
+        item.startswith("runtime_smoke_error:") for item in payload["runtime_smoke_blockers"]
     )
 
 
 def _write_parquet_fixture(root: Path) -> None:
-    canonical = root / "parquet" / "cn" / "bars" / "year=2026" / "month=01"
-    serving_1 = root / "parquet_serving" / "cn" / "bars" / "symbol=000001.SZ"
-    serving_2 = root / "parquet_serving" / "cn" / "bars" / "symbol=000002.SZ"
-    snapshot_dir = root / "parquet" / "cn" / "_snapshots"
+    table_root, serving_root, manifest = v4_snapshot_paths(root, "snap-001")
+    canonical = table_root / "year=2026" / "month=01"
+    serving_1 = serving_root / "symbol=000001.SZ"
+    serving_2 = serving_root / "symbol=000002.SZ"
+    snapshot_dir = manifest.parent
     universe_dir = root / "cn_universe"
     canonical.mkdir(parents=True, exist_ok=True)
     serving_1.mkdir(parents=True, exist_ok=True)
@@ -1159,9 +1122,14 @@ def _write_parquet_fixture(root: Path) -> None:
         index=False,
     )
 
-    manifest = snapshot_dir / "snap-001.json"
+    data_root = root
+    coverage = coverage_v4(
+        data_root,
+        ["000001.SZ", "000002.SZ"],
+        trade_date="20260103",
+    )
     manifest.write_text(
-        json.dumps({"snapshot_id": "snap-001"}, ensure_ascii=False),
+        json.dumps({"snapshot_id": "snap-001", "coverage": coverage}, ensure_ascii=False),
         encoding="utf-8",
     )
     latest = {
@@ -1169,10 +1137,10 @@ def _write_parquet_fixture(root: Path) -> None:
         "snapshot_id": "snap-001",
         "latest_complete_trade_date": "20260103",
         "latest_trade_date": "20260103",
-        "table_root": str(root / "parquet" / "cn" / "bars"),
-        "derived_serving_root": str(root / "parquet_serving" / "cn" / "bars"),
+        "table_root": str(table_root),
+        "derived_serving_root": str(serving_root),
         "manifest_path": str(manifest),
-        "coverage": {"row_count": int(len(frame)), "symbol_count": 2},
+        "coverage": coverage,
         "blockers": [],
     }
     latest_path = root / "parquet" / "cn" / "_latest.json"
@@ -1189,10 +1157,11 @@ def _write_parquet_fixture(root: Path) -> None:
 
 
 def _write_parquet_fresh_fixture(root: Path) -> None:
-    canonical = root / "parquet" / "cn" / "bars" / "year=2026" / "month=01"
-    serving_1 = root / "parquet_serving" / "cn" / "bars" / "symbol=000001.SZ"
-    serving_2 = root / "parquet_serving" / "cn" / "bars" / "symbol=000002.SZ"
-    snapshot_dir = root / "parquet" / "cn" / "_snapshots"
+    table_root, serving_root, manifest = v4_snapshot_paths(root, "snap-fresh")
+    canonical = table_root / "year=2026" / "month=01"
+    serving_1 = serving_root / "symbol=000001.SZ"
+    serving_2 = serving_root / "symbol=000002.SZ"
+    snapshot_dir = manifest.parent
     universe_dir = root / "cn_universe"
     canonical.mkdir(parents=True, exist_ok=True)
     serving_1.mkdir(parents=True, exist_ok=True)
@@ -1236,9 +1205,14 @@ def _write_parquet_fresh_fixture(root: Path) -> None:
         index=False,
     )
 
-    manifest = snapshot_dir / "snap-fresh.json"
+    data_root = root
+    coverage = coverage_v4(
+        data_root,
+        ["000001.SZ", "000002.SZ"],
+        trade_date="20260111",
+    )
     manifest.write_text(
-        json.dumps({"snapshot_id": "snap-fresh"}, ensure_ascii=False),
+        json.dumps({"snapshot_id": "snap-fresh", "coverage": coverage}, ensure_ascii=False),
         encoding="utf-8",
     )
     latest = {
@@ -1246,10 +1220,10 @@ def _write_parquet_fresh_fixture(root: Path) -> None:
         "snapshot_id": "snap-fresh",
         "latest_complete_trade_date": "20260111",
         "latest_trade_date": "20260111",
-        "table_root": str(root / "parquet" / "cn" / "bars"),
-        "derived_serving_root": str(root / "parquet_serving" / "cn" / "bars"),
+        "table_root": str(table_root),
+        "derived_serving_root": str(serving_root),
         "manifest_path": str(manifest),
-        "coverage": {"row_count": int(len(frame)), "symbol_count": 2},
+        "coverage": coverage,
         "blockers": [],
     }
     latest_path = root / "parquet" / "cn" / "_latest.json"

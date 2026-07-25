@@ -1091,38 +1091,6 @@ def _compact_trade_date(value: Any, *, blocker: str) -> str:
     return text
 
 
-def _validate_v15_snapshot_target_binding(
-    snapshot_as_of: Any,
-    target_as_of: Any,
-    *,
-    release_readiness_evidence: Mapping[str, Any] | None = None,
-    require_readiness_evidence: bool = True,
-) -> None:
-    """Allow only a readiness-proven observation lag behind the market date."""
-
-    snapshot_date = _compact_trade_date(
-        snapshot_as_of,
-        blocker="macro_v15_snapshot_as_of_mismatch",
-    )
-    target_date = _compact_trade_date(
-        target_as_of,
-        blocker="macro_v15_snapshot_as_of_mismatch",
-    )
-    if snapshot_date > target_date:
-        raise MacroMartPromotionError("macro_v15_snapshot_as_of_mismatch")
-    if snapshot_date < target_date:
-        if not require_readiness_evidence:
-            return
-        if not isinstance(release_readiness_evidence, Mapping):
-            raise MacroMartPromotionError("macro_v15_snapshot_as_of_mismatch")
-        readiness_date = _compact_trade_date(
-            release_readiness_evidence.get("macro_logical_date"),
-            blocker="macro_v15_snapshot_as_of_mismatch",
-        )
-        if readiness_date != snapshot_date:
-            raise MacroMartPromotionError("macro_v15_snapshot_as_of_mismatch")
-
-
 def _normalize_provider_month(value: Any) -> str:
     text = str(value or "").strip()
     if text.endswith(".0"):
@@ -2254,11 +2222,10 @@ def _load_v15_macro_snapshot(
                 "macro_v15_observation_generation_v2_required"
             )
         snapshot_as_of = str(metadata.get("as_of") or "")
-        _validate_v15_snapshot_target_binding(
-            snapshot_as_of,
-            as_of,
-            require_readiness_evidence=False,
-        )
+        if _date_text(snapshot_as_of) != _date_text(as_of):
+            raise MacroMartPromotionError(
+                "macro_v15_observation_trade_date_mismatch"
+            )
         try:
             snapshot_cutoff = parse_timestamp(
                 metadata.get("decision_cutoff_at"),
@@ -2596,13 +2563,10 @@ def _validate_v15_generation_controls(
         raise MacroMartPromotionError(
             "macro_v15_control_row_mismatch:policy_signal"
         )
-    _validate_v15_snapshot_target_binding(
-        validated.get("snapshot_as_of"),
-        row["trade_date"],
-        release_readiness_evidence=manifest.get(
-            "macro_release_readiness_evidence"
-        ),
-    )
+    if _date_text(row["trade_date"]) != _date_text(
+        validated.get("snapshot_as_of")
+    ):
+        raise MacroMartPromotionError("macro_v15_snapshot_as_of_mismatch")
     return snapshot, validated
 
 
@@ -2677,11 +2641,10 @@ def _write_primary_generation(
             )
         except (TypeError, ValueError, V15MacroControlError) as exc:
             raise MacroMartPromotionError(str(exc)) from exc
-        _validate_v15_snapshot_target_binding(
-            validated_controls.get("snapshot_as_of"),
-            frame.iloc[0]["trade_date"],
-            release_readiness_evidence=release_readiness_evidence,
-        )
+        if _date_text(validated_controls.get("snapshot_as_of")) != _date_text(
+            frame.iloc[0]["trade_date"]
+        ):
+            raise MacroMartPromotionError("macro_v15_snapshot_as_of_mismatch")
         snapshot_path = temp_path / "macro_snapshot.json"
         _atomic_write_bytes(
             snapshot_path,

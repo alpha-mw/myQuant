@@ -1349,8 +1349,6 @@ def _prepare_market_context(
     unsampled_symbol_count: int = 0,
     sampled: bool = False,
     recall_context: Mapping[str, Any] | None = None,
-    full_market_branch_readiness: bool = False,
-    persist_branch_readiness: bool = True,
 ) -> MarketContextState:
     settings = get_market_settings(market)
     all_symbols = list(symbols)
@@ -2160,15 +2158,10 @@ def _prepare_market_context(
         "dag_branch_readiness",
         {"candidate_count": len(candidate_symbols), "universe_key": universe_key},
     ) as stage_metadata:
-        readiness_symbols = (
-            list(researchable_symbols)
-            if full_market_branch_readiness
-            else list(candidate_symbols)
-        )
         branch_governance_report = assess_branch_data_readiness(
             frames=frames,
             read_results=read_results,
-            candidate_symbols=readiness_symbols,
+            candidate_symbols=list(candidate_symbols),
             market=settings.market,
             category=universe_key,
             as_of=effective_latest_trade_date,
@@ -2181,10 +2174,8 @@ def _prepare_market_context(
                 pinned_macro_runtime.decision_cutoff_at or None
             ),
         )
-        branch_governance_artifacts = (
-            write_branch_readiness_report(branch_governance_report)
-            if persist_branch_readiness
-            else {}
+        branch_governance_artifacts = write_branch_readiness_report(
+            branch_governance_report
         )
         stage_metadata["blocked_symbol_count"] = len(branch_governance_report.blocked_symbols)
         stage_metadata["quantifiable_universe_count"] = len(branch_governance_report.quantifiable_universe)

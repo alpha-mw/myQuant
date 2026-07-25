@@ -20,9 +20,10 @@ The target production set has exactly ten healthy factors.
 
 `new_risk_eligible` is a readiness result, not authority. This scaffold always
 returns `new_risk_authorized=false` and
-`production_apply_enabled=false`. Any v16 activation must fail closed unless a
-separate production workflow verifies the same-day hash-bound receipt and all
-other v16 gates. The v15 default remains authoritative.
+`production_apply_enabled=false`. Any production activation must fail closed
+unless a separate production workflow verifies the same-day hash-bound receipt
+and every independent production gate. The v15 default remains authoritative;
+v17 consumes this protocol only as a nonauthorizing, version-neutral input.
 
 For exactly five normalized factors, the 20% per-factor cap means every factor
 must have exactly 20% absolute weight. The 35% family cap therefore forbids two
@@ -75,9 +76,9 @@ protocol hash or activation receipt.
 `assess_factor_governance_readiness_v4` accepts quality records only through an
 explicit optional sidecar. Calls that omit them retain the historical output
 shape exactly. When present, `quality_assessment` is additive and report-only.
-The v16 summary normalizes it for display but never reads it when calculating
-Factor readiness, activation gates, blockers, or authorization. Historical v16
-artifacts without the nested quality summary remain valid.
+Any research summary may normalize it for display but must never read it when
+calculating Factor readiness, activation gates, blockers, or authorization.
+Historical artifacts without the nested quality summary remain historical only.
 
 ## Healthy factor contract
 
@@ -204,8 +205,8 @@ rollback WAL records, and replaces the shadow receipt with a revocation.
 The store's receipt schema is
 `factor-governance-shadow-activation-receipt.v4`; it explicitly carries
 `production_activation_performed=false`. It cannot satisfy the production
-activation-receipt validator used by readiness and therefore cannot unlock v16
-new risk.
+activation-receipt validator used by readiness and therefore cannot unlock
+production risk.
 
 An activation request is not a receipt. A receipt validates only with the exact
 `factor-governance-activation-receipt.v4` schema, an explicit
@@ -379,7 +380,7 @@ keeps completeness, same-snapshot, screening, data-quality, producer-lineage,
 BH, maturity, admission, registry, apply, production, portfolio, and new-risk
 claims false. Its readiness is
 `EXPLORATORY_PINNED_SOURCE_SEMANTIC_COMPUTABILITY_ONLY`; it is not a Factor v4
-activation receipt and cannot authorize v16 production.
+activation receipt and cannot authorize production.
 
 ### Future strict-full-A candidate preregistration
 

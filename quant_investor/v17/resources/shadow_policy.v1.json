@@ -1,0 +1,81 @@
+{
+  "schema": "myquant-v17-shadow-policy.v1",
+  "version": "17.0.0",
+  "authority": false,
+  "production_protocol": "v15",
+  "mode": "research_shadow_only",
+  "side_effects": {
+    "broker": false,
+    "orders": false,
+    "trades": false,
+    "live_data_fetch": false,
+    "live_llm_call": false
+  },
+  "pipeline": [
+    "fundamental_candidate_generation",
+    "codex_fundamental_deep_research",
+    "quant_timing",
+    "regime_portfolio_overlay",
+    "pretrade_and_portfolio_optimization",
+    "shadow_result"
+  ],
+  "fundamental": {
+    "universe": "canonical_CN/full_a_PIT_in_universe_and_research_eligible",
+    "flow_basis": "LATEST_TTM",
+    "balance_sheet_basis": "LATEST_REPORT_PERIOD",
+    "capex_sign_convention": "POSITIVE_OUTFLOW",
+    "unknown_or_conflicting_membership": "UNAVAILABLE",
+    "top_n": 24,
+    "holdings_append_without_consuming_top_n": true,
+    "failed_deep_research_may_backfill": false,
+    "industry_winsor_quantiles": [0.01, 0.99],
+    "industry_percentile_weight": 0.70,
+    "self_percentile_weight": 0.30,
+    "self_history_open_days": 756,
+    "minimum_self_history_open_days": 252,
+    "minimum_industry_sample": 20,
+    "tie_policy": "industry_average_rank_pct; self_mid_empirical_cdf",
+    "cutoff_inclusion": "availability<=cutoff and history_trade_date<=cutoff",
+    "optional_metric_policy": "70_percent_main_30_percent_optional_when_optional_fully_scoreable_else_100_percent_main",
+    "missing_main_metric": "UNAVAILABLE"
+  },
+  "forward_calibration": {
+    "lookback_open_days": 2520,
+    "pit_month_end_mature_only": true,
+    "horizons_open_days": [120, 252, 378],
+    "benchmark": "H00300.CSI_pre_tax_total_return_index",
+    "exact_stock_benchmark_trade_dates": true,
+    "cell": "industry_by_industry_score_decile",
+    "minimum_observations": 100,
+    "minimum_cross_section_dates": 12,
+    "minimum_symbols": 20,
+    "delisting": "official_terminal_cash_settlement_only_else_cell_unavailable",
+    "quantile_method": "linear"
+  },
+  "quant_timing": {
+    "factor_percentile_tie_policy": "average_rank_pct",
+    "latest_composite_decile_tie_policy": "sort_composite_score_ascending_then_security_code_ascending_and_assign_floor(position*10/n)+1",
+    "cutoff_inclusion": "cross_section_date<=cutoff and availability<=cutoff",
+    "duplicate_observation_key": "symbol+cross_section_date+horizon_is_forbidden"
+  },
+  "optimizer": {
+    "objective_order": [
+      "maximize_adjusted_252d_q25_net_of_cost",
+      "minimize_turnover",
+      "ascending_security_code"
+    ],
+    "permission_mask_authoritative": true,
+    "may_create_permission": false,
+    "net_q25_and_turnover_comparison": "exact_decimal_from_input_text_representation",
+    "turnover_unit": "traded_notional_fraction_of_NAV=sum(abs(target_weight-current_weight)); no_half_turnover_factor",
+    "tertiary_tie_break": "lexicographically_ascending_tuple_of_positive_target_security_codes_then_candidate_id"
+  },
+  "authority_requirements_without_defaults": {
+    "macro_score_to_cap_floor_mapping": "REQUIRED_SEALED_RESOURCE",
+    "markov_state_to_cap_floor_mapping": "REQUIRED_SEALED_RESOURCE_WHEN_ENABLED",
+    "transaction_cost_parameters": "REQUIRED_SEALED_RESOURCE",
+    "portfolio_risk_policy_snapshot": "REQUIRED_SEALED_RESOURCE",
+    "holdings": "REQUIRED_EXPLICIT_AVAILABLE_OR_DECLARED_ALL_CASH"
+  },
+  "missing_enabled_overlay_or_risk_input_terminal": "SHADOW_RANK_COMPLETE_NO_PORTFOLIO"
+}

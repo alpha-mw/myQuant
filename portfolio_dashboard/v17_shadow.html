@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>myQuant v17 Shadow Dashboard</title>
+    <link rel="stylesheet" href="v17_shadow.css" />
+    <script defer src="generated/v17_shadow_latest.js"></script>
+    <script defer src="js/v17_shadow.js"></script>
+  </head>
+  <body>
+    <main class="v17-shell">
+      <header class="v17-header">
+        <div>
+          <p class="v17-eyebrow">FUNDAMENTAL-FIRST · READ ONLY · AUTHORITY FALSE</p>
+          <h1>myQuant v17 Shadow</h1>
+          <p class="v17-subtitle">
+            仅展示经 SHA/CAS readback 的 <code>results/v17_shadow/_latest/shadow.json</code>。
+            缺失或校验失败时固定显示 UNAVAILABLE，不读取 v3、样例或合成数据。
+          </p>
+        </div>
+        <div class="v17-status-wrap">
+          <span id="v17Status" class="v17-status unavailable">UNAVAILABLE</span>
+          <small id="v17Reason">v17_latest_loader_missing</small>
+        </div>
+      </header>
+
+      <section class="v17-warning" aria-label="权限边界">
+        <strong>Shadow only：</strong>
+        本页没有生产、风控、券商、订单或交易权限；红旗和择时状态只限制许可，不会生成真实指令。
+      </section>
+
+      <section class="v17-grid v17-kpis" aria-label="运行状态">
+        <article class="v17-card">
+          <span>Run ID</span>
+          <strong id="v17RunId">UNAVAILABLE</strong>
+        </article>
+        <article class="v17-card">
+          <span>Terminal</span>
+          <strong id="v17Terminal">UNAVAILABLE</strong>
+        </article>
+        <article class="v17-card">
+          <span>PIT Cutoff</span>
+          <strong id="v17Cutoff">UNAVAILABLE</strong>
+        </article>
+        <article class="v17-card">
+          <span>Portfolio</span>
+          <strong id="v17PortfolioState">UNAVAILABLE</strong>
+        </article>
+      </section>
+
+      <section class="v17-grid v17-two-column">
+        <article class="v17-panel">
+          <div class="v17-panel-head">
+            <div>
+              <p class="v17-eyebrow">SEALED OUTPUT</p>
+              <h2>候选与择时</h2>
+            </div>
+            <span class="v17-chip">Top 24 + holdings</span>
+          </div>
+          <div class="v17-table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Rank</th>
+                  <th>代码 公司名</th>
+                  <th>Fundamental</th>
+                  <th>Quant timing</th>
+                  <th>Authority</th>
+                </tr>
+              </thead>
+              <tbody id="rankTableBody">
+                <tr><td colspan="5">当前 terminal 未提供可渲染的候选列表。</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="v17-panel">
+          <div class="v17-panel-head">
+            <div>
+              <p class="v17-eyebrow">FAIL CLOSED</p>
+              <h2>阻断项</h2>
+            </div>
+          </div>
+          <ul id="v17Blockers" class="v17-blockers">
+            <li>v17 latest 不可用或尚未完成 readback。</li>
+          </ul>
+        </article>
+      </section>
+
+      <section class="v17-panel">
+        <div class="v17-panel-head">
+          <div>
+            <p class="v17-eyebrow">PROVENANCE</p>
+            <h2>证据绑定</h2>
+          </div>
+          <span class="v17-chip">fallback=false</span>
+        </div>
+        <div id="v17Evidence" class="v17-evidence">
+          <div class="v17-row"><span class="v17-row-label">source</span><code>results/v17_shadow/_latest/shadow.json</code></div>
+          <div class="v17-row"><span class="v17-row-label">readback</span><code>unavailable</code></div>
+          <div class="v17-row"><span class="v17-row-label">fallback</span><code>false</code></div>
+        </div>
+      </section>
+
+      <section class="v17-grid v17-two-column">
+        <details class="v17-panel">
+          <summary>Rank output 原文</summary>
+          <pre id="v17RankJson">UNAVAILABLE</pre>
+        </details>
+        <details class="v17-panel">
+          <summary>Portfolio output 原文</summary>
+          <pre id="v17PortfolioJson">UNAVAILABLE</pre>
+        </details>
+      </section>
+    </main>
+  </body>
+</html>

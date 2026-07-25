@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 
 SCAN_ROOTS = [
@@ -28,6 +27,9 @@ ALLOWLIST = {
     "scripts/run_v14_retirement_replay_gate.py",
     "scripts/migrate_legacy_csv_state_to_parquet.py",
     "scripts/run_us_aggressive_analysis.py",
+    # Factor package integrity verification reads installed wheel RECORD
+    # metadata, not production market bars.
+    "scripts/build_factor_v4_3_prior_diagnostic_nomination.py",
 }
 
 FORBIDDEN_SNIPPETS = [

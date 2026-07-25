@@ -14,7 +14,7 @@
 <br/>
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org)
-[![Version](https://img.shields.io/badge/Version-v16.0.0-FF6B35?style=flat-square)](https://github.com/alpha-mw/myQuant/releases)
+[![Version](https://img.shields.io/badge/Version-v17.0.0-FF6B35?style=flat-square)](https://github.com/alpha-mw/myQuant/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-22C55E?style=flat-square)](LICENSE)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black)](https://react.dev)
@@ -40,12 +40,14 @@ Quant-Investor 的解法是严格分层：
         ↑
 LLM 审阅层（advisory-only，提供观点，不做决策）
         ↑
-数据快照 + Eligibility/Funnel + v16 四分支候选决策
+v17 Fundamental-first shadow（候选、深研、择时、仓位覆盖、组合约束）
 ```
 
-v16 的正式证据分支为 Quant、Fundamental、Macro、LLM，各占 25%。RiskAdvisor
-只提供建议；Eligibility、Codex IC、执行计划、readiness 和 hash-bound 人工授权仍是
-确定性硬门。v15 暂时保留为生产/default 协议，直至独立激活审查通过。
+v17 不再把 Quant、Fundamental、Macro、LLM 作为四个等权分支：Fundamental 是唯一
+候选生成器，Codex 只在 sealed evidence 内完成 Fundamental 深研，Quant 只做择时，
+Macro/Markov 只在组合层收紧 gross/cash。确定性 PreTrade、风险快照与权限掩码始终
+优先；v17 只产出 shadow 结果，不连接券商、不生成真实订单。v15 继续作为
+production/default 协议。
 
 ---
 
@@ -54,10 +56,10 @@ v16 的正式证据分支为 Quant、Fundamental、Macro、LLM，各占 25%。Ri
 | 能力 | 说明 |
 |------|------|
 | 🏗 **三层数据协议** | `GlobalContext` → `SymbolResearchPacket` → `PortfolioDecision`，全程 Pydantic 结构化，可追溯 |
-| 🔬 **v16 四分支候选决策** | Eligibility → Quant/Fundamental/Macro/LLM 等权证据 → Bayesian → Codex IC |
-| 🛡 **确定性执行门** | RiskAdvisor 仅建议；Eligibility、Execution、Readiness 与人工 receipt 决定是否可进入下一状态 |
+| 🔬 **v17 Fundamental-first shadow** | Fundamental Top 24 → Codex 深研 → Quant 择时 → RegimePortfolioOverlay → PreTrade/组合优化 |
+| 🛡 **确定性执行门** | Codex 不能扩充股票或数据源；风险、权限掩码和 PreTrade 只能取消已许可动作 |
 | 🧾 **Factor Governance v4** | 5–10 个健康因子、family/slot/weight/maturity/FDR/hash/receipt 全量 fail-closed |
-| 📊 **Dashboard Contract v16** | 展示四分支、posterior、IC allocation、handoff、activation/readiness；未激活不覆盖 Dashboard v3 |
+| 📊 **Dashboard v17 Shadow** | 只读 exact v17 `_latest`；缺失即 `UNAVAILABLE`，不回退 Dashboard v3、sample 或合成数据 |
 | 🧭 **生产 Markov 市场状态** | 生产默认启用，必须使用 full-market 或 broad reference 数据；小股票池不会定义全局市场状态 |
 | 🤖 **可选 LLM 审阅层** | 支持 OpenAI / Claude / DeepSeek / Gemini / 通义 / Kimi，无 API Key 自动降级 |
 | 📈 **Parquet 全市场运行面** | strict canonical Parquet、canonical batch symbol 读取和含 exclusive/wall timing 的 stage runtime profile |
@@ -73,30 +75,22 @@ v16 的正式证据分支为 Quant、Fundamental、Macro、LLM，各占 25%。Ri
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│             Stage 1: Snapshot + DeterministicFunnel          │
+│        Stage 1: Canonical PIT Fundamental Candidate Seal      │
 │                                                             │
-│   MarketDataReader ──► 本地快照 ──► quant-only funnel        │
-│                                      (candidate shortlist)  │
+│   CN/full_a PIT ──► 五柱评分 ──► Top 24 + current holdings    │
 └────────────────────────────┬────────────────────────────────┘
                              │
 ┌────────────────────────────▼────────────────────────────────┐
-│             Stage 2: v16 Four-Branch Evidence                │
+│          Stage 2: Fundamental Deep Research + Timing          │
 │                                                             │
-│       Quant · Fundamental · Macro · LLM (25% each)          │
-│        │                                                    │
-│        ▼                                                    │
-│   Sealed evidence ──► Bayesian posterior ──► RiskAdvisor    │
+│   sealed evidence ──► Codex 深研/红旗 ──► Quant 20d/60d 择时  │
 └────────────────────────────┬────────────────────────────────┘
                              │
 ┌─────────────────────────────────────────────────────────────┐
-│                 Stage 3: Unified Control Chain               │
+│             Stage 3: Shadow Portfolio Control Chain          │
 │                                                             │
-│   Codex IC → Eligibility → Execution → v16 Readiness        │
-│   (逐票动作)    (硬门)         (无券商副作用)   (receipt/CAS)  │
-│                                    │                        │
-│                                    ▼                        │
-│                              NarratorAgent                  │
-│                              (ReportBundle)                 │
+│   Macro/Markov Overlay → PreTrade → permission-only optimizer│
+│              → immutable shadow terminal + human decision    │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -116,15 +110,12 @@ Macro           ███████████████████       
 
 Bayesian 证据源为 Quant 与 Fundamental（`x/2`）；Macro 只作为 prior/context，不占用 likelihood 槽位。
 
-### v16 研究候选分支权重
+### v17 shadow 决策顺序
 
-**v16 候选分支权重**
-
-| 分支 | Quant | Fundamental | Macro | LLM |
-|------|:-----:|:-----------:|:-----:|:---:|
-| 权重 | 25% | 25% | 25% | 25% |
-
-Retrieval 只能为 Quant、Fundamental、Macro 添加不带 score/weight 的审计注释，不能形成第五分支。
+v17 没有可加总的分支权重。五柱 Fundamental 分数只负责产生 sealed 候选；Codex
+六维信号最多把已为正的 252 日基础 `q25` 调整 ±10%；Quant 只给出
+`BUY_NOW/WATCH/TRIM_TIMING`；Macro/Markov 只形成组合 gross/cash 上限。任一必需
+authority 缺失时最多产出排名，不构造组合。
 
 ### 数据协议
 
@@ -380,6 +371,7 @@ black quant_investor/ && flake8 quant_investor/
 ## 📚 文档
 
 - [架构概览与版本管理](docs/architecture/entrypoints_and_versioning.md)
+- [v17 Shadow 离线运维](docs/runbooks/v17_shadow_operations.md)
 - [研究管道与数据协议](docs/architecture/research_pipeline_and_protocols.md)
 - [模块索引](docs/modules/module_map.md)
 - [宏观风险参考](docs/modules/macro_risk_reference.md)

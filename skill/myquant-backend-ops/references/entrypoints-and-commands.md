@@ -10,6 +10,7 @@
 | 全市场下载 | `quant-investor market download` | `quant_investor/cli/main.py`, `quant_investor/market/download*.py` |
 | 全市场分析 | `quant-investor market analyze` | `quant_investor/cli/main.py`, `quant_investor/market/analyze.py` |
 | 全市场 daily pipeline | `quant-investor market run` | `quant_investor/cli/main.py`, `quant_investor/market/run_pipeline.py`, `quant_investor/market/dag_executor.py` |
+| v17 latest shadow | `quant-investor market v17-*` | `quant_investor/cli/main.py`, `quant_investor/v17/cli.py`, `docs/runbooks/v17_shadow_operations.md` |
 | 本地回测 | `quant-investor market backtest` | `quant_investor/cli/main.py`, `quant_investor/market/backtest.py` |
 | Workspace 运行时 | `quant-investor web` | `quant_investor/cli/main.py`, `web/main.py`, `web/workspace_app.py` |
 | 前端开发 | `./run_web.sh` | `run_web.sh`, `frontend/` |
@@ -54,6 +55,9 @@ Use when:
 - 用户要基于已有本地数据做全市场研究
 - 用户问 shortlist / candidate / portfolio 建议从哪里来
 
+`market analyze` 与 `market run` 始终是 v15 production/default，不能用它们隐式
+启动 v17。
+
 ### Full-market pipeline
 
 ```bash
@@ -63,6 +67,26 @@ quant-investor market run --market CN --mode batch --top-k 12
 Use when:
 - 用户要完整 daily path
 - 用户说“下载 + 分析一起跑”
+
+### v17 offline shadow
+
+```bash
+quant-investor market v17-source-maintain ...
+quant-investor market v17-shadow-prepare ...
+quant-investor market v17-shadow-receive ...
+quant-investor market v17-shadow-finalize ...
+quant-investor market v17-shadow-status --run-id <run-id>
+```
+
+Use only when:
+- 用户明确要运行 latest shadow
+- source、risk、deep response 与 finalization 都是本地 sealed 文件
+- 每次写入都有精确字节 SHA 和 ledger/latest CAS
+
+风险快照另用 owner-only `v17-risk-policy-seal`；latest 只能用
+`v17-shadow-latest-repair` 显式修复。完整命令与停止条件见
+`docs/runbooks/v17_shadow_operations.md`。不得调用 provider、在线 LLM、券商、订单
+或交易接口，也不得从 v15/v3/sample/synthetic 结果回填。
 
 ### Workspace runtime
 
@@ -107,3 +131,5 @@ Current runtime entry:
 - 查询或解释类请求，先说明应该走哪个入口，不要直接跳内部实现
 - 用户明确要求运行命令时，可以直接执行；但如果涉及长耗时或外部依赖，先做轻量检查
 - `quant-investor web` 是 workspace 正统入口；不要默认从 `uvicorn web.app:app` 之类 legacy 工厂起服务
+- v17 是 latest shadow，v15 是 production/default；旧四分支 advisory tail 不再是
+  CLI 或 schedule 的附加步骤

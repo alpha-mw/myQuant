@@ -270,13 +270,6 @@ Then stage and promote with separate commands:
   --expected-catalog-sha256 "$catalog_sha256"
 ```
 
-`--as-of` is the market target date. The production observation generation
-may carry a logical `as_of` behind that target by zero, one, or two pinned CN
-open sessions, but only when the staged release-readiness evidence proves the
-same lag and an empty critical-event gap. The observation logical date is not
-silently advanced to the market date, and a lagged generation without that
-four-way hash-bound readiness evidence remains ineligible.
-
 The projection takes `macro_score`, `liquidity_score` and `policy_signal` from
 the ready, at-least-80%-covered MacroSnapshot domains. Only market volatility
 percentile remains derived from the exact bound bars generation. The stage
@@ -319,3 +312,36 @@ PYTHON=./.venv/bin/python scripts/staged_upgrade_quality_gate.sh
 The first provider-hard-off v15 smoke is expected to prove the v15 contract,
 absence of Theme output and `new_risk_authorized=false`; long-duration Factor
 or Macro blockers are expected and must remain visible.
+
+## CN strict snapshot recovery
+
+If a legacy or noncanonical writer replaces the active CN pointer, recover
+only an existing immutable snapshot whose exact v4 coverage, PIT binding,
+manifest SHA, table/serving inventories, logical rowset digests, unique keys,
+and trade date all validate. The command is dry-run by default and requires
+both the source-manifest SHA and current-pointer CAS SHA:
+
+```bash
+./.venv/bin/quant-investor market storage-reactivate-snapshot \
+  --market CN \
+  --snapshot-id <immutable-snapshot-id> \
+  --expected-snapshot-manifest-sha256 <sha256> \
+  --expected-market-pointer-sha256 <sha256> \
+  --acknowledge-trade-date <YYYYMMDD> \
+  --reason <operator-recovery-reason>
+```
+
+Run the same command with `--commit` only after the dry-run passes. Commit is
+writer-lock and CAS protected, writes immutable recovery intent/receipt
+evidence, and binds that evidence into the active pointer. Relative `data` and
+the exact absolute repository `data` root both seal canonical `data/...`
+evidence paths; commit against any external data root is rejected before a
+lock, intent, or pointer write.
+
+Any strategy runtime that consumes a recovered pointer must validate the
+version-neutral `cn-market-snapshot-recovery-binding.v1` contract. The
+validator reads intent, receipt, and source manifest through pinned directory
+file descriptors, rejects symlinks, duplicate keys, non-finite JSON, artifact
+drift, hash mismatch, and incomplete source coverage. Never hand-edit the
+pointer, rewrite the source snapshot, or treat recovery as proof of a newer
+trade date; the restored trade date remains explicit bound evidence.

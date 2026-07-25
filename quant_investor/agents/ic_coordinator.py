@@ -15,8 +15,6 @@ from quant_investor.agent_protocol import (
     RiskDecision,
 )
 from quant_investor.agents.base import BaseAgent
-from quant_investor.v16.candidate_pipeline import Stage2Decision
-from quant_investor.v16.protocol_matrix import PROTOCOL_VERSIONS
 
 
 class ICCoordinator(BaseAgent):
@@ -182,62 +180,3 @@ class ICCoordinator(BaseAgent):
         if conflict_points:
             return f"{head}；但存在分支冲突，因此 {risk_tail}，IC 建议当前执行 {action.value}。"
         return f"{head}；{risk_tail}，IC 建议当前执行 {action.value}。"
-
-
-class V16ICCoordinator(BaseAgent):
-    """Validate and map one structured Stage2 response.
-
-    RiskAdvisor output is intentionally not an input to the mapping.  Supplying
-    a ``risk_advisory`` key is tolerated for orchestration convenience but the
-    value is never read, so it cannot alter action, rank, or target weight.
-    """
-
-    agent_name = "V16ICCoordinator"
-    protocol_version = PROTOCOL_VERSIONS["ic_version"]
-    _REQUIRED_STAGE2_FIELDS = frozenset(
-        {
-            "symbol",
-            "action",
-            "selected_for_portfolio",
-            "target_weight",
-            "rationale",
-            "risk_acceptance_rationale",
-        }
-    )
-
-    def run(self, payload: Mapping[str, Any]) -> Stage2Decision:
-        envelope = self.ensure_payload(payload)
-        self.require_keys(envelope, "stage2_decision")
-        if isinstance(envelope["stage2_decision"], Stage2Decision):
-            return envelope["stage2_decision"]
-        stage2 = self.ensure_payload(envelope["stage2_decision"])
-        missing = sorted(self._REQUIRED_STAGE2_FIELDS - set(stage2))
-        if missing:
-            raise ValueError(
-                "Stage2 decision missing required fields: " + ", ".join(missing)
-            )
-
-        symbol = str(stage2["symbol"]).strip()
-        if not symbol:
-            raise ValueError("Stage2 decision symbol must be non-empty")
-        action = str(stage2["action"]).strip().upper()
-        if action not in {"BUY", "HOLD", "AVOID", "SELL"}:
-            raise ValueError("Stage2 action must be BUY, HOLD, AVOID, or SELL")
-        selected = stage2["selected_for_portfolio"]
-        if not isinstance(selected, bool):
-            raise TypeError("selected_for_portfolio must be boolean")
-        rationale = stage2["rationale"]
-        if not isinstance(rationale, str):
-            raise TypeError("rationale must be a string")
-        rationale_value = stage2["risk_acceptance_rationale"]
-        if rationale_value is not None and not isinstance(rationale_value, str):
-            raise TypeError("risk_acceptance_rationale must be a string or null")
-
-        return Stage2Decision(
-            symbol=symbol,
-            action=action,
-            selected_for_portfolio=selected,
-            target_weight=stage2["target_weight"],
-            rationale=rationale,
-            risk_acceptance_rationale=rationale_value,
-        )

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "myquant.v17.trade-permission.v1",
+  "title": "TradePermission",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": {"const": "myquant.v17.trade-permission.v1"},
+    "symbol": {"type": "string"}, "held": {"type": "boolean"}, "tradable": {"type": "boolean"},
+    "fundamental_eligibility": {"enum": ["F_ELIGIBLE", "F_INELIGIBLE", "UNAVAILABLE"]},
+    "severe_red_flag": {"type": "boolean"}, "quant_timing": {"enum": ["BUY_NOW", "WATCH", "TRIM_TIMING"]},
+    "can_buy": {"type": "boolean"}, "can_sell": {"type": "boolean"}, "position_locked": {"type": "boolean"},
+    "basis": {"type": "string", "minLength": 1},
+    "restriction_chain": {
+      "type": "array", "maxItems": 2,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "properties": {"gate": {"enum": ["risk", "optimizer"]}, "allow_buy": {"type": "boolean"}, "allow_sell": {"type": "boolean"}, "reason": {"type": "string", "minLength": 1}},
+        "required": ["gate", "allow_buy", "allow_sell", "reason"]
+      }
+    },
+    "authority": {"const": false}, "semantic_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "required": ["version", "symbol", "held", "tradable", "fundamental_eligibility", "severe_red_flag", "quant_timing", "can_buy", "can_sell", "position_locked", "basis", "restriction_chain", "authority", "semantic_sha256"]
+}

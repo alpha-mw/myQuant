@@ -9,6 +9,7 @@ import pytest
 
 import scripts.retire_event_score_catalog_residual as residual
 from quant_investor.market.market_data_reader import MarketDataReader
+from tests.fixtures.strict_cn_snapshot import coverage_v4, v4_snapshot_paths
 
 
 def _sha256(path: Path) -> str:
@@ -71,15 +72,21 @@ def _fixture(tmp_path: Path) -> dict:
     }
     _write_json(catalog_path, catalog)
 
-    bars_root = market_root / "bars"
-    serving_root = repo_root / "data" / "parquet_serving" / "cn" / "bars"
-    manifest_path = market_root / "_snapshots" / "fixture.json"
+    bars_root, serving_root, manifest_path = v4_snapshot_paths(
+        repo_root / "data",
+        "fixture",
+    )
     bars_root.mkdir(parents=True)
     (bars_root / "bars.parquet").write_bytes(b"snapshot probe")
     serving_symbol = serving_root / "symbol=000001.SZ"
     serving_symbol.mkdir(parents=True)
     (serving_symbol / "bars.parquet").write_bytes(b"snapshot probe")
-    _write_json(manifest_path, {"snapshot_id": "fixture"})
+    coverage = coverage_v4(
+        repo_root / "data",
+        ["000001.SZ"],
+        trade_date="20260714",
+    )
+    _write_json(manifest_path, {"snapshot_id": "fixture", "coverage": coverage})
     _write_json(
         pointer_path,
         {
@@ -90,6 +97,7 @@ def _fixture(tmp_path: Path) -> dict:
             "table_root": str(bars_root),
             "derived_serving_root": str(serving_root),
             "manifest_path": str(manifest_path),
+            "coverage": coverage,
             "blockers": [],
         },
     )
@@ -155,18 +163,11 @@ def test_apply_writes_new_generation_and_commits_bound_wal(tmp_path):
     assert fixture["source_table_path"].read_bytes() == old_source
     assert fixture["market_pointer_path"].read_bytes() == old_pointer
     catalog = json.loads(fixture["catalog_path"].read_text(encoding="utf-8"))
-    assert (
-        "intelligence" not in json.dumps(catalog, ensure_ascii=False).lower()
-    )
+    assert "intelligence" not in json.dumps(catalog, ensure_ascii=False).lower()
     entry = catalog["tables"]["event_daily_score"]
     assert entry["sha256"] == report["new_generation_sha256"]
-    assert (
-        entry["generation_manifest_sha256"]
-        == report["generation_manifest_sha256"]
-    )
-    assert entry["path"].startswith(
-        "event_daily_score/_generations/event-schema-v14-fixture-0001/"
-    )
+    assert entry["generation_manifest_sha256"] == report["generation_manifest_sha256"]
+    assert entry["path"].startswith("event_daily_score/_generations/event-schema-v14-fixture-0001/")
     generation = fixture["catalog_path"].parent / entry["path"]
     assert _sha256(generation) == entry["sha256"]
     journal_path = (
@@ -180,10 +181,7 @@ def test_apply_writes_new_generation_and_commits_bound_wal(tmp_path):
     assert journal["state"] == "committed"
     assert journal["old_catalog_sha256"] == fixture["expected_catalog_sha256"]
     assert journal["new_catalog_sha256"] == report["output_catalog_sha256"]
-    assert (
-        journal["expected_market_pointer_sha256"]
-        == fixture["expected_market_pointer_sha256"]
-    )
+    assert journal["expected_market_pointer_sha256"] == fixture["expected_market_pointer_sha256"]
     assert journal["new_generation_sha256"] == report["new_generation_sha256"]
     fresh = MarketDataReader(
         market="CN",
@@ -200,9 +198,7 @@ def test_apply_writes_new_generation_and_commits_bound_wal(tmp_path):
     assert fixture["source_table_path"].read_bytes() == old_source
 
 
-def test_failed_fresh_reader_probe_rolls_back_exact_catalog(
-    tmp_path, monkeypatch
-):
+def test_failed_fresh_reader_probe_rolls_back_exact_catalog(tmp_path, monkeypatch):
     fixture = _fixture(tmp_path)
     old_catalog = fixture["catalog_path"].read_bytes()
     old_source = fixture["source_table_path"].read_bytes()
@@ -230,9 +226,7 @@ def test_failed_fresh_reader_probe_rolls_back_exact_catalog(
     assert journal["state"] == "rolled_back"
 
 
-def test_recovery_commits_after_crash_between_catalog_switch_and_wal_update(
-    tmp_path, monkeypatch
-):
+def test_recovery_commits_after_crash_between_catalog_switch_and_wal_update(tmp_path, monkeypatch):
     fixture = _fixture(tmp_path)
     old_source = fixture["source_table_path"].read_bytes()
     real_transition = residual._journal_transition
@@ -243,19 +237,12 @@ def test_recovery_commits_after_crash_between_catalog_switch_and_wal_update(
         return real_transition(*args, state=state, **kwargs)
 
     with monkeypatch.context() as patcher:
-        patcher.setattr(
-            residual, "_journal_transition", crash_before_switched_record
-        )
+        patcher.setattr(residual, "_journal_transition", crash_before_switched_record)
         with pytest.raises(SystemExit, match="injected crash"):
             _apply(fixture)
 
-    switched_catalog = json.loads(
-        fixture["catalog_path"].read_text(encoding="utf-8")
-    )
-    assert (
-        "intelligence"
-        not in json.dumps(switched_catalog, ensure_ascii=False).lower()
-    )
+    switched_catalog = json.loads(fixture["catalog_path"].read_text(encoding="utf-8"))
+    assert "intelligence" not in json.dumps(switched_catalog, ensure_ascii=False).lower()
     journal_path = (
         fixture["catalog_path"].parent
         / "event_daily_score"
@@ -263,20 +250,14 @@ def test_recovery_commits_after_crash_between_catalog_switch_and_wal_update(
         / fixture["generation_id"]
         / "journal.json"
     )
-    assert (
-        json.loads(journal_path.read_text(encoding="utf-8"))["state"]
-        == "prepared"
-    )
+    assert json.loads(journal_path.read_text(encoding="utf-8"))["state"] == "prepared"
 
     report = _apply(fixture)
 
     assert report["status"] == "recovered_committed"
     assert report["recovery_attempted"] is True
     assert report["fresh_reader_probe"]["passed"] is True
-    assert (
-        json.loads(journal_path.read_text(encoding="utf-8"))["state"]
-        == "committed"
-    )
+    assert json.loads(journal_path.read_text(encoding="utf-8"))["state"] == "committed"
     assert fixture["source_table_path"].read_bytes() == old_source
 
 

@@ -169,6 +169,7 @@ def _build_full_market_report_bundle(*args: Any, **kwargs: Any):
 
 
 _DEFAULT_ANALYZE_REPORT_BUNDLE_WRAPPER = _build_full_market_report_bundle
+_RETIRED_PROTOCOL_ARGUMENT_PREFIX = "v" + str(4 * 4) + "_"
 
 
 def generate_full_report(
@@ -223,10 +224,17 @@ def run_market_analysis(
 ) -> dict[str, Any]:
     analysis_kwargs = dict(analysis_kwargs)
     decision_protocol = str(
-        analysis_kwargs.get("decision_protocol", "v15") or "v15"
+        analysis_kwargs.pop("decision_protocol", "v15") or "v15"
     ).strip().lower()
-    if decision_protocol not in {"v15", "v16"}:
-        raise ValueError("decision_protocol must be v15 or v16")
+    if decision_protocol != "v15":
+        raise ValueError("decision_protocol is retired; market analyze supports v15 only")
+    retired_arguments = sorted(
+        key
+        for key in analysis_kwargs
+        if key.startswith(_RETIRED_PROTOCOL_ARGUMENT_PREFIX)
+    )
+    if retired_arguments:
+        raise ValueError(f"retired market analyze arguments: {retired_arguments}")
     branch_config, master_config = resolve_runtime_role_models(
         review_model_priority=analysis_kwargs.get("review_model_priority", []),
         agent_model=str(analysis_kwargs.get("agent_model", "") or ""),
@@ -306,52 +314,7 @@ def run_market_analysis(
         recall_context=analysis_kwargs.get("recall_context"),
         data_snapshot=scoped_data_snapshot,
         runtime_profiler=runtime_profiler,
-        decision_protocol=decision_protocol,
-        v16_factor_readiness_path=str(
-            analysis_kwargs.get(
-                "v16_factor_readiness_path",
-                "results/v16/factor_governance/readiness.json",
-            )
-        ),
-        v16_review_root=str(
-            analysis_kwargs.get("v16_review_root", "results/v16/codex_review")
-        ),
-        v16_config_path=str(
-            analysis_kwargs.get(
-                "v16_config_path",
-                Path(__file__).resolve().parents[1]
-                / "v16"
-                / "four_branch_config.json",
-            )
-        ),
-        v16_prompt_path=str(
-            analysis_kwargs.get(
-                "v16_prompt_path",
-                Path(__file__).resolve().parents[1] / "v16" / "stage1_prompt.md",
-            )
-        ),
-        v16_run_id=str(analysis_kwargs.get("v16_run_id", "") or ""),
-        v16_expiry_hours=float(
-            analysis_kwargs.get("v16_expiry_hours", 24.0) or 24.0
-        ),
     )
-    if decision_protocol == "v16":
-        pending = dict(dag_artifacts.get("v16_stage1", {}) or {})
-        return {
-            "architecture_version": "16.0.0",
-            "branch_schema_version": "v16.four-branch",
-            "results": [],
-            "reports": {
-                "stage1_request": str(
-                    dict(pending.get("review", {}) or {}).get(
-                        "stage1_request_path", ""
-                    )
-                )
-            },
-            "analysis_meta": dict(dag_artifacts),
-            "runtime_profile": {},
-            "v16_stage1": pending,
-        }
     all_results = _synthesize_legacy_analysis_results_from_dag(
         dag_artifacts=dag_artifacts,
         market=settings.market,

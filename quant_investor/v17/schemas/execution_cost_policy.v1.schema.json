@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "myquant.v17.execution-cost-policy.v1",
+  "title": "ExecutionCostPolicy",
+  "type": "object", "additionalProperties": false,
+  "properties": {
+    "version": {"const": "myquant.v17.execution-cost-policy.v1"},
+    "buy_commission": {"type": "number", "minimum": 0, "maximum": 1},
+    "sell_commission": {"type": "number", "minimum": 0, "maximum": 1},
+    "sell_stamp_tax": {"type": "number", "minimum": 0, "maximum": 1},
+    "buy_transfer_fee": {"type": "number", "minimum": 0, "maximum": 1},
+    "sell_transfer_fee": {"type": "number", "minimum": 0, "maximum": 1},
+    "buy_slippage": {"type": "number", "minimum": 0, "maximum": 1},
+    "sell_slippage": {"type": "number", "minimum": 0, "maximum": 1},
+    "market_impact": {"type": "number", "minimum": 0, "maximum": 1},
+    "authority": {"const": false}, "semantic_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "required": ["version", "buy_commission", "sell_commission", "sell_stamp_tax", "buy_transfer_fee", "sell_transfer_fee", "buy_slippage", "sell_slippage", "market_impact", "authority", "semantic_sha256"]
+}

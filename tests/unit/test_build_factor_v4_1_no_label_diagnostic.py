@@ -13,11 +13,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-
 SCRIPT_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "scripts"
-    / "build_factor_v4_1_no_label_diagnostic.py"
+    Path(__file__).resolve().parents[2] / "scripts" / "build_factor_v4_1_no_label_diagnostic.py"
 )
 SPEC = importlib.util.spec_from_file_location(
     "build_factor_v4_1_no_label_diagnostic_under_test", SCRIPT_PATH
@@ -29,13 +26,16 @@ SPEC.loader.exec_module(runner)
 
 
 def _canonical_file(value: object) -> bytes:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8") + b"\n"
+    return (
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        + b"\n"
+    )
 
 
 def _write_private(path: Path, raw: bytes) -> None:
@@ -54,10 +54,7 @@ def _cutoff_bundle(tmp_path: Path) -> tuple[Path, dict[str, object]]:
         _write_private(bundle / filename, raw)
         bound[filename] = hashlib.sha256(raw).hexdigest()
     report = {
-        "artifacts": {
-            filename: {"sha256": digest}
-            for filename, digest in sorted(bound.items())
-        }
+        "artifacts": {filename: {"sha256": digest} for filename, digest in sorted(bound.items())}
     }
     report_raw = _canonical_file(report)
     _write_private(bundle / runner.CUTOFF_REPORT, report_raw)
@@ -130,19 +127,30 @@ def test_inventory_hash_uses_canonical_json_with_trailing_newline(tmp_path: Path
     assert sum(row["dataset_member"] is True for row in inventory) == 1
 
 
-def test_accepted_inventory_regression_when_fixture_is_present() -> None:
-    root = Path(
-        "/Users/maxwell/mySpace/myQuant/data/parquet/cn/_snapshots/"
-        "20260717T172132Z/table/bars"
-    )
-    if not root.is_dir():
-        pytest.skip("accepted local cutoff table is not present")
+def test_accepted_inventory_regression_uses_frozen_synthetic_fixture(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "frozen" / "table" / "bars"
+    member_a = root / "year=2021" / "month=06" / "part.parquet"
+    member_a.parent.mkdir(parents=True)
+    member_a.write_bytes(b"alpha")
+    member_b = root / "year=2021" / "month=07" / "part.parquet"
+    member_b.parent.mkdir(parents=True)
+    member_b.write_bytes(b"beta")
+    temporary = root / "_temporary" / "part.parquet"
+    temporary.parent.mkdir()
+    temporary.write_bytes(b"scratch")
 
     inventory, observed = runner._inventory_table(root)
 
-    assert observed == "d3b281045dfa34af49371a2847877920a062ac077aeee8525d381fc4713a7330"
-    assert len(inventory) == 93
-    assert sum(row["dataset_member"] is True for row in inventory) == 90
+    assert observed == "a01ca55d0d3ebf42cf7837fad7a8b1ee6704d15dff540d6827b9775ade734ae5"
+    assert len(inventory) == 3
+    assert sum(row["dataset_member"] is True for row in inventory) == 2
+    assert [row["relative_path"] for row in inventory] == [
+        "_temporary/part.parquet",
+        "year=2021/month=06/part.parquet",
+        "year=2021/month=07/part.parquet",
+    ]
 
 
 def test_cutoff_bundle_requires_exact_empty_private_lock_and_detects_drift(
@@ -202,9 +210,7 @@ def test_market_loader_projects_only_eight_authorized_columns(
     assert "turnover_rate" not in matrices
     assert matrices["vwap"].loc[pd.Timestamp("2021-06-25"), "000001.SZ"] == 100.0
     assert matrices["vwap"].loc[pd.Timestamp("2026-07-17"), "000002.SZ"] == 100.0
-    assert np.isnan(
-        matrices["close"].loc[pd.Timestamp("2021-06-25"), "000002.SZ"]
-    )
+    assert np.isnan(matrices["close"].loc[pd.Timestamp("2021-06-25"), "000002.SZ"])
 
 
 def test_market_loader_fails_closed_when_exact_vol_column_is_missing(
@@ -247,9 +253,7 @@ def test_prepublish_revalidation_propagates_predecessor_drift(
     def drift_on_cutoff(**kwargs: object) -> None:
         calls.append(str(kwargs["report_filename"]))
         if len(calls) == 3:
-            raise runner.FactorV4_1SignalDiagnosticRunnerError(
-                "predecessor drift"
-            )
+            raise runner.FactorV4_1SignalDiagnosticRunnerError("predecessor drift")
 
     monkeypatch.setattr(runner, "_read_bundle", drift_on_cutoff)
     specs = [
