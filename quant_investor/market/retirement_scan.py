@@ -50,7 +50,9 @@ _HEX_DIGITS = frozenset("0123456789abcdef")
 # active Python package ``quant_investor/data`` is not excluded.
 EXCLUDED_ROOT_PREFIXES = frozenset(
     {
+        ".claude/worktrees",
         ".git",
+        ".omx",
         ".venv",
         ".venv-managed",
         ".uv-python",
@@ -64,6 +66,8 @@ EXCLUDED_ROOT_PREFIXES = frozenset(
         "results",
     }
 )
+EXCLUDED_LOGICAL_PATHS = frozenset({".agent/CONTINUITY.md"})
+EXCLUDED_FILE_NAMES = frozenset({".DS_Store"})
 EXCLUDED_CACHE_DIR_NAMES = frozenset(
     {
         "__pycache__",
@@ -289,7 +293,11 @@ def _inventory(
             if path.absolute() == allowlist_path.absolute():
                 continue
             relative = path.relative_to(root).as_posix()
-            if _is_excluded_directory(relative):
+            if (
+                _is_excluded_directory(relative)
+                or relative in EXCLUDED_LOGICAL_PATHS
+                or name in EXCLUDED_FILE_NAMES
+            ):
                 continue
             try:
                 path_stat = os.lstat(path)

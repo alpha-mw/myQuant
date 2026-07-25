@@ -265,6 +265,26 @@ def test_active_quant_investor_data_package_is_not_excluded(tmp_path: Path) -> N
     assert "large-market-cache.txt" not in message
 
 
+def test_local_tool_state_and_os_metadata_are_excluded(tmp_path: Path) -> None:
+    repo, allowlist, runtime, external, bindings = _fixture(tmp_path)
+    session_state = repo / ".omx" / "state" / "sessions" / "old" / "hud-state.json"
+    session_state.parent.mkdir(parents=True)
+    session_state.write_text('{"historical_lane":"v16"}\n', encoding="utf-8")
+    claude_state = repo / ".claude" / "worktrees" / "old" / "package-lock.json"
+    claude_state.parent.mkdir(parents=True)
+    claude_state.write_text('{"version":"16.0.0"}\n', encoding="utf-8")
+    continuity = repo / ".agent" / "CONTINUITY.md"
+    continuity.parent.mkdir()
+    continuity.write_text("historical v16 note\n", encoding="utf-8")
+    finder_metadata = repo / "quant_investor" / ".DS_Store"
+    finder_metadata.parent.mkdir()
+    finder_metadata.write_bytes(b"\x00v16")
+
+    report = _scan(allowlist, runtime, external, bindings)
+
+    assert report["status"] == "CLEAN"
+
+
 def test_hash_and_exact_count_bound_historical_allowlist(tmp_path: Path) -> None:
     payload = b"retired v16 history\n"
     entries = [_entry("docs/history.md", "text.v16-token", 1, payload)]
