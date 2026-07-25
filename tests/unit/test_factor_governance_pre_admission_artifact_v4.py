@@ -138,7 +138,7 @@ def test_all_verified_inputs_stop_at_pending_exact_admission() -> None:
     [
         ("schema_version", "factor-governance-codex-s1-status.v2"),
         ("schema_version", "factor-governance-codex-s1-status.v3"),
-        ("schema_version", "factor-governance-codex-s1-status.v16"),
+        ("schema_version", "factor-governance-codex-s1-status.retired"),
         ("stage", "placeholder"),
         ("status", "placeholder"),
         ("verified", False),

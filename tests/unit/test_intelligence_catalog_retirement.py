@@ -27,6 +27,7 @@ from scripts.retire_intelligence_catalog import (
     _tree_digest,
     retire_intelligence_catalog,
 )
+from tests.fixtures.strict_cn_snapshot import coverage_v4, v4_snapshot_paths
 
 
 @pytest.fixture(autouse=True)
@@ -62,15 +63,21 @@ def _write_fixture(tmp_path: Path) -> dict:
         },
     }
     _write_json(catalog_path, catalog)
-    bars_root = repo_root / "data" / "parquet" / "cn" / "bars"
-    serving_root = repo_root / "data" / "parquet_serving" / "cn" / "bars"
-    manifest_path = repo_root / "data" / "parquet" / "cn" / "_snapshots" / "stable.json"
+    bars_root, serving_root, manifest_path = v4_snapshot_paths(
+        repo_root / "data",
+        "stable",
+    )
     bars_root.mkdir(parents=True)
     (bars_root / "bars.parquet").write_bytes(b"probe only")
     serving_symbol_root = serving_root / "symbol=000001.SZ"
     serving_symbol_root.mkdir(parents=True)
     (serving_symbol_root / "bars.parquet").write_bytes(b"probe only")
-    _write_json(manifest_path, {"snapshot_id": "stable"})
+    coverage = coverage_v4(
+        repo_root / "data",
+        ["000001.SZ"],
+        trade_date="20260713",
+    )
+    _write_json(manifest_path, {"snapshot_id": "stable", "coverage": coverage})
     _write_json(
         latest_path,
         {
@@ -81,6 +88,7 @@ def _write_fixture(tmp_path: Path) -> dict:
             "table_root": str(bars_root),
             "derived_serving_root": str(serving_root),
             "manifest_path": str(manifest_path),
+            "coverage": coverage,
             "blockers": [],
         },
     )

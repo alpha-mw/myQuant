@@ -206,14 +206,18 @@ def test_load_config_normalizes_legacy_model_fields_into_review_priority(tmp_pat
     assert cfg["master_fallback_model"] == "deepseek-reasoner"
 
 
-def test_bootstrap_project_venv_reexecs_when_not_running_inside_venv(monkeypatch):
+def test_bootstrap_project_venv_reexecs_when_not_running_inside_venv(monkeypatch, tmp_path):
     captured: dict[str, object] = {}
+    target = tmp_path / ".venv" / "bin" / "python"
+    target.parent.mkdir(parents=True)
+    target.touch()
 
     def _fake_execv(path, argv):
         captured["path"] = path
         captured["argv"] = list(argv)
         raise RuntimeError("execv intercepted")
 
+    monkeypatch.setattr(daily_runner, "ROOT", tmp_path)
     monkeypatch.setattr(daily_runner.sys, "prefix", "/opt/homebrew")
     monkeypatch.setattr(daily_runner.os, "execv", _fake_execv)
 

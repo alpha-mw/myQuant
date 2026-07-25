@@ -82,15 +82,6 @@ from quant_investor.market.dag.packets import (
 )
 from quant_investor.market.dag.research import _run_candidate_research_phase
 from quant_investor.market.dag.reporting import _build_reporting_artifacts
-from quant_investor.v16.runtime import (
-    DEFAULT_CODEX_REVIEW_ROOT,
-    DEFAULT_CONFIG_PATH,
-    DEFAULT_FACTOR_READINESS_PATH,
-    DEFAULT_STAGE1_PROMPT_PATH,
-    V16Stage1RuntimeError,
-    load_v16_factor_readiness,
-    prepare_v16_stage1_pending,
-)
 from quant_investor.market.dag.review import _portfolio_master_advisory
 from quant_investor.market.dag.shortlist import _build_shortlist, _build_shortlist_from_bayesian_records
 from quant_investor.market.market_data_reader import MarketDataReader
@@ -482,16 +473,10 @@ async def _execute_market_dag_async(
     recall_context: Mapping[str, Any] | None = None,
     runtime_profiler: Any | None = None,
     decision_protocol: str = "v15",
-    v16_factor_readiness_path: str = DEFAULT_FACTOR_READINESS_PATH,
-    v16_review_root: str = DEFAULT_CODEX_REVIEW_ROOT,
-    v16_config_path: str = str(DEFAULT_CONFIG_PATH),
-    v16_prompt_path: str = str(DEFAULT_STAGE1_PROMPT_PATH),
-    v16_run_id: str = "",
-    v16_expiry_hours: float = 24.0,
 ) -> dict[str, Any]:
     protocol = str(decision_protocol or "v15").strip().lower()
-    if protocol not in {"v15", "v16"}:
-        raise ValueError("decision_protocol must be v15 or v16")
+    if protocol != "v15":
+        raise ValueError("decision_protocol must be v15")
     settings = get_market_settings(market)
     selected_categories = (
         normalize_universe(settings.market, universe)
@@ -613,10 +598,6 @@ async def _execute_market_dag_async(
     scoped_data_snapshot["pit_universe"] = pit_universe_metadata
 
     if not symbols:
-        if protocol == "v16":
-            raise V16Stage1RuntimeError(
-                "v16 Stage 1 cannot be prepared from an empty universe"
-            )
         (
             empty_completeness,
             empty_as_of,
@@ -835,13 +816,6 @@ async def _execute_market_dag_async(
             fallback_reason="agent_layer_disabled",
             metadata={"agent_layer_enabled": False},
         )
-    factor_readiness_v4 = None
-    if protocol == "v16" and enable_agent_layer:
-        # Factor readiness belongs to Eligibility and must be proved before
-        # formal Quant is evaluated.  Missing/legacy evidence fails closed.
-        factor_readiness_v4 = load_v16_factor_readiness(
-            v16_factor_readiness_path
-        )
     macro_agent = MacroAgent()
     with profile_stage(
         runtime_profiler,
@@ -880,39 +854,10 @@ async def _execute_market_dag_async(
             unsampled_symbol_count=unsampled_symbol_count,
             sampled=bool(mode == "sample"),
             recall_context=recall_context,
-            full_market_branch_readiness=protocol == "v16",
-            persist_branch_readiness=protocol != "v16",
         )
         stage_metadata["researchable_count"] = len(context_state.researchable_symbols)
         stage_metadata["candidate_count"] = len(context_state.candidate_symbols)
         stage_metadata["quarantined_count"] = len(context_state.quarantined_symbols)
-    if protocol == "v16":
-        pending = prepare_v16_stage1_pending(
-            context_state=context_state,
-            market=settings.market,
-            mode=mode,
-            enable_agent_layer=enable_agent_layer,
-            factor_readiness_path=v16_factor_readiness_path,
-            factor_readiness=factor_readiness_v4,
-            review_root=v16_review_root,
-            config_path=v16_config_path,
-            prompt_path=v16_prompt_path,
-            model_id=(
-                branch_model_resolution.resolved_model
-                or branch_model_resolution.primary_model
-                or "codex-unresolved"
-            ),
-            run_id=v16_run_id,
-            expiry_hours=v16_expiry_hours,
-        )
-        return {
-            "decision_protocol": "v16",
-            "status": pending["status"],
-            "v16_stage1": pending,
-            "formal_shortlist_generated": False,
-            "new_risk_authorized": False,
-            "data_snapshot": scoped_data_snapshot,
-        }
     read_results = context_state.read_results
     frames = context_state.frames
     tradability_snapshot = context_state.tradability_snapshot
@@ -1220,12 +1165,6 @@ def execute_market_dag(
     recall_context: Mapping[str, Any] | None = None,
     runtime_profiler: Any | None = None,
     decision_protocol: str = "v15",
-    v16_factor_readiness_path: str = DEFAULT_FACTOR_READINESS_PATH,
-    v16_review_root: str = DEFAULT_CODEX_REVIEW_ROOT,
-    v16_config_path: str = str(DEFAULT_CONFIG_PATH),
-    v16_prompt_path: str = str(DEFAULT_STAGE1_PROMPT_PATH),
-    v16_run_id: str = "",
-    v16_expiry_hours: float = 24.0,
 ) -> dict[str, Any]:
     return asyncio.run(
         _execute_market_dag_async(
@@ -1260,12 +1199,6 @@ def execute_market_dag(
             recall_context=recall_context,
             runtime_profiler=runtime_profiler,
             decision_protocol=decision_protocol,
-            v16_factor_readiness_path=v16_factor_readiness_path,
-            v16_review_root=v16_review_root,
-            v16_config_path=v16_config_path,
-            v16_prompt_path=v16_prompt_path,
-            v16_run_id=v16_run_id,
-            v16_expiry_hours=v16_expiry_hours,
         )
     )
 

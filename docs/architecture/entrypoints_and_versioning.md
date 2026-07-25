@@ -7,9 +7,9 @@
 - Python 入口：`quant_investor.QuantInvestor`
 - Pipeline 结果类型：`quant_investor.pipeline.QuantInvestorPipelineResult`
 - CLI 入口：`quant-investor research run`
-- 当前包版本为 v16；`market analyze/run --decision-protocol v16` 进入隔离的四分支
-  research-candidate 状态机。省略该参数仍进入 v15 production/default 兼容路径，
-  直至独立激活审查完成。
+- 当前包版本为 `17.0.0`，它是删除旧公共入口的 V16 retirement release，
+  不是 V17 runtime 协议。`market analyze/run` 只接受并默认使用 `v15`；
+  任何已退役协议 literal 都在解析阶段 exit 2，且不回退、不写文件。
 - CN bounded maintenance 入口：`quant-investor market maintain --market CN --staged --resume`；每次只处理配置的 batch，并在 `data/cn_market_full/_maintenance_runs/<run_id>/` 写入进度。
 - `quant-investor market download` 仅作为 `market maintain` 的兼容 alias 保留；新流程应优先使用 `market maintain`。
 - Storage 验证入口：`quant-investor market storage-validate --market CN` 校验 Parquet canonical；`quant-investor market storage-validate-clean --market CN` 只读校验 clean/readiness lineage，不触发补数、provider 或写入。
@@ -28,14 +28,12 @@
 
 ## Package And Protocol Versions
 
-- package version：`16.0.0`
-- v16 candidate `ARCHITECTURE_VERSION = "16.0.0"`
-- v16 branches：`quant/fundamental/macro/llm`，各 `0.25`
-- v16 Factor Governance：`v4`
-- v16 readiness/report/dashboard：`v16`
-- v16 artifacts：仅 `results/v16/`
+- package release：`17.0.0`（V16 retirement release）
+- V17 runtime：不存在、未接入、未授权
+- Factor Governance：`v4`，使用版本中立的 `results/factor_governance/`
+- Dashboard：Contract v3
 
-当前 production/default 兼容协议尚未激活切换，继续使用：
+当前 production/default 协议继续使用：
 
 - `ARCHITECTURE_VERSION = "15.0.0-stable"`
 - `BRANCH_SCHEMA_VERSION = "branch-schema.v15.three-branch"`

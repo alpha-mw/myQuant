@@ -89,7 +89,7 @@ class FakePro:
         return pd.DataFrame(columns=["ts_code", "trade_date", "suspend_type"])
 
 
-def test_download_stock_auto_clean_hook_writes_reports_and_flags(monkeypatch, tmp_path):
+def test_download_stock_fails_closed_after_full_history_writer_retirement(monkeypatch, tmp_path):
     module = _load_module(monkeypatch, tmp_path)
     fake_pro = FakePro()
     monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
@@ -97,19 +97,12 @@ def test_download_stock_auto_clean_hook_writes_reports_and_flags(monkeypatch, tm
     downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path / "market"), years=3)
     result = downloader.download_stock("000001.SZ", "hs300")
 
-    assert result["status"] == "updated"
-    assert result["cleaning_status"] == "pass"
-    assert result["factor_readiness_status"] == "not_ready"
+    assert result["status"] == "failed"
+    assert result["error"] == "cn_full_history_writer_retired_use_parquet_direct"
+    assert result["cleaning_status"] == "skipped"
+    assert result["factor_readiness_status"] is None
     assert result["parquet_status"] == "skipped"
-    report_path = Path(result["cleaning_report_path"])
-    assert report_path.exists()
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    assert Path(report["raw_backup_path"]).exists()
-    assert Path(report["row_flags_path"]).exists()
-    assert Path(report["cell_flags_path"]).exists()
-    assert Path(report["metadata"]["factor_ready_masks_path"]).exists()
-    assert Path(report["metadata"]["matrix_coverage_path"]).exists()
-    assert Path(report["metadata"]["storage_audit_report_path"]).exists()
+    assert result["cleaning_report_path"] is None
 
 
 def test_env_can_disable_auto_cleaning(monkeypatch, tmp_path):
@@ -120,7 +113,8 @@ def test_env_can_disable_auto_cleaning(monkeypatch, tmp_path):
     downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path / "market"), years=3)
     result = downloader.download_stock("000001.SZ", "hs300")
 
-    assert result["status"] == "updated"
+    assert result["status"] == "failed"
+    assert result["error"] == "cn_full_history_writer_retired_use_parquet_direct"
     assert result["cleaning_status"] == "skipped"
     assert result["cleaning_report_path"] is None
 
@@ -133,8 +127,9 @@ def test_factor_readiness_can_be_disabled_separately(monkeypatch, tmp_path):
     downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path / "market"), years=3)
     result = downloader.download_stock("000001.SZ", "hs300")
 
-    assert result["status"] == "updated"
-    assert result["cleaning_status"] == "pass"
+    assert result["status"] == "failed"
+    assert result["error"] == "cn_full_history_writer_retired_use_parquet_direct"
+    assert result["cleaning_status"] == "skipped"
     assert result["factor_readiness_status"] is None
 
 

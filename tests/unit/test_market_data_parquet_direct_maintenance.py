@@ -20,6 +20,10 @@ from quant_investor.market.cn_nontrading_evidence import (
 from quant_investor.market.market_data_store import MarketDataStore
 from quant_investor.market.market_data_reader import coverage_fingerprint
 from quant_investor.market.pit_universe import PITUniverseRecord, PITUniverseStore
+from tests.fixtures.strict_cn_snapshot import (
+    coverage_v4 as strict_coverage_v4,
+    v4_snapshot_paths,
+)
 
 
 def test_cn_legacy_maintenance_is_disabled_outside_staged():
@@ -57,9 +61,7 @@ def _write_pit_generation(
     store = PITUniverseStore(
         root_dir=root / "parquet" / "cn" / "reference",
         raw_root=root / "cn_universe" / "raw",
-        compatibility_path=(
-            root / "cn_universe" / "stock_basic_membership_latest.json"
-        ),
+        compatibility_path=(root / "cn_universe" / "stock_basic_membership_latest.json"),
     )
     return store.write_snapshot(
         raw_records=selected_records,
@@ -74,15 +76,9 @@ def _production_binding_args(
     generation: dict[str, object],
 ) -> dict[str, str]:
     return {
-        "pit_generation_manifest": str(
-            generation["generation_manifest_path"]
-        ),
-        "expected_pit_generation_manifest_sha256": str(
-            generation["generation_manifest_sha256"]
-        ),
-        "expected_market_pointer_sha256": file_sha256(
-            root / "parquet" / "cn" / "_latest.json"
-        ),
+        "pit_generation_manifest": str(generation["generation_manifest_path"]),
+        "expected_pit_generation_manifest_sha256": str(generation["generation_manifest_sha256"]),
+        "expected_market_pointer_sha256": file_sha256(root / "parquet" / "cn" / "_latest.json"),
     }
 
 
@@ -117,9 +113,10 @@ def test_cn_auto_maintenance_uses_parquet_direct(monkeypatch, tmp_path):
     assert result["storage_mode"] == "parquet-direct"
     assert captured["maintain"]["categories"] == ["full_a"]
     assert captured["maintain"]["target_date"] == "20260316"
-    assert captured["maintain"]["pit_generation_binding"][
-        "generation_id"
-    ] == generation["generation_id"]
+    assert (
+        captured["maintain"]["pit_generation_binding"]["generation_id"]
+        == generation["generation_id"]
+    )
 
 
 def test_cn_parquet_direct_requires_publish_bindings_before_provider_init(
@@ -145,9 +142,7 @@ def test_cn_parquet_direct_requires_publish_bindings_before_provider_init(
 
 
 def _write_seed_snapshot(root: Path) -> None:
-    table_root = root / "parquet" / "cn" / "bars"
-    serving_root = root / "parquet_serving" / "cn" / "bars"
-    manifest_path = root / "parquet" / "cn" / "_snapshots" / "seed.json"
+    table_root, serving_root, manifest_path = v4_snapshot_paths(root, "seed")
     month_dir = table_root / "year=2026" / "month=03"
     symbol_1 = serving_root / "symbol=000001.SZ"
     symbol_2 = serving_root / "symbol=000002.SZ"
@@ -181,10 +176,28 @@ def _write_seed_snapshot(root: Path) -> None:
         ]
     )
     frame.to_parquet(month_dir / "part.parquet", index=False)
+    legacy_month_dir = root / "parquet" / "cn" / "bars" / "year=2026" / "month=03"
+    legacy_month_dir.mkdir(parents=True, exist_ok=True)
+    frame.to_parquet(legacy_month_dir / "part.parquet", index=False)
+    legacy_serving_root = root / "parquet_serving" / "cn" / "bars"
+    (legacy_serving_root / "symbol=000001.SZ").mkdir(parents=True, exist_ok=True)
+    (legacy_serving_root / "symbol=000002.SZ").mkdir(parents=True, exist_ok=True)
+    frame[frame["ts_code"].eq("000001.SZ")].to_parquet(
+        legacy_serving_root / "symbol=000001.SZ" / "bars.parquet",
+        index=False,
+    )
+    frame[frame["ts_code"].eq("000002.SZ")].to_parquet(
+        legacy_serving_root / "symbol=000002.SZ" / "bars.parquet",
+        index=False,
+    )
     frame[frame["ts_code"].eq("000001.SZ")].to_parquet(symbol_1 / "bars.parquet", index=False)
     frame[frame["ts_code"].eq("000002.SZ")].to_parquet(symbol_2 / "bars.parquet", index=False)
-    manifest_path.parent.mkdir(parents=True)
-    coverage = {"row_count": 2, "symbol_count": 2}
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    coverage = strict_coverage_v4(
+        root,
+        ["000001.SZ", "000002.SZ"],
+        trade_date="20260315",
+    )
     manifest_path.write_text(
         json.dumps(
             {
@@ -225,13 +238,7 @@ def test_upsert_bars_merges_target_day_without_replacing_history(tmp_path):
     latest_path = tmp_path / "parquet" / "cn" / "_latest.json"
     previous_pointer_sha256 = hashlib.sha256(latest_path.read_bytes()).hexdigest()
     legacy_table_path = (
-        tmp_path
-        / "parquet"
-        / "cn"
-        / "bars"
-        / "year=2026"
-        / "month=03"
-        / "part.parquet"
+        tmp_path / "parquet" / "cn" / "bars" / "year=2026" / "month=03" / "part.parquet"
     )
     legacy_table_bytes = legacy_table_path.read_bytes()
 
@@ -270,34 +277,25 @@ def test_upsert_bars_merges_target_day_without_replacing_history(tmp_path):
             "status": "OK",
             "latest_available_trade_date": "20260316",
             "latest_complete_trade_date": "20260316",
+            "coverage": strict_coverage_v4(
+                tmp_path,
+                ["000001.SZ", "000002.SZ", "000003.SZ"],
+                trade_date="20260316",
+            ),
         },
     )
 
     latest = json.loads(latest_path.read_text(encoding="utf-8"))
     table_root = Path(latest["table_root"])
     serving_root = Path(latest["derived_serving_root"])
-    table = pd.read_parquet(
-        table_root / "year=2026" / "month=03" / "part.parquet"
-    )
+    table = pd.read_parquet(table_root / "year=2026" / "month=03" / "part.parquet")
     assert manifest["snapshot_id"] == "upserted"
     assert manifest["row_count"] == 4
     assert table_root == (
-        tmp_path
-        / "parquet"
-        / "cn"
-        / "_snapshots"
-        / "upserted"
-        / "table"
-        / "bars"
+        tmp_path / "parquet" / "cn" / "_snapshots" / "upserted" / "table" / "bars"
     )
     assert serving_root == (
-        tmp_path
-        / "parquet"
-        / "cn"
-        / "_snapshots"
-        / "upserted"
-        / "serving"
-        / "bars"
+        tmp_path / "parquet" / "cn" / "_snapshots" / "upserted" / "serving" / "bars"
     )
     assert legacy_table_path.read_bytes() == legacy_table_bytes
     assert set(table["ts_code"]) == {"000001.SZ", "000002.SZ", "000003.SZ"}
@@ -311,27 +309,7 @@ def test_historical_multi_date_upsert_preserves_latest_coverage(tmp_path):
     _write_seed_snapshot(tmp_path)
     latest_path = tmp_path / "parquet" / "cn" / "_latest.json"
     latest = json.loads(latest_path.read_text(encoding="utf-8"))
-    coverage = {
-        "coverage_schema_version": "cn-full-a-coverage.v2",
-        "complete": True,
-        "coverage_ratio": 1.0,
-        "coverage_complete_count": 2,
-        "expected_scope_count": 2,
-        "observed_bar_count": 2,
-        "blocking_incomplete_count": 0,
-        "latest_available_trade_date": "20260315",
-        "latest_complete_trade_date": "20260315",
-        "coverage_trade_date": "20260315",
-        "expected_scope_sha256": symbol_set_sha256(
-            ["000001.SZ", "000002.SZ"]
-        ),
-        "suspended_symbols": [],
-        "inactive_symbols": [],
-        "allowed_stale_symbols": [],
-        "non_blocking_absent_symbols": [],
-        "true_missing_symbols": [],
-        "classification_sets_disjoint": True,
-    }
+    coverage = dict(latest["coverage"])
     latest["coverage"] = coverage
     manifest_path = Path(latest["manifest_path"])
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -373,12 +351,7 @@ def test_historical_multi_date_upsert_preserves_latest_coverage(tmp_path):
     assert repaired["historical_upsert_coverage_preserved"] is True
     assert after["latest_complete_trade_date"] == "20260315"
     assert coverage_fingerprint(after["coverage"]) == before_fingerprint
-    table = pd.read_parquet(
-        Path(after["table_root"])
-        / "year=2026"
-        / "month=03"
-        / "part.parquet"
-    )
+    table = pd.read_parquet(Path(after["table_root"]) / "year=2026" / "month=03" / "part.parquet")
     assert {"20260313", "20260314"}.issubset(set(table["trade_date"]))
 
 
@@ -412,9 +385,7 @@ def test_upsert_rejects_market_pointer_cas_drift_without_publishing(tmp_path):
         )
 
     assert latest_path.read_bytes() == before
-    assert not (
-        tmp_path / "parquet" / "cn" / "_snapshots" / "cas-rejected"
-    ).exists()
+    assert not (tmp_path / "parquet" / "cn" / "_snapshots" / "cas-rejected").exists()
 
 
 @pytest.mark.parametrize("snapshot_id", ["..", "../escape", "nested/name"])
@@ -491,9 +462,7 @@ def test_storage_validate_rejects_historical_scope_hash_backfill_provenance(tmp_
     validation = store.validate_latest()
 
     assert validation["status"] == "failed"
-    assert "coverage_scope_hash_backfilled_from_historical_target" in (
-        validation["blockers"]
-    )
+    assert "coverage_scope_hash_backfilled_from_historical_target" in (validation["blockers"])
     assert store.reader.snapshot()["coverage_provenance_blockers"] == [
         "coverage_scope_hash_backfilled_from_historical_target"
     ]
@@ -501,15 +470,14 @@ def test_storage_validate_rejects_historical_scope_hash_backfill_provenance(tmp_
 
 def test_storage_validate_semantically_reads_v3_nontrading_evidence(tmp_path):
     _write_seed_snapshot(tmp_path)
-    pit_path = (
-        tmp_path
-        / "parquet"
-        / "cn"
-        / "reference"
-        / "stock_basic_membership.parquet"
+    coverage = strict_coverage_v4(
+        tmp_path,
+        ["000001.SZ", "000002.SZ", "000003.SZ"],
+        trade_date="20260315",
+        observed_bar_count=2,
     )
-    pit_path.parent.mkdir(parents=True, exist_ok=True)
-    pit_path.write_bytes(b"unit-pit-binding")
+    pit_path = Path(coverage["pit_membership_path"])
+    pit_sha = str(coverage["pit_membership_sha256"])
     evidence_path = tmp_path / "cn_market_full" / ".cache" / "evidence.json"
     payload = build_bak_daily_nontrading_evidence(
         pd.DataFrame(
@@ -533,35 +501,19 @@ def test_storage_validate_semantically_reads_v3_nontrading_evidence(tmp_path):
         primary_missing_symbols=["000003.SZ"],
         query_params={"trade_date": "20260315"},
         pit_membership_path=pit_path,
-        pit_membership_sha256=file_sha256(pit_path),
+        pit_membership_sha256=pit_sha,
     )
     write_evidence_cache(evidence_path, payload)
-    coverage = {
-        "coverage_schema_version": "cn-full-a-coverage.v3",
-        "complete": True,
-        "coverage_ratio": 1.0,
-        "coverage_complete_count": 3,
-        "expected_scope_count": 3,
-        "observed_bar_count": 2,
-        "blocking_incomplete_count": 0,
-        "latest_available_trade_date": "20260315",
-        "latest_complete_trade_date": "20260315",
-        "coverage_trade_date": "20260315",
-        "expected_scope_sha256": symbol_set_sha256(
-            ["000001.SZ", "000002.SZ", "000003.SZ"]
-        ),
-        "suspended_symbols": [],
-        "inactive_symbols": [],
-        "verified_nontrading_bak_daily_zero_symbols": ["000003.SZ"],
-        "allowed_stale_symbols": [],
-        "non_blocking_absent_symbols": ["000003.SZ"],
-        "true_missing_symbols": [],
-        "classification_sets_disjoint": True,
-        "verified_nontrading_evidence_path": str(evidence_path),
-        "verified_nontrading_evidence_sha256": file_sha256(evidence_path),
-        "pit_membership_path": str(pit_path),
-        "pit_membership_sha256": file_sha256(pit_path),
-    }
+    coverage.update(
+        {
+            "coverage_ratio": 1.0,
+            "coverage_complete_count": 3,
+            "verified_nontrading_bak_daily_zero_symbols": ["000003.SZ"],
+            "non_blocking_absent_symbols": ["000003.SZ"],
+            "verified_nontrading_evidence_path": str(evidence_path),
+            "verified_nontrading_evidence_sha256": file_sha256(evidence_path),
+        }
+    )
     latest_path = tmp_path / "parquet" / "cn" / "_latest.json"
     latest = json.loads(latest_path.read_text(encoding="utf-8"))
     manifest_path = Path(latest["manifest_path"])
@@ -588,10 +540,7 @@ def test_storage_validate_semantically_reads_v3_nontrading_evidence(tmp_path):
 
     validation = MarketDataStore(market="CN", data_root=tmp_path).validate_latest()
     assert validation["status"] == "failed"
-    assert (
-        "coverage_nontrading_evidence_semantic:query_params_mismatch"
-        in validation["blockers"]
-    )
+    assert "coverage_nontrading_evidence_semantic:query_params_mismatch" in validation["blockers"]
 
 
 def test_parquet_maintainer_excludes_symbol_on_exact_delist_date():
@@ -613,9 +562,7 @@ def test_parquet_maintainer_excludes_symbol_on_exact_delist_date():
     )
     maintainer.downloader = type("_Downloader", (), {"pro": _Provider()})()
 
-    assert maintainer._load_inactive_symbols(
-        "20260707", {"000001.SZ"}
-    ) == {"000001.SZ"}
+    assert maintainer._load_inactive_symbols("20260707", {"000001.SZ"}) == {"000001.SZ"}
 
 
 def test_parquet_maintainer_uses_bak_daily_zero_as_evidence_only(tmp_path):
@@ -747,6 +694,13 @@ def test_historical_upsert_requires_verified_latest_coverage(tmp_path):
     _write_seed_snapshot(tmp_path)
     store = MarketDataStore(market="CN", data_root=tmp_path)
     latest_path = tmp_path / "parquet" / "cn" / "_latest.json"
+    latest = json.loads(latest_path.read_text(encoding="utf-8"))
+    latest["coverage"] = {**latest["coverage"], "complete": False}
+    latest_path.write_text(json.dumps(latest), encoding="utf-8")
+    manifest_path = Path(latest["manifest_path"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["coverage"] = latest["coverage"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     before = latest_path.read_text(encoding="utf-8")
 
     with pytest.raises(
@@ -781,17 +735,7 @@ def test_same_date_republish_repairs_provenance_only_blocker(tmp_path):
     _write_seed_snapshot(tmp_path)
     latest_path = tmp_path / "parquet" / "cn" / "_latest.json"
     latest = json.loads(latest_path.read_text(encoding="utf-8"))
-    old_coverage = {
-        "complete": True,
-        "coverage_ratio": 1.0,
-        "coverage_complete_count": 2,
-        "expected_scope_count": 2,
-        "blocking_incomplete_count": 0,
-        "latest_complete_trade_date": "20260315",
-        "coverage_trade_date": "20260315",
-        "expected_scope_sha256": "a" * 64,
-        "allowed_stale_symbols": [],
-    }
+    old_coverage = dict(latest["coverage"])
     latest["coverage"] = old_coverage
     latest_path.write_text(json.dumps(latest), encoding="utf-8")
     old_manifest_path = Path(latest["manifest_path"])
@@ -836,14 +780,13 @@ def test_same_date_republish_repairs_provenance_only_blocker(tmp_path):
             "latest_complete_trade_date": "20260315",
             "coverage": {
                 **old_coverage,
-                "expected_scope_sha256": "b" * 64,
             },
         },
     )
 
     assert result["snapshot_id"] == "same-date-repaired"
     assert result.get("historical_scope_hash_backfilled") is not True
-    assert result["coverage"]["expected_scope_sha256"] == "b" * 64
+    assert result["coverage"]["expected_scope_sha256"] == old_coverage["expected_scope_sha256"]
     assert store.validate_latest()["status"] == "passed"
 
 
@@ -866,15 +809,7 @@ def test_upsert_rolls_back_pointer_and_roots_when_post_validation_fails(
     latest_path.write_bytes(before_pointer)
     before_pointer_sha256 = hashlib.sha256(before_pointer).hexdigest()
     store = MarketDataStore(market="CN", data_root=tmp_path)
-    table_path = (
-        tmp_path
-        / "parquet"
-        / "cn"
-        / "bars"
-        / "year=2026"
-        / "month=03"
-        / "part.parquet"
-    )
+    table_path = tmp_path / "parquet" / "cn" / "bars" / "year=2026" / "month=03" / "part.parquet"
     before_table = pd.read_parquet(table_path)
     original_gate = store.reader.clean_snapshot_gate
     gate_calls = 0
@@ -921,9 +856,7 @@ def test_upsert_rolls_back_pointer_and_roots_when_post_validation_fails(
         )
 
     assert latest_path.read_bytes() == before_pointer
-    assert hashlib.sha256(latest_path.read_bytes()).hexdigest() == (
-        before_pointer_sha256
-    )
+    assert hashlib.sha256(latest_path.read_bytes()).hexdigest() == (before_pointer_sha256)
     pd.testing.assert_frame_equal(pd.read_parquet(table_path), before_table)
 
 
@@ -937,9 +870,7 @@ def test_upsert_bars_postcommit_does_not_depend_on_stale_macro_generation(
     store = MarketDataStore(market="CN", data_root=tmp_path)
 
     def _full_validation_must_not_run():
-        raise AssertionError(
-            "bars postcommit must not depend on cross-table Macro readiness"
-        )
+        raise AssertionError("bars postcommit must not depend on cross-table Macro readiness")
 
     monkeypatch.setattr(store, "validate_latest", _full_validation_must_not_run)
     result = store.upsert_bars(
@@ -962,6 +893,16 @@ def test_upsert_bars_postcommit_does_not_depend_on_stale_macro_generation(
         source="unit-test-macro-cutover",
         snapshot_id="bars-before-macro-v15",
         expected_latest_pointer_sha256=pointer_sha256,
+        metadata={
+            "status": "OK",
+            "latest_available_trade_date": "20260316",
+            "latest_complete_trade_date": "20260316",
+            "coverage": strict_coverage_v4(
+                tmp_path,
+                ["000001.SZ", "000002.SZ"],
+                trade_date="20260316",
+            ),
+        },
     )
 
     assert result["snapshot_id"] == "bars-before-macro-v15"
@@ -1115,9 +1056,7 @@ def test_storage_validate_rejects_unverified_allowed_stale_symbols(tmp_path):
     validation = MarketDataStore(market="CN", data_root=tmp_path).validate_latest()
 
     assert validation["status"] == "failed"
-    assert "coverage_unverified_allowed_stale_symbols_not_permitted" in (
-        validation["blockers"]
-    )
+    assert "coverage_unverified_allowed_stale_symbols_not_permitted" in (validation["blockers"])
 
 
 def test_storage_validate_rejects_overlapping_v2_classification_sets(tmp_path):
@@ -1194,8 +1133,12 @@ def test_upsert_bars_rolls_back_live_roots_when_latest_pointer_write_fails(monke
         )
 
     latest = json.loads((tmp_path / "parquet" / "cn" / "_latest.json").read_text(encoding="utf-8"))
-    table = pd.read_parquet(tmp_path / "parquet" / "cn" / "bars" / "year=2026" / "month=03" / "part.parquet")
-    serving = pd.read_parquet(tmp_path / "parquet_serving" / "cn" / "bars" / "symbol=000001.SZ" / "bars.parquet")
+    table = pd.read_parquet(
+        tmp_path / "parquet" / "cn" / "bars" / "year=2026" / "month=03" / "part.parquet"
+    )
+    serving = pd.read_parquet(
+        tmp_path / "parquet_serving" / "cn" / "bars" / "symbol=000001.SZ" / "bars.parquet"
+    )
     assert latest["snapshot_id"] == "seed"
     assert set(table["trade_date"]) == {"20260315"}
     assert set(serving["trade_date"]) == {"20260315"}
@@ -1203,7 +1146,9 @@ def test_upsert_bars_rolls_back_live_roots_when_latest_pointer_write_fails(monke
     assert store.validate_latest()["status"] == "passed"
 
 
-def test_run_market_maintenance_parquet_direct_upserts_and_writes_audit_artifacts(monkeypatch, tmp_path):
+def test_run_market_maintenance_parquet_direct_upserts_and_writes_audit_artifacts(
+    monkeypatch, tmp_path
+):
     _write_seed_snapshot(tmp_path)
     audit_root = tmp_path / "cn_market_full"
 
@@ -1288,9 +1233,13 @@ def test_run_market_maintenance_parquet_direct_upserts_and_writes_audit_artifact
 
     monkeypatch.setattr(download_module.config, "TUSHARE_TOKEN", "dummy-token")
     monkeypatch.setattr(download_module.config, "TUSHARE_URL", "http://example.invalid")
-    monkeypatch.setattr(download_module.config, "MARKET_DATA_BASE_DIR", str(tmp_path), raising=False)
+    monkeypatch.setattr(
+        download_module.config, "MARKET_DATA_BASE_DIR", str(tmp_path), raising=False
+    )
     monkeypatch.setattr(download_module.config, "CN_FRESHNESS_MODE", "strict")
-    monkeypatch.setattr(download_cn_module, "create_tushare_pro", lambda *_args, **_kwargs: FakePro())
+    monkeypatch.setattr(
+        download_cn_module, "create_tushare_pro", lambda *_args, **_kwargs: FakePro()
+    )
     generation = _write_pit_generation(tmp_path)
 
     result = download_module.run_market_maintenance(
@@ -1322,14 +1271,10 @@ def test_run_market_maintenance_parquet_direct_upserts_and_writes_audit_artifact
     )
 
     assert blocked["parquet_commit"]["status"] == "BLOCKED"
-    assert "unverified_allowed_stale_symbols_not_permitted" in (
-        blocked["completeness"]["blockers"]
-    )
+    assert "unverified_allowed_stale_symbols_not_permitted" in (blocked["completeness"]["blockers"])
     assert blocked["completeness"]["true_missing_symbols"] == []
     assert blocked["completeness"]["allowed_stale_symbols"] == []
-    assert blocked["completeness"]["requested_allowed_stale_symbols"] == [
-        "000001.SZ"
-    ]
+    assert blocked["completeness"]["requested_allowed_stale_symbols"] == ["000001.SZ"]
     assert blocked["completeness"]["requested_allowed_absent_symbols"] == []
 
 
@@ -1337,17 +1282,7 @@ def test_parquet_direct_explicit_historical_target_preserves_latest_pointer(monk
     _write_seed_snapshot(tmp_path)
     latest_path = tmp_path / "parquet" / "cn" / "_latest.json"
     latest = json.loads(latest_path.read_text(encoding="utf-8"))
-    latest["coverage"] = {
-        "complete": True,
-        "coverage_ratio": 1.0,
-        "coverage_complete_count": 2,
-        "expected_scope_count": 2,
-        "blocking_incomplete_count": 0,
-        "latest_complete_trade_date": "20260315",
-        "coverage_trade_date": "20260315",
-        "expected_scope_sha256": "a" * 64,
-        "allowed_stale_symbols": [],
-    }
+    latest["coverage"] = dict(latest["coverage"])
     latest_path.write_text(json.dumps(latest), encoding="utf-8")
     manifest_path = Path(latest["manifest_path"])
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -1446,9 +1381,13 @@ def test_parquet_direct_explicit_historical_target_preserves_latest_pointer(monk
 
     monkeypatch.setattr(download_module.config, "TUSHARE_TOKEN", "dummy-token")
     monkeypatch.setattr(download_module.config, "TUSHARE_URL", "http://example.invalid")
-    monkeypatch.setattr(download_module.config, "MARKET_DATA_BASE_DIR", str(tmp_path), raising=False)
+    monkeypatch.setattr(
+        download_module.config, "MARKET_DATA_BASE_DIR", str(tmp_path), raising=False
+    )
     monkeypatch.setattr(download_module.config, "CN_FRESHNESS_MODE", "strict")
-    monkeypatch.setattr(download_cn_module, "create_tushare_pro", lambda *_args, **_kwargs: FakePro())
+    monkeypatch.setattr(
+        download_cn_module, "create_tushare_pro", lambda *_args, **_kwargs: FakePro()
+    )
     generation = _write_pit_generation(tmp_path)
 
     result = download_module.run_market_maintenance(
@@ -1471,16 +1410,11 @@ def test_parquet_direct_historical_target_excludes_prelisting_symbols(monkeypatc
     _write_seed_snapshot(tmp_path)
     latest_path = tmp_path / "parquet" / "cn" / "_latest.json"
     latest = json.loads(latest_path.read_text(encoding="utf-8"))
-    latest["coverage"] = {
-        "complete": True,
-        "coverage_ratio": 1.0,
-        "coverage_complete_count": 3,
-        "expected_scope_count": 3,
-        "blocking_incomplete_count": 0,
-        "latest_complete_trade_date": "20260315",
-        "coverage_trade_date": "20260315",
-        "expected_scope_sha256": "b" * 64,
-    }
+    latest["coverage"] = strict_coverage_v4(
+        tmp_path,
+        ["000001.SZ", "000002.SZ", "000003.SZ"],
+        trade_date="20260315",
+    )
     latest_path.write_text(json.dumps(latest), encoding="utf-8")
     manifest_path = Path(latest["manifest_path"])
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -1491,7 +1425,9 @@ def test_parquet_direct_historical_target_excludes_prelisting_symbols(monkeypatc
     class FakePro:
         def stock_basic(self, list_status="L", **_kwargs):
             if list_status != "L":
-                return pd.DataFrame(columns=["ts_code", "name", "list_status", "list_date", "delist_date"])
+                return pd.DataFrame(
+                    columns=["ts_code", "name", "list_status", "list_date", "delist_date"]
+                )
             return pd.DataFrame(
                 [
                     {
@@ -1600,9 +1536,13 @@ def test_parquet_direct_historical_target_excludes_prelisting_symbols(monkeypatc
 
     monkeypatch.setattr(download_module.config, "TUSHARE_TOKEN", "dummy-token")
     monkeypatch.setattr(download_module.config, "TUSHARE_URL", "http://example.invalid")
-    monkeypatch.setattr(download_module.config, "MARKET_DATA_BASE_DIR", str(tmp_path), raising=False)
+    monkeypatch.setattr(
+        download_module.config, "MARKET_DATA_BASE_DIR", str(tmp_path), raising=False
+    )
     monkeypatch.setattr(download_module.config, "CN_FRESHNESS_MODE", "strict")
-    monkeypatch.setattr(download_cn_module, "create_tushare_pro", lambda *_args, **_kwargs: FakePro())
+    monkeypatch.setattr(
+        download_cn_module, "create_tushare_pro", lambda *_args, **_kwargs: FakePro()
+    )
     generation = _write_pit_generation(
         tmp_path,
         records=[
@@ -1649,13 +1589,13 @@ def test_parquet_direct_historical_target_excludes_prelisting_symbols(monkeypatc
     assert target_coverage["coverage_complete_count"] == 3
     assert target_coverage["inactive_symbols"] == ["000003.SZ"]
     latest = json.loads(latest_path.read_text(encoding="utf-8"))
-    assert latest["coverage"]["expected_scope_sha256"] == "b" * 64
+    assert latest["coverage"]["expected_scope_sha256"] == symbol_set_sha256(
+        ["000001.SZ", "000002.SZ", "000003.SZ"]
+    )
     validation = MarketDataStore(market="CN", data_root=tmp_path).validate_latest()
     assert validation["status"] == "passed"
-    table = pd.read_parquet(
-        Path(latest["table_root"])
-        / "year=2026"
-        / "month=03"
-        / "part.parquet"
-    )
-    assert set(table.loc[table["trade_date"].eq("20260314"), "ts_code"]) == {"000001.SZ", "000002.SZ"}
+    table = pd.read_parquet(Path(latest["table_root"]) / "year=2026" / "month=03" / "part.parquet")
+    assert set(table.loc[table["trade_date"].eq("20260314"), "ts_code"]) == {
+        "000001.SZ",
+        "000002.SZ",
+    }

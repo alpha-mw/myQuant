@@ -6,7 +6,6 @@ import hashlib
 import pytest
 
 from quant_investor.factors import governance_signal_computability_v4_1 as subject
-from quant_investor.monitoring import v16_run_readiness
 
 
 def _digest(label: str) -> str:
@@ -276,10 +275,10 @@ def test_exact_ten_row_mismatch_against_fresh_pass_is_rejected() -> None:
         subject.validate_signal_computability_proof_v4_1(proof)
 
 
-def test_computability_schema_cannot_satisfy_v16_factor_readiness() -> None:
+def test_computability_proof_is_not_a_factor_readiness_artifact() -> None:
     _, proof = _proof()
 
-    _, _, ready, _, blockers = v16_run_readiness._factor_contract(proof)
-
-    assert ready is False
-    assert "factor_readiness_schema_not_v4" in blockers
+    assert proof["schema_version"] == subject.PROOF_SCHEMA_VERSION
+    assert proof["schema_version"] != "factor-governance-readiness.v4"
+    assert "production_factor_count" not in proof
+    assert "activation_receipt" not in proof

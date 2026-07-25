@@ -23,13 +23,6 @@ from quant_investor.agent_protocol import (
 )
 from quant_investor.agents.base import BaseAgent
 from quant_investor.portfolio_backtest import PortfolioConstructor as LegacyPortfolioConstructor
-from quant_investor.v16.candidate_pipeline import (
-    CapitalMapping,
-    PosteriorMenuItem,
-    Stage2Decision,
-    map_portfolio_capital,
-    validate_stage2_portfolio,
-)
 
 
 @dataclass(frozen=True)
@@ -781,84 +774,3 @@ class PortfolioConstructor(BaseAgent):
             "effective_n": round(effective_n, 6),
             "max_sector_weight": round(max(sector_totals.values()), 6),
         }
-
-
-class V16PortfolioConstructor(BaseAgent):
-    """Validate and map Stage2 target weights without constructing them."""
-
-    agent_name = "V16PortfolioConstructor"
-    _FORBIDDEN_POLICY_KEYS = frozenset(
-        {
-            "risk_limits",
-            "risk_advisory",
-            "macro_verdict",
-            "tradability_snapshot",
-            "sector_caps",
-            "max_weight",
-            "gross_exposure_cap",
-            "turnover_cap",
-            "liquidity_limits",
-        }
-    )
-
-    def run(self, payload: Mapping[str, Any]) -> CapitalMapping:
-        envelope = self.ensure_payload(payload)
-        self.require_keys(
-            envelope,
-            "menu",
-            "stage2_decisions",
-            "cash_ratio",
-            "existing_weights",
-            "total_capital",
-            "reference_price_by_symbol",
-            "existing_shares_by_symbol",
-        )
-        forbidden = sorted(self._FORBIDDEN_POLICY_KEYS.intersection(envelope))
-        if forbidden:
-            raise ValueError(
-                "V16PortfolioConstructor does not accept policy constraints: "
-                + ", ".join(forbidden)
-            )
-
-        menu = self._normalize_menu(envelope["menu"])
-        decisions = self._normalize_stage2_decisions(envelope["stage2_decisions"])
-        existing_weights = envelope["existing_weights"]
-        if not isinstance(existing_weights, Mapping):
-            raise TypeError("existing_weights must be a mapping")
-        validated = validate_stage2_portfolio(
-            menu,
-            decisions,
-            cash_ratio=envelope["cash_ratio"],
-            existing_weights=existing_weights,
-            severe_risk_symbols=(),
-        )
-        reference_prices = envelope["reference_price_by_symbol"]
-        existing_shares = envelope["existing_shares_by_symbol"]
-        if not isinstance(reference_prices, Mapping):
-            raise TypeError("reference_price_by_symbol must be a mapping")
-        if not isinstance(existing_shares, Mapping):
-            raise TypeError("existing_shares_by_symbol must be a mapping")
-        return map_portfolio_capital(
-            validated,
-            total_capital=envelope["total_capital"],
-            reference_prices=reference_prices,
-            existing_shares=existing_shares,
-        )
-
-    @staticmethod
-    def _normalize_menu(payload: Any) -> list[PosteriorMenuItem]:
-        if not isinstance(payload, Sequence) or isinstance(payload, (str, bytes)):
-            raise TypeError("menu must be a PosteriorMenuItem list")
-        menu = [item for item in payload if isinstance(item, PosteriorMenuItem)]
-        if len(menu) != len(payload):
-            raise TypeError("menu contains a non-PosteriorMenuItem item")
-        return menu
-
-    @staticmethod
-    def _normalize_stage2_decisions(payload: Any) -> list[Stage2Decision]:
-        if not isinstance(payload, Sequence) or isinstance(payload, (str, bytes)):
-            raise TypeError("stage2_decisions must be a Stage2Decision list")
-        decisions = [item for item in payload if isinstance(item, Stage2Decision)]
-        if len(decisions) != len(payload):
-            raise TypeError("stage2_decisions contains a non-Stage2Decision item")
-        return decisions

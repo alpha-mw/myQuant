@@ -14,16 +14,288 @@ from quant_investor.factors import governance_private_bundle_io as private_io
 from scripts import build_factor_v4_3_candidate_preregistration as cli
 
 
-@pytest.fixture(scope="session")
-def publication_inputs() -> Any:
-    return cli._collect_publication_inputs(
-        repository_root=cli.PROJECT_ROOT,
-        protected_specs=cli.PROTECTED_BINDING_SPECS,
+def _synthetic_source_descriptors(repository_root: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for name, raw in _synthetic_source_raws().items():
+        rows.append(
+            {
+                "name": name,
+                "absolute_path": str(_synthetic_source_path(repository_root, name)),
+                "byte_sha256": hashlib.sha256(raw).hexdigest(),
+                "size_bytes": len(raw),
+                "mode": 0o600,
+                "uid": os.getuid(),
+                "nlink": 1,
+            }
+        )
+    return rows
+
+
+def _synthetic_symbols() -> list[str]:
+    return ["000001.SZ", "000002.SZ", "600000.SH"]
+
+
+def _synthetic_scope_sha256() -> str:
+    return hashlib.sha256("\n".join(_synthetic_symbols()).encode("ascii")).hexdigest()
+
+
+def _synthetic_source_path(repository_root: Path, name: str) -> Path:
+    if name == "latest_pointer":
+        return repository_root / "data" / "parquet" / "cn" / "_latest.json"
+    return (
+        repository_root
+        / "data"
+        / "parquet"
+        / "cn"
+        / "_snapshots"
+        / subject.SNAPSHOT_ID_V4_3
+        / f"{name}.json"
     )
 
 
-@pytest.fixture(scope="session")
-def artifacts(publication_inputs: Any) -> dict[str, dict[str, Any]]:
+def _synthetic_source_raws() -> dict[str, bytes]:
+    return {
+        "latest_pointer": prereg.canonical_file_bytes_v4_3(
+            {
+                "snapshot_id": subject.SNAPSHOT_ID_V4_3,
+                "status": "OK",
+                "blockers": [],
+                "latest_available_trade_date": subject.COMPACT_CUTOFF_V4_3,
+                "latest_complete_trade_date": subject.COMPACT_CUTOFF_V4_3,
+            }
+        ),
+        "snapshot_manifest": prereg.canonical_file_bytes_v4_3(
+            {
+                "snapshot_id": subject.SNAPSHOT_ID_V4_3,
+                "status": "OK",
+                "blockers": [],
+                "latest_available_trade_date": subject.COMPACT_CUTOFF_V4_3,
+                "latest_complete_trade_date": subject.COMPACT_CUTOFF_V4_3,
+            }
+        ),
+        "components": prereg.canonical_file_bytes_v4_3({"full_a": _synthetic_symbols()}),
+        "pit_generation_manifest": prereg.canonical_file_bytes_v4_3(
+            {
+                "generation_id": "pit-20260717-5a3853ca2dd955e3",
+                "canonical_sha256": "5" * 64,
+            }
+        ),
+        "pit_membership": b"synthetic PIT membership\n",
+    }
+
+
+def _synthetic_backend(repository_root: Path) -> dict[str, Any]:
+    records = {
+        name: {
+            "absolute_path": str(_synthetic_source_path(repository_root, name)),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "size_bytes": len(raw),
+        }
+        for name, raw in _synthetic_source_raws().items()
+    }
+    return {
+        "schema_version": subject.INPUT_BINDING_SCHEMA_VERSION,
+        "latest_pointer": records["latest_pointer"],
+        "snapshot_manifest": records["snapshot_manifest"],
+        "components": records["components"],
+        "calendar": {"analysis_start": "2021-01-01"},
+        "pit_generation": {
+            "manifest": records["pit_generation_manifest"],
+            "membership": records["pit_membership"],
+        },
+        "table": {
+            "absolute_root": str(repository_root / "data" / "parquet" / "synthetic" / "table"),
+            "regular_file_count": 0,
+            "parquet_file_count": 0,
+            "parquet_inventory": [],
+        },
+        "eligibility_boundary": {
+            "serving_inventory": {
+                "absolute_root": str(repository_root / "data" / "parquet" / "synthetic" / "serving")
+            }
+        },
+    }
+
+
+def _synthetic_strict_source_binding(repository_root: Path) -> dict[str, Any]:
+    backend = _synthetic_backend(repository_root)
+    return subject._seal(
+        {
+            "schema_version": subject.STRICT_SOURCE_SCHEMA_VERSION_V4_3,
+            "protocol_version": "v4",
+            "market": "CN",
+            "universe": "full_a",
+            "cycle_id": subject.CYCLE_ID_V4_3,
+            "snapshot_id": subject.SNAPSHOT_ID_V4_3,
+            "analysis_start": "2021-01-01",
+            "cutoff": subject.CUTOFF_V4_3,
+            "latest_available_trade_date": subject.COMPACT_CUTOFF_V4_3,
+            "latest_complete_trade_date": subject.COMPACT_CUTOFF_V4_3,
+            "expected_scope_count": 3,
+            "full_a_scope_sha256": _synthetic_scope_sha256(),
+            "serving_inventory_count": 1,
+            "calendar_semantic_sha256": "1" * 64,
+            "table_inventory_semantic_sha256": "2" * 64,
+            "serving_inventory_semantic_sha256": "3" * 64,
+            "backend_binding_schema_version": subject.INPUT_BINDING_SCHEMA_VERSION,
+            "backend_binding_semantic_sha256": subject.binding_semantic_sha256_v4_1(backend),
+            "backend_binding": backend,
+            "ordered_source_file_bindings": _synthetic_source_descriptors(repository_root),
+            "table_inventory_binding": {
+                "absolute_root": str(repository_root / "data" / "parquet" / "synthetic" / "table"),
+                "regular_file_count": 0,
+                "parquet_file_count": 0,
+                "inventory_semantic_sha256": "2" * 64,
+            },
+            "serving_inventory_binding": {
+                "absolute_root": str(
+                    repository_root / "data" / "parquet" / "synthetic" / "serving"
+                ),
+                "regular_file_count": 1,
+                "parquet_file_count": 1,
+                "inventory_semantic_sha256": "3" * 64,
+            },
+        }
+    )
+
+
+def _patch_synthetic_strict_source(
+    monkeypatch: pytest.MonkeyPatch,
+    repository_root: Path,
+) -> dict[str, bytes]:
+    source_raws = _synthetic_source_raws()
+    backend = _synthetic_backend(repository_root)
+
+    monkeypatch.setattr(subject, "FULL_A_SCOPE_COUNT_V4_3", 3)
+    monkeypatch.setattr(subject, "FULL_A_SCOPE_SHA256_V4_3", _synthetic_scope_sha256())
+    monkeypatch.setattr(subject, "SERVING_INVENTORY_COUNT_V4_3", 1)
+    monkeypatch.setattr(subject, "CALENDAR_SEMANTIC_SHA256_V4_3", "1" * 64)
+    monkeypatch.setattr(subject, "TABLE_INVENTORY_SEMANTIC_SHA256_V4_3", "2" * 64)
+    monkeypatch.setattr(subject, "SERVING_INVENTORY_SEMANTIC_SHA256_V4_3", "3" * 64)
+    monkeypatch.setattr(subject, "PIT_MEMBERSHIP_BYTE_SHA256_V4_3", "5" * 64)
+
+    def validate_backend_binding(value: Any) -> dict[str, Any]:
+        if value != backend:
+            raise subject.FactorGovernanceCandidatePreregistrationBundleV4_3Error(
+                "strict source backend semantic identity mismatch"
+            )
+        return copy.deepcopy(backend)
+
+    def source_descriptor_rows(
+        backend_value: Any,
+        *,
+        boundary: Path,
+    ) -> tuple[list[dict[str, Any]], tuple[Any, ...]]:
+        if backend_value != backend or boundary != repository_root:
+            raise subject.FactorGovernanceCandidatePreregistrationBundleV4_3Error(
+                "strict source repository root mismatch"
+            )
+        rows: list[dict[str, Any]] = []
+        files: list[Any] = []
+        for name, raw in source_raws.items():
+            path = _synthetic_source_path(repository_root, name)
+            descriptor = {
+                "absolute_path": str(path),
+                "byte_sha256": hashlib.sha256(raw).hexdigest(),
+                "size_bytes": len(raw),
+                "mode": 0o600,
+                "uid": os.getuid(),
+                "nlink": 1,
+            }
+            rows.append({"name": name, **descriptor})
+            files.append(
+                subject._StableFile(
+                    path=path,
+                    raw=raw,
+                    descriptor=descriptor,
+                    signature=(len(raw),),
+                )
+            )
+        return rows, tuple(files)
+
+    def stable_tree(root: Path, *, boundary: Path, label: str) -> Any:
+        return subject._TreeSnapshot(
+            summary={
+                "absolute_root": str(root),
+                "regular_file_count": 0 if "table" in label else 1,
+                "parquet_file_count": 0 if "table" in label else 1,
+                "inventory_semantic_sha256": ("2" * 64 if "table" in label else "3" * 64),
+            },
+            inventory=(),
+            identities=(),
+        )
+
+    monkeypatch.setattr(subject, "_validate_backend_binding", validate_backend_binding)
+    monkeypatch.setattr(subject, "_source_descriptor_rows", source_descriptor_rows)
+    monkeypatch.setattr(subject, "_stable_tree", stable_tree)
+    return source_raws
+
+
+def _patch_v4_2_contract_lock_repository(
+    monkeypatch: pytest.MonkeyPatch,
+    repository_root: Path,
+) -> None:
+    real_validate = subject.validate_v4_2_contract_lock_v4_3
+    real_build = subject.build_v4_2_contract_lock_v4_3
+
+    def validate(value: Any, *, repository_root: str | os.PathLike[str] = repository_root) -> Any:
+        return real_validate(value, repository_root=repository_root)
+
+    def build(*, repository_root: str | os.PathLike[str] = repository_root) -> Any:
+        return real_build(repository_root=repository_root)
+
+    monkeypatch.setattr(subject, "validate_v4_2_contract_lock_v4_3", validate)
+    monkeypatch.setattr(subject, "build_v4_2_contract_lock_v4_3", build)
+
+
+def _synthetic_aquant_source_set_receipt() -> dict[str, Any]:
+    return prereg.validate_aquant_source_set_receipt_v4_3(
+        prereg._seal(
+            {
+                "schema_version": prereg.SOURCE_SET_RECEIPT_SCHEMA_VERSION,
+                "protocol_version": prereg.PROTOCOL_VERSION,
+                "project": "A_quant",
+                "git_top": prereg.AQUANT_GIT_TOP,
+                "commit": prereg.AQUANT_COMMIT,
+                "runtime_fingerprint": prereg.runtime_fingerprint_v4_3(),
+                "source_bindings": list(prereg.SOURCE_BINDINGS),
+                "selector_bindings": list(prereg.EXPECTED_SELECTOR_BINDINGS),
+                "candidate_definitions": list(prereg.EXPECTED_CANDIDATE_DEFINITION_ROWS),
+                "source_authenticity_verified": True,
+                "definition_identity_verified": True,
+                "runtime_equivalence_verified": False,
+                "signal_computability_proven": False,
+                "measurement_status": "measurement_not_run",
+                "outcome_paths_read": [],
+                "outcomes_used_as_evidence": False,
+            }
+        )
+    )
+
+
+@pytest.fixture
+def publication_inputs(monkeypatch: pytest.MonkeyPatch) -> Any:
+    _patch_synthetic_strict_source(monkeypatch, cli.PROJECT_ROOT)
+    return cli.PublicationInputs(
+        aquant_git_objects={"A_quant/source.py": b"source\n"},
+        strict_source_binding=_synthetic_strict_source_binding(cli.PROJECT_ROOT),
+        code_bindings=cli._build_code_bindings(cli.PROJECT_ROOT),
+        protected_bindings=(),
+        runtime_fingerprint={"synthetic_strict_source": True},
+    )
+
+
+@pytest.fixture
+def artifacts(
+    publication_inputs: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, dict[str, Any]]:
+    _patch_v4_2_contract_lock_repository(monkeypatch, cli.PROJECT_ROOT)
+    monkeypatch.setattr(
+        prereg,
+        "build_aquant_source_set_receipt_v4_3",
+        lambda **_kwargs: _synthetic_aquant_source_set_receipt(),
+    )
     source = prereg.build_aquant_source_set_receipt_v4_3(
         aquant_git_objects=publication_inputs.aquant_git_objects
     )
@@ -38,7 +310,9 @@ def artifacts(publication_inputs: Any) -> dict[str, dict[str, Any]]:
         repository_root=cli.PROJECT_ROOT,
         code_bindings=publication_inputs.code_bindings,
     )
-    v4_2_contract_lock = subject.build_v4_2_contract_lock_v4_3()
+    v4_2_contract_lock = subject.build_v4_2_contract_lock_v4_3(
+        repository_root=cli.PROJECT_ROOT,
+    )
     return subject.build_candidate_preregistration_bundle_artifacts_v4_3(
         aquant_source_set_receipt=source,
         operator_semantics=operator,
@@ -130,9 +404,7 @@ def test_each_v4_2_locked_file_byte_drift_is_rejected_at_runtime(
     tmp_path: Path,
 ) -> None:
     repository_root = _copy_v4_2_locked_tree(tmp_path)
-    accepted = subject.build_v4_2_contract_lock_v4_3(
-        repository_root=repository_root
-    )
+    accepted = subject.build_v4_2_contract_lock_v4_3(repository_root=repository_root)
     assert accepted["locked_file_count"] == 6
 
     spec = subject.V4_2_LOCKED_FILES_V4_3[locked_index]
@@ -142,9 +414,7 @@ def test_each_v4_2_locked_file_byte_drift_is_rejected_at_runtime(
         subject.FactorGovernanceCandidatePreregistrationBundleV4_3Error,
         match="byte SHA mismatch",
     ):
-        subject.build_v4_2_contract_lock_v4_3(
-            repository_root=repository_root
-        )
+        subject.build_v4_2_contract_lock_v4_3(repository_root=repository_root)
 
 
 @pytest.mark.parametrize(
@@ -165,10 +435,7 @@ def test_v4_2_contract_lock_rejects_unsafe_runtime_file_identity(
     repository_root = _copy_v4_2_locked_tree(tmp_path)
     target = repository_root / subject.V4_2_LOCKED_FILES_V4_3[1]["relative_path"]
     if tamper == "symlink":
-        replacement = (
-            repository_root
-            / subject.V4_2_LOCKED_FILES_V4_3[0]["relative_path"]
-        )
+        replacement = repository_root / subject.V4_2_LOCKED_FILES_V4_3[0]["relative_path"]
         target.unlink()
         target.symlink_to(replacement)
     elif tamper == "non_regular":
@@ -185,9 +452,7 @@ def test_v4_2_contract_lock_rejects_unsafe_runtime_file_identity(
         subject.FactorGovernanceCandidatePreregistrationBundleV4_3Error,
         match=error_pattern,
     ):
-        subject.build_v4_2_contract_lock_v4_3(
-            repository_root=repository_root
-        )
+        subject.build_v4_2_contract_lock_v4_3(repository_root=repository_root)
 
 
 def test_v4_2_contract_lock_rejects_wrong_owner_at_runtime(
@@ -202,9 +467,7 @@ def test_v4_2_contract_lock_rejects_wrong_owner_at_runtime(
         subject.FactorGovernanceCandidatePreregistrationBundleV4_3Error,
         match="owner/regular/non-symlink hard-link contract",
     ):
-        subject.build_v4_2_contract_lock_v4_3(
-            repository_root=repository_root
-        )
+        subject.build_v4_2_contract_lock_v4_3(repository_root=repository_root)
 
 
 def test_fixed_inventory_schemas_and_dual_sha_dag(
@@ -262,9 +525,7 @@ def test_fixed_inventory_schemas_and_dual_sha_dag(
             artifact=contract_lock,
         )
     )
-    collision = artifacts[
-        subject.DEFINITION_IDENTITY_COLLISION_AUDIT_FILENAME_V4_3
-    ]
+    collision = artifacts[subject.DEFINITION_IDENTITY_COLLISION_AUDIT_FILENAME_V4_3]
     assert [row["name"] for row in collision["predecessor_bindings"]] == [
         "aquant_source_set_receipt",
         "comparison_catalog_receipt",
@@ -289,9 +550,7 @@ def test_fixed_inventory_schemas_and_dual_sha_dag(
         "byte_sha256",
         "semantic_sha256",
     }
-    orchestration = artifacts[
-        subject.PREREG_DISCOVERY_ORCHESTRATION_FILENAME_V4_3
-    ]
+    orchestration = artifacts[subject.PREREG_DISCOVERY_ORCHESTRATION_FILENAME_V4_3]
     assert len(orchestration["graph_bindings"]) == 12
     assert {row["name"] for row in orchestration["graph_bindings"]} >= {
         "cycle_root",
@@ -315,9 +574,7 @@ def test_readback_report_is_exact_precommit_intent_and_binds_all_inputs(
     artifacts: dict[str, dict[str, Any]],
 ) -> None:
     complete = _complete(artifacts)
-    normalized = subject.validate_candidate_preregistration_bundle_artifacts_v4_3(
-        complete
-    )
+    normalized = subject.validate_candidate_preregistration_bundle_artifacts_v4_3(complete)
     report = normalized[subject.READBACK_REPORT_FILENAME_V4_3]
     assert report["publication_phase"] == "PRECOMMIT_INTENT_ONLY"
     assert report["exclusive_rename_completed"] is False
@@ -342,24 +599,17 @@ def test_readback_report_is_exact_precommit_intent_and_binds_all_inputs(
         for row in report["artifact_bindings"]
         if row["filename"] == subject.CYCLE_ROOT_FILENAME_V4_3
     )
-    assert root_readback_binding["semantic_sha256"] == root[
-        "artifact_semantic_sha256"
-    ]
-    assert subject.validate_v4_2_contract_lock_v4_3(
-        root["v4_2_contract_lock"]
-    )["ordered_locked_files"] == root["v4_2_contract_lock"][
-        "ordered_locked_files"
-    ]
+    assert root_readback_binding["semantic_sha256"] == root["artifact_semantic_sha256"]
+    assert (
+        subject.validate_v4_2_contract_lock_v4_3(root["v4_2_contract_lock"])["ordered_locked_files"]
+        == root["v4_2_contract_lock"]["ordered_locked_files"]
+    )
 
     tampered = copy.deepcopy(complete)
     tampered_report = tampered[subject.READBACK_REPORT_FILENAME_V4_3]
     tampered_report["artifact_bindings"][0]["semantic_sha256"] = "0" * 64
     tampered_report["artifact_semantic_sha256"] = prereg.semantic_sha256_v4_3(
-        {
-            key: value
-            for key, value in tampered_report.items()
-            if key != "artifact_semantic_sha256"
-        }
+        {key: value for key, value in tampered_report.items() if key != "artifact_semantic_sha256"}
     )
     with pytest.raises(
         subject.FactorGovernanceCandidatePreregistrationBundleV4_3Error,
@@ -382,12 +632,11 @@ def test_historical_readback_rebuild_uses_embedded_v4_2_lock_without_live_scan(
         "_observe_v4_2_contract_lock_snapshot",
         forbidden,
     )
-    normalized = subject.validate_candidate_preregistration_bundle_artifacts_v4_3(
-        complete
+    normalized = subject.validate_candidate_preregistration_bundle_artifacts_v4_3(complete)
+    assert (
+        normalized[subject.CYCLE_ROOT_FILENAME_V4_3]["v4_2_contract_lock"]
+        == artifacts[subject.CYCLE_ROOT_FILENAME_V4_3]["v4_2_contract_lock"]
     )
-    assert normalized[subject.CYCLE_ROOT_FILENAME_V4_3][
-        "v4_2_contract_lock"
-    ] == artifacts[subject.CYCLE_ROOT_FILENAME_V4_3]["v4_2_contract_lock"]
 
 
 @pytest.mark.parametrize(
@@ -404,9 +653,7 @@ def test_cycle_root_rejects_v4_2_contract_lock_row_or_dual_sha_tamper(
 ) -> None:
     root = copy.deepcopy(artifacts[subject.CYCLE_ROOT_FILENAME_V4_3])
     if tamper == "embedded_row":
-        root["v4_2_contract_lock"]["ordered_locked_files"][0][
-            "byte_sha256"
-        ] = "0" * 64
+        root["v4_2_contract_lock"]["ordered_locked_files"][0]["byte_sha256"] = "0" * 64
     else:
         root["ordered_predecessor_bindings"][-1]["semantic_sha256"] = "0" * 64
     with pytest.raises(
@@ -422,11 +669,7 @@ def test_strict_source_and_comparison_identity_tamper_fail_closed(
     strict = copy.deepcopy(publication_inputs.strict_source_binding)
     strict["ordered_source_file_bindings"][0]["byte_sha256"] = "0" * 64
     strict["artifact_semantic_sha256"] = prereg.semantic_sha256_v4_3(
-        {
-            key: value
-            for key, value in strict.items()
-            if key != "artifact_semantic_sha256"
-        }
+        {key: value for key, value in strict.items() if key != "artifact_semantic_sha256"}
     )
     with pytest.raises(
         subject.FactorGovernanceCandidatePreregistrationBundleV4_3Error,
@@ -451,6 +694,96 @@ def test_strict_source_and_comparison_identity_tamper_fail_closed(
         match="exactly once",
     ):
         subject._v4_2_identity_inventory(duplicate)
+
+
+def test_real_strict_source_validator_and_revalidator_reject_resealed_drift(
+    publication_inputs: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_raws = _patch_synthetic_strict_source(monkeypatch, cli.PROJECT_ROOT)
+    strict = copy.deepcopy(publication_inputs.strict_source_binding)
+
+    assert (
+        subject.validate_strict_full_a_source_binding_v4_3(strict)["artifact_semantic_sha256"]
+        == strict["artifact_semantic_sha256"]
+    )
+    assert (
+        subject.revalidate_strict_full_a_source_binding_v4_3(
+            strict,
+            repository_root=cli.PROJECT_ROOT,
+        )["strict_source_binding_semantic_sha256"]
+        == strict["artifact_semantic_sha256"]
+    )
+
+    tampered_snapshot = copy.deepcopy(strict)
+    tampered_snapshot["snapshot_id"] = "20990101T000000Z"
+    tampered_snapshot["artifact_semantic_sha256"] = prereg.semantic_sha256_v4_3(
+        {
+            key: value
+            for key, value in tampered_snapshot.items()
+            if key != "artifact_semantic_sha256"
+        }
+    )
+    with pytest.raises(
+        subject.FactorGovernanceCandidatePreregistrationBundleV4_3Error,
+        match="fixed identity mismatch",
+    ):
+        subject.validate_strict_full_a_source_binding_v4_3(tampered_snapshot)
+
+    tampered_cutoff = copy.deepcopy(strict)
+    tampered_cutoff["cutoff"] = "2099-01-01"
+    tampered_cutoff["artifact_semantic_sha256"] = prereg.semantic_sha256_v4_3(
+        {key: value for key, value in tampered_cutoff.items() if key != "artifact_semantic_sha256"}
+    )
+    with pytest.raises(
+        subject.FactorGovernanceCandidatePreregistrationBundleV4_3Error,
+        match="fixed identity mismatch",
+    ):
+        subject.validate_strict_full_a_source_binding_v4_3(tampered_cutoff)
+
+    tampered_backend = copy.deepcopy(strict)
+    tampered_backend["backend_binding"]["calendar"]["analysis_start"] = "2021-01-02"
+    tampered_backend["artifact_semantic_sha256"] = prereg.semantic_sha256_v4_3(
+        {key: value for key, value in tampered_backend.items() if key != "artifact_semantic_sha256"}
+    )
+    with pytest.raises(
+        subject.FactorGovernanceCandidatePreregistrationBundleV4_3Error,
+        match="backend semantic identity mismatch",
+    ):
+        subject.validate_strict_full_a_source_binding_v4_3(tampered_backend)
+
+    tampered_inventory = copy.deepcopy(strict)
+    tampered_inventory["table_inventory_binding"]["regular_file_count"] = 1
+    tampered_inventory["artifact_semantic_sha256"] = prereg.semantic_sha256_v4_3(
+        {
+            key: value
+            for key, value in tampered_inventory.items()
+            if key != "artifact_semantic_sha256"
+        }
+    )
+    with pytest.raises(
+        subject.FactorGovernanceCandidatePreregistrationBundleV4_3Error,
+        match="inventory binding mismatch",
+    ):
+        subject.validate_strict_full_a_source_binding_v4_3(tampered_inventory)
+
+    source_raws["latest_pointer"] = prereg.canonical_file_bytes_v4_3(
+        {
+            "snapshot_id": subject.SNAPSHOT_ID_V4_3,
+            "status": "OK",
+            "blockers": [],
+            "latest_available_trade_date": subject.COMPACT_CUTOFF_V4_3,
+            "latest_complete_trade_date": "20990101",
+        }
+    )
+    with pytest.raises(
+        subject.FactorGovernanceCandidatePreregistrationBundleV4_3Error,
+        match="file descriptors drifted",
+    ):
+        subject.revalidate_strict_full_a_source_binding_v4_3(
+            strict,
+            repository_root=cli.PROJECT_ROOT,
+        )
 
 
 def test_owner_nlink1_descriptors_reject_relative_symlink_and_hardlink(
@@ -547,9 +880,7 @@ def test_code_and_protected_descriptor_drift_is_rejected(tmp_path: Path) -> None
         repository_root=tmp_path,
         protected_bindings=protected_rows,
     )
-    (tmp_path / subject.PROTECTED_BINDING_RELATIVE_PATHS_V4_3[-1]).write_bytes(
-        b"changed"
-    )
+    (tmp_path / subject.PROTECTED_BINDING_RELATIVE_PATHS_V4_3[-1]).write_bytes(b"changed")
     with pytest.raises(
         subject.FactorGovernanceCandidatePreregistrationBundleV4_3Error,
         match="descriptor mismatch",
@@ -582,15 +913,11 @@ def test_private_publication_committed_truth_exact_readback_and_no_clobber(
     assert all(path.stat().st_mode & 0o777 == 0o600 for path in bundle.iterdir())
     assert all(path.stat().st_nlink == 1 for path in bundle.iterdir())
 
-    report_descriptor = published["artifact_descriptors"][
-        subject.READBACK_REPORT_FILENAME_V4_3
-    ]
+    report_descriptor = published["artifact_descriptors"][subject.READBACK_REPORT_FILENAME_V4_3]
     reread = subject.readback_candidate_preregistration_bundle_v4_3(
         bundle_path=bundle,
         expected_readback_report_byte_sha256=report_descriptor["byte_sha256"],
-        expected_readback_report_semantic_sha256=report[
-            "artifact_semantic_sha256"
-        ],
+        expected_readback_report_semantic_sha256=report["artifact_semantic_sha256"],
     )
     assert reread["accepted"] is True
     assert reread["expected_hashes_verified"] is True
@@ -601,9 +928,7 @@ def test_private_publication_committed_truth_exact_readback_and_no_clobber(
         subject.readback_candidate_preregistration_bundle_v4_3(
             bundle_path=bundle,
             expected_readback_report_byte_sha256="0" * 64,
-            expected_readback_report_semantic_sha256=report[
-                "artifact_semantic_sha256"
-            ],
+            expected_readback_report_semantic_sha256=report["artifact_semantic_sha256"],
         )
     with pytest.raises(private_io.FactorGovernancePrivateBundleIOError, match="already exists"):
         private_io.publish_private_bundle(

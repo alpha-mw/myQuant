@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import copy
 from dataclasses import replace
 import hashlib
 import inspect
@@ -58,6 +59,294 @@ def _entry(tmp_path: Path) -> subject.PublicationInputs:
     )
 
 
+def _synthetic_source_descriptors(repository_root: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for name, raw in _synthetic_source_raws().items():
+        rows.append(
+            {
+                "name": name,
+                "absolute_path": str(_synthetic_source_path(repository_root, name)),
+                "byte_sha256": hashlib.sha256(raw).hexdigest(),
+                "size_bytes": len(raw),
+                "mode": 0o600,
+                "uid": os.getuid(),
+                "nlink": 1,
+            }
+        )
+    return rows
+
+
+def _synthetic_symbols() -> list[str]:
+    return ["000001.SZ", "000002.SZ", "600000.SH"]
+
+
+def _synthetic_scope_sha256() -> str:
+    return hashlib.sha256("\n".join(_synthetic_symbols()).encode("ascii")).hexdigest()
+
+
+def _synthetic_source_path(repository_root: Path, name: str) -> Path:
+    if name == "latest_pointer":
+        return repository_root / "data" / "parquet" / "cn" / "_latest.json"
+    return (
+        repository_root
+        / "data"
+        / "parquet"
+        / "cn"
+        / "_snapshots"
+        / subject.SNAPSHOT_ID
+        / f"{name}.json"
+    )
+
+
+def _synthetic_source_raws() -> dict[str, bytes]:
+    prereg = subject.prereg_v4_3
+    return {
+        "latest_pointer": prereg.canonical_file_bytes_v4_3(
+            {
+                "snapshot_id": subject.SNAPSHOT_ID,
+                "status": "OK",
+                "blockers": [],
+                "latest_available_trade_date": subject.LATEST_COMPLETE_TRADE_DATE,
+                "latest_complete_trade_date": subject.LATEST_COMPLETE_TRADE_DATE,
+            }
+        ),
+        "snapshot_manifest": prereg.canonical_file_bytes_v4_3(
+            {
+                "snapshot_id": subject.SNAPSHOT_ID,
+                "status": "OK",
+                "blockers": [],
+                "latest_available_trade_date": subject.LATEST_COMPLETE_TRADE_DATE,
+                "latest_complete_trade_date": subject.LATEST_COMPLETE_TRADE_DATE,
+            }
+        ),
+        "components": prereg.canonical_file_bytes_v4_3({"full_a": _synthetic_symbols()}),
+        "pit_generation_manifest": prereg.canonical_file_bytes_v4_3(
+            {
+                "generation_id": "pit-20260717-5a3853ca2dd955e3",
+                "canonical_sha256": "5" * 64,
+            }
+        ),
+        "pit_membership": b"synthetic PIT membership\n",
+    }
+
+
+def _synthetic_backend(repository_root: Path) -> dict[str, Any]:
+    records = {
+        name: {
+            "absolute_path": str(_synthetic_source_path(repository_root, name)),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "size_bytes": len(raw),
+        }
+        for name, raw in _synthetic_source_raws().items()
+    }
+    return {
+        "schema_version": subject.bundle_v4_3.INPUT_BINDING_SCHEMA_VERSION,
+        "latest_pointer": records["latest_pointer"],
+        "snapshot_manifest": records["snapshot_manifest"],
+        "components": records["components"],
+        "calendar": {"analysis_start": "2021-01-01"},
+        "pit_generation": {
+            "manifest": records["pit_generation_manifest"],
+            "membership": records["pit_membership"],
+        },
+        "table": {
+            "absolute_root": str(repository_root / "data" / "parquet" / "synthetic" / "table"),
+            "regular_file_count": 0,
+            "parquet_file_count": 0,
+            "parquet_inventory": [],
+        },
+        "eligibility_boundary": {
+            "serving_inventory": {
+                "absolute_root": str(repository_root / "data" / "parquet" / "synthetic" / "serving")
+            }
+        },
+    }
+
+
+def _synthetic_strict_source_binding(repository_root: Path) -> dict[str, Any]:
+    backend = _synthetic_backend(repository_root)
+    return subject.bundle_v4_3._seal(
+        {
+            "schema_version": subject.bundle_v4_3.STRICT_SOURCE_SCHEMA_VERSION_V4_3,
+            "protocol_version": "v4",
+            "market": "CN",
+            "universe": "full_a",
+            "cycle_id": subject.FIXED_CYCLE_ID,
+            "snapshot_id": subject.SNAPSHOT_ID,
+            "analysis_start": "2021-01-01",
+            "cutoff": subject.CUTOFF_DATE,
+            "latest_available_trade_date": subject.LATEST_COMPLETE_TRADE_DATE,
+            "latest_complete_trade_date": subject.LATEST_COMPLETE_TRADE_DATE,
+            "expected_scope_count": 3,
+            "full_a_scope_sha256": _synthetic_scope_sha256(),
+            "serving_inventory_count": 1,
+            "calendar_semantic_sha256": "1" * 64,
+            "table_inventory_semantic_sha256": "2" * 64,
+            "serving_inventory_semantic_sha256": "3" * 64,
+            "backend_binding_schema_version": subject.bundle_v4_3.INPUT_BINDING_SCHEMA_VERSION,
+            "backend_binding_semantic_sha256": subject.bundle_v4_3.binding_semantic_sha256_v4_1(
+                backend
+            ),
+            "backend_binding": backend,
+            "ordered_source_file_bindings": _synthetic_source_descriptors(repository_root),
+            "table_inventory_binding": {
+                "absolute_root": str(repository_root / "data" / "parquet" / "synthetic" / "table"),
+                "regular_file_count": 0,
+                "parquet_file_count": 0,
+                "inventory_semantic_sha256": "2" * 64,
+            },
+            "serving_inventory_binding": {
+                "absolute_root": str(
+                    repository_root / "data" / "parquet" / "synthetic" / "serving"
+                ),
+                "regular_file_count": 1,
+                "parquet_file_count": 1,
+                "inventory_semantic_sha256": "3" * 64,
+            },
+        }
+    )
+
+
+def _synthetic_publication_inputs() -> subject.PublicationInputs:
+    return subject.PublicationInputs(
+        aquant_git_objects={"A_quant/source.py": b"source\n"},
+        strict_source_binding=_synthetic_strict_source_binding(subject.PROJECT_ROOT),
+        code_bindings=subject._build_code_bindings(subject.PROJECT_ROOT),
+        protected_bindings=(),
+        runtime_fingerprint={"synthetic_strict_source": True},
+    )
+
+
+def _synthetic_aquant_source_set_receipt() -> dict[str, Any]:
+    prereg = subject.prereg_v4_3
+    return prereg.validate_aquant_source_set_receipt_v4_3(
+        prereg._seal(
+            {
+                "schema_version": prereg.SOURCE_SET_RECEIPT_SCHEMA_VERSION,
+                "protocol_version": prereg.PROTOCOL_VERSION,
+                "project": "A_quant",
+                "git_top": prereg.AQUANT_GIT_TOP,
+                "commit": prereg.AQUANT_COMMIT,
+                "runtime_fingerprint": prereg.runtime_fingerprint_v4_3(),
+                "source_bindings": list(prereg.SOURCE_BINDINGS),
+                "selector_bindings": list(prereg.EXPECTED_SELECTOR_BINDINGS),
+                "candidate_definitions": list(prereg.EXPECTED_CANDIDATE_DEFINITION_ROWS),
+                "source_authenticity_verified": True,
+                "definition_identity_verified": True,
+                "runtime_equivalence_verified": False,
+                "signal_computability_proven": False,
+                "measurement_status": "measurement_not_run",
+                "outcome_paths_read": [],
+                "outcomes_used_as_evidence": False,
+            }
+        )
+    )
+
+
+def _patch_synthetic_publish_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
+    source_raws = _synthetic_source_raws()
+    backend = _synthetic_backend(subject.PROJECT_ROOT)
+
+    monkeypatch.setattr(subject.bundle_v4_3, "FULL_A_SCOPE_COUNT_V4_3", 3)
+    monkeypatch.setattr(
+        subject.bundle_v4_3,
+        "FULL_A_SCOPE_SHA256_V4_3",
+        _synthetic_scope_sha256(),
+    )
+    monkeypatch.setattr(subject.bundle_v4_3, "SERVING_INVENTORY_COUNT_V4_3", 1)
+    monkeypatch.setattr(subject.bundle_v4_3, "CALENDAR_SEMANTIC_SHA256_V4_3", "1" * 64)
+    monkeypatch.setattr(
+        subject.bundle_v4_3,
+        "TABLE_INVENTORY_SEMANTIC_SHA256_V4_3",
+        "2" * 64,
+    )
+    monkeypatch.setattr(
+        subject.bundle_v4_3,
+        "SERVING_INVENTORY_SEMANTIC_SHA256_V4_3",
+        "3" * 64,
+    )
+    monkeypatch.setattr(subject.bundle_v4_3, "PIT_MEMBERSHIP_BYTE_SHA256_V4_3", "5" * 64)
+
+    def validate_backend_binding(value: Any) -> dict[str, Any]:
+        if value != backend:
+            raise subject.bundle_v4_3.FactorGovernanceCandidatePreregistrationBundleV4_3Error(
+                "strict source backend semantic identity mismatch"
+            )
+        return copy.deepcopy(backend)
+
+    def source_descriptor_rows(
+        backend_value: Any,
+        *,
+        boundary: Path,
+    ) -> tuple[list[dict[str, Any]], tuple[Any, ...]]:
+        if backend_value != backend or boundary != subject.PROJECT_ROOT:
+            raise subject.bundle_v4_3.FactorGovernanceCandidatePreregistrationBundleV4_3Error(
+                "strict source repository root mismatch"
+            )
+        rows: list[dict[str, Any]] = []
+        files: list[Any] = []
+        for name, raw in source_raws.items():
+            path = _synthetic_source_path(subject.PROJECT_ROOT, name)
+            descriptor = {
+                "absolute_path": str(path),
+                "byte_sha256": hashlib.sha256(raw).hexdigest(),
+                "size_bytes": len(raw),
+                "mode": 0o600,
+                "uid": os.getuid(),
+                "nlink": 1,
+            }
+            rows.append({"name": name, **descriptor})
+            files.append(
+                subject.bundle_v4_3._StableFile(
+                    path=path,
+                    raw=raw,
+                    descriptor=descriptor,
+                    signature=(len(raw),),
+                )
+            )
+        return rows, tuple(files)
+
+    def stable_tree(root: Path, *, boundary: Path, label: str) -> Any:
+        return subject.bundle_v4_3._TreeSnapshot(
+            summary={
+                "absolute_root": str(root),
+                "regular_file_count": 0 if "table" in label else 1,
+                "parquet_file_count": 0 if "table" in label else 1,
+                "inventory_semantic_sha256": ("2" * 64 if "table" in label else "3" * 64),
+            },
+            inventory=(),
+            identities=(),
+        )
+
+    monkeypatch.setattr(subject.bundle_v4_3, "_validate_backend_binding", validate_backend_binding)
+    monkeypatch.setattr(subject.bundle_v4_3, "_source_descriptor_rows", source_descriptor_rows)
+    monkeypatch.setattr(subject.bundle_v4_3, "_stable_tree", stable_tree)
+    monkeypatch.setattr(
+        subject.bundle_v4_3,
+        "_observe_protected_bindings",
+        lambda **_kwargs: (),
+    )
+    monkeypatch.setattr(
+        subject.prereg_v4_3,
+        "build_aquant_source_set_receipt_v4_3",
+        lambda **_kwargs: _synthetic_aquant_source_set_receipt(),
+    )
+    real_validate_v4_2 = subject.bundle_v4_3.validate_v4_2_contract_lock_v4_3
+
+    def validate_v4_2_contract_lock(
+        value: Any,
+        *,
+        repository_root: str | os.PathLike[str] = subject.PROJECT_ROOT,
+    ) -> Any:
+        return real_validate_v4_2(value, repository_root=repository_root)
+
+    monkeypatch.setattr(
+        subject.bundle_v4_3,
+        "validate_v4_2_contract_lock_v4_3",
+        validate_v4_2_contract_lock,
+    )
+
+
 def _published(root: Path, *, report_phase: str = "PRECOMMIT_INTENT_ONLY") -> dict[str, Any]:
     bundle = root / subject.FIXED_CYCLE_ID
     report_name = subject.bundle_v4_3.READBACK_REPORT_FILENAME_V4_3
@@ -92,9 +381,7 @@ def _published(root: Path, *, report_phase: str = "PRECOMMIT_INTENT_ONLY") -> di
 def test_cli_surface_is_exact_and_has_no_override_or_side_effect_flags() -> None:
     parser = subject.build_parser()
     subparsers = next(
-        action
-        for action in parser._actions
-        if isinstance(action, argparse._SubParsersAction)
+        action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
     )
     assert tuple(subparsers.choices) == ("publish", "readback")
     publish = subparsers.choices["publish"]
@@ -139,9 +426,7 @@ def test_fixed_root_cycle_candidates_sources_and_strict_oracles() -> None:
         "/Users/maxwell/mySpace/myQuant/reports/factor_governance/private/"
         "v4_3_candidate_preregistration"
     )
-    assert subject.FIXED_CYCLE_ID == (
-        "cn_full_a_v4_3_20260717_20260717T172132Z"
-    )
+    assert subject.FIXED_CYCLE_ID == ("cn_full_a_v4_3_20260717_20260717T172132Z")
     assert tuple(subject.prereg_v4_3.EXPECTED_CANDIDATES_V4_3) == (
         "event_guidance_revision_90d",
         "event_earnings_drift_60d",
@@ -151,9 +436,7 @@ def test_fixed_root_cycle_candidates_sources_and_strict_oracles() -> None:
         "industry_relative_momentum_20d",
     )
     assert subject.prereg_v4_3.AQUANT_GIT_TOP == "/Users/maxwell/mySpace"
-    assert subject.prereg_v4_3.AQUANT_COMMIT_V4_3 == (
-        "4424dcecc384f614b0e9fd5e36cf094e9244bad5"
-    )
+    assert subject.prereg_v4_3.AQUANT_COMMIT_V4_3 == ("4424dcecc384f614b0e9fd5e36cf094e9244bad5")
     assert len(subject.prereg_v4_3.AQUANT_SOURCE_SPECS_V4_3) == 8
     assert all(
         row["git_tree_path"].startswith("A_quant/")
@@ -315,15 +598,13 @@ def test_aquant_sources_are_read_only_through_pinned_git_objects(
     )
     objects = subject._read_aquant_git_objects()
     assert tuple(objects) == tuple(
-        row["git_tree_path"]
-        for row in subject.prereg_v4_3.AQUANT_SOURCE_SPECS_V4_3
+        row["git_tree_path"] for row in subject.prereg_v4_3.AQUANT_SOURCE_SPECS_V4_3
     )
     assert calls[0][0:2] == ("rev-parse", "--verify")
     assert len([call for call in calls if call[0] == "ls-tree"]) == 8
     assert len([call for call in calls if call[0:2] == ("cat-file", "blob")]) == 8
     assert all(
-        not any(token in call for token in ("status", "diff", "show", "log"))
-        for call in calls
+        not any(token in call for token in ("status", "diff", "show", "log")) for call in calls
     )
 
 
@@ -340,9 +621,7 @@ def test_aquant_git_blob_drift_fails_before_pure_build(
             row = next(source_rows)
             current.clear()
             current.update(row)
-            return (
-                f"{row['mode']} blob {row['blob_oid']}\t{row['git_tree_path']}\n"
-            ).encode()
+            return (f"{row['mode']} blob {row['blob_oid']}\t{row['git_tree_path']}\n").encode()
         assert arguments[0:2] == ["cat-file", "blob"]
         return b"drifted Git object\n"
 
@@ -380,12 +659,8 @@ def test_strict_source_builder_receives_only_the_fixed_explicit_inputs(
         "expected_scope_count": subject.EXPECTED_FULL_A_COUNT,
         "full_a_scope_sha256": subject.EXPECTED_FULL_A_SEMANTIC_SHA256,
         "calendar_semantic_sha256": subject.EXPECTED_CALENDAR_SEMANTIC_SHA256,
-        "table_inventory_semantic_sha256": (
-            subject.EXPECTED_TABLE_INVENTORY_SEMANTIC_SHA256
-        ),
-        "serving_inventory_semantic_sha256": (
-            subject.EXPECTED_SERVING_INVENTORY_SEMANTIC_SHA256
-        ),
+        "table_inventory_semantic_sha256": (subject.EXPECTED_TABLE_INVENTORY_SEMANTIC_SHA256),
+        "serving_inventory_semantic_sha256": (subject.EXPECTED_SERVING_INVENTORY_SEMANTIC_SHA256),
     }
     monkeypatch.setattr(
         subject.source_readback_v4_1,
@@ -428,9 +703,7 @@ def test_under_lock_callback_rejects_git_source_code_or_protected_drift(
         "aquant_git_objects": {"A_quant/source.py": b"changed\n"},
         "strict_source_binding": {"artifact_semantic_sha256": "9" * 64},
         "code_bindings": ({**first.code_bindings[0], "byte_sha256": "9" * 64},),
-        "protected_bindings": (
-            {**first.protected_bindings[0], "byte_sha256": "9" * 64},
-        ),
+        "protected_bindings": ({**first.protected_bindings[0], "byte_sha256": "9" * 64},),
         "runtime_fingerprint": {"fixed": False},
     }
     changed = replace(first, **{field: replacements[field]})
@@ -534,19 +807,20 @@ def test_actual_tmp_root_publish_readback_hash_mismatch_and_no_clobber(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _patch_synthetic_publish_inputs(monkeypatch)
+    monkeypatch.setattr(
+        subject,
+        "_collect_publication_inputs",
+        lambda **_kwargs: _synthetic_publication_inputs(),
+    )
     root = _private_root(tmp_path)
     lock_observations: list[tuple[str, ...]] = []
-    real_observe_lock = (
-        subject.bundle_v4_3._observe_v4_2_contract_lock_snapshot
-    )
+    real_observe_lock = subject.bundle_v4_3._observe_v4_2_contract_lock_snapshot
 
     def observe_lock(**kwargs: Any) -> Any:
         snapshot = real_observe_lock(**kwargs)
         lock_observations.append(
-            tuple(
-                row["byte_sha256"]
-                for row in snapshot.artifact["ordered_locked_files"]
-            )
+            tuple(row["byte_sha256"] for row in snapshot.artifact["ordered_locked_files"])
         )
         return snapshot
 
@@ -572,12 +846,8 @@ def test_actual_tmp_root_publish_readback_hash_mismatch_and_no_clobber(
     monkeypatch.setattr(subject, "_validate_static_contract", lambda: None)
     args = argparse.Namespace(
         bundle_path=str(bundle_path),
-        expected_readback_report_byte_sha256=published[
-            "readback_report_byte_sha256"
-        ],
-        expected_readback_report_semantic_sha256=published[
-            "readback_report_semantic_sha256"
-        ],
+        expected_readback_report_byte_sha256=published["readback_report_byte_sha256"],
+        expected_readback_report_semantic_sha256=published["readback_report_semantic_sha256"],
     )
     readback = subject.run_readback(args)
     assert readback["status"] == "READBACK_ACCEPTED"

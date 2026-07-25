@@ -10,15 +10,15 @@ import quant_investor.versioning as versioning
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_v16_package_and_fail_closed_production_runtime_versions_are_explicit():
+def test_retirement_release_and_v15_production_versions_are_explicit():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     lock_packages = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))["package"]
     locked_project = next(item for item in lock_packages if item["name"] == project["name"])
 
-    assert project["version"] == "16.0.0"
+    assert project["version"] == "17.0.0"
     assert locked_project["version"] == project["version"]
-    assert "v16 four-branch research-candidate" in project["description"]
-    assert "v15 production default" in project["description"]
+    assert "V16 retirement release" in project["description"]
+    assert "V15 production/default protocol" in project["description"]
 
     assert versioning.ARCHITECTURE_VERSION == "15.0.0-stable"
     assert versioning.BRANCH_SCHEMA_VERSION == "branch-schema.v15.three-branch"
@@ -43,7 +43,9 @@ def test_readme_and_cli_share_single_mainline_policy():
     option_strings = [option for action in run_parser._actions for option in action.option_strings]
     route_flag = "--" + "architecture"
 
-    assert "16.0.0" in readme
+    assert "17.0.0" in readme
+    assert "V16 retirement release" in readme
+    assert "V15" in readme
     assert route_flag not in readme
     assert "NarratorAgent -> ReportBundle" in readme
     assert "`buy` / `hold` / `sell` / `watch` / `avoid`" in readme
@@ -52,6 +54,24 @@ def test_readme_and_cli_share_single_mainline_policy():
     assert "单一主线" in parser.description
     assert route_flag not in option_strings
     assert not hasattr(parsed, "architecture")
+
+
+def test_retirement_release_excludes_unused_deep_learning_extra():
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    lock_packages = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))["package"]
+    optional_dependencies = project["optional-dependencies"]
+    declared_requirements = [
+        requirement
+        for requirements in optional_dependencies.values()
+        for requirement in requirements
+    ]
+
+    assert "ml" not in optional_dependencies
+    assert not any("tensorflow" in requirement.lower() for requirement in declared_requirements)
+    assert not any(requirement.lower().startswith("torch") for requirement in declared_requirements)
+    assert {"tensorflow", "torch"}.isdisjoint(
+        {package["name"].lower() for package in lock_packages}
+    )
 
 
 def test_versioning_module_exposes_only_single_mainline_payload():

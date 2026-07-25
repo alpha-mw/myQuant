@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from quant_investor.v16.evidence_v2.factor_carrier import (
+from quant_investor.factors.production_set_carrier_v4 import (
     FACTOR_PRODUCTION_SET_CARRIER_SCHEMA,
     FactorProductionSetCarrierV4Error,
     FactorProductionSetEvidenceBundleV4,
@@ -21,10 +21,11 @@ from quant_investor.factors.registry_store import (
     registry_payload_semantic_sha256,
 )
 from quant_investor.factors.runtime import production_factor_set_sha256
-from quant_investor.v16.evidence_v2.contracts import (
+from quant_investor.factors.evidence_contracts import (
     BoundRawArtifact,
     EVIDENCE_REF_SCHEMA,
     EvidenceRef,
+    canonical_json_bytes,
     seal_semantic,
 )
 
@@ -158,3 +159,25 @@ def test_readback_does_not_open_paths(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_carrier_schema_is_distinct_from_legacy_registry() -> None:
     assert FACTOR_PRODUCTION_SET_CARRIER_SCHEMA != "mined-factor-registry.v1"
+
+
+def test_neutral_module_preserves_legacy_carrier_bytes_and_semantic_sha() -> None:
+    registry_ref = EvidenceRef(
+        schema_version=EVIDENCE_REF_SCHEMA,
+        artifact_schema="mined-factor-registry.v1",
+        absolute_path="/registry.json",
+        byte_sha256="0" * 64,
+        semantic_sha256="1" * 64,
+        root_policy="v16.governed-data-root.v2",
+    )
+    payload = build_factor_production_set_carrier_v4(
+        as_of="2026-07-17",
+        legacy_registry_ref=registry_ref,
+    )
+
+    assert hashlib.sha256(canonical_json_bytes(payload)).hexdigest() == (
+        "8c6d0346a6314e01b8b1de77d0438435e798ce487f2d7e545c3386374ced663e"
+    )
+    assert payload["semantic_sha256"] == (
+        "13ee0e080098d09608d5fefa4a7cd6df75ec5702a579352a11c4982b2ef6e8ca"
+    )
