@@ -32,7 +32,7 @@ FROZEN_POLICY_RESOURCE_SHA256S = {
 }
 FROZEN_OPERATIONAL_RESOURCE_SHA256S = {
     "retirement_scan_allowlist.json": (
-        "165827016d53e0e486d7bda50cac1ad0b0b6dc841a2bd0e019f788b03d2eca1f"
+        "54931a0a345f91da763fa1306953d9b8ad4a92bdfdfea5195cfef5b27d2f209d"
     ),
 }
 FROZEN_SCHEMA_SHA256S = {

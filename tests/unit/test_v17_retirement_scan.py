@@ -205,6 +205,30 @@ def test_clean_scan_binds_exact_external_and_runtime_evidence(tmp_path: Path) ->
     assert len(report["semantic_sha256"]) == 64
 
 
+def test_checked_in_allowlist_exactly_matches_repository_findings() -> None:
+    repo = Path(__file__).resolve().parents[2]
+    allowlist = (
+        repo
+        / "quant_investor"
+        / "v17"
+        / "resources"
+        / "retirement_scan_allowlist.json"
+    )
+    _, allowed = scan_module._load_allowlist(allowlist)
+    inventory = scan_module._inventory(repo, allowlist)
+    findings: dict[tuple[str, str], tuple[int, str]] = {}
+    for logical_path, (path, _fingerprint) in inventory.items():
+        payload, kind, _ = scan_module._stable_file_payload(path)
+        digest = hashlib.sha256(payload).hexdigest()
+        for detector, count in scan_module._detect(logical_path, payload, kind).items():
+            findings[(logical_path, detector)] = (count, digest)
+
+    assert set(findings) == set(allowed)
+    for key, (count, digest) in findings.items():
+        assert allowed[key]["exact_count"] == count
+        assert allowed[key]["expected_sha256"] == digest
+
+
 def test_unknown_text_or_python_import_blocks(tmp_path: Path) -> None:
     repo, allowlist, runtime, external, bindings = _fixture(tmp_path)
     (repo / "active.py").write_text(
