@@ -36,6 +36,14 @@ authorizes a BUY, broker call or real order.
 
 - Market maintenance remains `market maintain`; `market run` never refreshes
   data.
+- CN `parquet-direct` keeps Tushare as the primary daily-bar source. An
+  explicitly supplied `--secondary-daily-source eastmoney` may probe only
+  PIT-active unresolved symbols on the exact target date. The probe writes
+  `cn-secondary-daily-evidence.v1` with raw-response bytes/SHA, exact URL and
+  parameters, normalized-row SHA, query-run ID, and PIT binding. It can add
+  only validated exact-date bars; an empty or malformed response leaves
+  `true_missing` blocking, and it never classifies suspension, writes a
+  synthetic bar, or enables staged maintenance. The default is `none`.
 - Fundamental authoritative rebuild remains the existing two-stage
   `fundamental-maintain --allow-live --authoritative-full-rebuild` followed by
   `fundamental-promote --expected-pointer-sha256` workflow.
@@ -261,6 +269,13 @@ Then stage and promote with separate commands:
   --canonical-root data/parquet/cn/macro_daily \
   --expected-catalog-sha256 "$catalog_sha256"
 ```
+
+`--as-of` is the market target date. The production observation generation
+may carry a logical `as_of` behind that target by zero, one, or two pinned CN
+open sessions, but only when the staged release-readiness evidence proves the
+same lag and an empty critical-event gap. The observation logical date is not
+silently advanced to the market date, and a lagged generation without that
+four-way hash-bound readiness evidence remains ineligible.
 
 The projection takes `macro_score`, `liquidity_score` and `policy_signal` from
 the ready, at-least-80%-covered MacroSnapshot domains. Only market volatility

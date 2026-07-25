@@ -19,6 +19,10 @@ from quant_investor.market.cn_nontrading_evidence import (
     symbol_set_sha256,
     write_evidence_cache,
 )
+from quant_investor.market.cn_official_suspension_evidence import (
+    official_suspension_evidence_path,
+    read_official_web_suspension_evidence,
+)
 from quant_investor.market.cn_terminal_delisting_evidence import (
     read_terminal_delisting_evidence,
     terminal_delist_dates,
@@ -1360,10 +1364,53 @@ def run_cn_history_audit(
         evidence_blockers.extend(suspend_blockers)
         if loader_symbols != cached_suspend_symbols:
             evidence_blockers.append("suspend_loader_cache_symbols_mismatch")
+        official_symbols: set[str] = set()
+        official_path = official_suspension_evidence_path(
+            output,
+            trade_date=current_date,
+            pit_membership_sha256=pit_sha256,
+        )
+        official_payload: dict[str, Any] = {}
+        if official_path.exists():
+            official_readback = read_official_web_suspension_evidence(
+                official_path,
+                trade_date=current_date,
+                expected_pit_membership_path=pit_path,
+                expected_pit_membership_sha256=pit_sha256,
+            )
+            if official_readback.get("status") != "passed":
+                evidence_blockers.extend(
+                    "official_suspension_evidence:"
+                    + str(item)
+                    for item in official_readback.get("blockers", []) or []
+                )
+            else:
+                official_symbols = set(
+                    _normalize_symbols(
+                        official_readback.get("verified_symbols", []) or []
+                    )
+                )
+                try:
+                    official_payload = json.loads(
+                        official_path.read_text(encoding="utf-8")
+                    )
+                except Exception as exc:
+                    evidence_blockers.append(
+                        f"official_suspension_evidence_readback_failed:{exc}"
+                    )
+                    official_symbols = set()
         suspend_paths_by_date[current_date] = suspend_path
         suspend_payloads_by_date[current_date] = dict(_suspend_payload)
+        suspend_payloads_by_date[current_date][
+            "official_web_suspension_symbols"
+        ] = sorted(official_symbols)
+        suspend_payloads_by_date[current_date][
+            "official_web_suspension_evidence_path"
+        ] = str(official_path) if official_symbols else ""
         suspend_symbols_by_date[current_date] = (
-            cached_suspend_symbols if not evidence_blockers else set()
+            cached_suspend_symbols | official_symbols
+            if not evidence_blockers
+            else set()
         )
         suspend_blockers_by_date[current_date] = evidence_blockers
 
@@ -1396,7 +1443,15 @@ def run_cn_history_audit(
                 )
                 or []
                 if isinstance(record, Mapping)
-            },
+            }
+            | set(
+                _normalize_symbols(
+                    suspend_payloads_by_date[current_date].get(
+                        "official_web_suspension_symbols", []
+                    )
+                    or []
+                )
+            ),
             next_suspended_symbols=suspend_symbols_by_date[next_date],
         )
         return [

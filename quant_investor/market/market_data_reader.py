@@ -924,22 +924,33 @@ class MarketDataReader:
                 "mode_policy": self.mode_policy,
             }
 
+        blockers: list[str] = []
+        coverage_schema_version = str(
+            (payload.get("coverage") or {}).get("coverage_schema_version") or ""
+        ).strip() if isinstance(payload.get("coverage"), dict) else ""
+        if (
+            self.market == "CN"
+            and self.mode_policy == "strict"
+            and coverage_schema_version != "cn-full-a-coverage.v4"
+        ):
+            observed_schema = coverage_schema_version or "missing"
+            blockers.append(
+                "cn_strict_coverage_schema_v4_required:"
+                f"{observed_schema}"
+            )
         try:
             snapshot = self._snapshot_from_payload(payload)
         except MarketDataUnavailableError as exc:
+            blockers.append(str(exc))
             gate_payload = {
                 "status": "blocked",
                 "healthy": False,
-                "blockers": [str(exc)],
+                "blockers": blockers,
                 "latest_pointer_path": str(self.latest_pointer_path),
                 "mode_policy": self.mode_policy,
             }
             self._snapshot_gate_cache = dict(gate_payload)
             return dict(gate_payload)
-        blockers: list[str] = []
-        coverage_schema_version = str(
-            (payload.get("coverage") or {}).get("coverage_schema_version") or ""
-        ).strip() if isinstance(payload.get("coverage"), dict) else ""
         if str(payload.get("status") or "").upper() != "OK":
             blockers.append(f"latest pointer status is {payload.get('status')!r}")
         blockers.extend(str(item) for item in list(payload.get("blockers", []) or []) if str(item).strip())

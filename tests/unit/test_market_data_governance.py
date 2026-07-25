@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
-import shutil
 from pathlib import Path
 
 import pandas as pd
@@ -52,22 +51,60 @@ def _daily_frame(symbol: str = "000001.SZ") -> pd.DataFrame:
     )
 
 
+def _write_pit_generation(
+    data_root: Path,
+    *,
+    expected_symbols: list[str],
+    source_run_id: str,
+) -> dict:
+    pit_store = PITUniverseStore(
+        root_dir=data_root / "parquet" / "cn" / "reference",
+        raw_root=data_root / "cn_universe" / "raw",
+        compatibility_path=(
+            data_root
+            / "cn_universe"
+            / "stock_basic_membership_latest.json"
+        ),
+    )
+    return pit_store.write_snapshot(
+        raw_records=[
+            PITUniverseRecord(
+                symbol=symbol,
+                name=symbol,
+                list_date="20200101",
+                source_list_status="L",
+                observed_at="2024-05-10T00:00:00Z",
+                source_run_id=source_run_id,
+            )
+            for symbol in expected_symbols
+        ],
+        observed_at="2024-05-10T00:00:00Z",
+        source_run_id=source_run_id,
+    )
+
+
 def _write_parquet_market_data(root):
     data_root = root / "data"
     parquet_root = data_root / "parquet" / "cn"
-    bars_root = parquet_root / "bars"
-    serving_root = data_root / "parquet_serving" / "cn" / "bars"
+    snapshot_root = parquet_root / "_snapshots" / "fixture"
+    bars_root = snapshot_root / "table" / "bars"
+    serving_root = snapshot_root / "serving" / "bars"
     manifest_path = parquet_root / "_snapshots" / "fixture.json"
     frame = _daily_frame()
     (bars_root / "year=2024").mkdir(parents=True)
     (serving_root / "symbol=000001.SZ").mkdir(parents=True)
     frame.to_parquet(bars_root / "year=2024" / "part.parquet", index=False)
     frame.to_parquet(serving_root / "symbol=000001.SZ" / "bars.parquet", index=False)
-    manifest_path.parent.mkdir(parents=True)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
     expected_symbols = ["000001.SZ"]
     expected_scope_sha256 = hashlib.sha256("\n".join(expected_symbols).encode("utf-8")).hexdigest()
+    pit_generation = _write_pit_generation(
+        data_root,
+        expected_symbols=expected_symbols,
+        source_run_id="fixture",
+    )
     coverage = {
-        "coverage_schema_version": "cn-full-a-coverage.v3",
+        "coverage_schema_version": "cn-full-a-coverage.v4",
         "complete": True,
         "coverage_ratio": 1.0,
         "coverage_complete_count": 1,
@@ -84,6 +121,15 @@ def _write_parquet_market_data(root):
         "non_blocking_absent_symbols": [],
         "true_missing_symbols": [],
         "classification_sets_disjoint": True,
+        "pit_membership_path": pit_generation["canonical_path"],
+        "pit_membership_sha256": pit_generation["canonical_sha256"],
+        "pit_generation_id": pit_generation["generation_id"],
+        "pit_generation_manifest_path": pit_generation[
+            "generation_manifest_path"
+        ],
+        "pit_generation_manifest_sha256": pit_generation[
+            "generation_manifest_sha256"
+        ],
     }
     manifest_path.write_text(
         json.dumps({"snapshot_id": "fixture", "coverage": coverage}),
@@ -105,7 +151,7 @@ def _write_parquet_market_data(root):
         encoding="utf-8",
     )
     universe_root = data_root / "cn_universe"
-    universe_root.mkdir(parents=True)
+    universe_root.mkdir(parents=True, exist_ok=True)
     (universe_root / "cn_index_components.json").write_text(
         json.dumps({"full_a": expected_symbols}),
         encoding="utf-8",
@@ -116,8 +162,9 @@ def _write_parquet_market_data(root):
 def _write_full_a_scope_fixture(root: Path) -> Path:
     data_root = root / "data"
     parquet_root = data_root / "parquet" / "cn"
-    bars_root = parquet_root / "bars"
-    serving_root = data_root / "parquet_serving" / "cn" / "bars"
+    snapshot_root = parquet_root / "_snapshots" / "scope-fixture"
+    bars_root = snapshot_root / "table" / "bars"
+    serving_root = snapshot_root / "serving" / "bars"
     manifest_path = parquet_root / "_snapshots" / "scope-fixture.json"
     expected_symbols = ["000001.SZ", "000002.SZ", "000003.SZ"]
     symbol_frames = {
@@ -138,12 +185,13 @@ def _write_full_a_scope_fixture(root: Path) -> Path:
     expected_scope_sha256 = hashlib.sha256(
         "\n".join(sorted(expected_symbols)).encode("utf-8")
     ).hexdigest()
-    pit_path = parquet_root / "reference" / "stock_basic_membership.parquet"
-    pit_path.parent.mkdir(parents=True)
-    pd.DataFrame({"ts_code": expected_symbols}).to_parquet(pit_path, index=False)
-    pit_sha256 = hashlib.sha256(pit_path.read_bytes()).hexdigest()
+    pit_generation = _write_pit_generation(
+        data_root,
+        expected_symbols=expected_symbols,
+        source_run_id="scope-fixture",
+    )
     coverage = {
-        "coverage_schema_version": "cn-full-a-coverage.v3",
+        "coverage_schema_version": "cn-full-a-coverage.v4",
         "complete": True,
         "coverage_ratio": 1.0,
         "coverage_complete_count": 3,
@@ -162,10 +210,17 @@ def _write_full_a_scope_fixture(root: Path) -> Path:
         "classification_sets_disjoint": True,
         "suspended_evidence_symbols": [],
         "inactive_evidence_symbols": ["000003.SZ"],
-        "pit_membership_path": str(pit_path),
-        "pit_membership_sha256": pit_sha256,
+        "pit_membership_path": pit_generation["canonical_path"],
+        "pit_membership_sha256": pit_generation["canonical_sha256"],
+        "pit_generation_id": pit_generation["generation_id"],
+        "pit_generation_manifest_path": pit_generation[
+            "generation_manifest_path"
+        ],
+        "pit_generation_manifest_sha256": pit_generation[
+            "generation_manifest_sha256"
+        ],
     }
-    manifest_path.parent.mkdir(parents=True)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(
         json.dumps({"snapshot_id": "scope-fixture", "coverage": coverage}),
         encoding="utf-8",
@@ -186,7 +241,7 @@ def _write_full_a_scope_fixture(root: Path) -> Path:
         encoding="utf-8",
     )
     universe_root = data_root / "cn_universe"
-    universe_root.mkdir(parents=True)
+    universe_root.mkdir(parents=True, exist_ok=True)
     (universe_root / "cn_index_components.json").write_text(
         json.dumps({"full_a": expected_symbols}),
         encoding="utf-8",
@@ -364,18 +419,20 @@ def test_full_a_governance_batch_read_recovers_history_for_stale_symbol(
     import quant_investor.market.data_governance as governance_module
 
     data_root = _write_full_a_scope_fixture(tmp_path)
+    pointer = json.loads(
+        (data_root / "parquet" / "cn" / "_latest.json").read_text(
+            encoding="utf-8"
+        )
+    )
     stale_path = (
-        data_root
-        / "parquet_serving"
-        / "cn"
-        / "bars"
+        Path(pointer["derived_serving_root"])
         / "symbol=000002.SZ"
         / "bars.parquet"
     )
     _daily_frame("000002.SZ").assign(
         trade_date=["20240508", "20240509"]
     ).to_parquet(stale_path, index=False)
-    canonical_path = data_root / "parquet" / "cn" / "bars" / "year=2024" / "part.parquet"
+    canonical_path = Path(pointer["table_root"]) / "year=2024" / "part.parquet"
     canonical_frame = pd.read_parquet(canonical_path)
     canonical_frame.loc[
         canonical_frame["ts_code"].eq("000002.SZ"),
@@ -426,7 +483,7 @@ def test_full_a_governance_batch_read_recovers_history_for_stale_symbol(
         ("components_hash", "coverage_expected_scope_sha256_mismatch"),
         ("classification_union", "coverage_non_blocking_absent_union_mismatch"),
         ("status_evidence", "coverage_inactive_evidence_mismatch"),
-        ("pit_hash", "coverage_pit_membership_sha256_mismatch"),
+        ("pit_hash", "coverage_bound_pit_sha256_mismatch"),
         ("observed_count", "coverage_observed_bar_count_mismatch"),
         ("serving_presence", "readiness_symbols_missing_serving"),
     ],
@@ -491,8 +548,15 @@ def test_full_a_governance_scope_contract_mismatch_fails_closed(
             lambda coverage: coverage.__setitem__("observed_bar_count", 1),
         )
     else:
+        pointer = json.loads(
+            (data_root / "parquet" / "cn" / "_latest.json").read_text(
+                encoding="utf-8"
+            )
+        )
         (
-            data_root / "parquet_serving" / "cn" / "bars" / "symbol=000002.SZ" / "bars.parquet"
+            Path(pointer["derived_serving_root"])
+            / "symbol=000002.SZ"
+            / "bars.parquet"
         ).unlink()
 
     result = run_data_governance(
@@ -515,7 +579,7 @@ def test_full_a_governance_scope_contract_mismatch_fails_closed(
     assert any(expected_blocker in blocker for blocker in scope["blockers"])
 
 
-def test_full_a_governance_accepts_v2_without_nonblocking_absence(tmp_path):
+def test_full_a_governance_blocks_v2_in_strict_mode(tmp_path):
     data_root = _write_parquet_market_data(tmp_path)
     _mutate_bound_coverage(
         data_root,
@@ -533,8 +597,16 @@ def test_full_a_governance_accepts_v2_without_nonblocking_absence(tmp_path):
     )
 
     report = result["reports"][0]
-    assert report["metadata"]["quant_scope"]["status"] == "passed"
-    assert report["readiness"]["quant"]["status"] == "pass"
+    scope = report["metadata"]["quant_scope"]
+    quant = report["readiness"]["quant"]
+    assert result["status"] == "blocked"
+    assert scope["status"] == "blocked"
+    assert quant["status"] == "block"
+    assert any(
+        "cn_strict_coverage_schema_v4_required:cn-full-a-coverage.v2"
+        in blocker
+        for blocker in scope["blockers"]
+    )
 
 
 def test_full_a_governance_accepts_coverage_bound_v4_pit_generation(
@@ -543,61 +615,7 @@ def test_full_a_governance_accepts_coverage_bound_v4_pit_generation(
     data_root = _write_parquet_market_data(tmp_path)
     pointer_path = data_root / "parquet" / "cn" / "_latest.json"
     pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
-    immutable_root = (
-        data_root
-        / "parquet"
-        / "cn"
-        / "_snapshots"
-        / str(pointer["snapshot_id"])
-    )
-    immutable_table = immutable_root / "table" / "bars"
-    immutable_serving = immutable_root / "serving" / "bars"
-    shutil.copytree(Path(pointer["table_root"]), immutable_table)
-    shutil.copytree(Path(pointer["derived_serving_root"]), immutable_serving)
-    pointer["table_root"] = str(immutable_table)
-    pointer["derived_serving_root"] = str(immutable_serving)
-    pointer_path.write_text(json.dumps(pointer), encoding="utf-8")
-    pit_store = PITUniverseStore(
-        root_dir=data_root / "parquet" / "cn" / "reference",
-        raw_root=data_root / "cn_universe" / "raw",
-        compatibility_path=(
-            data_root
-            / "cn_universe"
-            / "stock_basic_membership_latest.json"
-        ),
-    )
-    generation = pit_store.write_snapshot(
-        raw_records=[
-            PITUniverseRecord(
-                symbol="000001.SZ",
-                name="One",
-                list_date="20200101",
-                source_list_status="L",
-                observed_at="2024-05-10T00:00:00Z",
-                source_run_id="governance-v4",
-            )
-        ],
-        observed_at="2024-05-10T00:00:00Z",
-        source_run_id="governance-v4",
-    )
-
-    def _upgrade(coverage):
-        coverage.update(
-            {
-                "coverage_schema_version": "cn-full-a-coverage.v4",
-                "pit_membership_path": generation["canonical_path"],
-                "pit_membership_sha256": generation["canonical_sha256"],
-                "pit_generation_id": generation["generation_id"],
-                "pit_generation_manifest_path": generation[
-                    "generation_manifest_path"
-                ],
-                "pit_generation_manifest_sha256": generation[
-                    "generation_manifest_sha256"
-                ],
-            }
-        )
-
-    _mutate_bound_coverage(data_root, _upgrade)
+    generation_id = pointer["coverage"]["pit_generation_id"]
     result = run_data_governance(
         market="CN",
         categories=["full_a"],
@@ -610,7 +628,7 @@ def test_full_a_governance_accepts_coverage_bound_v4_pit_generation(
 
     scope = result["reports"][0]["metadata"]["quant_scope"]
     assert scope["status"] == "passed"
-    assert scope["pit_generation_id"] == generation["generation_id"]
+    assert scope["pit_generation_id"] == generation_id
 
 
 def test_non_full_a_unhealthy_snapshot_returns_structured_block(tmp_path):

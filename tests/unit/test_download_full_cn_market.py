@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import sys
@@ -14,7 +15,6 @@ from pathlib import Path
 import pandas as pd
 
 from quant_investor.market.market_data_reader import MarketDataReader
-from quant_investor.market.market_data_store import MarketDataStore
 from quant_investor.market.pit_universe import (
     LIST_STATUS_DELISTED,
     LIST_STATUS_LISTED,
@@ -85,6 +85,29 @@ def _load_module(
     module = importlib.import_module(module_name)
     monkeypatch.setattr(module, "TUSHARE_TOKEN", "dummy-token")
     monkeypatch.setattr(module.config, "TUSHARE_AUTO_CLEAN", False, raising=False)
+
+    def _publish_strict_fixture(
+        downloader,
+        frame: pd.DataFrame,
+        *,
+        source: str,
+        metadata,
+    ):
+        return _publish_cn_v4_rows(
+            Path(downloader.data_root),
+            frame,
+            source=source,
+            metadata=dict(metadata or {}),
+        )
+
+    # These are downloader behavior tests, not tests for the retired mutable
+    # full-history publisher.  Keep their local canonical fixture on the exact
+    # immutable v4/PIT contract whenever the downloader requests publication.
+    monkeypatch.setattr(
+        module.CNFullMarketDownloader,
+        "_write_parquet_bars",
+        _publish_strict_fixture,
+    )
     return module
 
 
@@ -275,7 +298,7 @@ class PartialBatchFakePro(BatchFakePro):
         return frame
 
 
-def _write_cn_parquet_rows(data_root: Path, symbol: str, rows: list[dict]) -> None:
+def _normalized_cn_rows(symbol: str, rows: list[dict]) -> pd.DataFrame:
     normalized_rows = []
     for row in rows:
         close = float(row.get("close", row.get("adj_close", 10.0)))
@@ -303,8 +326,185 @@ def _write_cn_parquet_rows(data_root: Path, symbol: str, rows: list[dict]) -> No
                 "adj_low": float(row.get("adj_low", low * adj_factor)),
             }
         )
-    MarketDataStore(market="CN", data_root=data_root).write_full_history_bars(
-        pd.DataFrame(normalized_rows),
+    frame = pd.DataFrame(normalized_rows)
+    frame["trade_date"] = pd.to_datetime(
+        frame["trade_date"], errors="coerce"
+    ).dt.strftime("%Y%m%d")
+    return frame.dropna(subset=["trade_date"])
+
+
+def _active_cn_rows(data_root: Path) -> pd.DataFrame:
+    latest_path = data_root / "parquet" / "cn" / "_latest.json"
+    if not latest_path.exists():
+        return pd.DataFrame()
+    latest = json.loads(latest_path.read_text(encoding="utf-8"))
+    serving_root = Path(str(latest.get("derived_serving_root") or ""))
+    frames = [
+        pd.read_parquet(path)
+        for path in sorted(serving_root.glob("symbol=*/bars.parquet"))
+    ]
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def _publish_cn_v4_rows(
+    data_root: Path,
+    incoming: pd.DataFrame,
+    *,
+    source: str,
+    metadata: dict | None = None,
+) -> dict:
+    existing = _active_cn_rows(data_root)
+    combined = pd.concat([existing, incoming], ignore_index=True, sort=False)
+    combined["ts_code"] = combined["ts_code"].astype(str).str.strip().str.upper()
+    combined["trade_date"] = combined["trade_date"].map(
+        lambda value: "".join(
+            character for character in str(value) if character.isdigit()
+        )[:8]
+    )
+    combined = (
+        combined[combined["trade_date"].str.len().eq(8)]
+        .drop_duplicates(subset=["ts_code", "trade_date"], keep="last")
+        .sort_values(["trade_date", "ts_code"])
+        .reset_index(drop=True)
+    )
+    symbols = sorted(combined["ts_code"].unique().tolist())
+    latest_by_symbol = combined.groupby("ts_code")["trade_date"].max()
+    latest_available = str(latest_by_symbol.max())
+    latest_complete = str(latest_by_symbol.min())
+
+    snapshot_root = data_root / "parquet" / "cn" / "_snapshots"
+    snapshot_root.mkdir(parents=True, exist_ok=True)
+    existing_manifests = list(snapshot_root.glob("fixture-download-*.json"))
+    snapshot_sequence = len(existing_manifests) + 1
+    snapshot_id = f"fixture-download-{snapshot_sequence:06d}"
+    observed_at = (
+        "2026-07-22T"
+        f"{snapshot_sequence // 3600:02d}:"
+        f"{(snapshot_sequence // 60) % 60:02d}:"
+        f"{snapshot_sequence % 60:02d}Z"
+    )
+
+    pit_store = PITUniverseStore(
+        root_dir=data_root / "parquet" / "cn" / "reference",
+        raw_root=data_root / "cn_universe" / "raw",
+        compatibility_path=(
+            data_root
+            / "cn_universe"
+            / "stock_basic_membership_latest.json"
+        ),
+    )
+    pit_records = [
+        PITUniverseRecord(
+            symbol=symbol,
+            source_list_status=LIST_STATUS_LISTED,
+            list_date="20000101",
+            observed_at=observed_at,
+            source_run_id=snapshot_id,
+        )
+        for symbol in symbols
+    ]
+    pit_generation = pit_store.write_snapshot(
+        raw_records=pit_records,
+        latest_records=pit_records,
+        observed_at=observed_at,
+        source_run_id=snapshot_id,
+    )
+
+    payload_root = snapshot_root / snapshot_id
+    table_root = payload_root / "table" / "bars"
+    serving_root = payload_root / "serving" / "bars"
+    for (year, month), month_frame in combined.groupby(
+        [combined["trade_date"].str[:4], combined["trade_date"].str[4:6]],
+        sort=True,
+    ):
+        month_path = (
+            table_root
+            / f"year={year}"
+            / f"month={month}"
+            / "part.parquet"
+        )
+        month_path.parent.mkdir(parents=True, exist_ok=True)
+        month_frame.to_parquet(month_path, index=False)
+    for symbol, symbol_frame in combined.groupby("ts_code", sort=True):
+        symbol_path = serving_root / f"symbol={symbol}" / "bars.parquet"
+        symbol_path.parent.mkdir(parents=True, exist_ok=True)
+        symbol_frame.to_parquet(symbol_path, index=False)
+
+    expected_scope_sha256 = hashlib.sha256(
+        "".join(f"{symbol}\n" for symbol in symbols).encode("utf-8")
+    ).hexdigest()
+    coverage = {
+        "coverage_schema_version": "cn-full-a-coverage.v4",
+        "complete": True,
+        "coverage_ratio": 1.0,
+        "coverage_complete_count": len(symbols),
+        "expected_scope_count": len(symbols),
+        "observed_bar_count": len(symbols),
+        "blocking_incomplete_count": 0,
+        "latest_available_trade_date": latest_available,
+        "latest_complete_trade_date": latest_complete,
+        "coverage_trade_date": latest_complete,
+        "expected_scope_sha256": expected_scope_sha256,
+        "suspended_symbols": [],
+        "inactive_symbols": [],
+        "verified_nontrading_bak_daily_zero_symbols": [],
+        "verified_terminal_delisting_symbols": [],
+        "allowed_stale_symbols": [],
+        "non_blocking_absent_symbols": [],
+        "true_missing_symbols": [],
+        "classification_sets_disjoint": True,
+        "pit_membership_path": str(pit_generation["canonical_path"]),
+        "pit_membership_sha256": str(pit_generation["canonical_sha256"]),
+        "pit_generation_id": str(pit_generation["generation_id"]),
+        "pit_generation_manifest_path": str(
+            pit_generation["generation_manifest_path"]
+        ),
+        "pit_generation_manifest_sha256": str(
+            pit_generation["generation_manifest_sha256"]
+        ),
+    }
+    manifest_path = snapshot_root / f"{snapshot_id}.json"
+    manifest = {
+        "snapshot_id": snapshot_id,
+        "market": "CN",
+        "status": "OK",
+        "source": source,
+        "row_count": len(combined),
+        "symbol_count": len(symbols),
+        "latest_trade_date": latest_complete,
+        "latest_available_trade_date": latest_available,
+        "latest_complete_trade_date": latest_complete,
+        "table_root": str(table_root),
+        "derived_serving_root": str(serving_root),
+        "manifest_path": str(manifest_path),
+        "readback_validated": True,
+        "coverage": coverage,
+        "blockers": [],
+        "metadata": dict(metadata or {}),
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    latest = {
+        "snapshot_id": snapshot_id,
+        "status": "OK",
+        "manifest_path": str(manifest_path),
+        "table_root": str(table_root),
+        "derived_serving_root": str(serving_root),
+        "latest_available_trade_date": latest_available,
+        "latest_complete_trade_date": latest_complete,
+        "latest_trade_date": latest_complete,
+        "coverage": coverage,
+        "blockers": [],
+    }
+    latest_path = data_root / "parquet" / "cn" / "_latest.json"
+    latest_path.parent.mkdir(parents=True, exist_ok=True)
+    latest_path.write_text(json.dumps(latest), encoding="utf-8")
+    return manifest
+
+
+def _write_cn_parquet_rows(data_root: Path, symbol: str, rows: list[dict]) -> None:
+    _publish_cn_v4_rows(
+        data_root,
+        _normalized_cn_rows(symbol, rows),
         source="test_download_full_cn_market",
     )
 
@@ -388,6 +588,77 @@ def test_download_daily_batch_uses_trade_date_endpoint_once_for_stale_symbols(mo
     assert len(fake_pro.daily_calls) == 0
     assert _read_cn_parquet_frame(tmp_path, "000001.SZ")["trade_date"].iloc[-1] == "20260316"
     assert _read_cn_parquet_frame(tmp_path, "000002.SZ")["adj_close"].iloc[-1] == 20.9
+
+
+def test_download_daily_batch_noncanonical_mode_never_publishes_parquet_or_freshness(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_module(monkeypatch)
+    fake_pro = BatchFakePro()
+    monkeypatch.setattr(module, "create_tushare_pro", lambda *_args, **_kwargs: fake_pro)
+    monkeypatch.setattr(module.config, "TUSHARE_AUTO_CLEAN", False, raising=False)
+
+    downloader = module.CNFullMarketDownloader(data_dir=str(tmp_path), years=3)
+    stale_path = tmp_path / "hs300" / "000001.SZ.csv"
+    stale_frame = pd.DataFrame(
+        [
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": "2026-03-12",
+                "open": 10.2,
+                "high": 10.6,
+                "low": 10.0,
+                "close": 10.4,
+                "pre_close": 10.2,
+                "change": 0.2,
+                "pct_chg": 1.96,
+                "vol": 1200,
+                "amount": 12000,
+                "adj_factor": 1.0,
+                "adj_close": 10.4,
+                "adj_open": 10.2,
+                "adj_high": 10.6,
+                "adj_low": 10.0,
+            }
+        ]
+    )
+    stale_state = module.CNSymbolLocalStatusResult(
+        symbol="000001.SZ",
+        resolved_path=str(stale_path),
+        latest_local_date="20260312",
+        local_status="stale",
+        is_complete=False,
+        is_blocking=True,
+        strict_trade_date="20260316",
+        stable_trade_date="20260315",
+        effective_target_trade_date="20260316",
+        freshness_mode="strict",
+        frame=stale_frame,
+    )
+    monkeypatch.setattr(
+        downloader,
+        "_evaluate_symbol_local_status_for_target",
+        lambda *_args, **_kwargs: stale_state,
+    )
+    canonical_calls: list[dict[str, object]] = []
+
+    def forbidden_publish(*_args, **kwargs):
+        canonical_calls.append(dict(kwargs))
+        raise AssertionError("publish_canonical=False must not publish Parquet")
+
+    monkeypatch.setattr(downloader, "_write_parquet_bars", forbidden_publish)
+
+    results = downloader.download_daily_batch(
+        ["000001.SZ"],
+        "hs300",
+        target_trade_date="20260316",
+        publish_canonical=False,
+    )
+
+    assert [row["status"] for row in results] == ["updated"]
+    assert canonical_calls == []
+    assert not downloader._freshness_index_path().exists()
 
 
 def test_download_daily_batch_fills_missing_tushare_symbol_from_eastmoney(monkeypatch, tmp_path):

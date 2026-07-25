@@ -71,6 +71,7 @@ class FakeDownloader:
     probe_calls = 0
     last: "FakeDownloader | None" = None
 
+    STAGED_NONCANONICAL_SAFE = True
     REQUESTS_PER_STOCK = 2
     REQUESTS_PER_MINUTE_BUDGET = 500
 
@@ -145,6 +146,21 @@ class FakeDownloader:
                 }
             )
         return rows
+
+    def download_daily_batch(
+        self,
+        symbols: list[str],
+        category: str,
+        target_trade_date: str | None = None,
+        *,
+        publish_canonical: bool = True,
+    ) -> list[dict[str, Any]]:
+        assert publish_canonical is False
+        return self.download_category(
+            symbols,
+            category,
+            target_trade_date=target_trade_date,
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -242,9 +258,16 @@ def test_staged_maintenance_prefers_downloader_daily_batch_api(monkeypatch, tmp_
             symbols: list[str],
             category: str,
             target_trade_date: str | None = None,
+            *,
+            publish_canonical: bool = True,
         ) -> list[dict[str, Any]]:
             BatchOnlyDownloader.batch_calls.append(
-                {"category": category, "symbols": list(symbols), "target_trade_date": target_trade_date}
+                {
+                    "category": category,
+                    "symbols": list(symbols),
+                    "target_trade_date": target_trade_date,
+                    "publish_canonical": publish_canonical,
+                }
             )
             return [
                 {
@@ -273,7 +296,12 @@ def test_staged_maintenance_prefers_downloader_daily_batch_api(monkeypatch, tmp_
     )
 
     assert BatchOnlyDownloader.batch_calls == [
-        {"category": "full_a", "symbols": ["000001.SZ", "000002.SZ"], "target_trade_date": "20260316"}
+        {
+            "category": "full_a",
+            "symbols": ["000001.SZ", "000002.SZ"],
+            "target_trade_date": "20260316",
+            "publish_canonical": False,
+        }
     ]
 
 
@@ -376,3 +404,110 @@ def test_staged_maintenance_daily_window_narrows_downloader_dates(tmp_path):
         "reason": "explicit_target_date",
         "trade_date": "20260316",
     }
+
+
+def test_real_staged_boundary_blocks_before_constructor_and_preserves_canonical_bytes(
+    monkeypatch,
+    tmp_path,
+):
+    import quant_investor.market.download_cn as download_cn
+
+    data_dir = tmp_path / "cn_market_full"
+    pointer_path = tmp_path / "parquet" / "cn" / "_latest.json"
+    shared_path = tmp_path / "parquet" / "cn" / "bars" / "part-000.parquet"
+    snapshot_path = (
+        tmp_path
+        / "parquet"
+        / "cn"
+        / "_snapshots"
+        / "immutable-snapshot"
+        / "table"
+        / "bars"
+        / "part-000.parquet"
+    )
+    canonical_payloads = {
+        pointer_path: b'{"snapshot_id":"immutable-snapshot"}\n',
+        shared_path: b"shared-root-bytes",
+        snapshot_path: b"immutable-snapshot-bytes",
+    }
+    for path, payload in canonical_payloads.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+
+    constructor_calls: list[dict[str, Any]] = []
+    provider_calls: list[tuple[Any, ...]] = []
+    real_downloader = download_cn.CNFullMarketDownloader
+    assert real_downloader.STAGED_NONCANONICAL_SAFE is False
+
+    def forbidden_constructor(_self, *args: Any, **kwargs: Any) -> None:
+        constructor_calls.append({"args": args, "kwargs": kwargs})
+        raise AssertionError("real staged boundary must block before downloader construction")
+
+    def forbidden_provider(*args: Any, **_kwargs: Any) -> None:
+        provider_calls.append(args)
+        raise AssertionError("real staged boundary must block before provider construction")
+
+    monkeypatch.setattr(real_downloader, "__init__", forbidden_constructor)
+    monkeypatch.setattr(download_cn, "create_tushare_pro", forbidden_provider)
+    monkeypatch.setattr(staged, "CNFullMarketDownloader", real_downloader)
+
+    with pytest.raises(RuntimeError, match=staged.NONCANONICAL_WRITER_BLOCKER):
+        staged.run_staged_maintenance(
+            market="CN",
+            categories=["full_a"],
+            data_dir=str(data_dir),
+            target_date="20260316",
+            resume=True,
+        )
+
+    assert constructor_calls == []
+    assert provider_calls == []
+    assert {path: path.read_bytes() for path in canonical_payloads} == canonical_payloads
+    progress_paths = list((data_dir / "_maintenance_runs").glob("*/progress_summary.json"))
+    assert len(progress_paths) == 1
+    progress = json.loads(progress_paths[0].read_text(encoding="utf-8"))
+    assert progress["status"] == "blocked"
+    assert progress["maintenance_status"] == "blocked"
+    assert progress["resume_requested"] is True
+    assert progress["early_stop_reason"] == staged.NONCANONICAL_WRITER_BLOCKER
+    assert progress["blockers"] == [staged.NONCANONICAL_WRITER_BLOCKER]
+
+
+def test_staged_safe_contract_detects_canonical_pointer_mutation(monkeypatch, tmp_path):
+    pointer_path = tmp_path / "parquet" / "cn" / "_latest.json"
+    pointer_path.parent.mkdir(parents=True, exist_ok=True)
+    pointer_path.write_text('{"snapshot_id":"before"}\n', encoding="utf-8")
+
+    class MutatingDownloader(FakeDownloader):
+        def __init__(self, **kwargs: Any):
+            super().__init__(**kwargs)
+            self.data_root = Path(self.data_dir)
+
+        def download_daily_batch(
+            self,
+            symbols: list[str],
+            category: str,
+            target_trade_date: str | None = None,
+            *,
+            publish_canonical: bool = True,
+        ) -> list[dict[str, Any]]:
+            assert publish_canonical is False
+            pointer_path.write_text('{"snapshot_id":"after"}\n', encoding="utf-8")
+            return super().download_daily_batch(
+                symbols,
+                category,
+                target_trade_date=target_trade_date,
+                publish_canonical=publish_canonical,
+            )
+
+    FakeDownloader.reports = [_report(["000001.SZ"])]
+    monkeypatch.setattr(staged, "CNFullMarketDownloader", MutatingDownloader)
+
+    with pytest.raises(RuntimeError, match="staged_canonical_pointer_mutation_detected"):
+        staged.run_staged_maintenance(
+            market="CN",
+            categories=["full_a"],
+            data_dir=str(tmp_path),
+            batch_size=1,
+            max_batches_per_run=1,
+        )

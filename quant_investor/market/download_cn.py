@@ -184,6 +184,7 @@ def fetch_eastmoney_daily_batch_frame(
 class CNFullMarketDownloader:
     """A股全市场数据下载器"""
 
+    STAGED_NONCANONICAL_SAFE = False
     SUPPORTED_CATEGORIES = ("full_a", "hs300", "zz500", "zz1000")
     REQUESTS_PER_STOCK = 2
     REQUESTS_PER_MINUTE_BUDGET = config.TUSHARE_RATE_LIMIT_PER_MIN
@@ -1844,8 +1845,10 @@ class CNFullMarketDownloader:
         symbols: List[str],
         category: str,
         target_trade_date: Optional[str] = None,
+        *,
+        publish_canonical: bool = True,
     ) -> List[Dict]:
-        """补齐一个交易日的一批股票，避免逐 symbol 请求 daily/adj_factor。"""
+        """补齐一个交易日的一批股票；可显式禁止 canonical Parquet 发布。"""
         effective_target_trade_date = target_trade_date or self.latest_trade_date
         cleaning_skipped_fields = self._default_cleaning_result_fields()
         normalized_symbols: list[str] = []
@@ -2127,18 +2130,19 @@ class CNFullMarketDownloader:
                 else:
                     cleaning_result = cleaning_skipped_fields
 
-                self._write_parquet_bars(
-                    final_df,
-                    source="CNFullMarketDownloader.download_daily_batch",
-                    metadata={
-                        "symbol": local_state.symbol,
-                        "category": category,
-                        "target_trade_date": effective_target_trade_date,
-                        "local_status": local_state.local_status,
-                        "mode": "daily_batch",
-                        "data_source": data_source,
-                    },
-                )
+                if publish_canonical:
+                    self._write_parquet_bars(
+                        final_df,
+                        source="CNFullMarketDownloader.download_daily_batch",
+                        metadata={
+                            "symbol": local_state.symbol,
+                            "category": category,
+                            "target_trade_date": effective_target_trade_date,
+                            "local_status": local_state.local_status,
+                            "mode": "daily_batch",
+                            "data_source": data_source,
+                        },
+                    )
 
                 cleaning_fields = self._cleaning_result_fields(cleaning_result)
                 latest_saved_ts = pd.NaT
@@ -2228,7 +2232,8 @@ class CNFullMarketDownloader:
             latest_date = str(result.get("latest_local_date") or "")
             if symbol and latest_date and status in ("updated", "cached", "stale_cached"):
                 index_updates[symbol] = latest_date
-        self._flush_freshness_index(index_updates)
+        if publish_canonical:
+            self._flush_freshness_index(index_updates)
         print(
             f"✅ 批量补齐完成 | cached: {self.stats['cached']} | "
             f"stale_cached: {self.stats['stale_cached']} | "

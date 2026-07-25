@@ -244,6 +244,14 @@ def run_storage_validate(**kwargs):
     return _run_storage_validate(**kwargs)
 
 
+def run_storage_reactivate_snapshot(**kwargs):
+    from quant_investor.market.market_data_store import (
+        run_storage_reactivate_snapshot as _run_storage_reactivate_snapshot,
+    )
+
+    return _run_storage_reactivate_snapshot(**kwargs)
+
+
 def run_storage_validate_clean(**kwargs):
     from quant_investor.market.market_data_store import (
         run_storage_validate_clean as _run_storage_validate_clean,
@@ -732,6 +740,23 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "CN 日更存储路径；auto 对 CN 非 staged 解析为 parquet-direct，"
             "staged 仍使用受控批次状态机。legacy 仅保留非 CN 兼容路径。"
+        ),
+    )
+    market_maintain.add_argument(
+        "--secondary-daily-source",
+        choices=["none", "eastmoney"],
+        default="none",
+        help=(
+            "仅显式开启 CN parquet-direct 的 exact-date secondary bar probe；"
+            "默认 none，不能用于 staged 或停牌分类。"
+        ),
+    )
+    market_maintain.add_argument(
+        "--official-suspension-evidence",
+        default="",
+        help=(
+            "显式使用已完整 readback 的网页停牌证据包；仅作 exact-date 缺失分类，"
+            "不生成 synthetic bar，也不改写 suspend_d v5 cache。"
         ),
     )
 
@@ -1255,6 +1280,35 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     market_storage_validate.add_argument("--market", required=True, choices=["CN"])
 
+    market_storage_reactivate_snapshot = market_subparsers.add_parser(
+        "storage-reactivate-snapshot",
+        help="以 SHA/CAS 绑定恢复已存在的 immutable CN snapshot；默认只做 dry-run",
+    )
+    market_storage_reactivate_snapshot.add_argument(
+        "--market", required=True, choices=["CN"]
+    )
+    market_storage_reactivate_snapshot.add_argument("--snapshot-id", required=True)
+    market_storage_reactivate_snapshot.add_argument(
+        "--expected-snapshot-manifest-sha256", required=True
+    )
+    market_storage_reactivate_snapshot.add_argument(
+        "--expected-market-pointer-sha256", required=True
+    )
+    market_storage_reactivate_snapshot.add_argument(
+        "--acknowledge-trade-date", required=True
+    )
+    market_storage_reactivate_snapshot.add_argument("--reason", required=True)
+    market_storage_reactivate_snapshot.add_argument(
+        "--commit",
+        action="store_true",
+        help="显式提交恢复 pointer；未指定时不写 canonical 状态",
+    )
+    market_storage_reactivate_snapshot.add_argument(
+        "--data-root",
+        default="",
+        help="可选 market data root；默认使用仓库 data",
+    )
+
     market_storage_validate_clean = market_subparsers.add_parser(
         "storage-validate-clean",
         help="只读校验本地 clean/readiness lineage 可用性",
@@ -1693,6 +1747,8 @@ def main(argv: list[str] | None = None) -> None:
             expected_market_pointer_sha256=(
                 args.expected_market_pointer_sha256
             ),
+            secondary_daily_source=args.secondary_daily_source,
+            official_suspension_evidence=args.official_suspension_evidence,
         )
         return
 
@@ -2214,6 +2270,23 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "market" and args.market_command == "storage-validate":
         _print_json(run_storage_validate(market=args.market))
+        return
+
+    if args.command == "market" and args.market_command == "storage-reactivate-snapshot":
+        _print_json(
+            run_storage_reactivate_snapshot(
+                market=args.market,
+                snapshot_id=args.snapshot_id,
+                expected_snapshot_manifest_sha256=(
+                    args.expected_snapshot_manifest_sha256
+                ),
+                expected_market_pointer_sha256=args.expected_market_pointer_sha256,
+                acknowledge_trade_date=args.acknowledge_trade_date,
+                reason=args.reason,
+                commit=args.commit,
+                data_root=args.data_root or None,
+            )
+        )
         return
 
     if args.command == "market" and args.market_command == "storage-validate-clean":

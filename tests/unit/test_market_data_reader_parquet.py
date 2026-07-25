@@ -27,7 +27,11 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _write_parquet_fixture(root: Path, *, status: str = "OK") -> dict[str, Path]:
+def _write_legacy_parquet_fixture(
+    root: Path,
+    *,
+    status: str = "OK",
+) -> dict[str, Path]:
     canonical = root / "parquet" / "cn" / "bars" / "year=2026" / "month=01"
     serving_1 = root / "parquet_serving" / "cn" / "bars" / "symbol=000001.SZ"
     serving_2 = root / "parquet_serving" / "cn" / "bars" / "symbol=000002.SZ"
@@ -175,8 +179,12 @@ def _bind_fixture_to_pit_generation(
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
 
-def _write_v4_parquet_fixture(root: Path) -> dict[str, Path]:
-    paths = _write_parquet_fixture(root)
+def _write_v4_parquet_fixture(
+    root: Path,
+    *,
+    status: str = "OK",
+) -> dict[str, Path]:
+    paths = _write_legacy_parquet_fixture(root, status=status)
     pit_store = PITUniverseStore(
         root_dir=root / "parquet" / "cn" / "reference",
         raw_root=root / "pit_raw",
@@ -207,6 +215,16 @@ def _write_v4_parquet_fixture(root: Path) -> dict[str, Path]:
     paths["canonical"] = Path(latest["table_root"])
     paths["serving"] = Path(latest["derived_serving_root"])
     return paths
+
+
+def _write_parquet_fixture(
+    root: Path,
+    *,
+    status: str = "OK",
+) -> dict[str, Path]:
+    """Write the default strict-CN fixture using the required v4 contract."""
+
+    return _write_v4_parquet_fixture(root, status=status)
 
 
 def test_strict_parquet_reader_reads_symbol_batch_cross_section_and_catalog_table(tmp_path: Path) -> None:
@@ -372,6 +390,8 @@ def test_strict_catalog_blocks_path_replacement_during_same_fd_read(
     pd.DataFrame(
         [{"ts_code": "999999.SZ", "trade_date": "20260103"}]
     ).to_parquet(replacement, index=False)
+    reader = MarketDataReader(market="CN", data_root=tmp_path)
+    assert reader.clean_snapshot_gate()["healthy"] is True
     original_read = pd.read_parquet
 
     def _replace_after_fd_read(*args, **kwargs):
@@ -381,9 +401,7 @@ def test_strict_catalog_blocks_path_replacement_during_same_fd_read(
 
     monkeypatch.setattr(pd, "read_parquet", _replace_after_fd_read)
     with pytest.raises(MarketDataUnavailableError, match="replaced during read"):
-        MarketDataReader(market="CN", data_root=tmp_path).read_table(
-            "daily_basic"
-        )
+        reader.read_table("daily_basic")
 
 
 @pytest.mark.parametrize(
@@ -462,7 +480,7 @@ def test_reader_list_symbols_filters_by_pit_universe_only_when_enabled(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    _write_parquet_fixture(tmp_path)
+    _write_legacy_parquet_fixture(tmp_path)
     pit_store = PITUniverseStore(
         root_dir=tmp_path / "parquet" / "cn" / "reference",
         raw_root=tmp_path / "pit_raw",
@@ -536,7 +554,7 @@ def test_coverage_bound_pit_accepts_explicit_configured_generation_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _write_parquet_fixture(tmp_path)
+    _write_legacy_parquet_fixture(tmp_path)
     external_root = tmp_path / "configured-pit-reference"
     pit_store = PITUniverseStore(
         root_dir=external_root,
@@ -741,8 +759,8 @@ def test_reader_reuses_snapshot_and_symbol_inventory_for_repeated_runtime_reads(
     assert reader.list_symbols("zz500") == ["000002.SZ"]
 
     assert call_counts == {
-        "health_rglob": 1,
-        "serving_glob": 2,
+        "health_rglob": 0,
+        "serving_glob": 1,
         "component_read": 1,
     }
 
@@ -753,6 +771,7 @@ def test_reader_batch_reads_symbols_from_canonical_dataset_without_per_symbol_fi
 ) -> None:
     _write_parquet_fixture(tmp_path)
     reader = MarketDataReader(market="CN", data_root=tmp_path)
+    assert reader.clean_snapshot_gate()["healthy"] is True
     read_parquet_calls = {"count": 0}
     original_read_parquet = pd.read_parquet
 

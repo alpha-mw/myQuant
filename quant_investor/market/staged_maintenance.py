@@ -1,12 +1,14 @@
 """Bounded CN market maintenance state machine.
 
-This module stages raw CN maintenance work into resumable batches. It prefers
-the downloader's date-scoped batch API when available and deliberately does not
-promote partial maintenance results into the Parquet canonical pointer.
+This module stages raw CN maintenance work into resumable batches. Only a
+downloader that explicitly advertises a non-canonical-safe sink may execute;
+otherwise the run is blocked before downloader/provider construction. Partial
+maintenance results must never promote the Parquet canonical pointer.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import uuid
@@ -21,6 +23,7 @@ SUCCESS_STATUSES = frozenset({"updated", "cached", "stale_cached"})
 RUNNABLE_BATCH_STATUSES = frozenset({"pending", "running", "incomplete", "failed"})
 COMPLETED_BATCH_STATUS = "completed"
 SCHEMA_VERSION = "myquant-cn-staged-maintenance.v1"
+NONCANONICAL_WRITER_BLOCKER = "blocked_noncanonical_writer_disabled"
 
 
 def _utc_now_iso() -> str:
@@ -42,6 +45,66 @@ def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
 
 def _maintenance_root(data_dir: str | Path) -> Path:
     return Path(data_dir).expanduser() / "_maintenance_runs"
+
+
+def _write_noncanonical_writer_block(
+    *,
+    data_dir: str | Path,
+    categories: list[str] | None,
+    target_date: str,
+    resume: bool,
+    storage_validate: dict[str, Any] | None,
+) -> Path:
+    requested_target = _compact_trade_date(target_date)
+    effective_target = requested_target or "unknown"
+    run_id = _new_run_id(effective_target)
+    run_dir = _maintenance_root(data_dir) / run_id
+    progress_path = run_dir / "progress_summary.json"
+    target_categories = _normalize_categories(categories) or ["full_a"]
+    generated_at = _utc_now_iso()
+    progress = {
+        "schema_version": SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "run_id": run_id,
+        "market": "CN",
+        "categories": target_categories,
+        "status": "blocked",
+        "maintenance_status": "blocked",
+        "complete": False,
+        "decision_data_sufficient": False,
+        "decision_data_status": "blocked",
+        "target_trade_date": requested_target or str(target_date or "auto"),
+        "effective_target_trade_date": requested_target,
+        "resume_requested": bool(resume),
+        "early_stop_reason": NONCANONICAL_WRITER_BLOCKER,
+        "limitations": [NONCANONICAL_WRITER_BLOCKER],
+        "blockers": [NONCANONICAL_WRITER_BLOCKER],
+        "storage_validate": dict(storage_validate or {}),
+        "run_dir": str(run_dir),
+        "progress_summary_path": str(progress_path),
+    }
+    _atomic_json_write(progress_path, progress)
+    return progress_path
+
+
+def _canonical_pointer_state(downloader: Any) -> dict[str, Any]:
+    reader = getattr(downloader, "market_reader", None)
+    pointer_path = getattr(reader, "latest_pointer_path", None)
+    if pointer_path is None:
+        data_root = getattr(downloader, "data_root", None)
+        if data_root:
+            pointer_path = Path(data_root) / "parquet" / "cn" / "_latest.json"
+    if pointer_path is None:
+        return {"path": "", "exists": False, "sha256": ""}
+    path = Path(pointer_path)
+    if not path.exists():
+        return {"path": str(path), "exists": False, "sha256": ""}
+    payload = path.read_bytes()
+    return {
+        "path": str(path),
+        "exists": True,
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
 
 
 def _normalize_categories(categories: Iterable[str] | None) -> list[str]:
@@ -381,18 +444,20 @@ def _execute_batch(
     symbols = list(batch.get("symbols") or [])
     category = str(batch.get("category") or "full_a")
     daily_batch = getattr(downloader, "download_daily_batch", None)
-    if callable(daily_batch):
+    if not callable(daily_batch):
+        raise RuntimeError("staged_noncanonical_daily_batch_api_required")
+    pointer_before = _canonical_pointer_state(downloader)
+    try:
         results = daily_batch(
             symbols,
             category,
             target_trade_date=effective_target_trade_date,
+            publish_canonical=False,
         )
-    else:
-        results = downloader.download_category(
-            symbols,
-            category,
-            target_trade_date=effective_target_trade_date,
-        )
+    finally:
+        pointer_after = _canonical_pointer_state(downloader)
+        if pointer_after != pointer_before:
+            raise RuntimeError("staged_canonical_pointer_mutation_detected")
     successful_symbols = [
         str(row.get("symbol") or "").strip().upper()
         for row in results
@@ -454,6 +519,17 @@ def run_staged_maintenance(
 
     settings = get_market_settings("CN")
     resolved_data_dir = data_dir or settings.data_dir
+    if not bool(getattr(CNFullMarketDownloader, "STAGED_NONCANONICAL_SAFE", False)):
+        progress_path = _write_noncanonical_writer_block(
+            data_dir=resolved_data_dir,
+            categories=categories,
+            target_date=target_date,
+            resume=resume,
+            storage_validate=storage_validate,
+        )
+        raise RuntimeError(
+            f"{NONCANONICAL_WRITER_BLOCKER}: progress_summary={progress_path}"
+        )
     downloader = CNFullMarketDownloader(
         data_dir=resolved_data_dir,
         years=years,

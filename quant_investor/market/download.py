@@ -20,10 +20,18 @@ from quant_investor.market.cn_nontrading_evidence import (
     read_evidence_cache,
     write_evidence_cache,
 )
+from quant_investor.market.cn_official_suspension_evidence import (
+    official_suspension_evidence_path,
+    read_official_web_suspension_evidence,
+)
 from quant_investor.market.cn_terminal_delisting_evidence import (
     read_terminal_delisting_evidence,
     resolve_terminal_delisting_evidence,
     select_terminal_delisting_candidates,
+)
+from quant_investor.market.cn_secondary_daily_evidence import (
+    probe_eastmoney_daily_evidence,
+    validate_secondary_daily_evidence,
 )
 from quant_investor.market.config import get_market_settings, normalize_categories
 from quant_investor.market.download_cn import CNFullMarketDownloader
@@ -296,6 +304,8 @@ class CNParquetBatchMaintainer:
         target_date: str = "auto",
         pit_generation_binding: dict[str, Any] | None = None,
         expected_market_pointer_sha256: str = "",
+        secondary_daily_source: str = "",
+        official_suspension_evidence: str = "",
     ) -> dict[str, Any]:
         pit_binding = self._load_pit_membership_binding(
             pit_generation_binding
@@ -380,6 +390,171 @@ class CNParquetBatchMaintainer:
             - inactive_absent
             - suspended_absent
         )
+        official_suspension_evidence_payload: dict[str, Any] = {
+            "status": "disabled",
+            "source": "",
+            "verified_symbols": [],
+            "evidence_path": "",
+            "evidence_sha256": "",
+            "payload_sha256": "",
+            "query_run_id": "",
+            "blockers": [],
+        }
+        official_path_text = str(official_suspension_evidence or "").strip()
+        if not official_path_text:
+            try:
+                discovered_path = official_suspension_evidence_path(
+                    self.data_dir,
+                    trade_date=target_trade_date,
+                    pit_membership_sha256=str(pit_binding.get("sha256") or ""),
+                )
+            except Exception:
+                discovered_path = None
+            if discovered_path is not None and discovered_path.exists():
+                official_path_text = str(discovered_path)
+        if official_path_text:
+            official_suspension_evidence_payload = read_official_web_suspension_evidence(
+                official_path_text,
+                trade_date=target_trade_date,
+                expected_pit_membership_path=str(pit_binding.get("path") or ""),
+                expected_pit_membership_sha256=str(pit_binding.get("sha256") or ""),
+                expected_symbols=primary_missing_after_status,
+            )
+            if official_suspension_evidence_payload.get("status") != "passed":
+                raise RuntimeError(
+                    "official_suspension_evidence_readback_blocked:"
+                    + ",".join(
+                        str(item)
+                        for item in official_suspension_evidence_payload.get(
+                            "blockers", []
+                        )
+                    )
+                )
+            official_symbols = {
+                str(symbol).strip().upper()
+                for symbol in official_suspension_evidence_payload.get(
+                    "verified_symbols", []
+                )
+                if str(symbol).strip()
+            }
+            official_suspension_absent = official_symbols - daily_symbols
+            suspended_absent |= official_suspension_absent
+            scope_suspended_symbols |= official_symbols & target_symbols
+            primary_missing_after_status = (
+                target_symbols
+                - observed_target_symbols
+                - inactive_absent
+                - suspended_absent
+            )
+        secondary_daily_evidence: dict[str, Any] = {
+            "status": "disabled",
+            "source": "",
+            "queried_symbols": [],
+            "observed_symbols": [],
+            "manifest_path": "",
+            "manifest_sha256": "",
+            "blockers": [],
+        }
+        resolved_secondary_source = str(secondary_daily_source or "").strip().lower()
+        if resolved_secondary_source == "none":
+            resolved_secondary_source = ""
+        if resolved_secondary_source:
+            if resolved_secondary_source != "eastmoney":
+                raise ValueError(
+                    "unsupported_secondary_daily_source:"
+                    f"{resolved_secondary_source}"
+                )
+            secondary_candidates = sorted(primary_missing_after_status)
+            if secondary_candidates:
+                secondary_run_id = (
+                    "cn-secondary-daily-"
+                    + target_trade_date
+                    + "-"
+                    + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+                )
+                try:
+                    secondary_payload, secondary_path = (
+                        probe_eastmoney_daily_evidence(
+                            secondary_candidates,
+                            target_trade_date,
+                            output_root=self.data_dir,
+                            pit_membership_path=pit_binding["path"],
+                            pit_membership_sha256=pit_binding["sha256"],
+                            query_run_id=secondary_run_id,
+                        )
+                    )
+                    secondary_readback = validate_secondary_daily_evidence(
+                        secondary_path,
+                        target_trade_date=target_trade_date,
+                        expected_pit_membership_sha256=pit_binding["sha256"],
+                    )
+                    secondary_daily_evidence = {
+                        "status": secondary_readback.get("status", "blocked"),
+                        "source": str(secondary_payload.get("source") or ""),
+                        "schema_version": str(
+                            secondary_payload.get("schema_version") or ""
+                        ),
+                        "query_run_id": secondary_run_id,
+                        "queried_symbols": list(
+                            secondary_payload.get("queried_symbols") or []
+                        ),
+                        "observed_symbols": list(
+                            secondary_payload.get("observed_symbols") or []
+                        ),
+                        "manifest_path": str(secondary_path),
+                        "manifest_sha256": str(
+                            secondary_readback.get("manifest_sha256") or ""
+                        ),
+                        "normalized_rows_sha256": str(
+                            secondary_payload.get("normalized_rows_sha256") or ""
+                        ),
+                        "blockers": list(
+                            secondary_readback.get("blockers") or []
+                        ),
+                    }
+                    if secondary_readback.get("status") != "passed":
+                        raise RuntimeError(
+                            "secondary_daily_evidence_readback_blocked:"
+                            + ",".join(secondary_daily_evidence["blockers"])
+                        )
+                    secondary_rows = pd.DataFrame(
+                        secondary_payload.get("normalized_rows") or []
+                    )
+                    if not secondary_rows.empty:
+                        secondary_rows["ts_code"] = secondary_rows[
+                            "ts_code"
+                        ].astype(str).str.strip().str.upper()
+                        secondary_rows["trade_date"] = secondary_rows[
+                            "trade_date"
+                        ].map(_compact_trade_date)
+                        secondary_rows = secondary_rows.loc[
+                            secondary_rows["ts_code"].isin(secondary_candidates)
+                            & secondary_rows["trade_date"].eq(target_trade_date)
+                        ].copy()
+                        if not secondary_rows.empty:
+                            daily_df = pd.concat(
+                                [daily_df, secondary_rows],
+                                ignore_index=True,
+                                sort=False,
+                            ).drop_duplicates(
+                                subset=["ts_code", "trade_date"],
+                                keep="first",
+                            )
+                            daily_symbols = set(
+                                daily_df["ts_code"].astype(str).str.strip().str.upper()
+                            )
+                            observed_target_symbols = daily_symbols & target_symbols
+                            primary_missing_after_status = (
+                                target_symbols
+                                - observed_target_symbols
+                                - inactive_absent
+                                - suspended_absent
+                            )
+                except Exception as exc:
+                    secondary_daily_evidence["status"] = "blocked"
+                    secondary_daily_evidence.setdefault("blockers", []).append(
+                        f"secondary_daily_probe_failed:{type(exc).__name__}:{exc}"
+                    )
         nontrading_evidence = self._load_verified_nontrading_bak_daily_zero(
             target_trade_date,
             primary_missing_after_status,
@@ -522,6 +697,8 @@ class CNParquetBatchMaintainer:
                 verified_terminal_delisting_absent
             ),
             verified_terminal_delisting_evidence=terminal_delisting_evidence,
+            secondary_daily_evidence=secondary_daily_evidence,
+            official_suspension_evidence=official_suspension_evidence_payload,
             requested_allowed_stale_symbols=sorted(scope_allowed_symbols),
             requested_allowed_absent_symbols=sorted(allowed_absent),
             non_blocking_absent_symbols=sorted(non_blocking_absent),
@@ -539,6 +716,8 @@ class CNParquetBatchMaintainer:
             bars_frame=bars_frame,
             completeness=completeness,
             early_stop_reason=early_stop_reason,
+            secondary_daily_evidence=secondary_daily_evidence,
+            official_suspension_evidence=official_suspension_evidence_payload,
         )
         if complete:
             parquet_commit = self.store.upsert_bars(
@@ -579,6 +758,32 @@ class CNParquetBatchMaintainer:
                         "true_missing_symbols": [],
                         "classification_sets_disjoint": True,
                         "suspended_evidence_symbols": sorted(scope_suspended_symbols),
+                        "verified_official_web_suspension_symbols": sorted(
+                            set(
+                                official_suspension_evidence_payload.get(
+                                    "verified_symbols", []
+                                )
+                                or []
+                            )
+                        ),
+                        "official_suspension_evidence_path": str(
+                            official_suspension_evidence_payload.get(
+                                "evidence_path"
+                            )
+                            or ""
+                        ),
+                        "official_suspension_evidence_sha256": str(
+                            official_suspension_evidence_payload.get(
+                                "evidence_sha256"
+                            )
+                            or ""
+                        ),
+                        "official_suspension_payload_sha256": str(
+                            official_suspension_evidence_payload.get(
+                                "payload_sha256"
+                            )
+                            or ""
+                        ),
                         "inactive_evidence_symbols": sorted(scope_inactive_symbols),
                         "verified_nontrading_evidence_path": str(
                             nontrading_evidence.get("evidence_path") or ""
@@ -623,10 +828,13 @@ class CNParquetBatchMaintainer:
                         ),
                         "daily_basic_coverage": daily_basic_coverage,
                         "adj_factor_coverage": adj_factor_coverage,
+                        "secondary_daily_evidence": secondary_daily_evidence,
                     },
                     "blockers": [],
                     "daily_basic_coverage": daily_basic_coverage,
                     "adj_factor_coverage": adj_factor_coverage,
+                    "secondary_daily_evidence": secondary_daily_evidence,
+                    "official_suspension_evidence": official_suspension_evidence_payload,
                 },
                 expected_latest_pointer_sha256=expected_market_pointer_sha256,
             )
@@ -668,6 +876,26 @@ class CNParquetBatchMaintainer:
                     "true_missing_symbols": sorted(true_missing_symbols),
                     "classification_sets_disjoint": True,
                     "suspended_evidence_symbols": sorted(scope_suspended_symbols),
+                    "verified_official_web_suspension_symbols": sorted(
+                        set(
+                            official_suspension_evidence_payload.get(
+                                "verified_symbols", []
+                            )
+                            or []
+                        )
+                    ),
+                    "official_suspension_evidence_path": str(
+                        official_suspension_evidence_payload.get("evidence_path")
+                        or ""
+                    ),
+                    "official_suspension_evidence_sha256": str(
+                        official_suspension_evidence_payload.get("evidence_sha256")
+                        or ""
+                    ),
+                    "official_suspension_payload_sha256": str(
+                        official_suspension_evidence_payload.get("payload_sha256")
+                        or ""
+                    ),
                     "inactive_evidence_symbols": sorted(scope_inactive_symbols),
                     "verified_nontrading_evidence_path": str(
                         nontrading_evidence.get("evidence_path") or ""
@@ -705,6 +933,8 @@ class CNParquetBatchMaintainer:
                     ),
                     "daily_basic_coverage": daily_basic_coverage,
                     "adj_factor_coverage": adj_factor_coverage,
+                    "secondary_daily_evidence": secondary_daily_evidence,
+                    "official_suspension_evidence": official_suspension_evidence_payload,
                 },
                 "blockers": blockers,
                 "daily_basic_coverage": daily_basic_coverage,
@@ -1154,6 +1384,8 @@ class CNParquetBatchMaintainer:
         verified_nontrading_evidence: dict[str, Any],
         verified_terminal_delisting_symbols: list[str],
         verified_terminal_delisting_evidence: dict[str, Any],
+        secondary_daily_evidence: dict[str, Any],
+        official_suspension_evidence: dict[str, Any],
         requested_allowed_stale_symbols: list[str],
         requested_allowed_absent_symbols: list[str],
         non_blocking_absent_symbols: list[str],
@@ -1252,6 +1484,8 @@ class CNParquetBatchMaintainer:
                 )
                 or {}
             ),
+            "secondary_daily_evidence": dict(secondary_daily_evidence),
+            "official_suspension_evidence": dict(official_suspension_evidence),
             "allowed_stale_symbols": [],
             "requested_allowed_stale_symbols": list(
                 requested_allowed_stale_symbols
@@ -1280,6 +1514,8 @@ class CNParquetBatchMaintainer:
         bars_frame: pd.DataFrame,
         completeness: dict[str, Any],
         early_stop_reason: str,
+        secondary_daily_evidence: dict[str, Any],
+        official_suspension_evidence: dict[str, Any],
     ) -> dict[str, Any]:
         ok_symbols = sorted(set(bars_frame.get("ts_code", pd.Series(dtype=str)).astype(str)) - set(missing_adj)) if not bars_frame.empty else []
         failed_symbols = [
@@ -1322,6 +1558,8 @@ class CNParquetBatchMaintainer:
                 "categories": list(target_categories),
                 "daily_basic_coverage": daily_basic_coverage,
                 "adj_factor_coverage": adj_factor_coverage,
+                "secondary_daily_evidence": dict(secondary_daily_evidence),
+                "official_suspension_evidence": dict(official_suspension_evidence),
             },
             "categories": {category: [*updated_symbols, *failed_symbols] for category in target_categories},
             "rounds": [
@@ -1338,6 +1576,8 @@ class CNParquetBatchMaintainer:
             "completeness": completeness,
             "daily_basic_coverage": daily_basic_coverage,
             "adj_factor_coverage": adj_factor_coverage,
+            "secondary_daily_evidence": dict(secondary_daily_evidence),
+            "official_suspension_evidence": dict(official_suspension_evidence),
         }
 
 
@@ -1358,6 +1598,8 @@ def run_market_maintenance(
     pit_generation_manifest: str | Path = "",
     expected_pit_generation_manifest_sha256: str = "",
     expected_market_pointer_sha256: str = "",
+    secondary_daily_source: str = "",
+    official_suspension_evidence: str = "",
     **kwargs: Any,
 ) -> Any:
     settings = get_market_settings(market)
@@ -1375,6 +1617,10 @@ def run_market_maintenance(
     if staged:
         if settings.market != "CN":
             raise ValueError("staged maintenance is only supported for CN")
+        if str(secondary_daily_source or "").strip().lower() not in {"", "none"}:
+            raise ValueError(
+                "secondary_daily_source_not_allowed_in_staged_maintenance"
+            )
         if requested_storage_mode == "parquet-direct":
             raise ValueError("staged maintenance cannot be combined with parquet-direct storage_mode")
         from quant_investor.market.staged_maintenance import run_staged_maintenance
@@ -1438,6 +1684,12 @@ def run_market_maintenance(
             target_date=target_date,
             pit_generation_binding=pit_generation_binding,
             expected_market_pointer_sha256=expected_pointer_sha256,
+            secondary_daily_source=(
+                ""
+                if str(secondary_daily_source or "").strip().lower() in {"", "none"}
+                else str(secondary_daily_source).strip().lower()
+            ),
+            official_suspension_evidence=official_suspension_evidence,
         )
 
     if settings.market == "CN":

@@ -26,6 +26,7 @@ __all__ = [
     "run_materialize_features",
     "run_materialize_serving",
     "run_storage_diff",
+    "run_storage_reactivate_snapshot",
     "run_storage_validate",
     "run_storage_validate_clean",
 ]
@@ -68,6 +69,7 @@ def __getattr__(name: str) -> Any:
         "run_materialize_features",
         "run_materialize_serving",
         "run_storage_diff",
+        "run_storage_reactivate_snapshot",
         "run_storage_validate",
         "run_storage_validate_clean",
     }:

@@ -5,8 +5,11 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import math
 import os
 import shutil
+import stat
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime, timezone
@@ -21,6 +24,9 @@ from quant_investor.market.market_data_reader import (
 )
 
 
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
+
 class MarketDataStore:
     """Validate and materialize local Parquet market-data layers."""
 
@@ -33,6 +39,30 @@ class MarketDataStore:
         self.market = str(market or "").strip().upper()
         self.data_root = Path(data_root or "data")
         self.reader = MarketDataReader(market=self.market, data_root=self.data_root)
+
+    @staticmethod
+    def _lexical_absolute(path: str | Path) -> Path:
+        return Path(os.path.abspath(os.fspath(path)))
+
+    def _uses_repository_data_root(self) -> bool:
+        return self._lexical_absolute(self.data_root) == self._lexical_absolute(
+            _REPOSITORY_ROOT / "data"
+        )
+
+    def _sealed_recovery_path(self, path: str | Path, *, label: str) -> str:
+        """Return repository-relative data paths for durable recovery evidence."""
+
+        if not self._uses_repository_data_root():
+            return str(path)
+        repository_root = self._lexical_absolute(_REPOSITORY_ROOT)
+        target = self._lexical_absolute(path)
+        try:
+            relative = target.relative_to(repository_root)
+        except ValueError as exc:
+            raise ValueError(f"{label}_outside_repository_data_root") from exc
+        if not relative.parts or relative.parts[0] != "data":
+            raise ValueError(f"{label}_outside_repository_data_root")
+        return relative.as_posix()
 
     def validate_latest(self) -> dict[str, Any]:
         gate = self.reader.clean_snapshot_gate(refresh=True)
@@ -187,6 +217,109 @@ class MarketDataStore:
     @staticmethod
     def _file_sha256(path: Path) -> str:
         return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    @staticmethod
+    def _canonical_json_bytes(payload: Any) -> bytes:
+        return (
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+            + "\n"
+        ).encode("utf-8")
+
+    @staticmethod
+    def _valid_sha256(value: Any) -> str:
+        digest = str(value or "").strip().lower()
+        if len(digest) != 64 or any(
+            character not in "0123456789abcdef" for character in digest
+        ):
+            raise ValueError("sha256_invalid")
+        return digest
+
+    @staticmethod
+    def _stat_signature(metadata: os.stat_result) -> tuple[int, ...]:
+        return (
+            int(metadata.st_dev),
+            int(metadata.st_ino),
+            int(metadata.st_mode),
+            int(metadata.st_nlink),
+            int(metadata.st_size),
+            int(metadata.st_mtime_ns),
+            int(metadata.st_ctime_ns),
+        )
+
+    def _read_fd_stable_bytes(self, path: Path, *, label: str) -> bytes:
+        try:
+            before = os.lstat(path)
+        except OSError as exc:
+            raise ValueError(f"{label}_missing") from exc
+        if stat.S_ISLNK(before.st_mode):
+            raise ValueError(f"{label}_symlink_rejected")
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError(f"{label}_regular_file_required")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(path, flags)
+            opened = os.fstat(descriptor)
+            opened_signature = self._stat_signature(opened)
+            if self._stat_signature(before) != opened_signature:
+                raise ValueError(f"{label}_identity_changed_before_read")
+            chunks: list[bytes] = []
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            after_opened = os.fstat(descriptor)
+            try:
+                after_path = os.lstat(path)
+            except OSError as exc:
+                raise ValueError(f"{label}_path_replaced_during_read") from exc
+            if (
+                self._stat_signature(after_opened) != opened_signature
+                or self._stat_signature(after_path) != opened_signature
+            ):
+                raise ValueError(f"{label}_changed_during_read")
+            return b"".join(chunks)
+        except OSError as exc:
+            raise ValueError(f"{label}_open_failed") from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    def _read_fd_stable_json(self, path: Path, *, label: str) -> tuple[dict[str, Any], bytes]:
+        encoded = self._read_fd_stable_bytes(path, label=label)
+        try:
+            payload = json.loads(encoded.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"{label}_json_invalid") from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f"{label}_json_object_required")
+        return dict(payload), encoded
+
+    def _write_new_bytes(self, encoded: bytes, path: Path, *, label: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+        try:
+            descriptor = os.open(path, flags, 0o600)
+        except FileExistsError as exc:
+            raise ValueError(f"{label}_already_exists") from exc
+        try:
+            with os.fdopen(descriptor, "wb", closefd=False) as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+        finally:
+            os.close(descriptor)
+        self._fsync_directory(path.parent)
+        if self._read_fd_stable_bytes(path, label=label) != encoded:
+            raise ValueError(f"{label}_readback_mismatch")
 
     @contextmanager
     def _market_writer_lock(self) -> Iterator[None]:
@@ -783,6 +916,1137 @@ class MarketDataStore:
             if staging_base.exists():
                 shutil.rmtree(staging_base)
 
+    def _snapshot_file_inventory(
+        self,
+        root: Path,
+        *,
+        label: str,
+    ) -> tuple[list[dict[str, Any]], list[Path]]:
+        def _is_orphaned_atomic_parquet_temp(path: Path) -> bool:
+            prefix, separator, process_id = path.name.rpartition(".tmp-")
+            return bool(
+                separator
+                and process_id.isdigit()
+                and prefix.startswith(".")
+                and prefix[1:].endswith(".parquet")
+            )
+
+        try:
+            self.reader._assert_path_has_no_symlink(
+                root,
+                boundary=self.data_root,
+                label=label,
+            )
+        except MarketDataUnavailableError as exc:
+            raise ValueError(f"{label}_path_invalid:{exc}") from exc
+        if not root.exists() or not root.is_dir():
+            raise ValueError(f"{label}_root_missing")
+
+        paths: list[Path] = []
+        residual_paths: list[Path] = []
+        for directory, directory_names, file_names in os.walk(
+            root,
+            followlinks=False,
+        ):
+            current = Path(directory)
+            for name in directory_names:
+                child = current / name
+                if child.is_symlink():
+                    raise ValueError(f"{label}_nested_symlink_rejected")
+            for name in file_names:
+                child = current / name
+                if child.is_symlink():
+                    raise ValueError(f"{label}_nested_symlink_rejected")
+                if child.suffix.lower() != ".parquet":
+                    if _is_orphaned_atomic_parquet_temp(child):
+                        residual_paths.append(child)
+                        continue
+                    raise ValueError(
+                        f"{label}_non_parquet_file_rejected:"
+                        f"{child.relative_to(root).as_posix()}"
+                    )
+                paths.append(child)
+        paths = sorted(paths, key=lambda item: item.relative_to(root).as_posix())
+        residual_paths = sorted(
+            residual_paths,
+            key=lambda item: item.relative_to(root).as_posix(),
+        )
+        if not paths:
+            raise ValueError(f"{label}_parquet_inventory_empty")
+
+        records: list[dict[str, Any]] = []
+        for path in paths:
+            encoded = self._read_fd_stable_bytes(path, label=f"{label}_file")
+            records.append(
+                {
+                    "relative_path": path.relative_to(root).as_posix(),
+                    "size_bytes": len(encoded),
+                    "sha256": hashlib.sha256(encoded).hexdigest(),
+                }
+            )
+
+        residual_records = []
+        for path in residual_paths:
+            encoded = self._read_fd_stable_bytes(
+                path,
+                label=f"{label}_orphaned_atomic_temp",
+            )
+            residual_records.append(
+                {
+                    "relative_path": path.relative_to(root).as_posix(),
+                    "size_bytes": len(encoded),
+                    "sha256": hashlib.sha256(encoded).hexdigest(),
+                }
+            )
+
+        after_files = sorted(path for path in root.rglob("*") if path.is_file())
+        after_paths = sorted(
+            path.relative_to(root).as_posix()
+            for path in after_files
+            if path.suffix.lower() == ".parquet"
+        )
+        after_residual_paths = sorted(
+            path.relative_to(root).as_posix()
+            for path in after_files
+            if _is_orphaned_atomic_parquet_temp(path)
+        )
+        after_unexpected_paths = sorted(
+            path.relative_to(root).as_posix()
+            for path in after_files
+            if path.suffix.lower() != ".parquet"
+            and not _is_orphaned_atomic_parquet_temp(path)
+        )
+        before_paths = [str(record["relative_path"]) for record in records]
+        before_residual_paths = [
+            str(record["relative_path"]) for record in residual_records
+        ]
+        if (
+            after_paths != before_paths
+            or after_residual_paths != before_residual_paths
+            or after_unexpected_paths
+        ):
+            raise ValueError(f"{label}_file_set_changed_during_inventory")
+        residual_records_after = []
+        for path in residual_paths:
+            encoded = self._read_fd_stable_bytes(
+                path,
+                label=f"{label}_orphaned_atomic_temp_postscan",
+            )
+            residual_records_after.append(
+                {
+                    "relative_path": path.relative_to(root).as_posix(),
+                    "size_bytes": len(encoded),
+                    "sha256": hashlib.sha256(encoded).hexdigest(),
+                }
+            )
+        if residual_records_after != residual_records:
+            raise ValueError(f"{label}_orphaned_atomic_temp_changed")
+        return records, paths
+
+    @staticmethod
+    def _arrow_type_family(data_type: Any) -> str:
+        import pyarrow as pa
+
+        if pa.types.is_dictionary(data_type):
+            return MarketDataStore._arrow_type_family(data_type.value_type)
+        if pa.types.is_null(data_type):
+            return "null"
+        if (
+            pa.types.is_integer(data_type)
+            or pa.types.is_floating(data_type)
+            or pa.types.is_decimal(data_type)
+        ):
+            return "numeric"
+        if pa.types.is_boolean(data_type):
+            return "bool"
+        if (
+            pa.types.is_date(data_type)
+            or pa.types.is_time(data_type)
+            or pa.types.is_timestamp(data_type)
+            or pa.types.is_duration(data_type)
+        ):
+            return "datetime"
+        if pa.types.is_string(data_type) or pa.types.is_large_string(data_type):
+            return "string"
+        if pa.types.is_binary(data_type) or pa.types.is_large_binary(data_type):
+            return "binary"
+        raise ValueError(f"snapshot_logical_type_unsupported:{data_type}")
+
+    @staticmethod
+    def _logical_column_name(name: Any) -> str:
+        column = str(name or "").strip()
+        if column in {"Date", "date"}:
+            return "trade_date"
+        if column in {"Symbol", "symbol"}:
+            return "ts_code"
+        return column
+
+    def _snapshot_logical_schema(
+        self,
+        paths: Sequence[Path],
+    ) -> tuple[list[str], dict[str, str]]:
+        import pyarrow.parquet as pq
+
+        families: dict[str, set[str]] = {}
+        for path in paths:
+            try:
+                schema = pq.read_schema(path)
+            except Exception as exc:
+                raise ValueError(f"snapshot_parquet_schema_unreadable:{path}") from exc
+            physical_names = set(schema.names)
+            for field in schema:
+                physical_name = str(field.name)
+                if physical_name in {"_year", "_month", "year", "month"}:
+                    continue
+                if physical_name in {"Symbol", "symbol"} and (
+                    "ts_code" in physical_names or "Symbol" in physical_names
+                    and physical_name == "symbol"
+                ):
+                    continue
+                logical_name = self._logical_column_name(physical_name)
+                if not logical_name:
+                    raise ValueError("snapshot_logical_column_name_empty")
+                families.setdefault(logical_name, set()).add(
+                    self._arrow_type_family(field.type)
+                )
+
+        for required in ("ts_code", "trade_date"):
+            if required not in families:
+                raise ValueError(f"snapshot_logical_column_missing:{required}")
+        resolved: dict[str, str] = {}
+        for name, observed in families.items():
+            non_null = observed - {"null"}
+            if len(non_null) > 1:
+                raise ValueError(
+                    "snapshot_logical_type_conflict:"
+                    f"{name}:{','.join(sorted(non_null))}"
+                )
+            resolved[name] = next(iter(non_null), "string")
+        resolved["ts_code"] = "string"
+        resolved["trade_date"] = "string"
+        ordered = ["ts_code", "trade_date"] + sorted(
+            name for name in resolved if name not in {"ts_code", "trade_date"}
+        )
+        return ordered, {name: resolved[name] for name in ordered}
+
+    def _read_parquet_frame_fd_stable(self, path: Path, *, label: str) -> pd.DataFrame:
+        import pyarrow.parquet as pq
+
+        try:
+            before = os.lstat(path)
+        except OSError as exc:
+            raise ValueError(f"{label}_missing") from exc
+        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+            raise ValueError(f"{label}_regular_file_required")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(path, flags)
+            opened = os.fstat(descriptor)
+            opened_signature = self._stat_signature(opened)
+            if self._stat_signature(before) != opened_signature:
+                raise ValueError(f"{label}_identity_changed_before_read")
+            with os.fdopen(os.dup(descriptor), "rb") as handle:
+                frame = pq.ParquetFile(handle).read().to_pandas()
+            after_opened = os.fstat(descriptor)
+            after_path = os.lstat(path)
+            if (
+                self._stat_signature(after_opened) != opened_signature
+                or self._stat_signature(after_path) != opened_signature
+            ):
+                raise ValueError(f"{label}_changed_during_read")
+            return frame
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError(f"{label}_unreadable") from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    def _normalize_logical_frame(
+        self,
+        frame: pd.DataFrame,
+        *,
+        logical_columns: Sequence[str],
+    ) -> pd.DataFrame:
+        work = frame.copy()
+        if "ts_code" in work.columns and "symbol" in work.columns:
+            primary = work["ts_code"].map(self._normalize_symbol)
+            redundant = work["symbol"].where(work["symbol"].notna(), "").map(
+                self._normalize_symbol
+            )
+            declared = redundant.ne("")
+            if not primary.loc[declared].equals(redundant.loc[declared]):
+                raise ValueError("snapshot_redundant_symbol_mismatch")
+            work = work.drop(columns=["symbol"])
+        elif "ts_code" not in work.columns:
+            for alias in ("Symbol", "symbol"):
+                if alias in work.columns:
+                    work = work.rename(columns={alias: "ts_code"})
+                    break
+        if "trade_date" not in work.columns:
+            for alias in ("Date", "date"):
+                if alias in work.columns:
+                    work = work.rename(columns={alias: "trade_date"})
+                    break
+        for ignored in ("Symbol", "_year", "_month", "year", "month"):
+            if ignored in work.columns:
+                work = work.drop(columns=[ignored])
+        if "ts_code" not in work.columns or "trade_date" not in work.columns:
+            raise ValueError("snapshot_logical_key_columns_missing")
+        work["ts_code"] = work["ts_code"].map(self._normalize_symbol)
+        work["trade_date"] = work["trade_date"].map(self._normalize_trade_date)
+        if work["ts_code"].eq("").any() or work["trade_date"].str.len().ne(8).any():
+            raise ValueError("snapshot_logical_key_invalid")
+        for column in logical_columns:
+            if column not in work.columns:
+                work[column] = None
+        unexpected = set(work.columns) - set(logical_columns)
+        if unexpected:
+            raise ValueError(
+                "snapshot_logical_columns_unexpected:"
+                + ",".join(sorted(str(item) for item in unexpected))
+            )
+        return work.loc[:, list(logical_columns)].copy()
+
+    @staticmethod
+    def _canonical_logical_value(value: Any, *, family: str) -> str:
+        try:
+            missing = bool(pd.isna(value))
+        except (TypeError, ValueError):
+            missing = False
+        if missing:
+            return "N"
+        if family == "numeric":
+            number = float(value)
+            if not math.isfinite(number):
+                raise ValueError("snapshot_numeric_value_nonfinite")
+            if number == 0.0:
+                number = 0.0
+            return "F" + number.hex()
+        if family == "bool":
+            if isinstance(value, str):
+                lowered = value.strip().lower()
+                if lowered not in {"true", "false", "1", "0"}:
+                    raise ValueError("snapshot_boolean_value_invalid")
+                return "B1" if lowered in {"true", "1"} else "B0"
+            return "B1" if bool(value) else "B0"
+        if family == "datetime":
+            return "T" + pd.Timestamp(value).isoformat()
+        if family == "binary":
+            return "X" + bytes(value).hex()
+        return "S" + str(value)
+
+    def _snapshot_logical_summary(
+        self,
+        *,
+        root: Path,
+        paths: Sequence[Path],
+        layout: str,
+        logical_columns: Sequence[str],
+        logical_types: Mapping[str, str],
+        acknowledged_trade_date: str,
+    ) -> dict[str, Any]:
+        symbol_hashers: dict[str, Any] = {}
+        symbol_counts: dict[str, int] = {}
+        symbol_first_dates: dict[str, str] = {}
+        symbol_last_dates: dict[str, str] = {}
+        row_count = 0
+
+        if layout == "table":
+            ordered_paths: list[tuple[str, str, Path]] = []
+            for path in paths:
+                parts = path.relative_to(root).parts
+                if (
+                    len(parts) != 3
+                    or not parts[0].startswith("year=")
+                    or not parts[1].startswith("month=")
+                    or parts[2] != "part.parquet"
+                ):
+                    raise ValueError(
+                        "snapshot_table_layout_invalid:"
+                        f"{path.relative_to(root).as_posix()}"
+                    )
+                year = parts[0].split("=", 1)[1]
+                month = parts[1].split("=", 1)[1]
+                if len(year) != 4 or len(month) != 2 or not (year + month).isdigit():
+                    raise ValueError("snapshot_table_partition_invalid")
+                ordered_paths.append((year, month, path))
+            work_paths = [item[2] for item in sorted(ordered_paths)]
+        elif layout == "serving":
+            work_paths = []
+            for path in paths:
+                parts = path.relative_to(root).parts
+                if (
+                    len(parts) != 2
+                    or not parts[0].startswith("symbol=")
+                    or parts[1] != "bars.parquet"
+                ):
+                    raise ValueError(
+                        "snapshot_serving_layout_invalid:"
+                        f"{path.relative_to(root).as_posix()}"
+                    )
+                work_paths.append(path)
+            work_paths.sort(
+                key=lambda item: item.parent.name.split("=", 1)[1].upper()
+            )
+        else:
+            raise ValueError("snapshot_layout_invalid")
+
+        for path in work_paths:
+            raw = self._read_parquet_frame_fd_stable(
+                path,
+                label=f"snapshot_{layout}_parquet",
+            )
+            frame = self._normalize_logical_frame(
+                raw,
+                logical_columns=logical_columns,
+            )
+            if layout == "table":
+                parts = path.relative_to(root).parts
+                expected_partition = (
+                    parts[0].split("=", 1)[1] + parts[1].split("=", 1)[1]
+                )
+                if not frame["trade_date"].str.startswith(expected_partition).all():
+                    raise ValueError("snapshot_table_partition_row_mismatch")
+            else:
+                expected_symbol = self._normalize_symbol(
+                    path.parent.name.split("=", 1)[1]
+                )
+                if not frame["ts_code"].eq(expected_symbol).all():
+                    raise ValueError("snapshot_serving_symbol_row_mismatch")
+            frame = frame.sort_values(
+                ["ts_code", "trade_date"],
+                kind="mergesort",
+            ).reset_index(drop=True)
+            if frame.duplicated(subset=["ts_code", "trade_date"]).any():
+                raise ValueError(f"snapshot_{layout}_duplicate_key")
+
+            for symbol, group in frame.groupby("ts_code", sort=True):
+                normalized_symbol = self._normalize_symbol(symbol)
+                dates = group["trade_date"].astype(str).tolist()
+                previous_last = symbol_last_dates.get(normalized_symbol, "")
+                if previous_last and dates and dates[0] <= previous_last:
+                    raise ValueError(f"snapshot_{layout}_duplicate_or_unordered_key")
+                if dates:
+                    symbol_first_dates.setdefault(normalized_symbol, dates[0])
+                    symbol_last_dates[normalized_symbol] = dates[-1]
+                hasher = symbol_hashers.setdefault(normalized_symbol, hashlib.sha256())
+                for values in group.itertuples(index=False, name=None):
+                    tokens = [
+                        self._canonical_logical_value(
+                            value,
+                            family=str(logical_types[column]),
+                        )
+                        for column, value in zip(logical_columns, values)
+                    ]
+                    hasher.update(
+                        self._canonical_json_bytes(tokens)
+                    )
+                count = int(len(group))
+                symbol_counts[normalized_symbol] = (
+                    symbol_counts.get(normalized_symbol, 0) + count
+                )
+                row_count += count
+
+        symbol_digests = {
+            symbol: symbol_hashers[symbol].hexdigest()
+            for symbol in sorted(symbol_hashers)
+        }
+        root_hasher = hashlib.sha256()
+        for symbol in sorted(symbol_digests):
+            root_hasher.update(
+                (
+                    f"{symbol}\t{symbol_counts[symbol]}\t"
+                    f"{symbol_first_dates[symbol]}\t{symbol_last_dates[symbol]}\t"
+                    f"{symbol_digests[symbol]}\n"
+                ).encode("utf-8")
+            )
+        exact_date_symbols = sorted(
+            symbol
+            for symbol, last_date in symbol_last_dates.items()
+            if last_date == acknowledged_trade_date
+        )
+        return {
+            "logical_rowset_sha256": root_hasher.hexdigest(),
+            "row_count": row_count,
+            "key_count": row_count,
+            "symbol_count": len(symbol_digests),
+            "latest_trade_date": max(symbol_last_dates.values(), default=""),
+            "exact_date_symbol_count": len(exact_date_symbols),
+            "exact_date_symbols_sha256": hashlib.sha256(
+                "".join(f"{symbol}\n" for symbol in exact_date_symbols).encode(
+                    "utf-8"
+                )
+            ).hexdigest(),
+            "symbol_counts": symbol_counts,
+            "symbol_first_dates": symbol_first_dates,
+            "symbol_last_dates": symbol_last_dates,
+            "symbol_digests": symbol_digests,
+        }
+
+    def _candidate_pointer_from_snapshot_manifest(
+        self,
+        manifest: Mapping[str, Any],
+        *,
+        recovery: Mapping[str, Any] | None = None,
+        updated_at: str | None = None,
+    ) -> dict[str, Any]:
+        coverage = manifest.get("coverage")
+        if not isinstance(coverage, Mapping):
+            raise ValueError("snapshot_manifest_coverage_missing")
+        latest_complete = self._normalize_trade_date(
+            manifest.get("latest_complete_trade_date")
+            or manifest.get("latest_trade_date")
+        )
+        latest_available = self._normalize_trade_date(
+            manifest.get("latest_available_trade_date") or latest_complete
+        )
+        payload: dict[str, Any] = {
+            "snapshot_id": str(manifest.get("snapshot_id") or ""),
+            "status": "OK",
+            "manifest_path": str(manifest.get("manifest_path") or ""),
+            "table_root": str(manifest.get("table_root") or ""),
+            "derived_serving_root": str(
+                manifest.get("derived_serving_root") or ""
+            ),
+            "latest_available_trade_date": latest_available,
+            "latest_complete_trade_date": latest_complete,
+            "latest_trade_date": latest_complete,
+            "quarantined_tail_dates": list(
+                manifest.get("quarantined_tail_dates") or []
+            ),
+            "coverage": dict(coverage),
+            "blockers": [],
+            "updated_at": updated_at or self._utc_now(),
+        }
+        if recovery is not None:
+            payload["recovery"] = dict(recovery)
+        return payload
+
+    def _validate_snapshot_reactivation_source(
+        self,
+        *,
+        snapshot_id: str,
+        expected_snapshot_manifest_sha256: str,
+        acknowledged_trade_date: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        snapshot_root = self.data_root / "parquet" / "cn" / "_snapshots"
+        manifest_path = snapshot_root / f"{snapshot_id}.json"
+        manifest, manifest_bytes = self._read_fd_stable_json(
+            manifest_path,
+            label="source_snapshot_manifest",
+        )
+        actual_manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+        if actual_manifest_sha256 != expected_snapshot_manifest_sha256:
+            raise ValueError(
+                "source_snapshot_manifest_sha256_mismatch:"
+                f"{actual_manifest_sha256}!={expected_snapshot_manifest_sha256}"
+            )
+        if str(manifest.get("snapshot_id") or "") != snapshot_id:
+            raise ValueError("source_snapshot_manifest_snapshot_id_mismatch")
+        if str(manifest.get("market") or "").strip().upper() != "CN":
+            raise ValueError("source_snapshot_manifest_market_mismatch")
+        if str(manifest.get("status") or "").strip().upper() != "OK":
+            raise ValueError("source_snapshot_manifest_status_invalid")
+        coverage = manifest.get("coverage")
+        if not isinstance(coverage, dict) or str(
+            coverage.get("coverage_schema_version") or ""
+        ).strip() != "cn-full-a-coverage.v4":
+            raise ValueError("source_snapshot_exact_v4_required")
+        manifest_trade_date = self._normalize_trade_date(
+            manifest.get("latest_complete_trade_date")
+            or manifest.get("latest_trade_date")
+        )
+        if manifest_trade_date != acknowledged_trade_date:
+            raise ValueError(
+                "acknowledged_trade_date_mismatch:"
+                f"{acknowledged_trade_date}!={manifest_trade_date}"
+            )
+
+        candidate_pointer = self._candidate_pointer_from_snapshot_manifest(
+            manifest
+        )
+        candidate_reader = MarketDataReader(market="CN", data_root=self.data_root)
+        candidate_reader._latest_payload = dict(candidate_pointer)
+        candidate_gate = candidate_reader.clean_snapshot_gate(refresh=False)
+        candidate_blockers = [
+            str(item)
+            for item in list(candidate_gate.get("blockers", []) or [])
+            if str(item).strip()
+        ]
+        if not candidate_gate.get("healthy") or candidate_blockers:
+            raise ValueError(
+                "source_snapshot_candidate_validation_failed:"
+                + ",".join(dict.fromkeys(candidate_blockers))
+            )
+        snapshot = candidate_reader._snapshot_from_payload(candidate_pointer)
+        expected_manifest_path = snapshot_root / f"{snapshot_id}.json"
+        expected_table_root = snapshot_root / snapshot_id / "table" / "bars"
+        expected_serving_root = snapshot_root / snapshot_id / "serving" / "bars"
+        for label, actual, expected in (
+            ("manifest", snapshot.manifest_path, expected_manifest_path),
+            ("table", snapshot.table_root, expected_table_root),
+            ("serving", snapshot.serving_root, expected_serving_root),
+        ):
+            try:
+                same_path = actual.resolve(strict=True) == expected.resolve(
+                    strict=True
+                )
+            except (OSError, RuntimeError):
+                same_path = False
+            if not same_path:
+                raise ValueError(f"source_snapshot_{label}_path_mismatch")
+
+        table_inventory, table_paths = self._snapshot_file_inventory(
+            snapshot.table_root,
+            label="source_snapshot_table",
+        )
+        serving_inventory, serving_paths = self._snapshot_file_inventory(
+            snapshot.serving_root,
+            label="source_snapshot_serving",
+        )
+        logical_columns, logical_types = self._snapshot_logical_schema(
+            [*table_paths, *serving_paths]
+        )
+        table_summary = self._snapshot_logical_summary(
+            root=snapshot.table_root,
+            paths=table_paths,
+            layout="table",
+            logical_columns=logical_columns,
+            logical_types=logical_types,
+            acknowledged_trade_date=acknowledged_trade_date,
+        )
+        serving_summary = self._snapshot_logical_summary(
+            root=snapshot.serving_root,
+            paths=serving_paths,
+            layout="serving",
+            logical_columns=logical_columns,
+            logical_types=logical_types,
+            acknowledged_trade_date=acknowledged_trade_date,
+        )
+        for field in (
+            "logical_rowset_sha256",
+            "row_count",
+            "key_count",
+            "symbol_count",
+            "latest_trade_date",
+            "exact_date_symbol_count",
+            "exact_date_symbols_sha256",
+            "symbol_counts",
+            "symbol_first_dates",
+            "symbol_last_dates",
+            "symbol_digests",
+        ):
+            if table_summary[field] != serving_summary[field]:
+                raise ValueError(f"snapshot_table_serving_{field}_mismatch")
+        if int(manifest.get("row_count") or -1) != int(
+            table_summary["row_count"]
+        ):
+            raise ValueError("source_snapshot_manifest_row_count_mismatch")
+        if int(manifest.get("symbol_count") or -1) != int(
+            table_summary["symbol_count"]
+        ):
+            raise ValueError("source_snapshot_manifest_symbol_count_mismatch")
+        table_total_size_bytes = sum(
+            int(item["size_bytes"]) for item in table_inventory
+        )
+        if int(manifest.get("parquet_size_bytes") or -1) != table_total_size_bytes:
+            raise ValueError("source_snapshot_manifest_parquet_size_mismatch")
+        if table_summary["latest_trade_date"] != acknowledged_trade_date:
+            raise ValueError("source_snapshot_latest_trade_date_mismatch")
+        observed_bar_count = int(coverage.get("observed_bar_count") or -1)
+        exact_date_symbol_count = int(table_summary["exact_date_symbol_count"])
+        if observed_bar_count < 0 or observed_bar_count > exact_date_symbol_count:
+            raise ValueError("source_snapshot_observed_bar_count_invalid")
+        for coverage_key in ("daily_basic_coverage", "adj_factor_coverage"):
+            coverage_summary = coverage.get(coverage_key)
+            if not isinstance(coverage_summary, Mapping):
+                raise ValueError(
+                    f"source_snapshot_{coverage_key}_summary_missing"
+                )
+            if int(coverage_summary.get("covered_count") or -1) != (
+                exact_date_symbol_count
+            ):
+                raise ValueError(
+                    f"source_snapshot_{coverage_key}_count_mismatch"
+                )
+
+        pit_binding = candidate_reader.coverage_bound_pit(refresh=False)
+        pit_blockers = [
+            str(item)
+            for item in list(pit_binding.get("blockers", []) or [])
+            if str(item).strip()
+        ]
+        if str(pit_binding.get("status") or "") != "passed" or pit_blockers:
+            raise ValueError(
+                "source_snapshot_pit_validation_failed:"
+                + ",".join(dict.fromkeys(pit_blockers))
+            )
+        pit_membership_path = Path(str(pit_binding.get("canonical_path") or ""))
+        pit_manifest_path = Path(
+            str(pit_binding.get("generation_manifest_path") or "")
+        )
+        pit_membership_bytes = self._read_fd_stable_bytes(
+            pit_membership_path,
+            label="source_snapshot_pit_membership",
+        )
+        pit_manifest_bytes = self._read_fd_stable_bytes(
+            pit_manifest_path,
+            label="source_snapshot_pit_generation_manifest",
+        )
+        pit_membership_sha256 = hashlib.sha256(pit_membership_bytes).hexdigest()
+        pit_manifest_sha256 = hashlib.sha256(pit_manifest_bytes).hexdigest()
+        if pit_membership_sha256 != str(
+            pit_binding.get("canonical_sha256") or ""
+        ):
+            raise ValueError("source_snapshot_pit_membership_sha256_mismatch")
+        if pit_manifest_sha256 != str(
+            pit_binding.get("generation_manifest_sha256") or ""
+        ):
+            raise ValueError(
+                "source_snapshot_pit_generation_manifest_sha256_mismatch"
+            )
+
+        table_inventory_after, _ = self._snapshot_file_inventory(
+            snapshot.table_root,
+            label="source_snapshot_table_postscan",
+        )
+        serving_inventory_after, _ = self._snapshot_file_inventory(
+            snapshot.serving_root,
+            label="source_snapshot_serving_postscan",
+        )
+        if table_inventory_after != table_inventory:
+            raise ValueError("source_snapshot_table_inventory_changed")
+        if serving_inventory_after != serving_inventory:
+            raise ValueError("source_snapshot_serving_inventory_changed")
+        manifest_after = self._read_fd_stable_bytes(
+            manifest_path,
+            label="source_snapshot_manifest_postscan",
+        )
+        if manifest_after != manifest_bytes:
+            raise ValueError("source_snapshot_manifest_changed")
+        if self._read_fd_stable_bytes(
+            pit_membership_path,
+            label="source_snapshot_pit_membership_postscan",
+        ) != pit_membership_bytes:
+            raise ValueError("source_snapshot_pit_membership_changed")
+        if self._read_fd_stable_bytes(
+            pit_manifest_path,
+            label="source_snapshot_pit_generation_manifest_postscan",
+        ) != pit_manifest_bytes:
+            raise ValueError("source_snapshot_pit_generation_manifest_changed")
+
+        table_inventory_sha256 = hashlib.sha256(
+            self._canonical_json_bytes(table_inventory)
+        ).hexdigest()
+        serving_inventory_sha256 = hashlib.sha256(
+            self._canonical_json_bytes(serving_inventory)
+        ).hexdigest()
+        source_validation = {
+            "table_inventory_sha256": table_inventory_sha256,
+            "serving_inventory_sha256": serving_inventory_sha256,
+            "logical_column_names": list(logical_columns),
+            "table_logical_rowset_sha256": table_summary[
+                "logical_rowset_sha256"
+            ],
+            "serving_logical_rowset_sha256": serving_summary[
+                "logical_rowset_sha256"
+            ],
+            "row_count": int(table_summary["row_count"]),
+            "key_count": int(table_summary["key_count"]),
+            "symbol_count": int(table_summary["symbol_count"]),
+            "latest_trade_date": str(table_summary["latest_trade_date"]),
+            "exact_date_symbol_count": int(
+                table_summary["exact_date_symbol_count"]
+            ),
+            "pit_membership_path": str(pit_membership_path),
+            "pit_membership_sha256": pit_membership_sha256,
+            "pit_generation_manifest_path": str(pit_manifest_path),
+            "pit_generation_manifest_sha256": pit_manifest_sha256,
+        }
+        return manifest, source_validation
+
+    def _validate_reactivated_pointer(
+        self,
+        *,
+        attempted_pointer_bytes: bytes,
+        snapshot_id: str,
+        expected_snapshot_manifest_sha256: str,
+        acknowledged_trade_date: str,
+        expected_source_validation: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        actual_pointer_bytes = self._read_fd_stable_bytes(
+            self.reader.latest_pointer_path,
+            label="reactivated_market_pointer",
+        )
+        if actual_pointer_bytes != attempted_pointer_bytes:
+            raise ValueError("reactivated_market_pointer_readback_mismatch")
+        validation_reader = MarketDataReader(
+            market="CN",
+            data_root=self.data_root,
+        )
+        gate = validation_reader.clean_snapshot_gate(refresh=True)
+        blockers = [
+            str(item)
+            for item in list(gate.get("blockers", []) or [])
+            if str(item).strip()
+        ]
+        if not gate.get("healthy") or blockers:
+            raise ValueError(
+                "reactivated_market_pointer_validation_failed:"
+                + ",".join(dict.fromkeys(blockers))
+            )
+        if str(gate.get("snapshot_id") or "") != snapshot_id:
+            raise ValueError("reactivated_market_pointer_snapshot_id_mismatch")
+        _manifest, observed_source_validation = (
+            self._validate_snapshot_reactivation_source(
+                snapshot_id=snapshot_id,
+                expected_snapshot_manifest_sha256=(
+                    expected_snapshot_manifest_sha256
+                ),
+                acknowledged_trade_date=acknowledged_trade_date,
+            )
+        )
+        if self._canonical_json_bytes(observed_source_validation) != (
+            self._canonical_json_bytes(dict(expected_source_validation))
+        ):
+            raise ValueError("reactivated_snapshot_source_validation_changed")
+        return observed_source_validation
+
+    def reactivate_snapshot(
+        self,
+        *,
+        snapshot_id: str,
+        expected_snapshot_manifest_sha256: str,
+        expected_market_pointer_sha256: str,
+        acknowledge_trade_date: str,
+        reason: str,
+        commit: bool = False,
+    ) -> dict[str, Any]:
+        if self.market != "CN":
+            raise ValueError("storage_reactivate_snapshot_cn_only")
+        resolved_snapshot_id = str(snapshot_id or "").strip()
+        if (
+            not resolved_snapshot_id
+            or Path(resolved_snapshot_id).name != resolved_snapshot_id
+            or any(
+                character
+                not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+                for character in resolved_snapshot_id
+            )
+        ):
+            raise ValueError("snapshot_id_invalid")
+        try:
+            manifest_sha256 = self._valid_sha256(
+                expected_snapshot_manifest_sha256
+            )
+        except ValueError as exc:
+            raise ValueError("expected_snapshot_manifest_sha256_invalid") from exc
+        try:
+            expected_pointer_sha256 = self._valid_sha256(
+                expected_market_pointer_sha256
+            )
+        except ValueError as exc:
+            raise ValueError("expected_market_pointer_sha256_invalid") from exc
+        acknowledged_trade_date = self._normalize_trade_date(
+            acknowledge_trade_date
+        )
+        if not acknowledged_trade_date:
+            raise ValueError("acknowledge_trade_date_invalid")
+        resolved_reason = str(reason or "").strip()
+        if not resolved_reason:
+            raise ValueError("snapshot_reactivation_reason_required")
+
+        if commit:
+            if not self._uses_repository_data_root():
+                raise ValueError(
+                    "snapshot_reactivation_commit_requires_repository_data_root"
+                )
+            with self._market_writer_lock():
+                return self._reactivate_snapshot_locked(
+                    snapshot_id=resolved_snapshot_id,
+                    expected_snapshot_manifest_sha256=manifest_sha256,
+                    expected_market_pointer_sha256=expected_pointer_sha256,
+                    acknowledged_trade_date=acknowledged_trade_date,
+                    reason=resolved_reason,
+                    commit=True,
+                )
+        return self._reactivate_snapshot_locked(
+            snapshot_id=resolved_snapshot_id,
+            expected_snapshot_manifest_sha256=manifest_sha256,
+            expected_market_pointer_sha256=expected_pointer_sha256,
+            acknowledged_trade_date=acknowledged_trade_date,
+            reason=resolved_reason,
+            commit=False,
+        )
+
+    def _reactivate_snapshot_locked(
+        self,
+        *,
+        snapshot_id: str,
+        expected_snapshot_manifest_sha256: str,
+        expected_market_pointer_sha256: str,
+        acknowledged_trade_date: str,
+        reason: str,
+        commit: bool,
+    ) -> dict[str, Any]:
+        previous_pointer_bytes = self._read_fd_stable_bytes(
+            self.reader.latest_pointer_path,
+            label="current_market_pointer",
+        )
+        previous_pointer_sha256 = hashlib.sha256(previous_pointer_bytes).hexdigest()
+        if previous_pointer_sha256 != expected_market_pointer_sha256:
+            raise ValueError(
+                "market_pointer_cas_mismatch:"
+                f"{previous_pointer_sha256}!={expected_market_pointer_sha256}"
+            )
+        manifest, source_validation = self._validate_snapshot_reactivation_source(
+            snapshot_id=snapshot_id,
+            expected_snapshot_manifest_sha256=(
+                expected_snapshot_manifest_sha256
+            ),
+            acknowledged_trade_date=acknowledged_trade_date,
+        )
+        snapshot_root = self.data_root / "parquet" / "cn" / "_snapshots"
+        source_snapshot_manifest_path = self._sealed_recovery_path(
+            snapshot_root / f"{snapshot_id}.json",
+            label="source_snapshot_manifest",
+        )
+        source_snapshot_table_path = self._sealed_recovery_path(
+            snapshot_root / snapshot_id / "table" / "bars",
+            label="source_snapshot_table",
+        )
+        source_snapshot_serving_path = self._sealed_recovery_path(
+            snapshot_root / snapshot_id / "serving" / "bars",
+            label="source_snapshot_serving",
+        )
+        if commit:
+            canonical_manifest_paths = {
+                "manifest_path": source_snapshot_manifest_path,
+                "table_root": source_snapshot_table_path,
+                "derived_serving_root": source_snapshot_serving_path,
+            }
+            for field, expected_path in canonical_manifest_paths.items():
+                if str(manifest.get(field) or "") != expected_path:
+                    raise ValueError(
+                        f"source_snapshot_{field}_not_repository_relative"
+                    )
+        pointer_manifest = dict(manifest)
+        pointer_manifest["manifest_path"] = source_snapshot_manifest_path
+        pointer_manifest["table_root"] = source_snapshot_table_path
+        pointer_manifest["derived_serving_root"] = source_snapshot_serving_path
+        pointer_coverage = dict(manifest.get("coverage") or {})
+        pointer_coverage["pit_membership_path"] = source_validation[
+            "pit_membership_path"
+        ]
+        pointer_coverage["pit_generation_manifest_path"] = source_validation[
+            "pit_generation_manifest_path"
+        ]
+        pointer_manifest["coverage"] = pointer_coverage
+
+        created_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        recovery_id = (
+            "recovery-"
+            + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            + "-"
+            + uuid.uuid4().hex[:12]
+        )
+        recovery_root = (
+            self.data_root / "parquet" / "cn" / "_recoveries" / recovery_id
+        )
+        intent_path = recovery_root / "intent.json"
+        receipt_path = recovery_root / "receipt.json"
+        sealed_intent_path = self._sealed_recovery_path(
+            intent_path,
+            label="recovery_intent",
+        )
+        sealed_receipt_path = self._sealed_recovery_path(
+            receipt_path,
+            label="recovery_receipt",
+        )
+        intent = {
+            "schema_version": "cn-market-snapshot-recovery-intent.v1",
+            "recovery_id": recovery_id,
+            "market": "CN",
+            "snapshot_id": snapshot_id,
+            "created_at": created_at,
+            "previous_market_pointer_sha256": previous_pointer_sha256,
+            "source_snapshot_manifest_path": source_snapshot_manifest_path,
+            "source_snapshot_manifest_sha256": (
+                expected_snapshot_manifest_sha256
+            ),
+            "acknowledged_trade_date": acknowledged_trade_date,
+            "reason": reason,
+            "intent_path": sealed_intent_path,
+            "receipt_path": sealed_receipt_path,
+            "source_validation": source_validation,
+        }
+        intent_bytes = self._canonical_json_bytes(intent)
+        intent_sha256 = hashlib.sha256(intent_bytes).hexdigest()
+        recovery_metadata = {
+            "schema_version": "cn-market-snapshot-recovery-pointer.v1",
+            "recovery_id": recovery_id,
+            "previous_market_pointer_sha256": previous_pointer_sha256,
+            "source_snapshot_manifest_sha256": (
+                expected_snapshot_manifest_sha256
+            ),
+            "acknowledged_trade_date": acknowledged_trade_date,
+            "reason": reason,
+            "intent_path": sealed_intent_path,
+            "intent_sha256": intent_sha256,
+            "receipt_path": sealed_receipt_path,
+        }
+        candidate_pointer = self._candidate_pointer_from_snapshot_manifest(
+            pointer_manifest,
+            recovery=recovery_metadata,
+            updated_at=created_at,
+        )
+        candidate_pointer_bytes = self._json_bytes(candidate_pointer)
+        candidate_pointer_sha256 = hashlib.sha256(
+            candidate_pointer_bytes
+        ).hexdigest()
+        result = {
+            "schema_version": "cn-market-snapshot-recovery-result.v1",
+            "status": "validated_dry_run" if not commit else "activated",
+            "commit": bool(commit),
+            "market": "CN",
+            "snapshot_id": snapshot_id,
+            "acknowledged_trade_date": acknowledged_trade_date,
+            "previous_market_pointer_sha256": previous_pointer_sha256,
+            "new_market_pointer_sha256": candidate_pointer_sha256,
+            "source_snapshot_manifest_path": source_snapshot_manifest_path,
+            "source_snapshot_manifest_sha256": (
+                expected_snapshot_manifest_sha256
+            ),
+            "recovery_id": recovery_id,
+            "intent_path": sealed_intent_path,
+            "intent_sha256": intent_sha256,
+            "receipt_path": sealed_receipt_path,
+            "source_validation": source_validation,
+        }
+        if not commit:
+            return result
+
+        if recovery_root.exists():
+            raise ValueError("snapshot_recovery_generation_already_exists")
+        recovery_root.mkdir(parents=True, exist_ok=False)
+        self._fsync_directory(recovery_root.parent)
+        self._write_new_bytes(intent_bytes, intent_path, label="recovery_intent")
+
+        attempted_pointer_written = False
+        failure: Exception | None = None
+        failure_status = "activation_failed"
+        try:
+            current_pointer_bytes = self._read_fd_stable_bytes(
+                self.reader.latest_pointer_path,
+                label="current_market_pointer_precommit",
+            )
+            if current_pointer_bytes != previous_pointer_bytes:
+                failure_status = "cas_failed"
+                raise ValueError("market_pointer_cas_mismatch_precommit")
+            self._atomic_write_bytes(
+                candidate_pointer_bytes,
+                self.reader.latest_pointer_path,
+            )
+            attempted_pointer_written = True
+            self.reader._latest_payload = None
+            self.reader._snapshot_gate_cache = None
+            self.reader._serving_symbols_cache = None
+            self._validate_reactivated_pointer(
+                attempted_pointer_bytes=candidate_pointer_bytes,
+                snapshot_id=snapshot_id,
+                expected_snapshot_manifest_sha256=(
+                    expected_snapshot_manifest_sha256
+                ),
+                acknowledged_trade_date=acknowledged_trade_date,
+                expected_source_validation=source_validation,
+            )
+            receipt = {
+                "schema_version": "cn-market-snapshot-recovery-receipt.v1",
+                "status": "activated",
+                "recovery_id": recovery_id,
+                "market": "CN",
+                "snapshot_id": snapshot_id,
+                "activated_at": self._utc_now(),
+                "previous_market_pointer_sha256": previous_pointer_sha256,
+                "new_market_pointer_sha256": candidate_pointer_sha256,
+                "source_snapshot_manifest_path": source_snapshot_manifest_path,
+                "source_snapshot_manifest_sha256": (
+                    expected_snapshot_manifest_sha256
+                ),
+                "acknowledged_trade_date": acknowledged_trade_date,
+                "reason": reason,
+                "intent_path": sealed_intent_path,
+                "intent_sha256": intent_sha256,
+                "receipt_path": sealed_receipt_path,
+                "source_validation": source_validation,
+            }
+            receipt_bytes = self._canonical_json_bytes(receipt)
+            self._write_new_bytes(
+                receipt_bytes,
+                receipt_path,
+                label="recovery_receipt",
+            )
+            if self._read_fd_stable_bytes(
+                self.reader.latest_pointer_path,
+                label="reactivated_market_pointer_final",
+            ) != candidate_pointer_bytes:
+                raise ValueError("reactivated_market_pointer_final_mismatch")
+            result["receipt_sha256"] = hashlib.sha256(receipt_bytes).hexdigest()
+            return result
+        except Exception as exc:
+            failure = exc
+            try:
+                current_pointer_bytes = self.reader.latest_pointer_path.read_bytes()
+            except OSError:
+                current_pointer_bytes = b""
+            rolled_back = False
+            if attempted_pointer_written and current_pointer_bytes == candidate_pointer_bytes:
+                self._atomic_write_bytes(
+                    previous_pointer_bytes,
+                    self.reader.latest_pointer_path,
+                )
+                rolled_back = True
+                failure_status = "rolled_back"
+            elif attempted_pointer_written:
+                failure_status = "activation_failed_pointer_changed"
+            self.reader._latest_payload = None
+            self.reader._snapshot_gate_cache = None
+            self.reader._serving_symbols_cache = None
+            if not receipt_path.exists():
+                failure_receipt = {
+                    "schema_version": (
+                        "cn-market-snapshot-recovery-receipt.v1"
+                    ),
+                    "status": failure_status,
+                    "recovery_id": recovery_id,
+                    "market": "CN",
+                    "snapshot_id": snapshot_id,
+                    "finished_at": self._utc_now(),
+                    "previous_market_pointer_sha256": previous_pointer_sha256,
+                    "attempted_market_pointer_sha256": (
+                        candidate_pointer_sha256
+                    ),
+                    "source_snapshot_manifest_sha256": (
+                        expected_snapshot_manifest_sha256
+                    ),
+                    "intent_path": sealed_intent_path,
+                    "intent_sha256": intent_sha256,
+                    "receipt_path": sealed_receipt_path,
+                    "rolled_back": rolled_back,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+                self._write_new_bytes(
+                    self._canonical_json_bytes(failure_receipt),
+                    receipt_path,
+                    label="recovery_failure_receipt",
+                )
+            raise failure
+
     def write_full_history_bars(
         self,
         frame: pd.DataFrame,
@@ -791,9 +2055,9 @@ class MarketDataStore:
         snapshot_id: str | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        normalized = self._normalize_bars_frame(frame)
         if self.market == "CN":
-            self._validate_adj_factor(normalized)
+            raise ValueError("cn_full_history_writer_retired_use_parquet_direct")
+        normalized = self._normalize_bars_frame(frame)
         resolved_snapshot_id = snapshot_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         table_root = self.data_root / "parquet" / self.market.lower() / "bars"
         serving_root = self.data_root / "parquet_serving" / self.market.lower() / "bars"
@@ -990,6 +2254,29 @@ def run_storage_validate(*, market: str = "CN", data_root: str | Path | None = N
     return MarketDataStore(market=market, data_root=data_root).validate_latest()
 
 
+def run_storage_reactivate_snapshot(
+    *,
+    market: str = "CN",
+    snapshot_id: str,
+    expected_snapshot_manifest_sha256: str,
+    expected_market_pointer_sha256: str,
+    acknowledge_trade_date: str,
+    reason: str,
+    commit: bool = False,
+    data_root: str | Path | None = None,
+) -> dict[str, Any]:
+    return MarketDataStore(market=market, data_root=data_root).reactivate_snapshot(
+        snapshot_id=snapshot_id,
+        expected_snapshot_manifest_sha256=(
+            expected_snapshot_manifest_sha256
+        ),
+        expected_market_pointer_sha256=expected_market_pointer_sha256,
+        acknowledge_trade_date=acknowledge_trade_date,
+        reason=reason,
+        commit=commit,
+    )
+
+
 def _bounded_files(root: Path, pattern: str, *, limit: int) -> tuple[list[Path], bool]:
     if not root.exists():
         return [], False
@@ -1144,6 +2431,7 @@ __all__ = [
     "run_materialize_features",
     "run_materialize_serving",
     "run_storage_diff",
+    "run_storage_reactivate_snapshot",
     "run_storage_validate",
     "run_storage_validate_clean",
 ]

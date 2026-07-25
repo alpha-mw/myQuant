@@ -151,6 +151,7 @@ def _patch_release_calendar(
     monkeypatch: pytest.MonkeyPatch,
     *,
     root_name: str = "macro-release-calendar",
+    ready_lag: int = 0,
 ) -> tuple[Path, Path, str, dict[str, str]]:
     root = tmp_path / root_name
     root.mkdir(mode=0o700)
@@ -243,25 +244,27 @@ def _patch_release_calendar(
         target_session_date: str,
         decision_cutoff_at: str,
     ) -> ReleaseReadinessEvaluation:
+        macro_date = datetime.strptime(
+            macro_logical_date,
+            "%Y%m%d",
+        ).date()
+        target_date = datetime.strptime(
+            target_session_date,
+            "%Y%m%d",
+        ).date()
         return ReleaseReadinessEvaluation(
             ready=True,
             session_lag=SessionLagEvaluation(
                 ready=True,
-                session_lag=0,
-                macro_logical_date=datetime.strptime(
-                    macro_logical_date,
-                    "%Y%m%d",
-                ).date().isoformat(),
-                target_session_date=datetime.strptime(
-                    target_session_date,
-                    "%Y%m%d",
-                ).date().isoformat(),
+                session_lag=ready_lag,
+                macro_logical_date=macro_date.isoformat(),
+                target_session_date=target_date.isoformat(),
                 blockers=(),
             ),
             critical_event_gap=CriticalEventGapEvaluation(
                 ready=True,
                 window_start_exclusive=(
-                    "2024-05-10T07:00:00+00:00"
+                    f"{macro_date.isoformat()}T07:00:00+00:00"
                 ),
                 window_end_inclusive=decision_cutoff_at,
                 relevant_event_ids=(),
@@ -291,7 +294,12 @@ def _patch_release_calendar(
     return root, pointer_path, pointer_sha, binding
 
 
-def _workspace(tmp_path: Path) -> tuple[Path, Path, Path, pd.DataFrame]:
+def _workspace(
+    tmp_path: Path,
+    *,
+    macro_as_of: str = TARGET,
+    macro_decision_cutoff_at: str | None = None,
+) -> tuple[Path, Path, Path, pd.DataFrame]:
     market_root = tmp_path / "parquet" / "cn"
     macro_root = market_root / "macro_daily"
     bars_root = market_root / "bars"
@@ -371,7 +379,8 @@ def _workspace(tmp_path: Path) -> tuple[Path, Path, Path, pd.DataFrame]:
     pointer_path.write_text(json.dumps(pointer, sort_keys=True), encoding="utf-8")
     write_ready_macro_observations(
         market_root / "macro_observations",
-        as_of="2024-05-10",
+        as_of=macro_as_of,
+        decision_cutoff_at=macro_decision_cutoff_at,
     )
     return macro_root, catalog_path, pointer_path, bars
 
@@ -687,6 +696,72 @@ def test_refresh_promotes_hash_bound_strict_generation(
         capture_entry["source_release_at"]
         != capture_entry["fetch_completed_at"]
     )
+
+
+def test_v15_stage_accepts_readiness_proven_observation_lag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    macro_root, catalog_path, pointer_path, _bars = _workspace(
+        tmp_path,
+        macro_as_of="20240509",
+        macro_decision_cutoff_at="2024-05-10T07:00:00+00:00",
+    )
+    release_root, _release_pointer_path, release_pointer_sha, _binding = (
+        _patch_release_calendar(
+            tmp_path,
+            monkeypatch,
+            root_name="macro-release-calendar-lagged-observations",
+            ready_lag=1,
+        )
+    )
+    clock_calls = iter(
+        CAPTURED_AT + timedelta(seconds=index) for index in range(200)
+    )
+    monkeypatch.setattr(macro_mart, "_utc_now", lambda: next(clock_calls))
+    monkeypatch.setattr(
+        macro_mart,
+        "_build_tushare_client",
+        lambda: _FakeTushare(),
+    )
+    _patch_official_fetch(monkeypatch)
+
+    stage = macro_mart.stage_cn_macro_authoritative_refresh(
+        market="CN",
+        as_of=TARGET,
+        canonical_root=macro_root,
+        staging_root=tmp_path / "macro-stage-lagged-observations",
+        run_id="v15-stage-lagged-observations",
+        expected_catalog_sha256=_sha(catalog_path),
+        expected_market_pointer_sha256=_sha(pointer_path),
+        macro_observations_root=macro_root.parent / "macro_observations",
+        expected_macro_observations_pointer_sha256=pointer_sha256(
+            macro_root.parent / "macro_observations"
+        ),
+        macro_release_calendar_root=release_root,
+        expected_macro_release_calendar_pointer_sha256=release_pointer_sha,
+        allow_live=True,
+        nbs_cn_pmi_url=NBS_URL,
+    )
+
+    assert stage["row"]["trade_date"] == "2024-05-10"
+    snapshot = json.loads(
+        Path(stage["manifest"]["resolved_macro_snapshot"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert snapshot["as_of"] == "20240509"
+    readiness = stage["manifest"]["macro_release_readiness_evidence"]
+    assert readiness["macro_logical_date"] == "20240509"
+    assert readiness["target_session_date"] == "20240510"
+    assert readiness["evaluation"]["session_lag"]["session_lag"] == 1
+
+    promoted = macro_mart.promote_staged_macro_generation(
+        staging_root=stage["staging_root"],
+        canonical_root=macro_root,
+        expected_catalog_sha256=_sha(catalog_path),
+    )
+    assert promoted["status"] == "promoted"
 
 
 def test_observation_pointer_change_during_provider_fetch_blocks_catalog_switch(
