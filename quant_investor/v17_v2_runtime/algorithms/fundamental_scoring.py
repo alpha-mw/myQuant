@@ -51,6 +51,9 @@ REQUIRED_SNAPSHOT_COLUMNS = frozenset(
 REQUIRED_HISTORY_COLUMNS = frozenset(
     {"symbol", "trade_date", "availability", "is_open_day", "metric", "value"}
 )
+REQUIRED_WIDE_HISTORY_COLUMNS = frozenset(
+    {"symbol", "trade_date", "availability", "is_open_day", *MAIN_METRICS}
+)
 
 
 @dataclass(frozen=True)
@@ -100,37 +103,18 @@ def _historical_percentile(current: float, values: pd.Series) -> float:
     return float((less + 0.5 * equal) / len(array))
 
 
-def _history(
-    history: pd.DataFrame,
-    *,
-    symbol: str,
-    metric: str,
-    cutoff: pd.Timestamp,
-) -> pd.Series | None:
-    rows = history.loc[
-        (history["symbol"] == symbol)
-        & (history["metric"] == metric)
-        & (history["trade_date"] <= cutoff)
-        & (history["availability"] <= cutoff)
-    ].sort_values("trade_date", kind="mergesort")
-    rows = rows.drop_duplicates("trade_date", keep="last").tail(756)
-    numeric = pd.to_numeric(rows["value"], errors="coerce")
-    numeric = numeric[np.isfinite(numeric)]
-    return numeric if len(numeric) >= 252 else None
-
-
-def score_fundamental_universe(
+def _score_fundamental_universe(
     snapshot: pd.DataFrame,
     history: pd.DataFrame,
     *,
     cutoff: datetime | str | pd.Timestamp,
     holdings: Iterable[str] = (),
     top_n: int = 24,
+    _history_lookup: dict[tuple[str, str], pd.Series] | None = None,
 ) -> FundamentalCandidateSet:
     if top_n <= 0:
         raise ValueError("top_n must be positive")
     _columns(snapshot, REQUIRED_SNAPSHOT_COLUMNS, "snapshot")
-    _columns(history, REQUIRED_HISTORY_COLUMNS, "history")
     cutoff_ts = _cutoff(cutoff)
     working = snapshot.copy(deep=True)
     working["symbol"] = working["symbol"].astype(str).str.strip()
@@ -141,15 +125,32 @@ def score_fundamental_universe(
     working["availability"] = _timestamps(working["availability"], "snapshot.availability")
     if "fin_fcf_to_profit" not in working:
         working["fin_fcf_to_profit"] = np.nan
-    hist = history.copy(deep=True)
-    hist["symbol"] = hist["symbol"].astype(str).str.strip()
-    hist["metric"] = hist["metric"].astype(str).str.strip()
-    hist["trade_date"] = _timestamps(hist["trade_date"], "history.trade_date")
-    hist["availability"] = _timestamps(hist["availability"], "history.availability")
-    if any(_strict_bool(value) is not True for value in hist["is_open_day"]):
-        raise ValueError("history rows must be explicit canonical open-market sessions")
-    if hist.duplicated(["symbol", "metric", "trade_date"], keep=False).any():
-        raise ValueError("history contains duplicate symbol/metric/open-session rows")
+    if _history_lookup is None:
+        _columns(history, REQUIRED_HISTORY_COLUMNS, "history")
+        hist = history.copy(deep=True)
+        hist["symbol"] = hist["symbol"].astype(str).str.strip()
+        hist["metric"] = hist["metric"].astype(str).str.strip()
+        hist["trade_date"] = _timestamps(hist["trade_date"], "history.trade_date")
+        hist["availability"] = _timestamps(hist["availability"], "history.availability")
+        if any(_strict_bool(value) is not True for value in hist["is_open_day"]):
+            raise ValueError("history rows must be explicit canonical open-market sessions")
+        if hist.duplicated(["symbol", "metric", "trade_date"], keep=False).any():
+            raise ValueError("history contains duplicate symbol/metric/open-session rows")
+        history_lookup: dict[tuple[str, str], pd.Series] = {}
+        eligible_history = hist.loc[
+            (hist["trade_date"] <= cutoff_ts) & (hist["availability"] <= cutoff_ts)
+        ].sort_values(["symbol", "metric", "trade_date"], kind="mergesort")
+        for (symbol, metric), rows in eligible_history.groupby(
+            ["symbol", "metric"],
+            sort=False,
+            observed=True,
+        ):
+            numeric = pd.to_numeric(rows.tail(756)["value"], errors="coerce")
+            numeric = numeric[np.isfinite(numeric)]
+            if len(numeric) >= 252:
+                history_lookup[(str(symbol), str(metric))] = numeric
+    else:
+        history_lookup = _history_lookup
 
     reasons: dict[str, list[str]] = {symbol: [] for symbol in working["symbol"]}
     eligible = pd.Series(True, index=working.index, dtype=bool)
@@ -231,7 +232,7 @@ def score_fundamental_universe(
                 continue
             for index in valid:
                 symbol = str(working.at[index, "symbol"])
-                own = _history(hist, symbol=symbol, metric=metric, cutoff=cutoff_ts)
+                own = history_lookup.get((symbol, metric))
                 if own is None:
                     reasons[symbol].append(f"self_history_below_252:{metric}")
                     eligible.at[index] = False
@@ -263,7 +264,7 @@ def score_fundamental_universe(
                     symbol = str(working.at[index, "symbol"])
                     own = optional_histories.get((index, metric))
                     if own is None:
-                        own = _history(hist, symbol=symbol, metric=metric, cutoff=cutoff_ts)
+                        own = history_lookup.get((symbol, metric))
                     if own is None:
                         failures.setdefault(index, []).append(f"self_history_below_252:{metric}")
                     else:
@@ -354,6 +355,68 @@ def score_fundamental_universe(
     )
 
 
+def score_fundamental_universe(
+    snapshot: pd.DataFrame,
+    history: pd.DataFrame,
+    *,
+    cutoff: datetime | str | pd.Timestamp,
+    holdings: Iterable[str] = (),
+    top_n: int = 24,
+) -> FundamentalCandidateSet:
+    return _score_fundamental_universe(
+        snapshot,
+        history,
+        cutoff=cutoff,
+        holdings=holdings,
+        top_n=top_n,
+    )
+
+
+def score_fundamental_universe_wide_history(
+    snapshot: pd.DataFrame,
+    history: pd.DataFrame,
+    *,
+    cutoff: datetime | str | pd.Timestamp,
+    holdings: Iterable[str] = (),
+    top_n: int = 24,
+) -> FundamentalCandidateSet:
+    """Score an equivalent one-row-per-symbol/session history without melting it."""
+
+    _columns(history, REQUIRED_WIDE_HISTORY_COLUMNS, "wide_history")
+    cutoff_ts = _cutoff(cutoff)
+    hist = history.copy(deep=True)
+    hist["symbol"] = hist["symbol"].astype(str).str.strip()
+    hist["trade_date"] = _timestamps(hist["trade_date"], "wide_history.trade_date")
+    hist["availability"] = _timestamps(hist["availability"], "wide_history.availability")
+    if (hist["symbol"] == "").any():
+        raise ValueError("wide_history symbols must be non-empty")
+    if any(_strict_bool(value) is not True for value in hist["is_open_day"]):
+        raise ValueError("wide_history rows must be explicit canonical open-market sessions")
+    if hist.duplicated(["symbol", "trade_date"], keep=False).any():
+        raise ValueError("wide_history contains duplicate symbol/open-session rows")
+    eligible = hist.loc[
+        (hist["trade_date"] <= cutoff_ts) & (hist["availability"] <= cutoff_ts)
+    ].sort_values(["symbol", "trade_date"], kind="mergesort")
+    history_lookup: dict[tuple[str, str], pd.Series] = {}
+    for symbol, rows in eligible.groupby("symbol", sort=False, observed=True):
+        latest = rows.tail(756)
+        for metric in ALL_METRICS:
+            if metric not in latest:
+                continue
+            numeric = pd.to_numeric(latest[metric], errors="coerce")
+            numeric = numeric[np.isfinite(numeric)]
+            if len(numeric) >= 252:
+                history_lookup[(str(symbol), metric)] = numeric
+    return _score_fundamental_universe(
+        snapshot,
+        pd.DataFrame(),
+        cutoff=cutoff,
+        holdings=holdings,
+        top_n=top_n,
+        _history_lookup=history_lookup,
+    )
+
+
 __all__ = [
     "ALL_METRICS",
     "FundamentalCandidateSet",
@@ -361,4 +424,5 @@ __all__ = [
     "OPTIONAL_METRICS",
     "PILLARS",
     "score_fundamental_universe",
+    "score_fundamental_universe_wide_history",
 ]

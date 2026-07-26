@@ -511,9 +511,13 @@ def _validate_checked_schema(
         resources_name = f"{package_name}.resources"
         resources = ModuleType(resources_name)
 
+        class PackageResourceError(Exception):
+            pass
+
         def unavailable_resource(*_args: Any, **_kwargs: Any) -> None:
             raise PackageEvidenceError("packaged resource access is outside schema validation")
 
+        resources.PackageResourceError = PackageResourceError  # type: ignore[attr-defined]
         resources.load_packaged_json = unavailable_resource  # type: ignore[attr-defined]
         sys.modules[resources_name] = resources
         loaded_names.append(resources_name)

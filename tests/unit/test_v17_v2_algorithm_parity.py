@@ -21,6 +21,7 @@ from quant_investor.v17_v2_runtime.algorithms.forward_calibration import (
 from quant_investor.v17_v2_runtime.algorithms.fundamental_scoring import (
     MAIN_METRICS,
     score_fundamental_universe,
+    score_fundamental_universe_wide_history,
 )
 from quant_investor.v17_v2_runtime.algorithms.optimizer import (
     FeasiblePortfolio,
@@ -172,6 +173,28 @@ def test_five_pillar_top24_and_appended_holding_parity() -> None:
     assert result.ranked_symbols[0] == "000025.SZ"
     assert result.appended_holdings == ("000001.SZ",)
     assert len(result.sealed_symbols) == 25
+    wide_history = (
+        pd.DataFrame(history)
+        .pivot(
+            index=["symbol", "trade_date", "availability", "is_open_day"],
+            columns="metric",
+            values="value",
+        )
+        .reset_index()
+        .rename_axis(columns=None)
+    )
+    wide_result = score_fundamental_universe_wide_history(
+        pd.DataFrame(snapshot),
+        wide_history,
+        cutoff="2026-07-01T07:00:00Z",
+        holdings=("000001.SZ",),
+    )
+    assert wide_result.ranked_symbols == result.ranked_symbols
+    assert wide_result.sealed_symbols == result.sealed_symbols
+    pd.testing.assert_series_equal(
+        wide_result.scored.set_index("symbol")["total_score"],
+        result.scored.set_index("symbol")["total_score"],
+    )
 
 
 def test_regime_min_cap_max_floor_frozen_vector() -> None:
