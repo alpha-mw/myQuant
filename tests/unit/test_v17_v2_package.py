@@ -44,7 +44,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 LEGACY_ROOT = REPO_ROOT / "quant_investor" / "v17"
 PACKAGE_ROOT = REPO_ROOT / "quant_investor" / "v17_v2_contract"
 EXPECTED_PACKAGE_MANIFEST_SHA256 = (
-    "6ca4956bd12a8d0908a3351182e0d97e1240032cc082f38005d80380c76e2ffe"
+    "0a9a43cfe0bcd9dd5036daf72fdea6187fbf290c1faf2d00ca2397bbd95a950c"
 )
 
 LEGACY_FROZEN_SHA256S = {
@@ -244,16 +244,14 @@ def test_new_package_json_is_canonical_and_identifiers_are_unique() -> None:
     assert set(schema_keys).isdisjoint(artifact_keys)
 
 
-def test_partial_source_role_matrix_cannot_authorize_runtime() -> None:
+def test_complete_source_role_matrix_authorizes_shadow_runtime_only() -> None:
     payload = _load_canonical_json(PACKAGE_ROOT / "resources" / "source_role_matrix.v1.json")
     assert payload["authority"] is False
-    assert payload["completeness"] == "PARTIAL"
-    assert payload["runtime_usable"] is False
+    assert payload["completeness"] == "COMPLETE"
+    assert payload["runtime_usable"] is True
     assert payload["forbidden_role_suffixes"] == ["_verification_receipt"]
     pending_registry = payload["pending_registry"]
-    assert isinstance(pending_registry, list)
-    assert all(type(item) is str for item in pending_registry)
-    assert pending_registry == sorted((str(item) for item in pending_registry), key=str.casefold)
+    assert pending_registry == []
 
     roles = payload["roles"]
     assert isinstance(roles, list)
@@ -267,14 +265,18 @@ def test_partial_source_role_matrix_cannot_authorize_runtime() -> None:
         "deep_evidence_dataset",
         "fundamental_generation_catalog",
         "fundamental_raw_tables_dataset",
+        "macro_overlay",
         "market_bars_dataset",
         "market_pointer",
         "market_snapshot_manifest",
+        "markov_overlay",
         "official_delisting_cash_dataset",
         "pit_generation_catalog",
+        "portfolio_required_inputs",
+        "risk_policy_snapshot",
     }
     pending_roles = {item["role"] for item in roles if item["schema_status"] == "PENDING"}
-    assert pending_roles == {"market_pointer", "market_snapshot_manifest"}
+    assert pending_roles == set()
 
 
 def test_package_manifest_and_loader_bind_the_exact_asset_inventory() -> None:
@@ -296,7 +298,7 @@ def test_package_manifest_and_loader_bind_the_exact_asset_inventory() -> None:
 
     manifest = load_package_manifest()
     assert manifest["authority"] is False
-    assert manifest["runtime_usable"] is False
+    assert manifest["runtime_usable"] is True
     assert manifest["distribution"] == {
         "name": "quant-investor",
         "version": "17.0.0",
@@ -373,7 +375,7 @@ def test_ledger_binding_builders_are_exact_and_byte_backed() -> None:
         LEDGER_IMPLEMENTATION_MODULES
     )
     for row in implementation_bindings:
-        path = PACKAGE_ROOT / row["relative_path"]
+        path = PACKAGE_ROOT.parent / row["relative_path"]
         assert path.is_file()
         assert hashlib.sha256(path.read_bytes()).hexdigest() == row["byte_sha256"]
 

@@ -27,6 +27,7 @@ from quant_investor.v17_v2_contract.validators import (
     DEEP_RESEARCH_RESPONSE_VERSION,
     GENERATION_CATALOG_VERSION,
     OBSERVATION_DISPOSITION_VERSION,
+    RANK_OUTPUT_VERSION,
     SHADOW_LATEST_POINTER_VERSION,
     SHADOW_LEDGER_VERSION,
     SHADOW_OUTPUT_VERSION,
@@ -146,22 +147,28 @@ def _dataset_schema_sha256(schema: list[dict[str, Any]]) -> str:
 
 def _source_dag() -> dict[str, Any]:
     role_matrix = _load_resource("source_role_matrix.v1.json")
+    record_registry = _load_resource("dataset_record_schema_registry.v1.json")
+    market_record = next(
+        record
+        for record in record_registry["records"]
+        if record["role"] == "market_bars_dataset"
+    )
     dataset_object = b"x"
     dataset_object_sha = hashlib.sha256(dataset_object).hexdigest()
     dataset_object_path = (
         "data/private/v17_sources/protocol-v2/objects/"
-        f"{dataset_object_sha[:2]}/{dataset_object_sha}.blob"
+        f"{dataset_object_sha[:2]}/{dataset_object_sha}.parquet"
     )
     shard = {
-        "logical_name": "market-bars.blob",
-        "partition_values": {},
+        "logical_name": "trade_date=2026-07-21/market-bars.parquet",
+        "partition_values": {"trade_date": "2026-07-21"},
         "object_path": dataset_object_path,
         "byte_sha256": dataset_object_sha,
         "size_bytes": len(dataset_object),
-        "row_count": 0,
-        "min_key": None,
-        "max_key": None,
-        "schema_sha256": _dataset_schema_sha256([]),
+        "row_count": 1,
+        "min_key": ["000001.SZ", "2026-07-21"],
+        "max_key": ["000001.SZ", "2026-07-21"],
+        "schema_sha256": _dataset_schema_sha256(market_record["logical_fields"]),
     }
     content_set_sha = hashlib.sha256(
         canonical_json_bytes(
@@ -176,14 +183,14 @@ def _source_dag() -> dict[str, Any]:
         version=DATASET_MANIFEST_VERSION,
         dataset_id="market-bars",
         role="market_bars_dataset",
-        format="BLOB",
-        media_type="application/octet-stream",
-        schema=[],
-        primary_key=[],
-        partition_keys=[],
-        sort_keys=[],
+        format="PARQUET",
+        media_type="application/vnd.apache.parquet",
+        schema=market_record["logical_fields"],
+        primary_key=market_record["primary_key"],
+        partition_keys=market_record["partition_keys"],
+        sort_keys=market_record["sort_keys"],
         shards=[shard],
-        total_row_count=0,
+        total_row_count=1,
         total_size_bytes=1,
         content_set_sha256=content_set_sha,
     )
@@ -270,7 +277,7 @@ def _source_dag() -> dict[str, Any]:
         summary_id="market-summary",
         source_manifest_ref=manifest_ref,
         dataset_manifest_ref=dataset_ref,
-        row_count=0,
+        row_count=1,
     )
     summary_sha = document_byte_sha256(summary)
     summary_path = (
@@ -305,10 +312,10 @@ def _source_dag() -> dict[str, Any]:
                     **summary_ref,
                     "dataset_manifest_ref": dataset_ref,
                 },
-                "record_schema_id": "market-bars-v1",
-                "primary_key": ["trade_date", "ts_code"],
-                "valid_time_field": "trade_date",
-                "available_time_field": "available_at",
+                "record_schema_id": market_record["record_schema_id"],
+                "primary_key": market_record["primary_key"],
+                "valid_time_field": market_record["effective_time_field"],
+                "available_time_field": market_record["available_time_field"],
                 "selection_policy": ("available_at_or_before_cutoff_then_latest_valid_revision"),
                 "conflict_policy": "conflict_is_invalid_no_fallback",
             }
@@ -505,7 +512,17 @@ def test_dataset_manifest_rejects_blob_nonzero_row_shard() -> None:
     dag = _source_dag()
     manifest = copy.deepcopy(next(iter(dag["dataset_manifests"].values())))
     object_path = manifest["shards"][0]["object_path"]
+    manifest["format"] = "BLOB"
+    manifest["media_type"] = "application/octet-stream"
+    manifest["schema"] = []
+    manifest["primary_key"] = []
+    manifest["partition_keys"] = []
+    manifest["sort_keys"] = []
+    manifest["shards"][0]["partition_values"] = {}
     manifest["shards"][0]["row_count"] = 1
+    manifest["shards"][0]["min_key"] = None
+    manifest["shards"][0]["max_key"] = None
+    manifest["shards"][0]["schema_sha256"] = _dataset_schema_sha256([])
     manifest["content_set_sha256"] = hashlib.sha256(
         canonical_json_bytes(
             {
@@ -610,7 +627,10 @@ def test_source_hash_dag_rejects_schema_forbidden_extra_fields(target: str) -> N
 
 
 def test_partial_source_role_matrix_is_structural_but_not_runtime_usable() -> None:
-    resource = _load_resource("source_role_matrix.v1.json")
+    resource = copy.deepcopy(_load_resource("source_role_matrix.v1.json"))
+    resource["completeness"] = "PARTIAL"
+    resource["runtime_usable"] = False
+    resource["pending_registry"] = ["future_registry"]
     assert validate_source_role_matrix(resource) == resource
     with pytest.raises(V17V2ValidationError, match="not COMPLETE"):
         require_runtime_usable_source_role_matrix(resource)
@@ -619,7 +639,7 @@ def test_partial_source_role_matrix_is_structural_but_not_runtime_usable() -> No
 def test_source_hash_dag_runtime_admission_is_explicit_and_fail_closed() -> None:
     dag = _source_dag()
     assert validate_source_hash_dag(**dag) == dag["source_locator"]
-    with pytest.raises(V17V2ValidationError, match="not COMPLETE"):
+    with pytest.raises(V17V2ValidationError, match="stored source document closure"):
         admit_runtime_source_hash_dag(**dag, stored_document_bytes={})
 
 
@@ -833,7 +853,8 @@ def _append_available_locator_object(
 def test_runtime_admission_core_rejects_object_without_role_and_phase_carrier() -> None:
     dag = _source_dag()
     object_role = _append_available_locator_object(dag)
-    with pytest.raises(V17V2ValidationError, match="does not bind exact role and phase"):
+    object_role["schema_version"] = "myquant.v17.v2.market-pointer.schema.v1"
+    with pytest.raises(V17V2ValidationError, match="document version mismatch"):
         _runtime_core(dag, _complete_runtime_matrix(object_role))
 
     wrong_version = copy.deepcopy(dag)
@@ -850,7 +871,7 @@ def test_runtime_admission_core_rejects_object_without_role_and_phase_carrier() 
             if key != "semantic_sha256"
         }
     )
-    with pytest.raises(V17V2ValidationError, match="artifact_version mismatch"):
+    with pytest.raises(V17V2ValidationError, match="document version mismatch"):
         _runtime_core(wrong_version, _complete_runtime_matrix(object_role))
 
 
@@ -916,23 +937,15 @@ def test_runtime_admission_core_rejects_source_object_mapping_substitution() -> 
 
 def test_runtime_role_matrix_rejects_unapproved_complete_rewrite() -> None:
     resource = copy.deepcopy(_load_resource("source_role_matrix.v1.json"))
-    resource["completeness"] = "COMPLETE"
-    resource["runtime_usable"] = True
-    resource["pending_registry"] = []
-    for row in resource["roles"]:
-        row["schema_status"] = "FROZEN"
-        if row["schema_version"] is None:
-            row["schema_version"] = "myquant.v17.v2.dataset-manifest.schema.v1"
+    resource["roles"][0]["required"] = False
     with pytest.raises(V17V2ValidationError, match="exact approved frozen resource"):
         require_runtime_usable_source_role_matrix(resource)
 
 
 def test_runtime_source_role_matrix_requires_no_pending_rows() -> None:
     resource = copy.deepcopy(_load_resource("source_role_matrix.v1.json"))
-    resource["completeness"] = "COMPLETE"
-    resource["runtime_usable"] = True
-    resource["pending_registry"] = []
-    with pytest.raises(V17V2ValidationError, match="contains PENDING roles"):
+    resource["pending_registry"] = ["future_registry"]
+    with pytest.raises(V17V2ValidationError, match="too many items"):
         require_runtime_usable_source_role_matrix(resource)
 
 
@@ -1652,7 +1665,18 @@ def _terminal_chain() -> dict[str, Any]:
         terminal_state="SHADOW_RANK_COMPLETE_NO_PORTFOLIO",
         ledger_ref=_ref(ledger, ledger_path),
         source_locator_ref=ledger["locator_binding"]["locator_ref"],
-        rank_output={},
+        rank_output=_sealed(
+            version=RANK_OUTPUT_VERSION,
+            output_id="rank-output-1",
+            run_id="run-1",
+            strategy_id="cn-shadow",
+            market="CN",
+            cutoff=CUTOFF,
+            status="COMPLETE",
+            candidate_ordering="rank-ascending-then-security_code-ascending",
+            candidates=[],
+            generated_at="2026-07-22T00:06:00Z",
+        ),
         portfolio_output=None,
         blockers=[],
         generated_at="2026-07-22T00:07:00Z",
@@ -1782,11 +1806,11 @@ def test_runtime_stored_source_document_closure_is_byte_exact() -> None:
         )
 
 
-def test_public_terminal_admission_fails_closed_while_registry_is_partial() -> None:
+def test_public_terminal_admission_fails_closed_on_incomplete_required_roles() -> None:
     chain = _terminal_chain()
     dag = _source_dag()
     stored_documents = _stored_source_documents(dag)
-    with pytest.raises(V17V2ValidationError, match="not COMPLETE"):
+    with pytest.raises(V17V2ValidationError, match="lacks an availability row"):
         validate_shadow_terminal_chain(
             ledger_bytes=chain["ledger_bytes"],
             predecessor_ledger_bytes=chain["predecessor_ledger_bytes"],

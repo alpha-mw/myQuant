@@ -1,0 +1,36 @@
+{
+  "optimizer": {
+    "expected_selected": "candidate-a",
+    "net_q25": "0.11",
+    "turnover": "0.20"
+  },
+  "pava": {
+    "expected": [
+      0.5,
+      0.5,
+      0.8
+    ],
+    "values": [
+      0.6,
+      0.4,
+      0.8
+    ],
+    "weights": [
+      10,
+      10,
+      10
+    ]
+  },
+  "regime": {
+    "cash_floor": 0.3,
+    "effective_gross": 0.65,
+    "gross_cap": 0.65
+  },
+  "transaction_cost": {
+    "adv20": "1000000",
+    "amount": "1250.000",
+    "coefficient": "0.01",
+    "fraction": "0.005",
+    "notional": "250000"
+  }
+}

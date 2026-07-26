@@ -16,6 +16,9 @@ RESOURCE_ROOT = PACKAGE_ROOT / "resources"
 
 EXPECTED_SCHEMA_IDS = {
     "action_failure_receipt.v1.schema.json": ("myquant.v17.v2.action-failure-receipt.schema.v1"),
+    "dataset_record_schema_registry.v1.schema.json": (
+        "myquant.v17.v2.dataset-record-schema-registry.schema.v1"
+    ),
     "dataset_manifest.v1.schema.json": "myquant.v17.v2.dataset-manifest.schema.v1",
     "dataset_summary.v1.schema.json": "myquant.v17.v2.dataset-summary.schema.v1",
     "deep_research_report.v1.schema.json": ("myquant.v17.v2.deep-research-report.schema.v1"),
@@ -25,7 +28,21 @@ EXPECTED_SCHEMA_IDS = {
     "main_suite_runtime_policy.v1.schema.json": (
         "myquant.v17.v2.phase0-main-suite-runtime-policy.schema.v1"
     ),
+    "macro_overlay.v1.schema.json": "myquant.v17.v2.macro-overlay.schema.v1",
+    "market_pointer.v1.schema.json": "myquant.v17.v2.market-pointer.schema.v1",
+    "market_snapshot_manifest.v1.schema.json": (
+        "myquant.v17.v2.market-snapshot-manifest.schema.v1"
+    ),
+    "markov_overlay.v1.schema.json": "myquant.v17.v2.markov-overlay.schema.v1",
     "observation_disposition.v1.schema.json": ("myquant.v17.v2.observation-disposition.schema.v1"),
+    "portfolio_output.v1.schema.json": "myquant.v17.v2.portfolio-output.schema.v1",
+    "portfolio_required_inputs.v1.schema.json": (
+        "myquant.v17.v2.portfolio-required-inputs.schema.v1"
+    ),
+    "rank_output.v1.schema.json": "myquant.v17.v2.rank-output.schema.v1",
+    "risk_policy_snapshot.v1.schema.json": (
+        "myquant.v17.v2.risk-policy-snapshot.schema.v1"
+    ),
     "shadow_latest_pointer.v1.schema.json": ("myquant.v17.v2.shadow-latest-pointer.schema.v1"),
     "shadow_ledger.v1.schema.json": "myquant.v17.v2.shadow-ledger.schema.v1",
     "shadow_output.v1.schema.json": "myquant.v17.v2.shadow-output.schema.v1",
@@ -93,7 +110,14 @@ def test_schema_references_are_local_and_path_contracts_are_protocol_isolated() 
             reference = node.get("$ref")
             if reference is not None:
                 assert type(reference) is str
-                assert reference.startswith("#/"), f"{schema_path.name}:{path}"
+                assert reference.startswith("#/") or (
+                    schema_path.name == "shadow_output.v1.schema.json"
+                    and reference
+                    in {
+                        "portfolio_output.v1.schema.json",
+                        "rank_output.v1.schema.json",
+                    }
+                ), f"{schema_path.name}:{path}"
             pattern = node.get("pattern")
             if type(pattern) is str:
                 re.compile(pattern)
@@ -209,15 +233,20 @@ def test_source_locator_schema_is_caller_bound_and_run_independent() -> None:
     assert {"run_id", "source_binding_set_ref"}.isdisjoint(schema["properties"])
 
 
-def test_source_role_matrix_schema_matches_honest_partial_resource() -> None:
+def test_source_role_matrix_schema_matches_complete_phase1_resource() -> None:
     resource = _load(RESOURCE_ROOT / "source_role_matrix.v1.json")
     schema = _load(SCHEMA_ROOT / "source_role_matrix.v1.schema.json")
     assert set(resource) == set(schema["required"])
-    assert resource["completeness"] == "PARTIAL"
-    assert resource["runtime_usable"] is False
-    assert resource["pending_registry"]
-    assert not any(row["phase"] == "PORTFOLIO" for row in resource["roles"])
-    assert any(row["schema_status"] == "PENDING" for row in resource["roles"])
+    assert resource["completeness"] == "COMPLETE"
+    assert resource["runtime_usable"] is True
+    assert resource["pending_registry"] == []
+    assert {row["role"] for row in resource["roles"] if row["phase"] == "PORTFOLIO"} == {
+        "macro_overlay",
+        "markov_overlay",
+        "portfolio_required_inputs",
+        "risk_policy_snapshot",
+    }
+    assert all(row["schema_status"] == "FROZEN" for row in resource["roles"])
     assert validate_source_role_matrix(resource) == resource
 
 
@@ -250,8 +279,9 @@ def test_source_object_schema_patterns_reject_bin_suffix_consistently() -> None:
             continue
         checked.append(schema_path.name)
         pattern = re.compile(raw_pattern)
-        assert pattern.fullmatch(f"{base}.blob")
         assert pattern.fullmatch(f"{base}.json")
+        if "blob" in raw_pattern:
+            assert pattern.fullmatch(f"{base}.blob")
         if "parquet" in raw_pattern:
             assert pattern.fullmatch(f"{base}.parquet")
         assert pattern.fullmatch(f"{base}.bin") is None
@@ -260,6 +290,8 @@ def test_source_object_schema_patterns_reject_bin_suffix_consistently() -> None:
         "deep_research_report.v1.schema.json",
         "deep_research_request.v1.schema.json",
         "generation_catalog.v1.schema.json",
+        "market_pointer.v1.schema.json",
+        "portfolio_output.v1.schema.json",
         "shadow_ledger.v1.schema.json",
         "source_binding_set.v1.schema.json",
         "source_manifest.v1.schema.json",

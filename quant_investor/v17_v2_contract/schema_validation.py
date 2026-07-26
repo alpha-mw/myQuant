@@ -19,20 +19,37 @@ from .canonical import (
     canonical_json_bytes,
     load_canonical_resource,
 )
-from .resources import load_packaged_json
+from .resources import PackageResourceError, load_packaged_json
 
 T = TypeVar("T")
 
 _DRAFT_2020_12: Final = "https://json-schema.org/draft/2020-12/schema"
 _SCHEMA_PATH_BY_VERSION: Final = {
     "myquant.v17.v2.action-failure-receipt.v1": ("schemas/action_failure_receipt.v1.schema.json"),
+    "myquant.v17.v2.dataset-record-schema-registry.v1": (
+        "schemas/dataset_record_schema_registry.v1.schema.json"
+    ),
     "myquant.v17.v2.dataset-manifest.v1": ("schemas/dataset_manifest.v1.schema.json"),
     "myquant.v17.v2.dataset-summary.v1": ("schemas/dataset_summary.v1.schema.json"),
     "myquant.v17.v2.deep-research-report.v1": ("schemas/deep_research_report.v1.schema.json"),
     "myquant.v17.v2.deep-research-request.v1": ("schemas/deep_research_request.v1.schema.json"),
     "myquant.v17.v2.deep-research-response.v1": ("schemas/deep_research_response.v1.schema.json"),
     "myquant.v17.v2.generation-catalog.v1": ("schemas/generation_catalog.v1.schema.json"),
+    "myquant.v17.v2.macro-overlay.v1": ("schemas/macro_overlay.v1.schema.json"),
+    "myquant.v17.v2.market-pointer.v1": ("schemas/market_pointer.v1.schema.json"),
+    "myquant.v17.v2.market-snapshot-manifest.v1": (
+        "schemas/market_snapshot_manifest.v1.schema.json"
+    ),
+    "myquant.v17.v2.markov-overlay.v1": ("schemas/markov_overlay.v1.schema.json"),
     "myquant.v17.v2.observation-disposition.v1": ("schemas/observation_disposition.v1.schema.json"),
+    "myquant.v17.v2.portfolio-output.v1": ("schemas/portfolio_output.v1.schema.json"),
+    "myquant.v17.v2.portfolio-required-inputs.v1": (
+        "schemas/portfolio_required_inputs.v1.schema.json"
+    ),
+    "myquant.v17.v2.rank-output.v1": ("schemas/rank_output.v1.schema.json"),
+    "myquant.v17.v2.risk-policy-snapshot.v1": (
+        "schemas/risk_policy_snapshot.v1.schema.json"
+    ),
     "myquant.v17.v2.shadow-latest-pointer.v1": ("schemas/shadow_latest_pointer.v1.schema.json"),
     "myquant.v17.v2.shadow-ledger.v1": ("schemas/shadow_ledger.v1.schema.json"),
     "myquant.v17.v2.shadow-output.v1": ("schemas/shadow_output.v1.schema.json"),
@@ -107,7 +124,38 @@ def _schema_array(value: Any, *, label: str, nonempty: bool = False) -> list[Any
     return value
 
 
-def _preflight_node(node: Any, *, root: Mapping[str, Any], path: str) -> None:
+def _packaged_schema_for_reference(
+    reference: str,
+    *,
+    path: str,
+) -> Mapping[str, Any]:
+    relative_path = f"schemas/{reference}"
+    matching_versions = [
+        version
+        for version, schema_path in _SCHEMA_PATH_BY_VERSION.items()
+        if schema_path == relative_path
+    ]
+    if len(matching_versions) != 1:
+        raise SchemaValidationError(f"unsupported packaged schema reference at {path}")
+    try:
+        schema = load_packaged_json(relative_path)
+    except PackageResourceError as exc:
+        raise SchemaValidationError(
+            f"unavailable packaged schema reference at {path}: {reference}"
+        ) from exc
+    expected_id = matching_versions[0].removesuffix(".v1") + ".schema.v1"
+    if schema.get("$id") != expected_id:
+        raise SchemaValidationError(f"packaged schema reference identity mismatch at {path}")
+    return schema
+
+
+def _preflight_node(
+    node: Any,
+    *,
+    root: Mapping[str, Any],
+    path: str,
+    packaged_ref_stack: tuple[str, ...],
+) -> None:
     if type(node) is bool:
         return
     if type(node) is not dict:
@@ -118,15 +166,33 @@ def _preflight_node(node: Any, *, root: Mapping[str, Any], path: str) -> None:
 
     reference = node.get("$ref")
     if reference is not None:
-        if (
-            type(reference) is not str
-            or re.fullmatch(r"#/\$defs/[A-Za-z0-9_.-]+", reference, re.ASCII) is None
-        ):
+        if type(reference) is not str:
             raise SchemaValidationError(f"unsupported schema reference at {path}")
-        name = reference.removeprefix("#/$defs/")
-        definitions = root.get("$defs")
-        if type(definitions) is not dict or name not in definitions:
-            raise SchemaValidationError(f"unresolved schema reference at {path}: {reference}")
+        if re.fullmatch(r"#/\$defs/[A-Za-z0-9_.-]+", reference, re.ASCII) is not None:
+            name = reference.removeprefix("#/$defs/")
+            definitions = root.get("$defs")
+            if type(definitions) is not dict or name not in definitions:
+                raise SchemaValidationError(f"unresolved schema reference at {path}: {reference}")
+        elif re.fullmatch(r"[a-z0-9_]+\.v1\.schema\.json", reference, re.ASCII) is not None:
+            if reference in packaged_ref_stack:
+                raise SchemaValidationError(f"cyclic packaged schema reference at {path}")
+            external = _packaged_schema_for_reference(reference, path=path)
+            if (
+                external.get("$schema") != _DRAFT_2020_12
+                or type(external.get("$id")) is not str
+            ):
+                raise SchemaValidationError(
+                    f"invalid packaged schema reference envelope at {path}"
+                )
+            canonical_json_bytes(external)
+            _preflight_node(
+                external,
+                root=external,
+                path=f"{path}.$ref[{reference}]",
+                packaged_ref_stack=(*packaged_ref_stack, reference),
+            )
+        else:
+            raise SchemaValidationError(f"unsupported schema reference at {path}")
 
     declared_type = node.get("type")
     if declared_type is not None:
@@ -198,7 +264,12 @@ def _preflight_node(node: Any, *, root: Mapping[str, Any], path: str) -> None:
         if type(children) is not dict or any(type(name) is not str for name in children):
             raise SchemaValidationError(f"schema {keyword} must be an object at {path}")
         for name, child in children.items():
-            _preflight_node(child, root=root, path=f"{path}.{keyword}.{name}")
+            _preflight_node(
+                child,
+                root=root,
+                path=f"{path}.{keyword}.{name}",
+                packaged_ref_stack=packaged_ref_stack,
+            )
 
     if "required" in node:
         required = _schema_array(node["required"], label=f"{path}.required")
@@ -215,10 +286,16 @@ def _preflight_node(node: Any, *, root: Mapping[str, Any], path: str) -> None:
                 additional,
                 root=root,
                 path=f"{path}.additionalProperties",
+                packaged_ref_stack=packaged_ref_stack,
             )
     for keyword in ("propertyNames", "items", "if", "then", "else"):
         if keyword in node:
-            _preflight_node(node[keyword], root=root, path=f"{path}.{keyword}")
+            _preflight_node(
+                node[keyword],
+                root=root,
+                path=f"{path}.{keyword}",
+                packaged_ref_stack=packaged_ref_stack,
+            )
     for keyword in ("allOf", "oneOf"):
         if keyword not in node:
             continue
@@ -228,6 +305,7 @@ def _preflight_node(node: Any, *, root: Mapping[str, Any], path: str) -> None:
                 branch,
                 root=root,
                 path=f"{path}.{keyword}[{index}]",
+                packaged_ref_stack=packaged_ref_stack,
             )
 
 
@@ -241,7 +319,7 @@ def preflight_packaged_schema(schema: Mapping[str, Any]) -> None:
     if type(schema.get("$id")) is not str:
         raise SchemaValidationError("schema $id is missing")
     canonical_json_bytes(schema)
-    _preflight_node(schema, root=schema, path="$")
+    _preflight_node(schema, root=schema, path="$", packaged_ref_stack=())
 
 
 def validate_instance_against_schema(
@@ -315,8 +393,12 @@ def _validate_instance(
 
     reference = node.get("$ref")
     if reference is not None:
-        definition = root["$defs"][reference.removeprefix("#/$defs/")]
-        _validate_instance(instance, definition, root=root, path=path)
+        if reference.startswith("#/$defs/"):
+            definition = root["$defs"][reference.removeprefix("#/$defs/")]
+            _validate_instance(instance, definition, root=root, path=path)
+        else:
+            external = _packaged_schema_for_reference(reference, path=path)
+            _validate_instance(instance, external, root=external, path=path)
 
     if "type" in node:
         declared = node["type"]

@@ -34,9 +34,9 @@ def _schema(**keywords: object) -> dict[str, object]:
 
 def test_exact_packaged_schema_inventory_preflights() -> None:
     versions = packaged_schema_versions()
-    assert len(versions) == 15
+    assert len(versions) == 24
     assert versions == tuple(sorted(versions))
-    assert len({schema_path_for_version(version) for version in versions}) == 15
+    assert len({schema_path_for_version(version) for version in versions}) == 24
     for version in versions:
         preflight_packaged_schema(load_packaged_json(schema_path_for_version(version)))
 
@@ -148,7 +148,7 @@ def test_closed_subset_enforces_date_time_and_conditional_branches() -> None:
 
     matrix = load_packaged_json("resources/source_role_matrix.v1.json")
     changed = copy.deepcopy(matrix)
-    changed["runtime_usable"] = True
+    changed["runtime_usable"] = False
     with pytest.raises(SchemaValidationError, match="does not match const"):
         validate_mapping_against_packaged_schema(
             changed,

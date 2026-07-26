@@ -56,6 +56,9 @@ from .schema_validation import (
 PROTOCOL_VERSION: Final = "myquant.v17.v2"
 SEMANTIC_SHA_FIELD: Final = "semantic_sha256"
 SOURCE_ROLE_MATRIX_VERSION: Final = "myquant.v17.v2.source-role-matrix.v1"
+DATASET_RECORD_SCHEMA_REGISTRY_VERSION: Final = (
+    "myquant.v17.v2.dataset-record-schema-registry.v1"
+)
 DATASET_MANIFEST_VERSION: Final = "myquant.v17.v2.dataset-manifest.v1"
 SOURCE_MANIFEST_VERSION: Final = "myquant.v17.v2.source-manifest.v1"
 GENERATION_CATALOG_VERSION: Final = "myquant.v17.v2.generation-catalog.v1"
@@ -71,6 +74,14 @@ SHADOW_LEDGER_VERSION: Final = "myquant.v17.v2.shadow-ledger.v1"
 SHADOW_OUTPUT_VERSION: Final = "myquant.v17.v2.shadow-output.v1"
 SHADOW_LATEST_POINTER_VERSION: Final = "myquant.v17.v2.shadow-latest-pointer.v1"
 ACTION_FAILURE_RECEIPT_VERSION: Final = "myquant.v17.v2.action-failure-receipt.v1"
+MARKET_POINTER_VERSION: Final = "myquant.v17.v2.market-pointer.v1"
+MARKET_SNAPSHOT_MANIFEST_VERSION: Final = "myquant.v17.v2.market-snapshot-manifest.v1"
+RISK_POLICY_SNAPSHOT_VERSION: Final = "myquant.v17.v2.risk-policy-snapshot.v1"
+PORTFOLIO_REQUIRED_INPUTS_VERSION: Final = "myquant.v17.v2.portfolio-required-inputs.v1"
+MACRO_OVERLAY_VERSION: Final = "myquant.v17.v2.macro-overlay.v1"
+MARKOV_OVERLAY_VERSION: Final = "myquant.v17.v2.markov-overlay.v1"
+RANK_OUTPUT_VERSION: Final = "myquant.v17.v2.rank-output.v1"
+PORTFOLIO_OUTPUT_VERSION: Final = "myquant.v17.v2.portfolio-output.v1"
 
 
 class SourceAdmissionDisposition(str, Enum):
@@ -107,6 +118,14 @@ SUPPORTED_DOCUMENT_VERSIONS: Final = frozenset(
         SHADOW_OUTPUT_VERSION,
         SHADOW_LATEST_POINTER_VERSION,
         ACTION_FAILURE_RECEIPT_VERSION,
+        MARKET_POINTER_VERSION,
+        MARKET_SNAPSHOT_MANIFEST_VERSION,
+        RISK_POLICY_SNAPSHOT_VERSION,
+        PORTFOLIO_REQUIRED_INPUTS_VERSION,
+        MACRO_OVERLAY_VERSION,
+        MARKOV_OVERLAY_VERSION,
+        RANK_OUTPUT_VERSION,
+        PORTFOLIO_OUTPUT_VERSION,
     }
 )
 
@@ -125,6 +144,131 @@ _DOCUMENT_ID_FIELDS: Final = {
     SHADOW_OUTPUT_VERSION: "run_id",
     SHADOW_LATEST_POINTER_VERSION: "run_id",
     ACTION_FAILURE_RECEIPT_VERSION: "receipt_id",
+    MARKET_POINTER_VERSION: "pointer_id",
+    MARKET_SNAPSHOT_MANIFEST_VERSION: "manifest_id",
+    RISK_POLICY_SNAPSHOT_VERSION: "policy_id",
+    PORTFOLIO_REQUIRED_INPUTS_VERSION: "input_id",
+    MACRO_OVERLAY_VERSION: "overlay_id",
+    MARKOV_OVERLAY_VERSION: "overlay_id",
+    RANK_OUTPUT_VERSION: "output_id",
+    PORTFOLIO_OUTPUT_VERSION: "output_id",
+}
+
+_DATASET_CATALOG_ROLE: Final = {
+    "H00300_total_return_dataset": "pit_generation_catalog",
+    "cn_open_day_calendar_dataset": "pit_generation_catalog",
+    "corporate_actions_dataset": "pit_generation_catalog",
+    "deep_evidence_dataset": "fundamental_generation_catalog",
+    "fundamental_raw_tables_dataset": "fundamental_generation_catalog",
+    "market_bars_dataset": "pit_generation_catalog",
+    "official_delisting_cash_dataset": "pit_generation_catalog",
+}
+_PHASE1_ROLE_DECLARATIONS: Final = {
+    "H00300_total_return_dataset": (
+        "RANK",
+        "DATASET",
+        True,
+        "REJECT_BEFORE_INITIALIZED_ZERO_WRITE",
+        "myquant.v17.v2.dataset-manifest.schema.v1",
+    ),
+    "cn_open_day_calendar_dataset": (
+        "RANK",
+        "DATASET",
+        True,
+        "REJECT_BEFORE_INITIALIZED_ZERO_WRITE",
+        "myquant.v17.v2.dataset-manifest.schema.v1",
+    ),
+    "corporate_actions_dataset": (
+        "RANK",
+        "DATASET",
+        True,
+        "REJECT_BEFORE_INITIALIZED_ZERO_WRITE",
+        "myquant.v17.v2.dataset-manifest.schema.v1",
+    ),
+    "deep_evidence_dataset": (
+        "RANK",
+        "DATASET",
+        True,
+        "REJECT_BEFORE_INITIALIZED_ZERO_WRITE",
+        "myquant.v17.v2.dataset-manifest.schema.v1",
+    ),
+    "fundamental_generation_catalog": (
+        "RANK",
+        "OBJECT",
+        True,
+        "REJECT_BEFORE_INITIALIZED_ZERO_WRITE",
+        "myquant.v17.v2.generation-catalog.schema.v1",
+    ),
+    "fundamental_raw_tables_dataset": (
+        "RANK",
+        "DATASET",
+        True,
+        "REJECT_BEFORE_INITIALIZED_ZERO_WRITE",
+        "myquant.v17.v2.dataset-manifest.schema.v1",
+    ),
+    "macro_overlay": (
+        "PORTFOLIO",
+        "OBJECT",
+        False,
+        "SHADOW_RANK_COMPLETE_NO_PORTFOLIO",
+        "myquant.v17.v2.macro-overlay.schema.v1",
+    ),
+    "market_bars_dataset": (
+        "RANK",
+        "DATASET",
+        True,
+        "REJECT_BEFORE_INITIALIZED_ZERO_WRITE",
+        "myquant.v17.v2.dataset-manifest.schema.v1",
+    ),
+    "market_pointer": (
+        "RANK",
+        "OBJECT",
+        True,
+        "REJECT_BEFORE_INITIALIZED_ZERO_WRITE",
+        "myquant.v17.v2.market-pointer.schema.v1",
+    ),
+    "market_snapshot_manifest": (
+        "RANK",
+        "OBJECT",
+        True,
+        "REJECT_BEFORE_INITIALIZED_ZERO_WRITE",
+        "myquant.v17.v2.market-snapshot-manifest.schema.v1",
+    ),
+    "markov_overlay": (
+        "PORTFOLIO",
+        "OBJECT",
+        False,
+        "SHADOW_RANK_COMPLETE_NO_PORTFOLIO",
+        "myquant.v17.v2.markov-overlay.schema.v1",
+    ),
+    "official_delisting_cash_dataset": (
+        "RANK",
+        "DATASET",
+        True,
+        "REJECT_BEFORE_INITIALIZED_ZERO_WRITE",
+        "myquant.v17.v2.dataset-manifest.schema.v1",
+    ),
+    "pit_generation_catalog": (
+        "RANK",
+        "OBJECT",
+        True,
+        "REJECT_BEFORE_INITIALIZED_ZERO_WRITE",
+        "myquant.v17.v2.generation-catalog.schema.v1",
+    ),
+    "portfolio_required_inputs": (
+        "PORTFOLIO",
+        "OBJECT",
+        True,
+        "SHADOW_RANK_COMPLETE_NO_PORTFOLIO",
+        "myquant.v17.v2.portfolio-required-inputs.schema.v1",
+    ),
+    "risk_policy_snapshot": (
+        "PORTFOLIO",
+        "OBJECT",
+        True,
+        "SHADOW_RANK_COMPLETE_NO_PORTFOLIO",
+        "myquant.v17.v2.risk-policy-snapshot.schema.v1",
+    ),
 }
 
 _ARTIFACT_REF_KEYS: Final = frozenset(
@@ -1074,6 +1218,183 @@ def validate_dataset_manifest(
     return dict(payload)
 
 
+def validate_dataset_record_schema_registry(
+    resource: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate the exact Phase 1 dataset-record registry relationships."""
+
+    payload = dict(_mapping(resource, label="dataset record schema registry"))
+    try:
+        validate_mapping_against_packaged_schema(
+            payload,
+            expected_version=DATASET_RECORD_SCHEMA_REGISTRY_VERSION,
+        )
+    except (PackageResourceError, SchemaValidationError) as exc:
+        raise V17V2ValidationError(str(exc)) from exc
+    records = _array(
+        payload.get("records"),
+        label="dataset record schema registry records",
+        maximum=LIMITS["max_sources"],
+    )
+    by_role: dict[str, Mapping[str, Any]] = {}
+    observed_order: list[str] = []
+    observed_ids: set[str] = set()
+    for index, item in enumerate(records):
+        record = _mapping(item, label=f"dataset record schema registry records[{index}]")
+        role = _string(record.get("role"), label=f"dataset record schema registry role[{index}]")
+        record_id = _string(
+            record.get("record_schema_id"),
+            label=f"dataset record schema registry record_schema_id[{index}]",
+        )
+        expected_id = role.lower().replace("_", "-") + ".v1"
+        if record_id != expected_id:
+            _fail(f"dataset record schema id does not derive from role: {role}")
+        if role in by_role or record_id in observed_ids:
+            _fail("dataset record schema registry contains duplicate role or record id")
+        fields = _array(
+            record.get("logical_fields"),
+            label=f"dataset record schema registry fields[{index}]",
+            maximum=64,
+        )
+        field_names = [
+            _string(
+                _mapping(field, label=f"dataset record field[{field_index}]").get("name"),
+                label=f"dataset record field name[{field_index}]",
+            )
+            for field_index, field in enumerate(fields)
+        ]
+        if len(field_names) != len(set(field_names)):
+            _fail(f"dataset record schema contains duplicate fields: {role}")
+        key_fields = [
+            *record["primary_key"],
+            *record["partition_keys"],
+            *record["sort_keys"],
+            record["effective_time_field"],
+            record["available_time_field"],
+        ]
+        if not set(key_fields).issubset(field_names):
+            _fail(f"dataset record schema key/time field is undeclared: {role}")
+        by_role[role] = record
+        observed_order.append(role)
+        observed_ids.add(record_id)
+    if observed_order != sorted(observed_order, key=lambda value: (value.lower(), value)):
+        _fail("dataset record schema registry is not canonically ordered")
+    if set(by_role) != set(_DATASET_CATALOG_ROLE):
+        _fail("dataset record schema registry role inventory mismatch")
+    validate_json_limits(payload)
+    return payload
+
+
+def require_runtime_usable_dataset_record_schema_registry() -> dict[str, Any]:
+    """Load and require the exact packaged Phase 1 dataset registry."""
+
+    resource_path = "resources/dataset_record_schema_registry.v1.json"
+    try:
+        payload = load_packaged_json(resource_path)
+    except PackageResourceError as exc:
+        raise V17V2ValidationError(str(exc)) from exc
+    validated = validate_dataset_record_schema_registry(payload)
+    if (
+        hashlib.sha256(canonical_resource_bytes(validated)).hexdigest()
+        != PACKAGE_ASSET_SHA256S.get(resource_path)
+    ):
+        _fail("dataset record schema registry is not the exact approved frozen resource")
+    return validated
+
+
+def _validate_phase1_document(
+    document: Mapping[str, Any],
+    *,
+    expected_version: str,
+) -> dict[str, Any]:
+    return validate_document_identity(document, expected_version=expected_version)
+
+
+def validate_market_pointer(document: Mapping[str, Any]) -> dict[str, Any]:
+    return _validate_phase1_document(document, expected_version=MARKET_POINTER_VERSION)
+
+
+def validate_market_snapshot_manifest(document: Mapping[str, Any]) -> dict[str, Any]:
+    return _validate_phase1_document(
+        document,
+        expected_version=MARKET_SNAPSHOT_MANIFEST_VERSION,
+    )
+
+
+def validate_risk_policy_snapshot(document: Mapping[str, Any]) -> dict[str, Any]:
+    payload = _validate_phase1_document(
+        document,
+        expected_version=RISK_POLICY_SNAPSHOT_VERSION,
+    )
+    if _rfc3339_instant(payload["expires_at"], label="risk expires_at") <= _rfc3339_instant(
+        payload["cutoff"], label="risk cutoff"
+    ):
+        _fail("risk policy snapshot is expired at cutoff")
+    return payload
+
+
+def validate_portfolio_required_inputs(document: Mapping[str, Any]) -> dict[str, Any]:
+    payload = _validate_phase1_document(
+        document,
+        expected_version=PORTFOLIO_REQUIRED_INPUTS_VERSION,
+    )
+    attestation = _mapping(payload["owner_attestation"], label="owner attestation")
+    if attestation["nav"] <= 0:
+        _fail("owner-attested NAV must be positive")
+    holdings = _array(attestation["holdings"], label="owner-attested holdings", maximum=10000)
+    codes = [str(_mapping(item, label="holding")["security_code"]) for item in holdings]
+    if codes != sorted(codes) or len(codes) != len(set(codes)):
+        _fail("owner-attested holdings are not ordered and unique")
+    if payload["cutoff"] != attestation["attested_at"]:
+        _fail("owner attestation cutoff mismatch")
+    return payload
+
+
+def validate_macro_overlay(document: Mapping[str, Any]) -> dict[str, Any]:
+    return _validate_phase1_document(document, expected_version=MACRO_OVERLAY_VERSION)
+
+
+def validate_markov_overlay(document: Mapping[str, Any]) -> dict[str, Any]:
+    payload = _validate_phase1_document(document, expected_version=MARKOV_OVERLAY_VERSION)
+    probabilities = _array(payload["probabilities"], label="markov probabilities", maximum=32)
+    states = [str(_mapping(item, label="markov probability")["state"]) for item in probabilities]
+    if states != sorted(states) or len(states) != len(set(states)):
+        _fail("markov probabilities are not ordered and unique")
+    if abs(sum(float(item["probability"]) for item in probabilities) - 1.0) > 1e-12:
+        _fail("markov probabilities do not sum to one")
+    if payload["selected_state"] not in states:
+        _fail("markov selected_state is absent from probabilities")
+    return payload
+
+
+def validate_rank_output(document: Mapping[str, Any]) -> dict[str, Any]:
+    payload = _validate_phase1_document(document, expected_version=RANK_OUTPUT_VERSION)
+    candidates = _array(payload["candidates"], label="rank candidates", maximum=1024)
+    order = [
+        (int(_mapping(item, label="rank candidate")["rank"]), str(item["security_code"]))
+        for item in candidates
+    ]
+    if order != sorted(order) or [rank for rank, _ in order] != list(
+        range(1, len(order) + 1)
+    ):
+        _fail("rank candidates are not in contiguous total order")
+    return payload
+
+
+def validate_portfolio_output(document: Mapping[str, Any]) -> dict[str, Any]:
+    payload = _validate_phase1_document(document, expected_version=PORTFOLIO_OUTPUT_VERSION)
+    roles = [
+        str(_mapping(item, label="portfolio input binding")["role"])
+        for item in _array(payload["input_bindings"], label="portfolio input bindings", maximum=4)
+    ]
+    if roles != sorted(roles) or not {
+        "portfolio_required_inputs",
+        "risk_policy_snapshot",
+    }.issubset(roles):
+        _fail("portfolio output input binding inventory mismatch")
+    return payload
+
+
 def validate_source_role_matrix(resource: Mapping[str, Any]) -> dict[str, Any]:
     """Validate the honest partial registry without treating it as runtime authority."""
 
@@ -1235,6 +1556,32 @@ def require_runtime_usable_source_role_matrix(
     )
     if not any(_mapping(row, label="runtime source role").get("required") is True for row in roles):
         _fail("runtime source role matrix required-role inventory is incomplete")
+    observed = {
+        str(row["role"]): (
+            row["phase"],
+            row["kind"],
+            row["required"],
+            row["availability_disposition"],
+            row["schema_version"],
+        )
+        for row in roles
+    }
+    if observed != _PHASE1_ROLE_DECLARATIONS:
+        _fail("runtime source role matrix Phase 1 inventory mismatch")
+    expected_conditionals = [
+        {
+            "controller": controller,
+            "disabled_mapping_may_be_missing": True,
+            "enabled_input_unavailable_terminal": (
+                "SHADOW_RANK_COMPLETE_NO_PORTFOLIO"
+            ),
+            "enabled_mapping_required": True,
+        }
+        for controller in ("macro", "markov")
+    ]
+    if payload.get("conditional_semantics") != expected_conditionals:
+        _fail("runtime source role matrix conditional semantics mismatch")
+    require_runtime_usable_dataset_record_schema_registry()
     return payload
 
 
@@ -1280,6 +1627,11 @@ def validate_source_hash_dag(
         for row in [_mapping(item, label="source role matrix role")]
     }
     registered_roles = set(role_rows)
+    dataset_registry = require_runtime_usable_dataset_record_schema_registry()
+    dataset_record_by_role = {
+        str(record["role"]): _mapping(record, label="dataset registry record")
+        for record in dataset_registry["records"]
+    }
     _require_protocol_path(source_manifest_path, label="source manifest path")
     _require_protocol_path(source_binding_set_path, label="source binding set path")
     _require_protocol_path(source_locator_path, label="source locator path")
@@ -1352,6 +1704,16 @@ def validate_source_hash_dag(
         )
         if dataset_role not in registered_roles:
             _fail(f"dataset manifest {path}.role is not registered")
+        registry_record = dataset_record_by_role.get(dataset_role)
+        if registry_record is None:
+            _fail(f"dataset manifest {path}.role lacks a record schema")
+        if (
+            dataset_document.get("schema") != registry_record.get("logical_fields")
+            or dataset_document.get("primary_key") != registry_record.get("primary_key")
+            or dataset_document.get("partition_keys") != registry_record.get("partition_keys")
+            or dataset_document.get("sort_keys") != registry_record.get("sort_keys")
+        ):
+            _fail(f"dataset manifest {path} does not match its record schema")
         _validate_dataset_manifest_objects(
             dataset_document,
             source_objects=source_objects,
@@ -1628,6 +1990,18 @@ def validate_source_hash_dag(
             )
             if role not in registered_roles:
                 _fail(f"catalog table role is not registered: {role}")
+            registry_record = dataset_record_by_role.get(role)
+            if registry_record is None:
+                _fail(f"catalog table role lacks a record schema: {role}")
+            if (
+                catalog_role != _DATASET_CATALOG_ROLE[role]
+                or table.get("record_schema_id") != registry_record.get("record_schema_id")
+                or table.get("primary_key") != registry_record.get("primary_key")
+                or table.get("valid_time_field") != registry_record.get("effective_time_field")
+                or table.get("available_time_field")
+                != registry_record.get("available_time_field")
+            ):
+                _fail(f"catalog table record schema binding mismatch: {role}")
             table_id = _string(table.get("table_id"), label="catalog table_id")
             identity = (path, stage, role)
             if identity in table_index:
@@ -1851,10 +2225,18 @@ def _load_runtime_object_document(
     )
     if expected_version not in SUPPORTED_DOCUMENT_VERSIONS:
         _fail(f"runtime OBJECT role schema lacks an identity validator: {role}")
-    validated = validate_document_identity(
-        document,
-        expected_version=expected_version,
-    )
+    validators = {
+        MARKET_POINTER_VERSION: validate_market_pointer,
+        MARKET_SNAPSHOT_MANIFEST_VERSION: validate_market_snapshot_manifest,
+        RISK_POLICY_SNAPSHOT_VERSION: validate_risk_policy_snapshot,
+        PORTFOLIO_REQUIRED_INPUTS_VERSION: validate_portfolio_required_inputs,
+        MACRO_OVERLAY_VERSION: validate_macro_overlay,
+        MARKOV_OVERLAY_VERSION: validate_markov_overlay,
+    }
+    validator = validators.get(expected_version)
+    if validator is None:
+        _fail(f"runtime OBJECT role lacks a Phase 1 cross-validator: {role}")
+    validated = validator(document)
     _validate_artifact_ref(
         source_ref,
         document=validated,
@@ -2032,6 +2414,7 @@ def _admit_runtime_source_hash_dag_core(
     reject_required_roles: list[str] = []
     admitted_input_bindings: list[tuple[str, str, str, str, str, str]] = []
     object_carrier_identities: dict[tuple[str, str], str] = {}
+    object_documents: dict[str, Mapping[str, Any]] = {}
     for role, row in role_rows.items():
         source = sources_by_role.get(role)
         if source is None:
@@ -2122,6 +2505,7 @@ def _admit_runtime_source_hash_dag_core(
             if previous_role is not None:
                 _fail("runtime OBJECT carrier is shared across roles: " f"{previous_role}, {role}")
             object_carrier_identities[object_identity] = role
+            object_documents[role] = object_document
             admitted_input_bindings.append(
                 (
                     role,
@@ -2134,6 +2518,77 @@ def _admit_runtime_source_hash_dag_core(
             )
         else:
             _fail(f"runtime source role kind is unsupported: {role}")
+
+    pointer = object_documents.get("market_pointer")
+    snapshot = object_documents.get("market_snapshot_manifest")
+    if pointer is not None and snapshot is not None:
+        snapshot_ref = _mapping(
+            pointer.get("snapshot_manifest_ref"),
+            label="market pointer snapshot_manifest_ref",
+        )
+        snapshot_source = _mapping(
+            sources_by_role["market_snapshot_manifest"].get("source_ref"),
+            label="market snapshot source_ref",
+        )
+        if (
+            snapshot_ref != snapshot_source
+            or pointer.get("snapshot_id") != snapshot.get("snapshot_id")
+            or pointer.get("cutoff") != snapshot.get("cutoff")
+        ):
+            _fail("market pointer/snapshot manifest binding mismatch")
+        expected_dataset_roles = {
+            "cn_open_day_calendar_dataset",
+            "market_bars_dataset",
+        }
+        bound_roles: set[str] = set()
+        for item in _array(
+            snapshot.get("dataset_bindings"),
+            label="market snapshot dataset_bindings",
+            maximum=2,
+        ):
+            binding = _mapping(item, label="market snapshot dataset binding")
+            role = str(binding["role"])
+            datasets = dataset_docs_by_role.get(role, [])
+            if len(datasets) != 1:
+                _fail(f"market snapshot dataset binding does not resolve: {role}")
+            dataset_path, dataset = datasets[0]
+            expected_ref = {
+                "artifact_id": _document_id(dataset),
+                "artifact_version": DATASET_MANIFEST_VERSION,
+                "relative_path": dataset_path,
+                "byte_sha256": document_byte_sha256(dataset),
+                "semantic_sha256": dataset["semantic_sha256"],
+            }
+            if binding.get("dataset_manifest_ref") != expected_ref:
+                _fail(f"market snapshot dataset binding mismatch: {role}")
+            bound_roles.add(role)
+        if bound_roles != expected_dataset_roles:
+            _fail("market snapshot dataset role inventory mismatch")
+
+    portfolio_inputs = object_documents.get("portfolio_required_inputs")
+    if portfolio_inputs is not None:
+        for role in ("risk_policy_snapshot", "macro_overlay", "markov_overlay"):
+            document = object_documents.get(role)
+            if document is not None and (
+                document.get("strategy_id") != portfolio_inputs.get("strategy_id")
+                or document.get("cutoff") != portfolio_inputs.get("cutoff")
+            ):
+                _fail(f"portfolio source identity mismatch: {role}")
+        controllers = _mapping(
+            portfolio_inputs.get("controllers"),
+            label="portfolio controllers",
+        )
+        for controller in ("macro", "markov"):
+            enabled = _mapping(
+                controllers.get(controller),
+                label=f"portfolio controller {controller}",
+            ).get("enabled")
+            overlay_role = f"{controller}_overlay"
+            source = sources_by_role.get(overlay_role)
+            if enabled is True and (
+                source is None or source.get("availability") != "AVAILABLE"
+            ):
+                unavailable_required_roles.append(overlay_role)
 
     for role, datasets in dataset_docs_by_role.items():
         if len(datasets) != 1:
@@ -2158,7 +2613,7 @@ def _admit_runtime_source_hash_dag_core(
         if len(table_links.get(role, [])) != 1 or len(binding_links.get(role, [])) != 1:
             _fail(f"runtime role has duplicate or missing stage-bearing links: {role}")
 
-    unavailable = tuple(sorted(unavailable_required_roles))
+    unavailable = tuple(sorted(set(unavailable_required_roles)))
     if reject_required_roles:
         _fail(
             "runtime required source is unavailable and requires zero-write rejection: "
@@ -3390,6 +3845,20 @@ def _validate_shadow_terminal_chain_admitted(
     if type(output) is not dict:
         _fail("terminal shadow output root must be an object")
     output_doc = validate_document_identity(output, expected_version=SHADOW_OUTPUT_VERSION)
+    rank_output = validate_rank_output(
+        _mapping(output_doc.get("rank_output"), label="output.rank_output")
+    )
+    for field in ("run_id", "strategy_id", "market", "cutoff"):
+        if rank_output.get(field) != output_doc.get(field):
+            _fail(f"rank output identity mismatch: {field}")
+    portfolio_value = output_doc.get("portfolio_output")
+    if portfolio_value is not None:
+        portfolio_output = validate_portfolio_output(
+            _mapping(portfolio_value, label="output.portfolio_output")
+        )
+        for field in ("run_id", "strategy_id", "market", "cutoff"):
+            if portfolio_output.get(field) != output_doc.get(field):
+                _fail(f"portfolio output identity mismatch: {field}")
     latest_doc = validate_document_identity(
         latest_pointer,
         expected_version=SHADOW_LATEST_POINTER_VERSION,
@@ -3696,14 +4165,23 @@ def validate_shadow_terminal_chain(
 __all__ = [
     "ACTION_FAILURE_RECEIPT_VERSION",
     "DATASET_MANIFEST_VERSION",
+    "DATASET_RECORD_SCHEMA_REGISTRY_VERSION",
     "DATASET_SCHEMA_DIGEST_VERSION",
     "DATASET_SUMMARY_VERSION",
     "DEEP_RESEARCH_REPORT_VERSION",
     "DEEP_RESEARCH_REQUEST_VERSION",
     "DEEP_RESEARCH_RESPONSE_VERSION",
     "GENERATION_CATALOG_VERSION",
+    "MACRO_OVERLAY_VERSION",
+    "MARKET_POINTER_VERSION",
+    "MARKET_SNAPSHOT_MANIFEST_VERSION",
+    "MARKOV_OVERLAY_VERSION",
     "OBSERVATION_DISPOSITION_VERSION",
     "PROTOCOL_VERSION",
+    "PORTFOLIO_OUTPUT_VERSION",
+    "PORTFOLIO_REQUIRED_INPUTS_VERSION",
+    "RANK_OUTPUT_VERSION",
+    "RISK_POLICY_SNAPSHOT_VERSION",
     "SEMANTIC_SHA_FIELD",
     "SHADOW_LATEST_POINTER_VERSION",
     "SHADOW_LEDGER_VERSION",
@@ -3721,10 +4199,20 @@ __all__ = [
     "seal_semantic",
     "semantic_sha256",
     "require_runtime_usable_source_role_matrix",
+    "require_runtime_usable_dataset_record_schema_registry",
+    "validate_dataset_record_schema_registry",
     "validate_action_failure_receipt",
     "validate_dataset_manifest",
     "validate_deep_research_chain",
     "validate_document_identity",
+    "validate_macro_overlay",
+    "validate_market_pointer",
+    "validate_market_snapshot_manifest",
+    "validate_markov_overlay",
+    "validate_portfolio_output",
+    "validate_portfolio_required_inputs",
+    "validate_rank_output",
+    "validate_risk_policy_snapshot",
     "validate_semantic_seal",
     "validate_shadow_ledger",
     "validate_shadow_ledger_chain",
