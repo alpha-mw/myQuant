@@ -16,7 +16,12 @@ from quant_investor.v17_v2_contract.canonical import (
 )
 
 from .gate import RuntimeGate, RuntimeGateError
-from .service import RuntimeServiceError, analyze_mapping, verify_runtime
+from .service import (
+    RuntimeServiceError,
+    admit_source_bundle,
+    analyze_mapping,
+    verify_runtime,
+)
 
 
 def _emit(payload: Any) -> None:
@@ -70,6 +75,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="run the pure offline deterministic pipeline from canonical JSON",
     )
     analyze.add_argument("--input", required=True)
+
+    admit = subparsers.add_parser(
+        "admit-sources",
+        help="validate an exact source DAG bundle and optionally publish it",
+    )
+    admit.add_argument("--bundle", required=True)
+    admit.add_argument("--workspace-root", default=str(Path.cwd()))
+    admit.add_argument("--commit", action="store_true")
     return parser
 
 
@@ -100,6 +113,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = analyze_mapping(_read_input(args.input))
             _emit(result.to_wire())
             return 0 if not result.terminal_state.startswith("HARD_STOP_") else 2
+        if args.command == "admit-sources":
+            result = admit_source_bundle(
+                _read_input(args.bundle),
+                workspace_root=Path(args.workspace_root),
+                commit=args.commit,
+            )
+            _emit(result.to_wire())
+            return 0
     except (
         ActionMatrixError,
         RuntimeGateError,

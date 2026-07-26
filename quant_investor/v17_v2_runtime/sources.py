@@ -164,6 +164,22 @@ class SourceDagPlan:
     source_locator_path: str
 
 
+def read_pinned_source_bytes(
+    *,
+    source_root: Path,
+    source: SourceFile,
+) -> bytes:
+    """Read one caller-pinned local source through the hardened exact-byte path."""
+
+    if type(source) is not SourceFile:
+        raise SourcePlanningError("source must be a SourceFile")
+    return _secure_read_exact(
+        source,
+        source_root=source_root,
+        maximum_bytes=LIMITS["max_shard_bytes"],
+    )
+
+
 RecordRegistryValidator = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 RecordSpecResolver = Callable[[str, Mapping[str, Any]], DatasetRecordSpec]
 DatasetInspector = Callable[
@@ -1185,4 +1201,5 @@ __all__ = [
     "SourcePlanningError",
     "WriteIntent",
     "plan_source_dag",
+    "read_pinned_source_bytes",
 ]
