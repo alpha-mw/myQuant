@@ -148,6 +148,7 @@ Factor production control packages:
 factor-governance-production-control.transaction.schema.v1
 factor-governance-production-control.pre-activation-eligibility.schema.v1
 factor-governance-production-control.authorization-receipt.schema.v1
+factor-governance-production-control.rollback-authorization-receipt.schema.v1
 factor-governance-production-control.wal-record.schema.v1
 factor-governance-production-control.active-set-pointer.schema.v1
 factor-governance-production-control.activation-receipt.schema.v1
@@ -157,6 +158,20 @@ factor-governance-production-control.rollback-receipt.schema.v1
 These identities belong to
 `quant_investor.factors.production_control_v1`, not to the v4 scaffold or V17
 contract package.
+
+The control module also closes its internal registry and exact-readback inputs
+under `factor-governance-production-control.registry.v1`,
+`factor-governance-production-control.readiness-readback.v1`,
+`factor-governance-production-control.runtime-contract-set.v1`,
+`factor-governance-production-control.v4-evidence-set.v1`, and
+`factor-governance-production-control.v4-replay-set.v1`. Their references are
+revalidated against the supplied exact source bytes before any transaction
+intent or WAL file is written. Per-factor v4 evidence is also revalidated
+through canonical replay readback from its owner-only immutable local file;
+the evidence and replay sets are derived only after complete-chain, context,
+quantitative, factor-identity, runtime-contract, file-hash, and semantic-hash
+bindings pass. Coherent caller-declared evidence and replay digests are not an
+admissible source.
 
 The quant-first model artifacts are copied forward under `myquant.v17.v4.*`
 identities. Their v3 discriminators, semantic hashes, and authority envelopes
@@ -488,6 +503,7 @@ wal = wal/{transaction_id}.jsonl
 v4_activation_receipt = receipts/v4_activations/{receipt_id}.json
 production_control_receipt = receipts/control_activations/{receipt_id}.json
 rollback_receipt = receipts/rollbacks/{receipt_id}.json
+rollback_authorization = rollback_authorizations/{receipt_id}.json
 registry_snapshot = registry/snapshots/{byte_sha256}.json
 ```
 
@@ -512,7 +528,10 @@ readback. Only after registry readback does it issue the
 recomputes full v4 readiness with that receipt, then CAS-advances the active-set
 pointer and writes the production-control success receipt. Its rollback
 restores the exact before-registry bytes and predecessor active-set pointer
-under inverse CAS.
+under inverse CAS. Rollback requires its own intent-before-lock authorization
+receipt scoped to `factor_v4_production_research_rollback`; its validity
+window, transaction, successful control receipt, current hashes, and exact
+restore hashes must all match before either lock is acquired.
 
 Lock order is registry lock then active-set lock. The immutable transaction
 intent contains `transaction_id`, `as_of`, `authorized_by`,
@@ -564,6 +583,16 @@ readback mismatch, is a hard blocker. A report-only factor set cannot be
 relabelled. Historical calibration must reference the factor set actually
 effective at each origin; current production-control activation cannot create
 retroactive origin authority.
+
+The current legacy registry contains one old `production_factor`, but that row
+does not carry the v4 family, slot, Gates 1-8, BH, runtime-contract, canonical
+replay, and fresh-health closure. It therefore contributes zero factors to the
+v4 production set. Production control permits the reviewed underfilled floor
+of five healthy factors and continues accelerated mining toward ten; it never
+relabels legacy or `production_candidate` rows to satisfy that floor.
+Freshness is recomputed from each factor's hash-bound strict open-session
+calendar and `health.source_as_of`; a caller-supplied `fresh=true` flag is
+insufficient.
 
 ### Calibration
 
