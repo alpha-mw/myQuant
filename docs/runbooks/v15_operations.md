@@ -3,6 +3,10 @@
 This is the current operating contract for the no-Theme v15 mainline.  The
 system remains offline by default and fail closed for new risk.
 
+The additive `quant-investor-v17-v3` research entrypoint is isolated from this
+runbook. It does not change any V15 command, artifact, Dashboard consumer,
+schedule or production/default authority.
+
 ## Active architecture
 
 - Canonical branches: `quant`, `fundamental`, `macro`.

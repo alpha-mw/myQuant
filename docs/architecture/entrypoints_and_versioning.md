@@ -7,6 +7,10 @@
 - Python 入口：`quant_investor.QuantInvestor`
 - Pipeline 结果类型：`quant_investor.pipeline.QuantInvestorPipelineResult`
 - CLI 入口：`quant-investor research run`
+- 隔离 V17 v3 入口：`quant-investor-v17-v3`。该入口只拥有独立
+  `myquant.v17.v3` shadow / formal-research publication surface，不改变
+  `quant-investor`、`market analyze` 或 `market run` 的 V15 默认路由；其
+  execution、broker、order、trade 与 production-default authority 永远为 false。
 - 当前包版本为 `17.0.0`，它是删除旧公共入口的 V16 retirement release，
   不是 V17 runtime 协议。`market analyze/run` 只接受并默认使用 `v15`；
   任何已退役协议 literal 都在解析阶段 exit 2，且不回退、不写文件。
@@ -29,7 +33,11 @@
 ## Package And Protocol Versions
 
 - package release：`17.0.0`（V16 retirement release）
-- V17 runtime：不存在、未接入、未授权
+- V17 runtime：`myquant.v17.v3` 是独立、显式入口的 additive research runtime。
+  Phase A 只允许 offline/synthetic 验证并报告
+  `NOT_ACTIVATED_DATA_BLOCKED`；任何 formal-research publication 必须通过
+  v3 自身的 exact-cutoff promotion、activation 和 source-admission 门禁。V15
+  仍是 production/default。
 - Factor Governance：`v4`，使用版本中立的 `results/factor_governance/`
 - Dashboard：Contract v3
 
