@@ -23,6 +23,8 @@ V4_REGISTERED_REFERENCE_VERSIONS = frozenset(
     {
         "myquant.v17.v4.canary-pointer.v1",
         "myquant.v17.v4.canary-receipt.v1",
+        "myquant.v17.v4.canary-transition-intent.v1",
+        "myquant.v17.v4.default-eligibility-intent.v1",
         "myquant.v17.v4.default-eligibility-receipt.v1",
         "myquant.v17.v4.default-eligible-pointer.v1",
         "myquant.v17.v4.dual-run-comparison.v1",

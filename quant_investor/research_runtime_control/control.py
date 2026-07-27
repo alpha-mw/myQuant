@@ -1138,6 +1138,73 @@ def _evidence_by_version(
     return matched
 
 
+def _read_v4_completion_chain(
+    *,
+    store: ControlStore,
+    pointer: ControlArtifact,
+    intent_version: str,
+    completion_version: str,
+    completion_path: str,
+    expected_status: str,
+) -> tuple[ControlArtifact, ControlArtifact]:
+    if pointer.document.get("state") != "PENDING_COMPLETION":
+        raise RuntimeControlError("v4 pointer state is invalid")
+    intent = _read_v4_typed_reference(
+        store,
+        pointer.document["intent_ref"],
+        expected_version=intent_version,
+    )
+    stored = store.read_optional(completion_path)
+    if stored is None:
+        raise RuntimeControlError("v4 pointer is pending completion")
+    try:
+        from quant_investor.v17_v4_contract import load_canonical_artifact
+
+        document = decode_reference(
+            stored.data,
+            expected_version=completion_version,
+        )
+        validated = load_canonical_artifact(
+            stored.data,
+            expected_version=completion_version,
+            label="v4 pointer completion receipt",
+        )
+    except (ImportError, ValueError, ControlStorageError) as exc:
+        raise RuntimeControlError(
+            "v4 pointer completion receipt is invalid"
+        ) from exc
+    completion = ControlArtifact(
+        completion_path,
+        document,
+        stored.data,
+        stored.byte_sha256,
+        pointer.strategy_id,
+        pointer.cutoff,
+    )
+    if (
+        dict(validated.payload) != dict(completion.document)
+        or completion.document.get("status") != expected_status
+        or completion.document.get("intent_ref") != intent.reference
+        or completion.document.get("pointer_ref") != pointer.reference
+        or completion.document.get("post_readback_sha256")
+        != pointer.byte_sha256
+        or completion.document.get("proposed_pointer_sha256")
+        != pointer.byte_sha256
+        or completion.document.get("expected_pointer_sha256")
+        != intent.document.get("expected_pointer_sha256")
+        or completion.document.get("observed_pointer_sha256")
+        != intent.document.get("expected_pointer_sha256")
+        or completion.document.get("from_state")
+        != intent.document.get("from_state")
+        or completion.document.get("to_state")
+        != intent.document.get("to_state")
+    ):
+        raise RuntimeControlError(
+            "v4 pointer completion binding is invalid"
+        )
+    return intent, completion
+
+
 def _validate_v4_cutover_evidence(
     *,
     store: ControlStore,
@@ -1228,19 +1295,34 @@ def _validate_v4_cutover_evidence(
         evidence["myquant.v17.v4.default-eligible-pointer.v1"],
         expected_version="myquant.v17.v4.default-eligible-pointer.v1",
     )
-    eligibility_receipt = _read_v4_typed_reference(
-        store,
-        eligible_pointer.document["eligibility_receipt_ref"],
-        expected_version="myquant.v17.v4.default-eligibility-receipt.v1",
+    eligibility_intent_id = str(
+        eligible_pointer.document["intent_ref"]["artifact_id"]
+    )
+    eligibility_intent, eligibility_receipt = (
+        _read_v4_completion_chain(
+            store=store,
+            pointer=eligible_pointer,
+            intent_version=(
+                "myquant.v17.v4.default-eligibility-intent.v1"
+            ),
+            completion_version=(
+                "myquant.v17.v4.default-eligibility-receipt.v1"
+            ),
+            completion_path=(
+                "results/v17_v4_formal_research/strategies/"
+                f"{eligible_pointer.strategy_id}/eligibility/"
+                "completion_receipts/"
+                f"{eligibility_intent_id}.json"
+            ),
+            expected_status="DEFAULT_ELIGIBLE",
+        )
     )
     if (
-        eligible_pointer.document.get("state") != "DEFAULT_ELIGIBLE"
-        or eligible_pointer.document.get("formal_active_pointer_ref")
+        eligibility_intent.document.get("intent_id")
+        != eligibility_intent_id
+        or eligibility_intent.document.get("formal_active_pointer_ref")
         != formal_pointer.reference
-        or eligibility_receipt.document.get("status") != "DEFAULT_ELIGIBLE"
         or eligibility_receipt.document.get("to_state") != "DEFAULT_ELIGIBLE"
-        or eligibility_receipt.document.get("formal_active_pointer_ref")
-        != formal_pointer.reference
     ):
         raise RuntimeControlError("v4 eligibility evidence is not live")
     canary_pointer = _read_v4_typed_reference(
@@ -1248,24 +1330,48 @@ def _validate_v4_cutover_evidence(
         evidence["myquant.v17.v4.canary-pointer.v1"],
         expected_version="myquant.v17.v4.canary-pointer.v1",
     )
-    canary_receipt = _read_v4_typed_reference(
-        store,
-        canary_pointer.document["canary_receipt_ref"],
-        expected_version="myquant.v17.v4.canary-receipt.v1",
+    canary_intent_id = str(
+        canary_pointer.document["intent_ref"]["artifact_id"]
     )
-    paired_run_ids = canary_pointer.document.get("paired_run_ids")
+    canary_intent, canary_receipt = _read_v4_completion_chain(
+        store=store,
+        pointer=canary_pointer,
+        intent_version="myquant.v17.v4.canary-transition-intent.v1",
+        completion_version="myquant.v17.v4.canary-receipt.v1",
+        completion_path=(
+            "results/v17_v4_canary/strategies/"
+            f"{canary_pointer.strategy_id}/transitions/"
+            f"completion_receipts/{canary_intent_id}.json"
+        ),
+        expected_status="CANARY_COMPLETED",
+    )
+    paired_run_ids = canary_intent.document.get("paired_run_ids")
     if (
-        canary_pointer.document.get("state") != "CANARY"
-        or canary_pointer.document.get("eligibility_pointer_ref")
+        canary_intent.document.get("intent_id") != canary_intent_id
+        or canary_intent.document.get("transition") != "COMPLETE"
+        or canary_intent.document.get("eligibility_pointer_ref")
         != eligible_pointer.reference
         or type(paired_run_ids) is not list
         or len(paired_run_ids) != 5
-        or canary_receipt.document.get("status") != "CANARY_COMPLETED"
-        or canary_receipt.document.get("eligibility_pointer_ref")
-        != eligible_pointer.reference
-        or canary_receipt.document.get("paired_run_ids") != paired_run_ids
-        or canary_receipt.document.get("v15_protocol_target_ref")
+        or canary_intent.document.get("v15_protocol_target_ref")
         != expected_target.reference
+        or len(canary_intent.document.get("comparison_refs", ())) != 5
+        or len(canary_intent.document.get("completed_sessions", ())) != 5
+        or any(
+            row.get("status") != "PASS"
+            for row in canary_intent.document.get(
+                "threshold_results",
+                (),
+            )
+        )
+        or any(
+            value != 0
+            for value in canary_intent.document.get(
+                "side_effect_counters",
+                {},
+            ).values()
+        )
+        or canary_receipt.document.get("to_state") != "CANARY"
     ):
         raise RuntimeControlError("v4 completed-canary evidence is not live")
 

@@ -35,6 +35,8 @@ from quant_investor.v17_v4_contract.validators import (
     ArtifactContractError,
     CanaryPointerArtifact,
     CanaryReceiptArtifact,
+    CanaryTransitionIntentArtifact,
+    DefaultEligibilityIntentArtifact,
     DefaultEligibilityReceiptArtifact,
     DefaultEligiblePointerArtifact,
     DualRunComparisonArtifact,
@@ -305,7 +307,7 @@ def _formal_output() -> dict[str, Any]:
     )
 
 
-def _eligibility_receipt() -> dict[str, Any]:
+def _eligibility_intent() -> dict[str, Any]:
     formal_pointer = _ref(
         "formal-pointer-1",
         "myquant.v17.v4.formal-active-pointer.v1",
@@ -314,7 +316,7 @@ def _eligibility_receipt() -> dict[str, Any]:
     public = [
         _ref(
             f"public-{index}",
-            f"myquant.v17.v4.public-surface-receipt-{index}.v1",
+            "myquant.v17.v4.public-surface-compatibility-receipt.v1",
             f"data/private/v17_v4_runs/run-1/public-{index}.json",
         )
         for index in range(4)
@@ -322,7 +324,7 @@ def _eligibility_receipt() -> dict[str, Any]:
     validation = [
         _ref(
             f"validation-{index}",
-            f"myquant.v17.v4.validation-receipt-{index}.v1",
+            "myquant.v17.v4.validation-receipt.v1",
             f"data/private/v17_v4_runs/run-1/validation-{index}.json",
         )
         for index in range(5)
@@ -334,13 +336,17 @@ def _eligibility_receipt() -> dict[str, Any]:
     )
     rollback = _ref(
         "rollback-drill-1",
-        "myquant.research-runtime.rollback-receipt.v1",
-        "results/research_runtime_control/rollback_receipts/rollback-drill-1.json",
+        "myquant.v17.v4.rollback-drill-receipt.v1",
+        (
+            "results/v17_v4_formal_research/strategies/quant-first/"
+            "eligibility/rollback_drills/rollback-drill-1.json"
+        ),
     )
-    proposed = _sha("eligibility-proposed")
     return seal_semantic(
         {
-            "authority": _authority(formal=True),
+            "authority": _authority(formal=False),
+            "created_at": CUTOFF,
+            "cutoff": CUTOFF,
             "evidence_refs": _ordered_refs(
                 formal_pointer,
                 bootstrap,
@@ -351,39 +357,39 @@ def _eligibility_receipt() -> dict[str, Any]:
             "expected_pointer_sha256": "EMPTY",
             "formal_active_pointer_ref": formal_pointer,
             "from_state": "FORMAL_ACTIVE",
-            "observed_pointer_sha256": "EMPTY",
-            "post_readback_sha256": proposed,
-            "proposed_pointer_sha256": proposed,
+            "intent_id": "eligibility-1",
             "protocol_version": PROTOCOL_VERSION,
             "public_surface_receipt_refs": _ordered_refs(*public),
-            "receipt_id": "eligibility-1",
-            "recorded_at": CUTOFF,
             "rollback_drill_receipt_ref": rollback,
             "selector_bootstrap_receipt_ref": bootstrap,
-            "status": "DEFAULT_ELIGIBLE",
             "strategy_id": STRATEGY,
             "to_state": "DEFAULT_ELIGIBLE",
             "validation_receipt_refs": _ordered_refs(*validation),
-            "version": "myquant.v17.v4.default-eligibility-receipt.v1",
+            "version": "myquant.v17.v4.default-eligibility-intent.v1",
         }
     )
 
 
 def _eligible_pointer() -> dict[str, Any]:
+    intent = _eligibility_intent()
     return seal_semantic(
         {
-            "authority": _authority(formal=True),
-            "eligibility_receipt_ref": _ref(
+            "authority": _authority(formal=False),
+            "cutoff": CUTOFF,
+            "intent_ref": _ref(
                 "eligibility-1",
-                "myquant.v17.v4.default-eligibility-receipt.v1",
-                "results/v17_v4_canary/strategies/quant-first/receipts/eligibility-1.json",
+                "myquant.v17.v4.default-eligibility-intent.v1",
+                (
+                    "results/v17_v4_formal_research/strategies/quant-first/"
+                    "eligibility/intents/eligibility-1.json"
+                ),
+                byte_sha256=hashlib.sha256(
+                    canonical_resource_bytes(intent)
+                ).hexdigest(),
             ),
-            "formal_active_pointer_ref": _eligibility_receipt()[
-                "formal_active_pointer_ref"
-            ],
             "pointer_id": "eligible-pointer-1",
             "protocol_version": PROTOCOL_VERSION,
-            "state": "DEFAULT_ELIGIBLE",
+            "state": "PENDING_COMPLETION",
             "strategy_id": STRATEGY,
             "updated_at": CUTOFF,
             "version": "myquant.v17.v4.default-eligible-pointer.v1",
@@ -391,11 +397,53 @@ def _eligible_pointer() -> dict[str, Any]:
     )
 
 
-def _canary_receipt() -> dict[str, Any]:
+def _eligibility_receipt() -> dict[str, Any]:
+    intent = _eligibility_intent()
+    pointer = _eligible_pointer()
+    intent_ref = pointer["intent_ref"]
+    pointer_ref = _ref(
+        "eligible-pointer-1",
+        "myquant.v17.v4.default-eligible-pointer.v1",
+        (
+            "results/v17_v4_formal_research/strategies/quant-first/"
+            "eligibility/_active.json"
+        ),
+        byte_sha256=hashlib.sha256(
+            canonical_resource_bytes(pointer)
+        ).hexdigest(),
+    )
+    proposed = pointer_ref["byte_sha256"]
+    return seal_semantic(
+        {
+            "authority": _authority(formal=True),
+            "cutoff": CUTOFF,
+            "evidence_refs": _ordered_refs(intent_ref, pointer_ref),
+            "expected_pointer_sha256": intent["expected_pointer_sha256"],
+            "from_state": "FORMAL_ACTIVE",
+            "intent_ref": intent_ref,
+            "observed_pointer_sha256": intent["expected_pointer_sha256"],
+            "pointer_ref": pointer_ref,
+            "post_readback_sha256": proposed,
+            "proposed_pointer_sha256": proposed,
+            "protocol_version": PROTOCOL_VERSION,
+            "receipt_id": "eligibility-1",
+            "recorded_at": CUTOFF,
+            "status": "DEFAULT_ELIGIBLE",
+            "strategy_id": STRATEGY,
+            "to_state": "DEFAULT_ELIGIBLE",
+            "version": "myquant.v17.v4.default-eligibility-receipt.v1",
+        }
+    )
+
+
+def _canary_intent(*, completed: bool = False) -> dict[str, Any]:
     eligibility = _ref(
         "eligible-pointer-1",
         "myquant.v17.v4.default-eligible-pointer.v1",
-        "results/v17_v4_canary/strategies/quant-first/_eligible.json",
+        (
+            "results/v17_v4_formal_research/strategies/quant-first/"
+            "eligibility/_active.json"
+        ),
     )
     policy = _ref(
         "historical-policy-1",
@@ -412,54 +460,151 @@ def _canary_receipt() -> dict[str, Any]:
         "myquant.research-runtime.active-run-pointer.v1",
         "results/research_runtime_control/active_runs/v15/quant-first.json",
     )
-    proposed = _sha("canary-proposed")
+    comparison_refs = [
+        _ref(
+            f"operational-comparison-{index}",
+            "myquant.v17.v4.dual-run-comparison.v1",
+            (
+                "results/v17_v4_canary/strategies/quant-first/"
+                f"runs/{index}/comparison.json"
+            ),
+        )
+        for index in range(5)
+    ]
+    paired_run_ids = (
+        [f"paired-run-{index}" for index in range(1, 6)]
+        if completed
+        else ["paired-run-1"]
+    )
+    explicit = [eligibility, policy, target, active]
+    if completed:
+        explicit.extend(comparison_refs)
+    completion_fields: dict[str, Any] = {}
+    if completed:
+        completion_fields = {
+            "comparison_refs": comparison_refs,
+            "completed_sessions": [
+                "2026-07-27",
+                "2026-07-28",
+                "2026-07-29",
+                "2026-07-30",
+                "2026-07-31",
+            ],
+            "side_effect_counters": {
+                "active_run_cas_mismatch_count": 0,
+                "analysis_time_provider_call_count": 0,
+                "broker_call_count": 0,
+                "canary_pointer_cas_mismatch_count": 0,
+                "data_pointer_cas_mismatch_count": 0,
+                "eligibility_pointer_cas_mismatch_count": 0,
+                "execution_call_count": 0,
+                "factor_pointer_cas_mismatch_count": 0,
+                "formal_pointer_cas_mismatch_count": 0,
+                "llm_control_call_count": 0,
+                "order_call_count": 0,
+                "protocol_target_cas_mismatch_count": 0,
+                "selector_cas_mismatch_count": 0,
+                "trade_call_count": 0,
+            },
+            "threshold_results": [
+                {
+                    "observed": "1",
+                    "status": "PASS",
+                    "threshold_id": "five-of-five",
+                }
+            ],
+        }
     return seal_semantic(
         {
-            "authority": _authority(formal=True),
+            "authority": _authority(formal=False),
+            "created_at": CUTOFF,
+            "cutoff": CUTOFF,
             "eligibility_pointer_ref": eligibility,
-            "evidence_refs": _ordered_refs(eligibility, policy, target, active),
+            "evidence_refs": _ordered_refs(*explicit),
             "expected_pointer_sha256": "EMPTY",
-            "from_state": "DEFAULT_ELIGIBLE",
+            "from_state": "CANARY" if completed else "DEFAULT_ELIGIBLE",
             "historical_canary_policy_ref": policy,
-            "observed_pointer_sha256": "EMPTY",
-            "paired_run_ids": ["paired-run-1"],
-            "post_readback_sha256": proposed,
-            "proposed_pointer_sha256": proposed,
+            "intent_id": (
+                "canary-complete-1" if completed else "canary-start-1"
+            ),
+            "paired_run_ids": paired_run_ids,
             "protocol_version": PROTOCOL_VERSION,
-            "receipt_id": "canary-start-1",
-            "recorded_at": CUTOFF,
             "session_window": {
                 "end_session": "2026-07-31",
                 "required_session_count": 5,
                 "start_session": "2026-07-27",
             },
-            "status": "CANARY_STARTED",
             "strategy_id": STRATEGY,
             "to_state": "CANARY",
+            "transition": "COMPLETE" if completed else "START",
             "v15_active_run_pointer_ref": active,
             "v15_protocol_target_ref": target,
-            "version": "myquant.v17.v4.canary-receipt.v1",
+            "version": "myquant.v17.v4.canary-transition-intent.v1",
+            **completion_fields,
         }
     )
 
 
-def _canary_pointer() -> dict[str, Any]:
+def _canary_pointer(*, completed: bool = False) -> dict[str, Any]:
+    intent = _canary_intent(completed=completed)
+    intent_id = str(intent["intent_id"])
     return seal_semantic(
         {
-            "authority": _authority(formal=True),
-            "canary_receipt_ref": _ref(
-                "canary-start-1",
-                "myquant.v17.v4.canary-receipt.v1",
-                "results/v17_v4_canary/strategies/quant-first/receipts/canary-start-1.json",
+            "authority": _authority(formal=False),
+            "cutoff": CUTOFF,
+            "intent_ref": _ref(
+                intent_id,
+                "myquant.v17.v4.canary-transition-intent.v1",
+                (
+                    "results/v17_v4_canary/strategies/quant-first/"
+                    f"transitions/intents/{intent_id}.json"
+                ),
+                byte_sha256=hashlib.sha256(
+                    canonical_resource_bytes(intent)
+                ).hexdigest(),
             ),
-            "eligibility_pointer_ref": _canary_receipt()["eligibility_pointer_ref"],
-            "paired_run_ids": ["paired-run-1"],
-            "pointer_id": "canary-pointer-1",
+            "pointer_id": f"canary-pointer-{intent_id}",
             "protocol_version": PROTOCOL_VERSION,
-            "state": "CANARY",
+            "state": "PENDING_COMPLETION",
             "strategy_id": STRATEGY,
             "updated_at": CUTOFF,
             "version": "myquant.v17.v4.canary-pointer.v1",
+        }
+    )
+
+
+def _canary_receipt(*, completed: bool = False) -> dict[str, Any]:
+    intent = _canary_intent(completed=completed)
+    pointer = _canary_pointer(completed=completed)
+    intent_ref = pointer["intent_ref"]
+    pointer_ref = _ref(
+        str(pointer["pointer_id"]),
+        "myquant.v17.v4.canary-pointer.v1",
+        "results/v17_v4_canary/strategies/quant-first/_current.json",
+        byte_sha256=hashlib.sha256(
+            canonical_resource_bytes(pointer)
+        ).hexdigest(),
+    )
+    proposed = pointer_ref["byte_sha256"]
+    return seal_semantic(
+        {
+            "authority": _authority(formal=True),
+            "cutoff": CUTOFF,
+            "evidence_refs": _ordered_refs(intent_ref, pointer_ref),
+            "expected_pointer_sha256": intent["expected_pointer_sha256"],
+            "from_state": intent["from_state"],
+            "intent_ref": intent_ref,
+            "observed_pointer_sha256": intent["expected_pointer_sha256"],
+            "pointer_ref": pointer_ref,
+            "post_readback_sha256": proposed,
+            "proposed_pointer_sha256": proposed,
+            "protocol_version": PROTOCOL_VERSION,
+            "receipt_id": str(intent["intent_id"]),
+            "recorded_at": CUTOFF,
+            "status": "CANARY_COMPLETED" if completed else "CANARY_STARTED",
+            "strategy_id": STRATEGY,
+            "to_state": intent["to_state"],
+            "version": "myquant.v17.v4.canary-receipt.v1",
         }
     )
 
@@ -619,14 +764,16 @@ def test_package_runtime_manifests_and_scaffold_authority_are_sealed() -> None:
         "v17_v4_runtime/__init__.py",
         "v17_v4_runtime/authority.py",
         "v17_v4_runtime/calibration.py",
+        "v17_v4_runtime/canary_control.py",
         "v17_v4_runtime/cli.py",
-            "v17_v4_runtime/deep_control.py",
-            "v17_v4_runtime/formal_activation.py",
+        "v17_v4_runtime/deep_control.py",
+        "v17_v4_runtime/eligibility_control.py",
+        "v17_v4_runtime/formal_activation.py",
         "v17_v4_runtime/pit_admission.py",
-            "v17_v4_runtime/pit_catalog.py",
-            "v17_v4_runtime/portfolio_control.py",
-            "v17_v4_runtime/public_surfaces.py",
-            "v17_v4_runtime/security_directory.py",
+        "v17_v4_runtime/pit_catalog.py",
+        "v17_v4_runtime/portfolio_control.py",
+        "v17_v4_runtime/public_surfaces.py",
+        "v17_v4_runtime/security_directory.py",
         "v17_v4_runtime/source_storage.py",
         "v17_v4_runtime/tushare_https.py",
     }
@@ -638,10 +785,12 @@ def test_schema_inventory_is_closed_and_does_not_redefine_neutral_control() -> N
         "myquant.v17.v4.branch-output.v1",
         "myquant.v17.v4.calibration-origin-inventory.v1",
         "myquant.v17.v4.calibration-receipt.v1",
-            "myquant.v17.v4.canary-pointer.v1",
-            "myquant.v17.v4.canary-public-snapshot.v1",
-            "myquant.v17.v4.canary-receipt.v1",
+        "myquant.v17.v4.canary-pointer.v1",
+        "myquant.v17.v4.canary-public-snapshot.v1",
+        "myquant.v17.v4.canary-receipt.v1",
+        "myquant.v17.v4.canary-transition-intent.v1",
         "myquant.v17.v4.deep-evidence-bundle.v1",
+        "myquant.v17.v4.default-eligibility-intent.v1",
         "myquant.v17.v4.default-eligibility-receipt.v1",
         "myquant.v17.v4.default-eligible-pointer.v1",
         "myquant.v17.v4.dual-run-comparison.v1",
@@ -668,7 +817,9 @@ def test_schema_inventory_is_closed_and_does_not_redefine_neutral_control() -> N
         "myquant.v17.v4.public-surface-compatibility-receipt.v1",
         "myquant.v17.v4.public-run-dto.v1",
         "myquant.v17.v4.regime-evidence.v1",
+        "myquant.v17.v4.rollback-drill-receipt.v1",
         "myquant.v17.v4.total-return-labels.v1",
+        "myquant.v17.v4.validation-receipt.v1",
     }
     for path in sorted((CONTRACT_ROOT / "schemas").glob("*.json")):
         schema = load_packaged_json(f"schemas/{path.name}")
@@ -756,6 +907,11 @@ def test_formal_receipt_rejects_v3_identity_relabel_and_semantic_tamper() -> Non
 
 
 def test_eligibility_and_canary_pointers_never_claim_runtime_default() -> None:
+    eligibility_intent = _eligibility_intent()
+    assert isinstance(
+        validate_artifact(eligibility_intent),
+        DefaultEligibilityIntentArtifact,
+    )
     eligibility = _eligibility_receipt()
     assert isinstance(
         validate_artifact(eligibility),
@@ -765,69 +921,25 @@ def test_eligibility_and_canary_pointers_never_claim_runtime_default() -> None:
         validate_artifact(_eligible_pointer()),
         DefaultEligiblePointerArtifact,
     )
+    canary_intent = _canary_intent()
+    assert isinstance(
+        validate_artifact(canary_intent),
+        CanaryTransitionIntentArtifact,
+    )
     assert isinstance(validate_artifact(_canary_receipt()), CanaryReceiptArtifact)
     assert isinstance(validate_artifact(_canary_pointer()), CanaryPointerArtifact)
     assert eligibility["authority"] == _authority(formal=True)
+    assert eligibility_intent["authority"] == _authority(formal=False)
+    assert _eligible_pointer()["state"] == "PENDING_COMPLETION"
+    assert _canary_pointer()["state"] == "PENDING_COMPLETION"
 
-    completed = _canary_receipt()
-    comparison_refs = [
-        _ref(
-            f"operational-comparison-{index}",
-            "myquant.v17.v4.dual-run-comparison.v1",
-            f"results/v17_v4_canary/strategies/quant-first/runs/{index}/comparison.json",
-        )
-        for index in range(5)
-    ]
-    completed.update(
-        {
-            "comparison_refs": comparison_refs,
-            "completed_sessions": [
-                "2026-07-27",
-                "2026-07-28",
-                "2026-07-29",
-                "2026-07-30",
-                "2026-07-31",
-            ],
-            "evidence_refs": _ordered_refs(
-                completed["eligibility_pointer_ref"],
-                completed["historical_canary_policy_ref"],
-                completed["v15_active_run_pointer_ref"],
-                completed["v15_protocol_target_ref"],
-                *comparison_refs,
-            ),
-            "from_state": "CANARY",
-            "paired_run_ids": [f"paired-run-{index}" for index in range(1, 6)],
-            "receipt_id": "canary-complete-1",
-            "side_effect_counters": {
-                "active_run_cas_mismatch_count": 0,
-                "analysis_time_provider_call_count": 0,
-                "broker_call_count": 0,
-                "canary_pointer_cas_mismatch_count": 0,
-                "data_pointer_cas_mismatch_count": 0,
-                "eligibility_pointer_cas_mismatch_count": 0,
-                "execution_call_count": 0,
-                "factor_pointer_cas_mismatch_count": 0,
-                "formal_pointer_cas_mismatch_count": 0,
-                "llm_control_call_count": 0,
-                "order_call_count": 0,
-                "protocol_target_cas_mismatch_count": 0,
-                "selector_cas_mismatch_count": 0,
-                "trade_call_count": 0,
-            },
-            "status": "CANARY_COMPLETED",
-            "threshold_results": [
-                {
-                    "observed": "1",
-                    "status": "PASS",
-                    "threshold_id": "five-of-five",
-                }
-            ],
-            "to_state": "CANARY",
-        }
-    )
-    completed.pop("semantic_sha256")
+    completed_intent = _canary_intent(completed=True)
     assert isinstance(
-        validate_artifact(seal_semantic(completed)),
+        validate_artifact(completed_intent),
+        CanaryTransitionIntentArtifact,
+    )
+    assert isinstance(
+        validate_artifact(_canary_receipt(completed=True)),
         CanaryReceiptArtifact,
     )
 

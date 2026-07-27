@@ -109,12 +109,22 @@ class DefaultEligibilityReceiptArtifact(ValidatedArtifact):
 
 
 @dataclass(frozen=True)
+class DefaultEligibilityIntentArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
 class DefaultEligiblePointerArtifact(ValidatedArtifact):
     pass
 
 
 @dataclass(frozen=True)
 class CanaryReceiptArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class CanaryTransitionIntentArtifact(ValidatedArtifact):
     pass
 
 
@@ -245,6 +255,16 @@ class PublicRunDTOArtifact(ValidatedArtifact):
 
 @dataclass(frozen=True)
 class CanaryPublicSnapshotArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class ValidationReceiptArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class RollbackDrillReceiptArtifact(ValidatedArtifact):
     pass
 
 
@@ -823,6 +843,63 @@ def validate_public_surface_compatibility_receipt(
     return result
 
 
+def validate_validation_receipt(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> ValidationReceiptArtifact:
+    result = _common(
+        payload,
+        ValidationReceiptArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, ValidationReceiptArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    recorded_at = require_utc_timestamp(
+        payload["recorded_at"],
+        label="recorded_at",
+    )
+    if recorded_at < cutoff:
+        raise ArtifactContractError(
+            "validation receipt predates its run cutoff"
+        )
+    return result
+
+
+def validate_rollback_drill_receipt(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> RollbackDrillReceiptArtifact:
+    result = _common(
+        payload,
+        RollbackDrillReceiptArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, RollbackDrillReceiptArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    recorded_at = require_utc_timestamp(
+        payload["recorded_at"],
+        label="recorded_at",
+    )
+    if recorded_at < cutoff:
+        raise ArtifactContractError(
+            "rollback drill receipt predates its run cutoff"
+        )
+    if payload["scenarios"] != [
+        "BOOTSTRAP",
+        "CUTOVER",
+        "CRASH_AFTER_CAS_RECOVERY",
+        "ROLLBACK",
+    ]:
+        raise ArtifactContractError(
+            "rollback drill scenarios differ from the fixed order"
+        )
+    return result
+
+
 def validate_public_run_dto(
     payload: Mapping[str, Any],
     *,
@@ -949,25 +1026,32 @@ def validate_canary_public_snapshot(
     return result
 
 
-def validate_default_eligibility_receipt(
+def validate_default_eligibility_intent(
     payload: Mapping[str, Any],
     *,
     schema_checked: bool = False,
-) -> DefaultEligibilityReceiptArtifact:
+) -> DefaultEligibilityIntentArtifact:
     result = _common(
         payload,
-        DefaultEligibilityReceiptArtifact,
-        formal_research_publication=True,
+        DefaultEligibilityIntentArtifact,
+        formal_research_publication=False,
         schema_checked=schema_checked,
     )
-    assert isinstance(result, DefaultEligibilityReceiptArtifact)
-    success = payload["status"] == "DEFAULT_ELIGIBLE"
-    if payload["to_state"] != ("DEFAULT_ELIGIBLE" if success else "FORMAL_ACTIVE"):
-        raise ArtifactContractError("eligibility transition state/status mismatch")
+    assert isinstance(result, DefaultEligibilityIntentArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    created_at = require_utc_timestamp(
+        payload["created_at"],
+        label="created_at",
+    )
+    if created_at < cutoff:
+        raise ArtifactContractError(
+            "default eligibility intent predates its run cutoff"
+        )
     explicit = [
         _ref(
             payload["formal_active_pointer_ref"],
             strategy_id=result.strategy_id,
+            cutoff=cutoff,
             expected_version="myquant.v17.v4.formal-active-pointer.v1",
             label="formal_active_pointer_ref",
         ),
@@ -980,21 +1064,27 @@ def validate_default_eligibility_receipt(
         _ref(
             payload["rollback_drill_receipt_ref"],
             strategy_id=result.strategy_id,
-            version_prefix="myquant.research-runtime.",
+            cutoff=cutoff,
+            expected_version="myquant.v17.v4.rollback-drill-receipt.v1",
             label="rollback_drill_receipt_ref",
         ),
     ]
     public = _refs(
         payload["public_surface_receipt_refs"],
         strategy_id=result.strategy_id,
-        cutoff=None,
+        cutoff=cutoff,
         label="public_surface_receipt_refs",
+        expected_version=(
+            "myquant.v17.v4."
+            "public-surface-compatibility-receipt.v1"
+        ),
     )
     validation = _refs(
         payload["validation_receipt_refs"],
         strategy_id=result.strategy_id,
-        cutoff=None,
+        cutoff=cutoff,
         label="validation_receipt_refs",
+        expected_version="myquant.v17.v4.validation-receipt.v1",
     )
     evidence = _refs(
         payload["evidence_refs"],
@@ -1005,9 +1095,54 @@ def validate_default_eligibility_receipt(
     _require_evidence_contains(
         evidence,
         [*explicit, *public, *validation],
-        label="default eligibility evidence",
+        label="default eligibility intent evidence",
     )
-    _cas(payload, success=success, label="default eligibility")
+    return result
+
+
+def validate_default_eligibility_receipt(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> DefaultEligibilityReceiptArtifact:
+    result = _common(
+        payload,
+        DefaultEligibilityReceiptArtifact,
+        formal_research_publication=True,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, DefaultEligibilityReceiptArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    intent_ref = _ref(
+        payload["intent_ref"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        expected_version="myquant.v17.v4.default-eligibility-intent.v1",
+        label="intent_ref",
+    )
+    pointer_ref = _ref(
+        payload["pointer_ref"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        expected_version="myquant.v17.v4.default-eligible-pointer.v1",
+        label="pointer_ref",
+    )
+    evidence = _refs(
+        payload["evidence_refs"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        label="evidence_refs",
+    )
+    _require_evidence_contains(
+        evidence,
+        [intent_ref, pointer_ref],
+        label="default eligibility completion evidence",
+    )
+    if pointer_ref["byte_sha256"] != payload["proposed_pointer_sha256"]:
+        raise ArtifactContractError(
+            "default eligibility pointer differs from proposed bytes"
+        )
+    _cas(payload, success=True, label="default eligibility completion")
     return result
 
 
@@ -1019,55 +1154,74 @@ def validate_default_eligible_pointer(
     result = _common(
         payload,
         DefaultEligiblePointerArtifact,
-        formal_research_publication=True,
+        formal_research_publication=False,
         schema_checked=schema_checked,
     )
     assert isinstance(result, DefaultEligiblePointerArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
     _ref(
-        payload["formal_active_pointer_ref"],
+        payload["intent_ref"],
         strategy_id=result.strategy_id,
-        expected_version="myquant.v17.v4.formal-active-pointer.v1",
-        label="formal_active_pointer_ref",
+        cutoff=cutoff,
+        expected_version="myquant.v17.v4.default-eligibility-intent.v1",
+        label="intent_ref",
     )
-    _ref(
-        payload["eligibility_receipt_ref"],
-        strategy_id=result.strategy_id,
-        expected_version="myquant.v17.v4.default-eligibility-receipt.v1",
-        label="eligibility_receipt_ref",
-    )
+    if payload["updated_at"] < cutoff:
+        raise ArtifactContractError(
+            "default eligibility pointer predates its cutoff"
+        )
     return result
 
 
-def validate_canary_receipt(
+def validate_canary_transition_intent(
     payload: Mapping[str, Any],
     *,
     schema_checked: bool = False,
-) -> CanaryReceiptArtifact:
+) -> CanaryTransitionIntentArtifact:
     result = _common(
         payload,
-        CanaryReceiptArtifact,
-        formal_research_publication=True,
+        CanaryTransitionIntentArtifact,
+        formal_research_publication=False,
         schema_checked=schema_checked,
     )
-    assert isinstance(result, CanaryReceiptArtifact)
-    status = payload["status"]
+    assert isinstance(result, CanaryTransitionIntentArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    created_at = require_utc_timestamp(
+        payload["created_at"],
+        label="created_at",
+    )
+    if created_at < cutoff:
+        raise ArtifactContractError(
+            "canary intent predates its cutoff"
+        )
+    session_window = payload["session_window"]
+    if session_window["start_session"] > session_window["end_session"]:
+        raise ArtifactContractError("canary session window is inverted")
+    transition = payload["transition"]
     expected_states = {
-        "CANARY_STARTED": ("DEFAULT_ELIGIBLE", "CANARY"),
-        "CANARY_COMPLETED": ("CANARY", "CANARY"),
-        "CANARY_FAILED": ("CANARY", "DEFAULT_ELIGIBLE"),
+        "START": ("DEFAULT_ELIGIBLE", "CANARY"),
+        "COMPLETE": ("CANARY", "CANARY"),
+        "FAIL": ("CANARY", "DEFAULT_ELIGIBLE"),
     }
-    if (payload["from_state"], payload["to_state"]) != expected_states[status]:
-        raise ArtifactContractError("canary transition state/status mismatch")
+    if (
+        payload["from_state"],
+        payload["to_state"],
+    ) != expected_states[transition]:
+        raise ArtifactContractError(
+            "canary intent transition state mismatch"
+        )
     explicit = [
         _ref(
             payload["eligibility_pointer_ref"],
             strategy_id=result.strategy_id,
+            cutoff=cutoff,
             expected_version="myquant.v17.v4.default-eligible-pointer.v1",
             label="eligibility_pointer_ref",
         ),
         _ref(
             payload["historical_canary_policy_ref"],
             strategy_id=result.strategy_id,
+            cutoff=cutoff,
             expected_version="myquant.v17.v4.historical-canary-policy.v1",
             label="historical_canary_policy_ref",
         ),
@@ -1096,14 +1250,14 @@ def validate_canary_receipt(
         "side_effect_counters",
         "threshold_results",
     }
-    if status == "CANARY_STARTED":
+    if transition == "START":
         if completion_fields & set(payload):
             raise ArtifactContractError(
-                "CANARY_STARTED cannot carry completion-only fields"
+                "canary START cannot carry completion-only fields"
             )
         if len(payload["paired_run_ids"]) != 1:
             raise ArtifactContractError(
-                "CANARY_STARTED must bind exactly the first paired-run ID"
+                "canary START must bind exactly the first paired-run ID"
             )
     else:
         if not completion_fields.issubset(payload):
@@ -1121,7 +1275,28 @@ def validate_canary_receipt(
         explicit.extend(comparisons)
         if len(payload["paired_run_ids"]) != 5:
             raise ArtifactContractError("operational canary requires five paired runs")
-        if status == "CANARY_COMPLETED":
+        completed_sessions = payload["completed_sessions"]
+        if (
+            completed_sessions != sorted(completed_sessions)
+            or completed_sessions[0]
+            != payload["session_window"]["start_session"]
+            or completed_sessions[-1]
+            != payload["session_window"]["end_session"]
+        ):
+            raise ArtifactContractError(
+                "operational canary sessions must match the fixed window"
+            )
+        threshold_ids = [
+            row["threshold_id"] for row in payload["threshold_results"]
+        ]
+        if (
+            threshold_ids != sorted(threshold_ids)
+            or len(set(threshold_ids)) != len(threshold_ids)
+        ):
+            raise ArtifactContractError(
+                "canary threshold results must be ID ordered"
+            )
+        if transition == "COMPLETE":
             if any(
                 row["status"] != "PASS" for row in payload["threshold_results"]
             ) or any(value != 0 for value in payload["side_effect_counters"].values()):
@@ -1129,7 +1304,64 @@ def validate_canary_receipt(
                     "CANARY_COMPLETED requires all thresholds and counters to pass"
                 )
     _require_evidence_contains(evidence, explicit, label="canary evidence")
-    _cas(payload, success=True, label="canary pointer")
+    return result
+
+
+def validate_canary_receipt(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> CanaryReceiptArtifact:
+    result = _common(
+        payload,
+        CanaryReceiptArtifact,
+        formal_research_publication=True,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, CanaryReceiptArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    expected_states = {
+        "CANARY_STARTED": ("DEFAULT_ELIGIBLE", "CANARY"),
+        "CANARY_COMPLETED": ("CANARY", "CANARY"),
+        "CANARY_FAILED": ("CANARY", "DEFAULT_ELIGIBLE"),
+    }
+    if (
+        payload["from_state"],
+        payload["to_state"],
+    ) != expected_states[payload["status"]]:
+        raise ArtifactContractError(
+            "canary completion state/status mismatch"
+        )
+    intent_ref = _ref(
+        payload["intent_ref"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        expected_version="myquant.v17.v4.canary-transition-intent.v1",
+        label="intent_ref",
+    )
+    pointer_ref = _ref(
+        payload["pointer_ref"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        expected_version="myquant.v17.v4.canary-pointer.v1",
+        label="pointer_ref",
+    )
+    evidence = _refs(
+        payload["evidence_refs"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        label="evidence_refs",
+    )
+    _require_evidence_contains(
+        evidence,
+        [intent_ref, pointer_ref],
+        label="canary completion evidence",
+    )
+    if pointer_ref["byte_sha256"] != payload["proposed_pointer_sha256"]:
+        raise ArtifactContractError(
+            "canary pointer differs from proposed bytes"
+        )
+    _cas(payload, success=True, label="canary completion")
     return result
 
 
@@ -1141,22 +1373,22 @@ def validate_canary_pointer(
     result = _common(
         payload,
         CanaryPointerArtifact,
-        formal_research_publication=True,
+        formal_research_publication=False,
         schema_checked=schema_checked,
     )
     assert isinstance(result, CanaryPointerArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
     _ref(
-        payload["eligibility_pointer_ref"],
+        payload["intent_ref"],
         strategy_id=result.strategy_id,
-        expected_version="myquant.v17.v4.default-eligible-pointer.v1",
-        label="eligibility_pointer_ref",
+        cutoff=cutoff,
+        expected_version="myquant.v17.v4.canary-transition-intent.v1",
+        label="intent_ref",
     )
-    _ref(
-        payload["canary_receipt_ref"],
-        strategy_id=result.strategy_id,
-        expected_version="myquant.v17.v4.canary-receipt.v1",
-        label="canary_receipt_ref",
-    )
+    if payload["updated_at"] < cutoff:
+        raise ArtifactContractError(
+            "canary pointer predates its cutoff"
+        )
     return result
 
 
@@ -2654,8 +2886,14 @@ _VALIDATORS: Final[Mapping[str, Callable[..., ValidatedArtifact]]] = {
         validate_canary_public_snapshot
     ),
     "myquant.v17.v4.canary-receipt.v1": validate_canary_receipt,
+    "myquant.v17.v4.canary-transition-intent.v1": (
+        validate_canary_transition_intent
+    ),
     "myquant.v17.v4.default-eligibility-receipt.v1": (
         validate_default_eligibility_receipt
+    ),
+    "myquant.v17.v4.default-eligibility-intent.v1": (
+        validate_default_eligibility_intent
     ),
     "myquant.v17.v4.default-eligible-pointer.v1": validate_default_eligible_pointer,
     "myquant.v17.v4.deep-evidence-bundle.v1": (
@@ -2700,6 +2938,9 @@ _VALIDATORS: Final[Mapping[str, Callable[..., ValidatedArtifact]]] = {
         validate_pretrade_permissions
     ),
     "myquant.v17.v4.regime-evidence.v1": validate_regime_evidence,
+    "myquant.v17.v4.rollback-drill-receipt.v1": (
+        validate_rollback_drill_receipt
+    ),
     "myquant.v17.v4.pit-catalog-pointer.v1": validate_pit_catalog_pointer,
     "myquant.v17.v4.pit-generation-catalog.v1": (
         validate_pit_generation_catalog
@@ -2713,6 +2954,9 @@ _VALIDATORS: Final[Mapping[str, Callable[..., ValidatedArtifact]]] = {
     "myquant.v17.v4.public-run-dto.v1": validate_public_run_dto,
     "myquant.v17.v4.total-return-labels.v1": (
         validate_total_return_labels
+    ),
+    "myquant.v17.v4.validation-receipt.v1": (
+        validate_validation_receipt
     ),
 }
 
@@ -2747,7 +2991,9 @@ __all__ = [
     "CanaryPointerArtifact",
     "CanaryPublicSnapshotArtifact",
     "CanaryReceiptArtifact",
+    "CanaryTransitionIntentArtifact",
     "DefaultEligibilityReceiptArtifact",
+    "DefaultEligibilityIntentArtifact",
     "DefaultEligiblePointerArtifact",
     "DeepEvidenceBundleArtifact",
     "DualRunComparisonArtifact",
@@ -2771,18 +3017,22 @@ __all__ = [
     "PortfolioRiskPolicyArtifact",
     "PretradePermissionsArtifact",
     "RegimeEvidenceArtifact",
+    "RollbackDrillReceiptArtifact",
     "PreselectLocatorArtifact",
     "PublicSurfaceCompatibilityReceiptArtifact",
     "PublicRunDTOArtifact",
     "TotalReturnLabelsArtifact",
     "ValidatedArtifact",
+    "ValidationReceiptArtifact",
     "validate_canary_pointer",
     "validate_canary_public_snapshot",
     "validate_canary_receipt",
+    "validate_canary_transition_intent",
     "validate_calibration_origin_inventory",
     "validate_calibration_receipt",
     "validate_branch_output",
     "validate_default_eligibility_receipt",
+    "validate_default_eligibility_intent",
     "validate_default_eligible_pointer",
     "validate_deep_evidence_bundle",
     "validate_dual_run_comparison",
@@ -2805,10 +3055,12 @@ __all__ = [
     "validate_portfolio_risk_policy",
     "validate_pretrade_permissions",
     "validate_regime_evidence",
+    "validate_rollback_drill_receipt",
     "validate_preselect_locator",
     "validate_public_surface_compatibility_receipt",
     "validate_public_run_dto",
     "validate_total_return_labels",
     "validate_pit_generation_catalog",
     "validate_typed_artifact",
+    "validate_validation_receipt",
 ]

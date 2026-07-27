@@ -125,8 +125,12 @@ myquant.v17.v4.formal-activation-receipt.schema.v1
 myquant.v17.v4.formal-activation-rejection.schema.v1
 myquant.v17.v4.formal-active-pointer.schema.v1
 myquant.v17.v4.formal-output.schema.v1
+myquant.v17.v4.default-eligibility-intent.schema.v1
 myquant.v17.v4.default-eligibility-receipt.schema.v1
 myquant.v17.v4.default-eligible-pointer.schema.v1
+myquant.v17.v4.validation-receipt.schema.v1
+myquant.v17.v4.rollback-drill-receipt.schema.v1
+myquant.v17.v4.canary-transition-intent.schema.v1
 myquant.v17.v4.canary-receipt.schema.v1
 myquant.v17.v4.canary-pointer.schema.v1
 myquant.v17.v4.canary-public-snapshot.schema.v1
@@ -287,19 +291,23 @@ the expected and observed prevalue, `proposed_pointer_sha256`, and
 `post_readback_sha256`. The formal rejection is a separate no-authority
 artifact and cannot be used as completion evidence.
 
-The eligibility receipt additionally requires `formal_active_pointer_ref`,
+The eligibility intent owns `formal_active_pointer_ref`,
 `public_surface_receipt_refs`, `validation_receipt_refs`,
-`selector_bootstrap_receipt_ref`, `rollback_drill_receipt_ref`,
-`expected_pointer_sha256`, `observed_pointer_sha256`,
-`proposed_pointer_sha256`, and `post_readback_sha256`.
+`selector_bootstrap_receipt_ref`, `rollback_drill_receipt_ref`, and the
+expected eligibility-pointer prevalue. The eligibility pointer contains only
+the intent reference and `PENDING_COMPLETION` state. The completion receipt
+contains only the exact intent and pointer references plus CAS/readback
+evidence. This acyclic sequence is mandatory:
+`intent -> pending pointer -> completion receipt`.
 
-The canary-start receipt additionally requires `eligibility_pointer_ref`,
+The canary transition intent owns `eligibility_pointer_ref`,
 `historical_canary_policy_ref`, `v15_protocol_target_ref`,
-`v15_active_run_pointer_ref`, `session_window`, `paired_run_ids`,
-`expected_pointer_sha256`, `observed_pointer_sha256`,
-`proposed_pointer_sha256`, and `post_readback_sha256`. The canary-complete or
-canary-failed receipt additionally requires `comparison_refs`,
-`completed_sessions`, `threshold_results`, and `side_effect_counters`.
+`v15_active_run_pointer_ref`, `session_window`, `paired_run_ids`, and the
+expected canary-pointer prevalue. A `COMPLETE` or `FAIL` intent additionally
+owns `comparison_refs`, `completed_sessions`, `threshold_results`, and
+`side_effect_counters`. The canary pointer contains only the transition-intent
+reference and `PENDING_COMPLETION` state; its completion receipt contains only
+the exact intent and pointer references plus CAS/readback evidence.
 
 The neutral protocol target contains exactly `version`, `target_id`,
 `protocol_id`, `strategy_scope`, `active_run_pointer_template`,
@@ -369,7 +377,7 @@ without replacement. The activation writer is limited to the strategy lock,
 
 ### `FORMAL_ACTIVE -> DEFAULT_ELIGIBLE`
 
-`myquant.v17.v4.default-eligibility-receipt.v1` requires:
+`myquant.v17.v4.default-eligibility-intent.v1` requires:
 
 - the current exact formal active receipt and pointer;
 - CLI opt-in compatibility receipt;
@@ -383,23 +391,30 @@ without replacement. The activation writer is limited to the strategy lock,
 - successful V15 selector bootstrap receipt;
 - successful rollback dry-run and fault-injection receipt.
 
-The eligibility pointer is a v4-only CAS from `EMPTY` or its exact prior SHA.
-It grants no default authority and cannot write the shared protocol selector.
+The v4-only eligibility service first seals this intent, CAS-writes a
+`PENDING_COMPLETION` pointer from `EMPTY` or its exact prior SHA, reads the
+pointer back, and only then writes
+`myquant.v17.v4.default-eligibility-receipt.v1`. It grants no default authority
+and cannot write the shared protocol selector. Missing completion is a
+blocking state, not eligibility.
 
 Failure status is `DEFAULT_ELIGIBILITY_BLOCKED`; it permits only an immutable
 blocker receipt.
 
 ### `DEFAULT_ELIGIBLE -> CANARY`
 
-A `CANARY_STARTED` receipt binds the current eligibility pointer, the exact
+A `START` transition intent binds the current eligibility pointer, the exact
 V15 protocol target and active-run pointer, the historical canary policy, a
 fixed session window, and the first paired-run ID. It CAS advances only the v4
-canary pointer.
+canary pointer. Exact readback is followed by a `CANARY_STARTED` completion
+receipt.
 
-A `CANARY_COMPLETED` receipt binds every paired V15/v4 run and one immutable
-`myquant.v17.v4.dual-run-comparison.v1` artifact. It is valid only when every
-threshold below passes. A failed comparison writes `CANARY_FAILED`, leaves
-the default selector byte-for-byte unchanged, and prevents cutover.
+A `COMPLETE` transition intent binds every paired V15/v4 run and one immutable
+`myquant.v17.v4.dual-run-comparison.v1` artifact per session. Only after its
+pointer CAS/readback does the service write `CANARY_COMPLETED`. A failed
+comparison uses a `FAIL` intent and `CANARY_FAILED` completion, leaves the
+default selector byte-for-byte unchanged, and prevents cutover. Any pending
+canary pointer without its exact completion receipt blocks cutover.
 
 ### `CANARY -> RESEARCH_DEFAULT_ACTIVE`
 

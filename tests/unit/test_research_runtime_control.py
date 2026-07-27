@@ -310,7 +310,7 @@ def _seed_v4(
     public_refs = [
         _placeholder_ref(
             f"public-{index}-{run_id}",
-            f"myquant.v17.v4.public-surface-receipt-{index}.v1",
+            "myquant.v17.v4.public-surface-compatibility-receipt.v1",
             f"data/private/v17_v4_runs/{run_id}/public-{index}.json",
             cutoff=cutoff,
         )
@@ -319,7 +319,7 @@ def _seed_v4(
     validation_refs = [
         _placeholder_ref(
             f"validation-{index}-{run_id}",
-            f"myquant.v17.v4.validation-receipt-{index}.v1",
+            "myquant.v17.v4.validation-receipt.v1",
             f"data/private/v17_v4_runs/{run_id}/validation-{index}.json",
             cutoff=cutoff,
         )
@@ -327,9 +327,10 @@ def _seed_v4(
     ]
     rollback_ref = _placeholder_ref(
         f"rollback-{run_id}",
-        "myquant.research-runtime.rollback-receipt.v1",
+        "myquant.v17.v4.rollback-drill-receipt.v1",
         (
-            "results/research_runtime_control/rollback_receipts/"
+            "results/v17_v4_formal_research/strategies/"
+            f"{STRATEGY}/eligibility/rollback_drills/"
             f"rollback-{run_id}.json"
         ),
         cutoff=cutoff,
@@ -343,25 +344,22 @@ def _seed_v4(
         ),
         cutoff=cutoff,
     )
-    eligibility_receipt = _artifact(
+    eligibility_intent = _artifact(
         (
-            "results/v17_v4_canary/strategies/"
-            f"{STRATEGY}/receipts/eligibility-{run_id}.json"
+            "results/v17_v4_formal_research/strategies/"
+            f"{STRATEGY}/eligibility/intents/eligibility-{run_id}.json"
         ),
         {
-            "version": "myquant.v17.v4.default-eligibility-receipt.v1",
-            "receipt_id": f"eligibility-{run_id}",
+            "version": "myquant.v17.v4.default-eligibility-intent.v1",
+            "intent_id": f"eligibility-{run_id}",
             "protocol_version": "myquant.v17.v4",
             "strategy_id": STRATEGY,
-            "authority": _v4_authority(),
+            "authority": _v4_authority(formal=False),
+            "cutoff": cutoff,
+            "created_at": cutoff,
             "from_state": "FORMAL_ACTIVE",
             "to_state": "DEFAULT_ELIGIBLE",
-            "status": "DEFAULT_ELIGIBLE",
-            "recorded_at": cutoff,
             "expected_pointer_sha256": "EMPTY",
-            "observed_pointer_sha256": "EMPTY",
-            "proposed_pointer_sha256": "e" * 64,
-            "post_readback_sha256": "e" * 64,
             "formal_active_pointer_ref": pointer.reference,
             "selector_bootstrap_receipt_ref": bootstrap_ref,
             "rollback_drill_receipt_ref": rollback_ref,
@@ -379,19 +377,49 @@ def _seed_v4(
     )
     eligible_pointer = _artifact(
         (
-            "results/v17_v4_canary/strategies/"
-            f"{STRATEGY}/_eligible.json"
+            "results/v17_v4_formal_research/strategies/"
+            f"{STRATEGY}/eligibility/_active.json"
         ),
         {
             "version": "myquant.v17.v4.default-eligible-pointer.v1",
             "pointer_id": f"eligible-{run_id}",
             "protocol_version": "myquant.v17.v4",
             "strategy_id": STRATEGY,
-            "authority": _v4_authority(),
-            "state": "DEFAULT_ELIGIBLE",
-            "formal_active_pointer_ref": pointer.reference,
-            "eligibility_receipt_ref": eligibility_receipt.reference,
+            "authority": _v4_authority(formal=False),
+            "cutoff": cutoff,
+            "state": "PENDING_COMPLETION",
+            "intent_ref": eligibility_intent.reference,
             "updated_at": cutoff,
+        },
+        cutoff=cutoff,
+    )
+    eligibility_receipt = _artifact(
+        (
+            "results/v17_v4_formal_research/strategies/"
+            f"{STRATEGY}/eligibility/completion_receipts/"
+            f"eligibility-{run_id}.json"
+        ),
+        {
+            "version": "myquant.v17.v4.default-eligibility-receipt.v1",
+            "receipt_id": f"eligibility-{run_id}",
+            "protocol_version": "myquant.v17.v4",
+            "strategy_id": STRATEGY,
+            "authority": _v4_authority(),
+            "cutoff": cutoff,
+            "from_state": "FORMAL_ACTIVE",
+            "to_state": "DEFAULT_ELIGIBLE",
+            "status": "DEFAULT_ELIGIBLE",
+            "recorded_at": cutoff,
+            "expected_pointer_sha256": "EMPTY",
+            "observed_pointer_sha256": "EMPTY",
+            "proposed_pointer_sha256": eligible_pointer.byte_sha256,
+            "post_readback_sha256": eligible_pointer.byte_sha256,
+            "intent_ref": eligibility_intent.reference,
+            "pointer_ref": eligible_pointer.reference,
+            "evidence_refs": _ordered_refs(
+                eligibility_intent.reference,
+                eligible_pointer.reference,
+            ),
         },
         cutoff=cutoff,
     )
@@ -417,25 +445,23 @@ def _seed_v4(
         for index in range(5)
     ]
     paired_run_ids = [f"paired-{index}-{run_id}" for index in range(5)]
-    canary_receipt = _artifact(
+    canary_intent = _artifact(
         (
             "results/v17_v4_canary/strategies/"
-            f"{STRATEGY}/receipts/canary-{run_id}.json"
+            f"{STRATEGY}/transitions/intents/canary-{run_id}.json"
         ),
         {
-            "version": "myquant.v17.v4.canary-receipt.v1",
-            "receipt_id": f"canary-{run_id}",
+            "version": "myquant.v17.v4.canary-transition-intent.v1",
+            "intent_id": f"canary-{run_id}",
             "protocol_version": "myquant.v17.v4",
             "strategy_id": STRATEGY,
-            "authority": _v4_authority(),
+            "authority": _v4_authority(formal=False),
+            "cutoff": cutoff,
+            "created_at": cutoff,
+            "transition": "COMPLETE",
             "from_state": "CANARY",
             "to_state": "CANARY",
-            "status": "CANARY_COMPLETED",
-            "recorded_at": cutoff,
             "expected_pointer_sha256": "EMPTY",
-            "observed_pointer_sha256": "EMPTY",
-            "proposed_pointer_sha256": "d" * 64,
-            "post_readback_sha256": "d" * 64,
             "eligibility_pointer_ref": eligible_pointer.reference,
             "historical_canary_policy_ref": policy_ref,
             "v15_protocol_target_ref": v15_target.reference,
@@ -497,12 +523,41 @@ def _seed_v4(
             "pointer_id": f"canary-pointer-{run_id}",
             "protocol_version": "myquant.v17.v4",
             "strategy_id": STRATEGY,
-            "authority": _v4_authority(),
-            "state": "CANARY",
-            "eligibility_pointer_ref": eligible_pointer.reference,
-            "canary_receipt_ref": canary_receipt.reference,
-            "paired_run_ids": paired_run_ids,
+            "authority": _v4_authority(formal=False),
+            "cutoff": cutoff,
+            "state": "PENDING_COMPLETION",
+            "intent_ref": canary_intent.reference,
             "updated_at": cutoff,
+        },
+        cutoff=cutoff,
+    )
+    canary_receipt = _artifact(
+        (
+            "results/v17_v4_canary/strategies/"
+            f"{STRATEGY}/transitions/completion_receipts/"
+            f"canary-{run_id}.json"
+        ),
+        {
+            "version": "myquant.v17.v4.canary-receipt.v1",
+            "receipt_id": f"canary-{run_id}",
+            "protocol_version": "myquant.v17.v4",
+            "strategy_id": STRATEGY,
+            "authority": _v4_authority(),
+            "cutoff": cutoff,
+            "from_state": "CANARY",
+            "to_state": "CANARY",
+            "status": "CANARY_COMPLETED",
+            "recorded_at": cutoff,
+            "expected_pointer_sha256": "EMPTY",
+            "observed_pointer_sha256": "EMPTY",
+            "proposed_pointer_sha256": canary_pointer.byte_sha256,
+            "post_readback_sha256": canary_pointer.byte_sha256,
+            "intent_ref": canary_intent.reference,
+            "pointer_ref": canary_pointer.reference,
+            "evidence_refs": _ordered_refs(
+                canary_intent.reference,
+                canary_pointer.reference,
+            ),
         },
         cutoff=cutoff,
     )
@@ -511,8 +566,10 @@ def _seed_v4(
     _owner_file(workspace / receipt.relative_path, receipt.raw)
     _owner_file(workspace / pointer.relative_path, pointer.raw)
     for artifact in (
+        eligibility_intent,
         eligibility_receipt,
         eligible_pointer,
+        canary_intent,
         canary_receipt,
         canary_pointer,
     ):
@@ -882,6 +939,113 @@ def test_cutover_rejects_missing_eligibility_and_canary_evidence(
             intent_id="cutover-missing-evidence",
             receipt_id="cutover-missing-evidence-receipt",
             required_evidence_refs=[bootstrap.receipt.reference],
+        )
+    assert control.current_selector().byte_sha256 == selector.byte_sha256
+
+
+@pytest.mark.parametrize(
+    "completion_path",
+    [
+        (
+            "results/v17_v4_formal_research/strategies/"
+            f"{STRATEGY}/eligibility/completion_receipts/"
+            "eligibility-v4-pending.json"
+        ),
+        (
+            "results/v17_v4_canary/strategies/"
+            f"{STRATEGY}/transitions/completion_receipts/"
+            "canary-v4-pending.json"
+        ),
+    ],
+)
+def test_cutover_rejects_pending_v4_completion_chain(
+    workspace: Path,
+    completion_path: str,
+) -> None:
+    control = ResearchRuntimeControl(workspace)
+    bootstrap = _bootstrap(control)
+    selector = control.current_selector()
+    target, pointer, run, evidence = _seed_v4(
+        control,
+        workspace,
+        run_id="v4-pending",
+        cutoff=T1,
+    )
+    (workspace / completion_path).unlink()
+
+    with pytest.raises(RuntimeControlError, match="pending completion"):
+        control.cutover(
+            strategy_id=STRATEGY,
+            v4_protocol_target_ref=target.reference,
+            expected_v4_active_pointer_sha256=pointer.byte_sha256,
+            expected_v4_run_ref=run.reference,
+            expected_selector_sha256=selector.byte_sha256,
+            recorded_at=T1,
+            intent_id="cutover-pending-v4-chain",
+            receipt_id="cutover-pending-v4-chain-receipt",
+            required_evidence_refs=[
+                bootstrap.receipt.reference,
+                *evidence,
+            ],
+        )
+    assert control.current_selector().byte_sha256 == selector.byte_sha256
+
+
+def test_cutover_rejects_completion_prevalue_not_bound_to_intent(
+    workspace: Path,
+) -> None:
+    control = ResearchRuntimeControl(workspace)
+    bootstrap = _bootstrap(control)
+    selector = control.current_selector()
+    target, pointer, run, evidence = _seed_v4(
+        control,
+        workspace,
+        run_id="v4-prevalue-drift",
+        cutoff=T1,
+    )
+    from quant_investor.v17_v4_contract import (
+        canonical_resource_bytes,
+        seal_semantic,
+    )
+    from quant_investor.v17_v4_contract.canonical import (
+        load_canonical_resource,
+    )
+
+    completion_path = (
+        workspace
+        / "results/v17_v4_canary/strategies"
+        / STRATEGY
+        / "transitions/completion_receipts"
+        / "canary-v4-prevalue-drift.json"
+    )
+    completion = dict(
+        load_canonical_resource(
+            completion_path.read_bytes(),
+            label="canary completion",
+        )
+    )
+    completion["expected_pointer_sha256"] = "a" * 64
+    completion["observed_pointer_sha256"] = "a" * 64
+    completion.pop("semantic_sha256")
+    _owner_file(
+        completion_path,
+        canonical_resource_bytes(seal_semantic(completion)),
+    )
+
+    with pytest.raises(RuntimeControlError, match="completion binding"):
+        control.cutover(
+            strategy_id=STRATEGY,
+            v4_protocol_target_ref=target.reference,
+            expected_v4_active_pointer_sha256=pointer.byte_sha256,
+            expected_v4_run_ref=run.reference,
+            expected_selector_sha256=selector.byte_sha256,
+            recorded_at=T1,
+            intent_id="cutover-prevalue-drift",
+            receipt_id="cutover-prevalue-drift-receipt",
+            required_evidence_refs=[
+                bootstrap.receipt.reference,
+                *evidence,
+            ],
         )
     assert control.current_selector().byte_sha256 == selector.byte_sha256
 

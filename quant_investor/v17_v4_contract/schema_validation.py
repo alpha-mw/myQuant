@@ -44,9 +44,17 @@ _ARTIFACT_REGISTRY: Final = {
         "schemas/canary_public_snapshot.v1.schema.json",
         "snapshot_id",
     ),
+    "myquant.v17.v4.canary-transition-intent.v1": (
+        "schemas/canary_transition_intent.v1.schema.json",
+        "intent_id",
+    ),
     "myquant.v17.v4.default-eligibility-receipt.v1": (
         "schemas/default_eligibility_receipt.v1.schema.json",
         "receipt_id",
+    ),
+    "myquant.v17.v4.default-eligibility-intent.v1": (
+        "schemas/default_eligibility_intent.v1.schema.json",
+        "intent_id",
     ),
     "myquant.v17.v4.default-eligible-pointer.v1": (
         "schemas/default_eligible_pointer.v1.schema.json",
@@ -132,6 +140,10 @@ _ARTIFACT_REGISTRY: Final = {
         "schemas/regime_evidence.v1.schema.json",
         "evidence_id",
     ),
+    "myquant.v17.v4.rollback-drill-receipt.v1": (
+        "schemas/rollback_drill_receipt.v1.schema.json",
+        "receipt_id",
+    ),
     "myquant.v17.v4.pit-catalog-pointer.v1": (
         "schemas/pit_catalog_pointer.v1.schema.json",
         "pointer_id",
@@ -155,6 +167,10 @@ _ARTIFACT_REGISTRY: Final = {
     "myquant.v17.v4.total-return-labels.v1": (
         "schemas/total_return_labels.v1.schema.json",
         "label_id",
+    ),
+    "myquant.v17.v4.validation-receipt.v1": (
+        "schemas/validation_receipt.v1.schema.json",
+        "receipt_id",
     ),
 }
 _SUPPORTED_KEYWORDS: Final = frozenset(
