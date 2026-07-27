@@ -127,6 +127,8 @@ myquant.v17.v4.canary-receipt.schema.v1
 myquant.v17.v4.canary-pointer.schema.v1
 myquant.v17.v4.dual-run-comparison.schema.v1
 myquant.v17.v4.historical-canary-policy.schema.v1
+myquant.v17.v4.pit-generation-catalog.schema.v1
+myquant.v17.v4.pit-catalog-pointer.schema.v1
 myquant.research-runtime.protocol-target.schema.v1
 myquant.research-runtime.active-run-pointer.schema.v1
 myquant.research-runtime.default-protocol-selector.schema.v1
@@ -450,6 +452,21 @@ calibration label window; the observed set must equal that inventory exactly.
 
 Missing, extra, duplicate, future-available, or conflicting keys produce
 `SOURCE_ADMISSION_BLOCKED` and no catalog or source pointer write.
+
+The current security-directory acquisition calls the official HTTPS
+`stock_basic` endpoint separately for `L`, `D`, and `P`. Standard A-share
+codes are admitted as bitemporal membership rows. A source row outside the
+closed six-digit `BJ/SH/SZ` code namespace is not silently discarded: it is
+retained as a hash-bound `UNSUPPORTED_SECURITY_CODE` exclusion. The current
+fetch timestamp is `available_at`; it is never backdated to create historical
+PIT authority.
+
+Catalog publication first revalidates the complete seven-role closure in
+memory, then independently streams the SHA-256 readback of every dataset and
+expected-key inventory. It writes the immutable generation before CAS
+advancing only
+`data/private/v17_v4_sources/pit_catalog/_latest.json` under its dedicated
+source lock. It cannot import or write the neutral research-default selector.
 
 ### Factor v4
 

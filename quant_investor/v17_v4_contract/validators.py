@@ -5,10 +5,15 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+import hashlib
 from types import MappingProxyType
 from typing import Any, Final
 
-from .canonical import CanonicalContractError, validate_semantic_sha
+from .canonical import (
+    CanonicalContractError,
+    canonical_bytes,
+    validate_semantic_sha,
+)
 from .identities import (
     IdentityContractError,
     require_opaque_id,
@@ -95,6 +100,16 @@ class DualRunComparisonArtifact(ValidatedArtifact):
 
 @dataclass(frozen=True)
 class HistoricalCanaryPolicyArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class PitGenerationCatalogArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class PitCatalogPointerArtifact(ValidatedArtifact):
     pass
 
 
@@ -709,6 +724,101 @@ def validate_historical_canary_policy(
     return result
 
 
+_PIT_ROLES: Final = (
+    "benchmark_total_return",
+    "cn_open_day_calendar",
+    "corporate_actions",
+    "market_bars",
+    "official_delisting_cash",
+    "pit_fundamentals",
+    "universe_membership",
+)
+
+
+def validate_pit_generation_catalog(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> PitGenerationCatalogArtifact:
+    result = _common(
+        payload,
+        PitGenerationCatalogArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, PitGenerationCatalogArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    if payload["history_start"] > payload["decision_session"]:
+        raise ArtifactContractError("PIT catalog session range is inverted")
+    for name, version_kind in (
+        ("dataset_refs", "dataset"),
+        ("expected_key_inventory_refs", "expected-keys"),
+    ):
+        values = payload[name]
+        if type(values) is not dict or set(values) != set(_PIT_ROLES):
+            raise ArtifactContractError(f"{name} role inventory mismatch")
+        for role in _PIT_ROLES:
+            _ref(
+                values[role],
+                strategy_id=result.strategy_id,
+                cutoff=cutoff,
+                expected_version=(
+                    f"myquant.v17.v4.{version_kind}.{role}.v1"
+                ),
+                label=f"{name}.{role}",
+            )
+    summaries = payload["dataset_summaries"]
+    if tuple(row["role"] for row in summaries) != _PIT_ROLES:
+        raise ArtifactContractError("PIT dataset summary role order mismatch")
+    admission_payload = {
+        "history_start": payload["history_start"],
+        "decision_session": payload["decision_session"],
+        "decision_cutoff": cutoff,
+        "datasets": summaries,
+    }
+    if hashlib.sha256(canonical_bytes(admission_payload)).hexdigest() != payload[
+        "admission_closure_sha256"
+    ]:
+        raise ArtifactContractError("PIT admission closure SHA mismatch")
+    source_payload = {
+        "admission_closure_sha256": payload["admission_closure_sha256"],
+        "dataset_refs": payload["dataset_refs"],
+        "expected_key_inventory_refs": payload[
+            "expected_key_inventory_refs"
+        ],
+    }
+    if hashlib.sha256(canonical_bytes(source_payload)).hexdigest() != payload[
+        "source_closure_sha256"
+    ]:
+        raise ArtifactContractError("PIT source closure SHA mismatch")
+    return result
+
+
+def validate_pit_catalog_pointer(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> PitCatalogPointerArtifact:
+    result = _common(
+        payload,
+        PitCatalogPointerArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, PitCatalogPointerArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    _ref(
+        payload["catalog_ref"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        expected_version="myquant.v17.v4.pit-generation-catalog.v1",
+        label="catalog_ref",
+    )
+    if payload["updated_at"] < cutoff:
+        raise ArtifactContractError("PIT catalog pointer predates its cutoff")
+    return result
+
+
 _VALIDATORS: Final[Mapping[str, Callable[..., ValidatedArtifact]]] = {
     "myquant.v17.v4.canary-pointer.v1": validate_canary_pointer,
     "myquant.v17.v4.canary-receipt.v1": validate_canary_receipt,
@@ -724,6 +834,10 @@ _VALIDATORS: Final[Mapping[str, Callable[..., ValidatedArtifact]]] = {
     "myquant.v17.v4.formal-output.v1": validate_formal_output,
     "myquant.v17.v4.historical-canary-policy.v1": (
         validate_historical_canary_policy
+    ),
+    "myquant.v17.v4.pit-catalog-pointer.v1": validate_pit_catalog_pointer,
+    "myquant.v17.v4.pit-generation-catalog.v1": (
+        validate_pit_generation_catalog
     ),
 }
 
@@ -751,6 +865,8 @@ __all__ = [
     "FormalActivePointerArtifact",
     "FormalOutputArtifact",
     "HistoricalCanaryPolicyArtifact",
+    "PitCatalogPointerArtifact",
+    "PitGenerationCatalogArtifact",
     "ValidatedArtifact",
     "validate_canary_pointer",
     "validate_canary_receipt",
@@ -761,5 +877,7 @@ __all__ = [
     "validate_formal_active_pointer",
     "validate_formal_output",
     "validate_historical_canary_policy",
+    "validate_pit_catalog_pointer",
+    "validate_pit_generation_catalog",
     "validate_typed_artifact",
 ]

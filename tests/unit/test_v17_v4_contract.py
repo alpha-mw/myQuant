@@ -537,6 +537,10 @@ def test_package_runtime_manifests_and_scaffold_authority_are_sealed() -> None:
         "v17_v4_runtime/__init__.py",
         "v17_v4_runtime/authority.py",
         "v17_v4_runtime/cli.py",
+        "v17_v4_runtime/pit_admission.py",
+        "v17_v4_runtime/pit_catalog.py",
+        "v17_v4_runtime/security_directory.py",
+        "v17_v4_runtime/source_storage.py",
         "v17_v4_runtime/tushare_https.py",
     }
     assert not any("research_runtime_control" in path for path in verified)
@@ -553,6 +557,8 @@ def test_schema_inventory_is_closed_and_does_not_redefine_neutral_control() -> N
         "myquant.v17.v4.formal-active-pointer.v1",
         "myquant.v17.v4.formal-output.v1",
         "myquant.v17.v4.historical-canary-policy.v1",
+        "myquant.v17.v4.pit-catalog-pointer.v1",
+        "myquant.v17.v4.pit-generation-catalog.v1",
     }
     for path in sorted((CONTRACT_ROOT / "schemas").glob("*.json")):
         schema = load_packaged_json(f"schemas/{path.name}")

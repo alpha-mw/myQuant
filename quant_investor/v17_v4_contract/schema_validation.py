@@ -55,6 +55,14 @@ _ARTIFACT_REGISTRY: Final = {
         "schemas/historical_canary_policy.v1.schema.json",
         "policy_id",
     ),
+    "myquant.v17.v4.pit-catalog-pointer.v1": (
+        "schemas/pit_catalog_pointer.v1.schema.json",
+        "pointer_id",
+    ),
+    "myquant.v17.v4.pit-generation-catalog.v1": (
+        "schemas/pit_generation_catalog.v1.schema.json",
+        "catalog_id",
+    ),
 }
 _SUPPORTED_KEYWORDS: Final = frozenset(
     {
