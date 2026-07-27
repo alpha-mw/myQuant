@@ -537,6 +537,7 @@ def test_package_runtime_manifests_and_scaffold_authority_are_sealed() -> None:
         "v17_v4_runtime/__init__.py",
         "v17_v4_runtime/authority.py",
         "v17_v4_runtime/cli.py",
+        "v17_v4_runtime/tushare_https.py",
     }
     assert not any("research_runtime_control" in path for path in verified)
 
