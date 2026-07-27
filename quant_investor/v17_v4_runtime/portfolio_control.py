@@ -1437,6 +1437,43 @@ def build_production_portfolio(
     return document
 
 
+def revalidate_production_portfolio(
+    portfolio_ref: Mapping[str, Any],
+    *,
+    artifact_loader: Callable[[Mapping[str, str]], bytes],
+) -> dict[str, Any]:
+    """Replay a persisted portfolio from its exact referenced closure."""
+
+    reference = _validate_ref(
+        portfolio_ref,
+        strategy_id=str(portfolio_ref.get("strategy_id", "")),
+        cutoff=str(portfolio_ref.get("cutoff", "")),
+        expected_version=PORTFOLIO_VERSION,
+        label="portfolio_ref",
+    )
+    observed = _read_exact(
+        reference,
+        artifact_loader=artifact_loader,
+        label="portfolio_output",
+    )
+    replayed = build_production_portfolio(
+        run_id=observed["run_id"],
+        strategy_id=observed["strategy_id"],
+        cutoff=observed["cutoff"],
+        fusion_top24_ref=observed["fusion_top24_ref"],
+        deep_bundle_ref=observed["deep_bundle_ref"],
+        holdings_snapshot_ref=observed["holdings_snapshot_ref"],
+        permissions_ref=observed["permissions_ref"],
+        risk_policy_ref=observed["risk_policy_ref"],
+        macro_overlay_ref=observed["macro_overlay_ref"],
+        markov_overlay_ref=observed["markov_overlay_ref"],
+        artifact_loader=artifact_loader,
+    )
+    if observed != replayed:
+        _blocked("portfolio_output_replay_mismatch")
+    return observed
+
+
 __all__ = [
     "ALLOCATION_RULES_SHA256",
     "HOLDINGS_VERSION",
@@ -1452,4 +1489,5 @@ __all__ = [
     "build_production_portfolio",
     "build_regime_evidence",
     "build_risk_policy",
+    "revalidate_production_portfolio",
 ]

@@ -15,6 +15,23 @@ import stat
 from typing import Final, Iterator
 
 SOURCE_ROOT: Final = PurePosixPath("data/private/v17_v4_sources")
+RUN_ROOT: Final = PurePosixPath("data/private/v17_v4_runs")
+SHADOW_ROOT: Final = PurePosixPath("results/v17_v4_shadow")
+FORMAL_RESEARCH_ROOT: Final = PurePosixPath(
+    "results/v17_v4_formal_research"
+)
+CANARY_ROOT: Final = PurePosixPath("results/v17_v4_canary")
+FACTOR_CONTROL_ROOT: Final = PurePosixPath(
+    "data/private/factor_governance_production_control_v1"
+)
+GOVERNED_ROOTS: Final = (
+    SOURCE_ROOT,
+    RUN_ROOT,
+    SHADOW_ROOT,
+    FORMAL_RESEARCH_ROOT,
+    CANARY_ROOT,
+)
+REFERENCE_ROOTS: Final = (*GOVERNED_ROOTS, FACTOR_CONTROL_ROOT)
 PIT_CATALOG_ROOT: Final = SOURCE_ROOT / "pit_catalog"
 PIT_CATALOG_POINTER: Final = PIT_CATALOG_ROOT / "_latest.json"
 PIT_CATALOG_LOCK: Final = PIT_CATALOG_ROOT / ".latest.lock"
@@ -105,6 +122,39 @@ def _expected(value: str) -> str:
 
 
 def canonical_source_path(value: str | PurePosixPath) -> PurePosixPath:
+    return _canonical_path(
+        value,
+        roots=(SOURCE_ROOT,),
+        label="V17 v4 source root",
+    )
+
+
+def canonical_governed_path(
+    value: str | PurePosixPath,
+) -> PurePosixPath:
+    return _canonical_path(
+        value,
+        roots=GOVERNED_ROOTS,
+        label="V17 v4 governed roots",
+    )
+
+
+def canonical_reference_path(
+    value: str | PurePosixPath,
+) -> PurePosixPath:
+    return _canonical_path(
+        value,
+        roots=REFERENCE_ROOTS,
+        label="V17 v4 exact-reference roots",
+    )
+
+
+def _canonical_path(
+    value: str | PurePosixPath,
+    *,
+    roots: tuple[PurePosixPath, ...],
+    label: str,
+) -> PurePosixPath:
     if not isinstance(value, (str, PurePosixPath)):
         raise SourceStorageSecurityError("source path must be text")
     text = str(value)
@@ -121,8 +171,8 @@ def canonical_source_path(value: str | PurePosixPath) -> PurePosixPath:
         text.encode("ascii")
     except UnicodeEncodeError as exc:
         raise SourceStorageSecurityError("source path must be ASCII") from exc
-    if path != SOURCE_ROOT and SOURCE_ROOT not in path.parents:
-        raise SourceStorageSecurityError("path is outside the V17 v4 source root")
+    if not any(path == root or root in path.parents for root in roots):
+        raise SourceStorageSecurityError(f"path is outside the {label}")
     return path
 
 
@@ -143,6 +193,10 @@ def _verify_directory(st: os.stat_result, *, private: bool, label: str) -> None:
         raise SourceStorageSecurityError(f"{label} is not a directory")
     if private and stat.S_IMODE(st.st_mode) != 0o700:
         raise SourceStorageSecurityError(f"{label} directory mode must be 0700")
+    if private and st.st_uid != os.geteuid():
+        raise SourceStorageSecurityError(
+            f"{label} directory must be owned by the current user"
+        )
 
 
 def _verify_regular(st: os.stat_result, *, label: str) -> None:
@@ -150,6 +204,10 @@ def _verify_regular(st: os.stat_result, *, label: str) -> None:
         raise SourceStorageSecurityError(f"{label} is not a regular file")
     if stat.S_IMODE(st.st_mode) != 0o600:
         raise SourceStorageSecurityError(f"{label} file mode must be 0600")
+    if st.st_uid != os.geteuid():
+        raise SourceStorageSecurityError(
+            f"{label} file must be owned by the current user"
+        )
     if st.st_nlink != 1:
         raise SourceStorageSecurityError(
             f"{label} file must have exactly one hard link"
@@ -211,6 +269,15 @@ class SourceStore:
                 os.close(fd)
             raise
 
+    def _canonical_path(
+        self,
+        value: str | PurePosixPath,
+    ) -> PurePosixPath:
+        return canonical_source_path(value)
+
+    def _private_path(self, path: PurePosixPath) -> bool:
+        return path == SOURCE_ROOT or SOURCE_ROOT in path.parents
+
     @staticmethod
     def _reject_casefold_alias(parent_fd: int, leaf: str) -> None:
         try:
@@ -270,10 +337,7 @@ class SourceStore:
                     ) from exc
                 try:
                     current = PurePosixPath(*traversed)
-                    private = (
-                        current == SOURCE_ROOT
-                        or SOURCE_ROOT in current.parents
-                    )
+                    private = self._private_path(current)
                     _verify_directory(
                         os.fstat(child),
                         private=private,
@@ -295,7 +359,7 @@ class SourceStore:
         *,
         create: bool,
     ) -> tuple[PurePosixPath, int, str]:
-        path = canonical_source_path(relative_path)
+        path = self._canonical_path(relative_path)
         if len(path.parts) < 2:
             raise SourceStorageSecurityError(
                 "source file must have a parent"
@@ -587,7 +651,7 @@ class SourceStore:
         self,
         relative_path: str | PurePosixPath,
     ) -> Iterator[None]:
-        path = canonical_source_path(relative_path)
+        path = self._canonical_path(relative_path)
         key = str(path)
         held = self._held.get()
         if key in held:
@@ -619,11 +683,90 @@ class SourceStore:
             os.close(parent)
 
 
+class GovernedStore(SourceStore):
+    """Descriptor-relative storage across the fixed V17 v4 roots.
+
+    This broad store is for exact-reference readback and tightly scoped
+    publishers.  Individual writers must still enforce a narrower path set.
+    """
+
+    def _canonical_path(
+        self,
+        value: str | PurePosixPath,
+    ) -> PurePosixPath:
+        return canonical_governed_path(value)
+
+    def _private_path(self, path: PurePosixPath) -> bool:
+        return any(
+            path == root or root in path.parents
+            for root in GOVERNED_ROOTS
+        )
+
+
+class ExactReferenceReader(GovernedStore):
+    """Read-only exact-byte reader including Factor production control."""
+
+    def _canonical_path(
+        self,
+        value: str | PurePosixPath,
+    ) -> PurePosixPath:
+        return canonical_reference_path(value)
+
+    def _private_path(self, path: PurePosixPath) -> bool:
+        return any(
+            path == root or root in path.parents
+            for root in REFERENCE_ROOTS
+        )
+
+    def initialize(self) -> None:
+        raise SourceStorageSecurityError(
+            "exact-reference reader cannot initialize storage"
+        )
+
+    def write_exact_once(
+        self,
+        relative_path: str | PurePosixPath,
+        raw: bytes,
+    ) -> WriteResult:
+        raise SourceStorageSecurityError(
+            "exact-reference reader cannot write"
+        )
+
+    def replace_cas(
+        self,
+        relative_path: str | PurePosixPath,
+        expected_sha256: str,
+        raw: bytes,
+    ) -> WriteResult:
+        raise SourceStorageSecurityError(
+            "exact-reference reader cannot write"
+        )
+
+    @contextmanager
+    def locked(
+        self,
+        relative_path: str | PurePosixPath,
+    ) -> Iterator[None]:
+        raise SourceStorageSecurityError(
+            "exact-reference reader cannot lock"
+        )
+        yield
+
+
 __all__ = [
+    "CANARY_ROOT",
     "EMPTY_SHA256",
+    "ExactReferenceReader",
+    "FACTOR_CONTROL_ROOT",
+    "FORMAL_RESEARCH_ROOT",
+    "GOVERNED_ROOTS",
+    "GovernedStore",
     "PIT_CATALOG_LOCK",
     "PIT_CATALOG_POINTER",
     "PIT_CATALOG_ROOT",
+    "REFERENCE_ROOTS",
+    "RUN_ROOT",
+    "SHADOW_ROOT",
     "SOURCE_ROOT",
     "SourceCASMismatch",
     "SourceExactOnceConflict",
@@ -634,5 +777,7 @@ __all__ = [
     "StoredBytes",
     "StoredFile",
     "WriteResult",
+    "canonical_governed_path",
+    "canonical_reference_path",
     "canonical_source_path",
 ]

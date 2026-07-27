@@ -83,7 +83,9 @@ The mutable and immutable paths are:
 ```text
 results/v17_v4_formal_research/strategies/{strategy_id}/_active.json
 results/v17_v4_formal_research/strategies/{strategy_id}/.active.lock
-results/v17_v4_formal_research/strategies/{strategy_id}/receipts/{receipt_id}.json
+results/v17_v4_formal_research/strategies/{strategy_id}/intents/{intent_id}.json
+results/v17_v4_formal_research/strategies/{strategy_id}/completion_receipts/{intent_id}.json
+results/v17_v4_formal_research/strategies/{strategy_id}/rejection_receipts/{intent_id}.json
 
 results/v17_v4_canary/strategies/{strategy_id}/_eligible.json
 results/v17_v4_canary/strategies/{strategy_id}/_current.json
@@ -118,7 +120,9 @@ V4 packages the following new schemas:
 ```text
 myquant.v17.v4.common.schema.v1
 myquant.v17.v4.authority.schema.v1
+myquant.v17.v4.formal-activation-intent.schema.v1
 myquant.v17.v4.formal-activation-receipt.schema.v1
+myquant.v17.v4.formal-activation-rejection.schema.v1
 myquant.v17.v4.formal-active-pointer.schema.v1
 myquant.v17.v4.formal-output.schema.v1
 myquant.v17.v4.default-eligibility-receipt.schema.v1
@@ -249,7 +253,7 @@ cutoff
 References are exact, same-strategy, no-later-than-cutoff, and resolved before
 any authority or mutable-pointer write.
 
-Every v4 state-transition receipt contains exactly:
+Every completed v4 state-transition receipt contains exactly:
 
 ```text
 version
@@ -265,14 +269,20 @@ evidence_refs
 semantic_sha256
 ```
 
-The formal receipt additionally requires `cutoff`, `formal_output_ref`,
-`source_locator_ref`, `factor_control_active_set_ref`,
+The formal activation intent owns the immutable closure references:
+`formal_output_ref`, `source_locator_ref`, `factor_control_active_set_ref`,
 `factor_control_activation_receipt_ref`, `quant_calibration_receipt_ref`,
 `fundamental_calibration_receipt_ref`, `fusion_promotion_receipt_ref`,
-`deep_bundle_ref`, `holdings_snapshot_ref`, `risk_policy_ref`,
-`macro_overlay_ref`, `markov_overlay_ref`, `expected_pointer_sha256`,
-`observed_pointer_sha256`, `proposed_pointer_sha256`, and
-`post_readback_sha256`.
+`deep_bundle_ref`, `portfolio_output_ref`, `holdings_snapshot_ref`,
+`risk_policy_ref`, `macro_overlay_ref`, `markov_overlay_ref`,
+`package_manifest_ref`, and `runtime_manifest_ref`. It also contains the
+expected pointer prevalue, but never a pointer hash, completion-receipt
+reference, or post-readback claim.
+
+The formal completion receipt requires exact `intent_ref` and `pointer_ref`,
+the expected and observed prevalue, `proposed_pointer_sha256`, and
+`post_readback_sha256`. The formal rejection is a separate no-authority
+artifact and cannot be used as completion evidence.
 
 The eligibility receipt additionally requires `formal_active_pointer_ref`,
 `public_surface_receipt_refs`, `validation_receipt_refs`,
@@ -314,7 +324,7 @@ claimed post-readback value before the readback occurs.
 
 ### `V15_DEFAULT -> FORMAL_ACTIVE`
 
-`myquant.v17.v4.formal-activation-receipt.v1` requires exact references to:
+`myquant.v17.v4.formal-activation-intent.v1` requires exact references to:
 
 - v4 formal research output and its full source locator;
 - accepted Quant timing, Fundamental forward, fusion calibration, and fusion
@@ -326,14 +336,33 @@ claimed post-readback value before the readback occurs.
 - v4 package and runtime manifests.
 
 The formal active pointer has a per-strategy lock and CAS prevalue of either
-`EMPTY` or the exact previous active-pointer SHA. The receipt is written
-exactly once before the pointer. Pointer post-readback must equal the proposed
-bytes. The transition never opens, locks, or writes
+`EMPTY` or the exact previous active-pointer SHA. Its dependency graph is
+strictly acyclic:
+
+```text
+immutable closure -> activation intent -> pending pointer -> completion receipt
+```
+
+The intent is written exactly once before the pointer. The pending pointer
+contains only the exact intent reference and grants no publication or default
+authority. After pointer CAS, exact readback must equal the proposed bytes;
+only then is the completion receipt written at the deterministic path
+`completion_receipts/{intent_id}.json`. `intent + pointer + completion` is
+required to derive `FORMAL_ACTIVE`; a pointer without completion is
+`PENDING_COMPLETION` and is rejected by eligibility, canary, and selector
+consumers. The transition never opens, locks, or writes
 `results/research_runtime_control/`.
 
 Failure status is `FORMAL_ACTIVATION_REJECTED`. A rejection may write only an
 immutable rejection receipt. It cannot write an active pointer, eligibility
 pointer, canary pointer, or default protocol selector.
+
+Crash recovery is deterministic. If the pointer still equals the intent
+prevalue, CAS may be retried. If it equals the exact proposed bytes, readback
+and completion publication are resumed. Any third pointer state hard-stops
+without replacement. The activation writer is limited to the strategy lock,
+`intents/`, `_active.json`, `completion_receipts/`, and
+`rejection_receipts/` below the exact strategy root.
 
 ### `FORMAL_ACTIVE -> DEFAULT_ELIGIBLE`
 

@@ -64,6 +64,14 @@ _ARTIFACT_REGISTRY: Final = {
         "schemas/formal_activation_receipt.v1.schema.json",
         "receipt_id",
     ),
+    "myquant.v17.v4.formal-activation-intent.v1": (
+        "schemas/formal_activation_intent.v1.schema.json",
+        "intent_id",
+    ),
+    "myquant.v17.v4.formal-activation-rejection.v1": (
+        "schemas/formal_activation_rejection.v1.schema.json",
+        "receipt_id",
+    ),
     "myquant.v17.v4.formal-active-pointer.v1": (
         "schemas/formal_active_pointer.v1.schema.json",
         "pointer_id",

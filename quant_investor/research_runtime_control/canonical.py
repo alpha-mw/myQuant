@@ -26,7 +26,9 @@ V4_REGISTERED_REFERENCE_VERSIONS = frozenset(
         "myquant.v17.v4.default-eligibility-receipt.v1",
         "myquant.v17.v4.default-eligible-pointer.v1",
         "myquant.v17.v4.dual-run-comparison.v1",
+        "myquant.v17.v4.formal-activation-intent.v1",
         "myquant.v17.v4.formal-activation-receipt.v1",
+        "myquant.v17.v4.formal-activation-rejection.v1",
         V4_FORMAL_ACTIVE_POINTER_VERSION,
         "myquant.v17.v4.formal-output.v1",
         "myquant.v17.v4.historical-canary-policy.v1",
@@ -412,10 +414,9 @@ def _validate_v4_formal_pointer(value: Mapping[str, Any]) -> None:
         {
             "authority",
             "cutoff",
-            "formal_output_ref",
+            "intent_ref",
             "pointer_id",
             "protocol_version",
-            "receipt_ref",
             "semantic_sha256",
             "state",
             "strategy_id",
@@ -426,33 +427,31 @@ def _validate_v4_formal_pointer(value: Mapping[str, Any]) -> None:
     )
     _validate_v4_authority(value["authority"])
     if (
-        value["authority"]["formal_research_publication"] is not True
+        value["authority"]["formal_research_publication"] is not False
         or value["authority"]["research_runtime_default"] is not False
     ):
         raise CanonicalControlError(
             "v4 formal pointer authority exceeds its publication role"
         )
     _instant(value["cutoff"], label="cutoff")
-    _reference(value["formal_output_ref"], label="formal_output_ref")
+    _reference(value["intent_ref"], label="intent_ref")
     _identifier(value["pointer_id"], label="pointer_id")
     if value["protocol_version"] != "myquant.v17.v4":
         raise CanonicalControlError("v4 protocol version mismatch")
-    _reference(value["receipt_ref"], label="receipt_ref")
-    if value["state"] != "FORMAL_ACTIVE":
+    if value["state"] != "PENDING_COMPLETION":
         raise CanonicalControlError("v4 formal pointer state mismatch")
     _identifier(value["strategy_id"], label="strategy_id")
     _instant(value["updated_at"], label="updated_at")
-    for label in ("formal_output_ref", "receipt_ref"):
-        reference = value[label]
-        if (
-            reference["strategy_id"] != value["strategy_id"]
-            or reference["cutoff"] > value["cutoff"]
-        ):
-            raise CanonicalControlError(
-                f"{label} scope or cutoff mismatch"
-            )
-    if value["formal_output_ref"]["cutoff"] != value["cutoff"]:
-        raise CanonicalControlError("formal output cutoff mismatch")
+    intent_ref = value["intent_ref"]
+    if (
+        intent_ref["strategy_id"] != value["strategy_id"]
+        or intent_ref["cutoff"] != value["cutoff"]
+        or intent_ref["artifact_version"]
+        != "myquant.v17.v4.formal-activation-intent.v1"
+    ):
+        raise CanonicalControlError(
+            "intent_ref scope, cutoff, or version mismatch"
+        )
 
 
 def _validate_selector(value: Mapping[str, Any]) -> None:

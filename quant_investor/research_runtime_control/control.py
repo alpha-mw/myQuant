@@ -532,7 +532,7 @@ class ResearchRuntimeControl:
             str(pointer_document["strategy_id"]),
             str(pointer_document["cutoff"]),
         )
-        run_ref = _pointer_run_ref(pointer.document)
+        run_ref = _pointer_run_ref(pointer.document, store=self.store)
         run = (
             _read_v4_typed_reference(
                 self.store,
@@ -543,6 +543,7 @@ class ResearchRuntimeControl:
             else _read_reference(self.store, run_ref)
         )
         _validate_pointer_run(
+            store=self.store,
             target=target,
             pointer=pointer,
             run=run,
@@ -734,13 +735,17 @@ class ResearchRuntimeControl:
                             != intent.document[
                                 "expected_target_active_pointer_sha256"
                             ]
-                            or _pointer_run_ref(pointer.document)
+                            or _pointer_run_ref(
+                                pointer.document,
+                                store=self.store,
+                            )
                             != intent.document["expected_target_run_ref"]
                         ):
                             raise RuntimeControlError(
                                 "v4 recovery target evidence drifted"
                             )
                         _validate_pointer_run(
+                            store=self.store,
                             target=proposed_target,
                             pointer=pointer,
                             run=run,
@@ -802,7 +807,10 @@ class ResearchRuntimeControl:
                     != intent.document[
                         "expected_target_active_pointer_sha256"
                     ]
-                    or _pointer_run_ref(pointer.document)
+                    or _pointer_run_ref(
+                        pointer.document,
+                        store=self.store,
+                    )
                     != intent.document["expected_target_run_ref"]
                 ):
                     return self._write_receipt(
@@ -818,6 +826,7 @@ class ResearchRuntimeControl:
                         selector_changed=False,
                     )
                 _validate_pointer_run(
+                    store=self.store,
                     target=proposed_target,
                     pointer=pointer,
                     run=run,
@@ -1149,17 +1158,66 @@ def _validate_v4_cutover_evidence(
     )
     if bound_formal_pointer.reference != formal_pointer.reference:
         raise RuntimeControlError("v4 formal pointer evidence is not live")
-    activation_receipt = _read_v4_typed_reference(
+    activation_intent = _read_v4_typed_reference(
         store,
-        formal_pointer.document["receipt_ref"],
-        expected_version="myquant.v17.v4.formal-activation-receipt.v1",
+        formal_pointer.document["intent_ref"],
+        expected_version="myquant.v17.v4.formal-activation-intent.v1",
+    )
+    completion_path = (
+        "results/v17_v4_formal_research/strategies/"
+        f"{formal_pointer.strategy_id}/completion_receipts/"
+        f"{activation_intent.document['intent_id']}.json"
+    )
+    completion_stored = store.read_optional(completion_path)
+    if completion_stored is None:
+        raise RuntimeControlError(
+            "v4 formal pointer is pending completion"
+        )
+    try:
+        from quant_investor.v17_v4_contract import (
+            load_canonical_artifact,
+        )
+
+        completion_document = decode_reference(
+            completion_stored.data,
+            expected_version=(
+                "myquant.v17.v4.formal-activation-receipt.v1"
+            ),
+        )
+        validated_completion = load_canonical_artifact(
+            completion_stored.data,
+            expected_version=(
+                "myquant.v17.v4.formal-activation-receipt.v1"
+            ),
+            label="v4 formal completion receipt",
+        )
+    except (ImportError, ValueError, ControlStorageError) as exc:
+        raise RuntimeControlError(
+            "v4 formal completion receipt is invalid"
+        ) from exc
+    activation_receipt = ControlArtifact(
+        completion_path,
+        completion_document,
+        completion_stored.data,
+        completion_stored.byte_sha256,
+        formal_pointer.strategy_id,
+        formal_pointer.cutoff,
     )
     if (
-        activation_receipt.document.get("status") != "FORMAL_ACTIVATED"
+        dict(validated_completion.payload)
+        != dict(activation_receipt.document)
+        or activation_receipt.document.get("status")
+        != "FORMAL_ACTIVATED"
         or activation_receipt.document.get("to_state") != "FORMAL_ACTIVE"
-        or activation_receipt.document.get("formal_output_ref")
-        != formal_output.reference
-        or formal_pointer.document.get("formal_output_ref")
+        or activation_receipt.document.get("intent_ref")
+        != activation_intent.reference
+        or activation_receipt.document.get("pointer_ref")
+        != formal_pointer.reference
+        or activation_receipt.document.get("post_readback_sha256")
+        != formal_pointer.byte_sha256
+        or activation_receipt.document.get("proposed_pointer_sha256")
+        != formal_pointer.byte_sha256
+        or activation_intent.document.get("formal_output_ref")
         != formal_output.reference
     ):
         raise RuntimeControlError(
@@ -1259,17 +1317,18 @@ def _target_lock(
 
 def _validate_pointer_run(
     *,
+    store: ControlStore,
     target: ControlArtifact,
     pointer: ControlArtifact,
     run: ControlArtifact,
     strategy_id: str,
 ) -> None:
     protocol_id = target.document.get("protocol_id")
-    run_ref = _pointer_run_ref(pointer.document)
+    run_ref = _pointer_run_ref(pointer.document, store=store)
     if protocol_id == "myquant.v17.v4":
         if (
             pointer.document.get("protocol_version") != protocol_id
-            or pointer.document.get("state") != "FORMAL_ACTIVE"
+            or pointer.document.get("state") != "PENDING_COMPLETION"
             or pointer.document.get("strategy_id") != strategy_id
             or pointer.document.get("cutoff") != run_ref.get("cutoff")
             or run_ref != run.reference
@@ -1310,12 +1369,28 @@ def _decode_active_pointer(
     return decode_reference(raw, expected_version=expected)
 
 
-def _pointer_run_ref(pointer: Mapping[str, Any]) -> Mapping[str, Any]:
+def _pointer_run_ref(
+    pointer: Mapping[str, Any],
+    *,
+    store: ControlStore,
+) -> Mapping[str, Any]:
     version = pointer.get("version")
     if version == ACTIVE_POINTER_VERSION:
         reference = pointer.get("run_ref")
     elif version == V4_FORMAL_ACTIVE_POINTER_VERSION:
-        reference = pointer.get("formal_output_ref")
+        intent_ref = pointer.get("intent_ref")
+        if not isinstance(intent_ref, Mapping):
+            raise RuntimeControlError(
+                "v4 active pointer intent reference is invalid"
+            )
+        intent = _read_v4_typed_reference(
+            store,
+            intent_ref,
+            expected_version=(
+                "myquant.v17.v4.formal-activation-intent.v1"
+            ),
+        )
+        reference = intent.document.get("formal_output_ref")
     else:
         raise RuntimeControlError("active pointer version is closed")
     if not isinstance(reference, Mapping):

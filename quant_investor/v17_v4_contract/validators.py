@@ -84,6 +84,16 @@ class FormalActivationReceiptArtifact(ValidatedArtifact):
 
 
 @dataclass(frozen=True)
+class FormalActivationIntentArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class FormalActivationRejectionArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
 class FormalActivePointerArtifact(ValidatedArtifact):
     pass
 
@@ -506,31 +516,96 @@ def validate_formal_activation_receipt(
     *,
     schema_checked: bool = False,
 ) -> FormalActivationReceiptArtifact:
-    success = payload.get("status") == "FORMAL_ACTIVATED"
     result = _common(
         payload,
         FormalActivationReceiptArtifact,
-        formal_research_publication=success,
+        formal_research_publication=True,
         schema_checked=schema_checked,
     )
     assert isinstance(result, FormalActivationReceiptArtifact)
     cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
-    if payload["to_state"] != ("FORMAL_ACTIVE" if success else "V15_DEFAULT"):
-        raise ArtifactContractError("formal transition state/status mismatch")
-    expected = {
+    intent_ref = _ref(
+        payload["intent_ref"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        expected_version="myquant.v17.v4.formal-activation-intent.v1",
+        label="intent_ref",
+    )
+    pointer_ref = _ref(
+        payload["pointer_ref"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        expected_version="myquant.v17.v4.formal-active-pointer.v1",
+        label="pointer_ref",
+    )
+    evidence = _refs(
+        payload["evidence_refs"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        label="evidence_refs",
+    )
+    _require_evidence_contains(
+        evidence,
+        [intent_ref, pointer_ref],
+        label="formal activation completion evidence",
+    )
+    if pointer_ref["byte_sha256"] != payload["proposed_pointer_sha256"]:
+        raise ArtifactContractError(
+            "formal activation pointer reference differs from proposed bytes"
+        )
+    _cas(payload, success=True, label="formal activation completion")
+    return result
+
+
+def validate_formal_activation_intent(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> FormalActivationIntentArtifact:
+    result = _common(
+        payload,
+        FormalActivationIntentArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, FormalActivationIntentArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    require_utc_timestamp(payload["created_at"], label="created_at")
+    if (
+        payload["from_state"] == "V15_DEFAULT"
+    ) != (payload["expected_pointer_sha256"] == "EMPTY"):
+        raise ArtifactContractError(
+            "formal intent state does not match pointer prevalue"
+        )
+    expected_versions = {
         "formal_output_ref": "myquant.v17.v4.formal-output.v1",
-        "source_locator_ref": "myquant.v17.v4.",
-        "quant_calibration_receipt_ref": "myquant.v17.v4.",
-        "fundamental_calibration_receipt_ref": "myquant.v17.v4.",
-        "fusion_promotion_receipt_ref": "myquant.v17.v4.",
-        "deep_bundle_ref": "myquant.v17.v4.",
-        "holdings_snapshot_ref": "myquant.v17.v4.",
-        "risk_policy_ref": "myquant.v17.v4.",
-        "macro_overlay_ref": "myquant.v17.v4.",
-        "markov_overlay_ref": "myquant.v17.v4.",
-        "factor_control_active_set_ref": "factor-governance-production-control.",
+        "source_locator_ref": "myquant.v17.v4.preselect-locator.v1",
+        "quant_calibration_receipt_ref": (
+            "myquant.v17.v4.calibration-receipt.v1"
+        ),
+        "fundamental_calibration_receipt_ref": (
+            "myquant.v17.v4.calibration-receipt.v1"
+        ),
+        "fusion_promotion_receipt_ref": (
+            "myquant.v17.v4.fusion-promotion-receipt.v1"
+        ),
+        "deep_bundle_ref": "myquant.v17.v4.deep-evidence-bundle.v1",
+        "portfolio_output_ref": "myquant.v17.v4.portfolio-output.v1",
+        "holdings_snapshot_ref": "myquant.v17.v4.holdings-snapshot.v1",
+        "risk_policy_ref": "myquant.v17.v4.portfolio-risk-policy.v1",
+        "macro_overlay_ref": "myquant.v17.v4.portfolio-overlay.v1",
+        "markov_overlay_ref": "myquant.v17.v4.portfolio-overlay.v1",
+        "factor_control_active_set_ref": (
+            "factor-governance-production-control."
+            "active-set-pointer.schema.v1"
+        ),
         "factor_control_activation_receipt_ref": (
             "factor-governance-production-control."
+            "activation-receipt.schema.v1"
+        ),
+        "package_manifest_ref": "myquant.v17.v4.package-manifest.v1",
+        "runtime_manifest_ref": (
+            "myquant.v17.v4.runtime-build-manifest.v1"
         ),
     }
     explicit = [
@@ -538,19 +613,10 @@ def validate_formal_activation_receipt(
             payload[field],
             strategy_id=result.strategy_id,
             cutoff=cutoff,
-            expected_version=(
-                prefix
-                if field == "formal_output_ref"
-                else None
-            ),
-            version_prefix=(
-                None
-                if field == "formal_output_ref"
-                else prefix
-            ),
+            expected_version=version,
             label=field,
         )
-        for field, prefix in expected.items()
+        for field, version in expected_versions.items()
     ]
     evidence = _refs(
         payload["evidence_refs"],
@@ -558,8 +624,37 @@ def validate_formal_activation_receipt(
         cutoff=cutoff,
         label="evidence_refs",
     )
-    _require_evidence_contains(evidence, explicit, label="formal activation evidence")
-    _cas(payload, success=success, label="formal activation")
+    _require_evidence_contains(
+        evidence,
+        explicit,
+        label="formal activation intent evidence",
+    )
+    return result
+
+
+def validate_formal_activation_rejection(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> FormalActivationRejectionArtifact:
+    result = _common(
+        payload,
+        FormalActivationRejectionArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, FormalActivationRejectionArtifact)
+    require_utc_timestamp(payload["recorded_at"], label="recorded_at")
+    _refs(
+        payload["attempted_evidence_refs"],
+        strategy_id=result.strategy_id,
+        cutoff=None,
+        label="attempted_evidence_refs",
+    )
+    if payload["to_state"] != payload["from_state"]:
+        raise ArtifactContractError(
+            "formal rejection cannot change state"
+        )
     return result
 
 
@@ -571,24 +666,17 @@ def validate_formal_active_pointer(
     result = _common(
         payload,
         FormalActivePointerArtifact,
-        formal_research_publication=True,
+        formal_research_publication=False,
         schema_checked=schema_checked,
     )
     assert isinstance(result, FormalActivePointerArtifact)
     cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
     _ref(
-        payload["receipt_ref"],
+        payload["intent_ref"],
         strategy_id=result.strategy_id,
         cutoff=cutoff,
-        expected_version="myquant.v17.v4.formal-activation-receipt.v1",
-        label="receipt_ref",
-    )
-    _ref(
-        payload["formal_output_ref"],
-        strategy_id=result.strategy_id,
-        cutoff=cutoff,
-        expected_version="myquant.v17.v4.formal-output.v1",
-        label="formal_output_ref",
+        expected_version="myquant.v17.v4.formal-activation-intent.v1",
+        label="intent_ref",
     )
     if payload["updated_at"] < cutoff:
         raise ArtifactContractError("formal pointer updated_at precedes cutoff")
@@ -2333,6 +2421,12 @@ _VALIDATORS: Final[Mapping[str, Callable[..., ValidatedArtifact]]] = {
     "myquant.v17.v4.formal-activation-receipt.v1": (
         validate_formal_activation_receipt
     ),
+    "myquant.v17.v4.formal-activation-intent.v1": (
+        validate_formal_activation_intent
+    ),
+    "myquant.v17.v4.formal-activation-rejection.v1": (
+        validate_formal_activation_rejection
+    ),
     "myquant.v17.v4.formal-active-pointer.v1": validate_formal_active_pointer,
     "myquant.v17.v4.formal-output.v1": validate_formal_output,
     "myquant.v17.v4.fusion-promotion-receipt.v1": (
@@ -2409,6 +2503,8 @@ __all__ = [
     "DualRunComparisonArtifact",
     "EventScanArtifact",
     "FormalActivationReceiptArtifact",
+    "FormalActivationIntentArtifact",
+    "FormalActivationRejectionArtifact",
     "FormalActivePointerArtifact",
     "FormalOutputArtifact",
     "FusionPromotionReceiptArtifact",
@@ -2439,6 +2535,8 @@ __all__ = [
     "validate_dual_run_comparison",
     "validate_event_scan",
     "validate_formal_activation_receipt",
+    "validate_formal_activation_intent",
+    "validate_formal_activation_rejection",
     "validate_formal_active_pointer",
     "validate_formal_output",
     "validate_fusion_promotion_receipt",

@@ -37,7 +37,7 @@ def test_v17_v4_verify_is_no_write_and_all_side_effects_are_false(
 ) -> None:
     assert main(["verify"]) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == "CONTRACT_SCAFFOLD_NOT_ACTIVATED"
+    assert payload["status"] == "FORMAL_ACTIVATION_AVAILABLE_NOT_DEFAULT"
     assert payload["package_verified"] is True
     assert payload["package_asset_count"] > 0
     for field in (

@@ -38,6 +38,8 @@ from quant_investor.v17_v4_contract.validators import (
     DefaultEligibilityReceiptArtifact,
     DefaultEligiblePointerArtifact,
     DualRunComparisonArtifact,
+    FormalActivationIntentArtifact,
+    FormalActivationRejectionArtifact,
     FormalActivationReceiptArtifact,
     FormalActivePointerArtifact,
     FormalOutputArtifact,
@@ -95,7 +97,7 @@ def _ordered_refs(*refs: dict[str, str]) -> list[dict[str, str]]:
     )
 
 
-def _formal_receipt(*, success: bool = True) -> dict[str, Any]:
+def _formal_intent() -> dict[str, Any]:
     refs = {
         "formal_output_ref": _ref(
             "formal-output-1",
@@ -104,17 +106,17 @@ def _formal_receipt(*, success: bool = True) -> dict[str, Any]:
         ),
         "source_locator_ref": _ref(
             "source-locator-1",
-            "myquant.v17.v4.source-locator.v1",
+            "myquant.v17.v4.preselect-locator.v1",
             "data/private/v17_v4_sources/locators/source-1.json",
         ),
         "quant_calibration_receipt_ref": _ref(
             "quant-calibration-1",
-            "myquant.v17.v4.fusion-calibration-receipt.v1",
+            "myquant.v17.v4.calibration-receipt.v1",
             "data/private/v17_v4_runs/run-1/quant-calibration.json",
         ),
         "fundamental_calibration_receipt_ref": _ref(
             "fundamental-calibration-1",
-            "myquant.v17.v4.fusion-calibration-receipt.v1",
+            "myquant.v17.v4.calibration-receipt.v1",
             "data/private/v17_v4_runs/run-1/fundamental-calibration.json",
         ),
         "fusion_promotion_receipt_ref": _ref(
@@ -149,55 +151,135 @@ def _formal_receipt(*, success: bool = True) -> dict[str, Any]:
         ),
         "factor_control_active_set_ref": _ref(
             "factor-active-set-1",
-            "factor-governance-production-control.active-set-pointer.v1",
+            (
+                "factor-governance-production-control."
+                "active-set-pointer.schema.v1"
+            ),
             "data/private/factor_governance_production_control_v1/active_sets/active.json",
         ),
         "factor_control_activation_receipt_ref": _ref(
             "factor-control-receipt-1",
-            "factor-governance-production-control.activation-receipt.v1",
+            (
+                "factor-governance-production-control."
+                "activation-receipt.schema.v1"
+            ),
             "data/private/factor_governance_production_control_v1/receipts/control.json",
         ),
+        "portfolio_output_ref": _ref(
+            "portfolio-output-1",
+            "myquant.v17.v4.portfolio-output.v1",
+            "data/private/v17_v4_runs/run-1/portfolio-output.json",
+        ),
+        "package_manifest_ref": _ref(
+            "package-manifest",
+            "myquant.v17.v4.package-manifest.v1",
+            "quant_investor/v17_v4_contract/resources/package_manifest.v1.json",
+        ),
+        "runtime_manifest_ref": _ref(
+            "runtime-manifest",
+            "myquant.v17.v4.runtime-build-manifest.v1",
+            "quant_investor/v17_v4_contract/resources/runtime_build_manifest.v1.json",
+        ),
     }
-    proposed = _sha("formal-pointer-proposed")
     return seal_semantic(
         {
-            "authority": _authority(formal=success),
+            "authority": _authority(formal=False),
+            "created_at": CUTOFF,
             "cutoff": CUTOFF,
             **refs,
             "evidence_refs": _ordered_refs(*refs.values()),
             "expected_pointer_sha256": "EMPTY",
             "from_state": "V15_DEFAULT",
-            "observed_pointer_sha256": "EMPTY",
-            "post_readback_sha256": proposed if success else "EMPTY",
-            "proposed_pointer_sha256": proposed,
+            "intent_id": "formal-activation-1",
             "protocol_version": PROTOCOL_VERSION,
-            "receipt_id": "formal-activation-1",
-            "recorded_at": CUTOFF,
-            "status": "FORMAL_ACTIVATED" if success else "FORMAL_ACTIVATION_REJECTED",
             "strategy_id": STRATEGY,
-            "to_state": "FORMAL_ACTIVE" if success else "V15_DEFAULT",
-            "version": "myquant.v17.v4.formal-activation-receipt.v1",
+            "version": "myquant.v17.v4.formal-activation-intent.v1",
         }
     )
 
 
 def _formal_pointer() -> dict[str, Any]:
+    intent = _formal_intent()
+    return seal_semantic(
+        {
+            "authority": _authority(formal=False),
+            "cutoff": CUTOFF,
+            "intent_ref": _ref(
+                "formal-activation-1",
+                "myquant.v17.v4.formal-activation-intent.v1",
+                (
+                    "results/v17_v4_formal_research/strategies/"
+                    "quant-first/intents/formal-activation-1.json"
+                ),
+                byte_sha256=hashlib.sha256(
+                    canonical_resource_bytes(intent)
+                ).hexdigest(),
+            ),
+            "pointer_id": "formal-pointer-1",
+            "protocol_version": PROTOCOL_VERSION,
+            "state": "PENDING_COMPLETION",
+            "strategy_id": STRATEGY,
+            "updated_at": CUTOFF,
+            "version": "myquant.v17.v4.formal-active-pointer.v1",
+        }
+    )
+
+
+def _formal_receipt() -> dict[str, Any]:
+    intent = _formal_intent()
+    pointer = _formal_pointer()
+    intent_ref = pointer["intent_ref"]
+    pointer_ref = _ref(
+        "formal-pointer-1",
+        "myquant.v17.v4.formal-active-pointer.v1",
+        (
+            "results/v17_v4_formal_research/strategies/"
+            "quant-first/_active.json"
+        ),
+        byte_sha256=hashlib.sha256(
+            canonical_resource_bytes(pointer)
+        ).hexdigest(),
+    )
+    proposed = pointer_ref["byte_sha256"]
     return seal_semantic(
         {
             "authority": _authority(formal=True),
             "cutoff": CUTOFF,
-            "formal_output_ref": _formal_receipt()["formal_output_ref"],
-            "pointer_id": "formal-pointer-1",
+            "evidence_refs": _ordered_refs(intent_ref, pointer_ref),
+            "expected_pointer_sha256": intent["expected_pointer_sha256"],
+            "from_state": "V15_DEFAULT",
+            "intent_ref": intent_ref,
+            "observed_pointer_sha256": intent["expected_pointer_sha256"],
+            "pointer_ref": pointer_ref,
+            "post_readback_sha256": proposed,
+            "proposed_pointer_sha256": proposed,
             "protocol_version": PROTOCOL_VERSION,
-            "receipt_ref": _ref(
-                "formal-activation-1",
-                "myquant.v17.v4.formal-activation-receipt.v1",
-                "results/v17_v4_formal_research/strategies/quant-first/receipts/formal-activation-1.json",
-            ),
-            "state": "FORMAL_ACTIVE",
+            "receipt_id": "formal-activation-1",
+            "recorded_at": CUTOFF,
+            "status": "FORMAL_ACTIVATED",
             "strategy_id": STRATEGY,
-            "updated_at": CUTOFF,
-            "version": "myquant.v17.v4.formal-active-pointer.v1",
+            "to_state": "FORMAL_ACTIVE",
+            "version": "myquant.v17.v4.formal-activation-receipt.v1",
+        }
+    )
+
+
+def _formal_rejection() -> dict[str, Any]:
+    return seal_semantic(
+        {
+            "attempted_evidence_refs": [],
+            "authority": _authority(formal=False),
+            "expected_pointer_sha256": "EMPTY",
+            "from_state": "V15_DEFAULT",
+            "observed_pointer_sha256": "EMPTY",
+            "protocol_version": PROTOCOL_VERSION,
+            "receipt_id": "formal-rejection-1",
+            "recorded_at": CUTOFF,
+            "rejection_reasons": ["CLOSURE_REVALIDATION_FAILED"],
+            "status": "FORMAL_ACTIVATION_REJECTED",
+            "strategy_id": STRATEGY,
+            "to_state": "V15_DEFAULT",
+            "version": "myquant.v17.v4.formal-activation-rejection.v1",
         }
     )
 
@@ -538,7 +620,8 @@ def test_package_runtime_manifests_and_scaffold_authority_are_sealed() -> None:
         "v17_v4_runtime/authority.py",
         "v17_v4_runtime/calibration.py",
         "v17_v4_runtime/cli.py",
-        "v17_v4_runtime/deep_control.py",
+            "v17_v4_runtime/deep_control.py",
+            "v17_v4_runtime/formal_activation.py",
         "v17_v4_runtime/pit_admission.py",
         "v17_v4_runtime/pit_catalog.py",
         "v17_v4_runtime/portfolio_control.py",
@@ -561,7 +644,9 @@ def test_schema_inventory_is_closed_and_does_not_redefine_neutral_control() -> N
         "myquant.v17.v4.default-eligible-pointer.v1",
         "myquant.v17.v4.dual-run-comparison.v1",
         "myquant.v17.v4.event-scan.v1",
+        "myquant.v17.v4.formal-activation-intent.v1",
         "myquant.v17.v4.formal-activation-receipt.v1",
+        "myquant.v17.v4.formal-activation-rejection.v1",
         "myquant.v17.v4.formal-active-pointer.v1",
         "myquant.v17.v4.formal-output.v1",
         "myquant.v17.v4.fusion-promotion-receipt.v1",
@@ -596,6 +681,12 @@ def test_schema_inventory_is_closed_and_does_not_redefine_neutral_control() -> N
 
 def test_formal_transition_and_pointer_separate_publication_from_default() -> None:
     assert isinstance(validate_artifact(_formal_output()), FormalOutputArtifact)
+    intent = _formal_intent()
+    assert isinstance(
+        validate_artifact(intent),
+        FormalActivationIntentArtifact,
+    )
+    assert intent["authority"]["formal_research_publication"] is False
     receipt = _formal_receipt()
     assert isinstance(validate_artifact(receipt), FormalActivationReceiptArtifact)
     assert receipt["authority"]["formal_research_publication"] is True
@@ -617,10 +708,10 @@ def test_formal_transition_and_pointer_separate_publication_from_default() -> No
 
 
 def test_formal_receipt_rejects_v3_identity_relabel_and_semantic_tamper() -> None:
-    receipt = _formal_receipt()
-    v3_ref = dict(receipt)
+    intent = _formal_intent()
+    v3_ref = dict(intent)
     v3_ref["formal_output_ref"] = {
-        **receipt["formal_output_ref"],
+        **intent["formal_output_ref"],
         "artifact_version": "myquant.v17.v3.formal-research-output.v1",
     }
     v3_ref["evidence_refs"] = _ordered_refs(
@@ -628,16 +719,25 @@ def test_formal_receipt_rejects_v3_identity_relabel_and_semantic_tamper() -> Non
             v3_ref["formal_output_ref"]
             if row["artifact_id"] == "formal-output-1"
             else row
-            for row in receipt["evidence_refs"]
+            for row in intent["evidence_refs"]
         ]
     )
     v3_ref.pop("semantic_sha256")
     with pytest.raises(ArtifactContractError, match="artifact version mismatch"):
         validate_artifact(seal_semantic(v3_ref))
 
+    receipt = _formal_receipt()
     receipt["status"] = "FORMAL_ACTIVATION_REJECTED"
-    with pytest.raises(ArtifactContractError, match="semantic_sha256 mismatch"):
+    with pytest.raises(SchemaValidationError):
         validate_artifact(receipt)
+
+    legacy_pointer = dict(_formal_pointer())
+    legacy_pointer["receipt_ref"] = legacy_pointer.pop("intent_ref")
+    legacy_pointer["formal_output_ref"] = intent["formal_output_ref"]
+    legacy_pointer["state"] = "FORMAL_ACTIVE"
+    legacy_pointer.pop("semantic_sha256")
+    with pytest.raises(SchemaValidationError):
+        validate_artifact(seal_semantic(legacy_pointer))
 
     v3_artifact = seal_semantic(
         {
@@ -754,11 +854,11 @@ def test_dual_run_comparability_is_exact_and_policy_binds_sixty_pairs() -> None:
 
 
 def test_canonical_loader_rejects_noncanonical_and_additional_properties() -> None:
-    receipt = _formal_receipt(success=False)
+    receipt = _formal_rejection()
     raw = canonical_resource_bytes(receipt)
     assert isinstance(
         load_canonical_artifact(raw),
-        FormalActivationReceiptArtifact,
+        FormalActivationRejectionArtifact,
     )
     with pytest.raises(SchemaValidationError):
         load_canonical_artifact(b" " + raw)

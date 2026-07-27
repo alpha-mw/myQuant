@@ -1,8 +1,8 @@
-"""Production-research control scaffold for ``myquant.v17.v4``.
+"""Production-research controls for ``myquant.v17.v4``.
 
-The package is intentionally incomplete: it exposes the versioned authority
-boundary and an explicit verification CLI, but it cannot activate formal
-research, change the default research selector, or call a provider.
+Formal research publication is available only through the exact, crash-safe
+activation service.  Importing the package still grants no publication,
+default-selector, execution, broker, order, or trade authority.
 """
 
 from __future__ import annotations

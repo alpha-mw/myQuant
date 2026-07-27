@@ -111,11 +111,11 @@ def _placeholder_ref(
     }
 
 
-def _v4_authority() -> dict[str, bool]:
+def _v4_authority(*, formal: bool = True) -> dict[str, bool]:
     return {
         "broker": False,
         "execution": False,
-        "formal_research_publication": True,
+        "formal_research_publication": formal,
         "order": False,
         "research_runtime_default": False,
         "trade": False,
@@ -180,90 +180,83 @@ def _seed_v4(
         },
         cutoff=cutoff,
     )
-    receipt = _artifact(
+    closure_refs = {
+        "formal_output_ref": run.reference,
+        **{
+            field: _placeholder_ref(
+                field.removesuffix("_ref"),
+                version,
+                (
+                    "data/private/v17_v4_runs/"
+                    f"{run_id}/{field}.json"
+                ),
+                cutoff=cutoff,
+            )
+            for field, version in {
+                "source_locator_ref": (
+                    "myquant.v17.v4.preselect-locator.v1"
+                ),
+                "quant_calibration_receipt_ref": (
+                    "myquant.v17.v4.calibration-receipt.v1"
+                ),
+                "fundamental_calibration_receipt_ref": (
+                    "myquant.v17.v4.calibration-receipt.v1"
+                ),
+                "fusion_promotion_receipt_ref": (
+                    "myquant.v17.v4.fusion-promotion-receipt.v1"
+                ),
+                "deep_bundle_ref": (
+                    "myquant.v17.v4.deep-evidence-bundle.v1"
+                ),
+                "portfolio_output_ref": (
+                    "myquant.v17.v4.portfolio-output.v1"
+                ),
+                "holdings_snapshot_ref": (
+                    "myquant.v17.v4.holdings-snapshot.v1"
+                ),
+                "risk_policy_ref": (
+                    "myquant.v17.v4.portfolio-risk-policy.v1"
+                ),
+                "macro_overlay_ref": (
+                    "myquant.v17.v4.portfolio-overlay.v1"
+                ),
+                "markov_overlay_ref": (
+                    "myquant.v17.v4.portfolio-overlay.v1"
+                ),
+                "factor_control_active_set_ref": (
+                    "factor-governance-production-control."
+                    "active-set-pointer.schema.v1"
+                ),
+                "factor_control_activation_receipt_ref": (
+                    "factor-governance-production-control."
+                    "activation-receipt.schema.v1"
+                ),
+                "package_manifest_ref": (
+                    "myquant.v17.v4.package-manifest.v1"
+                ),
+                "runtime_manifest_ref": (
+                    "myquant.v17.v4.runtime-build-manifest.v1"
+                ),
+            }.items()
+        },
+    }
+    intent = _artifact(
         (
             "results/v17_v4_formal_research/strategies/"
-            f"{STRATEGY}/receipts/{run_id}.json"
+            f"{STRATEGY}/intents/{run_id}.json"
         ),
         {
-            "version": "myquant.v17.v4.formal-activation-receipt.v1",
-            "receipt_id": f"receipt-{run_id}",
+            "version": "myquant.v17.v4.formal-activation-intent.v1",
+            "intent_id": run_id,
             "protocol_version": "myquant.v17.v4",
             "strategy_id": STRATEGY,
             "cutoff": cutoff,
-            "status": "FORMAL_ACTIVATED",
+            "created_at": cutoff,
             "from_state": "V15_DEFAULT",
-            "to_state": "FORMAL_ACTIVE",
-            "recorded_at": cutoff,
-            "authority": _v4_authority(),
+            "authority": _v4_authority(formal=False),
             "expected_pointer_sha256": "EMPTY",
-            "observed_pointer_sha256": "EMPTY",
-            "proposed_pointer_sha256": "f" * 64,
-            "post_readback_sha256": "f" * 64,
-            "formal_output_ref": run.reference,
-            **{
-                field: _placeholder_ref(
-                    field.removesuffix("_ref"),
-                    version,
-                    (
-                        "data/private/v17_v4_runs/"
-                        f"{run_id}/{field}.json"
-                    ),
-                    cutoff=cutoff,
-                )
-                for field, version in {
-                    "source_locator_ref": "myquant.v17.v4.source-locator.v1",
-                    "quant_calibration_receipt_ref": (
-                        "myquant.v17.v4.fusion-calibration-receipt.v1"
-                    ),
-                    "fundamental_calibration_receipt_ref": (
-                        "myquant.v17.v4.fusion-calibration-receipt.v1"
-                    ),
-                    "fusion_promotion_receipt_ref": (
-                        "myquant.v17.v4.fusion-promotion-receipt.v1"
-                    ),
-                    "deep_bundle_ref": (
-                        "myquant.v17.v4.deep-evidence-bundle.v1"
-                    ),
-                    "holdings_snapshot_ref": (
-                        "myquant.v17.v4.holdings-snapshot.v1"
-                    ),
-                    "risk_policy_ref": (
-                        "myquant.v17.v4.portfolio-risk-policy.v1"
-                    ),
-                    "macro_overlay_ref": (
-                        "myquant.v17.v4.portfolio-overlay.v1"
-                    ),
-                    "markov_overlay_ref": (
-                        "myquant.v17.v4.portfolio-overlay.v1"
-                    ),
-                    "factor_control_active_set_ref": (
-                        "factor-governance-production-control."
-                        "active-set-pointer.v1"
-                    ),
-                    "factor_control_activation_receipt_ref": (
-                        "factor-governance-production-control."
-                        "activation-receipt.v1"
-                    ),
-                }.items()
-            },
-        },
-        cutoff=cutoff,
-    )
-    receipt_payload = dict(receipt.document)
-    receipt_payload["evidence_refs"] = _ordered_refs(
-        *[
-            value
-            for key, value in receipt_payload.items()
-            if key.endswith("_ref") and isinstance(value, dict)
-        ]
-    )
-    receipt = _artifact(
-        receipt.relative_path,
-        {
-            key: value
-            for key, value in receipt_payload.items()
-            if key != "semantic_sha256"
+            **closure_refs,
+            "evidence_refs": _ordered_refs(*closure_refs.values()),
         },
         cutoff=cutoff,
     )
@@ -274,22 +267,43 @@ def _seed_v4(
         ),
         {
             "version": "myquant.v17.v4.formal-active-pointer.v1",
-            "authority": {
-                "broker": False,
-                "execution": False,
-                "formal_research_publication": True,
-                "order": False,
-                "research_runtime_default": False,
-                "trade": False,
-            },
-            "formal_output_ref": run.reference,
+            "authority": _v4_authority(formal=False),
+            "intent_ref": intent.reference,
             "pointer_id": f"active-{run_id}",
             "protocol_version": "myquant.v17.v4",
-            "receipt_ref": receipt.reference,
-            "state": "FORMAL_ACTIVE",
+            "state": "PENDING_COMPLETION",
             "strategy_id": STRATEGY,
             "cutoff": cutoff,
             "updated_at": cutoff,
+        },
+        cutoff=cutoff,
+    )
+    receipt = _artifact(
+        (
+            "results/v17_v4_formal_research/strategies/"
+            f"{STRATEGY}/completion_receipts/{run_id}.json"
+        ),
+        {
+            "version": "myquant.v17.v4.formal-activation-receipt.v1",
+            "receipt_id": run_id,
+            "protocol_version": "myquant.v17.v4",
+            "strategy_id": STRATEGY,
+            "cutoff": cutoff,
+            "status": "FORMAL_ACTIVATED",
+            "from_state": "V15_DEFAULT",
+            "to_state": "FORMAL_ACTIVE",
+            "recorded_at": cutoff,
+            "authority": _v4_authority(),
+            "expected_pointer_sha256": "EMPTY",
+            "observed_pointer_sha256": "EMPTY",
+            "proposed_pointer_sha256": pointer.byte_sha256,
+            "post_readback_sha256": pointer.byte_sha256,
+            "intent_ref": intent.reference,
+            "pointer_ref": pointer.reference,
+            "evidence_refs": _ordered_refs(
+                intent.reference,
+                pointer.reference,
+            ),
         },
         cutoff=cutoff,
     )
@@ -493,6 +507,7 @@ def _seed_v4(
         cutoff=cutoff,
     )
     _owner_file(workspace / run.relative_path, run.raw)
+    _owner_file(workspace / intent.relative_path, intent.raw)
     _owner_file(workspace / receipt.relative_path, receipt.raw)
     _owner_file(workspace / pointer.relative_path, pointer.raw)
     for artifact in (
@@ -888,9 +903,9 @@ def test_cutover_rejects_wrong_formal_activation_receipt_version(
         seal_semantic,
     )
 
-    bogus_path = (
+    completion_path = (
         "results/v17_v4_formal_research/strategies/"
-        f"{STRATEGY}/receipts/bogus.json"
+        f"{STRATEGY}/completion_receipts/v4-wrong-receipt.json"
     )
     bogus_document = seal_semantic(
         {
@@ -902,41 +917,16 @@ def test_cutover_rejects_wrong_formal_activation_receipt_version(
         }
     )
     bogus_raw = canonical_resource_bytes(bogus_document)
-    bogus_ref = {
-        "artifact_id": "bogus-receipt",
-        "artifact_version": "myquant.v17.v4.not-activation.v1",
-        "byte_sha256": hashlib.sha256(bogus_raw).hexdigest(),
-        "cutoff": T1,
-        "relative_path": bogus_path,
-        "semantic_sha256": bogus_document["semantic_sha256"],
-        "strategy_id": STRATEGY,
-    }
-    bad_pointer_payload = {
-        key: value
-        for key, value in pointer.document.items()
-        if key != "semantic_sha256"
-    }
-    bad_pointer_payload["receipt_ref"] = bogus_ref
-    bad_pointer = _artifact(
-        pointer.relative_path,
-        bad_pointer_payload,
-        cutoff=T1,
-    )
-    _owner_file(workspace / bogus_path, bogus_raw)
-    _owner_file(workspace / bad_pointer.relative_path, bad_pointer.raw)
-    bad_evidence = [
-        bad_pointer.reference
-        if row["artifact_version"]
-        == "myquant.v17.v4.formal-active-pointer.v1"
-        else row
-        for row in evidence
-    ]
+    _owner_file(workspace / completion_path, bogus_raw)
 
-    with pytest.raises(RuntimeControlError, match="selector evidence is invalid"):
+    with pytest.raises(
+        RuntimeControlError,
+        match="formal completion receipt is invalid",
+    ):
         control.cutover(
             strategy_id=STRATEGY,
             v4_protocol_target_ref=target.reference,
-            expected_v4_active_pointer_sha256=bad_pointer.byte_sha256,
+            expected_v4_active_pointer_sha256=pointer.byte_sha256,
             expected_v4_run_ref=run.reference,
             expected_selector_sha256=selector.byte_sha256,
             recorded_at=T1,
@@ -944,13 +934,54 @@ def test_cutover_rejects_wrong_formal_activation_receipt_version(
             receipt_id="cutover-wrong-receipt-receipt",
             required_evidence_refs=[
                 bootstrap.receipt.reference,
-                *bad_evidence,
+                *evidence,
             ],
         )
     assert control.current_selector().byte_sha256 == selector.byte_sha256
 
 
-def test_cutover_rejects_activation_receipt_output_mismatch(
+def test_cutover_rejects_pending_formal_pointer_without_completion(
+    workspace: Path,
+) -> None:
+    control = ResearchRuntimeControl(workspace)
+    bootstrap = _bootstrap(control)
+    selector = control.current_selector()
+    target, pointer, run, evidence = _seed_v4(
+        control,
+        workspace,
+        run_id="v4-pending-completion",
+        cutoff=T1,
+    )
+    completion = (
+        workspace
+        / "results/v17_v4_formal_research/strategies"
+        / STRATEGY
+        / "completion_receipts/v4-pending-completion.json"
+    )
+    completion.unlink()
+
+    with pytest.raises(
+        RuntimeControlError,
+        match="pending completion",
+    ):
+        control.cutover(
+            strategy_id=STRATEGY,
+            v4_protocol_target_ref=target.reference,
+            expected_v4_active_pointer_sha256=pointer.byte_sha256,
+            expected_v4_run_ref=run.reference,
+            expected_selector_sha256=selector.byte_sha256,
+            recorded_at=T1,
+            intent_id="cutover-pending-completion",
+            receipt_id="cutover-pending-completion-receipt",
+            required_evidence_refs=[
+                bootstrap.receipt.reference,
+                *evidence,
+            ],
+        )
+    assert control.current_selector().byte_sha256 == selector.byte_sha256
+
+
+def test_cutover_rejects_completion_pointer_mismatch(
     workspace: Path,
 ) -> None:
     control = ResearchRuntimeControl(workspace)
@@ -962,58 +993,36 @@ def test_cutover_rejects_activation_receipt_output_mismatch(
         run_id="v4-output-mismatch",
         cutoff=T1,
     )
-    receipt_ref = pointer.document["receipt_ref"]
+    receipt_path = (
+        "results/v17_v4_formal_research/strategies/"
+        f"{STRATEGY}/completion_receipts/v4-output-mismatch.json"
+    )
     receipt_document = decode_reference(
-        (workspace / receipt_ref["relative_path"]).read_bytes()
+        (workspace / receipt_path).read_bytes()
     )
-    other_output_ref = _placeholder_ref(
-        "other-formal-output",
-        "myquant.v17.v4.formal-output.v1",
-        (
-            "results/v17_v4_formal_research/strategies/"
-            f"{STRATEGY}/runs/other/formal.json"
-        ),
-        cutoff=T1,
-    )
+    other_pointer_ref = {
+        **pointer.reference,
+        "byte_sha256": "f" * 64,
+        "semantic_sha256": "e" * 64,
+    }
     bad_receipt_payload = {
         key: value
         for key, value in receipt_document.items()
         if key != "semantic_sha256"
     }
-    bad_receipt_payload["formal_output_ref"] = other_output_ref
+    bad_receipt_payload["pointer_ref"] = other_pointer_ref
+    bad_receipt_payload["proposed_pointer_sha256"] = "f" * 64
+    bad_receipt_payload["post_readback_sha256"] = "f" * 64
     bad_receipt_payload["evidence_refs"] = _ordered_refs(
-        *[
-            other_output_ref
-            if row["artifact_id"] == run.reference["artifact_id"]
-            else row
-            for row in receipt_document["evidence_refs"]
-        ]
+        receipt_document["intent_ref"],
+        other_pointer_ref,
     )
     bad_receipt = _artifact(
-        receipt_ref["relative_path"],
+        receipt_path,
         bad_receipt_payload,
         cutoff=T1,
     )
-    bad_pointer_payload = {
-        key: value
-        for key, value in pointer.document.items()
-        if key != "semantic_sha256"
-    }
-    bad_pointer_payload["receipt_ref"] = bad_receipt.reference
-    bad_pointer = _artifact(
-        pointer.relative_path,
-        bad_pointer_payload,
-        cutoff=T1,
-    )
     _owner_file(workspace / bad_receipt.relative_path, bad_receipt.raw)
-    _owner_file(workspace / bad_pointer.relative_path, bad_pointer.raw)
-    bad_evidence = [
-        bad_pointer.reference
-        if row["artifact_version"]
-        == "myquant.v17.v4.formal-active-pointer.v1"
-        else row
-        for row in evidence
-    ]
 
     with pytest.raises(
         RuntimeControlError,
@@ -1022,7 +1031,7 @@ def test_cutover_rejects_activation_receipt_output_mismatch(
         control.cutover(
             strategy_id=STRATEGY,
             v4_protocol_target_ref=target.reference,
-            expected_v4_active_pointer_sha256=bad_pointer.byte_sha256,
+            expected_v4_active_pointer_sha256=pointer.byte_sha256,
             expected_v4_run_ref=run.reference,
             expected_selector_sha256=selector.byte_sha256,
             recorded_at=T1,
@@ -1030,7 +1039,7 @@ def test_cutover_rejects_activation_receipt_output_mismatch(
             receipt_id="cutover-output-mismatch-receipt",
             required_evidence_refs=[
                 bootstrap.receipt.reference,
-                *bad_evidence,
+                *evidence,
             ],
         )
     assert control.current_selector().byte_sha256 == selector.byte_sha256
