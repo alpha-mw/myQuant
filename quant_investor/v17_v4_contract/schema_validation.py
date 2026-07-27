@@ -48,9 +48,17 @@ _ARTIFACT_REGISTRY: Final = {
         "schemas/default_eligible_pointer.v1.schema.json",
         "pointer_id",
     ),
+    "myquant.v17.v4.deep-evidence-bundle.v1": (
+        "schemas/deep_evidence_bundle.v1.schema.json",
+        "bundle_id",
+    ),
     "myquant.v17.v4.dual-run-comparison.v1": (
         "schemas/dual_run_comparison.v1.schema.json",
         "comparison_id",
+    ),
+    "myquant.v17.v4.event-scan.v1": (
+        "schemas/event_scan.v1.schema.json",
+        "scan_id",
     ),
     "myquant.v17.v4.formal-activation-receipt.v1": (
         "schemas/formal_activation_receipt.v1.schema.json",
@@ -68,13 +76,49 @@ _ARTIFACT_REGISTRY: Final = {
         "schemas/fusion_promotion_receipt.v1.schema.json",
         "receipt_id",
     ),
+    "myquant.v17.v4.fusion-top24.v1": (
+        "schemas/fusion_top24.v1.schema.json",
+        "output_id",
+    ),
     "myquant.v17.v4.historical-canary-policy.v1": (
         "schemas/historical_canary_policy.v1.schema.json",
         "policy_id",
     ),
+    "myquant.v17.v4.holdings-snapshot.v1": (
+        "schemas/holdings_snapshot.v1.schema.json",
+        "snapshot_id",
+    ),
     "myquant.v17.v4.initial-pool-output.v1": (
         "schemas/initial_pool_output.v1.schema.json",
         "output_id",
+    ),
+    "myquant.v17.v4.issuer-dossier.v1": (
+        "schemas/issuer_dossier.v1.schema.json",
+        "dossier_id",
+    ),
+    "myquant.v17.v4.official-evidence.v1": (
+        "schemas/official_evidence.v1.schema.json",
+        "evidence_id",
+    ),
+    "myquant.v17.v4.portfolio-output.v1": (
+        "schemas/portfolio_output.v1.schema.json",
+        "output_id",
+    ),
+    "myquant.v17.v4.portfolio-overlay.v1": (
+        "schemas/portfolio_overlay.v1.schema.json",
+        "overlay_id",
+    ),
+    "myquant.v17.v4.portfolio-risk-policy.v1": (
+        "schemas/portfolio_risk_policy.v1.schema.json",
+        "policy_id",
+    ),
+    "myquant.v17.v4.pretrade-permissions.v1": (
+        "schemas/pretrade_permissions.v1.schema.json",
+        "permissions_id",
+    ),
+    "myquant.v17.v4.regime-evidence.v1": (
+        "schemas/regime_evidence.v1.schema.json",
+        "evidence_id",
     ),
     "myquant.v17.v4.pit-catalog-pointer.v1": (
         "schemas/pit_catalog_pointer.v1.schema.json",

@@ -154,6 +154,61 @@ class TotalReturnLabelsArtifact(ValidatedArtifact):
 
 
 @dataclass(frozen=True)
+class FusionTop24Artifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class OfficialEvidenceArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class IssuerDossierArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class EventScanArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class DeepEvidenceBundleArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class HoldingsSnapshotArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class PortfolioRiskPolicyArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class PretradePermissionsArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class PortfolioOverlayArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class PortfolioOutputArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class RegimeEvidenceArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
 class CalibrationOriginInventoryArtifact(ValidatedArtifact):
     pass
 
@@ -1242,6 +1297,657 @@ def validate_total_return_labels(
     return result
 
 
+def validate_fusion_top24(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> FusionTop24Artifact:
+    result = _common(
+        payload,
+        FusionTop24Artifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, FusionTop24Artifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    if require_utc_timestamp(
+        payload["created_at"],
+        label="created_at",
+    ) < cutoff:
+        raise ArtifactContractError(
+            "fusion Top24 created_at precedes cutoff"
+        )
+    _ref(
+        payload["promotion_receipt_ref"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        expected_version=(
+            "myquant.v17.v4.fusion-promotion-receipt.v1"
+        ),
+        label="promotion_receipt_ref",
+    )
+    rows = payload["rows"]
+    ranks = [row["rank"] for row in rows]
+    symbols = [row["symbol"] for row in rows]
+    if (
+        ranks != list(range(1, 25))
+        or len(symbols) != len(set(symbols))
+    ):
+        raise ArtifactContractError(
+            "fusion Top24 rank or symbol inventory mismatch"
+        )
+    total = Decimal("0")
+    for index, row in enumerate(rows):
+        _decimal(
+            row["fused_score"],
+            label=f"rows[{index}].fused_score",
+        )
+        target = _decimal(
+            row["base_target"],
+            label=f"rows[{index}].base_target",
+        )
+        if target < 0:
+            raise ArtifactContractError(
+                "fusion Top24 base target is negative"
+            )
+        total += target
+    if total > Decimal("1"):
+        raise ArtifactContractError(
+            "fusion Top24 base targets exceed one"
+        )
+    return result
+
+
+def validate_official_evidence(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> OfficialEvidenceArtifact:
+    result = _common(
+        payload,
+        OfficialEvidenceArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, OfficialEvidenceArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    published = require_utc_timestamp(
+        payload["published_at"],
+        label="published_at",
+    )
+    available = require_utc_timestamp(
+        payload["available_at"],
+        label="available_at",
+    )
+    if published > available or available > cutoff:
+        raise ArtifactContractError(
+            "official evidence availability exceeds cutoff"
+        )
+    return result
+
+
+def _validate_deep_source_refs(
+    values: Any,
+    *,
+    strategy_id: str,
+    cutoff: str,
+    label: str,
+) -> list[dict[str, Any]]:
+    refs = _refs(
+        values,
+        strategy_id=strategy_id,
+        cutoff=cutoff,
+        expected_version="myquant.v17.v4.official-evidence.v1",
+        label=label,
+    )
+    if not refs:
+        raise ArtifactContractError(
+            f"{label} must contain official evidence"
+        )
+    return refs
+
+
+def validate_issuer_dossier(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> IssuerDossierArtifact:
+    result = _common(
+        payload,
+        IssuerDossierArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, IssuerDossierArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    if require_utc_timestamp(
+        payload["created_at"],
+        label="created_at",
+    ) < cutoff:
+        raise ArtifactContractError(
+            "issuer dossier created_at precedes cutoff"
+        )
+    try:
+        as_of = date.fromisoformat(payload["as_of"]).isoformat()
+    except (TypeError, ValueError) as exc:
+        raise ArtifactContractError(
+            "issuer dossier as_of is invalid"
+        ) from exc
+    if as_of != payload["as_of"] or as_of > cutoff[:10]:
+        raise ArtifactContractError(
+            "issuer dossier as_of exceeds cutoff"
+        )
+    _validate_deep_source_refs(
+        payload["official_evidence_refs"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        label="official_evidence_refs",
+    )
+    return result
+
+
+def validate_event_scan(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> EventScanArtifact:
+    result = _common(
+        payload,
+        EventScanArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, EventScanArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    if require_utc_timestamp(
+        payload["created_at"],
+        label="created_at",
+    ) < cutoff:
+        raise ArtifactContractError(
+            "event scan created_at precedes cutoff"
+        )
+    try:
+        as_of = date.fromisoformat(payload["as_of"]).isoformat()
+    except (TypeError, ValueError) as exc:
+        raise ArtifactContractError(
+            "event scan as_of is invalid"
+        ) from exc
+    if (
+        as_of != payload["as_of"]
+        or as_of > cutoff[:10]
+        or payload["flags"] != sorted(payload["flags"])
+    ):
+        raise ArtifactContractError(
+            "event scan native payload mismatch"
+        )
+    _validate_deep_source_refs(
+        payload["official_evidence_refs"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        label="official_evidence_refs",
+    )
+    return result
+
+
+def validate_deep_evidence_bundle(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> DeepEvidenceBundleArtifact:
+    result = _common(
+        payload,
+        DeepEvidenceBundleArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, DeepEvidenceBundleArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    if require_utc_timestamp(
+        payload["created_at"],
+        label="created_at",
+    ) < cutoff:
+        raise ArtifactContractError(
+            "Deep bundle created_at precedes cutoff"
+        )
+    _ref(
+        payload["fusion_top24_ref"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        expected_version="myquant.v17.v4.fusion-top24.v1",
+        label="fusion_top24_ref",
+    )
+    rows = payload["rows"]
+    symbols = [row["symbol"] for row in rows]
+    if len(symbols) != 24 or len(symbols) != len(set(symbols)):
+        raise ArtifactContractError(
+            "Deep bundle must contain exactly one row per Top24 symbol"
+        )
+    for index, row in enumerate(rows):
+        target = _decimal(
+            row["target_after_deep"],
+            label=f"rows[{index}].target_after_deep",
+        )
+        if target < 0:
+            raise ArtifactContractError(
+                "Deep target must be nonnegative"
+            )
+        if row["status"] == "UNAVAILABLE":
+            if (
+                row["official_evidence_refs"]
+                or row["issuer_dossier_ref"] is not None
+                or row["event_scan_ref"] is not None
+                or row["signal"] is not None
+                or row["buy_veto"] is not True
+                or not row["reason"]
+                or target != 0
+            ):
+                raise ArtifactContractError(
+                    "unavailable Deep row must remain a zero BUY veto"
+                )
+            continue
+        if (
+            not row["official_evidence_refs"]
+            or row["issuer_dossier_ref"] is None
+            or row["event_scan_ref"] is None
+            or row["signal"] is None
+            or row["reason"]
+        ):
+            raise ArtifactContractError(
+                "complete Deep row evidence closure is incomplete"
+            )
+        _validate_deep_source_refs(
+            row["official_evidence_refs"],
+            strategy_id=result.strategy_id,
+            cutoff=cutoff,
+            label=f"rows[{index}].official_evidence_refs",
+        )
+        for field, version in (
+            ("issuer_dossier_ref", "myquant.v17.v4.issuer-dossier.v1"),
+            ("event_scan_ref", "myquant.v17.v4.event-scan.v1"),
+        ):
+            _ref(
+                row[field],
+                strategy_id=result.strategy_id,
+                cutoff=cutoff,
+                expected_version=version,
+                label=f"rows[{index}].{field}",
+            )
+        _decimal(row["signal"], label=f"rows[{index}].signal")
+    return result
+
+
+def validate_holdings_snapshot(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> HoldingsSnapshotArtifact:
+    result = _common(
+        payload,
+        HoldingsSnapshotArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, HoldingsSnapshotArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    if (
+        require_utc_timestamp(payload["created_at"], label="created_at")
+        < cutoff
+        or require_utc_timestamp(payload["available_at"], label="available_at")
+        > cutoff
+    ):
+        raise ArtifactContractError(
+            "holdings snapshot time closure mismatch"
+        )
+    try:
+        as_of = date.fromisoformat(payload["as_of_session"]).isoformat()
+    except (TypeError, ValueError) as exc:
+        raise ArtifactContractError(
+            "holdings snapshot as_of_session is invalid"
+        ) from exc
+    if as_of != payload["as_of_session"] or as_of > cutoff[:10]:
+        raise ArtifactContractError(
+            "holdings snapshot session exceeds cutoff"
+        )
+    positions = payload["positions"]
+    symbols = [row["symbol"] for row in positions]
+    if symbols != sorted(symbols) or len(symbols) != len(set(symbols)):
+        raise ArtifactContractError(
+            "holdings positions must be unique and symbol ordered"
+        )
+    nav = _decimal(payload["nav"], label="nav")
+    cash = _decimal(payload["cash"], label="cash")
+    position_total = Decimal("0")
+    for index, row in enumerate(positions):
+        market_value = _decimal(
+            row["market_value"],
+            label=f"positions[{index}].market_value",
+        )
+        if market_value <= 0:
+            raise ArtifactContractError(
+                "holding market value must be positive"
+            )
+        position_total += market_value
+    if (
+        nav <= 0
+        or cash < 0
+        or cash + position_total != nav
+        or payload["declared_all_cash"]
+        != (not positions and cash == nav)
+    ):
+        raise ArtifactContractError(
+            "holdings snapshot NAV reconciliation mismatch"
+        )
+    return result
+
+
+def validate_portfolio_risk_policy(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> PortfolioRiskPolicyArtifact:
+    result = _common(
+        payload,
+        PortfolioRiskPolicyArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, PortfolioRiskPolicyArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    created_at = require_utc_timestamp(
+        payload["created_at"],
+        label="created_at",
+    )
+    effective_from = require_utc_timestamp(
+        payload["effective_from"],
+        label="effective_from",
+    )
+    expires_at = require_utc_timestamp(
+        payload["expires_at"],
+        label="expires_at",
+    )
+    if created_at < cutoff or not effective_from <= cutoff < expires_at:
+        raise ArtifactContractError(
+            "risk policy is not effective and unexpired at cutoff"
+        )
+    values = {
+        field: _decimal(payload[field], label=field)
+        for field in (
+            "cash_floor",
+            "cluster_cap",
+            "gross_cap",
+            "industry_cap",
+            "single_name_cap",
+            "turnover_cap",
+        )
+    }
+    if (
+        any(value < 0 or value > 1 for value in values.values())
+        or any(
+            values[field] <= 0
+            for field in (
+                "cluster_cap",
+                "gross_cap",
+                "industry_cap",
+                "single_name_cap",
+                "turnover_cap",
+            )
+        )
+        or values["gross_cap"] + values["cash_floor"] > 1
+    ):
+        raise ArtifactContractError("risk policy limits are incoherent")
+    return result
+
+
+def validate_pretrade_permissions(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> PretradePermissionsArtifact:
+    result = _common(
+        payload,
+        PretradePermissionsArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, PretradePermissionsArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    if require_utc_timestamp(payload["created_at"], label="created_at") < cutoff:
+        raise ArtifactContractError(
+            "pretrade permissions created_at precedes cutoff"
+        )
+    _ref(
+        payload["canonical_calendar_ref"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        expected_version=(
+            "myquant.v17.v4.dataset.cn_open_day_calendar.v1"
+        ),
+        label="canonical_calendar_ref",
+    )
+    _ref(
+        payload["pit_catalog_ref"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        expected_version=(
+            "myquant.v17.v4.pit-generation-catalog.v1"
+        ),
+        label="pit_catalog_ref",
+    )
+    _ref(
+        payload["holdings_snapshot_ref"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        expected_version="myquant.v17.v4.holdings-snapshot.v1",
+        label="holdings_snapshot_ref",
+    )
+    _ref(
+        payload["risk_policy_ref"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        expected_version="myquant.v17.v4.portfolio-risk-policy.v1",
+        label="risk_policy_ref",
+    )
+    rows = payload["payload"]
+    symbols = [row["symbol"] for row in rows]
+    if symbols != sorted(symbols) or len(symbols) != len(set(symbols)):
+        raise ArtifactContractError(
+            "pretrade permissions must be unique and symbol ordered"
+        )
+    for index, row in enumerate(rows):
+        current = _decimal(
+            row["current_target"],
+            label=f"payload[{index}].current_target",
+        )
+        if (
+            current < 0
+            or row["held"] != (current > 0)
+            or (
+                row["lane"] == "REVIEW_ONLY_HOLDING"
+                and not row["held"]
+            )
+        ):
+            raise ArtifactContractError(
+                "pretrade permission holding truth table mismatch"
+            )
+    return result
+
+
+def validate_portfolio_overlay(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> PortfolioOverlayArtifact:
+    result = _common(
+        payload,
+        PortfolioOverlayArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, PortfolioOverlayArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    if require_utc_timestamp(payload["created_at"], label="created_at") < cutoff:
+        raise ArtifactContractError(
+            "portfolio overlay created_at precedes cutoff"
+        )
+    _ref(
+        payload["baseline_ref"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        version_prefix="myquant.v17.v4.",
+        label="baseline_ref",
+    )
+    for field, version in (
+        ("permissions_ref", "myquant.v17.v4.pretrade-permissions.v1"),
+        ("risk_policy_ref", "myquant.v17.v4.portfolio-risk-policy.v1"),
+    ):
+        _ref(
+            payload[field],
+            strategy_id=result.strategy_id,
+            cutoff=cutoff,
+            expected_version=version,
+            label=field,
+        )
+    evidence = _refs(
+        payload["evidence_refs"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        label="evidence_refs",
+    )
+    if not evidence:
+        raise ArtifactContractError(
+            "APPLIED portfolio overlay requires evidence"
+        )
+    rows = payload["target_weights"]
+    symbols = [row["symbol"] for row in rows]
+    if symbols != sorted(symbols) or len(symbols) != len(set(symbols)):
+        raise ArtifactContractError(
+            "overlay targets must be unique and symbol ordered"
+        )
+    input_gross = _decimal(payload["input_gross"], label="input_gross")
+    output_gross = _decimal(payload["output_gross"], label="output_gross")
+    released = _decimal(payload["released_to_cash"], label="released_to_cash")
+    observed = sum(
+        (
+            _decimal(row["target"], label=f"target_weights[{index}].target")
+            for index, row in enumerate(rows)
+        ),
+        Decimal("0"),
+    )
+    if (
+        input_gross < 0
+        or output_gross < 0
+        or output_gross > input_gross
+        or output_gross != observed
+        or released != input_gross - output_gross
+    ):
+        raise ArtifactContractError(
+            "portfolio overlay gross reconciliation mismatch"
+        )
+    return result
+
+
+def validate_regime_evidence(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> RegimeEvidenceArtifact:
+    result = _common(
+        payload,
+        RegimeEvidenceArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, RegimeEvidenceArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    if (
+        require_utc_timestamp(payload["created_at"], label="created_at")
+        < cutoff
+        or require_utc_timestamp(payload["available_at"], label="available_at")
+        > cutoff
+    ):
+        raise ArtifactContractError(
+            "regime evidence time closure mismatch"
+        )
+    multiplier = _decimal(
+        payload["gross_multiplier"],
+        label="gross_multiplier",
+    )
+    if multiplier < 0 or multiplier > 1:
+        raise ArtifactContractError(
+            "regime gross multiplier must be in [0, 1]"
+        )
+    return result
+
+
+def validate_portfolio_output(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> PortfolioOutputArtifact:
+    result = _common(
+        payload,
+        PortfolioOutputArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, PortfolioOutputArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    if require_utc_timestamp(payload["created_at"], label="created_at") < cutoff:
+        raise ArtifactContractError(
+            "portfolio output created_at precedes cutoff"
+        )
+    for field, version in (
+        ("deep_bundle_ref", "myquant.v17.v4.deep-evidence-bundle.v1"),
+        ("fusion_top24_ref", "myquant.v17.v4.fusion-top24.v1"),
+        ("holdings_snapshot_ref", "myquant.v17.v4.holdings-snapshot.v1"),
+        ("macro_overlay_ref", "myquant.v17.v4.portfolio-overlay.v1"),
+        ("markov_overlay_ref", "myquant.v17.v4.portfolio-overlay.v1"),
+        ("permissions_ref", "myquant.v17.v4.pretrade-permissions.v1"),
+        ("risk_policy_ref", "myquant.v17.v4.portfolio-risk-policy.v1"),
+    ):
+        _ref(
+            payload[field],
+            strategy_id=result.strategy_id,
+            cutoff=cutoff,
+            expected_version=version,
+            label=field,
+        )
+    selected = payload["selection_pool_symbols"]
+    if len(selected) != 24 or len(selected) != len(set(selected)):
+        raise ArtifactContractError(
+            "portfolio selection pool must be exact Top24"
+        )
+    rows = payload["targets"]
+    symbols = [row["symbol"] for row in rows]
+    if symbols != sorted(symbols) or len(symbols) != len(set(symbols)):
+        raise ArtifactContractError(
+            "portfolio targets must be unique and symbol ordered"
+        )
+    if not set(selected).issubset(symbols):
+        raise ArtifactContractError(
+            "portfolio targets omit a Top24 symbol"
+        )
+    gross = sum(
+        (
+            _decimal(row["final_target"], label=f"targets[{index}].final_target")
+            for index, row in enumerate(rows)
+        ),
+        Decimal("0"),
+    )
+    declared_gross = _decimal(payload["gross_weight"], label="gross_weight")
+    cash = _decimal(payload["cash_weight"], label="cash_weight")
+    if (
+        gross != declared_gross
+        or gross < 0
+        or cash < 0
+        or gross + cash != 1
+    ):
+        raise ArtifactContractError(
+            "portfolio output gross/cash reconciliation mismatch"
+        )
+    return result
+
+
 _BOOTSTRAP_MATRIX_SHA256: Final = (
     "8e4467cf152ca8de71c94ed1a20715a18ba8eefa19428217541e0baa17df9458"
 )
@@ -1619,7 +2325,11 @@ _VALIDATORS: Final[Mapping[str, Callable[..., ValidatedArtifact]]] = {
         validate_default_eligibility_receipt
     ),
     "myquant.v17.v4.default-eligible-pointer.v1": validate_default_eligible_pointer,
+    "myquant.v17.v4.deep-evidence-bundle.v1": (
+        validate_deep_evidence_bundle
+    ),
     "myquant.v17.v4.dual-run-comparison.v1": validate_dual_run_comparison,
+    "myquant.v17.v4.event-scan.v1": validate_event_scan,
     "myquant.v17.v4.formal-activation-receipt.v1": (
         validate_formal_activation_receipt
     ),
@@ -1628,12 +2338,29 @@ _VALIDATORS: Final[Mapping[str, Callable[..., ValidatedArtifact]]] = {
     "myquant.v17.v4.fusion-promotion-receipt.v1": (
         validate_fusion_promotion_receipt
     ),
+    "myquant.v17.v4.fusion-top24.v1": validate_fusion_top24,
     "myquant.v17.v4.historical-canary-policy.v1": (
         validate_historical_canary_policy
+    ),
+    "myquant.v17.v4.holdings-snapshot.v1": (
+        validate_holdings_snapshot
     ),
     "myquant.v17.v4.initial-pool-output.v1": (
         validate_initial_pool_output
     ),
+    "myquant.v17.v4.issuer-dossier.v1": validate_issuer_dossier,
+    "myquant.v17.v4.official-evidence.v1": (
+        validate_official_evidence
+    ),
+    "myquant.v17.v4.portfolio-output.v1": validate_portfolio_output,
+    "myquant.v17.v4.portfolio-overlay.v1": validate_portfolio_overlay,
+    "myquant.v17.v4.portfolio-risk-policy.v1": (
+        validate_portfolio_risk_policy
+    ),
+    "myquant.v17.v4.pretrade-permissions.v1": (
+        validate_pretrade_permissions
+    ),
+    "myquant.v17.v4.regime-evidence.v1": validate_regime_evidence,
     "myquant.v17.v4.pit-catalog-pointer.v1": validate_pit_catalog_pointer,
     "myquant.v17.v4.pit-generation-catalog.v1": (
         validate_pit_generation_catalog
@@ -1678,15 +2405,26 @@ __all__ = [
     "CanaryReceiptArtifact",
     "DefaultEligibilityReceiptArtifact",
     "DefaultEligiblePointerArtifact",
+    "DeepEvidenceBundleArtifact",
     "DualRunComparisonArtifact",
+    "EventScanArtifact",
     "FormalActivationReceiptArtifact",
     "FormalActivePointerArtifact",
     "FormalOutputArtifact",
     "FusionPromotionReceiptArtifact",
+    "FusionTop24Artifact",
     "HistoricalCanaryPolicyArtifact",
+    "HoldingsSnapshotArtifact",
     "InitialPoolOutputArtifact",
+    "IssuerDossierArtifact",
+    "OfficialEvidenceArtifact",
     "PitCatalogPointerArtifact",
     "PitGenerationCatalogArtifact",
+    "PortfolioOutputArtifact",
+    "PortfolioOverlayArtifact",
+    "PortfolioRiskPolicyArtifact",
+    "PretradePermissionsArtifact",
+    "RegimeEvidenceArtifact",
     "PreselectLocatorArtifact",
     "TotalReturnLabelsArtifact",
     "ValidatedArtifact",
@@ -1697,14 +2435,25 @@ __all__ = [
     "validate_branch_output",
     "validate_default_eligibility_receipt",
     "validate_default_eligible_pointer",
+    "validate_deep_evidence_bundle",
     "validate_dual_run_comparison",
+    "validate_event_scan",
     "validate_formal_activation_receipt",
     "validate_formal_active_pointer",
     "validate_formal_output",
     "validate_fusion_promotion_receipt",
+    "validate_fusion_top24",
     "validate_historical_canary_policy",
+    "validate_holdings_snapshot",
     "validate_initial_pool_output",
+    "validate_issuer_dossier",
+    "validate_official_evidence",
     "validate_pit_catalog_pointer",
+    "validate_portfolio_output",
+    "validate_portfolio_overlay",
+    "validate_portfolio_risk_policy",
+    "validate_pretrade_permissions",
+    "validate_regime_evidence",
     "validate_preselect_locator",
     "validate_total_return_labels",
     "validate_pit_generation_catalog",

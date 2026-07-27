@@ -179,6 +179,56 @@ Calibration artifacts use the independent v4 identities
 `myquant.v17.v4.fusion-promotion-receipt.v1`. They are package-manifest and
 runtime-build-manifest bound; no v3 calibration identity is relabelled.
 
+The native Deep and production-portfolio closure uses:
+
+```text
+myquant.v17.v4.fusion-top24.v1
+myquant.v17.v4.official-evidence.v1
+myquant.v17.v4.issuer-dossier.v1
+myquant.v17.v4.event-scan.v1
+myquant.v17.v4.deep-evidence-bundle.v1
+myquant.v17.v4.holdings-snapshot.v1
+myquant.v17.v4.portfolio-risk-policy.v1
+myquant.v17.v4.pretrade-permissions.v1
+myquant.v17.v4.regime-evidence.v1
+myquant.v17.v4.portfolio-overlay.v1
+myquant.v17.v4.portfolio-output.v1
+```
+
+Every fusion Top24 row has exactly one Deep row. `COMPLETE` requires an
+official filing or announcement, an issuer dossier no older than 30 calendar
+days, and a regulatory/corporate-event scan no older than seven calendar
+days. `UNAVAILABLE` is retained as a zero-target `BUY_VETO`; omission,
+backfill, caller-supplied replacement targets, evidence-byte drift, or
+symbol-domain drift fails closed.
+
+Formal portfolio construction is `HOLDINGS_AWARE` only. The snapshot
+reconciles position market value plus cash exactly to positive NAV and is no
+more than one canonical session old. The freshness calculation binds the
+exact active PIT generation catalog and its exact
+`myquant.v17.v4.dataset.cn_open_day_calendar.v1` bytes, requires the same
+history start and decision session, and requires at least 2,520 canonical
+sessions. Runtime revalidates each calendar row's exact field set, CN market,
+open-day flag, canonical weekday date, availability cutoff, uniqueness and
+ordering; adjacent open sessions cannot be more than 15 calendar days apart.
+It recomputes the natural-key hashes, row-set hash, latest availability and
+row count from the exact dataset bytes and requires exact equality with the
+PIT catalog summary. Permissions cover the exact union of Top24 and outside-
+pool holdings. Every downstream read recomputes held state, current target and
+lane from the exact holdings bytes; an outside-pool holding is
+`REVIEW_ONLY_HOLDING` and cannot receive a positive target delta. A held name
+with `can_sell=false` cannot be reduced by base risk, Macro, Markov or final
+portfolio construction; a conflicting mandatory risk reduction fails closed.
+
+The risk policy is effective and unexpired at the decision cutoff and binds
+the exact permission and allocation rule hashes. Single-name, industry,
+cluster, gross, cash-floor and turnover controls only shrink targets and never
+redistribute released weight. Both Macro and Markov require typed AVAILABLE
+evidence with a multiplier in `[0, 1]`; each output must be `APPLIED`, can
+only multiply its exact predecessor targets downward, and releases the
+difference to cash. A missing overlay is not a production no-op and blocks
+formal activation.
+
 The quant-first model artifacts are copied forward under `myquant.v17.v4.*`
 identities. Their v3 discriminators, semantic hashes, and authority envelopes
 are not accepted as v4 identities. The v4 package and runtime manifests bind
