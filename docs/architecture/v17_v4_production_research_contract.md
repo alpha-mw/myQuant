@@ -120,6 +120,7 @@ myquant.v17.v4.common.schema.v1
 myquant.v17.v4.authority.schema.v1
 myquant.v17.v4.formal-activation-receipt.schema.v1
 myquant.v17.v4.formal-active-pointer.schema.v1
+myquant.v17.v4.formal-output.schema.v1
 myquant.v17.v4.default-eligibility-receipt.schema.v1
 myquant.v17.v4.default-eligible-pointer.schema.v1
 myquant.v17.v4.canary-receipt.schema.v1

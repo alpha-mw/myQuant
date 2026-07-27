@@ -7,6 +7,11 @@ The additive `quant-investor-v17-v3` research entrypoint is isolated from this
 runbook. It does not change any V15 command, artifact, Dashboard consumer,
 schedule or production/default authority.
 
+The explicit `quant-investor-v17-v4` entrypoint is also isolated while its
+production-research contract is staged. Its current `verify` and `status`
+commands are no-write checks. They do not change the V15 default selector,
+schedule, Web DTO, Dashboard v3 consumer, or any trading authority.
+
 ## Active architecture
 
 - Canonical branches: `quant`, `fundamental`, `macro`.

@@ -11,6 +11,10 @@
   `myquant.v17.v3` shadow / formal-research publication surface，不改变
   `quant-investor`、`market analyze` 或 `market run` 的 V15 默认路由；其
   execution、broker、order、trade 与 production-default authority 永远为 false。
+- V17 v4 契约入口：`quant-investor-v17-v4`。当前只开放无写入的
+  `verify` 与 `status`，状态固定为 `CONTRACT_SCAFFOLD_NOT_ACTIVATED`；
+  formal-publication 与 research-runtime-default 分离，execution、broker、
+  order、trade 永远为 false。该显式入口不改变 V15 默认路由。
 - 当前包版本为 `17.0.0`，它是删除旧公共入口的 V16 retirement release，
   不是 V17 runtime 协议。`market analyze/run` 只接受并默认使用 `v15`；
   任何已退役协议 literal 都在解析阶段 exit 2，且不回退、不写文件。
@@ -38,6 +42,12 @@
   `NOT_ACTIVATED_DATA_BLOCKED`；任何 formal-research publication 必须通过
   v3 自身的 exact-cutoff promotion、activation 和 source-admission 门禁。V15
   仍是 production/default。
+- V17 production-research successor：`myquant.v17.v4`。当前仅实现契约与
+  neutral selector control scaffold；selector 转换逻辑仅作为内部受测组件，
+  未接入 CLI、Web、Dashboard 或 schedule，也没有满足 formal activation、
+  provider、eligibility、canary 的真实生产证据，因而未运营开放且不会执行
+  cutover。默认仍是 V15。完整迁移边界见
+  `docs/architecture/v17_v4_production_research_contract.md`。
 - Factor Governance：`v4`，使用版本中立的 `results/factor_governance/`
 - Dashboard：Contract v3
 
