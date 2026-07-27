@@ -536,6 +536,7 @@ def test_package_runtime_manifests_and_scaffold_authority_are_sealed() -> None:
     assert set(verify_runtime_build()) == {
         "v17_v4_runtime/__init__.py",
         "v17_v4_runtime/authority.py",
+        "v17_v4_runtime/calibration.py",
         "v17_v4_runtime/cli.py",
         "v17_v4_runtime/pit_admission.py",
         "v17_v4_runtime/pit_catalog.py",
@@ -548,6 +549,9 @@ def test_package_runtime_manifests_and_scaffold_authority_are_sealed() -> None:
 
 def test_schema_inventory_is_closed_and_does_not_redefine_neutral_control() -> None:
     assert set(schema_versions()) == {
+        "myquant.v17.v4.branch-output.v1",
+        "myquant.v17.v4.calibration-origin-inventory.v1",
+        "myquant.v17.v4.calibration-receipt.v1",
         "myquant.v17.v4.canary-pointer.v1",
         "myquant.v17.v4.canary-receipt.v1",
         "myquant.v17.v4.default-eligibility-receipt.v1",
@@ -556,9 +560,13 @@ def test_schema_inventory_is_closed_and_does_not_redefine_neutral_control() -> N
         "myquant.v17.v4.formal-activation-receipt.v1",
         "myquant.v17.v4.formal-active-pointer.v1",
         "myquant.v17.v4.formal-output.v1",
+        "myquant.v17.v4.fusion-promotion-receipt.v1",
         "myquant.v17.v4.historical-canary-policy.v1",
+        "myquant.v17.v4.initial-pool-output.v1",
         "myquant.v17.v4.pit-catalog-pointer.v1",
         "myquant.v17.v4.pit-generation-catalog.v1",
+        "myquant.v17.v4.preselect-locator.v1",
+        "myquant.v17.v4.total-return-labels.v1",
     }
     for path in sorted((CONTRACT_ROOT / "schemas").glob("*.json")):
         schema = load_packaged_json(f"schemas/{path.name}")

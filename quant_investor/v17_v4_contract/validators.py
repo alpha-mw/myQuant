@@ -4,14 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal, InvalidOperation
 import hashlib
+import re
 from types import MappingProxyType
 from typing import Any, Final
 
 from .canonical import (
     CanonicalContractError,
     canonical_bytes,
+    load_canonical_resource,
     validate_semantic_sha,
 )
 from .identities import (
@@ -39,6 +42,23 @@ _AUTHORITY_KEYS: Final = {
     "research_runtime_default",
     "trade",
 }
+_FACTOR_CONTROL_REF_KEYS: Final = {
+    "artifact_schema",
+    "byte_sha256",
+    "relative_path",
+    "schema_version",
+    "semantic_sha256",
+}
+_FACTOR_ACTIVE_SET_SCHEMA: Final = (
+    "factor-governance-production-control.active-set-pointer.schema.v1"
+)
+_FACTOR_ARTIFACT_REF_SCHEMA: Final = (
+    "factor-governance-production-control.artifact-ref.v1"
+)
+_CN_SYMBOL_RE: Final = re.compile(
+    r"^[0-9]{6}\.(?:BJ|SH|SZ)$",
+    re.ASCII,
+)
 
 
 class ArtifactContractError(ValueError):
@@ -110,6 +130,41 @@ class PitGenerationCatalogArtifact(ValidatedArtifact):
 
 @dataclass(frozen=True)
 class PitCatalogPointerArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class PreselectLocatorArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class InitialPoolOutputArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class BranchOutputArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class TotalReturnLabelsArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class CalibrationOriginInventoryArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class CalibrationReceiptArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class FusionPromotionReceiptArtifact(ValidatedArtifact):
     pass
 
 
@@ -213,6 +268,101 @@ def _ref(
     ):
         raise ArtifactContractError(f"{label} path is unsafe")
     return dict(value)
+
+
+def _factor_control_ref(
+    value: Any,
+    *,
+    label: str,
+) -> dict[str, Any]:
+    if type(value) is not dict or set(value) != _FACTOR_CONTROL_REF_KEYS:
+        raise ArtifactContractError(f"{label} shape mismatch")
+    if (
+        value["artifact_schema"] != _FACTOR_ACTIVE_SET_SCHEMA
+        or value["schema_version"] != _FACTOR_ARTIFACT_REF_SCHEMA
+    ):
+        raise ArtifactContractError(f"{label} schema mismatch")
+    try:
+        require_sha256(value["byte_sha256"], label=f"{label}.byte_sha256")
+        require_sha256(
+            value["semantic_sha256"],
+            label=f"{label}.semantic_sha256",
+        )
+    except IdentityContractError as exc:
+        raise ArtifactContractError(str(exc)) from exc
+    path = value["relative_path"]
+    if (
+        type(path) is not str
+        or not path
+        or path.startswith("/")
+        or "\\" in path
+        or any(part in {"", ".", ".."} for part in path.split("/"))
+    ):
+        raise ArtifactContractError(f"{label} path is unsafe")
+    return dict(value)
+
+
+def _read_exact_ref(
+    reference: Mapping[str, Any],
+    *,
+    artifact_loader: Callable[[Mapping[str, str]], bytes] | None,
+    expected_version: str,
+    strategy_id: str,
+    cutoff: str,
+    label: str,
+) -> dict[str, Any]:
+    normalized_ref = _ref(
+        reference,
+        strategy_id=strategy_id,
+        cutoff=cutoff,
+        expected_version=expected_version,
+        label=label,
+    )
+    if artifact_loader is None:
+        raise ArtifactContractError(
+            f"{label} requires canonical artifact readback"
+        )
+    string_ref = {
+        field: str(value) for field, value in normalized_ref.items()
+    }
+    try:
+        raw = artifact_loader(string_ref)
+    except Exception as exc:
+        raise ArtifactContractError(f"{label} readback failed") from exc
+    if (
+        type(raw) is not bytes
+        or hashlib.sha256(raw).hexdigest()
+        != normalized_ref["byte_sha256"]
+    ):
+        raise ArtifactContractError(f"{label} byte SHA mismatch")
+    try:
+        document = load_canonical_resource(raw, label=label)
+        sealed = validate_semantic_sha(document)
+    except CanonicalContractError as exc:
+        raise ArtifactContractError(
+            f"{label} canonical readback failed"
+        ) from exc
+    identity = next(
+        (
+            sealed.get(field)
+            for field in (
+                "inventory_id",
+                "receipt_id",
+            )
+            if field in sealed
+        ),
+        None,
+    )
+    if (
+        sealed.get("version") != expected_version
+        or sealed.get("strategy_id") != strategy_id
+        or sealed.get("cutoff") != normalized_ref["cutoff"]
+        or sealed.get("semantic_sha256")
+        != normalized_ref["semantic_sha256"]
+        or identity != normalized_ref["artifact_id"]
+    ):
+        raise ArtifactContractError(f"{label} document binding mismatch")
+    return sealed
 
 
 def _refs(
@@ -819,7 +969,650 @@ def validate_pit_catalog_pointer(
     return result
 
 
+def validate_preselect_locator(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> PreselectLocatorArtifact:
+    if set(payload) != {
+        "authority",
+        "cutoff",
+        "locator_id",
+        "origin",
+        "pit_catalog_ref",
+        "protocol_version",
+        "semantic_sha256",
+        "strategy_id",
+        "version",
+    }:
+        raise ArtifactContractError(
+            "preselect locator native shape mismatch"
+        )
+    result = _common(
+        payload,
+        PreselectLocatorArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, PreselectLocatorArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    _ref(
+        payload["pit_catalog_ref"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        expected_version="myquant.v17.v4.pit-generation-catalog.v1",
+        label="pit_catalog_ref",
+    )
+    try:
+        origin = date.fromisoformat(payload["origin"]).isoformat()
+    except (TypeError, ValueError) as exc:
+        raise ArtifactContractError(
+            "preselect origin is invalid"
+        ) from exc
+    if origin != payload["origin"] or origin > cutoff[:10]:
+        raise ArtifactContractError(
+            "preselect origin is after its cutoff"
+        )
+    return result
+
+
+def validate_initial_pool_output(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> InitialPoolOutputArtifact:
+    if set(payload) != {
+        "authority",
+        "cutoff",
+        "ordered_pool",
+        "origin",
+        "output_id",
+        "preselect_locator_ref",
+        "protocol_version",
+        "semantic_sha256",
+        "strategy_id",
+        "version",
+    }:
+        raise ArtifactContractError(
+            "initial pool native shape mismatch"
+        )
+    result = _common(
+        payload,
+        InitialPoolOutputArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, InitialPoolOutputArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    _ref(
+        payload["preselect_locator_ref"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        expected_version="myquant.v17.v4.preselect-locator.v1",
+        label="preselect_locator_ref",
+    )
+    pool = payload["ordered_pool"]
+    try:
+        origin = date.fromisoformat(payload["origin"]).isoformat()
+    except (TypeError, ValueError) as exc:
+        raise ArtifactContractError(
+            "initial pool origin is invalid"
+        ) from exc
+    if (
+        type(pool) is not list
+        or not 24 <= len(pool) <= 500
+        or any(
+            type(symbol) is not str
+            or _CN_SYMBOL_RE.fullmatch(symbol) is None
+            for symbol in pool
+        )
+        or len(pool) != len(set(pool))
+        or origin != payload["origin"]
+        or origin > cutoff[:10]
+    ):
+        raise ArtifactContractError(
+            "initial pool native payload mismatch"
+        )
+    return result
+
+
+def validate_branch_output(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> BranchOutputArtifact:
+    if set(payload) != {
+        "authority",
+        "branch_kind",
+        "cutoff",
+        "initial_pool_ref",
+        "origin",
+        "output_id",
+        "protocol_version",
+        "score_rows",
+        "semantic_sha256",
+        "strategy_id",
+        "version",
+    }:
+        raise ArtifactContractError(
+            "branch output native shape mismatch"
+        )
+    result = _common(
+        payload,
+        BranchOutputArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, BranchOutputArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    _ref(
+        payload["initial_pool_ref"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        expected_version="myquant.v17.v4.initial-pool-output.v1",
+        label="initial_pool_ref",
+    )
+    rows = payload["score_rows"]
+    if (
+        payload["branch_kind"] not in {"FUNDAMENTAL", "QUANT"}
+        or type(rows) is not list
+        or not 24 <= len(rows) <= 500
+        or any(
+            type(row) is not dict
+            or set(row) != {"score", "symbol"}
+            for row in rows
+        )
+    ):
+        raise ArtifactContractError(
+            "branch native score payload mismatch"
+        )
+    symbols = [row["symbol"] for row in rows]
+    try:
+        origin = date.fromisoformat(payload["origin"]).isoformat()
+    except (TypeError, ValueError) as exc:
+        raise ArtifactContractError(
+            "branch origin is invalid"
+        ) from exc
+    if (
+        any(
+            type(symbol) is not str
+            or _CN_SYMBOL_RE.fullmatch(symbol) is None
+            for symbol in symbols
+        )
+        or len(symbols) != len(set(symbols))
+        or origin != payload["origin"]
+        or origin > cutoff[:10]
+    ):
+        raise ArtifactContractError(
+            "branch native score payload mismatch"
+        )
+    for row in payload["score_rows"]:
+        _decimal(row["score"], label=f"score_rows.{row['symbol']}")
+    return result
+
+
+def validate_total_return_labels(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> TotalReturnLabelsArtifact:
+    if set(payload) != {
+        "authority",
+        "cutoff",
+        "label_end_session",
+        "label_id",
+        "label_kind",
+        "origin",
+        "protocol_version",
+        "rows",
+        "semantic_sha256",
+        "strategy_id",
+        "version",
+    }:
+        raise ArtifactContractError(
+            "total-return label native shape mismatch"
+        )
+    result = _common(
+        payload,
+        TotalReturnLabelsArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, TotalReturnLabelsArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    rows = payload["rows"]
+    if (
+        payload["label_kind"] not in {"LABEL_60", "LABEL_252"}
+        or type(rows) is not list
+        or not 24 <= len(rows) <= 500
+        or any(
+            type(row) is not dict
+            or set(row)
+            != {
+                "delisted",
+                "forward_return",
+                "official_terminal_cash",
+                "symbol",
+            }
+            or type(row.get("delisted")) is not bool
+            or type(row.get("official_terminal_cash")) is not bool
+            for row in rows
+        )
+    ):
+        raise ArtifactContractError(
+            "total-return label native payload mismatch"
+        )
+    symbols = [row["symbol"] for row in rows]
+    try:
+        origin = date.fromisoformat(payload["origin"]).isoformat()
+        label_end = date.fromisoformat(
+            payload["label_end_session"]
+        ).isoformat()
+    except (TypeError, ValueError) as exc:
+        raise ArtifactContractError(
+            "total-return label date is invalid"
+        ) from exc
+    if (
+        any(
+            type(symbol) is not str
+            or _CN_SYMBOL_RE.fullmatch(symbol) is None
+            for symbol in symbols
+        )
+        or len(symbols) != len(set(symbols))
+        or origin != payload["origin"]
+        or label_end != payload["label_end_session"]
+        or origin >= label_end
+        or label_end > cutoff[:10]
+    ):
+        raise ArtifactContractError(
+            "total-return label native payload mismatch"
+        )
+    for row in payload["rows"]:
+        _decimal(
+            row["forward_return"],
+            label=f"rows.{row['symbol']}.forward_return",
+        )
+        if (
+            row["delisted"] is True
+            and row["official_terminal_cash"] is not True
+        ):
+            raise ArtifactContractError(
+                "delisted label lacks official terminal cash"
+            )
+    return result
+
+
+_BOOTSTRAP_MATRIX_SHA256: Final = (
+    "8e4467cf152ca8de71c94ed1a20715a18ba8eefa19428217541e0baa17df9458"
+)
+
+
+def _next_calendar_month(value: str) -> str:
+    year, month = (int(part) for part in value.split("-"))
+    if month == 12:
+        return f"{year + 1:04d}-01"
+    return f"{year:04d}-{month + 1:02d}"
+
+
+def _consecutive_month_end_dates(
+    values: Sequence[str],
+    *,
+    label: str,
+) -> None:
+    if list(values) != sorted(values) or len(values) != len(set(values)):
+        raise ArtifactContractError(f"{label} must be unique and ascending")
+    for value in values:
+        try:
+            if date.fromisoformat(value).isoformat() != value:
+                raise ValueError
+        except ValueError as exc:
+            raise ArtifactContractError(
+                f"{label} contains a noncanonical date"
+            ) from exc
+    months = [value[:7] for value in values]
+    for previous, current in zip(months, months[1:]):
+        if _next_calendar_month(previous) != current:
+            raise ArtifactContractError(f"{label} skips a calendar month")
+
+
+def _bootstrap(value: Any) -> None:
+    if value != {
+        "block_length_months": 12,
+        "generator": "PCG64",
+        "matrix_sha256": _BOOTSTRAP_MATRIX_SHA256,
+        "replicates": 10_000,
+        "seed": 170_317,
+    }:
+        raise ArtifactContractError("calibration bootstrap identity mismatch")
+
+
+def validate_calibration_origin_inventory(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> CalibrationOriginInventoryArtifact:
+    result = _common(
+        payload,
+        CalibrationOriginInventoryArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, CalibrationOriginInventoryArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    created = require_utc_timestamp(
+        payload["created_at"],
+        label="created_at",
+    )
+    if created < cutoff:
+        raise ArtifactContractError(
+            "calibration inventory created_at precedes cutoff"
+        )
+    rows = payload["origins"]
+    if len(rows) != payload["input_origin_count"]:
+        raise ArtifactContractError(
+            "calibration origin inventory count mismatch"
+        )
+    origins = [row["origin"] for row in rows]
+    _consecutive_month_end_dates(origins, label="calibration origins")
+    closure = payload["closure_origins"]
+    _consecutive_month_end_dates(
+        closure,
+        label="calibration closure origins",
+    )
+    if closure != origins[-120:]:
+        raise ArtifactContractError(
+            "calibration closure must be the last 120 origins"
+        )
+    for index, row in enumerate(rows):
+        _factor_control_ref(
+            row["factor_active_set_ref"],
+            label=f"origins[{index}].factor_active_set_ref",
+        )
+        require_sha256(
+            row["factor_set_sha256"],
+            label=f"origins[{index}].factor_set_sha256",
+        )
+        require_sha256(
+            row["origin_semantic_sha256"],
+            label=f"origins[{index}].origin_semantic_sha256",
+        )
+        require_sha256(
+            row["source_closure_sha256"],
+            label=f"origins[{index}].source_closure_sha256",
+        )
+    return result
+
+
+def validate_calibration_receipt(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+    artifact_loader: Callable[[Mapping[str, str]], bytes] | None = None,
+) -> CalibrationReceiptArtifact:
+    result = _common(
+        payload,
+        CalibrationReceiptArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, CalibrationReceiptArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    if require_utc_timestamp(
+        payload["created_at"],
+        label="created_at",
+    ) < cutoff:
+        raise ArtifactContractError(
+            "calibration receipt created_at precedes cutoff"
+        )
+    expected_span = {
+        "QUANT_TIMING": 1260,
+        "FUNDAMENTAL_FORWARD": 2520,
+    }[payload["calibration_kind"]]
+    if (
+        payload["accepted"] is not True
+        or payload["status"] != "ACCEPTED"
+        or payload["minimum_open_session_span"] != expected_span
+        or payload["input_origin_count"] < payload["closure_origin_count"]
+    ):
+        raise ArtifactContractError(
+            "calibration receipt gate result mismatch"
+        )
+    _bootstrap(payload["bootstrap"])
+    inventory_ref = _ref(
+        payload["origin_inventory_ref"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        expected_version=(
+            "myquant.v17.v4.calibration-origin-inventory.v1"
+        ),
+        label="origin_inventory_ref",
+    )
+    inventory_document = _read_exact_ref(
+        inventory_ref,
+        artifact_loader=artifact_loader,
+        expected_version=(
+            "myquant.v17.v4.calibration-origin-inventory.v1"
+        ),
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        label="origin_inventory_ref",
+    )
+    inventory = validate_calibration_origin_inventory(
+        inventory_document,
+    )
+    if (
+        inventory_document["cutoff"] != payload["cutoff"]
+        or inventory_document["run_id"] != payload["run_id"]
+        or inventory_document["closure_origin_count"]
+        != payload["closure_origin_count"]
+        or inventory_document["input_origin_count"]
+        != payload["input_origin_count"]
+    ):
+        raise ArtifactContractError(
+            "calibration receipt inventory binding mismatch"
+        )
+    if inventory.strategy_id != result.strategy_id:
+        raise ArtifactContractError(
+            "calibration receipt inventory strategy mismatch"
+        )
+    return result
+
+
+def validate_fusion_promotion_receipt(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+    artifact_loader: Callable[[Mapping[str, str]], bytes] | None = None,
+) -> FusionPromotionReceiptArtifact:
+    result = _common(
+        payload,
+        FusionPromotionReceiptArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, FusionPromotionReceiptArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    if require_utc_timestamp(
+        payload["created_at"],
+        label="created_at",
+    ) < cutoff:
+        raise ArtifactContractError(
+            "fusion receipt created_at precedes cutoff"
+        )
+    _bootstrap(payload["bootstrap"])
+    inventory = _ref(
+        payload["origin_inventory_ref"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        expected_version=(
+            "myquant.v17.v4.calibration-origin-inventory.v1"
+        ),
+        label="origin_inventory_ref",
+    )
+    quant = _ref(
+        payload["quant_calibration_receipt_ref"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        expected_version="myquant.v17.v4.calibration-receipt.v1",
+        label="quant_calibration_receipt_ref",
+    )
+    fundamental = _ref(
+        payload["fundamental_calibration_receipt_ref"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        expected_version="myquant.v17.v4.calibration-receipt.v1",
+        label="fundamental_calibration_receipt_ref",
+    )
+    if len(
+        {
+            inventory["byte_sha256"],
+            quant["byte_sha256"],
+            fundamental["byte_sha256"],
+        }
+    ) != 3:
+        raise ArtifactContractError(
+            "fusion receipt contains colliding source refs"
+        )
+    inventory_document = _read_exact_ref(
+        inventory,
+        artifact_loader=artifact_loader,
+        expected_version=(
+            "myquant.v17.v4.calibration-origin-inventory.v1"
+        ),
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        label="origin_inventory_ref",
+    )
+    validate_calibration_origin_inventory(inventory_document)
+    quant_document = _read_exact_ref(
+        quant,
+        artifact_loader=artifact_loader,
+        expected_version="myquant.v17.v4.calibration-receipt.v1",
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        label="quant_calibration_receipt_ref",
+    )
+    fundamental_document = _read_exact_ref(
+        fundamental,
+        artifact_loader=artifact_loader,
+        expected_version="myquant.v17.v4.calibration-receipt.v1",
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        label="fundamental_calibration_receipt_ref",
+    )
+    validate_calibration_receipt(
+        quant_document,
+        artifact_loader=artifact_loader,
+    )
+    validate_calibration_receipt(
+        fundamental_document,
+        artifact_loader=artifact_loader,
+    )
+    if (
+        inventory_document["cutoff"] != payload["cutoff"]
+        or inventory_document["run_id"] != payload["run_id"]
+        or quant_document["calibration_kind"] != "QUANT_TIMING"
+        or fundamental_document["calibration_kind"]
+        != "FUNDAMENTAL_FORWARD"
+        or quant_document["origin_inventory_ref"] != inventory
+        or fundamental_document["origin_inventory_ref"] != inventory
+        or quant_document["bootstrap"] != payload["bootstrap"]
+        or fundamental_document["bootstrap"] != payload["bootstrap"]
+        or quant_document["run_id"] != payload["run_id"]
+        or fundamental_document["run_id"] != payload["run_id"]
+        or quant_document["closure_origin_count"]
+        != inventory_document["closure_origin_count"]
+        or fundamental_document["closure_origin_count"]
+        != inventory_document["closure_origin_count"]
+        or quant_document["input_origin_count"]
+        != inventory_document["input_origin_count"]
+        or fundamental_document["input_origin_count"]
+        != inventory_document["input_origin_count"]
+    ):
+        raise ArtifactContractError(
+            "fusion receipt calibration binding mismatch"
+        )
+    folds = payload["folds"]
+    if [row["fold_index"] for row in folds] != [1, 2, 3, 4, 5]:
+        raise ArtifactContractError("fusion fold inventory mismatch")
+    stitched: list[str] = []
+    for row in folds:
+        training = row["training_origins"]
+        oos = row["oos_origins"]
+        _consecutive_month_end_dates(
+            training,
+            label=f"fold_{row['fold_index']}.training_origins",
+        )
+        _consecutive_month_end_dates(
+            oos,
+            label=f"fold_{row['fold_index']}.oos_origins",
+        )
+        if training[-1] >= oos[0]:
+            raise ArtifactContractError(
+                "fusion fold training is not before OOS"
+            )
+        weight = _decimal(
+            row["selected_quant_weight"],
+            label="selected_quant_weight",
+        )
+        if weight not in {
+            Decimal(value) / Decimal(100)
+            for value in range(25, 76, 5)
+        }:
+            raise ArtifactContractError(
+                "fusion fold weight is outside the frozen grid"
+            )
+        stitched.extend(oos)
+    active = payload["active_refit_origins"]
+    _consecutive_month_end_dates(
+        active,
+        label="active_refit_origins",
+    )
+    if stitched != active:
+        raise ArtifactContractError(
+            "fusion outer OOS origins differ from active refit origins"
+        )
+    accepted = payload["accepted"]
+    expected_status = (
+        "PROMOTED" if accepted else "CALIBRATION_CLOSURE_BLOCKED"
+    )
+    if payload["status"] != expected_status:
+        raise ArtifactContractError(
+            "fusion promotion status/accepted mismatch"
+        )
+    hit_lower = _decimal(
+        payload["oos_hit60_lower_95"],
+        label="oos_hit60_lower_95",
+    )
+    q25_lower = _decimal(
+        payload["oos_q25_252_lower_95"],
+        label="oos_q25_252_lower_95",
+    )
+    blockers = payload["blockers"]
+    expected_blockers: list[str] = []
+    if hit_lower <= Decimal("0.50"):
+        expected_blockers.append(
+            "oos_hit60_lower_95_not_above_0.50"
+        )
+    if q25_lower <= 0:
+        expected_blockers.append(
+            "oos_q25_252_lower_95_not_above_zero"
+        )
+    if blockers != expected_blockers or accepted == bool(expected_blockers):
+        raise ArtifactContractError(
+            "fusion promotion threshold closure mismatch"
+        )
+    return result
+
+
 _VALIDATORS: Final[Mapping[str, Callable[..., ValidatedArtifact]]] = {
+    "myquant.v17.v4.branch-output.v1": validate_branch_output,
+    "myquant.v17.v4.calibration-origin-inventory.v1": (
+        validate_calibration_origin_inventory
+    ),
+    "myquant.v17.v4.calibration-receipt.v1": (
+        validate_calibration_receipt
+    ),
     "myquant.v17.v4.canary-pointer.v1": validate_canary_pointer,
     "myquant.v17.v4.canary-receipt.v1": validate_canary_receipt,
     "myquant.v17.v4.default-eligibility-receipt.v1": (
@@ -832,12 +1625,24 @@ _VALIDATORS: Final[Mapping[str, Callable[..., ValidatedArtifact]]] = {
     ),
     "myquant.v17.v4.formal-active-pointer.v1": validate_formal_active_pointer,
     "myquant.v17.v4.formal-output.v1": validate_formal_output,
+    "myquant.v17.v4.fusion-promotion-receipt.v1": (
+        validate_fusion_promotion_receipt
+    ),
     "myquant.v17.v4.historical-canary-policy.v1": (
         validate_historical_canary_policy
+    ),
+    "myquant.v17.v4.initial-pool-output.v1": (
+        validate_initial_pool_output
     ),
     "myquant.v17.v4.pit-catalog-pointer.v1": validate_pit_catalog_pointer,
     "myquant.v17.v4.pit-generation-catalog.v1": (
         validate_pit_generation_catalog
+    ),
+    "myquant.v17.v4.preselect-locator.v1": (
+        validate_preselect_locator
+    ),
+    "myquant.v17.v4.total-return-labels.v1": (
+        validate_total_return_labels
     ),
 }
 
@@ -846,16 +1651,29 @@ def validate_typed_artifact(
     payload: Mapping[str, Any],
     *,
     schema_checked: bool = False,
+    artifact_loader: Callable[[Mapping[str, str]], bytes] | None = None,
 ) -> ValidatedArtifact:
     version = payload.get("version")
     validator = _VALIDATORS.get(version)
     if validator is None:
         raise ArtifactContractError(f"unsupported v4 artifact version: {version!r}")
+    if version in {
+        "myquant.v17.v4.calibration-receipt.v1",
+        "myquant.v17.v4.fusion-promotion-receipt.v1",
+    }:
+        return validator(
+            payload,
+            schema_checked=schema_checked,
+            artifact_loader=artifact_loader,
+        )
     return validator(payload, schema_checked=schema_checked)
 
 
 __all__ = [
     "ArtifactContractError",
+    "BranchOutputArtifact",
+    "CalibrationOriginInventoryArtifact",
+    "CalibrationReceiptArtifact",
     "CanaryPointerArtifact",
     "CanaryReceiptArtifact",
     "DefaultEligibilityReceiptArtifact",
@@ -864,20 +1682,31 @@ __all__ = [
     "FormalActivationReceiptArtifact",
     "FormalActivePointerArtifact",
     "FormalOutputArtifact",
+    "FusionPromotionReceiptArtifact",
     "HistoricalCanaryPolicyArtifact",
+    "InitialPoolOutputArtifact",
     "PitCatalogPointerArtifact",
     "PitGenerationCatalogArtifact",
+    "PreselectLocatorArtifact",
+    "TotalReturnLabelsArtifact",
     "ValidatedArtifact",
     "validate_canary_pointer",
     "validate_canary_receipt",
+    "validate_calibration_origin_inventory",
+    "validate_calibration_receipt",
+    "validate_branch_output",
     "validate_default_eligibility_receipt",
     "validate_default_eligible_pointer",
     "validate_dual_run_comparison",
     "validate_formal_activation_receipt",
     "validate_formal_active_pointer",
     "validate_formal_output",
+    "validate_fusion_promotion_receipt",
     "validate_historical_canary_policy",
+    "validate_initial_pool_output",
     "validate_pit_catalog_pointer",
+    "validate_preselect_locator",
+    "validate_total_return_labels",
     "validate_pit_generation_catalog",
     "validate_typed_artifact",
 ]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from decimal import Decimal
 import math
@@ -19,6 +20,18 @@ from .resources import PackageResourceError, load_packaged_json
 PROTOCOL_VERSION: Final = "myquant.v17.v4"
 _DRAFT: Final = "https://json-schema.org/draft/2020-12/schema"
 _ARTIFACT_REGISTRY: Final = {
+    "myquant.v17.v4.branch-output.v1": (
+        "schemas/branch_output.v1.schema.json",
+        "output_id",
+    ),
+    "myquant.v17.v4.calibration-origin-inventory.v1": (
+        "schemas/calibration_origin_inventory.v1.schema.json",
+        "inventory_id",
+    ),
+    "myquant.v17.v4.calibration-receipt.v1": (
+        "schemas/calibration_receipt.v1.schema.json",
+        "receipt_id",
+    ),
     "myquant.v17.v4.canary-pointer.v1": (
         "schemas/canary_pointer.v1.schema.json",
         "pointer_id",
@@ -51,9 +64,17 @@ _ARTIFACT_REGISTRY: Final = {
         "schemas/formal_output.v1.schema.json",
         "output_id",
     ),
+    "myquant.v17.v4.fusion-promotion-receipt.v1": (
+        "schemas/fusion_promotion_receipt.v1.schema.json",
+        "receipt_id",
+    ),
     "myquant.v17.v4.historical-canary-policy.v1": (
         "schemas/historical_canary_policy.v1.schema.json",
         "policy_id",
+    ),
+    "myquant.v17.v4.initial-pool-output.v1": (
+        "schemas/initial_pool_output.v1.schema.json",
+        "output_id",
     ),
     "myquant.v17.v4.pit-catalog-pointer.v1": (
         "schemas/pit_catalog_pointer.v1.schema.json",
@@ -62,6 +83,14 @@ _ARTIFACT_REGISTRY: Final = {
     "myquant.v17.v4.pit-generation-catalog.v1": (
         "schemas/pit_generation_catalog.v1.schema.json",
         "catalog_id",
+    ),
+    "myquant.v17.v4.preselect-locator.v1": (
+        "schemas/preselect_locator.v1.schema.json",
+        "locator_id",
+    ),
+    "myquant.v17.v4.total-return-labels.v1": (
+        "schemas/total_return_labels.v1.schema.json",
+        "label_id",
     ),
 }
 _SUPPORTED_KEYWORDS: Final = frozenset(
@@ -398,14 +427,22 @@ def validate_schema_version(instance: Any, version: Any) -> dict[str, Any]:
     return dict(instance)
 
 
-def validate_artifact(instance: Any) -> Any:
+def validate_artifact(
+    instance: Any,
+    *,
+    artifact_loader: Callable[[Mapping[str, str]], bytes] | None = None,
+) -> Any:
     if type(instance) is not dict:
         raise SchemaValidationError("v4 artifact must be an object")
     validate_schema_version(instance, instance.get("version"))
     try:
         from .validators import validate_typed_artifact
 
-        return validate_typed_artifact(instance, schema_checked=True)
+        return validate_typed_artifact(
+            instance,
+            schema_checked=True,
+            artifact_loader=artifact_loader,
+        )
     except (CanonicalContractError, PackageResourceError) as exc:
         raise SchemaValidationError(str(exc)) from exc
 
@@ -415,6 +452,7 @@ def load_canonical_artifact(
     *,
     expected_version: str | None = None,
     label: str = "v4 artifact",
+    artifact_loader: Callable[[Mapping[str, str]], bytes] | None = None,
 ) -> Any:
     try:
         instance = load_canonical_resource(raw, label=label)
@@ -424,7 +462,10 @@ def load_canonical_artifact(
         raise SchemaValidationError(f"{label} root must be an object")
     if expected_version is not None and instance.get("version") != expected_version:
         raise SchemaValidationError(f"{label} version does not match expected_version")
-    return validate_artifact(instance)
+    return validate_artifact(
+        instance,
+        artifact_loader=artifact_loader,
+    )
 
 
 __all__ = [

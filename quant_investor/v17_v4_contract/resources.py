@@ -18,7 +18,7 @@ PROTOCOL_VERSION: Final = "myquant.v17.v4"
 PACKAGE_MANIFEST_PATH: Final = "resources/package_manifest.v1.json"
 RUNTIME_BUILD_MANIFEST_PATH: Final = "resources/runtime_build_manifest.v1.json"
 PACKAGE_MANIFEST_SHA256: Final = (
-    "45e11b9b75acf6a9da54a1065d8766a7dbf9ae6b6e6e080ff7d32322ac8095db"
+    "01fd6bc8c39ac52880be0bb3ad17005537f8c1566d8f7a26a27a0f465b4eb7b4"
 )
 _PACKAGE_ROOT: Final = Path(__file__).resolve().parent
 _NO_AUTHORITY: Final = {

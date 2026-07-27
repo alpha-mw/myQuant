@@ -173,6 +173,12 @@ quantitative, factor-identity, runtime-contract, file-hash, and semantic-hash
 bindings pass. Coherent caller-declared evidence and replay digests are not an
 admissible source.
 
+Calibration artifacts use the independent v4 identities
+`myquant.v17.v4.calibration-origin-inventory.v1`,
+`myquant.v17.v4.calibration-receipt.v1`, and
+`myquant.v17.v4.fusion-promotion-receipt.v1`. They are package-manifest and
+runtime-build-manifest bound; no v3 calibration identity is relabelled.
+
 The quant-first model artifacts are copied forward under `myquant.v17.v4.*`
 identities. Their v3 discriminators, semantic hashes, and authority envelopes
 are not accepted as v4 identities. The v4 package and runtime manifests bind
@@ -604,11 +610,25 @@ label maturity = exact 60-session and 252-session total-return labels
 common READY minimum = 24 names at every origin
 ```
 
+The closure window is exactly the last 120 consecutive origins. Earlier,
+equally governed antecedent origins may be supplied solely to make each
+fold's 60-origin training window leakage-free after enforcing the 252-session
+label maturity boundary. Antecedents do not replace, shorten, or create gaps
+inside the 120-origin closure window.
+
 Every origin reconstructs the exact PIT catalog, PRESELECT locator, initial
 pool, same-pool Quant/Fundamental branches, benchmark, corporate actions, and
-official terminal cash. No month may be skipped. The last 60 mature origins
-form five consecutive 12-month outer folds; each fold trains only on the
-latest 60 earlier origins whose 252-session labels end before the fold starts.
+official terminal cash. Each referenced artifact is read back as canonical
+bytes and must match its byte and semantic hashes. PRESELECT locators, initial
+pools, Quant/Fundamental branch outputs, and total-return labels use closed
+native v4 schemas; a metadata-only `calibration_binding` cannot stand in for
+their payloads. Benchmark, corporate-action, and official-delisting-cash refs
+must be byte-for-byte identical to the corresponding refs in the validated PIT
+catalog. Pool order, scores, label rows, delisting cash, and the historical
+Factor production-control active set are then recomputed from the native
+payloads. No month may be skipped. The last 60 mature origins form five
+consecutive 12-month outer folds; each fold trains only on the latest 60
+earlier origins whose 252-session labels end before the fold starts.
 
 All receipts bind the fixed 10,000-replicate circular 12-month block-bootstrap
 matrix with PCG64 seed `170317`. Fusion promotion requires one-sided 95% lower
