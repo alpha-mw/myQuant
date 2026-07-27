@@ -129,8 +129,11 @@ myquant.v17.v4.default-eligibility-receipt.schema.v1
 myquant.v17.v4.default-eligible-pointer.schema.v1
 myquant.v17.v4.canary-receipt.schema.v1
 myquant.v17.v4.canary-pointer.schema.v1
+myquant.v17.v4.canary-public-snapshot.schema.v1
 myquant.v17.v4.dual-run-comparison.schema.v1
 myquant.v17.v4.historical-canary-policy.schema.v1
+myquant.v17.v4.public-run-dto.schema.v1
+myquant.v17.v4.public-surface-compatibility-receipt.schema.v1
 myquant.v17.v4.pit-generation-catalog.schema.v1
 myquant.v17.v4.pit-catalog-pointer.schema.v1
 myquant.research-runtime.protocol-target.schema.v1
@@ -746,6 +749,27 @@ Before cutover:
   `v15_run_readiness`;
 - the v4 schedule writes only canary artifacts;
 - canary Web and Dashboard views are read-only and visibly labelled `CANARY`.
+
+The implemented opt-in boundary is:
+
+- `quant-investor market analyze|run --decision-protocol v17-v4
+  --v17-strategy-id ...` resolves one exact `FORMAL_ACTIVE` run and performs
+  no provider, selector, execution, broker, order, or trade call;
+- `quant-investor-v17-v4 read-formal` exposes the same CLI DTO;
+- `GET /api/v4/research-runs/{strategy_id}` is the only v4 Web method and
+  returns the closed `myquant.v17.v4.public-run-dto.v1` namespace;
+- `portfolio_dashboard/schema/dashboard_contract.v4.schema.json` keeps
+  `v15_run_readiness` reserved and null, and uses a distinct
+  `v17_v4_run_readiness`;
+- `quant-investor-v17-v4 publish-canary` requires the exact formal-pointer
+  prevalue and its narrow writer can create only immutable
+  `results/v17_v4_canary/strategies/{strategy_id}/public_snapshots/sessions/`
+  objects;
+- `resources/canary_schedule_policy.v1.json` is disabled by default and
+  requires explicit opt-in;
+- `quant-investor-v17-v4 audit-surfaces` produces exactly four
+  `myquant.v17.v4.public-surface-compatibility-receipt.v1` artifacts, each
+  hash-binding its v4 files and the unchanged V15 counterpart.
 
 The V15 DTO, Dashboard Contract v3, V15 command spelling, and V15 schedule
 remain byte-compatible. After selector bootstrap, all surfaces resolve the same

@@ -233,6 +233,21 @@ class FusionPromotionReceiptArtifact(ValidatedArtifact):
     pass
 
 
+@dataclass(frozen=True)
+class PublicSurfaceCompatibilityReceiptArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class PublicRunDTOArtifact(ValidatedArtifact):
+    pass
+
+
+@dataclass(frozen=True)
+class CanaryPublicSnapshotArtifact(ValidatedArtifact):
+    pass
+
+
 def _authority(
     value: Any,
     *,
@@ -704,6 +719,233 @@ def validate_formal_output(
     )
     if not evidence:
         raise ArtifactContractError("formal output requires evidence")
+    return result
+
+
+def _source_file_refs(
+    values: Any,
+    *,
+    label: str,
+) -> tuple[dict[str, str], ...]:
+    if type(values) is not list or not values:
+        raise ArtifactContractError(f"{label} must be a nonempty array")
+    normalized: list[dict[str, str]] = []
+    for index, value in enumerate(values):
+        if type(value) is not dict or set(value) != {
+            "byte_sha256",
+            "relative_path",
+        }:
+            raise ArtifactContractError(
+                f"{label}[{index}] shape mismatch"
+            )
+        relative_path = value["relative_path"]
+        if (
+            type(relative_path) is not str
+            or not relative_path
+            or relative_path.startswith("/")
+            or "\\" in relative_path
+            or any(
+                part in {"", ".", ".."}
+                for part in relative_path.split("/")
+            )
+        ):
+            raise ArtifactContractError(
+                f"{label}[{index}] path is noncanonical"
+            )
+        try:
+            relative_path.encode("ascii")
+            byte_sha256 = require_sha256(
+                value["byte_sha256"],
+                label=f"{label}[{index}].byte_sha256",
+            )
+        except (UnicodeEncodeError, IdentityContractError) as exc:
+            raise ArtifactContractError(
+                f"{label}[{index}] is invalid"
+            ) from exc
+        normalized.append(
+            {
+                "byte_sha256": byte_sha256,
+                "relative_path": relative_path,
+            }
+        )
+    expected = sorted(
+        normalized,
+        key=lambda row: row["relative_path"],
+    )
+    if normalized != expected or len(
+        {row["relative_path"].casefold() for row in normalized}
+    ) != len(normalized):
+        raise ArtifactContractError(
+            f"{label} must be unique and ASCII path ordered"
+        )
+    return tuple(normalized)
+
+
+def validate_public_surface_compatibility_receipt(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> PublicSurfaceCompatibilityReceiptArtifact:
+    result = _common(
+        payload,
+        PublicSurfaceCompatibilityReceiptArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(
+        result,
+        PublicSurfaceCompatibilityReceiptArtifact,
+    )
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    created_at = require_utc_timestamp(
+        payload["created_at"],
+        label="created_at",
+    )
+    if created_at < cutoff:
+        raise ArtifactContractError(
+            "public surface receipt predates its run cutoff"
+        )
+    _ref(
+        payload["formal_active_pointer_ref"],
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        expected_version="myquant.v17.v4.formal-active-pointer.v1",
+        label="formal_active_pointer_ref",
+    )
+    _source_file_refs(
+        payload["surface_file_refs"],
+        label="surface_file_refs",
+    )
+    _source_file_refs(
+        payload["v15_compatibility_refs"],
+        label="v15_compatibility_refs",
+    )
+    return result
+
+
+def validate_public_run_dto(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> PublicRunDTOArtifact:
+    result = _common(
+        payload,
+        PublicRunDTOArtifact,
+        formal_research_publication=True,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, PublicRunDTOArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    expected_refs = (
+        (
+            "formal_active_pointer_ref",
+            "myquant.v17.v4.formal-active-pointer.v1",
+        ),
+        (
+            "formal_activation_receipt_ref",
+            "myquant.v17.v4.formal-activation-receipt.v1",
+        ),
+        ("formal_output_ref", "myquant.v17.v4.formal-output.v1"),
+        (
+            "portfolio_output_ref",
+            "myquant.v17.v4.portfolio-output.v1",
+        ),
+    )
+    for field, version in expected_refs:
+        reference = _ref(
+            payload[field],
+            strategy_id=result.strategy_id,
+            cutoff=cutoff,
+            expected_version=version,
+            label=field,
+        )
+        if reference["cutoff"] != cutoff:
+            raise ArtifactContractError(
+                f"{field} cutoff must equal the public run cutoff"
+            )
+    if payload["side_effects"] != {
+        "broker_calls": False,
+        "execution_calls": False,
+        "llm_control_calls": False,
+        "order_calls": False,
+        "provider_calls": False,
+        "selector_writes": False,
+        "trade_calls": False,
+    }:
+        raise ArtifactContractError(
+            "public run side effects must all be false"
+        )
+    targets = payload["targets"]
+    symbols = [row["symbol"] for row in targets]
+    if (
+        symbols != sorted(symbols)
+        or len(symbols) != len(set(symbols))
+        or any(
+            _CN_SYMBOL_RE.fullmatch(symbol) is None
+            for symbol in symbols
+        )
+    ):
+        raise ArtifactContractError(
+            "public run targets must be unique and symbol ordered"
+        )
+    gross = _decimal(payload["gross_weight"], label="gross_weight")
+    cash = _decimal(payload["cash_weight"], label="cash_weight")
+    final_total = sum(
+        (
+            _decimal(
+                row["final_target"],
+                label=f"targets[{index}].final_target",
+            )
+            for index, row in enumerate(targets)
+        ),
+        Decimal("0"),
+    )
+    if gross + cash != Decimal("1") or final_total != gross:
+        raise ArtifactContractError(
+            "public run portfolio weights do not close"
+        )
+    return result
+
+
+def validate_canary_public_snapshot(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> CanaryPublicSnapshotArtifact:
+    result = _common(
+        payload,
+        CanaryPublicSnapshotArtifact,
+        formal_research_publication=True,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, CanaryPublicSnapshotArtifact)
+    cutoff = require_utc_timestamp(payload["cutoff"], label="cutoff")
+    created_at = require_utc_timestamp(
+        payload["created_at"],
+        label="created_at",
+    )
+    if created_at < cutoff:
+        raise ArtifactContractError(
+            "canary public snapshot predates its run cutoff"
+        )
+    public = validate_public_run_dto(
+        payload["public_run"],
+        schema_checked=True,
+    )
+    if (
+        public.strategy_id != result.strategy_id
+        or payload["public_run"]["surface"] != "SCHEDULE"
+        or payload["public_run"]["cutoff"] != cutoff
+        or payload["formal_active_pointer_ref"]
+        != payload["public_run"]["formal_active_pointer_ref"]
+        or payload["formal_activation_receipt_ref"]
+        != payload["public_run"]["formal_activation_receipt_ref"]
+        or payload["snapshot_id"]
+        != f"canary-public-{payload['session_id']}"
+    ):
+        raise ArtifactContractError(
+            "canary public snapshot binding mismatch"
+        )
     return result
 
 
@@ -2408,6 +2650,9 @@ _VALIDATORS: Final[Mapping[str, Callable[..., ValidatedArtifact]]] = {
         validate_calibration_receipt
     ),
     "myquant.v17.v4.canary-pointer.v1": validate_canary_pointer,
+    "myquant.v17.v4.canary-public-snapshot.v1": (
+        validate_canary_public_snapshot
+    ),
     "myquant.v17.v4.canary-receipt.v1": validate_canary_receipt,
     "myquant.v17.v4.default-eligibility-receipt.v1": (
         validate_default_eligibility_receipt
@@ -2462,6 +2707,10 @@ _VALIDATORS: Final[Mapping[str, Callable[..., ValidatedArtifact]]] = {
     "myquant.v17.v4.preselect-locator.v1": (
         validate_preselect_locator
     ),
+    "myquant.v17.v4.public-surface-compatibility-receipt.v1": (
+        validate_public_surface_compatibility_receipt
+    ),
+    "myquant.v17.v4.public-run-dto.v1": validate_public_run_dto,
     "myquant.v17.v4.total-return-labels.v1": (
         validate_total_return_labels
     ),
@@ -2496,6 +2745,7 @@ __all__ = [
     "CalibrationOriginInventoryArtifact",
     "CalibrationReceiptArtifact",
     "CanaryPointerArtifact",
+    "CanaryPublicSnapshotArtifact",
     "CanaryReceiptArtifact",
     "DefaultEligibilityReceiptArtifact",
     "DefaultEligiblePointerArtifact",
@@ -2522,9 +2772,12 @@ __all__ = [
     "PretradePermissionsArtifact",
     "RegimeEvidenceArtifact",
     "PreselectLocatorArtifact",
+    "PublicSurfaceCompatibilityReceiptArtifact",
+    "PublicRunDTOArtifact",
     "TotalReturnLabelsArtifact",
     "ValidatedArtifact",
     "validate_canary_pointer",
+    "validate_canary_public_snapshot",
     "validate_canary_receipt",
     "validate_calibration_origin_inventory",
     "validate_calibration_receipt",
@@ -2553,6 +2806,8 @@ __all__ = [
     "validate_pretrade_permissions",
     "validate_regime_evidence",
     "validate_preselect_locator",
+    "validate_public_surface_compatibility_receipt",
+    "validate_public_run_dto",
     "validate_total_return_labels",
     "validate_pit_generation_catalog",
     "validate_typed_artifact",

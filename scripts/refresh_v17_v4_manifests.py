@@ -60,7 +60,11 @@ def main() -> None:
 
     asset_paths = sorted(
         [
-            runtime_manifest,
+            *[
+                path
+                for path in (CONTRACT / "resources").glob("*.json")
+                if path.name != "package_manifest.v1.json"
+            ],
             *list((CONTRACT / "schemas").glob("*.json")),
         ],
         key=lambda path: path.relative_to(CONTRACT).as_posix(),

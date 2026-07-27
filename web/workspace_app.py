@@ -14,7 +14,7 @@ from quant_investor.env_loading import load_env_file
 from quant_investor.versioning import ARCHITECTURE_VERSION
 from web.config import CORS_ORIGINS, PROJECT_ROOT, workspace_auth_token
 from web.api.data import router as data_router
-from web.routers import presets, research, settings, universe
+from web.routers import presets, research, settings, universe, v17_v4_research
 from web.services.run_history_store import history_store
 
 
@@ -127,6 +127,7 @@ def create_app(
     app.include_router(presets.router)
     app.include_router(settings.router)
     app.include_router(universe.router)
+    app.include_router(v17_v4_research.router)
     app.include_router(data_router, prefix="/api")
 
     @app.get("/api/health")

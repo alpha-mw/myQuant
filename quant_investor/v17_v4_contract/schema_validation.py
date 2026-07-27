@@ -40,6 +40,10 @@ _ARTIFACT_REGISTRY: Final = {
         "schemas/canary_receipt.v1.schema.json",
         "receipt_id",
     ),
+    "myquant.v17.v4.canary-public-snapshot.v1": (
+        "schemas/canary_public_snapshot.v1.schema.json",
+        "snapshot_id",
+    ),
     "myquant.v17.v4.default-eligibility-receipt.v1": (
         "schemas/default_eligibility_receipt.v1.schema.json",
         "receipt_id",
@@ -139,6 +143,14 @@ _ARTIFACT_REGISTRY: Final = {
     "myquant.v17.v4.preselect-locator.v1": (
         "schemas/preselect_locator.v1.schema.json",
         "locator_id",
+    ),
+    "myquant.v17.v4.public-surface-compatibility-receipt.v1": (
+        "schemas/public_surface_compatibility_receipt.v1.schema.json",
+        "receipt_id",
+    ),
+    "myquant.v17.v4.public-run-dto.v1": (
+        "schemas/public_run_dto.v1.schema.json",
+        "run_id",
     ),
     "myquant.v17.v4.total-return-labels.v1": (
         "schemas/total_return_labels.v1.schema.json",

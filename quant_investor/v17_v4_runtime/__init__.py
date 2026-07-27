@@ -18,6 +18,13 @@ from .authority import (
     TRADE_AUTHORITY,
     authority_envelope,
 )
+from .public_surfaces import (
+    PublicSurfaceError,
+    build_dashboard_contract_v4,
+    build_public_surface_compatibility_receipts,
+    publish_canary_snapshot,
+    resolve_public_run,
+)
 
 __all__ = [
     "BROKER_AUTHORITY",
@@ -28,5 +35,10 @@ __all__ = [
     "PROTOCOL_VERSION",
     "RESEARCH_RUNTIME_DEFAULT",
     "TRADE_AUTHORITY",
+    "PublicSurfaceError",
     "authority_envelope",
+    "build_dashboard_contract_v4",
+    "build_public_surface_compatibility_receipts",
+    "publish_canary_snapshot",
+    "resolve_public_run",
 ]
