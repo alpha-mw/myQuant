@@ -21,7 +21,9 @@ def _tree_sha256(relative_root: str) -> tuple[int, str]:
     root = REPO_ROOT / relative_root
     digest = hashlib.sha256()
     paths = sorted(
-        path for path in root.rglob("*") if path.is_file() and "__pycache__" not in path.parts
+        path
+        for path in root.rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts and path.name != ".DS_Store"
     )
     for path in paths:
         relative = path.relative_to(REPO_ROOT).as_posix().encode("utf-8")

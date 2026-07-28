@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+
+from scripts import run_v17_v3_phase_a_gate as subject
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "run_v17_v3_phase_a_gate.py"
@@ -42,3 +45,18 @@ def test_v17_v3_phase_a_gate_is_offline_isolated_and_data_blocked() -> None:
         "trade_calls",
     ):
         assert payload[counter] is False
+
+
+def test_frozen_tree_identity_ignores_macos_directory_metadata(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    relative_root = "quant_investor/v17_v2_runtime"
+    copied_root = tmp_path / relative_root
+    shutil.copytree(REPO_ROOT / relative_root, copied_root)
+    monkeypatch.setattr(subject, "REPO_ROOT", tmp_path)
+    before = subject._tree_identity(relative_root)
+
+    (copied_root / ".DS_Store").write_bytes(b"not-source-code")
+
+    assert subject._tree_identity(relative_root) == before

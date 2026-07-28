@@ -20,6 +20,12 @@ def _disable_dotenv_load(monkeypatch) -> None:
     module = types.ModuleType("dotenv")
     module.load_dotenv = lambda *_args, **_kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", module)
+    env_loading = _reload_module("quant_investor.env_loading")
+    monkeypatch.setattr(
+        env_loading,
+        "read_env_file_values",
+        lambda *_args, **_kwargs: {},
+    )
 
 
 def test_tushare_default_url_is_lianghua_proxy(monkeypatch):

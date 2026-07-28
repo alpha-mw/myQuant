@@ -254,7 +254,11 @@ def _parse_case(case: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     )
 
 
-def _valid_report(tmp_path: Path) -> dict[str, Any]:
+def _valid_report(
+    tmp_path: Path,
+    *,
+    command_cwd: str | None = None,
+) -> dict[str, Any]:
     command = {
         "ordinal": 1,
         "argv": [
@@ -266,7 +270,7 @@ def _valid_report(tmp_path: Path) -> dict[str, Any]:
             "--all-extras",
             "--offline",
         ],
-        "cwd": str(ROOT),
+        "cwd": command_cwd or str(ROOT),
         "environment": _native_environment(tmp_path / "work", tmp_path / "work" / "native_venv"),
         "exit_code": 0,
         "signal": None,
@@ -492,7 +496,9 @@ def test_schema_is_closed_draft_2020_12_and_validates_exact_v2(
 ) -> None:
     schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
     preflight_packaged_schema(schema)
-    report = _valid_report(tmp_path)
+    frozen_command_cwd = schema["$defs"]["command"]["properties"]["cwd"]["const"]
+    assert isinstance(frozen_command_cwd, str)
+    report = _valid_report(tmp_path, command_cwd=frozen_command_cwd)
     validate_instance_against_schema(report, schema)
     subject._validate_evidence_v2(report)
     downgraded = copy.deepcopy(report)
