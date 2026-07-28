@@ -3,9 +3,11 @@
 This is the current operating contract for the no-Theme v15 mainline.  The
 system remains offline by default and fail closed for new risk.
 
-The additive `quant-investor-v17-v3` research entrypoint is isolated from this
-runbook. It does not change any V15 command, artifact, Dashboard consumer,
-schedule or production/default authority.
+The additive `quant-investor-v17-v3` research entrypoint remains isolated from
+V15 routing and authority. The CN daily review may read an already completed,
+same-session V17 v3 model-only shadow through the gray comparison sidecar
+described below. That read-only comparison does not change any V15 command,
+recommendation, Dashboard consumer or production/default authority.
 
 The explicit `quant-investor-v17-v4` entrypoint is also isolated while its
 production-research contract is staged. Its current `verify` and `status`
@@ -22,6 +24,43 @@ schedule, Web DTO, Dashboard v3 consumer, or any trading authority.
   artifacts are retired.  Historical mixed strategy records remain immutable.
 - Current analysis artifacts are written under `results/v15/` and must carry
   the exact v15 schema family.  A v14 artifact cannot be relabelled as v15.
+
+## Daily V17 gray comparison
+
+`python -m quant_investor.monitoring.cn_aggressive_daily_review` enables the
+V17 v3 gray sidecar by default after the V15 formal record has been completed.
+The sidecar never compiles or downloads V17 inputs. It only discovers a
+pre-positioned `SHADOW_COMPLETE` model-only run below
+`data/private/v17_v3_workspaces` and requires all of the following:
+
+- V15 `analysis_trade_date` equals V17 `decision_session`;
+- the strict CN market pointer SHA256 is unchanged across the V15 run;
+- V17 `source_bindings.market_pointer_sha256` equals those exact pointer bytes;
+- V17 summary and fusion artifacts are private regular single-link files;
+- every V17 broker, execution, order, trade, publication and default authority
+  field is false.
+
+Missing, stale, malformed or differently bound V17 evidence produces
+`GRAY_UNAVAILABLE` / `NON_COMPARABLE`; it never fails or modifies the V15
+decision. A successful comparison writes:
+
+- `v15_v17_gray_comparison.json`;
+- `v15_v17_gray_comparison.md`;
+- byte-identical copies below `raw_exports/`;
+- a SHA-bound reference in `manifest.json` and `market_snapshot.json`;
+- a report-only section appended to `analysis_report.md`.
+
+Current-session metrics cover candidate overlap, V15 holding coverage inside
+the V17 common-ready domain, Top24 overlap, gross/cash exposure differences and
+Deep veto counts. Prior comparable rank sets are evaluated locally at 1, 5 and
+20-session horizons as equal-weight diagnostics when exact strict-Parquet
+closes mature. This is rank-set evidence, not portfolio performance.
+
+No general V15/V17 performance verdict is permitted before at least 20
+comparable sessions and 20 matured 20-session paired outcomes. Even then, a V17
+model-only result whose zero exposure comes from unavailable Deep evidence
+cannot be called a superior portfolio. `--skip-v17-gray` exists only as an
+explicit rollback/debug switch.
 
 ## Authorization boundary
 

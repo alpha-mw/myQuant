@@ -11,6 +11,9 @@
   `myquant.v17.v3` shadow / formal-research publication surface，不改变
   `quant-investor`、`market analyze` 或 `market run` 的 V15 默认路由；其
   execution、broker、order、trade 与 production-default authority 永远为 false。
+  CN 日度复盘可以在 V15 完成后读取同交易日、同 market-pointer bytes 的
+  `SHADOW_COMPLETE` 产物并生成 `v15_v17_gray_comparison` 报告侧旁路；
+  该旁路不运行 provider、不会发布 V17 formal result，也不改变 V15 结论。
 - V17 v4 契约入口：`quant-investor-v17-v4`。当前只开放无写入的
   `verify` 与 `status`，状态固定为 `CONTRACT_SCAFFOLD_NOT_ACTIVATED`；
   formal-publication 与 research-runtime-default 分离，execution、broker、

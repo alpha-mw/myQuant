@@ -142,6 +142,27 @@ The terminal records Macro and Markov separately as `APPLIED` or
 evidence is absent. Formal analysis and activation reject provisional-factor
 or model-only artifacts before any formal write.
 
+## Daily V15/V17 gray observation
+
+The CN daily V15 review discovers completed current-shadow workspaces under
+`data/private/v17_v3_workspaces` after the authoritative V15 record has been
+written. Discovery is read-only. It does not invoke this compiler, a provider
+or any V17 state transition.
+
+Only an exact V15/V17 pair with the same decision session and the same strict
+CN market-pointer bytes is classified `COMPARABLE`. A missing or stale V17
+shadow is recorded as `GRAY_UNAVAILABLE` and leaves the V15 review successful
+and unchanged. The per-run outputs are
+`v15_v17_gray_comparison.{json,md}` inside the V15 strategy-record directory.
+
+The comparison reports rank overlap, holding coverage and exposure differences.
+It also matures prior rank-set returns at 1, 5 and 20 local sessions when exact
+strict-Parquet closes exist. These are equal-weight rank diagnostics only.
+`SHADOW_COMPLETE` with 24 `BUY_VETO` rows and 100% model cash is an unavailable
+Deep-evidence state, not a defensive or performance win. V15 remains the only
+production/default result and no comparison can authorize a broker, order or
+trade.
+
 ## Fusion calibration
 
 Calibration is offline and reads only the admitted PIT closure:
