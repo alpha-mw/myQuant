@@ -358,14 +358,20 @@ def _find_calendar_path(phase1_inventory: Mapping[str, Any]) -> tuple[Path, str]
     rows = acquisition.get("files") if isinstance(acquisition, Mapping) else None
     if not isinstance(rows, list):
         raise CurrentShadowBuildError("source_dataset_schema_invalid")
+    matches: list[tuple[Path, str]] = []
     for row in rows:
         if (
             isinstance(row, Mapping)
-            and row.get("query_id") == "trade_cal_cn_2016_20260724"
+            and isinstance(row.get("query_id"), str)
+            and str(row["query_id"]).startswith("trade_cal_cn_")
             and row.get("kind") == "parquet"
         ):
-            return Path(str(row["path"])), str(row["expected_sha256"])
-    raise CurrentShadowBuildError("source_dataset_calendar_missing")
+            matches.append(
+                (Path(str(row["path"])), str(row["expected_sha256"]))
+            )
+    if len(matches) != 1:
+        raise CurrentShadowBuildError("source_dataset_calendar_missing")
+    return matches[0]
 
 
 def _last_completed_session(calendar: pd.DataFrame, cutoff: datetime) -> str:
