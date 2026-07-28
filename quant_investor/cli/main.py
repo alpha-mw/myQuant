@@ -33,8 +33,24 @@ def run_market_maintenance(**kwargs):
 
 def run_market_analysis(**kwargs):
     decision_protocol = str(kwargs.pop("decision_protocol", "v15") or "v15").strip().lower()
+    v17_workspace_root = kwargs.pop("v17_workspace_root", "")
+    v17_strategy_id = kwargs.pop("v17_strategy_id", "")
+    if decision_protocol == "v17-v4":
+        if str(kwargs.get("market", "")).upper() != "CN":
+            raise ValueError("v17-v4 public research currently supports CN only")
+        if not v17_strategy_id:
+            raise ValueError("--v17-strategy-id is required for v17-v4")
+        from quant_investor.v17_v4_runtime.public_surfaces import (
+            resolve_public_run,
+        )
+
+        return resolve_public_run(
+            Path(v17_workspace_root or Path.cwd()),
+            strategy_id=v17_strategy_id,
+            surface="CLI",
+        )
     if decision_protocol != "v15":
-        raise ValueError("decision_protocol is retired; market analyze supports v15 only")
+        raise ValueError("unsupported decision_protocol")
     retired_arguments = sorted(
         key for key in kwargs if key.startswith(_RETIRED_PROTOCOL_ARGUMENT_PREFIX)
     )
@@ -49,8 +65,24 @@ def run_market_analysis(**kwargs):
 
 def run_market_pipeline(**kwargs):
     decision_protocol = str(kwargs.pop("decision_protocol", "v15") or "v15").strip().lower()
+    v17_workspace_root = kwargs.pop("v17_workspace_root", "")
+    v17_strategy_id = kwargs.pop("v17_strategy_id", "")
+    if decision_protocol == "v17-v4":
+        if str(kwargs.get("market", "")).upper() != "CN":
+            raise ValueError("v17-v4 public research currently supports CN only")
+        if not v17_strategy_id:
+            raise ValueError("--v17-strategy-id is required for v17-v4")
+        from quant_investor.v17_v4_runtime.public_surfaces import (
+            resolve_public_run,
+        )
+
+        return resolve_public_run(
+            Path(v17_workspace_root or Path.cwd()),
+            strategy_id=v17_strategy_id,
+            surface="CLI",
+        )
     if decision_protocol != "v15":
-        raise ValueError("decision_protocol is retired; market run supports v15 only")
+        raise ValueError("unsupported decision_protocol")
     retired_arguments = sorted(
         key for key in kwargs if key.startswith(_RETIRED_PROTOCOL_ARGUMENT_PREFIX)
     )
@@ -1267,9 +1299,19 @@ def _build_parser() -> argparse.ArgumentParser:
     market_analyze.add_argument("--top-k", type=int, default=12)
     market_analyze.add_argument(
         "--decision-protocol",
-        choices=["v15"],
+        choices=["v15", "v17-v4"],
         default="v15",
-        help="生产/default 候选决策协议固定为 v15",
+        help="默认 v15；v17-v4 仅显式读取 FORMAL_ACTIVE canary",
+    )
+    market_analyze.add_argument(
+        "--v17-workspace-root",
+        default=str(Path.cwd()),
+        help="v17-v4 显式 opt-in 的物理工作区根目录",
+    )
+    market_analyze.add_argument(
+        "--v17-strategy-id",
+        default="",
+        help="v17-v4 显式 opt-in 必需的策略标识",
     )
     market_analyze.add_argument(
         "--shortlist-size",
@@ -1324,9 +1366,19 @@ def _build_parser() -> argparse.ArgumentParser:
     market_run.add_argument("--top-k", type=int, default=12)
     market_run.add_argument(
         "--decision-protocol",
-        choices=["v15"],
+        choices=["v15", "v17-v4"],
         default="v15",
-        help="生产/default 候选决策协议固定为 v15",
+        help="默认 v15；v17-v4 仅显式读取 FORMAL_ACTIVE canary",
+    )
+    market_run.add_argument(
+        "--v17-workspace-root",
+        default=str(Path.cwd()),
+        help="v17-v4 显式 opt-in 的物理工作区根目录",
+    )
+    market_run.add_argument(
+        "--v17-strategy-id",
+        default="",
+        help="v17-v4 显式 opt-in 必需的策略标识",
     )
     market_run.add_argument(
         "--shortlist-size",
@@ -2080,7 +2132,7 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.command == "market" and args.market_command == "analyze":
-        run_market_analysis(
+        result = run_market_analysis(
             market=args.market,
             mode=args.mode,
             categories=args.categories,
@@ -2088,6 +2140,8 @@ def main(argv: list[str] | None = None) -> None:
             total_capital=args.capital,
             top_k=args.top_k,
             decision_protocol=args.decision_protocol,
+            v17_workspace_root=args.v17_workspace_root,
+            v17_strategy_id=args.v17_strategy_id,
             shortlist_size=args.shortlist_size,
             enable_agent_layer=not args.no_agent_layer,
             funnel_profile=args.funnel_profile,
@@ -2097,10 +2151,12 @@ def main(argv: list[str] | None = None) -> None:
             breakout_distance_pct=args.breakout_distance_pct,
             **review_models.to_runtime_kwargs(),
         )
+        if args.decision_protocol == "v17-v4":
+            _print_json(result)
         return
 
     if args.command == "market" and args.market_command == "run":
-        run_market_pipeline(
+        result = run_market_pipeline(
             market=args.market,
             mode=args.mode,
             categories=args.categories,
@@ -2108,6 +2164,8 @@ def main(argv: list[str] | None = None) -> None:
             total_capital=args.capital,
             top_k=args.top_k,
             decision_protocol=args.decision_protocol,
+            v17_workspace_root=args.v17_workspace_root,
+            v17_strategy_id=args.v17_strategy_id,
             shortlist_size=args.shortlist_size,
             skip_download=args.skip_download,
             force_download=False,
@@ -2122,6 +2180,8 @@ def main(argv: list[str] | None = None) -> None:
             breakout_distance_pct=args.breakout_distance_pct,
             **review_models.to_runtime_kwargs(),
         )
+        if args.decision_protocol == "v17-v4":
+            _print_json(result)
         return
 
     if args.command == "market" and args.market_command == "backtest":

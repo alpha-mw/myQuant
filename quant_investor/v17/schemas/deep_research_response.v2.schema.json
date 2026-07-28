@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "myquant.v17.deep-research-response.v2",
+  "title": "V17DeepResearchResponseV2",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "symbol": {
+      "type": "string",
+      "pattern": "^(?:[0368][0-9]{5}\\.(?:SZ|SH|BJ)|[0-9]{6})$"
+    },
+    "modelJsonRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "object_path": {
+          "type": "string",
+          "pattern": "^results/v17_shadow/models/objects/[0-9a-f]{2}/[0-9a-f]{64}\\.json$"
+        },
+        "byte_sha256": {"$ref": "#/$defs/sha256"},
+        "size_bytes": {"type": "integer", "minimum": 1},
+        "semantic_sha256": {"$ref": "#/$defs/sha256"},
+        "schema_version": {"$ref": "#/$defs/identifier"}
+      },
+      "required": [
+        "object_path",
+        "byte_sha256",
+        "size_bytes",
+        "semantic_sha256",
+        "schema_version"
+      ]
+    },
+    "completeReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {"$ref": "#/$defs/symbol"},
+        "status": {"const": "COMPLETE"},
+        "research_object_ref": {
+          "allOf": [
+            {"$ref": "#/$defs/modelJsonRef"},
+            {
+              "properties": {
+                "schema_version": {"const": "myquant.v17.deep-research-report.v1"}
+              }
+            }
+          ]
+        }
+      },
+      "required": ["symbol", "status", "research_object_ref"]
+    },
+    "unavailableReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {"$ref": "#/$defs/symbol"},
+        "status": {"const": "UNAVAILABLE"},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 512}
+      },
+      "required": ["symbol", "status", "reason"]
+    }
+  },
+  "properties": {
+    "version": {"const": "myquant.v17.deep-research-response.v2"},
+    "response_id": {"$ref": "#/$defs/identifier"},
+    "run_id": {"$ref": "#/$defs/identifier"},
+    "market": {"const": "CN"},
+    "cutoff": {"type": "string", "format": "date-time"},
+    "request_ref": {
+      "allOf": [
+        {"$ref": "#/$defs/modelJsonRef"},
+        {
+          "properties": {
+            "schema_version": {"const": "myquant.v17.deep-research-request.v2"}
+          }
+        }
+      ]
+    },
+    "review_ordering": {"const": "request-symbol-order"},
+    "review_results": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1024,
+      "uniqueItems": true,
+      "items": {
+        "oneOf": [
+          {"$ref": "#/$defs/completeReview"},
+          {"$ref": "#/$defs/unavailableReview"}
+        ]
+      }
+    },
+    "generated_at": {"type": "string", "format": "date-time"},
+    "received_at": {"type": "string", "format": "date-time"},
+    "authority": {"const": false},
+    "semantic_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "required": [
+    "version",
+    "response_id",
+    "run_id",
+    "market",
+    "cutoff",
+    "request_ref",
+    "review_ordering",
+    "review_results",
+    "generated_at",
+    "received_at",
+    "authority",
+    "semantic_sha256"
+  ]
+}

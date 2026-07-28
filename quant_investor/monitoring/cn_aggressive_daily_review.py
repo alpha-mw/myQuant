@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -18,6 +19,12 @@ from quant_investor.market.download_cn import CNFullMarketDownloader
 from quant_investor.market.market_data_store import run_storage_validate
 from quant_investor.market.staged_maintenance import run_staged_maintenance
 from quant_investor.monitoring import cn_aggressive_portfolio_tracker as tracker
+from quant_investor.monitoring.v17_daily_gray import (
+    DEFAULT_V17_WORKSPACE_ROOT,
+    MARKET_POINTER_PATH,
+    MINIMUM_FORWARD_SESSIONS,
+    run_daily_gray_comparison,
+)
 
 
 def _jsonable(value: Any) -> Any:
@@ -51,7 +58,11 @@ def _storage_coverage_ratio(
     *,
     expected_symbol_count: int | None = None,
 ) -> float | None:
-    coverage = storage_validate.get("coverage") if isinstance(storage_validate.get("coverage"), dict) else {}
+    coverage = (
+        storage_validate.get("coverage")
+        if isinstance(storage_validate.get("coverage"), dict)
+        else {}
+    )
     candidates = [
         storage_validate.get("coverage_ratio"),
         coverage.get("coverage_ratio"),
@@ -190,7 +201,9 @@ def _run_maintenance_preflight(args: argparse.Namespace) -> dict[str, Any]:
         if coverage_ratio is None:
             coverage_ratio = float(completeness.get("coverage_ratio") or 0.0)
         min_success = float(getattr(args, "min_symbol_success_rate", 0.95))
-        same_day_unavailable = same_day_probe.get("applicable") and same_day_probe.get("available") is False
+        same_day_unavailable = (
+            same_day_probe.get("applicable") and same_day_probe.get("available") is False
+        )
         if same_day_unavailable and coverage_ratio >= min_success:
             return {
                 "attempted": True,
@@ -257,7 +270,9 @@ def _run_maintenance_preflight(args: argparse.Namespace) -> dict[str, Any]:
             "attempted": True,
             "status": str(progress.get("status") or staged_payload.get("status") or "incomplete"),
             "maintenance_status": str(
-                progress.get("maintenance_status") or staged_payload.get("maintenance_status") or "incomplete"
+                progress.get("maintenance_status")
+                or staged_payload.get("maintenance_status")
+                or "incomplete"
             ),
             "non_blocking": True,
             "parquet_canonical_status": "healthy",
@@ -265,14 +280,18 @@ def _run_maintenance_preflight(args: argparse.Namespace) -> dict[str, Any]:
             "latest_healthy_snapshot": latest_snapshot,
             "staged_progress": _jsonable(progress),
             "remaining_batches": progress.get("remaining_batches"),
-            "failed_symbols": list(progress.get("failed_symbols") or staged_payload.get("failed_symbols") or []),
+            "failed_symbols": list(
+                progress.get("failed_symbols") or staged_payload.get("failed_symbols") or []
+            ),
             "limitations": list(progress.get("limitations") or ["maintenance_incomplete"]),
             "blockers": list(progress.get("blockers") or []),
             "error": "",
             "elapsed_sec": round(time.time() - started, 2),
             "storage_validate": _jsonable(storage),
             "same_day_close_probe": _jsonable(same_day_probe),
-            "categories": list(staged_payload.get("categories", []) or probe.get("categories", []) or []),
+            "categories": list(
+                staged_payload.get("categories", []) or probe.get("categories", []) or []
+            ),
             "completeness": _jsonable(staged_payload.get("completeness") or completeness),
         }
     except Exception as exc:
@@ -306,8 +325,18 @@ def _attach_preflight_to_record(run_dir: str | Path, preflight: dict[str, Any]) 
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def run_daily_review(args: argparse.Namespace) -> dict[str, Any]:
     preflight = _run_maintenance_preflight(args)
+    market_pointer_path = Path(
+        getattr(args, "v17_gray_market_pointer", MARKET_POINTER_PATH) or MARKET_POINTER_PATH
+    )
+    pointer_sha256_before_v15 = (
+        _file_sha256(market_pointer_path) if market_pointer_path.is_file() else ""
+    )
     tracker_args = argparse.Namespace(
         base_dir=getattr(args, "base_dir", str(tracker.DEFAULT_BASE_DIR)),
         years=int(getattr(args, "years", 7)),
@@ -333,12 +362,56 @@ def run_daily_review(args: argparse.Namespace) -> dict[str, Any]:
     result = tracker.run_tracker(tracker_args)
     result["maintenance_preflight"] = preflight
     result["full_market_metrics_cache"] = _jsonable(
-        result.get("full_market_metrics_cache")
-        or result.get("market_metrics_prewarm")
-        or {}
+        result.get("full_market_metrics_cache") or result.get("market_metrics_prewarm") or {}
     )
     if result.get("run_dir"):
         _attach_preflight_to_record(result["run_dir"], preflight)
+        persisted_run_dir = Path(result["run_dir"])
+        v15_gray_required_files = (
+            "manifest.json",
+            "market_snapshot.json",
+            "analysis_report.md",
+            "candidate_pool.csv",
+            "holdings_review.csv",
+            "pnl_summary.csv",
+        )
+        v15_record_complete = all(
+            (persisted_run_dir / name).is_file() for name in v15_gray_required_files
+        )
+        if not bool(getattr(args, "skip_v17_gray", False)) and v15_record_complete:
+            pointer_sha256_after_v15 = (
+                _file_sha256(market_pointer_path) if market_pointer_path.is_file() else ""
+            )
+            result["v17_gray_comparison"] = run_daily_gray_comparison(
+                run_dir=result["run_dir"],
+                v17_workspace_root=getattr(
+                    args,
+                    "v17_gray_workspace_root",
+                    DEFAULT_V17_WORKSPACE_ROOT,
+                ),
+                market_pointer_path=market_pointer_path,
+                pointer_sha256_before_v15=pointer_sha256_before_v15,
+                pointer_sha256_after_v15=pointer_sha256_after_v15,
+                minimum_forward_sessions=int(
+                    getattr(
+                        args,
+                        "v17_gray_min_forward_sessions",
+                        MINIMUM_FORWARD_SESSIONS,
+                    )
+                ),
+            )
+        elif bool(getattr(args, "skip_v17_gray", False)):
+            result["v17_gray_comparison"] = {
+                "status": "SKIPPED",
+                "classification": "NON_COMPARABLE",
+                "blockers": ["skip_v17_gray_requested"],
+            }
+        else:
+            result["v17_gray_comparison"] = {
+                "status": "GRAY_UNAVAILABLE",
+                "classification": "NON_COMPARABLE",
+                "blockers": ["v15_record_not_persisted"],
+            }
     return result
 
 
@@ -385,6 +458,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-date", default="auto")
     parser.add_argument("--daily-window", action="store_true", default=True)
     parser.add_argument("--skip-maintenance", action="store_true")
+    parser.add_argument(
+        "--skip-v17-gray",
+        action="store_true",
+        help="工程回滚用：跳过默认启用的 V17 v3 model-only 灰度旁路",
+    )
+    parser.add_argument(
+        "--v17-gray-workspace-root",
+        default=str(DEFAULT_V17_WORKSPACE_ROOT),
+        help="已预置 V17 v3 shadow workspace 的只读发现根",
+    )
+    parser.add_argument(
+        "--v17-gray-market-pointer",
+        default=str(MARKET_POINTER_PATH),
+        help="V15/V17 必须共同绑定的 strict CN market pointer",
+    )
+    parser.add_argument(
+        "--v17-gray-min-forward-sessions",
+        type=int,
+        default=MINIMUM_FORWARD_SESSIONS,
+        help="形成任何 V15/V17 效果结论前的最少同口径前瞻样本数",
+    )
     parser.add_argument(
         "--skip-market-metrics-prewarm",
         action="store_true",

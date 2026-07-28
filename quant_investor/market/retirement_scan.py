@@ -214,7 +214,11 @@ def _valid_logical_path(value: object) -> str:
     return text
 
 
-def _load_allowlist(path: Path) -> tuple[str, dict[tuple[str, str], dict[str, Any]]]:
+def _load_allowlist(
+    path: Path,
+    *,
+    repo_root: Path | None = None,
+) -> tuple[str, dict[tuple[str, str], dict[str, Any]]]:
     payload, value = _read_json(path)
     if set(value) != {"schema_version", "authority", "entries"}:
         raise RetirementScanError("retirement allowlist has an unexpected shape")
@@ -225,6 +229,23 @@ def _load_allowlist(path: Path) -> tuple[str, dict[tuple[str, str], dict[str, An
     entries = value.get("entries")
     if not isinstance(entries, list):
         raise RetirementScanError("retirement allowlist entries must be a list")
+    self_logical_paths = {path.name}
+    if repo_root is not None:
+        try:
+            self_logical_paths.add(
+                path.absolute().relative_to(repo_root.absolute()).as_posix()
+            )
+        except ValueError:
+            pass
+    elif tuple(path.parts[-4:]) == (
+        "quant_investor",
+        "market",
+        "resources",
+        path.name,
+    ):
+        self_logical_paths.add(
+            "quant_investor/market/resources/" + path.name
+        )
     index: dict[tuple[str, str], dict[str, Any]] = {}
     for entry in entries:
         if not isinstance(entry, dict) or set(entry) != {
@@ -240,7 +261,7 @@ def _load_allowlist(path: Path) -> tuple[str, dict[tuple[str, str], dict[str, An
         count = entry["exact_count"]
         reason = str(entry["reason"]).strip()
         expected_sha = _require_sha256(entry["expected_sha256"], "allowlist expected_sha256")
-        if logical_path == path.name or logical_path.endswith(f"/{path.name}"):
+        if logical_path in self_logical_paths:
             raise RetirementScanError("allowlist cannot reference itself")
         if not detector or type(count) is not int or count <= 0:
             raise RetirementScanError("allowlist count/detector is invalid")
@@ -542,7 +563,10 @@ def scan_retirement(
     allowlist_candidate = Path(allowlist_path).absolute()
     # Read before resolving so a symlink cannot be laundered into a trusted
     # regular file outside the repository inventory.
-    allowlist_sha, allowed = _load_allowlist(allowlist_candidate)
+    allowlist_sha, allowed = _load_allowlist(
+        allowlist_candidate,
+        repo_root=root,
+    )
     allowlist = allowlist_candidate.resolve(strict=True)
     if allowlist != allowlist_candidate:
         raise RetirementScanError("allowlist path must be canonical and cannot be a symlink")

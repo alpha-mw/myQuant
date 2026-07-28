@@ -102,7 +102,18 @@ def install_sourceless_finder() -> None:
     for finder in sys.meta_path:
         if isinstance(finder, _QuantInvestorSourcelessFinder):
             return
-    sys.meta_path.insert(0, _QuantInvestorSourcelessFinder())
+    insert_at = (
+        1
+        if sys.meta_path
+        and getattr(
+            sys.meta_path[0],
+            "_myquant_phase0_candidate_guard",
+            False,
+        )
+        is True
+        else 0
+    )
+    sys.meta_path.insert(insert_at, _QuantInvestorSourcelessFinder())
 
 
 @lru_cache(maxsize=None)
