@@ -20,9 +20,17 @@ from typing import Any, Final, Mapping, Sequence
 
 from quant_investor.market.market_data_reader import MarketDataReader
 
-SCHEMA_VERSION: Final = "cn_aggressive_v15_v17_gray_comparison.v1"
+SCHEMA_VERSION: Final = "cn_aggressive_v15_v17_gray_comparison.v2"
+HISTORY_SCHEMA_VERSIONS: Final = frozenset(
+    {
+        "cn_aggressive_v15_v17_gray_comparison.v1",
+        SCHEMA_VERSION,
+    }
+)
 V17_SUMMARY_VERSION: Final = "myquant.v17.v3.current-shadow-run-summary.v1"
 V17_FUSION_VERSION: Final = "myquant.v17.v3.fusion-output.v1"
+V17_INITIAL_POOL_VERSION: Final = "myquant.v17.v3.initial-pool-output.v1"
+V17_BRANCH_VERSION: Final = "myquant.v17.v3.branch-output.v1"
 DEFAULT_V17_WORKSPACE_ROOT: Final = Path("data/private/v17_v3_workspaces")
 MARKET_POINTER_PATH: Final = Path("data/parquet/cn/_latest.json")
 OUTPUT_JSON: Final = "v15_v17_gray_comparison.json"
@@ -205,9 +213,327 @@ def _load_v17_fusion(
     return fusion, fusion_sha, fusion_path
 
 
+def _workspace_for_summary(summary_path: Path, workspace_root: Path) -> Path:
+    try:
+        relative = summary_path.resolve(strict=True).relative_to(
+            workspace_root.resolve(strict=True)
+        )
+    except (OSError, ValueError) as exc:
+        raise GrayComparisonError("v17_summary_outside_workspace_root") from exc
+    if (
+        len(relative.parts) != 6
+        or relative.parts[1:4] != ("data", "private", "v17_v3_runs")
+        or relative.name != "run_summary.json"
+    ):
+        raise GrayComparisonError("v17_summary_workspace_shape")
+    workspace = workspace_root / relative.parts[0]
+    if not workspace.is_dir() or workspace.is_symlink():
+        raise GrayComparisonError("v17_workspace_unavailable")
+    return workspace
+
+
+def _safe_artifact_path(workspace: Path, relative_path: Any) -> Path:
+    rendered = str(relative_path or "")
+    candidate_relative = Path(rendered)
+    if not rendered or candidate_relative.is_absolute() or ".." in candidate_relative.parts:
+        raise GrayComparisonError("v17_artifact_relative_path_invalid")
+    candidate = workspace / candidate_relative
+    try:
+        candidate.resolve(strict=True).relative_to(workspace.resolve(strict=True))
+    except (OSError, ValueError) as exc:
+        raise GrayComparisonError("v17_artifact_outside_workspace") from exc
+    return candidate
+
+
+def _load_v17_branch(
+    *,
+    workspace: Path,
+    fusion: Mapping[str, Any],
+    run_id: str,
+    branch: str,
+) -> tuple[dict[str, Any], str, Path]:
+    reference = fusion.get(f"{branch}_branch_ref")
+    if not isinstance(reference, Mapping):
+        raise GrayComparisonError(f"v17_{branch}_branch_ref_missing")
+    path = _safe_artifact_path(workspace, reference.get("relative_path"))
+    document, byte_sha = _read_json(path, private=True)
+    if (
+        byte_sha != reference.get("byte_sha256")
+        or document.get("version") != V17_BRANCH_VERSION
+        or document.get("run_id") != run_id
+        or document.get("branch") != branch
+        or document.get("state") != "BRANCHES_COMPLETE"
+        or not _authority_is_zero(document.get("authority"))
+    ):
+        raise GrayComparisonError(f"v17_{branch}_branch_contract_mismatch")
+    return document, byte_sha, path
+
+
+def _records_by_symbol(value: Any, *, label: str) -> dict[str, Mapping[str, Any]]:
+    if not isinstance(value, list):
+        raise GrayComparisonError(f"{label}_records_missing")
+    result: dict[str, Mapping[str, Any]] = {}
+    for row in value:
+        if not isinstance(row, Mapping):
+            raise GrayComparisonError(f"{label}_record_invalid")
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if not symbol or symbol in result:
+            raise GrayComparisonError(f"{label}_symbol_invalid_or_duplicate")
+        result[symbol] = row
+    return result
+
+
+def _score(value: Any) -> float | None:
+    try:
+        rendered = float(value)
+    except (TypeError, ValueError):
+        return None
+    if rendered != rendered or rendered < 0 or rendered > 1:
+        return None
+    return round(rendered, 12)
+
+
+def _number(value: Any) -> float | None:
+    try:
+        rendered = float(value)
+    except (TypeError, ValueError):
+        return None
+    return round(rendered, 12) if rendered == rendered else None
+
+
+def _score_100(value: float | None) -> float | None:
+    return round(value * 100, 4) if value is not None else None
+
+
+def _holding_branch_diagnostics(
+    *,
+    workspace_root: Path,
+    summary_path: Path,
+    summary: Mapping[str, Any],
+    fusion: Mapping[str, Any],
+    holdings_rows: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    run_id = str(summary.get("run_id") or "")
+    workspace = _workspace_for_summary(summary_path, workspace_root)
+    initial_pool_path = summary_path.parent / "initial_pool.json"
+    initial_pool, initial_pool_sha = _read_json(initial_pool_path, private=True)
+    if (
+        initial_pool.get("version") != V17_INITIAL_POOL_VERSION
+        or initial_pool.get("run_id") != run_id
+        or initial_pool.get("status") != "READY"
+        or initial_pool.get("state") != "PRESELECT_COMPLETE"
+        or not _authority_is_zero(initial_pool.get("authority"))
+    ):
+        raise GrayComparisonError("v17_initial_pool_contract_mismatch")
+    quant, quant_sha, quant_path = _load_v17_branch(
+        workspace=workspace,
+        fusion=fusion,
+        run_id=run_id,
+        branch="quant",
+    )
+    fundamental, fundamental_sha, fundamental_path = _load_v17_branch(
+        workspace=workspace,
+        fusion=fusion,
+        run_id=run_id,
+        branch="fundamental",
+    )
+    for branch, document in (("quant", quant), ("fundamental", fundamental)):
+        initial_reference = document.get("initial_pool_ref")
+        if (
+            not isinstance(initial_reference, Mapping)
+            or initial_reference.get("artifact_version") != V17_INITIAL_POOL_VERSION
+            or initial_reference.get("byte_sha256") != initial_pool_sha
+        ):
+            raise GrayComparisonError(f"v17_{branch}_initial_pool_binding_mismatch")
+    initial_rows = _records_by_symbol(
+        initial_pool.get("dispositions"),
+        label="v17_initial_pool",
+    )
+    quant_rows = _records_by_symbol(quant.get("records"), label="v17_quant")
+    fundamental_rows = _records_by_symbol(
+        fundamental.get("records"),
+        label="v17_fundamental",
+    )
+    fusion_rows = _records_by_symbol(
+        fusion.get("dispositions"),
+        label="v17_fusion",
+    )
+    top24_rows = _records_by_symbol(summary.get("top24"), label="v17_top24")
+    ranked_preselection = sorted(
+        (
+            (score, symbol)
+            for symbol, row in initial_rows.items()
+            if row.get("status") == "READY"
+            if (score := _number(row.get("score"))) is not None
+        ),
+        key=lambda item: (-item[0], item[1]),
+    )
+    preselection_ranks = {
+        symbol: index for index, (_, symbol) in enumerate(ranked_preselection, start=1)
+    }
+    top24_ranks = {
+        str(symbol).strip().upper(): index
+        for index, symbol in enumerate(fusion.get("selected_symbols", []), start=1)
+        if str(symbol).strip()
+    }
+    diagnostics: list[dict[str, Any]] = []
+    for holding in holdings_rows:
+        symbol = str(holding.get("symbol") or "").strip().upper()
+        if not symbol:
+            raise GrayComparisonError("v15_holding_symbol_missing")
+        name = str(holding.get("name") or "").strip() or "UNKNOWN_NAME"
+        initial = initial_rows.get(symbol)
+        preselected = bool(initial and initial.get("selected") is True)
+        quant_row = quant_rows.get(symbol) if preselected else None
+        fundamental_row = fundamental_rows.get(symbol) if preselected else None
+        fusion_row = fusion_rows.get(symbol) if preselected else None
+        quant_score = _score(quant_row.get("score")) if quant_row else None
+        fundamental_score = _score(fundamental_row.get("score")) if fundamental_row else None
+        quant_percentile = _score(fusion_row.get("quant_percentile")) if fusion_row else None
+        fundamental_percentile = (
+            _score(fusion_row.get("fundamental_percentile")) if fusion_row else None
+        )
+        fusion_score = _score(fusion_row.get("fusion_score")) if fusion_row else None
+        branch_ready = (
+            quant_row is not None
+            and quant_row.get("status") == "READY"
+            and quant_score is not None
+            and fundamental_row is not None
+            and fundamental_row.get("status") == "READY"
+            and fundamental_score is not None
+            and fusion_row is not None
+            and fusion_row.get("status") == "READY"
+            and quant_percentile is not None
+            and fundamental_percentile is not None
+            and fusion_score is not None
+        )
+        if branch_ready:
+            percentile_difference = quant_percentile - fundamental_percentile
+            if percentile_difference > 0.15:
+                branch_balance = "QUANT_STRONGER"
+            elif percentile_difference < -0.15:
+                branch_balance = "FUNDAMENTAL_STRONGER"
+            else:
+                branch_balance = "BALANCED"
+        else:
+            branch_balance = "UNAVAILABLE"
+        top24 = top24_rows.get(symbol)
+        blockers: list[str] = []
+        if initial is None:
+            blockers.append("holding_absent_from_v17_preselection_domain")
+        elif not preselected:
+            blockers.extend(
+                [
+                    "quant_preselection_not_selected",
+                    "two_branch_scores_not_produced_by_same_pool_contract",
+                ]
+            )
+        elif not branch_ready:
+            blockers.append("two_branch_evidence_not_ready")
+        if top24 is None:
+            blockers.append("not_selected_into_v17_top24")
+            deep_status = "NOT_EVALUATED_NOT_TOP24"
+            final_target = None
+        else:
+            deep_status = str(top24.get("deep_status") or "UNAVAILABLE")
+            final_target = _score(top24.get("final_target"))
+            if deep_status == "BUY_VETO":
+                blockers.append("deep_buy_veto")
+        diagnostics.append(
+            {
+                "symbol": symbol,
+                "name": name,
+                "initial_preselection": {
+                    "status": (
+                        str(initial.get("status") or "UNAVAILABLE") if initial else "UNAVAILABLE"
+                    ),
+                    "raw_score": _number(initial.get("score")) if initial else None,
+                    "rank_ready_domain": preselection_ranks.get(symbol),
+                    "ranked_ready_domain_count": len(ranked_preselection),
+                    "selected_top500": preselected,
+                    "reasons": (
+                        list(initial.get("reasons") or [])
+                        if initial
+                        else ["holding_absent_from_v17_preselection_domain"]
+                    ),
+                },
+                "quant_branch": {
+                    "status": (
+                        str(quant_row.get("status") or "UNAVAILABLE")
+                        if quant_row
+                        else "UNAVAILABLE_PRESELECTION_NOT_SELECTED"
+                    ),
+                    "score": quant_score,
+                    "score_100": _score_100(quant_score),
+                    "percentile": quant_percentile,
+                    "percentile_100": _score_100(quant_percentile),
+                    "reason": quant_row.get("reason") if quant_row else None,
+                },
+                "fundamental_branch": {
+                    "status": (
+                        str(fundamental_row.get("status") or "UNAVAILABLE")
+                        if fundamental_row
+                        else "UNAVAILABLE_PRESELECTION_NOT_SELECTED"
+                    ),
+                    "score": fundamental_score,
+                    "score_100": _score_100(fundamental_score),
+                    "percentile": fundamental_percentile,
+                    "percentile_100": _score_100(fundamental_percentile),
+                    "reason": (fundamental_row.get("reason") if fundamental_row else None),
+                },
+                "fusion": {
+                    "status": (
+                        str(fusion_row.get("status") or "UNAVAILABLE")
+                        if fusion_row
+                        else "UNAVAILABLE_PRESELECTION_NOT_SELECTED"
+                    ),
+                    "score": fusion_score,
+                    "score_100": _score_100(fusion_score),
+                    "selected_top24": symbol in top24_ranks,
+                    "top24_rank": top24_ranks.get(symbol),
+                    "calibration": str(fusion.get("calibration_label") or "UNAVAILABLE"),
+                    "quant_weight": _score(fusion.get("quant_weight")),
+                    "fundamental_weight": _score(fusion.get("fundamental_weight")),
+                },
+                "branch_evidence_status": ("READY" if branch_ready else "UNAVAILABLE"),
+                "branch_balance": branch_balance,
+                "deep_status": deep_status,
+                "final_target": final_target,
+                "gray_action": "暂不参与",
+                "blockers": blockers,
+                "interpretation_scope": ("V17_TWO_BRANCH_GRAY_DIAGNOSTIC_NOT_INVESTMENT_AUTHORITY"),
+            }
+        )
+    evidence_refs = {
+        "v17_initial_pool": {
+            "path": _safe_relative(initial_pool_path, workspace_root),
+            "sha256": initial_pool_sha,
+        },
+        "v17_quant_branch": {
+            "path": _safe_relative(quant_path, workspace_root),
+            "sha256": quant_sha,
+        },
+        "v17_fundamental_branch": {
+            "path": _safe_relative(fundamental_path, workspace_root),
+            "sha256": fundamental_sha,
+        },
+    }
+    return diagnostics, evidence_refs
+
+
 def _load_v15_inputs(run_dir: Path) -> dict[str, Any]:
     manifest_path = run_dir / "manifest.json"
-    manifest, manifest_sha = _read_json(manifest_path)
+    manifest, _ = _read_json(manifest_path)
+    manifest_without_gray = dict(manifest)
+    manifest_without_gray.pop("v17_gray_comparison", None)
+    manifest_without_gray_sha = _sha(
+        json.dumps(
+            manifest_without_gray,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    )
     data_snapshot = manifest.get("data_snapshot")
     if not isinstance(data_snapshot, Mapping):
         raise GrayComparisonError("v15_data_snapshot_missing")
@@ -242,7 +568,7 @@ def _load_v15_inputs(run_dir: Path) -> dict[str, Any]:
     return {
         "manifest": manifest,
         "manifest_path": manifest_path,
-        "manifest_pre_gray_sha256": manifest_sha,
+        "manifest_without_gray_semantic_sha256": manifest_without_gray_sha,
         "decision_session": decision_session,
         "snapshot_id": str(data_snapshot.get("completeness", {}).get("snapshot_id") or ""),
         "candidate_symbols": _symbols(candidate_rows)[:12],
@@ -281,7 +607,7 @@ def _comparison_history(base_dir: Path, current_session: str) -> list[str]:
             continue
         session = _normalized_session(document.get("decision_session"))
         if (
-            document.get("schema_version") == SCHEMA_VERSION
+            document.get("schema_version") in HISTORY_SCHEMA_VERSIONS
             and document.get("classification") == "COMPARABLE"
             and session
             and session <= current_session
@@ -309,7 +635,7 @@ def _previous_comparisons(
         session = _normalized_session(document.get("decision_session"))
         sets = document.get("selection_sets")
         if (
-            document.get("schema_version") == SCHEMA_VERSION
+            document.get("schema_version") in HISTORY_SCHEMA_VERSIONS
             and document.get("classification") == "COMPARABLE"
             and isinstance(sets, Mapping)
             and session
@@ -486,6 +812,7 @@ def _build_metrics(
     v15: Mapping[str, Any],
     summary: Mapping[str, Any],
     fusion: Mapping[str, Any],
+    holding_branch_diagnostics: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
     v15_candidates = list(v15["candidate_symbols"])
     v15_holdings = list(v15["holding_symbols"])
@@ -533,6 +860,12 @@ def _build_metrics(
             symbol in common_ready for symbol in v15_holdings
         ),
         "v15_holdings_in_v17_top24_count": sum(symbol in v17_set for symbol in v15_holdings),
+        "v15_holdings_two_branch_ready_count": sum(
+            row.get("branch_evidence_status") == "READY" for row in holding_branch_diagnostics
+        ),
+        "v15_holdings_two_branch_unavailable_count": sum(
+            row.get("branch_evidence_status") != "READY" for row in holding_branch_diagnostics
+        ),
         "v15_actual_gross_weight": _round(v15_gross),
         "v17_model_gross_weight": _round(v17_gross),
         "gross_weight_difference_v17_minus_v15": _round(v17_gross - v15_gross),
@@ -603,42 +936,119 @@ def _render_markdown(document: Mapping[str, Any]) -> str:
     metrics = document["metrics"]
     effect = document["effect_evaluation"]
     blockers = ", ".join(effect["blockers"]) or "none"
-    return "\n".join(
+    lines = [
+        "# V15 / V17 日度灰度比较",
+        "",
+        f"- 比较分类：`{document['classification']}`",
+        f"- 决策交易日：`{document['decision_session']}`",
+        "- 正式权威：V15；V17 仅为 model-only shadow，所有交易权限均为 false。",
+        (
+            "- 候选集合："
+            f"V15 `{metrics['v15_candidate_count']}`，"
+            f"V17 Top24 `{metrics['v17_top24_count']}`，"
+            f"重合 `{metrics['candidate_overlap_count']}`。"
+        ),
+        (
+            "- 现有持仓覆盖："
+            f"V17 common-ready `{metrics['v15_holdings_in_v17_common_ready_count']}`"
+            f"/`{metrics['v15_holding_count']}`；"
+            f"双分支可评分 `{metrics['v15_holdings_two_branch_ready_count']}`；"
+            f"进入 V17 Top24 `{metrics['v15_holdings_in_v17_top24_count']}`。"
+        ),
+        (
+            "- 仓位诊断："
+            f"V15 实际总仓位 `{metrics['v15_actual_gross_weight']:.2%}`；"
+            f"V17 model 总仓位 `{metrics['v17_model_gross_weight']:.2%}`；"
+            f"V17 Deep BUY_VETO `{metrics['v17_deep_buy_veto_count']}`。"
+        ),
+        (
+            "- 效果结论："
+            f"`{effect['verdict']}`；可比日样本 "
+            f"`{effect['observed_comparable_sessions']}`/"
+            f"`{effect['minimum_forward_sessions']}`；blockers=`{blockers}`。"
+        ),
+        "",
+        "## Deep BUY_VETO 是什么",
+        "",
+        (
+            "`Top24` 只表示 Quant/Fundamental 融合排序入围。"
+            "`BUY_VETO` 表示该证券缺少满足合同的 Deep 公司级证据，"
+            "所以最终目标仓位必须为 0；它不是负面基本面结论，"
+            "也不能把 100% 现金解释成防守或超额收益。"
+        ),
+        "",
+        "## 现有持仓的 V17 双分支灰度评分",
+        "",
+        (
+            "下表分数均转换为 0–100 展示；percentile 是当日同池相对位置。"
+            "融合仍为 `UNCALIBRATED_50_50`，不是预期收益率或正式投资评级。"
+        ),
+        "",
+        "| 代码 公司名 | Quant 分数 / percentile | Fundamental 分数 / percentile | Fusion | 初选/Top24 | 分支判断 | 灰度标签 |",
+        "| --- | ---: | ---: | ---: | --- | --- | --- |",
+    ]
+    for row in document.get("holding_branch_diagnostics", []):
+        quant = row["quant_branch"]
+        fundamental = row["fundamental_branch"]
+        fusion = row["fusion"]
+        initial = row["initial_preselection"]
+
+        def rendered(value: Any) -> str:
+            return f"{value:.2f}" if isinstance(value, (int, float)) else "UNAVAILABLE"
+
+        initial_label = (
+            f"Top500；rank={initial['rank_ready_domain']}"
+            if initial["selected_top500"]
+            else f"未入Top500；rank={initial['rank_ready_domain'] or 'UNAVAILABLE'}"
+        )
+        top24_label = f"Top24 #{fusion['top24_rank']}" if fusion["selected_top24"] else "未入Top24"
+        lines.append(
+            "| "
+            f"{row['symbol']} {str(row['name']).replace('|', '/')} | "
+            f"{rendered(quant['score_100'])} / "
+            f"{rendered(quant['percentile_100'])} | "
+            f"{rendered(fundamental['score_100'])} / "
+            f"{rendered(fundamental['percentile_100'])} | "
+            f"{rendered(fusion['score_100'])} | "
+            f"{initial_label}；{top24_label} | "
+            f"`{row['branch_balance']}` | "
+            f"`{row['gray_action']}` |"
+        )
+    lines.extend(
         [
-            "# V15 / V17 日度灰度比较",
             "",
-            f"- 比较分类：`{document['classification']}`",
-            f"- 决策交易日：`{document['decision_session']}`",
-            "- 正式权威：V15；V17 仅为 model-only shadow，所有交易权限均为 false。",
+            "## 1/5/20 日持续记录",
+            "",
+            "| 期限（交易日） | 已成熟配对数 | V15 等权均值 | V17 等权均值 | V17−V15 |",
+            "| ---: | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for horizon in ("1", "5", "20"):
+        aggregate = effect["rank_set_aggregates"][horizon]
+
+        def percentage(value: Any) -> str:
+            return f"{value:.2%}" if isinstance(value, (int, float)) else "UNAVAILABLE"
+
+        lines.append(
+            f"| {horizon} | {aggregate['paired_origin_count']} | "
+            f"{percentage(aggregate['v15_mean_equal_weight_return'])} | "
+            f"{percentage(aggregate['v17_mean_equal_weight_return'])} | "
+            f"{percentage(aggregate['v17_minus_v15_mean_return'])} |"
+        )
+    lines.extend(
+        [
+            "",
             (
-                "- 候选集合："
-                f"V15 `{metrics['v15_candidate_count']}`，"
-                f"V17 Top24 `{metrics['v17_top24_count']}`，"
-                f"重合 `{metrics['candidate_overlap_count']}`。"
-            ),
-            (
-                "- 现有持仓覆盖："
-                f"V17 common-ready `{metrics['v15_holdings_in_v17_common_ready_count']}`"
-                f"/`{metrics['v15_holding_count']}`；"
-                f"进入 V17 Top24 `{metrics['v15_holdings_in_v17_top24_count']}`。"
-            ),
-            (
-                "- 仓位诊断："
-                f"V15 实际总仓位 `{metrics['v15_actual_gross_weight']:.2%}`；"
-                f"V17 model 总仓位 `{metrics['v17_model_gross_weight']:.2%}`；"
-                f"V17 Deep BUY_VETO `{metrics['v17_deep_buy_veto_count']}`。"
-            ),
-            (
-                "- 效果结论："
-                f"`{effect['verdict']}`；可比日样本 "
-                f"`{effect['observed_comparable_sessions']}`/"
-                f"`{effect['minimum_forward_sessions']}`；blockers=`{blockers}`。"
+                "每个后续同日、同 pointer 的灰度复盘都会读取历史比较文件，"
+                "在 strict Parquet 收盘价成熟后补记上述期限；"
+                "旧版 v1 比较继续参与历史累计。"
             ),
             "",
             "本节只做灰度诊断，不改变 V15 建议、持仓、订单或交易。",
             "",
         ]
     )
+    return "\n".join(lines)
 
 
 def _atomic_write(path: Path, raw: bytes, *, mode: int = 0o600) -> None:
@@ -692,17 +1102,28 @@ def _attach_to_v15_record(
         _atomic_write(path, raw)
     report_path = run_dir / "analysis_report.md"
     report = _read_regular(report_path).decode("utf-8")
-    marker = "\n## 7. V15 / V17 日度灰度比较\n"
-    gray_section = _render_markdown(document).replace(
+    embedded_markdown = _render_markdown(document).replace("\n## ", "\n### ")
+    gray_section = embedded_markdown.replace(
         "# V15 / V17 日度灰度比较",
         "## 7. V15 / V17 日度灰度比较",
         1,
     )
-    if marker.strip() not in report:
-        _atomic_write(
-            report_path,
-            (report.rstrip() + "\n\n" + gray_section).encode("utf-8"),
-        )
+    heading = "## 7. V15 / V17 日度灰度比较"
+    start = report.find(heading)
+    if start < 0:
+        updated_report = report.rstrip() + "\n\n" + gray_section
+    else:
+        next_heading = report.find("\n## ", start + len(heading))
+        prefix = report[:start].rstrip()
+        suffix = report[next_heading + 1 :].lstrip() if next_heading >= 0 else ""
+        updated_report = prefix + "\n\n" + gray_section.rstrip()
+        if suffix:
+            updated_report += "\n\n" + suffix
+        updated_report += "\n"
+    _atomic_write(
+        report_path,
+        updated_report.encode("utf-8"),
+    )
 
 
 def run_daily_gray_comparison(
@@ -730,6 +1151,8 @@ def run_daily_gray_comparison(
     fusion: dict[str, Any] | None = None
     fusion_path: Path | None = None
     fusion_sha = ""
+    holding_branch_diagnostics: list[dict[str, Any]] = []
+    holding_evidence_refs: dict[str, dict[str, Any]] = {}
     pointer_sha = ""
     try:
         if minimum_forward_sessions < 5:
@@ -766,9 +1189,21 @@ def run_daily_gray_comparison(
             )
         except GrayComparisonError:
             decision_session = ""
-    if classification == "COMPARABLE" and v15 and summary and fusion:
+    if classification == "COMPARABLE" and v15 and summary and summary_path and fusion:
         try:
-            metrics = _build_metrics(v15, summary, fusion)
+            holding_branch_diagnostics, holding_evidence_refs = _holding_branch_diagnostics(
+                workspace_root=workspace_root,
+                summary_path=summary_path,
+                summary=summary,
+                fusion=fusion,
+                holdings_rows=v15["holdings_rows"],
+            )
+            metrics = _build_metrics(
+                v15,
+                summary,
+                fusion,
+                holding_branch_diagnostics,
+            )
             history_sessions = _comparison_history(base_dir, decision_session)
             forward_outcomes = _mature_forward_outcomes(
                 base_dir=base_dir,
@@ -791,6 +1226,10 @@ def run_daily_gray_comparison(
             "v15_holding_count": len(v15["holding_symbols"]) if v15 else 0,
             "v15_holdings_in_v17_common_ready_count": 0,
             "v15_holdings_in_v17_top24_count": 0,
+            "v15_holdings_two_branch_ready_count": 0,
+            "v15_holdings_two_branch_unavailable_count": (
+                len(v15["holding_symbols"]) if v15 else 0
+            ),
             "v15_actual_gross_weight": 0.0,
             "v17_model_gross_weight": 0.0,
             "gross_weight_difference_v17_minus_v15": 0.0,
@@ -834,7 +1273,9 @@ def run_daily_gray_comparison(
             "v15_record": (
                 {
                     "run_dir": str(target),
-                    "manifest_pre_gray_sha256": v15["manifest_pre_gray_sha256"],
+                    "manifest_without_gray_semantic_sha256": v15[
+                        "manifest_without_gray_semantic_sha256"
+                    ],
                     "stable_artifact_refs": v15["artifact_refs"],
                 }
                 if v15
@@ -860,8 +1301,10 @@ def run_daily_gray_comparison(
                 if fusion_path
                 else None
             ),
+            **holding_evidence_refs,
         },
         "metrics": metrics,
+        "holding_branch_diagnostics": holding_branch_diagnostics,
         "selection_sets": {
             "v15_candidates": (list(v15["candidate_symbols"]) if v15 else []),
             "v15_holdings": (list(v15["holding_symbols"]) if v15 else []),

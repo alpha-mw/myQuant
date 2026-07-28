@@ -57,10 +57,10 @@ def _v15_run(tmp_path: Path, *, session: str = "20260727") -> Path:
     _write_csv(
         run_dir / "holdings_review.csv",
         [
-            {"symbol": "000001.SZ", "nav_weight": "0.03"},
-            {"symbol": "000002.SZ", "nav_weight": "0.02"},
+            {"symbol": "000001.SZ", "name": "平安银行", "nav_weight": "0.03"},
+            {"symbol": "000002.SZ", "name": "万科A", "nav_weight": "0.02"},
         ],
-        ["symbol", "nav_weight"],
+        ["symbol", "name", "nav_weight"],
     )
     _write_csv(
         run_dir / "pnl_summary.csv",
@@ -120,6 +120,106 @@ def _v17_workspace(
         "source_bindings": {"market_pointer_sha256": pointer_sha},
         "authority": dict(NO_AUTHORITY),
     }
+    selected_pool = [
+        "000001.SZ",
+        "000002.SZ",
+        *[row["symbol"] for row in top24],
+    ]
+    initial_pool_payload = {
+        "version": "myquant.v17.v3.initial-pool-output.v1",
+        "status": "READY",
+        "state": "PRESELECT_COMPLETE",
+        "run_id": run_id,
+        "pool_count": len(selected_pool),
+        "ready_domain": [*selected_pool, "605358.SH"],
+        "selected_symbols": selected_pool,
+        "dispositions": [
+            *[
+                {
+                    "symbol": symbol,
+                    "status": "READY",
+                    "score": (
+                        "0.900000000000"
+                        if symbol in {row["symbol"] for row in top24}
+                        else "0.700000000000"
+                    ),
+                    "selected": True,
+                    "reasons": [],
+                }
+                for symbol in selected_pool
+            ],
+            {
+                "symbol": "605358.SH",
+                "status": "READY",
+                "score": "0.100000000000",
+                "selected": False,
+                "reasons": [],
+            },
+        ],
+        "authority": dict(NO_AUTHORITY),
+    }
+    initial_pool_sha = _write_json(
+        run_dir / "initial_pool.json",
+        initial_pool_payload,
+        private=True,
+    )
+    initial_pool_ref = {
+        "artifact_version": "myquant.v17.v3.initial-pool-output.v1",
+        "byte_sha256": initial_pool_sha,
+    }
+    source_root = workspace / "data/private/v17_v3_sources" / run_id / "derived"
+    quant_relative = f"data/private/v17_v3_sources/{run_id}/derived/quant_branch.json"
+    fundamental_relative = f"data/private/v17_v3_sources/{run_id}/derived/fundamental_branch.json"
+    quant_scores = {
+        symbol: ("0.700000000000" if symbol == "000001.SZ" else "0.400000000000")
+        for symbol in selected_pool
+    }
+    fundamental_scores = {
+        symbol: ("0.300000000000" if symbol == "000001.SZ" else "0.600000000000")
+        for symbol in selected_pool
+    }
+    quant_sha = _write_json(
+        source_root / "quant_branch.json",
+        {
+            "version": "myquant.v17.v3.branch-output.v1",
+            "state": "BRANCHES_COMPLETE",
+            "branch": "quant",
+            "run_id": run_id,
+            "initial_pool_ref": initial_pool_ref,
+            "records": [
+                {
+                    "symbol": symbol,
+                    "status": "READY",
+                    "score": quant_scores[symbol],
+                    "reason": None,
+                }
+                for symbol in selected_pool
+            ],
+            "authority": dict(NO_AUTHORITY),
+        },
+        private=True,
+    )
+    fundamental_sha = _write_json(
+        source_root / "fundamental_branch.json",
+        {
+            "version": "myquant.v17.v3.branch-output.v1",
+            "state": "BRANCHES_COMPLETE",
+            "branch": "fundamental",
+            "run_id": run_id,
+            "initial_pool_ref": initial_pool_ref,
+            "records": [
+                {
+                    "symbol": symbol,
+                    "status": "READY",
+                    "score": fundamental_scores[symbol],
+                    "reason": None,
+                }
+                for symbol in selected_pool
+            ],
+            "authority": dict(NO_AUTHORITY),
+        },
+        private=True,
+    )
     fusion = {
         "version": "myquant.v17.v3.fusion-output.v1",
         "status": "READY",
@@ -127,11 +227,35 @@ def _v17_workspace(
         "strategy_id": "cn-full-a-v17-v3-model",
         "run_id": run_id,
         "selected_symbols": [row["symbol"] for row in top24],
-        "common_ready_domain": [
-            "000001.SZ",
-            "000002.SZ",
-            *[row["symbol"] for row in top24],
+        "ordered_domain": selected_pool,
+        "common_ready_domain": selected_pool,
+        "dispositions": [
+            {
+                "symbol": symbol,
+                "status": "READY",
+                "quant_percentile": (
+                    "0.800000000000" if symbol == "000001.SZ" else "0.300000000000"
+                ),
+                "fundamental_percentile": (
+                    "0.200000000000" if symbol == "000001.SZ" else "0.700000000000"
+                ),
+                "fusion_score": "0.500000000000",
+                "selected": symbol in {row["symbol"] for row in top24},
+                "reason": None,
+            }
+            for symbol in selected_pool
         ],
+        "quant_branch_ref": {
+            "relative_path": quant_relative,
+            "byte_sha256": quant_sha,
+        },
+        "fundamental_branch_ref": {
+            "relative_path": fundamental_relative,
+            "byte_sha256": fundamental_sha,
+        },
+        "quant_weight": "0.500000000000",
+        "fundamental_weight": "0.500000000000",
+        "calibration_label": "UNCALIBRATED_50_50",
         "authority": dict(NO_AUTHORITY),
     }
     _write_json(run_dir / "run_summary.json", summary, private=True)
@@ -158,11 +282,19 @@ def test_same_session_same_pointer_writes_comparable_gray_sidecar(tmp_path: Path
     assert result["metrics"]["candidate_overlap_count"] == 1
     assert result["metrics"]["v15_holdings_in_v17_common_ready_count"] == 2
     assert result["metrics"]["v15_holdings_in_v17_top24_count"] == 0
+    assert result["metrics"]["v15_holdings_two_branch_ready_count"] == 2
     assert result["metrics"]["v15_actual_gross_weight"] == 0.05
     assert result["metrics"]["v17_model_gross_weight"] == 0.0
     assert result["metrics"]["v17_deep_buy_veto_count"] == 24
     document = json.loads((run_dir / OUTPUT_JSON).read_text(encoding="utf-8"))
     assert document["schema_version"] == SCHEMA_VERSION
+    holding_rows = {row["symbol"]: row for row in document["holding_branch_diagnostics"]}
+    assert holding_rows["000001.SZ"]["name"] == "平安银行"
+    assert holding_rows["000001.SZ"]["quant_branch"]["score_100"] == 70.0
+    assert holding_rows["000001.SZ"]["fundamental_branch"]["score_100"] == 30.0
+    assert holding_rows["000001.SZ"]["fusion"]["score_100"] == 50.0
+    assert holding_rows["000001.SZ"]["branch_balance"] == "QUANT_STRONGER"
+    assert holding_rows["000001.SZ"]["deep_status"] == "NOT_EVALUATED_NOT_TOP24"
     assert document["effect_evaluation"]["status"] == "INSUFFICIENT_EVIDENCE"
     assert document["effect_evaluation"]["observed_comparable_sessions"] == 1
     assert document["side_effect_attestation"]["broker_calls"] == 0
@@ -170,7 +302,66 @@ def test_same_session_same_pointer_writes_comparable_gray_sidecar(tmp_path: Path
     assert (run_dir / "raw_exports" / OUTPUT_JSON).is_file()
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["v17_gray_comparison"]["classification"] == "COMPARABLE"
-    assert "V15 / V17 日度灰度比较" in (run_dir / "analysis_report.md").read_text(encoding="utf-8")
+    report = (run_dir / "analysis_report.md").read_text(encoding="utf-8")
+    assert "V15 / V17 日度灰度比较" in report
+    assert "Deep BUY_VETO 是什么" in report
+    assert "000001.SZ 平安银行" in report
+
+
+def test_preselection_rejection_keeps_two_branch_score_unavailable(
+    tmp_path: Path,
+) -> None:
+    run_dir = _v15_run(tmp_path)
+    _write_csv(
+        run_dir / "holdings_review.csv",
+        [{"symbol": "605358.SH", "name": "立昂微", "nav_weight": "0.02"}],
+        ["symbol", "name", "nav_weight"],
+    )
+    pointer_path, pointer_sha = _pointer(tmp_path)
+    v17_root = _v17_workspace(tmp_path, pointer_sha=pointer_sha)
+
+    run_daily_gray_comparison(
+        run_dir=run_dir,
+        v17_workspace_root=v17_root,
+        market_pointer_path=pointer_path,
+        pointer_sha256_before_v15=pointer_sha,
+        pointer_sha256_after_v15=pointer_sha,
+    )
+
+    document = json.loads((run_dir / OUTPUT_JSON).read_text(encoding="utf-8"))
+    row = document["holding_branch_diagnostics"][0]
+    assert row["symbol"] == "605358.SH"
+    assert row["initial_preselection"]["selected_top500"] is False
+    assert row["quant_branch"]["score"] is None
+    assert row["fundamental_branch"]["score"] is None
+    assert row["fusion"]["score"] is None
+    assert row["branch_evidence_status"] == "UNAVAILABLE"
+    assert "quant_preselection_not_selected" in row["blockers"]
+    assert "two_branch_scores_not_produced_by_same_pool_contract" in row["blockers"]
+
+
+def test_repeat_run_replaces_gray_report_section_and_is_byte_stable(
+    tmp_path: Path,
+) -> None:
+    run_dir = _v15_run(tmp_path)
+    pointer_path, pointer_sha = _pointer(tmp_path)
+    v17_root = _v17_workspace(tmp_path, pointer_sha=pointer_sha)
+    kwargs = {
+        "run_dir": run_dir,
+        "v17_workspace_root": v17_root,
+        "market_pointer_path": pointer_path,
+        "pointer_sha256_before_v15": pointer_sha,
+        "pointer_sha256_after_v15": pointer_sha,
+    }
+
+    first = run_daily_gray_comparison(**kwargs)
+    second = run_daily_gray_comparison(**kwargs)
+
+    report = (run_dir / "analysis_report.md").read_text(encoding="utf-8")
+    assert first["sha256"] == second["sha256"]
+    assert first["report_sha256"] == second["report_sha256"]
+    assert report.count("## 7. V15 / V17 日度灰度比较") == 1
+    assert report.count("### Deep BUY_VETO 是什么") == 1
 
 
 def test_missing_v17_shadow_is_non_blocking_and_explicit(tmp_path: Path) -> None:

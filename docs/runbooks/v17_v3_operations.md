@@ -156,8 +156,16 @@ and unchanged. The per-run outputs are
 `v15_v17_gray_comparison.{json,md}` inside the V15 strategy-record directory.
 
 The comparison reports rank overlap, holding coverage and exposure differences.
+Schema v2 also records every current V15 holding against the exact V17
+preselection, Quant branch, Fundamental branch and Fusion artifacts. Scores are
+shown on a 0-100 display scale together with same-pool percentiles, calibration
+label, Top24/Deep state and explicit blockers. A holding that did not enter the
+Quant Top500 remains `UNAVAILABLE_PRESELECTION_NOT_SELECTED` for both branches;
+the gray report must not bypass the Quant-first architecture to invent scores.
+
 It also matures prior rank-set returns at 1, 5 and 20 local sessions when exact
-strict-Parquet closes exist. These are equal-weight rank diagnostics only.
+strict-Parquet closes exist. The current v2 reader retains v1 history when
+building those cumulative labels. These are equal-weight rank diagnostics only.
 `SHADOW_COMPLETE` with 24 `BUY_VETO` rows and 100% model cash is an unavailable
 Deep-evidence state, not a defensive or performance win. V15 remains the only
 production/default result and no comparison can authorize a broker, order or
