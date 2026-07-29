@@ -976,6 +976,16 @@ def publish_shadow_fusion_matured_label(
     }
 
 
+def build_availability_aware_forward_fusion_v3(
+    **scoring_inputs: Any,
+) -> dict[str, Any]:
+    """Build additive coverage-aware Fusion v3 without changing Fusion v2."""
+
+    from .forward_scoring_v3 import fuse_forward_scores_v3
+
+    return fuse_forward_scores_v3(**scoring_inputs)
+
+
 __all__ = [
     "BASE_TARGET",
     "FORWARD_ACCUMULATION_STATE",
@@ -989,6 +999,7 @@ __all__ = [
     "SHADOW_FUSION_OBSERVATION_VERSION",
     "SHADOW_FUSION_POLICY_VERSION",
     "build_forward_fusion_top24",
+    "build_availability_aware_forward_fusion_v3",
     "build_shadow_fusion_matured_label",
     "build_shadow_fusion_observation",
     "build_shadow_fusion_policy",

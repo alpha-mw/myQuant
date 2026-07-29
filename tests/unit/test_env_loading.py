@@ -3,7 +3,17 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from quant_investor.env_loading import load_env_file, read_env_file_values
+from quant_investor.env_loading import (
+    DEFAULT_ENV_FILE,
+    PROJECT_ROOT,
+    load_env_file,
+    read_env_file_values,
+)
+
+
+def test_default_env_file_is_repository_root_not_package_tree() -> None:
+    assert DEFAULT_ENV_FILE == PROJECT_ROOT / ".env"
+    assert DEFAULT_ENV_FILE.parent.name != "quant_investor"
 
 
 def test_load_env_file_does_not_override_existing_process_env(monkeypatch, tmp_path: Path) -> None:

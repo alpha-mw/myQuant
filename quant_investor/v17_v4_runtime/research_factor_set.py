@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 import hashlib
 from importlib import resources
 import math
@@ -12,6 +12,7 @@ import os
 from pathlib import PurePosixPath
 import re
 from typing import Any, Final
+from zoneinfo import ZoneInfo
 
 from quant_investor.factors.governance_literature_incubator_v4 import (
     candidate_catalog_artifact_v4,
@@ -58,6 +59,9 @@ NO_AUTHORITY: Final = {
     "research_runtime_default": False,
     "trade": False,
 }
+SHANGHAI_TIMEZONE: Final = ZoneInfo("Asia/Shanghai")
+SHANGHAI_MARKET_CLOSE: Final = time(15, 0)
+SAME_SESSION_PUBLICATION_WINDOW_SECONDS: Final = 300
 
 _IDENTIFIER_RE: Final = re.compile(
     r"^[a-z0-9][a-z0-9_.:-]{0,127}$",
@@ -133,6 +137,7 @@ _FACTOR_SET_KEYS: Final = {
     "target_cardinality",
     "version",
 }
+_FACTOR_SET_OPTIONAL_KEYS: Final = {"published_at"}
 _POINTER_KEYS: Final = {
     "authority",
     "canary_evidence_eligible",
@@ -150,6 +155,7 @@ _POINTER_KEYS: Final = {
     "strategy_id",
     "version",
 }
+_POINTER_OPTIONAL_KEYS: Final = {"published_at"}
 _SLICE_KEYS: Final = {
     "available_at",
     "field_name",
@@ -219,6 +225,22 @@ def _require_keys(
     label: str,
 ) -> Mapping[str, Any]:
     if type(value) is not dict or set(value) != expected:
+        raise _blocked(f"{label}_fields")
+    return value
+
+
+def _require_keys_with_optional(
+    value: Any,
+    required: set[str],
+    optional: set[str],
+    *,
+    label: str,
+) -> Mapping[str, Any]:
+    if (
+        type(value) is not dict
+        or not required.issubset(value)
+        or not set(value).issubset(required | optional)
+    ):
         raise _blocked(f"{label}_fields")
     return value
 
@@ -502,8 +524,65 @@ def _selected_factor(
     }
 
 
+def _local_timestamp(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(SHANGHAI_TIMEZONE)
+
+
+def _publication_now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _timing_baseline(audit_session: str, selected_at: str) -> str:
+    selected_session = _local_timestamp(selected_at).date().isoformat()
+    if selected_session < audit_session:
+        raise _blocked("selection_timing")
+    return max(audit_session, selected_session)
+
+
+def _same_session_publication_is_causal(
+    *,
+    effective_session: str,
+    selected_at: str,
+    published_at: str | None,
+) -> bool:
+    if published_at is None:
+        return False
+    published = _local_timestamp(published_at)
+    selected = _local_timestamp(selected_at)
+    return (
+        published >= selected
+        and published.date().isoformat() == effective_session
+        and published.time().replace(tzinfo=None) < SHANGHAI_MARKET_CLOSE
+    )
+
+
+def _validate_effective_timing(
+    *,
+    audit_session: str,
+    selected_at: str,
+    published_at: str | None,
+    effective_session: str,
+) -> None:
+    baseline = _timing_baseline(audit_session, selected_at)
+    if published_at is not None:
+        published_at = _cutoff(published_at, label="published_at")
+        if _local_timestamp(published_at) < _local_timestamp(selected_at):
+            raise _blocked("factor_set_publication_timing")
+    if effective_session < baseline or (
+        effective_session == baseline
+        and not _same_session_publication_is_causal(
+            effective_session=effective_session,
+            selected_at=selected_at,
+            published_at=published_at,
+        )
+    ):
+        raise _blocked("factor_set_timing")
+
+
 def _effective_session(
     audit_session: str,
+    selected_at: str,
+    published_at: str,
     open_sessions: Sequence[str],
 ) -> str:
     if isinstance(open_sessions, (str, bytes)) or not open_sessions:
@@ -511,8 +590,15 @@ def _effective_session(
     normalized = [_day(value, label="open_session") for value in open_sessions]
     if normalized != sorted(set(normalized)):
         raise _blocked("open_sessions_order")
+    baseline = _timing_baseline(audit_session, selected_at)
+    if baseline in normalized and _same_session_publication_is_causal(
+        effective_session=baseline,
+        selected_at=selected_at,
+        published_at=published_at,
+    ):
+        return baseline
     try:
-        return next(session for session in normalized if session > audit_session)
+        return next(session for session in normalized if session > baseline)
     except StopIteration as exc:
         raise _blocked("effective_open_session_missing") from exc
 
@@ -524,6 +610,7 @@ def build_research_shadow_factor_set(
     cutoff: str,
     audit_session: str,
     selected_at: str,
+    published_at: str,
     open_sessions: Sequence[str],
     monthly_audit_ref: Mapping[str, Any],
     previous_factor_set_ref: Mapping[str, Any] | None,
@@ -542,8 +629,9 @@ def build_research_shadow_factor_set(
     strategy = _identifier(strategy_id, label="strategy_id")
     cutoff_value = _cutoff(cutoff, label="cutoff")
     selected = _cutoff(selected_at, label="selected_at")
+    published = _cutoff(published_at, label="published_at")
     audit = _day(audit_session, label="audit_session")
-    if selected != cutoff_value or selected[:10] < audit:
+    if selected != cutoff_value or _local_timestamp(published) < _local_timestamp(selected):
         raise _blocked("selection_timing")
     audit_ref = _artifact_ref(
         monthly_audit_ref,
@@ -623,6 +711,8 @@ def build_research_shadow_factor_set(
             "cutoff": cutoff_value,
             "effective_from_session": _effective_session(
                 audit,
+                selected,
+                published,
                 open_sessions,
             ),
             "eligible_distinct_slot_count": len(by_slot),
@@ -634,6 +724,7 @@ def build_research_shadow_factor_set(
             "performance_evidence_eligible": False,
             "previous_factor_set_ref": previous,
             "protocol_version": PROTOCOL_VERSION,
+            "published_at": published,
             "selected_at": selected,
             "selected_factors": factor_rows,
             "selection_policy_sha256": SELECTION_POLICY_SHA256,
@@ -682,9 +773,10 @@ def validate_research_shadow_factor_set(
 ) -> dict[str, Any]:
     """Validate a factor set against the exact currently packaged catalog."""
 
-    document = _require_keys(
+    document = _require_keys_with_optional(
         value,
         _FACTOR_SET_KEYS,
+        _FACTOR_SET_OPTIONAL_KEYS,
         label="factor_set",
     )
     if (
@@ -710,8 +802,14 @@ def validate_research_shadow_factor_set(
         document["effective_from_session"],
         label="effective_from_session",
     )
-    if cutoff_value != selected_at or selected_at[:10] < audit or effective <= audit:
+    if cutoff_value != selected_at:
         raise _blocked("factor_set_timing")
+    _validate_effective_timing(
+        audit_session=audit,
+        selected_at=selected_at,
+        published_at=document.get("published_at"),
+        effective_session=effective,
+    )
     audit_ref = _artifact_ref(
         document["monthly_audit_ref"],
         label="monthly_audit_ref",
@@ -793,30 +891,36 @@ def _pointer_document(
     factor_set_ref: Mapping[str, str],
     expected_pointer_sha256: str,
 ) -> dict[str, Any]:
-    return seal_semantic(
-        {
-            "authority": dict(NO_AUTHORITY),
-            "canary_evidence_eligible": False,
-            "cutoff": str(factor_set["cutoff"]),
-            "effective_from_session": str(factor_set["effective_from_session"]),
-            "factor_set_ref": dict(factor_set_ref),
-            "formal_activation_eligible": False,
-            "performance_evidence_eligible": False,
-            "pointer_id": ("research-factor-set:" + str(factor_set["factor_set_id"])),
-            "previous_pointer_sha256": expected_pointer_sha256,
-            "protocol_version": PROTOCOL_VERSION,
-            "selected_at": str(factor_set["selected_at"]),
-            "shadow_only": True,
-            "strategy_id": str(factor_set["strategy_id"]),
-            "version": POINTER_VERSION,
-        }
-    )
+    payload = {
+        "authority": dict(NO_AUTHORITY),
+        "canary_evidence_eligible": False,
+        "cutoff": str(factor_set["cutoff"]),
+        "effective_from_session": str(factor_set["effective_from_session"]),
+        "factor_set_ref": dict(factor_set_ref),
+        "formal_activation_eligible": False,
+        "performance_evidence_eligible": False,
+        "pointer_id": ("research-factor-set:" + str(factor_set["factor_set_id"])),
+        "previous_pointer_sha256": expected_pointer_sha256,
+        "protocol_version": PROTOCOL_VERSION,
+        "selected_at": str(factor_set["selected_at"]),
+        "shadow_only": True,
+        "strategy_id": str(factor_set["strategy_id"]),
+        "version": POINTER_VERSION,
+    }
+    if "published_at" in factor_set:
+        payload["published_at"] = str(factor_set["published_at"])
+    return seal_semantic(payload)
 
 
 def validate_research_shadow_factor_set_pointer(
     value: Any,
 ) -> dict[str, Any]:
-    document = _require_keys(value, _POINTER_KEYS, label="factor_set_pointer")
+    document = _require_keys_with_optional(
+        value,
+        _POINTER_KEYS,
+        _POINTER_OPTIONAL_KEYS,
+        label="factor_set_pointer",
+    )
     if (
         document["version"] != POINTER_VERSION
         or document["protocol_version"] != PROTOCOL_VERSION
@@ -844,9 +948,17 @@ def validate_research_shadow_factor_set_pointer(
         factor_set_ref["artifact_version"] != FACTOR_SET_VERSION
         or factor_set_ref["cutoff"] != cutoff_value
         or selected != cutoff_value
-        or effective <= selected[:10]
     ):
         raise _blocked("factor_set_pointer_binding")
+    try:
+        _validate_effective_timing(
+            audit_session=_local_timestamp(selected).date().isoformat(),
+            selected_at=selected,
+            published_at=document.get("published_at"),
+            effective_session=effective,
+        )
+    except ResearchFactorSetError as exc:
+        raise _blocked("factor_set_pointer_binding") from exc
     _cas(
         document["previous_pointer_sha256"],
         label="previous_pointer_sha256",
@@ -1143,6 +1255,16 @@ class ResearchFactorSetStore:
         crash_after: str | None = None,
     ) -> ResearchFactorSetPublication:
         normalized = validate_research_shadow_factor_set(factor_set)
+        if normalized["effective_from_session"] == _timing_baseline(
+            str(normalized["audit_session"]),
+            str(normalized["selected_at"]),
+        ):
+            published = datetime.fromisoformat(
+                str(normalized["published_at"]).replace("Z", "+00:00")
+            )
+            publication_age = (_publication_now_utc() - published).total_seconds()
+            if not 0 <= publication_age <= SAME_SESSION_PUBLICATION_WINDOW_SECONDS:
+                raise _blocked("same_session_publication_clock")
         expected = _cas(
             expected_pointer_sha256,
             label="expected_pointer_sha256",
@@ -1255,6 +1377,17 @@ class ResearchFactorSetStore:
         )
         if exact_ref != factor_set_ref:
             raise _blocked("factor_set_ref_mismatch")
+        if any(
+            pointer.get(field_name) != factor_set.get(field_name)
+            for field_name in (
+                "cutoff",
+                "effective_from_session",
+                "published_at",
+                "selected_at",
+                "strategy_id",
+            )
+        ):
+            raise _blocked("factor_set_pointer_timing_mismatch")
         second = self._writer.read_optional(FACTOR_SET_POINTER)
         if second is None or second.byte_sha256 != first.byte_sha256 or second.data != first.data:
             raise _blocked("pointer_changed_during_reread")
@@ -1320,6 +1453,20 @@ def assert_research_factor_set_reread(
     return state
 
 
+def allocate_forward_factor_tiers(inputs: Any) -> Any:
+    """Derive run-local Core/Challenger/Experimental tiers from exact evidence.
+
+    This additive helper does not mutate the monthly v1 factor-set pointer or
+    relabel any research factor as production-ready.
+    """
+
+    from quant_investor.factors.forward_evaluator import (
+        allocate_factor_tiers,
+    )
+
+    return allocate_factor_tiers(inputs)
+
+
 __all__ = [
     "CANDIDATE_CATALOG_SHA256",
     "CATALOG_RESOURCE_SHA256",
@@ -1339,6 +1486,7 @@ __all__ = [
     "ResearchFactorSetState",
     "ResearchFactorSetStore",
     "SELECTION_POLICY_SHA256",
+    "allocate_forward_factor_tiers",
     "assert_research_factor_set_reread",
     "build_research_factor_input_bundle",
     "build_research_shadow_factor_set",

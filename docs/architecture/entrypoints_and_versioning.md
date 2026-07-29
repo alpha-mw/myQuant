@@ -13,8 +13,16 @@
   execution、broker、order、trade 与 production-default authority 永远为 false。
   v3 日度灰度发现链已冻结为历史兼容代码，不再是每日复盘默认入口。
 - V17 v4 契约入口：`quant-investor-v17-v4`。除 `verify`、`status` 和既有
-  formal/canary 显式入口外，现开放 `deep-compile`、`shadow-publish` 与
-  `shadow-status`。新增 Deep v2、Shadow run 和 session-ref 全部固定为
+  formal/canary 显式入口外，现开放 `run-forward`、`deep-compile`、
+  `shadow-publish` 与 `shadow-status`。`run-forward` 只接受不可变 request
+  的精确路径与 SHA；`EXPLORE` 和 `FORWARD_EVIDENCE` 逐 stage 写入
+  output/readback/receipt，允许缺失的 Fundamental、Deep、holdings 保持
+  `UNAVAILABLE`，但 PIT、future-data、schema、SHA、replay、lineage 与
+  authority 违规仍整体 fail closed。CLI 和持久化 artifact 分别使用
+  `global_activation_state=INACTIVE` 与
+  `run_state=FORWARD_EVIDENCE_ACTIVE`；后者只是单次 run state，不是
+  selector/default state。新增 Deep v2、
+  Shadow run 和 session-ref 全部固定为
   shadow-only，不具备 formal 或 canary 证据资格；
   `shadow-publish` 的默认 Factor-v4 路径保持 `shadow-run.v1`，只有显式
   旧版 `--research-factor-shadow-only-override-id` 仅用于重放既有固定集合；

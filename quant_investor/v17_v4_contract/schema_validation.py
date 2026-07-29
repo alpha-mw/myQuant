@@ -96,6 +96,14 @@ _ARTIFACT_REGISTRY: Final = {
         "schemas/event_scan.v3.schema.json",
         "scan_id",
     ),
+    "myquant.v17.v4.existing-factor-inventory.v1": (
+        "schemas/existing_factor_inventory.v1.schema.json",
+        "inventory_id",
+    ),
+    "myquant.v17.v4.factor-universe-observation.v1": (
+        "schemas/factor_universe_observation.v1.schema.json",
+        "observation_id",
+    ),
     "myquant.v17.v4.formal-activation-receipt.v1": (
         "schemas/formal_activation_receipt.v1.schema.json",
         "receipt_id",
@@ -115,6 +123,46 @@ _ARTIFACT_REGISTRY: Final = {
     "myquant.v17.v4.formal-output.v1": (
         "schemas/formal_output.v1.schema.json",
         "output_id",
+    ),
+    "myquant.v17.v4.forward-evaluation-receipt.v1": (
+        "schemas/forward_evaluation_receipt.v1.schema.json",
+        "receipt_id",
+    ),
+    "myquant.v17.v4.forward-evidence-origin-inventory.v1": (
+        "schemas/forward_evidence_origin_inventory.v1.schema.json",
+        "inventory_id",
+    ),
+    "myquant.v17.v4.forward-factor-allocation.v1": (
+        "schemas/forward_factor_allocation.v1.schema.json",
+        "allocation_id",
+    ),
+    "myquant.v17.v4.forward-label.v1": (
+        "schemas/forward_label.v1.schema.json",
+        "label_id",
+    ),
+    "myquant.v17.v4.forward-observation-run.v1": (
+        "schemas/forward_observation_run.v1.schema.json",
+        "observation_run_id",
+    ),
+    "myquant.v17.v4.forward-observation-session-ref.v1": (
+        "schemas/forward_observation_session_ref.v1.schema.json",
+        "session_ref_id",
+    ),
+    "myquant.v17.v4.forward-run-request.v1": (
+        "schemas/forward_run_request.v1.schema.json",
+        "request_id",
+    ),
+    "myquant.v17.v4.forward-runtime-source-manifest.v1": (
+        "schemas/forward_runtime_source_manifest.v1.schema.json",
+        "manifest_id",
+    ),
+    "myquant.v17.v4.forward-stage-output.v1": (
+        "schemas/forward_stage_output.v1.schema.json",
+        "output_id",
+    ),
+    "myquant.v17.v4.forward-stage-receipt.v1": (
+        "schemas/forward_stage_receipt.v1.schema.json",
+        "receipt_id",
     ),
     "myquant.v17.v4.fusion-promotion-receipt.v1": (
         "schemas/fusion_promotion_receipt.v1.schema.json",
@@ -218,7 +266,7 @@ _ARTIFACT_REGISTRY: Final = {
     ),
     "myquant.v17.v4.research-shadow-factor-set.v1": (
         "schemas/research_shadow_factor_set.v1.schema.json",
-        "set_id",
+        "factor_set_id",
     ),
     "myquant.v17.v4.research-shadow-factor-set-pointer.v1": (
         "schemas/research_shadow_factor_set_pointer.v1.schema.json",
@@ -267,6 +315,10 @@ _ARTIFACT_REGISTRY: Final = {
     "myquant.v17.v4.shadow-session-ref.v3": (
         "schemas/shadow_session_ref.v3.schema.json",
         "session_ref_id",
+    ),
+    "myquant.v17.v4.strategy-pool-observation.v1": (
+        "schemas/strategy_pool_observation.v1.schema.json",
+        "observation_id",
     ),
     "myquant.v17.v4.rollback-drill-receipt.v1": (
         "schemas/rollback_drill_receipt.v1.schema.json",

@@ -17,9 +17,8 @@ from .identities import IdentityContractError, require_sha256
 PROTOCOL_VERSION: Final = "myquant.v17.v4"
 PACKAGE_MANIFEST_PATH: Final = "resources/package_manifest.v1.json"
 RUNTIME_BUILD_MANIFEST_PATH: Final = "resources/runtime_build_manifest.v1.json"
-PACKAGE_MANIFEST_SHA256: Final = (
-    "5ed835b9ee861f3205b1d259a35ddba7587cd2b9eefa22d430ee7035e7b83d3e"
-)
+FORWARD_RUNTIME_SOURCE_MANIFEST_PATH: Final = "resources/forward_runtime_source_manifest.v1.json"
+PACKAGE_MANIFEST_SHA256: Final = "5fd5b345f0a9b9da5c8258e8961ccdb3a759e1e29584beaa72985dbac34ef5cc"
 _PACKAGE_ROOT: Final = Path(__file__).resolve().parent
 _NO_AUTHORITY: Final = {
     "broker": False,
@@ -116,9 +115,7 @@ def _asset_rows(manifest: Mapping[str, Any]) -> tuple[dict[str, str], ...]:
         try:
             require_sha256(byte_sha256)
         except IdentityContractError as exc:
-            raise PackageResourceError(
-                f"v4 package asset row {index} SHA is invalid"
-            ) from exc
+            raise PackageResourceError(f"v4 package asset row {index} SHA is invalid") from exc
         if previous is not None and relative_path <= previous:
             raise PackageResourceError("v4 package assets are not ASCII path ordered")
         if relative_path.casefold() in seen:
@@ -137,10 +134,7 @@ def _source_paths(manifest: Mapping[str, Any]) -> tuple[str, ...]:
     if (
         type(values) is not list
         or any(
-            type(value) is not str
-            or not value.endswith(".py")
-            or "/" in value
-            for value in values
+            type(value) is not str or not value.endswith(".py") or "/" in value for value in values
         )
         or values != sorted(values)
         or len(values) != len({value.casefold() for value in values})
@@ -164,25 +158,17 @@ def read_packaged_asset(
     try:
         raw = (root / relative_path).read_bytes()
     except OSError as exc:
-        raise PackageResourceError(
-            f"v4 package asset is unreadable: {relative_path}"
-        ) from exc
+        raise PackageResourceError(f"v4 package asset is unreadable: {relative_path}") from exc
     if hashlib.sha256(raw).hexdigest() != expected[relative_path]:
-        raise PackageResourceError(
-            f"v4 package asset byte SHA-256 mismatch: {relative_path}"
-        )
+        raise PackageResourceError(f"v4 package asset byte SHA-256 mismatch: {relative_path}")
     try:
         payload = load_canonical_resource(raw, label=relative_path)
         if type(payload) is not dict:
-            raise PackageResourceError(
-                f"v4 package asset root is not an object: {relative_path}"
-            )
+            raise PackageResourceError(f"v4 package asset root is not an object: {relative_path}")
         if relative_path.startswith("resources/"):
             validate_semantic_sha(payload)
     except CanonicalContractError as exc:
-        raise PackageResourceError(
-            f"v4 package asset is invalid: {relative_path}"
-        ) from exc
+        raise PackageResourceError(f"v4 package asset is invalid: {relative_path}") from exc
     return raw
 
 
@@ -210,8 +196,7 @@ def _runtime_rows(manifest: Mapping[str, Any]) -> tuple[dict[str, str], ...]:
         "version",
     } or (
         manifest.get("protocol_version") != PROTOCOL_VERSION
-        or manifest.get("version")
-        != "myquant.v17.v4.runtime-build-manifest.v1"
+        or manifest.get("version") != "myquant.v17.v4.runtime-build-manifest.v1"
         or manifest.get("authority") != _NO_AUTHORITY
     ):
         raise PackageResourceError("v4 runtime-build manifest identity mismatch")
@@ -238,9 +223,7 @@ def _runtime_rows(manifest: Mapping[str, Any]) -> tuple[dict[str, str], ...]:
         try:
             require_sha256(row["byte_sha256"])
         except IdentityContractError as exc:
-            raise PackageResourceError(
-                f"v4 runtime source row {index} SHA is invalid"
-            ) from exc
+            raise PackageResourceError(f"v4 runtime source row {index} SHA is invalid") from exc
         previous = relative_path
         result.append(dict(row))
     return tuple(result)
@@ -259,14 +242,103 @@ def verify_runtime_build(
     quant_investor_root = root.parent
     runtime_root = quant_investor_root / "v17_v4_runtime"
     discovered = sorted(
-        path.relative_to(quant_investor_root).as_posix()
-        for path in runtime_root.glob("*.py")
+        path.relative_to(quant_investor_root).as_posix() for path in runtime_root.glob("*.py")
     )
     expected = [row["relative_path"] for row in rows]
     if discovered != expected:
-        raise PackageResourceError(
-            "v4 runtime Python inventory differs from the build manifest"
+        raise PackageResourceError("v4 runtime Python inventory differs from the build manifest")
+    result: dict[str, str] = {}
+    for row in rows:
+        relative_path = row["relative_path"]
+        try:
+            raw = (quant_investor_root / relative_path).read_bytes()
+        except OSError as exc:
+            raise PackageResourceError(f"v4 runtime source is unreadable: {relative_path}") from exc
+        observed = hashlib.sha256(raw).hexdigest()
+        if observed != row["byte_sha256"]:
+            raise PackageResourceError(f"v4 runtime source byte SHA-256 mismatch: {relative_path}")
+        result[relative_path] = observed
+    return dict(sorted(result.items()))
+
+
+def _forward_runtime_rows(
+    manifest: Mapping[str, Any],
+) -> tuple[dict[str, str], ...]:
+    if set(manifest) != {
+        "array_order_semantics",
+        "authority",
+        "manifest_id",
+        "protocol_version",
+        "semantic_sha256",
+        "sources",
+        "version",
+    } or (
+        manifest.get("protocol_version") != PROTOCOL_VERSION
+        or manifest.get("version") != "myquant.v17.v4.forward-runtime-source-manifest.v1"
+        or manifest.get("manifest_id") != "v17-v4-forward-runtime-sources"
+        or manifest.get("authority") != _NO_AUTHORITY
+    ):
+        raise PackageResourceError("v4 forward runtime source manifest identity mismatch")
+    rows = manifest.get("sources")
+    if type(rows) is not list or not rows:
+        raise PackageResourceError("v4 forward runtime source inventory is empty")
+    result: list[dict[str, str]] = []
+    previous: str | None = None
+    for index, row in enumerate(rows):
+        if type(row) is not dict or set(row) != {
+            "byte_sha256",
+            "relative_path",
+        }:
+            raise PackageResourceError(f"v4 forward runtime source row {index} shape mismatch")
+        relative_path = row["relative_path"]
+        allowed = type(relative_path) is str and (
+            relative_path == "factors/forward_evaluator.py"
+            or relative_path.startswith("industry/")
+            or relative_path.startswith("v17_v4_runtime/themes/")
         )
+        if (
+            type(relative_path) is not str
+            or not allowed
+            or not relative_path.endswith(".py")
+            or "__pycache__" in PurePath(relative_path).parts
+            or (previous is not None and relative_path <= previous)
+        ):
+            raise PackageResourceError(f"v4 forward runtime source row {index} is noncanonical")
+        try:
+            require_sha256(row["byte_sha256"])
+        except IdentityContractError as exc:
+            raise PackageResourceError(
+                f"v4 forward runtime source row {index} SHA is invalid"
+            ) from exc
+        previous = relative_path
+        result.append(dict(row))
+    return tuple(result)
+
+
+def verify_forward_runtime_sources(
+    *,
+    package_root: Path | None = None,
+) -> dict[str, str]:
+    root = _PACKAGE_ROOT if package_root is None else Path(package_root)
+    manifest = load_packaged_json(
+        FORWARD_RUNTIME_SOURCE_MANIFEST_PATH,
+        package_root=root,
+    )
+    rows = _forward_runtime_rows(manifest)
+    quant_investor_root = root.parent
+    discovered_paths = [
+        quant_investor_root / "factors/forward_evaluator.py",
+    ]
+    for directory in ("industry", "v17_v4_runtime/themes"):
+        discovered_paths.extend(sorted((quant_investor_root / directory).glob("*.py")))
+    discovered = sorted(
+        path.relative_to(quant_investor_root).as_posix()
+        for path in discovered_paths
+        if path.is_file()
+    )
+    expected = [row["relative_path"] for row in rows]
+    if discovered != expected:
+        raise PackageResourceError("v4 forward runtime Python inventory differs from its manifest")
     result: dict[str, str] = {}
     for row in rows:
         relative_path = row["relative_path"]
@@ -274,12 +346,12 @@ def verify_runtime_build(
             raw = (quant_investor_root / relative_path).read_bytes()
         except OSError as exc:
             raise PackageResourceError(
-                f"v4 runtime source is unreadable: {relative_path}"
+                f"v4 forward runtime source is unreadable: {relative_path}"
             ) from exc
         observed = hashlib.sha256(raw).hexdigest()
         if observed != row["byte_sha256"]:
             raise PackageResourceError(
-                f"v4 runtime source byte SHA-256 mismatch: {relative_path}"
+                "v4 forward runtime source byte SHA-256 mismatch: " f"{relative_path}"
             )
         result[relative_path] = observed
     return dict(sorted(result.items()))
@@ -296,14 +368,10 @@ def verify_package(*, package_root: Path | None = None) -> dict[str, str]:
         if path.relative_to(root).as_posix() != PACKAGE_MANIFEST_PATH
     )
     if discovered_assets != [row["relative_path"] for row in rows]:
-        raise PackageResourceError(
-            "v4 package JSON inventory differs from the manifest"
-        )
+        raise PackageResourceError("v4 package JSON inventory differs from the manifest")
     discovered_sources = sorted(path.name for path in root.glob("*.py"))
     if discovered_sources != list(_source_paths(manifest)):
-        raise PackageResourceError(
-            "v4 package source inventory differs from the manifest"
-        )
+        raise PackageResourceError("v4 package source inventory differs from the manifest")
     result = {PACKAGE_MANIFEST_PATH: PACKAGE_MANIFEST_SHA256}
     for row in rows:
         raw = read_packaged_asset(row["relative_path"], package_root=root)
@@ -318,10 +386,12 @@ def verify_package(*, package_root: Path | None = None) -> dict[str, str]:
                 )
             )
     verify_runtime_build(package_root=root)
+    verify_forward_runtime_sources(package_root=root)
     return dict(sorted(result.items()))
 
 
 __all__ = [
+    "FORWARD_RUNTIME_SOURCE_MANIFEST_PATH",
     "PACKAGE_MANIFEST_PATH",
     "PACKAGE_MANIFEST_SHA256",
     "PROTOCOL_VERSION",
@@ -330,5 +400,6 @@ __all__ = [
     "load_packaged_json",
     "read_packaged_asset",
     "verify_package",
+    "verify_forward_runtime_sources",
     "verify_runtime_build",
 ]

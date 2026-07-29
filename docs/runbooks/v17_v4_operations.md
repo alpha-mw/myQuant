@@ -25,6 +25,16 @@ selection cutoff, and first effective Shanghai session. Rotation never writes
 the Factor production registry, production active set, production-control
 receipt, selector, or V15 route.
 
+A set published before `15:00 Asia/Shanghai` on an open session may use that
+session's close as its first forward decision. The immutable set and pointer
+must bind `published_at`, and the selection cutoff must not be later than that
+publication time. Same-session CAS publication also requires `published_at` to
+be no more than five minutes behind the publisher process clock. A publication
+at or after the close starts on the next open session. Same-session activation
+never labels the interval before publication: the first 1/5/20-session labels
+use only future Shanghai closes after the decision close. Legacy sets without
+`published_at` remain readable but cannot claim same-session effectiveness.
+
 The daily compiler reads the research pointer and set by exact path and SHA,
 then rereads both before publishing either the prediction observation or the
 Shadow session. A pointer race blocks publication. The selected set contains
@@ -247,3 +257,73 @@ Mature 1/5/20-session results are separate immutable
 current market pointer, snapshot manifest, and relevant monthly Parquet
 bytes. They are not total-return labels and are never eligible for a
 performance or production conclusion.
+
+## 5. Run the additive forward-evidence lane
+
+`run-forward` is the daily research entrypoint for staged, partial Shadow
+closure. It does not replace `shadow-publish`, mutate the V15 selector, or
+relax the strict Shadow v3 transaction.
+
+Preposition one canonical sealed request at:
+
+```text
+data/private/v17_v4_runs/forward_requests/<request_id>.json
+```
+
+The request ID is content-derived. It binds the profile, strategy, decision
+session, cutoff, source snapshot, factor-set pointer, policy references, and
+every supplied stage input. Run it by exact path and byte SHA only:
+
+```bash
+quant-investor-v17-v4 run-forward \
+  --workspace-root /absolute/path/to/myQuant \
+  --request-path data/private/v17_v4_runs/forward_requests/<request_id>.json \
+  --request-sha256 <sha256>
+```
+
+Available profiles are:
+
+- `EXPLORE`: source, allocation, Quant, and full-universe factor observation
+  are required. Fundamental, Fusion, strategy observation, Deep, and holdings
+  may be absent.
+- `FORWARD_EVIDENCE`: source, Core/Challenger allocation, Quant,
+  full-universe factor observation, Fusion, strategy observation, and the
+  final immutable session ref are required. Fundamental, Deep, and holdings
+  may be absent or partial.
+- `RELEASE_CANDIDATE`: delegates to the unchanged strict Shadow v3 closure and
+  remains ineligible for formal activation, canary, promotion, or default
+  routing.
+
+The command exits `0` only after the selected profile's required receipts and
+transitive references replay. A missing required stage, supplied-invalid
+optional stage, PIT/future-data failure, SHA/schema mismatch, authority claim,
+lineage drift, or factor-pointer race exits `2` and writes no final session
+ref. An absent optional stage is recorded as `SKIPPED/UNAVAILABLE`; valid
+partial evidence is `SUCCEEDED/PARTIAL`.
+
+Successful daily evidence is discoverable only through:
+
+```text
+results/v17_v4_shadow/forward_evidence/strategies/<strategy_id>/sessions/
+  <decision_session>/<request_id>.json
+```
+
+Stage outputs and receipts may survive a later failure for audit and exact
+retry. Do not scan orphan run directories as completed observations.
+
+The status has two independent axes:
+
+```text
+default_protocol_state = V15_DEFAULT
+global_activation_state = INACTIVE
+run_state = FORWARD_EVIDENCE_ACTIVE
+research_runtime_default = false
+formal_activation_eligible = false
+```
+
+`default_protocol_state` identifies V15 as the unchanged default protocol.
+`global_activation_state` applies to V17 as a whole. `run_state` applies only
+to one successfully closed `FORWARD_EVIDENCE` session and does not imply
+production/default activation. The complete scoring, tier, label,
+de-duplication, and rollback policy is documented in
+`docs/architecture/v17_v4_forward_evidence_runtime.md`.

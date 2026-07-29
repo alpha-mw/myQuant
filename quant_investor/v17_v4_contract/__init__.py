@@ -13,7 +13,11 @@ from .canonical import (
     seal_semantic,
     semantic_sha256,
 )
-from .resources import verify_package, verify_runtime_build
+from .resources import (
+    verify_forward_runtime_sources,
+    verify_package,
+    verify_runtime_build,
+)
 from .schema_validation import (
     artifact_identity_field,
     load_canonical_artifact,
@@ -43,6 +47,7 @@ __all__ = [
     "seal_semantic",
     "semantic_sha256",
     "validate_artifact",
+    "verify_forward_runtime_sources",
     "verify_package",
     "verify_runtime_build",
 ]

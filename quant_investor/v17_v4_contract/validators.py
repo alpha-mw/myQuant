@@ -9,12 +9,13 @@ from decimal import Decimal, InvalidOperation
 import hashlib
 import re
 from types import MappingProxyType
-from typing import Any, Final
+from typing import Any, Final, TypeVar
 
 from .canonical import (
     CanonicalContractError,
     canonical_bytes,
     load_canonical_resource,
+    strict_json_loads,
     validate_semantic_sha,
 )
 from .identities import (
@@ -61,6 +62,33 @@ _CN_SYMBOL_RE: Final = re.compile(
     r"^[0-9]{6}\.(?:BJ|SH|SZ)$",
     re.ASCII,
 )
+_FORWARD_CONTRACT_VERSIONS: Final = frozenset(
+    {
+        "myquant.v17.v4.existing-factor-inventory.v1",
+        "myquant.v17.v4.factor-universe-observation.v1",
+        "myquant.v17.v4.forward-evaluation-receipt.v1",
+        "myquant.v17.v4.forward-evidence-origin-inventory.v1",
+        "myquant.v17.v4.forward-factor-allocation.v1",
+        "myquant.v17.v4.forward-label.v1",
+        "myquant.v17.v4.forward-observation-run.v1",
+        "myquant.v17.v4.forward-observation-session-ref.v1",
+        "myquant.v17.v4.forward-run-request.v1",
+        "myquant.v17.v4.forward-stage-output.v1",
+        "myquant.v17.v4.forward-stage-receipt.v1",
+        "myquant.v17.v4.strategy-pool-observation.v1",
+    }
+)
+_FORWARD_EXPECTED_REF_VERSIONS: Final = {
+    "evidence_origin_inventory_ref": ("myquant.v17.v4.forward-evidence-origin-inventory.v1"),
+    "existing_factor_inventory_ref": ("myquant.v17.v4.existing-factor-inventory.v1"),
+    "factor_allocation_ref": "myquant.v17.v4.forward-factor-allocation.v1",
+    "observation_run_ref": "myquant.v17.v4.forward-observation-run.v1",
+    "request_ref": "myquant.v17.v4.forward-run-request.v1",
+}
+_FORWARD_EXPECTED_REF_ARRAY_VERSIONS: Final = {
+    "label_refs": "myquant.v17.v4.forward-label.v1",
+    "stage_receipt_refs": "myquant.v17.v4.forward-stage-receipt.v1",
+}
 
 
 class ArtifactContractError(ValueError):
@@ -325,6 +353,9 @@ class ResearchShadowArtifact(ValidatedArtifact):
     """Schema-closed additive artifact with no formal or execution authority."""
 
 
+_ArtifactT = TypeVar("_ArtifactT", bound=ValidatedArtifact)
+
+
 def _authority(
     value: Any,
     *,
@@ -347,11 +378,11 @@ def _authority(
 
 def _common(
     payload: Mapping[str, Any],
-    artifact_class: type[ValidatedArtifact],
+    artifact_class: type[_ArtifactT],
     *,
     formal_research_publication: bool,
     schema_checked: bool,
-) -> ValidatedArtifact:
+) -> _ArtifactT:
     if type(payload) is not dict:
         raise ArtifactContractError("v4 artifact must be an object")
     if not schema_checked:
@@ -846,6 +877,215 @@ def _source_file_refs(
     ) != len(normalized):
         raise ArtifactContractError(f"{label} must be unique and ASCII path ordered")
     return tuple(normalized)
+
+
+def _validate_forward_exact_refs(
+    value: Any,
+    *,
+    strategy_id: str,
+    cutoff: str,
+    label: str,
+) -> None:
+    if type(value) is dict:
+        for field, child in value.items():
+            child_label = f"{label}.{field}"
+            if field.endswith("_ref"):
+                _ref(
+                    child,
+                    strategy_id=strategy_id,
+                    cutoff=cutoff,
+                    expected_version=_FORWARD_EXPECTED_REF_VERSIONS.get(field),
+                    label=child_label,
+                )
+            elif field.endswith("_refs"):
+                _refs(
+                    child,
+                    strategy_id=strategy_id,
+                    cutoff=cutoff,
+                    expected_version=_FORWARD_EXPECTED_REF_ARRAY_VERSIONS.get(field),
+                    label=child_label,
+                )
+            else:
+                _validate_forward_exact_refs(
+                    child,
+                    strategy_id=strategy_id,
+                    cutoff=cutoff,
+                    label=child_label,
+                )
+    elif type(value) is list:
+        for index, child in enumerate(value):
+            _validate_forward_exact_refs(
+                child,
+                strategy_id=strategy_id,
+                cutoff=cutoff,
+                label=f"{label}[{index}]",
+            )
+
+
+def _validate_available_values(
+    rows: Any,
+    *,
+    value_field: str,
+    label: str,
+) -> None:
+    for index, row in enumerate(rows):
+        status = row["status"]
+        available = row[value_field] is not None
+        if (status == "AVAILABLE") != available:
+            raise ArtifactContractError(f"{label}[{index}] availability/value mismatch")
+
+
+def validate_forward_contract_artifact(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> ResearchShadowArtifact:
+    """Validate exact refs and fail-closed semantics for additive forward artifacts."""
+
+    version = payload.get("version")
+    if version not in _FORWARD_CONTRACT_VERSIONS:
+        raise ArtifactContractError("unsupported forward contract artifact")
+    result = _common(
+        payload,
+        ResearchShadowArtifact,
+        formal_research_publication=False,
+        schema_checked=schema_checked,
+    )
+    assert isinstance(result, ResearchShadowArtifact)
+    cutoff = require_utc_timestamp(payload.get("cutoff"), label="cutoff")
+    try:
+        session = date.fromisoformat(str(payload.get("decision_session"))).isoformat()
+    except ValueError as exc:
+        raise ArtifactContractError("forward decision_session is invalid") from exc
+    if session != payload.get("decision_session") or session > cutoff[:10]:
+        raise ArtifactContractError("forward decision_session/cutoff binding mismatch")
+    for timestamp_field in ("created_at", "published_at", "recorded_at"):
+        if timestamp_field in payload:
+            require_utc_timestamp(payload[timestamp_field], label=timestamp_field)
+    _validate_forward_exact_refs(
+        payload,
+        strategy_id=result.strategy_id,
+        cutoff=cutoff,
+        label="forward",
+    )
+    if version == "myquant.v17.v4.forward-runtime-source-manifest.v1":
+        _source_file_refs(payload["source_files"], label="source_files")
+    if version == "myquant.v17.v4.forward-evidence-origin-inventory.v1":
+        origins = payload["origins"]
+        if [row["origin"] for row in origins] != sorted(row["origin"] for row in origins):
+            raise ArtifactContractError("forward origins must be origin ordered")
+        for index, row in enumerate(origins):
+            refs = row["evidence_refs"]
+            distinct_bytes = {ref["byte_sha256"] for ref in refs}
+            status = row["duplicate_origin_status"]
+            valid = (status == "UNIQUE" and len(refs) == 1) or (
+                status == "DUPLICATE_IDENTICAL" and len(refs) >= 2 and len(distinct_bytes) == 1
+            )
+            if not valid:
+                raise ArtifactContractError(
+                    f"forward origins[{index}] duplicate-origin status mismatch"
+                )
+    if version == "myquant.v17.v4.factor-universe-observation.v1":
+        _validate_available_values(
+            payload["observations"],
+            value_field="value",
+            label="observations",
+        )
+    if version == "myquant.v17.v4.forward-label.v1":
+        _validate_available_values(
+            payload["label_rows"],
+            value_field="total_return",
+            label="label_rows",
+        )
+    if version == "myquant.v17.v4.forward-evaluation-receipt.v1":
+        _validate_available_values(
+            payload["metric_rows"],
+            value_field="value",
+            label="metric_rows",
+        )
+    if version == "myquant.v17.v4.forward-stage-output.v1":
+        try:
+            payload_raw = payload["payload_json"].encode(
+                "utf-8",
+                errors="strict",
+            )
+            decoded = strict_json_loads(
+                payload_raw,
+                label="forward stage payload_json",
+            )
+        except (AttributeError, CanonicalContractError, UnicodeError) as exc:
+            raise ArtifactContractError("forward stage payload_json is invalid") from exc
+        if (
+            type(decoded) is not dict
+            or canonical_bytes(decoded) != payload_raw
+            or hashlib.sha256(payload_raw).hexdigest() != payload["payload_sha256"]
+        ):
+            raise ArtifactContractError("forward stage payload_json/hash mismatch")
+    return result
+
+
+def validate_forward_runtime_source_manifest(
+    payload: Mapping[str, Any],
+    *,
+    schema_checked: bool = False,
+) -> ValidatedArtifact:
+    """Validate the packaged whitelist for non-runtime forward source files."""
+
+    del schema_checked
+    try:
+        sealed = validate_semantic_sha(payload)
+    except CanonicalContractError as exc:
+        raise ArtifactContractError(
+            "forward runtime source manifest semantic SHA mismatch"
+        ) from exc
+    if (
+        sealed.get("version") != "myquant.v17.v4.forward-runtime-source-manifest.v1"
+        or sealed.get("protocol_version") != PROTOCOL_VERSION
+        or sealed.get("manifest_id") != "v17-v4-forward-runtime-sources"
+        or sealed.get("authority")
+        != {
+            "broker": False,
+            "execution": False,
+            "formal_research_publication": False,
+            "order": False,
+            "research_runtime_default": False,
+            "trade": False,
+        }
+        or sealed.get("array_order_semantics") != {"/sources": "relative_path ASCII ascending"}
+    ):
+        raise ArtifactContractError("forward runtime source manifest identity mismatch")
+    rows = sealed.get("sources")
+    if type(rows) is not list or not rows:
+        raise ArtifactContractError("forward runtime source manifest is empty")
+    previous: str | None = None
+    for index, row in enumerate(rows):
+        if type(row) is not dict or set(row) != {
+            "byte_sha256",
+            "relative_path",
+        }:
+            raise ArtifactContractError(f"forward runtime source row {index} shape mismatch")
+        path = row["relative_path"]
+        allowed = type(path) is str and (
+            path == "factors/forward_evaluator.py"
+            or path.startswith("industry/")
+            or path.startswith("v17_v4_runtime/themes/")
+        )
+        if not allowed or not path.endswith(".py") or (previous is not None and path <= previous):
+            raise ArtifactContractError(f"forward runtime source row {index} path mismatch")
+        try:
+            require_sha256(
+                row["byte_sha256"],
+                label=f"sources[{index}].byte_sha256",
+            )
+        except IdentityContractError as exc:
+            raise ArtifactContractError(f"forward runtime source row {index} SHA mismatch") from exc
+        previous = path
+    return ValidatedArtifact(
+        version=str(sealed["version"]),
+        strategy_id="v17-v4-forward-runtime",
+        semantic_sha256=str(sealed["semantic_sha256"]),
+        payload=sealed,
+    )
 
 
 def validate_public_surface_compatibility_receipt(
@@ -1752,9 +1992,7 @@ def validate_research_quant_branch_output(
         "version",
     }
     if set(payload) != expected_fields:
-        raise ArtifactContractError(
-            "research Quant branch native shape mismatch"
-        )
+        raise ArtifactContractError("research Quant branch native shape mismatch")
     result = _common(
         payload,
         ResearchQuantBranchOutputArtifact,
@@ -1791,9 +2029,7 @@ def validate_research_quant_branch_output(
         or payload["formal_activation_eligible"] is not False
         or payload["canary_evidence_eligible"] is not False
     ):
-        raise ArtifactContractError(
-            "research Quant branch authority or factor identity mismatch"
-        )
+        raise ArtifactContractError("research Quant branch authority or factor identity mismatch")
     factor_rows = payload["factor_rows"]
     score_rows = payload["score_rows"]
     if (
@@ -1802,23 +2038,18 @@ def validate_research_quant_branch_output(
         or not 24 <= len(factor_rows) <= 500
         or len(score_rows) != len(factor_rows)
     ):
-        raise ArtifactContractError(
-            "research Quant branch row shape mismatch"
-        )
+        raise ArtifactContractError("research Quant branch row shape mismatch")
     factor_symbols = [row.get("symbol") for row in factor_rows]
     score_symbols = [row.get("symbol") for row in score_rows]
     if (
         factor_symbols != score_symbols
         or len(factor_symbols) != len(set(factor_symbols))
         or any(
-            type(symbol) is not str
-            or _CN_SYMBOL_RE.fullmatch(symbol) is None
+            type(symbol) is not str or _CN_SYMBOL_RE.fullmatch(symbol) is None
             for symbol in factor_symbols
         )
     ):
-        raise ArtifactContractError(
-            "research Quant branch symbol order mismatch"
-        )
+        raise ArtifactContractError("research Quant branch symbol order mismatch")
     for factor_row, score_row in zip(
         factor_rows,
         score_rows,
@@ -1830,30 +2061,21 @@ def validate_research_quant_branch_output(
             or type(score_row) is not dict
             or set(score_row) != {"score", "symbol"}
         ):
-            raise ArtifactContractError(
-                "research Quant branch row shape mismatch"
-            )
+            raise ArtifactContractError("research Quant branch row shape mismatch")
         values = factor_row["factor_values"]
         if (
             type(values) is not list
-            or [value.get("factor_name") for value in values]
-            != factor_names
+            or [value.get("factor_name") for value in values] != factor_names
             or any(
-                type(value) is not dict
-                or set(value) != {"factor_name", "value"}
+                type(value) is not dict or set(value) != {"factor_name", "value"}
                 for value in values
             )
         ):
-            raise ArtifactContractError(
-                "research Quant branch factor order mismatch"
-            )
+            raise ArtifactContractError("research Quant branch factor order mismatch")
         decimals = [
             _decimal(
                 value["value"],
-                label=(
-                    f"factor_rows.{factor_row['symbol']}."
-                    f"{value['factor_name']}"
-                ),
+                label=(f"factor_rows.{factor_row['symbol']}." f"{value['factor_name']}"),
             )
             for value in values
         ]
@@ -1861,23 +2083,17 @@ def validate_research_quant_branch_output(
             score_row["score"],
             label=f"score_rows.{score_row['symbol']}",
         )
-        expected_score = (
-            sum(decimals, Decimal("0")) / Decimal("3")
-        ).quantize(Decimal("0.0000000000000001"))
+        expected_score = (sum(decimals, Decimal("0")) / Decimal("3")).quantize(
+            Decimal("0.0000000000000001")
+        )
         if observed != expected_score:
-            raise ArtifactContractError(
-                "research Quant branch composite score mismatch"
-            )
+            raise ArtifactContractError("research Quant branch composite score mismatch")
     try:
         origin = date.fromisoformat(payload["origin"]).isoformat()
     except (TypeError, ValueError) as exc:
-        raise ArtifactContractError(
-            "research Quant branch origin is invalid"
-        ) from exc
+        raise ArtifactContractError("research Quant branch origin is invalid") from exc
     if origin != payload["origin"] or origin > cutoff[:10]:
-        raise ArtifactContractError(
-            "research Quant branch origin is invalid"
-        )
+        raise ArtifactContractError("research Quant branch origin is invalid")
     require_sha256(
         payload["factor_policy_sha256"],
         label="factor_policy_sha256",
@@ -1913,8 +2129,7 @@ def validate_research_factor_shadow_assertion(
         created < cutoff
         or session != payload["decision_session"]
         or session != cutoff[:10]
-        or payload["assertion_scope"]
-        != "ONE_RUN_V17_V4_SHADOW_RESEARCH_TRIO"
+        or payload["assertion_scope"] != "ONE_RUN_V17_V4_SHADOW_RESEARCH_TRIO"
         or payload["factor_evidence_mode"] != "RESEARCH_TRIO_SHADOW_ONLY"
         or payload["operator_asserted"] is not True
         or payload["factor_names"]
@@ -1924,9 +2139,7 @@ def validate_research_factor_shadow_assertion(
             "cn_low_total_skewness_20d",
         ]
     ):
-        raise ArtifactContractError(
-            "research-factor Shadow assertion binding mismatch"
-        )
+        raise ArtifactContractError("research-factor Shadow assertion binding mismatch")
     require_opaque_id(payload["override_id"], label="override_id")
     require_opaque_id(payload["shadow_run_id"], label="shadow_run_id")
     require_sha256(
@@ -2929,9 +3142,7 @@ def validate_shadow_session_ref(
             payload["research_factor_shadow_assertion_ref"],
             strategy_id=result.strategy_id,
             cutoff=cutoff,
-            expected_version=(
-                "myquant.v17.v4.research-factor-shadow-assertion.v1"
-            ),
+            expected_version=("myquant.v17.v4.research-factor-shadow-assertion.v1"),
             label="research_factor_shadow_assertion_ref",
         )
         expected_run_version = SHADOW_RUN_RESEARCH_VERSION
@@ -3587,14 +3798,10 @@ _VALIDATORS: Final[Mapping[str, Callable[..., ValidatedArtifact]]] = {
     "myquant.v17.v4.default-eligibility-intent.v1": (validate_default_eligibility_intent),
     "myquant.v17.v4.default-eligible-pointer.v1": validate_default_eligible_pointer,
     "myquant.v17.v4.deep-assessment-manifest.v1": (validate_deep_assessment_manifest),
-    "myquant.v17.v4.deep-assessment-manifest.v2": (
-        validate_research_shadow_artifact
-    ),
+    "myquant.v17.v4.deep-assessment-manifest.v2": (validate_research_shadow_artifact),
     "myquant.v17.v4.deep-evidence-bundle.v1": (validate_deep_evidence_bundle),
     "myquant.v17.v4.deep-evidence-bundle.v2": (validate_deep_evidence_bundle_v2),
-    "myquant.v17.v4.deep-evidence-bundle.v3": (
-        validate_research_shadow_artifact
-    ),
+    "myquant.v17.v4.deep-evidence-bundle.v3": (validate_research_shadow_artifact),
     "myquant.v17.v4.dual-run-comparison.v1": validate_dual_run_comparison,
     "myquant.v17.v4.event-scan.v1": validate_event_scan,
     "myquant.v17.v4.event-scan.v2": validate_event_scan_v2,
@@ -3624,42 +3831,18 @@ _VALIDATORS: Final[Mapping[str, Callable[..., ValidatedArtifact]]] = {
     "myquant.v17.v4.research-factor-shadow-assertion.v1": (
         validate_research_factor_shadow_assertion
     ),
-    "myquant.v17.v4.research-factor-shadow-assertion.v2": (
-        validate_research_shadow_artifact
-    ),
-    "myquant.v17.v4.research-factor-input-bundle.v1": (
-        validate_research_shadow_artifact
-    ),
-    "myquant.v17.v4.research-fundamental-branch-output.v2": (
-        validate_research_shadow_artifact
-    ),
-    "myquant.v17.v4.research-initial-pool-output.v2": (
-        validate_research_shadow_artifact
-    ),
-    "myquant.v17.v4.research-quant-branch-output.v1": (
-        validate_research_quant_branch_output
-    ),
-    "myquant.v17.v4.research-quant-branch-output.v2": (
-        validate_research_shadow_artifact
-    ),
-    "myquant.v17.v4.research-source-locator.v2": (
-        validate_research_shadow_artifact
-    ),
-    "myquant.v17.v4.research-shadow-factor-set.v1": (
-        validate_research_shadow_artifact
-    ),
-    "myquant.v17.v4.research-shadow-factor-set-pointer.v1": (
-        validate_research_shadow_artifact
-    ),
-    "myquant.v17.v4.shadow-fusion-matured-label.v1": (
-        validate_research_shadow_artifact
-    ),
-    "myquant.v17.v4.shadow-fusion-observation.v1": (
-        validate_research_shadow_artifact
-    ),
-    "myquant.v17.v4.shadow-fusion-policy.v1": (
-        validate_research_shadow_artifact
-    ),
+    "myquant.v17.v4.research-factor-shadow-assertion.v2": (validate_research_shadow_artifact),
+    "myquant.v17.v4.research-factor-input-bundle.v1": (validate_research_shadow_artifact),
+    "myquant.v17.v4.research-fundamental-branch-output.v2": (validate_research_shadow_artifact),
+    "myquant.v17.v4.research-initial-pool-output.v2": (validate_research_shadow_artifact),
+    "myquant.v17.v4.research-quant-branch-output.v1": (validate_research_quant_branch_output),
+    "myquant.v17.v4.research-quant-branch-output.v2": (validate_research_shadow_artifact),
+    "myquant.v17.v4.research-source-locator.v2": (validate_research_shadow_artifact),
+    "myquant.v17.v4.research-shadow-factor-set.v1": (validate_research_shadow_artifact),
+    "myquant.v17.v4.research-shadow-factor-set-pointer.v1": (validate_research_shadow_artifact),
+    "myquant.v17.v4.shadow-fusion-matured-label.v1": (validate_research_shadow_artifact),
+    "myquant.v17.v4.shadow-fusion-observation.v1": (validate_research_shadow_artifact),
+    "myquant.v17.v4.shadow-fusion-policy.v1": (validate_research_shadow_artifact),
     "myquant.v17.v4.shadow-readiness.v1": (validate_shadow_readiness),
     "myquant.v17.v4.shadow-readiness.v2": validate_research_shadow_artifact,
     "myquant.v17.v4.shadow-run.v1": validate_shadow_run,
@@ -3678,6 +3861,8 @@ _VALIDATORS: Final[Mapping[str, Callable[..., ValidatedArtifact]]] = {
     "myquant.v17.v4.public-run-dto.v1": validate_public_run_dto,
     "myquant.v17.v4.total-return-labels.v1": (validate_total_return_labels),
     "myquant.v17.v4.validation-receipt.v1": (validate_validation_receipt),
+    "myquant.v17.v4.forward-runtime-source-manifest.v1": (validate_forward_runtime_source_manifest),
+    **{version: validate_forward_contract_artifact for version in _FORWARD_CONTRACT_VERSIONS},
 }
 
 
@@ -3775,6 +3960,8 @@ __all__ = [
     "validate_formal_activation_rejection",
     "validate_formal_active_pointer",
     "validate_formal_output",
+    "validate_forward_contract_artifact",
+    "validate_forward_runtime_source_manifest",
     "validate_fusion_promotion_receipt",
     "validate_fusion_top24",
     "validate_historical_canary_policy",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -8,7 +9,9 @@ from typing import Any
 
 import pytest
 
+import quant_investor.v17_v4_runtime.research_factor_set as factor_set_module
 from quant_investor.v17_v4_contract import (
+    artifact_identity_field,
     canonical_resource_bytes,
     seal_semantic,
 )
@@ -32,8 +35,15 @@ from quant_investor.v17_v4_runtime.source_storage import EMPTY_SHA256
 
 STRATEGY = "cn-shadow-research"
 CUTOFF = "2026-07-28T10:00:00Z"
+PUBLISHED_AT = "2026-07-28T10:01:00Z"
 AUDIT_SESSION = "2026-07-28"
 OPEN_SESSIONS = ["2026-07-28", "2026-07-29", "2026-07-30"]
+
+
+def test_research_factor_set_artifact_identity_is_factor_set_id() -> None:
+    assert (
+        artifact_identity_field("myquant.v17.v4.research-shadow-factor-set.v1") == "factor_set_id"
+    )
 
 
 def _ref(
@@ -79,6 +89,8 @@ def _factor_set(
     *,
     previous: dict[str, str] | None = None,
     disabled: set[str] = frozenset(),
+    cutoff: str = CUTOFF,
+    published_at: str = PUBLISHED_AT,
 ) -> dict[str, Any]:
     rows = [
         _selection(
@@ -90,14 +102,16 @@ def _factor_set(
     return build_research_shadow_factor_set(
         factor_set_id=factor_set_id,
         strategy_id=STRATEGY,
-        cutoff=CUTOFF,
+        cutoff=cutoff,
         audit_session=AUDIT_SESSION,
-        selected_at=CUTOFF,
+        selected_at=cutoff,
+        published_at=published_at,
         open_sessions=OPEN_SESSIONS,
         monthly_audit_ref=_ref(
             "monthly-audit-202607",
             "myquant.factor-governance.monthly-audit.v4",
             "data/private/v17_v4_sources/audits/monthly-audit-202607.json",
+            cutoff=cutoff,
         ),
         previous_factor_set_ref=previous,
         selection_rows=rows,
@@ -121,6 +135,7 @@ def test_selection_is_bounded_deterministic_and_effective_next_open() -> None:
     assert factor_set["eligible_distinct_slot_count"] == 9
     assert factor_set["target_cardinality"] == 8
     assert factor_set["effective_from_session"] == "2026-07-29"
+    assert factor_set["published_at"] == PUBLISHED_AT
     assert [row["name"] for row in factor_set["selected_factors"]] == names[:8]
     assert len({row["slot"] for row in factor_set["selected_factors"]}) == 8
     assert all(row["selection_score"] == 90 for row in factor_set["selected_factors"])
@@ -136,6 +151,57 @@ def test_selection_is_bounded_deterministic_and_effective_next_open() -> None:
     assert factor_set["formal_activation_eligible"] is False
     assert factor_set["canary_evidence_eligible"] is False
     assert factor_set["performance_evidence_eligible"] is False
+
+
+def test_preclose_publication_can_start_same_shanghai_session() -> None:
+    name = sorted(research_factor_catalog_bindings()["factors"])[0]
+    factor_set = _factor_set(
+        "research-set-same-session",
+        [name],
+        cutoff="2026-07-28T02:00:00Z",
+        published_at="2026-07-28T02:01:00Z",
+    )
+
+    assert factor_set["effective_from_session"] == "2026-07-28"
+
+    forged = copy.deepcopy(factor_set)
+    forged.pop("published_at")
+    with pytest.raises(ResearchFactorSetError, match="factor_set_timing"):
+        validate_research_shadow_factor_set(_reseal(forged))
+
+
+def test_same_session_publish_requires_current_process_clock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    name = sorted(research_factor_catalog_bindings()["factors"])[0]
+    factor_set = _factor_set(
+        "research-set-same-session",
+        [name],
+        cutoff="2026-07-28T02:00:00Z",
+        published_at="2026-07-28T02:01:00Z",
+    )
+    monkeypatch.setattr(
+        factor_set_module,
+        "_publication_now_utc",
+        lambda: datetime(2026, 7, 28, 2, 7, tzinfo=timezone.utc),
+    )
+
+    with pytest.raises(ResearchFactorSetError, match="same_session_publication_clock"):
+        ResearchFactorSetStore(str(tmp_path.resolve())).publish(
+            factor_set,
+            expected_pointer_sha256=EMPTY_SHA256,
+        )
+    monkeypatch.setattr(
+        factor_set_module,
+        "_publication_now_utc",
+        lambda: datetime(2026, 7, 28, 2, 5, tzinfo=timezone.utc),
+    )
+    publication = ResearchFactorSetStore(str(tmp_path.resolve())).publish(
+        factor_set,
+        expected_pointer_sha256=EMPTY_SHA256,
+    )
+    assert publication.factor_set_ref["artifact_id"] == "research-set-same-session"
 
 
 def test_rotation_publishes_immutable_set_before_pointer_and_exact_reread(
@@ -198,6 +264,7 @@ def test_tamper_and_unsupported_fields_fail_closed() -> None:
             cutoff=CUTOFF,
             audit_session=AUDIT_SESSION,
             selected_at=CUTOFF,
+            published_at=PUBLISHED_AT,
             open_sessions=OPEN_SESSIONS,
             monthly_audit_ref=factor_set["monthly_audit_ref"],
             previous_factor_set_ref=None,

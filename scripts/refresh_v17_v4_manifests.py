@@ -16,6 +16,7 @@ from quant_investor.v17_v4_contract.canonical import (
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "quant_investor/v17_v4_contract"
 RUNTIME = ROOT / "quant_investor/v17_v4_runtime"
+QUANT_INVESTOR = ROOT / "quant_investor"
 NO_AUTHORITY = {
     "broker": False,
     "execution": False,
@@ -35,22 +36,46 @@ def _write(path: Path, value: dict[str, object]) -> None:
 
 
 def main() -> None:
+    forward_source_paths = [
+        QUANT_INVESTOR / "factors/forward_evaluator.py",
+        *sorted((QUANT_INVESTOR / "industry").glob("*.py")),
+        *sorted((RUNTIME / "themes").glob("*.py")),
+    ]
+    if any(not path.is_file() for path in forward_source_paths):
+        raise RuntimeError("forward runtime source inventory is incomplete")
+    _write(
+        CONTRACT / "resources/forward_runtime_source_manifest.v1.json",
+        {
+            "array_order_semantics": {"/sources": "relative_path ASCII ascending"},
+            "authority": NO_AUTHORITY,
+            "manifest_id": "v17-v4-forward-runtime-sources",
+            "protocol_version": "myquant.v17.v4",
+            "sources": [
+                {
+                    "byte_sha256": _sha(path),
+                    "relative_path": path.relative_to(QUANT_INVESTOR).as_posix(),
+                }
+                for path in sorted(
+                    forward_source_paths,
+                    key=lambda value: value.relative_to(QUANT_INVESTOR).as_posix(),
+                )
+            ],
+            "version": ("myquant.v17.v4.forward-runtime-source-manifest.v1"),
+        },
+    )
+
     runtime_manifest = CONTRACT / "resources/runtime_build_manifest.v1.json"
     runtime_rows = [
         {
             "byte_sha256": _sha(path),
-            "relative_path": (
-                "v17_v4_runtime/" + path.name
-            ),
+            "relative_path": ("v17_v4_runtime/" + path.name),
         }
         for path in sorted(RUNTIME.glob("*.py"))
     ]
     _write(
         runtime_manifest,
         {
-            "array_order_semantics": {
-                "/sources": "relative_path ASCII ascending"
-            },
+            "array_order_semantics": {"/sources": "relative_path ASCII ascending"},
             "authority": NO_AUTHORITY,
             "protocol_version": "myquant.v17.v4",
             "sources": runtime_rows,
@@ -95,14 +120,11 @@ def main() -> None:
             "protocol_version": "myquant.v17.v4",
             "self_binding": {
                 "byte_sha256_source": (
-                    "quant_investor.v17_v4_contract.resources."
-                    "PACKAGE_MANIFEST_SHA256"
+                    "quant_investor.v17_v4_contract.resources." "PACKAGE_MANIFEST_SHA256"
                 ),
                 "relative_path": "resources/package_manifest.v1.json",
             },
-            "source_paths": sorted(
-                path.name for path in CONTRACT.glob("*.py")
-            ),
+            "source_paths": sorted(path.name for path in CONTRACT.glob("*.py")),
             "version": "myquant.v17.v4.package-manifest.v1",
         },
     )
@@ -110,12 +132,8 @@ def main() -> None:
     resources = CONTRACT / "resources.py"
     source = resources.read_text(encoding="utf-8")
     updated, count = re.subn(
-        r'PACKAGE_MANIFEST_SHA256: Final = \(\n    "[0-9a-f]{64}"\n\)',
-        (
-            "PACKAGE_MANIFEST_SHA256: Final = (\n"
-            f'    "{digest}"\n'
-            ")"
-        ),
+        (r"PACKAGE_MANIFEST_SHA256: Final = " r'(?:\(\n    )?"[0-9a-f]{64}"(?:\n\))?'),
+        f'PACKAGE_MANIFEST_SHA256: Final = "{digest}"',
         source,
     )
     if count != 1:

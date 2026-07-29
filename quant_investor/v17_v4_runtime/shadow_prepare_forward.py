@@ -1404,6 +1404,28 @@ def prepare_forward_shadow(
     }
 
 
+def build_quant_forward_v3(**scoring_inputs: Any) -> dict[str, Any]:
+    """Build the additive coverage-aware Quant v3 research payload.
+
+    The legacy v2 replay path above remains unchanged. Callers must provide
+    exact PIT neutralizer inputs to the pure v3 scorer.
+    """
+
+    from .forward_scoring_v3 import score_quant_forward_v3
+
+    return score_quant_forward_v3(**scoring_inputs)
+
+
+def build_fundamental_forward_v3(
+    **scoring_inputs: Any,
+) -> dict[str, Any]:
+    """Build the additive evidence-weighted Fundamental v3 payload."""
+
+    from .forward_scoring_v3 import score_fundamental_forward_v3
+
+    return score_fundamental_forward_v3(**scoring_inputs)
+
+
 __all__ = [
     "FACTOR_SET_VERSION",
     "FUNDAMENTAL_BRANCH_VERSION",
@@ -1415,6 +1437,8 @@ __all__ = [
     "SOURCE_LOCATOR_VERSION",
     "TrueCurrentCanonicalInputGap",
     "artifact_ref",
+    "build_fundamental_forward_v3",
+    "build_quant_forward_v3",
     "build_quant_first_forward_shadow",
     "classify_current_canonical_preflight",
     "preflight_current_canonical_sources",

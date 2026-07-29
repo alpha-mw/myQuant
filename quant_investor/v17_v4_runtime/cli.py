@@ -18,6 +18,7 @@ from .forward_shadow import (
     build_shadow_readiness_v2,
     read_forward_shadow_session,
 )
+from .orchestrator import ForwardEvidenceError, run_forward
 from .public_surfaces import (
     build_dashboard_contract_v4,
     build_public_surface_compatibility_receipts,
@@ -40,6 +41,16 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("verify", help="verify packaged V17 v4 contract bytes")
     commands.add_parser("status", help="show the fail-closed public-surface state")
+    run_forward_parser = commands.add_parser(
+        "run-forward",
+        help=("run one immutable EXPLORE, FORWARD_EVIDENCE, or " "RELEASE_CANDIDATE request"),
+    )
+    run_forward_parser.add_argument(
+        "--workspace-root",
+        default=str(Path.cwd()),
+    )
+    run_forward_parser.add_argument("--request-path", required=True)
+    run_forward_parser.add_argument("--request-sha256", required=True)
     deep_compile = commands.add_parser(
         "deep-compile",
         help="compile prepositioned official Deep evidence into a shadow-only v2 bundle",
@@ -211,6 +222,10 @@ def _wire(*, package_assets: int | None = None) -> dict[str, Any]:
         "order_calls": False,
         "trade_calls": False,
         "selector_writes": False,
+        "default_protocol_state": "V15_DEFAULT",
+        "formal_activation_eligible": False,
+        "global_activation_state": "INACTIVE",
+        "run_state": "INACTIVE",
     }
     if package_assets is not None:
         payload["package_verified"] = True
@@ -239,6 +254,45 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "status":
         _emit(_wire())
         return 0
+    if args.command == "run-forward":
+        try:
+            _emit(
+                run_forward(
+                    str(Path(args.workspace_root).resolve()),
+                    request_path=args.request_path,
+                    request_sha256=args.request_sha256,
+                )
+            )
+            return 0
+        except ForwardEvidenceError as exc:
+            _emit(
+                {
+                    "authority": False,
+                    "broker": False,
+                    "blocker_code": exc.code,
+                    "execution": False,
+                    "formal_activation_eligible": False,
+                    "global_activation_state": exc.global_activation_state,
+                    "order": False,
+                    "research_runtime_default": False,
+                    "run_state": exc.run_state,
+                    "side_effects": {
+                        "broker": False,
+                        "canary": False,
+                        "default": False,
+                        "execution": False,
+                        "formal": False,
+                        "order": False,
+                        "promotion": False,
+                        "provider": False,
+                        "selector": False,
+                        "trade": False,
+                    },
+                    "status": "BLOCKED",
+                    "trade": False,
+                }
+            )
+            return exc.exit_code
     if args.command == "deep-compile":
         _emit(
             compile_deep_v2(

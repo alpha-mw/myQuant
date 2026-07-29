@@ -18,6 +18,7 @@ from quant_investor.v17_v4_contract import (
     load_canonical_artifact,
     seal_semantic,
     validate_artifact,
+    verify_forward_runtime_sources,
     verify_package,
     verify_runtime_build,
 )
@@ -737,19 +738,35 @@ def test_package_runtime_manifests_and_scaffold_authority_are_sealed() -> None:
         "v17_v4_runtime/deep_v3.py",
         "v17_v4_runtime/eligibility_control.py",
         "v17_v4_runtime/formal_activation.py",
+        "v17_v4_runtime/factor_observation.py",
+        "v17_v4_runtime/forward_evaluation_receipt.py",
+        "v17_v4_runtime/forward_evidence.py",
         "v17_v4_runtime/forward_fusion.py",
+        "v17_v4_runtime/forward_scoring_v3.py",
         "v17_v4_runtime/forward_shadow.py",
+        "v17_v4_runtime/orchestrator.py",
         "v17_v4_runtime/pit_admission.py",
         "v17_v4_runtime/pit_catalog.py",
         "v17_v4_runtime/portfolio_control.py",
         "v17_v4_runtime/public_surfaces.py",
         "v17_v4_runtime/research_factor_set.py",
         "v17_v4_runtime/research_quant.py",
+        "v17_v4_runtime/run_profiles.py",
         "v17_v4_runtime/security_directory.py",
         "v17_v4_runtime/shadow_runtime.py",
         "v17_v4_runtime/shadow_prepare_forward.py",
         "v17_v4_runtime/source_storage.py",
         "v17_v4_runtime/tushare_https.py",
+    }
+    assert set(verify_forward_runtime_sources()) == {
+        "factors/forward_evaluator.py",
+        "industry/__init__.py",
+        "industry/forward_model.py",
+        "industry/industry_context.py",
+        "industry/industry_evidence_store.py",
+        "industry/industry_scorer.py",
+        "v17_v4_runtime/themes/__init__.py",
+        "v17_v4_runtime/themes/forward_model.py",
     }
     assert not any("research_runtime_control" in path for path in verified)
 
@@ -772,9 +789,21 @@ def test_schema_inventory_is_closed_and_does_not_redefine_neutral_control() -> N
         "myquant.v17.v4.default-eligibility-receipt.v1",
         "myquant.v17.v4.default-eligible-pointer.v1",
         "myquant.v17.v4.dual-run-comparison.v1",
+        "myquant.v17.v4.existing-factor-inventory.v1",
         "myquant.v17.v4.event-scan.v1",
         "myquant.v17.v4.event-scan.v2",
         "myquant.v17.v4.event-scan.v3",
+        "myquant.v17.v4.factor-universe-observation.v1",
+        "myquant.v17.v4.forward-evaluation-receipt.v1",
+        "myquant.v17.v4.forward-evidence-origin-inventory.v1",
+        "myquant.v17.v4.forward-factor-allocation.v1",
+        "myquant.v17.v4.forward-label.v1",
+        "myquant.v17.v4.forward-observation-run.v1",
+        "myquant.v17.v4.forward-observation-session-ref.v1",
+        "myquant.v17.v4.forward-run-request.v1",
+        "myquant.v17.v4.forward-runtime-source-manifest.v1",
+        "myquant.v17.v4.forward-stage-output.v1",
+        "myquant.v17.v4.forward-stage-receipt.v1",
         "myquant.v17.v4.formal-activation-intent.v1",
         "myquant.v17.v4.formal-activation-receipt.v1",
         "myquant.v17.v4.formal-activation-rejection.v1",
@@ -823,6 +852,7 @@ def test_schema_inventory_is_closed_and_does_not_redefine_neutral_control() -> N
         "myquant.v17.v4.shadow-session-ref.v1",
         "myquant.v17.v4.shadow-session-ref.v2",
         "myquant.v17.v4.shadow-session-ref.v3",
+        "myquant.v17.v4.strategy-pool-observation.v1",
         "myquant.v17.v4.rollback-drill-receipt.v1",
         "myquant.v17.v4.total-return-labels.v1",
         "myquant.v17.v4.validation-receipt.v1",
@@ -842,10 +872,7 @@ def test_formal_activation_rejects_research_shadow_run_v2_reference() -> None:
     intent["formal_output_ref"] = _ref(
         "shadow-run-2",
         "myquant.v17.v4.shadow-run.v2",
-        (
-            "results/v17_v4_shadow/strategies/quant-first/"
-            "runs/shadow-run-2.json"
-        ),
+        ("results/v17_v4_shadow/strategies/quant-first/" "runs/shadow-run-2.json"),
     )
     with pytest.raises(
         ArtifactContractError,
