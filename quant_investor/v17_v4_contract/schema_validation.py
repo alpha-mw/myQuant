@@ -136,6 +136,10 @@ _ARTIFACT_REGISTRY: Final = {
         "schemas/forward_factor_allocation.v1.schema.json",
         "allocation_id",
     ),
+    "myquant.v17.v4.forward-factor-input-bundle.v1": (
+        "schemas/forward_factor_input_bundle.v1.schema.json",
+        "bundle_id",
+    ),
     "myquant.v17.v4.forward-label.v1": (
         "schemas/forward_label.v1.schema.json",
         "label_id",
@@ -163,6 +167,14 @@ _ARTIFACT_REGISTRY: Final = {
     "myquant.v17.v4.forward-stage-receipt.v1": (
         "schemas/forward_stage_receipt.v1.schema.json",
         "receipt_id",
+    ),
+    "myquant.v17.v4.forward-source-locator.v1": (
+        "schemas/forward_source_locator.v1.schema.json",
+        "locator_id",
+    ),
+    "myquant.v17.v4.forward-source-slice-manifest.v1": (
+        "schemas/forward_source_slice_manifest.v1.schema.json",
+        "manifest_id",
     ),
     "myquant.v17.v4.fusion-promotion-receipt.v1": (
         "schemas/fusion_promotion_receipt.v1.schema.json",

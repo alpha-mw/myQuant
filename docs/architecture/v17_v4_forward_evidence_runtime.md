@@ -25,6 +25,41 @@ unchanged. `RELEASE_CANDIDATE` delegates to that closed path. The additive
 forward-evidence artifact family is not accepted by formal activation, canary,
 or default-routing services.
 
+## Immutable source snapshot
+
+`build-source-snapshot` is the offline materialization gate before a real
+Forward Evidence request is sealed. It reads only exact, caller-SHA-bound local
+inputs: the canonical market pointer and sealed market Parquet, PIT membership,
+canonical Fundamental pointer and daily Parquet, strategy-universe Parquet and
+its coverage sidecar, and the current research factor-set pointer.
+
+A successful build publishes, exact-once, below:
+
+```text
+data/private/v17_v4_sources/snapshots/{decision_session}/
+  source_locator.json
+  universe.parquet
+  universe.manifest.json
+  factor_input_bundle.json
+  factor_inputs/{adj_close,total_mv,fin_roe,fin_ocf_to_profit,fin_debt_to_assets}.parquet
+  factor_inputs/{field}.manifest.json
+  neutralizer.parquet
+  neutralizer.manifest.json
+```
+
+Every generated Parquet carries cutoff, available-at, schema version and
+semantic SHA-256 metadata. Every Parquet also has a schema-validated immutable
+manifest that binds its byte SHA-256, logical semantic SHA-256, columns,
+coverage and complete source lineage. `source_locator.json` is validated and
+published last, so a partial directory is never a completed snapshot.
+
+The neutralizer slice contains only sourced or deterministically derived
+`industry`, `log_market_cap`, and `beta_252d`; missing values stay missing.
+The builder never calls maintenance or a provider and never substitutes a
+fixture, CSV, stale pointer, file timestamp, or inferred availability. Before
+publication it rereads the identity of every input. A mismatch returns
+`TRUE_CURRENT_CANONICAL_INPUT_GAP` and publishes no completion locator.
+
 ## Immutable request
 
 `run-forward` accepts one exact request reference:

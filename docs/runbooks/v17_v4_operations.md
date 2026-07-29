@@ -64,6 +64,33 @@ classification may route to an already-authorized market, Fundamental, or
 Macro maintenance workflow, followed by strict storage validation. Missing
 forward history or Deep assessment bytes are not canonical-data gaps.
 
+## Build the real Forward Evidence source snapshot
+
+After the canonical close is fully sealed, bind the exact bytes that were
+audited. Do not reuse a SHA after any pointer or strategy-universe file
+changes:
+
+```bash
+quant-investor-v17-v4 build-source-snapshot \
+  --workspace-root /absolute/path/to/myQuant \
+  --strategy-id cn-aggressive-tech-manufacturing \
+  --decision-session <YYYY-MM-DD> \
+  --cutoff <UTC-second-timestamp> \
+  --market-pointer-sha256 <sha256> \
+  --fundamental-pointer-sha256 <sha256> \
+  --factor-set-pointer-sha256 <sha256> \
+  --strategy-universe-path <full_metrics.parquet> \
+  --strategy-universe-sha256 <sha256> \
+  --strategy-universe-manifest-path <breadth.json> \
+  --strategy-universe-manifest-sha256 <sha256>
+```
+
+Exit `0` and `status=READY` mean that `source_locator.json` was validated,
+written last, and read back. Exit `2` with
+`status=TRUE_CURRENT_CANONICAL_INPUT_GAP` means no completion locator was
+published. The command is offline and has no Factor Governance, activation,
+selector, provider, broker, execution, order, or trade authority.
+
 Inspect the current monthly-rotating set and the additive Deep/Shadow v3
 surfaces with explicit paths and hashes:
 

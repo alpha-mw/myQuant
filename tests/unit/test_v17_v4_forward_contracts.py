@@ -58,6 +58,10 @@ FORWARD_SCHEMAS = {
         "forward_factor_allocation.v1.schema.json",
         "allocation_id",
     ),
+    "myquant.v17.v4.forward-factor-input-bundle.v1": (
+        "forward_factor_input_bundle.v1.schema.json",
+        "bundle_id",
+    ),
     "myquant.v17.v4.forward-label.v1": (
         "forward_label.v1.schema.json",
         "label_id",
@@ -85,6 +89,14 @@ FORWARD_SCHEMAS = {
     "myquant.v17.v4.forward-stage-output.v1": (
         "forward_stage_output.v1.schema.json",
         "output_id",
+    ),
+    "myquant.v17.v4.forward-source-locator.v1": (
+        "forward_source_locator.v1.schema.json",
+        "locator_id",
+    ),
+    "myquant.v17.v4.forward-source-slice-manifest.v1": (
+        "forward_source_slice_manifest.v1.schema.json",
+        "manifest_id",
     ),
     "myquant.v17.v4.strategy-pool-observation.v1": (
         "strategy_pool_observation.v1.schema.json",

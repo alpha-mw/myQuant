@@ -28,6 +28,12 @@ from .public_surfaces import (
 from .research_quant import compile_research_quant_branch
 from .research_factor_set import ResearchFactorSetStore
 from .shadow_runtime import publish_shadow_run, read_shadow_session
+from .source_builder import (
+    SourceSnapshotError,
+    SourceSnapshotGap,
+    build_source_snapshot,
+    gap_payload,
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -51,6 +57,30 @@ def _parser() -> argparse.ArgumentParser:
     )
     run_forward_parser.add_argument("--request-path", required=True)
     run_forward_parser.add_argument("--request-sha256", required=True)
+    build_source = commands.add_parser(
+        "build-source-snapshot",
+        help=(
+            "materialize one immutable, offline Forward Evidence source "
+            "snapshot from exact canonical inputs"
+        ),
+    )
+    build_source.add_argument("--workspace-root", default=str(Path.cwd()))
+    build_source.add_argument("--strategy-id", required=True)
+    build_source.add_argument("--decision-session", required=True)
+    build_source.add_argument("--cutoff", required=True)
+    build_source.add_argument("--market-pointer-sha256", required=True)
+    build_source.add_argument("--fundamental-pointer-sha256", required=True)
+    build_source.add_argument("--factor-set-pointer-sha256", required=True)
+    build_source.add_argument("--strategy-universe-path", required=True)
+    build_source.add_argument("--strategy-universe-sha256", required=True)
+    build_source.add_argument(
+        "--strategy-universe-manifest-path",
+        required=True,
+    )
+    build_source.add_argument(
+        "--strategy-universe-manifest-sha256",
+        required=True,
+    )
     deep_compile = commands.add_parser(
         "deep-compile",
         help="compile prepositioned official Deep evidence into a shadow-only v2 bundle",
@@ -254,6 +284,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "status":
         _emit(_wire())
         return 0
+    if args.command == "build-source-snapshot":
+        try:
+            _emit(
+                build_source_snapshot(
+                    str(Path(args.workspace_root).resolve()),
+                    strategy_id=args.strategy_id,
+                    decision_session=args.decision_session,
+                    cutoff=args.cutoff,
+                    market_pointer_sha256=args.market_pointer_sha256,
+                    fundamental_pointer_sha256=(args.fundamental_pointer_sha256),
+                    factor_set_pointer_sha256=(args.factor_set_pointer_sha256),
+                    strategy_universe_path=args.strategy_universe_path,
+                    strategy_universe_sha256=(args.strategy_universe_sha256),
+                    strategy_universe_manifest_path=(args.strategy_universe_manifest_path),
+                    strategy_universe_manifest_sha256=(args.strategy_universe_manifest_sha256),
+                )
+            )
+            return 0
+        except SourceSnapshotGap as exc:
+            _emit(gap_payload(exc))
+            return exc.exit_code
+        except SourceSnapshotError as exc:
+            gap = SourceSnapshotGap(f"SOURCE_SNAPSHOT_BUILD_FAILED: {exc}")
+            _emit(gap_payload(gap))
+            return gap.exit_code
     if args.command == "run-forward":
         try:
             _emit(
