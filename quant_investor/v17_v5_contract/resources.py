@@ -30,13 +30,18 @@ from .identities import (
     require_sha256,
 )
 from .limits import LIMITS
-from .validators import NO_AUTHORITY
+from .validators import (
+    FACTOR_DIAGNOSTIC_POLICY_ID,
+    FACTOR_DIAGNOSTIC_POLICY_VERSION,
+    NO_AUTHORITY,
+)
 
 PROTOCOL_VERSION: Final = "myquant.v17.v5"
 PACKAGE_MANIFEST_PATH: Final = "resources/package_manifest.v1.json"
 RUNTIME_BUILD_MANIFEST_PATH: Final = "resources/runtime_build_manifest.v1.json"
 COMPATIBILITY_POLICY_PATH: Final = "resources/v4_compatibility_policy.v1.json"
-PACKAGE_MANIFEST_SHA256: Final = "0f703733643842e442b4d90d3dbf5f389bfab0368182cc25372b888a2a3c9537"
+FACTOR_DIAGNOSTIC_POLICY_PATH: Final = "resources/factor_diagnostic_policy.v1.json"
+PACKAGE_MANIFEST_SHA256: Final = "660d51c6be5aae3843fe2ef332d301995b1f9b230d0259df1839e1dd70c5ecff"
 _PACKAGE_ROOT: Final = Path(__file__).resolve().parent
 
 
@@ -286,6 +291,72 @@ def load_compatibility_policy(
     return policy
 
 
+def load_factor_diagnostic_policy(
+    *,
+    package_root: Path | None = None,
+) -> dict[str, Any]:
+    policy = load_packaged_json(
+        FACTOR_DIAGNOSTIC_POLICY_PATH,
+        package_root=package_root,
+    )
+    if (
+        set(policy)
+        != {
+            "artifact_id",
+            "authority",
+            "input_contract",
+            "limits",
+            "protocol_version",
+            "rank_ic",
+            "sample_policy",
+            "semantic_sha256",
+            "statuses",
+            "version",
+        }
+        or policy["artifact_id"] != FACTOR_DIAGNOSTIC_POLICY_ID
+        or policy["authority"] != NO_AUTHORITY
+        or policy["protocol_version"] != PROTOCOL_VERSION
+        or policy["version"] != FACTOR_DIAGNOSTIC_POLICY_VERSION
+        or policy["statuses"] != ["ACCUMULATING", "UNAVAILABLE", "UNOBSERVED"]
+        or policy["limits"]
+        != {
+            "max_origins": 4_096,
+            "max_symbols_per_origin": 10_000,
+            "max_total_symbol_rows": 2_000_000,
+        }
+        or policy["sample_policy"]
+        != {
+            "descriptive_coverage_minimum_origins": 60,
+            "descriptive_coverage_minimum_symbols_per_origin": 100,
+            "horizon_sessions": 20,
+            "inference_gate_passed": False,
+            "naturally_matured_only": True,
+        }
+        or policy["rank_ic"]
+        != {
+            "negative_zero": "ZERO",
+            "output_decimal_places": 12,
+            "rounding": "ROUND_HALF_EVEN",
+            "symbol_order": "ASCII_ASCENDING",
+            "ties": "AVERAGE_RANK_EXACT_DECIMAL",
+        }
+        or policy["input_contract"]
+        != {
+            "canonical_decimal": (
+                "no_exponent_no_plus_no_trailing_fractional_zero_" "negative_zero_forbidden"
+            ),
+            "constant_input": "ORIGIN_RANK_IC_UNAVAILABLE",
+            "duplicate_conflict": "MALFORMED_EXIT_2",
+            "duplicate_identical": "DEDUPLICATE",
+            "maturity": ("EXACT_SHANGHAI_OPEN_SESSION_DISTANCE_AND_" "LABEL_AVAILABLE_AT_CUTOFF"),
+            "nonfinite": "MALFORMED_EXIT_2",
+            "symbol_intersection": "FACTOR_AND_FORWARD_RETURN",
+        }
+    ):
+        raise PackageResourceError("factor diagnostic policy identity mismatch")
+    return policy
+
+
 def verify_runtime_build(
     *,
     package_root: Path | None = None,
@@ -369,6 +440,7 @@ def verify_package(
         raw = read_packaged_asset(row["relative_path"], package_root=root)
         result[row["relative_path"]] = hashlib.sha256(raw).hexdigest()
     load_compatibility_policy(package_root=root)
+    load_factor_diagnostic_policy(package_root=root)
     verify_runtime_build(package_root=root)
     return result
 
@@ -408,11 +480,13 @@ def verify_predecessor(
 
 __all__ = [
     "COMPATIBILITY_POLICY_PATH",
+    "FACTOR_DIAGNOSTIC_POLICY_PATH",
     "PACKAGE_MANIFEST_PATH",
     "PACKAGE_MANIFEST_SHA256",
     "PackageResourceError",
     "RUNTIME_BUILD_MANIFEST_PATH",
     "load_compatibility_policy",
+    "load_factor_diagnostic_policy",
     "load_package_manifest",
     "load_packaged_json",
     "read_packaged_asset",

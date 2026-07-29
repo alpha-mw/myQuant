@@ -36,12 +36,16 @@
   SHA，并在 exact calendar/bars/holdings/source-closure 绑定一致时生成
   `v15_v17_v4_gray_comparison`；不再扫描 v3 workspace。该显式入口不改变
   V15 默认路由。
-- V17 v5 Phase-0 契约入口：`quant-investor-v17-v5`。当前只开放
+- V17 v5 Sprint-1A 契约入口：`quant-investor-v17-v5`。当前仍只开放
   `status` 和 `verify`，状态固定为
-  `PHASE0_CONTRACT_AVAILABLE_NOT_OPERATIONAL`。它使用独立
+  `SPRINT1A_FACTOR_DIAGNOSTICS_AVAILABLE_NOT_OPERATIONAL`。它使用独立
   `myquant.v17.v5` 协议和
   `quant_investor.v17_v5_contract` / `quant_investor.v17_v5_runtime`
-  包，只读验证已封存的 v4 predecessor；不开放 run、schedule、模型、
+  包，只读验证已封存的 v4 predecessor，并提供纯内存、描述性、无文件
+  写入的 Factor maturity/RankIC/coverage/replay library。该 library 不读取
+  V4 artifact，不输出 effectiveness、inference、tier、weight 或 promotion
+  结论；`descriptive_coverage_minimum_met` 也不是 Factor Governance 门禁。
+  它不开放 run、schedule、模型、
   provider、LLM、Factor Governance writer、portfolio、selector、formal、
   canary、promotion、execution、broker、order 或 trade surface。
 - 当前包版本为 `17.0.0`，它是删除旧公共入口的 V16 retirement release，

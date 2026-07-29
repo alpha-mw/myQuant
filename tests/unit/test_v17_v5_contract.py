@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
+import shutil
+from typing import Any
 
 import pytest
 
@@ -14,13 +17,14 @@ from quant_investor.v17_v5_contract import (
 )
 from quant_investor.v17_v5_contract.resources import (
     COMPATIBILITY_POLICY_PATH,
+    PackageResourceError,
     read_packaged_asset,
 )
 from quant_investor.v17_v5_contract.schema_validation import SchemaValidationError
 from quant_investor.v17_v5_contract.validators import ArtifactContractError, NO_AUTHORITY
 
 
-def _predecessor_binding() -> dict[str, object]:
+def _predecessor_binding() -> dict[str, Any]:
     policy = load_compatibility_policy()
     policy_raw = read_packaged_asset(COMPATIBILITY_POLICY_PATH)
     predecessor = policy["predecessor"]
@@ -58,11 +62,12 @@ def test_v5_package_runtime_and_predecessor_are_closed() -> None:
     runtime = verify_runtime_build()
     predecessor = verify_predecessor()
 
-    assert len(package) == 5
+    assert len(package) == 7
     assert set(runtime) == {
         "v17_v5_runtime/__init__.py",
         "v17_v5_runtime/authority.py",
         "v17_v5_runtime/cli.py",
+        "v17_v5_runtime/factor_diagnostics.py",
         "v17_v5_runtime/v4_compat_reader.py",
     }
     assert predecessor == {
@@ -151,3 +156,63 @@ def test_compatibility_policy_is_exact_phase0_allowlist() -> None:
     assert policy["allowed_artifacts"][0]["transitive_edges"] == []
     assert policy["forbidden_import_prefixes"] == ["quant_investor.v17_v4_runtime"]
     assert all(value is False for value in policy["authority"].values())
+
+
+def test_factor_diagnostic_policy_is_descriptive_only() -> None:
+    from quant_investor.v17_v5_contract import load_factor_diagnostic_policy
+
+    policy = load_factor_diagnostic_policy()
+
+    assert policy["sample_policy"] == {
+        "descriptive_coverage_minimum_origins": 60,
+        "descriptive_coverage_minimum_symbols_per_origin": 100,
+        "horizon_sessions": 20,
+        "inference_gate_passed": False,
+        "naturally_matured_only": True,
+    }
+    assert policy["statuses"] == ["ACCUMULATING", "UNAVAILABLE", "UNOBSERVED"]
+    assert all(value is False for value in policy["authority"].values())
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "resources/factor_diagnostic_policy.v1.json",
+        "schemas/factor_diagnostic.v1.schema.json",
+        "../v17_v5_runtime/factor_diagnostics.py",
+    ],
+)
+def test_factor_diagnostic_policy_schema_and_runtime_tamper_fail_closed(
+    tmp_path: Path,
+    relative_path: str,
+) -> None:
+    from quant_investor.v17_v5_contract.resources import verify_package as verify_copy
+
+    source_quant = Path(__file__).resolve().parents[2] / "quant_investor"
+    target_quant = tmp_path / "quant_investor"
+    shutil.copytree(source_quant / "v17_v5_contract", target_quant / "v17_v5_contract")
+    shutil.copytree(source_quant / "v17_v5_runtime", target_quant / "v17_v5_runtime")
+    target = target_quant / "v17_v5_contract" / relative_path
+    target.write_bytes(target.read_bytes() + b" ")
+
+    with pytest.raises(PackageResourceError):
+        verify_copy(package_root=target_quant / "v17_v5_contract")
+
+
+def test_v4_compatibility_policy_and_reader_seals_are_unchanged() -> None:
+    root = Path(__file__).resolve().parents[2]
+
+    assert (
+        hashlib.sha256(
+            (
+                root / "quant_investor/v17_v5_contract/resources/" "v4_compatibility_policy.v1.json"
+            ).read_bytes()
+        ).hexdigest()
+        == "480d89a7c0804427510f4a32c70195a55085acf4389d40edc939a08851bfec47"
+    )
+    assert (
+        hashlib.sha256(
+            (root / "quant_investor/v17_v5_runtime/v4_compat_reader.py").read_bytes()
+        ).hexdigest()
+        == "d2528024d094b05d24f29005e6fa4d7ec3192c5c3290182f4aae2dedafb13358"
+    )

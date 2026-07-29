@@ -12,6 +12,7 @@ from .canonical import (
 )
 from .resources import (
     load_compatibility_policy,
+    load_factor_diagnostic_policy,
     verify_package,
     verify_predecessor,
     verify_runtime_build,
@@ -60,6 +61,7 @@ __all__ = [
     "load_canonical_artifact",
     "load_canonical_resource",
     "load_compatibility_policy",
+    "load_factor_diagnostic_policy",
     "seal_semantic",
     "semantic_sha256",
     "validate_artifact",

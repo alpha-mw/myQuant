@@ -1,4 +1,4 @@
-"""Closed schema registry for V17 v5 Phase 0."""
+"""Closed schema registry for V17 v5."""
 
 from __future__ import annotations
 
@@ -13,6 +13,10 @@ from .canonical import CanonicalContractError, load_canonical_resource
 
 PROTOCOL_VERSION: Final = "myquant.v17.v5"
 _ARTIFACT_REGISTRY: Final = {
+    "myquant.v17.v5.factor-diagnostic.v1": (
+        "schemas/factor_diagnostic.v1.schema.json",
+        "diagnostic_id",
+    ),
     "myquant.v17.v5.v4-predecessor-binding.v1": (
         "schemas/v4_predecessor_binding.v1.schema.json",
         "binding_id",

@@ -7,7 +7,7 @@ import tomllib
 
 import quant_investor.v17_v5_runtime.cli as cli_subject
 from quant_investor.v17_v5_contract.resources import PackageResourceError
-from quant_investor.v17_v5_runtime.authority import authority_envelope
+from quant_investor.v17_v5_runtime.authority import DELIVERY_STATUS, authority_envelope
 from quant_investor.v17_v5_runtime.cli import main
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -23,16 +23,23 @@ def _tree(root: Path) -> tuple[tuple[str, str], ...]:
 
 
 def test_v5_runtime_has_no_v4_runtime_or_writer_import() -> None:
+    forbidden_modules = {
+        "quant_investor.factors.forward_evaluator",
+        "quant_investor.factors.production_control_v1",
+        "quant_investor.factors.registry_store",
+    }
     for path in sorted(RUNTIME.glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
                 assert not (node.module or "").startswith("quant_investor.v17_v4_runtime"), path
+                assert (node.module or "") not in forbidden_modules, path
             if isinstance(node, ast.Import):
                 assert all(
                     not alias.name.startswith("quant_investor.v17_v4_runtime")
                     for alias in node.names
                 ), path
+                assert all(alias.name not in forbidden_modules for alias in node.names), path
 
 
 def test_v5_authority_is_permanently_false() -> None:
@@ -55,6 +62,7 @@ def test_v5_authority_is_permanently_false() -> None:
         "trade",
     }
     assert all(value is False for value in authority.values())
+    assert DELIVERY_STATUS == "SPRINT1A_FACTOR_DIAGNOSTICS_AVAILABLE_NOT_OPERATIONAL"
 
 
 def test_v5_cli_only_adds_status_and_verify_and_writes_nothing(
@@ -93,3 +101,14 @@ def test_v5_cli_verify_fails_closed_with_exit_two(
     assert '"verified":false' in payload
     assert '"error":"sealed package drift"' in payload
     assert _tree(tmp_path) == before
+
+
+def test_v5_cli_help_remains_status_and_verify_only(capsys) -> None:
+    import pytest
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--help"])
+    assert exc_info.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "{status,verify}" in help_text
+    assert "\n    run" not in help_text

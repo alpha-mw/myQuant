@@ -6,7 +6,7 @@
 intelligence evidence from exact immutable V17 v4 Forward Evidence artifacts.
 It does not replace, relabel, mutate, or activate V17 v4.
 
-Phase 0 establishes only:
+Phase 0 established:
 
 - a separate `v17_v5_contract` / `v17_v5_runtime` boundary;
 - closed package and runtime manifests;
@@ -15,10 +15,17 @@ Phase 0 establishes only:
 - a bounded, no-follow, read-only compatibility reader;
 - `status` and `verify`.
 
+Sprint 1A adds one library-only surface:
+
+- a sealed descriptive Factor diagnostic policy and schema;
+- a pure in-memory maturity, cross-sectional RankIC, coverage and replay kernel;
+- no V17 v4 artifact admission, reader expansion, writer, run command or
+  empirical effectiveness conclusion.
+
 ## Scope and non-goals
 
-Phase 0 has no intelligence algorithm, run orchestrator, schedule, artifact
-writer, output root, model call, provider call, or portfolio surface. It does
+Sprint 1A has no run orchestrator, schedule, artifact writer, output root,
+model call, provider call, or portfolio surface. It does
 not modify V15, V16, V17 v2/v3, V17 v4 runtime, Factor Governance, formal
 activation, canary, promotion, the default selector, execution, broker, order,
 or trade behavior.
@@ -77,9 +84,21 @@ V5 runtime imports the V17 v4 contract only. Importing any
 `quant_investor.v17_v4_runtime` module is forbidden and covered by an AST
 boundary test.
 
+The Sprint-1A diagnostic kernel also does not import the shared
+`forward_evaluator`, Factor Governance registry, production-control or tier
+allocation modules. Its runtime source is byte-bound by the V5 runtime
+manifest.
+
+The package manifest byte-binds packaged JSON and inventories the contract
+Python filenames. It does not byte-bind the contract Python contents because
+`resources.py` contains the package manifest's self-binding constant. Git
+checkpoint review and tests remain the source binding for those contract
+modules; `verify` must not be described as a complete byte seal of contract
+Python.
+
 ## Authority
 
-Every V17 v5 authority field is permanently false in Phase 0:
+Every V17 v5 authority field remains permanently false:
 
 ```text
 formal research publication
@@ -138,14 +157,76 @@ UNAVAILABLE
 They cannot claim factor, industry, fundamental, theme, regime or strategy
 effectiveness.
 
+## Sprint 1A Factor diagnostic contract
+
+`myquant.v17.v5.factor-diagnostic.v1` is a descriptive artifact, not a receipt.
+It is returned only in memory and has no governed output path. The only states
+are:
+
+- `UNOBSERVED`: a complete exact stratum and sealed calendar are supplied, but
+  there are zero naturally matured origins;
+- `ACCUMULATING`: at least one naturally matured origin is supplied;
+- `UNAVAILABLE`: an explicit prerequisite such as calendar, label contract or
+  lineage is absent. This state has no stratum SHA, origins or statistics.
+
+Malformed identity, SHA, date, cutoff, conflicting duplicate, mixed session
+identity, noncanonical decimal, future label or resource-limit input raises
+`FactorDiagnosticError` with exit code 2. It is never converted to
+`UNAVAILABLE`.
+
+Each observed diagnostic fixes one exact stratum:
+
+```text
+strategy_id
+factor_name
+factor_definition_sha256
+factor_implementation_sha256
+factor_set_sha256
+quant_policy_sha256
+adapter_policy_byte_sha256
+source_lineage_series_sha256
+market_calendar_sha256
+horizon_sessions = 20
+```
+
+`source_lineage_series_sha256` is the stable series/policy identity.
+`evidence_lineage_sha256` remains distinct for each origin. The runtime
+computes maturity from the ordered Shanghai open-session calendar, exact
+20-session end, label `available_at` and evaluation cutoff; it does not accept
+a caller-provided maturity boolean.
+
+Factor and forward-return values are canonical finite decimal strings. The
+comparable domain is their exact symbol intersection. RankIC uses ASCII symbol
+ordering, exact Decimal average ranks for ties, `ROUND_HALF_EVEN` and 12 output
+decimal places. Constant factor or return vectors produce an origin-level
+unavailable metric; nonfinite or noncanonical values fail closed.
+
+`descriptive_coverage_minimum_met=true` only means at least 60 RankIC-available
+naturally matured origins with at least 100 comparable symbols each. It always
+coexists with:
+
+```text
+gate_scope = DESCRIPTIVE_ONLY
+inference_gate_passed = false
+inference_eligible = false
+effectiveness_claimed = false
+effectiveness_conclusion = null
+```
+
+Tier, weight, promotion, Factor Governance and all operational authority remain
+false. Overlap-robust inference is explicitly deferred.
+
+The in-memory limits are 4,096 origins, 10,000 symbols per origin and 2,000,000
+total supplied symbol rows.
+
 ## Acceptance and stop conditions
 
-Phase 0 is accepted only if package/runtime/predecessor verification, semantic
+Sprint 1A is accepted only if package/runtime/predecessor verification, semantic
 replay, reader positive and negative tests, authority/import/no-write boundary
 tests, V15 public smoke, full V17 v4 regression, mypy, Black and
 `git diff --check` pass.
 
-Stop before Sprint 1 if any predecessor manifest drifts, an unallowlisted
+Stop before any operational Factor adapter if any predecessor manifest drifts, an unallowlisted
 reference is accepted, a resource limit is bypassed, a v4 runtime writer is
 imported, a file is written, an existing CLI entrypoint changes, any authority
 is true, or V15/V17 v4 regresses.
