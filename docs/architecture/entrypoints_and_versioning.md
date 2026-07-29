@@ -36,6 +36,14 @@
   SHA，并在 exact calendar/bars/holdings/source-closure 绑定一致时生成
   `v15_v17_v4_gray_comparison`；不再扫描 v3 workspace。该显式入口不改变
   V15 默认路由。
+- V17 v5 Phase-0 契约入口：`quant-investor-v17-v5`。当前只开放
+  `status` 和 `verify`，状态固定为
+  `PHASE0_CONTRACT_AVAILABLE_NOT_OPERATIONAL`。它使用独立
+  `myquant.v17.v5` 协议和
+  `quant_investor.v17_v5_contract` / `quant_investor.v17_v5_runtime`
+  包，只读验证已封存的 v4 predecessor；不开放 run、schedule、模型、
+  provider、LLM、Factor Governance writer、portfolio、selector、formal、
+  canary、promotion、execution、broker、order 或 trade surface。
 - 当前包版本为 `17.0.0`，它是删除旧公共入口的 V16 retirement release，
   不是 V17 runtime 协议。`market analyze/run` 只接受并默认使用 `v15`；
   任何已退役协议 literal 都在解析阶段 exit 2，且不回退、不写文件。
@@ -68,6 +76,11 @@
   到 formal portfolio、eligibility 或 canary v1 合同，selector 也不会执行
   cutover。默认仍是 V15。完整迁移边界见
   `docs/architecture/v17_v4_production_research_contract.md`。
+- V17 Investment Intelligence successor：`myquant.v17.v5`。Phase 0 仅建立
+  research-only 契约、封闭 package/runtime manifest、永久 false authority
+  和 v4 immutable artifact 只读兼容边界；它不是 v4 artifact 的重标，也未
+  进入 operational runtime。后续 Sprint 必须逐阶段验收，且真实统计结论
+  受成熟 forward-origin 门禁约束。
 - Factor Governance：`v4`，使用版本中立的 `results/factor_governance/`
 - Dashboard：Contract v3
 

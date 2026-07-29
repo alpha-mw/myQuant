@@ -1,0 +1,422 @@
+"""Hash-bound package, runtime, and predecessor resources for V17 v5."""
+
+from __future__ import annotations
+
+from copy import deepcopy
+import hashlib
+from pathlib import Path, PurePosixPath
+from typing import Any, Final, Mapping
+
+from quant_investor.v17_v4_contract import (
+    verify_package as verify_v4_package,
+    verify_runtime_build as verify_v4_runtime_build,
+)
+from quant_investor.v17_v4_contract.schema_validation import (
+    artifact_identity_field as v4_identity_field,
+    schema_path_for_version as v4_schema_path,
+)
+from quant_investor.v17_v4_contract.resources import load_packaged_json as load_v4_json
+
+from .canonical import (
+    CanonicalContractError,
+    load_canonical_resource,
+    validate_semantic_sha,
+)
+from .identities import (
+    IdentityContractError,
+    require_git_commit,
+    require_identifier,
+    require_relative_path,
+    require_sha256,
+)
+from .limits import LIMITS
+from .validators import NO_AUTHORITY
+
+PROTOCOL_VERSION: Final = "myquant.v17.v5"
+PACKAGE_MANIFEST_PATH: Final = "resources/package_manifest.v1.json"
+RUNTIME_BUILD_MANIFEST_PATH: Final = "resources/runtime_build_manifest.v1.json"
+COMPATIBILITY_POLICY_PATH: Final = "resources/v4_compatibility_policy.v1.json"
+PACKAGE_MANIFEST_SHA256: Final = "0f703733643842e442b4d90d3dbf5f389bfab0368182cc25372b888a2a3c9537"
+_PACKAGE_ROOT: Final = Path(__file__).resolve().parent
+
+
+class PackageResourceError(RuntimeError):
+    """Raised when a sealed V17 v5 package resource drifts."""
+
+    exit_code = 2
+
+
+def _read_object(path: Path, *, label: str) -> tuple[bytes, dict[str, Any]]:
+    try:
+        raw = path.read_bytes()
+        payload = load_canonical_resource(raw, label=label)
+    except (OSError, CanonicalContractError) as exc:
+        raise PackageResourceError(f"{label} is unreadable or invalid") from exc
+    if type(payload) is not dict:
+        raise PackageResourceError(f"{label} root must be an object")
+    return raw, dict(payload)
+
+
+def load_package_manifest(*, package_root: Path | None = None) -> dict[str, Any]:
+    root = _PACKAGE_ROOT if package_root is None else Path(package_root)
+    raw, manifest = _read_object(root / PACKAGE_MANIFEST_PATH, label="v5 package manifest")
+    try:
+        require_sha256(PACKAGE_MANIFEST_SHA256, label="package manifest SHA-256")
+        validate_semantic_sha(manifest)
+    except (IdentityContractError, CanonicalContractError) as exc:
+        raise PackageResourceError("v5 package manifest seal is invalid") from exc
+    if hashlib.sha256(raw).hexdigest() != PACKAGE_MANIFEST_SHA256:
+        raise PackageResourceError("v5 package manifest byte SHA-256 mismatch")
+    expected_keys = {
+        "array_order_semantics",
+        "assets",
+        "authority",
+        "protocol_version",
+        "self_binding",
+        "semantic_sha256",
+        "source_paths",
+        "version",
+    }
+    if (
+        set(manifest) != expected_keys
+        or manifest.get("protocol_version") != PROTOCOL_VERSION
+        or manifest.get("version") != "myquant.v17.v5.package-manifest.v1"
+        or manifest.get("authority") != NO_AUTHORITY
+        or manifest.get("self_binding")
+        != {
+            "byte_sha256_source": (
+                "quant_investor.v17_v5_contract.resources.PACKAGE_MANIFEST_SHA256"
+            ),
+            "relative_path": PACKAGE_MANIFEST_PATH,
+        }
+    ):
+        raise PackageResourceError("v5 package manifest identity mismatch")
+    return manifest
+
+
+def _asset_rows(manifest: Mapping[str, Any]) -> tuple[dict[str, str], ...]:
+    rows = manifest.get("assets")
+    if type(rows) is not list:
+        raise PackageResourceError("v5 package assets must be an array")
+    result: list[dict[str, str]] = []
+    paths: set[str] = set()
+    identities: set[str] = set()
+    previous: str | None = None
+    for index, row in enumerate(rows):
+        if type(row) is not dict or set(row) != {
+            "artifact_id",
+            "byte_sha256",
+            "relative_path",
+        }:
+            raise PackageResourceError(f"v5 package asset row {index} shape mismatch")
+        relative_path = row["relative_path"]
+        artifact_id = row["artifact_id"]
+        try:
+            require_relative_path(relative_path)
+            require_identifier(artifact_id, label="package artifact_id")
+            require_sha256(row["byte_sha256"])
+        except IdentityContractError as exc:
+            raise PackageResourceError(f"v5 package asset row {index} invalid") from exc
+        if (
+            not relative_path.startswith(("resources/", "schemas/"))
+            or not relative_path.endswith(".json")
+            or relative_path == PACKAGE_MANIFEST_PATH
+            or (previous is not None and relative_path <= previous)
+            or relative_path.casefold() in paths
+            or artifact_id.casefold() in identities
+        ):
+            raise PackageResourceError(f"v5 package asset row {index} noncanonical")
+        previous = relative_path
+        paths.add(relative_path.casefold())
+        identities.add(artifact_id.casefold())
+        result.append(dict(row))
+    return tuple(result)
+
+
+def _source_paths(manifest: Mapping[str, Any]) -> tuple[str, ...]:
+    values = manifest.get("source_paths")
+    if (
+        type(values) is not list
+        or values != sorted(values)
+        or len(values) != len({value.casefold() for value in values if type(value) is str})
+        or any(
+            type(value) is not str or "/" in value or not value.endswith(".py") for value in values
+        )
+    ):
+        raise PackageResourceError("v5 source path inventory is invalid")
+    return tuple(values)
+
+
+def read_packaged_asset(
+    relative_path: str,
+    *,
+    package_root: Path | None = None,
+) -> bytes:
+    root = _PACKAGE_ROOT if package_root is None else Path(package_root)
+    expected = {
+        row["relative_path"]: row["byte_sha256"]
+        for row in _asset_rows(load_package_manifest(package_root=root))
+    }
+    if relative_path not in expected:
+        raise PackageResourceError(f"unknown V17 v5 package asset: {relative_path!r}")
+    try:
+        raw = (root / relative_path).read_bytes()
+    except OSError as exc:
+        raise PackageResourceError(f"v5 package asset unreadable: {relative_path}") from exc
+    if hashlib.sha256(raw).hexdigest() != expected[relative_path]:
+        raise PackageResourceError(f"v5 package asset SHA mismatch: {relative_path}")
+    try:
+        payload = load_canonical_resource(raw, label=relative_path)
+        if type(payload) is not dict:
+            raise PackageResourceError(f"v5 package asset is not an object: {relative_path}")
+        if relative_path.startswith("resources/"):
+            validate_semantic_sha(payload)
+    except CanonicalContractError as exc:
+        raise PackageResourceError(f"v5 package asset invalid: {relative_path}") from exc
+    return raw
+
+
+def load_packaged_json(
+    relative_path: str,
+    *,
+    package_root: Path | None = None,
+) -> dict[str, Any]:
+    payload = load_canonical_resource(
+        read_packaged_asset(relative_path, package_root=package_root),
+        label=relative_path,
+    )
+    if type(payload) is not dict:
+        raise PackageResourceError(f"{relative_path} root must be an object")
+    return deepcopy(payload)
+
+
+def load_compatibility_policy(
+    *,
+    package_root: Path | None = None,
+) -> dict[str, Any]:
+    policy = load_packaged_json(COMPATIBILITY_POLICY_PATH, package_root=package_root)
+    expected_keys = {
+        "allowed_artifacts",
+        "array_order_semantics",
+        "artifact_id",
+        "authority",
+        "closure_limits",
+        "forbidden_import_prefixes",
+        "forbidden_v4_writer_modules",
+        "predecessor",
+        "protocol_version",
+        "semantic_sha256",
+        "version",
+    }
+    if (
+        set(policy) != expected_keys
+        or policy["protocol_version"] != PROTOCOL_VERSION
+        or policy["version"] != "myquant.v17.v5.v4-compatibility-policy.v1"
+        or policy["authority"] != NO_AUTHORITY
+        or policy["forbidden_import_prefixes"] != ["quant_investor.v17_v4_runtime"]
+    ):
+        raise PackageResourceError("v4 compatibility policy identity mismatch")
+    limits = policy["closure_limits"]
+    if limits != {
+        "max_artifact_bytes": LIMITS["compat_max_artifact_bytes"],
+        "max_closure_bytes": LIMITS["compat_max_closure_bytes"],
+        "max_depth": LIMITS["compat_max_closure_depth"],
+        "max_nodes": LIMITS["compat_max_closure_nodes"],
+    }:
+        raise PackageResourceError("v4 compatibility closure limits drift")
+    rows = policy["allowed_artifacts"]
+    if type(rows) is not list or not rows:
+        raise PackageResourceError("v4 compatibility artifact allowlist is empty")
+    versions: list[str] = []
+    for index, row in enumerate(rows):
+        if type(row) is not dict or set(row) != {
+            "allowed_path_prefixes",
+            "identity_field",
+            "schema_id",
+            "transitive_edges",
+            "version",
+        }:
+            raise PackageResourceError(f"v4 compatibility row {index} shape mismatch")
+        version = row["version"]
+        try:
+            require_identifier(version, label="v4 artifact version")
+        except IdentityContractError as exc:
+            raise PackageResourceError(f"v4 compatibility row {index} invalid") from exc
+        schema = load_v4_json(v4_schema_path(version))
+        if (
+            row["identity_field"] != v4_identity_field(version)
+            or row["schema_id"] != schema.get("$id")
+            or row["allowed_path_prefixes"] != sorted(row["allowed_path_prefixes"])
+            or any(
+                type(prefix) is not str
+                or not prefix.startswith(("data/private/v17_v4_", "results/v17_v4_"))
+                for prefix in row["allowed_path_prefixes"]
+            )
+            or row["transitive_edges"]
+            != sorted(
+                row["transitive_edges"],
+                key=lambda edge: edge["json_pointer"] if type(edge) is dict else "",
+            )
+        ):
+            raise PackageResourceError(f"v4 compatibility row {index} binding mismatch")
+        versions.append(version)
+    if versions != sorted(versions) or len(versions) != len(set(versions)):
+        raise PackageResourceError("v4 compatibility versions are not uniquely ordered")
+    predecessor = policy["predecessor"]
+    try:
+        require_git_commit(predecessor["source_git_commit"])
+        require_sha256(predecessor["package_manifest_byte_sha256"])
+        require_sha256(predecessor["runtime_manifest_byte_sha256"])
+        require_relative_path(predecessor["package_manifest_relative_path"])
+        require_relative_path(predecessor["runtime_manifest_relative_path"])
+    except (IdentityContractError, KeyError, TypeError) as exc:
+        raise PackageResourceError("v4 predecessor policy binding invalid") from exc
+    if predecessor["protocol_version"] != "myquant.v17.v4":
+        raise PackageResourceError("v4 predecessor protocol mismatch")
+    forbidden = policy["forbidden_v4_writer_modules"]
+    if (
+        type(forbidden) is not list
+        or forbidden != sorted(forbidden)
+        or any(
+            type(value) is not str or not value.startswith("quant_investor.v17_v4_runtime.")
+            for value in forbidden
+        )
+    ):
+        raise PackageResourceError("v4 forbidden writer inventory invalid")
+    return policy
+
+
+def verify_runtime_build(
+    *,
+    package_root: Path | None = None,
+) -> dict[str, str]:
+    root = _PACKAGE_ROOT if package_root is None else Path(package_root)
+    manifest = load_packaged_json(RUNTIME_BUILD_MANIFEST_PATH, package_root=root)
+    if (
+        set(manifest)
+        != {
+            "array_order_semantics",
+            "authority",
+            "protocol_version",
+            "semantic_sha256",
+            "sources",
+            "version",
+        }
+        or manifest["protocol_version"] != PROTOCOL_VERSION
+        or manifest["version"] != "myquant.v17.v5.runtime-build-manifest.v1"
+        or manifest["authority"] != NO_AUTHORITY
+    ):
+        raise PackageResourceError("v5 runtime manifest identity mismatch")
+    rows = manifest["sources"]
+    if type(rows) is not list or not rows:
+        raise PackageResourceError("v5 runtime source inventory is empty")
+    expected: list[str] = []
+    result: dict[str, str] = {}
+    previous: str | None = None
+    quant_root = root.parent
+    for index, row in enumerate(rows):
+        if type(row) is not dict or set(row) != {"byte_sha256", "relative_path"}:
+            raise PackageResourceError(f"v5 runtime source row {index} shape mismatch")
+        relative = row["relative_path"]
+        try:
+            require_relative_path(relative)
+            require_sha256(row["byte_sha256"])
+        except IdentityContractError as exc:
+            raise PackageResourceError(f"v5 runtime source row {index} invalid") from exc
+        if (
+            not relative.startswith("v17_v5_runtime/")
+            or not relative.endswith(".py")
+            or (previous is not None and relative <= previous)
+        ):
+            raise PackageResourceError(f"v5 runtime source row {index} noncanonical")
+        previous = relative
+        expected.append(relative)
+        raw = (quant_root / relative).read_bytes()
+        observed = hashlib.sha256(raw).hexdigest()
+        if observed != row["byte_sha256"]:
+            raise PackageResourceError(f"v5 runtime source SHA mismatch: {relative}")
+        result[relative] = observed
+    discovered = sorted(
+        path.relative_to(quant_root).as_posix()
+        for path in (quant_root / "v17_v5_runtime").glob("*.py")
+    )
+    if discovered != expected:
+        raise PackageResourceError("v5 runtime Python inventory differs from manifest")
+    return result
+
+
+def verify_package(
+    *,
+    package_root: Path | None = None,
+) -> dict[str, str]:
+    root = _PACKAGE_ROOT if package_root is None else Path(package_root)
+    manifest = load_package_manifest(package_root=root)
+    rows = _asset_rows(manifest)
+    expected_paths = [row["relative_path"] for row in rows]
+    discovered = sorted(
+        path.relative_to(root).as_posix()
+        for directory in ("resources", "schemas")
+        for path in (root / directory).glob("*.json")
+        if path.relative_to(root).as_posix() != PACKAGE_MANIFEST_PATH
+    )
+    if discovered != expected_paths:
+        raise PackageResourceError("v5 packaged JSON inventory differs from manifest")
+    sources = sorted(path.name for path in root.glob("*.py"))
+    if sources != list(_source_paths(manifest)):
+        raise PackageResourceError("v5 contract Python inventory differs from manifest")
+    result: dict[str, str] = {}
+    for row in rows:
+        raw = read_packaged_asset(row["relative_path"], package_root=root)
+        result[row["relative_path"]] = hashlib.sha256(raw).hexdigest()
+    load_compatibility_policy(package_root=root)
+    verify_runtime_build(package_root=root)
+    return result
+
+
+def verify_predecessor(
+    *,
+    package_root: Path | None = None,
+) -> dict[str, Any]:
+    root = _PACKAGE_ROOT if package_root is None else Path(package_root)
+    policy = load_compatibility_policy(package_root=root)
+    predecessor = policy["predecessor"]
+    workspace_root = root.parent.parent
+    package_path = workspace_root / predecessor["package_manifest_relative_path"]
+    runtime_path = workspace_root / predecessor["runtime_manifest_relative_path"]
+    try:
+        package_sha = hashlib.sha256(package_path.read_bytes()).hexdigest()
+        runtime_sha = hashlib.sha256(runtime_path.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise PackageResourceError("pinned V17 v4 manifests are unreadable") from exc
+    if (
+        package_sha != predecessor["package_manifest_byte_sha256"]
+        or runtime_sha != predecessor["runtime_manifest_byte_sha256"]
+    ):
+        raise PackageResourceError("pinned V17 v4 predecessor manifest drift")
+    v4_assets = verify_v4_package()
+    v4_sources = verify_v4_runtime_build()
+    return {
+        "package_asset_count": len(v4_assets),
+        "package_manifest_byte_sha256": package_sha,
+        "protocol_version": predecessor["protocol_version"],
+        "runtime_manifest_byte_sha256": runtime_sha,
+        "runtime_source_count": len(v4_sources),
+        "source_git_commit": predecessor["source_git_commit"],
+        "status": "PINNED_AND_VERIFIED",
+    }
+
+
+__all__ = [
+    "COMPATIBILITY_POLICY_PATH",
+    "PACKAGE_MANIFEST_PATH",
+    "PACKAGE_MANIFEST_SHA256",
+    "PackageResourceError",
+    "RUNTIME_BUILD_MANIFEST_PATH",
+    "load_compatibility_policy",
+    "load_package_manifest",
+    "load_packaged_json",
+    "read_packaged_asset",
+    "verify_package",
+    "verify_predecessor",
+    "verify_runtime_build",
+]
