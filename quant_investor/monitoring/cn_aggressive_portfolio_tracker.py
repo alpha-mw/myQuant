@@ -38,6 +38,12 @@ from quant_investor.monitoring.v15_run_readiness import (
     build_v15_run_readiness,
     write_v15_run_readiness,
 )
+from quant_investor.monitoring.system_factor_attribution import (
+    build_system_factor_attribution,
+    render_system_factor_attribution_markdown,
+    system_factor_attribution_bytes,
+    system_factor_attribution_reference,
+)
 from quant_investor.llm_policy import llm_handoff_reason
 from quant_investor.llm_provider_priority import coerce_review_model_priority
 from quant_investor.pipeline import QuantInvestor
@@ -3231,11 +3237,23 @@ def _manual_manifest_order_key(run_dir: Path, manifest: dict[str, Any]) -> tuple
     return _validated_datetime_key(run_dir.name), run_dir.name
 
 
-def _resolve_manual_ledger_path(manifest_path: Path, manifest: dict[str, Any]) -> Path | None:
+def _resolve_manual_ledger_path(
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    *,
+    require_parquet: bool = False,
+) -> Path | None:
     next_ledger = str(manifest.get("next_ledger_path") or "").strip()
-    if not next_ledger:
+    declared_ledger = next_ledger
+    if require_parquet:
+        declared_ledger = str(
+            manifest.get("ledger_after_manual_switch_parquet") or ""
+        ).strip()
+        if not declared_ledger and Path(next_ledger).suffix.lower() == ".parquet":
+            declared_ledger = next_ledger
+    if not declared_ledger:
         return None
-    declared = Path(next_ledger).expanduser()
+    declared = Path(declared_ledger).expanduser()
     candidate = declared if declared.is_absolute() else manifest_path.parent / declared
     if candidate.is_symlink():
         return None
@@ -3246,7 +3264,8 @@ def _resolve_manual_ledger_path(manifest_path: Path, manifest: dict[str, Any]) -
         return None
     if (
         resolved.stem != "ledger_after_manual_switch"
-        or resolved.suffix.lower() not in {".parquet", ".csv"}
+        or resolved.suffix.lower()
+        not in ({".parquet"} if require_parquet else {".parquet", ".csv"})
         or not resolved.is_file()
     ):
         return None
@@ -3262,12 +3281,12 @@ def _declared_manual_ledger_sha256(
         if ledger_path.suffix.lower() == ".parquet"
         else "ledger_after_manual_switch_csv_sha256"
     )
-    for key in (
-        "next_ledger_sha256",
-        suffix_key,
-        "ledger_after_manual_switch_sha256",
-        "ledger_sha256",
-    ):
+    keys = [suffix_key]
+    next_ledger = str(manifest.get("next_ledger_path") or "").strip()
+    if Path(next_ledger).suffix.lower() == ledger_path.suffix.lower():
+        keys.append("next_ledger_sha256")
+    keys.extend(("ledger_after_manual_switch_sha256", "ledger_sha256"))
+    for key in keys:
         value = str(manifest.get(key) or "").strip().lower()
         if len(value) == 64 and all(character in "0123456789abcdef" for character in value):
             return value
@@ -3442,6 +3461,7 @@ def _load_latest_effective_manual_record(
     base_dir: Path,
     max_record_name: str | None = None,
     expected_capital: float | None = None,
+    require_parquet_ledger: bool = False,
 ) -> tuple[pd.DataFrame, dict[str, Any], Path, Path]:
     run_dirs = [
         path
@@ -3476,7 +3496,11 @@ def _load_latest_effective_manual_record(
             if explicit_time > now_utc + timedelta(minutes=5):
                 validation_errors.append(f"{run_dir.name}:v3_manifest_time_in_future")
                 continue
-        ledger_path = _resolve_manual_ledger_path(manifest_path, manifest)
+        ledger_path = _resolve_manual_ledger_path(
+            manifest_path,
+            manifest,
+            require_parquet=require_parquet_ledger,
+        )
         if ledger_path is None:
             validation_errors.append(f"{run_dir.name}:declared_next_ledger_invalid")
             continue
@@ -3520,7 +3544,17 @@ def _load_latest_effective_manual_record(
                     ledger=ledger,
                     manifest=manifest,
                     expected_capital=float(expected_capital),
-                    ledger_sha256=actual_sha256,
+                    ledger_sha256=(
+                        str(manifest.get("next_ledger_sha256") or "")
+                        .strip()
+                        .lower()
+                        if require_parquet_ledger
+                        and Path(
+                            str(manifest.get("next_ledger_path") or "")
+                        ).suffix.lower()
+                        == ".csv"
+                        else actual_sha256
+                    ),
                 )
                 if is_v3
                 else {"status": "legacy_unsealed"}
@@ -3571,6 +3605,7 @@ def _read_pnl_summary(path: Path) -> pd.DataFrame:
 def _load_previous_record(
     base_dir: Path,
     source_record: str | None = None,
+    require_parquet_ledger: bool = False,
 ) -> tuple[pd.DataFrame, dict[str, Any], pd.DataFrame]:
     run_dirs = [
         path
@@ -3608,6 +3643,7 @@ def _load_previous_record(
             manifest.get("capital_cny"),
             DEFAULT_INITIAL_CAPITAL,
         ),
+        require_parquet_ledger=require_parquet_ledger,
     )
     manifest = {
         **manifest,
@@ -4440,6 +4476,7 @@ def _write_outputs(
     pnl_summary_df: pd.DataFrame,
     manifest: dict[str, Any],
     market_snapshot: dict[str, Any],
+    system_factor_attribution: dict[str, Any],
 ) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     raw_dir = run_dir / "raw_exports"
@@ -4456,6 +4493,7 @@ def _write_outputs(
     snapshot_path = run_dir / "market_snapshot.json"
     manifest_path = run_dir / "manifest.json"
     runtime_profile_path = run_dir / "runtime_profile.json"
+    system_factor_attribution_path = run_dir / "system_factor_attribution.json"
 
     report_path.write_text(report_text, encoding="utf-8")
     holdings_review.to_csv(holdings_path, index=False, encoding="utf-8-sig")
@@ -4471,6 +4509,9 @@ def _write_outputs(
             json.dumps(runtime_profile, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+    system_factor_attribution_path.write_bytes(
+        system_factor_attribution_bytes(system_factor_attribution)
+    )
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
     shutil.copy2(report_path, raw_dir / f"{prefix}_report.md")
@@ -4481,6 +4522,10 @@ def _write_outputs(
     shutil.copy2(pnl_path, raw_dir / f"{prefix}_pnl_summary.csv")
     if runtime_profile_path.exists():
         shutil.copy2(runtime_profile_path, raw_dir / "runtime_profile.json")
+    shutil.copy2(
+        system_factor_attribution_path,
+        raw_dir / "system_factor_attribution.json",
+    )
 
 
 def _holdings_review_ledger_invariant(
@@ -4721,9 +4766,9 @@ def _write_manual_execution_outputs(
         "execution_price_gate": execution_price_gate,
         "applied_local_trades": applied_trades,
         "rejected_or_pending_trades": rejected_trades,
-        "effective_manual_ledger_path": ledger_csv_path.name,
-        "next_ledger_path": ledger_csv_path.name,
-        "next_ledger_sha256": ledger_csv_sha256,
+        "effective_manual_ledger_path": ledger_parquet_path.name,
+        "next_ledger_path": ledger_parquet_path.name,
+        "next_ledger_sha256": ledger_parquet_sha256,
         "ledger_after_manual_switch_csv": ledger_csv_path.name,
         "ledger_after_manual_switch_csv_sha256": ledger_csv_sha256,
         "ledger_after_manual_switch_parquet": ledger_parquet_path.name,
@@ -4732,11 +4777,11 @@ def _write_manual_execution_outputs(
         "manual_orders_sha256": orders_sha256,
         "daily_execution_review_path": review_path.name,
         "ledger_provenance": {
-            "declared_next_ledger_path": ledger_csv_path.name,
+            "declared_next_ledger_path": ledger_parquet_path.name,
             "contained_in_run_directory": True,
             "regular_non_symlink_file": True,
             "stable_double_read": True,
-            "declared_sha256": ledger_csv_sha256,
+            "declared_sha256": ledger_parquet_sha256,
             "csv_sha256": ledger_csv_sha256,
             "parquet_sha256": ledger_parquet_sha256,
         },
@@ -4752,7 +4797,7 @@ def _write_manual_execution_outputs(
     }
     manifest["financial_state_sha256"] = _manual_financial_state_sha256(
         manifest,
-        ledger_sha256=ledger_csv_sha256,
+        ledger_sha256=ledger_parquet_sha256,
     )
     review_lines = [
         f"# 本地/manual执行复盘 {timestamp}",
@@ -4763,7 +4808,7 @@ def _write_manual_execution_outputs(
             if applied_trades
             else "未成交；无真实券商/API下单。"
         ),
-        f"- 有效 manual ledger：`{ledger_csv_path}`；SHA256 `{ledger_csv_sha256}`。",
+        f"- 有效 manual ledger：`{ledger_parquet_path}`；SHA256 `{ledger_parquet_sha256}`。",
         f"- 模式：advisory_only=`{bool(advisory_only)}`，local_manual_fills_allowed=`{not bool(advisory_only)}`。",
         f"- 有效持仓数：`{len(next_symbols)}`；组合纪律上限 `{MAX_EFFECTIVE_HOLDING_COUNT}`。",
         f"- quote_snapshot：`{quote_snapshot or 'N/A'}`；价格口径 `{price_basis}`。",
@@ -4900,9 +4945,13 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     run_dir = base_dir / timestamp
     base_dir.mkdir(parents=True, exist_ok=True)
 
+    previous_record_kwargs: dict[str, Any] = {}
+    if bool(getattr(args, "manual_ledger_parquet_only", False)):
+        previous_record_kwargs["require_parquet_ledger"] = True
     source_ledger, source_manifest, source_pnl = _load_previous_record(
         base_dir,
         source_record=args.source_record,
+        **previous_record_kwargs,
     )
     source_record = str(source_manifest.get("timestamp") or source_ledger.iloc[0].get("source_record", "unknown"))
     cash_before = _safe_float(source_pnl["cash_after"].iloc[-1] if "cash_after" in source_pnl.columns else 0.0)
@@ -5778,6 +5827,24 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     factor_governance_lines = _format_factor_governance_runtime_lines(
         factor_governance_runtime
     )
+    system_factor_attribution = build_system_factor_attribution(
+        project_root=PROJECT_ROOT,
+        base_dir=base_dir,
+        run_id=timestamp,
+        generated_at=now.isoformat(),
+        trade_date=now.strftime("%Y-%m-%d"),
+        analysis_trade_date=analysis_trade_date,
+        completeness_passed=completeness_passed,
+        decision_data_sufficient=decision_data_sufficient,
+        action_taken_today=bool(orders),
+        execution_rejections=execution_price_rejections,
+    )
+    system_factor_attribution_ref = system_factor_attribution_reference(
+        system_factor_attribution
+    )
+    factor_v4_analysis_lines, historical_attribution_lines = (
+        render_system_factor_attribution_markdown(system_factor_attribution)
+    )
     factor_shadow_status = load_factor_library_shadow_status(
         root_dir=PROJECT_ROOT / "data" / "factor_library",
         as_of=now.strftime("%Y-%m-%d"),
@@ -5818,6 +5885,11 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "- v15 readiness：`v15_run_readiness.json`；"
             f"SHA256=`{v15_run_readiness_reference['sha256']}`；"
             f"new_risk_authorized=`{str(bool(v15_run_readiness['new_risk_authorized'])).lower()}`"
+        ),
+        (
+            "- 系统归因/Factor v4 分析：`system_factor_attribution.json`；"
+            f"SHA256=`{system_factor_attribution_ref['sha256']}`；"
+            "report_only=true"
         ),
         f"- 盘中快照：{quote_snapshot or 'N/A'}",
         f"- 完整性校验：**{'已通过' if completeness_passed else '未通过'}**",
@@ -6182,11 +6254,19 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
     report_lines.extend(
         [
             "",
-            "### 5.7 FactorGovernanceProtocol v3 生产运行时",
+            "### 5.7 FactorGovernanceProtocol v4 权威 readiness 与因子分析",
+            "",
+            *factor_v4_analysis_lines,
+            "",
+            "#### 5.7.1 v2/v3 兼容运行时诊断（非 v4 生产权威）",
             "",
             *factor_governance_lines,
             "",
-            "### 5.8 Legacy Factor Library（只读影子观察）",
+            "### 5.8 历史交易与系统归因（报告侧）",
+            "",
+            *historical_attribution_lines,
+            "",
+            "### 5.9 Legacy Factor Library（只读影子观察）",
             "",
             *factor_shadow_lines,
             "",
@@ -6265,6 +6345,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "dag_branch_contract_compliance": _jsonable(dag_branch_contract_compliance),
         "candidate_level_dag_status": _jsonable(candidate_level_dag_status),
         "factor_governance_runtime": _jsonable(factor_governance_runtime),
+        "system_factor_attribution": dict(system_factor_attribution_ref),
         "trailing_take_profit": _jsonable(trailing_take_profit_summary),
         "holdings_review_ledger_invariant": _jsonable(holdings_review_invariant),
         "holding_dag_assessments": _jsonable(holding_dag_assessments),
@@ -6322,6 +6403,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "pnl_summary": "pnl_summary.csv",
             "market_snapshot": "market_snapshot.json",
             "runtime_profile": "runtime_profile.json",
+            "system_factor_attribution": "system_factor_attribution.json",
             "manual_execution_manifest": "manual_execution_manifest.json",
             "manual_orders": "manual_switch_and_take_profit_orders.csv",
             "ledger_after_manual_switch": "ledger_after_manual_switch.csv",
@@ -6335,6 +6417,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
             "candidate_pool": f"raw_exports/aggressive_portfolio_{timestamp}_formal_candidate_pool.csv",
             "switch_plan": f"raw_exports/aggressive_portfolio_{timestamp}_formal_switch_plan.csv",
             "runtime_profile": "raw_exports/runtime_profile.json",
+            "system_factor_attribution": "raw_exports/system_factor_attribution.json",
             "manual_execution_manifest": f"raw_exports/aggressive_portfolio_{timestamp}_manual_execution_manifest.json",
             "manual_orders": f"raw_exports/aggressive_portfolio_{timestamp}_manual_switch_and_take_profit_orders.csv",
             "ledger_after_manual_switch": f"raw_exports/aggressive_portfolio_{timestamp}_ledger_after_manual_switch.csv",
@@ -6378,6 +6461,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "blocker": candidate_level_dag_status.get("blocker"),
         "v15_run_readiness": dict(v15_run_readiness_reference),
         "factor_governance_runtime": _jsonable(factor_governance_runtime),
+        "system_factor_attribution": dict(system_factor_attribution_ref),
         "holding_dag_assessments": _jsonable(holding_dag_assessments),
         "trailing_take_profit": _jsonable(trailing_take_profit_summary),
         "candidate_pool": candidate_pool.to_dict(orient="records"),
@@ -6432,6 +6516,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "candidate_generation_status": candidate_level_dag_status.get("candidate_generation_status"),
         "blocker": candidate_level_dag_status.get("blocker"),
         "factor_governance_runtime": _jsonable(factor_governance_runtime),
+        "system_factor_attribution": dict(system_factor_attribution_ref),
         "holding_dag_assessments": _jsonable(holding_dag_assessments),
         "trailing_take_profit": _jsonable(trailing_take_profit_summary),
         "formal_diagnostics": formal_diagnostics_payload,
@@ -6453,6 +6538,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         pnl_summary_df=pnl_summary_df,
         manifest=manifest,
         market_snapshot=market_snapshot,
+        system_factor_attribution=system_factor_attribution,
     )
 
     return {
@@ -6479,6 +6565,7 @@ def run_tracker(args: argparse.Namespace) -> dict[str, Any]:
         "candidate_generation_status": candidate_level_dag_status.get("candidate_generation_status"),
         "blocker": candidate_level_dag_status.get("blocker"),
         "formal_diagnostics": formal_diagnostics_payload,
+        "system_factor_attribution": _jsonable(system_factor_attribution),
         "holdings_review_ledger_invariant": _jsonable(holdings_review_invariant),
         "market_metrics_prewarm": _jsonable(market_metrics_cache_meta),
         "full_market_metrics_cache": _jsonable(market_metrics_cache_meta),

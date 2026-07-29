@@ -11,13 +11,23 @@
   `myquant.v17.v3` shadow / formal-research publication surface，不改变
   `quant-investor`、`market analyze` 或 `market run` 的 V15 默认路由；其
   execution、broker、order、trade 与 production-default authority 永远为 false。
-  CN 日度复盘可以在 V15 完成后读取同交易日、同 market-pointer bytes 的
-  `SHADOW_COMPLETE` 产物并生成 `v15_v17_gray_comparison` 报告侧旁路；
-  该旁路不运行 provider、不会发布 V17 formal result，也不改变 V15 结论。
-- V17 v4 契约入口：`quant-investor-v17-v4`。当前只开放无写入的
-  `verify` 与 `status`，状态固定为 `CONTRACT_SCAFFOLD_NOT_ACTIVATED`；
+  v3 日度灰度发现链已冻结为历史兼容代码，不再是每日复盘默认入口。
+- V17 v4 契约入口：`quant-investor-v17-v4`。除 `verify`、`status` 和既有
+  formal/canary 显式入口外，现开放 `deep-compile`、`shadow-publish` 与
+  `shadow-status`。新增 Deep v2、Shadow run 和 session-ref 全部固定为
+  shadow-only，不具备 formal 或 canary 证据资格；
+  `shadow-publish` 的默认 Factor-v4 路径保持 `shadow-run.v1`，只有显式
+  旧版 `--research-factor-shadow-only-override-id` 仅用于重放既有固定集合；
+  当前日度 Shadow 必须读取月度审计发布的 research-only factor-set
+  pointer/set 精确路径与 SHA，并在 prediction/session 发布前二次校验，
+  才可生成动态 `shadow-run.v3`/`shadow-session-ref.v3`；旧
+  `shadow-run.v2`/`shadow-session-ref.v2` 只保留 fixed-trio exact replay，
+  两条研究路径都不携带或替代 production active-set/receipt；
   formal-publication 与 research-runtime-default 分离，execution、broker、
-  order、trade 永远为 false。该显式入口不改变 V15 默认路由。
+  order、trade 永远为 false。CN 日度复盘只接受显式 v4 session-ref 路径与
+  SHA，并在 exact calendar/bars/holdings/source-closure 绑定一致时生成
+  `v15_v17_v4_gray_comparison`；不再扫描 v3 workspace。该显式入口不改变
+  V15 默认路由。
 - 当前包版本为 `17.0.0`，它是删除旧公共入口的 V16 retirement release，
   不是 V17 runtime 协议。`market analyze/run` 只接受并默认使用 `v15`；
   任何已退役协议 literal 都在解析阶段 exit 2，且不回退、不写文件。
@@ -45,10 +55,9 @@
   `NOT_ACTIVATED_DATA_BLOCKED`；任何 formal-research publication 必须通过
   v3 自身的 exact-cutoff promotion、activation 和 source-admission 门禁。V15
   仍是 production/default。
-- V17 production-research successor：`myquant.v17.v4`。当前仅实现契约与
-  neutral selector control scaffold；selector 转换逻辑仅作为内部受测组件，
-  未接入 CLI、Web、Dashboard 或 schedule，也没有满足 formal activation、
-  provider、eligibility、canary 的真实生产证据，因而未运营开放且不会执行
+- V17 production-research successor：`myquant.v17.v4`。当前新增显式、
+  Factor-v4-gated 的 Shadow 运行和 V15/v4 日度灰度，但 Deep v2 尚未迁移
+  到 formal portfolio、eligibility 或 canary v1 合同，selector 也不会执行
   cutover。默认仍是 V15。完整迁移边界见
   `docs/architecture/v17_v4_production_research_contract.md`。
 - Factor Governance：`v4`，使用版本中立的 `results/factor_governance/`

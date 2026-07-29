@@ -3563,8 +3563,12 @@ def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypa
     assert "Codex 评分 `" in report_text
     assert "#### 5.4.3 证据质量与工程诊断" in report_text
     assert "provider 与 snapshot 诊断" in report_text
-    assert "### 5.7 FactorGovernanceProtocol v3 生产运行时" in report_text
-    assert "### 5.8 Legacy Factor Library（只读影子观察）" in report_text
+    assert "### 5.7 FactorGovernanceProtocol v4 权威 readiness 与因子分析" in report_text
+    assert "#### 5.7.1 v2/v3 兼容运行时诊断（非 v4 生产权威）" in report_text
+    assert "### 5.8 历史交易与系统归因（报告侧）" in report_text
+    assert "### 5.9 Legacy Factor Library（只读影子观察）" in report_text
+    assert "当前没有可展示的生产 Factor v4 因子" in report_text
+    assert "无 `ledger.csv` fallback" in report_text
     assert "This factor library status is read-only" in report_text
     assert "does not alter stock selection, portfolio construction, RiskGuard" in report_text
     assert "| Verdict | `fail` |" in report_text
@@ -3583,7 +3587,15 @@ def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypa
     assert manifest_payload["market_metrics_prewarm"]["status"] == "blocking_generated"
     assert manifest_payload["data_snapshot"]["market_metrics_cache"]["status"] == "blocking_generated"
     assert manifest_payload["files"]["runtime_profile"] == "runtime_profile.json"
+    assert (
+        manifest_payload["files"]["system_factor_attribution"]
+        == "system_factor_attribution.json"
+    )
     assert manifest_payload["raw_exports"]["runtime_profile"] == "raw_exports/runtime_profile.json"
+    assert (
+        manifest_payload["raw_exports"]["system_factor_attribution"]
+        == "raw_exports/system_factor_attribution.json"
+    )
     assert manifest_payload["runtime_profile"]["stages"][0]["name"] == "market_metrics_prewarm"
     assert market_snapshot_payload["market_metrics_prewarm"]["status"] == "blocking_generated"
     assert runtime_profile_payload["stages"][0]["status"] == "blocking_generated"
@@ -3597,6 +3609,17 @@ def test_run_tracker_renders_formal_diagnostics_without_changing_action(monkeypa
     assert (run_dir / "orders.csv").exists()
     assert (run_dir / "holdings_review.csv").exists()
     assert (run_dir / "raw_exports" / "runtime_profile.json").exists()
+    attribution_path = run_dir / "system_factor_attribution.json"
+    assert attribution_path.exists()
+    assert (run_dir / "raw_exports" / "system_factor_attribution.json").exists()
+    assert hashlib.sha256(attribution_path.read_bytes()).hexdigest() == (
+        manifest_payload["system_factor_attribution"]["sha256"]
+    )
+    attribution_payload = json.loads(attribution_path.read_text(encoding="utf-8"))
+    assert attribution_payload["report_only"] is True
+    assert attribution_payload["production_authority"] is False
+    assert attribution_payload["factor_v4_analysis"]["protocol_version"] == "v4"
+    assert attribution_payload["source_policy"]["ledger_csv_fallback_used"] is False
     holdings_review = pd.read_csv(run_dir / "holdings_review.csv", encoding="utf-8-sig")
     assert "codex_recommendation_score" in holdings_review.columns
     assert "codex_recommendation_rating" in holdings_review.columns
@@ -4026,13 +4049,19 @@ def test_run_tracker_enforces_advisory_boundary_for_risk_reduction_sell(
     run_dir = tmp_path / "strategy_records" / result["timestamp"]
     manual_manifest = json.loads((run_dir / "manual_execution_manifest.json").read_text(encoding="utf-8"))
     manual_orders = pd.read_csv(run_dir / "manual_switch_and_take_profit_orders.csv")
-    next_ledger = pd.read_csv(run_dir / "ledger_after_manual_switch.csv")
+    next_ledger = pd.read_parquet(
+        run_dir / "ledger_after_manual_switch.parquet"
+    )
     formal_manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
 
     assert manual_manifest["advisory_only"] is advisory_only
     assert manual_manifest["local_manual_fills_allowed"] is (not advisory_only)
+    assert (
+        manual_manifest["next_ledger_path"]
+        == "ledger_after_manual_switch.parquet"
+    )
     assert manual_manifest["next_ledger_sha256"] == manual_manifest[
-        "ledger_after_manual_switch_csv_sha256"
+        "ledger_after_manual_switch_parquet_sha256"
     ]
     assert manual_manifest["decision_data_sufficient"] is False
     if not holding_dag_ready:

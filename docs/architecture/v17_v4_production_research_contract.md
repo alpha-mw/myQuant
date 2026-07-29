@@ -213,6 +213,46 @@ days. `UNAVAILABLE` is retained as a zero-target `BUY_VETO`; omission,
 backfill, caller-supplied replacement targets, evidence-byte drift, or
 symbol-domain drift fails closed.
 
+### Shadow-only Deep v2 extension
+
+The additive Deep v2 compiler and Shadow runtime use:
+
+```text
+myquant.v17.v4.deep-assessment-manifest.v1
+myquant.v17.v4.official-evidence.v2
+myquant.v17.v4.issuer-dossier.v2
+myquant.v17.v4.event-scan.v2
+myquant.v17.v4.deep-evidence-bundle.v2
+myquant.v17.v4.shadow-readiness.v1
+myquant.v17.v4.shadow-run.v1
+myquant.v17.v4.shadow-session-ref.v1
+```
+
+The assessment manifest binds prepositioned official raw bytes, publication
+and availability times, parser identity/version/SHA, ten fixed research
+modules, contrary evidence, falsification conditions and monitoring items.
+The compiler performs no collection or LLM call. The packaged scoring policy
+fixes module order, weights, missing-evidence behavior, severe-red-flag truth
+table, signal threshold and target penalty. Missing evidence remains
+`BUY_VETO_ZERO_TARGET`.
+
+Every Deep v2 and Shadow artifact is
+`shadow_only=true`, `formal_activation_eligible=false`, and
+`canary_evidence_eligible=false`. Formal activation, formal portfolio,
+eligibility and canary remain on the v1 Deep closure and reject v2 refs.
+Promoting v2 into those paths requires a separate end-to-end contract
+migration; the Shadow extension is not a relabel or implicit activation.
+
+Shadow publication requires exact replay of the Factor Governance v4
+production active-set, control receipt, transaction, registry, eligibility
+and authorization closure. Missing or invalid Factor closure writes only
+`FACTOR_V4_BLOCKED` readiness with `model_output_present=false`. A successful
+Shadow run reopens one Quant-preselected pool, requires Quant and Fundamental
+score rows in that same order, recomputes calibrated Fusion Top24, replays the
+Deep v2 closure, and writes an immutable session ref. Strategy path IDs are
+single lower-case hyphenated components; slash, casefold and alias forms are
+rejected.
+
 Formal portfolio construction is `HOLDINGS_AWARE` only. The snapshot
 reconciles position market value plus cash exactly to positive NAV and is no
 more than one canonical session old. The freshness calculation binds the
@@ -244,6 +284,74 @@ The quant-first model artifacts are copied forward under `myquant.v17.v4.*`
 identities. Their v3 discriminators, semantic hashes, and authority envelopes
 are not accepted as v4 identities. The v4 package and runtime manifests bind
 every copied-forward or new byte.
+
+The v1 Shadow Quant branch is a legacy explicit exception to the generic branch
+identity: it must be
+`myquant.v17.v4.research-quant-branch-output.v1`. Its score is the arithmetic
+mean of the full-universe PIT ranks for FIP continuous direction, low
+market-adjusted tail asymmetry, and low total skewness. The artifact seals the
+three per-symbol contributions, the exact market-slice reference, the
+incubator version, and the definition and policy hashes. Shadow publication
+recomputes the branch from those exact bytes. Stopped candidates, including
+left-tail VaR1, are not accepted.
+
+This branch version is Shadow-only and is deliberately not accepted by the
+formal Quant calibration or activation path. It therefore proves actual use
+in V17 Shadow scoring without granting or implying Factor v4 production
+status. Production use requires a later formal activation closure and
+contract migration.
+
+The default Shadow publication path still replays the formal Factor v4
+active-set and production-control receipt and emits `shadow-run.v1`. A
+separate, default-off operator assertion may authorize exactly one immutable
+research-trio Shadow run. That path emits
+`research-factor-shadow-assertion.v1`, `shadow-run.v2`, and
+`shadow-session-ref.v2`; it omits formal Factor references and production
+factor claims. The assertion is exact-once bound to the strategy, cutoff,
+decision session, run ID, trio, and policy SHA. Mixed formal references and
+research assertion mode fail closed. Only the Shadow replay and gray
+diagnostic readers accept these v2 artifacts; formal activation, eligibility,
+canary, V15/default routing, execution, broker, order, and trade surfaces do
+not.
+
+The current rotating research lane is additive and does not broaden any of
+those versions. It uses an immutable `research-shadow-factor-set.v1` plus a
+dedicated research-only CAS pointer. The set is selected from exact
+literature-incubator catalog definitions, contains one winner per catalog
+`slot`, and is bounded to eight factors. The pointer and set are read twice:
+once before compilation and again before prediction-observation and session
+publication. A changed pointer or changed set blocks the run.
+
+Dynamic Quant uses `research-quant-branch-output.v2` and a transitive
+`research-factor-input-bundle.v1`. Every selected factor must have a supported
+PIT adapter and complete required lookback. No selected factor may be silently
+dropped. The input bundle binds the exact active market pointer/manifest, PIT
+membership generation, Fundamental generation, Macro generation, Shanghai
+calendar, current V15 strategy-universe Parquet, and current V15 contained
+Parquet ledger. It is not a relabelled v3 source closure.
+
+The zero-history Fusion path uses `shadow-fusion-policy.v1` with exact state
+`UNCALIBRATED_FORWARD_ACCUMULATING` and fixed 0.5/0.5 Quant/Fundamental
+weights. Missing Fundamental evidence receives Fundamental percentile zero
+and is excluded from the available-evidence percentile denominator. Fusion
+uses weak percentiles, symbol-ASCII tie breaks, Top24, and a 0.03 base target
+per name. The resulting `fusion-top24.v2` is never accepted by formal
+calibration or activation.
+
+Each immutable prediction observation is identified by strategy, decision
+session, source-locator semantic SHA, input-bundle byte SHA, factor-set byte
+SHA, and policy semantic SHA. Matured 1/5/20-session labels are separate
+future-only receipts. Rotation changes the factor-set SHA and therefore starts
+a new lineage. Historical gaps are not backfilled and lineages are not pooled.
+
+Deep and publication continue additively through assessment manifest v2,
+official evidence/dossier/event v3, Deep bundle v3, research assertion v2,
+Shadow run v3, and session ref v3. The session ref is the sole discoverability
+point and is written only after full replay, pointer/set reread, and immutable
+child/run readback. Missing owner Deep assessment evidence writes blocker
+readiness with no model output; it does not authorize an automated assessment.
+Formal activation, eligibility, canary, selector, V15/default, broker, order,
+execution, and trade surfaces reject all of these research versions.
 
 Every artifact reference contains:
 

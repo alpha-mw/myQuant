@@ -50,9 +50,7 @@ def _month_session(index: int) -> str:
     return date(year, month, 15).isoformat()
 
 
-def _historical_pairs() -> list[
-    tuple[dict[str, Any], dict[str, str]]
-]:
+def _historical_pairs() -> list[tuple[dict[str, Any], dict[str, str]]]:
     pairs: list[tuple[dict[str, Any], dict[str, str]]] = []
     for index in range(60):
         comparison = dict(_comparison(index=index))
@@ -62,8 +60,7 @@ def _historical_pairs() -> list[
         reference = artifact_ref(
             comparison,
             relative_path=(
-                "results/v17_v4_canary/strategies/"
-                f"{STRATEGY}/historical/{index:02d}.json"
+                "results/v17_v4_canary/strategies/" f"{STRATEGY}/historical/{index:02d}.json"
             ),
         )
         pairs.append((comparison, reference))
@@ -111,6 +108,24 @@ def test_historical_policy_computes_exact_sixty_origin_bands() -> None:
         "max_common_name_target_difference": "0.01",
         "turnover_difference": "0.03",
     }
+
+
+def test_canary_rejects_daily_gray_monitoring_documents() -> None:
+    pairs = _historical_pairs()
+    document, reference = pairs[0]
+    gray = {
+        "classification": "COMPARABLE",
+        "decision_session": document["decision_session"],
+        "schema_version": ("cn_aggressive_v15_v17_v4_gray_comparison.v1"),
+    }
+    pairs[0] = (gray, reference)
+    with pytest.raises(ValueError, match="unsupported v4 artifact"):
+        build_historical_canary_policy(
+            policy_id="historical-policy-gray-rejected",
+            strategy_id=STRATEGY,
+            created_at=CUTOFF,
+            comparison_pairs=pairs,
+        )
 
 
 def test_comparison_builder_derives_exact_byte_comparability() -> None:
@@ -181,18 +196,12 @@ def test_replay_policy_and_forward_comparison_publish_only_to_canary_root(
         created_at=CUTOFF,
         comparisons=[document for document, _reference in pairs],
     )
-    operational_ref = service.publish_operational_comparison(
-        _operational_comparisons()[0]
-    )
+    operational_ref = service.publish_operational_comparison(_operational_comparisons()[0])
 
     assert policy_ref["artifact_id"] == policy["policy_id"]
     assert operational_ref["artifact_id"] == "comparison-00"
-    assert (
-        tmp_path / str(policy_ref["relative_path"])
-    ).is_file()
-    assert (
-        tmp_path / str(operational_ref["relative_path"])
-    ).is_file()
+    assert (tmp_path / str(policy_ref["relative_path"])).is_file()
+    assert (tmp_path / str(operational_ref["relative_path"])).is_file()
     assert not (tmp_path / "results/research_runtime_control").exists()
 
 
@@ -207,18 +216,12 @@ def _start_intent(expected: str = EMPTY_SHA256) -> dict[str, Any]:
         eligibility_pointer_ref=_ref(
             "eligibility-pointer-1",
             "myquant.v17.v4.default-eligible-pointer.v1",
-            (
-                "results/v17_v4_formal_research/strategies/"
-                f"{STRATEGY}/eligibility/_active.json"
-            ),
+            ("results/v17_v4_formal_research/strategies/" f"{STRATEGY}/eligibility/_active.json"),
         ),
         historical_canary_policy_ref=_ref(
             "historical-policy-1",
             "myquant.v17.v4.historical-canary-policy.v1",
-            (
-                "results/v17_v4_canary/strategies/"
-                f"{STRATEGY}/policies/historical-policy-1.json"
-            ),
+            ("results/v17_v4_canary/strategies/" f"{STRATEGY}/policies/historical-policy-1.json"),
         ),
         v15_protocol_target_ref=_ref(
             "v15-target-1",
@@ -228,10 +231,7 @@ def _start_intent(expected: str = EMPTY_SHA256) -> dict[str, Any]:
         v15_active_run_pointer_ref=_ref(
             "v15-active-1",
             "myquant.research-runtime.active-run-pointer.v1",
-            (
-                "results/research_runtime_control/"
-                f"active_runs/v15/{STRATEGY}.json"
-            ),
+            ("results/research_runtime_control/" f"active_runs/v15/{STRATEGY}.json"),
         ),
         session_window={
             "start_session": "2026-07-27",
@@ -258,10 +258,7 @@ def _complete_intent(expected: str) -> dict[str, Any]:
         _ref(
             f"operational-comparison-{index}",
             "myquant.v17.v4.dual-run-comparison.v1",
-            (
-                "results/v17_v4_canary/strategies/"
-                f"{STRATEGY}/operational/{index}/comparison.json"
-            ),
+            ("results/v17_v4_canary/strategies/" f"{STRATEGY}/operational/{index}/comparison.json"),
         )
         for index in range(5)
     ]
@@ -289,13 +286,9 @@ def _complete_intent(expected: str) -> dict[str, Any]:
         transition="COMPLETE",
         expected_pointer_sha256=expected,
         eligibility_pointer_ref=base["eligibility_pointer_ref"],
-        historical_canary_policy_ref=base[
-            "historical_canary_policy_ref"
-        ],
+        historical_canary_policy_ref=base["historical_canary_policy_ref"],
         v15_protocol_target_ref=base["v15_protocol_target_ref"],
-        v15_active_run_pointer_ref=base[
-            "v15_active_run_pointer_ref"
-        ],
+        v15_active_run_pointer_ref=base["v15_active_run_pointer_ref"],
         session_window=base["session_window"],
         paired_run_ids=[f"paired-run-{index}" for index in range(1, 6)],
         comparison_refs=comparison_refs,
@@ -345,9 +338,7 @@ def test_canary_complete_requires_and_replaces_exact_started_pointer(
 ) -> None:
     service = _service(tmp_path, monkeypatch)
     started = service.transition(_start_intent())
-    completed = service.transition(
-        _complete_intent(str(started.pointer_ref["byte_sha256"]))
-    )
+    completed = service.transition(_complete_intent(str(started.pointer_ref["byte_sha256"])))
     state = service.resolve(STRATEGY)
 
     assert completed.status == state.status == "CANARY_COMPLETED"

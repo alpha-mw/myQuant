@@ -64,12 +64,36 @@ _ARTIFACT_REGISTRY: Final = {
         "schemas/deep_evidence_bundle.v1.schema.json",
         "bundle_id",
     ),
+    "myquant.v17.v4.deep-assessment-manifest.v1": (
+        "schemas/deep_assessment_manifest.v1.schema.json",
+        "request_id",
+    ),
+    "myquant.v17.v4.deep-assessment-manifest.v2": (
+        "schemas/deep_assessment_manifest.v2.schema.json",
+        "request_id",
+    ),
+    "myquant.v17.v4.deep-evidence-bundle.v2": (
+        "schemas/deep_evidence_bundle.v2.schema.json",
+        "bundle_id",
+    ),
+    "myquant.v17.v4.deep-evidence-bundle.v3": (
+        "schemas/deep_evidence_bundle.v3.schema.json",
+        "bundle_id",
+    ),
     "myquant.v17.v4.dual-run-comparison.v1": (
         "schemas/dual_run_comparison.v1.schema.json",
         "comparison_id",
     ),
     "myquant.v17.v4.event-scan.v1": (
         "schemas/event_scan.v1.schema.json",
+        "scan_id",
+    ),
+    "myquant.v17.v4.event-scan.v2": (
+        "schemas/event_scan.v2.schema.json",
+        "scan_id",
+    ),
+    "myquant.v17.v4.event-scan.v3": (
+        "schemas/event_scan.v3.schema.json",
         "scan_id",
     ),
     "myquant.v17.v4.formal-activation-receipt.v1": (
@@ -100,6 +124,10 @@ _ARTIFACT_REGISTRY: Final = {
         "schemas/fusion_top24.v1.schema.json",
         "output_id",
     ),
+    "myquant.v17.v4.fusion-top24.v2": (
+        "schemas/fusion_top24.v2.schema.json",
+        "output_id",
+    ),
     "myquant.v17.v4.historical-canary-policy.v1": (
         "schemas/historical_canary_policy.v1.schema.json",
         "policy_id",
@@ -116,8 +144,24 @@ _ARTIFACT_REGISTRY: Final = {
         "schemas/issuer_dossier.v1.schema.json",
         "dossier_id",
     ),
+    "myquant.v17.v4.issuer-dossier.v2": (
+        "schemas/issuer_dossier.v2.schema.json",
+        "dossier_id",
+    ),
+    "myquant.v17.v4.issuer-dossier.v3": (
+        "schemas/issuer_dossier.v3.schema.json",
+        "dossier_id",
+    ),
     "myquant.v17.v4.official-evidence.v1": (
         "schemas/official_evidence.v1.schema.json",
+        "evidence_id",
+    ),
+    "myquant.v17.v4.official-evidence.v2": (
+        "schemas/official_evidence.v2.schema.json",
+        "evidence_id",
+    ),
+    "myquant.v17.v4.official-evidence.v3": (
+        "schemas/official_evidence.v3.schema.json",
         "evidence_id",
     ),
     "myquant.v17.v4.portfolio-output.v1": (
@@ -139,6 +183,90 @@ _ARTIFACT_REGISTRY: Final = {
     "myquant.v17.v4.regime-evidence.v1": (
         "schemas/regime_evidence.v1.schema.json",
         "evidence_id",
+    ),
+    "myquant.v17.v4.research-factor-shadow-assertion.v1": (
+        "schemas/research_factor_shadow_assertion.v1.schema.json",
+        "override_id",
+    ),
+    "myquant.v17.v4.research-factor-shadow-assertion.v2": (
+        "schemas/research_factor_shadow_assertion.v2.schema.json",
+        "override_id",
+    ),
+    "myquant.v17.v4.research-factor-input-bundle.v1": (
+        "schemas/research_factor_input_bundle.v1.schema.json",
+        "bundle_id",
+    ),
+    "myquant.v17.v4.research-fundamental-branch-output.v2": (
+        "schemas/research_fundamental_branch_output.v2.schema.json",
+        "output_id",
+    ),
+    "myquant.v17.v4.research-initial-pool-output.v2": (
+        "schemas/research_initial_pool_output.v2.schema.json",
+        "output_id",
+    ),
+    "myquant.v17.v4.research-quant-branch-output.v1": (
+        "schemas/research_quant_branch_output.v1.schema.json",
+        "output_id",
+    ),
+    "myquant.v17.v4.research-quant-branch-output.v2": (
+        "schemas/research_quant_branch_output.v2.schema.json",
+        "output_id",
+    ),
+    "myquant.v17.v4.research-source-locator.v2": (
+        "schemas/research_source_locator.v2.schema.json",
+        "locator_id",
+    ),
+    "myquant.v17.v4.research-shadow-factor-set.v1": (
+        "schemas/research_shadow_factor_set.v1.schema.json",
+        "set_id",
+    ),
+    "myquant.v17.v4.research-shadow-factor-set-pointer.v1": (
+        "schemas/research_shadow_factor_set_pointer.v1.schema.json",
+        "pointer_id",
+    ),
+    "myquant.v17.v4.shadow-fusion-matured-label.v1": (
+        "schemas/shadow_fusion_matured_label.v1.schema.json",
+        "label_id",
+    ),
+    "myquant.v17.v4.shadow-fusion-observation.v1": (
+        "schemas/shadow_fusion_observation.v1.schema.json",
+        "observation_id",
+    ),
+    "myquant.v17.v4.shadow-fusion-policy.v1": (
+        "schemas/shadow_fusion_policy.v1.schema.json",
+        "policy_id",
+    ),
+    "myquant.v17.v4.shadow-readiness.v1": (
+        "schemas/shadow_readiness.v1.schema.json",
+        "readiness_id",
+    ),
+    "myquant.v17.v4.shadow-readiness.v2": (
+        "schemas/shadow_readiness.v2.schema.json",
+        "readiness_id",
+    ),
+    "myquant.v17.v4.shadow-run.v1": (
+        "schemas/shadow_run.v1.schema.json",
+        "shadow_run_id",
+    ),
+    "myquant.v17.v4.shadow-run.v2": (
+        "schemas/shadow_run.v2.schema.json",
+        "shadow_run_id",
+    ),
+    "myquant.v17.v4.shadow-run.v3": (
+        "schemas/shadow_run.v3.schema.json",
+        "shadow_run_id",
+    ),
+    "myquant.v17.v4.shadow-session-ref.v1": (
+        "schemas/shadow_session_ref.v1.schema.json",
+        "session_ref_id",
+    ),
+    "myquant.v17.v4.shadow-session-ref.v2": (
+        "schemas/shadow_session_ref.v2.schema.json",
+        "session_ref_id",
+    ),
+    "myquant.v17.v4.shadow-session-ref.v3": (
+        "schemas/shadow_session_ref.v3.schema.json",
+        "session_ref_id",
     ),
     "myquant.v17.v4.rollback-drill-receipt.v1": (
         "schemas/rollback_drill_receipt.v1.schema.json",
@@ -209,8 +337,7 @@ _DATE_TIME_RE: Final = re.compile(
     re.ASCII,
 )
 _EXTERNAL_REF_RE: Final = re.compile(
-    r"^(?P<file>[a-z0-9_]+\.v1\.schema\.json)#/\$defs/"
-    r"(?P<name>[A-Za-z0-9_.-]+)$",
+    r"^(?P<file>[a-z0-9_]+\.v1\.schema\.json)#/\$defs/" r"(?P<name>[A-Za-z0-9_.-]+)$",
     re.ASCII,
 )
 
@@ -258,9 +385,7 @@ def _resolve_reference(
     definitions = schema.get("$defs")
     name = match.group("name")
     if type(definitions) is not dict or name not in definitions:
-        raise SchemaValidationError(
-            f"unresolved external schema reference: {reference}"
-        )
+        raise SchemaValidationError(f"unresolved external schema reference: {reference}")
     return definitions[name], schema
 
 
@@ -444,9 +569,7 @@ def _validate(instance: Any, node: Any, *, root: Mapping[str, Any], path: str) -
             raise SchemaValidationError(f"{path} has the wrong JSON type")
     if "const" in node and _identity(instance) != _identity(node["const"]):
         raise SchemaValidationError(f"{path} does not match const")
-    if "enum" in node and all(
-        _identity(instance) != _identity(value) for value in node["enum"]
-    ):
+    if "enum" in node and all(_identity(instance) != _identity(value) for value in node["enum"]):
         raise SchemaValidationError(f"{path} is outside the closed enum")
     if type(instance) is str:
         if "minLength" in node and len(instance) < node["minLength"]:
@@ -472,9 +595,7 @@ def _validate(instance: Any, node: Any, *, root: Mapping[str, Any], path: str) -
             raise SchemaValidationError(f"{path} has too few items")
         if "maxItems" in node and len(instance) > node["maxItems"]:
             raise SchemaValidationError(f"{path} has too many items")
-        if node.get("uniqueItems") and len({_identity(item) for item in instance}) != len(
-            instance
-        ):
+        if node.get("uniqueItems") and len({_identity(item) for item in instance}) != len(instance):
             raise SchemaValidationError(f"{path} must contain unique items")
         for index, item in enumerate(instance):
             if "items" in node:

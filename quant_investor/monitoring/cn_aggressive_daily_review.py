@@ -19,11 +19,10 @@ from quant_investor.market.download_cn import CNFullMarketDownloader
 from quant_investor.market.market_data_store import run_storage_validate
 from quant_investor.market.staged_maintenance import run_staged_maintenance
 from quant_investor.monitoring import cn_aggressive_portfolio_tracker as tracker
-from quant_investor.monitoring.v17_daily_gray import (
-    DEFAULT_V17_WORKSPACE_ROOT,
+from quant_investor.monitoring.v17_v4_daily_gray import (
     MARKET_POINTER_PATH,
     MINIMUM_FORWARD_SESSIONS,
-    run_daily_gray_comparison,
+    run_daily_v4_gray_comparison,
 )
 
 
@@ -339,6 +338,7 @@ def run_daily_review(args: argparse.Namespace) -> dict[str, Any]:
     )
     tracker_args = argparse.Namespace(
         base_dir=getattr(args, "base_dir", str(tracker.DEFAULT_BASE_DIR)),
+        manual_ledger_parquet_only=True,
         years=int(getattr(args, "years", 7)),
         max_rounds=int(getattr(args, "tracker_max_rounds", 3)),
         source_record=getattr(args, "source_record", None),
@@ -382,16 +382,40 @@ def run_daily_review(args: argparse.Namespace) -> dict[str, Any]:
             pointer_sha256_after_v15 = (
                 _file_sha256(market_pointer_path) if market_pointer_path.is_file() else ""
             )
-            result["v17_gray_comparison"] = run_daily_gray_comparison(
+            result["v17_v4_gray_comparison"] = run_daily_v4_gray_comparison(
                 run_dir=result["run_dir"],
-                v17_workspace_root=getattr(
+                workspace_root=getattr(
                     args,
-                    "v17_gray_workspace_root",
-                    DEFAULT_V17_WORKSPACE_ROOT,
+                    "v17_v4_workspace_root",
+                    ".",
                 ),
+                shadow_session_ref_path=(
+                    str(
+                        getattr(
+                            args,
+                            "v17_v4_shadow_session_ref",
+                            "",
+                        )
+                        or ""
+                    )
+                    or ""
+                )
+                or None,
+                expected_shadow_session_ref_sha256=(
+                    str(
+                        getattr(
+                            args,
+                            "v17_v4_shadow_session_sha256",
+                            "",
+                        )
+                        or ""
+                    )
+                    or ""
+                )
+                or None,
                 market_pointer_path=market_pointer_path,
-                pointer_sha256_before_v15=pointer_sha256_before_v15,
-                pointer_sha256_after_v15=pointer_sha256_after_v15,
+                pointer_sha256_before_v15=(pointer_sha256_before_v15),
+                pointer_sha256_after_v15=(pointer_sha256_after_v15),
                 minimum_forward_sessions=int(
                     getattr(
                         args,
@@ -401,13 +425,13 @@ def run_daily_review(args: argparse.Namespace) -> dict[str, Any]:
                 ),
             )
         elif bool(getattr(args, "skip_v17_gray", False)):
-            result["v17_gray_comparison"] = {
+            result["v17_v4_gray_comparison"] = {
                 "status": "SKIPPED",
                 "classification": "NON_COMPARABLE",
                 "blockers": ["skip_v17_gray_requested"],
             }
         else:
-            result["v17_gray_comparison"] = {
+            result["v17_v4_gray_comparison"] = {
                 "status": "GRAY_UNAVAILABLE",
                 "classification": "NON_COMPARABLE",
                 "blockers": ["v15_record_not_persisted"],
@@ -461,12 +485,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--skip-v17-gray",
         action="store_true",
-        help="工程回滚用：跳过默认启用的 V17 v3 model-only 灰度旁路",
+        help="工程回滚用：跳过默认启用的 V17 v4 Shadow 灰度旁路",
     )
     parser.add_argument(
-        "--v17-gray-workspace-root",
-        default=str(DEFAULT_V17_WORKSPACE_ROOT),
-        help="已预置 V17 v3 shadow workspace 的只读发现根",
+        "--v17-v4-workspace-root",
+        default=".",
+        help="V17 v4 immutable Shadow/session-ref 所在仓库根",
+    )
+    parser.add_argument(
+        "--v17-v4-shadow-session-ref",
+        default="",
+        help="显式 V17 v4 shadow-session-ref 相对路径；不做目录扫描",
+    )
+    parser.add_argument(
+        "--v17-v4-shadow-session-sha256",
+        default="",
+        help="显式 V17 v4 shadow-session-ref 预期 SHA-256",
     )
     parser.add_argument(
         "--v17-gray-market-pointer",

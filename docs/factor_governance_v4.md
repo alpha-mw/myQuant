@@ -578,6 +578,144 @@ activation, and new-risk authority fields remain false. The lane has no
 registry, WAL, receipt, pointer, provider, network, portfolio, broker, order,
 or trade side effects.
 
+### Literature-backed future candidate incubator
+
+`scripts/diagnose_factor_v4_literature_incubator.py` is an owner-private,
+strict-Parquet, no-label diagnostic for definitions derived from primary
+research. Its signal module is
+`quant_investor/factors/governance_literature_incubator_v4.py`. The lane is
+independent of the frozen v4.4 exact-five graph and never edits a registry,
+activation pointer, portfolio, or production receipt.
+
+The current China-market adverse-evidence review routes raw 252-session low
+beta to a diagnostic control. Low MAX is also stopped: its median monthly
+absolute Spearman correlation with the protected v4.4
+`pv_low_vol_of_vol_20d` is 0.8188, above the 0.70 line. The candidates still
+eligible for later policy work are `cn_low_total_skewness_20d`, the
+cross-sectional rank of negative unbiased sample skewness over 20 sessions
+with at least 15 observations, and
+`cn_low_market_adjusted_tail_asymmetry_252d`, a proxy that ranks the negative
+`P(z>1)-P(z<-1)` over 252 PIT equal-weight-market-adjusted sessions, plus
+`cn_fip_continuous_direction_12m`. The FIP candidate uses the source
+information-discreteness definition over a 231-session formation period after
+skipping 21 sessions and translates the source double-sort into
+`sign(PRET) * (1-ID) / 2`. Its immutable definition identity is
+`50774665658fb239c4fcddfb4d4106932d800b2eb5c2a4b64c16d1dd5d98f9b3`;
+the other two identities are
+`61f9decdf50929402f919a23330c32150cc34cc533ae5478b5b27f3a83fa02af`
+and
+`8d4437da6a3d4e7758a371922ad96849ebbab35f5799a83364b48856fb057dd3`.
+Conventional skewness and distributional tail asymmetry remain different
+families; the latter does not claim exact CH-3/CH-4 idiosyncratic IE
+replication.
+
+The FIP candidate covers 5,365 of 5,528 eligible names on 2026-07-27. Its
+median monthly absolute Spearman is 0.3779 against 120-session momentum,
+0.3972 against the stopped 52-week-high candidate, and at most 0.1704 against
+the five protected v4.4 factors. It is therefore diagnostically eligible for
+a later formal preregistration. Da, Gurun, and Warachka supply the foundational
+cross-sectional method. Zhang, Chen, and Feng supply China aggregate-market
+relevance only; their result is not recorded as direct cross-sectional
+A-share support. The daily/session translation is also not described as the
+source monthly double-sort.
+
+The incubator also freezes the direct-China VaR1 construction as
+`cn_low_left_tail_var1_250d`: rank low `VaR1`, where `VaR1` is negative one
+times the first percentile of daily returns over 250 sessions with at least
+200 observations. It covers 5,405 of 5,528 names, but its four-closed-month
+median absolute Spearman correlation with formal
+`pv_downside_volatility_60d` is 0.7405. It is therefore
+`STOP_HIGH_CORRELATION`, and its draft policy is inapplicable. VaR5, ES1,
+shorter windows, and a relaxed dedup line cannot replace the stopped primary
+definition within this cycle.
+
+The incubator also tests the source-exact 52-week-high anchor as
+`cn_52_week_high_momentum_12m`: adjusted close divided by the trailing
+365-calendar-day high, with at least 200 observations and closed-month
+governance measurement. It covers 5,393 of 5,528 names on 2026-07-27 and has
+no structural or protected exact-five collision, but its four-month median
+absolute Spearman correlation with existing `pv_momentum_120d` is 0.7134.
+It is therefore `STOP_HIGH_CORRELATION`. Direct China evidence also makes a
+release-lag-bound PIT China EPU regime split mandatory; that input is absent,
+but acquiring it cannot waive the same-cycle correlation stop.
+
+The five embedded draft policies are not formal preregistrations, and the
+current diagnostic marks both the low-MAX and VaR1 drafts inapplicable. They
+require a strict-full-A cutoff strictly after the 2026-07-28 selection date,
+zero initial weight, a 30-open-session embargo, at least 240 post-embargo open
+sessions and 12 closed month ends, family BH `q<=0.10`, all eight gates,
+canonical A/B/C/D replay, mutual dedup, and formal dedup against downside
+volatility, 20-session momentum, the volatility penalty, and all five protected
+v4.4 definitions.
+The total-skewness policy additionally freezes a PIT 52-week-high interaction
+and requires sentiment/arbitrage-risk state reports only when valid PIT inputs
+exist. The primary definitions cannot be replaced after measurement by locked
+parameter variants; a different winner requires a new governance cycle.
+
+The incubator also freezes exact Hou-Moskowitz D1 as
+`cn_high_price_delay_d1_52w`: Wednesday-to-Wednesday stock returns; a
+prior-Wednesday-market-cap-weighted market return; 52 response weeks; current
+plus four lagged market returns; and
+`1 - R²(restricted) / R²(unrestricted)`, with at least 40 valid observations.
+It is currently `BLOCKED_NOT_COMPUTABLE`: strict Parquet supplies at most 10
+valid design rows in a 52-week window. No equal-weight, current-cap, or
+inferred-cap fallback is permitted.
+
+The accepted diagnostic is still research-only and is reproduced byte for
+byte by two independent runs. It contains eleven definitions and 26 primary
+source records; FIP continuous direction, total skewness, and tail asymmetry
+remain eligible for a future preregistration cutoff strictly after
+2026-07-28. Residual momentum, factor momentum, and change in salience are
+recorded as blocked source routes rather than approximated from missing
+inputs or incomplete formulas.
+
+The command accepts only explicit research output and existing input pointers:
+
+```bash
+./.venv/bin/python scripts/diagnose_factor_v4_literature_incubator.py \
+  --output <owner-private-0700-directory/new-report.json>
+```
+
+The output parent must belong to the current user and have mode `0700`; the
+report is created once as `0600`. The diagnostic loads no forward returns or
+labels and does not create Factor v4 gate, family-BH, formal dedup,
+preregistration, admission, or activation evidence.
+
+#### Monthly rotating V17 research Shadow set
+
+The monthly review may also publish a separate V17 research-only factor set.
+This is not the Factor v4 production active set and has no production, formal,
+canary, selector, V15, broker, order, execution, or trade authority.
+
+Selection is deterministic over the exact literature-incubator catalog:
+
+- `source_review_accepted` contributes 40 points;
+- `runtime_adapter_supported` contributes 20 points;
+- `pit_inputs_current` contributes 20 points;
+- `required_lookback_complete` contributes 10 points.
+
+A candidate is eligible only when all four gates pass and its catalog
+definition, implementation, and resource hashes read back exactly. Candidates
+are partitioned by the catalog `slot` string. Each slot contributes at most one
+winner, selected by descending score and then factor-name ASCII order. Winners
+are globally ordered by the same key and the set contains
+`min(8, eligible distinct slots)` factors. There is no hard-coded three-factor
+cardinality.
+
+The monthly run writes an immutable set first, then advances only the dedicated
+research pointer with a lock, expected-before SHA, CAS, fsync, and exact
+readback. `effective_from_session` is the first bound Shanghai open session
+strictly after the audit cutoff. A retry that observes the exact proposed
+pointer bytes recovers the completed CAS; any third state aborts. The artifact
+binds the previous-set reference, monthly selection-audit reference, calendar,
+catalog, implementation, and resource hashes.
+
+Daily V17 Shadow compilation reads the pointer and set once, then rereads both
+before publishing its prediction observation and again before publishing a
+session ref. Any rotation during the run blocks publication. Rotation starts a
+new forward diagnostic lineage; observations and matured labels are never
+pooled across factor-set or policy hashes.
+
 The remaining validation/planning scripts require explicit input and output
 paths and write only the requested research artifact as mode `0600`:
 

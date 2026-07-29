@@ -153,18 +153,12 @@ def _formal_intent() -> dict[str, Any]:
         ),
         "factor_control_active_set_ref": _ref(
             "factor-active-set-1",
-            (
-                "factor-governance-production-control."
-                "active-set-pointer.schema.v1"
-            ),
+            ("factor-governance-production-control." "active-set-pointer.schema.v1"),
             "data/private/factor_governance_production_control_v1/active_sets/active.json",
         ),
         "factor_control_activation_receipt_ref": _ref(
             "factor-control-receipt-1",
-            (
-                "factor-governance-production-control."
-                "activation-receipt.schema.v1"
-            ),
+            ("factor-governance-production-control." "activation-receipt.schema.v1"),
             "data/private/factor_governance_production_control_v1/receipts/control.json",
         ),
         "portfolio_output_ref": _ref(
@@ -213,9 +207,7 @@ def _formal_pointer() -> dict[str, Any]:
                     "results/v17_v4_formal_research/strategies/"
                     "quant-first/intents/formal-activation-1.json"
                 ),
-                byte_sha256=hashlib.sha256(
-                    canonical_resource_bytes(intent)
-                ).hexdigest(),
+                byte_sha256=hashlib.sha256(canonical_resource_bytes(intent)).hexdigest(),
             ),
             "pointer_id": "formal-pointer-1",
             "protocol_version": PROTOCOL_VERSION,
@@ -234,13 +226,8 @@ def _formal_receipt() -> dict[str, Any]:
     pointer_ref = _ref(
         "formal-pointer-1",
         "myquant.v17.v4.formal-active-pointer.v1",
-        (
-            "results/v17_v4_formal_research/strategies/"
-            "quant-first/_active.json"
-        ),
-        byte_sha256=hashlib.sha256(
-            canonical_resource_bytes(pointer)
-        ).hexdigest(),
+        ("results/v17_v4_formal_research/strategies/" "quant-first/_active.json"),
+        byte_sha256=hashlib.sha256(canonical_resource_bytes(pointer)).hexdigest(),
     )
     proposed = pointer_ref["byte_sha256"]
     return seal_semantic(
@@ -383,9 +370,7 @@ def _eligible_pointer() -> dict[str, Any]:
                     "results/v17_v4_formal_research/strategies/quant-first/"
                     "eligibility/intents/eligibility-1.json"
                 ),
-                byte_sha256=hashlib.sha256(
-                    canonical_resource_bytes(intent)
-                ).hexdigest(),
+                byte_sha256=hashlib.sha256(canonical_resource_bytes(intent)).hexdigest(),
             ),
             "pointer_id": "eligible-pointer-1",
             "protocol_version": PROTOCOL_VERSION,
@@ -404,13 +389,8 @@ def _eligibility_receipt() -> dict[str, Any]:
     pointer_ref = _ref(
         "eligible-pointer-1",
         "myquant.v17.v4.default-eligible-pointer.v1",
-        (
-            "results/v17_v4_formal_research/strategies/quant-first/"
-            "eligibility/_active.json"
-        ),
-        byte_sha256=hashlib.sha256(
-            canonical_resource_bytes(pointer)
-        ).hexdigest(),
+        ("results/v17_v4_formal_research/strategies/quant-first/" "eligibility/_active.json"),
+        byte_sha256=hashlib.sha256(canonical_resource_bytes(pointer)).hexdigest(),
     )
     proposed = pointer_ref["byte_sha256"]
     return seal_semantic(
@@ -440,10 +420,7 @@ def _canary_intent(*, completed: bool = False) -> dict[str, Any]:
     eligibility = _ref(
         "eligible-pointer-1",
         "myquant.v17.v4.default-eligible-pointer.v1",
-        (
-            "results/v17_v4_formal_research/strategies/quant-first/"
-            "eligibility/_active.json"
-        ),
+        ("results/v17_v4_formal_research/strategies/quant-first/" "eligibility/_active.json"),
     )
     policy = _ref(
         "historical-policy-1",
@@ -464,17 +441,12 @@ def _canary_intent(*, completed: bool = False) -> dict[str, Any]:
         _ref(
             f"operational-comparison-{index}",
             "myquant.v17.v4.dual-run-comparison.v1",
-            (
-                "results/v17_v4_canary/strategies/quant-first/"
-                f"runs/{index}/comparison.json"
-            ),
+            ("results/v17_v4_canary/strategies/quant-first/" f"runs/{index}/comparison.json"),
         )
         for index in range(5)
     ]
     paired_run_ids = (
-        [f"paired-run-{index}" for index in range(1, 6)]
-        if completed
-        else ["paired-run-1"]
+        [f"paired-run-{index}" for index in range(1, 6)] if completed else ["paired-run-1"]
     )
     explicit = [eligibility, policy, target, active]
     if completed:
@@ -524,9 +496,7 @@ def _canary_intent(*, completed: bool = False) -> dict[str, Any]:
             "expected_pointer_sha256": "EMPTY",
             "from_state": "CANARY" if completed else "DEFAULT_ELIGIBLE",
             "historical_canary_policy_ref": policy,
-            "intent_id": (
-                "canary-complete-1" if completed else "canary-start-1"
-            ),
+            "intent_id": ("canary-complete-1" if completed else "canary-start-1"),
             "paired_run_ids": paired_run_ids,
             "protocol_version": PROTOCOL_VERSION,
             "session_window": {
@@ -559,9 +529,7 @@ def _canary_pointer(*, completed: bool = False) -> dict[str, Any]:
                     "results/v17_v4_canary/strategies/quant-first/"
                     f"transitions/intents/{intent_id}.json"
                 ),
-                byte_sha256=hashlib.sha256(
-                    canonical_resource_bytes(intent)
-                ).hexdigest(),
+                byte_sha256=hashlib.sha256(canonical_resource_bytes(intent)).hexdigest(),
             ),
             "pointer_id": f"canary-pointer-{intent_id}",
             "protocol_version": PROTOCOL_VERSION,
@@ -581,9 +549,7 @@ def _canary_receipt(*, completed: bool = False) -> dict[str, Any]:
         str(pointer["pointer_id"]),
         "myquant.v17.v4.canary-pointer.v1",
         "results/v17_v4_canary/strategies/quant-first/_current.json",
-        byte_sha256=hashlib.sha256(
-            canonical_resource_bytes(pointer)
-        ).hexdigest(),
+        byte_sha256=hashlib.sha256(canonical_resource_bytes(pointer)).hexdigest(),
     )
     proposed = pointer_ref["byte_sha256"]
     return seal_semantic(
@@ -767,13 +733,21 @@ def test_package_runtime_manifests_and_scaffold_authority_are_sealed() -> None:
         "v17_v4_runtime/canary_control.py",
         "v17_v4_runtime/cli.py",
         "v17_v4_runtime/deep_control.py",
+        "v17_v4_runtime/deep_v2.py",
+        "v17_v4_runtime/deep_v3.py",
         "v17_v4_runtime/eligibility_control.py",
         "v17_v4_runtime/formal_activation.py",
+        "v17_v4_runtime/forward_fusion.py",
+        "v17_v4_runtime/forward_shadow.py",
         "v17_v4_runtime/pit_admission.py",
         "v17_v4_runtime/pit_catalog.py",
         "v17_v4_runtime/portfolio_control.py",
         "v17_v4_runtime/public_surfaces.py",
+        "v17_v4_runtime/research_factor_set.py",
+        "v17_v4_runtime/research_quant.py",
         "v17_v4_runtime/security_directory.py",
+        "v17_v4_runtime/shadow_runtime.py",
+        "v17_v4_runtime/shadow_prepare_forward.py",
         "v17_v4_runtime/source_storage.py",
         "v17_v4_runtime/tushare_https.py",
     }
@@ -790,11 +764,17 @@ def test_schema_inventory_is_closed_and_does_not_redefine_neutral_control() -> N
         "myquant.v17.v4.canary-receipt.v1",
         "myquant.v17.v4.canary-transition-intent.v1",
         "myquant.v17.v4.deep-evidence-bundle.v1",
+        "myquant.v17.v4.deep-evidence-bundle.v2",
+        "myquant.v17.v4.deep-evidence-bundle.v3",
+        "myquant.v17.v4.deep-assessment-manifest.v1",
+        "myquant.v17.v4.deep-assessment-manifest.v2",
         "myquant.v17.v4.default-eligibility-intent.v1",
         "myquant.v17.v4.default-eligibility-receipt.v1",
         "myquant.v17.v4.default-eligible-pointer.v1",
         "myquant.v17.v4.dual-run-comparison.v1",
         "myquant.v17.v4.event-scan.v1",
+        "myquant.v17.v4.event-scan.v2",
+        "myquant.v17.v4.event-scan.v3",
         "myquant.v17.v4.formal-activation-intent.v1",
         "myquant.v17.v4.formal-activation-receipt.v1",
         "myquant.v17.v4.formal-activation-rejection.v1",
@@ -802,11 +782,16 @@ def test_schema_inventory_is_closed_and_does_not_redefine_neutral_control() -> N
         "myquant.v17.v4.formal-output.v1",
         "myquant.v17.v4.fusion-promotion-receipt.v1",
         "myquant.v17.v4.fusion-top24.v1",
+        "myquant.v17.v4.fusion-top24.v2",
         "myquant.v17.v4.historical-canary-policy.v1",
         "myquant.v17.v4.holdings-snapshot.v1",
         "myquant.v17.v4.initial-pool-output.v1",
         "myquant.v17.v4.issuer-dossier.v1",
+        "myquant.v17.v4.issuer-dossier.v2",
+        "myquant.v17.v4.issuer-dossier.v3",
         "myquant.v17.v4.official-evidence.v1",
+        "myquant.v17.v4.official-evidence.v2",
+        "myquant.v17.v4.official-evidence.v3",
         "myquant.v17.v4.pit-catalog-pointer.v1",
         "myquant.v17.v4.pit-generation-catalog.v1",
         "myquant.v17.v4.portfolio-output.v1",
@@ -817,6 +802,27 @@ def test_schema_inventory_is_closed_and_does_not_redefine_neutral_control() -> N
         "myquant.v17.v4.public-surface-compatibility-receipt.v1",
         "myquant.v17.v4.public-run-dto.v1",
         "myquant.v17.v4.regime-evidence.v1",
+        "myquant.v17.v4.research-factor-shadow-assertion.v1",
+        "myquant.v17.v4.research-factor-shadow-assertion.v2",
+        "myquant.v17.v4.research-factor-input-bundle.v1",
+        "myquant.v17.v4.research-fundamental-branch-output.v2",
+        "myquant.v17.v4.research-initial-pool-output.v2",
+        "myquant.v17.v4.research-quant-branch-output.v1",
+        "myquant.v17.v4.research-quant-branch-output.v2",
+        "myquant.v17.v4.research-shadow-factor-set-pointer.v1",
+        "myquant.v17.v4.research-shadow-factor-set.v1",
+        "myquant.v17.v4.research-source-locator.v2",
+        "myquant.v17.v4.shadow-fusion-matured-label.v1",
+        "myquant.v17.v4.shadow-fusion-observation.v1",
+        "myquant.v17.v4.shadow-fusion-policy.v1",
+        "myquant.v17.v4.shadow-readiness.v1",
+        "myquant.v17.v4.shadow-readiness.v2",
+        "myquant.v17.v4.shadow-run.v1",
+        "myquant.v17.v4.shadow-run.v2",
+        "myquant.v17.v4.shadow-run.v3",
+        "myquant.v17.v4.shadow-session-ref.v1",
+        "myquant.v17.v4.shadow-session-ref.v2",
+        "myquant.v17.v4.shadow-session-ref.v3",
         "myquant.v17.v4.rollback-drill-receipt.v1",
         "myquant.v17.v4.total-return-labels.v1",
         "myquant.v17.v4.validation-receipt.v1",
@@ -824,14 +830,28 @@ def test_schema_inventory_is_closed_and_does_not_redefine_neutral_control() -> N
     for path in sorted((CONTRACT_ROOT / "schemas").glob("*.json")):
         schema = load_packaged_json(f"schemas/{path.name}")
         preflight_schema(schema)
-        assert not str(schema.get("$id", "")).startswith(
-            "myquant.research-runtime."
-        )
-    authority = load_packaged_json("schemas/authority.v1.schema.json")["$defs"][
-        "authority"
-    ]
+        assert not str(schema.get("$id", "")).startswith("myquant.research-runtime.")
+    authority = load_packaged_json("schemas/authority.v1.schema.json")["$defs"]["authority"]
     for field in ("broker", "execution", "order", "trade"):
         assert authority["properties"][field]["const"] is False
+
+
+def test_formal_activation_rejects_research_shadow_run_v2_reference() -> None:
+    intent = _formal_intent()
+    intent.pop("semantic_sha256")
+    intent["formal_output_ref"] = _ref(
+        "shadow-run-2",
+        "myquant.v17.v4.shadow-run.v2",
+        (
+            "results/v17_v4_shadow/strategies/quant-first/"
+            "runs/shadow-run-2.json"
+        ),
+    )
+    with pytest.raises(
+        ArtifactContractError,
+        match="formal_output_ref artifact version mismatch",
+    ):
+        validate_artifact(seal_semantic(intent))
 
 
 def test_formal_transition_and_pointer_separate_publication_from_default() -> None:
@@ -871,9 +891,7 @@ def test_formal_receipt_rejects_v3_identity_relabel_and_semantic_tamper() -> Non
     }
     v3_ref["evidence_refs"] = _ordered_refs(
         *[
-            v3_ref["formal_output_ref"]
-            if row["artifact_id"] == "formal-output-1"
-            else row
+            v3_ref["formal_output_ref"] if row["artifact_id"] == "formal-output-1" else row
             for row in intent["evidence_refs"]
         ]
     )
@@ -982,6 +1000,6 @@ def test_canonical_loader_rejects_noncanonical_and_additional_properties() -> No
     receipt.pop("semantic_sha256")
     with pytest.raises(SchemaValidationError):
         validate_artifact(seal_semantic(receipt))
-    assert schema_path_for_version(
-        "myquant.v17.v4.formal-activation-receipt.v1"
-    ).endswith("formal_activation_receipt.v1.schema.json")
+    assert schema_path_for_version("myquant.v17.v4.formal-activation-receipt.v1").endswith(
+        "formal_activation_receipt.v1.schema.json"
+    )

@@ -354,6 +354,34 @@ loads that immutable generation once and constructs one hash-bound
 assessment, three-branch readiness and `v15_run_readiness`; the run never
 reloads a newer calendar or infers a second freshness decision mid-flight.
 
+## Daily system attribution and Factor analysis
+
+The `CN/aggressive_tech_manufacturing` V15 formal review writes
+`system_factor_attribution.json` beside `analysis_report.md` and copies the
+same bytes to `raw_exports/system_factor_attribution.json`. `manifest.json`
+binds the artifact path, schema and SHA256. This artifact is report-only:
+`production_authority=false`, and the analysis module cannot connect a broker,
+create an order, execute a trade, activate a factor or mutate a registry.
+
+Historical realized-trade attribution reads only each run's contained
+`manual_execution_manifest.json.applied_local_trades`. It does not read
+`ledger.csv`, `holdings_review.csv` or another fallback execution tape.
+`portfolio_decision`, `factor_signal`, `risk_control` and
+`insufficient_evidence` describe explicit reason-code markers, not causal
+proof. A single trade or a small bucket P&L never promotes, invalidates or
+deprecates a factor. Historical v2/unsealed manifests are labeled
+`legacy_manifest_limited`; only a sealed v3 manifest may carry
+`sealed_v3` evidence quality.
+
+Factor analysis reads only the neutral
+`results/factor_governance/readiness.json` artifact through the Factor v4
+readiness store and records both its byte SHA256 and semantic SHA256. Missing,
+unsafe or invalid v4 readiness fails closed as `insufficient_evidence`.
+Legacy, v2/v3 runtime, shadow and challenger factors are never substituted
+into the Factor v4 table. Short-horizon factor contribution statistics remain
+`unavailable` until a separate authoritative Factor v4 contribution artifact
+is defined and hash-bound; the report must not infer them from portfolio P&L.
+
 ## Local gates
 
 ```bash

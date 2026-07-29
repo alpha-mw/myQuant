@@ -234,6 +234,9 @@ def test_daily_review_forwards_market_metrics_prewarm_debug_flag(monkeypatch, tm
 
     def _fake_tracker_run(tracker_args):
         captured["skip_market_metrics_prewarm"] = tracker_args.skip_market_metrics_prewarm
+        captured["manual_ledger_parquet_only"] = (
+            tracker_args.manual_ledger_parquet_only
+        )
         return {
             "timestamp": "run-3",
             "run_dir": str(tmp_path / "missing-record"),
@@ -245,4 +248,5 @@ def test_daily_review_forwards_market_metrics_prewarm_debug_flag(monkeypatch, tm
     result = daily_review.run_daily_review(args)
 
     assert captured["skip_market_metrics_prewarm"] is True
+    assert captured["manual_ledger_parquet_only"] is True
     assert result["full_market_metrics_cache"]["status"] == "skipped"
