@@ -10,18 +10,32 @@ import pytest
 
 from quant_investor.v17_v4_contract import load_canonical_artifact
 from quant_investor.v17_v4_runtime.cli import main as v17_v4_main
+from quant_investor.v17_v4_runtime.research_factor_set import (
+    CANDIDATE_CATALOG_SHA256,
+    CATALOG_RESOURCE_SHA256,
+    GATE_ORDER,
+    IMPLEMENTATION_RESOURCE_SHA256,
+    ResearchFactorSetStore,
+    build_research_shadow_factor_set,
+    research_factor_catalog_bindings,
+)
 from quant_investor.v17_v4_runtime.source_builder import (
     FACTOR_FIELDS,
     NEUTRALIZER_FIELDS,
     SourceSnapshotGap,
     build_source_snapshot,
 )
+from quant_investor.v17_v4_runtime.source_storage import EMPTY_SHA256
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
 STRATEGY_ID = "cn-aggressive-tech-manufacturing"
 SESSION = "2026-07-29"
 CUTOFF = "2026-07-29T08:00:00Z"
 SYMBOLS = ("000001.SZ", "600000.SH", "688001.SH")
+FACTOR_NAMES = (
+    "cn_fip_continuous_direction_12m",
+    "cn_low_market_adjusted_tail_asymmetry_252d",
+    "cn_low_total_skewness_20d",
+)
 
 
 def _sha(path: Path) -> str:
@@ -42,25 +56,52 @@ def _write_parquet(path: Path, frame: pd.DataFrame) -> None:
 
 
 def _copy_factor_set(workspace: Path) -> str:
-    source_root = REPO_ROOT / "data/private/v17_v4_sources/research_factor_sets"
-    pointer = json.loads((source_root / "_current.json").read_text())
-    factor_relative = pointer["factor_set_ref"]["relative_path"]
-    target_root = workspace / "data/private/v17_v4_sources"
-    target_set_root = target_root / "research_factor_sets/sets"
-    target_set_root.mkdir(parents=True)
-    for directory in (
-        target_root,
-        target_root / "research_factor_sets",
-        target_set_root,
-    ):
-        directory.chmod(0o700)
-    pointer_path = target_root / "research_factor_sets/_current.json"
-    pointer_path.write_bytes((source_root / "_current.json").read_bytes())
-    factor_path = workspace / factor_relative
-    factor_path.write_bytes((REPO_ROOT / factor_relative).read_bytes())
-    pointer_path.chmod(0o600)
-    factor_path.chmod(0o600)
-    return _sha(pointer_path)
+    bindings = research_factor_catalog_bindings()
+    selections: list[dict[str, object]] = []
+    for name in FACTOR_NAMES:
+        factor = bindings["factors"][name]
+        selections.append(
+            {
+                "candidate_catalog_sha256": CANDIDATE_CATALOG_SHA256,
+                "catalog_resource_sha256": CATALOG_RESOURCE_SHA256,
+                "definition_sha256": factor["definition_sha256"],
+                "implementation_resource_sha256": IMPLEMENTATION_RESOURCE_SHA256,
+                "implementation_sha256": factor["implementation_sha256"],
+                "name": name,
+                "selection_gates": {gate_id: True for gate_id in GATE_ORDER},
+            }
+        )
+    audit_path = "data/private/v17_v4_sources/audits/monthly-audit-test.json"
+    factor_set = build_research_shadow_factor_set(
+        factor_set_id="source-builder-test-factors",
+        strategy_id=STRATEGY_ID,
+        cutoff="2026-07-28T08:00:00Z",
+        audit_session="2026-07-28",
+        selected_at="2026-07-28T08:00:00Z",
+        published_at="2026-07-28T08:00:01Z",
+        open_sessions=("2026-07-28", "2026-07-29"),
+        monthly_audit_ref={
+            "artifact_id": "monthly-audit-test",
+            "artifact_version": "myquant.factor-governance.monthly-audit.v4",
+            "byte_sha256": hashlib.sha256(audit_path.encode()).hexdigest(),
+            "cutoff": "2026-07-28T08:00:00Z",
+            "relative_path": audit_path,
+            "semantic_sha256": hashlib.sha256(
+                f"{audit_path}:semantic".encode()
+            ).hexdigest(),
+            "strategy_id": STRATEGY_ID,
+        },
+        previous_factor_set_ref=None,
+        selection_rows=selections,
+        expected_candidate_catalog_sha256=CANDIDATE_CATALOG_SHA256,
+        expected_catalog_resource_sha256=CATALOG_RESOURCE_SHA256,
+        expected_implementation_resource_sha256=IMPLEMENTATION_RESOURCE_SHA256,
+    )
+    publication = ResearchFactorSetStore(str(workspace.resolve())).publish(
+        factor_set,
+        expected_pointer_sha256=EMPTY_SHA256,
+    )
+    return str(publication.pointer_ref["byte_sha256"])
 
 
 def _canonical_inputs(workspace: Path) -> dict[str, str]:
