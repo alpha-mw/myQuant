@@ -34,6 +34,9 @@ from .validators import (
     FACTOR_DIAGNOSTIC_POLICY_ID,
     FACTOR_DIAGNOSTIC_POLICY_VERSION,
     NO_AUTHORITY,
+    V4_COMPATIBILITY_POLICY_ID,
+    V4_FACTOR_EVIDENCE_ADAPTER_POLICY_ID,
+    V4_FACTOR_EVIDENCE_ADAPTER_POLICY_VERSION,
 )
 
 PROTOCOL_VERSION: Final = "myquant.v17.v5"
@@ -41,7 +44,10 @@ PACKAGE_MANIFEST_PATH: Final = "resources/package_manifest.v1.json"
 RUNTIME_BUILD_MANIFEST_PATH: Final = "resources/runtime_build_manifest.v1.json"
 COMPATIBILITY_POLICY_PATH: Final = "resources/v4_compatibility_policy.v1.json"
 FACTOR_DIAGNOSTIC_POLICY_PATH: Final = "resources/factor_diagnostic_policy.v1.json"
-PACKAGE_MANIFEST_SHA256: Final = "660d51c6be5aae3843fe2ef332d301995b1f9b230d0259df1839e1dd70c5ecff"
+V4_FACTOR_EVIDENCE_ADAPTER_POLICY_PATH: Final = (
+    "resources/v4_factor_evidence_adapter_policy.v1.json"
+)
+PACKAGE_MANIFEST_SHA256: Final = "9ea730804e3b299069cacce37d14a4b747d1bf50fcc8dfed0f2090f83cc90550"
 _PACKAGE_ROOT: Final = Path(__file__).resolve().parent
 
 
@@ -217,6 +223,7 @@ def load_compatibility_policy(
         set(policy) != expected_keys
         or policy["protocol_version"] != PROTOCOL_VERSION
         or policy["version"] != "myquant.v17.v5.v4-compatibility-policy.v1"
+        or policy["artifact_id"] != V4_COMPATIBILITY_POLICY_ID
         or policy["authority"] != NO_AUTHORITY
         or policy["forbidden_import_prefixes"] != ["quant_investor.v17_v4_runtime"]
     ):
@@ -227,18 +234,23 @@ def load_compatibility_policy(
         "max_closure_bytes": LIMITS["compat_max_closure_bytes"],
         "max_depth": LIMITS["compat_max_closure_depth"],
         "max_nodes": LIMITS["compat_max_closure_nodes"],
+        "max_parquet_row_groups": LIMITS["compat_max_parquet_row_groups"],
+        "max_parquet_rows": LIMITS["compat_max_parquet_rows"],
     }:
         raise PackageResourceError("v4 compatibility closure limits drift")
     rows = policy["allowed_artifacts"]
     if type(rows) is not list or not rows:
         raise PackageResourceError("v4 compatibility artifact allowlist is empty")
     versions: list[str] = []
+    referenced_versions: set[str] = set()
     for index, row in enumerate(rows):
         if type(row) is not dict or set(row) != {
             "allowed_path_prefixes",
             "identity_field",
+            "root_admissible",
             "schema_id",
             "transitive_edges",
+            "validation_mode",
             "version",
         }:
             raise PackageResourceError(f"v4 compatibility row {index} shape mismatch")
@@ -247,26 +259,100 @@ def load_compatibility_policy(
             require_identifier(version, label="v4 artifact version")
         except IdentityContractError as exc:
             raise PackageResourceError(f"v4 compatibility row {index} invalid") from exc
-        schema = load_v4_json(v4_schema_path(version))
+        validation_mode = row["validation_mode"]
+        if validation_mode == "V4_REGISTERED_JSON":
+            try:
+                schema = load_v4_json(v4_schema_path(version))
+                expected_identity = v4_identity_field(version)
+                expected_schema_id: str | None = str(schema.get("$id"))
+            except Exception as exc:
+                raise PackageResourceError(
+                    f"v4 compatibility row {index} registered binding absent"
+                ) from exc
+        elif validation_mode in {
+            "V4_GENERIC_CANONICAL_TERMINAL",
+            "V4_PARQUET_METADATA",
+        }:
+            expected_identity = "artifact_id"
+            expected_schema_id = None
+        else:
+            raise PackageResourceError(f"v4 compatibility row {index} validation mode invalid")
+        prefixes = row["allowed_path_prefixes"]
+        edges = row["transitive_edges"]
         if (
-            row["identity_field"] != v4_identity_field(version)
-            or row["schema_id"] != schema.get("$id")
-            or row["allowed_path_prefixes"] != sorted(row["allowed_path_prefixes"])
+            row["identity_field"] != expected_identity
+            or row["schema_id"] != expected_schema_id
+            or type(row["root_admissible"]) is not bool
+            or type(prefixes) is not list
+            or not prefixes
+            or prefixes != sorted(prefixes)
             or any(
                 type(prefix) is not str
-                or not prefix.startswith(("data/private/v17_v4_", "results/v17_v4_"))
-                for prefix in row["allowed_path_prefixes"]
+                or not prefix.startswith(
+                    (
+                        "data/private/v17_v4_",
+                        "reports/factor_governance/private/monthly_factor_research",
+                        "results/v17_v4_",
+                    )
+                )
+                for prefix in prefixes
             )
-            or row["transitive_edges"]
+            or type(edges) is not list
+            or edges
             != sorted(
-                row["transitive_edges"],
+                edges,
                 key=lambda edge: edge["json_pointer"] if type(edge) is dict else "",
             )
         ):
             raise PackageResourceError(f"v4 compatibility row {index} binding mismatch")
+        for edge_index, edge in enumerate(edges):
+            if type(edge) is not dict or set(edge) != {
+                "cardinality",
+                "json_pointer",
+                "mode",
+                "target_versions",
+            }:
+                raise PackageResourceError(
+                    f"v4 compatibility row {index} edge {edge_index} shape mismatch"
+                )
+            targets = edge["target_versions"]
+            if (
+                edge["cardinality"]
+                not in {
+                    "EXACT_ONE",
+                    "ONE_OR_MORE",
+                    "ONE_PER_PARENT_ROW",
+                    "ZERO_OR_MORE",
+                    "ZERO_OR_ONE",
+                }
+                or edge["mode"]
+                not in {
+                    "DECODED_REF_SCAN",
+                    "FOLLOW",
+                    "TERMINAL_SOURCE_BINDING",
+                }
+                or type(edge["json_pointer"]) is not str
+                or not edge["json_pointer"].startswith("/")
+                or type(targets) is not list
+                or targets != sorted(targets)
+                or len(targets) != len(set(targets))
+                or (edge["mode"] == "TERMINAL_SOURCE_BINDING" and targets)
+                or (edge["mode"] != "TERMINAL_SOURCE_BINDING" and not targets)
+                or any(type(target) is not str for target in targets)
+            ):
+                raise PackageResourceError(
+                    f"v4 compatibility row {index} edge {edge_index} invalid"
+                )
+            referenced_versions.update(targets)
+        if validation_mode != "V4_REGISTERED_JSON" and edges:
+            raise PackageResourceError(
+                f"v4 compatibility row {index} terminal has transitive edges"
+            )
         versions.append(version)
     if versions != sorted(versions) or len(versions) != len(set(versions)):
         raise PackageResourceError("v4 compatibility versions are not uniquely ordered")
+    if not referenced_versions.issubset(versions):
+        raise PackageResourceError("v4 compatibility edge target is not allowlisted")
     predecessor = policy["predecessor"]
     try:
         require_git_commit(predecessor["source_git_commit"])
@@ -357,6 +443,85 @@ def load_factor_diagnostic_policy(
     return policy
 
 
+def load_v4_factor_evidence_adapter_policy(
+    *,
+    package_root: Path | None = None,
+) -> dict[str, Any]:
+    policy = load_packaged_json(
+        V4_FACTOR_EVIDENCE_ADAPTER_POLICY_PATH,
+        package_root=package_root,
+    )
+    if (
+        set(policy)
+        != {
+            "artifact_id",
+            "authority",
+            "evidence_contract",
+            "failure_contract",
+            "lineage_contract",
+            "output_contract",
+            "protocol_version",
+            "semantic_sha256",
+            "version",
+        }
+        or policy["artifact_id"] != V4_FACTOR_EVIDENCE_ADAPTER_POLICY_ID
+        or policy["authority"] != NO_AUTHORITY
+        or policy["protocol_version"] != PROTOCOL_VERSION
+        or policy["version"] != V4_FACTOR_EVIDENCE_ADAPTER_POLICY_VERSION
+        or policy["evidence_contract"]
+        != {
+            "evaluation_receipt_completeness": "COMPLETE",
+            "evaluation_receipt_execution_outcome": "SUCCEEDED",
+            "evaluation_receipt_type": "factor_evaluation_receipt",
+            "factor_inventory_rows": "EXACTLY_ONE_MATCHING_FACTOR",
+            "horizon_sessions": 20,
+            "label_completeness": "COMPLETE",
+            "label_return_field": "total_return",
+            "observation_completeness": "COMPLETE",
+            "origin_rows_per_receipt": "EXACTLY_ONE_MATCHING_LINEAGE",
+            "request_profile": "FORWARD_EVIDENCE",
+            "run_state": "FORWARD_EVIDENCE_ACTIVE",
+        }
+        or policy["failure_contract"]
+        != {
+            "contradictory_or_tampered_closure": "MALFORMED_EXIT_2_NO_ARTIFACT",
+            "missing_registered_dependency": "UNAVAILABLE",
+            "mixed_stratum": "MALFORMED_EXIT_2_NO_ARTIFACT",
+            "no_matching_factor_or_label": "UNAVAILABLE",
+        }
+        or policy["lineage_contract"]
+        != {
+            "origin_evidence_preimage": [
+                "decision_session",
+                "factor_observation_ref",
+                "factor_set_ref",
+                "forward_label_ref",
+                "observation_run_ref",
+                "request_ref",
+                "source_locator_ref",
+            ],
+            "source_series_preimage": [
+                "factor_input_bundle_version",
+                "factor_slice_fields",
+                "neutralizer_fields",
+                "required_fields",
+                "source_locator_version",
+            ],
+        }
+        or policy["output_contract"]
+        != {
+            "effectiveness_claimed": False,
+            "factor_governance_write": False,
+            "factor_tier_change_eligible": False,
+            "factor_weight_change_eligible": False,
+            "inference_implemented": False,
+            "promotion_eligible": False,
+        }
+    ):
+        raise PackageResourceError("V4 factor evidence adapter policy identity mismatch")
+    return policy
+
+
 def verify_runtime_build(
     *,
     package_root: Path | None = None,
@@ -441,6 +606,7 @@ def verify_package(
         result[row["relative_path"]] = hashlib.sha256(raw).hexdigest()
     load_compatibility_policy(package_root=root)
     load_factor_diagnostic_policy(package_root=root)
+    load_v4_factor_evidence_adapter_policy(package_root=root)
     verify_runtime_build(package_root=root)
     return result
 

@@ -185,5 +185,150 @@ def test_reader_enforces_resource_limit_and_rejects_hidden_ref(
         "strategy_id": "quant-first",
     }
     sha256 = _write_artifact(tmp_path, seal_semantic(artifact))
-    with pytest.raises(V4CompatibilityError, match="unallowlisted transitive"):
+    with pytest.raises(
+        V4CompatibilityError,
+        match="schema or semantic validation failed|hidden or undeclared",
+    ):
         _read(tmp_path, sha256)
+
+
+def test_reader_recurses_exact_declared_dependency_and_rejects_cycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    version = "myquant.v17.v4.regime-evidence.v1"
+    root_path = "data/private/v17_v4_runs/root/regime.json"
+    child_path = "data/private/v17_v4_runs/child/regime.json"
+    child_raw = canonical_resource_bytes({"version": version})
+    child_sha = hashlib.sha256(child_raw).hexdigest()
+    root_raw = canonical_resource_bytes({"version": version})
+    root_sha = hashlib.sha256(root_raw).hexdigest()
+    for relative_path, raw in ((root_path, root_raw), (child_path, child_raw)):
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+    child_ref = {
+        "artifact_id": "child",
+        "artifact_version": version,
+        "byte_sha256": child_sha,
+        "cutoff": CUTOFF,
+        "relative_path": child_path,
+        "semantic_sha256": "b" * 64,
+        "strategy_id": "quant-first",
+    }
+    documents = {
+        root_path: {
+            "authority": {},
+            "child_ref": child_ref,
+            "cutoff": CUTOFF,
+            "evidence_id": "root",
+            "protocol_version": "myquant.v17.v4",
+            "semantic_sha256": "a" * 64,
+            "strategy_id": "quant-first",
+            "version": version,
+        },
+        child_path: {
+            "authority": {},
+            "cutoff": CUTOFF,
+            "evidence_id": "child",
+            "protocol_version": "myquant.v17.v4",
+            "semantic_sha256": "b" * 64,
+            "strategy_id": "quant-first",
+            "version": version,
+        },
+    }
+    policy = subject.load_compatibility_policy()
+    row = next(value for value in policy["allowed_artifacts"] if value["version"] == version)
+    row["transitive_edges"] = [
+        {
+            "cardinality": "ZERO_OR_ONE",
+            "json_pointer": "/child_ref",
+            "mode": "FOLLOW",
+            "target_versions": [version],
+        }
+    ]
+    monkeypatch.setattr(subject, "load_compatibility_policy", lambda: policy)
+
+    def registered(raw, *, path, version, row):
+        document = documents[path]
+        return dict(document), document["evidence_id"], document["semantic_sha256"]
+
+    monkeypatch.setattr(subject, "_registered_document", registered)
+    result = read_v4_artifact(
+        tmp_path,
+        relative_path=root_path,
+        expected_byte_sha256=root_sha,
+        expected_strategy_id="quant-first",
+        decision_cutoff=CUTOFF,
+    )
+    assert [node.relative_path for node in result.closure] == [
+        child_path,
+        root_path,
+    ]
+
+    root_ref = {
+        "artifact_id": "root",
+        "artifact_version": version,
+        "byte_sha256": root_sha,
+        "cutoff": CUTOFF,
+        "relative_path": root_path,
+        "semantic_sha256": "a" * 64,
+        "strategy_id": "quant-first",
+    }
+    documents[child_path]["child_ref"] = root_ref
+    with pytest.raises(V4CompatibilityError, match="cycle"):
+        read_v4_artifact(
+            tmp_path,
+            relative_path=root_path,
+            expected_byte_sha256=root_sha,
+            expected_strategy_id="quant-first",
+            decision_cutoff=CUTOFF,
+        )
+
+
+def test_generic_terminal_audit_requires_exact_no_authority() -> None:
+    document = seal_semantic(
+        {
+            "artifact_id": "audit-1",
+            "artifact_version": "myquant.v17.v4.shadow-factor-selection-audit.v1",
+            "authority": {
+                "broker": False,
+                "execution": False,
+                "formal_research_publication": False,
+                "order": False,
+                "research_runtime_default": False,
+                "trade": False,
+            },
+            "cutoff": CUTOFF,
+            "protocol_version": "myquant.v17.v4",
+            "strategy_id": "quant-first",
+        }
+    )
+    expected_ref = {
+        "artifact_id": "audit-1",
+        "artifact_version": document["artifact_version"],
+        "cutoff": CUTOFF,
+        "strategy_id": "quant-first",
+    }
+    raw = canonical_resource_bytes(document)
+    assert (
+        subject._generic_terminal_document(
+            raw,
+            path="reports/factor_governance/private/monthly_factor_research/audit.json",
+            expected_ref=expected_ref,
+        )[0]
+        == document
+    )
+
+    mutation = dict(document)
+    mutation.pop("semantic_sha256")
+    mutation["authority"] = {
+        **document["authority"],
+        "factor_governance_write": False,
+    }
+    with pytest.raises(V4CompatibilityError, match="identity mismatch"):
+        subject._generic_terminal_document(
+            canonical_resource_bytes(seal_semantic(mutation)),
+            path="reports/factor_governance/private/monthly_factor_research/audit.json",
+            expected_ref=expected_ref,
+        )

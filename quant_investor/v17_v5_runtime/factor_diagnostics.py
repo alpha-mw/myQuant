@@ -7,12 +7,13 @@ provider, clock, governance, portfolio, or execution surface.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN, localcontext
 from enum import Enum
 import hashlib
 import re
 from typing import Any, Final, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 from quant_investor.v17_v5_contract.canonical import (
     canonical_bytes,
@@ -31,6 +32,7 @@ from quant_investor.v17_v5_contract.validators import (
     FACTOR_DIAGNOSTIC_POLICY_SEMANTIC_SHA256,
     FACTOR_DIAGNOSTIC_POLICY_VERSION,
     NO_AUTHORITY,
+    V4_FACTOR_EVIDENCE_ADAPTER_POLICY_BYTE_SHA256,
 )
 
 PROTOCOL_VERSION: Final = "myquant.v17.v5"
@@ -42,6 +44,7 @@ MAX_ORIGINS: Final = 4_096
 MAX_SYMBOLS_PER_ORIGIN: Final = 10_000
 MAX_TOTAL_SYMBOL_ROWS: Final = 2_000_000
 OUTPUT_SCALE: Final = Decimal("0.000000000001")
+SHANGHAI_TZ: Final = ZoneInfo("Asia/Shanghai")
 
 _DECIMAL_RE: Final = re.compile(
     r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]*[1-9])?$",
@@ -182,6 +185,8 @@ def _stratum_document(stratum: FactorSampleStratum) -> dict[str, Any]:
         raise FactorDiagnosticError(str(exc)) from exc
     if type(stratum.horizon_sessions) is not int or stratum.horizon_sessions != 20:
         _fail("horizon_sessions must equal 20")
+    if adapter_policy != V4_FACTOR_EVIDENCE_ADAPTER_POLICY_BYTE_SHA256:
+        _fail("adapter_policy_byte_sha256 is not the sealed Sprint 1A adapter policy")
     return {
         "adapter_policy_byte_sha256": adapter_policy,
         "factor_definition_sha256": factor_definition,
@@ -318,6 +323,13 @@ def _origin_document(
         _fail(f"{origin_id} is not an exact 20-session origin")
     if label_available_at.date() < date.fromisoformat(horizon_end_session):
         _fail(f"{origin_id} label is available before its horizon end")
+    horizon_close = datetime.combine(
+        date.fromisoformat(horizon_end_session),
+        time(hour=15),
+        tzinfo=SHANGHAI_TZ,
+    )
+    if label_available_at.astimezone(SHANGHAI_TZ) < horizon_close:
+        _fail(f"{origin_id} label is available before the Shanghai session close")
     if label_available_at > evaluation_cutoff:
         _fail(f"{origin_id} label is not naturally matured at the evaluation cutoff")
     factor_values = _numeric_map(

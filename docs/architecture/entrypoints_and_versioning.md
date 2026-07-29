@@ -38,13 +38,15 @@
   V15 默认路由。
 - V17 v5 Sprint-1A 契约入口：`quant-investor-v17-v5`。当前仍只开放
   `status` 和 `verify`，状态固定为
-  `SPRINT1A_FACTOR_DIAGNOSTICS_AVAILABLE_NOT_OPERATIONAL`。它使用独立
+  `SPRINT1A_V4_FACTOR_EVIDENCE_DIAGNOSTICS_AVAILABLE_NOT_OPERATIONAL`。它使用独立
   `myquant.v17.v5` 协议和
   `quant_investor.v17_v5_contract` / `quant_investor.v17_v5_runtime`
-  包，只读验证已封存的 v4 predecessor，并提供纯内存、描述性、无文件
-  写入的 Factor maturity/RankIC/coverage/replay library。该 library 不读取
-  V4 artifact，不输出 effectiveness、inference、tier、weight 或 promotion
-  结论；`descriptive_coverage_minimum_met` 也不是 Factor Governance 门禁。
+  包，只读验证已封存的 v4 predecessor 和显式 allowlist dependency closure，
+  并提供纯内存、描述性、无文件写入的 V4 evidence adapter、Factor
+  maturity/RankIC/coverage/replay 与 lifecycle diagnostic library。它不扫描或
+  写入 V4 artifact，不输出 effectiveness、inference、tier、weight、action 或
+  promotion 结论；`descriptive_coverage_minimum_met` 也不是 Factor Governance
+  门禁。
   它不开放 run、schedule、模型、
   provider、LLM、Factor Governance writer、portfolio、selector、formal、
   canary、promotion、execution、broker、order 或 trade surface。

@@ -19,8 +19,11 @@ Sprint 1A adds one library-only surface:
 
 - a sealed descriptive Factor diagnostic policy and schema;
 - a pure in-memory maturity, cross-sectional RankIC, coverage and replay kernel;
-- no V17 v4 artifact admission, reader expansion, writer, run command or
-  empirical effectiveness conclusion.
+- a recursively verified, allowlisted V17 v4 Forward Evidence read closure;
+- a sealed V4-to-V5 Factor evidence adapter policy;
+- a pure descriptive Factor lifecycle diagnostic;
+- no writer, run command, governance action or empirical effectiveness
+  conclusion.
 
 ## Scope and non-goals
 
@@ -30,16 +33,20 @@ not modify V15, V16, V17 v2/v3, V17 v4 runtime, Factor Governance, formal
 activation, canary, promotion, the default selector, execution, broker, order,
 or trade behavior.
 
-The only initially allowed predecessor artifact is:
+The only root-admissible predecessor artifacts are:
 
 ```text
+myquant.v17.v4.forward-evaluation-receipt.v1
 myquant.v17.v4.regime-evidence.v1
 ```
 
-It is self-contained and has no transitive artifact reference. Adding another
-V17 v4 artifact requires a compatibility-policy revision that explicitly binds
-its version, schema ID, identity field, path namespaces and every transitive
-edge. Unknown versions and hidden references fail closed.
+The evaluation receipt expands only through the sealed compatibility-policy
+graph: origin and existing-factor inventories, 20-session labels, observation
+run and request, factor observations and factor set, source locator, input
+bundle and slice manifests, stage receipts/outputs and immutable Parquet
+leaves. Raw upstream `source_refs` are terminal provenance bindings; the
+adapter does not dereference them or treat them as statistical observations.
+Unknown versions, partial refs, hidden refs and undeclared edges fail closed.
 
 ## Predecessor identity
 
@@ -75,10 +82,16 @@ cutoff. It:
 5. recomputes byte SHA-256;
 6. executes the exact V17 v4 schema and semantic validator;
 7. enforces strategy, cutoff, availability and authority closure;
-8. rejects unallowlisted transitive references.
+8. recursively follows every declared exact artifact ref;
+9. validates registered JSON, generic terminal audit and Parquet metadata
+   according to the per-version policy;
+10. rejects cycles, conflicting duplicate nodes, partial refs and undeclared
+    transitive references.
 
-Phase-0 closure limits are 64 MiB per JSON artifact, 256 MiB total, eight
-levels and 64 nodes. The current self-contained allowlist uses one node.
+Sprint-1A closure limits are 128 MiB per artifact, 512 MiB total, 32 levels and
+512 nodes. Parquet leaves are additionally limited to 10,000,000 rows and
+4,096 row groups. Limits are fail-closed and do not authorize source
+discovery.
 
 V5 runtime imports the V17 v4 contract only. Importing any
 `quant_investor.v17_v4_runtime` module is forbidden and covered by an AST
@@ -219,6 +232,49 @@ false. Overlap-robust inference is explicitly deferred.
 The in-memory limits are 4,096 origins, 10,000 symbols per origin and 2,000,000
 total supplied symbol rows.
 
+## V4 Factor evidence adapter
+
+`adapt_v4_factor_evidence` accepts only `V4CompatibilityRead` values produced
+by the compatibility reader, an exact evaluation cutoff, one factor identity
+and a sealed Shanghai open-session sequence. It does not discover files.
+
+For each usable origin it requires:
+
+- a `factor_evaluation_receipt` with one matching 20-session origin;
+- exact request/run/inventory/label/observation refs and one inactive
+  `FORWARD_EVIDENCE_ACTIVE` run;
+- one selected Factor row whose definition, implementation and factor-set
+  identities agree with the receipt lineage;
+- one current source locator and input bundle with exact required and
+  neutralizer field identities;
+- a complete Factor observation and complete, naturally matured 20-session
+  label whose source-lineage SHA and return arithmetic replay exactly.
+
+The series SHA is derived from the stable locator/bundle versions, required
+field set, Factor-slice field set and neutralizer field set. Daily snapshot
+identity is not used as the series identity; each origin evidence SHA instead
+binds the exact request, run, Factor set, Factor observation, source locator
+and label refs. Structurally valid missing evidence becomes `UNAVAILABLE` or
+`UNOBSERVED`. Hash, identity, cutoff, calendar, arithmetic, stratum or
+authority contradictions raise `V4FactorAdapterError` with exit code 2 and
+produce no artifact.
+
+No real persisted V4 evaluation receipt was present when Sprint 1A closed.
+Therefore the current evidence state is `UNAVAILABLE`; no Factor effectiveness
+claim is made.
+
+## Factor lifecycle diagnostic
+
+`myquant.v17.v5.factor-lifecycle-diagnostic.v1` aggregates only sealed V5
+Factor diagnostics for the same exact factor and stratum. Its outputs are
+limited to `UNOBSERVED`, `ACCUMULATING` and `UNAVAILABLE`, with origin-count
+and first/last-session description. Empty input is malformed; an explicit
+missing prerequisite must use the unavailable builder.
+
+The lifecycle artifact contains no tier, weight, action, effectiveness or
+promotion conclusion. `lifecycle_action` and `lifecycle_conclusion` are always
+null, and every authority field remains false.
+
 ## Acceptance and stop conditions
 
 Sprint 1A is accepted only if package/runtime/predecessor verification, semantic
@@ -226,7 +282,7 @@ replay, reader positive and negative tests, authority/import/no-write boundary
 tests, V15 public smoke, full V17 v4 regression, mypy, Black and
 `git diff --check` pass.
 
-Stop before any operational Factor adapter if any predecessor manifest drifts, an unallowlisted
-reference is accepted, a resource limit is bypassed, a v4 runtime writer is
-imported, a file is written, an existing CLI entrypoint changes, any authority
-is true, or V15/V17 v4 regresses.
+Stop before any operational writer or governance integration if any predecessor
+manifest drifts, an unallowlisted reference is accepted, a resource limit is
+bypassed, a v4 runtime writer is imported, a file is written, an existing CLI
+entrypoint changes, any authority is true, or V15/V17 v4 regresses.

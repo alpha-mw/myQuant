@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 import hashlib
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -12,7 +13,10 @@ from quant_investor.v17_v5_contract import (
     seal_semantic,
     validate_artifact,
 )
-from quant_investor.v17_v5_contract.validators import ArtifactContractError
+from quant_investor.v17_v5_contract.validators import (
+    ArtifactContractError,
+    V4_FACTOR_EVIDENCE_ADAPTER_POLICY_BYTE_SHA256,
+)
 from quant_investor.v17_v5_runtime.factor_diagnostics import (
     FactorDiagnosticError,
     FactorOriginSample,
@@ -40,7 +44,7 @@ def _stratum(sessions: tuple[str, ...]) -> FactorSampleStratum:
         factor_implementation_sha256="2" * 64,
         factor_set_sha256="3" * 64,
         quant_policy_sha256="4" * 64,
-        adapter_policy_byte_sha256="5" * 64,
+        adapter_policy_byte_sha256=V4_FACTOR_EVIDENCE_ADAPTER_POLICY_BYTE_SHA256,
         source_lineage_series_sha256="6" * 64,
         market_calendar_sha256=_calendar_sha(sessions),
     )
@@ -290,11 +294,11 @@ def test_conflicting_duplicate_and_same_session_alias_fail_closed() -> None:
     ],
 )
 def test_future_maturity_wrong_horizon_and_noncanonical_numbers_fail_closed(
-    mutation: dict[str, object],
+    mutation: dict[str, Any],
     message: str,
 ) -> None:
     sessions = _sessions()
-    origin = replace(_origin(sessions, 0), **mutation)
+    origin = replace(_origin(sessions, 0), **cast(Any, mutation))
 
     with pytest.raises(FactorDiagnosticError, match=message):
         build_factor_diagnostic(

@@ -62,7 +62,7 @@ def test_v5_authority_is_permanently_false() -> None:
         "trade",
     }
     assert all(value is False for value in authority.values())
-    assert DELIVERY_STATUS == "SPRINT1A_FACTOR_DIAGNOSTICS_AVAILABLE_NOT_OPERATIONAL"
+    assert DELIVERY_STATUS == "SPRINT1A_V4_FACTOR_EVIDENCE_DIAGNOSTICS_AVAILABLE_NOT_OPERATIONAL"
 
 
 def test_v5_cli_only_adds_status_and_verify_and_writes_nothing(

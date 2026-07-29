@@ -17,6 +17,10 @@ _ARTIFACT_REGISTRY: Final = {
         "schemas/factor_diagnostic.v1.schema.json",
         "diagnostic_id",
     ),
+    "myquant.v17.v5.factor-lifecycle-diagnostic.v1": (
+        "schemas/factor_lifecycle_diagnostic.v1.schema.json",
+        "lifecycle_diagnostic_id",
+    ),
     "myquant.v17.v5.v4-predecessor-binding.v1": (
         "schemas/v4_predecessor_binding.v1.schema.json",
         "binding_id",

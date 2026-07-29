@@ -34,6 +34,7 @@ NO_AUTHORITY: Final = {
 }
 PREDECESSOR_BINDING_VERSION: Final = "myquant.v17.v5.v4-predecessor-binding.v1"
 FACTOR_DIAGNOSTIC_VERSION: Final = "myquant.v17.v5.factor-diagnostic.v1"
+FACTOR_LIFECYCLE_DIAGNOSTIC_VERSION: Final = "myquant.v17.v5.factor-lifecycle-diagnostic.v1"
 FACTOR_DIAGNOSTIC_POLICY_ID: Final = "v17.v5.factor.diagnostic.policy.sprint1a"
 FACTOR_DIAGNOSTIC_POLICY_VERSION: Final = "myquant.v17.v5.factor-diagnostic-policy.v1"
 FACTOR_DIAGNOSTIC_POLICY_PATH: Final = (
@@ -45,16 +46,29 @@ FACTOR_DIAGNOSTIC_POLICY_BYTE_SHA256: Final = (
 FACTOR_DIAGNOSTIC_POLICY_SEMANTIC_SHA256: Final = (
     "f2c763f68d64381fbdbc11db0e57a25075bb9da4eb6968d168261318fabe68c4"
 )
-V4_COMPATIBILITY_POLICY_ID: Final = "v17.v4.compatibility.policy.phase0"
+V4_COMPATIBILITY_POLICY_ID: Final = "v17.v4.compatibility.policy.sprint1a"
 V4_COMPATIBILITY_POLICY_VERSION: Final = "myquant.v17.v5.v4-compatibility-policy.v1"
 V4_COMPATIBILITY_POLICY_PATH: Final = (
     "quant_investor/v17_v5_contract/resources/v4_compatibility_policy.v1.json"
 )
 V4_COMPATIBILITY_POLICY_BYTE_SHA256: Final = (
-    "480d89a7c0804427510f4a32c70195a55085acf4389d40edc939a08851bfec47"
+    "bfb29a67fcee1e440ebc70d9d7299b28636cbcf7d38b6a88d0a5d720ec8a95ca"
 )
 V4_COMPATIBILITY_POLICY_SEMANTIC_SHA256: Final = (
-    "69334ee3b1065bc923bbbbb06b57f5aa87e59d9c2c353b811a6de33e44bb786c"
+    "73439952d7844949694df4c1259db70dd46b0ed870700c98ec9aee088db47c53"
+)
+V4_FACTOR_EVIDENCE_ADAPTER_POLICY_ID: Final = "v17.v5.v4.factor.evidence.adapter.policy.sprint1a"
+V4_FACTOR_EVIDENCE_ADAPTER_POLICY_VERSION: Final = (
+    "myquant.v17.v5.v4-factor-evidence-adapter-policy.v1"
+)
+V4_FACTOR_EVIDENCE_ADAPTER_POLICY_PATH: Final = (
+    "quant_investor/v17_v5_contract/resources/" "v4_factor_evidence_adapter_policy.v1.json"
+)
+V4_FACTOR_EVIDENCE_ADAPTER_POLICY_BYTE_SHA256: Final = (
+    "cf6d01b9db09a4ba7924c85675cb41ba0a8720689f212f13e34986c4ad9c3188"
+)
+V4_FACTOR_EVIDENCE_ADAPTER_POLICY_SEMANTIC_SHA256: Final = (
+    "463cd280d80ebb7914bca720d1b585380638b59863a48bec7a4f5615cdf8e225"
 )
 V4_SOURCE_GIT_COMMIT: Final = "ec1370553fdf7ca0951ec4b03ea9fc426a872b4e"
 V4_PACKAGE_MANIFEST_SHA256: Final = (
@@ -226,6 +240,8 @@ def _validate_factor_diagnostic(payload: Mapping[str, Any]) -> dict[str, Any]:
             stratum_sha != expected_stratum_sha
             or stratum["horizon_sessions"] != 20
             or stratum["factor_name"] != document["subject_factor_name"]
+            or stratum["adapter_policy_byte_sha256"]
+            != V4_FACTOR_EVIDENCE_ADAPTER_POLICY_BYTE_SHA256
         ):
             raise ArtifactContractError("factor diagnostic stratum identity mismatch")
     previous_key: tuple[str, str] | None = None
@@ -319,6 +335,118 @@ def _validate_factor_diagnostic(payload: Mapping[str, Any]) -> dict[str, Any]:
     return document
 
 
+def _validate_factor_lifecycle_diagnostic(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    try:
+        document = validate_semantic_sha(payload)
+        require_identifier(
+            document["lifecycle_diagnostic_id"],
+            label="lifecycle_diagnostic_id",
+        )
+        require_identifier(document["factor_name"], label="factor_name")
+        _validate_timestamp(document["evaluation_cutoff"], label="evaluation_cutoff")
+    except (
+        CanonicalContractError,
+        IdentityContractError,
+        KeyError,
+        TypeError,
+    ) as exc:
+        raise ArtifactContractError("V17 v5 factor lifecycle diagnostic is invalid") from exc
+    if document["authority"] != NO_AUTHORITY:
+        raise ArtifactContractError("V17 v5 factor lifecycle diagnostic grants authority")
+    for field in (
+        "effectiveness_claimed",
+        "factor_tier_change_eligible",
+        "factor_weight_change_eligible",
+        "promotion_eligible",
+    ):
+        if document[field] is not False:
+            raise ArtifactContractError(f"{field} must remain false")
+    if document["lifecycle_action"] is not None or document["lifecycle_conclusion"] is not None:
+        raise ArtifactContractError("factor lifecycle conclusions are forbidden")
+    blockers = document["blockers"]
+    if blockers != sorted(set(blockers)):
+        raise ArtifactContractError("factor lifecycle blockers are noncanonical")
+    for blocker in blockers:
+        try:
+            require_identifier(blocker, label="factor lifecycle blocker")
+        except IdentityContractError as exc:
+            raise ArtifactContractError("factor lifecycle blocker is invalid") from exc
+    input_shas = document["input_factor_diagnostic_semantic_sha256s"]
+    if input_shas != sorted(set(input_shas)):
+        raise ArtifactContractError("factor lifecycle input SHA list is noncanonical")
+    for value in input_shas:
+        try:
+            require_sha256(value, label="input factor diagnostic semantic SHA-256")
+        except IdentityContractError as exc:
+            raise ArtifactContractError("factor lifecycle input SHA is invalid") from exc
+    status = document["status"]
+    stratum = document["stratum"]
+    stratum_sha = document["stratum_sha256"]
+    count = document["unique_origin_count"]
+    first_session = document["first_decision_session"]
+    last_session = document["last_decision_session"]
+    if status == "UNAVAILABLE":
+        if (
+            stratum is not None
+            or stratum_sha is not None
+            or count != 0
+            or first_session is not None
+            or last_session is not None
+            or document["descriptive_coverage_minimum_met"]
+            or not blockers
+            or input_shas
+            or "lifecycle_inputs_unavailable" not in blockers
+        ):
+            raise ArtifactContractError("UNAVAILABLE lifecycle diagnostic is inconsistent")
+    else:
+        if type(stratum) is not dict or type(stratum_sha) is not str:
+            raise ArtifactContractError("observed lifecycle diagnostic has no stratum")
+        try:
+            require_sha256(stratum_sha, label="stratum_sha256")
+        except IdentityContractError as exc:
+            raise ArtifactContractError("lifecycle stratum SHA is invalid") from exc
+        if (
+            hashlib.sha256(canonical_bytes(stratum)).hexdigest() != stratum_sha
+            or stratum["factor_name"] != document["factor_name"]
+            or stratum["adapter_policy_byte_sha256"]
+            != V4_FACTOR_EVIDENCE_ADAPTER_POLICY_BYTE_SHA256
+        ):
+            raise ArtifactContractError("lifecycle stratum identity mismatch")
+        if status == "UNOBSERVED":
+            if (
+                count != 0
+                or first_session is not None
+                or last_session is not None
+                or input_shas == []
+                or document["descriptive_coverage_minimum_met"]
+                or "lifecycle_no_observed_origins" not in blockers
+            ):
+                raise ArtifactContractError("UNOBSERVED lifecycle diagnostic is inconsistent")
+        elif status == "ACCUMULATING":
+            if (
+                count <= 0
+                or first_session is None
+                or last_session is None
+                or "lifecycle_diagnostic_only" not in blockers
+            ):
+                raise ArtifactContractError("ACCUMULATING lifecycle diagnostic is inconsistent")
+            first = _validate_session(first_session, label="first_decision_session")
+            last = _validate_session(last_session, label="last_decision_session")
+            if first > last or not input_shas:
+                raise ArtifactContractError("lifecycle session bounds are invalid")
+        else:
+            raise ArtifactContractError("unknown factor lifecycle diagnostic status")
+    identity_material = dict(document)
+    identity_material.pop("lifecycle_diagnostic_id")
+    identity_material.pop("semantic_sha256")
+    identity = hashlib.sha256(canonical_bytes(identity_material)).hexdigest()
+    if document["lifecycle_diagnostic_id"] != f"factor-lifecycle-diagnostic-{identity[:32]}":
+        raise ArtifactContractError("factor lifecycle diagnostic identity mismatch")
+    return document
+
+
 def _validate_predecessor_binding(payload: Mapping[str, Any]) -> dict[str, Any]:
     try:
         document = validate_semantic_sha(payload)
@@ -369,6 +497,8 @@ def validate_typed_artifact(
         return _validate_predecessor_binding(payload)
     if payload.get("version") == FACTOR_DIAGNOSTIC_VERSION:
         return _validate_factor_diagnostic(payload)
+    if payload.get("version") == FACTOR_LIFECYCLE_DIAGNOSTIC_VERSION:
+        return _validate_factor_lifecycle_diagnostic(payload)
     raise ArtifactContractError("unsupported V17 v5 artifact version")
 
 
@@ -380,6 +510,7 @@ __all__ = [
     "FACTOR_DIAGNOSTIC_POLICY_SEMANTIC_SHA256",
     "FACTOR_DIAGNOSTIC_POLICY_VERSION",
     "FACTOR_DIAGNOSTIC_VERSION",
+    "FACTOR_LIFECYCLE_DIAGNOSTIC_VERSION",
     "NO_AUTHORITY",
     "PREDECESSOR_BINDING_VERSION",
     "V4_COMPATIBILITY_POLICY_BYTE_SHA256",
@@ -387,6 +518,11 @@ __all__ = [
     "V4_COMPATIBILITY_POLICY_PATH",
     "V4_COMPATIBILITY_POLICY_SEMANTIC_SHA256",
     "V4_COMPATIBILITY_POLICY_VERSION",
+    "V4_FACTOR_EVIDENCE_ADAPTER_POLICY_BYTE_SHA256",
+    "V4_FACTOR_EVIDENCE_ADAPTER_POLICY_ID",
+    "V4_FACTOR_EVIDENCE_ADAPTER_POLICY_PATH",
+    "V4_FACTOR_EVIDENCE_ADAPTER_POLICY_SEMANTIC_SHA256",
+    "V4_FACTOR_EVIDENCE_ADAPTER_POLICY_VERSION",
     "V4_PACKAGE_MANIFEST_SHA256",
     "V4_RUNTIME_MANIFEST_SHA256",
     "V4_SOURCE_GIT_COMMIT",

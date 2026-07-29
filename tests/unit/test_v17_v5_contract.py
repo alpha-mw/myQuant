@@ -62,13 +62,15 @@ def test_v5_package_runtime_and_predecessor_are_closed() -> None:
     runtime = verify_runtime_build()
     predecessor = verify_predecessor()
 
-    assert len(package) == 7
+    assert len(package) == 9
     assert set(runtime) == {
         "v17_v5_runtime/__init__.py",
         "v17_v5_runtime/authority.py",
         "v17_v5_runtime/cli.py",
         "v17_v5_runtime/factor_diagnostics.py",
+        "v17_v5_runtime/factor_lifecycle.py",
         "v17_v5_runtime/v4_compat_reader.py",
+        "v17_v5_runtime/v4_factor_adapter.py",
     }
     assert predecessor == {
         "package_asset_count": 93,
@@ -147,13 +149,31 @@ def test_v4_predecessor_binding_rejects_compatibility_policy_version_drift() -> 
         validate_artifact(seal_semantic(artifact))
 
 
-def test_compatibility_policy_is_exact_phase0_allowlist() -> None:
+def test_compatibility_policy_is_exact_sprint1a_allowlist() -> None:
     policy = load_compatibility_policy()
 
     assert [row["version"] for row in policy["allowed_artifacts"]] == [
-        "myquant.v17.v4.regime-evidence.v1"
+        "myquant.v17.v4.existing-factor-inventory.v1",
+        "myquant.v17.v4.factor-universe-observation.v1",
+        "myquant.v17.v4.forward-evaluation-receipt.v1",
+        "myquant.v17.v4.forward-evidence-origin-inventory.v1",
+        "myquant.v17.v4.forward-factor-input-bundle.v1",
+        "myquant.v17.v4.forward-label.v1",
+        "myquant.v17.v4.forward-observation-run.v1",
+        "myquant.v17.v4.forward-run-request.v1",
+        "myquant.v17.v4.forward-source-locator.v1",
+        "myquant.v17.v4.forward-source-parquet.v1",
+        "myquant.v17.v4.forward-source-slice-manifest.v1",
+        "myquant.v17.v4.forward-stage-output.v1",
+        "myquant.v17.v4.forward-stage-receipt.v1",
+        "myquant.v17.v4.regime-evidence.v1",
+        "myquant.v17.v4.research-shadow-factor-set.v1",
+        "myquant.v17.v4.shadow-factor-selection-audit.v1",
     ]
-    assert policy["allowed_artifacts"][0]["transitive_edges"] == []
+    assert [row["version"] for row in policy["allowed_artifacts"] if row["root_admissible"]] == [
+        "myquant.v17.v4.forward-evaluation-receipt.v1",
+        "myquant.v17.v4.regime-evidence.v1",
+    ]
     assert policy["forbidden_import_prefixes"] == ["quant_investor.v17_v4_runtime"]
     assert all(value is False for value in policy["authority"].values())
 
@@ -199,20 +219,22 @@ def test_factor_diagnostic_policy_schema_and_runtime_tamper_fail_closed(
         verify_copy(package_root=target_quant / "v17_v5_contract")
 
 
-def test_v4_compatibility_policy_and_reader_seals_are_unchanged() -> None:
+def test_v4_compatibility_policy_and_reader_are_manifest_bound() -> None:
     root = Path(__file__).resolve().parents[2]
+    package = verify_package()
+    runtime = verify_runtime_build()
 
     assert (
-        hashlib.sha256(
+        package["resources/v4_compatibility_policy.v1.json"]
+        == hashlib.sha256(
             (
                 root / "quant_investor/v17_v5_contract/resources/" "v4_compatibility_policy.v1.json"
             ).read_bytes()
         ).hexdigest()
-        == "480d89a7c0804427510f4a32c70195a55085acf4389d40edc939a08851bfec47"
     )
     assert (
-        hashlib.sha256(
+        runtime["v17_v5_runtime/v4_compat_reader.py"]
+        == hashlib.sha256(
             (root / "quant_investor/v17_v5_runtime/v4_compat_reader.py").read_bytes()
         ).hexdigest()
-        == "d2528024d094b05d24f29005e6fa4d7ec3192c5c3290182f4aae2dedafb13358"
     )

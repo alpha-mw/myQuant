@@ -15,10 +15,12 @@ LIMITS: Final[Mapping[str, int]] = MappingProxyType(
         "max_key_utf8_bytes": 256,
         "max_string_utf8_bytes": 1_048_576,
         "max_total_nodes": 250_000,
-        "compat_max_artifact_bytes": 67_108_864,
-        "compat_max_closure_bytes": 268_435_456,
-        "compat_max_closure_depth": 8,
-        "compat_max_closure_nodes": 64,
+        "compat_max_artifact_bytes": 134_217_728,
+        "compat_max_closure_bytes": 536_870_912,
+        "compat_max_closure_depth": 32,
+        "compat_max_closure_nodes": 512,
+        "compat_max_parquet_row_groups": 4_096,
+        "compat_max_parquet_rows": 10_000_000,
     }
 )
 
