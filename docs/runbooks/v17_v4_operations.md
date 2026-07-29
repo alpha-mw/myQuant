@@ -64,6 +64,91 @@ classification may route to an already-authorized market, Fundamental, or
 Macro maintenance workflow, followed by strict storage validation. Missing
 forward history or Deep assessment bytes are not canonical-data gaps.
 
+## Build and replay causal Regime Evidence v2
+
+`regime-evidence-build` is an additive offline producer. It does not change
+the existing `regime-evidence.v1` builder or any consumer. It accepts only
+`FULL_PIT_MARKET` filtered-causal inputs for the prior Shanghai session and
+makes them effective on the next exact open session. It never performs
+same-session inference, a smoothed-state pass, historical backfill, latest
+scanning, model training, provider collection, Factor Governance, portfolio
+allocation, selector mutation, broker, order, execution, or trade work.
+Inputs must be registered canonical JSON snapshots and terminals. Direct
+Parquet and opaque raw-file references are not accepted by this producer.
+
+Preposition the exact policy, fixed no-training model, pinned native default
+transition matrix, full-market feature snapshot, and, after bootstrap, the
+unique contiguous prior v2 evidence. Then run:
+
+```bash
+quant-investor-v17-v4 regime-evidence-build \
+  --workspace-root /absolute/path/to/myQuant \
+  --evidence-id <evidence-id> \
+  --strategy-id cn-aggressive-tech-manufacturing \
+  --decision-session <YYYY-MM-DD> \
+  --cutoff <UTC-second-timestamp> \
+  --created-at <UTC-second-timestamp> \
+  --inference-policy-path resources/regime_inference_policy.v1.json \
+  --inference-policy-sha256 <sha256> \
+  --model-snapshot-path <exact-model-path> \
+  --model-snapshot-sha256 <sha256> \
+  --transition-matrix-path <exact-transition-path> \
+  --transition-matrix-sha256 <sha256> \
+  --feature-snapshot-path <exact-feature-path> \
+  --feature-snapshot-sha256 <sha256>
+```
+
+After the first session, also supply the pair:
+
+```bash
+  --prior-evidence-path <exact-prior-v2-path> \
+  --prior-evidence-sha256 <sha256>
+```
+
+Supplying only one member of the optional prior pair is a CLI error. V1 is
+never accepted as the prior. Bootstrap is allowed only for the policy's exact
+`2026-07-29` observed / `2026-07-30` decision pair. Normal publication requires the prior v2
+`effective_session` to equal the current observed session; gaps, forks, and
+rebootstrap fail closed.
+
+New publication must occur after the observed session's Shanghai close and no
+later than the declared Factor observation cutoff for the decision session.
+That cutoff must fall on the decision session in Shanghai time; a later local
+date cannot be supplied to backfill an earlier decision session.
+Its declared time must be within 300 seconds of one captured UTC runtime
+timestamp. The monotonic clock is reserved for the 10-second closure budget. A delayed
+identical retry is allowed because the occupied exact-once slot is replayed
+before the new-publication clock test. A delayed conflicting retry remains
+blocked.
+
+Success exits `0` only after exact-byte publication and deterministic readback
+replay. The response includes descriptive sessions/state, artifact path/SHA,
+`replay_result`, `blocker_codes`, and the complete all-false authority attestation.
+Missing qualified current closure exits `2` with
+`TRUE_CURRENT_CANONICAL_INPUT_GAP` and creates no v2 completion artifact.
+Schema/SHA/semantic/causality/security/conflict/replay failures exit `2` with
+`BLOCKED`; they are not relabelled as data gaps.
+
+Read one existing artifact by exact path and expected SHA:
+
+```bash
+quant-investor-v17-v4 regime-evidence-status \
+  --workspace-root /absolute/path/to/myQuant \
+  --artifact-path data/private/v17_v4_sources/regime_evidence/<strategy-id>/<effective-session>/regime_evidence.v2.json \
+  --expected-sha256 <sha256>
+```
+
+Status never scans a directory or pointer and never applies new-publication
+wall-clock freshness. It validates the artifact, recursively replays its
+bounded closure, verifies the sealed posterior and hard state, and reports the
+same all-false authority boundary. The reader cannot reclassify the hard state
+or compute a smoothed posterior.
+
+The exact formulas, Decimal-12 `ROUND_HALF_EVEN` policy, largest-remainder
+normalization, native state order, closure limits, 45-case acceptance matrix,
+and rollback semantics are specified in
+`docs/architecture/v17_v4_causal_regime_evidence.md`.
+
 ## Build the real Forward Evidence source snapshot
 
 After the canonical close is fully sealed, bind the exact bytes that were
