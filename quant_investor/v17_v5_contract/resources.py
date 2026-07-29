@@ -33,6 +33,8 @@ from .limits import LIMITS
 from .validators import (
     FACTOR_DIAGNOSTIC_POLICY_ID,
     FACTOR_DIAGNOSTIC_POLICY_VERSION,
+    FACTOR_REGIME_DIAGNOSTIC_POLICY_ID,
+    FACTOR_REGIME_DIAGNOSTIC_POLICY_VERSION,
     NO_AUTHORITY,
     V4_COMPATIBILITY_POLICY_ID,
     V4_FACTOR_EVIDENCE_ADAPTER_POLICY_ID,
@@ -44,10 +46,11 @@ PACKAGE_MANIFEST_PATH: Final = "resources/package_manifest.v1.json"
 RUNTIME_BUILD_MANIFEST_PATH: Final = "resources/runtime_build_manifest.v1.json"
 COMPATIBILITY_POLICY_PATH: Final = "resources/v4_compatibility_policy.v1.json"
 FACTOR_DIAGNOSTIC_POLICY_PATH: Final = "resources/factor_diagnostic_policy.v1.json"
+FACTOR_REGIME_DIAGNOSTIC_POLICY_PATH: Final = "resources/factor_regime_diagnostic_policy.v1.json"
 V4_FACTOR_EVIDENCE_ADAPTER_POLICY_PATH: Final = (
     "resources/v4_factor_evidence_adapter_policy.v1.json"
 )
-PACKAGE_MANIFEST_SHA256: Final = "9ea730804e3b299069cacce37d14a4b747d1bf50fcc8dfed0f2090f83cc90550"
+PACKAGE_MANIFEST_SHA256: Final = "83338ab238e524b89c8e91e7b929475176ca8de89ded5dd3f2a65582be7027a5"
 _PACKAGE_ROOT: Final = Path(__file__).resolve().parent
 
 
@@ -443,6 +446,99 @@ def load_factor_diagnostic_policy(
     return policy
 
 
+def load_factor_regime_diagnostic_policy(
+    *,
+    package_root: Path | None = None,
+) -> dict[str, Any]:
+    policy = load_packaged_json(
+        FACTOR_REGIME_DIAGNOSTIC_POLICY_PATH,
+        package_root=package_root,
+    )
+    if (
+        set(policy)
+        != {
+            "accepted_factor_evidence_versions",
+            "accepted_label_versions",
+            "artifact_id",
+            "authority",
+            "conditioning_dimension",
+            "decimal_quantization",
+            "deterministic_ordering",
+            "horizon_sessions",
+            "minimum_descriptive_origins",
+            "minimum_stability_origins",
+            "missing_evidence_statuses",
+            "newey_west_lag",
+            "no_governance_action",
+            "origin_binding_policy",
+            "overlap_adjustment_policy",
+            "protocol_version",
+            "publication_causality_policy",
+            "regime_source_versions",
+            "semantic_sha256",
+            "status_contract",
+            "version",
+        }
+        or policy["artifact_id"] != FACTOR_REGIME_DIAGNOSTIC_POLICY_ID
+        or policy["authority"] != NO_AUTHORITY
+        or policy["protocol_version"] != PROTOCOL_VERSION
+        or policy["version"] != FACTOR_REGIME_DIAGNOSTIC_POLICY_VERSION
+        or policy["conditioning_dimension"] != "ORIGIN_REGIME"
+        or policy["horizon_sessions"] != 20
+        or policy["minimum_descriptive_origins"] != 20
+        or policy["minimum_stability_origins"] != 60
+        or policy["newey_west_lag"] != 19
+        or policy["missing_evidence_statuses"] != ["UNAVAILABLE", "UNOBSERVED"]
+        or policy["status_contract"] != ["ACCUMULATING", "UNAVAILABLE", "UNOBSERVED"]
+        or policy["accepted_factor_evidence_versions"]
+        != [
+            "myquant.v17.v4.factor-universe-observation.v1",
+            "myquant.v17.v4.forward-evaluation-receipt.v1",
+        ]
+        or policy["accepted_label_versions"] != ["myquant.v17.v4.forward-label.v1"]
+        or policy["regime_source_versions"]
+        != {
+            "capabilities": [
+                {
+                    "capability_status": ("CONDITIONING_INELIGIBLE_HARD_STATE_ABSENT"),
+                    "decision_session": "ABSENT",
+                    "effective_session": "ABSENT",
+                    "hard_state": "ABSENT",
+                    "posterior": "ABSENT",
+                    "published_at": "ABSENT",
+                    "source_refs": "ABSENT",
+                    "version": "myquant.v17.v4.regime-evidence.v1",
+                }
+            ],
+            "conditioning_eligible": [],
+            "registered": ["myquant.v17.v4.regime-evidence.v1"],
+        }
+        or policy["decimal_quantization"]
+        != {
+            "decimal_places": 12,
+            "negative_zero": "ZERO",
+            "rounding": "ROUND_HALF_EVEN",
+        }
+        or policy["overlap_adjustment_policy"]
+        != {
+            "bartlett_weight": "1-k/(lag+1)",
+            "gamma_denominator": "n",
+            "newey_west_variance_of_mean": "long_run_variance/n",
+            "overlapping_label_sessions": 20,
+        }
+        or policy["publication_causality_policy"]
+        != {
+            "available_at": "NOT_AFTER_FACTOR_ORIGIN_CUTOFF",
+            "created_at_is_not_published_at": True,
+            "future_or_smoothed_state": "FORBIDDEN",
+            "published_at": "REQUIRED_AND_NOT_AFTER_FACTOR_ORIGIN_CUTOFF",
+            "raw_or_mutable_regime_reconstruction": "FORBIDDEN",
+        }
+    ):
+        raise PackageResourceError("factor regime diagnostic policy identity mismatch")
+    return policy
+
+
 def load_v4_factor_evidence_adapter_policy(
     *,
     package_root: Path | None = None,
@@ -606,6 +702,7 @@ def verify_package(
         result[row["relative_path"]] = hashlib.sha256(raw).hexdigest()
     load_compatibility_policy(package_root=root)
     load_factor_diagnostic_policy(package_root=root)
+    load_factor_regime_diagnostic_policy(package_root=root)
     load_v4_factor_evidence_adapter_policy(package_root=root)
     verify_runtime_build(package_root=root)
     return result
@@ -647,12 +744,14 @@ def verify_predecessor(
 __all__ = [
     "COMPATIBILITY_POLICY_PATH",
     "FACTOR_DIAGNOSTIC_POLICY_PATH",
+    "FACTOR_REGIME_DIAGNOSTIC_POLICY_PATH",
     "PACKAGE_MANIFEST_PATH",
     "PACKAGE_MANIFEST_SHA256",
     "PackageResourceError",
     "RUNTIME_BUILD_MANIFEST_PATH",
     "load_compatibility_policy",
     "load_factor_diagnostic_policy",
+    "load_factor_regime_diagnostic_policy",
     "load_package_manifest",
     "load_packaged_json",
     "read_packaged_asset",

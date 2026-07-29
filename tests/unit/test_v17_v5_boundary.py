@@ -62,10 +62,13 @@ def test_v5_authority_is_permanently_false() -> None:
         "trade",
     }
     assert all(value is False for value in authority.values())
-    assert DELIVERY_STATUS == "SPRINT1A_V4_FACTOR_EVIDENCE_DIAGNOSTICS_AVAILABLE_NOT_OPERATIONAL"
+    assert (
+        DELIVERY_STATUS
+        == "SPRINT1B_REGIME_CONDITIONED_FACTOR_DIAGNOSTICS_AVAILABLE_NOT_OPERATIONAL"
+    )
 
 
-def test_v5_cli_only_adds_status_and_verify_and_writes_nothing(
+def test_v5_cli_only_adds_read_only_surfaces_and_writes_nothing(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -80,6 +83,28 @@ def test_v5_cli_only_adds_status_and_verify_and_writes_nothing(
 
     assert main(["status"]) == 0
     assert main(["verify"]) == 0
+    assert (
+        main(
+            [
+                "factor-regime-diagnostics",
+                "--workspace-root",
+                str(tmp_path),
+                "--strategy-id",
+                "quant-first",
+                "--factor-name",
+                "cn-factor",
+                "--evaluation-cutoff",
+                "2026-07-29T08:00:00Z",
+                "--created-at",
+                "2026-07-29T08:00:01Z",
+                "--output-id",
+                "diagnostic-request-1",
+                "--factor-evidence-unavailable",
+                "--regime-evidence-unavailable",
+            ]
+        )
+        == 0
+    )
     assert _tree(tmp_path) == before
 
 
@@ -103,12 +128,12 @@ def test_v5_cli_verify_fails_closed_with_exit_two(
     assert _tree(tmp_path) == before
 
 
-def test_v5_cli_help_remains_status_and_verify_only(capsys) -> None:
+def test_v5_cli_help_exposes_only_read_only_commands(capsys) -> None:
     import pytest
 
     with pytest.raises(SystemExit) as exc_info:
         main(["--help"])
     assert exc_info.value.code == 0
     help_text = capsys.readouterr().out
-    assert "{status,verify}" in help_text
+    assert "{status,verify,factor-regime-diagnostics}" in help_text
     assert "\n    run" not in help_text

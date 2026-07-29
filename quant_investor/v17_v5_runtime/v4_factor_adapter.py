@@ -15,6 +15,8 @@ from quant_investor.v17_v5_contract.canonical import canonical_bytes
 from quant_investor.v17_v5_contract.identities import (
     IdentityContractError,
     require_identifier,
+    require_relative_path,
+    require_sha256,
 )
 from quant_investor.v17_v5_contract.resources import (
     V4_FACTOR_EVIDENCE_ADAPTER_POLICY_PATH,
@@ -65,10 +67,44 @@ class V4FactorAdaptationStatus(str, Enum):
 
 
 @dataclass(frozen=True)
+class V4ArtifactReference:
+    """One exact closure-verified V4 artifact reference."""
+
+    artifact_id: str
+    artifact_version: str
+    byte_sha256: str
+    cutoff: str
+    relative_path: str
+    semantic_sha256: str
+    strategy_id: str
+
+
+@dataclass(frozen=True)
+class V4FactorOriginBinding:
+    """Exact V4 references and counts retained for one adapted origin."""
+
+    comparable_symbol_count: int
+    decision_session: str
+    eligible_symbol_count: int
+    evaluation_receipt_ref: V4ArtifactReference
+    factor_implementation_sha256: str
+    factor_observation_ref: V4ArtifactReference
+    factor_set_ref: V4ArtifactReference
+    forward_label_ref: V4ArtifactReference
+    horizon_end_session: str
+    observation_run_ref: V4ArtifactReference
+    origin_cutoff: str
+    origin_id: str
+    request_ref: V4ArtifactReference
+    source_locator_ref: V4ArtifactReference
+
+
+@dataclass(frozen=True)
 class V4FactorEvidenceAdaptation:
     """Pure in-memory evidence returned to the V5 diagnostic builder."""
 
     blockers: tuple[str, ...]
+    origin_bindings: tuple[V4FactorOriginBinding, ...]
     origins: tuple[FactorOriginSample, ...]
     status: V4FactorAdaptationStatus
     stratum: FactorSampleStratum | None
@@ -161,6 +197,50 @@ def _single_reference(
 def _reference_equal(left: Mapping[str, Any], right: Mapping[str, Any], *, label: str) -> None:
     if dict(left) != dict(right):
         _fail(f"{label} exact reference mismatch")
+
+
+def _artifact_reference(
+    value: Mapping[str, Any],
+    *,
+    label: str,
+) -> V4ArtifactReference:
+    expected = {
+        "artifact_id",
+        "artifact_version",
+        "byte_sha256",
+        "cutoff",
+        "relative_path",
+        "semantic_sha256",
+        "strategy_id",
+    }
+    if type(value) is not dict or set(value) != expected:
+        _fail(f"{label} must be an exact V4 artifact reference")
+    try:
+        return V4ArtifactReference(
+            artifact_id=_identifier(value["artifact_id"], label=f"{label}.artifact_id"),
+            artifact_version=_identifier(
+                value["artifact_version"],
+                label=f"{label}.artifact_version",
+            ),
+            byte_sha256=require_sha256(
+                value["byte_sha256"],
+                label=f"{label}.byte_sha256",
+            ),
+            cutoff=_instant(value["cutoff"], label=f"{label}.cutoff").strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            ),
+            relative_path=require_relative_path(
+                value["relative_path"],
+                label=f"{label}.relative_path",
+            ),
+            semantic_sha256=require_sha256(
+                value["semantic_sha256"],
+                label=f"{label}.semantic_sha256",
+            ),
+            strategy_id=_identifier(value["strategy_id"], label=f"{label}.strategy_id"),
+        )
+    except (IdentityContractError, KeyError, TypeError) as exc:
+        raise V4FactorAdapterError(f"{label} is malformed") from exc
 
 
 def _canonical_decimal(value: Any, *, label: str) -> str:
@@ -267,7 +347,12 @@ def _origin_from_read(
     sessions: Sequence[str],
     session_index: Mapping[str, int],
     market_calendar_sha256: str,
-) -> tuple[FactorSampleStratum | None, FactorOriginSample | None, tuple[str, ...]]:
+) -> tuple[
+    FactorSampleStratum | None,
+    FactorOriginSample | None,
+    V4FactorOriginBinding | None,
+    tuple[str, ...],
+]:
     receipt = dict(read.document)
     if receipt.get("version") != EVALUATION_RECEIPT_VERSION:
         _fail("adapter root must be a V4 forward evaluation receipt")
@@ -291,7 +376,7 @@ def _origin_from_read(
     if receipt["lineage_key_sha256"] != hashlib.sha256(canonical_bytes(lineage)).hexdigest():
         _fail("evaluation receipt lineage SHA mismatch")
     if lineage["horizon_sessions"] != HORIZON_SESSIONS:
-        return None, None, ("exact_20_session_evidence_unavailable",)
+        return None, None, None, ("exact_20_session_evidence_unavailable",)
     origin_inventory = _document(
         read,
         receipt["evidence_origin_inventory_ref"],
@@ -359,10 +444,10 @@ def _origin_from_read(
         row for row in factor_inventory["factors"] if row.get("factor_name") == factor_name
     ]
     if len(factor_rows) != 1:
-        return None, None, ("matching_factor_inventory_row_unavailable",)
+        return None, None, None, ("matching_factor_inventory_row_unavailable",)
     factor_inventory_row = factor_rows[0]
     if factor_inventory_row["lifecycle"] != "ACTIVE":
-        return None, None, ("matching_active_factor_unavailable",)
+        return None, None, None, ("matching_active_factor_unavailable",)
     factor_set_ref = factor_inventory_row["factor_ref"]
     if factor_set_ref["artifact_version"] != FACTOR_SET_VERSION:
         _fail("factor inventory does not bind a research factor set")
@@ -397,7 +482,7 @@ def _origin_from_read(
         and reference.get("cutoff", "") <= receipt["cutoff"]
     ]
     if len(matching_observations) != 1:
-        return None, None, ("matching_factor_observation_unavailable",)
+        return None, None, None, ("matching_factor_observation_unavailable",)
     factor_observation_ref = matching_observations[0]
     factor_observation = _document(
         read,
@@ -450,12 +535,12 @@ def _origin_from_read(
         or receipt["execution_outcome"] != "SUCCEEDED"
         or receipt["blockers"]
     ):
-        return stratum, None, ("evaluation_receipt_not_complete",)
+        return stratum, None, None, ("evaluation_receipt_not_complete",)
     matching_origins = [
         row for row in origin_inventory["origins"] if row.get("lineage_key") == lineage
     ]
     if len(matching_origins) != 1 or receipt["origin_count"] != 1:
-        return stratum, None, ("exact_single_origin_unavailable",)
+        return stratum, None, None, ("exact_single_origin_unavailable",)
     origin_row = matching_origins[0]
     label_ref = origin_row["canonical_evidence_ref"]
     if (
@@ -494,11 +579,11 @@ def _origin_from_read(
     ):
         _fail("forward label contract mismatch")
     if factor_observation["completeness"] != "COMPLETE":
-        return stratum, None, ("complete_factor_observation_unavailable",)
+        return stratum, None, None, ("complete_factor_observation_unavailable",)
     origin_session = _session(label["decision_session"], label="label.decision_session")
     label_session = _session(label["label_session"], label="label.label_session")
     if origin_session not in session_index or label_session not in session_index:
-        return stratum, None, ("market_calendar_session_unavailable",)
+        return stratum, None, None, ("market_calendar_session_unavailable",)
     start = session_index[origin_session]
     end = session_index[label_session]
     if end - start != HORIZON_SESSIONS:
@@ -516,7 +601,7 @@ def _origin_from_read(
         label_available_at.astimezone(SHANGHAI_TZ) < horizon_close
         or label_available_at > evaluation_cutoff
     ):
-        return stratum, None, ("label_not_naturally_matured",)
+        return stratum, None, None, ("label_not_naturally_matured",)
     expected_label_lineage = hashlib.sha256(
         canonical_bytes(
             {
@@ -608,6 +693,7 @@ def _origin_from_read(
     }
     evidence_sha = hashlib.sha256(canonical_bytes(evidence_preimage)).hexdigest()
     origin_id = f"v4-factor-origin-{evidence_sha[:32]}"
+    comparable_symbol_count = len(set(factor_values).intersection(forward_returns))
     return (
         stratum,
         FactorOriginSample(
@@ -618,6 +704,43 @@ def _origin_from_read(
             horizon_end_session=label_session,
             label_available_at=label["cutoff"],
             origin_id=origin_id,
+        ),
+        V4FactorOriginBinding(
+            comparable_symbol_count=comparable_symbol_count,
+            decision_session=origin_session,
+            eligible_symbol_count=len(factor_values),
+            evaluation_receipt_ref=_artifact_reference(
+                read.root_ref,
+                label="evaluation receipt ref",
+            ),
+            factor_implementation_sha256=selected_factor["implementation_sha256"],
+            factor_observation_ref=_artifact_reference(
+                factor_observation_ref,
+                label="factor observation ref",
+            ),
+            factor_set_ref=_artifact_reference(
+                factor_set_ref,
+                label="factor set ref",
+            ),
+            forward_label_ref=_artifact_reference(
+                label_ref,
+                label="forward label ref",
+            ),
+            horizon_end_session=label_session,
+            observation_run_ref=_artifact_reference(
+                receipt["observation_run_ref"],
+                label="observation run ref",
+            ),
+            origin_cutoff=factor_observation["cutoff"],
+            origin_id=origin_id,
+            request_ref=_artifact_reference(
+                request_ref,
+                label="request ref",
+            ),
+            source_locator_ref=_artifact_reference(
+                locator_ref,
+                label="source locator ref",
+            ),
         ),
         (),
     )
@@ -641,12 +764,14 @@ def adapt_v4_factor_evidence(
     if not reads:
         return V4FactorEvidenceAdaptation(
             blockers=("v4_evaluation_receipts_unavailable",),
+            origin_bindings=(),
             origins=(),
             status=V4FactorAdaptationStatus.UNAVAILABLE,
             stratum=None,
         )
     stratum: FactorSampleStratum | None = None
     origins: dict[str, FactorOriginSample] = {}
+    origin_bindings: dict[str, V4FactorOriginBinding] = {}
     blockers: set[str] = set()
     for read in reads:
         if not isinstance(read, V4CompatibilityRead):
@@ -656,7 +781,7 @@ def adapt_v4_factor_evidence(
             or read.predecessor_git_commit != V4_SOURCE_GIT_COMMIT
         ):
             _fail("V4 compatibility read policy or predecessor identity mismatch")
-        candidate_stratum, origin, candidate_blockers = _origin_from_read(
+        candidate_stratum, origin, binding, candidate_blockers = _origin_from_read(
             read,
             evaluation_cutoff=cutoff,
             factor_name=subject,
@@ -671,19 +796,29 @@ def adapt_v4_factor_evidence(
             elif stratum != candidate_stratum:
                 _fail("V4 evidence closures do not share one exact sample stratum")
         if origin is not None:
+            if binding is None or binding.origin_id != origin.origin_id:
+                _fail("V4 factor origin binding is absent or inconsistent")
             existing = origins.get(origin.origin_id)
             if existing is not None and existing != origin:
                 _fail("conflicting duplicate V4 factor origin")
+            existing_binding = origin_bindings.get(binding.origin_id)
+            if existing_binding is not None and existing_binding != binding:
+                _fail("conflicting duplicate V4 factor origin binding")
             origins[origin.origin_id] = origin
+            origin_bindings[binding.origin_id] = binding
     ordered_origins = tuple(
         sorted(
             origins.values(),
             key=lambda value: (value.decision_session, value.origin_id),
         )
     )
+    if len({origin.decision_session for origin in ordered_origins}) != len(ordered_origins):
+        _fail("duplicate V4 factor origin decision session")
+    ordered_bindings = tuple(origin_bindings[origin.origin_id] for origin in ordered_origins)
     if ordered_origins:
         return V4FactorEvidenceAdaptation(
             blockers=tuple(sorted(blockers)),
+            origin_bindings=ordered_bindings,
             origins=ordered_origins,
             status=V4FactorAdaptationStatus.ACCUMULATING,
             stratum=stratum,
@@ -691,12 +826,14 @@ def adapt_v4_factor_evidence(
     if stratum is not None:
         return V4FactorEvidenceAdaptation(
             blockers=tuple(sorted(blockers | {"no_naturally_matured_origins"})),
+            origin_bindings=(),
             origins=(),
             status=V4FactorAdaptationStatus.UNOBSERVED,
             stratum=stratum,
         )
     return V4FactorEvidenceAdaptation(
         blockers=tuple(sorted(blockers | {"v4_factor_evidence_unavailable"})),
+        origin_bindings=(),
         origins=(),
         status=V4FactorAdaptationStatus.UNAVAILABLE,
         stratum=None,
@@ -735,9 +872,11 @@ def build_factor_diagnostic_from_v4(
 
 
 __all__ = [
+    "V4ArtifactReference",
     "V4FactorAdaptationStatus",
     "V4FactorAdapterError",
     "V4FactorEvidenceAdaptation",
+    "V4FactorOriginBinding",
     "adapt_v4_factor_evidence",
     "build_factor_diagnostic_from_v4",
 ]

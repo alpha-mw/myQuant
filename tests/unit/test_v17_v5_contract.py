@@ -62,15 +62,18 @@ def test_v5_package_runtime_and_predecessor_are_closed() -> None:
     runtime = verify_runtime_build()
     predecessor = verify_predecessor()
 
-    assert len(package) == 9
+    assert len(package) == 12
     assert set(runtime) == {
         "v17_v5_runtime/__init__.py",
         "v17_v5_runtime/authority.py",
         "v17_v5_runtime/cli.py",
         "v17_v5_runtime/factor_diagnostics.py",
         "v17_v5_runtime/factor_lifecycle.py",
+        "v17_v5_runtime/factor_regime_diagnostics.py",
+        "v17_v5_runtime/factor_regime_origin_inventory.py",
         "v17_v5_runtime/v4_compat_reader.py",
         "v17_v5_runtime/v4_factor_adapter.py",
+        "v17_v5_runtime/v4_regime_adapter.py",
     }
     assert predecessor == {
         "package_asset_count": 93,

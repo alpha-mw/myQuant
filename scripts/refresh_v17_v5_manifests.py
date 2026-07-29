@@ -66,12 +66,15 @@ def _replace_digest(source: str, name: str, digest: str) -> str:
 
 def main() -> None:
     resources_dir = CONTRACT / "resources"
+    schemas_dir = CONTRACT / "schemas"
     for path in sorted(resources_dir.glob("*.json")):
         if path.name not in {
             "package_manifest.v1.json",
             "runtime_build_manifest.v1.json",
         }:
             _seal_existing_resource(path)
+    for path in sorted(schemas_dir.glob("*.json")):
+        path.write_bytes(canonical_resource_bytes(json.loads(path.read_bytes())))
 
     runtime_manifest = resources_dir / "runtime_build_manifest.v1.json"
     _write_sealed(
@@ -100,7 +103,7 @@ def main() -> None:
                 for path in resources_dir.glob("*.json")
                 if path.name != "package_manifest.v1.json"
             ],
-            *list((CONTRACT / "schemas").glob("*.json")),
+            *list(schemas_dir.glob("*.json")),
         ],
         key=lambda path: path.relative_to(CONTRACT).as_posix(),
     )
@@ -165,6 +168,18 @@ def main() -> None:
         "V4_FACTOR_EVIDENCE_ADAPTER_POLICY_SEMANTIC_SHA256",
         adapter_payload["semantic_sha256"],
     )
+    regime_policy = resources_dir / "factor_regime_diagnostic_policy.v1.json"
+    regime_policy_payload = json.loads(regime_policy.read_bytes())
+    source = _replace_digest(
+        source,
+        "FACTOR_REGIME_DIAGNOSTIC_POLICY_BYTE_SHA256",
+        _sha(regime_policy),
+    )
+    source = _replace_digest(
+        source,
+        "FACTOR_REGIME_DIAGNOSTIC_POLICY_SEMANTIC_SHA256",
+        regime_policy_payload["semantic_sha256"],
+    )
     source, count = re.subn(
         r'V4_COMPATIBILITY_POLICY_ID: Final = "[^"]+"',
         ("V4_COMPATIBILITY_POLICY_ID: Final = " f'"{compatibility_payload["artifact_id"]}"'),
@@ -188,6 +203,7 @@ def main() -> None:
             {
                 "adapter_policy_byte_sha256": _sha(adapter),
                 "compatibility_policy_byte_sha256": _sha(compatibility),
+                "factor_regime_diagnostic_policy_byte_sha256": _sha(regime_policy),
                 "package_manifest_byte_sha256": _sha(package_manifest),
                 "runtime_manifest_byte_sha256": _sha(runtime_manifest),
             },

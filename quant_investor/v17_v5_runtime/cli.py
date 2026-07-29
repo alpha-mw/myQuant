@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from typing import Any, Sequence
 
@@ -13,6 +14,30 @@ from quant_investor.v17_v5_contract import (
     verify_runtime_build,
 )
 from quant_investor.v17_v5_contract.resources import PackageResourceError
+from quant_investor.v17_v5_contract.identities import (
+    IdentityContractError,
+    require_identifier,
+)
+from quant_investor.v17_v5_contract.resources import (
+    FACTOR_REGIME_DIAGNOSTIC_POLICY_PATH,
+    load_factor_regime_diagnostic_policy,
+    read_packaged_asset,
+)
+from quant_investor.v17_v5_contract.validators import (
+    FACTOR_REGIME_DIAGNOSTIC_POLICY_PATH as POLICY_REFERENCE_PATH,
+)
+from quant_investor.v17_v5_runtime.factor_regime_diagnostics import (
+    FactorRegimeDiagnosticError,
+    build_unavailable_regime_conditioned_factor_diagnostic,
+)
+from quant_investor.v17_v5_runtime.v4_compat_reader import (
+    V4CompatibilityError,
+    read_v4_artifact,
+)
+from quant_investor.v17_v5_runtime.v4_regime_adapter import (
+    V4RegimeAdapterError,
+    adapt_v4_regime_evidence,
+)
 
 from .authority import (
     DELIVERY_STATUS,
@@ -28,6 +53,24 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("status", help="show the inert V17 v5 authority boundary")
     commands.add_parser("verify", help="verify v5 package/runtime and the pinned v4 predecessor")
+    diagnostics = commands.add_parser(
+        "factor-regime-diagnostics",
+        help="read exact V4 refs and emit one stdout-only descriptive diagnostic",
+    )
+    diagnostics.add_argument("--workspace-root", required=True)
+    diagnostics.add_argument("--strategy-id", required=True)
+    diagnostics.add_argument("--factor-name", required=True)
+    diagnostics.add_argument("--evaluation-cutoff", required=True)
+    diagnostics.add_argument("--created-at", required=True)
+    diagnostics.add_argument("--output-id", required=True)
+    factor_mode = diagnostics.add_mutually_exclusive_group(required=True)
+    factor_mode.add_argument("--factor-evidence-path")
+    factor_mode.add_argument("--factor-evidence-unavailable", action="store_true")
+    diagnostics.add_argument("--factor-evidence-sha256")
+    regime_mode = diagnostics.add_mutually_exclusive_group(required=True)
+    regime_mode.add_argument("--regime-evidence-path")
+    regime_mode.add_argument("--regime-evidence-unavailable", action="store_true")
+    diagnostics.add_argument("--regime-evidence-sha256")
     return parser
 
 
@@ -53,11 +96,136 @@ def _emit(payload: Any) -> None:
     )
 
 
+def _factor_regime_policy_ref() -> dict[str, str]:
+    policy = load_factor_regime_diagnostic_policy()
+    raw = read_packaged_asset(FACTOR_REGIME_DIAGNOSTIC_POLICY_PATH)
+    return {
+        "artifact_id": policy["artifact_id"],
+        "byte_sha256": hashlib.sha256(raw).hexdigest(),
+        "relative_path": POLICY_REFERENCE_PATH,
+        "semantic_sha256": policy["semantic_sha256"],
+        "version": policy["version"],
+    }
+
+
+def _validate_evidence_mode(
+    *,
+    path: str | None,
+    sha256: str | None,
+    unavailable: bool,
+    label: str,
+) -> None:
+    if unavailable:
+        if sha256 is not None:
+            raise V4CompatibilityError(
+                f"{label} SHA-256 cannot accompany an unavailable declaration"
+            )
+        return
+    if path is None or sha256 is None:
+        raise V4CompatibilityError(f"{label} exact path and SHA-256 are both required")
+
+
+def _run_factor_regime_diagnostics(args: argparse.Namespace) -> int:
+    output_id = require_identifier(args.output_id, label="output_id")
+    _validate_evidence_mode(
+        path=args.factor_evidence_path,
+        sha256=args.factor_evidence_sha256,
+        unavailable=args.factor_evidence_unavailable,
+        label="factor evidence",
+    )
+    _validate_evidence_mode(
+        path=args.regime_evidence_path,
+        sha256=args.regime_evidence_sha256,
+        unavailable=args.regime_evidence_unavailable,
+        label="regime evidence",
+    )
+    blockers: list[str] = []
+    if args.factor_evidence_unavailable:
+        blockers.append("V4_FACTOR_EVIDENCE_UNAVAILABLE")
+    else:
+        factor_read = read_v4_artifact(
+            args.workspace_root,
+            relative_path=args.factor_evidence_path,
+            expected_byte_sha256=args.factor_evidence_sha256,
+            expected_strategy_id=args.strategy_id,
+            decision_cutoff=args.evaluation_cutoff,
+        )
+        if factor_read.document.get("version") != "myquant.v17.v4.forward-evaluation-receipt.v1":
+            raise V4CompatibilityError(
+                "factor evidence root must be a V4 forward evaluation receipt"
+            )
+        lineage_key = factor_read.document.get("lineage_key")
+        if (
+            factor_read.document.get("subject_id") != args.factor_name
+            or type(lineage_key) is not dict
+            or lineage_key.get("factor_name") != args.factor_name
+        ):
+            raise V4CompatibilityError("factor evidence subject does not match --factor-name")
+    if args.regime_evidence_unavailable:
+        blockers.append("V4_REGIME_EVIDENCE_UNAVAILABLE")
+    else:
+        regime_read = read_v4_artifact(
+            args.workspace_root,
+            relative_path=args.regime_evidence_path,
+            expected_byte_sha256=args.regime_evidence_sha256,
+            expected_strategy_id=args.strategy_id,
+            decision_cutoff=args.evaluation_cutoff,
+        )
+        normalized = adapt_v4_regime_evidence(regime_read)
+        blockers.extend(
+            (
+                "V4_REGIME_EVIDENCE_UNAVAILABLE",
+                normalized.causal_status,
+            )
+        )
+    diagnostic = build_unavailable_regime_conditioned_factor_diagnostic(
+        strategy_id=args.strategy_id,
+        factor_name=args.factor_name,
+        factor_implementation_sha256=None,
+        policy_ref=_factor_regime_policy_ref(),
+        cutoff=args.evaluation_cutoff,
+        created_at=args.created_at,
+        unavailable_prerequisites=tuple(sorted(set(blockers))),
+    )
+    wire = _wire()
+    _emit(
+        {
+            **wire,
+            "diagnostic": diagnostic,
+            "delivery_status": wire["status"],
+            "output_id": output_id,
+            "provider_calls": False,
+            "status": diagnostic["status"],
+        }
+    )
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "status":
         _emit(_wire())
         return 0
+    if args.command == "factor-regime-diagnostics":
+        try:
+            return _run_factor_regime_diagnostics(args)
+        except (
+            FactorRegimeDiagnosticError,
+            IdentityContractError,
+            PackageResourceError,
+            V4CompatibilityError,
+            V4RegimeAdapterError,
+        ) as exc:
+            _emit(
+                {
+                    **_wire(),
+                    "error": str(exc),
+                    "output_id": args.output_id,
+                    "provider_calls": False,
+                    "verified": False,
+                }
+            )
+            return exc.exit_code
     try:
         package = verify_package()
         runtime = verify_runtime_build()

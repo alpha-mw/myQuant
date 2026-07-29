@@ -25,9 +25,19 @@ Sprint 1A adds one library-only surface:
 - no writer, run command, governance action or empirical effectiveness
   conclusion.
 
+Sprint 1B adds:
+
+- a sealed origin-regime diagnostic policy;
+- a V4 regime-evidence adapter that reuses the Sprint-1A bounded closure reader;
+- immutable origin bindings across Factor observation, 20-session matured
+  label, Factor implementation identity and origin-available regime evidence;
+- unconditional and by-regime descriptive RankIC statistics;
+- a stdout-only CLI diagnostic surface;
+- no online weights, tier changes, lifecycle advice or authority.
+
 ## Scope and non-goals
 
-Sprint 1A has no run orchestrator, schedule, artifact writer, output root,
+Sprint 1B has no run orchestrator, schedule, artifact writer, output root,
 model call, provider call, or portfolio surface. It does
 not modify V15, V16, V17 v2/v3, V17 v4 runtime, Factor Governance, formal
 activation, canary, promotion, the default selector, execution, broker, order,
@@ -169,6 +179,10 @@ UNAVAILABLE
 
 They cannot claim factor, industry, fundamental, theme, regime or strategy
 effectiveness.
+
+The complete Sprint-1B origin-regime causality and statistical contract is
+defined in
+`docs/architecture/v17_v5_factor_regime_diagnostics.md`.
 
 ## Sprint 1A Factor diagnostic contract
 

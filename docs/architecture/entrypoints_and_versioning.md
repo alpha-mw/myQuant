@@ -36,14 +36,15 @@
   SHA，并在 exact calendar/bars/holdings/source-closure 绑定一致时生成
   `v15_v17_v4_gray_comparison`；不再扫描 v3 workspace。该显式入口不改变
   V15 默认路由。
-- V17 v5 Sprint-1A 契约入口：`quant-investor-v17-v5`。当前仍只开放
-  `status` 和 `verify`，状态固定为
-  `SPRINT1A_V4_FACTOR_EVIDENCE_DIAGNOSTICS_AVAILABLE_NOT_OPERATIONAL`。它使用独立
+- V17 v5 Sprint-1B 契约入口：`quant-investor-v17-v5`。当前开放
+  `status`、`verify` 和 stdout-only 的 `factor-regime-diagnostics`，状态固定为
+  `SPRINT1B_REGIME_CONDITIONED_FACTOR_DIAGNOSTICS_AVAILABLE_NOT_OPERATIONAL`。它使用独立
   `myquant.v17.v5` 协议和
   `quant_investor.v17_v5_contract` / `quant_investor.v17_v5_runtime`
   包，只读验证已封存的 v4 predecessor 和显式 allowlist dependency closure，
   并提供纯内存、描述性、无文件写入的 V4 evidence adapter、Factor
-  maturity/RankIC/coverage/replay 与 lifecycle diagnostic library。它不扫描或
+  maturity/RankIC/coverage/replay、lifecycle 与 origin-regime diagnostic
+  library。它不扫描或
   写入 V4 artifact，不输出 effectiveness、inference、tier、weight、action 或
   promotion 结论；`descriptive_coverage_minimum_met` 也不是 Factor Governance
   门禁。

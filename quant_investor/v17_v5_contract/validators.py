@@ -35,6 +35,10 @@ NO_AUTHORITY: Final = {
 PREDECESSOR_BINDING_VERSION: Final = "myquant.v17.v5.v4-predecessor-binding.v1"
 FACTOR_DIAGNOSTIC_VERSION: Final = "myquant.v17.v5.factor-diagnostic.v1"
 FACTOR_LIFECYCLE_DIAGNOSTIC_VERSION: Final = "myquant.v17.v5.factor-lifecycle-diagnostic.v1"
+FACTOR_REGIME_ORIGIN_INVENTORY_VERSION: Final = "myquant.v17.v5.factor-regime-origin-inventory.v1"
+REGIME_CONDITIONED_FACTOR_DIAGNOSTIC_VERSION: Final = (
+    "myquant.v17.v5.regime-conditioned-factor-diagnostic.v1"
+)
 FACTOR_DIAGNOSTIC_POLICY_ID: Final = "v17.v5.factor.diagnostic.policy.sprint1a"
 FACTOR_DIAGNOSTIC_POLICY_VERSION: Final = "myquant.v17.v5.factor-diagnostic-policy.v1"
 FACTOR_DIAGNOSTIC_POLICY_PATH: Final = (
@@ -45,6 +49,17 @@ FACTOR_DIAGNOSTIC_POLICY_BYTE_SHA256: Final = (
 )
 FACTOR_DIAGNOSTIC_POLICY_SEMANTIC_SHA256: Final = (
     "f2c763f68d64381fbdbc11db0e57a25075bb9da4eb6968d168261318fabe68c4"
+)
+FACTOR_REGIME_DIAGNOSTIC_POLICY_ID: Final = "v17.v5.factor.regime.diagnostic.policy.sprint1b"
+FACTOR_REGIME_DIAGNOSTIC_POLICY_VERSION: Final = "myquant.v17.v5.factor-regime-diagnostic-policy.v1"
+FACTOR_REGIME_DIAGNOSTIC_POLICY_PATH: Final = (
+    "quant_investor/v17_v5_contract/resources/" "factor_regime_diagnostic_policy.v1.json"
+)
+FACTOR_REGIME_DIAGNOSTIC_POLICY_BYTE_SHA256: Final = (
+    "4884be00e368cbd92a7edb7f947ce98b4fe04bee9555e721da330ff6a31cd607"
+)
+FACTOR_REGIME_DIAGNOSTIC_POLICY_SEMANTIC_SHA256: Final = (
+    "6e406c5c7b66be9f85550c9a5931b866452a73762fc5b46b7505ba8473082ca6"
 )
 V4_COMPATIBILITY_POLICY_ID: Final = "v17.v4.compatibility.policy.sprint1a"
 V4_COMPATIBILITY_POLICY_VERSION: Final = "myquant.v17.v5.v4-compatibility-policy.v1"
@@ -141,6 +156,245 @@ def _validate_timestamp(value: Any, *, label: str) -> datetime:
     except (TypeError, ValueError) as exc:
         raise ArtifactContractError(f"{label} is not a valid UTC timestamp") from exc
     return parsed
+
+
+def _factor_regime_policy_ref() -> dict[str, str]:
+    return {
+        "artifact_id": FACTOR_REGIME_DIAGNOSTIC_POLICY_ID,
+        "byte_sha256": FACTOR_REGIME_DIAGNOSTIC_POLICY_BYTE_SHA256,
+        "relative_path": FACTOR_REGIME_DIAGNOSTIC_POLICY_PATH,
+        "semantic_sha256": FACTOR_REGIME_DIAGNOSTIC_POLICY_SEMANTIC_SHA256,
+        "version": FACTOR_REGIME_DIAGNOSTIC_POLICY_VERSION,
+    }
+
+
+def _validate_factor_regime_origin_inventory(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    try:
+        document = validate_semantic_sha(payload)
+        require_identifier(document["inventory_id"], label="inventory_id")
+        require_identifier(document["strategy_id"], label="strategy_id")
+        require_identifier(document["factor_name"], label="factor_name")
+        require_sha256(
+            document["factor_implementation_sha256"],
+            label="factor_implementation_sha256",
+        )
+        cutoff = _validate_timestamp(document["cutoff"], label="cutoff")
+        created_at = _validate_timestamp(document["created_at"], label="created_at")
+    except (
+        CanonicalContractError,
+        IdentityContractError,
+        KeyError,
+        TypeError,
+    ) as exc:
+        raise ArtifactContractError("factor regime origin inventory is invalid") from exc
+    if (
+        document["authority"] != NO_AUTHORITY
+        or document["protocol_version"] != "myquant.v17.v5"
+        or document["horizon_sessions"] != 20
+        or document["policy_ref"] != _factor_regime_policy_ref()
+        or created_at < cutoff
+    ):
+        raise ArtifactContractError("factor regime origin inventory contract mismatch")
+    rows = document["origin_rows"]
+    if document["origin_count"] != len(rows):
+        raise ArtifactContractError("factor regime origin count mismatch")
+    expected_order = sorted(
+        rows,
+        key=lambda row: (
+            row["decision_session"],
+            row["factor_name"],
+            row["regime_state"],
+            row["factor_observation_ref"]["artifact_id"],
+            row["matured_label_ref"]["artifact_id"],
+            row["regime_evidence_ref"]["artifact_id"],
+        ),
+    )
+    seen: set[tuple[str, str]] = set()
+    seen_origin_ids: set[str] = set()
+    counts: dict[str, int] = {}
+    for row in rows:
+        key = (row["decision_session"], row["factor_name"])
+        if key in seen or row["origin_id"] in seen_origin_ids:
+            raise ArtifactContractError("duplicate factor regime origin")
+        seen.add(key)
+        seen_origin_ids.add(row["origin_id"])
+        expected_row_identity = dict(row)
+        observed_row_identity = expected_row_identity.pop("row_identity_sha256")
+        if (
+            hashlib.sha256(canonical_bytes(expected_row_identity)).hexdigest()
+            != observed_row_identity
+        ):
+            raise ArtifactContractError("factor regime origin row identity mismatch")
+        eligible_count = row["eligible_symbol_count"]
+        comparable_count = row["comparable_symbol_count"]
+        coverage = Decimal(row["coverage"])
+        if (eligible_count == 0 and (comparable_count != 0 or coverage != 0)) or (
+            eligible_count > 0
+            and (Decimal(comparable_count) / Decimal(eligible_count)).quantize(
+                Decimal("0.000000000001"),
+                rounding=ROUND_HALF_EVEN,
+            )
+            != coverage
+        ):
+            raise ArtifactContractError("factor regime origin coverage mismatch")
+        source_refs = (
+            row["factor_evidence_ref"],
+            row["factor_observation_ref"],
+            row["matured_label_ref"],
+            row["observation_run_ref"],
+            row["request_ref"],
+            row["source_locator_ref"],
+            row["regime_evidence_ref"],
+        )
+        if any(ref["strategy_id"] != document["strategy_id"] for ref in source_refs):
+            raise ArtifactContractError("factor regime origin ref strategy mismatch")
+        if row["regime_source_version"] != row["regime_evidence_ref"]["version"]:
+            raise ArtifactContractError("factor regime source version mismatch")
+        probabilities = row["state_probabilities"]
+        if probabilities is not None and row["regime_state"] not in {
+            probability["regime_state"] for probability in probabilities
+        }:
+            raise ArtifactContractError("factor regime posterior omits the sealed hard state")
+        if (
+            row["factor_name"] != document["factor_name"]
+            or row["label_horizon_sessions"] != 20
+            or _validate_timestamp(
+                row["regime_available_at"],
+                label="regime_available_at",
+            )
+            > _validate_timestamp(row["origin_cutoff"], label="origin_cutoff")
+            or _validate_timestamp(
+                row["regime_published_at"],
+                label="regime_published_at",
+            )
+            > _validate_timestamp(row["origin_cutoff"], label="origin_cutoff")
+            or (
+                row["regime_decision_session"] is not None
+                and row["regime_decision_session"] > row["decision_session"]
+            )
+            or (
+                row["regime_effective_session"] is not None
+                and row["regime_effective_session"] > row["decision_session"]
+            )
+        ):
+            raise ArtifactContractError("factor regime origin causality mismatch")
+        counts[row["regime_state"]] = counts.get(row["regime_state"], 0) + 1
+    if rows != expected_order or document["regime_counts"] != [
+        {
+            "origin_count": counts[key],
+            "regime_state": key,
+        }
+        for key in sorted(counts)
+    ]:
+        raise ArtifactContractError("factor regime origin ordering mismatch")
+    identity_material = dict(document)
+    identity_material.pop("inventory_id")
+    identity_material.pop("semantic_sha256")
+    expected_inventory_id = (
+        "factor-regime-origin-inventory-"
+        f"{hashlib.sha256(canonical_bytes(identity_material)).hexdigest()[:32]}"
+    )
+    if document["inventory_id"] != expected_inventory_id:
+        raise ArtifactContractError("factor regime origin inventory identity mismatch")
+    return document
+
+
+def _validate_regime_conditioned_factor_diagnostic(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    try:
+        document = validate_semantic_sha(payload)
+        require_identifier(document["diagnostic_id"], label="diagnostic_id")
+        require_identifier(document["strategy_id"], label="strategy_id")
+        require_identifier(document["factor_name"], label="factor_name")
+        cutoff = _validate_timestamp(document["cutoff"], label="cutoff")
+        created_at = _validate_timestamp(document["created_at"], label="created_at")
+    except (
+        CanonicalContractError,
+        IdentityContractError,
+        KeyError,
+        TypeError,
+    ) as exc:
+        raise ArtifactContractError("regime-conditioned factor diagnostic is invalid") from exc
+    if (
+        document["authority"] != NO_AUTHORITY
+        or document["protocol_version"] != "myquant.v17.v5"
+        or document["horizon_sessions"] != 20
+        or document["policy_ref"] != _factor_regime_policy_ref()
+        or created_at < cutoff
+    ):
+        raise ArtifactContractError("regime-conditioned factor diagnostic contract mismatch")
+    identity_material = dict(document)
+    identity_material.pop("diagnostic_id")
+    identity_material.pop("semantic_sha256")
+    expected_diagnostic_id = (
+        "regime-conditioned-factor-diagnostic-"
+        f"{hashlib.sha256(canonical_bytes(identity_material)).hexdigest()[:32]}"
+    )
+    if document["diagnostic_id"] != expected_diagnostic_id:
+        raise ArtifactContractError("regime-conditioned factor diagnostic identity mismatch")
+    status = document["status"]
+    occupancy = document["regime_occupancy"]
+    if occupancy["ambiguous_regime_count"] != 0:
+        raise ArtifactContractError("ambiguous regime evidence cannot be diagnosed")
+    if status == "UNAVAILABLE":
+        if (
+            document["factor_evidence_ref"] is not None
+            or document["origin_inventory_ref"] is not None
+            or document["by_regime"]
+            or document["regime_source_refs"]
+            or document["unconditional_metrics"] is not None
+            or not document["limitation_codes"]
+            or occupancy
+            != {
+                "ambiguous_regime_count": 0,
+                "missing_regime_count": 0,
+                "posterior_confidence_summary": None,
+                "regime_concentration": None,
+                "regime_origin_counts": [],
+                "total_origin_count": 0,
+            }
+        ):
+            raise ArtifactContractError("UNAVAILABLE regime diagnostic is inconsistent")
+    else:
+        regime_counts = occupancy["regime_origin_counts"]
+        if regime_counts != sorted(regime_counts, key=lambda row: row["regime_state"]):
+            raise ArtifactContractError("regime occupancy counts are noncanonical")
+        if len({row["regime_state"] for row in regime_counts}) != len(regime_counts):
+            raise ArtifactContractError("regime occupancy contains duplicate states")
+        if sum(row["origin_count"] for row in regime_counts) != occupancy["total_origin_count"]:
+            raise ArtifactContractError("regime occupancy counts do not close")
+        try:
+            require_sha256(
+                document["factor_implementation_sha256"],
+                label="factor_implementation_sha256",
+            )
+        except IdentityContractError as exc:
+            raise ArtifactContractError("observed regime diagnostic has no factor SHA") from exc
+        if (
+            document["factor_evidence_ref"] is None
+            or document["origin_inventory_ref"] is None
+            or (
+                status == "UNOBSERVED"
+                and (
+                    occupancy["total_origin_count"] != 0
+                    or document["unconditional_metrics"] is not None
+                    or document["by_regime"]
+                )
+            )
+            or (
+                status == "ACCUMULATING"
+                and (
+                    occupancy["total_origin_count"] < 1
+                    or document["unconditional_metrics"] is None
+                    or not document["by_regime"]
+                )
+            )
+        ):
+            raise ArtifactContractError("observed regime diagnostic is inconsistent")
+    return document
 
 
 def _validate_session(value: Any, *, label: str) -> str:
@@ -499,6 +753,10 @@ def validate_typed_artifact(
         return _validate_factor_diagnostic(payload)
     if payload.get("version") == FACTOR_LIFECYCLE_DIAGNOSTIC_VERSION:
         return _validate_factor_lifecycle_diagnostic(payload)
+    if payload.get("version") == FACTOR_REGIME_ORIGIN_INVENTORY_VERSION:
+        return _validate_factor_regime_origin_inventory(payload)
+    if payload.get("version") == REGIME_CONDITIONED_FACTOR_DIAGNOSTIC_VERSION:
+        return _validate_regime_conditioned_factor_diagnostic(payload)
     raise ArtifactContractError("unsupported V17 v5 artifact version")
 
 
@@ -510,9 +768,16 @@ __all__ = [
     "FACTOR_DIAGNOSTIC_POLICY_SEMANTIC_SHA256",
     "FACTOR_DIAGNOSTIC_POLICY_VERSION",
     "FACTOR_DIAGNOSTIC_VERSION",
+    "FACTOR_REGIME_DIAGNOSTIC_POLICY_BYTE_SHA256",
+    "FACTOR_REGIME_DIAGNOSTIC_POLICY_ID",
+    "FACTOR_REGIME_DIAGNOSTIC_POLICY_PATH",
+    "FACTOR_REGIME_DIAGNOSTIC_POLICY_SEMANTIC_SHA256",
+    "FACTOR_REGIME_DIAGNOSTIC_POLICY_VERSION",
     "FACTOR_LIFECYCLE_DIAGNOSTIC_VERSION",
+    "FACTOR_REGIME_ORIGIN_INVENTORY_VERSION",
     "NO_AUTHORITY",
     "PREDECESSOR_BINDING_VERSION",
+    "REGIME_CONDITIONED_FACTOR_DIAGNOSTIC_VERSION",
     "V4_COMPATIBILITY_POLICY_BYTE_SHA256",
     "V4_COMPATIBILITY_POLICY_ID",
     "V4_COMPATIBILITY_POLICY_PATH",

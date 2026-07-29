@@ -409,6 +409,20 @@ def test_adapter_builds_only_accumulating_descriptive_diagnostic() -> None:
 
     assert adaptation.status == V4FactorAdaptationStatus.ACCUMULATING
     assert len(adaptation.origins) == 1
+    assert len(adaptation.origin_bindings) == 1
+    binding = adaptation.origin_bindings[0]
+    assert binding.origin_id == adaptation.origins[0].origin_id
+    assert binding.factor_implementation_sha256 == SHA_C
+    assert binding.eligible_symbol_count == 2
+    assert binding.comparable_symbol_count == 2
+    assert binding.factor_observation_ref.relative_path.endswith(
+        "observations/factor-observation-1.json"
+    )
+    assert binding.forward_label_ref.relative_path.endswith("labels/label-1.json")
+    assert binding.evaluation_receipt_ref.relative_path.endswith("evaluation/receipt-1.json")
+    assert binding.observation_run_ref.relative_path.endswith("runs/run-1.json")
+    assert binding.request_ref.relative_path.endswith("forward_requests/request-1.json")
+    assert binding.source_locator_ref.relative_path.endswith("source_locator.json")
     assert diagnostic["status"] == "ACCUMULATING"
     assert diagnostic["matured_origin_count"] == 1
     assert diagnostic["effectiveness_claimed"] is False
@@ -432,6 +446,7 @@ def test_adapter_maps_missing_receipts_to_unavailable() -> None:
     )
 
     assert adaptation.status == V4FactorAdaptationStatus.UNAVAILABLE
+    assert adaptation.origin_bindings == ()
     assert diagnostic["status"] == "UNAVAILABLE"
     assert diagnostic["matured_origin_count"] == 0
 
@@ -445,6 +460,7 @@ def test_adapter_maps_incomplete_receipt_to_unobserved() -> None:
     )
 
     assert adaptation.status == V4FactorAdaptationStatus.UNOBSERVED
+    assert adaptation.origin_bindings == ()
     assert adaptation.origins == ()
     assert adaptation.stratum is not None
 
