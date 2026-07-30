@@ -439,3 +439,46 @@ to one successfully closed `FORWARD_EVIDENCE` session and does not imply
 production/default activation. The complete scoring, tier, label,
 de-duplication, and rollback policy is documented in
 `docs/architecture/v17_v4_forward_evidence_runtime.md`.
+
+## 6. Build or replay bounded Regime Evidence v3
+
+Regime Evidence v3 is a research-only successor to the frozen v2 producer.
+It retains filtered-causal prior-session/next-session inference, but replaces
+recursive predecessor evidence with an immutable state checkpoint, 64-record
+segments, and domain-separated hash accumulators.
+
+The v2 commands remain unchanged:
+
+```text
+regime-evidence-build
+regime-evidence-status
+```
+
+V3 uses version-explicit commands:
+
+```text
+regime-evidence-v3-build
+regime-evidence-v3-status
+regime-chain-v3-audit
+```
+
+Every input is supplied by exact path and byte SHA. The commands never scan a
+directory, choose a `latest` artifact, invoke a provider, import v2 posterior
+state, or write a V5 artifact. Non-genesis publication requires the explicit
+prior finalized v3 evidence, its exact checkpoint, and the fixed chain anchor.
+An orphan checkpoint is not a valid predecessor.
+
+When a publication was missed, the current build records the exact ordered
+missing Shanghai open sessions, performs transition-only propagation for
+those sessions, and opens a `RECOVERY` segment. It does not create the missing
+historical evidence and does not invent missing likelihoods. Recovery is
+limited to 260 open sessions.
+
+Do not invoke the v3 producer in a real strategy workspace during Sprint
+1E-0A. Current-data inspection is read-only. The first real publication
+requires a separate deployment work package with a complete feature, model,
+transition, calendar, PIT, market, and locator closure.
+
+The exact commitment formulas, crash behavior, calendar-prefix rule, replay
+boundary, and audit budgets are specified in
+`docs/architecture/v17_v4_regime_checkpoint_chain.md`.

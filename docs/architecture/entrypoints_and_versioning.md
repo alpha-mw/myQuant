@@ -80,7 +80,11 @@
   production，不是 production/default/formal authority。默认仍是 V15。完整
   迁移边界见 `docs/architecture/v17_v4_production_research_contract.md`；
   Regime v2 的因果、精度、closure 和回放合同见
-  `docs/architecture/v17_v4_causal_regime_evidence.md`。
+  `docs/architecture/v17_v4_causal_regime_evidence.md`。Additive Regime
+  Evidence v3 使用 bounded state checkpoint、64-record segment 和 hash
+  accumulator 修复 v2 的递归闭包与漏跑后永久阻塞问题；它不改变 v1/v2
+  consumer，也不具备任何新增权限。完整边界见
+  `docs/architecture/v17_v4_regime_checkpoint_chain.md`。
 - Factor Governance：`v4`，使用版本中立的 `results/factor_governance/`
 - Dashboard：Contract v3
 

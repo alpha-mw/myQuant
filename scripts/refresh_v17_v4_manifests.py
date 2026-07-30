@@ -44,6 +44,15 @@ def main() -> None:
         policy.pop("semantic_sha256", None)
         _write(regime_policy, policy)
 
+    regime_v3_source = RUNTIME / "regime_evidence_v3.py"
+    regime_policy_v2 = CONTRACT / "resources/regime_inference_policy.v2.json"
+    if regime_v3_source.is_file() and regime_policy_v2.is_file():
+        policy_v2 = json.loads(regime_policy_v2.read_bytes())
+        policy_v2["model_helper_sha256"] = _sha(regime_source)
+        policy_v2["producer_sha256"] = _sha(regime_v3_source)
+        policy_v2.pop("semantic_sha256", None)
+        _write(regime_policy_v2, policy_v2)
+
     forward_source_paths = [
         QUANT_INVESTOR / "factors/forward_evaluator.py",
         *sorted((QUANT_INVESTOR / "industry").glob("*.py")),
